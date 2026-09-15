@@ -65,9 +65,25 @@ export {
 export type { PrototypeStatus, PrototypeStatusService } from './status.ts'
 export { buildPrototypeStatus, listPrototypeStatuses } from './status.ts'
 
+export type { PrototypeKind, PrototypeConfig } from './config.ts'
+export {
+  PROTOTYPE_CONFIG_FILENAME,
+  DEFAULT_PROTOTYPE_KIND,
+  getPrototypeConfigPath,
+  isPrototypeKind,
+  normalizePrototypeReferences,
+  readPrototypeConfig,
+  writePrototypeConfig,
+} from './config.ts'
+
+export {
+  getPrototypeReferences,
+  linkPrototypeReference,
+  unlinkPrototypeReference,
+} from './references.ts'
+
 export type { CapturedBase, CreatedPrototype, CreatePrototypeInput } from './create.ts'
 export {
-  buildStarterBaseHtml,
   createPrototype,
   prototypeSlugFromName,
   readPrototypeBase,

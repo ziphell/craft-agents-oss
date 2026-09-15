@@ -5,6 +5,7 @@ import {
   getSessionScopedToolCallbacks,
   unregisterSessionScopedToolCallbacks,
 } from '../session-scoped-tools.ts';
+import type { PrototypeKind } from '../../prototypes/config.ts';
 
 describe('session-scoped tool callback merge', () => {
   const sessionId = 'test-session-merge';
@@ -75,6 +76,8 @@ describe('session-scoped tool callback merge', () => {
       prototypeStatus: async (slug: string) => ({
         slug,
         dir: '/tmp/prototypes',
+        kind: 'overlay' as const,
+        references: [],
         baseHtmlPresent: false,
         baseHtmlPath: null,
         patches: { total: 0, byLane: {}, files: [] },
@@ -90,12 +93,15 @@ describe('session-scoped tool callback merge', () => {
       }),
       getBoundPrototypeSlug: () => null,
       listPrototypes: async () => [],
-      createPrototype: async (name: string) => ({
+      createPrototype: async ({ name, kind }: { name: string; kind?: PrototypeKind; targetUrl?: string }) => ({
         slug: name,
         dir: `/tmp/prototypes/${name}`,
         baseHtmlPath: `/tmp/prototypes/${name}/base.html`,
+        kind: kind ?? 'overlay',
       }),
       bindPrototype: async (_slug: string | null) => {},
+      linkPrototypeReference: async (_slug: string, referenceSlug: string) => ({ references: [referenceSlug] }),
+      unlinkPrototypeReference: async () => ({ references: [] }),
       focusWindow: async () => ({ instanceId: 'browser-1', title: 'Example', url: 'https://example.com' }),
       releaseControl: async () => ({ action: 'released' as const, affectedIds: [] }),
       closeWindow: async () => ({ action: 'closed' as const, affectedIds: [] }),

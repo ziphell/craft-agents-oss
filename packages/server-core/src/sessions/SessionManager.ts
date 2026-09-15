@@ -20,6 +20,8 @@ import {
   resolvePrototypeEntry,
   listPrototypeStatuses,
   createPrototype as createPrototypeProject,
+  linkPrototypeReference as linkReference,
+  unlinkPrototypeReference as unlinkReference,
 } from '@craft-agent/shared/prototypes'
 import { applyPrototypeToBrowser, clearPrototypeFromBrowser } from '../domain/apply-prototype'
 import {
@@ -3880,14 +3882,25 @@ export class SessionManager implements ISessionManager {
             listPrototypes: async () => {
               return listPrototypeStatuses(managed.workspace.rootPath)
             },
-            createPrototype: async (name) => {
-              return createPrototypeProject(managed.workspace.rootPath, { name })
+            createPrototype: async (input) => {
+              return createPrototypeProject(managed.workspace.rootPath, input)
             },
             // Writing through the setter (rather than `managed.prototypeSlug = …`)
             // is what emits prototype_slug_changed and persists the header, so the
             // UI badge and a later resume both see the new binding.
             bindPrototype: async (prototypeSlug) => {
               await this.setSessionPrototypeSlug(managed.id, prototypeSlug)
+            },
+            // Pure config writes against two separate prototypes. Kept as the only
+            // supported way to connect them: a reference's patches must never end
+            // up in the reader's patches/ (they would ship inside its deliverable).
+            linkPrototypeReference: async (prototypeSlug, referenceSlug) => {
+              const config = linkReference(managed.workspace.rootPath, prototypeSlug, referenceSlug)
+              return { references: config.references ?? [] }
+            },
+            unlinkPrototypeReference: async (prototypeSlug, referenceSlug) => {
+              const config = unlinkReference(managed.workspace.rootPath, prototypeSlug, referenceSlug)
+              return { references: config.references ?? [] }
             },
             applyPrototype: async (prototypeSlug) => {
               const instanceId = await resolveSessionBrowserInstance('browser_prototype_apply')

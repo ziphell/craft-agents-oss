@@ -14,7 +14,7 @@
 import { useTranslation } from 'react-i18next'
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useAtomValue } from 'jotai'
-import { Camera, Download, ExternalLink, FileCode, FlaskConical, FolderOpen, MessageSquare, RefreshCw, TriangleAlert, Zap } from 'lucide-react'
+import { Camera, Download, ExternalLink, FileCode, FlaskConical, FolderOpen, Link2, MessageSquare, RefreshCw, TriangleAlert, Unlink, Zap } from 'lucide-react'
 import { toast } from 'sonner'
 import { useActiveWorkspace, useAppShellContext } from '@/context/AppShellContext'
 import { navigate, routes } from '@/lib/navigate'
@@ -22,6 +22,7 @@ import { sessionMetaMapAtom } from '@/atoms/sessions'
 import { activeBrowserInstanceIdAtom } from '@/atoms/browser-pane'
 import { Info_Page, Info_Section, Info_Table, Info_Alert } from '@/components/info'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { PrototypeSourceEditorDialog } from '@/components/prototypes/PrototypeSourceEditorDialog'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@craft-agent/ui'
 import type { PrototypeEntry, PrototypeExportResult, PrototypeStatus } from '@craft-agent/shared/prototypes'
@@ -44,12 +45,21 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
   const sessionMetaMap = useAtomValue(sessionMetaMapAtom)
 
   const [status, setStatus] = useState<PrototypeStatus | null>(null)
+  /** Every prototype in the workspace — references are resolved against it. */
+  const [allStatuses, setAllStatuses] = useState<PrototypeStatus[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [exporting, setExporting] = useState(false)
   const [exportResult, setExportResult] = useState<PrototypeExportResult | null>(null)
   const [applying, setApplying] = useState(false)
   const [capturing, setCapturing] = useState(false)
+  /** Capture is armed but waiting for the user to accept overwriting base.html. */
+  const [confirmingCapture, setConfirmingCapture] = useState(false)
+  /** The "add a reference" form, which is hidden until it is asked for. */
+  const [referenceFormOpen, setReferenceFormOpen] = useState(false)
+  const [referenceName, setReferenceName] = useState('')
+  const [referenceUrl, setReferenceUrl] = useState('')
+  const [linkingReference, setLinkingReference] = useState(false)
   /** Artifact open in the source editor — null when the editor is closed. */
   const [editing, setEditing] = useState<{ path: string; name: string } | null>(null)
   /** Failure from Open or Export — both surface the throwing RPC's message verbatim. */
@@ -70,6 +80,7 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
     try {
       const result = await window.electronAPI.listPrototypes(workspaceId)
       const list = Array.isArray(result) ? (result as PrototypeStatus[]) : []
+      setAllStatuses(list)
       const found = list.find((item) => item.slug === prototypeSlug)
       if (!found) {
         setStatus(null)
@@ -102,6 +113,14 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
     }
   }, [workspaceId, loadStatus])
 
+  // Every "open this in a browser window" action is the same three steps, so
+  // they share one helper rather than three drifting copies.
+  const openInBrowserPane = useCallback(async (url: string) => {
+    const instanceId = await window.electronAPI.browserPane.create({ show: true })
+    await window.electronAPI.browserPane.navigate(instanceId, url)
+    await window.electronAPI.browserPane.focus(instanceId)
+  }, [])
+
   // Open the prototype in a browser pane. Prefers the exported deliverable,
   // else base.html — `getPrototypeEntry` throws when neither exists.
   const handleOpen = useCallback(async () => {
@@ -109,14 +128,12 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
     setActionError(null)
     try {
       const entry = (await window.electronAPI.getPrototypeEntry(workspaceId, prototypeSlug)) as PrototypeEntry
-      const instanceId = await window.electronAPI.browserPane.create({ show: true })
-      await window.electronAPI.browserPane.navigate(instanceId, entry.url)
-      await window.electronAPI.browserPane.focus(instanceId)
+      await openInBrowserPane(entry.url)
     } catch (err) {
       console.error('[PrototypeInfoPage] Failed to open prototype:', err)
       setActionError(err instanceof Error ? err.message : String(err))
     }
-  }, [workspaceId, prototypeSlug])
+  }, [workspaceId, prototypeSlug, openInBrowserPane])
 
   const handleExport = useCallback(async () => {
     if (!workspaceId) return
@@ -158,9 +175,10 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
 
   // Store the rendered page as base.html. Goes through the browser, so it works
   // for client-rendered apps and authenticated sessions where a fetch would not.
-  const handleCapture = useCallback(async () => {
+  const runCapture = useCallback(async () => {
     if (!workspaceId || !activeBrowserInstanceId) return
     setCapturing(true)
+    setConfirmingCapture(false)
     setActionError(null)
     try {
       const result = (await window.electronAPI.capturePrototypeBase(
@@ -177,6 +195,20 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
       setCapturing(false)
     }
   }, [workspaceId, activeBrowserInstanceId, prototypeSlug, t, loadStatus])
+
+  // Capture overwrites base.html outright. For an overlay that is the documented
+  // remedy (base.html is a snapshot, and re-capturing is how it is refreshed),
+  // but for a scratch the same file is the user's own document — seeding it from
+  // a page is fine, silently replacing edits is not. So the destructive case
+  // asks first; the sanctioned case does not.
+  const handleCapture = useCallback(() => {
+    if (!status) return
+    if (status.kind === 'scratch' && status.baseHtmlPresent) {
+      setConfirmingCapture(true)
+      return
+    }
+    void runCapture()
+  }, [status, runCapture])
 
   // Conversations already bound to this prototype (any session bound to it, from
   // any entry point). `prototypeSlug` is on the persisted header, so this is a
@@ -213,6 +245,109 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
     }
   }, [workspaceId, prototypeSessions, onCreateSession, prototypeSlug])
 
+  // Open the recorded target page in a browser panel. This is the entry that was
+  // missing before kinds existed: an overlay prototype is *about* an external
+  // page, so "open my target" has to be one click, not a URL the user retypes.
+  const handleOpenTargetPage = useCallback(async () => {
+    if (!status?.targetUrl) return
+    setActionError(null)
+    try {
+      await openInBrowserPane(status.targetUrl)
+    } catch (err) {
+      console.error('[PrototypeInfoPage] Failed to open the target page:', err)
+      setActionError(err instanceof Error ? err.message : String(err))
+    }
+  }, [status?.targetUrl, openInBrowserPane])
+
+  // Open a reference *for study*. Its live page is the point (that is what you
+  // reverse-engineer), so prefer `targetUrl` and only fall back to its captured
+  // or exported document when no page was recorded.
+  const handleOpenReference = useCallback(async (referenceSlug: string) => {
+    if (!workspaceId) return
+    setActionError(null)
+    try {
+      const reference = allStatuses.find((item) => item.slug === referenceSlug)
+      if (reference?.targetUrl) {
+        await openInBrowserPane(reference.targetUrl)
+        return
+      }
+      const entry = (await window.electronAPI.getPrototypeEntry(workspaceId, referenceSlug)) as PrototypeEntry
+      await openInBrowserPane(entry.url)
+    } catch (err) {
+      console.error('[PrototypeInfoPage] Failed to open the reference:', err)
+      setActionError(err instanceof Error ? err.message : String(err))
+    }
+  }, [workspaceId, allStatuses, openInBrowserPane])
+
+  // Add a reference: create the prototype that will hold it, then link it.
+  //
+  // Two steps rather than one RPC, and in this order, so the page being built is
+  // never the thing left half-made: if the reference's name is taken, the create
+  // fails and this prototype is untouched.
+  const handleAddReference = useCallback(async () => {
+    if (!workspaceId) return
+    const name = referenceName.trim()
+    const url = referenceUrl.trim()
+    if (!name) return
+
+    setLinkingReference(true)
+    setActionError(null)
+    try {
+      const created = (await window.electronAPI.createPrototype(workspaceId, {
+        name,
+        kind: 'overlay',
+        targetUrl: url || undefined,
+      })) as { slug: string }
+      await window.electronAPI.linkPrototypeReference(workspaceId, prototypeSlug, created.slug)
+      setReferenceFormOpen(false)
+      setReferenceName('')
+      setReferenceUrl('')
+      await loadStatus(true)
+    } catch (err) {
+      console.error('[PrototypeInfoPage] Failed to add a reference:', err)
+      setActionError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLinkingReference(false)
+    }
+  }, [workspaceId, referenceName, referenceUrl, prototypeSlug, loadStatus])
+
+  const handleRemoveReference = useCallback(async (referenceSlug: string) => {
+    if (!workspaceId) return
+    setActionError(null)
+    try {
+      await window.electronAPI.unlinkPrototypeReference(workspaceId, prototypeSlug, referenceSlug)
+      await loadStatus(true)
+    } catch (err) {
+      console.error('[PrototypeInfoPage] Failed to remove the reference:', err)
+      setActionError(err instanceof Error ? err.message : String(err))
+    }
+  }, [workspaceId, prototypeSlug, loadStatus])
+
+  // Link a prototype that already exists. Any kind qualifies: the relation is
+  // about two projects being independent, not about what either of them is — so
+  // studying another scratch is the same thing as studying an overlay.
+  const handleLinkExistingReference = useCallback(async (referenceSlug: string) => {
+    if (!workspaceId) return
+    setLinkingReference(true)
+    setActionError(null)
+    try {
+      await window.electronAPI.linkPrototypeReference(workspaceId, prototypeSlug, referenceSlug)
+      setReferenceFormOpen(false)
+      await loadStatus(true)
+    } catch (err) {
+      console.error('[PrototypeInfoPage] Failed to link the reference:', err)
+      setActionError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLinkingReference(false)
+    }
+  }, [workspaceId, prototypeSlug, loadStatus])
+
+  /** Anything that could be linked, minus this prototype and what is already linked. */
+  const referenceCandidates = useMemo(() => {
+    const linked = new Set(status?.references ?? [])
+    return allStatuses.filter((item) => item.slug !== prototypeSlug && !linked.has(item.slug))
+  }, [allStatuses, prototypeSlug, status?.references])
+
   const handleRevealFolder = useCallback(async () => {
     if (!status) return
     try {
@@ -235,7 +370,11 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
           <Info_Page.Hero
             avatar={<FlaskConical className="h-6 w-6 text-foreground/60" />}
             title={status.slug}
-            tagline={status.dir}
+            tagline={
+              status.kind === 'overlay'
+                ? t('prototypeInfo.kindOverlay')
+                : t('prototypeInfo.kindScratch')
+            }
           />
 
           {/* Actions — Apply and Capture act on the browser window the user is viewing */}
@@ -246,6 +385,12 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
               <MessageSquare className="h-3.5 w-3.5" />
               {prototypeSessions.length > 0 ? t('prototypeInfo.openChat') : t('prototypeInfo.startChat')}
             </Button>
+            {status.kind === 'overlay' && status.targetUrl && (
+              <Button size="sm" variant="outline" onClick={() => void handleOpenTargetPage()}>
+                <ExternalLink className="h-3.5 w-3.5" />
+                {t('prototypeInfo.openTargetPage')}
+              </Button>
+            )}
             <Button size="sm" variant="outline" onClick={handleApply} disabled={applying || !activeBrowserInstanceId}>
               <Zap className="h-3.5 w-3.5" />
               {applying ? t('prototypeInfo.applying') : t('prototypeInfo.apply')}
@@ -272,12 +417,15 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
             <p className="pl-1 text-xs text-muted-foreground">{t('prototypeInfo.needBrowser')}</p>
           )}
 
-          {/* base.html is the precondition for export — say so loudly. */}
+          {/* base.html is the precondition for export — say so loudly, and say
+              the right thing: an overlay captures it, a scratch authors it. */}
           {!status.baseHtmlPresent && (
             <Info_Alert variant="warning" icon={<TriangleAlert className="h-4 w-4" />}>
               <Info_Alert.Title>{t('prototypeInfo.baseHtmlMissing')}</Info_Alert.Title>
               <Info_Alert.Description>
-                {t('prototypeInfo.baseHtmlMissingHint')}
+                {status.kind === 'overlay'
+                  ? t('prototypeInfo.baseHtmlMissingHintOverlay')
+                  : t('prototypeInfo.baseHtmlMissingHintScratch')}
               </Info_Alert.Description>
             </Info_Alert>
           )}
@@ -299,6 +447,143 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
               <Info_Alert.Description>{actionError}</Info_Alert.Description>
             </Info_Alert>
           )}
+
+          {confirmingCapture && (
+            <Info_Alert variant="warning" icon={<TriangleAlert className="h-4 w-4" />}>
+              <Info_Alert.Title>{t('prototypeInfo.captureOverwriteTitle')}</Info_Alert.Title>
+              <Info_Alert.Description>
+                <div>{t('prototypeInfo.captureOverwriteHint')}</div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button size="sm" variant="outline" onClick={() => void runCapture()} disabled={capturing}>
+                    {capturing ? t('prototypeInfo.capturing') : t('prototypeInfo.captureOverwriteConfirm')}
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setConfirmingCapture(false)} disabled={capturing}>
+                    {t('common.cancel')}
+                  </Button>
+                </div>
+              </Info_Alert.Description>
+            </Info_Alert>
+          )}
+
+          {/* References — the prototypes this one is studied from. Each stays a
+              separate project, which is what keeps its patches out of this
+              prototype's deliverable (plan §14). */}
+          <Info_Section
+            title={t('prototypeInfo.references')}
+            description={status.references.length > 0 ? t('prototypeInfo.referencesHint') : undefined}
+          >
+            {status.references.length === 0 ? (
+              <div className="px-4 py-6 text-sm text-muted-foreground">
+                {t('prototypeInfo.referencesEmpty')}
+              </div>
+            ) : (
+              <ul className="divide-y divide-border/30">
+                {status.references.map((referenceSlug) => {
+                  const reference = allStatuses.find((item) => item.slug === referenceSlug)
+                  return (
+                    <li key={referenceSlug} className="flex items-center gap-2 px-4 py-2">
+                      <button
+                        type="button"
+                        onClick={() => navigate(routes.view.prototypes(referenceSlug))}
+                        className="min-w-0 flex-1 text-left"
+                      >
+                        <div className="truncate text-sm font-medium">{referenceSlug}</div>
+                        {/* A scratch reference has no target page *by design* — say
+                            what it actually is rather than reporting a missing URL. */}
+                        <div className="truncate font-mono text-xs text-foreground/60">
+                          {reference?.targetUrl
+                            ?? t(reference?.kind === 'scratch'
+                              ? 'prototypeInfo.referenceOwnPage'
+                              : 'prototypeInfo.referenceNoTarget')}
+                        </div>
+                      </button>
+                      <Button size="sm" variant="ghost" onClick={() => void handleOpenReference(referenceSlug)}>
+                        <ExternalLink className="h-3.5 w-3.5" />
+                        {t('prototypeInfo.open')}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        aria-label={t('prototypeInfo.removeReference')}
+                        onClick={() => void handleRemoveReference(referenceSlug)}
+                      >
+                        <Unlink className="h-3.5 w-3.5" />
+                      </Button>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+
+            <div className="px-4 py-3">
+              {referenceFormOpen ? (
+                <div className="space-y-3">
+                  {/* Linking an existing prototype comes first: it creates nothing,
+                      and it is the only way to study another one of your own. */}
+                  {referenceCandidates.length > 0 && (
+                    <div className="space-y-1.5">
+                      <p className="text-xs text-muted-foreground">{t('prototypeInfo.referenceLinkExisting')}</p>
+                      <div className="flex flex-wrap gap-2">
+                        {referenceCandidates.map((candidate) => (
+                          <Button
+                            key={candidate.slug}
+                            size="sm"
+                            variant="outline"
+                            onClick={() => void handleLinkExistingReference(candidate.slug)}
+                            disabled={linkingReference}
+                          >
+                            {candidate.slug}
+                            <span className="ml-1 font-mono text-[10px] text-muted-foreground">{candidate.kind}</span>
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Input
+                        value={referenceName}
+                        onChange={(event) => setReferenceName(event.target.value)}
+                        placeholder={t('prototypeInfo.referenceNamePlaceholder')}
+                        className="h-8 w-48"
+                      />
+                      <Input
+                        value={referenceUrl}
+                        onChange={(event) => setReferenceUrl(event.target.value)}
+                        placeholder={t('prototypeInfo.referenceUrlPlaceholder')}
+                        className="h-8 w-72"
+                      />
+                      <Button
+                        size="sm"
+                        onClick={() => void handleAddReference()}
+                        disabled={!referenceName.trim() || linkingReference}
+                      >
+                        <Link2 className="h-3.5 w-3.5" />
+                        {t('prototypeInfo.referenceAdd')}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => setReferenceFormOpen(false)}
+                        disabled={linkingReference}
+                      >
+                        {t('common.cancel')}
+                      </Button>
+                    </div>
+                    {/* Says out loud that this creates a whole prototype — a side
+                        effect nobody would guess from a button labelled "Add". */}
+                    <p className="text-xs text-muted-foreground">{t('prototypeInfo.addReferenceHint')}</p>
+                  </div>
+                </div>
+              ) : (
+                <Button size="sm" variant="outline" onClick={() => setReferenceFormOpen(true)}>
+                  <Link2 className="h-3.5 w-3.5" />
+                  {t('prototypeInfo.addReference')}
+                </Button>
+              )}
+            </div>
+          </Info_Section>
 
           {/* Patches — total + per-lane distribution */}
           <Info_Section title={t('prototypeInfo.patches')}>
@@ -437,6 +722,16 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
           <Info_Section title={t('prototypeInfo.metadata')}>
             <Info_Table>
               <Info_Table.Row label={t('common.slug')} value={status.slug} />
+              {status.kind === 'overlay' && (
+                <Info_Table.Row
+                  label={t('prototypeInfo.targetPage')}
+                  value={
+                    status.targetUrl
+                      ? <span className="font-mono text-xs break-all">{status.targetUrl}</span>
+                      : <span className="text-muted-foreground">{t('prototypeInfo.targetPageUnset')}</span>
+                  }
+                />
+              )}
               <Info_Table.Row label={t('common.location')}>
                 <div className="flex items-center gap-2 min-w-0">
                   <span className="flex-1 min-w-0 truncate font-mono text-xs">{status.dir}</span>

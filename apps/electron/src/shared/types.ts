@@ -3,6 +3,8 @@
 // =============================================================================
 export * from '@craft-agent/shared/protocol'
 
+import type { PrototypeKind } from '@craft-agent/shared/prototypes'
+
 // =============================================================================
 // Package re-exports (convenience for renderer imports)
 // =============================================================================
@@ -486,12 +488,27 @@ export interface ElectronAPI {
   getPrototypeEntry(workspaceId: string, slug: string): Promise<unknown>
   /** Write `dist/*` for a prototype so it can be handed to developers. */
   exportPrototype(workspaceId: string, slug: string): Promise<unknown>
-  /** Create a prototype project and seed its starter `base.html`. */
-  createPrototype(workspaceId: string, input: { name: string }): Promise<unknown>
+  /**
+   * Create a prototype project. `kind` defaults to `overlay` (inject patches into
+   * a real page, optionally recording its `targetUrl`); `scratch` owns its own
+   * `base.html`. No base page is seeded either way — see create.ts.
+   */
+  createPrototype(
+    workspaceId: string,
+    input: { name: string; kind?: PrototypeKind; targetUrl?: string },
+  ): Promise<unknown>
   /** Replay a prototype's patches into a live browser instance. */
   applyPrototype(workspaceId: string, instanceId: string, slug: string): Promise<unknown>
   /** Replace `base.html` with the rendered document of a live page. */
   capturePrototypeBase(workspaceId: string, instanceId: string, slug: string): Promise<unknown>
+  /**
+   * Declare that `slug` is studied from `referenceSlug` (plan §14). The two stay
+   * separate projects: that is what keeps the reference's patches out of this
+   * prototype's deliverable.
+   */
+  linkPrototypeReference(workspaceId: string, slug: string, referenceSlug: string): Promise<unknown>
+  /** Drop the relation. Idempotent, and how a dangling reference is cleaned up. */
+  unlinkPrototypeReference(workspaceId: string, slug: string, referenceSlug: string): Promise<unknown>
 
   // Sources
   getSources(workspaceId: string): Promise<LoadedSource[]>

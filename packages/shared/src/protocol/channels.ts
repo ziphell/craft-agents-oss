@@ -124,6 +124,10 @@ export const RPC_CHANNELS = {
     APPLY: 'prototypes:apply',
     /** Replace `base.html` with the rendered document of a live page. */
     CAPTURE: 'prototypes:capture',
+    /** Declare that a prototype is studied from another one (plan §14). */
+    LINK_REFERENCE: 'prototypes:linkReference',
+    /** Drop that relation. Idempotent, and the way a dangling reference is cleaned up. */
+    UNLINK_REFERENCE: 'prototypes:unlinkReference',
   },
   debug: {
     LOG: 'debug:log',

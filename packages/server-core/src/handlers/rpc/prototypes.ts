@@ -14,7 +14,8 @@ import { watch } from 'fs'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import { ensureWorkspacePrototypesPath } from '@craft-agent/shared/workspaces'
-import { exportPrototype, createPrototype, listPrototypeStatuses, resolvePrototypeEntry, writePrototypeBase } from '@craft-agent/shared/prototypes'
+import { exportPrototype, createPrototype, linkPrototypeReference, listPrototypeStatuses, resolvePrototypeEntry, unlinkPrototypeReference, writePrototypeBase } from '@craft-agent/shared/prototypes'
+import type { PrototypeKind } from '@craft-agent/shared/prototypes'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import {
   applyPrototypeToBrowser,
@@ -31,6 +32,8 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.prototypes.CREATE,
   RPC_CHANNELS.prototypes.APPLY,
   RPC_CHANNELS.prototypes.CAPTURE,
+  RPC_CHANNELS.prototypes.LINK_REFERENCE,
+  RPC_CHANNELS.prototypes.UNLINK_REFERENCE,
 ] as const
 
 /** Batch rapid changes before notifying (matches the session file watcher). */
@@ -91,13 +94,20 @@ export function registerPrototypesHandlers(server: RpcServer, deps: HandlerDeps)
   })
 
   // Create a prototype project (the panel's "New Prototype").
-  server.handle(RPC_CHANNELS.prototypes.CREATE, async (_ctx, workspaceId: string, input: { name?: string }) => {
-    const workspace = getWorkspaceByNameOrId(workspaceId)
-    if (!workspace) throw new Error(`PROTOTYPES_CREATE: Workspace not found: ${workspaceId}`)
-    const created = createPrototype(workspace.rootPath, { name: input?.name ?? '' })
-    log.info(`PROTOTYPES_CREATE: ${created.slug}`)
-    return created
-  })
+  server.handle(
+    RPC_CHANNELS.prototypes.CREATE,
+    async (_ctx, workspaceId: string, input: { name?: string; kind?: PrototypeKind; targetUrl?: string }) => {
+      const workspace = getWorkspaceByNameOrId(workspaceId)
+      if (!workspace) throw new Error(`PROTOTYPES_CREATE: Workspace not found: ${workspaceId}`)
+      const created = createPrototype(workspace.rootPath, {
+        name: input?.name ?? '',
+        kind: input?.kind,
+        targetUrl: input?.targetUrl,
+      })
+      log.info(`PROTOTYPES_CREATE: ${created.slug} (${created.kind})`)
+      return created
+    },
+  )
 
   // Replay a prototype's patches into a live browser instance. The instance id
   // comes from the caller because it owns the browser window it is looking at.
@@ -135,6 +145,31 @@ export function registerPrototypesHandlers(server: RpcServer, deps: HandlerDeps)
       const captured = writePrototypeBase(workspace.rootPath, slug, markup)
       log.info(`PROTOTYPES_CAPTURE: ${slug} ← ${captured.bytes} bytes from ${instanceId}`)
       return captured
+    },
+  )
+
+  // References are a relation between two prototypes, not a third kind: the
+  // reader keeps its own patches and the reference keeps its own, which is what
+  // stops reference selectors from being inlined into the reader's deliverable.
+  server.handle(
+    RPC_CHANNELS.prototypes.LINK_REFERENCE,
+    async (_ctx, workspaceId: string, slug: string, referenceSlug: string) => {
+      const workspace = getWorkspaceByNameOrId(workspaceId)
+      if (!workspace) throw new Error(`PROTOTYPES_LINK_REFERENCE: Workspace not found: ${workspaceId}`)
+      const config = linkPrototypeReference(workspace.rootPath, slug, referenceSlug)
+      log.info(`PROTOTYPES_LINK_REFERENCE: ${slug} ← reference ${referenceSlug}`)
+      return config
+    },
+  )
+
+  server.handle(
+    RPC_CHANNELS.prototypes.UNLINK_REFERENCE,
+    async (_ctx, workspaceId: string, slug: string, referenceSlug: string) => {
+      const workspace = getWorkspaceByNameOrId(workspaceId)
+      if (!workspace) throw new Error(`PROTOTYPES_UNLINK_REFERENCE: Workspace not found: ${workspaceId}`)
+      const config = unlinkPrototypeReference(workspace.rootPath, slug, referenceSlug)
+      log.info(`PROTOTYPES_UNLINK_REFERENCE: ${slug} ↛ reference ${referenceSlug}`)
+      return config
     },
   )
 

@@ -137,7 +137,7 @@ import { PanelHeader } from "./PanelHeader"
 import { FabNewChat } from "./FabNewChat"
 import { SendToWorkspaceDialog } from "./SendToWorkspaceDialog"
 import { CreateProjectDialog } from "../projects/CreateProjectDialog"
-import { CreatePrototypeDialog } from "../prototypes/CreatePrototypeDialog"
+import { CreatePrototypeDialog, type CreatePrototypeValues } from "../prototypes/CreatePrototypeDialog"
 import { ElementEditorDialog } from "../prototypes/ElementEditorDialog"
 import { useBrowserToolbarActions, type EditElementRequest } from "@/hooks/useBrowserToolbarActions"
 import { MessagingDialogHost } from "@/components/messaging/MessagingDialogHost"
@@ -2036,16 +2036,16 @@ function AppShellContent({
     if (!activeWorkspace?.id) return
     setCreatePrototypeDialogOpen(true)
   }, [activeWorkspace?.id])
-  const handleCreatePrototypeSubmit = useCallback(async (name: string) => {
+  const handleCreatePrototypeSubmit = useCallback(async (values: CreatePrototypeValues) => {
     if (!activeWorkspace?.id) return
     // Deliberately does NOT catch: createPrototype rejects on a taken slug or
     // an unusable name, and CreatePrototypeDialog renders that message inline.
     const created = (await window.electronAPI.createPrototype(
       activeWorkspace.id,
-      { name }
+      { name: values.name, kind: values.kind, targetUrl: values.targetUrl }
     )) as CreatedPrototype
     setCreatePrototypeDialogOpen(false)
-    toast.success(t('prototypeCreate.success', { name }))
+    toast.success(t('prototypeCreate.success', { name: values.name }))
     navigate(routes.view.prototypes(created.slug))
   }, [activeWorkspace?.id, t])
 

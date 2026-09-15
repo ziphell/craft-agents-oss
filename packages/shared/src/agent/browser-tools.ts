@@ -15,6 +15,7 @@ import { z } from 'zod';
 import type { PickedElement } from '../protocol/dto.ts';
 import type { PrototypeEntry, PrototypeExportResult } from '../prototypes/export.ts';
 import type { CreatedPrototype } from '../prototypes/create.ts';
+import type { PrototypeKind } from '../prototypes/config.ts';
 import type { ContractExportResult } from '../prototypes/contract.ts';
 import type { PrototypeStatus } from '../prototypes/status.ts';
 import { executeBrowserToolCommand } from './browser-tool-runtime.ts';
@@ -161,10 +162,23 @@ export interface BrowserPaneFns {
   getBoundPrototypeSlug?: () => string | null;
   /** Every prototype in the workspace, with its derived status. */
   listPrototypes: () => Promise<PrototypeStatus[]>;
-  /** Create a prototype project by display name. */
-  createPrototype: (name: string) => Promise<CreatedPrototype>;
+  /** Create a prototype project. `kind` defaults to `overlay`. */
+  createPrototype: (input: {
+    name: string;
+    kind?: PrototypeKind;
+    /** `overlay` only: the page this prototype injects into. */
+    targetUrl?: string;
+  }) => Promise<CreatedPrototype>;
   /** Bind (or unbind, with null) this session's prototype. */
   bindPrototype: (slug: string | null) => Promise<void>;
+  /**
+   * Declare that `slug` studies `referenceSlug` (plan §14). The two stay separate
+   * projects, which is what keeps the reference's patches out of `slug`'s
+   * deliverable — so this is the only supported way to connect them.
+   */
+  linkPrototypeReference: (slug: string, referenceSlug: string) => Promise<{ references: string[] }>;
+  /** Drop the relation. Idempotent, and how a dangling reference is cleaned up. */
+  unlinkPrototypeReference: (slug: string, referenceSlug: string) => Promise<{ references: string[] }>;
   /**
    * Replay a prototype project's patches in this session's browser and register
    * them for future documents (so they survive a reload).
@@ -255,6 +269,17 @@ Array mode bypasses string parsing and preserves raw arguments exactly (recommen
 - \`["evaluate", "var x = 1; var y = 2; x + y"]\`
 - \`["paste", "Name\\tAge\\nAlice\\t30"]\`
 
+Prototypes — one project per requirement, each a folder with \`base.html\` + \`patches/\`.
+Two kinds, fixed when the prototype is created:
+- **overlay** — patches injected on top of a page that belongs to someone else. \`base.html\` is a
+  *snapshot* of that page, so it goes stale when that side ships a change: re-capture instead of
+  patching a stale base. The deliverable is a spec a developer translates, not a patch anyone applies.
+- **scratch** — \`base.html\` is ours (hand-written, or seeded by capturing a page studied first). Never
+  re-capture over it: that would discard edits silently.
+Projects are independent — each keeps its own patches, and one can *reference* another without merging
+them. Referencing is how you build one thing by studying another. \`prototype-list\` shows every
+prototype with its kind, target page, and which ones reference which.
+
 Examples:
 - \`--help\`
 - \`open\`
@@ -275,8 +300,11 @@ Examples:
 - \`scroll down 800\`
 - \`evaluate document.title\`
 - \`pick\` — ask the user to click an element; returns a stable selector + geometry
-- \`prototype-list\` — prototypes in this workspace, and which one is bound
-- \`prototype-create Checkout flow\` — create a prototype and bind this session to it
+- \`prototype-list\` — every prototype with its kind, target page, and references (both directions)
+- \`prototype-create Checkout flow --url https://app.example.com/checkout\` — overlay prototype on a real page
+- \`prototype-create Landing page --scratch\` — from-scratch prototype that owns its own base.html
+- \`prototype-create Rival checkout --url https://rival.example.com --no-bind\` — create one *without* stealing this session's binding (used to make a reference)
+- \`prototype-reference rival-checkout\` — study another prototype from the bound one, whatever kind either is. Its patches were written against a different document: read them for intent, never copy them into the bound prototype's patches/ (they would ship silently inside its deliverable)
 - \`prototype-bind checkout-flow\` — bind this session (or \`prototype-bind --clear\` to unbind)
 - \`prototype-apply\` — replay the bound prototype's patches (survives reload)
 - \`prototype-apply checkout-flow\` — same, for an explicitly named prototype

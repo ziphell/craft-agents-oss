@@ -18,9 +18,19 @@ import { existsSync } from 'fs'
 import { buildPrototypeStatus } from './status.ts'
 import { getPrototypeProjectPath } from './storage.ts'
 import { PROTOTYPE_LANES } from './ownership.ts'
+import { readPrototypeConfig, type PrototypeKind } from './config.ts'
 
 export interface PrototypePromptContext {
   slug: string
+  /** `overlay` (patches on someone else's page) or `scratch` (our own page). */
+  kind: PrototypeKind
+  /** `overlay` only: the page this prototype injects into. */
+  targetUrl?: string
+  /**
+   * Prototypes this one is being built with reference to (plan §14), resolved so
+   * the agent knows each one's kind without having to read its config.
+   */
+  references: Array<{ slug: string; kind: PrototypeKind; targetUrl?: string }>
   /** Absolute project directory (patches/ and base.html live here). */
   dir: string
   /** Absolute path to base.html, or null when the project has none yet. */
@@ -60,6 +70,16 @@ export function buildPrototypePromptContext(
 
   return {
     slug: status.slug,
+    kind: status.kind,
+    ...(status.targetUrl ? { targetUrl: status.targetUrl } : {}),
+    references: status.references.map((referenceSlug) => {
+      const config = readPrototypeConfig(workspaceRootPath, referenceSlug)
+      return {
+        slug: referenceSlug,
+        kind: config.kind,
+        ...(config.targetUrl ? { targetUrl: config.targetUrl } : {}),
+      }
+    }),
     dir: status.dir,
     baseHtmlPath: status.baseHtmlPath,
     patches: status.patches.files.map((absolute) => {
@@ -109,6 +129,50 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
   lines.push(sanitize(ctx.dir))
   lines.push('')
 
+  // Kind first: it decides where base.html comes from, what the deliverable is,
+  // and whether there is an external page to keep in sync. Getting this wrong
+  // makes every later instruction wrong too.
+  if (ctx.kind === 'overlay') {
+    lines.push(`This is an **overlay** prototype: the patches are injected on top of a page that belongs`)
+    lines.push(`to someone else. They never flow back into that page's source — the deliverable is a spec a`)
+    lines.push(`developer translates, not a patch anyone applies.`)
+    if (ctx.targetUrl) {
+      lines.push(`Target page: ${sanitize(ctx.targetUrl)}`)
+    } else {
+      lines.push(`No target page is recorded yet. If the user wants one remembered, it can be set when creating`)
+      lines.push(`the prototype; there is no command to change it afterwards (the kind and target are fixed).`)
+    }
+    lines.push(`This is why base.html is a *snapshot*: it is the rendered DOM at capture time, and it goes stale`)
+    lines.push(`when the other side ships a change. Re-capture rather than patching a stale base.`)
+  } else {
+    lines.push(`This is a **from-scratch** prototype: base.html is ours. It may have been written by hand or`)
+    lines.push(`seeded by capturing a page that was studied first — either way the whole document is editable`)
+    lines.push(`and there is nothing to keep in sync. Never re-capture over an existing base.html: that would`)
+    lines.push(`discard edits without warning. Write it directly when it does not exist.`)
+  }
+  lines.push('')
+
+  // References come right after the kind: they change how the agent should read
+  // everything below (patches here are the deliverable; patches over there are
+  // notes), so they cannot be deferred to a footnote.
+  //
+  // The rule is deliberately stated once, without regard to what kind either side
+  // is: a reference is a relation between two independent projects, and a scratch
+  // referencing another scratch works exactly like one referencing an overlay.
+  if (ctx.references.length > 0) {
+    lines.push(`This prototype is being built with reference to other prototypes:`)
+    for (const reference of ctx.references) {
+      const target = reference.targetUrl ? ` — ${sanitize(reference.targetUrl)}` : ''
+      lines.push(`- ${sanitize(reference.slug)} (${reference.kind}${target}) at prototypes/${sanitize(reference.slug)}/`)
+    }
+    lines.push(`A reference is **evidence, not material**, whatever kind it is. Its patches were written`)
+    lines.push(`against a different document: Do NOT copy a reference's patch files into this prototype's`)
+    lines.push(`patches/ — their selectors would not match here, and they would ship inside the deliverable`)
+    lines.push(`without erroring. Translate the intent into this prototype's own markup, and say in the`)
+    lines.push(`conversation what you took from the reference.`)
+    lines.push('')
+  }
+
   lines.push(`This session is bound to the prototype above. Commands below target it by default —`)
   lines.push(`you do not need to pass a slug, though you may pass one to work on a different prototype.`)
   lines.push('')
@@ -121,9 +185,10 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
   if (ctx.baseHtmlPath) {
     lines.push(`Base page: ${sanitize(ctx.baseHtmlPath)}`)
   } else {
-    lines.push(`Base page: MISSING. There is no base.html, so patches have nothing to apply to.`)
-    lines.push(`Either write the starter markup with the Write tool, or tell the user to open the real`)
-    lines.push(`product in a browser window and use "Capture base" to capture the rendered page.`)
+    lines.push(`Base page: none yet. Patches have nothing to apply to until one exists.`)
+    lines.push(`Preferred: have the user open the product in a browser window (any address — a dev server,`)
+    lines.push(`a test environment, or production) and press "Capture base". That stores the *rendered* DOM,`)
+    lines.push(`which is what makes it usable as a base. To build a page from scratch, write base.html yourself.`)
   }
   lines.push('')
 

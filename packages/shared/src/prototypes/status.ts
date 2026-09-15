@@ -11,6 +11,7 @@
 import { existsSync, readdirSync } from 'fs'
 import { join } from 'path'
 import { getWorkspacePrototypesPath } from '../workspaces/storage.ts'
+import { readPrototypeConfig, type PrototypeKind } from './config.ts'
 import { buildMockRoutes, composeContract, listContractServices, loadContractService } from './contract.ts'
 import { PROTOTYPE_LANES, resolvePrototypeOwnership } from './ownership.ts'
 import { getPrototypeDistPath, getPrototypePatchesPath, getPrototypeProjectPath, scanPrototypePatches } from './storage.ts'
@@ -31,6 +32,17 @@ export interface PrototypeStatus {
   slug: string
   /** Absolute project directory. */
   dir: string
+  /** Which kind of prototype this is (fixed at creation). */
+  kind: PrototypeKind
+  /** `overlay` only: the page this prototype injects into. */
+  targetUrl?: string
+  /**
+   * Slugs of prototypes this one is studied from (plan §14). Raw slugs rather
+   * than resolved values: callers that need more join against their own status
+   * list, and the one caller that needs `kind`/`targetUrl` (the prompt) resolves
+   * it from that reference's own config.
+   */
+  references: string[]
   baseHtmlPresent: boolean
   /** Absolute path to `base.html`, or null when the project has none. */
   baseHtmlPath: string | null
@@ -116,10 +128,14 @@ export function buildPrototypeStatus(workspaceRootPath: string, slug: string): P
 
   const ownership = resolvePrototypeOwnership(workspaceRootPath, slug)
   const baseHtmlPath = join(dir, BASE_FILENAME)
+  const config = readPrototypeConfig(workspaceRootPath, slug)
 
   return {
     slug,
     dir,
+    kind: config.kind,
+    ...(config.targetUrl ? { targetUrl: config.targetUrl } : {}),
+    references: config.references ?? [],
     baseHtmlPresent: existsSync(baseHtmlPath),
     baseHtmlPath: existsSync(baseHtmlPath) ? baseHtmlPath : null,
     patches: {

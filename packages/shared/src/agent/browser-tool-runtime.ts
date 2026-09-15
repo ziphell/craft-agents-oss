@@ -73,7 +73,10 @@ export function getBrowserToolHelp(): string {
     '  evaluate <expression>',
     '  pick [--timeout <ms>]                          ask the user to click an element; returns a stable selector',
     '  prototype-list                                 prototypes in this workspace, and which one is bound',
-    '  prototype-create <name>                        create a prototype and bind this session to it',
+    '  prototype-create <name> [--url <page>] [--scratch] [--no-bind]',
+    '                                                 create (--scratch = own page, no target;',
+    '                                                 --no-bind = do not bind the session)',
+    '  prototype-reference <slug> [--remove]          study another prototype (reference, not a copy)',
     '  prototype-bind <slug|--clear>                  bind (or unbind) this session\'s prototype',
     '  prototype-apply [slug]                         replay prototype patches (survives reload)',
     '  prototype-clear [slug]                         remove prototype patches',
@@ -90,9 +93,9 @@ export function getBrowserToolHelp(): string {
     '  close [windowId]                               close & destroy the browser window',
     '  hide [windowId]                                hide the window (keeps state, "open" re-shows)',
     '',
-    'Every prototype-* command except list/create/bind defaults to the prototype this session is',
-    'bound to, so no slug is needed. Pass one to target a different prototype.',
-    'Use "prototype-list" to see what exists and which one is bound.',
+    'Every prototype-* command except list/create/bind/reference defaults to the prototype this',
+    'session is bound to, so no slug is needed. Pass one to target a different prototype.',
+    'Use "prototype-list" for what exists, each one\'s kind, and how they reference each other.',
     '',
     'Batching (string mode, semicolon-separated, stops after navigation commands):',
     '  fill @e1 user@example.com; fill @e2 password123; click @e3',
@@ -116,7 +119,10 @@ export function getBrowserToolHelp(): string {
     '  evaluate document.title',
     '  pick',
     '  prototype-list',
-    '  prototype-create Checkout flow',
+    '  prototype-create Checkout flow --url https://app.example.com/checkout',
+    '  prototype-create Landing page --scratch',
+    '  prototype-create Rival checkout --url https://rival.example.com/cart --no-bind',
+    '  prototype-reference rival-checkout            (study it from the bound prototype)',
     '  prototype-apply                                (targets the bound prototype)',
     '  prototype-apply checkout-flow                  (explicit target)',
     '  prototype-contract-compose --service checkout-api',
@@ -1689,6 +1695,15 @@ async function executeSingleCommand(args: {
       };
     }
 
+    // Which prototypes study each one, derived from the same list — the stored
+    // relation is one-way, but "a relation" is only legible if both ends show it.
+    const referencedBy = new Map<string, string[]>()
+    for (const prototype of prototypes) {
+      for (const referenceSlug of prototype.references) {
+        referencedBy.set(referenceSlug, [...(referencedBy.get(referenceSlug) ?? []), prototype.slug])
+      }
+    }
+
     const lines = [
       `${prototypes.length} prototype${prototypes.length === 1 ? '' : 's'} in this workspace` +
       `${bound ? ` (this session is bound to "${bound}")` : ' (this session is not bound to one)'}:`,
@@ -1698,35 +1713,120 @@ async function executeSingleCommand(args: {
       if (prototype.slug === bound) notes.push('BOUND');
       if (!prototype.baseHtmlPresent) notes.push('no base.html');
       notes.push(`${prototype.patches.total} patch${prototype.patches.total === 1 ? '' : 'es'}`);
-      lines.push(`  • ${prototype.slug} — ${notes.join(', ')}`);
+      if (prototype.targetUrl) notes.push(`target: ${prototype.targetUrl}`);
+      if (prototype.references.length > 0) notes.push(`references: ${prototype.references.join(', ')}`);
+      const studying = referencedBy.get(prototype.slug)
+      if (studying?.length) notes.push(`referenced by: ${studying.join(', ')}`);
+      // The kind is part of the identifier, not a footnote: it decides where
+      // base.html comes from and what the deliverable is.
+      lines.push(`  • ${prototype.slug} (${prototype.kind}) — ${notes.join(', ')}`);
     }
 
     return { output: lines.join('\n'), appendReleaseHint: false };
   }
 
   if (cmd === 'prototype-create') {
-    const name = parts.slice(1).join(' ').trim();
+    const scratch = parts.includes('--scratch');
+    // `--no-bind` exists for one reason: creating a *reference* must not steal
+    // the session's binding, or every later slug-less command would retarget the
+    // page being studied instead of the page being built.
+    const noBind = parts.includes('--no-bind');
+    const urlIndex = parts.indexOf('--url');
+    const targetUrl = urlIndex >= 0 ? parts[urlIndex + 1] : undefined;
+
+    if (urlIndex >= 0 && (!targetUrl || targetUrl.startsWith('--'))) {
+      throw new Error('prototype-create --url needs a value. Example: prototype-create checkout --url https://app.example.com/checkout');
+    }
+
+    // The name is whatever is left once the flags (and the --url value) are
+    // removed, so `prototype-create Checkout flow` keeps its spaces.
+    const name = parts
+      .slice(1)
+      .filter((part, index, all) => {
+        if (part === '--scratch' || part === '--no-bind' || part === '--url') return false;
+        if (index > 0 && all[index - 1] === '--url') return false;
+        return true;
+      })
+      .join(' ')
+      .trim();
+
     if (!name) {
       throw new Error('prototype-create needs a name. Example: prototype-create Checkout flow');
     }
 
-    // Creating binds the session in the same step: the point of creating one from
-    // a conversation is to work on it, and an unbound create would force the very
-    // slug-passing this binding exists to remove.
-    const created = await fns.createPrototype(name);
-    await fns.bindPrototype(created.slug);
+    const kind = scratch ? 'scratch' : 'overlay';
 
-    return {
-      output: [
-        `Created prototype "${created.slug}" and bound this session to it.`,
-        `  dir:  ${created.dir}`,
-        `  base: ${created.baseHtmlPath} (starter page)`,
-        '',
-        'The prototype-* commands now target it by default.',
-        'To start from the real product instead, open it in a browser window and have the user press "Capture base".',
-      ].join('\n'),
-      appendReleaseHint: false,
-    };
+    // Creating normally binds the session in the same step: the point of creating
+    // one from a conversation is to work on it, and an unbound create would force
+    // the very slug-passing this binding exists to remove.
+    const created = await fns.createPrototype({ name, kind, targetUrl });
+    if (!noBind) await fns.bindPrototype(created.slug);
+
+    const lines = [
+      noBind
+        ? `Created ${kind} prototype "${created.slug}" (not bound — this session still targets its own prototype).`
+        : `Created ${kind} prototype "${created.slug}" and bound this session to it.`,
+      `  dir: ${created.dir}`,
+      `  (no base page yet — it appears once the page is captured or written)`,
+      '',
+    ];
+
+    if (!noBind) lines.push('The prototype-* commands now target it by default.', '');
+
+    if (kind === 'overlay') {
+      if (targetUrl) lines.push(`Target page: ${targetUrl}`);
+      lines.push('Next: have the user open the product in a browser window (any address) and press "Capture base"');
+      lines.push('to store the rendered page, then write patches against it.');
+    } else {
+      lines.push('Next: write base.html yourself — this kind owns its whole document, with no external page.');
+    }
+
+    return { output: lines.join('\n'), appendReleaseHint: false };
+  }
+
+  // References: the subject is the *other* prototype, so the reader cannot also be
+  // a positional argument without ambiguity. It is therefore always the bound
+  // prototype, and an unbound session gets told how to bind rather than guessing.
+  if (cmd === 'prototype-reference') {
+    const remove = parts.includes('--remove');
+    const referenceSlug = parts.slice(1).find((part) => !part.startsWith('--'));
+
+    if (!referenceSlug) {
+      throw new Error(
+        'prototype-reference needs the slug of the prototype to study. Example: prototype-reference rival-checkout',
+      );
+    }
+
+    const reader = fns.getBoundPrototypeSlug?.() ?? null;
+    if (!reader) {
+      throw new Error(
+        `prototype-reference works on the prototype this session is bound to, and it is not bound to one. ` +
+        `Bind it with "prototype-bind <slug>". "prototype-list" shows what exists.`,
+      );
+    }
+
+    const config = remove
+      ? await fns.unlinkPrototypeReference(reader, referenceSlug)
+      : await fns.linkPrototypeReference(reader, referenceSlug);
+
+    const remaining = config.references ?? [];
+    const lines = [
+      remove
+        ? `"${referenceSlug}" is no longer a reference of "${reader}".`
+        : `"${referenceSlug}" is now a reference of "${reader}".`,
+    ];
+
+    if (remaining.length > 0) {
+      lines.push(`  references: ${remaining.join(', ')}`);
+    } else {
+      lines.push('  references: none');
+    }
+    lines.push('');
+    lines.push('Its patches were written against a different document: read them for intent, but do NOT copy');
+    lines.push(`them into prototypes/${reader}/patches/ — they would not match here, and they would ship inside`);
+    lines.push(`this prototype's deliverable without erroring.`);
+
+    return { output: lines.join('\n'), appendReleaseHint: false };
   }
 
   if (cmd === 'prototype-bind') {
@@ -1879,6 +1979,12 @@ async function executeSingleCommand(args: {
     const slug = resolvePrototypeSlug(fns, parts, 'prototype-status');
 
     const status = await fns.prototypeStatus(slug);
+    // Reference slugs are stored bare, so resolving what each one *is* takes the
+    // workspace list. Worth the extra read: "references: rival-checkout" is not
+    // actionable until you know whether that is an overlay or another scratch.
+    const all = await fns.listPrototypes();
+    const bySlug = new Map(all.map((prototype) => [prototype.slug, prototype]));
+
     const laneSummary = Object.entries(status.patches.byLane)
       .map(([lane, count]) => `${lane}: ${count}`)
       .join(', ');
@@ -1886,9 +1992,36 @@ async function executeSingleCommand(args: {
     const lines = [
       `Prototype "${status.slug}"`,
       `  dir:        ${status.dir}`,
-      `  base.html:  ${status.baseHtmlPresent ? 'present' : 'MISSING — nothing to apply patches to'}`,
-      `  patches:    ${status.patches.total}${laneSummary ? ` (${laneSummary})` : ''}`,
+      `  kind:       ${status.kind === 'overlay'
+        ? 'overlay — patches on someone else\'s page; base.html is a snapshot that goes stale'
+        : 'scratch — our own page; base.html is ours, never re-capture over it'}`,
     ];
+
+    if (status.kind === 'overlay') {
+      lines.push(`  target:     ${status.targetUrl ?? 'none recorded — nothing to reopen or re-capture'}`);
+    }
+
+    if (status.references.length === 0) {
+      lines.push('  references: none');
+    } else {
+      status.references.forEach((referenceSlug, index) => {
+        const reference = bySlug.get(referenceSlug);
+        const described = reference
+          ? `${reference.kind}${reference.targetUrl ? ` — ${reference.targetUrl}` : ''}`
+          : 'MISSING — no prototype with that slug'
+        lines.push(`  ${index === 0 ? 'references:' : '          '}    ${referenceSlug} (${described})`);
+      });
+    }
+
+    const referencedBy = all
+      .filter((prototype) => prototype.references.includes(status.slug))
+      .map((prototype) => prototype.slug);
+    if (referencedBy.length > 0) {
+      lines.push(`  referenced by: ${referencedBy.join(', ')}`);
+    }
+
+    lines.push(`  base.html:  ${status.baseHtmlPresent ? 'present' : 'MISSING — nothing to apply patches to'}`);
+    lines.push(`  patches:    ${status.patches.total}${laneSummary ? ` (${laneSummary})` : ''}`);
 
     if (status.services.length === 0) {
       lines.push('  services:   none');

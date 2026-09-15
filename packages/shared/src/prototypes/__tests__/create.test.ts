@@ -1,9 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import {
-  buildStarterBaseHtml,
   createPrototype,
   getPrototypePatchesPath,
   getPrototypeProjectPath,
@@ -35,19 +34,6 @@ describe('prototypeSlugFromName', () => {
   })
 })
 
-describe('buildStarterBaseHtml', () => {
-  it('is a complete document', () => {
-    const html = buildStarterBaseHtml('Checkout Flow')
-    expect(html.startsWith('<!doctype html>')).toBe(true)
-    expect(html).toContain('</html>')
-  })
-
-  it('escapes markup so a title cannot inject elements', () => {
-    const html = buildStarterBaseHtml('<script>alert(1)</script>')
-    expect(html).not.toContain('<script>')
-  })
-})
-
 describe('createPrototype', () => {
   let workspaceRoot = ''
 
@@ -59,13 +45,15 @@ describe('createPrototype', () => {
     rmSync(workspaceRoot, { recursive: true, force: true })
   })
 
-  it('creates the project, its patches folder and a starter base.html', () => {
+  it('creates the project and its patches folder, and seeds no base page', () => {
     const created = createPrototype(workspaceRoot, { name: 'Checkout Flow' })
 
     expect(created.slug).toBe('checkout-flow')
-    expect(existsSync(created.baseHtmlPath)).toBe(true)
     expect(existsSync(getPrototypePatchesPath(workspaceRoot, 'checkout-flow'))).toBe(true)
-    expect(readPrototypeBase(workspaceRoot, 'checkout-flow')).toContain('Checkout Flow')
+    // A placeholder base would make `baseHtmlPresent` true and hide the real next
+    // step (capture the product page), so creation must not write one.
+    expect(existsSync(created.baseHtmlPath)).toBe(false)
+    expect(readPrototypeBase(workspaceRoot, 'checkout-flow')).toBeNull()
   })
 
   it('refuses to reuse an existing project rather than mixing two sets of patches', () => {
@@ -129,11 +117,12 @@ describe('readPrototypeBase', () => {
     }
   })
 
-  it('reads back what createPrototype seeded', () => {
+  it('reads back what a capture wrote', () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-read-base-2-'))
     try {
-      const created = createPrototype(workspaceRoot, { name: 'Quotes' })
-      expect(readPrototypeBase(workspaceRoot, 'quotes')).toBe(readFileSync(created.baseHtmlPath, 'utf-8'))
+      createPrototype(workspaceRoot, { name: 'Quotes' })
+      writePrototypeBase(workspaceRoot, 'quotes', '<html><body>quotes</body></html>')
+      expect(readPrototypeBase(workspaceRoot, 'quotes')).toBe('<html><body>quotes</body></html>')
     } finally {
       rmSync(workspaceRoot, { recursive: true, force: true })
     }

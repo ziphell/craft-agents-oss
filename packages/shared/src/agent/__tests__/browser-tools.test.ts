@@ -8,6 +8,7 @@
 import { describe, it, expect, beforeEach } from 'bun:test'
 import { createBrowserTools, type BrowserPaneFns } from '../browser-tools'
 import type { PrototypeStatus } from '../../prototypes/status'
+import type { PrototypeKind } from '../../prototypes/config'
 
 // ============================================================================
 // Mock BrowserPaneFns
@@ -93,6 +94,8 @@ function createMockFns(): BrowserPaneFns {
     prototypeStatus: async (slug: string) => ({
       slug,
       dir: `/tmp/prototypes/${slug}`,
+      kind: 'overlay' as const,
+      references: [],
       baseHtmlPresent: true,
       baseHtmlPath: `/tmp/prototypes/${slug}/base.html`,
       patches: { total: 2, byLane: { A: 2 }, files: [] },
@@ -111,12 +114,15 @@ function createMockFns(): BrowserPaneFns {
     // Unbound by default; tests that exercise the no-slug fallback override it.
     getBoundPrototypeSlug: () => null,
     listPrototypes: async () => [],
-    createPrototype: async (name: string) => ({
+    createPrototype: async ({ name, kind }: { name: string; kind?: PrototypeKind; targetUrl?: string }) => ({
       slug: name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
       dir: `/tmp/prototypes/${name}`,
       baseHtmlPath: `/tmp/prototypes/${name}/base.html`,
+      kind: kind ?? 'overlay',
     }),
     bindPrototype: async (_slug: string | null) => {},
+    linkPrototypeReference: async (_slug: string, referenceSlug: string) => ({ references: [referenceSlug] }),
+    unlinkPrototypeReference: async () => ({ references: [] }),
     focusWindow: async (instanceId?: string) => ({ instanceId: instanceId ?? 'browser-1', title: 'Example Domain', url: 'https://example.com' }),
     releaseControl: async (_instanceId?: string) => ({ action: 'released' as const, resolvedInstanceId: 'browser-1', affectedIds: ['browser-1'] }),
     closeWindow: async (_instanceId?: string) => ({ action: 'closed' as const, resolvedInstanceId: 'browser-1', affectedIds: ['browser-1'] }),
@@ -146,6 +152,8 @@ function prototypeStatus(slug: string, overrides: Partial<PrototypeStatus> = {})
   return {
     slug,
     dir: `/tmp/prototypes/${slug}`,
+    kind: 'overlay',
+    references: [],
     baseHtmlPresent: true,
     baseHtmlPath: `/tmp/prototypes/${slug}/base.html`,
     patches: { total: 1, byLane: { A: 1 }, files: [] },
@@ -1064,6 +1072,8 @@ describe('createBrowserTools', () => {
       mockFns.prototypeStatus = async (slug) => ({
         slug,
         dir: `/tmp/prototypes/${slug}`,
+        kind: 'overlay' as const,
+        references: [],
         baseHtmlPresent: true,
         baseHtmlPath: `/tmp/prototypes/${slug}/base.html`,
         patches: { total: 2, byLane: { A: 2 }, files: [] },
@@ -1088,6 +1098,45 @@ describe('createBrowserTools', () => {
     it('reports a clean ownership check when there are no violations', async () => {
       const result = await executeTool(tools, 'browser_tool', { command: 'prototype-status checkout-flow' })
       expect(result.content[0].text).toContain('ownership:  OK (4 files)')
+    })
+
+    // "references: rival-cart" is not actionable until you know what rival-cart is.
+    it('reports the kind, target page and resolved references', async () => {
+      mockFns.prototypeStatus = async (slug) =>
+        prototypeStatus(slug, { kind: 'scratch', references: ['rival-cart', 'ghost'] })
+      mockFns.listPrototypes = async () => [
+        prototypeStatus('checkout-flow', { kind: 'scratch', references: ['rival-cart', 'ghost'] }),
+        prototypeStatus('rival-cart', { targetUrl: 'https://rival.example.com/cart' }),
+      ]
+
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-status checkout-flow' })
+
+      expect(result.content[0].text).toContain('scratch — our own page')
+      expect(result.content[0].text).toContain('rival-cart (overlay — https://rival.example.com/cart)')
+      // A dangling reference is named rather than silently dropped.
+      expect(result.content[0].text).toContain('ghost (MISSING — no prototype with that slug)')
+    })
+
+    it('reports who references this prototype', async () => {
+      mockFns.prototypeStatus = async (slug) => prototypeStatus(slug, { targetUrl: 'https://rival.example.com/cart' })
+      mockFns.listPrototypes = async () => [
+        prototypeStatus('rival-cart', { targetUrl: 'https://rival.example.com/cart' }),
+        prototypeStatus('checkout-flow', { kind: 'scratch', references: ['rival-cart'] }),
+      ]
+
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-status rival-cart' })
+
+      expect(result.content[0].text).toContain('referenced by: checkout-flow')
+    })
+
+    it('says an overlay has no target page recorded, and a scratch has none to record', async () => {
+      const overlay = await executeTool(tools, 'browser_tool', { command: 'prototype-status checkout-flow' })
+      expect(overlay.content[0].text).toContain('target:     none recorded')
+
+      mockFns.prototypeStatus = async (slug) => prototypeStatus(slug, { kind: 'scratch' })
+      const scratch = await executeTool(tools, 'browser_tool', { command: 'prototype-status checkout-flow' })
+      expect(scratch.content[0].text).not.toContain('target:')
+      expect(scratch.content[0].text).toContain('references: none')
     })
 
     it('routes prototype-open to the exported deliverable', async () => {
@@ -1167,6 +1216,36 @@ describe('createBrowserTools', () => {
       expect(result.content[0].text).toContain('no base.html')
     })
 
+    // Without the kind in the listing, an overlay and a scratch read identically —
+    // and they behave nothing alike (capture vs. author, snapshot vs. our page).
+    it('shows each prototype kind and target in the listing', async () => {
+      mockFns.listPrototypes = async () => [
+        prototypeStatus('checkout-flow', { kind: 'scratch' }),
+        prototypeStatus('rival-cart', { targetUrl: 'https://rival.example.com/cart' }),
+      ]
+
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-list' })
+
+      expect(result.content[0].text).toContain('checkout-flow (scratch)')
+      expect(result.content[0].text).toContain('rival-cart (overlay)')
+      expect(result.content[0].text).toContain('target: https://rival.example.com/cart')
+    })
+
+    // The stored relation is one-way, so a listing that only printed `references`
+    // would leave the other end invisible.
+    it('shows references in both directions', async () => {
+      mockFns.listPrototypes = async () => [
+        prototypeStatus('checkout-flow', { kind: 'scratch', references: ['rival-cart'] }),
+        prototypeStatus('rival-cart', { targetUrl: 'https://rival.example.com/cart' }),
+      ]
+
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-list' })
+
+      expect(result.content[0].text).toContain('checkout-flow (scratch)')
+      expect(result.content[0].text).toContain('references: rival-cart')
+      expect(result.content[0].text).toContain('referenced by: checkout-flow')
+    })
+
     it('creates a prototype and binds the session in the same step', async () => {
       const bound: Array<string | null> = []
       mockFns.bindPrototype = async (slug) => { bound.push(slug) }
@@ -1175,8 +1254,92 @@ describe('createBrowserTools', () => {
         command: 'prototype-create Checkout flow',
       })
 
-      expect(result.content[0].text).toContain('Created prototype "checkout-flow"')
+      expect(result.content[0].text).toContain('Created overlay prototype "checkout-flow"')
       expect(bound).toEqual(['checkout-flow'])
+    })
+
+    it('passes the kind and target through, and defaults to an overlay', async () => {
+      const seen: Array<{ name: string; kind?: string; targetUrl?: string }> = []
+      mockFns.createPrototype = async (input) => {
+        seen.push(input)
+        return { slug: 'checkout', dir: '/tmp/prototypes/checkout', baseHtmlPath: '/tmp/prototypes/checkout/base.html', kind: input.kind ?? 'overlay' }
+      }
+
+      await executeTool(tools, 'browser_tool', { command: 'prototype-create Checkout --url https://app.example.com/checkout' })
+      await executeTool(tools, 'browser_tool', { command: 'prototype-create Landing page --scratch' })
+
+      expect(seen[0]).toEqual({ name: 'Checkout', kind: 'overlay', targetUrl: 'https://app.example.com/checkout' })
+      expect(seen[1]).toEqual({ name: 'Landing page', kind: 'scratch', targetUrl: undefined })
+    })
+
+    it('asks for a target page when --url is given without a value', async () => {
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-create Checkout --url' })
+      expect(result.content[0].text).toContain('--url needs a value')
+    })
+
+    // Without this, creating a reference would rebind the session to the page
+    // being studied and every later slug-less command would retarget it.
+    it('leaves the session binding alone with --no-bind', async () => {
+      let bound = false
+      mockFns.bindPrototype = async () => { bound = true }
+
+      const result = await executeTool(tools, 'browser_tool', {
+        command: 'prototype-create Rival checkout --url https://rival.example.com --no-bind',
+      })
+
+      expect(bound).toBe(false)
+      expect(result.content[0].text).toContain('not bound')
+    })
+
+    it('still binds by default, so the name keeps its spaces', async () => {
+      const bound: Array<string | null> = []
+      mockFns.bindPrototype = async (slug) => { bound.push(slug) }
+
+      await executeTool(tools, 'browser_tool', { command: 'prototype-create Checkout flow' })
+
+      expect(bound).toEqual(['checkout-flow'])
+    })
+
+    it('links a reference on the bound prototype', async () => {
+      const linked: Array<[string, string]> = []
+      mockFns.getBoundPrototypeSlug = () => 'checkout-flow'
+      mockFns.linkPrototypeReference = async (slug, referenceSlug) => {
+        linked.push([slug, referenceSlug])
+        return { references: ['rival-checkout'] }
+      }
+
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-reference rival-checkout' })
+
+      expect(linked).toEqual([['checkout-flow', 'rival-checkout']])
+      expect(result.content[0].text).toContain('is now a reference')
+      expect(result.content[0].text).toContain('references: rival-checkout')
+      expect(result.content[0].text).toContain('do NOT copy')
+    })
+
+    it('removes a reference with --remove', async () => {
+      let unlinked: Array<[string, string]> = []
+      mockFns.getBoundPrototypeSlug = () => 'checkout-flow'
+      mockFns.unlinkPrototypeReference = async (slug, referenceSlug) => {
+        unlinked = [[slug, referenceSlug]]
+        return { references: [] }
+      }
+
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-reference rival-checkout --remove' })
+
+      expect(unlinked).toEqual([['checkout-flow', 'rival-checkout']])
+      expect(result.content[0].text).toContain('is no longer a reference')
+      expect(result.content[0].text).toContain('references: none')
+    })
+
+    it('names both ways out when prototype-reference runs unbound', async () => {
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-reference rival-checkout' })
+      expect(result.content[0].text).toContain('not bound to one')
+      expect(result.content[0].text).toContain('prototype-bind')
+    })
+
+    it('asks for a slug when prototype-reference is given none', async () => {
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-reference' })
+      expect(result.content[0].text).toContain('needs the slug of the prototype to study')
     })
 
     it('refuses to bind a slug that does not exist, and lists what does', async () => {

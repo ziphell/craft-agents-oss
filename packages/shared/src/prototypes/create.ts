@@ -1,22 +1,29 @@
 /**
  * Prototype creation and base-page capture.
  *
- * A prototype project is just a directory with a `base.html` and a `patches/`
- * folder. `base.html` has two legitimate origins, and they are *not*
- * interchangeable:
+ * A prototype project is a directory with an optional `base.html` and a
+ * `patches/` folder. `base.html` has one primary origin and one fallback:
  *
- * 1. **Starter page** — for building something from scratch.
- * 2. **Captured page** — the rendered DOM of a real page, read out of a live
- *    browser. This must come from the *rendered* document, not from fetching the
- *    URL: a client-rendered app returns an empty shell over HTTP, so a fetch
- *    would capture nothing usable (and would miss any authenticated state).
+ * 1. **Captured page** (the main path) — the rendered DOM of a real page, read
+ *    out of a live browser. This must come from the *rendered* document, not from
+ *    fetching the URL: a client-rendered app returns an empty shell over HTTP, so
+ *    a fetch would capture nothing usable (and would miss any authenticated state).
+ * 2. **Hand-written page** (from scratch) — written directly with the file tools.
  *
- * @see docs/prototype-workbench-plan.md §7 (无中生有) and §5 (服务契约层)
+ * Creation deliberately seeds **no** placeholder base. A stub would make
+ * `baseHtmlPresent` true, which makes the "this prototype has no page yet" signal
+ * lie — and stops "capture the real product" from being the obvious next step.
+ *
+ * Whether the product page is reached through a local dev server, a test
+ * environment, or production is not a distinction this model cares about: the
+ * patches are an overlay on someone else's page either way, and never flow back
+ * into that source. See docs/prototype-workbench-plan.md §1.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { getPrototypePatchesPath, getPrototypeProjectPath } from './storage.ts'
+import { DEFAULT_PROTOTYPE_KIND, writePrototypeConfig, type PrototypeKind } from './config.ts'
 
 const BASE_FILENAME = 'base.html'
 
@@ -25,14 +32,27 @@ const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/
 
 export interface CreatePrototypeInput {
   name: string
+  /**
+   * What kind of prototype to create. Defaults to `overlay` — injecting into a
+   * real page is the main path, and it is what every prototype predating kinds
+   * was built around.
+   */
+  kind?: PrototypeKind
+  /** `overlay` only: the page this prototype injects into. */
+  targetUrl?: string
 }
 
 export interface CreatedPrototype {
   slug: string
   /** Absolute project directory. */
   dir: string
-  /** Absolute path to the seeded `base.html`. */
+  /**
+   * Absolute path to `base.html`. This is where the file will live — it does not
+   * exist yet at creation time, only after a capture or a hand-write.
+   */
   baseHtmlPath: string
+  /** The kind this prototype was created as (fixed for its lifetime). */
+  kind: PrototypeKind
 }
 
 /**
@@ -51,32 +71,11 @@ export function prototypeSlugFromName(name: string): string {
     .replace(/-+$/g, '')
 }
 
-/** The page a from-scratch prototype starts from — real markup, not a stub. */
-export function buildStarterBaseHtml(title: string): string {
-  const safeTitle = title.replace(/[<>&]/g, '')
-  return `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>${safeTitle}</title>
-  </head>
-  <body>
-    <main style="font-family: system-ui; padding: 2rem; max-width: 40rem">
-      <h1>${safeTitle}</h1>
-      <p>
-        Starter page. Either build on this markup directly, or point the browser
-        at the real product and use <strong>Capture base</strong> to replace this
-        file with the rendered page.
-      </p>
-    </main>
-  </body>
-</html>
-`
-}
-
 /**
- * Create a prototype project and seed its starter `base.html`.
+ * Create a prototype project directory.
+ *
+ * No `base.html` is seeded — see the module note. The returned `baseHtmlPath` is
+ * where it *will* live, once captured or written by hand.
  *
  * @throws when the name produces an empty slug, or when the project already
  *   exists — silently reusing a directory would mix two prototypes' patches.
@@ -96,12 +95,15 @@ export function createPrototype(workspaceRootPath: string, input: CreatePrototyp
     throw new Error(`Prototype "${slug}" already exists.`)
   }
 
-  // Seed base.html before anything else can observe a half-built project.
+  const kind = input.kind ?? DEFAULT_PROTOTYPE_KIND
+
   mkdirSync(dir, { recursive: true })
   mkdirSync(getPrototypePatchesPath(workspaceRootPath, slug), { recursive: true })
-  writeFileSync(baseHtmlPath, buildStarterBaseHtml(title || slug), 'utf-8')
+  // Written before anything can observe the project: a prototype whose kind is
+  // unknown would render the wrong guidance (capture vs. write-your-own).
+  writePrototypeConfig(workspaceRootPath, slug, { kind, targetUrl: input.targetUrl })
 
-  return { slug, dir, baseHtmlPath }
+  return { slug, dir, baseHtmlPath, kind }
 }
 
 export interface CapturedBase {

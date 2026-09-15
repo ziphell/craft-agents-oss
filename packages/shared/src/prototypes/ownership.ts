@@ -48,7 +48,9 @@ const PATCH_RE = /^patches\/([A-Za-z])-\d+-.+\.(css|js)$/
  * makes patch writing contention-free in the first place.
  */
 export function classifyPrototypePath(relativePath: string): PrototypePathClassification {
-  if (relativePath === 'base.html') {
+  // Root-level control-plane files: the base page, and the kind/target config.
+  // Both are written by the control plane only, so they are not lane-owned.
+  if (relativePath === 'base.html' || relativePath === 'config.json') {
     return { owner: { kind: 'control-plane' } }
   }
 

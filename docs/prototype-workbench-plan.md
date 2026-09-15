@@ -1,6 +1,6 @@
 # 产品经理需求生产工作台 — 实施方案
 
-> 状态：阶段 1–6 全部完成；阶段 7 完成两项（无中生有入口、改写真实后端返回），放开面经决策**确定不开**，跨域 iframe 读取与响应头就地改写未做。UI 闭环已完成：创建入口（侧边栏「原型」+ 面板「+」+ 空态按钮）→ 详情页 Open / Apply / Capture base / Export，以及产物文件就地编辑（base.html 与 patches/*）。**会话绑定已完成（§11）**：会话绑定原型后，agent 的 system prompt 里带 `<prototype_context>`，且 `prototype-*` 的 slug 变为可选。**预览面板编辑入口已完成（§12）**：面板工具栏新增「选中元素」（显式进入编辑态，页面点击被拦截）与「应用补丁」，选中后可选「保存为补丁」或「在对话中改」。下一步：端到端试用（见 §10）。
+> 状态：阶段 1–6 全部完成；阶段 7 完成两项（无中生有入口、改写真实后端返回），放开面经决策**确定不开**，响应头就地改写未做。UI 闭环已完成：创建入口（侧边栏「原型」+ 面板「+」+ 空态按钮）→ 详情页 Open / Apply / Capture base / Export，以及产物文件就地编辑（base.html 与 patches/*）。**会话绑定已完成（§11）**：会话绑定原型后，agent 的 system prompt 里带 `<prototype_context>`，且 `prototype-*` 的 slug 变为可选。**预览面板编辑入口已完成（§12）**：面板工具栏新增「选中元素」（显式进入编辑态，页面点击被拦截）与「应用补丁」，选中后可选「保存为补丁」或「在对话中改」。**原型类型分离已完成（§13）**：「从无到有」与「patch 第三方」不再是同一件事的两种用法，而是创建时确定、不可改的两种类型（`overlay` / `scratch`），落在 `config.json` 并被详情页、system prompt、agent 命令共读。**混合场景已完成（§14）**：逆向第三方再搭自己的，拆成「起点」（scratch 可被 Capture 播种，且覆盖前先确认）与「参考面」（参考是独立原型 + 一条 `references` 关系 + 「翻译不要搬运」的硬规矩）。**这条关系与类型无关**——scratch 引用 scratch 和引用 overlay 同构。新增 `prototype-reference` 与 `prototype-create --no-bind`。**agent 的读取面已补齐（§14.6）**：`prototype-list` 给出每个原型的 kind / 目标页 / 双向关系，`prototype-status` 解析出每个参考是什么、以及谁在参考它（反向关系派生、不入库）。下一步：端到端试用（见 §10，新增步骤 H/I 分别验收类型分离与混合场景）。
 > 范围：MVP（个人使用，先增量模式）
 > 前置结论：本方案基于对现有代码的实测核对，所有引用均带文件路径与行号。
 
@@ -15,6 +15,22 @@
 **脱离纯前端视角**：mock 不是"拦截浏览器请求的技巧"，而是**服务契约层**。mock 是服务契约的一种运行时物化，同一个契约同时面向前端与后端交付。
 
 **平面分离**：数据面 / 控制面 / 业务逻辑 / 渲染四者相互分离。这不是为了整齐，而是**多 agent 并线能成立的前提**（见 §3）。
+
+**决定一切的分野是产物性质，不是运行环境**。一个原型项目有两种起点，产出的东西性质完全不同：
+
+| | 源页面 | 我们改的是 | 产物 | 能回流源码吗 |
+|---|---|---|---|---|
+| **外部页** | 别人的（产品 dev server / 测试环境 / 线上，**都算这一类**） | 我们注入的 patch 覆盖层 | patch + 导出物 | **不能**。它是给开发的**可执行规格**，由人翻译进源码 |
+| **自建页** | 我们的 `base.html` | 我们自己的 HTML | 完整页面 | 不适用，它本来就是源码 |
+
+`Capture base` 是两者之间的桥：捕获之后 `base.html` 是真实页面的**渲染快照**，从那一刻起它属于我们。所以实际是三态——**纯覆盖 → 快照 → 纯自有**。
+
+由此得出两条推论，它们替代了原先的 D6：
+
+1. **「产品 dev server vs 线上 URL」不是设计维度。** 无论哪一个，patch 都是覆盖层，都不回流源码；dev server 的「DOM 可控、无登录态」只降低**排错**成本，不改变**产出**。
+2. **在线场景更多，且不需要为登录做任何事。** 目标站点要登录时，**用户在窗口里自己登** —— 这里没有自动化登录，所以「已登录」只是页面的一种普通状态，和处理它无关。三条机制保证这一点成立：注入按 document 生效（`Page.addScriptToEvaluateOnNewDocument`），登录跳转后自动重新执行；`Capture` 读的是当前渲染的 DOM，天然包含登录后的内容；空闲 detach 后 `send()` 会 `ensureAttached()` 自动重连，且一旦应用过 patch（`holdsSessionState()`）就不再 detach。
+
+这张表不是**分析结论**，而是**产品结构**：它落成了两个原型类型（`overlay` / `scratch`），在创建时确定、不可改，见 §13。第三个诉求（逆向第三方再搭自己的，§14）**不新增类型**——它只新增一条关系（`references`）和一条护栏。
 
 ### MVP 范围内的（按优先级）
 
@@ -47,7 +63,6 @@
 | D3 | 产物位置 | `{workspaceRootPath}/prototypes/{projectSlug}/` | 跨会话长期存活，契合"同一项目多交付" |
 | D4 | 写通道 | 混合：确定性改动走新增 `file:write` 直写；语义改动走 agent `Write`/`Edit` | 实时性与可审计性兼顾，最终同一真源 |
 | D5 | 权限模型 | 真实产品面锁死；原型面独立 partition 才允许 `webSecurity:false`；`nodeIntegration` 永远 `false` | 注入与跨域都不需要 node 能力 |
-| D6 | 起手形态 | 本地 dev server | DOM 可控、无登录态，验证链路 |
 | D7 | 服务契约格式 | **OpenAPI 3.1** | REST 生态最成熟，Prism / MSW / 后端都能直接吃 |
 | D8 | mock 运行时 | ~~复用 MSW + Prism~~ → **改用 CDP `Fetch` 拦截**（阶段 5 修订） | 原方案要引两个新依赖，且页面级 mock 覆盖不到 axios 用的 XHR；CDP 在网络层兑现响应，fetch/XHR/任意资源全覆盖、无需改应用、零新依赖 |
 | D9 | mock 状态 | **MVP 无状态 fixtures**（flows 后置） | 覆盖"跑假数据"；状态化留待需要演多步流程时 |
@@ -58,6 +73,8 @@
 | D14 | lane 通信 | **只读通信**，lane 间不共享写 | 共享写是并线的唯一致命伤 |
 | D15 | 渲染面角色 | **只读**；拾取器是**传感器**不是写者 | 渲染一旦写文件就破坏所有权模型（修正 D4 的执行者） |
 | D16 | 会话与原型的关系 | **绑定**（session.prototypeSlug），复用 session↔project 的既有范式 | 让 agent 不必每轮被告知操作对象；`prototype-*` 的 slug 因此可选（见 §11） |
+
+> **原 D6「起手形态：本地 dev server」已删除。** 它不是一条决策：patch 对任何源页面都是覆盖层，dev server 与线上 URL 在**产出**上没有区别，所以这个维度不改变任何设计。正确的分野见 §1「决定一切的分野是产物性质」。
 
 ---
 
@@ -124,8 +141,9 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 
 ```
 {workspaceRootPath}/prototypes/{projectSlug}/
+  ├─ config.json            【§13/§14】原型类型（overlay / scratch）、目标页、参考列表；控制面独占，创建时定
   ├─ manifest.json          【阶段 3 起不再需要】索引由 scanPrototypePatches() 按需从磁盘派生
-  ├─ base.html              初始页：抓取的快照 或 agent 生成的起始页
+  ├─ base.html              overlay：抓取的快照 / scratch：我们自己写的页（手写或捕获播种）；**创建时不预置**
   ├─ patches/               每 patch 一个文件，append-only + 唯一命名
   │    ├─ A-001-btn-radius.css
   │    └─ A-002-flow-guard.js
@@ -419,14 +437,10 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 #### 已决策：放开面 partition（`webSecurity:false`）—— 决定**不开**
 - 原计划：新增 `PROTOTYPE_PARTITION = 'persist:prototype-lab'`，仅该 partition 允许 `webSecurity:false`；`persist:browser-pane` 保持锁死；原型面禁 `file://` 导航。
 - **推进到这一步时发现两件事**，因此改变结论：
-  1. `webSecurity:false` 买到的能力（页面 JS 跨域读 iframe DOM、免 CORS 发跨域请求）**都能从外部用 CDP 达到**（`Target.setAutoAttach` 读任意 frame；`Fetch` 兑现响应）。四个诉求里三个已交付，剩下一个用 CDP 也能做。
+  1. `webSecurity:false` 买到的是"**页面脚本自己**跨域"的能力（免 CORS 发请求、读跨域资源）——而**从外部用 CDP 同样能达到**（`Fetch` 兑现响应、`Runtime.evaluate` 在指定 frame 上执行）。四个诉求里三个已交付，剩下一个用 CDP 也能做。
   2. 代价是**真实的、不可回退的安全弱化**——同源策略一关，该 renderer 里任何页面脚本都能读任意跨域响应；若 `file://` 导航没堵住还能读本地文件。收益只是"省掉一层 CDP 封装"。
 - **结论（用户已确认）：不开。** 全部能力改走 CDP。因此 `persist:browser-pane` 的姿态从头到尾没有变：`sandbox:true` / `contextIsolation:true` / `nodeIntegration:false` / `webSecurity` 默认开。
 - 若将来真撞到"CDP 做不了、必须页面 JS 自己跨域"的具体场景，再回到本节的隔离设计（独立 partition + 无凭据 + 禁 `file://` + 风险提示）。
-
-#### 未做：跨域 iframe 读取（`Target.setAutoAttach`）
-- 需要 `BrowserCDP` 处理 `Target.attachedToTarget`、拿到 OOPIF 子会话、在目标 frame 上 `Runtime.evaluate`。
-- 不改任何安全姿态，但**必须在真实浏览器里验证**（frame 拓扑与 OOPIF 行为无法靠单测断言），所以没有在无法运行 Electron 的情况下盲写。等实际遇到需要读跨域 iframe 的场景再做。
 
 #### 已知未做
 - 响应头/状态码的**就地改写**（保留真实 body）——需要在 `Fetch` 的 `Response` 阶段拦截。
@@ -461,6 +475,7 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 | **`tsconfig.base.json` 缺失（既有问题）** | `typecheck:all` 在 session-tools-core 处中断，`validate:dev` 不可用 | 仓库既有缺陷：`session-tools-core` / `pi-agent-server` / `session-mcp-server` 的 tsconfig 引用了一个不存在的根 `tsconfig.base.json`。本次改动改为按包逐个 typecheck，全部通过 |
 | **mode-manager 既有测试失败** | 干扰回归判断 | 与本次改动无关：已用 `git stash push -- packages/shared/src/agent/mode-manager.ts` 定向回退验证，失败集合完全一致。属环境相关既有失败 |
 | **加 handler 会打破注册表测试（本次踩到）** | 新增 `registerXxxHandlers` 会让注册表断言失败 | `registration.test.ts` / `registration-profiles.test.ts` 用各 handler 模块的 `HANDLED_CHANNELS` 拼期望集合。新增 handler 必须同步把 `...prototypes.HANDLED_CHANNELS` 加进去（已在阶段 3 修好） |
+| **patch 不回流源码** | 用户可能误以为改完就能应用回源码 | 这是**设计事实**而非缺陷：patch 是给开发的可执行规格，由人翻译。导出物（`dist/`）承担"说清楚要改什么"的职责 |
 | **既有失败清单（改代码前请先基线）** | 容易被误判为本次引入 | 全量扫 `apps/electron/src/main` + `packages/shared/src/agent/__tests__` + `prototypes` 共 1013 个测试，13 个既有失败：`BrowserPaneManager` 8 个（已 stash 验证）、`mode-manager-path-boundary` 2 个（该文件缺 `setPowerShellValidatorRoot()`）、`spawn-session-tilde-expansion` 1 个（Windows 上期望 POSIX 路径）、`buildCallLlmRequest` 1 个（测试留下 `__tmp_build_call_llm__` 临时目录）、`ensureDefaultPermissions` 1 个。**改动前先跑一遍基线，别把这些算到新改动头上** |
 
 ---
@@ -469,7 +484,7 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 
 ### UI 与文件通路
 
-1. 在本地 dev server 页面上能点选任意元素，拿到稳定 selector，重复点选结果一致。
+1. 在**任意真实页面**上（产品 dev server / 测试环境 / 线上均可，见 §1）能点选任意元素，拿到稳定 selector，重复点选结果一致。
 2. 选中后做出的改动**立即反映在页面上**，并把 patch 落成 `patches/` 下的文件。
 3. 手动编辑该 patch 文件，页面随之更新（`fs.watch` 通路有效）。
 4. 刷新 / 重开页面，改动**依然存在**（patch 重放有效）。
@@ -527,13 +542,17 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 
 跑起 Electron 后，按下面的顺序走一遍，就能覆盖全部已交付能力。**前 5 步是核心闭环**，也是唯一没能在单测里验证的环节。
 
-> ⚠️ **端口**：`bun run electron:dev` 会占用 **5173**（renderer 的 vite）。所以你的产品 dev server 必须跑在**别的端口**（示例用 3000）。另外 `electron-dev.ts` 启动时会**无条件 kill 掉占用 5173 的进程**，别让产品 dev server 占这个口。
+> **关于页面地址**：示例用 `http://localhost:3000/...` 只是占位。换成任何真实产品地址——dev server、测试环境、线上——步骤完全一样（依据见 §1：patch 对任何源页面都是覆盖层，dev server 没有特殊性）。
+
+> ⚠️ **端口**：`bun run electron:dev` 会占用 **5173**（renderer 的 vite）。若你确实用本地 dev server，它要跑在**别的端口**（示例用 3000）；`electron-dev.ts` 启动时会**无条件 kill 掉占用 5173 的进程**。
 
 > **关于 slug**：A–E 保留了显式 slug 的写法（便于照抄，也验证显式路径）。若会话已绑定该原型（§11 / 步骤 F），这些命令的 slug 都可以省略。
 
 ### A. 在真实页面上改（核心闭环）
 
-1. `browser_tool navigate http://localhost:3000/checkout`（你的产品 dev server，**不是** 5173）
+> **前置**：先建一个 **overlay** 原型：创建对话框选「在已有页面上改」并填目标页，或 `browser_tool prototype-create Checkout flow --url <你的产品页面 URL>`。目标页只影响**引导**（详情页的「打开目标页面」、Capture 时该往哪走），不改变 patch 的行为——patch 对任何源页面都是覆盖层。
+
+1. `browser_tool navigate <你的产品页面 URL>`（示例 `http://localhost:3000/checkout`；线上地址同样成立）
 2. `browser_tool pick` → 光标高亮跟随，点一个元素 → 拿到稳定 selector
 3. 让 agent 写一个 patch：`prototypes/checkout-flow/patches/A-001-btn.css`
 4. `browser_tool prototype-apply checkout-flow` → 页面**立刻**变化
@@ -543,32 +562,33 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 
 > 产物落在 `~/.craft-agent/workspaces/<当前 workspace>/prototypes/`。当前会话属于哪个 workspace，`prototype-status` 里的 `dir` 会直接告诉你。
 
-### B. 从零做一个原型
+### B. 从零做一个原型（scratch 类型）
 
-6. 让 agent 直接写 `prototypes/quotes-flow/base.html`（不需要任何特殊命令）
-7. `browser_tool prototype-open quotes-flow` → 在浏览器面板里打开；再按 A 的 3–5 加 patch
+6. 创建时选 **scratch**（两个入口都行）：UI 在创建对话框里点「从零开始」；对话里 `browser_tool prototype-create Quotes flow --scratch`
+7. 让 agent 直接写 `prototypes/quotes-flow/base.html`（scratch 的 `base.html` 就是我们自己的文档，不需要任何特殊命令，也不需要 Capture）
+8. `browser_tool prototype-open quotes-flow` → 在浏览器面板里打开；再按 A 的 3–5 加 patch
 
 ### C. mock 就是服务（契约 → 前端 → 后端）
 
-8. 让 agent 写：
+9. 让 agent 写：
    - `prototypes/checkout-flow/services/checkout-api/paths/list-orders.yaml`（含 `x-mock.fixture`）
    - `prototypes/checkout-flow/services/checkout-api/fixtures/list-orders-200.json`
-9. `browser_tool prototype-mock-apply checkout-flow` → 原型有数据了（**fetch 和 axios 都覆盖**，应用不用改指向）
-10. `browser_tool prototype-contract-export checkout-flow` → `dist/openapi.yaml` + `dist/contract.md` + `dist/fixtures/`，把 `dist/` 交给后端
-11. `browser_tool prototype-mock-clear` → 请求打回真实后端。**代码一行不用改** —— 这就是"mock 与真服务同构"
+10. `browser_tool prototype-mock-apply checkout-flow` → 原型有数据了（**fetch 和 axios 都覆盖**，应用不用改指向）
+11. `browser_tool prototype-contract-export checkout-flow` → `dist/openapi.yaml` + `dist/contract.md` + `dist/fixtures/`，把 `dist/` 交给后端
+12. `browser_tool prototype-mock-clear` → 请求打回真实后端。**代码一行不用改** —— 这就是"mock 与真服务同构"
 
 > 想看 `contract.md` 有什么价值：故意只声明 200 响应、不写 `authType`、不写 `x-contract`，它会**点名这三处缺失**，正好是后端接手前必须补的清单。
 
 ### D. 交付与验收
 
-12. `browser_tool prototype-export checkout-flow` → `dist/prototype.html` 自包含，命令会打印 `file://` URL
-13. `browser_tool prototype-open checkout-flow` → 优先打开的就是这个交付物，验证它**脱离工作台也能跑**
-14. `browser_tool prototype-status checkout-flow` → 全貌 + 所有权检查
+13. `browser_tool prototype-export checkout-flow` → `dist/prototype.html` 自包含，命令会打印 `file://` URL
+14. `browser_tool prototype-open checkout-flow` → 优先打开的就是这个交付物，验证它**脱离工作台也能跑**
+15. `browser_tool prototype-status checkout-flow` → 全貌 + 所有权检查
 
 ### E. 故意制造一个所有权违例
 
-15. 写一个 `prototypes/checkout-flow/patches/oops.css`（不符合 `{lane}-{nnn}-{name}.css`）
-16. `browser_tool prototype-status checkout-flow` → 应该点名它"misnamed patch"
+16. 写一个 `prototypes/checkout-flow/patches/oops.css`（不符合 `{lane}-{nnn}-{name}.css`）
+17. `browser_tool prototype-status checkout-flow` → 应该点名它"misnamed patch"
 
 这条验证的是：**以前会被静默忽略的文件，现在会被抓出来**。
 
@@ -600,6 +620,48 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 26. 再选一个元素 → 点**在对话中改** → 跳回会话且输入框已预填该 selector
 27. 点工具栏**闪电图标** → 把当前原型的所有补丁重放进这个面板（与详情页 Apply 同一条 RPC）
 28. 按 Esc 或再点准星图标 → 退出编辑态，页面恢复正常点击行为
+
+### H. 两种原型类型（§13 的验收）
+
+29. 在创建对话框里看两个类型卡片：选「在已有页面上改」→ 出现**目标页输入框**；选「从零开始」→ 输入框消失（切回再切一次，确认不会残留上一个类型的输入）
+30. 建一个 overlay 并填目标页 → 详情页标题下是 overlay 的引导语，元数据里有「目标页面」行，且有**「打开目标页面」按钮** → 点它应打开浏览器窗口并**直接落在该地址**
+31. 建一个 scratch → 详情页**没有**「目标页面」行、**没有**「打开目标页面」按钮，引导语说的是「这是你自己的文档」
+32. 两种类型在 `base.html` 缺席时的提示**不一样**（scratch 说直接写；overlay 说去 Capture）
+33. 目录里 `prototypes/<slug>/config.json` 是 `{ "kind": "overlay", "targetUrl": "…" }` / `{ "kind": "scratch" }` 两种形态——scratch **不存** targetUrl
+34. `browser_tool prototype-status <slug>` 与 agent 的 system prompt 里都能看到类型；对话里 `prototype-create Landing page --scratch` 同一条链路建出 scratch 并自动绑定
+
+> 第 33 步验证的是「数据层分离」这个选择本身：类型不是 UI 状态、不是标签，而是**落盘的一个字段**，所以详情页、prompt、agent 命令、导出三条路读的是同一个真源。
+
+### I. 混合场景：逆向第三方再搭自己的（§14 的验收）
+
+**B 参考面**
+
+35. 建一个 scratch 原型 → 详情页「参考资料」区点**「添加参考」**。表单里上半部分是**已有原型**（点一下就关联，不新建）；下半部分填名称 + URL 会**新建**一个 overlay 原型再关联（表单下方有字说明这个副作用）
+36. **关联已有原型**：先另建一个 scratch，然后回到第一个原型，点候选里的它 → 应立即关联。**这就验证了「关系与类型无关」**：引用者是 scratch，被引用者也是 scratch
+37. 参考行点**「打开」**：overlay 参考落在它记录的真实地址；scratch 参考打开它自己的页面（导出物或 base.html），且第二行显示「它自己的页面」而不是「未记录目标页面」
+38. 点参考行的 slug → 跳到那个参考原型自己的详情页。在那里 Capture / 打 patch —— 这些 patch 属于**它自己**
+39. 回到交付原型 → `browser_tool prototype-apply` → 注入的是**交付原型**的 patch，参考的 patch 一条都不在里面（第 42 步会再确认一次）
+
+**A 起点**
+
+40. 在交付原型（scratch）上：先把竞品页 Capture 进来当底稿 → 手改几处 → **再按一次 Capture base** → 应当**先弹确认**（"这会覆盖你自己的页面"），而不是直接覆盖
+41. 取消 → `base.html` 未被改动；确认 → 被替换。overlay 原型上按 Capture 则**不该**弹这个确认（重新捕获是它的正规操作）
+
+**护栏**
+
+42. 导出交付原型（`prototype-export`）→ 检查 `dist/prototype.html`：里面**不应**出现任何参考原型的 patch 内容。这是第 38 步那批 patch 最危险的去处
+43. 目录里 `prototypes/<交付原型>/config.json` 应有 `"references": ["rival-checkout"]`，而 `prototypes/rival-checkout/config.json` **不应**有 `references`（关系是单向的）
+44. 对话里（会话已绑定交付原型）说「把另一个也加进来参考」→ agent 应执行 `prototype-reference <slug>`；若它需要先建一个，应当带 `--no-bind`，**且绑定不能被换掉**（`prototype-list` 里 BOUND 仍是交付原型）
+45. 参考行点解除（↔ 图标）→ 该行消失，`config.json` 里的 `references` 一并消失
+
+**agent 的读取面**
+
+46. 对话里说「列一下原型」→ `prototype-list` 的每一行都带 `(overlay)` / `(scratch)`，有目标页的带 `target:`，有关系的带 `references:` / `referenced by:`
+47. 对自己**不是**绑定对象的那个原型说「看一下它的状态」→ agent 应执行 `prototype-status <slug>`，输出里能看出它是什么类型、它在参考谁（**括注了对方是什么**）、以及谁在参考它
+
+> 第 46 步修的是一个「状态撒谎」：在此之前 `prototype-list` 只列 slug 和 patch 数，overlay 和 scratch 在列表里长得一模一样。
+
+> 第 44 步是本节最容易出事的一步：`prototype-create` 默认会绑定会话，如果 agent 建参考时没带 `--no-bind`，之后每条省 slug 的命令都会打到竞品页面上，而**画面上看不出来**。
 
 ---
 
@@ -721,4 +783,152 @@ BrowserPaneManager（主进程，只有 instanceId）
 - **样式可视化编辑**（颜色/间距编辑器）—— 只做了文字。样式改动目前走「在对话中改」
 - **面板内编辑条** —— 编辑 UI 在主窗口，不在面板里。面板工具栏是独立 BrowserView，`getToolbarEffectiveHeight()` 支持撑高做编辑条（菜单已用它），但那要改主进程布局 + 一套新 UI；先验证「选中 → 编辑」这条主线是否顺手
 - 面板工具栏的按钮**没有 tooltip**（BrowserView 边界会裁掉浮层），只有 `aria-label`
+
+---
+
+## 13. 原型类型：overlay / scratch
+
+**问题**：§1 已经把分野定在**产物性质**上，但产品结构里没有它。创建时只问名字，于是「从无到有」和「patch 第三方」是同一个东西的两种**用法**——引导文案说不到点上，`targetUrl` 无处可存（导致详情页既不能「打开目标页面」也不能重新 Capture，因为没人记得地址）。
+
+**结论**：把分野提升为**原型类型**，在创建时确定、不可改。
+
+### 13.1 为什么不是「一个标签」
+
+类型决定四件事，全都是实质的：
+
+| 决定 | overlay | scratch |
+|---|---|---|
+| `base.html` 从哪来 | Capture 一个真实页面的**渲染快照** | 我们自己写的文档 |
+| 交付物是什么 | patch + 导出物，是给开发翻译的**可执行规格** | 完整页面，本来就是源码 |
+| 有没有外部页 | 有（`targetUrl`，可重开、可重新捕获） | 没有（存 URL 是撒谎） |
+| `base.html` 缺席意味着 | 还没 Capture —— 该去 Capture | 还没写 —— 直接写 |
+
+第四行是这条改动最实际的收益：**提示不再含糊**。以前两者都只能说"还没有 base 页面"，现在 overlay 说去 Capture、scratch 说直接写。
+
+### 13.2 为什么创建时定、之后不可改
+
+切换类型不是改个字段：overlay 的 `base.html` 是别人页面的快照，scratch 的是我们的原稿——把前者改成后者，那些 patch 仍然指向一个不再被重放的页面，而画面上看不出来。**让一个能悄悄产生废物的开关存在，比不让它存在更糟。** 要换类型就新建一个，这是诚实的代价。
+
+### 13.3 为什么落在数据层（而不是 UI 状态）
+
+类型写在 `prototypes/{slug}/config.json`，因为它有**四个读者**：详情页（引导文案/元数据/按钮）、agent 的 system prompt（<prototype_context>）、agent 命令（`prototype-create --scratch` / `--url`）、以及未来导出器的分叉。放在 React 状态里这些读者就拿不到。
+
+> 这与「没有 `manifest.json`、一切按需派生」不冲突：那条约束针对 `patches/`（多 lane 并发写，共享索引必然争用），而 `config.json` 是**控制面独占、单一写者、无派生数据**，正是控制面文件该有的样子。所有权矩阵里它已登记为 `control-plane`（§3.5），所以误改会被 `prototype-status` 点名。
+
+读取**永不抛错**：缺文件、坏 JSON、未知 `kind` 一律回退 `overlay`。理由有二——配置不可读不该让原型不可用；该文件可被手工或外部工具编辑，畸形是**预期**而非异常。默认值选 `overlay` 是因为**类型存在之前建的原型全部是围绕"捕获真实页面"的**。
+
+### 13.4 一处刻意的收窄
+
+`writePrototypeConfig` 会**丢掉** scratch 的 `targetUrl`。不是校验，而是不愿意落一条无法兑现的声明：scratch 没有外部页面，存下那个地址只会让后来人以为某个地方会用到它。
+
+### 13.5 未做的（明确记录）
+
+- **类型不可改**（同上，有意）—— 无「转换类型」UI
+- **多目标页** —— overlay 只记一个 `targetUrl`。它只影响「默认打开去哪 / 默认捕获哪」；同一个窗口导航到别的页面时 patch 照样重放（注入按 document 生效），但没有地方登记"这个原型覆盖哪几页"
+- **引导文案的图示** —— 两个类型卡片目前是图标 + 一句描述，没有"页面上叠一层 vs 白纸"的示意图
+
+---
+
+## 14. 混合场景：逆向第三方，然后搭自己的
+
+**诉求原文**：「逆向第三方网站，然后搭建出自己的原型。可以选中、patch 第三方，然后作为 scratch 的参考资料。」
+
+这句话里其实是**两种场景**，必须分开——否则会重蹈 D6 的覆辙（把两件事塞进一个维度）。
+
+| | 那个第三方页最后变成什么 | 读法 |
+|---|---|---|
+| **A 起点** | 被吸收：Capture 成我的 `base.html`，此后归我 | 「抄完就变成我的」 |
+| **B 参考面** | 一直是旁证：躺在旁边，我另起一份自己的 | 「照着做，但不是它」 |
+
+两者都做，且**都不需要第三种原型类型**。
+
+### 14.1 读法 A 撞上了 §13.2，但解法不是放开类型
+
+A 的路径天然跨类型：开始时在别人的页上打 patch（overlay），结束时拥有一份自己的文档（scratch）。而 §13.2 规定类型创建时定、不可改。
+
+**正确的解法是让 scratch 可被一次 Capture 播种**，而不是允许改类型：
+
+- 创建时就声明「这会是我自己的页」，然后允许它从某个 URL 拿初稿。`writePrototypeBase` 本来就只依赖"项目存在"，A 在机制上已经可用；缺的只是**措辞**——旧文案说「没有外部页面，没有可捕获的东西」，那会**禁止掉主流程**。
+- 探索竞品的过程发生在**另一个**原型里（就是 B 的参考）。于是 A 与 B 收敛到同一套结构，规则不用松。
+
+`scratch` 的记录随之精确为：**`base.html` 归我们**——手写的或捕获来的都算；关键在于从那刻起它没有"要同步的对端"。
+
+**A 引入了一个静默丢失风险，必须守。** `handleCapture` → `writePrototypeBase` 是**无条件覆盖** `base.html`。对 overlay 这是正规操作（`base.html` 是快照，重新捕获就是刷新它的方式）；但对已播种、已改过的 scratch，按一下就是**无声抹掉自己的文档**。所以：`kind === 'scratch' && baseHtmlPresent` 时 Capture 先弹确认，其余情况不拦。这也写进了 prompt（"Never re-capture over an existing base.html"）。
+
+### 14.2 读法 B 不是第三种类型
+
+用 §13.1 的自检（类型要决定哪四件事）：
+
+| 类型决定的事 | 混合场景里的实际取值 | 和谁一样 |
+|---|---|---|
+| `base.html` 从哪来 | 我们自己写的 | **scratch** |
+| 交付物是什么 | 完整页面（本来就是源码） | **scratch** |
+| `base.html` 缺席意味着 | 还没写 | **scratch** |
+| 有没有外部页 | 有，但是**旁证**而非交付对象 | 与 overlay 的 `targetUrl` 语义不同 |
+
+四行里三行与 scratch 相同。**加第三种类型等于把 scratch 的语义复制一份**，然后在对话框、prompt、status、ownership、导出里各加一个分支，只换来一个多出来的字段。
+
+真正新增的只有两样：
+
+1. **一条关系**（`references`）。而且**角色在边上，不在节点上**——同一个竞品页可以是 A 原型的参考，同时是 B 原型的交付对象。放进类型里就表达不了这个。关系是**单向**的：参考不知道自己在被参考，因为"两边看它"的人理由可以完全相反，而理由不是那个页面的属性。
+2. **一条护栏**（见下）。
+
+**这条关系与类型无关。** scratch 引用另一个 scratch，和引用一个 overlay，是**同构**的：引用者与被引用者各自独立、各持自己的 `patches/`，就够了；两边各是什么类型，不参与判断。所以：
+
+- 数据层不按 kind 分叉：`references` 对两种类型都读、都写
+- 校验层只看存在性，不看 kind
+- prompt 里的规则**只写一遍**——patch 不能搬运，与两边类型无关（`overlay` 的 base 是别人页面的快照，`scratch` 的 base 是我们自己另一份文档，但"选择器绑在另一份 document 上"这件事是一样的）
+- UI 的参考列表对两种类型显示同一套动作，只是 scratch 参考没有目标页——那不是缺陷，是有意为之，所以显示「它自己的页面」而不是「未记录目标页面」
+
+### 14.3 护栏：为什么参考必须独立成项目
+
+`packages/shared/src/prototypes/export.ts` 的 `exportPrototype` 内联的是该原型 `patches/` 下**全部**文件（`scanPrototypePatches(workspaceRootPath, slug)`）。所以只要参考的 patch 和我的 patch 共用一个 `patches/`，导出时它们会被**打进我的交付 HTML**：选择器指向竞品的 DOM，在我自己的页面上一条都不生效，而且**不报任何错**。
+
+这正是这个项目一路在防的那类静默失效。于是：
+
+- **结构性护栏**：参考是一个**独立的原型**（哪种类型都行），各自持有自己的 `patches/`。`linkPrototypeReference` 是连接两者的**唯一**途径——不是"建议这么用"，而是没有别的路可走。
+- **语义护栏**：prompt 里写明参考是 `evidence, not material`，且**禁止**把参考的 patch 复制进交付物的 `patches/`（"它们的选择器是照另一份 document 写的，不会在这里匹配，却会不打一声招呼地进入交付物"）。结构性护栏挡得住机械错误，挡不住 agent 主动搬运，所以两条都要。
+
+换来的是参考获得了**独立生命周期**：竞品会改版，参考会烂，所以它需要能重新捕获；而一个交付原型可能参考三个竞品。
+
+### 14.4 为什么落在数据层，以及命令面
+
+`references` 写在 `prototypes/{slug}/config.json`，与 §13.3 同一个理由——它有多个读者：详情页（参考列表/打开/解除）、agent 的 system prompt（解析出每个参考的 kind 与 targetUrl，agent 无需去读对方的 config）、以及 agent 命令。
+
+只做 UI 是不够的：agent 才是这个工作台的主要操作者，用户会在对话里说「把这个也加进来参考」。没有命令，agent 就会去手改 `control-plane` 独占的 `config.json`——正是上面那类损坏。所以补了两条：
+
+| 命令 | 作用 |
+|---|---|
+| `prototype-reference <slug> [--remove]` | 把 `<slug>` 记为**会话所绑定原型**的参考 |
+| `prototype-create … --no-bind` | 创建但**不抢绑定** |
+
+第二条不是锦上添花，是必需：`prototype-create` 默认建完就绑定（§11 的设计），于是「先建一个参考原型」会把整个会话的默认目标悄悄换成被研究的那个页面——之后每条省 slug 的命令都打错地方。`--no-bind` 就是为了堵这个。
+
+`prototype-reference` 的读者**只能是绑定原型**（不接受位置参数指定）：它的位置参数已经是参考本身，两个 slug 并列无法消歧。未绑定时报错并点名 `prototype-bind`，而不是猜。
+
+### 14.5 未做的（明确记录）
+
+- **非绑定原型的参考** —— agent 侧只能往绑定原型上加参考（UI 侧不受限）
+- **悬空参考** —— 手工删掉参考原型的目录后，`references` 仍留着那个 slug。读取不做存在性过滤（不引入静默忽略），prompt 会把一个不存在的 slug 报给 agent，失败是可见的；`--remove` 宽容这一点，所以清理有路可走
+- **参考的 patch 对交付物的可追溯性** —— 「这条改动是从参考的哪一处翻译来的」没有落成数据，只在对话里
+
+**一处有意为之**：不禁止**互看**（A 引用 B 且 B 引用 A）。关系是"看"而不是"属于"，两边互相参考没有矛盾，也不构成循环——prompt 只列直接参考，不会展开。唯一被丢弃的是**自引用**（`normalizePrototypeReferences` 在读取时丢掉自己），因为那在语义上是自相矛盾的。
+
+### 14.6 agent 怎么看见这张图
+
+关系存在数据里是**单向**的（角色在边上），但"感知一张图"要求**两端都可见**。所以 agent 的读取面分成三层，各自回答不同的问题：
+
+| 读取面 | 作用域 | 回答什么 |
+|---|---|---|
+| system prompt · `<prototype_context>` | 绑定的那个 | **我绑定的这个是哪种、它在参考谁**（每个参考都带 kind 与 targetUrl，agent 不必去读对方的 config） |
+| `prototype-list` | 全工作区 | **这片工作区里有什么**：每个的 kind、target 页、`references:` 与 `referenced by:` |
+| `prototype-status [slug]` | 单个（可显式传 slug） | **这一个的全貌**：kind（带一句它意味着什么）、target、解析后的 references（含对方是什么）、以及 `referenced by:` |
+
+三点设计判断：
+
+1. **kind 出现在每一层，而且不是脚注。** 之前 `prototype-list` 只列 slug 和 patch 数——一个 overlay 和一个 scratch 在列表里**长得一模一样**，而它们的行为毫无相似之处（捕获 vs 手写、快照 vs 我们自己的文档）。这属于「状态撒谎」，不是缺个字段。
+2. **反向关系是派生的，不入库。** `referenced by` 由列表现算，不写进 `config.json`：写进去就有两个真源，而它们一定会漂移。代价是 `prototype-status` 要多读一次列表——值得，因为 `references: rival-checkout` 在你知道对方是什么之前**不可行动**。
+3. **prompt 里不铺开整个工作区。** 工作区可以有十个原型，全列进 prompt 对多数会话是噪音；它还是会话开始时的快照，中途新建就过期。工作区级查询是**命令**的职责（工具描述里已写明 `prototype-list` 给出 kind 与双向关系），prompt 只负责绑定原型自己的事实。
+
+悬空参考（原型目录被手工删掉）在这里**被点名**而不是静默消失：`prototype-status` 打印 `MISSING — no prototype with that slug`。这与读取时不做过存在性过滤是同一条原则——不让状态说谎。
 
