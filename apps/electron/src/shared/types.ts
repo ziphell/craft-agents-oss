@@ -489,9 +489,9 @@ export interface ElectronAPI {
   /** Write `dist/*` for a prototype so it can be handed to developers. */
   exportPrototype(workspaceId: string, slug: string): Promise<unknown>
   /**
-   * Create a prototype. `kind` defaults to `overlay` (inject patches into
-   * a real page, optionally recording its `targetUrl`); `scratch` owns its own
-   * `base.html`. No base page is seeded either way — see create.ts.
+   * Create a prototype. `kind` defaults to `scratch` (owns its own `base.html`);
+   * `overlay` injects patches into a real page and requires that page's
+   * `targetUrl` — see create.ts. No base page is seeded either way.
    */
   createPrototype(
     workspaceId: string,
@@ -514,6 +514,13 @@ export interface ElectronAPI {
    * overwritten. `scratch` targets only — an overlay's base is its own snapshot.
    */
   importPrototype(workspaceId: string, slug: string, sourceSlug: string): Promise<unknown>
+  /**
+   * Repoint an overlay at the same page in another environment (plan §13.2.1).
+   * Only the kind's own rules are enforced; the caller is expected to say what
+   * goes stale with it (windows open on the old page, selectors written against
+   * the old DOM) — that is what the panel's warning next to the field is for.
+   */
+  setPrototypeTarget(workspaceId: string, slug: string, targetUrl: string): Promise<unknown>
 
   // Sources
   getSources(workspaceId: string): Promise<LoadedSource[]>

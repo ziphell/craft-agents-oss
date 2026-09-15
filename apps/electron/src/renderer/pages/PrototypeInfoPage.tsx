@@ -14,13 +14,14 @@
 import { useTranslation } from 'react-i18next'
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useAtomValue } from 'jotai'
-import { Download, ExternalLink, FileCode, FlaskConical, FolderOpen, Link2, MessageSquare, TriangleAlert, Unlink } from 'lucide-react'
+import { Download, ExternalLink, FileCode, FlaskConical, FolderOpen, Link2, MessageSquare, Pencil, TriangleAlert, Unlink } from 'lucide-react'
 import { useActiveWorkspace, useAppShellContext } from '@/context/AppShellContext'
 import { navigate, routes } from '@/lib/navigate'
 import { sessionMetaMapAtom } from '@/atoms/sessions'
 import { Info_Page, Info_Section, Info_Table, Info_Alert } from '@/components/info'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { EditTargetPageDialog } from '@/components/prototypes/EditTargetPageDialog'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@craft-agent/ui'
 import type { PrototypeEntry, PrototypeExportResult, PrototypeStatus } from '@craft-agent/shared/prototypes'
 
@@ -53,6 +54,8 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
   const [referenceName, setReferenceName] = useState('')
   const [referenceUrl, setReferenceUrl] = useState('')
   const [linkingReference, setLinkingReference] = useState(false)
+  /** The "change the target page" dialog — reachable from the metadata row. */
+  const [targetDialogOpen, setTargetDialogOpen] = useState(false)
   /** Failure from Open or Export — both surface the throwing RPC's message verbatim. */
   const [actionError, setActionError] = useState<string | null>(null)
 
@@ -202,16 +205,32 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
     }
   }, [workspaceId, openInBrowserPane])
 
+  // Repoint an overlay at the same page in another environment (plan §13.2.1).
+  //
+  // The dialog owns the warning and the error message; here we only write it and
+  // re-read the status, because the address is on screen in the metadata row and in
+  // whatever the next export writes.
+  const handleSetTarget = useCallback(async (targetUrl: string) => {
+    if (!workspaceId) return
+    await window.electronAPI.setPrototypeTarget(workspaceId, prototypeSlug, targetUrl)
+    await loadStatus(true)
+    setTargetDialogOpen(false)
+  }, [workspaceId, prototypeSlug, loadStatus])
+
   // Add a reference: create the prototype that will hold it, then link it.
   //
   // Two steps rather than one RPC, and in this order, so the page being built is
   // never the thing left half-made: if the reference's name is taken, the create
   // fails and this prototype is untouched.
+  //
+  // The address is required because this creates an *overlay* — a reference to a
+  // page we are studying — and an overlay without its page has nothing to open
+  // (create.ts enforces the same rule the create dialog does).
   const handleAddReference = useCallback(async () => {
     if (!workspaceId) return
     const name = referenceName.trim()
     const url = referenceUrl.trim()
-    if (!name) return
+    if (!name || !url) return
 
     setLinkingReference(true)
     setActionError(null)
@@ -219,7 +238,7 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
       const created = (await window.electronAPI.createPrototype(workspaceId, {
         name,
         kind: 'overlay',
-        targetUrl: url || undefined,
+        targetUrl: url,
       })) as { slug: string }
       await window.electronAPI.linkPrototypeReference(workspaceId, prototypeSlug, created.slug)
       setReferenceFormOpen(false)
@@ -485,7 +504,7 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
                       <Button
                         size="sm"
                         onClick={() => void handleAddReference()}
-                        disabled={!referenceName.trim() || linkingReference}
+                        disabled={!referenceName.trim() || !referenceUrl.trim() || linkingReference}
                       >
                         <Link2 className="h-3.5 w-3.5" />
                         {t('prototypeInfo.referenceAdd')}
@@ -648,14 +667,31 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
             <Info_Table>
               <Info_Table.Row label={t('common.slug')} value={status.slug} />
               {status.kind === 'overlay' && (
-                <Info_Table.Row
-                  label={t('prototypeInfo.targetPage')}
-                  value={
-                    status.targetUrl
-                      ? <span className="font-mono text-xs break-all">{status.targetUrl}</span>
-                      : <span className="text-muted-foreground">{t('prototypeInfo.targetPageUnset')}</span>
-                  }
-                />
+                <Info_Table.Row label={t('prototypeInfo.targetPage')}>
+                  {/* Shown in full and changeable in place: the address is where the
+                      prototype's page lives, and the same page exists in several
+                      environments, so switching between them is an ordinary edit
+                      (the dialog carries the warning, plan §13.2.1). */}
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="flex-1 min-w-0 font-mono text-xs break-all">
+                      {status.targetUrl
+                        ?? <span className="text-muted-foreground">{t('prototypeInfo.targetPageUnset')}</span>}
+                    </span>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          onClick={() => setTargetDialogOpen(true)}
+                          className="shrink-0 inline-flex h-6 w-6 items-center justify-center rounded text-foreground/50 hover:text-foreground hover:bg-foreground/5 transition-colors"
+                          aria-label={t('prototypeInfo.editTargetPage')}
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent>{t('prototypeInfo.editTargetPage')}</TooltipContent>
+                    </Tooltip>
+                  </div>
+                </Info_Table.Row>
               )}
               <Info_Table.Row label={t('common.location')}>
                 <div className="flex items-center gap-2 min-w-0">
@@ -678,6 +714,19 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
             </Info_Table>
           </Info_Section>
         </Info_Page.Content>
+      )}
+
+      {/* Only an overlay has a target page, so only an overlay can repoint one. The
+          dialog is mounted here rather than inside the content block so it survives
+          the status re-read that follows a save. */}
+      {status?.kind === 'overlay' && (
+        <EditTargetPageDialog
+          open={targetDialogOpen}
+          slug={prototypeSlug}
+          currentUrl={status.targetUrl ?? ''}
+          onCancel={() => setTargetDialogOpen(false)}
+          onSubmit={handleSetTarget}
+        />
       )}
     </Info_Page>
   )

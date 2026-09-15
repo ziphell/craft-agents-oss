@@ -14,7 +14,7 @@ import { watch } from 'fs'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import { ensureWorkspacePrototypesPath } from '@craft-agent/shared/workspaces'
-import { exportPrototype, createPrototype, importPrototype, linkPrototypeReference, listPrototypeStatuses, resolvePrototypeEntry, unlinkPrototypeReference } from '@craft-agent/shared/prototypes'
+import { exportPrototype, createPrototype, importPrototype, linkPrototypeReference, listPrototypeStatuses, resolvePrototypeEntry, setPrototypeTargetUrl, unlinkPrototypeReference } from '@craft-agent/shared/prototypes'
 import type { PrototypeKind } from '@craft-agent/shared/prototypes'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import {
@@ -33,6 +33,7 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.prototypes.LINK_REFERENCE,
   RPC_CHANNELS.prototypes.UNLINK_REFERENCE,
   RPC_CHANNELS.prototypes.IMPORT,
+  RPC_CHANNELS.prototypes.SET_TARGET,
 ] as const
 
 /** Batch rapid changes before notifying (matches the session file watcher). */
@@ -172,6 +173,22 @@ export function registerPrototypesHandlers(server: RpcServer, deps: HandlerDeps)
           `${imported.skippedPatches.length} left as they were)`,
       )
       return imported
+    },
+  )
+
+  // Repoint an overlay at the same page in another environment. File work only,
+  // and no confirmation step: the address is a fact about where the page is, not a
+  // rule of the kind. The two things that go stale silently (windows open on the
+  // old page, selectors written against the old DOM) are said by whoever asks —
+  // the command says them, and the panel puts them next to the field.
+  server.handle(
+    RPC_CHANNELS.prototypes.SET_TARGET,
+    async (_ctx, workspaceId: string, slug: string, targetUrl: string) => {
+      const workspace = getWorkspaceByNameOrId(workspaceId)
+      if (!workspace) throw new Error(`PROTOTYPES_SET_TARGET: Workspace not found: ${workspaceId}`)
+      const config = setPrototypeTargetUrl(workspace.rootPath, slug, targetUrl)
+      log.info(`PROTOTYPES_SET_TARGET: ${slug} → ${config.targetUrl}`)
+      return config
     },
   )
 

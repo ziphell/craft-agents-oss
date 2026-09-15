@@ -211,6 +211,7 @@ const EXPECTED_CHANNELS: string[] = [
   'prototypes:import',
   'prototypes:linkReference',
   'prototypes:list',
+  'prototypes:setTarget',
   'prototypes:unlinkReference',
   'prototypes:unwatch',
   'prototypes:watch',
