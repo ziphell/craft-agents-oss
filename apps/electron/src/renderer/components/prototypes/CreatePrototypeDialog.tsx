@@ -1,11 +1,17 @@
 /**
  * CreatePrototypeDialog — name + kind (+ target page for overlays).
  *
- * The kind is asked for up front because it is **not** a label: it decides where
- * `base.html` comes from (a capture of someone else's page vs. a document we
- * author), what the deliverable is, and whether there is an external page to
- * reopen and re-capture. It is fixed for the prototype's lifetime, so it cannot
- * be deferred to a later settings screen.
+ * The kind is asked for up front because it is **not** a label: it decides what
+ * the prototype's page even is (the live address of someone else's page vs. a
+ * document we author), what the deliverable is, and whether there is an external
+ * page to keep in sync. It is fixed for the prototype's lifetime, so it cannot be
+ * deferred to a later settings screen.
+ *
+ * That is also why the target page is **required** once the overlay kind is
+ * chosen, and why the default is the from-scratch kind: an overlay without an
+ * address has no page to open, nothing to export against, and — since the kind
+ * cannot be changed afterwards — no way to fill it in later. `createPrototype`
+ * refuses the same combination, so the rule holds whichever entry point is used.
  *
  * `createPrototype` rejects when the derived slug is taken or the name yields no
  * usable slug, so the submit handler is awaited and the RPC's own message is
@@ -27,7 +33,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useRegisterModal } from '@/context/ModalContext'
 import { cn } from '@/lib/utils'
-import type { PrototypeKind } from '@craft-agent/shared/prototypes'
+import { DEFAULT_PROTOTYPE_KIND, type PrototypeKind } from '@craft-agent/shared/prototypes'
 
 export interface CreatePrototypeValues {
   name: string
@@ -49,7 +55,9 @@ interface CreatePrototypeDialogProps {
 export function CreatePrototypeDialog({ open, onCancel, onSubmit }: CreatePrototypeDialogProps) {
   const { t } = useTranslation()
   const [name, setName] = React.useState('')
-  const [kind, setKind] = React.useState<PrototypeKind>('overlay')
+  // Same default as the data layer (createPrototype.ts): the kind that owns its
+  // own page, and so can never be left with nothing to do next.
+  const [kind, setKind] = React.useState<PrototypeKind>(DEFAULT_PROTOTYPE_KIND)
   const [targetUrl, setTargetUrl] = React.useState('')
   const [submitting, setSubmitting] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
@@ -60,7 +68,7 @@ export function CreatePrototypeDialog({ open, onCancel, onSubmit }: CreateProtot
   React.useEffect(() => {
     if (open) {
       setName('')
-      setKind('overlay')
+      setKind(DEFAULT_PROTOTYPE_KIND)
       setTargetUrl('')
       setError(null)
       setSubmitting(false)
@@ -68,7 +76,13 @@ export function CreatePrototypeDialog({ open, onCancel, onSubmit }: CreateProtot
   }, [open])
 
   const trimmed = name.trim()
-  const canSubmit = trimmed.length > 0 && !submitting
+  const trimmedTarget = targetUrl.trim()
+  // An overlay's page *is* the address it was created against, and the kind is
+  // fixed for the prototype's lifetime — so an overlay without one would have
+  // nothing to open and no way to fill it in later. Required here, for the same
+  // reason it is required in createPrototype.
+  const needsTarget = kind === 'overlay' && trimmedTarget.length === 0
+  const canSubmit = trimmed.length > 0 && !needsTarget && !submitting
 
   const handleSubmit = async () => {
     if (!canSubmit) return
@@ -78,7 +92,7 @@ export function CreatePrototypeDialog({ open, onCancel, onSubmit }: CreateProtot
       await onSubmit({
         name: trimmed,
         kind,
-        targetUrl: kind === 'overlay' ? targetUrl.trim() || undefined : undefined,
+        targetUrl: kind === 'overlay' ? trimmedTarget : undefined,
       })
     } catch (err) {
       // The RPC message is already user-facing (duplicate slug / unusable name),
@@ -101,16 +115,16 @@ export function CreatePrototypeDialog({ open, onCancel, onSubmit }: CreateProtot
     description: string
   }> = [
     {
-      value: 'overlay',
-      icon: <Layers className="h-3.5 w-3.5" />,
-      title: t('prototypeCreate.kindOverlay'),
-      description: t('prototypeCreate.kindOverlayHint'),
-    },
-    {
       value: 'scratch',
       icon: <PencilRuler className="h-3.5 w-3.5" />,
       title: t('prototypeCreate.kindScratch'),
       description: t('prototypeCreate.kindScratchHint'),
+    },
+    {
+      value: 'overlay',
+      icon: <Layers className="h-3.5 w-3.5" />,
+      title: t('prototypeCreate.kindOverlay'),
+      description: t('prototypeCreate.kindOverlayHint'),
     },
   ]
 
@@ -182,10 +196,18 @@ export function CreatePrototypeDialog({ open, onCancel, onSubmit }: CreateProtot
             </label>
             <Input
               id="create-prototype-target"
+              required
+              aria-required="true"
               value={targetUrl}
               disabled={submitting}
               onChange={(e) => setTargetUrl(e.target.value)}
               placeholder={t('prototypeCreate.targetUrlPlaceholder')}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && canSubmit) {
+                  e.preventDefault()
+                  void handleSubmit()
+                }
+              }}
             />
             <p className="text-[11px] leading-snug text-muted-foreground">
               {t('prototypeCreate.targetUrlHint')}

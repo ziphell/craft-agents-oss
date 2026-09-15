@@ -8,6 +8,7 @@ import {
   getPrototypeDirPath,
   prototypeSlugFromName,
   readPrototypeBase,
+  readPrototypeConfig,
   writePrototypeBase,
 } from '..'
 
@@ -45,21 +46,60 @@ describe('createPrototype', () => {
     rmSync(workspaceRoot, { recursive: true, force: true })
   })
 
-  it('creates the prototype and its patches folder, and seeds no base page for an overlay', () => {
-    // Overlay is the default kind, and its base has to be a *capture*. Seeding a
-    // placeholder would make `baseHtmlPresent` true and hide the real next step.
+  it('creates the prototype and its patches folder, and seeds no base page', () => {
+    // The default kind owns its own document, so there is nothing to be missing
+    // on the other side of it: a new prototype is asked only for a name, and its
+    // next step (write base.html, or import one) is always available.
     const created = createPrototype(workspaceRoot, { name: 'Checkout Flow' })
 
     expect(created.slug).toBe('checkout-flow')
-    expect(created.kind).toBe('overlay')
+    expect(created.kind).toBe('scratch')
     expect(existsSync(getPrototypePatchesPath(workspaceRoot, 'checkout-flow'))).toBe(true)
     expect(existsSync(created.baseHtmlPath)).toBe(false)
     expect(readPrototypeBase(workspaceRoot, 'checkout-flow')).toBeNull()
   })
 
+  /**
+   * An overlay's page *is* the address it was created against, and the kind is
+   * fixed for the prototype's lifetime — so one created without an address would
+   * have nothing to open, nothing to export against and no way to fill it in.
+   * Creation is the only moment the address is still at hand, which is why the
+   * refusal lives here rather than at the first command that needs it.
+   */
+  it('refuses an overlay with no target page', () => {
+    expect(() => createPrototype(workspaceRoot, { name: 'Rival', kind: 'overlay' })).toThrow(/needs that page's address/)
+
+    // …and leaves nothing behind, rather than a directory that looks deliberate.
+    expect(existsSync(getPrototypeDirPath(workspaceRoot, 'rival'))).toBe(false)
+  })
+
+  it('takes an overlay with a target page, and records it', () => {
+    const created = createPrototype(workspaceRoot, {
+      name: 'Rival checkout',
+      kind: 'overlay',
+      targetUrl: 'https://rival.example.com/cart',
+    })
+
+    expect(created.kind).toBe('overlay')
+    expect(readPrototypeConfig(workspaceRoot, created.slug)).toEqual({
+      kind: 'overlay',
+      targetUrl: 'https://rival.example.com/cart',
+    })
+  })
+
+  // The same shape rule the later "change the address" path enforces (target.ts):
+  // one rule with two entry points, so neither can be laxer than the other.
+  it('refuses a target page a browser could not open', () => {
+    expect(() => createPrototype(workspaceRoot, {
+      name: 'Rival',
+      kind: 'overlay',
+      targetUrl: 'rival.example.com/cart',
+    })).toThrow(/Include the scheme/)
+  })
+
   // Same for scratch, even though its base will be our own document: an empty
-  // one would claim a page exists, and the three real ways to get a first page
-  // (write it, capture it, import it) are all reachable without one.
+  // one would claim a page exists, and both real ways to get a first page
+  // (write it, import it) are reachable without one.
   it('seeds no base page for a scratch prototype either', () => {
     const created = createPrototype(workspaceRoot, { name: 'Quotes Flow', kind: 'scratch' })
 
@@ -85,20 +125,20 @@ describe('writePrototypeBase', () => {
   let workspaceRoot = ''
 
   beforeEach(() => {
-    workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-capture-base-'))
-    createPrototype(workspaceRoot, { name: 'Checkout Flow' })
+    workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-write-base-'))
+    createPrototype(workspaceRoot, { name: 'Checkout Flow', kind: 'scratch' })
   })
 
   afterEach(() => {
     rmSync(workspaceRoot, { recursive: true, force: true })
   })
 
-  it('replaces base.html with the captured markup and reports its size', () => {
+  it('writes base.html and reports its size', () => {
     const markup = '<html><body><h1>Rendered</h1></body></html>'
 
-    const captured = writePrototypeBase(workspaceRoot, 'checkout-flow', markup)
+    const written = writePrototypeBase(workspaceRoot, 'checkout-flow', markup)
 
-    expect(captured.bytes).toBe(Buffer.byteLength(markup, 'utf-8'))
+    expect(written.bytes).toBe(Buffer.byteLength(markup, 'utf-8'))
     expect(readPrototypeBase(workspaceRoot, 'checkout-flow')).toBe(markup)
   })
 
@@ -129,10 +169,10 @@ describe('readPrototypeBase', () => {
     }
   })
 
-  it('reads back what a capture wrote', () => {
+  it('reads back what was written', () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-read-base-2-'))
     try {
-      createPrototype(workspaceRoot, { name: 'Quotes' })
+      createPrototype(workspaceRoot, { name: 'Quotes', kind: 'scratch' })
       writePrototypeBase(workspaceRoot, 'quotes', '<html><body>quotes</body></html>')
       expect(readPrototypeBase(workspaceRoot, 'quotes')).toBe('<html><body>quotes</body></html>')
     } finally {

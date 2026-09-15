@@ -207,16 +207,20 @@ prototypes/checkout-flow/patches/A-002-flow-guard.js
 ### `prototype-export <slug>`
 Write the prototype's deliverables into `prototypes/{slug}/dist/`:
 
-- `prototype.html` — one self-contained file (css inlined into `<head>`, js inlined before `</body>`), so it runs standalone with no network and no workbench.
-- `dev-spec.md` — the change list: every patch in replay order, with its lane, kind and full content.
+- `dev-spec.md` — the change list: every patch in replay order, with its lane, kind and full content. Both kinds get this, and for an **overlay** it opens with `Applies to: <the address the changes belong to>`.
+- an HTML artifact, whose shape depends on the kind:
+  - **from-scratch** → `prototype.html`: one self-contained file (css inlined into `<head>`, js before `</body>`), so it runs standalone with no network and no workbench. It fails with a clear error when there is no `base.html` — there would be nothing to apply the patches to.
+  - **overlay** → `overlay-preview.html`: the carrier that puts the patches onto the live page, because nothing we write can *be* that page. It holds instructions, a **draggable bookmarklet** (the whole patch set as one `javascript:` URL), the same bundle as a console snippet, and the list of what will change. The recipient opens the target page and clicks the bookmark; no install, no server, and our app does not have to be running. It fails with a clear error when the prototype has no target page.
 
-The command prints a URL for the HTML. Each prototype is served from its own loopback HTTP origin — `http://<slug>-<hash>.localhost:<port>/…`, with the prototype's directory as that origin's root — rather than `file://`, which has an opaque origin: no cookie jar, no relative `fetch`/XHR (so the mock layer would never see a request) and no ES modules. Root-absolute paths (`/assets/app.css`) and SPA history routes therefore work. Verify the deliverable the same way you view anything else:
+  Two things to know before handing an overlay preview over. A page that sends `Content-Security-Policy: script-src 'self'` **refuses bookmarklets** — a bookmarklet is an inline script in the page's context, so the page's policy applies to it — which is why the console snippet is in the same file (the console is not subject to that policy). And a bookmark applies to the current document only: reloading clears it, one click brings it back, while moving between views of a single-page app replays it automatically.
+
+  The bundle travels inside one URL, so keep the patch set small and delete patches that no longer change anything. Patches are shipped unminified on purpose — the recipient is asked to run this on their own page, and being able to read it is what makes that reasonable.
+
+The command prints a URL for the HTML deliverable. Each prototype is served from its own loopback HTTP origin — `http://<slug>-<hash>.localhost:<port>/…`, with the prototype's directory as that origin's root — rather than `file://`, which has an opaque origin: no cookie jar, no relative `fetch`/XHR (so the mock layer would never see a request) and no ES modules. Root-absolute paths (`/assets/app.css`) and SPA history routes therefore work. Verify the deliverable the same way you view anything else:
 
 ```
 navigate http://checkout-flow-9f3a2b1c.localhost:9793/dist/prototype.html
 ```
-
-Exports fail with a clear error when the prototype has no `base.html` — there would be nothing to apply the patches to.
 
 ### `prototype-contract-compose <slug> [--service <svc>]`
 Compose the API contract fragments into one spec.
@@ -276,13 +280,16 @@ Read-only report on a prototype:
 ```
 Prototype "checkout-flow"
   dir:        /…/prototypes/checkout-flow
-  base.html:  present
+  kind:       overlay — patches on someone else's page; the page is the live target, never copied
+  target:     https://app.example.com/checkout
   patches:    3 (A: 2, B: 1)
   service checkout-api: 4 endpoints, 3 mocked, 2 fragments, 2 fixtures
   dist:       prototype.html, dev-spec.md, openapi.yaml, contract.md
   ownership:  1 violation(s)
     • patches/oops.css — misnamed patch — expected {lane}-{nnn}-{name}.{css|js}
 ```
+
+A **from-scratch** prototype prints `base.html: present|MISSING` instead of `target:`, and a target page with nothing recorded prints `target: none recorded — nothing to open`.
 
 **Ownership** is how parallel work stays safe here: every artifact path belongs to exactly one writer, and lanes never write each other's files. The check flags three things that are otherwise silent:
 
@@ -293,13 +300,16 @@ Prototype "checkout-flow"
 Declared lanes: `A` UI/interaction (patches), `B` service contract (`paths/`, `config.json`), `C` data (`fixtures/`), `D` verification (read-only). `base.html`, `services/*/openapi.yaml` and everything under `dist/` are control-plane outputs.
 
 ### `prototype-open <slug>`
-Open a prototype in the browser.
+Open a prototype in the browser, and replay its patches into what opens.
 
-Opens the prototype's **origin root**, which the workbench serves as `base.html` rendered with every patch applied — computed per request, so it is byte-identical to what `prototype-export` would write right now. That is why the address is not a file: pointing at `base.html` would show none of the patches, and pointing at a previously exported `dist/prototype.html` would show a document frozen at export time. Individual files stay openable by name (`/base.html`, `/dist/prototype.html`).
+What opens depends on the kind, which is the point of having kinds:
 
-When there is no `base.html` to render (deleted after exporting), the address falls back to the frozen deliverable. With neither file the command fails with both remedies named, rather than letting the browser show a confusing load error.
+- **overlay** — the live address recorded as its target page, with the patches injected into it. That page brings its own JavaScript, its own session and its own data; nothing is copied or frozen, because a copy could not run any of that and would only *look* like the page. Opening it and stopping there would show the target page rather than the prototype, so the replay is part of this command.
+- **from-scratch** — the prototype's **origin root**, which the workbench serves as `base.html` rendered with every patch applied, computed per request so it is byte-identical to what `prototype-export` would write right now. That is why the address is not a file: pointing at `base.html` would show none of the patches, and pointing at a previously exported `dist/prototype.html` would show a document frozen at export time. Individual files stay openable by name (`/base.html`, `/dist/prototype.html`).
 
-Starting from nothing needs no special command: write `prototypes/{slug}/base.html` (the agent's `Write` tool is allowed to), then run `prototype-open`.
+Nothing stands in for a page that does not exist: an overlay with no target page, or a from-scratch prototype with no `base.html`, fails with the remedy named rather than letting the browser show a confusing load error.
+
+Starting from nothing needs no special command: write `prototypes/{slug}/base.html` (the agent's `Write` tool is allowed to) or import another prototype's page, then run `prototype-open`.
 
 ### `focus [windowId]` / `windows`
 Manage and inspect browser window ownership and visibility.

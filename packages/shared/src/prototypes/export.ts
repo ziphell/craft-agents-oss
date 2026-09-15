@@ -2,7 +2,9 @@
  * Prototype export.
  *
  * Turns a prototype into role-shaped deliverables under `dist/`:
- *  - `prototype.html` — one self-contained file that runs standalone
+ *  - an HTML artifact that shows the prototype to a human, whose shape depends
+ *    on the kind — a from-scratch prototype's own page, or an overlay's preview
+ *    carrier that applies the patches to the live page (bookmarklet.ts)
  *  - `dev-spec.md`    — the change list a developer reads
  *
  * The inlined patch order is the same derived order used for live replay, so the
@@ -11,6 +13,8 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
+import { buildOverlayPreviewHtml } from './bookmarklet.ts'
+import { getPrototypeConfigPath, readPrototypeConfig } from './config.ts'
 import { buildPatchInitScript } from './patch-script.ts'
 import { getPrototypeDistPath, getPrototypeDirPath, scanPrototypePatches } from './storage.ts'
 import { prototypeDocumentUrl, prototypeOriginUrl } from './url.ts'
@@ -18,17 +22,20 @@ import type { PrototypePatch } from './types.ts'
 
 const BASE_FILENAME = 'base.html'
 const PROTOTYPE_FILENAME = 'prototype.html'
+const OVERLAY_PREVIEW_FILENAME = 'overlay-preview.html'
 const DEV_SPEC_FILENAME = 'dev-spec.md'
 
 export interface PrototypeExportResult {
   slug: string
-  /** Absolute path to the self-contained deliverable. */
-  htmlPath: string
   /**
-   * Address of the deliverable — open it with `browser_tool navigate`. An HTTP
-   * URL when the host serves prototypes (see url.ts), else `file://`.
+   * Absolute path to the HTML artifact, or null when there is none. What it is
+   * depends on the kind: a from-scratch prototype exports its own page, an
+   * overlay exports the carrier that puts its patches onto the live page (see
+   * bookmarklet.ts).
    */
-  htmlUrl: string
+  htmlPath: string | null
+  /** Address of the deliverable, or null when there is no HTML. */
+  htmlUrl: string | null
   /** Absolute path to the change spec. */
   specPath: string
   /** Number of patches inlined. */
@@ -144,10 +151,18 @@ function fenceFor(source: string): string {
 }
 
 /** Human-readable change list for the developer receiving the prototype. */
-export function buildDevSpec(slug: string, patches: PrototypePatch[]): string {
+export function buildDevSpec(
+  slug: string,
+  patches: PrototypePatch[],
+  options: { targetUrl?: string } = {},
+): string {
   const lines = [
     `# Prototype change spec — ${slug}`,
     '',
+    // For an overlay this line carries what the HTML deliverable used to: the
+    // changes belong to a page that lives elsewhere, and nothing else here says
+    // which page that is.
+    ...(options.targetUrl ? [`Applies to: ${options.targetUrl}`, ''] : []),
     `Derived from \`prototypes/${slug}/patches/\` — ${patches.length} patch${patches.length === 1 ? '' : 'es'} in replay order.`,
     'Each patch is an ordinary file; the listings below are exactly what the prototype applies.',
     '',
@@ -181,41 +196,67 @@ export function buildDevSpec(slug: string, patches: PrototypePatch[]): string {
   return lines.join('\n')
 }
 
-/** Where a prototype's page is. */
+/** Where a prototype's page is, and what showing it takes. */
 export interface PrototypeEntry {
-  /** Absolute path to the base page the address renders. */
-  path: string
   /**
-   * The prototype's **origin root**, always. That address is `base.html`
-   * rendered with every patch, computed per request — the prototype as it stands
-   * right now, and the same bytes an export would write this second.
+   * Absolute path to `base.html` for a from-scratch prototype; null for an
+   * overlay, whose page is an address and never a file.
    */
+  path: string | null
+  /** The address to open. */
   url: string
+  /**
+   * Whether the patches have to be replayed into the page after it loads.
+   *
+   * True for an overlay: its page is the live one, which knows nothing about the
+   * prototype until the patches land in it. False for a from-scratch prototype,
+   * whose page is rendered by the host from `base.html` + `patches/` on every
+   * request — it arrives with the patches already inlined.
+   */
+  injectPatches: boolean
 }
 
 /**
- * Resolve the address to open for a prototype.
+ * Resolve where a prototype is shown.
  *
- * There is exactly one answer when there is an answer at all: the origin root,
- * which the host renders from `base.html` + `patches/` on every request.
+ * The two kinds answer this differently, and the difference is the whole point of
+ * having kinds:
  *
- * The rules this replaces all pointed somewhere that was not the prototype:
- * preferring a previous `dist/prototype.html` opened a document frozen at export
- * time, and a bare `base.html` opened one with none of the patches applied. The
- * exported deliverable is still reachable *by name* for anyone who wants to look
- * at it, but it is never what "open this prototype" means — opening it would
- * hand back a page you cannot go on editing.
+ * - **overlay** — the page is the **live address** it was created against. That
+ *   page brings its own JavaScript, its own session and its own data; the
+ *   prototype is that page with patches replayed into it. Nothing is copied: a
+ *   frozen snapshot could not run the app's own JS and would carry no session,
+ *   so it would only *look* like the page being worked on. A `base.html` lying
+ *   around here (written by hand, or left by an older version) is not the page
+ *   and is not used.
+ * - **scratch** — the page is the host rendering `base.html` + `patches/`, since
+ *   the document is ours and there is no address to point at.
  *
- * @throws when there is no base page to render, or when this host has no server
- *   to render it on — a `file://` page would be the raw base with none of the
- *   patches, which is worse than saying so.
+ * `injectPatches` is the one thing the caller has to act on: for an overlay, the
+ * address is not yet "the prototype" until the replay happens.
+ *
+ * @throws when there is nothing to open: an overlay with no recorded target page,
+ *   a from-scratch prototype with no document, or a host that serves neither.
  */
 export function resolvePrototypeEntry(workspaceRootPath: string, slug: string): PrototypeEntry {
   const base = join(getPrototypeDirPath(workspaceRootPath, slug), BASE_FILENAME)
-  if (!existsSync(base)) {
+  const hasBase = existsSync(base)
+  const config = readPrototypeConfig(workspaceRootPath, slug)
+
+  if (config.kind === 'overlay') {
+    if (config.targetUrl) {
+      return { path: null, url: config.targetUrl, injectPatches: true }
+    }
+    throw new Error(
+      `Prototype "${slug}" is an overlay with no target page recorded, so there is no live page to open. ` +
+        `Set "targetUrl" in ${getPrototypeConfigPath(workspaceRootPath, slug)}, or make a new one against the address.`,
+    )
+  }
+
+  if (!hasBase) {
     throw new Error(
       `Prototype "${slug}" has no ${BASE_FILENAME}, so there is nothing to render. ` +
-        `Write ${base}, capture a real page as the base, or import another prototype's page.`,
+        `Write ${base}, or start it from another prototype's page with "prototype-import --from <slug>".`,
     )
   }
 
@@ -227,33 +268,61 @@ export function resolvePrototypeEntry(workspaceRootPath: string, slug: string): 
     )
   }
 
-  return { path: base, url: origin }
+  return { path: base, url: origin, injectPatches: false }
 }
 
 /**
  * Write the deliverables for a prototype.
  *
- * @throws when the prototype has no `base.html` — a prototype with nothing to
- *   apply patches to would otherwise export a meaningless file.
+ * What a deliverable *is* depends on the kind, which is the reason kinds exist:
+ *
+ * - **from-scratch** — the prototype is a document, so the deliverable is a
+ *   document: one self-contained HTML with the patches inlined.
+ * - **overlay** — the changes belong to a page that lives somewhere else, and
+ *   freezing that page into HTML would hand over something that cannot run its
+ *   own JS and carries none of the session it was written against: it *looks*
+ *   like the page. So the HTML deliverable is the carrier that puts the patches
+ *   onto the real page for a human (`overlay-preview.html`, see bookmarklet.ts),
+ *   and the change spec names the address the changes belong to.
+ *
+ * @throws for a from-scratch prototype with no `base.html` (there is no document
+ *   to hand over, and an empty one would be a lie), and for an overlay with no
+ *   target page (the preview has no page to apply itself to, and no address to
+ *   name).
  */
 export function exportPrototype(workspaceRootPath: string, slug: string): PrototypeExportResult {
-  const prototypeDir = getPrototypeDirPath(workspaceRootPath, slug)
-  const basePath = join(prototypeDir, BASE_FILENAME)
-  if (!existsSync(basePath)) {
-    throw new Error(`Prototype "${slug}" has no ${BASE_FILENAME}. Create ${basePath} first.`)
-  }
-
-  const baseHtml = readFileSync(basePath, 'utf-8')
+  const basePath = join(getPrototypeDirPath(workspaceRootPath, slug), BASE_FILENAME)
+  const config = readPrototypeConfig(workspaceRootPath, slug)
   const patches = scanPrototypePatches(workspaceRootPath, slug)
 
-  const distDir = getPrototypeDistPath(workspaceRootPath, slug)
-  mkdirSync(distDir, { recursive: true })
+  // Each kind validates the thing its own deliverable is built from, next to the
+  // use — so neither precondition can be checked and then quietly forgotten.
+  const htmlPath = join(
+    getPrototypeDistPath(workspaceRootPath, slug),
+    config.kind === 'overlay' ? OVERLAY_PREVIEW_FILENAME : PROTOTYPE_FILENAME,
+  )
+  let html: string
+  if (config.kind === 'overlay') {
+    const targetUrl = config.targetUrl
+    if (!targetUrl) {
+      throw new Error(
+        `Prototype "${slug}" is an overlay with no target page recorded, so its preview would have no page to ` +
+          `apply itself to. Set "targetUrl" in ${getPrototypeConfigPath(workspaceRootPath, slug)}.`,
+      )
+    }
+    html = buildOverlayPreviewHtml(slug, targetUrl, patches)
+  } else {
+    if (!existsSync(basePath)) {
+      throw new Error(`Prototype "${slug}" has no ${BASE_FILENAME}. Write ${basePath} first.`)
+    }
+    html = buildSelfContainedHtml(readFileSync(basePath, 'utf-8'), patches)
+  }
 
-  const htmlPath = join(distDir, PROTOTYPE_FILENAME)
-  writeFileSync(htmlPath, buildSelfContainedHtml(baseHtml, patches), 'utf-8')
+  mkdirSync(getPrototypeDistPath(workspaceRootPath, slug), { recursive: true })
+  writeFileSync(htmlPath, html, 'utf-8')
 
-  const specPath = join(distDir, DEV_SPEC_FILENAME)
-  writeFileSync(specPath, buildDevSpec(slug, patches), 'utf-8')
+  const specPath = join(getPrototypeDistPath(workspaceRootPath, slug), DEV_SPEC_FILENAME)
+  writeFileSync(specPath, buildDevSpec(slug, patches, { targetUrl: config.targetUrl }), 'utf-8')
 
   return {
     slug,

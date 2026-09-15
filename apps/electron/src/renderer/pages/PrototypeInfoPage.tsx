@@ -14,18 +14,15 @@
 import { useTranslation } from 'react-i18next'
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useAtomValue } from 'jotai'
-import { AppWindow, Camera, CopyPlus, Download, ExternalLink, FileCode, FlaskConical, FolderOpen, Link2, MessageSquare, RefreshCw, TriangleAlert, Unlink, Zap } from 'lucide-react'
-import { toast } from 'sonner'
+import { Download, ExternalLink, FileCode, FlaskConical, FolderOpen, Link2, MessageSquare, TriangleAlert, Unlink } from 'lucide-react'
 import { useActiveWorkspace, useAppShellContext } from '@/context/AppShellContext'
 import { navigate, routes } from '@/lib/navigate'
 import { sessionMetaMapAtom } from '@/atoms/sessions'
-import { activeBrowserInstanceIdAtom } from '@/atoms/browser-pane'
 import { Info_Page, Info_Section, Info_Table, Info_Alert } from '@/components/info'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { PrototypeSourceEditorDialog } from '@/components/prototypes/PrototypeSourceEditorDialog'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@craft-agent/ui'
-import type { ImportedPrototype, PrototypeEntry, PrototypeExportResult, PrototypeStatus } from '@craft-agent/shared/prototypes'
+import type { PrototypeEntry, PrototypeExportResult, PrototypeStatus } from '@craft-agent/shared/prototypes'
 
 interface PrototypeInfoPageProps {
   prototypeSlug: string
@@ -51,30 +48,13 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
   const [error, setError] = useState<string | null>(null)
   const [exporting, setExporting] = useState(false)
   const [exportResult, setExportResult] = useState<PrototypeExportResult | null>(null)
-  const [applying, setApplying] = useState(false)
-  const [capturing, setCapturing] = useState(false)
-  /** Capture is armed but waiting for the user to accept overwriting base.html. */
-  const [confirmingCapture, setConfirmingCapture] = useState(false)
   /** The "add a reference" form, which is hidden until it is asked for. */
   const [referenceFormOpen, setReferenceFormOpen] = useState(false)
   const [referenceName, setReferenceName] = useState('')
   const [referenceUrl, setReferenceUrl] = useState('')
   const [linkingReference, setLinkingReference] = useState(false)
-  /** The "import another prototype" picker, hidden until it is asked for. */
-  const [importPanelOpen, setImportPanelOpen] = useState(false)
-  const [importing, setImporting] = useState(false)
-  /** Source slug armed for an import that would overwrite this prototype's page. */
-  const [confirmingImport, setConfirmingImport] = useState<string | null>(null)
-  const [importResult, setImportResult] = useState<ImportedPrototype | null>(null)
-  /** Artifact open in the source editor — null when the editor is closed. */
-  const [editing, setEditing] = useState<{ path: string; name: string } | null>(null)
   /** Failure from Open or Export — both surface the throwing RPC's message verbatim. */
   const [actionError, setActionError] = useState<string | null>(null)
-
-  // Apply and Capture both act on the browser window the user is currently
-  // looking at: patches are injected into whatever page that window shows, and
-  // Capture reads the rendered document out of it.
-  const activeBrowserInstanceId = useAtomValue(activeBrowserInstanceIdAtom)
 
   // Load the status report for this prototype. `listPrototypes` is the only
   // read path for a single prototype's status, so pick our slug out of it.
@@ -119,24 +99,32 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
     }
   }, [workspaceId, loadStatus])
 
-  // Every "open this in a browser window" action is the same three steps, so
-  // they share one helper rather than three drifting copies.
-  const openInBrowserPane = useCallback(async (url: string) => {
+  // Every "open this in a browser window" action is the same steps, so they share
+  // one helper rather than several drifting copies.
+  //
+  // `injectPatches` is the overlay's extra step: its page is the live one, which
+  // knows nothing about the prototype until the patches are replayed into it —
+  // that replay is what turns the address into *this* prototype. A from-scratch
+  // page arrives with its patches already inlined by the host, so it needs none.
+  const openInBrowserPane = useCallback(async (url: string, options?: { injectPatchesFor?: string }) => {
     const instanceId = await window.electronAPI.browserPane.create({ show: true })
     await window.electronAPI.browserPane.navigate(instanceId, url)
+    if (options?.injectPatchesFor && workspaceId) {
+      await window.electronAPI.applyPrototype(workspaceId, instanceId, options.injectPatchesFor)
+    }
     await window.electronAPI.browserPane.focus(instanceId)
-  }, [])
+  }, [workspaceId])
 
-  // Open the prototype in a browser pane: its origin root, which the host renders
-  // from base.html with every patch applied. Never the exported deliverable — that
-  // is a snapshot of an earlier state, and the page here is the one you can go on
-  // editing. `getPrototypeEntry` throws when there is no base page to render.
+  // Where this prototype is shown — an overlay's live target page, or the host
+  // rendering a from-scratch document. `getPrototypeEntry` throws when there is
+  // nothing to open; the button is disabled in that case, so this only runs when
+  // there is something.
   const handleOpen = useCallback(async () => {
     if (!workspaceId) return
     setActionError(null)
     try {
       const entry = (await window.electronAPI.getPrototypeEntry(workspaceId, prototypeSlug)) as PrototypeEntry
-      await openInBrowserPane(entry.url)
+      await openInBrowserPane(entry.url, entry.injectPatches ? { injectPatchesFor: prototypeSlug } : undefined)
     } catch (err) {
       console.error('[PrototypeInfoPage] Failed to open prototype:', err)
       setActionError(err instanceof Error ? err.message : String(err))
@@ -160,109 +148,6 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
       setExporting(false)
     }
   }, [workspaceId, prototypeSlug, loadStatus])
-
-  // Inject this prototype's patches into the live page the user is looking at.
-  // On a page opened from here there is usually nothing to do — it arrives with
-  // its patches inlined — so say which case this was instead of reporting a bare
-  // "0 patches", which reads as a failure.
-  const handleApply = useCallback(async () => {
-    if (!workspaceId || !activeBrowserInstanceId) return
-    setApplying(true)
-    setActionError(null)
-    try {
-      const result = (await window.electronAPI.applyPrototype(
-        workspaceId,
-        activeBrowserInstanceId,
-        prototypeSlug,
-      )) as { applied: number; skipped: string[] }
-      if (result.applied > 0) {
-        toast.success(t('prototypeInfo.applySuccess', { applied: result.applied }))
-      } else if (result.skipped.length > 0) {
-        toast.success(t('prototypeInfo.applyAlreadyInlined', { skipped: result.skipped.length }))
-      } else {
-        toast.success(t('prototypeInfo.applyNoPatches'))
-      }
-    } catch (err) {
-      console.error('[PrototypeInfoPage] Failed to apply patches:', err)
-      setActionError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setApplying(false)
-    }
-  }, [workspaceId, activeBrowserInstanceId, prototypeSlug, t])
-
-  // Store the rendered page as base.html. Goes through the browser, so it works
-  // for client-rendered apps and authenticated sessions where a fetch would not.
-  const runCapture = useCallback(async () => {
-    if (!workspaceId || !activeBrowserInstanceId) return
-    setCapturing(true)
-    setConfirmingCapture(false)
-    setActionError(null)
-    try {
-      const result = (await window.electronAPI.capturePrototypeBase(
-        workspaceId,
-        activeBrowserInstanceId,
-        prototypeSlug,
-      )) as { bytes: number }
-      toast.success(t('prototypeInfo.captureSuccess', { bytes: result.bytes }))
-      await loadStatus(true)
-    } catch (err) {
-      console.error('[PrototypeInfoPage] Failed to capture base page:', err)
-      setActionError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setCapturing(false)
-    }
-  }, [workspaceId, activeBrowserInstanceId, prototypeSlug, t, loadStatus])
-
-  // Capture overwrites base.html outright. For an overlay that is the documented
-  // remedy (base.html is a snapshot, and re-capturing is how it is refreshed),
-  // but for a scratch the same file is the user's own document — seeding it from
-  // a page is fine, silently replacing edits is not. So the destructive case
-  // asks first; the sanctioned case does not.
-  const handleCapture = useCallback(() => {
-    if (!status) return
-    if (status.kind === 'scratch' && status.baseHtmlPresent) {
-      setConfirmingCapture(true)
-      return
-    }
-    void runCapture()
-  }, [status, runCapture])
-
-  // Take another prototype's page and patches as this one's starting point. The
-  // third way a base.html comes into existence, alongside writing and capturing.
-  const runImport = useCallback(async (sourceSlug: string) => {
-    if (!workspaceId) return
-    setImporting(true)
-    setConfirmingImport(null)
-    setActionError(null)
-    setImportResult(null)
-    try {
-      const result = (await window.electronAPI.importPrototype(
-        workspaceId,
-        prototypeSlug,
-        sourceSlug,
-      )) as ImportedPrototype
-      setImportResult(result)
-      setImportPanelOpen(false)
-      // base.html and patches/ both changed on disk — reflect it now rather than
-      // waiting for the watcher's debounce.
-      await loadStatus(true)
-    } catch (err) {
-      console.error('[PrototypeInfoPage] Failed to import a prototype:', err)
-      setActionError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setImporting(false)
-    }
-  }, [workspaceId, prototypeSlug, loadStatus])
-
-  // Same reasoning as Capture: an import replaces base.html outright, so it asks
-  // first when this prototype already has a page of its own.
-  const handleImport = useCallback((sourceSlug: string) => {
-    if (status?.baseHtmlPresent) {
-      setConfirmingImport(sourceSlug)
-      return
-    }
-    void runImport(sourceSlug)
-  }, [status?.baseHtmlPresent, runImport])
 
   // Conversations already bound to this prototype (any session bound to it, from
   // any entry point). `prototypeSlug` is on the persisted header, so this is a
@@ -299,39 +184,23 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
     }
   }, [workspaceId, prototypeSessions, onCreateSession, prototypeSlug])
 
-  // Open the recorded target page in a browser panel. This is the entry that was
-  // missing before kinds existed: an overlay prototype is *about* an external
-  // page, so "open my target" has to be one click, not a URL the user retypes.
-  const handleOpenTargetPage = useCallback(async () => {
-    if (!status?.targetUrl) return
-    setActionError(null)
-    try {
-      await openInBrowserPane(status.targetUrl)
-    } catch (err) {
-      console.error('[PrototypeInfoPage] Failed to open the target page:', err)
-      setActionError(err instanceof Error ? err.message : String(err))
-    }
-  }, [status?.targetUrl, openInBrowserPane])
-
-  // Open a reference *for study*. Its live page is the point (that is what you
-  // reverse-engineer), so prefer `targetUrl` and only fall back to its captured
-  // or exported document when no page was recorded.
+  // Open a reference for study. `getPrototypeEntry` already answers "where is this
+  // prototype shown" per kind — a live address for an overlay, the rendered
+  // document for a from-scratch one — so there is no separate rule here.
+  //
+  // No patches are injected: a reference is evidence, and its own changes must not
+  // land on the page you are studying.
   const handleOpenReference = useCallback(async (referenceSlug: string) => {
     if (!workspaceId) return
     setActionError(null)
     try {
-      const reference = allStatuses.find((item) => item.slug === referenceSlug)
-      if (reference?.targetUrl) {
-        await openInBrowserPane(reference.targetUrl)
-        return
-      }
       const entry = (await window.electronAPI.getPrototypeEntry(workspaceId, referenceSlug)) as PrototypeEntry
       await openInBrowserPane(entry.url)
     } catch (err) {
       console.error('[PrototypeInfoPage] Failed to open the reference:', err)
       setActionError(err instanceof Error ? err.message : String(err))
     }
-  }, [workspaceId, allStatuses, openInBrowserPane])
+  }, [workspaceId, openInBrowserPane])
 
   // Add a reference: create the prototype that will hold it, then link it.
   //
@@ -402,32 +271,6 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
     return allStatuses.filter((item) => item.slug !== prototypeSlug && !linked.has(item.slug))
   }, [allStatuses, prototypeSlug, status?.references])
 
-  /**
-   * Prototypes an import could take material from: any of them that has a page.
-   * A prototype whose only deliverable is an export is not a source — its HTML
-   * already has the patches inlined, so importing it would apply them twice.
-   */
-  const importCandidates = useMemo(
-    () => allStatuses.filter((item) => item.slug !== prototypeSlug && item.baseHtmlPresent),
-    [allStatuses, prototypeSlug],
-  )
-
-  // Open a browser window with nothing in it. Without this, a prototype whose
-  // page does not exist yet has no way forward from this screen at all: Apply and
-  // Capture both need a window to act on, and the only other thing that opens one
-  // ("open the target page") requires a recorded target URL — which an overlay
-  // created without one can never gain.
-  const handleOpenBrowserWindow = useCallback(async () => {
-    setActionError(null)
-    try {
-      const instanceId = await window.electronAPI.browserPane.create({ show: true })
-      await window.electronAPI.browserPane.focus(instanceId)
-    } catch (err) {
-      console.error('[PrototypeInfoPage] Failed to open a browser window:', err)
-      setActionError(err instanceof Error ? err.message : String(err))
-    }
-  }, [])
-
   const handleRevealFolder = useCallback(async () => {
     if (!status) return
     try {
@@ -457,122 +300,70 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
             }
           />
 
-          {/* Actions — Apply and Capture act on the browser window the user is viewing */}
+          {/* Three controls: look at the prototype, go where it gets built, and
+              everything else behind one menu. The nine flat buttons this replaces
+              were mostly variants of "open something", and three of them appeared
+              or vanished with the prototype's state — so the row reshuffled
+              between prototypes and had to be re-read every time. State-dependent
+              actions live in the menu now, which is a fixed list you can learn. */}
           <div className="flex flex-wrap items-center gap-2 pl-1">
-            {/* Primary action: the conversation is where the prototype gets built,
-                and a bound session stops every command needing a slug. */}
-            <Button size="sm" onClick={() => void handleOpenChat()}>
-              <MessageSquare className="h-3.5 w-3.5" />
-              {prototypeSessions.length > 0 ? t('prototypeInfo.openChat') : t('prototypeInfo.startChat')}
-            </Button>
-            {status.kind === 'overlay' && status.targetUrl && (
-              <Button size="sm" variant="outline" onClick={() => void handleOpenTargetPage()}>
-                <ExternalLink className="h-3.5 w-3.5" />
-                {t('prototypeInfo.openTargetPage')}
-              </Button>
-            )}
-            {/* The generic "give me a window" entry. Suppressed when the target
-                button above already provides one, so there are never two buttons
-                that both just open a window. */}
-            {!activeBrowserInstanceId && !(status.kind === 'overlay' && status.targetUrl) && (
-              <Button size="sm" variant="outline" onClick={() => void handleOpenBrowserWindow()}>
-                <AppWindow className="h-3.5 w-3.5" />
-                {t('prototypeInfo.openBrowserWindow')}
-              </Button>
-            )}
-            <Button size="sm" variant="outline" onClick={handleApply} disabled={applying || !activeBrowserInstanceId}>
-              <Zap className="h-3.5 w-3.5" />
-              {applying ? t('prototypeInfo.applying') : t('prototypeInfo.apply')}
-            </Button>
-            <Button size="sm" variant="outline" onClick={handleCapture} disabled={capturing || !activeBrowserInstanceId}>
-              <Camera className="h-3.5 w-3.5" />
-              {capturing ? t('prototypeInfo.capturing') : t('prototypeInfo.captureBase')}
-            </Button>
-            {/* Only a scratch can import: an overlay's base.html is defined as the
-                snapshot of its own target page, so replacing it with a copy of
-                some other document would make its metadata say something false.
-                An overlay's version of this action is Capture, right above. */}
-            {status.kind === 'scratch' && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setImportPanelOpen((open) => !open)}
-                disabled={importing || importCandidates.length === 0}
-                title={importCandidates.length === 0 ? t('prototypeInfo.importNoSources') : undefined}
-              >
-                <CopyPlus className="h-3.5 w-3.5" />
-                {importing ? t('prototypeInfo.importing') : t('prototypeInfo.importPrototype')}
-              </Button>
-            )}
             <Button
               size="sm"
-              variant="outline"
-              onClick={handleOpen}
-              // Nothing to open yet: offering the button would only produce an
-              // error message written for the agent. The alert below says what to
-              // do instead, and it is kind-aware (capture / write / import vs.
-              // capture the target page).
-              disabled={!status.baseHtmlPresent}
-              title={status.baseHtmlPresent ? undefined : t('prototypeInfo.baseHtmlMissing')}
+              onClick={() => void handleOpen()}
+              // Nothing to open yet: the button would only produce an error written
+              // for the agent. The alert below says what to do instead, and it is
+              // kind-aware (an overlay needs its address, a scratch needs a document).
+              disabled={!status.pageAvailable}
+              title={status.pageAvailable ? undefined : t('prototypeInfo.noPageYet')}
             >
               <ExternalLink className="h-3.5 w-3.5" />
               {t('prototypeInfo.open')}
             </Button>
+            {/* Where the prototype is actually built. A bound session means every
+                command stops needing a slug. */}
+            <Button size="sm" variant="outline" onClick={() => void handleOpenChat()}>
+              <MessageSquare className="h-3.5 w-3.5" />
+              {prototypeSessions.length > 0 ? t('prototypeInfo.openChat') : t('prototypeInfo.startChat')}
+            </Button>
+
+            {/* Export belongs in the row rather than behind a menu: with the
+                preparation actions gone there is nothing left to put in one, and
+                a menu holding a single item is just a click tax. */}
             <Button
               size="sm"
               variant="outline"
-              onClick={handleExport}
-              // Export reads base.html; without it the RPC throws a message that
-              // names a filesystem path, which is not something to show a user.
-              disabled={exporting || !status.baseHtmlPresent}
-              title={status.baseHtmlPresent ? undefined : t('prototypeInfo.baseHtmlMissing')}
+              onClick={() => void handleExport()}
+              // Export needs what its deliverable is built from, and that is the
+              // same condition as "is there a page": a from-scratch prototype's
+              // page is its document, an overlay's preview applies itself to its
+              // target page. One rule, so one field.
+              disabled={exporting || !status.pageAvailable}
+              title={status.pageAvailable ? undefined : t('prototypeInfo.noPageYet')}
             >
               <Download className="h-3.5 w-3.5" />
               {exporting ? t('prototypeInfo.exporting') : t('prototypeInfo.export')}
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => loadStatus()} disabled={loading}>
-              <RefreshCw className="h-3.5 w-3.5" />
-              {t('common.refresh')}
-            </Button>
           </div>
 
-          {!activeBrowserInstanceId && (
-            <p className="pl-1 text-xs text-muted-foreground">{t('prototypeInfo.needBrowser')}</p>
-          )}
+          {/* And that is the whole screen: look at it, change it, hand it over.
+              Opening a browser window, studying the target page, importing
+              another prototype, applying patches — every one of those is how the
+              *machinery* gets what it needs, not something a user wants to say.
+              They live in the conversation ("reference this page"), where the
+              agent can do them and explain what it did. One button per mechanism
+              is what made this page unreadable. */}
 
-          {/* The import picker: which prototype to take a page and patches from.
-              Same shape as "link an existing reference" — a row of what exists —
-              because both answer "which other prototype", with opposite effects:
-              a reference stays where it is, an import moves a copy in here. */}
-          {importPanelOpen && status.kind === 'scratch' && (
-            <div className="space-y-2 pl-1">
-              <div className="flex flex-wrap gap-2">
-                {importCandidates.map((candidate) => (
-                  <Button
-                    key={candidate.slug}
-                    size="sm"
-                    variant="outline"
-                    disabled={importing}
-                    onClick={() => handleImport(candidate.slug)}
-                  >
-                    {candidate.slug}
-                    <span className="ml-1 font-mono text-[10px] text-muted-foreground">{candidate.kind}</span>
-                  </Button>
-                ))}
-              </div>
-              <p className="text-xs text-muted-foreground">{t('prototypeInfo.importHint')}</p>
-            </div>
-          )}
 
-          {/* base.html is the precondition for export — say so loudly, and say
-              the right thing: an overlay captures it, a scratch authors it. */}
-          {!status.baseHtmlPresent && (
+          {/* No page to look at — say what to do about it, and say the right thing:
+              an overlay is missing an address, a from-scratch prototype is missing
+              its document. */}
+          {!status.pageAvailable && (
             <Info_Alert variant="warning" icon={<TriangleAlert className="h-4 w-4" />}>
-              <Info_Alert.Title>{t('prototypeInfo.baseHtmlMissing')}</Info_Alert.Title>
+              <Info_Alert.Title>{t('prototypeInfo.noPageYet')}</Info_Alert.Title>
               <Info_Alert.Description>
                 {status.kind === 'overlay'
-                  ? t('prototypeInfo.baseHtmlMissingHintOverlay')
-                  : t('prototypeInfo.baseHtmlMissingHintScratch')}
+                  ? t('prototypeInfo.noPageYetHintOverlay')
+                  : t('prototypeInfo.noPageYetHintScratch')}
               </Info_Alert.Description>
             </Info_Alert>
           )}
@@ -583,7 +374,14 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
                 {t('prototypeInfo.exportSuccess', { applied: exportResult.applied })}
               </Info_Alert.Title>
               <Info_Alert.Description>
-                <span className="font-mono text-xs break-all">{exportResult.htmlPath}</span>
+                {/* Both kinds export an HTML artifact and a spec — what the HTML
+                    *is* differs (the page itself, or the carrier that puts the
+                    patches onto someone else's page), so it is listed first. */}
+                {[exportResult.htmlPath, exportResult.specPath]
+                  .filter((file): file is string => Boolean(file))
+                  .map((file) => (
+                    <div key={file} className="font-mono text-xs break-all">{file}</div>
+                  ))}
               </Info_Alert.Description>
             </Info_Alert>
           )}
@@ -592,62 +390,6 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
             <Info_Alert variant="error" icon={<TriangleAlert className="h-4 w-4" />}>
               <Info_Alert.Title>{t('prototypeInfo.actionFailed')}</Info_Alert.Title>
               <Info_Alert.Description>{actionError}</Info_Alert.Description>
-            </Info_Alert>
-          )}
-
-          {/* An import reports two numbers, and the second one matters: patches
-              that were already here were left alone, so the two patch sets are
-              not merged. Saying only "imported" would hide that. */}
-          {importResult && (
-            <Info_Alert variant="success">
-              <Info_Alert.Title>
-                {t('prototypeInfo.importSuccess', {
-                  source: importResult.sourceSlug,
-                  patches: importResult.copiedPatches.length,
-                })}
-              </Info_Alert.Title>
-              {importResult.skippedPatches.length > 0 && (
-                <Info_Alert.Description>
-                  {t('prototypeInfo.importSkipped', {
-                    skipped: importResult.skippedPatches.length,
-                    files: importResult.skippedPatches.join(', '),
-                  })}
-                </Info_Alert.Description>
-              )}
-            </Info_Alert>
-          )}
-
-          {confirmingCapture && (
-            <Info_Alert variant="warning" icon={<TriangleAlert className="h-4 w-4" />}>
-              <Info_Alert.Title>{t('prototypeInfo.captureOverwriteTitle')}</Info_Alert.Title>
-              <Info_Alert.Description>
-                <div>{t('prototypeInfo.captureOverwriteHint')}</div>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <Button size="sm" variant="outline" onClick={() => void runCapture()} disabled={capturing}>
-                    {capturing ? t('prototypeInfo.capturing') : t('prototypeInfo.captureOverwriteConfirm')}
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => setConfirmingCapture(false)} disabled={capturing}>
-                    {t('common.cancel')}
-                  </Button>
-                </div>
-              </Info_Alert.Description>
-            </Info_Alert>
-          )}
-
-          {confirmingImport && (
-            <Info_Alert variant="warning" icon={<TriangleAlert className="h-4 w-4" />}>
-              <Info_Alert.Title>{t('prototypeInfo.importOverwriteTitle')}</Info_Alert.Title>
-              <Info_Alert.Description>
-                <div>{t('prototypeInfo.importOverwriteHint')}</div>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <Button size="sm" variant="outline" onClick={() => void runImport(confirmingImport)} disabled={importing}>
-                    {importing ? t('prototypeInfo.importing') : t('prototypeInfo.importOverwriteConfirm')}
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => setConfirmingImport(null)} disabled={importing}>
-                    {t('common.cancel')}
-                  </Button>
-                </div>
-              </Info_Alert.Description>
             </Info_Alert>
           )}
 
@@ -792,10 +534,8 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
             </Info_Table>
           </Info_Section>
 
-          {/* Artifacts — the files that actually make up the prototype, each
-              editable in place. This is the "edit the injected HTML" entry: the
-              write goes straight to disk, so an external editor sees the same
-              bytes and the watcher refreshes this page either way. */}
+          {/* Artifacts — what the prototype is made of. Listed so the shape is
+              visible; changes are asked for in the conversation, not typed here. */}
           <Info_Section title={t('prototypeInfo.files')}>
             {!status.baseHtmlPath && status.patches.files.length === 0 ? (
               <div className="px-4 py-6 text-sm text-muted-foreground">
@@ -807,11 +547,10 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
                   <ArtifactRow
                     path={status.baseHtmlPath}
                     label={t('prototypeInfo.baseHtml')}
-                    onOpen={setEditing}
                   />
                 )}
                 {status.patches.files.map((file) => (
-                  <ArtifactRow key={file} path={file} onOpen={setEditing} />
+                  <ArtifactRow key={file} path={file} />
                 ))}
               </ul>
             )}
@@ -940,15 +679,6 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
           </Info_Section>
         </Info_Page.Content>
       )}
-
-      <PrototypeSourceEditorDialog
-        path={editing?.path ?? null}
-        name={editing ? editing.name : ''}
-        onClose={() => setEditing(null)}
-        // The file on disk just changed, so re-read rather than trusting the
-        // stale patch list — and re-apply is still the user's explicit choice.
-        onSaved={() => loadStatus(true)}
-      />
     </Info_Page>
   )
 }
@@ -957,23 +687,22 @@ interface ArtifactRowProps {
   path: string
   /** Optional right-hand hint, e.g. which role the file plays. */
   label?: string
-  onOpen: (artifact: { path: string; name: string }) => void
 }
 
-/** One prototype artifact, opened in the source editor on click. */
-function ArtifactRow({ path, label, onOpen }: ArtifactRowProps) {
-  const name = basename(path)
+/**
+ * One prototype artifact — listed, never editable here.
+ *
+ * Editing files is not the workbench's job: a change is a sentence in the
+ * conversation ("make this button say X"), which the agent turns into the patch
+ * it wants. An in-place editor here made every glance at the file list a chance
+ * to hand-write one more patch by hand.
+ */
+function ArtifactRow({ path, label }: ArtifactRowProps) {
   return (
-    <li>
-      <button
-        type="button"
-        onClick={() => onOpen({ path, name })}
-        className="flex w-full items-center gap-3 px-4 py-2 text-left transition-colors hover:bg-foreground/[0.03]"
-      >
-        <FileCode className="h-3.5 w-3.5 shrink-0 text-foreground/40" />
-        <span className="flex-1 min-w-0 truncate font-mono text-xs">{name}</span>
-        {label && <span className="shrink-0 text-xs text-muted-foreground">{label}</span>}
-      </button>
+    <li className="flex items-center gap-3 px-4 py-2">
+      <FileCode className="h-3.5 w-3.5 shrink-0 text-foreground/40" />
+      <span className="flex-1 min-w-0 truncate font-mono text-xs">{basename(path)}</span>
+      {label && <span className="shrink-0 text-xs text-muted-foreground">{label}</span>}
     </li>
   )
 }

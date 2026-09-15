@@ -210,9 +210,11 @@ async function filePayload(path: string): Promise<Payload> {
  *
  * Nothing stands in for it. A previously exported `dist/prototype.html` stays
  * reachable *by name* for anyone who wants to look at the deliverable, but it is
- * a snapshot of an earlier state and not a page you can go on editing, so it is
- * never what the address means. A prototype with no base page therefore has no
- * page, and the server says so rather than serving something else.
+ * a stale copy from an earlier export and not a page you can go on editing, so it
+ * is never what the address means. A from-scratch prototype with no base page
+ * therefore has no page, and the server says so rather than serving something
+ * else. An overlay never reaches this function at all: its page is its own live
+ * address, not something this server renders.
  */
 function pagePayload(prototype: ServedPrototype): Payload | null {
   const base = readPrototypeBase(prototype.workspaceRootPath, prototype.slug)
@@ -270,8 +272,8 @@ async function serve(request: IncomingMessage, response: ServerResponse): Promis
   response.writeHead(200, {
     'content-type': payload.contentType,
     'content-length': payload.body.byteLength,
-    // Prototypes are edited and re-captured constantly; a cached base.html would
-    // show the previous capture with no hint that it is stale.
+    // The document and its patches are edited constantly; a cached page would
+    // show an earlier state with no hint that it is stale.
     'cache-control': 'no-store',
     // The document is ours, but it may embed third-party snapshots; keep it from
     // claiming the privileges of the app shell.

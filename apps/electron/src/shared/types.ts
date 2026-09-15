@@ -499,8 +499,6 @@ export interface ElectronAPI {
   ): Promise<unknown>
   /** Replay a prototype's patches into a live browser instance. */
   applyPrototype(workspaceId: string, instanceId: string, slug: string): Promise<unknown>
-  /** Replace `base.html` with the rendered document of a live page. */
-  capturePrototypeBase(workspaceId: string, instanceId: string, slug: string): Promise<unknown>
   /**
    * Declare that `slug` is studied from `referenceSlug` (plan §14). The two stay
    * separate projects: that is what keeps the reference's patches out of this

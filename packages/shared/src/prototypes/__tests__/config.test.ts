@@ -25,10 +25,11 @@ describe('readPrototypeConfig', () => {
     rmSync(workspaceRoot, { recursive: true, force: true })
   })
 
-  it('falls back to overlay when the prototype has no config', () => {
+  it('falls back to the default kind when the prototype has no config', () => {
     workspaceRoot = makePrototype()
-    // Every prototype created before kinds existed was built around capturing a
-    // real page, so overlay is the honest default rather than a guess.
+    // The default is the kind that owns its own document, so a prototype whose
+    // kind we cannot read still has a way forward: write base.html, or import one.
+    // An overlay assumed here would have no address and no way to get one.
     expect(readPrototypeConfig(workspaceRoot, SLUG)).toEqual({ kind: DEFAULT_PROTOTYPE_KIND })
   })
 
@@ -43,13 +44,13 @@ describe('readPrototypeConfig', () => {
 
   // This file can be edited by hand or by another process, so a broken one is
   // expected rather than exceptional — it must not make the prototype unusable.
-  it('falls back to overlay on malformed JSON instead of throwing', () => {
+  it('falls back to the default kind on malformed JSON instead of throwing', () => {
     workspaceRoot = makePrototype()
     writeFileSync(getPrototypeConfigPath(workspaceRoot, SLUG), '{ not json', 'utf-8')
     expect(readPrototypeConfig(workspaceRoot, SLUG)).toEqual({ kind: DEFAULT_PROTOTYPE_KIND })
   })
 
-  it('falls back to overlay on an unknown kind', () => {
+  it('falls back to the default kind on an unknown kind', () => {
     workspaceRoot = makePrototype()
     writeFileSync(getPrototypeConfigPath(workspaceRoot, SLUG), JSON.stringify({ kind: 'nonsense' }), 'utf-8')
     expect(readPrototypeConfig(workspaceRoot, SLUG)).toEqual({ kind: DEFAULT_PROTOTYPE_KIND })
@@ -117,6 +118,9 @@ describe('writePrototypeConfig', () => {
     expect(readPrototypeConfig(workspaceRoot, SLUG)).toEqual({ kind: 'scratch' })
   })
 
+  // This writer normalises; it does not police. Whether an overlay is *allowed*
+  // to be missing its address is createPrototype's rule, because creation is the
+  // only moment the address can still be asked for.
   it('omits a blank targetUrl rather than storing whitespace', () => {
     workspaceRoot = makePrototype()
     writePrototypeConfig(workspaceRoot, SLUG, { kind: 'overlay', targetUrl: '   ' })

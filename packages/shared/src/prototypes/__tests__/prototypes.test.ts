@@ -120,4 +120,20 @@ describe('buildPatchInitScript', () => {
     const script = buildPatchInitScript({ ...cssPatch, source: '.a{} /* trailing' })
     expect(() => new Function(script)).not.toThrow()
   })
+
+  /**
+   * These scripts get concatenated — into one `<script>` in the self-contained
+   * page, into one bundle for the overlay preview. Two js patches in a row used
+   * to parse as a call chain on the first patch's *result*, so the first ran and
+   * everything after it silently did not.
+   */
+  it('terminates itself, so two scripts in a row both run', () => {
+    const patch = (file: string) =>
+      buildPatchInitScript({ ...cssPatch, file, kind: 'js', source: 'state.value += 1;' })
+
+    const state = { value: 0 }
+    new Function('state', `${patch('A-001-one.js')}\n${patch('A-002-two.js')}`)(state)
+
+    expect(state.value).toBe(2)
+  })
 })

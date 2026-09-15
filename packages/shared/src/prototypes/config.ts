@@ -5,13 +5,13 @@
  * There are two kinds, and they are different in substance rather than in
  * labelling (see docs/prototype-workbench-plan.md §1):
  *
- * - **`overlay`** — we inject patches into *someone else's* page. The page keeps
- *   existing on its own; our patches are an overlay that never flows back into
- *   that source. It therefore needs a `targetUrl` so the page can be reopened and
- *   re-captured later.
- * - **`scratch`** — `base.html` is ours. It may be written from scratch or seeded
- *   by capturing a page we studied (plan §14); either way the whole document is
- *   editable and there is nothing to keep in sync afterwards.
+ * - **`overlay`** — we inject patches into *someone else's* page. That page is
+ *   never copied: it *is* the live address, with its own JavaScript and its own
+ *   session, and our patches are replayed into it. It therefore needs a
+ *   `targetUrl` — the address to open and work against.
+ * - **`scratch`** — `base.html` is ours. It is written by hand or imported from
+ *   another prototype (plan §14); either way the whole document is editable and
+ *   there is nothing to keep in sync afterwards.
  *
  * Stored in `config.json`, written **only** by the control plane. This does not
  * conflict with the "no shared index file" rule (see storage.ts): that rule
@@ -43,12 +43,18 @@ export interface PrototypeConfig {
 export const PROTOTYPE_CONFIG_FILENAME = 'config.json'
 
 /**
- * What a prototype is assumed to be when it has no config (or an unreadable one).
+ * What a prototype is when the caller does not say — both the kind
+ * {@link createPrototype} falls back to, and what a missing or unreadable
+ * `config.json` is assumed to mean.
  *
- * `overlay` is the honest default: every prototype created before kinds existed
- * was built around capturing a real page.
+ * `scratch` is the default because it is the only kind that can never be
+ * stillborn: it owns its document, so every state has a way forward (write
+ * `base.html`, or import another prototype's page). An `overlay` without an
+ * address has no page to open, no page to export against, and — since the kind
+ * cannot be changed afterwards — no way out at all. Something with no way out
+ * must be asked for, never assumed.
  */
-export const DEFAULT_PROTOTYPE_KIND: PrototypeKind = 'overlay'
+export const DEFAULT_PROTOTYPE_KIND: PrototypeKind = 'scratch'
 
 /** Absolute path to a prototype's `config.json`. */
 export function getPrototypeConfigPath(workspaceRootPath: string, slug: string): string {

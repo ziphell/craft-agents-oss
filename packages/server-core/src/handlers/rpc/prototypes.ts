@@ -14,12 +14,11 @@ import { watch } from 'fs'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import { ensureWorkspacePrototypesPath } from '@craft-agent/shared/workspaces'
-import { exportPrototype, createPrototype, importPrototype, linkPrototypeReference, listPrototypeStatuses, resolvePrototypeEntry, unlinkPrototypeReference, writePrototypeBase } from '@craft-agent/shared/prototypes'
+import { exportPrototype, createPrototype, importPrototype, linkPrototypeReference, listPrototypeStatuses, resolvePrototypeEntry, unlinkPrototypeReference } from '@craft-agent/shared/prototypes'
 import type { PrototypeKind } from '@craft-agent/shared/prototypes'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import {
   applyPrototypeToBrowser,
-  captureRenderedDocument,
 } from '../../domain/apply-prototype'
 import type { HandlerDeps } from '../handler-deps'
 
@@ -31,7 +30,6 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.prototypes.EXPORT,
   RPC_CHANNELS.prototypes.CREATE,
   RPC_CHANNELS.prototypes.APPLY,
-  RPC_CHANNELS.prototypes.CAPTURE,
   RPC_CHANNELS.prototypes.LINK_REFERENCE,
   RPC_CHANNELS.prototypes.UNLINK_REFERENCE,
   RPC_CHANNELS.prototypes.IMPORT,
@@ -76,10 +74,12 @@ export function registerPrototypesHandlers(server: RpcServer, deps: HandlerDeps)
     return listPrototypeStatuses(workspace.rootPath)
   })
 
-  // Resolve what to open: the prototype's origin, which the host renders from
-  // base.html with every patch. Never the exported deliverable — that is a
-  // snapshot of an earlier state and not a page you can go on editing. Throws
-  // with the ways to get a base page named when there is none, so the panel
+  // Resolve what to open. Two kinds, two answers: an overlay opens the live
+  // address it was made against and needs its patches injected into that page,
+  // a from-scratch prototype opens the host rendering its own base.html with
+  // every patch already inlined. Never the exported deliverable — that is a
+  // stale copy from an earlier export, not a page you can go on editing. Throws
+  // with what is missing named when there is nothing to open, so the panel
   // surfaces that message instead of a failed page load.
   server.handle(RPC_CHANNELS.prototypes.ENTRY, async (_ctx, workspaceId: string, slug: string) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
@@ -130,24 +130,6 @@ export function registerPrototypesHandlers(server: RpcServer, deps: HandlerDeps)
       )
       log.info(`PROTOTYPES_APPLY: ${slug} → ${result.applied} patch(es) into ${instanceId}`)
       return result
-    },
-  )
-
-  // Replace base.html with the rendered document of a live page. Going through
-  // the browser (rather than fetching the URL) is what makes this work for
-  // client-rendered apps and authenticated sessions.
-  server.handle(
-    RPC_CHANNELS.prototypes.CAPTURE,
-    async (_ctx, workspaceId: string, instanceId: string, slug: string) => {
-      const workspace = getWorkspaceByNameOrId(workspaceId)
-      if (!workspace) throw new Error(`PROTOTYPES_CAPTURE: Workspace not found: ${workspaceId}`)
-      if (!deps.browserPaneManager) {
-        throw new Error('PROTOTYPES_CAPTURE: this host has no browser pane manager.')
-      }
-      const markup = await captureRenderedDocument(deps.browserPaneManager, instanceId)
-      const captured = writePrototypeBase(workspace.rootPath, slug, markup)
-      log.info(`PROTOTYPES_CAPTURE: ${slug} ← ${captured.bytes} bytes from ${instanceId}`)
-      return captured
     },
   )
 

@@ -122,8 +122,6 @@ export const RPC_CHANNELS = {
     CREATE: 'prototypes:create',
     /** Replay a prototype's patches into a live browser instance. */
     APPLY: 'prototypes:apply',
-    /** Replace `base.html` with the rendered document of a live page. */
-    CAPTURE: 'prototypes:capture',
     /** Declare that a prototype is studied from another one (plan §14). */
     LINK_REFERENCE: 'prototypes:linkReference',
     /** Drop that relation. Idempotent, and the way a dangling reference is cleaned up. */
@@ -133,6 +131,12 @@ export const RPC_CHANNELS = {
      * from a reference: this one *does* move material, into a `scratch` target.
      */
     IMPORT: 'prototypes:import',
+    /**
+     * Point an overlay at the same page in another environment. The address is a
+     * fact about where the page is, not a rule of the kind, so it is changeable —
+     * see target.ts for what goes stale with it.
+     */
+    SET_TARGET: 'prototypes:setTarget',
   },
   debug: {
     LOG: 'debug:log',

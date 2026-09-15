@@ -14,6 +14,9 @@ import {
   isPrototypeLane,
   listPrototypeStatuses,
   resolvePrototypeOwnership,
+  resolvePrototypeEntry,
+  setPrototypeBaseUrlResolver,
+  writePrototypeConfig,
 } from '..'
 import { getWorkspacePrototypesPath } from '../../workspaces/storage'
 
@@ -200,6 +203,8 @@ describe('buildPrototypeStatus', () => {
   })
 
   afterEach(() => {
+    // The resolver is process-global; one of the tests below installs it.
+    setPrototypeBaseUrlResolver(null)
     rmSync(workspaceRoot, { recursive: true, force: true })
   })
 
@@ -240,24 +245,61 @@ describe('buildPrototypeStatus', () => {
   })
 
   /**
-   * `baseHtmlPresent` is what lets the UI offer Open only when it can work: the
-   * entry renders `base.html`, so without one there is nothing to render — an
-   * exported deliverable is a snapshot of an earlier state, not a page.
+   * `pageAvailable` is what lets the UI offer Open only when it can work, and it
+   * is *not* `baseHtmlPresent`: the two kinds get their page from different places.
+   * An overlay opens the live address it was made against and needs no file at
+   * all — which is the whole reason a captured copy of that page was dropped;
+   * a from-scratch prototype opens the host's rendering of its own document.
    */
-  it('needs a base page — an exported deliverable does not count as one', () => {
-    const slug = 'empty'
+  it('counts an overlay with a target page as openable, without any file', () => {
+    const slug = 'overlay-no-file'
     mkdirSync(getPrototypeDirPath(workspaceRoot, slug), { recursive: true })
+    writePrototypeConfig(workspaceRoot, slug, { kind: 'overlay', targetUrl: 'https://app.example.com/checkout' })
 
-    expect(buildPrototypeStatus(workspaceRoot, slug).baseHtmlPresent).toBe(false)
+    const status = buildPrototypeStatus(workspaceRoot, slug)
 
-    const distDir = getPrototypeDistPath(workspaceRoot, slug)
-    mkdirSync(distDir, { recursive: true })
-    writeFileSync(join(distDir, 'prototype.html'), '<!doctype html><html></html>', 'utf-8')
+    expect(status.pageAvailable).toBe(true)
+    expect(status.baseHtmlPresent).toBe(false)
 
-    expect(buildPrototypeStatus(workspaceRoot, slug).baseHtmlPresent).toBe(false)
+    // An overlay with nothing to point at has nothing to open — and that is a
+    // state worth naming, since the address cannot be guessed.
+    writePrototypeConfig(workspaceRoot, slug, { kind: 'overlay' })
+    expect(buildPrototypeStatus(workspaceRoot, slug).pageAvailable).toBe(false)
+  })
 
-    writeFileSync(join(getPrototypeDirPath(workspaceRoot, slug), 'base.html'), '<!doctype html><html></html>', 'utf-8')
+  /**
+   * `pageAvailable` and `resolvePrototypeEntry` state one rule in two places: what
+   * the UI offers to open has to be exactly what the open path can produce. This
+   * walks every combination so they cannot drift apart silently.
+   */
+  it('agrees with resolvePrototypeEntry about what can be opened', () => {
+    setPrototypeBaseUrlResolver(() => 'http://case-abc123ab.localhost:41234')
 
-    expect(buildPrototypeStatus(workspaceRoot, slug).baseHtmlPresent).toBe(true)
+    const cases = [
+      { kind: 'overlay' as const, targetUrl: 'https://app.example.com/checkout', base: false },
+      { kind: 'overlay' as const, targetUrl: 'https://app.example.com/checkout', base: true },
+      { kind: 'overlay' as const, targetUrl: undefined, base: true },
+      { kind: 'overlay' as const, targetUrl: undefined, base: false },
+      { kind: 'scratch' as const, targetUrl: undefined, base: true },
+      { kind: 'scratch' as const, targetUrl: undefined, base: false },
+    ]
+
+    for (const scenario of cases) {
+      const slug = `${scenario.kind}-${scenario.targetUrl ? 'url' : 'nourl'}-${scenario.base ? 'base' : 'nobase'}`
+      mkdirSync(getPrototypeDirPath(workspaceRoot, slug), { recursive: true })
+      writePrototypeConfig(workspaceRoot, slug, { kind: scenario.kind, targetUrl: scenario.targetUrl })
+      if (scenario.base) {
+        writeFileSync(join(getPrototypeDirPath(workspaceRoot, slug), 'base.html'), '<!doctype html><html></html>', 'utf-8')
+      }
+
+      let openable = true
+      try {
+        resolvePrototypeEntry(workspaceRoot, slug)
+      } catch {
+        openable = false
+      }
+
+      expect(`${slug}: ${buildPrototypeStatus(workspaceRoot, slug).pageAvailable}`).toBe(`${slug}: ${openable}`)
+    }
   })
 })

@@ -89,15 +89,15 @@ describe('importPrototype', () => {
 
   // Material, not identity: the target is still the prototype it was created as.
   it('does not carry the source prototype over — only its files', () => {
-    createPrototype(workspaceRoot, { name: 'rival-cart', kind: 'overlay', targetUrl: 'https://rival.example.com/cart' })
-    writePrototypeBase(workspaceRoot, 'rival-cart', PAGE)
+    const source = makeSource()
     createPrototype(workspaceRoot, { name: 'Checkout', kind: 'scratch' })
 
-    importPrototype(workspaceRoot, 'checkout', 'rival-cart')
+    importPrototype(workspaceRoot, 'checkout', source)
 
     const config = readPrototypeConfig(workspaceRoot, 'checkout')
     expect(config.kind).toBe('scratch')
     expect(config.targetUrl).toBeUndefined()
+    expect(config.references ?? []).toEqual([])
   })
 
   // Only replayable files are part of a prototype; the rest are reported as
@@ -114,7 +114,9 @@ describe('importPrototype', () => {
     expect(readdirSync(getPrototypePatchesPath(workspaceRoot, 'checkout'))).toEqual(['A-001-heading.css'])
   })
 
-  it('refuses an overlay as the target, because its base is its own snapshot', () => {
+  // An overlay's page is the live address it was created against — there is no
+  // document here to replace, so the answer is no rather than a silent no-op.
+  it('refuses an overlay as the target, which has no document to replace', () => {
     const source = makeSource()
     writePatch(workspaceRoot, source, 'A-001-heading.css')
     createPrototype(workspaceRoot, { name: 'Rival', kind: 'overlay', targetUrl: 'https://rival.example.com/cart' })

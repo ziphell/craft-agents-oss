@@ -204,7 +204,6 @@ const EXPECTED_CHANNELS: string[] = [
   'projects:update',
   'projects:uploadAsset',
   'prototypes:apply',
-  'prototypes:capture',
   'prototypes:changed',
   'prototypes:create',
   'prototypes:entry',

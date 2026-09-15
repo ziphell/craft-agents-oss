@@ -138,7 +138,6 @@ import { FabNewChat } from "./FabNewChat"
 import { SendToWorkspaceDialog } from "./SendToWorkspaceDialog"
 import { CreateProjectDialog } from "../projects/CreateProjectDialog"
 import { CreatePrototypeDialog, type CreatePrototypeValues } from "../prototypes/CreatePrototypeDialog"
-import { ElementEditorDialog } from "../prototypes/ElementEditorDialog"
 import { useBrowserToolbarActions, type EditElementRequest } from "@/hooks/useBrowserToolbarActions"
 import { MessagingDialogHost } from "@/components/messaging/MessagingDialogHost"
 import { EditPopover, getEditConfig, type EditContextKey } from "@/components/ui/EditPopover"
@@ -533,6 +532,7 @@ function AppShellContent({
     onOpenSettings,
     onOpenKeyboardShortcuts,
     onOpenStoredUserPreferences,
+    onInputChange,
     onReset,
     onSendMessage,
     openNewChat,
@@ -942,14 +942,38 @@ function AppShellContent({
   const { projects } = useProjects(activeWorkspaceId)
   const { prototypes } = usePrototypes(activeWorkspaceId)
 
-  // Element picked in a browser panel's edit mode. The panel has no workspace
-  // context, so it forwards the pick here and this decides what it means.
-  const [elementEdit, setElementEdit] = useState<EditElementRequest | null>(null)
-  const elementEditPrototype = useMemo(
-    () => (elementEdit ? prototypes.find((p) => p.slug === elementEdit.slug) ?? null : null),
-    [elementEdit, prototypes],
-  )
-  useBrowserToolbarActions({ workspaceId: activeWorkspaceId, onEditElement: setElementEdit })
+  /**
+   * A picked element goes straight into the conversation.
+   *
+   * The panel's edit mode answers *which* element; the message says what should
+   * change, and the agent writes the patch. There is deliberately nothing in
+   * between — an editor card here meant one hand-written patch per pick, and the
+   * point of this workbench is that changes are described rather than typed
+   * straight into the DOM.
+   *
+   * The panel has no workspace or session context, so it forwards the pick here
+   * and this decides what it means.
+   */
+  const handleElementPicked = useCallback((request: EditElementRequest) => {
+    if (!request.sessionId) {
+      toast.error(t('browserEdit.noSession'))
+      return
+    }
+
+    const prompt = t('browserEdit.promptTemplate', {
+      selector: request.element.selector,
+      text: request.element.text,
+    })
+
+    // Write the draft (read on mount) *and* dispatch (applies immediately when
+    // the session is already open), then navigate — one of the two always lands.
+    onInputChange(request.sessionId, prompt)
+    window.dispatchEvent(new CustomEvent('craft:restore-input', {
+      detail: { sessionId: request.sessionId, text: prompt },
+    }))
+    navigate(routes.view.allSessions(request.sessionId))
+  }, [onInputChange, t])
+  useBrowserToolbarActions({ workspaceId: activeWorkspaceId, onEditElement: handleElementPicked })
   const projectMenuOptions = useMemo(
     () => projects.map(p => ({ id: p.config.id, slug: p.config.slug, name: p.config.name, color: p.config.color })),
     [projects],
@@ -3964,15 +3988,6 @@ function AppShellContent({
         open={createPrototypeDialogOpen}
         onCancel={() => setCreatePrototypeDialogOpen(false)}
         onSubmit={handleCreatePrototypeSubmit}
-      />
-
-      {/* Element picked in a browser panel — edit it as text, or hand it to the
-          session when the change needs reasoning rather than substitution. */}
-      <ElementEditorDialog
-        request={elementEdit}
-        prototype={elementEditPrototype}
-        workspaceId={activeWorkspaceId}
-        onClose={() => setElementEdit(null)}
       />
 
       {/* Messaging dialogs (pairing-code + WA connect) — driven by messagingDialogAtom.

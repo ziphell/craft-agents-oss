@@ -20,6 +20,8 @@ import {
   resolvePrototypeEntry,
   listPrototypeStatuses,
   createPrototype as createNewPrototype,
+  importPrototype as importIntoPrototype,
+  setPrototypeTargetUrl,
   linkPrototypeReference as linkReference,
   unlinkPrototypeReference as unlinkReference,
 } from '@craft-agent/shared/prototypes'
@@ -3909,6 +3911,26 @@ export class SessionManager implements ISessionManager {
             clearPrototype: async (prototypeSlug) => {
               const instanceId = await resolveSessionBrowserInstance('browser_prototype_clear')
               return clearPrototypeFromBrowser(bpm, instanceId, prototypeSlug)
+            },
+            /**
+             * Copy another prototype's page + patches in. File work only — no window.
+             *
+             * There is no counterpart for "capture a live page": for an overlay the
+             * live page *is* the base (patches are injected into it), and for a
+             * from-scratch prototype the document is written. Freezing a rendered
+             * page into a file produced something that could not run its own JS and
+             * carried no session — a base that only looks like the page.
+             */
+            importPrototype: async (prototypeSlug, sourceSlug) => {
+              return importIntoPrototype(managed.workspace.rootPath, prototypeSlug, sourceSlug)
+            },
+            // File work only, and deliberately no confirmation step: the address is
+            // not a rule, it is a fact about where the page is (the same page lives
+            // in a dev, a staging and a production environment). What *is* worth
+            // saying — that open windows keep the old page and that selectors were
+            // written against the old DOM — is said by the command that calls this.
+            setPrototypeTarget: async (prototypeSlug, targetUrl) => {
+              return setPrototypeTargetUrl(managed.workspace.rootPath, prototypeSlug, targetUrl)
             },
             // Pure file export — deliberately does not resolve a browser instance.
             exportPrototype: async (prototypeSlug) => {

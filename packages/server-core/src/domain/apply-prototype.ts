@@ -98,21 +98,3 @@ export async function clearPrototypeFromBrowser(
   const removed = await bpm.clearInitScripts(instanceId, `prototype:${slug}:`)
   return { slug, removed }
 }
-
-/**
- * Read the *rendered* document out of a live page, for use as a prototype base.
- *
- * This has to go through the browser rather than fetching the URL: a
- * client-rendered app serves an empty shell over HTTP, so a fetch captures
- * nothing, and it would also miss any authenticated state.
- */
-export async function captureRenderedDocument(
-  bpm: IBrowserPaneManager,
-  instanceId: string,
-): Promise<string> {
-  const markup = await bpm.evaluate(instanceId, 'document.documentElement.outerHTML')
-  if (typeof markup !== 'string' || markup.trim().length === 0) {
-    throw new Error('Capture failed: the page returned no markup.')
-  }
-  return markup
-}

@@ -21,6 +21,15 @@ export function buildPatchStyleElementId(patch: PrototypePatch): string {
  *   falls back to retrying on `DOMContentLoaded`.
  * - **js** is wrapped in an IIFE with a `try`/`catch` so one broken patch cannot
  *   abort the rest of the replay.
+ *
+ * The result is a **statement, terminated with `;`** — not an expression. It gets
+ * concatenated: two patches end up as consecutive lines inside one `<script>`
+ * (the self-contained page) or one bundle (the overlay preview). Without the
+ * terminator, `…})()\n(() => {…})()` parses as a *call chain* on the first
+ * patch's result, and since that result is undefined the whole block throws
+ * before the second patch ever runs — a failure that only appears once there are
+ * two js patches, which is why the terminator is here rather than at each call
+ * site.
  */
 export function buildPatchInitScript(patch: PrototypePatch): string {
   if (patch.kind === 'css') {
@@ -37,7 +46,7 @@ export function buildPatchInitScript(patch: PrototypePatch): string {
       '    return true;',
       '  };',
       "  if (!apply()) document.addEventListener('DOMContentLoaded', apply, { once: true });",
-      '})()',
+      '})();',
     ].join('\n')
   }
 
@@ -50,6 +59,6 @@ export function buildPatchInitScript(patch: PrototypePatch): string {
     '  } catch (err) {',
     `    console.error(${JSON.stringify(`[prototype patch ${patch.file}]`)}, err);`,
     '  }',
-    '})()',
+    '})();',
   ].join('\n')
 }

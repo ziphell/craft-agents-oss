@@ -44,16 +44,23 @@ export interface PrototypeStatus {
    */
   references: string[]
   /**
-   * Whether the prototype has a base page to render. This is the one thing that
-   * decides if Open can work (see `resolvePrototypeEntry`), so callers *offer*
-   * actions from it rather than discovering the failure after the fact — a
-   * prototype without one gets a disabled button and its guidance, instead of an
-   * error written for the agent.
-   *
-   * An exported deliverable does not count: it is a snapshot of an earlier state,
-   * not a page you can go on editing.
+   * Whether a `base.html` exists on disk. It is the page for a from-scratch
+   * prototype, and by design absent for an overlay, whose page is a live
+   * address. For "is there something to open", use {@link pageAvailable}.
    */
   baseHtmlPresent: boolean
+  /**
+   * Whether there is a page to open — the same condition `resolvePrototypeEntry`
+   * enforces, and deliberately not just `baseHtmlPresent`.
+   *
+   * The two kinds get their page from different places, so "is there something to
+   * open" is not one question: an overlay's page is the live address it was
+   * created against (it needs no file at all), while a from-scratch prototype's
+   * page is its own `base.html` rendered by the host. Two statements of one rule
+   * can drift, so a test asserts this agrees with `resolvePrototypeEntry` for
+   * every combination.
+   */
+  pageAvailable: boolean
   /** Absolute path to `base.html`, or null when the prototype has none. */
   baseHtmlPath: string | null
   patches: {
@@ -147,6 +154,7 @@ export function buildPrototypeStatus(workspaceRootPath: string, slug: string): P
     ...(config.targetUrl ? { targetUrl: config.targetUrl } : {}),
     references: config.references ?? [],
     baseHtmlPresent: existsSync(baseHtmlPath),
+    pageAvailable: config.kind === 'overlay' ? Boolean(config.targetUrl) : existsSync(baseHtmlPath),
     baseHtmlPath: existsSync(baseHtmlPath) ? baseHtmlPath : null,
     patches: {
       total: patches.length,

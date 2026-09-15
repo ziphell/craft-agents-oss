@@ -61,6 +61,14 @@ function createMockFns(): BrowserPaneFns {
     }),
     applyPrototype: async (slug: string) => ({ slug, applied: 2, files: ['A-001-btn.css', 'A-002-guard.js'], skipped: [] }),
     clearPrototype: async (slug: string) => ({ slug, removed: [`prototype:${slug}:A-001-btn.css`] }),
+    importPrototype: async (slug: string, sourceSlug: string) => ({
+      slug,
+      sourceSlug,
+      baseHtmlPath: `/tmp/prototypes/${slug}/base.html`,
+      bytes: 2048,
+      copiedPatches: ['A-001-btn.css'],
+      skippedPatches: [],
+    }),
     exportPrototype: async (slug: string) => ({
       slug,
       htmlPath: `/tmp/prototypes/${slug}/dist/prototype.html`,
@@ -97,6 +105,7 @@ function createMockFns(): BrowserPaneFns {
       kind: 'overlay' as const,
       references: [],
       baseHtmlPresent: true,
+      pageAvailable: true,
       baseHtmlPath: `/tmp/prototypes/${slug}/base.html`,
       patches: { total: 2, byLane: { A: 2 }, files: [] },
       services: [
@@ -109,6 +118,7 @@ function createMockFns(): BrowserPaneFns {
     prototypeEntry: async ({ slug }: { slug: string }) => ({
       path: `/tmp/prototypes/${slug}/base.html`,
       url: `http://${slug}.localhost:41234/`,
+      injectPatches: false,
     }),
     // Unbound by default; tests that exercise the no-slug fallback override it.
     getBoundPrototypeSlug: () => null,
@@ -117,8 +127,9 @@ function createMockFns(): BrowserPaneFns {
       slug: name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
       dir: `/tmp/prototypes/${name}`,
       baseHtmlPath: `/tmp/prototypes/${name}/base.html`,
-      kind: kind ?? 'overlay',
+      kind: kind ?? 'scratch',
     }),
+    setPrototypeTarget: async (_slug: string, targetUrl: string) => ({ kind: 'overlay' as const, targetUrl }),
     bindPrototype: async (_slug: string | null) => {},
     linkPrototypeReference: async (_slug: string, referenceSlug: string) => ({ references: [referenceSlug] }),
     unlinkPrototypeReference: async () => ({ references: [] }),
@@ -154,6 +165,7 @@ function prototypeStatus(slug: string, overrides: Partial<PrototypeStatus> = {})
     kind: 'overlay',
     references: [],
     baseHtmlPresent: true,
+    pageAvailable: true,
     baseHtmlPath: `/tmp/prototypes/${slug}/base.html`,
     patches: { total: 1, byLane: { A: 1 }, files: [] },
     services: [],
@@ -1013,6 +1025,31 @@ describe('createBrowserTools', () => {
       expect(result.content[0].text).toContain('needs a prototype')
     })
 
+    it('reports both halves of an import: what moved and what stayed', async () => {
+      mockFns.getBoundPrototypeSlug = () => 'checkout-flow'
+      mockFns.importPrototype = async (slug, sourceSlug) => ({
+        slug,
+        sourceSlug,
+        baseHtmlPath: '/tmp/prototypes/checkout-flow/base.html',
+        bytes: 2048,
+        copiedPatches: ['A-002-subtitle.css'],
+        skippedPatches: ['A-001-heading.css'],
+      })
+
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-import --from rival-checkout' })
+
+      expect(result.content[0].text).toContain('took "rival-checkout" as its starting point')
+      expect(result.content[0].text).toContain('A-002-subtitle.css')
+      // Reporting only the copy would hide the file that was deliberately not touched.
+      expect(result.content[0].text).toContain('A-001-heading.css')
+      expect(result.content[0].text).toContain('nothing was overwritten')
+    })
+
+    it('requires a source to import from', async () => {
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-import' })
+      expect(result.content[0].text).toContain('--from')
+    })
+
     it('routes prototype-clear and lists the removed keys', async () => {
       const result = await executeTool(tools, 'browser_tool', { command: 'prototype-clear checkout-flow' })
       expect(result.content[0].text).toContain('removed 1 patch')
@@ -1025,6 +1062,21 @@ describe('createBrowserTools', () => {
       expect(result.content[0].text).toContain('/dist/prototype.html')
       expect(result.content[0].text).toContain('/dist/dev-spec.md')
       expect(result.content[0].text).toContain('browser_tool navigate file://')
+    })
+
+    // The HTML means opposite things per kind — one is the page, the other is a
+    // carrier for someone else's page — so the next step cannot be the same
+    // sentence for both.
+    it('describes the HTML deliverable by kind', async () => {
+      mockFns.prototypeStatus = async (slug) => prototypeStatus(slug, { kind: 'overlay' })
+      const overlay = await executeTool(tools, 'browser_tool', { command: 'prototype-export checkout-flow' })
+      expect(overlay.content[0].text).toContain('preview carrier')
+      expect(overlay.content[0].text).toContain('Content-Security-Policy')
+
+      mockFns.prototypeStatus = async (slug) => prototypeStatus(slug, { kind: 'scratch' })
+      const scratch = await executeTool(tools, 'browser_tool', { command: 'prototype-export checkout-flow' })
+      expect(scratch.content[0].text).toContain('self-contained')
+      expect(scratch.content[0].text).not.toContain('preview carrier')
     })
 
     it('requires a slug for prototype-export', async () => {
@@ -1188,6 +1240,29 @@ describe('createBrowserTools', () => {
       expect(result.content[0].text).toContain('needs a prototype')
     })
 
+    // An overlay's page is the site's own page, which knows nothing about the
+    // prototype — navigating and stopping there would show the *target* page.
+    // The replay is what makes the address the prototype.
+    it('replays the patches when it opens an overlay', async () => {
+      const applied: string[] = []
+      mockFns.prototypeEntry = async () => ({
+        path: null,
+        url: 'https://app.example.com/checkout',
+        injectPatches: true,
+      })
+      mockFns.navigate = async (url) => ({ url, title: 'Checkout' })
+      mockFns.applyPrototype = async (slug) => {
+        applied.push(slug)
+        return { slug, applied: 2, files: ['A-001-btn.css', 'A-002-guard.js'], skipped: [] }
+      }
+
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-open checkout-flow' })
+
+      expect(applied).toEqual(['checkout-flow'])
+      expect(result.content[0].text).toContain('live page it changes')
+      expect(result.content[0].text).toContain('Replayed 2 patches')
+    })
+
     // ========================================================================
     // Prototype binding — a bound session drives the prototype without slugs.
     // ========================================================================
@@ -1223,17 +1298,30 @@ describe('createBrowserTools', () => {
       mockFns.getBoundPrototypeSlug = () => 'checkout-flow'
       mockFns.listPrototypes = async () => [
         prototypeStatus('checkout-flow'),
-        prototypeStatus('draft', { baseHtmlPresent: false, baseHtmlPath: null, patches: { total: 0, byLane: {}, files: [] } }),
+        prototypeStatus('draft', {
+          kind: 'scratch',
+          baseHtmlPresent: false,
+          pageAvailable: false,
+          baseHtmlPath: null,
+          patches: { total: 0, byLane: {}, files: [] },
+        }),
+        prototypeStatus('no-target', {
+          targetUrl: undefined,
+          pageAvailable: false,
+        }),
       ]
 
       const result = await executeTool(tools, 'browser_tool', { command: 'prototype-list' })
       expect(result.content[0].text).toContain('bound to "checkout-flow"')
       expect(result.content[0].text).toContain('BOUND')
-      expect(result.content[0].text).toContain('no base.html')
+      // Each kind is short of a page for its own reason, and the listing says
+      // which — "no base.html" on an overlay would be its normal state.
+      expect(result.content[0].text).toContain('draft (scratch) — no base.html')
+      expect(result.content[0].text).toContain('no-target (overlay) — no target page')
     })
 
     // Without the kind in the listing, an overlay and a scratch read identically —
-    // and they behave nothing alike (capture vs. author, snapshot vs. our page).
+    // and they behave nothing alike (a live page vs. a document of ours).
     it('shows each prototype kind and target in the listing', async () => {
       mockFns.listPrototypes = async () => [
         prototypeStatus('checkout-flow', { kind: 'scratch' }),
@@ -1270,15 +1358,19 @@ describe('createBrowserTools', () => {
         command: 'prototype-create Checkout flow',
       })
 
-      expect(result.content[0].text).toContain('Created overlay prototype "checkout-flow"')
+      // No flags means no page on the other side: the kind that owns its own
+      // document, which is the only one that can be created from a name alone.
+      expect(result.content[0].text).toContain('Created scratch prototype "checkout-flow"')
       expect(bound).toEqual(['checkout-flow'])
     })
 
-    it('passes the kind and target through, and defaults to an overlay', async () => {
+    // The address is what the two kinds disagree about, so the address decides
+    // the kind — there is no separate flag to get wrong.
+    it('derives the kind from whether a target page was given', async () => {
       const seen: Array<{ name: string; kind?: string; targetUrl?: string }> = []
       mockFns.createPrototype = async (input) => {
         seen.push(input)
-        return { slug: 'checkout', dir: '/tmp/prototypes/checkout', baseHtmlPath: '/tmp/prototypes/checkout/base.html', kind: input.kind ?? 'overlay' }
+        return { slug: 'checkout', dir: '/tmp/prototypes/checkout', baseHtmlPath: '/tmp/prototypes/checkout/base.html', kind: input.kind ?? 'scratch' }
       }
 
       await executeTool(tools, 'browser_tool', { command: 'prototype-create Checkout --url https://app.example.com/checkout' })
@@ -1288,9 +1380,66 @@ describe('createBrowserTools', () => {
       expect(seen[1]).toEqual({ name: 'Landing page', kind: 'scratch', targetUrl: undefined })
     })
 
+    it('refuses both --scratch and --url, which ask for opposite pages', async () => {
+      const result = await executeTool(tools, 'browser_tool', {
+        command: 'prototype-create Checkout --scratch --url https://app.example.com/checkout',
+      })
+
+      expect(result.content[0].text).toContain('not both')
+    })
+
+    // A from-scratch prototype has to be told how to become an overlay, or the
+    // new default would hide the other kind entirely.
+    it('points at --url as the way to get an overlay instead', async () => {
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-create Landing page' })
+
+      expect(result.content[0].text).toContain('--url <page>')
+    })
+
     it('asks for a target page when --url is given without a value', async () => {
       const result = await executeTool(tools, 'browser_tool', { command: 'prototype-create Checkout --url' })
       expect(result.content[0].text).toContain('--url needs a value')
+    })
+
+    /**
+     * The same page lives in a dev, a staging and a production environment, and the
+     * same patches are meant to be looked at in each of them — so the address is not
+     * a rule to be fixed but a fact about where the page is. Changing it is allowed;
+     * what quietly goes stale with it is what the command has to say.
+     */
+    it('repoints the bound overlay, naming what goes stale with it', async () => {
+      const seen: Array<[string, string]> = []
+      mockFns.getBoundPrototypeSlug = () => 'checkout-flow'
+      mockFns.prototypeStatus = async (slug) =>
+        prototypeStatus(slug, { targetUrl: 'https://app.example.com/checkout' })
+      mockFns.setPrototypeTarget = async (slug, targetUrl) => {
+        seen.push([slug, targetUrl])
+        return { kind: 'overlay' as const, targetUrl }
+      }
+
+      const result = await executeTool(tools, 'browser_tool', {
+        command: 'prototype-target https://staging.example.com/checkout',
+      })
+
+      expect(seen).toEqual([['checkout-flow', 'https://staging.example.com/checkout']])
+      const text = result.content[0].text
+      expect(text).toContain('from: https://app.example.com/checkout')
+      expect(text).toContain('to:   https://staging.example.com/checkout')
+      // The two failures that raise no error at all are the reason to say anything.
+      expect(text).toContain('already showing the old page')
+      expect(text).toContain('written against the old page')
+    })
+
+    it('needs the address, and a binding to point it at', async () => {
+      const noUrl = await executeTool(tools, 'browser_tool', { command: 'prototype-target' })
+      expect(noUrl.content[0].text).toContain('needs the address')
+
+      // A URL is the only positional argument this command takes, so it cannot
+      // also read one as a slug: binding is what names the prototype.
+      const unbound = await executeTool(tools, 'browser_tool', {
+        command: 'prototype-target https://staging.example.com/checkout',
+      })
+      expect(unbound.content[0].text).toContain('prototype-bind')
     })
 
     // Without this, creating a reference would rebind the session to the page

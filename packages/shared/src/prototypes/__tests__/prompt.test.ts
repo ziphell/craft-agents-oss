@@ -27,33 +27,37 @@ function makeContext(overrides: Partial<PrototypePromptContext> = {}): Prototype
 }
 
 describe('formatPrototypeContextForPrompt', () => {
-  it('says an overlay is a snapshot to refresh, not a document to edit', () => {
+  // An overlay's page is the live address; a copy of it would run none of that
+  // page's own JS. So the block must not send the agent looking for a base.html
+  // that is never going to exist, and must not ask it to keep one fresh.
+  it('tells an overlay its page is the live address, not a copy of it', () => {
     const text = formatPrototypeContextForPrompt(
       makeContext({ kind: 'overlay', targetUrl: 'https://app.example.com/cart' }),
     )
     expect(text).toContain('**overlay**')
     expect(text).toContain('https://app.example.com/cart')
-    expect(text).toContain('Re-capture rather than patching a stale base')
+    expect(text).toContain('the prototype\'s page *is* the live address')
+    expect(text).toContain('There is no base.html and none is wanted')
+    expect(text).not.toContain('prototype-capture')
   })
 
-  // Reading 14-A: a scratch page may be seeded by capturing a page first, so the
-  // old wording ("there is nothing to capture") would forbid the main flow. The
-  // same goes for importing another prototype's page, which is the other way a
-  // scratch can start from material rather than from a blank.
-  it('allows a scratch base to have been captured or imported, but not overwritten', () => {
+  // A scratch page is ours; the only way it changes hands is an import, which
+  // replaces the document outright.
+  it('allows a scratch base to have been imported, but not overwritten', () => {
     const text = formatPrototypeContextForPrompt(makeContext())
     expect(text).toContain('**from-scratch**')
-    expect(text).toContain('imported from another prototype')
-    expect(text).toContain('Never re-capture over an existing base.html')
+    expect(text).toContain('"prototype-import --from <slug>" to start from another')
+    expect(text).toContain('do not import over a base.html whose')
   })
 
   // Nothing is seeded at creation, so "no base page" is the state every new
-  // prototype is in — and the block has to say how to leave it.
-  it('names all three ways to get a first base page', () => {
+  // prototype is in — and the block has to say how to leave it. Both ways are the
+  // agent's own commands now: the panel no longer asks the user to open a window
+  // and press a button.
+  it('names the ways to get a first base page', () => {
     const text = formatPrototypeContextForPrompt(makeContext({ baseHtmlPath: null }))
-    expect(text).toContain('Capture base')
-    expect(text).toContain('write base.html')
-    expect(text).toContain('import another prototype')
+    expect(text).toContain('Write base.html')
+    expect(text).toContain('prototype-import')
   })
 
   // Reading 14-B: this is the rule that keeps reference selectors out of the

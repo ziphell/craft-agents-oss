@@ -1,31 +1,25 @@
 /**
- * Prototype creation and base-page capture.
+ * Prototype creation and the base page.
  *
- * A prototype is a directory with an optional `base.html` and a
- * `patches/` folder. `base.html` has three ways in, and creation decides none of
- * them:
+ * A prototype is a directory with a `patches/` folder and — for the
+ * from-scratch kind — a `base.html` of our own. Creation writes **no**
+ * `base.html`: the absence of the file is a *true* statement, "this prototype
+ * has no page yet", and an empty seeded document would assert a state that does
+ * not exist (it would make `baseHtmlPresent` true, hide the guidance that says
+ * how to get a first page, and hand Export an empty document to write). The
+ * earlier worry — a brand-new prototype with every action greyed out — is
+ * answered by the panel instead of by a fake file: Open is disabled until there
+ * is a page to show.
  *
- * 1. **Captured page** — the rendered DOM of a real page, read out of a live
- *    browser. This must come from the *rendered* document, not from fetching the
- *    URL: a client-rendered app returns an empty shell over HTTP, so a fetch
- *    would capture nothing usable (and would miss any authenticated state).
- * 2. **Hand-written page** — written directly with the file tools, by the agent
- *    or through the source editor.
- * 3. **Imported page** — another prototype's document and patches, copied in as a
- *    starting point ({@link importPrototype} in import.ts).
+ * Two kinds, and they get their page in different ways:
  *
- * So creation writes **no** `base.html`, for either kind, and the file's absence
- * is a *true* statement: "this prototype has no page yet." Seeding an empty
- * document would assert a state that does not exist — it would make
- * `baseHtmlPresent` true, hide the guidance that says how to get a first page,
- * and hand Export an empty document to write. The earlier worry (a brand-new
- * prototype with every action greyed out) is answered by the panel instead of by
- * a fake file: Open is disabled until there is a base page to render, while
- * "open a browser window" needs no page at all, so capturing one is always
- * reachable (§7 of docs/prototype-workbench-plan.md).
- *
- * "Is there a page?" is never inferred from the kind or from disk by guessing:
- * `PrototypeStatus.baseHtmlPresent` answers that.
+ * - **overlay** — the page is the live address the prototype was created
+ *   against. Nothing is written and nothing is captured: the page belongs to
+ *   someone else, brings its own JavaScript and its own session, and the
+ *   prototype is that page with patches replayed into it.
+ * - **scratch** — the page is a document we own. It arrives one of two ways:
+ *   written with the file tools ({@link writePrototypeBase}), or copied from
+ *   another prototype ({@link importPrototype} in import.ts).
  *
  * Whether the product page is reached through a local dev server, a test
  * environment, or production is not a distinction this model cares about: the
@@ -36,6 +30,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { getPrototypePatchesPath, getPrototypeDirPath } from './storage.ts'
+import { requireTargetUrl } from './target.ts'
 import { DEFAULT_PROTOTYPE_KIND, writePrototypeConfig, type PrototypeKind } from './config.ts'
 
 const BASE_FILENAME = 'base.html'
@@ -46,12 +41,12 @@ const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/
 export interface CreatePrototypeInput {
   name: string
   /**
-   * What kind of prototype to create. Defaults to `overlay` — injecting into a
-   * real page is the main path, and it is what every prototype predating kinds
-   * was built around.
+   * What kind of prototype to create. Defaults to {@link DEFAULT_PROTOTYPE_KIND}
+   * (`scratch`) — the kind that owns its document, and so is never left with
+   * nothing to do next.
    */
   kind?: PrototypeKind
-  /** `overlay` only: the page this prototype injects into. */
+  /** `overlay` only, and **required** for it: the page this prototype injects into. */
   targetUrl?: string
 }
 
@@ -93,8 +88,9 @@ export function prototypeSlugFromName(name: string): string {
  *
  * The returned `baseHtmlPath` is where it *will* live.
  *
- * @throws when the name produces an empty slug, or when the prototype already
- *   exists — silently reusing a directory would mix two prototypes' patches.
+ * @throws when the name produces an empty slug, when the prototype already
+ *   exists (silently reusing a directory would mix two prototypes' patches), or
+ *   when an overlay is requested without the page it changes — see below.
  */
 export function createPrototype(workspaceRootPath: string, input: CreatePrototypeInput): CreatedPrototype {
   const title = input.name.trim()
@@ -113,31 +109,53 @@ export function createPrototype(workspaceRootPath: string, input: CreatePrototyp
 
   const kind = input.kind ?? DEFAULT_PROTOTYPE_KIND
 
+  // An overlay's page *is* its address, and the kind is fixed for the
+  // prototype's lifetime — so an overlay created without one has nothing to
+  // open, nothing to export against, and no command that can fill it in later.
+  // Refusing here is the only moment the address is still at hand; every later
+  // failure would be a dead end with a working-looking prototype in front of it.
+  //
+  // The shape check is `requireTargetUrl`'s, shared with the later "change the
+  // address" path (target.ts): one rule, two entry points, so neither can end up
+  // stricter than the other.
+  let targetUrl: string | undefined
+  if (kind === 'overlay') {
+    if (!input.targetUrl?.trim()) {
+      throw new Error(
+        `An overlay prototype changes a page that already exists, so it needs that page's address — ` +
+          `"${title}" was created without one. Pass the address it changes, or create it as a ` +
+          `from-scratch prototype, which owns its own document instead.`,
+      )
+    }
+    targetUrl = requireTargetUrl(input.targetUrl)
+  }
+
   mkdirSync(dir, { recursive: true })
   mkdirSync(getPrototypePatchesPath(workspaceRootPath, slug), { recursive: true })
   // Written before anything can observe the prototype: a prototype whose kind is
-  // unknown would render the wrong guidance (capture vs. write-your-own).
-  writePrototypeConfig(workspaceRootPath, slug, { kind, targetUrl: input.targetUrl })
+  // unknown would render the wrong guidance (patch someone's page vs. write ours).
+  writePrototypeConfig(workspaceRootPath, slug, { kind, targetUrl })
 
   return { slug, dir, baseHtmlPath, kind }
 }
 
-export interface CapturedBase {
+export interface WrittenBase {
   slug: string
   baseHtmlPath: string
-  /** Size of the captured markup, in bytes. */
+  /** Size of the written markup, in bytes. */
   bytes: number
 }
 
 /**
- * Replace a prototype's `base.html` with markup captured from a live page.
+ * Replace a prototype's `base.html`.
  *
- * The caller supplies the markup because only it can read the rendered document
- * (via CDP) — see the module note on why fetching the URL is not equivalent.
+ * Used by both ways a from-scratch prototype gets its document: writing one by
+ * hand, and importing another prototype's page. The write is unconditional — a
+ * caller that would discard edits is responsible for asking first.
  *
  * @throws when the prototype does not exist, or the markup is not a whole document.
  */
-export function writePrototypeBase(workspaceRootPath: string, slug: string, html: string): CapturedBase {
+export function writePrototypeBase(workspaceRootPath: string, slug: string, html: string): WrittenBase {
   const dir = getPrototypeDirPath(workspaceRootPath, slug)
   if (!existsSync(dir)) {
     throw new Error(`Prototype "${slug}" does not exist. Create it first.`)
@@ -147,7 +165,7 @@ export function writePrototypeBase(workspaceRootPath: string, slug: string, html
   // A partial fragment would produce a base that patches cannot be applied to,
   // and the failure would only show up later at export time.
   if (!/^<html[\s>]/i.test(markup) && !/^<!doctype html/i.test(markup)) {
-    throw new Error('Captured markup is not a complete HTML document (expected <html> or <!doctype html>).')
+    throw new Error('base.html is not a complete HTML document (expected <html> or <!doctype html>).')
   }
 
   const baseHtmlPath = join(dir, BASE_FILENAME)

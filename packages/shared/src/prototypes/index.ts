@@ -82,7 +82,7 @@ export {
   unlinkPrototypeReference,
 } from './references.ts'
 
-export type { CapturedBase, CreatedPrototype, CreatePrototypeInput } from './create.ts'
+export type { WrittenBase, CreatedPrototype, CreatePrototypeInput } from './create.ts'
 export {
   createPrototype,
   prototypeSlugFromName,
@@ -102,6 +102,10 @@ export {
   INLINED_PATCHES_ELEMENT_ID,
   resolvePrototypeEntry,
 } from './export.ts'
+
+export { buildOverlayPreviewHtml, buildPatchBundle, toBookmarkletUrl } from './bookmarklet.ts'
+
+export { requireTargetUrl, setPrototypeTargetUrl } from './target.ts'
 
 export type { PrototypeBaseUrlResolver } from './url.ts'
 export { prototypeDocumentUrl, prototypeOriginUrl, setPrototypeBaseUrlResolver } from './url.ts'

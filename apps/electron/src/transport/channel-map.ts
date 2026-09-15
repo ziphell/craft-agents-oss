@@ -226,7 +226,6 @@ export const CHANNEL_MAP = {
   exportPrototype: invoke(RPC_CHANNELS.prototypes.EXPORT),
   createPrototype: invoke(RPC_CHANNELS.prototypes.CREATE),
   applyPrototype: invoke(RPC_CHANNELS.prototypes.APPLY),
-  capturePrototypeBase: invoke(RPC_CHANNELS.prototypes.CAPTURE),
   linkPrototypeReference: invoke(RPC_CHANNELS.prototypes.LINK_REFERENCE),
   unlinkPrototypeReference: invoke(RPC_CHANNELS.prototypes.UNLINK_REFERENCE),
   importPrototype: invoke(RPC_CHANNELS.prototypes.IMPORT),

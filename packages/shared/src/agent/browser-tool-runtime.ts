@@ -73,10 +73,16 @@ export function getBrowserToolHelp(): string {
     '  evaluate <expression>',
     '  pick [--timeout <ms>]                          ask the user to click an element; returns a stable selector',
     '  prototype-list                                 prototypes in this workspace, and which one is bound',
-    '  prototype-create <name> [--url <page>] [--scratch] [--no-bind]',
-    '                                                 create (--scratch = own page, no target;',
+    '  prototype-create <name> [--url <page>] [--no-bind]',
+    '                                                 create (default = a page of our own;',
+    '                                                 --url <page> = patches on that existing page,',
+    '                                                 which then requires the address;',
     '                                                 --no-bind = do not bind the session)',
+    '  prototype-target <url>                         point the bound overlay at another address',
+    '                                                 (same page in another environment; say so, since the',
+    '                                                 patches were written against the old one)',
     '  prototype-reference <slug> [--remove]          study another prototype (reference, not a copy)',
+    '  prototype-import --from <slug>                 copy another prototype\'s page + patches in as the start',
     '  prototype-bind <slug|--clear>                  bind (or unbind) this session\'s prototype',
     '  prototype-apply [slug]                         replay prototype patches (survives reload)',
     '  prototype-clear [slug]                         remove prototype patches',
@@ -86,7 +92,7 @@ export function getBrowserToolHelp(): string {
     '  prototype-mock-apply [slug] [--service <svc>]         serve x-mock responses (fetch + XHR)',
     '  prototype-mock-clear                                  stop serving the mock',
     '  prototype-status [slug]                               patches, services, exports, ownership',
-    '  prototype-open [slug]                                 open the exported page (or base.html)',
+    '  prototype-open [slug]                                 open its page (base + every patch, live)',
     '  focus [windowId]                               focus existing browser window (no new window)',
     '  windows',
     '  release [windowId|all]                         dismiss agent overlay (user keeps browsing)',
@@ -120,9 +126,11 @@ export function getBrowserToolHelp(): string {
     '  pick',
     '  prototype-list',
     '  prototype-create Checkout flow --url https://app.example.com/checkout',
-    '  prototype-create Landing page --scratch',
+    '  prototype-create Landing page                 (no --url = a page of our own)',
     '  prototype-create Rival checkout --url https://rival.example.com/cart --no-bind',
+    '  prototype-target https://staging.example.com/checkout   (the bound overlay, another environment)',
     '  prototype-reference rival-checkout            (study it from the bound prototype)',
+    '  prototype-import --from rival-checkout        (start from another prototype\'s page and patches)',
     '  prototype-apply                                (targets the bound prototype)',
     '  prototype-apply checkout-flow                  (explicit target)',
     '  prototype-contract-compose --service checkout-api',
@@ -1689,7 +1697,8 @@ async function executeSingleCommand(args: {
       return {
         output: [
           'No prototypes in this workspace yet.',
-          'Create one with "prototype-create <name>", then open the running product and use "Capture base" to capture its rendered page.',
+          'Create one with "prototype-create <name>" for a page of our own, or',
+          '"prototype-create <name> --url <the page it changes>" to patch a page that already exists.',
         ].join('\n'),
         appendReleaseHint: false,
       };
@@ -1711,7 +1720,12 @@ async function executeSingleCommand(args: {
     for (const prototype of prototypes) {
       const notes: string[] = [];
       if (prototype.slug === bound) notes.push('BOUND');
-      if (!prototype.baseHtmlPresent) notes.push('no base.html');
+      // "no base.html" is the normal state of an overlay, so saying it there
+      // would train the reader to ignore it. What matters either way is the same
+      // thing the Open button asks: is there a page to show?
+      if (!prototype.pageAvailable) {
+        notes.push(prototype.kind === 'overlay' ? 'no target page' : 'no base.html');
+      }
       notes.push(`${prototype.patches.total} patch${prototype.patches.total === 1 ? '' : 'es'}`);
       if (prototype.targetUrl) notes.push(`target: ${prototype.targetUrl}`);
       if (prototype.references.length > 0) notes.push(`references: ${prototype.references.join(', ')}`);
@@ -1737,6 +1751,12 @@ async function executeSingleCommand(args: {
     if (urlIndex >= 0 && (!targetUrl || targetUrl.startsWith('--'))) {
       throw new Error('prototype-create --url needs a value. Example: prototype-create checkout --url https://app.example.com/checkout');
     }
+    if (scratch && targetUrl) {
+      throw new Error(
+        'prototype-create takes either --scratch (a page of our own) or --url <page> (patches on an existing one), ' +
+          'not both — the page is what the two kinds disagree about.',
+      );
+    }
 
     // The name is whatever is left once the flags (and the --url value) are
     // removed, so `prototype-create Checkout flow` keeps its spaces.
@@ -1754,7 +1774,11 @@ async function executeSingleCommand(args: {
       throw new Error('prototype-create needs a name. Example: prototype-create Checkout flow');
     }
 
-    const kind = scratch ? 'scratch' : 'overlay';
+    // The address decides the kind, because the address is what the kinds
+    // disagree about: an address means the base is someone else's live page, and
+    // its absence means the base is ours. So the default is the from-scratch
+    // kind — the only one that needs nothing we have not already been told.
+    const kind = targetUrl ? 'overlay' : 'scratch';
 
     // Creating normally binds the session in the same step: the point of creating
     // one from a conversation is to work on it, and an unbound create would force
@@ -1767,21 +1791,71 @@ async function executeSingleCommand(args: {
         ? `Created ${kind} prototype "${created.slug}" (not bound — this session still targets its own prototype).`
         : `Created ${kind} prototype "${created.slug}" and bound this session to it.`,
       `  dir: ${created.dir}`,
-      `  (no base page yet — it appears once the page is captured or written)`,
+      ...(kind === 'overlay'
+        ? ['  (no base.html — an overlay\'s page is the live target, not a copy of it)']
+        : ['  (no base.html yet — write it, or import another prototype\'s page)']),
       '',
     ];
 
     if (!noBind) lines.push('The prototype-* commands now target it by default.', '');
 
     if (kind === 'overlay') {
-      if (targetUrl) lines.push(`Target page: ${targetUrl}`);
-      lines.push('Next: have the user open the product in a browser window (any address) and press "Capture base"');
-      lines.push('to store the rendered page, then write patches against it.');
+      lines.push(`Target page: ${targetUrl}`);
+      lines.push('Next: open it with the browser tool and study the DOM you are about to change. The live page');
+      lines.push('*is* the base (never a copy of it), and patches are injected into it.');
     } else {
       lines.push('Next: write base.html yourself — this kind owns its whole document, with no external page.');
+      lines.push('It can also start from another prototype: "prototype-import --from <slug>".');
+      lines.push('To patch a page that already exists instead, create one with: prototype-create <name> --url <page>.');
     }
 
     return { output: lines.join('\n'), appendReleaseHint: false };
+  }
+
+  // The address is changeable, because the same page lives in several environments
+  // and the same patches are meant to be looked at in each of them (target.ts).
+  //
+  // Deliberately not resolved through `resolvePrototypeSlug`: the only positional
+  // argument here *is* the address, and a slug resolver would read it as a
+  // prototype. Binding names the prototype instead — which is also the state of
+  // any conversation that is working on one.
+  if (cmd === 'prototype-target') {
+    const url = parts.slice(1).find((part) => !part.startsWith('--'));
+
+    if (!url) {
+      throw new Error(
+        'prototype-target needs the address to point at. Example: prototype-target https://staging.example.com/checkout',
+      );
+    }
+
+    const slug = fns.getBoundPrototypeSlug?.() ?? null;
+    if (!slug) {
+      throw new Error(
+        `prototype-target changes the address of the prototype this session is bound to, and it is not bound to ` +
+          `one. Bind it with "prototype-bind <slug>" — "prototype-list" shows what exists.`,
+      );
+    }
+
+    const before = await fns.prototypeStatus(slug);
+    const updated = await fns.setPrototypeTarget(slug, url);
+
+    const lines = [`Prototype "${slug}": target page ${before.targetUrl ? 'changed' : 'set'}`];
+    if (before.targetUrl) lines.push(`  from: ${before.targetUrl}`);
+    lines.push(`  to:   ${updated.targetUrl}`, '');
+    // The two things that go stale silently are named here rather than discovered
+    // later as "the patches did nothing".
+    lines.push(
+      'What follows from this:',
+      '  • "prototype-open" goes to the new address, and the next "prototype-export" names it in dev-spec.md and',
+      '    in the preview carrier.',
+      '  • Windows already showing the old page keep it until they navigate again — re-open to move them.',
+      '  • The patches were written against the old page. Another environment (or the same one after a deploy) may',
+      '    not have the same DOM, and a patch that matches nothing looks exactly like a patch that did nothing —',
+      '    re-check them on the new address.',
+      '  • The kind is still fixed: this changes where the page is, not what the prototype is.',
+    );
+
+    return { output: lines.join('\n'), appendReleaseHint: true };
   }
 
   // References: the subject is the *other* prototype, so the reader cannot also be
@@ -1903,21 +1977,73 @@ async function executeSingleCommand(args: {
     return { output: lines.join('\n'), appendReleaseHint: true };
   }
 
+  if (cmd === 'prototype-import') {
+    const fromIndex = parts.indexOf('--from');
+    const source = fromIndex >= 0 ? parts[fromIndex + 1] : undefined;
+
+    if (fromIndex >= 0 && (!source || source.startsWith('--'))) {
+      throw new Error('prototype-import --from needs a value. Example: prototype-import --from rival-checkout');
+    }
+    if (!source) {
+      throw new Error(
+        'prototype-import needs the prototype to copy from. Example: prototype-import --from rival-checkout ' +
+          '("prototype-list" shows what exists).',
+      );
+    }
+
+    // The target is always the prototype this session is working on: you import
+    // *into* what you are building, so the source is the only thing to name.
+    const slug = resolvePrototypeSlug(fns, ['prototype-import'], 'prototype-import');
+    const imported = await fns.importPrototype(slug, source);
+
+    const lines = [
+      `Prototype "${slug}": took "${source}" as its starting point.`,
+      `  page:    ${imported.baseHtmlPath} (${formatBytes(imported.bytes)})`,
+      `  patches: ${imported.copiedPatches.length} copied${imported.copiedPatches.length > 0 ? ` — ${imported.copiedPatches.join(', ')}` : ''}`,
+    ];
+
+    // Non-empty means the two patch sets were *not* merged. Reporting only the
+    // copy would hide the files that stayed as they were.
+    if (imported.skippedPatches.length > 0) {
+      lines.push(
+        `  kept as they were: ${imported.skippedPatches.join(', ')}`,
+        '  (that file name already existed here — nothing was overwritten or deleted)',
+      );
+    }
+    lines.push('The kind, target page and references of this prototype did not change — only the page and patches moved.');
+
+    return { output: lines.join('\n'), appendReleaseHint: true };
+  }
+
   if (cmd === 'prototype-export') {
     const slug = resolvePrototypeSlug(fns, parts, 'prototype-export');
 
     const result = await fns.exportPrototype(slug);
-    return {
-      output: [
-        `Prototype "${result.slug}": exported ${result.applied} patch${result.applied === 1 ? '' : 'es'}`,
-        `  HTML: ${result.htmlPath}`,
-        `  Spec: ${result.specPath}`,
-        '',
-        'The HTML is self-contained — open it to verify it runs standalone:',
-        `  browser_tool navigate ${result.htmlUrl}`,
-      ].join('\n'),
-      appendReleaseHint: true,
-    };
+    const kind = (await fns.prototypeStatus(slug)).kind;
+
+    // What the HTML *is* differs by kind, and so does what to do with it: one is
+    // the page, the other is a carrier that puts the patches onto someone else's
+    // page. Telling the agent to "verify it runs standalone" for an overlay would
+    // send it to open a file that only contains instructions.
+    const lines = [
+      `Prototype "${result.slug}": exported ${result.applied} patch${result.applied === 1 ? '' : 'es'}`,
+      `  HTML: ${result.htmlPath}`,
+      `  Spec: ${result.specPath}`,
+      '',
+    ];
+    lines.push(
+      ...(kind === 'overlay'
+        ? [
+            'The HTML is the preview carrier: a draggable bookmarklet (plus the same bundle for the console)',
+            'that applies these patches to the live target page. Hand it over — the patches run on that page,',
+            'not in this file. Say which page it applies to when you hand it over; a page with a strict',
+            'Content-Security-Policy will refuse the bookmarklet, which is why the bundle is there twice.',
+          ]
+        : ['The HTML is self-contained — open it to verify it runs standalone:']),
+      `  browser_tool navigate ${result.htmlUrl}`,
+    );
+
+    return { output: lines.join('\n'), appendReleaseHint: true };
   }
 
   if (cmd === 'prototype-contract-compose') {
@@ -2005,12 +2131,12 @@ async function executeSingleCommand(args: {
       `Prototype "${status.slug}"`,
       `  dir:        ${status.dir}`,
       `  kind:       ${status.kind === 'overlay'
-        ? 'overlay — patches on someone else\'s page; base.html is a snapshot that goes stale'
-        : 'scratch — our own page; base.html is ours, never re-capture over it'}`,
+        ? 'overlay — patches on someone else\'s page; the page is the live target, never copied'
+        : 'scratch — our own page; base.html is ours, and nothing external to keep in sync'}`,
     ];
 
     if (status.kind === 'overlay') {
-      lines.push(`  target:     ${status.targetUrl ?? 'none recorded — nothing to reopen or re-capture'}`);
+      lines.push(`  target:     ${status.targetUrl ?? 'none recorded — nothing to open'}`);
     }
 
     if (status.references.length === 0) {
@@ -2069,15 +2195,27 @@ async function executeSingleCommand(args: {
     const entry = await fns.prototypeEntry({ slug });
     const result = await fns.navigate(entry.url);
 
-    return {
-      output: [
-        `Prototype "${slug}": opened its page — every patch applied, built from`,
-        `  ${entry.path}`,
-        `  Title: ${result.title || '(untitled)'}`,
-        'Edit and re-apply from here: patches added since this render still land on it.',
-      ].join('\n'),
-      appendReleaseHint: true,
-    };
+    // An overlay's page is the site's own page, which knows nothing about the
+    // prototype until the patches land in it — opening the address and stopping
+    // there would show the target page, not the prototype. A from-scratch page
+    // is rendered by the host with the patches already inlined, so it needs
+    // nothing here.
+    const applied = entry.injectPatches ? await fns.applyPrototype(slug) : null;
+
+    const lines = [
+      entry.injectPatches
+        ? `Prototype "${slug}": opened the live page it changes, and replayed its patches into it:`
+        : `Prototype "${slug}": opened its page — every patch applied, built from`,
+      `  ${entry.url}`,
+    ];
+    if (!entry.injectPatches && entry.path) lines.push(`  base: ${entry.path}`);
+    lines.push(`  Title: ${result.title || '(untitled)'}`);
+    if (applied && applied.applied > 0) {
+      lines.push(`Replayed ${applied.applied} patch${applied.applied === 1 ? '' : 'es'}: ${applied.files.join(', ')}`);
+    }
+    lines.push('Edit and re-apply from here: patches added since this render still land on it.');
+
+    return { output: lines.join('\n'), appendReleaseHint: true };
   }
 
   if (cmd === 'focus') {

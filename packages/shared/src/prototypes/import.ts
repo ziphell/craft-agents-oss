@@ -1,7 +1,7 @@
 /**
  * Importing another prototype's material — its page, and its patches.
  *
- * This is the third way a `base.html` comes into existence (see the module note
+ * This is the second way a `base.html` comes into existence (see the module note
  * in create.ts): a *copy* of another prototype's document, taken as a starting
  * point so a new flow does not begin on an empty page. What arrives is material,
  * not identity: the target keeps its own kind, its own `config.json`, its own
@@ -66,8 +66,7 @@ export interface ImportedPrototype {
  * @throws when either prototype is missing, when the source has no `base.html`
  *   (an export is not a substitute: it already has the patches inlined), when the
  *   source and target are the same, or when the target is an `overlay` — an
- *   overlay's base is defined as the rendered DOM of *its* target page, and a copy
- *   of some other document would make that definition false.
+ *   overlay has no document of its own to replace, only a live page to point at.
  */
 export function importPrototype(
   workspaceRootPath: string,
@@ -90,22 +89,22 @@ export function importPrototype(
   const kind = readPrototypeConfig(workspaceRootPath, slug).kind
   if (kind !== 'scratch') {
     throw new Error(
-      `Prototype "${slug}" is an overlay: its ${BASE_FILENAME} is the rendered snapshot of its own target page, ` +
-        `so importing a different document would misrepresent it. Capture the target page instead, ` +
-        `or create a from-scratch prototype to import into.`,
+      `Prototype "${slug}" is an overlay: its page is the live address it was created against, not a document, ` +
+        `so there is nothing here to replace with an import. Create a from-scratch prototype to import into.`,
     )
   }
 
   const sourceBase = readPrototypeBase(workspaceRootPath, source)
   if (sourceBase === null) {
     throw new Error(
-      `Prototype "${source}" has no ${BASE_FILENAME} to import. Give it one first — write it, or capture the page.`,
+      `Prototype "${source}" has no ${BASE_FILENAME} to import. Give it one first — write it, ` +
+        `or import from a prototype that already has a page.`,
     )
   }
 
-  // Written through the same path as a capture rather than copied blindly, so the
-  // target can only ever hold a whole document: a half-imported file would fail
-  // much later, at export time.
+  // Written through the same path as a hand-written document rather than copied
+  // blindly, so the target can only ever hold a whole document: a half-imported
+  // file would fail much later, at export time.
   const imported = writePrototypeBase(workspaceRootPath, slug, sourceBase)
 
   const sourcePatchesDir = getPrototypePatchesPath(workspaceRootPath, source)

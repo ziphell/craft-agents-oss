@@ -129,28 +129,35 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
   lines.push(sanitize(ctx.dir))
   lines.push('')
 
-  // Kind first: it decides where base.html comes from, what the deliverable is,
-  // and whether there is an external page to keep in sync. Getting this wrong
-  // makes every later instruction wrong too.
+  // Kind first: it decides what the page even is (a live address or a document of
+  // ours), what the deliverable is, and whether there is an external page to keep
+  // in sync. Getting this wrong makes every later instruction wrong too.
   if (ctx.kind === 'overlay') {
     lines.push(`This is an **overlay** prototype: the patches are injected on top of a page that belongs`)
-    lines.push(`to someone else. They never flow back into that page's source — the deliverable is a spec a`)
-    lines.push(`developer translates, not a patch anyone applies.`)
+    lines.push(`to someone else. That page is never copied: the prototype's page *is* the live address,`)
+    lines.push(`with its own JavaScript, its own session and its own data. Study it with the browser tool`)
+    lines.push(`before writing selectors — the live DOM is the only thing that says what they will match —`)
+    lines.push(`and use the same window to ask the user to sign in when the page needs it.`)
     if (ctx.targetUrl) {
       lines.push(`Target page: ${sanitize(ctx.targetUrl)}`)
+      lines.push(`The same page usually exists in several environments (a dev server, staging, production); to look`)
+      lines.push(`at these patches on another one, repoint it with 'prototype-target <url>' rather than making a second`)
+      lines.push(`prototype. Say what that costs when you do: windows already open keep the old page, and the selectors`)
+      lines.push(`were written against the old DOM — a patch that matches nothing looks like a patch that did nothing.`)
     } else {
-      lines.push(`No target page is recorded yet. If the user wants one remembered, it can be set when creating`)
-      lines.push(`the prototype; there is no command to change it afterwards (the kind and target are fixed).`)
+      lines.push(`No target page is recorded, so this overlay has no page to open — it was created before the address`)
+      lines.push(`became required, or its config was edited by hand. Set one with 'prototype-target <url>' (or by`)
+      lines.push(`editing prototypes/${sanitize(ctx.slug)}/config.json). The kind itself cannot change.`)
     }
-    lines.push(`This is why base.html is a *snapshot*: it is the rendered DOM at capture time, and it goes stale`)
-    lines.push(`when the other side ships a change. Re-capture rather than patching a stale base.`)
+    lines.push(`The patches never flow back into that page's source, so the deliverable is a spec a developer`)
+    lines.push(`translates onto it — plus a preview carrier (a bookmarklet anyone can drag into their browser and`)
+    lines.push(`click on that page) for showing the change to someone who does not have this workbench.`)
   } else {
-    lines.push(`This is a **from-scratch** prototype: base.html is ours. It may have been written by hand,`)
-    lines.push(`captured from a live page, or imported from another prototype; either way the whole document`)
-    lines.push(`is editable and there is nothing to keep in sync. A new one has no base.html yet — that is a`)
-    lines.push(`starting state, not a mistake. Never re-capture over an existing base.html, and do not import`)
-    lines.push(`another prototype's page over it either: both replace the document outright, discarding edits`)
-    lines.push(`without warning.`)
+    lines.push(`This is a **from-scratch** prototype: base.html is ours, so there is no external page to keep`)
+    lines.push(`in sync. A new one has no base.html yet — that is a starting state, not a mistake. Write it`)
+    lines.push(`yourself, or "prototype-import --from <slug>" to start from another prototype's page and`)
+    lines.push(`patches. Importing replaces the document outright, so do not import over a base.html whose`)
+    lines.push(`edits you would lose without warning.`)
   }
   lines.push('')
 
@@ -183,15 +190,18 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
   lines.push('')
 
   // Base page first: without it nothing can be replayed, and the agent must not
-  // write patches into a prototype that has no page to apply them to.
-  if (ctx.baseHtmlPath) {
+  // write patches into a prototype that has no page to apply them to. Where the
+  // page comes from differs by kind, so saying "no base.html yet" to an overlay
+  // would send the agent looking for a file that is never going to exist.
+  if (ctx.kind === 'overlay') {
+    lines.push(`Base page: the live target page above. There is no base.html and none is wanted — a copy`)
+    lines.push(`would run none of that page's own JavaScript and carry none of its session.`)
+  } else if (ctx.baseHtmlPath) {
     lines.push(`Base page: ${sanitize(ctx.baseHtmlPath)}`)
   } else {
-    lines.push(`Base page: none yet. Patches have nothing to apply to until one exists. To get one: have the`)
-    lines.push(`user open the product in a browser window (any address — a dev server, a test environment, or`)
-    lines.push(`production) and press "Capture base", which stores the *rendered* DOM; or write base.html`)
-    lines.push(`yourself. The user can also import another prototype's page from the app, which brings its`)
-    lines.push(`document and its patches over together.`)
+    lines.push(`Base page: none yet. Patches have nothing to apply to until one exists. Write base.html`)
+    lines.push(`yourself with the Write tool, or "prototype-import --from <slug>" to start from another`)
+    lines.push(`prototype's page and patches.`)
   }
   lines.push('')
 
@@ -201,6 +211,18 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
   lines.push(`To add a UI change, write a new file (e.g. patches/A-002-highlight.css) with the Write tool —`)
   lines.push(`do not edit base.html for presentation work, and do not rewrite an existing patch file owned`)
   lines.push(`by another lane. Every patch is replayed on reload, so the page state is reproducible.`)
+  lines.push('')
+  // These rules exist because the patches are also shipped as one script that
+  // someone runs on a page we do not control. They are cheap to follow now and
+  // expensive to discover later (the failure is "it looked right in the preview
+  // and did nothing on the real page").
+  lines.push(`Write each patch for the way it will be *replayed*, not just for the state you can see: it may run`)
+  lines.push(`after the page has rendered, and more than once (a second click, a single-page view change). Read`)
+  lines.push(`what is on the page rather than assuming it, wait for an element instead of querying once, and keep`)
+  lines.push(`each patch idempotent — appending or inserting twice duplicates something. Keep the set small and`)
+  lines.push(`delete patches that no longer change anything: all of them travel inside one bookmark URL. Keep the`)
+  lines.push(`source readable — no minifying, no obfuscating: whoever receives the preview is asked to run it on`)
+  lines.push(`their page, and being able to read it is how they decide to.`)
   lines.push('')
 
   if (ctx.patches.length > 0) {

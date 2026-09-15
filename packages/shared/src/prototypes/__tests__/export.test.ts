@@ -4,6 +4,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { buildDevSpec, buildInlinedPatchProbeScript, buildSelfContainedHtml, exportPrototype, INLINED_PATCHES_ELEMENT_ID, resolvePrototypeEntry } from '../export'
 import { setPrototypeBaseUrlResolver } from '../url'
+import { writePrototypeConfig } from '../config'
 import { getPrototypeDistPath, getPrototypePatchesPath, getPrototypeDirPath } from '../storage'
 import type { PrototypePatch } from '../types'
 
@@ -66,9 +67,30 @@ describe('buildSelfContainedHtml', () => {
   it('emits executable js for a patch ending in a line comment', () => {
     const html = buildSelfContainedHtml(BASE, [{ ...jsPatch, source: '// just a comment' }])
     const start = html.indexOf('<script>') + '<script>'.length
-    const script = html.slice(start, html.indexOf('</script>'))
+    const script = html.slice(start, html.indexOf('</script>', start))
 
     expect(() => new Function(script)).not.toThrow()
+  })
+
+  /**
+   * Every js patch lands in the same `<script>`. When the transform did not
+   * terminate its statements, the second one was swallowed by a call chain on the
+   * first one's result: the exported page ran the first patch and skipped the
+   * rest, without an error anywhere.
+   */
+  it('runs every js patch in the page, not just the first', () => {
+    const first = { ...jsPatch, file: 'A-001-one.js', source: 'state.value += 1;' }
+    const second = { ...jsPatch, file: 'A-002-two.js', source: 'state.value += 10;' }
+    const html = buildSelfContainedHtml(BASE, [first, second])
+    // From the script's own end tag, not the first one in the document: the
+    // inlined-patches marker is a `<script>` too.
+    const start = html.indexOf('<script>') + '<script>'.length
+    const script = html.slice(start, html.indexOf('</script>', start))
+
+    const state = { value: 0 }
+    new Function('state', script)(state)
+
+    expect(state.value).toBe(11)
   })
 
   /**
@@ -148,6 +170,9 @@ describe('exportPrototype', () => {
     prototypeDir = getPrototypeDirPath(workspaceRoot, slug)
     patchesDir = getPrototypePatchesPath(workspaceRoot, slug)
     mkdirSync(patchesDir, { recursive: true })
+    // From-scratch is the kind that *has* a document to hand over; the overlay
+    // cases below write their own config.
+    writePrototypeConfig(workspaceRoot, slug, { kind: 'scratch' })
     writeFileSync(join(prototypeDir, 'base.html'), BASE)
     writeFileSync(join(patchesDir, 'A-001-btn.css'), '.btn{}')
   })
@@ -160,13 +185,11 @@ describe('exportPrototype', () => {
     const result = exportPrototype(workspaceRoot, slug)
 
     expect(result.applied).toBe(1)
-    expect(existsSync(result.htmlPath)).toBe(true)
-    expect(existsSync(result.specPath)).toBe(true)
-    expect(result.htmlPath.endsWith(join('dist', 'prototype.html'))).toBe(true)
+    expect(result.htmlPath?.endsWith(join('dist', 'prototype.html'))).toBe(true)
     expect(result.specPath.endsWith(join('dist', 'dev-spec.md'))).toBe(true)
-    expect(result.htmlUrl.startsWith('file://')).toBe(true)
+    expect(result.htmlUrl?.startsWith('file://')).toBe(true)
 
-    const html = readFileSync(result.htmlPath, 'utf-8')
+    const html = readFileSync(result.htmlPath!, 'utf-8')
     expect(html).toContain('.btn{}')
     expect(html).toContain('<button>Pay</button>')
 
@@ -174,7 +197,34 @@ describe('exportPrototype', () => {
     expect(spec).toContain('A-001-btn.css')
   })
 
-  it('refuses to export a prototype with no base.html', () => {
+  /**
+   * An overlay's changes belong to a page that lives elsewhere, so its HTML
+   * deliverable is not a copy of that page — it is the carrier that puts the
+   * patches onto the real page for a human (a draggable bookmarklet). The spec
+   * is still written, and still names the address.
+   */
+  it('hands an overlay a preview carrier instead of a frozen page', () => {
+    writePrototypeConfig(workspaceRoot, slug, { kind: 'overlay', targetUrl: 'https://app.example.com/checkout' })
+
+    const result = exportPrototype(workspaceRoot, slug)
+
+    expect(result.htmlPath?.endsWith(join('dist', 'overlay-preview.html'))).toBe(true)
+    const html = readFileSync(result.htmlPath!, 'utf-8')
+    expect(html).toContain('Applies to: https://app.example.com/checkout')
+    expect(html).toContain('javascript:')
+    // The frozen-deliverable name must not appear: that mechanism is gone.
+    expect(existsSync(join(getPrototypeDistPath(workspaceRoot, slug), 'prototype.html'))).toBe(false)
+    expect(readFileSync(result.specPath, 'utf-8')).toContain('Applies to: https://app.example.com/checkout')
+  })
+
+  it('refuses to export an overlay with no target page, since its preview has no page', () => {
+    writePrototypeConfig(workspaceRoot, slug, { kind: 'overlay' })
+
+    expect(() => exportPrototype(workspaceRoot, slug)).toThrow(/no target page/)
+  })
+
+  it('still refuses to export a from-scratch prototype with no document', () => {
+    writePrototypeConfig(workspaceRoot, slug, { kind: 'scratch' })
     rmSync(join(prototypeDir, 'base.html'))
 
     expect(() => exportPrototype(workspaceRoot, slug)).toThrow(/no base\.html/)
@@ -202,56 +252,70 @@ describe('resolvePrototypeEntry', () => {
     writeFileSync(join(getPrototypeDirPath(workspaceRoot, slug), 'base.html'), BASE, 'utf-8')
   }
 
-  function writeExport(): void {
-    const distDir = getPrototypeDistPath(workspaceRoot, slug)
-    mkdirSync(distDir, { recursive: true })
-    writeFileSync(join(distDir, 'prototype.html'), BASE, 'utf-8')
-  }
-
-  it('points at the origin, which is the page with every patch applied', () => {
-    writeBase()
-    setPrototypeBaseUrlResolver(() => ORIGIN)
+  /**
+   * The whole point of kinds, in one assertion: an overlay's page is the *live
+   * address* it was made against — with its own JavaScript, its own session and
+   * its own data — and the prototype is that page with the patches replayed into
+   * it. A captured copy would run none of that; it would only look like the page.
+   */
+  it('sends an overlay to its live target page, patches still to be injected', () => {
+    writePrototypeConfig(workspaceRoot, slug, { kind: 'overlay', targetUrl: 'https://app.example.com/checkout' })
 
     const entry = resolvePrototypeEntry(workspaceRoot, slug)
 
-    expect(entry.url).toBe(ORIGIN)
-    expect(entry.path.endsWith('base.html')).toBe(true)
+    expect(entry.url).toBe('https://app.example.com/checkout')
+    expect(entry.injectPatches).toBe(true)
+    // No document of its own — an overlay is an address, not a file.
+    expect(entry.path).toBeNull()
+  })
+
+  it('ignores a base.html an overlay may have lying around — the address is the page', () => {
+    writePrototypeConfig(workspaceRoot, slug, { kind: 'overlay', targetUrl: 'https://app.example.com/checkout' })
+    writeBase()
+
+    const entry = resolvePrototypeEntry(workspaceRoot, slug)
+
+    expect(entry.url).toBe('https://app.example.com/checkout')
+    expect(entry.path).toBeNull()
+  })
+
+  it('refuses an overlay with no target page, naming what to add', () => {
+    writePrototypeConfig(workspaceRoot, slug, { kind: 'overlay' })
+
+    expect(() => resolvePrototypeEntry(workspaceRoot, slug)).toThrow(/no target page/)
+    expect(() => resolvePrototypeEntry(workspaceRoot, slug)).toThrow(/targetUrl/)
   })
 
   /**
-   * The deliverable is a snapshot of an earlier state, and opening it hands back
-   * a document you cannot go on editing. It stays reachable by name; it is never
-   * the entry.
+   * A from-scratch prototype has no address to point at, so its page is whatever
+   * the host renders from its own document — and that arrives with the patches
+   * already inlined, which is why nothing has to be injected.
    */
-  it('ignores an exported deliverable even when one exists', () => {
+  it('sends a from-scratch prototype to its rendered document, nothing to inject', () => {
+    writePrototypeConfig(workspaceRoot, slug, { kind: 'scratch' })
     writeBase()
-    writeExport()
     setPrototypeBaseUrlResolver(() => ORIGIN)
 
     const entry = resolvePrototypeEntry(workspaceRoot, slug)
 
     expect(entry.url).toBe(ORIGIN)
-    expect(entry.path.endsWith('base.html')).toBe(true)
+    expect(entry.injectPatches).toBe(false)
+    expect(entry.path?.endsWith('base.html')).toBe(true)
   })
 
-  it('refuses an export-only prototype: a deliverable is not a page', () => {
-    writeExport()
+  it('refuses a from-scratch prototype with no document, naming where to start', () => {
+    writePrototypeConfig(workspaceRoot, slug, { kind: 'scratch' })
     setPrototypeBaseUrlResolver(() => ORIGIN)
 
-    expect(() => resolvePrototypeEntry(workspaceRoot, slug)).toThrow(/nothing to render/)
+    expect(() => resolvePrototypeEntry(workspaceRoot, slug)).toThrow(/no base\.html/)
+    expect(() => resolvePrototypeEntry(workspaceRoot, slug)).toThrow(/prototype-import/)
   })
 
-  it('refuses to open a prototype with no base page, naming every way to get one', () => {
-    setPrototypeBaseUrlResolver(() => ORIGIN)
-
-    expect(() => resolvePrototypeEntry(workspaceRoot, slug)).toThrow(/base\.html/)
-    expect(() => resolvePrototypeEntry(workspaceRoot, slug)).toThrow(/capture a real page/)
-    expect(() => resolvePrototypeEntry(workspaceRoot, slug)).toThrow(/import another prototype/)
-  })
-
-  // No rendering host means no address shows the patches at all: a `file://` page
-  // would be the raw base, which is exactly the thing this refuses to hand out.
+  // No rendering host means no address shows a from-scratch document's patches at
+  // all: a `file://` page would be the raw base, which is exactly the thing this
+  // refuses to hand out.
   it('refuses rather than falling back to file:// when nothing serves prototypes', () => {
+    writePrototypeConfig(workspaceRoot, slug, { kind: 'scratch' })
     writeBase()
 
     expect(() => resolvePrototypeEntry(workspaceRoot, slug)).toThrow(/No host is serving prototypes/)
