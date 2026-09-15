@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { buildDevSpec, buildSelfContainedHtml, exportPrototype, resolvePrototypeEntry } from '../export'
-import { getPrototypeDistPath, getPrototypePatchesPath, getPrototypeProjectPath } from '../storage'
+import { setPrototypeBaseUrlResolver } from '../url'
+import { getPrototypeDistPath, getPrototypePatchesPath, getPrototypeDirPath } from '../storage'
 import type { PrototypePatch } from '../types'
 
 const cssPatch: PrototypePatch = {
@@ -98,15 +99,15 @@ describe('buildDevSpec', () => {
 describe('exportPrototype', () => {
   const slug = 'checkout-flow'
   let workspaceRoot = ''
-  let projectDir = ''
+  let prototypeDir = ''
   let patchesDir = ''
 
   beforeEach(() => {
     workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-prototype-export-'))
-    projectDir = getPrototypeProjectPath(workspaceRoot, slug)
+    prototypeDir = getPrototypeDirPath(workspaceRoot, slug)
     patchesDir = getPrototypePatchesPath(workspaceRoot, slug)
     mkdirSync(patchesDir, { recursive: true })
-    writeFileSync(join(projectDir, 'base.html'), BASE)
+    writeFileSync(join(prototypeDir, 'base.html'), BASE)
     writeFileSync(join(patchesDir, 'A-001-btn.css'), '.btn{}')
   })
 
@@ -132,8 +133,8 @@ describe('exportPrototype', () => {
     expect(spec).toContain('A-001-btn.css')
   })
 
-  it('refuses to export a project with no base.html', () => {
-    rmSync(join(projectDir, 'base.html'))
+  it('refuses to export a prototype with no base.html', () => {
+    rmSync(join(prototypeDir, 'base.html'))
 
     expect(() => exportPrototype(workspaceRoot, slug)).toThrow(/no base\.html/)
   })
@@ -145,35 +146,71 @@ describe('resolvePrototypeEntry', () => {
 
   beforeEach(() => {
     workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-prototype-entry-'))
-    mkdirSync(getPrototypeProjectPath(workspaceRoot, slug), { recursive: true })
+    mkdirSync(getPrototypeDirPath(workspaceRoot, slug), { recursive: true })
   })
 
   afterEach(() => {
+    // The resolver is process-global; leaving one installed would leak into every
+    // later test in this file.
+    setPrototypeBaseUrlResolver(null)
     rmSync(workspaceRoot, { recursive: true, force: true })
   })
 
   it('prefers the exported deliverable when it exists', () => {
     mkdirSync(getPrototypeDistPath(workspaceRoot, slug), { recursive: true })
     writeFileSync(join(getPrototypeDistPath(workspaceRoot, slug), 'prototype.html'), BASE, 'utf-8')
-    writeFileSync(join(getPrototypeProjectPath(workspaceRoot, slug), 'base.html'), BASE, 'utf-8')
+    writeFileSync(join(getPrototypeDirPath(workspaceRoot, slug), 'base.html'), BASE, 'utf-8')
 
     const entry = resolvePrototypeEntry(workspaceRoot, slug)
 
+    // With no host server the fully-applied document exists only as that file.
     expect(entry.kind).toBe('export')
     expect(entry.path.endsWith(join('dist', 'prototype.html'))).toBe(true)
     expect(entry.url.startsWith('file://')).toBe(true)
   })
 
   it('falls back to base.html when nothing has been exported', () => {
-    writeFileSync(join(getPrototypeProjectPath(workspaceRoot, slug), 'base.html'), BASE, 'utf-8')
+    writeFileSync(join(getPrototypeDirPath(workspaceRoot, slug), 'base.html'), BASE, 'utf-8')
 
     const entry = resolvePrototypeEntry(workspaceRoot, slug)
 
-    expect(entry.kind).toBe('base')
+    expect(entry.kind).toBe('page')
     expect(entry.path.endsWith('base.html')).toBe(true)
   })
 
-  it('refuses to open a project with neither file, naming both options', () => {
+  /**
+   * With a host serving prototypes, the address is the origin — not whichever
+   * file happens to exist. That page is `base.html` rendered with every patch, so
+   * pointing at a file would either drop the patches (raw base) or freeze the
+   * document at export time, and neither is the prototype.
+   */
+  it('points at the origin once a host serves prototypes, even when an export exists', () => {
+    mkdirSync(getPrototypeDistPath(workspaceRoot, slug), { recursive: true })
+    writeFileSync(join(getPrototypeDistPath(workspaceRoot, slug), 'prototype.html'), BASE, 'utf-8')
+    writeFileSync(join(getPrototypeDirPath(workspaceRoot, slug), 'base.html'), BASE, 'utf-8')
+    setPrototypeBaseUrlResolver(() => 'http://checkout-flow-abc123ab.localhost:41234')
+
+    const entry = resolvePrototypeEntry(workspaceRoot, slug)
+
+    expect(entry.url).toBe('http://checkout-flow-abc123ab.localhost:41234')
+    expect(entry.kind).toBe('page')
+    expect(entry.path.endsWith('base.html')).toBe(true)
+  })
+
+  // The one case where the address cannot render: the source was deleted after
+  // exporting. Serving the frozen file beats a dead end.
+  it('falls back to the export through the origin when base.html is gone', () => {
+    mkdirSync(getPrototypeDistPath(workspaceRoot, slug), { recursive: true })
+    writeFileSync(join(getPrototypeDistPath(workspaceRoot, slug), 'prototype.html'), BASE, 'utf-8')
+    setPrototypeBaseUrlResolver(() => 'http://checkout-flow-abc123ab.localhost:41234')
+
+    const entry = resolvePrototypeEntry(workspaceRoot, slug)
+
+    expect(entry.kind).toBe('export')
+    expect(entry.url).toBe('http://checkout-flow-abc123ab.localhost:41234/dist/prototype.html')
+  })
+
+  it('refuses to open a prototype with neither file, naming both options', () => {
     expect(() => resolvePrototypeEntry(workspaceRoot, slug)).toThrow(/prototype-export/)
     expect(() => resolvePrototypeEntry(workspaceRoot, slug)).toThrow(/base\.html/)
   })

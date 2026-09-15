@@ -1,7 +1,7 @@
 /**
  * usePrototypes
  *
- * Loads workspace-scoped prototype projects and keeps them in sync with the
+ * Loads workspace-scoped prototypes and keeps them in sync with the
  * `prototypes:changed` broadcast. Mirrors the lightweight half of `useProjects`,
  * plus the fs watcher lifecycle: the broadcast only carries the changed file
  * name, so every event triggers a full re-read of the status report.

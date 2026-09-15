@@ -1,7 +1,7 @@
 /**
  * Prototype workbench artifact types.
  *
- * A prototype project lives at `{workspaceRootPath}/prototypes/{slug}/` and is
+ * A prototype lives at `{workspaceRootPath}/prototypes/{slug}/` and is
  * made of ordinary files (`base.html` + `patches/`) so it stays git-diffable and
  * editable by the agent, the control plane, or an external editor.
  *
@@ -28,14 +28,14 @@ export interface PrototypePatch {
 }
 
 /**
- * Derived index of a prototype project's patches.
+ * Derived index of a prototype's patches.
  *
  * Deliberately never hand-written: it is recomputed from disk on demand, so it
  * cannot drift and no writer has to coordinate on a shared single file.
  */
 export interface PrototypeArtifacts {
   slug: string
-  /** Absolute path to the project directory. */
+  /** Absolute path to the prototype's directory. */
   dir: string
   /** Ordered patches, ready to replay. */
   patches: PrototypePatch[]

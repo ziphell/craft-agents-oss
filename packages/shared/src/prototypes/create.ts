@@ -1,7 +1,7 @@
 /**
  * Prototype creation and base-page capture.
  *
- * A prototype project is a directory with an optional `base.html` and a
+ * A prototype is a directory with an optional `base.html` and a
  * `patches/` folder. `base.html` has one primary origin and one fallback:
  *
  * 1. **Captured page** (the main path) — the rendered DOM of a real page, read
@@ -22,7 +22,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { getPrototypePatchesPath, getPrototypeProjectPath } from './storage.ts'
+import { getPrototypePatchesPath, getPrototypeDirPath } from './storage.ts'
 import { DEFAULT_PROTOTYPE_KIND, writePrototypeConfig, type PrototypeKind } from './config.ts'
 
 const BASE_FILENAME = 'base.html'
@@ -44,7 +44,7 @@ export interface CreatePrototypeInput {
 
 export interface CreatedPrototype {
   slug: string
-  /** Absolute project directory. */
+  /** Absolute path to the prototype's directory. */
   dir: string
   /**
    * Absolute path to `base.html`. This is where the file will live — it does not
@@ -72,12 +72,12 @@ export function prototypeSlugFromName(name: string): string {
 }
 
 /**
- * Create a prototype project directory.
+ * Create a prototype directory.
  *
  * No `base.html` is seeded — see the module note. The returned `baseHtmlPath` is
  * where it *will* live, once captured or written by hand.
  *
- * @throws when the name produces an empty slug, or when the project already
+ * @throws when the name produces an empty slug, or when the prototype already
  *   exists — silently reusing a directory would mix two prototypes' patches.
  */
 export function createPrototype(workspaceRootPath: string, input: CreatePrototypeInput): CreatedPrototype {
@@ -88,7 +88,7 @@ export function createPrototype(workspaceRootPath: string, input: CreatePrototyp
     throw new Error(`Prototype name "${input.name}" does not produce a usable slug. Use letters or digits.`)
   }
 
-  const dir = getPrototypeProjectPath(workspaceRootPath, slug)
+  const dir = getPrototypeDirPath(workspaceRootPath, slug)
   const baseHtmlPath = join(dir, BASE_FILENAME)
 
   if (existsSync(dir)) {
@@ -99,7 +99,7 @@ export function createPrototype(workspaceRootPath: string, input: CreatePrototyp
 
   mkdirSync(dir, { recursive: true })
   mkdirSync(getPrototypePatchesPath(workspaceRootPath, slug), { recursive: true })
-  // Written before anything can observe the project: a prototype whose kind is
+  // Written before anything can observe the prototype: a prototype whose kind is
   // unknown would render the wrong guidance (capture vs. write-your-own).
   writePrototypeConfig(workspaceRootPath, slug, { kind, targetUrl: input.targetUrl })
 
@@ -119,10 +119,10 @@ export interface CapturedBase {
  * The caller supplies the markup because only it can read the rendered document
  * (via CDP) — see the module note on why fetching the URL is not equivalent.
  *
- * @throws when the project does not exist, or the markup is not a whole document.
+ * @throws when the prototype does not exist, or the markup is not a whole document.
  */
 export function writePrototypeBase(workspaceRootPath: string, slug: string, html: string): CapturedBase {
-  const dir = getPrototypeProjectPath(workspaceRootPath, slug)
+  const dir = getPrototypeDirPath(workspaceRootPath, slug)
   if (!existsSync(dir)) {
     throw new Error(`Prototype "${slug}" does not exist. Create it first.`)
   }
@@ -142,7 +142,7 @@ export function writePrototypeBase(workspaceRootPath: string, slug: string, html
 
 /** Read a prototype's base page, or null when it has none. */
 export function readPrototypeBase(workspaceRootPath: string, slug: string): string | null {
-  const baseHtmlPath = join(getPrototypeProjectPath(workspaceRootPath, slug), BASE_FILENAME)
+  const baseHtmlPath = join(getPrototypeDirPath(workspaceRootPath, slug), BASE_FILENAME)
   if (!existsSync(baseHtmlPath)) return null
   return readFileSync(baseHtmlPath, 'utf-8')
 }

@@ -10,7 +10,7 @@ import {
   getContractPathsPath,
   getPrototypeDistPath,
   getPrototypePatchesPath,
-  getPrototypeProjectPath,
+  getPrototypeDirPath,
   isPrototypeLane,
   listPrototypeStatuses,
   resolvePrototypeOwnership,
@@ -98,10 +98,10 @@ describe('resolvePrototypeOwnership', () => {
 
   beforeEach(() => {
     workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-ownership-'))
-    const projectDir = getPrototypeProjectPath(workspaceRoot, slug)
+    const prototypeDir = getPrototypeDirPath(workspaceRoot, slug)
     const patchesDir = getPrototypePatchesPath(workspaceRoot, slug)
     mkdirSync(patchesDir, { recursive: true })
-    writeFileSync(join(projectDir, 'base.html'), '<html></html>', 'utf-8')
+    writeFileSync(join(prototypeDir, 'base.html'), '<html></html>', 'utf-8')
     writeFileSync(join(patchesDir, 'A-001-btn.css'), '.btn{}', 'utf-8')
     writeFileSync(join(patchesDir, 'oops.css'), '.x{}', 'utf-8')
     writeFileSync(join(patchesDir, '.DS_Store'), '', 'utf-8')
@@ -111,7 +111,7 @@ describe('resolvePrototypeOwnership', () => {
     rmSync(workspaceRoot, { recursive: true, force: true })
   })
 
-  it('walks the project, skipping hidden files, and reports violations', () => {
+  it('walks the prototype, skipping hidden files, and reports violations', () => {
     const report = resolvePrototypeOwnership(workspaceRoot, slug)
 
     expect(report.inspected).toBe(3)
@@ -121,7 +121,7 @@ describe('resolvePrototypeOwnership', () => {
     expect(report.entries.some((entry) => entry.path === '.DS_Store')).toBe(false)
   })
 
-  it('reports nothing for a project that does not exist', () => {
+  it('reports nothing for a prototype that does not exist', () => {
     expect(resolvePrototypeOwnership(workspaceRoot, 'nope')).toEqual({
       entries: [],
       violations: [],
@@ -157,7 +157,7 @@ describe('listPrototypeStatuses', () => {
     expect(slugs).toEqual(['alpha', 'checkout-flow'])
   })
 
-  it('includes a project that has patches but no base.html, and says so', () => {
+  it('includes a prototype that has patches but no base.html, and says so', () => {
     const patchesDir = getPrototypePatchesPath(workspaceRoot, 'draft')
     mkdirSync(patchesDir, { recursive: true })
     writeFileSync(join(patchesDir, 'A-001-btn.css'), '.btn{}', 'utf-8')
@@ -176,10 +176,10 @@ describe('buildPrototypeStatus', () => {
 
   beforeEach(() => {
     workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-status-'))
-    const projectDir = getPrototypeProjectPath(workspaceRoot, slug)
+    const prototypeDir = getPrototypeDirPath(workspaceRoot, slug)
     const patchesDir = getPrototypePatchesPath(workspaceRoot, slug)
     mkdirSync(patchesDir, { recursive: true })
-    writeFileSync(join(projectDir, 'base.html'), '<html></html>', 'utf-8')
+    writeFileSync(join(prototypeDir, 'base.html'), '<html></html>', 'utf-8')
     writeFileSync(join(patchesDir, 'A-001-btn.css'), '.btn{}', 'utf-8')
     writeFileSync(join(patchesDir, 'oops.css'), '.x{}', 'utf-8')
 
@@ -208,7 +208,7 @@ describe('buildPrototypeStatus', () => {
 
     expect(status.slug).toBe(slug)
     expect(status.baseHtmlPresent).toBe(true)
-    expect(status.baseHtmlPath).toBe(join(getPrototypeProjectPath(workspaceRoot, slug), 'base.html'))
+    expect(status.baseHtmlPath).toBe(join(getPrototypeDirPath(workspaceRoot, slug), 'base.html'))
     // Only the well-named patch counts; the misnamed one surfaces as a violation.
     expect(status.patches.total).toBe(1)
     expect(status.patches.byLane).toEqual({ A: 1 })
@@ -227,7 +227,7 @@ describe('buildPrototypeStatus', () => {
     expect(status.lanes.A).toContain('UI')
   })
 
-  it('reports an empty project without throwing', () => {
+  it('reports an empty prototype without throwing', () => {
     const status = buildPrototypeStatus(workspaceRoot, 'does-not-exist')
 
     expect(status.baseHtmlPresent).toBe(false)

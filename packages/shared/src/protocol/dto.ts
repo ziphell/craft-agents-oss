@@ -458,7 +458,7 @@ export type SessionCommand =
   | { type: 'setSources'; sourceSlugs: string[] }
   | { type: 'setLabels'; labels: string[] }
   | { type: 'setProjectId'; projectId: string | null }
-  /** Bind or unbind this session to a prototype project. Pass null to unbind. */
+  /** Bind or unbind this session to a prototype. Pass null to unbind. */
   | { type: 'setPrototypeSlug'; prototypeSlug: string | null }
   | { type: 'setKanbanColumn'; column: string | null }
   | { type: 'showInFinder' }

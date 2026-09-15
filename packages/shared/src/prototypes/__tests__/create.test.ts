@@ -5,7 +5,7 @@ import { tmpdir } from 'os'
 import {
   createPrototype,
   getPrototypePatchesPath,
-  getPrototypeProjectPath,
+  getPrototypeDirPath,
   prototypeSlugFromName,
   readPrototypeBase,
   writePrototypeBase,
@@ -45,7 +45,7 @@ describe('createPrototype', () => {
     rmSync(workspaceRoot, { recursive: true, force: true })
   })
 
-  it('creates the project and its patches folder, and seeds no base page', () => {
+  it('creates the prototype and its patches folder, and seeds no base page', () => {
     const created = createPrototype(workspaceRoot, { name: 'Checkout Flow' })
 
     expect(created.slug).toBe('checkout-flow')
@@ -56,7 +56,7 @@ describe('createPrototype', () => {
     expect(readPrototypeBase(workspaceRoot, 'checkout-flow')).toBeNull()
   })
 
-  it('refuses to reuse an existing project rather than mixing two sets of patches', () => {
+  it('refuses to reuse an existing prototype rather than mixing two sets of patches', () => {
     createPrototype(workspaceRoot, { name: 'Checkout Flow' })
 
     expect(() => createPrototype(workspaceRoot, { name: 'checkout-flow' })).toThrow(/already exists/)
@@ -65,7 +65,7 @@ describe('createPrototype', () => {
   it('refuses a name that yields no usable slug', () => {
     expect(() => createPrototype(workspaceRoot, { name: '!!!' })).toThrow(/usable slug/)
     // …and leaves nothing behind.
-    expect(existsSync(getPrototypeProjectPath(workspaceRoot, ''))).toBe(false)
+    expect(existsSync(getPrototypeDirPath(workspaceRoot, ''))).toBe(false)
   })
 })
 
@@ -101,16 +101,16 @@ describe('writePrototypeBase', () => {
     )
   })
 
-  it('refuses to write into a project that does not exist', () => {
+  it('refuses to write into a prototype that does not exist', () => {
     expect(() => writePrototypeBase(workspaceRoot, 'nope', '<html></html>')).toThrow(/does not exist/)
   })
 })
 
 describe('readPrototypeBase', () => {
-  it('returns null when the project has no base page', () => {
+  it('returns null when the prototype has no base page', () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-read-base-'))
     try {
-      mkdirSync(getPrototypeProjectPath(workspaceRoot, 'empty'), { recursive: true })
+      mkdirSync(getPrototypeDirPath(workspaceRoot, 'empty'), { recursive: true })
       expect(readPrototypeBase(workspaceRoot, 'empty')).toBeNull()
     } finally {
       rmSync(workspaceRoot, { recursive: true, force: true })

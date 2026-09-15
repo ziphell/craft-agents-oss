@@ -65,7 +65,7 @@ describe('formatPrototypeContextForPrompt', () => {
     expect(text).not.toContain('evidence, not material')
   })
 
-  // A reference is a relation between two independent projects, so the rule must
+  // A reference is a relation between two independent prototypes, so the rule must
   // not depend on what kind either side is — scratch-on-scratch is the same thing
   // as scratch-on-overlay.
   it('states the same rule for a scratch reference as for an overlay one', () => {

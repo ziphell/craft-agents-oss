@@ -1,5 +1,5 @@
 /**
- * Jotai atom for the active workspace's prototype projects (read once on
+ * Jotai atom for the active workspace's prototypes (read once on
  * workspace switch, refreshed on the `prototypes:changed` broadcast). Components
  * that need prototypes in isolation from AppShell read this atom.
  */

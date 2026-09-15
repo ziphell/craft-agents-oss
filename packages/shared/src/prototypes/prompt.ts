@@ -16,7 +16,7 @@
 
 import { existsSync } from 'fs'
 import { buildPrototypeStatus } from './status.ts'
-import { getPrototypeProjectPath } from './storage.ts'
+import { getPrototypeDirPath } from './storage.ts'
 import { PROTOTYPE_LANES } from './ownership.ts'
 import { readPrototypeConfig, type PrototypeKind } from './config.ts'
 
@@ -31,9 +31,9 @@ export interface PrototypePromptContext {
    * the agent knows each one's kind without having to read its config.
    */
   references: Array<{ slug: string; kind: PrototypeKind; targetUrl?: string }>
-  /** Absolute project directory (patches/ and base.html live here). */
+  /** Absolute path to the prototype's directory (patches/ and base.html live here). */
   dir: string
-  /** Absolute path to base.html, or null when the project has none yet. */
+  /** Absolute path to base.html, or null when the prototype has none yet. */
   baseHtmlPath: string | null
   /** Replayable patches, in replay order. Misnamed files are excluded. */
   patches: Array<{ file: string; lane: string | null; kind: string }>
@@ -53,7 +53,7 @@ export interface PrototypePromptContext {
 /**
  * Build the snapshot for a bound prototype.
  *
- * Returns null when the project does not exist (deleted while the session kept
+ * Returns null when the prototype does not exist (deleted while the session kept
  * its binding), so a stale binding degrades to an unbound conversation instead
  * of failing the turn.
  */
@@ -62,9 +62,9 @@ export function buildPrototypePromptContext(
   slug: string,
 ): PrototypePromptContext | null {
   // Checked before the status read rather than after: `buildPrototypeStatus`
-  // reports a missing project as an empty one, so existence is not inferable
+  // reports a missing prototype as an empty one, so existence is not inferable
   // from its output.
-  if (!existsSync(getPrototypeProjectPath(workspaceRootPath, slug))) return null
+  if (!existsSync(getPrototypeDirPath(workspaceRootPath, slug))) return null
 
   const status = buildPrototypeStatus(workspaceRootPath, slug)
 
@@ -157,7 +157,7 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
   // notes), so they cannot be deferred to a footnote.
   //
   // The rule is deliberately stated once, without regard to what kind either side
-  // is: a reference is a relation between two independent projects, and a scratch
+  // is: a reference is a relation between two independent prototypes, and a scratch
   // referencing another scratch works exactly like one referencing an overlay.
   if (ctx.references.length > 0) {
     lines.push(`This prototype is being built with reference to other prototypes:`)
@@ -181,7 +181,7 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
   lines.push('')
 
   // Base page first: without it nothing can be replayed, and the agent must not
-  // write patches into a project that has no page to apply them to.
+  // write patches into a prototype that has no page to apply them to.
   if (ctx.baseHtmlPath) {
     lines.push(`Base page: ${sanitize(ctx.baseHtmlPath)}`)
   } else {

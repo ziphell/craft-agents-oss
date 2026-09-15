@@ -190,7 +190,7 @@ Returns a **stable selector** resolved as `data-testid` → `id` → `:nth-of-ty
 Use this instead of guessing a CSS selector when the target is easier to point at than to describe (browser-based design/prototyping work).
 
 ### `prototype-apply <slug>` / `prototype-clear <slug>`
-Replay (or remove) a prototype project's patches in the current browser.
+Replay (or remove) a prototype's patches in the current browser.
 
 A prototype lives under `{workspace}/prototypes/{slug}/` and its patches are ordinary files named `{lane}-{nnn}-{slug}.{css|js}`:
 
@@ -210,13 +210,13 @@ Write the prototype's deliverables into `prototypes/{slug}/dist/`:
 - `prototype.html` — one self-contained file (css inlined into `<head>`, js inlined before `</body>`), so it runs standalone with no network and no workbench.
 - `dev-spec.md` — the change list: every patch in replay order, with its lane, kind and full content.
 
-The command prints a `file://` URL for the HTML. Verify the deliverable the same way you view anything else:
+The command prints a URL for the HTML. Each prototype is served from its own loopback HTTP origin — `http://<slug>-<hash>.localhost:<port>/…`, with the prototype's directory as that origin's root — rather than `file://`, which has an opaque origin: no cookie jar, no relative `fetch`/XHR (so the mock layer would never see a request) and no ES modules. Root-absolute paths (`/assets/app.css`) and SPA history routes therefore work. Verify the deliverable the same way you view anything else:
 
 ```
-navigate file:///…/prototypes/checkout-flow/dist/prototype.html
+navigate http://checkout-flow-9f3a2b1c.localhost:9793/dist/prototype.html
 ```
 
-Exports fail with a clear error when the project has no `base.html` — there would be nothing to apply the patches to.
+Exports fail with a clear error when the prototype has no `base.html` — there would be nothing to apply the patches to.
 
 ### `prototype-contract-compose <slug> [--service <svc>]`
 Compose the API contract fragments into one spec.
@@ -271,7 +271,7 @@ The command reports endpoints that declare no `x-mock` (they pass through to the
 While the mock is active the debugger stays attached — CDP drops interception on detach, so the client deliberately holds it.
 
 ### `prototype-status <slug>`
-Read-only report on a prototype project:
+Read-only report on a prototype:
 
 ```
 Prototype "checkout-flow"
@@ -295,7 +295,9 @@ Declared lanes: `A` UI/interaction (patches), `B` service contract (`paths/`, `c
 ### `prototype-open <slug>`
 Open a prototype in the browser.
 
-Picks the **exported deliverable** (`dist/prototype.html`) when it exists, because that is the artifact being shipped; otherwise falls back to `base.html`. When neither exists the command fails with both remedies named, rather than letting the browser show a confusing load error.
+Opens the prototype's **origin root**, which the workbench serves as `base.html` rendered with every patch applied — computed per request, so it is byte-identical to what `prototype-export` would write right now. That is why the address is not a file: pointing at `base.html` would show none of the patches, and pointing at a previously exported `dist/prototype.html` would show a document frozen at export time. Individual files stay openable by name (`/base.html`, `/dist/prototype.html`).
+
+When there is no `base.html` to render (deleted after exporting), the address falls back to the frozen deliverable. With neither file the command fails with both remedies named, rather than letting the browser show a confusing load error.
 
 Starting from nothing needs no special command: write `prototypes/{slug}/base.html` (the agent's `Write` tool is allowed to), then run `prototype-open`.
 

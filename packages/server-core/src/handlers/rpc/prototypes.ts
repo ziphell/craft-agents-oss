@@ -93,7 +93,7 @@ export function registerPrototypesHandlers(server: RpcServer, deps: HandlerDeps)
     return result
   })
 
-  // Create a prototype project (the panel's "New Prototype").
+  // Create a prototype (the panel's "New Prototype").
   server.handle(
     RPC_CHANNELS.prototypes.CREATE,
     async (_ctx, workspaceId: string, input: { name?: string; kind?: PrototypeKind; targetUrl?: string }) => {

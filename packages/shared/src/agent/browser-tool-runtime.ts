@@ -2059,15 +2059,14 @@ async function executeSingleCommand(args: {
 
     return {
       output: [
-        `Prototype "${slug}": opened ${entry.kind === 'export' ? 'the exported deliverable' : 'base.html'}`,
+        `Prototype "${slug}": opened its page — every patch applied, built from`,
         `  ${entry.path}`,
+        ...(entry.kind === 'export'
+          // No base page left to build from, so the address falls back to the file.
+          ? ['  (no base page exists, so this is the frozen exported deliverable — it may be stale)']
+          : []),
         `  Title: ${result.title || '(untitled)'}`,
-        entry.kind === 'base'
-          ? '  Note: this is the un-exported page — patches are replayed separately with prototype-apply.'
-          : '',
-      ]
-        .filter(Boolean)
-        .join('\n'),
+      ].join('\n'),
       appendReleaseHint: true,
     };
   }

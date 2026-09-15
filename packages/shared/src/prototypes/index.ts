@@ -8,7 +8,7 @@
 export type { PrototypeArtifacts, PrototypePatch, PrototypePatchKind } from './types.ts'
 
 export {
-  getPrototypeProjectPath,
+  getPrototypeDirPath,
   getPrototypePatchesPath,
   getPrototypeDistPath,
   getPrototypePatchKey,
@@ -92,6 +92,9 @@ export {
 
 export type { PrototypeEntry, PrototypeExportResult } from './export.ts'
 export { buildSelfContainedHtml, buildDevSpec, exportPrototype, resolvePrototypeEntry } from './export.ts'
+
+export type { PrototypeBaseUrlResolver } from './url.ts'
+export { prototypeDocumentUrl, prototypeOriginUrl, setPrototypeBaseUrlResolver } from './url.ts'
 
 export type { PrototypePromptContext } from './prompt.ts'
 export { buildPrototypePromptContext, formatPrototypeContextForPrompt } from './prompt.ts'

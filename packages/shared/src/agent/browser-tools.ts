@@ -162,7 +162,7 @@ export interface BrowserPaneFns {
   getBoundPrototypeSlug?: () => string | null;
   /** Every prototype in the workspace, with its derived status. */
   listPrototypes: () => Promise<PrototypeStatus[]>;
-  /** Create a prototype project. `kind` defaults to `overlay`. */
+  /** Create a prototype. `kind` defaults to `overlay`. */
   createPrototype: (input: {
     name: string;
     kind?: PrototypeKind;
@@ -173,14 +173,14 @@ export interface BrowserPaneFns {
   bindPrototype: (slug: string | null) => Promise<void>;
   /**
    * Declare that `slug` studies `referenceSlug` (plan §14). The two stay separate
-   * projects, which is what keeps the reference's patches out of `slug`'s
+   * prototypes, which is what keeps the reference's patches out of `slug`'s
    * deliverable — so this is the only supported way to connect them.
    */
   linkPrototypeReference: (slug: string, referenceSlug: string) => Promise<{ references: string[] }>;
   /** Drop the relation. Idempotent, and how a dangling reference is cleaned up. */
   unlinkPrototypeReference: (slug: string, referenceSlug: string) => Promise<{ references: string[] }>;
   /**
-   * Replay a prototype project's patches in this session's browser and register
+   * Replay a prototype's patches in this session's browser and register
    * them for future documents (so they survive a reload).
    */
   applyPrototype: (slug: string) => Promise<{ slug: string; applied: number; files: string[] }>;
@@ -216,13 +216,13 @@ export interface BrowserPaneFns {
   /** Stop serving the mock; requests fall through to the real network. */
   clearMock: () => Promise<void>;
   /**
-   * Inspect a prototype project: patches, services, contract coverage, exports
+   * Inspect a prototype: patches, services, contract coverage, exports
    * and ownership violations. Pure file inspection — no browser needed.
    */
   prototypeStatus: (slug: string) => Promise<PrototypeStatus>;
   /**
    * Resolve which file to show for a prototype (the exported deliverable when it
-   * exists, otherwise `base.html`) and return its `file://` URL.
+   * exists, otherwise `base.html`) and return the URL to open it at.
    */
   prototypeEntry: (options: { slug: string }) => Promise<PrototypeEntry>;
   focusWindow: (instanceId?: string) => Promise<{ instanceId: string; title: string; url: string }>;
@@ -269,14 +269,16 @@ Array mode bypasses string parsing and preserves raw arguments exactly (recommen
 - \`["evaluate", "var x = 1; var y = 2; x + y"]\`
 - \`["paste", "Name\\tAge\\nAlice\\t30"]\`
 
-Prototypes — one project per requirement, each a folder with \`base.html\` + \`patches/\`.
+Prototypes — one per requirement, each a folder with \`base.html\` + \`patches/\`. A prototype is NOT a
+project: projects are separate containers that group sessions, tasks and shared assets, and a prototype
+is never nested inside one.
 Two kinds, fixed when the prototype is created:
 - **overlay** — patches injected on top of a page that belongs to someone else. \`base.html\` is a
   *snapshot* of that page, so it goes stale when that side ships a change: re-capture instead of
   patching a stale base. The deliverable is a spec a developer translates, not a patch anyone applies.
 - **scratch** — \`base.html\` is ours (hand-written, or seeded by capturing a page studied first). Never
   re-capture over it: that would discard edits silently.
-Projects are independent — each keeps its own patches, and one can *reference* another without merging
+Prototypes are independent — each keeps its own patches, and one can *reference* another without merging
 them. Referencing is how you build one thing by studying another. \`prototype-list\` shows every
 prototype with its kind, target page, and which ones reference which.
 

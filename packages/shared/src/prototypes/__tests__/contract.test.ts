@@ -84,7 +84,7 @@ describe('contract service discovery', () => {
     mkdirSync(join(servicesPath, '.hidden'), { recursive: true })
 
     expect(listContractServices(workspaceRoot, slug)).toEqual(['billing', 'checkout-api'])
-    expect(listContractServices(workspaceRoot, 'no-such-project')).toEqual([])
+    expect(listContractServices(workspaceRoot, 'no-such-prototype')).toEqual([])
   })
 
   it('resolves an explicit service, a single service, and refuses ambiguity', () => {

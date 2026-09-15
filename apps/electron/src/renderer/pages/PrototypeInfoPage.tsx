@@ -2,7 +2,7 @@
  * PrototypeInfoPage
  *
  * Workspace-prototype detail page: the workbench control plane for a single
- * prototype project. Shows what the derived status report already knows
+ * prototype. Shows what the derived status report already knows
  * (base.html, patches by lane, per-service contract coverage, dist/, ownership)
  * and exposes the three actions that mutate or re-read it: Open, Export, Refresh.
  *

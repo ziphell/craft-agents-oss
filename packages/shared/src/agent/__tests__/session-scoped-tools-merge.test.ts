@@ -87,9 +87,9 @@ describe('session-scoped tool callback merge', () => {
         lanes: {},
       }),
       prototypeEntry: async ({ slug }: { slug: string }) => ({
-        kind: 'base' as const,
+        kind: 'page' as const,
         path: '/tmp/base.html',
-        url: 'file:///tmp/base.html',
+        url: 'http://checkout-flow.localhost:41234/',
       }),
       getBoundPrototypeSlug: () => null,
       listPrototypes: async () => [],

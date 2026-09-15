@@ -18,7 +18,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
-import { getPrototypeDistPath, getPrototypeProjectPath } from './storage.ts'
+import { getPrototypeDistPath, getPrototypeDirPath } from './storage.ts'
 
 const SERVICES_DIRNAME = 'services'
 const PATHS_DIRNAME = 'paths'
@@ -77,7 +77,7 @@ export interface ContractEndpoint {
 // ---------------------------------------------------------------------------
 
 export function getPrototypeServicesPath(workspaceRootPath: string, slug: string): string {
-  return join(getPrototypeProjectPath(workspaceRootPath, slug), SERVICES_DIRNAME)
+  return join(getPrototypeDirPath(workspaceRootPath, slug), SERVICES_DIRNAME)
 }
 
 export function getContractServicePath(workspaceRootPath: string, slug: string, serviceSlug: string): string {

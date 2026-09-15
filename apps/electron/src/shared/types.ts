@@ -489,7 +489,7 @@ export interface ElectronAPI {
   /** Write `dist/*` for a prototype so it can be handed to developers. */
   exportPrototype(workspaceId: string, slug: string): Promise<unknown>
   /**
-   * Create a prototype project. `kind` defaults to `overlay` (inject patches into
+   * Create a prototype. `kind` defaults to `overlay` (inject patches into
    * a real page, optionally recording its `targetUrl`); `scratch` owns its own
    * `base.html`. No base page is seeded either way — see create.ts.
    */

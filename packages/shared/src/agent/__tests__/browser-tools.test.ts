@@ -107,9 +107,9 @@ function createMockFns(): BrowserPaneFns {
       lanes: { A: 'UI / interaction (patches)' },
     }),
     prototypeEntry: async ({ slug }: { slug: string }) => ({
-      kind: 'export' as const,
-      path: `/tmp/prototypes/${slug}/dist/prototype.html`,
-      url: `file:///tmp/prototypes/${slug}/dist/prototype.html`,
+      kind: 'page' as const,
+      path: `/tmp/prototypes/${slug}/base.html`,
+      url: `http://${slug}.localhost:41234/`,
     }),
     // Unbound by default; tests that exercise the no-slug fallback override it.
     getBoundPrototypeSlug: () => null,
@@ -204,6 +204,15 @@ describe('createBrowserTools', () => {
   it('exposes only browser_tool', () => {
     const names = tools.map((t: any) => t.name)
     expect(names).toEqual(['browser_tool'])
+  })
+
+  // The description is always in the model's context, and the model also sees a
+  // real <project_context>. Without this line the two meanings of "project"
+  // collide with nothing to tell them apart.
+  it('tells the model that a prototype is not a project', () => {
+    const tool = tools.find((t: any) => t.name === 'browser_tool') as any
+    expect(tool.description).toContain('A prototype is NOT a')
+    expect(tool.description).toContain('projects are separate containers')
   })
 
   describe('browser_tool', () => {
@@ -1139,7 +1148,7 @@ describe('createBrowserTools', () => {
       expect(scratch.content[0].text).toContain('references: none')
     })
 
-    it('routes prototype-open to the exported deliverable', async () => {
+    it('routes prototype-open to the prototype page', async () => {
       let navigated = ''
       mockFns.navigate = async (url) => {
         navigated = url
@@ -1148,23 +1157,27 @@ describe('createBrowserTools', () => {
 
       const result = await executeTool(tools, 'browser_tool', { command: 'prototype-open checkout-flow' })
 
-      expect(navigated).toContain('dist/prototype.html')
-      expect(result.content[0].text).toContain('opened the exported deliverable')
+      // The address is the prototype's origin — the page built from base.html with
+      // every patch applied — not a file path.
+      expect(navigated).toBe('http://checkout-flow.localhost:41234/')
+      expect(result.content[0].text).toContain('every patch applied')
+      expect(result.content[0].text).toContain('base.html')
       expect(result.content[0].text).toContain('Checkout')
+      expect(result.content[0].text).not.toContain('frozen')
     })
 
-    it('notes when prototype-open falls back to the un-exported base.html', async () => {
+    it('says so when the address has to fall back to a stale export', async () => {
       mockFns.prototypeEntry = async ({ slug }) => ({
-        kind: 'base',
-        path: `/tmp/prototypes/${slug}/base.html`,
-        url: `file:///tmp/prototypes/${slug}/base.html`,
+        kind: 'export',
+        path: `/tmp/prototypes/${slug}/dist/prototype.html`,
+        url: `http://${slug}.localhost:41234/dist/prototype.html`,
       })
       mockFns.navigate = async (url) => ({ url, title: 'Draft' })
 
       const result = await executeTool(tools, 'browser_tool', { command: 'prototype-open checkout-flow' })
 
-      expect(result.content[0].text).toContain('opened base.html')
-      expect(result.content[0].text).toContain('un-exported page')
+      expect(result.content[0].text).toContain('frozen exported deliverable')
+      expect(result.content[0].text).toContain('may be stale')
     })
 
     it('requires a slug for prototype-open', async () => {

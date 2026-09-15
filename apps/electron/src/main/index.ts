@@ -111,6 +111,7 @@ import { handleDeepLink } from './deep-link'
 import { BrowserPaneManager } from './browser-pane-manager'
 import { OAuthFlowStore } from '@craft-agent/shared/auth'
 import { registerThumbnailScheme, registerThumbnailHandler } from './thumbnail-protocol'
+import { installPrototypeBaseUrlResolver, startPrototypeServer } from './prototype-server'
 import log, { isDebugMode, mainLog, getLogFilePath, getMessagingGatewayLogFilePath, messagingGatewayLog, autoUpdateLog } from './logger'
 import { setPerfEnabled, enableDebug } from '@craft-agent/shared/utils'
 import { registerPiModelResolver } from '@craft-agent/shared/config'
@@ -417,6 +418,13 @@ app.whenReady().then(async () => {
 
   // Register thumbnail:// protocol handler (scheme was registered earlier, before app.whenReady)
   registerThumbnailHandler()
+
+  // Prototype documents open over a loopback HTTP origin instead of file://, which
+  // has an opaque origin: no cookie jar, no relative fetch (so the mock layer never
+  // sees a request to answer), no ES modules. Installed after the start attempt
+  // either way — with no port the resolver returns null and URLs stay file://.
+  await startPrototypeServer()
+  installPrototypeBaseUrlResolver()
 
   // Re-apply proxy settings now that Electron sessions are available
   // (first call before app.whenReady only configured Node-level proxy)

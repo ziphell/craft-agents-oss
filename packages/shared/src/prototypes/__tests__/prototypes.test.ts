@@ -52,8 +52,8 @@ describe('prototype patch index', () => {
     expect(scanPrototypePatches(workspaceRoot, slug).map((patch) => patch.file)).toEqual(['A-001-ok.css'])
   })
 
-  it('returns an empty index when the project has no patches directory', () => {
-    expect(scanPrototypePatches(workspaceRoot, 'missing-project')).toEqual([])
+  it('returns an empty index when the prototype has no patches directory', () => {
+    expect(scanPrototypePatches(workspaceRoot, 'missing-prototype')).toEqual([])
   })
 
   it('exposes the derived index through loadPrototypeArtifacts', () => {

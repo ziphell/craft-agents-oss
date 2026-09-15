@@ -118,7 +118,7 @@ export const RPC_CHANNELS = {
     ENTRY: 'prototypes:entry',
     /** Write `dist/*` so the prototype can be handed to developers. */
     EXPORT: 'prototypes:export',
-    /** Create a prototype project (the panel's "New Prototype"). */
+    /** Create a prototype (the panel's "New Prototype"). */
     CREATE: 'prototypes:create',
     /** Replay a prototype's patches into a live browser instance. */
     APPLY: 'prototypes:apply',

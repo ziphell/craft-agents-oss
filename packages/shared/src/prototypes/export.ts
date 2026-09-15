@@ -1,7 +1,7 @@
 /**
  * Prototype export.
  *
- * Turns a prototype project into role-shaped deliverables under `dist/`:
+ * Turns a prototype into role-shaped deliverables under `dist/`:
  *  - `prototype.html` — one self-contained file that runs standalone
  *  - `dev-spec.md`    — the change list a developer reads
  *
@@ -13,7 +13,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { pathToFileURL } from 'url'
 import { buildPatchInitScript } from './patch-script.ts'
-import { getPrototypeDistPath, getPrototypeProjectPath, scanPrototypePatches } from './storage.ts'
+import { getPrototypeDistPath, getPrototypeDirPath, scanPrototypePatches } from './storage.ts'
+import { prototypeDocumentUrl, prototypeOriginUrl } from './url.ts'
 import type { PrototypePatch } from './types.ts'
 
 const BASE_FILENAME = 'base.html'
@@ -24,7 +25,10 @@ export interface PrototypeExportResult {
   slug: string
   /** Absolute path to the self-contained deliverable. */
   htmlPath: string
-  /** `file://` URL for the deliverable — open it with `browser_tool navigate`. */
+  /**
+   * Address of the deliverable — open it with `browser_tool navigate`. An HTTP
+   * URL when the host serves prototypes (see url.ts), else `file://`.
+   */
   htmlUrl: string
   /** Absolute path to the change spec. */
   specPath: string
@@ -126,51 +130,78 @@ export function buildDevSpec(slug: string, patches: PrototypePatch[]): string {
   return lines.join('\n')
 }
 
-/** Which file `prototype-open` should show, and how to reach it. */
+/** Where a prototype's page is, and what that address actually serves. */
 export interface PrototypeEntry {
-  /** `export` = the self-contained deliverable, `base` = the work-in-progress page. */
-  kind: 'export' | 'base'
-  /** Absolute path of the file. */
+  /**
+   * `page` — `base.html` is the source, and the address renders it with every
+   * patch applied. `export` — no base page is left, so the address serves the
+   * frozen deliverable instead.
+   */
+  kind: 'page' | 'export'
+  /** Absolute path of the file the page is built from. */
   path: string
-  /** `file://` URL, ready to hand to `navigate`. */
+  /**
+   * Address to open. The prototype's **origin root** whenever a host serves
+   * prototypes, because that address is `base.html` rendered with all patches —
+   * the current state, and the same bytes an export would write right now.
+   * Falls back to `file://` on a host that serves nothing.
+   */
   url: string
 }
 
 /**
- * Resolve what to open for a prototype.
+ * Resolve the prototype's page.
  *
- * Prefers the exported deliverable when it exists — that is the artifact the
- * user actually ships, so verifying it is the more meaningful default.
+ * Deliberately **not** "which file wins": the address is the prototype's origin,
+ * and the server renders it from `base.html` + `patches/` on every request. That
+ * removes the whole class of staleness the old rule had — preferring a previously
+ * exported `dist/prototype.html` would show a document frozen at export time, and
+ * falling back to a bare `base.html` would show one with no patches applied at
+ * all, neither of which is the prototype.
  *
- * @throws when neither file exists — opening a project with nothing in it would
- *   fail confusingly inside the browser instead of here.
+ * `kind` only describes what the address has to fall back to, and `path` names
+ * the file behind it.
+ *
+ * @throws when there is nothing to show at all, naming both ways to get one.
  */
 export function resolvePrototypeEntry(workspaceRootPath: string, slug: string): PrototypeEntry {
+  const base = join(getPrototypeDirPath(workspaceRootPath, slug), BASE_FILENAME)
   const exported = join(getPrototypeDistPath(workspaceRootPath, slug), PROTOTYPE_FILENAME)
+  const origin = prototypeOriginUrl(workspaceRootPath, slug)
+
+  // With an origin, the rendered page is always the answer; the file choice only
+  // matters when there is no base page to render (deleted source, kept export).
+  if (origin && existsSync(base)) {
+    return { kind: 'page', path: base, url: origin }
+  }
+  if (origin && existsSync(exported)) {
+    return { kind: 'export', path: exported, url: prototypeDocumentUrl(workspaceRootPath, slug, exported) }
+  }
+
+  // No host server: the fully-applied document exists only as the exported file,
+  // so it is the better fallback even though it may be stale.
   if (existsSync(exported)) {
     return { kind: 'export', path: exported, url: pathToFileURL(exported).toString() }
   }
-
-  const base = join(getPrototypeProjectPath(workspaceRootPath, slug), BASE_FILENAME)
   if (existsSync(base)) {
-    return { kind: 'base', path: base, url: pathToFileURL(base).toString() }
+    return { kind: 'page', path: base, url: pathToFileURL(base).toString() }
   }
 
   throw new Error(
-    `Prototype "${slug}" has neither ${PROTOTYPE_FILENAME} (run prototype-export) nor ${BASE_FILENAME}. ` +
+    `Prototype "${slug}" has neither ${BASE_FILENAME} nor ${PROTOTYPE_FILENAME} (run prototype-export). ` +
     `Write ${base} first, or capture a real page as the base.`,
   )
 }
 
 /**
- * Write the deliverables for a prototype project.
+ * Write the deliverables for a prototype.
  *
- * @throws when the project has no `base.html` — a prototype with nothing to
+ * @throws when the prototype has no `base.html` — a prototype with nothing to
  *   apply patches to would otherwise export a meaningless file.
  */
 export function exportPrototype(workspaceRootPath: string, slug: string): PrototypeExportResult {
-  const projectDir = getPrototypeProjectPath(workspaceRootPath, slug)
-  const basePath = join(projectDir, BASE_FILENAME)
+  const prototypeDir = getPrototypeDirPath(workspaceRootPath, slug)
+  const basePath = join(prototypeDir, BASE_FILENAME)
   if (!existsSync(basePath)) {
     throw new Error(`Prototype "${slug}" has no ${BASE_FILENAME}. Create ${basePath} first.`)
   }
@@ -190,7 +221,7 @@ export function exportPrototype(workspaceRootPath: string, slug: string): Protot
   return {
     slug,
     htmlPath,
-    htmlUrl: pathToFileURL(htmlPath).toString(),
+    htmlUrl: prototypeDocumentUrl(workspaceRootPath, slug, htmlPath),
     specPath,
     applied: patches.length,
   }

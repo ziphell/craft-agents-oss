@@ -21,7 +21,7 @@
 
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { getPrototypeProjectPath } from './storage.ts'
+import { getPrototypeDirPath } from './storage.ts'
 
 export type PrototypeKind = 'overlay' | 'scratch'
 
@@ -52,7 +52,7 @@ export const DEFAULT_PROTOTYPE_KIND: PrototypeKind = 'overlay'
 
 /** Absolute path to a prototype's `config.json`. */
 export function getPrototypeConfigPath(workspaceRootPath: string, slug: string): string {
-  return join(getPrototypeProjectPath(workspaceRootPath, slug), PROTOTYPE_CONFIG_FILENAME)
+  return join(getPrototypeDirPath(workspaceRootPath, slug), PROTOTYPE_CONFIG_FILENAME)
 }
 
 /** Narrow an unknown value to a known kind, falling back to the default. */

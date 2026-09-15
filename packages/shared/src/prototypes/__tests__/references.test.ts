@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import {
-  getPrototypeProjectPath,
+  getPrototypeDirPath,
   getPrototypeReferences,
   linkPrototypeReference,
   readPrototypeConfig,
@@ -17,10 +17,10 @@ const REFERENCE = 'rival-checkout'
 /** A workspace with a scratch reader and one overlay prototype to study. */
 function makeWorkspace(options: { withReference?: boolean } = {}): string {
   const workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-prototype-refs-'))
-  mkdirSync(getPrototypeProjectPath(workspaceRoot, READER), { recursive: true })
+  mkdirSync(getPrototypeDirPath(workspaceRoot, READER), { recursive: true })
   writePrototypeConfig(workspaceRoot, READER, { kind: 'scratch' })
   if (options.withReference !== false) {
-    mkdirSync(getPrototypeProjectPath(workspaceRoot, REFERENCE), { recursive: true })
+    mkdirSync(getPrototypeDirPath(workspaceRoot, REFERENCE), { recursive: true })
     writePrototypeConfig(workspaceRoot, REFERENCE, { kind: 'overlay', targetUrl: 'https://rival.example.com/cart' })
   }
   return workspaceRoot
@@ -61,7 +61,7 @@ describe('linkPrototypeReference', () => {
   it('keeps declaration order across several references', () => {
     workspaceRoot = makeWorkspace()
     for (const slug of ['second-rival', 'third-rival']) {
-      mkdirSync(getPrototypeProjectPath(workspaceRoot, slug), { recursive: true })
+      mkdirSync(getPrototypeDirPath(workspaceRoot, slug), { recursive: true })
       writePrototypeConfig(workspaceRoot, slug, { kind: 'overlay' })
     }
     linkPrototypeReference(workspaceRoot, READER, 'second-rival')
@@ -71,10 +71,10 @@ describe('linkPrototypeReference', () => {
 
   // The relation is kind-agnostic: a scratch referencing another scratch is the
   // same thing as one referencing an overlay, because what matters is that the
-  // two projects are independent — not what either of them is.
+  // two prototypes are independent — not what either of them is.
   it('accepts a scratch prototype, and a scratch reader, without special-casing either', () => {
     workspaceRoot = makeWorkspace()
-    mkdirSync(getPrototypeProjectPath(workspaceRoot, 'our-other-page'), { recursive: true })
+    mkdirSync(getPrototypeDirPath(workspaceRoot, 'our-other-page'), { recursive: true })
     writePrototypeConfig(workspaceRoot, 'our-other-page', { kind: 'scratch' })
 
     linkPrototypeReference(workspaceRoot, READER, 'our-other-page')
@@ -132,7 +132,7 @@ describe('unlinkPrototypeReference', () => {
   it('still succeeds when the reference prototype is gone', () => {
     workspaceRoot = makeWorkspace()
     linkPrototypeReference(workspaceRoot, READER, REFERENCE)
-    rmSync(getPrototypeProjectPath(workspaceRoot, REFERENCE), { recursive: true, force: true })
+    rmSync(getPrototypeDirPath(workspaceRoot, REFERENCE), { recursive: true, force: true })
 
     unlinkPrototypeReference(workspaceRoot, READER, REFERENCE)
     expect(getPrototypeReferences(workspaceRoot, READER)).toEqual([])

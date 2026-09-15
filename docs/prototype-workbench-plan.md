@@ -1,6 +1,6 @@
 # 产品经理需求生产工作台 — 实施方案
 
-> 状态：阶段 1–6 全部完成；阶段 7 完成两项（无中生有入口、改写真实后端返回），放开面经决策**确定不开**，响应头就地改写未做。UI 闭环已完成：创建入口（侧边栏「原型」+ 面板「+」+ 空态按钮）→ 详情页 Open / Apply / Capture base / Export，以及产物文件就地编辑（base.html 与 patches/*）。**会话绑定已完成（§11）**：会话绑定原型后，agent 的 system prompt 里带 `<prototype_context>`，且 `prototype-*` 的 slug 变为可选。**预览面板编辑入口已完成（§12）**：面板工具栏新增「选中元素」（显式进入编辑态，页面点击被拦截）与「应用补丁」，选中后可选「保存为补丁」或「在对话中改」。**原型类型分离已完成（§13）**：「从无到有」与「patch 第三方」不再是同一件事的两种用法，而是创建时确定、不可改的两种类型（`overlay` / `scratch`），落在 `config.json` 并被详情页、system prompt、agent 命令共读。**混合场景已完成（§14）**：逆向第三方再搭自己的，拆成「起点」（scratch 可被 Capture 播种，且覆盖前先确认）与「参考面」（参考是独立原型 + 一条 `references` 关系 + 「翻译不要搬运」的硬规矩）。**这条关系与类型无关**——scratch 引用 scratch 和引用 overlay 同构。新增 `prototype-reference` 与 `prototype-create --no-bind`。**agent 的读取面已补齐（§14.6）**：`prototype-list` 给出每个原型的 kind / 目标页 / 双向关系，`prototype-status` 解析出每个参考是什么、以及谁在参考它（反向关系派生、不入库）。下一步：端到端试用（见 §10，新增步骤 H/I 分别验收类型分离与混合场景）。
+> 状态：阶段 1–6 全部完成；阶段 7 完成两项（无中生有入口、改写真实后端返回），放开面经决策**确定不开**，响应头就地改写未做。UI 闭环已完成：创建入口（侧边栏「原型」+ 面板「+」+ 空态按钮）→ 详情页 Open / Apply / Capture base / Export，以及产物文件就地编辑（base.html 与 patches/*）。**会话绑定已完成（§11）**：会话绑定原型后，agent 的 system prompt 里带 `<prototype_context>`，且 `prototype-*` 的 slug 变为可选。**预览面板编辑入口已完成（§12）**：面板工具栏新增「选中元素」（显式进入编辑态，页面点击被拦截）与「应用补丁」，选中后可选「保存为补丁」或「在对话中改」。**原型类型分离已完成（§13）**：「从无到有」与「patch 第三方」不再是同一件事的两种用法，而是创建时确定、不可改的两种类型（`overlay` / `scratch`），落在 `config.json` 并被详情页、system prompt、agent 命令共读。**混合场景已完成（§14）**：逆向第三方再搭自己的，拆成「起点」（scratch 可被 Capture 播种，且覆盖前先确认）与「参考面」（参考是独立原型 + 一条 `references` 关系 + 「翻译不要搬运」的硬规矩）。**这条关系与类型无关**——scratch 引用 scratch 和引用 overlay 同构。新增 `prototype-reference` 与 `prototype-create --no-bind`。**agent 的读取面已补齐（§14.6）**：`prototype-list` 给出每个原型的 kind / 目标页 / 双向关系，`prototype-status` 解析出每个参考是什么、以及谁在参考它（反向关系派生、不入库）。**命名已与「项目」分开（§15）**：原型与 workspace 的 projects 无关，且不该共用一个词——`getPrototypeProjectPath` → `getPrototypeDirPath`，给模型的工具描述里显式写明「a prototype is NOT a project」。**原型文档载体已换（§16）**：不再走 `file://`（opaque origin ⇒ 无 cookie、相对 fetch 发不出去所以 mock 拿不到请求、ES module 跑不了），改为回环 HTTP：**一个原型一个 host、目录即 origin 根**（`http://<slug>-<目录hash>.localhost:<port>/…`），根路径是该原型的**渲染结果**（`base.html` + 全部 patch，按请求现算，与"此刻导出会写出的字节"相同），根绝对路径资源与 SPA history 路由都能用。一处注入、三处入口零改动、真实页面浏览路径零风险。下一步：端到端试用（见 §10，新增步骤 H/I/J）。
 > 范围：MVP（个人使用，先增量模式）
 > 前置结论：本方案基于对现有代码的实测核对，所有引用均带文件路径与行号。
 
@@ -16,7 +16,7 @@
 
 **平面分离**：数据面 / 控制面 / 业务逻辑 / 渲染四者相互分离。这不是为了整齐，而是**多 agent 并线能成立的前提**（见 §3）。
 
-**决定一切的分野是产物性质，不是运行环境**。一个原型项目有两种起点，产出的东西性质完全不同：
+**决定一切的分野是产物性质，不是运行环境**。一个原型有两种起点，产出的东西性质完全不同：
 
 | | 源页面 | 我们改的是 | 产物 | 能回流源码吗 |
 |---|---|---|---|---|
@@ -60,7 +60,7 @@
 |---|---|---|---|
 | D1 | 渲染载体 | 真实浏览器引擎（BrowserView + CDP） | 所见即代码，零翻译损耗 |
 | D2 | 持久化模型 | Hybrid：编辑时 live overlay，交付时 snapshot | 线上页面改版不毁产物 |
-| D3 | 产物位置 | `{workspaceRootPath}/prototypes/{projectSlug}/` | 跨会话长期存活，契合"同一项目多交付" |
+| D3 | 产物位置 | `{workspaceRootPath}/prototypes/{slug}/` | 跨会话长期存活，契合"同一项目多交付" |
 | D4 | 写通道 | 混合：确定性改动走新增 `file:write` 直写；语义改动走 agent `Write`/`Edit` | 实时性与可审计性兼顾，最终同一真源 |
 | D5 | 权限模型 | 真实产品面锁死；原型面独立 partition 才允许 `webSecurity:false`；`nodeIntegration` 永远 `false` | 注入与跨域都不需要 node 能力 |
 | D7 | 服务契约格式 | **OpenAPI 3.1** | REST 生态最成熟，Prism / MSW / 后端都能直接吃 |
@@ -140,7 +140,7 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 ## 4. 目录与数据模型
 
 ```
-{workspaceRootPath}/prototypes/{projectSlug}/
+{workspaceRootPath}/prototypes/{slug}/
   ├─ config.json            【§13/§14】原型类型（overlay / scratch）、目标页、参考列表；控制面独占，创建时定
   ├─ manifest.json          【阶段 3 起不再需要】索引由 scanPrototypePatches() 按需从磁盘派生
   ├─ base.html              overlay：抓取的快照 / scratch：我们自己写的页（手写或捕获播种）；**创建时不预置**
@@ -328,9 +328,9 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 #### 4.2 预览通道：**结论改了——不需要新开 BrowserView**
 - 初稿判断"必须单开一条受控渲染通道"，因为现有 HTML 预览 iframe 禁脚本（`MarkdownHtmlBlock.tsx:218-219`、`HTMLPreviewOverlay.tsx:204-205`）。
 - 但实测发现：**现有浏览器面板本身就能打开导出产物**。[browser-pane-manager.ts](file:///c:/Users/Ryan/code/craft-agents-oss/apps/electron/src/main/browser-pane-manager.ts#L735-L745) 的 `navigate` 对 `file://` 是放行的（scheme 正则匹配后原样 `loadURL`），而它本来就是真实引擎、能跑 JS、已沙箱隔离。
-- 所以预览通道 = `browser_tool navigate <file://…/dist/prototype.html>`。这比自己搭一个 BrowserView 更好：零新增 UI、渲染环境与工作台一致（同架构同引擎），且**不改动现有预览块的安全策略**。
-- `prototype-export` 因此直接返回可直接使用的 `file://` URL（用 `pathToFileURL` 生成，空格等已正确编码）。
-- 遗留说明：浏览器会话是 `persist:browser-pane`（带真实登录态）。导出产物是自包含的本地文件，`file://` 是 opaque origin，读不到 https 站点的 cookie；若将来需要更强隔离，放到阶段 7 的原型分区。
+- 所以预览通道 = 浏览器面板打开导出的产物。这比自己搭一个 BrowserView 更好：零新增 UI、渲染环境与工作台一致（同架构同引擎），且**不改动现有预览块的安全策略**。
+- `prototype-export` 因此直接返回可直接使用的 URL。
+- 遗留说明：浏览器会话是共享 partition（带真实登录态）。**这一条后来被 §16 修正**：`file://` 不只是"读不到 cookie"，它连相对 `fetch` 都发不出去（所以 mock 层拿不到请求）、ES module 也跑不了；现在改由回环 HTTP 提供 origin。
 
 **阶段 4 完成标志**：`dist/prototype.html` 自包含、可独立打开；`dist/dev-spec.md` 能让人看懂改了什么。
 （单测覆盖了内联位置/顺序、无 head/body 的回退、注释结尾仍可执行、围栏不被内容撑破、导出落盘与缺 base 时报错。）
@@ -424,8 +424,8 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 | (b) | 改写**已存在**的真实后端返回 | CDP Fetch 拦截 | ✅ **阶段 7，靠阶段 5 的机制自然获得** |
 
 #### 已完成：无中生有入口（`prototype-open <slug>`）
-- 初稿把"无中生有"列为阶段 7 的独立能力，其实它**不需要新机制**：agent 在阶段 1.2 起就能写 `prototypes/{slug}/base.html`（Explore 白名单已覆盖），而 `navigate` 一直能打开 `file://`。
-- 补的是入口体验：`resolvePrototypeEntry()` 决定"该打开哪个文件"——**优先导出产物**（那才是要交付的东西），否则回退 `base.html`；两者都没有时**明确报错并给出两条出路**，而不是让浏览器里报一个含糊的失败。
+- 初稿把"无中生有"列为阶段 7 的独立能力，其实它**不需要新机制**：agent 在阶段 1.2 起就能写 `prototypes/{slug}/base.html`（Explore 白名单已覆盖），而浏览器面板一直能打开它。
+- 补的是入口体验：`resolvePrototypeEntry()` 决定"这个原型的页面在哪"——**答案现在是它的 origin**，那个地址由服务器把 `base.html` + `patches/` 渲染出来（见 §16.3）。早先的规则是"优先导出产物，否则 `base.html`"，两者都会骗人：前者是冻结在导出时刻的文档，后者一条 patch 都没应用。两者都没有时**明确报错并给出两条出路**，而不是让浏览器里报一个含糊的失败。
 - 命令 `prototype-open <slug>` 复用了既有的 `navigate`，没有新增导航能力。
 
 #### 已完成：overlay 改写真实后端（无需新机制）
@@ -455,7 +455,7 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 | 风险 | 影响 | 对策 |
 |---|---|---|
 | Explore 模式拦截写 | agent 写不进 `prototypes/` | 阶段 1.2 新增 `prototypesFolderPath` 例外（**必做，否则阶段 3 / 5 / 6 阻塞**） |
-| 现有 HTML 预览禁 JS | 原型跑不起来 | **已解决**：预览走浏览器面板的 `file://`（阶段 4.2），不动现有预览块安全策略 |
+| 现有 HTML 预览禁 JS | 原型跑不起来 | **已解决**：预览走浏览器面板（阶段 4.2）；载体后来从 `file://` 改为回环 HTTP（§16） |
 | `file://` + `webSecurity:false` | 本地文件可被读取 | **已作废**：`webSecurity` 决定不开，该组合不存在 |
 | 线上页面改版 / 登录态 | 抓取的 base 失效 | D2 Hybrid：编辑走 overlay，交付走 snapshot |
 | `webSecurity:false` 的杀伤面 | 页面可读跨域响应 | **已作废**：决定不开；能力改由 CDP 提供 |
@@ -581,8 +581,8 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 
 ### D. 交付与验收
 
-13. `browser_tool prototype-export checkout-flow` → `dist/prototype.html` 自包含，命令会打印 `file://` URL
-14. `browser_tool prototype-open checkout-flow` → 优先打开的就是这个交付物，验证它**脱离工作台也能跑**
+13. `browser_tool prototype-export checkout-flow` → `dist/prototype.html` 自包含，命令会打印一个 **`http://checkout-flow-<hash>.localhost:<port>/dist/prototype.html`** 地址（不再是 `file://`，见 §16）
+14. `browser_tool prototype-open checkout-flow` → 打开的是它的 **origin 根**：`base.html` + 全部 patch 现算出来的页面（与"此刻导出会写出的字节"相同），而不是某个文件
 15. `browser_tool prototype-status checkout-flow` → 全貌 + 所有权检查
 
 ### E. 故意制造一个所有权违例
@@ -662,6 +662,14 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 > 第 46 步修的是一个「状态撒谎」：在此之前 `prototype-list` 只列 slug 和 patch 数，overlay 和 scratch 在列表里长得一模一样。
 
 > 第 44 步是本节最容易出事的一步：`prototype-create` 默认会绑定会话，如果 agent 建参考时没带 `--no-bind`，之后每条省 slug 的命令都会打到竞品页面上，而**画面上看不出来**。
+
+### J. 交付物的 origin（§16 的验收）
+
+48. 打开 `http://<slug>-<hash>.localhost:<port>/`（**不带路径**）→ 应看到 base 页**加上全部 patch**；对照 `/base.html`（裸底稿，无 patch）与 `/dist/prototype.html`（冻结的交付物）。**在没导出过的情况下也要能看到 patch 生效**——这是这一节的核心
+49. 让 agent 建一个 scratch 原型，`base.html` 里放 `<script type="module">` + `fetch('/api/anything')`，写一条对应 path 的契约 fragment 与 fixture，然后 `prototype-mock-apply` → **相对 fetch 应被 mock 答上**。这是 §16 的收益点：`file://` 时代这个请求根本发不出去，mock 再对也没用
+50. 在页面里 `document.cookie = 'a=1'` 再读回 → 有值；`localStorage` 同理。两者在 `file://` 下都是空/不可用
+51. 重启应用后重开同一原型 → cookie 与 localStorage **会丢**（端口每次变 ⇒ origin 变）。这是已知限制，不是 bug
+52. **SPA**：让 `base.html` 里放一个 `history.pushState(null,'','/orders/42')` 的按钮 + `<link href="/assets/app.css">`，并在原型目录里放 `assets/app.css` → 点按钮后**刷新**，页面应仍然起来（回退到原型页面），且样式表命中（根绝对路径）
 
 ---
 
@@ -931,4 +939,144 @@ A 的路径天然跨类型：开始时在别人的页上打 patch（overlay）�
 3. **prompt 里不铺开整个工作区。** 工作区可以有十个原型，全列进 prompt 对多数会话是噪音；它还是会话开始时的快照，中途新建就过期。工作区级查询是**命令**的职责（工具描述里已写明 `prototype-list` 给出 kind 与双向关系），prompt 只负责绑定原型自己的事实。
 
 悬空参考（原型目录被手工删掉）在这里**被点名**而不是静默消失：`prototype-status` 打印 `MISSING — no prototype with that slug`。这与读取时不做过存在性过滤是同一条原则——不让状态说谎。
+
+---
+
+## 15. 原型与项目：没有关系，而且不该叫同一个词
+
+**问题**：这个工作区里有**两个不同的东西都叫 "project"**：
+
+| | 项目（Project） | 原型（Prototype） |
+|---|---|---|
+| 在磁盘上 | `{workspace}/projects/{slug}/` | `{workspace}/prototypes/{slug}/` |
+| 里面有什么 | `config.json` · `assets/` · `MEMORY.md` | `config.json` · `base.html` · `patches/` · `services/` · `dist/` |
+| 是什么 | **组织过程**：归组会话、任务（`TaskSpec.project`）、工作目录、共享资产、看板列 | **就是产物**：交付物本身 |
+| 生命周期 | 可归档、**可删除**（删除时解绑会话） | 交付物，应当活过单个会话 |
+
+**它们今天没有任何关系**，这不是疏漏：[workspaces/storage.ts](file:///c:/Users/Ryan/code/craft-agents-oss/packages/shared/src/workspaces/storage.ts) 的注释写明了原型放在工作区级是为了「让交付物活过单个会话」。`PrototypeConfig` 里没有 `projectId`，`handlers/rpc/prototypes.ts` 与 `handlers/rpc/projects.ts` 互不调用，没有任何 join。
+
+**唯一的实际交汇在会话上**：一个会话可以同时持有 `projectId` 与 `prototypeSlug`，于是两个 context 被并列注入 system prompt（`claude-agent.ts` 的 `pinnedProjectContext` 与 `pinnedPrototypeContext`）。所以 agent 确实知道「我在项目 P 下做原型 X」——但**这个关系没有被记录在任何地方**：原型不知道它属于哪个项目。它是会话上的两个点，不是一个连接。
+
+### 15.1 决定：不建立归属关系
+
+判据还是那个：**什么变了？**
+
+1. **目录嵌套（`projects/{p}/prototypes/{x}/`）不该做**：项目可删可归档，而原型是交付物——把交付物的路径挂在会被删除的容器下面是数据丢失隐患。
+2. 若将来要连，正确形态是**一条关系**（`PrototypeConfig.projectSlug?`），与 `references` 同一套写法：关系落在 config、删除时表现为悬空关系（§14.5 已定好处理方式：点名，不静默丢弃）。这条留在纸上，随时可低成本实现。
+3. 但**它唯一的读者是「按项目分组 / 项目详情页列出它的原型」**。原型还是个位数时这个字段没有消费者——按本方案的规矩（D12、派生索引），**没有读者的字段就是死字段**。等原型多到需要分组时再加。
+
+### 15.2 同时：把命名分开
+
+"prototype project" 这个说法让两个概念在代码里长得像一回事。已改为一律说 **directory**：
+
+| 改前 | 改后 |
+|---|---|
+| `getPrototypeProjectPath()` | `getPrototypeDirPath()`（与 `status.dir` 同名语义） |
+| `createPrototype as createPrototypeProject` | `createPrototype as createNewPrototype` |
+| 注释/JSDoc 里的 "prototype project"、"Absolute project directory" | "prototype"、"the prototype's directory" |
+| 局部变量 `projectDir` | `prototypeDir` |
+| **给模型的文本**："Prototypes — **one project per requirement**…" | 改为显式排除混淆：**"A prototype is NOT a project: projects are separate containers…"** |
+
+最后一行是这次改名的**主要理由**，不是顺带：这段文本进的是 `browser_tool` 的工具描述，**永远在上下文里**；而模型同时还看得到真实的 `<project_context>`。两个"project"同时出现时，模型没有任何线索能分清。
+
+### 15.3 未做的（明确记录）
+
+- **原型按项目分组/过滤** —— 同上，等有消费者
+- **`apps/electron/resources/docs/browser-tools.md` 的同步** —— 已改掉措辞，但这份随应用发布的文档**整体滞后**：没有 `prototype-create` / `prototype-bind` / `prototype-reference`，没有 kinds，且 `prototype-apply <slug>` 等标题仍把 slug 写成必填（现在绑定后可选）。属于独立的一次文档同步，未在本轮做
+
+---
+
+## 16. 原型文档的载体：从 `file://` 改为回环 HTTP
+
+**问题**：原型文档（`base.html` / `dist/prototype.html`）一直以 `file://` 打开（§4.2）。`file://` 的 origin 是 **opaque**，代价不止一条：
+
+| 代价 | 后果 |
+|---|---|
+| 没有 cookie 域 | 无法模拟登录态；`document.cookie` 写不进去 |
+| **相对 `fetch`/XHR 发不出去** | Blink 在 file→file 上直接拦掉。**mock 层因此永远看不到请求** |
+| ES module 被 CORS 拦 | `<script type="module">` 不执行 |
+
+第二条是决定性的：§5 的整条「契约 → mock → 前端」闭环，在**交付物上完全不可用**——不是 mock 写错了，是请求压根没发出来（`browser-cdp.ts` 靠 `Fetch.enable` + pathname 匹配，它只能看见 renderer 真正发出的请求）。
+
+**影响范围只有一笔**：我们自己的原型文档。overlay 主路径在真实页面上是**真 http**，patch 注入按 document 生效与 scheme 无关，截图/DOM/pick 都不受影响。
+
+### 16.1 为什么不拦截 http
+
+"Electron 可以拦截 http 请求、从磁盘取文件"——语义是对的，机制有个坑：**所有浏览器实例共用一个 session partition**（`browser-pane-manager.ts` 中 window + 3 个 BrowserView 全用同一个 `SESSION_PARTITION`，注释写明 "preserving shared session/cookie partition"）。所以 `protocol.handle('http', …)` 会接管**所有** http 请求，包括正在被 patch 的真实产品页；我们要自己实现完整的 pass-through（流式、重定向、cookie、鉴权、下载、CSP），任一处偏差坏掉的是核心流程。
+
+**回环服务器不需要"拦截"，因为它就是那个 handler**：同样的 origin 语义，零 pass-through 代码。这个应用本来就在 127.0.0.1 上监听（WS RPC server），再加一个回环静态监听不是新类别。
+
+### 16.2 实测（不是推断）
+
+用一个一次性 Electron 探针验证了四条前提，全部成立：
+
+```
+http://probe.localhost:8420/  -> loaded
+origin:  "http://probe.localhost:8420"            ← 真实 origin，不是 null
+cookie:  "probe=1"                                 ← document.cookie 可读可写
+fetch:   {"ok":true,"host":"probe.localhost:8420"} ← 相对路径 fetch 打到了服务器
+storage: true        moduleRan: true               ← localStorage 与 <script type=module> 正常
+```
+
+`*.localhost` 在 Chromium 里解析到回环，所以不需要 DNS 或 hosts 条目。
+
+### 16.3 地址形状：一个原型一个 host，目录即 origin 根
+
+```
+http://<slug>-<目录hash>.localhost:<port>/                 ← 原型页面（渲染后）
+http://<slug>-<目录hash>.localhost:<port>/<原型内文件路径>   ← 原型里的任意文件
+```
+
+**根路径是该原型的"渲染结果"**：`base.html` **加上全部 patch**，按请求现算。它与"现在执行一次导出会写出的字节"完全相同，所以"我在看的东西"和"我会交付的东西"是同一份文档。这条替换掉了原先那种二选一——**裸 base 页**（一条 patch 都没有）与**上次导出的文件**（冻结在导出时刻）都不是这个原型。
+
+单个文件仍然可以按名字取用，四种地址各有明确含义：
+
+| 地址 | 是什么 |
+|---|---|
+| `/` | 原型页面：base + 全部 patch，现算 |
+| `/base.html` | 裸底稿（调试用；无 patch） |
+| `/dist/prototype.html` | 冻结的交付物（`prototype-export` 打印的就是它） |
+| `/assets/app.css` 等 | 目录内的静态资源 |
+
+**原型目录就是那个 host 的根**，而不是挂在某个路径前缀下。理由不是美观：页面的 `src="/assets/app.css"`、`fetch('/api/orders')`、路由器的 `/orders` 都指向 **origin 根**，而页面并不知道也不该知道自己被放在子目录里。带前缀（`/prototypes/<slug>/…`）会让"假设自己拥有 origin"的页面全部坏掉——那是绝大多数页面。
+
+host 里两半各答一个问题：**目录 hash** 保证唯一（两个 workspace 可以都有 `checkout-flow`，把其中一个的页面喂给另一个是静默换文件），**slug** 让它在日志和对话里可读。
+
+**只有一种情况会退回到文件**：`base.html` 被删了、`dist/prototype.html` 还在。那时渲染没有输入，服务器就直接给冻结的交付物（好过 404），`resolvePrototypeEntry` 也会这么告诉你。
+
+### 16.3.1 SPA
+
+| 场景 | 处理 |
+|---|---|
+| 打开 `/` | 返回渲染后的原型页面 |
+| history 路由刷新（`/orders/42`） | 无对应文件时回退到**同一个渲染页面**——这是 SPA 的路径，服务端不认识 |
+| **标了扩展名的路径**（`/missing.js`） | **不回退**，老老实实 404。用 HTML 回答缺失的脚本，会把"文件没了"变成"解析错误" |
+| 根绝对路径资源（`/assets/app.css`） | 按目录内路径查找并**正常命中**——这条是"目录即根"的直接收益 |
+
+这也让**捕获来的 SPA 快照**第一次真正可用：它的 `pushState` 路由刷新能拿到文档，它的客户端路由能起来；`file://` 时代这种 URL 连重载都做不到。
+
+### 16.4 代码上的接法
+
+**一处注入**：`prototypes/url.ts` 提供 `setPrototypeBaseUrlResolver`，主进程启动时装上（`prototype-server.ts` 的 `installPrototypeBaseUrlResolver`）。共享层两个出口：`prototypeOriginUrl()` 给"原型页面"，`prototypeDocumentUrl()` 给"某个具体文件"。`resolvePrototypeEntry()` 与 `exportPrototype()` 都走这里，所以 `prototype-open`、RPC `prototypes:entry`、详情页 Open 按钮三处入口**一行都不用改**；没装 resolver 时（单测、无服务器的宿主）回退 `file://`——那时没有渲染能力，"全 patch 的文档"只存在于导出物里，所以那种情形下仍然优先给导出物。
+
+**渲染用的是导出器那一个函数**：`buildSelfContainedHtml(baseHtml, scanPrototypePatches(...))`。导出 = 把它写到 `dist/`，预览 = 把它当响应体返回。同一份变换，所以"看到的"和"导出的"不可能分叉。
+
+### 16.5 安全边界（四条，各自有测试）
+
+1. **只绑 `127.0.0.1`**，端口 0 由系统分配——不可从网络访问，也不会与别的进程抢端口。
+2. **只有注册过的 host 可达**：注册发生在"某个原型被打开/导出"时，服务器自己从不遍历文件系统。未知 host 一律 404；`a.b.localhost` 这种多标签名也 404（只认单标签，否则等于放行了没人发放过的名字）。
+3. **路径围栏**（`resolveServedPath`，独立导出单独测）：解码后拒绝 NUL 与反斜杠（Windows 上反斜杠是分隔符，放过一个就能绕过前缀检查），`resolve` 折叠 `..` 后必须落在目录内，前缀比较用 `${root}${sep}` 以免同名兄弟目录（`checkout-flow-secrets`）蒙混。
+4. **`Cache-Control: no-store`**：原型在被反复编辑与重新捕获，缓存住的 `base.html` 会显示上一次捕获的结果而没有任何提示。
+
+HTTP 层的测试通过**覆盖 `Host` 头**打到 `127.0.0.1`：Chromium 把 `*.localhost` 解析到回环（已实测），但 Node 的解析器不会，所以测试不能按字面拨号。路由本来就认 Host，两条路走的是同一段代码。
+
+HTTP 层那条越界测试只断言"任何拼法都到不了目录外的文件"——诚实说明：URL 解析器在请求发出前就把 `..` / `%2e%2e` 规范化掉了，所以服务端的拒绝由 `resolveServedPath` 的单测覆盖。
+
+### 16.6 未做 / 已知限制
+
+- **端口是临时的**，origin 每次启动都变，因此 cookie 与 `localStorage` **不跨重启**。原型流程不依赖这个；要持久就得绑一个稳定端口（并处理被占用的情况）。
+- **`overlay` 的 `base.html` 是快照**：它的相对资源 URL（`/assets/x.js`）现在会打到回环服务器而不是原来那个站点，和 `file://` 时代一样取不到；绝对 URL 的资源正常。捕获快照本来就只保证"那一刻渲染出来的样子"。
+- **`/` 的含义是"这个原型，当前状态"**，没有独立的 index 概念要同步。
+- **`prototype-apply` 对 `/` 是多余的**：页面到手时 patch 已经内联，再注入一次会让 JS patch 跑第二遍（`textContent` 这类是幂等的，加事件监听不是）。那条命令的用武之地是**外部文档**——overlay 要打补丁的真实产品页，或裸的 `/base.html`。没做守卫是刻意的：CDP 的 init script 在 document-start 就执行，那时页面还没解析出任何标记可判断"这份文档是否已内联"，可靠的做法需要注入方知道自己要打开的是哪个地址——那是个独立的设计，不是一行判断。同一条风险在导出物上早就存在。
+- **没动的东西**：`webSecurity` 仍未开（D5），没有新增 partition，没有 http pass-through，真实页面浏览路径零改动。
 

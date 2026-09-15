@@ -17,13 +17,13 @@
  * (see export.ts). If a reference's patches were stored alongside the reader's,
  * they would be baked into the reader's deliverable silently — selectors aimed at
  * someone else's DOM, applied to a page where none of them match. Keeping each
- * prototype's patches in its own project is what makes that impossible rather
+ * prototype's patches in its own directory is what makes that impossible rather
  * than merely unlikely; this module is the only way the two are connected.
  */
 
 import { existsSync } from 'fs'
 import { readPrototypeConfig, writePrototypeConfig, type PrototypeConfig } from './config.ts'
-import { getPrototypeProjectPath } from './storage.ts'
+import { getPrototypeDirPath } from './storage.ts'
 
 /** The references a prototype currently declares, in declaration order. */
 export function getPrototypeReferences(workspaceRootPath: string, slug: string): string[] {
@@ -53,10 +53,10 @@ export function linkPrototypeReference(
   if (target === slug) {
     throw new Error(`Prototype "${slug}" cannot reference itself.`)
   }
-  if (!existsSync(getPrototypeProjectPath(workspaceRootPath, slug))) {
+  if (!existsSync(getPrototypeDirPath(workspaceRootPath, slug))) {
     throw new Error(`Prototype "${slug}" does not exist.`)
   }
-  if (!existsSync(getPrototypeProjectPath(workspaceRootPath, target))) {
+  if (!existsSync(getPrototypeDirPath(workspaceRootPath, target))) {
     throw new Error(`No prototype "${target}" to reference. See "prototype-list" for what exists.`)
   }
 

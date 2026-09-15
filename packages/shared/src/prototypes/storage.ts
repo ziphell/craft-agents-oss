@@ -23,19 +23,29 @@ const DIST_DIRNAME = 'dist'
  */
 const PATCH_NAME_RE = /^([A-Za-z])-(\d+)-.+\.(css|js)$/
 
-/** Absolute path to a prototype project directory. */
-export function getPrototypeProjectPath(workspaceRootPath: string, slug: string): string {
+/**
+ * Paths inside a prototype's own directory.
+ *
+ * "Directory", never "project": this workspace also has real **projects**
+ * (`{workspace}/projects/{slug}/` — the containers that group sessions, tasks
+ * and shared assets), and they are unrelated to prototypes. A prototype is not
+ * nested inside a project, and nothing records an ownership edge between them.
+ * @see docs/prototype-workbench-plan.md §15
+ */
+
+/** Absolute path to a prototype's directory. */
+export function getPrototypeDirPath(workspaceRootPath: string, slug: string): string {
   return join(getWorkspacePrototypesPath(workspaceRootPath), slug)
 }
 
-/** Absolute path to a prototype project's patches directory. */
+/** Absolute path to a prototype's patches directory. */
 export function getPrototypePatchesPath(workspaceRootPath: string, slug: string): string {
-  return join(getPrototypeProjectPath(workspaceRootPath, slug), PATCHES_DIRNAME)
+  return join(getPrototypeDirPath(workspaceRootPath, slug), PATCHES_DIRNAME)
 }
 
-/** Absolute path to a prototype project's exported deliverables. */
+/** Absolute path to a prototype's exported deliverables. */
 export function getPrototypeDistPath(workspaceRootPath: string, slug: string): string {
-  return join(getPrototypeProjectPath(workspaceRootPath, slug), DIST_DIRNAME)
+  return join(getPrototypeDirPath(workspaceRootPath, slug), DIST_DIRNAME)
 }
 
 /** Init-script key for a patch — stable across re-scans so re-apply is idempotent. */
@@ -87,11 +97,11 @@ export function scanPrototypePatches(workspaceRootPath: string, slug: string): P
   return patches
 }
 
-/** Load a prototype project's derived artifact index. */
+/** Load a prototype's derived artifact index. */
 export function loadPrototypeArtifacts(workspaceRootPath: string, slug: string): PrototypeArtifacts {
   return {
     slug,
-    dir: getPrototypeProjectPath(workspaceRootPath, slug),
+    dir: getPrototypeDirPath(workspaceRootPath, slug),
     patches: scanPrototypePatches(workspaceRootPath, slug),
   }
 }

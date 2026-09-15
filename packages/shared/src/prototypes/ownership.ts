@@ -13,7 +13,7 @@
 
 import { readdirSync } from 'fs'
 import { join } from 'path'
-import { getPrototypeProjectPath } from './storage.ts'
+import { getPrototypeDirPath } from './storage.ts'
 
 /** Declared lanes, in the order the plan introduces them. */
 export const PROTOTYPE_LANES = {
@@ -120,7 +120,7 @@ export function canLaneWrite(relativePath: string, lane: PrototypeLaneId): LaneW
 }
 
 export interface PrototypeOwnershipEntry {
-  /** Path relative to the prototype project directory, `/`-separated. */
+  /** Path relative to the prototype directory, `/`-separated. */
   path: string
   classification: PrototypePathClassification
 }
@@ -155,9 +155,9 @@ function walkFiles(root: string, prefix = ''): string[] {
   return out
 }
 
-/** Classify every artifact file in a prototype project. */
+/** Classify every artifact file in a prototype. */
 export function resolvePrototypeOwnership(workspaceRootPath: string, slug: string): PrototypeOwnershipReport {
-  const files = walkFiles(getPrototypeProjectPath(workspaceRootPath, slug)).sort()
+  const files = walkFiles(getPrototypeDirPath(workspaceRootPath, slug)).sort()
 
   const entries: PrototypeOwnershipEntry[] = []
   const violations: Array<{ path: string; reason: string }> = []

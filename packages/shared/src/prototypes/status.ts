@@ -1,5 +1,5 @@
 /**
- * Prototype status — the control-plane view of a project.
+ * Prototype status — the control-plane view of a prototype.
  *
  * Composes the derived facts (patches, services, contract, exports) with the
  * ownership check into one report, so the state of a prototype can be inspected
@@ -14,7 +14,7 @@ import { getWorkspacePrototypesPath } from '../workspaces/storage.ts'
 import { readPrototypeConfig, type PrototypeKind } from './config.ts'
 import { buildMockRoutes, composeContract, listContractServices, loadContractService } from './contract.ts'
 import { PROTOTYPE_LANES, resolvePrototypeOwnership } from './ownership.ts'
-import { getPrototypeDistPath, getPrototypePatchesPath, getPrototypeProjectPath, scanPrototypePatches } from './storage.ts'
+import { getPrototypeDistPath, getPrototypePatchesPath, getPrototypeDirPath, scanPrototypePatches } from './storage.ts'
 
 const BASE_FILENAME = 'base.html'
 
@@ -30,7 +30,7 @@ export interface PrototypeStatusService {
 
 export interface PrototypeStatus {
   slug: string
-  /** Absolute project directory. */
+  /** Absolute path to the prototype's directory. */
   dir: string
   /** Which kind of prototype this is (fixed at creation). */
   kind: PrototypeKind
@@ -44,7 +44,7 @@ export interface PrototypeStatus {
    */
   references: string[]
   baseHtmlPresent: boolean
-  /** Absolute path to `base.html`, or null when the project has none. */
+  /** Absolute path to `base.html`, or null when the prototype has none. */
   baseHtmlPath: string | null
   patches: {
     total: number
@@ -78,9 +78,9 @@ function listFileNames(dir: string): string[] {
 }
 
 /**
- * List every prototype project in a workspace, each with its full status.
+ * List every prototype in a workspace, each with its full status.
  *
- * A project directory counts as a prototype even without `base.html` — patches
+ * A directory under `prototypes/` counts as a prototype even without `base.html` — patches
  * can legitimately be collected before the base page is written, and the status
  * reports `baseHtmlPresent: false` so the caller can say so.
  */
@@ -100,9 +100,9 @@ export function listPrototypeStatuses(workspaceRootPath: string): PrototypeStatu
     .map((slug) => buildPrototypeStatus(workspaceRootPath, slug))
 }
 
-/** Build the full status report for a prototype project. */
+/** Build the full status report for a prototype. */
 export function buildPrototypeStatus(workspaceRootPath: string, slug: string): PrototypeStatus {
-  const dir = getPrototypeProjectPath(workspaceRootPath, slug)
+  const dir = getPrototypeDirPath(workspaceRootPath, slug)
 
   const patches = scanPrototypePatches(workspaceRootPath, slug)
   const patchesDir = getPrototypePatchesPath(workspaceRootPath, slug)

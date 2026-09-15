@@ -19,7 +19,7 @@ import {
   buildPrototypeStatus,
   resolvePrototypeEntry,
   listPrototypeStatuses,
-  createPrototype as createPrototypeProject,
+  createPrototype as createNewPrototype,
   linkPrototypeReference as linkReference,
   unlinkPrototypeReference as unlinkReference,
 } from '@craft-agent/shared/prototypes'
@@ -3883,7 +3883,7 @@ export class SessionManager implements ISessionManager {
               return listPrototypeStatuses(managed.workspace.rootPath)
             },
             createPrototype: async (input) => {
-              return createPrototypeProject(managed.workspace.rootPath, input)
+              return createNewPrototype(managed.workspace.rootPath, input)
             },
             // Writing through the setter (rather than `managed.prototypeSlug = …`)
             // is what emits prototype_slug_changed and persists the header, so the
@@ -7373,7 +7373,7 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
-   * Bind or unbind a session to/from a prototype project.
+   * Bind or unbind a session to/from a prototype.
    * Pass `null` to unbind.
    *
    * Binding is what makes the conversation usable without naming artifacts:
