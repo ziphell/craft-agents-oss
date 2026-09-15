@@ -1,7 +1,7 @@
 # 开发环境运行指南（Craft Agents）
 
 > 覆盖：monorepo 结构、各子组件如何消费依赖、开发命令与执行目录、常见坑。
-> 配套文档：[Windows 安装包构建指南](build-windows.md)
+> 配套文档：[Windows 安装包构建指南](build-windows.md)、[渲染层的导入边界](renderer-imports.md)
 
 ## 1. 仓库结构（bun workspaces monorepo）
 
@@ -131,3 +131,4 @@ bun run validate:dev                     # 全量校验：typecheck + shared 测
 3. **多份 React**：必须保留 vite 里 react/react-dom 指向根 node_modules 的 alias + dedupe。
 4. **`.env`**：electron-dev / electron-build-main 会自动读取根 `.env`（不存在则跳过）；OAuth ID/Secret 通过 esbuild `--define` 注入构建。
 5. **端口冲突**：5173/5174/5175 被占用时 dev 会失败，先停掉旧进程。
+6. **渲染层从共享包 barrel 取「值」**：会把 node-only 依赖（Claude Agent SDK 等）顺链条拖进浏览器包——`electron:dev` 照跑不误，`electron:build` 才炸在 `sdk.mjs` 上。规矩、链路与自查命令见[渲染层的导入边界](renderer-imports.md)。

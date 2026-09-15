@@ -21,9 +21,14 @@
 
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
+import { DEFAULT_PROTOTYPE_KIND, type PrototypeKind } from './types.ts'
 import { getPrototypeDirPath } from './storage.ts'
 
-export type PrototypeKind = 'overlay' | 'scratch'
+// Both come from `types.ts`, which imports nothing: the renderer needs the default
+// kind as a *value*, and it may only take one from a module that cannot reach the
+// agent runtime and, through it, the node-only Claude Agent SDK (see types.ts).
+export { DEFAULT_PROTOTYPE_KIND }
+export type { PrototypeKind }
 
 export interface PrototypeConfig {
   kind: PrototypeKind
@@ -41,20 +46,6 @@ export interface PrototypeConfig {
 }
 
 export const PROTOTYPE_CONFIG_FILENAME = 'config.json'
-
-/**
- * What a prototype is when the caller does not say — both the kind
- * {@link createPrototype} falls back to, and what a missing or unreadable
- * `config.json` is assumed to mean.
- *
- * `scratch` is the default because it is the only kind that can never be
- * stillborn: it owns its document, so every state has a way forward (write
- * `base.html`, or import another prototype's page). An `overlay` without an
- * address has no page to open, no page to export against, and — since the kind
- * cannot be changed afterwards — no way out at all. Something with no way out
- * must be asked for, never assumed.
- */
-export const DEFAULT_PROTOTYPE_KIND: PrototypeKind = 'scratch'
 
 /** Absolute path to a prototype's `config.json`. */
 export function getPrototypeConfigPath(workspaceRootPath: string, slug: string): string {

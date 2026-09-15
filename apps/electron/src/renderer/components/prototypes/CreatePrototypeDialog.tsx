@@ -33,7 +33,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useRegisterModal } from '@/context/ModalContext'
 import { cn } from '@/lib/utils'
-import { DEFAULT_PROTOTYPE_KIND, type PrototypeKind } from '@craft-agent/shared/prototypes'
+import { DEFAULT_PROTOTYPE_KIND, type PrototypeKind } from '@craft-agent/shared/prototypes/types'
 
 export interface CreatePrototypeValues {
   name: string

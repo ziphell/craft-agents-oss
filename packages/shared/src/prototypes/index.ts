@@ -65,6 +65,9 @@ export {
 export type { PrototypeStatus, PrototypeStatusService } from './status.ts'
 export { buildPrototypeStatus, listPrototypeStatuses } from './status.ts'
 
+// The kind and its default come from `types.ts` (no imports), re-exported through
+// `config.ts` as well — see the note there for why a renderer must not reach this
+// barrel for a *value*.
 export type { PrototypeKind, PrototypeConfig } from './config.ts'
 export {
   PROTOTYPE_CONFIG_FILENAME,
