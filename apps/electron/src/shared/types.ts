@@ -214,6 +214,7 @@ import type {
   WorkspaceSettings,
   PermissionModeState,
   BrowserInstanceInfo,
+  BrowserToolbarAction,
   DeepLinkNavigation,
   TestAutomationPayload,
   TestAutomationResult,
@@ -663,6 +664,8 @@ export interface ElectronAPI {
     onStateChanged(callback: (info: BrowserInstanceInfo) => void): () => void
     onRemoved(callback: (id: string) => void): () => void
     onInteracted(callback: (id: string) => void): () => void
+    /** Actions forwarded from a browser panel's own toolbar (pick / apply). */
+    onToolbarAction(callback: (action: BrowserToolbarAction) => void): () => void
   }
 
   // LLM Connections (provider configurations)

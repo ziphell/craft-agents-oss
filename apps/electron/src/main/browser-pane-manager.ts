@@ -19,8 +19,8 @@ import {
   type BrowserInstanceInfo,
 } from '../shared/types'
 import { DEFAULT_THEME, loadAppTheme, getAllowRemoteEvaluate } from '@craft-agent/shared/config'
-import { CodedError } from '@craft-agent/shared/protocol'
-import type { PickedElement } from '@craft-agent/shared/protocol'
+import { CodedError, RPC_CHANNELS } from '@craft-agent/shared/protocol'
+import type { PickedElement, BrowserToolbarAction } from '@craft-agent/shared/protocol'
 import type { MockRoute } from '@craft-agent/shared/prototypes'
 import { getBrowserLiveFxCornerRadii } from '../shared/browser-live-fx'
 import type {
@@ -123,9 +123,21 @@ const TOOLBAR_CHANNELS = {
   DESTROY: 'browser-toolbar:destroy',
   STATE_UPDATE: 'browser-toolbar:state-update',
   THEME_COLOR: 'browser-toolbar:theme-color',
+  PICK_ELEMENT: 'browser-toolbar:pick-element',
+  CANCEL_PICK: 'browser-toolbar:cancel-pick',
+  APPLY_PROTOTYPE: 'browser-toolbar:apply-prototype',
 } as const
 export const BROWSER_PANE_SESSION_PARTITION = 'persist:browser-pane'
 const SESSION_PARTITION = BROWSER_PANE_SESSION_PARTITION
+
+/**
+ * How long a toolbar-initiated pick waits for a click.
+ *
+ * Deliberately long — the user may be reading the page while deciding — and the
+ * toolbar shows its own cancel control, so a short timeout would only cause
+ * surprise exits from edit mode.
+ */
+const PICK_FROM_TOOLBAR_TIMEOUT_MS = 10 * 60_000
 
 interface AgentControlState {
   active: boolean
@@ -2425,7 +2437,63 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       if (inst) this.destroyInstance(inst.id)
     })
 
+    // -------------------------------------------------------------------------
+    // Prototype workbench actions from the panel's own toolbar.
+    //
+    // The panel cannot resolve any of this itself: "apply" needs the bound
+    // prototype, and "pick" needs a decision about what the selection is for.
+    // Both live in the main window, so the panel reports the action and we
+    // forward it there.
+    // -------------------------------------------------------------------------
+
+    ipcMain.handle(TOOLBAR_CHANNELS.PICK_ELEMENT, async (_event, instanceId: string) => {
+      const inst = findInstance(instanceId)
+      if (!inst) return
+
+      try {
+        // A long timeout on purpose: the user is expected to take their time
+        // choosing, and the toolbar exposes its own cancel button.
+        const element = await inst.cdp.pickElement({ timeoutMs: PICK_FROM_TOOLBAR_TIMEOUT_MS })
+        this.emitToolbarAction({ kind: 'picked', instanceId: inst.id, element })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        mainLog.warn(`[browser-pane] toolbar pick failed instanceId=${inst.id}: ${message}`)
+        this.emitToolbarAction({ kind: 'pick-failed', instanceId: inst.id, message })
+      }
+    })
+
+    ipcMain.handle(TOOLBAR_CHANNELS.CANCEL_PICK, async (_event, instanceId: string) => {
+      const inst = findInstance(instanceId)
+      if (!inst) return
+      // Escape in the page also cancels; this covers the toolbar button.
+      await inst.cdp.cancelPicker()
+    })
+
+    ipcMain.handle(TOOLBAR_CHANNELS.APPLY_PROTOTYPE, async (_event, instanceId: string) => {
+      const inst = findInstance(instanceId)
+      if (!inst) return
+      // No injection happens here — the main window resolves the prototype and
+      // calls the same RPC the prototype panel's Apply button uses, so the two
+      // entry points cannot drift.
+      this.emitToolbarAction({ kind: 'apply-requested', instanceId: inst.id })
+    })
+
     mainLog.info('[browser-pane] Toolbar IPC handlers registered')
+  }
+
+  /**
+   * Forward a toolbar action to the main window(s).
+   *
+   * Broadcast rather than targeted: the panel does not know which client opened
+   * it, and a renderer that does not own the instance simply ignores the action.
+   */
+  private emitToolbarAction(action: BrowserToolbarAction): void {
+    const sink = this.windowManager?.getRpcEventSink()
+    if (!sink) {
+      mainLog.warn(`[browser-pane] no RPC event sink; dropping toolbar action ${action.kind}`)
+      return
+    }
+    sink(RPC_CHANNELS.browserPane.TOOLBAR_ACTION, { to: 'all' }, action)
   }
 
   // ---------------------------------------------------------------------------

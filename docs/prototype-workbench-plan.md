@@ -1,6 +1,6 @@
 # 产品经理需求生产工作台 — 实施方案
 
-> 状态：阶段 1–6 全部完成；阶段 7 完成两项（无中生有入口、改写真实后端返回），放开面经决策**确定不开**，跨域 iframe 读取与响应头就地改写未做。UI 闭环已完成：创建入口（侧边栏「原型」+ 面板「+」+ 空态按钮）→ 详情页 Open / Apply / Capture base / Export，以及产物文件就地编辑（base.html 与 patches/*）。**会话绑定已完成（§11）**：会话绑定原型后，agent 的 system prompt 里带 `<prototype_context>`，且 `prototype-*` 的 slug 变为可选。下一步：端到端试用（见 §10）；仍未进 UI 的是「选择元素」按钮（agent 侧 `browser_tool pick` 已可用）。
+> 状态：阶段 1–6 全部完成；阶段 7 完成两项（无中生有入口、改写真实后端返回），放开面经决策**确定不开**，跨域 iframe 读取与响应头就地改写未做。UI 闭环已完成：创建入口（侧边栏「原型」+ 面板「+」+ 空态按钮）→ 详情页 Open / Apply / Capture base / Export，以及产物文件就地编辑（base.html 与 patches/*）。**会话绑定已完成（§11）**：会话绑定原型后，agent 的 system prompt 里带 `<prototype_context>`，且 `prototype-*` 的 slug 变为可选。**预览面板编辑入口已完成（§12）**：面板工具栏新增「选中元素」（显式进入编辑态，页面点击被拦截）与「应用补丁」，选中后可选「保存为补丁」或「在对话中改」。下一步：端到端试用（见 §10）。
 > 范围：MVP（个人使用，先增量模式）
 > 前置结论：本方案基于对现有代码的实测核对，所有引用均带文件路径与行号。
 
@@ -589,6 +589,18 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 
 > 第 18 步是本节的验收点：它验证的是 prompt 注入（agent 知道当前原型）+ slug 回退（命令缺省取绑定）**两条链路都通**。若 agent 仍要求你提供 slug，看主进程日志里 system prompt 是否含 `<prototype_context>`。
 
+### G. 在预览面板上直接改（§12 的验收）
+
+前提：该面板窗口的会话已绑定原型（否则工具栏会提示「未绑定原型」）。
+
+22. 点面板工具栏的**准星图标** → 按钮高亮 + 出现「点击页面上的元素」提示 → 点击页面任意元素
+23. **关键验证**：此刻点击**不应触发**页面自身的按钮/链接行为（编辑态已拦截 capture 阶段）
+24. 主窗口弹出编辑卡片，显示 selector 与当前文字 → 改文字 → **保存为补丁** → 面板里立刻生效，且落盘为 `patches/A-nnn-text-edit.js`
+25. **刷新面板页面** → 改动仍在（它现在是 patch，不再是 DOM 临时状态）
+26. 再选一个元素 → 点**在对话中改** → 跳回会话且输入框已预填该 selector
+27. 点工具栏**闪电图标** → 把当前原型的所有补丁重放进这个面板（与详情页 Apply 同一条 RPC）
+28. 按 Esc 或再点准星图标 → 退出编辑态，页面恢复正常点击行为
+
 ---
 
 ## 11. 会话 ↔ 原型绑定（对话入口）
@@ -639,4 +651,74 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 | prompt 块 | 名称 / 描述 / assets / MEMORY.md | slug / base 状态 / patch 清单 / 契约覆盖 / 所有权违规 |
 | 命令回退 | 无（project 不驱动工具） | **有**：9 个 `prototype-*` 命令缺省取绑定 |
 | 缺失处理 | 项目被删 → 解析为 null，退化为未绑定 | 同左（`existsSync` 判目录，因为 `buildPrototypeStatus` 对不存在的项目返回"空项目"而非报错） |
+
+---
+
+## 12. 预览面板上的编辑入口
+
+**问题**：§11 把「应用补丁」放在了原型详情页。用户看的是**预览面板**里正在开发的产品页面，却要切到另一个页面去点应用。更根本的是：原始痛点「对注入的 HTML 实时编辑**或选中**」在预览面板上**一个入口都没有**。
+
+### 12.1 先纠正一个认知：预览面板不是 React 面板
+
+它是一个**独立的无边框原生窗口**，内部叠了 3 个 `BrowserView`（`browser-pane-manager.ts:496-499`）：
+
+```
+toolbarView   48px   独立渲染进程（browser-toolbar.html）
+pageView      整块    产品页面
+nativeOverlayView     仅 agent 操作时的遮罩（纯视觉，无按钮）
+```
+
+含义：renderer 里的 `components/browser/` 只是主窗口 TopBar 的徽章条，**不是面板本体**。面板工具栏的可用 API 只有导航类（`window.browserToolbar`），它**拿不到 workspace、会话、绑定原型**。
+
+所以「在那里加个按钮」不是加个按钮，而是要新开一条链路。
+
+### 12.2 链路：面板 → 主进程 → 主窗口
+
+```
+面板工具栏（无上下文）
+  │ ipcRenderer.invoke('browser-toolbar:pick-element' | ':apply-prototype')
+  ▼
+BrowserPaneManager（主进程，只有 instanceId）
+  │ 广播 RPC_CHANNELS.browserPane.TOOLBAR_ACTION = { kind, instanceId, ... }
+  ▼
+主窗口 renderer（有 sessionMetaMap + 原型列表）
+  │ 解析 instance.boundSessionId → session.prototypeSlug
+  ▼
+调既有 RPC：prototypes:apply / file:write
+```
+
+**关键设计**：面板只上报「用户做了什么」（`BrowserToolbarAction`），**不判断它的含义**。含义依赖绑定，而绑定在主窗口。这样「应用补丁」按钮与原型详情页的 Apply **走同一个 RPC**，两个入口不可能行为分叉。
+
+广播用 `{ to: 'all' }` 而非定向：面板不知道自己由哪个 client 打开，不拥有该 instance 的 renderer 会忽略。
+
+### 12.3 编辑态必须显式进入（这是用户的明确约束）
+
+用户原话：「要先点击可视化编辑按钮再进入编辑态，否则会被 html 本身的点击行为干扰」。
+
+现有 picker 已满足这个约束（`browser-cdp.ts:120-227`）：
+
+- 它在 `click` 的 **capture 阶段**注册（`addEventListener('click', onClick, true)`）
+- 处理函数里 `e.preventDefault()` + `e.stopPropagation()` —— 页面自身的行为被拦住
+- 它**只在注入后存在**；注入即进入编辑态，`cleanup()` 即退出
+
+所以工具栏的按钮就是「注入/取消注入」的开关，UI 上还额外给了一个文字提示（`browser.pickHint`），避免用户在不知情的情况下点进页面。
+
+### 12.4 选中之后：两个出口
+
+选中元素 → 主窗口弹出编辑卡片（`ElementEditorDialog`），提供两条路：
+
+| 出口 | 行为 | 适用 |
+|---|---|---|
+| **保存为补丁** | 写 `patches/A-nnn-text-edit.js`（`textContent` 替换）+ 立即重放 | 文字/文案类确定性修改。**全程不经过模型** |
+| **在对话中改** | 把 `selector` + 当前文字预填进该会话的输入框并跳过去 | 需要推理的改动（行为、结构） |
+
+只做**文字替换**是刻意的：更丰富的可视化编辑会产出没人审过的补丁，那比不做更糟。
+
+补丁序号取现有最大值 +1，且固定用 lane A —— 这是「不覆盖 agent 或其他 lane 写的补丁」的保证。
+
+### 12.5 未做的（明确记录）
+
+- **样式可视化编辑**（颜色/间距编辑器）—— 只做了文字。样式改动目前走「在对话中改」
+- **面板内编辑条** —— 编辑 UI 在主窗口，不在面板里。面板工具栏是独立 BrowserView，`getToolbarEffectiveHeight()` 支持撑高做编辑条（菜单已用它），但那要改主进程布局 + 一套新 UI；先验证「选中 → 编辑」这条主线是否顺手
+- 面板工具栏的按钮**没有 tooltip**（BrowserView 边界会裁掉浮层），只有 `aria-label`
 

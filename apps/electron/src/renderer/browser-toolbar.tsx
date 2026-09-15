@@ -11,7 +11,7 @@ import ReactDOM from 'react-dom/client'
 import { useTranslation, initReactI18next } from 'react-i18next'
 import LanguageDetector from 'i18next-browser-languagedetector'
 import { setupI18n } from '@craft-agent/shared/i18n'
-import { EyeOff, X, XCircle } from 'lucide-react'
+import { EyeOff, MousePointerClick, X, XCircle, Zap } from 'lucide-react'
 import { BrowserControls } from '@craft-agent/ui'
 import { HeaderIconButton } from '@/components/ui/HeaderIconButton'
 import {
@@ -51,6 +51,9 @@ declare global {
       setMenuGeometry: (open: boolean, height?: number) => Promise<void>
       hideWindow: () => Promise<void>
       closeWindowEntirely: () => Promise<void>
+      pickElement: () => Promise<void>
+      cancelPick: () => Promise<void>
+      applyPrototype: () => Promise<void>
       onStateUpdate: (callback: (state: ToolbarState) => void) => () => void
       onThemeColor: (callback: (color: string | null) => void) => () => void
       onForceCloseMenu: (callback: (payload: { reason?: string }) => void) => () => void
@@ -73,6 +76,12 @@ function BrowserToolbarApp() {
   })
   const [themeColor, setThemeColor] = useState<string | null>(null)
   const [windowMenuOpen, setWindowMenuOpen] = useState(false)
+  /**
+   * Edit mode. While true the page suppresses its own click handlers, so a click
+   * selects an element instead of activating it — this is why entering the mode
+   * is an explicit button press rather than something that happens implicitly.
+   */
+  const [picking, setPicking] = useState(false)
   const menuContentRef = useRef<HTMLDivElement | null>(null)
 
   const api = window.browserToolbar
@@ -162,6 +171,30 @@ function BrowserToolbarApp() {
     void api?.closeWindowEntirely()
   }, [api])
 
+  const handleTogglePick = useCallback(async () => {
+    if (!api) return
+
+    if (picking) {
+      setPicking(false)
+      await api.cancelPick()
+      return
+    }
+
+    setPicking(true)
+    try {
+      // Resolves on pick, Escape, cancel, or timeout — every one of which must
+      // leave edit mode, so the reset lives in `finally` rather than in the
+      // success path only.
+      await api.pickElement()
+    } finally {
+      setPicking(false)
+    }
+  }, [api, picking])
+
+  const handleApplyPrototype = useCallback(() => {
+    void api?.applyPrototype()
+  }, [api])
+
   return (
     <>
       {/*
@@ -191,6 +224,34 @@ function BrowserToolbarApp() {
         onStop={handleStop}
         trailingContent={(
           <div className="ml-2 flex items-center gap-1.5 titlebar-no-drag">
+            {/*
+              Edit mode indicator. Text, not just a highlighted icon: the user is
+              about to click into the page, and a wrong click there would activate
+              whatever is under the cursor if this mode were not clearly entered.
+            */}
+            {picking && (
+              <span className="inline-flex select-none items-center whitespace-nowrap rounded-[6px] bg-accent/15 px-2 py-1 text-[11px] text-accent">
+                {t('browser.pickHint')}
+              </span>
+            )}
+
+            <HeaderIconButton
+              icon={picking
+                ? <X className="h-3.5 w-3.5" />
+                : <MousePointerClick className="h-3.5 w-3.5" />}
+              aria-label={picking ? t('browser.cancelPick') : t('browser.pickElement')}
+              className={picking ? 'bg-accent/15 text-accent' : undefined}
+              style={!picking && themeColor ? { color: 'var(--tb-fg)' } : undefined}
+              onClick={() => { void handleTogglePick() }}
+            />
+
+            <HeaderIconButton
+              icon={<Zap className="h-3.5 w-3.5" />}
+              aria-label={t('browser.applyPrototype')}
+              style={themeColor ? { color: 'var(--tb-fg)' } : undefined}
+              onClick={handleApplyPrototype}
+            />
+
             <DropdownMenu open={windowMenuOpen} onOpenChange={setWindowMenuOpen}>
               <DropdownMenuTrigger asChild>
                 <HeaderIconButton

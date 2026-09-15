@@ -827,6 +827,23 @@ export interface PickedElement {
   rect: { x: number; y: number; width: number; height: number }
 }
 
+/**
+ * An action the browser panel's toolbar forwards to the main window.
+ *
+ * The panel has no workspace or prototype context of its own (it is a separate
+ * render process), so it reports *what the user did* and lets the main window —
+ * which owns the binding — decide what it means.
+ */
+export type BrowserToolbarAction =
+  | {
+      kind: 'picked'
+      instanceId: string
+      /** Null when the user pressed Escape or the pick timed out. */
+      element: PickedElement | null
+    }
+  | { kind: 'apply-requested'; instanceId: string }
+  | { kind: 'pick-failed'; instanceId: string; message: string }
+
 export interface BrowserInstanceInfo {
   id: string
   url: string

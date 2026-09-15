@@ -138,6 +138,8 @@ import { FabNewChat } from "./FabNewChat"
 import { SendToWorkspaceDialog } from "./SendToWorkspaceDialog"
 import { CreateProjectDialog } from "../projects/CreateProjectDialog"
 import { CreatePrototypeDialog } from "../prototypes/CreatePrototypeDialog"
+import { ElementEditorDialog } from "../prototypes/ElementEditorDialog"
+import { useBrowserToolbarActions, type EditElementRequest } from "@/hooks/useBrowserToolbarActions"
 import { MessagingDialogHost } from "@/components/messaging/MessagingDialogHost"
 import { EditPopover, getEditConfig, type EditContextKey } from "@/components/ui/EditPopover"
 import SettingsNavigator from "@/pages/settings/SettingsNavigator"
@@ -939,6 +941,15 @@ function AppShellContent({
 
   const { projects } = useProjects(activeWorkspaceId)
   const { prototypes } = usePrototypes(activeWorkspaceId)
+
+  // Element picked in a browser panel's edit mode. The panel has no workspace
+  // context, so it forwards the pick here and this decides what it means.
+  const [elementEdit, setElementEdit] = useState<EditElementRequest | null>(null)
+  const elementEditPrototype = useMemo(
+    () => (elementEdit ? prototypes.find((p) => p.slug === elementEdit.slug) ?? null : null),
+    [elementEdit, prototypes],
+  )
+  useBrowserToolbarActions({ workspaceId: activeWorkspaceId, onEditElement: setElementEdit })
   const projectMenuOptions = useMemo(
     () => projects.map(p => ({ id: p.config.id, slug: p.config.slug, name: p.config.name, color: p.config.color })),
     [projects],
@@ -3953,6 +3964,15 @@ function AppShellContent({
         open={createPrototypeDialogOpen}
         onCancel={() => setCreatePrototypeDialogOpen(false)}
         onSubmit={handleCreatePrototypeSubmit}
+      />
+
+      {/* Element picked in a browser panel — edit it as text, or hand it to the
+          session when the change needs reasoning rather than substitution. */}
+      <ElementEditorDialog
+        request={elementEdit}
+        prototype={elementEditPrototype}
+        workspaceId={activeWorkspaceId}
+        onClose={() => setElementEdit(null)}
       />
 
       {/* Messaging dialogs (pairing-code + WA connect) — driven by messagingDialogAtom.

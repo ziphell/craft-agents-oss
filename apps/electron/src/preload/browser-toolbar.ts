@@ -20,6 +20,9 @@ const CHANNELS = {
   DESTROY: 'browser-toolbar:destroy',
   STATE_UPDATE: 'browser-toolbar:state-update',
   THEME_COLOR: 'browser-toolbar:theme-color',
+  PICK_ELEMENT: 'browser-toolbar:pick-element',
+  CANCEL_PICK: 'browser-toolbar:cancel-pick',
+  APPLY_PROTOTYPE: 'browser-toolbar:apply-prototype',
 } as const
 
 // Instance ID is passed via query parameter by BrowserPaneManager
@@ -35,6 +38,17 @@ contextBridge.exposeInMainWorld('browserToolbar', {
   setMenuGeometry: (open: boolean, height = 0) => ipcRenderer.invoke(CHANNELS.MENU_GEOMETRY, instanceId, open, height),
   hideWindow: () => ipcRenderer.invoke(CHANNELS.HIDE, instanceId),
   closeWindowEntirely: () => ipcRenderer.invoke(CHANNELS.DESTROY, instanceId),
+  /**
+   * Enter edit mode: ask the user to click an element on the page.
+   *
+   * Resolves when the pick ends (either way) — the outcome also arrives as a
+   * `picked` payload on the host side, which is what actually drives the editor.
+   * Page clicks are suppressed while this is in flight.
+   */
+  pickElement: () => ipcRenderer.invoke(CHANNELS.PICK_ELEMENT, instanceId),
+  cancelPick: () => ipcRenderer.invoke(CHANNELS.CANCEL_PICK, instanceId),
+  /** Ask the host to replay this session's prototype patches into this window. */
+  applyPrototype: () => ipcRenderer.invoke(CHANNELS.APPLY_PROTOTYPE, instanceId),
   onStateUpdate: (callback: (state: unknown) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, state: unknown) => callback(state)
     ipcRenderer.on(CHANNELS.STATE_UPDATE, handler)

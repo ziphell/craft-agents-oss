@@ -395,6 +395,13 @@ export const RPC_CHANNELS = {
     STATE_CHANGED: 'browser-pane:state-changed',
     REMOVED: 'browser-pane:removed',
     INTERACTED: 'browser-pane:interacted',
+    /**
+     * Pushed from the browser panel's own toolbar to the main window, because the
+     * panel is a separate render process with no workspace/session context of its
+     * own. The main window owns the prototype binding, so it decides what a pick
+     * or an apply actually means.
+     */
+    TOOLBAR_ACTION: 'browser-pane:toolbar-action',
   },
   automations: {
     GET: 'automations:get',

@@ -187,6 +187,7 @@ export const LOCAL_ONLY_CHANNELS = new Set<string>([
   RPC_CHANNELS.browserPane.STATE_CHANGED,
   RPC_CHANNELS.browserPane.REMOVED,
   RPC_CHANNELS.browserPane.INTERACTED,
+  RPC_CHANNELS.browserPane.TOOLBAR_ACTION,
 
   // gitbash — Windows-specific local
   RPC_CHANNELS.gitbash.CHECK,

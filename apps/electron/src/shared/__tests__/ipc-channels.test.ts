@@ -60,6 +60,7 @@ const EXPECTED_CHANNELS: string[] = [
   'browser-pane:snapshot',
   'browser-pane:state-changed',
   'browser-pane:stop',
+  'browser-pane:toolbar-action',
   'caching:getEnable1MContext',
   'caching:getExtendedPromptCache',
   'caching:setEnable1MContext',
