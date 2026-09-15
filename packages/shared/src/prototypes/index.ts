@@ -90,8 +90,17 @@ export {
   writePrototypeBase,
 } from './create.ts'
 
+export type { ImportedPrototype } from './import.ts'
+export { importPrototype } from './import.ts'
+
 export type { PrototypeEntry, PrototypeExportResult } from './export.ts'
-export { buildSelfContainedHtml, buildDevSpec, exportPrototype, resolvePrototypeEntry } from './export.ts'
+export {
+  buildSelfContainedHtml,
+  buildDevSpec,
+  exportPrototype,
+  hasPrototypePage,
+  resolvePrototypeEntry,
+} from './export.ts'
 
 export type { PrototypeBaseUrlResolver } from './url.ts'
 export { prototypeDocumentUrl, prototypeOriginUrl, setPrototypeBaseUrlResolver } from './url.ts'

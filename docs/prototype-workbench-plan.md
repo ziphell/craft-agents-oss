@@ -1,6 +1,6 @@
 # 产品经理需求生产工作台 — 实施方案
 
-> 状态：阶段 1–6 全部完成；阶段 7 完成两项（无中生有入口、改写真实后端返回），放开面经决策**确定不开**，响应头就地改写未做。UI 闭环已完成：创建入口（侧边栏「原型」+ 面板「+」+ 空态按钮）→ 详情页 Open / Apply / Capture base / Export，以及产物文件就地编辑（base.html 与 patches/*）。**会话绑定已完成（§11）**：会话绑定原型后，agent 的 system prompt 里带 `<prototype_context>`，且 `prototype-*` 的 slug 变为可选。**预览面板编辑入口已完成（§12）**：面板工具栏新增「选中元素」（显式进入编辑态，页面点击被拦截）与「应用补丁」，选中后可选「保存为补丁」或「在对话中改」。**原型类型分离已完成（§13）**：「从无到有」与「patch 第三方」不再是同一件事的两种用法，而是创建时确定、不可改的两种类型（`overlay` / `scratch`），落在 `config.json` 并被详情页、system prompt、agent 命令共读。**混合场景已完成（§14）**：逆向第三方再搭自己的，拆成「起点」（scratch 可被 Capture 播种，且覆盖前先确认）与「参考面」（参考是独立原型 + 一条 `references` 关系 + 「翻译不要搬运」的硬规矩）。**这条关系与类型无关**——scratch 引用 scratch 和引用 overlay 同构。新增 `prototype-reference` 与 `prototype-create --no-bind`。**agent 的读取面已补齐（§14.6）**：`prototype-list` 给出每个原型的 kind / 目标页 / 双向关系，`prototype-status` 解析出每个参考是什么、以及谁在参考它（反向关系派生、不入库）。**命名已与「项目」分开（§15）**：原型与 workspace 的 projects 无关，且不该共用一个词——`getPrototypeProjectPath` → `getPrototypeDirPath`，给模型的工具描述里显式写明「a prototype is NOT a project」。**原型文档载体已换（§16）**：不再走 `file://`（opaque origin ⇒ 无 cookie、相对 fetch 发不出去所以 mock 拿不到请求、ES module 跑不了），改为回环 HTTP：**一个原型一个 host、目录即 origin 根**（`http://<slug>-<目录hash>.localhost:<port>/…`），根路径是该原型的**渲染结果**（`base.html` + 全部 patch，按请求现算，与"此刻导出会写出的字节"相同），根绝对路径资源与 SPA history 路由都能用。一处注入、三处入口零改动、真实页面浏览路径零风险。下一步：端到端试用（见 §10，新增步骤 H/I/J）。
+> 状态：阶段 1–6 全部完成；阶段 7 完成两项（无中生有入口、改写真实后端返回），放开面经决策**确定不开**，响应头就地改写未做。UI 闭环已完成：创建入口（侧边栏「原型」+ 面板「+」+ 空态按钮）→ 详情页 Open / Apply / Capture base / Export，以及产物文件就地编辑（base.html 与 patches/*）。**会话绑定已完成（§11）**：会话绑定原型后，agent 的 system prompt 里带 `<prototype_context>`，且 `prototype-*` 的 slug 变为可选。**预览面板编辑入口已完成（§12）**：面板工具栏新增「选中元素」（显式进入编辑态，页面点击被拦截）与「应用补丁」，选中后可选「保存为补丁」或「在对话中改」。**原型类型分离已完成（§13）**：「从无到有」与「patch 第三方」不再是同一件事的两种用法，而是创建时确定、不可改的两种类型（`overlay` / `scratch`），落在 `config.json` 并被详情页、system prompt、agent 命令共读。**混合场景已完成（§14）**：逆向第三方再搭自己的，拆成「起点」（scratch 可被 Capture 播种，且覆盖前先确认）与「参考面」（参考是独立原型 + 一条 `references` 关系 + 「翻译不要搬运」的硬规矩）。**这条关系与类型无关**——scratch 引用 scratch 和引用 overlay 同构。新增 `prototype-reference` 与 `prototype-create --no-bind`。**agent 的读取面已补齐（§14.6）**：`prototype-list` 给出每个原型的 kind / 目标页 / 双向关系，`prototype-status` 解析出每个参考是什么、以及谁在参考它（反向关系派生、不入库）。**命名已与「项目」分开（§15）**：原型与 workspace 的 projects 无关，且不该共用一个词——`getPrototypeProjectPath` → `getPrototypeDirPath`，给模型的工具描述里显式写明「a prototype is NOT a project」。**原型文档载体已换（§16）**：不再走 `file://`（opaque origin ⇒ 无 cookie、相对 fetch 发不出去所以 mock 拿不到请求、ES module 跑不了），改为回环 HTTP：**一个原型一个 host、目录即 origin 根**（`http://<slug>-<目录hash>.localhost:<port>/…`），根路径是该原型的**渲染结果**（`base.html` + 全部 patch，按请求现算，与"此刻导出会写出的字节"相同），根绝对路径资源与 SPA history 路由都能用。一处注入、三处入口零改动、真实页面浏览路径零风险。**创建不再预置 `base.html`（§13.1）**：缺席是一句真话，首稿的三条来路（agent 写 / 捕获在线页 / 从其他原型导入）全都在创建之后，死胡同由入口解决而不是由假文件解决。**新增「导入其他原型」（§13.1.1）**：把另一个原型的页面与补丁**成对**搬过来当起点，仅限 scratch 目标，同名补丁一律不覆盖、不删除，只报出来。下一步：端到端试用（见 §10，新增步骤 H/I/J）。
 > 范围：MVP（个人使用，先增量模式）
 > 前置结论：本方案基于对现有代码的实测核对，所有引用均带文件路径与行号。
 
@@ -143,7 +143,7 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 {workspaceRootPath}/prototypes/{slug}/
   ├─ config.json            【§13/§14】原型类型（overlay / scratch）、目标页、参考列表；控制面独占，创建时定
   ├─ manifest.json          【阶段 3 起不再需要】索引由 scanPrototypePatches() 按需从磁盘派生
-  ├─ base.html              overlay：抓取的快照 / scratch：我们自己写的页（手写或捕获播种）；**创建时不预置**
+  ├─ base.html              overlay：抓取的快照（**创建时不预置**）／scratch：我们自己的页（**创建时预置空文档**，之后手写或捕获播种）
   ├─ patches/               每 patch 一个文件，append-only + 唯一命名
   │    ├─ A-001-btn-radius.css
   │    └─ A-002-flow-guard.js
@@ -427,6 +427,10 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 - 初稿把"无中生有"列为阶段 7 的独立能力，其实它**不需要新机制**：agent 在阶段 1.2 起就能写 `prototypes/{slug}/base.html`（Explore 白名单已覆盖），而浏览器面板一直能打开它。
 - 补的是入口体验：`resolvePrototypeEntry()` 决定"这个原型的页面在哪"——**答案现在是它的 origin**，那个地址由服务器把 `base.html` + `patches/` 渲染出来（见 §16.3）。早先的规则是"优先导出产物，否则 `base.html`"，两者都会骗人：前者是冻结在导出时刻的文档，后者一条 patch 都没应用。两者都没有时**明确报错并给出两条出路**，而不是让浏览器里报一个含糊的失败。
 - 命令 `prototype-open <slug>` 复用了既有的 `navigate`，没有新增导航能力。
+- **入口的失败由 UI 提前挡住，而不是把错误弹给人**：`PrototypeStatus.pageAvailable` 是"这个原型到底有没有东西可打开"（base 或导出物其一），详情页据此禁用 Open（以及 Export——它读 `base.html`）。这些 RPC 的错误文案是**写给 agent 的**（点名 `prototype-export`、附绝对路径），弹给用户既看不懂也没法照做；页面下方那条 kind-aware 的告警才是给人的引导。
+- **但同时必须留一个能往前走的入口**：Apply 与 Capture 都需要"有一个浏览器窗口"，而详情页原来只有「打开目标页面」能创建窗口——**而它要求已记录 `targetUrl`**。于是未记目标页的 overlay（或任何还没有页面的原型）在这页上无路可走。补了一个通用的「打开浏览器窗口」（不导航，用户自己走/登录），与「打开目标页面」二选一显示，避免出现两个都只是"开个窗口"的按钮。
+- **那个入口报过 `ERR_FAILED (-2) loading 'about:blank'`（已修）**：详情页每个打开动作都是「先 `create`，紧接着 `navigate`」（`openInBrowserPane`），而 `create` 立刻发起空态页加载。后发的导航把空态加载 abort 掉——这是**正常且预期**的；问题在空态加载的 `catch` 里**无条件**回退到 `about:blank`，于是又插进一条导航，失败被记在 `about:blank` 上、顺着 `navigate` 的 promise 弹回 UI。日志里 `did-navigate` 明明显示真实导航已经成功（`did-fail-load code=-2 url=about:blank` 与 `did-navigate to=http://<slug>-<hash>.localhost:…` 相差 50ms），只有回给用户的那条路是坏的——**报的错误是回退自己的，不是那次导航的**。
+- 修法是给回退加一个前提：**空态回退不得抢占调用方的导航**——`ERR_ABORTED` 时直接放弃回退，只有空态因别的原因失败才加载 `about:blank`（`code` 与 message 两处都匹配：这个 rejection 在日志里只观测到 message 这一条线索，不依赖单一字段）。两个方向都有测试固定（abort 时不抢占 / 真失败时仍回退）。
 
 #### 已完成：overlay 改写真实后端（无需新机制）
 - 初稿认为 (b) 需要扩展 `ses.webRequest.onBeforeRequest` + 新增 `onHeadersReceived`。
@@ -626,7 +630,7 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 29. 在创建对话框里看两个类型卡片：选「在已有页面上改」→ 出现**目标页输入框**；选「从零开始」→ 输入框消失（切回再切一次，确认不会残留上一个类型的输入）
 30. 建一个 overlay 并填目标页 → 详情页标题下是 overlay 的引导语，元数据里有「目标页面」行，且有**「打开目标页面」按钮** → 点它应打开浏览器窗口并**直接落在该地址**
 31. 建一个 scratch → 详情页**没有**「目标页面」行、**没有**「打开目标页面」按钮，引导语说的是「这是你自己的文档」
-32. 两种类型在 `base.html` 缺席时的提示**不一样**（scratch 说直接写；overlay 说去 Capture）
+32. 两种类型在 `base.html` 缺席时的提示**不一样**（scratch 说三条来路：自己写 / 捕获 / 导入；overlay 说去 Capture）
 33. 目录里 `prototypes/<slug>/config.json` 是 `{ "kind": "overlay", "targetUrl": "…" }` / `{ "kind": "scratch" }` 两种形态——scratch **不存** targetUrl
 34. `browser_tool prototype-status <slug>` 与 agent 的 system prompt 里都能看到类型；对话里 `prototype-create Landing page --scratch` 同一条链路建出 scratch 并自动绑定
 
@@ -670,6 +674,15 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 50. 在页面里 `document.cookie = 'a=1'` 再读回 → 有值；`localStorage` 同理。两者在 `file://` 下都是空/不可用
 51. 重启应用后重开同一原型 → cookie 与 localStorage **会丢**（端口每次变 ⇒ origin 变）。这是已知限制，不是 bug
 52. **SPA**：让 `base.html` 里放一个 `history.pushState(null,'','/orders/42')` 的按钮 + `<link href="/assets/app.css">`，并在原型目录里放 `assets/app.css` → 点按钮后**刷新**，页面应仍然起来（回退到原型页面），且样式表命中（根绝对路径）
+
+### K. 首稿的三条来路（§13.1 / §13.1.1 的验收）
+
+53. 新建一个 scratch → `prototypes/<slug>/` 里**没有** `base.html`（只有 `config.json` 与空的 `patches/`），详情页的 Open / Export 是灰的，但「打开浏览器窗口」可用 → 这是**入口**解法，不是死胡同
+54. 在上一步的窗口里导航到任意在线页面 → 回详情页点「捕获为底稿」→ **不弹覆盖确认**（本来就没有东西可覆盖），`base.html` 出现，Open 随之可用
+55. 另一个 scratch 上点**「导入其他原型」** → 弹出的候选只列**有 `base.html`** 的原型（导出物不算来源）→ 点一个：`base.html` 与其补丁一起出现，页面立刻能打开并已带效果
+56. 对**已经写过内容**的 scratch 再导入一次 → 先弹确认；确认后 `base.html` 被替换，而**同名补丁保持原样**，结果提示里点出被保留的文件名（不静默吞掉）
+57. 在 overlay 的详情页上确认**没有**「导入其他原型」（它对应的是「捕获为底稿」）；若绕过 UI 直接调用，报错应说明原因而不是照做
+58. 导入后再看 `config.json` → 目标的 kind / targetUrl / references **都没变**：过来的是材料，不是身份
 
 ---
 
@@ -809,9 +822,37 @@ BrowserPaneManager（主进程，只有 instanceId）
 | `base.html` 从哪来 | Capture 一个真实页面的**渲染快照** | 我们自己写的文档 |
 | 交付物是什么 | patch + 导出物，是给开发翻译的**可执行规格** | 完整页面，本来就是源码 |
 | 有没有外部页 | 有（`targetUrl`，可重开、可重新捕获） | 没有（存 URL 是撒谎） |
-| `base.html` 缺席意味着 | 还没 Capture —— 该去 Capture | 还没写 —— 直接写 |
+| `base.html` 缺席意味着 | 还没 Capture —— 该去 Capture | 还没有首稿 —— 自己写，或捕获 / 导入一份 |
 
-第四行是这条改动最实际的收益：**提示不再含糊**。以前两者都只能说"还没有 base 页面"，现在 overlay 说去 Capture、scratch 说直接写。
+第四行是这条改动最实际的收益：**提示不再含糊**。以前两者都只能说"还没有 base 页面"，现在 overlay 说去 Capture、scratch 说三条来路。
+
+**创建时不写 `base.html`，两种类型都一样**：缺席是一句**真话**（"这个原型还没有页"）。预置一份空白会断言一个不存在的状态——`baseHtmlPresent` 变成 true，于是"怎么拿到第一页"的引导被自己藏起来，导出还会照着空文档写一份空的交付物。
+
+> 这里推翻过一次。最初的顾虑是"新原型一开局所有动作都是灰的，是个死胡同"，于是给 scratch 预置了一个空的合法文档。**顾虑是真的，解法错了**：灰按钮的成因是"没有页面就不能打开"，而这该由**入口**解决而不是由假文件解决——`pageAvailable` 挡住 Open，同时详情页的「打开浏览器窗口」**不需要任何页面**（§7），所以"去捕获一页"这条路永远走得通。空文档只是把死胡同伪装成了一条路。
+>
+> 顺带的收获：`kind === 'scratch' && baseHtmlPresent` 的覆盖确认（§14.1）从此只会在**真有自己文档**时触发。新建的 scratch 没有 `base.html`，"首次播种"不再经过一次语义上略保守的确认。
+
+**首稿的三条来路**（都在创建之后，创建只负责建容器）：
+
+| 来路 | 动作 | 产物归谁 |
+|---|---|---|
+| **agent 写** | 直接写 `base.html`（文件工具，或编辑器） | 我们 |
+| **捕获** | 用户在浏览器窗口里打开任意地址，按「捕获为底稿」——存的是**渲染后**的 DOM | 我们（对 overlay 则是快照） |
+| **导入** | 「导入其他原型」：把另一个原型的 `base.html` 连同它的补丁复制过来 | 我们（见下） |
+
+### 13.1.1 导入：从另一个原型取一份首稿
+
+**动机**：新流程常常和已有的某个原型同源（同一个产品的另一条流程）。对着空白页面重写一遍，是最没价值的那部分工作。
+
+三条边界，每条都有理由：
+
+- **目标是 scratch，来源任意。** 来源不看 kind——另一个 scratch 的文档、或某个 overlay 捕获下来的页面，机制上完全相同（都是"复制一份文档过来"），所以不按 kind 分叉（与 §14.2 的参考关系同一条原则）。但**目标必须是 scratch**：overlay 的 `base.html` 的定义就是"它自己那个目标页的渲染快照"，拿别的文档替换它会让 `targetUrl` 这句话变成假的。overlay 想做同一件事，对应的动作是**捕获**，就在「导入」左边。
+- **页面与补丁作为一对搬过来，且只作为一对。** 补丁的选择器绑在它被写时的那份文档上；只搬页面会得到一堆打不中的补丁。这正是它与**参考**的分野：参考**必须**把补丁留在原地（§14.2），导入**必须**成对搬运。
+- **不覆盖、不删除任何东西。** 目标已有同名补丁时保留原样并**报出来**（`skippedPatches`），因为静默替换掉用户自己写的补丁是唯一没人会发现的损失。`dist/` 不搬——它是派生的，搬过来只是第二份会过期的事实。
+
+**带过来的是材料，不是身份**：目标保留自己的 kind、自己的 `targetUrl`、自己的 `references`，只有文档与补丁两个文件集移动。
+
+覆盖自己的 `base.html` 与捕获同罪，所以**复用同一套确认**：目标已有页面时先问一句。
 
 ### 13.2 为什么创建时定、之后不可改
 
@@ -832,8 +873,12 @@ BrowserPaneManager（主进程，只有 instanceId）
 ### 13.5 未做的（明确记录）
 
 - **类型不可改**（同上，有意）—— 无「转换类型」UI
+- **overlay 的 `targetUrl` 不可补填** —— 创建时省略就永远没有（§13.2 的"不可改"同样适用于目标页）。它**不挡任何流程**：Capture 与 Apply 都是从浏览器窗口取页面，详情页上的「打开浏览器窗口」就是给这种情况的入口；但"一键重开目标页"就没有了。要补就得放开 target 的可变性，那是与 §13.2 相反的一个判断，需单独决定
 - **多目标页** —— overlay 只记一个 `targetUrl`。它只影响「默认打开去哪 / 默认捕获哪」；同一个窗口导航到别的页面时 patch 照样重放（注入按 document 生效），但没有地方登记"这个原型覆盖哪几页"
 - **引导文案的图示** —— 两个类型卡片目前是图标 + 一句描述，没有"页面上叠一层 vs 白纸"的示意图
+- **导入没有 agent 命令** —— 发起导入要人在详情页点。agent 读得到结果（`base.html` 与 `patches/` 就是它的读取面），但它不能自己发起一次"以某原型为模板"。真要加就是一条 `prototype-import <source>`，与 `prototype-reference` 并列；现在不加是因为没有对话里需要它的场景被观察到，而每多一条命令都要在帮助文本、解析器、测试里各留一处
+- **导入不做补丁合并** —— 目标已有同名补丁时**保留原样并报出来**，不尝试三方合并、也不是"源的覆盖目标的"。合并语义（谁赢、内容怎么插）不是能顺手决定的事，而没有合并至少不会丢东西
+- **创建时不捕获** —— "建原型时直接给个 URL，建完自动捕获"没做：捕获要求页面已经渲染完，那是浏览器的事，不是文件系统的事。所以它留在窗口里（「打开浏览器窗口」→ 导航 → 「捕获为底稿」），这三步都不依赖 `base.html` 存在
 
 ---
 
@@ -859,9 +904,11 @@ A 的路径天然跨类型：开始时在别人的页上打 patch（overlay）�
 - 创建时就声明「这会是我自己的页」，然后允许它从某个 URL 拿初稿。`writePrototypeBase` 本来就只依赖"项目存在"，A 在机制上已经可用；缺的只是**措辞**——旧文案说「没有外部页面，没有可捕获的东西」，那会**禁止掉主流程**。
 - 探索竞品的过程发生在**另一个**原型里（就是 B 的参考）。于是 A 与 B 收敛到同一套结构，规则不用松。
 
-`scratch` 的记录随之精确为：**`base.html` 归我们**——手写的或捕获来的都算；关键在于从那刻起它没有"要同步的对端"。
+`scratch` 的记录随之精确为：**`base.html` 归我们**——手写的、捕获来的、或从别的原型导入的都算；关键在于从那刻起它没有"要同步的对端"。
 
-**A 引入了一个静默丢失风险，必须守。** `handleCapture` → `writePrototypeBase` 是**无条件覆盖** `base.html`。对 overlay 这是正规操作（`base.html` 是快照，重新捕获就是刷新它的方式）；但对已播种、已改过的 scratch，按一下就是**无声抹掉自己的文档**。所以：`kind === 'scratch' && baseHtmlPresent` 时 Capture 先弹确认，其余情况不拦。这也写进了 prompt（"Never re-capture over an existing base.html"）。
+**A 引入了一个静默丢失风险，必须守。** `handleCapture` → `writePrototypeBase` 是**无条件覆盖** `base.html`。对 overlay 这是正规操作（`base.html` 是快照，重新捕获就是刷新它的方式）；但对已有自己文档的 scratch，按一下就是**无声抹掉它**。所以：`kind === 'scratch' && baseHtmlPresent` 时 Capture 先弹确认，其余情况不拦。这也写进了 prompt（"Never re-capture over an existing base.html"）。
+
+> **与 §13.1 的交汇（已消解）**：这条确认曾经会在"首次捕获播种"时也弹一次（因为 scratch 一创建就带一份空的种子文档，`baseHtmlPresent` 为真）。现在创建**不写** `base.html`（§13.1），所以新 scratch 的首次捕获不再经过确认——确认只在真有内容会被覆盖时出现，语义正好落在它该在的地方。同样一句确认也覆盖**导入**（导入覆盖的是同一个文件）。
 
 ### 14.2 读法 B 不是第三种类型
 

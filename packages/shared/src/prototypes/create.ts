@@ -2,17 +2,30 @@
  * Prototype creation and base-page capture.
  *
  * A prototype is a directory with an optional `base.html` and a
- * `patches/` folder. `base.html` has one primary origin and one fallback:
+ * `patches/` folder. `base.html` has three ways in, and creation decides none of
+ * them:
  *
- * 1. **Captured page** (the main path) — the rendered DOM of a real page, read
- *    out of a live browser. This must come from the *rendered* document, not from
- *    fetching the URL: a client-rendered app returns an empty shell over HTTP, so
- *    a fetch would capture nothing usable (and would miss any authenticated state).
- * 2. **Hand-written page** (from scratch) — written directly with the file tools.
+ * 1. **Captured page** — the rendered DOM of a real page, read out of a live
+ *    browser. This must come from the *rendered* document, not from fetching the
+ *    URL: a client-rendered app returns an empty shell over HTTP, so a fetch
+ *    would capture nothing usable (and would miss any authenticated state).
+ * 2. **Hand-written page** — written directly with the file tools, by the agent
+ *    or through the source editor.
+ * 3. **Imported page** — another prototype's document and patches, copied in as a
+ *    starting point ({@link importPrototype} in import.ts).
  *
- * Creation deliberately seeds **no** placeholder base. A stub would make
- * `baseHtmlPresent` true, which makes the "this prototype has no page yet" signal
- * lie — and stops "capture the real product" from being the obvious next step.
+ * So creation writes **no** `base.html`, for either kind, and the file's absence
+ * is a *true* statement: "this prototype has no page yet." Seeding an empty
+ * document would assert a state that does not exist — it would make
+ * `baseHtmlPresent` true, hide the guidance that says how to get a first page,
+ * and hand Export an empty document to write. The earlier worry (a brand-new
+ * prototype with every action greyed out) is answered by the panel instead of by
+ * a fake file: Open is disabled from `PrototypeStatus.pageAvailable`, while
+ * "open a browser window" needs no page at all, so capturing one is always
+ * reachable (§7 of docs/prototype-workbench-plan.md).
+ *
+ * "Is there a page?" is never inferred from the kind or from disk by guessing:
+ * `PrototypeStatus.pageAvailable` answers that, and it counts an export as a page.
  *
  * Whether the product page is reached through a local dev server, a test
  * environment, or production is not a distinction this model cares about: the
@@ -47,8 +60,8 @@ export interface CreatedPrototype {
   /** Absolute path to the prototype's directory. */
   dir: string
   /**
-   * Absolute path to `base.html`. This is where the file will live — it does not
-   * exist yet at creation time, only after a capture or a hand-write.
+   * Absolute path to `base.html`. This is where the file will live — creation
+   * never writes it, so it appears later: captured, hand-written, or imported.
    */
   baseHtmlPath: string
   /** The kind this prototype was created as (fixed for its lifetime). */
@@ -74,8 +87,11 @@ export function prototypeSlugFromName(name: string): string {
 /**
  * Create a prototype directory.
  *
- * No `base.html` is seeded — see the module note. The returned `baseHtmlPath` is
- * where it *will* live, once captured or written by hand.
+ * Writes `config.json` and an empty `patches/`, and nothing else: `base.html` is
+ * authored later (hand-written, captured, or imported) and its absence is the
+ * truth about the prototype's state. See the module note.
+ *
+ * The returned `baseHtmlPath` is where it *will* live.
  *
  * @throws when the name produces an empty slug, or when the prototype already
  *   exists — silently reusing a directory would mix two prototypes' patches.

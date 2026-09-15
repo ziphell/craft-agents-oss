@@ -37,12 +37,23 @@ describe('formatPrototypeContextForPrompt', () => {
   })
 
   // Reading 14-A: a scratch page may be seeded by capturing a page first, so the
-  // old wording ("there is nothing to capture") would forbid the main flow.
-  it('allows a scratch base to have been captured, but not overwritten', () => {
+  // old wording ("there is nothing to capture") would forbid the main flow. The
+  // same goes for importing another prototype's page, which is the other way a
+  // scratch can start from material rather than from a blank.
+  it('allows a scratch base to have been captured or imported, but not overwritten', () => {
     const text = formatPrototypeContextForPrompt(makeContext())
     expect(text).toContain('**from-scratch**')
-    expect(text).toContain('seeded by capturing a page')
+    expect(text).toContain('imported from another prototype')
     expect(text).toContain('Never re-capture over an existing base.html')
+  })
+
+  // Nothing is seeded at creation, so "no base page" is the state every new
+  // prototype is in — and the block has to say how to leave it.
+  it('names all three ways to get a first base page', () => {
+    const text = formatPrototypeContextForPrompt(makeContext({ baseHtmlPath: null }))
+    expect(text).toContain('Capture base')
+    expect(text).toContain('write base.html')
+    expect(text).toContain('import another prototype')
   })
 
   // Reading 14-B: this is the rule that keeps reference selectors out of the

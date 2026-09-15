@@ -145,10 +145,12 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
     lines.push(`This is why base.html is a *snapshot*: it is the rendered DOM at capture time, and it goes stale`)
     lines.push(`when the other side ships a change. Re-capture rather than patching a stale base.`)
   } else {
-    lines.push(`This is a **from-scratch** prototype: base.html is ours. It may have been written by hand or`)
-    lines.push(`seeded by capturing a page that was studied first — either way the whole document is editable`)
-    lines.push(`and there is nothing to keep in sync. Never re-capture over an existing base.html: that would`)
-    lines.push(`discard edits without warning. Write it directly when it does not exist.`)
+    lines.push(`This is a **from-scratch** prototype: base.html is ours. It may have been written by hand,`)
+    lines.push(`captured from a live page, or imported from another prototype; either way the whole document`)
+    lines.push(`is editable and there is nothing to keep in sync. A new one has no base.html yet — that is a`)
+    lines.push(`starting state, not a mistake. Never re-capture over an existing base.html, and do not import`)
+    lines.push(`another prototype's page over it either: both replace the document outright, discarding edits`)
+    lines.push(`without warning.`)
   }
   lines.push('')
 
@@ -185,10 +187,11 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
   if (ctx.baseHtmlPath) {
     lines.push(`Base page: ${sanitize(ctx.baseHtmlPath)}`)
   } else {
-    lines.push(`Base page: none yet. Patches have nothing to apply to until one exists.`)
-    lines.push(`Preferred: have the user open the product in a browser window (any address — a dev server,`)
-    lines.push(`a test environment, or production) and press "Capture base". That stores the *rendered* DOM,`)
-    lines.push(`which is what makes it usable as a base. To build a page from scratch, write base.html yourself.`)
+    lines.push(`Base page: none yet. Patches have nothing to apply to until one exists. To get one: have the`)
+    lines.push(`user open the product in a browser window (any address — a dev server, a test environment, or`)
+    lines.push(`production) and press "Capture base", which stores the *rendered* DOM; or write base.html`)
+    lines.push(`yourself. The user can also import another prototype's page from the app, which brings its`)
+    lines.push(`document and its patches over together.`)
   }
   lines.push('')
 

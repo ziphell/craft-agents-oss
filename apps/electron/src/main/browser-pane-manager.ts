@@ -529,7 +529,22 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       })
     void this.loadEmptyStatePage(instance).catch((error) => {
       mainLog.warn(`[browser-pane] empty-state load failed id=${instance.id}: ${error instanceof Error ? error.message : String(error)}`)
-      void pageView.webContents.loadURL('about:blank')
+
+      // `ERR_ABORTED` means something else navigated first — in practice the
+      // caller creating a window and pointing it somewhere in the same breath.
+      // Forcing `about:blank` here would abort *that* navigation and fail it, with
+      // the error surfacing against `about:blank` (so the real navigation looks
+      // broken when it actually succeeded). Only take over when nothing else did.
+      //
+      // Matched on the message as well as the code: the rejection is only observed
+      // through its message in the logs, so do not depend on one field.
+      const aborted = (error as { code?: string } | null)?.code === 'ERR_ABORTED'
+        || (error instanceof Error && error.message.includes('ERR_ABORTED'))
+      if (aborted) return
+
+      void pageView.webContents.loadURL('about:blank').catch((fallbackError) => {
+        mainLog.warn(`[browser-pane] about:blank fallback failed id=${instance.id}: ${String(fallbackError)}`)
+      })
     })
 
     return instanceId

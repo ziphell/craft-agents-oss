@@ -9,8 +9,21 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test'
 
 const createdWindows: any[] = []
 let toolbarLoadFailuresRemaining = 0
+/**
+ * When set, the next `browser-empty-state.html` load throws it. Lets tests drive
+ * the create-time empty-state fallback (see the fallback tests near the top).
+ */
+let emptyStateLoadError: Error | null = null
 const mockShellOpenExternal = mock(async () => {})
 const mockIpcMainHandle = mock(() => {})
+
+function maybeFailEmptyStateLoad(target: string): void {
+  if (emptyStateLoadError && target.includes('browser-empty-state.html')) {
+    const error = emptyStateLoadError
+    emptyStateLoadError = null
+    throw error
+  }
+}
 
 function createMockWebContents() {
   const listeners: Record<string, Function[]> = {}
@@ -25,13 +38,15 @@ function createMockWebContents() {
     },
     loadURL: mock(async (url: string) => {
       currentUrl = url
+      maybeFailEmptyStateLoad(url)
       const isToolbarUrl = typeof url === 'string' && url.includes('browser-toolbar.html')
       if (isToolbarUrl && toolbarLoadFailuresRemaining > 0) {
         toolbarLoadFailuresRemaining--
         throw new Error('mock toolbar load failure')
       }
     }),
-    loadFile: mock(async (_path: string, _opts?: unknown) => {
+    loadFile: mock(async (path: string, _opts?: unknown) => {
+      maybeFailEmptyStateLoad(path)
       if (toolbarLoadFailuresRemaining > 0) {
         toolbarLoadFailuresRemaining--
         throw new Error('mock toolbar load failure')
@@ -244,9 +259,41 @@ describe('BrowserPaneManager', () => {
   beforeEach(() => {
     createdWindows.length = 0
     toolbarLoadFailuresRemaining = 0
+    emptyStateLoadError = null
     mockShellOpenExternal.mockClear()
     mockIpcMainHandle.mockClear()
     manager = new BrowserPaneManager()
+  })
+
+  /**
+   * Creating a window and pointing it somewhere in the same breath aborts the
+   * empty-state load. Forcing `about:blank` in that case would abort the
+   * navigation the caller asked for, and the failure would be reported against
+   * `about:blank` — so a navigation that actually succeeded looks broken.
+   */
+  it('does not hijack a navigation that aborted the empty-state load', async () => {
+    emptyStateLoadError = Object.assign(
+      new Error("ERR_ABORTED (-3) loading 'browser-empty-state.html'"),
+      { code: 'ERR_ABORTED' },
+    )
+
+    manager.createInstance('empty-state-aborted')
+    const instance = (manager as any).instances.get('empty-state-aborted')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(instance.pageView.webContents.loadURL).not.toHaveBeenCalledWith('about:blank')
+  })
+
+  // …while a genuine failure still gets the fallback, so the blank window case
+  // does not regress into showing nothing.
+  it('still falls back to about:blank when the empty state fails for another reason', async () => {
+    emptyStateLoadError = new Error('mock empty-state failure')
+
+    manager.createInstance('empty-state-broken')
+    const instance = (manager as any).instances.get('empty-state-broken')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(instance.pageView.webContents.loadURL).toHaveBeenCalledWith('about:blank')
   })
 
   it('creates and lists instances', () => {

@@ -79,6 +79,7 @@ describe('session-scoped tool callback merge', () => {
         kind: 'overlay' as const,
         references: [],
         baseHtmlPresent: false,
+        pageAvailable: false,
         baseHtmlPath: null,
         patches: { total: 0, byLane: {}, files: [] },
         services: [],

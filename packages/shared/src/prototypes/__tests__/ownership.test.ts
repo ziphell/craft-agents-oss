@@ -238,4 +238,25 @@ describe('buildPrototypeStatus', () => {
     expect(status.distFiles).toEqual([])
     expect(status.ownership.violations).toEqual([])
   })
+
+  /**
+   * `pageAvailable` is what lets the UI offer Open only when it can work. It has
+   * to answer a different question from `baseHtmlPresent`: a prototype whose base
+   * page was deleted after exporting still has a page (the deliverable).
+   */
+  it('says a prototype has no page until a base or an export exists, and does after', () => {
+    const slug = 'empty'
+    mkdirSync(getPrototypeDirPath(workspaceRoot, slug), { recursive: true })
+
+    expect(buildPrototypeStatus(workspaceRoot, slug).pageAvailable).toBe(false)
+
+    const distDir = getPrototypeDistPath(workspaceRoot, slug)
+    mkdirSync(distDir, { recursive: true })
+    writeFileSync(join(distDir, 'prototype.html'), '<!doctype html><html></html>', 'utf-8')
+
+    const exportedOnly = buildPrototypeStatus(workspaceRoot, slug)
+    expect(exportedOnly.pageAvailable).toBe(true)
+    // …and it is still true that there is no base page to edit or re-export.
+    expect(exportedOnly.baseHtmlPresent).toBe(false)
+  })
 })

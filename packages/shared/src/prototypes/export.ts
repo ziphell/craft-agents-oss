@@ -150,6 +150,21 @@ export interface PrototypeEntry {
 }
 
 /**
+ * Whether this prototype has anything to show at all.
+ *
+ * The condition `resolvePrototypeEntry` is built on, exported so callers that
+ * need to *offer* an action can ask it instead of restating the rule — a UI that
+ * re-derives "base or export" drifts the moment the rule changes, and its failure
+ * mode is a button that is silently wrong.
+ */
+export function hasPrototypePage(workspaceRootPath: string, slug: string): boolean {
+  return (
+    existsSync(join(getPrototypeDirPath(workspaceRootPath, slug), BASE_FILENAME)) ||
+    existsSync(join(getPrototypeDistPath(workspaceRootPath, slug), PROTOTYPE_FILENAME))
+  )
+}
+
+/**
  * Resolve the prototype's page.
  *
  * Deliberately **not** "which file wins": the address is the prototype's origin,

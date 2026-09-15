@@ -14,7 +14,7 @@ import { watch } from 'fs'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import { ensureWorkspacePrototypesPath } from '@craft-agent/shared/workspaces'
-import { exportPrototype, createPrototype, linkPrototypeReference, listPrototypeStatuses, resolvePrototypeEntry, unlinkPrototypeReference, writePrototypeBase } from '@craft-agent/shared/prototypes'
+import { exportPrototype, createPrototype, importPrototype, linkPrototypeReference, listPrototypeStatuses, resolvePrototypeEntry, unlinkPrototypeReference, writePrototypeBase } from '@craft-agent/shared/prototypes'
 import type { PrototypeKind } from '@craft-agent/shared/prototypes'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import {
@@ -34,6 +34,7 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.prototypes.CAPTURE,
   RPC_CHANNELS.prototypes.LINK_REFERENCE,
   RPC_CHANNELS.prototypes.UNLINK_REFERENCE,
+  RPC_CHANNELS.prototypes.IMPORT,
 ] as const
 
 /** Batch rapid changes before notifying (matches the session file watcher). */
@@ -170,6 +171,23 @@ export function registerPrototypesHandlers(server: RpcServer, deps: HandlerDeps)
       const config = unlinkPrototypeReference(workspace.rootPath, slug, referenceSlug)
       log.info(`PROTOTYPES_UNLINK_REFERENCE: ${slug} ↛ reference ${referenceSlug}`)
       return config
+    },
+  )
+
+  // Copy another prototype's page and patches in. The counterpart of a reference,
+  // and deliberately not the same thing: a reference keeps the other prototype's
+  // patches out of this one, an import moves them in.
+  server.handle(
+    RPC_CHANNELS.prototypes.IMPORT,
+    async (_ctx, workspaceId: string, slug: string, sourceSlug: string) => {
+      const workspace = getWorkspaceByNameOrId(workspaceId)
+      if (!workspace) throw new Error(`PROTOTYPES_IMPORT: Workspace not found: ${workspaceId}`)
+      const imported = importPrototype(workspace.rootPath, slug, sourceSlug)
+      log.info(
+        `PROTOTYPES_IMPORT: ${slug} ← ${sourceSlug} (${imported.copiedPatches.length} patches, ` +
+          `${imported.skippedPatches.length} left as they were)`,
+      )
+      return imported
     },
   )
 

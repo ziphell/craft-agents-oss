@@ -128,6 +128,11 @@ export const RPC_CHANNELS = {
     LINK_REFERENCE: 'prototypes:linkReference',
     /** Drop that relation. Idempotent, and the way a dangling reference is cleaned up. */
     UNLINK_REFERENCE: 'prototypes:unlinkReference',
+    /**
+     * Copy another prototype's page and patches in as a starting point. Distinct
+     * from a reference: this one *does* move material, into a `scratch` target.
+     */
+    IMPORT: 'prototypes:import',
   },
   debug: {
     LOG: 'debug:log',

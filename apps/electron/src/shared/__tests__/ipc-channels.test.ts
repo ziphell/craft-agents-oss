@@ -209,6 +209,7 @@ const EXPECTED_CHANNELS: string[] = [
   'prototypes:create',
   'prototypes:entry',
   'prototypes:export',
+  'prototypes:import',
   'prototypes:linkReference',
   'prototypes:list',
   'prototypes:unlinkReference',

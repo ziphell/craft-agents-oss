@@ -97,6 +97,7 @@ function createMockFns(): BrowserPaneFns {
       kind: 'overlay' as const,
       references: [],
       baseHtmlPresent: true,
+      pageAvailable: true,
       baseHtmlPath: `/tmp/prototypes/${slug}/base.html`,
       patches: { total: 2, byLane: { A: 2 }, files: [] },
       services: [
@@ -155,6 +156,7 @@ function prototypeStatus(slug: string, overrides: Partial<PrototypeStatus> = {})
     kind: 'overlay',
     references: [],
     baseHtmlPresent: true,
+    pageAvailable: true,
     baseHtmlPath: `/tmp/prototypes/${slug}/base.html`,
     patches: { total: 1, byLane: { A: 1 }, files: [] },
     services: [],
@@ -1084,6 +1086,7 @@ describe('createBrowserTools', () => {
         kind: 'overlay' as const,
         references: [],
         baseHtmlPresent: true,
+        pageAvailable: true,
         baseHtmlPath: `/tmp/prototypes/${slug}/base.html`,
         patches: { total: 2, byLane: { A: 2 }, files: [] },
         services: [

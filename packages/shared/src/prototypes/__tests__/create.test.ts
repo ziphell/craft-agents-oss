@@ -45,15 +45,27 @@ describe('createPrototype', () => {
     rmSync(workspaceRoot, { recursive: true, force: true })
   })
 
-  it('creates the prototype and its patches folder, and seeds no base page', () => {
+  it('creates the prototype and its patches folder, and seeds no base page for an overlay', () => {
+    // Overlay is the default kind, and its base has to be a *capture*. Seeding a
+    // placeholder would make `baseHtmlPresent` true and hide the real next step.
     const created = createPrototype(workspaceRoot, { name: 'Checkout Flow' })
 
     expect(created.slug).toBe('checkout-flow')
+    expect(created.kind).toBe('overlay')
     expect(existsSync(getPrototypePatchesPath(workspaceRoot, 'checkout-flow'))).toBe(true)
-    // A placeholder base would make `baseHtmlPresent` true and hide the real next
-    // step (capture the product page), so creation must not write one.
     expect(existsSync(created.baseHtmlPath)).toBe(false)
     expect(readPrototypeBase(workspaceRoot, 'checkout-flow')).toBeNull()
+  })
+
+  // Same for scratch, even though its base will be our own document: an empty
+  // one would claim a page exists, and the three real ways to get a first page
+  // (write it, capture it, import it) are all reachable without one.
+  it('seeds no base page for a scratch prototype either', () => {
+    const created = createPrototype(workspaceRoot, { name: 'Quotes Flow', kind: 'scratch' })
+
+    expect(created.kind).toBe('scratch')
+    expect(existsSync(created.baseHtmlPath)).toBe(false)
+    expect(readPrototypeBase(workspaceRoot, created.slug)).toBeNull()
   })
 
   it('refuses to reuse an existing prototype rather than mixing two sets of patches', () => {

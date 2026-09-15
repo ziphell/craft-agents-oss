@@ -509,6 +509,13 @@ export interface ElectronAPI {
   linkPrototypeReference(workspaceId: string, slug: string, referenceSlug: string): Promise<unknown>
   /** Drop the relation. Idempotent, and how a dangling reference is cleaned up. */
   unlinkPrototypeReference(workspaceId: string, slug: string, referenceSlug: string): Promise<unknown>
+  /**
+   * Copy another prototype's `base.html` and its replayable patches in as a
+   * starting point (plan §13.1). Material, not identity: the target keeps its own
+   * kind and target page, and patches it already has are left alone rather than
+   * overwritten. `scratch` targets only — an overlay's base is its own snapshot.
+   */
+  importPrototype(workspaceId: string, slug: string, sourceSlug: string): Promise<unknown>
 
   // Sources
   getSources(workspaceId: string): Promise<LoadedSource[]>
