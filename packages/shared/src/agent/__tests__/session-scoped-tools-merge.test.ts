@@ -41,7 +41,7 @@ describe('session-scoped tool callback merge', () => {
       goForward: async () => {},
       evaluate: async () => 'ok',
       pick: async () => null,
-      applyPrototype: async (slug: string) => ({ slug, applied: 0, files: [] }),
+      applyPrototype: async (slug: string) => ({ slug, applied: 0, files: [], skipped: [] }),
       clearPrototype: async (slug: string) => ({ slug, removed: [] }),
       exportPrototype: async (slug: string) => ({
         slug,
@@ -79,7 +79,6 @@ describe('session-scoped tool callback merge', () => {
         kind: 'overlay' as const,
         references: [],
         baseHtmlPresent: false,
-        pageAvailable: false,
         baseHtmlPath: null,
         patches: { total: 0, byLane: {}, files: [] },
         services: [],
@@ -88,7 +87,6 @@ describe('session-scoped tool callback merge', () => {
         lanes: {},
       }),
       prototypeEntry: async ({ slug }: { slug: string }) => ({
-        kind: 'page' as const,
         path: '/tmp/base.html',
         url: 'http://checkout-flow.localhost:41234/',
       }),

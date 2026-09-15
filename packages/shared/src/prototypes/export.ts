@@ -11,7 +11,6 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { pathToFileURL } from 'url'
 import { buildPatchInitScript } from './patch-script.ts'
 import { getPrototypeDistPath, getPrototypeDirPath, scanPrototypePatches } from './storage.ts'
 import { prototypeDocumentUrl, prototypeOriginUrl } from './url.ts'
@@ -36,11 +35,50 @@ export interface PrototypeExportResult {
   applied: number
 }
 
-/** Insert `block` immediately before the last occurrence of `closingTag`. */
+/**
+ * Insert `block` immediately before the last occurrence of `closingTag`.
+ */
 function insertBeforeClosingTag(html: string, block: string, closingTag: string): string | null {
   const index = html.toLowerCase().lastIndexOf(closingTag)
   if (index === -1) return null
   return `${html.slice(0, index)}${block}\n${html.slice(index)}`
+}
+
+/**
+ * id of the element that records which patches a document already carries.
+ *
+ * Read back by {@link buildInlinedPatchProbeScript}, which is what keeps a page
+ * opened from the workbench from having its patches applied a second time.
+ */
+export const INLINED_PATCHES_ELEMENT_ID = '__craft_prototype_inlined__'
+
+/** The marker element itself: a list of file names, escaped so it cannot end the tag. */
+function inlinedMarkerBlock(files: string[]): string {
+  const json = JSON.stringify(files).replace(/</g, '\\u003c')
+  return `<script type="application/json" id="${INLINED_PATCHES_ELEMENT_ID}">${json}</script>`
+}
+
+/**
+ * An expression that reads the file names a document already has inlined.
+ *
+ * Deliberately tolerant: a document with no marker, a marker whose payload is
+ * not JSON, or one that is not an array of strings all mean "nothing known is
+ * applied", which is the safe answer — the alternative (assuming patches are
+ * already there) would silently skip work.
+ */
+export function buildInlinedPatchProbeScript(): string {
+  return [
+    '(() => {',
+    `  const el = document.getElementById(${JSON.stringify(INLINED_PATCHES_ELEMENT_ID)});`,
+    '  if (!el) return [];',
+    '  try {',
+    "    const parsed = JSON.parse(el.textContent || '[]');",
+    "    return Array.isArray(parsed) ? parsed.filter((name) => typeof name === 'string') : [];",
+    '  } catch {',
+    '    return [];',
+    '  }',
+    '})()',
+  ].join('\n')
 }
 
 /**
@@ -51,6 +89,11 @@ function insertBeforeClosingTag(html: string, block: string, closingTag: string)
  *   equivalent to what the live injector does — and it survives with JS off).
  * - js patches are inlined through {@link buildPatchInitScript}, the same
  *   transform used for live replay, so behaviour cannot diverge.
+ * - the list of what was inlined is written into the document as well
+ *   ({@link INLINED_PATCHES_ELEMENT_ID}), so the injector can tell "this page
+ *   already has these" from "this page is a foreign document" and not run the
+ *   JS patches twice. A plain base page carries no marker and is treated as
+ *   untouched, which is what an overlay's target page is.
  */
 export function buildSelfContainedHtml(baseHtml: string, patches: PrototypePatch[]): string {
   const cssPatches = patches.filter((patch) => patch.kind === 'css')
@@ -71,6 +114,14 @@ export function buildSelfContainedHtml(baseHtml: string, patches: PrototypePatch
   if (!styleBlock && !scriptBlock) return baseHtml
 
   let out = baseHtml
+
+  // The marker goes in on its own, before the styles, so that a document with no
+  // `</head>` cannot lose it to a later fallback — it is the only record that the
+  // patches inlined below are already applied.
+  const marker = inlinedMarkerBlock(patches.map((patch) => patch.file))
+  out = insertBeforeClosingTag(out, marker, '</head>')
+    ?? insertBeforeClosingTag(out, marker, '</body>')
+    ?? `${out}\n${marker}`
 
   if (styleBlock) {
     out = insertBeforeClosingTag(out, styleBlock, '</head>')
@@ -130,82 +181,53 @@ export function buildDevSpec(slug: string, patches: PrototypePatch[]): string {
   return lines.join('\n')
 }
 
-/** Where a prototype's page is, and what that address actually serves. */
+/** Where a prototype's page is. */
 export interface PrototypeEntry {
-  /**
-   * `page` — `base.html` is the source, and the address renders it with every
-   * patch applied. `export` — no base page is left, so the address serves the
-   * frozen deliverable instead.
-   */
-  kind: 'page' | 'export'
-  /** Absolute path of the file the page is built from. */
+  /** Absolute path to the base page the address renders. */
   path: string
   /**
-   * Address to open. The prototype's **origin root** whenever a host serves
-   * prototypes, because that address is `base.html` rendered with all patches —
-   * the current state, and the same bytes an export would write right now.
-   * Falls back to `file://` on a host that serves nothing.
+   * The prototype's **origin root**, always. That address is `base.html`
+   * rendered with every patch, computed per request — the prototype as it stands
+   * right now, and the same bytes an export would write this second.
    */
   url: string
 }
 
 /**
- * Whether this prototype has anything to show at all.
+ * Resolve the address to open for a prototype.
  *
- * The condition `resolvePrototypeEntry` is built on, exported so callers that
- * need to *offer* an action can ask it instead of restating the rule — a UI that
- * re-derives "base or export" drifts the moment the rule changes, and its failure
- * mode is a button that is silently wrong.
- */
-export function hasPrototypePage(workspaceRootPath: string, slug: string): boolean {
-  return (
-    existsSync(join(getPrototypeDirPath(workspaceRootPath, slug), BASE_FILENAME)) ||
-    existsSync(join(getPrototypeDistPath(workspaceRootPath, slug), PROTOTYPE_FILENAME))
-  )
-}
-
-/**
- * Resolve the prototype's page.
+ * There is exactly one answer when there is an answer at all: the origin root,
+ * which the host renders from `base.html` + `patches/` on every request.
  *
- * Deliberately **not** "which file wins": the address is the prototype's origin,
- * and the server renders it from `base.html` + `patches/` on every request. That
- * removes the whole class of staleness the old rule had — preferring a previously
- * exported `dist/prototype.html` would show a document frozen at export time, and
- * falling back to a bare `base.html` would show one with no patches applied at
- * all, neither of which is the prototype.
+ * The rules this replaces all pointed somewhere that was not the prototype:
+ * preferring a previous `dist/prototype.html` opened a document frozen at export
+ * time, and a bare `base.html` opened one with none of the patches applied. The
+ * exported deliverable is still reachable *by name* for anyone who wants to look
+ * at it, but it is never what "open this prototype" means — opening it would
+ * hand back a page you cannot go on editing.
  *
- * `kind` only describes what the address has to fall back to, and `path` names
- * the file behind it.
- *
- * @throws when there is nothing to show at all, naming both ways to get one.
+ * @throws when there is no base page to render, or when this host has no server
+ *   to render it on — a `file://` page would be the raw base with none of the
+ *   patches, which is worse than saying so.
  */
 export function resolvePrototypeEntry(workspaceRootPath: string, slug: string): PrototypeEntry {
   const base = join(getPrototypeDirPath(workspaceRootPath, slug), BASE_FILENAME)
-  const exported = join(getPrototypeDistPath(workspaceRootPath, slug), PROTOTYPE_FILENAME)
+  if (!existsSync(base)) {
+    throw new Error(
+      `Prototype "${slug}" has no ${BASE_FILENAME}, so there is nothing to render. ` +
+        `Write ${base}, capture a real page as the base, or import another prototype's page.`,
+    )
+  }
+
   const origin = prototypeOriginUrl(workspaceRootPath, slug)
-
-  // With an origin, the rendered page is always the answer; the file choice only
-  // matters when there is no base page to render (deleted source, kept export).
-  if (origin && existsSync(base)) {
-    return { kind: 'page', path: base, url: origin }
-  }
-  if (origin && existsSync(exported)) {
-    return { kind: 'export', path: exported, url: prototypeDocumentUrl(workspaceRootPath, slug, exported) }
+  if (!origin) {
+    throw new Error(
+      `No host is serving prototypes, so "${slug}" has no address that renders it with its patches ` +
+        `applied — opening ${BASE_FILENAME} directly would show the page with none of them.`,
+    )
   }
 
-  // No host server: the fully-applied document exists only as the exported file,
-  // so it is the better fallback even though it may be stale.
-  if (existsSync(exported)) {
-    return { kind: 'export', path: exported, url: pathToFileURL(exported).toString() }
-  }
-  if (existsSync(base)) {
-    return { kind: 'page', path: base, url: pathToFileURL(base).toString() }
-  }
-
-  throw new Error(
-    `Prototype "${slug}" has neither ${BASE_FILENAME} nor ${PROTOTYPE_FILENAME} (run prototype-export). ` +
-    `Write ${base} first, or capture a real page as the base.`,
-  )
+  return { path: base, url: origin }
 }
 
 /**

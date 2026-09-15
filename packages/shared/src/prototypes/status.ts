@@ -12,7 +12,6 @@ import { existsSync, readdirSync } from 'fs'
 import { join } from 'path'
 import { getWorkspacePrototypesPath } from '../workspaces/storage.ts'
 import { readPrototypeConfig, type PrototypeKind } from './config.ts'
-import { hasPrototypePage } from './export.ts'
 import { buildMockRoutes, composeContract, listContractServices, loadContractService } from './contract.ts'
 import { PROTOTYPE_LANES, resolvePrototypeOwnership } from './ownership.ts'
 import { getPrototypeDistPath, getPrototypePatchesPath, getPrototypeDirPath, scanPrototypePatches } from './storage.ts'
@@ -44,14 +43,17 @@ export interface PrototypeStatus {
    * it from that reference's own config.
    */
   references: string[]
-  baseHtmlPresent: boolean
   /**
-   * Whether there is anything to open at all — a base page, or a previously
-   * exported deliverable. Callers use this to *offer* actions rather than to
-   * discover the failure after the fact, so a prototype with no page yet gets a
-   * disabled button and its guidance instead of an error written for the agent.
+   * Whether the prototype has a base page to render. This is the one thing that
+   * decides if Open can work (see `resolvePrototypeEntry`), so callers *offer*
+   * actions from it rather than discovering the failure after the fact — a
+   * prototype without one gets a disabled button and its guidance, instead of an
+   * error written for the agent.
+   *
+   * An exported deliverable does not count: it is a snapshot of an earlier state,
+   * not a page you can go on editing.
    */
-  pageAvailable: boolean
+  baseHtmlPresent: boolean
   /** Absolute path to `base.html`, or null when the prototype has none. */
   baseHtmlPath: string | null
   patches: {
@@ -145,7 +147,6 @@ export function buildPrototypeStatus(workspaceRootPath: string, slug: string): P
     ...(config.targetUrl ? { targetUrl: config.targetUrl } : {}),
     references: config.references ?? [],
     baseHtmlPresent: existsSync(baseHtmlPath),
-    pageAvailable: hasPrototypePage(workspaceRootPath, slug),
     baseHtmlPath: existsSync(baseHtmlPath) ? baseHtmlPath : null,
     patches: {
       total: patches.length,

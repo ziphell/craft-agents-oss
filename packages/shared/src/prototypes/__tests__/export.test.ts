@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { buildDevSpec, buildSelfContainedHtml, exportPrototype, resolvePrototypeEntry } from '../export'
+import { buildDevSpec, buildInlinedPatchProbeScript, buildSelfContainedHtml, exportPrototype, INLINED_PATCHES_ELEMENT_ID, resolvePrototypeEntry } from '../export'
 import { setPrototypeBaseUrlResolver } from '../url'
 import { getPrototypeDistPath, getPrototypePatchesPath, getPrototypeDirPath } from '../storage'
 import type { PrototypePatch } from '../types'
@@ -69,6 +69,47 @@ describe('buildSelfContainedHtml', () => {
     const script = html.slice(start, html.indexOf('</script>'))
 
     expect(() => new Function(script)).not.toThrow()
+  })
+
+  /**
+   * The marker is the whole basis for not applying patches twice to a page that
+   * already has them, so it must be present exactly when patches were inlined.
+   */
+  it('records the patches it inlined, and stays out when it inlined none', () => {
+    const html = buildSelfContainedHtml(BASE, [cssPatch, jsPatch])
+
+    const start = html.indexOf(`id="${INLINED_PATCHES_ELEMENT_ID}"`)
+    expect(start).toBeGreaterThan(-1)
+    const payload = html.slice(html.indexOf('>', start) + 1, html.indexOf('</script>', start))
+    expect(JSON.parse(payload)).toEqual(['A-001-btn.css', 'A-002-guard.js'])
+
+    // No patches inlined means nothing to record — and a base page must not claim
+    // otherwise, or the injector would skip patches the page never had.
+    expect(buildSelfContainedHtml(BASE, [])).not.toContain(INLINED_PATCHES_ELEMENT_ID)
+  })
+
+  it('keeps the marker even when the base has no head or body tag', () => {
+    expect(buildSelfContainedHtml('<div>fragment</div>', [cssPatch])).toContain(INLINED_PATCHES_ELEMENT_ID)
+  })
+})
+
+describe('buildInlinedPatchProbeScript', () => {
+  /** Run the probe against a stand-in for `document`. */
+  function probeWith(payload: string | null): unknown {
+    const element = payload === null ? null : { textContent: payload }
+    return new Function('document', `return ${buildInlinedPatchProbeScript()}`)({
+      getElementById: () => element,
+    })
+  }
+
+  // Every unreadable shape has to mean "nothing known is applied": the other
+  // answer would skip work on a page that never had it done.
+  it('reads the list back, and treats every unreadable document as untouched', () => {
+    expect(probeWith('["A-001-btn.css"]')).toEqual(['A-001-btn.css'])
+    expect(probeWith(null)).toEqual([])
+    expect(probeWith('not json')).toEqual([])
+    expect(probeWith('{"a":1}')).toEqual([])
+    expect(probeWith('["ok.css", 7, null]')).toEqual(['ok.css'])
   })
 })
 
@@ -142,6 +183,7 @@ describe('exportPrototype', () => {
 
 describe('resolvePrototypeEntry', () => {
   const slug = 'checkout-flow'
+  const ORIGIN = 'http://checkout-flow-abc123ab.localhost:41234'
   let workspaceRoot = ''
 
   beforeEach(() => {
@@ -156,62 +198,62 @@ describe('resolvePrototypeEntry', () => {
     rmSync(workspaceRoot, { recursive: true, force: true })
   })
 
-  it('prefers the exported deliverable when it exists', () => {
-    mkdirSync(getPrototypeDistPath(workspaceRoot, slug), { recursive: true })
-    writeFileSync(join(getPrototypeDistPath(workspaceRoot, slug), 'prototype.html'), BASE, 'utf-8')
+  function writeBase(): void {
     writeFileSync(join(getPrototypeDirPath(workspaceRoot, slug), 'base.html'), BASE, 'utf-8')
+  }
+
+  function writeExport(): void {
+    const distDir = getPrototypeDistPath(workspaceRoot, slug)
+    mkdirSync(distDir, { recursive: true })
+    writeFileSync(join(distDir, 'prototype.html'), BASE, 'utf-8')
+  }
+
+  it('points at the origin, which is the page with every patch applied', () => {
+    writeBase()
+    setPrototypeBaseUrlResolver(() => ORIGIN)
 
     const entry = resolvePrototypeEntry(workspaceRoot, slug)
 
-    // With no host server the fully-applied document exists only as that file.
-    expect(entry.kind).toBe('export')
-    expect(entry.path.endsWith(join('dist', 'prototype.html'))).toBe(true)
-    expect(entry.url.startsWith('file://')).toBe(true)
-  })
-
-  it('falls back to base.html when nothing has been exported', () => {
-    writeFileSync(join(getPrototypeDirPath(workspaceRoot, slug), 'base.html'), BASE, 'utf-8')
-
-    const entry = resolvePrototypeEntry(workspaceRoot, slug)
-
-    expect(entry.kind).toBe('page')
+    expect(entry.url).toBe(ORIGIN)
     expect(entry.path.endsWith('base.html')).toBe(true)
   })
 
   /**
-   * With a host serving prototypes, the address is the origin — not whichever
-   * file happens to exist. That page is `base.html` rendered with every patch, so
-   * pointing at a file would either drop the patches (raw base) or freeze the
-   * document at export time, and neither is the prototype.
+   * The deliverable is a snapshot of an earlier state, and opening it hands back
+   * a document you cannot go on editing. It stays reachable by name; it is never
+   * the entry.
    */
-  it('points at the origin once a host serves prototypes, even when an export exists', () => {
-    mkdirSync(getPrototypeDistPath(workspaceRoot, slug), { recursive: true })
-    writeFileSync(join(getPrototypeDistPath(workspaceRoot, slug), 'prototype.html'), BASE, 'utf-8')
-    writeFileSync(join(getPrototypeDirPath(workspaceRoot, slug), 'base.html'), BASE, 'utf-8')
-    setPrototypeBaseUrlResolver(() => 'http://checkout-flow-abc123ab.localhost:41234')
+  it('ignores an exported deliverable even when one exists', () => {
+    writeBase()
+    writeExport()
+    setPrototypeBaseUrlResolver(() => ORIGIN)
 
     const entry = resolvePrototypeEntry(workspaceRoot, slug)
 
-    expect(entry.url).toBe('http://checkout-flow-abc123ab.localhost:41234')
-    expect(entry.kind).toBe('page')
+    expect(entry.url).toBe(ORIGIN)
     expect(entry.path.endsWith('base.html')).toBe(true)
   })
 
-  // The one case where the address cannot render: the source was deleted after
-  // exporting. Serving the frozen file beats a dead end.
-  it('falls back to the export through the origin when base.html is gone', () => {
-    mkdirSync(getPrototypeDistPath(workspaceRoot, slug), { recursive: true })
-    writeFileSync(join(getPrototypeDistPath(workspaceRoot, slug), 'prototype.html'), BASE, 'utf-8')
-    setPrototypeBaseUrlResolver(() => 'http://checkout-flow-abc123ab.localhost:41234')
+  it('refuses an export-only prototype: a deliverable is not a page', () => {
+    writeExport()
+    setPrototypeBaseUrlResolver(() => ORIGIN)
 
-    const entry = resolvePrototypeEntry(workspaceRoot, slug)
-
-    expect(entry.kind).toBe('export')
-    expect(entry.url).toBe('http://checkout-flow-abc123ab.localhost:41234/dist/prototype.html')
+    expect(() => resolvePrototypeEntry(workspaceRoot, slug)).toThrow(/nothing to render/)
   })
 
-  it('refuses to open a prototype with neither file, naming both options', () => {
-    expect(() => resolvePrototypeEntry(workspaceRoot, slug)).toThrow(/prototype-export/)
+  it('refuses to open a prototype with no base page, naming every way to get one', () => {
+    setPrototypeBaseUrlResolver(() => ORIGIN)
+
     expect(() => resolvePrototypeEntry(workspaceRoot, slug)).toThrow(/base\.html/)
+    expect(() => resolvePrototypeEntry(workspaceRoot, slug)).toThrow(/capture a real page/)
+    expect(() => resolvePrototypeEntry(workspaceRoot, slug)).toThrow(/import another prototype/)
+  })
+
+  // No rendering host means no address shows the patches at all: a `file://` page
+  // would be the raw base, which is exactly the thing this refuses to hand out.
+  it('refuses rather than falling back to file:// when nothing serves prototypes', () => {
+    writeBase()
+
+    expect(() => resolvePrototypeEntry(workspaceRoot, slug)).toThrow(/No host is serving prototypes/)
   })
 })

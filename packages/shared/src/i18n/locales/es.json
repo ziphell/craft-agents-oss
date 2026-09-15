@@ -807,6 +807,8 @@
   "prototypeInfo.addReference": "Añadir referencia",
   "prototypeInfo.addReferenceHint": "Crea un prototipo overlay aparte para la página que quieres estudiar y lo vincula aquí. Para tomar como referencia un prototipo que ya existe, vincúlalo desde su nombre arriba.",
   "prototypeInfo.apply": "Aplicar a la página",
+  "prototypeInfo.applyAlreadyInlined": "No hay nada que inyectar: esta página ya incluye los {{skipped}} parche(s). Un parche cuyo contenido haya cambiado aparece al recargar.",
+  "prototypeInfo.applyNoPatches": "Este prototipo aún no tiene parches que aplicar.",
   "prototypeInfo.applySuccess": "Se inyectaron {{applied}} parches en la página",
   "prototypeInfo.applying": "Aplicando…",
   "prototypeInfo.baseHtml": "Página base",

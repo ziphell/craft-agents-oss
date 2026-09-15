@@ -240,23 +240,24 @@ describe('buildPrototypeStatus', () => {
   })
 
   /**
-   * `pageAvailable` is what lets the UI offer Open only when it can work. It has
-   * to answer a different question from `baseHtmlPresent`: a prototype whose base
-   * page was deleted after exporting still has a page (the deliverable).
+   * `baseHtmlPresent` is what lets the UI offer Open only when it can work: the
+   * entry renders `base.html`, so without one there is nothing to render — an
+   * exported deliverable is a snapshot of an earlier state, not a page.
    */
-  it('says a prototype has no page until a base or an export exists, and does after', () => {
+  it('needs a base page — an exported deliverable does not count as one', () => {
     const slug = 'empty'
     mkdirSync(getPrototypeDirPath(workspaceRoot, slug), { recursive: true })
 
-    expect(buildPrototypeStatus(workspaceRoot, slug).pageAvailable).toBe(false)
+    expect(buildPrototypeStatus(workspaceRoot, slug).baseHtmlPresent).toBe(false)
 
     const distDir = getPrototypeDistPath(workspaceRoot, slug)
     mkdirSync(distDir, { recursive: true })
     writeFileSync(join(distDir, 'prototype.html'), '<!doctype html><html></html>', 'utf-8')
 
-    const exportedOnly = buildPrototypeStatus(workspaceRoot, slug)
-    expect(exportedOnly.pageAvailable).toBe(true)
-    // …and it is still true that there is no base page to edit or re-export.
-    expect(exportedOnly.baseHtmlPresent).toBe(false)
+    expect(buildPrototypeStatus(workspaceRoot, slug).baseHtmlPresent).toBe(false)
+
+    writeFileSync(join(getPrototypeDirPath(workspaceRoot, slug), 'base.html'), '<!doctype html><html></html>', 'utf-8')
+
+    expect(buildPrototypeStatus(workspaceRoot, slug).baseHtmlPresent).toBe(true)
   })
 })

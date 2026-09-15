@@ -807,6 +807,8 @@
   "prototypeInfo.addReference": "Dodaj odniesienie",
   "prototypeInfo.addReferenceHint": "Tworzy osobny prototyp overlay dla strony, którą chcesz zbadać, i łączy go tutaj. Aby odnieść się do istniejącego prototypu, połącz go powyżej przez jego nazwę.",
   "prototypeInfo.apply": "Zastosuj do strony",
+  "prototypeInfo.applyAlreadyInlined": "Nie ma czego wstrzykiwać — ta strona ma już wszystkie {{skipped}} patch(y). Patch o zmienionej treści pojawi się po odświeżeniu.",
+  "prototypeInfo.applyNoPatches": "Ten prototyp nie ma jeszcze poprawek do zastosowania.",
   "prototypeInfo.applySuccess": "Wstrzyknięto poprawki do strony: {{applied}}",
   "prototypeInfo.applying": "Stosowanie…",
   "prototypeInfo.baseHtml": "Strona bazowa",

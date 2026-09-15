@@ -114,7 +114,7 @@ export const RPC_CHANNELS = {
     CHANGED: 'prototypes:changed',
     /** Read-only listing of every prototype in a workspace (drives the panel). */
     LIST: 'prototypes:list',
-    /** Where to open a prototype: the exported deliverable, else `base.html`. */
+    /** Where to open a prototype: the origin that renders it, never the exported deliverable. */
     ENTRY: 'prototypes:entry',
     /** Write `dist/*` so the prototype can be handed to developers. */
     EXPORT: 'prototypes:export',

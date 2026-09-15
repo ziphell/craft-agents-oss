@@ -76,9 +76,11 @@ export function registerPrototypesHandlers(server: RpcServer, deps: HandlerDeps)
     return listPrototypeStatuses(workspace.rootPath)
   })
 
-  // Resolve what to open (the exported deliverable, else base.html). Throws with
-  // both remedies named when a project has neither — the panel surfaces that
-  // message directly instead of showing a failed page load.
+  // Resolve what to open: the prototype's origin, which the host renders from
+  // base.html with every patch. Never the exported deliverable — that is a
+  // snapshot of an earlier state and not a page you can go on editing. Throws
+  // with the ways to get a base page named when there is none, so the panel
+  // surfaces that message instead of a failed page load.
   server.handle(RPC_CHANNELS.prototypes.ENTRY, async (_ctx, workspaceId: string, slug: string) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`PROTOTYPES_ENTRY: Workspace not found: ${workspaceId}`)

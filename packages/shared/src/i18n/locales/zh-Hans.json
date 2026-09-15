@@ -807,6 +807,8 @@
   "prototypeInfo.addReference": "添加参考",
   "prototypeInfo.addReferenceHint": "会为你研究的页面单独建一个 overlay 原型，再关联到这里。要参考已经存在的原型，点上方它的名字关联即可。",
   "prototypeInfo.apply": "应用到页面",
+  "prototypeInfo.applyAlreadyInlined": "无需注入——这个页面已经带着全部 {{skipped}} 个补丁。若某个补丁的内容改过，刷新页面即可取到最新。",
+  "prototypeInfo.applyNoPatches": "这个原型还没有可应用的补丁。",
   "prototypeInfo.applySuccess": "已向页面注入 {{applied}} 个补丁",
   "prototypeInfo.applying": "应用中…",
   "prototypeInfo.baseHtml": "基础页面",

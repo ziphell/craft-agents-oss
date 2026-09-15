@@ -1,6 +1,6 @@
 # 产品经理需求生产工作台 — 实施方案
 
-> 状态：阶段 1–6 全部完成；阶段 7 完成两项（无中生有入口、改写真实后端返回），放开面经决策**确定不开**，响应头就地改写未做。UI 闭环已完成：创建入口（侧边栏「原型」+ 面板「+」+ 空态按钮）→ 详情页 Open / Apply / Capture base / Export，以及产物文件就地编辑（base.html 与 patches/*）。**会话绑定已完成（§11）**：会话绑定原型后，agent 的 system prompt 里带 `<prototype_context>`，且 `prototype-*` 的 slug 变为可选。**预览面板编辑入口已完成（§12）**：面板工具栏新增「选中元素」（显式进入编辑态，页面点击被拦截）与「应用补丁」，选中后可选「保存为补丁」或「在对话中改」。**原型类型分离已完成（§13）**：「从无到有」与「patch 第三方」不再是同一件事的两种用法，而是创建时确定、不可改的两种类型（`overlay` / `scratch`），落在 `config.json` 并被详情页、system prompt、agent 命令共读。**混合场景已完成（§14）**：逆向第三方再搭自己的，拆成「起点」（scratch 可被 Capture 播种，且覆盖前先确认）与「参考面」（参考是独立原型 + 一条 `references` 关系 + 「翻译不要搬运」的硬规矩）。**这条关系与类型无关**——scratch 引用 scratch 和引用 overlay 同构。新增 `prototype-reference` 与 `prototype-create --no-bind`。**agent 的读取面已补齐（§14.6）**：`prototype-list` 给出每个原型的 kind / 目标页 / 双向关系，`prototype-status` 解析出每个参考是什么、以及谁在参考它（反向关系派生、不入库）。**命名已与「项目」分开（§15）**：原型与 workspace 的 projects 无关，且不该共用一个词——`getPrototypeProjectPath` → `getPrototypeDirPath`，给模型的工具描述里显式写明「a prototype is NOT a project」。**原型文档载体已换（§16）**：不再走 `file://`（opaque origin ⇒ 无 cookie、相对 fetch 发不出去所以 mock 拿不到请求、ES module 跑不了），改为回环 HTTP：**一个原型一个 host、目录即 origin 根**（`http://<slug>-<目录hash>.localhost:<port>/…`），根路径是该原型的**渲染结果**（`base.html` + 全部 patch，按请求现算，与"此刻导出会写出的字节"相同），根绝对路径资源与 SPA history 路由都能用。一处注入、三处入口零改动、真实页面浏览路径零风险。**创建不再预置 `base.html`（§13.1）**：缺席是一句真话，首稿的三条来路（agent 写 / 捕获在线页 / 从其他原型导入）全都在创建之后，死胡同由入口解决而不是由假文件解决。**新增「导入其他原型」（§13.1.1）**：把另一个原型的页面与补丁**成对**搬过来当起点，仅限 scratch 目标，同名补丁一律不覆盖、不删除，只报出来。下一步：端到端试用（见 §10，新增步骤 H/I/J）。
+> 状态：阶段 1–6 全部完成；阶段 7 完成两项（无中生有入口、改写真实后端返回），放开面经决策**确定不开**，响应头就地改写未做。UI 闭环已完成：创建入口（侧边栏「原型」+ 面板「+」+ 空态按钮）→ 详情页 Open / Apply / Capture base / Export，以及产物文件就地编辑（base.html 与 patches/*）。**会话绑定已完成（§11）**：会话绑定原型后，agent 的 system prompt 里带 `<prototype_context>`，且 `prototype-*` 的 slug 变为可选。**预览面板编辑入口已完成（§12）**：面板工具栏新增「选中元素」（显式进入编辑态，页面点击被拦截）与「应用补丁」，选中后可选「保存为补丁」或「在对话中改」。**原型类型分离已完成（§13）**：「从无到有」与「patch 第三方」不再是同一件事的两种用法，而是创建时确定、不可改的两种类型（`overlay` / `scratch`），落在 `config.json` 并被详情页、system prompt、agent 命令共读。**混合场景已完成（§14）**：逆向第三方再搭自己的，拆成「起点」（scratch 可被 Capture 播种，且覆盖前先确认）与「参考面」（参考是独立原型 + 一条 `references` 关系 + 「翻译不要搬运」的硬规矩）。**这条关系与类型无关**——scratch 引用 scratch 和引用 overlay 同构。新增 `prototype-reference` 与 `prototype-create --no-bind`。**agent 的读取面已补齐（§14.6）**：`prototype-list` 给出每个原型的 kind / 目标页 / 双向关系，`prototype-status` 解析出每个参考是什么、以及谁在参考它（反向关系派生、不入库）。**命名已与「项目」分开（§15）**：原型与 workspace 的 projects 无关，且不该共用一个词——`getPrototypeProjectPath` → `getPrototypeDirPath`，给模型的工具描述里显式写明「a prototype is NOT a project」。**原型文档载体已换（§16）**：不再走 `file://`（opaque origin ⇒ 无 cookie、相对 fetch 发不出去所以 mock 拿不到请求、ES module 跑不了），改为回环 HTTP：**一个原型一个 host、目录即 origin 根**（`http://<slug>-<目录hash>.localhost:<port>/…`），根路径是该原型的**渲染结果**（`base.html` + 全部 patch，按请求现算，与"此刻导出会写出的字节"相同），根绝对路径资源与 SPA history 路由都能用。一处注入、三处入口零改动、真实页面浏览路径零风险。**创建不再预置 `base.html`（§13.1）**：缺席是一句真话，首稿的三条来路（agent 写 / 捕获在线页 / 从其他原型导入）全都在创建之后，死胡同由入口解决而不是由假文件解决。**新增「导入其他原型」（§13.1.1）**：把另一个原型的页面与补丁**成对**搬过来当起点，仅限 scratch 目标，同名补丁一律不覆盖、不删除，只报出来。**「打开」的含义收敛为一个（§16.3）**：只打开原型当前**渲染出来的样子**（`base.html` + 全部 patch），导出物不再顶替它——制品是旧状态的快照，也不是能继续编辑的页面；`base.html` 缺失时明确报错而不是拿别的东西冒充。**重复注入已修（§16.4.1）**：渲染结果自带"已内联哪些补丁"的清单，apply 跳过它们、只补新增的，所以打开预览后能继续打补丁而不会把 JS 跑两遍。下一步：端到端试用（见 §10，新增步骤 H/I/J/K/L）。
 > 范围：MVP（个人使用，先增量模式）
 > 前置结论：本方案基于对现有代码的实测核对，所有引用均带文件路径与行号。
 
@@ -425,9 +425,9 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 
 #### 已完成：无中生有入口（`prototype-open <slug>`）
 - 初稿把"无中生有"列为阶段 7 的独立能力，其实它**不需要新机制**：agent 在阶段 1.2 起就能写 `prototypes/{slug}/base.html`（Explore 白名单已覆盖），而浏览器面板一直能打开它。
-- 补的是入口体验：`resolvePrototypeEntry()` 决定"这个原型的页面在哪"——**答案现在是它的 origin**，那个地址由服务器把 `base.html` + `patches/` 渲染出来（见 §16.3）。早先的规则是"优先导出产物，否则 `base.html`"，两者都会骗人：前者是冻结在导出时刻的文档，后者一条 patch 都没应用。两者都没有时**明确报错并给出两条出路**，而不是让浏览器里报一个含糊的失败。
+- 补的是入口体验：`resolvePrototypeEntry()` 决定"这个原型的页面在哪"——**答案只有一个：它的 origin**，那个地址由服务器把 `base.html` + `patches/` 渲染出来（见 §16.3）。三条被淘汰的旧规则都会骗人：优先导出产物（冻结在导出时刻的文档）、否则 `base.html`（一条 patch 都没应用）、无服务器时退 `file://`（同上）。没有 base 页时**明确报错并点名三条来路**，而不是让浏览器里报一个含糊的失败，也不拿交付物顶替（§16.3）。
 - 命令 `prototype-open <slug>` 复用了既有的 `navigate`，没有新增导航能力。
-- **入口的失败由 UI 提前挡住，而不是把错误弹给人**：`PrototypeStatus.pageAvailable` 是"这个原型到底有没有东西可打开"（base 或导出物其一），详情页据此禁用 Open（以及 Export——它读 `base.html`）。这些 RPC 的错误文案是**写给 agent 的**（点名 `prototype-export`、附绝对路径），弹给用户既看不懂也没法照做；页面下方那条 kind-aware 的告警才是给人的引导。
+- **入口的失败由 UI 提前挡住，而不是把错误弹给人**：`PrototypeStatus.baseHtmlPresent` 是"这个原型到底有没有页面"（**唯一来源就是 `base.html`**，导出物不算——它是旧状态的快照），详情页据此禁用 Open（以及 Export——它读 `base.html`）。这些 RPC 的错误文案是**写给 agent 的**（点名三条来路、附绝对路径），弹给用户既看不懂也没法照做；页面下方那条 kind-aware 的告警才是给人的引导。
 - **但同时必须留一个能往前走的入口**：Apply 与 Capture 都需要"有一个浏览器窗口"，而详情页原来只有「打开目标页面」能创建窗口——**而它要求已记录 `targetUrl`**。于是未记目标页的 overlay（或任何还没有页面的原型）在这页上无路可走。补了一个通用的「打开浏览器窗口」（不导航，用户自己走/登录），与「打开目标页面」二选一显示，避免出现两个都只是"开个窗口"的按钮。
 - **那个入口报过 `ERR_FAILED (-2) loading 'about:blank'`（已修）**：详情页每个打开动作都是「先 `create`，紧接着 `navigate`」（`openInBrowserPane`），而 `create` 立刻发起空态页加载。后发的导航把空态加载 abort 掉——这是**正常且预期**的；问题在空态加载的 `catch` 里**无条件**回退到 `about:blank`，于是又插进一条导航，失败被记在 `about:blank` 上、顺着 `navigate` 的 promise 弹回 UI。日志里 `did-navigate` 明明显示真实导航已经成功（`did-fail-load code=-2 url=about:blank` 与 `did-navigate to=http://<slug>-<hash>.localhost:…` 相差 50ms），只有回给用户的那条路是坏的——**报的错误是回退自己的，不是那次导航的**。
 - 修法是给回退加一个前提：**空态回退不得抢占调用方的导航**——`ERR_ABORTED` 时直接放弃回退，只有空态因别的原因失败才加载 `about:blank`（`code` 与 message 两处都匹配：这个 rejection 在日志里只观测到 message 这一条线索，不依赖单一字段）。两个方向都有测试固定（abort 时不抢占 / 真失败时仍回退）。
@@ -683,6 +683,13 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 56. 对**已经写过内容**的 scratch 再导入一次 → 先弹确认；确认后 `base.html` 被替换，而**同名补丁保持原样**，结果提示里点出被保留的文件名（不静默吞掉）
 57. 在 overlay 的详情页上确认**没有**「导入其他原型」（它对应的是「捕获为底稿」）；若绕过 UI 直接调用，报错应说明原因而不是照做
 58. 导入后再看 `config.json` → 目标的 kind / targetUrl / references **都没变**：过来的是材料，不是身份
+
+### L. 打开 = 打开当前渲染的样子（§16.3 / §16.4.1 的验收）
+
+59. 打开一个有补丁的原型 → 地址是 `http://<slug>-<hash>.localhost:<port>/`，**不是** `/dist/prototype.html`；页面已经带全部补丁效果。**在 `dist/prototype.html` 存在的情况下也必须如此**（这条就是本节的判据）
+60. 在那个页面上继续改：选中元素 →「保存为补丁」→ 新效果**原地出现**，页面不重载、不闪。用一个会 `appendChild` 的 JS 补丁试：重复点「应用补丁」应当**只出现一次**（跑两遍就是这里要防的那个静默错误）
+61. 只改某个已有补丁的**内容**（不改文件名）→ 点「应用补丁」→ 提示"页面已经带着全部 N 个补丁" → **刷新**后看到新内容
+62. 把某原型的 `base.html` 删掉 → 详情页「打开」变灰、告警给出三条来路；直接导航到它的 origin 得到 404；`/dist/prototype.html` 仍可按名字访问（交付物没被藏起来，只是不再是入口）
 
 ---
 
@@ -1089,7 +1096,9 @@ http://<slug>-<目录hash>.localhost:<port>/<原型内文件路径>   ← 原型
 
 host 里两半各答一个问题：**目录 hash** 保证唯一（两个 workspace 可以都有 `checkout-flow`，把其中一个的页面喂给另一个是静默换文件），**slug** 让它在日志和对话里可读。
 
-**只有一种情况会退回到文件**：`base.html` 被删了、`dist/prototype.html` 还在。那时渲染没有输入，服务器就直接给冻结的交付物（好过 404），`resolvePrototypeEntry` 也会这么告诉你。
+**没有任何东西可以顶替它**。`/dist/prototype.html` 仍然可以按名字取用（想看交付物就看），但它是**旧状态的快照**、也不是一个能继续编辑的页面，所以它永远不是"这个原型的页面"。因此 `base.html` 不在时：服务器 404（`Nothing to serve`），`resolvePrototypeEntry` 抛错并点名三条来路——而不是拿别的东西冒充。
+
+**这同时修掉了一个说不清的入口**：早先的规则在有 base 时才给 origin、否则退到交付物，于是"打开"这个词在不同原型上指向**两种不同的东西**（一份活文档 / 一份冻结制品）。现在它只有一个意思：**打开 = 打开这个原型当前渲染出来的样子**，可以在上面继续改、继续打补丁。
 
 ### 16.3.1 SPA
 
@@ -1104,9 +1113,27 @@ host 里两半各答一个问题：**目录 hash** 保证唯一（两个 workspa
 
 ### 16.4 代码上的接法
 
-**一处注入**：`prototypes/url.ts` 提供 `setPrototypeBaseUrlResolver`，主进程启动时装上（`prototype-server.ts` 的 `installPrototypeBaseUrlResolver`）。共享层两个出口：`prototypeOriginUrl()` 给"原型页面"，`prototypeDocumentUrl()` 给"某个具体文件"。`resolvePrototypeEntry()` 与 `exportPrototype()` 都走这里，所以 `prototype-open`、RPC `prototypes:entry`、详情页 Open 按钮三处入口**一行都不用改**；没装 resolver 时（单测、无服务器的宿主）回退 `file://`——那时没有渲染能力，"全 patch 的文档"只存在于导出物里，所以那种情形下仍然优先给导出物。
+**一处注入**：`prototypes/url.ts` 提供 `setPrototypeBaseUrlResolver`，主进程启动时装上（`prototype-server.ts` 的 `installPrototypeBaseUrlResolver`）。共享层两个出口：`prototypeOriginUrl()` 给"原型页面"，`prototypeDocumentUrl()` 给"某个具体文件"。`resolvePrototypeEntry()` 与 `exportPrototype()` 都走这里，所以 `prototype-open`、RPC `prototypes:entry`、详情页 Open 按钮三处入口**一行都不用改**；没装 resolver 时（单测、无渲染服务的宿主）入口**明确报错**——那时没有能显示补丁的地址，给 `file://base.html` 只会端出一个"看起来像原型、其实一条 patch 都没应用"的页面。
 
 **渲染用的是导出器那一个函数**：`buildSelfContainedHtml(baseHtml, scanPrototypePatches(...))`。导出 = 把它写到 `dist/`，预览 = 把它当响应体返回。同一份变换，所以"看到的"和"导出的"不可能分叉。
+
+### 16.4.1 已经内联的补丁不会被重复应用
+
+"打开的就是打了补丁的预览效果"与"打开后还能继续应用编辑"是同一个问题的两面：页面到手时补丁**已经在文档里**了，此时再注入一遍会让 JS patch 跑第二遍——**页面看起来一模一样，改动却是错的**，没有任何东西会报出来。
+
+**做法是让文档自己说明它带了什么**：`buildSelfContainedHtml` 在有补丁可内联时，额外写一个标记元素
+
+```html
+<script type="application/json" id="__craft_prototype_inlined__">["A-001-btn.css","B-002-total.js"]</script>
+```
+
+注入前先读它（`buildInlinedPatchProbeScript()`），**跳过列出来的那些，其余照常注册并立即执行**。读不到、读不成 JSON、不是字符串数组，一律当作"这份文档什么都没有"——这是唯一安全的方向：反过来（默认已应用）会让该做的活被静默跳过。
+
+三条细节，每条都是踩过才写下的：
+
+- **判断读的是文档本身，不是地址。** 早先认为"注入方必须知道自己要打开的是哪个地址"才能做这件事，于是把它记为未做。其实标记随文档走：另存出去的渲染页、上一次会话留下的副本，同样认得出。
+- **已内联的补丁不注册 init script。** init script 是 window 级的，注册一次就会在**之后每个** document 上执行——包括重新加载出来的渲染页，那里已经内联过同一份。所以每次 apply 都是「清掉本原型的全部注册 → 只注册缺的那些」，注册集合与页面上缺的东西严格对齐；顺带保住了原来那条"删掉 patch 文件就真的不生效"。
+- **新补丁照常注入。** 这正是"打开后继续编辑"的实现：在打开的预览页上选中元素改文字 → 存成新补丁 → 全量 apply 里旧的那些被跳过、新的那条原地生效，不重载、不闪。
 
 ### 16.5 安全边界（四条，各自有测试）
 
@@ -1124,6 +1151,7 @@ HTTP 层那条越界测试只断言"任何拼法都到不了目录外的文件"�
 - **端口是临时的**，origin 每次启动都变，因此 cookie 与 `localStorage` **不跨重启**。原型流程不依赖这个；要持久就得绑一个稳定端口（并处理被占用的情况）。
 - **`overlay` 的 `base.html` 是快照**：它的相对资源 URL（`/assets/x.js`）现在会打到回环服务器而不是原来那个站点，和 `file://` 时代一样取不到；绝对 URL 的资源正常。捕获快照本来就只保证"那一刻渲染出来的样子"。
 - **`/` 的含义是"这个原型，当前状态"**，没有独立的 index 概念要同步。
-- **`prototype-apply` 对 `/` 是多余的**：页面到手时 patch 已经内联，再注入一次会让 JS patch 跑第二遍（`textContent` 这类是幂等的，加事件监听不是）。那条命令的用武之地是**外部文档**——overlay 要打补丁的真实产品页，或裸的 `/base.html`。没做守卫是刻意的：CDP 的 init script 在 document-start 就执行，那时页面还没解析出任何标记可判断"这份文档是否已内联"，可靠的做法需要注入方知道自己要打开的是哪个地址——那是个独立的设计，不是一行判断。同一条风险在导出物上早就存在。
+- **改了已有补丁的*内容*，页面不会自己变**：页面是在渲染那一刻内联的，`prototype-apply` 只补"页面上还没有的"（按文件名判断，见 §16.4.1），所以新增的那条立刻生效、改过内容的那条要**刷新**才看得到。没做内容指纹是刻意的：按内容只能判断出"页面上的版本旧了"，而正确处理只有重新渲染一条路——那和刷新是同一件事，多一层判断只多一处能错。
+- **判别只认文件名，不认版本**：把一个补丁文件删掉再写一个同名的，同样会被算作"已内联"。这是上面那条的另一面，不是独立缺陷。
 - **没动的东西**：`webSecurity` 仍未开（D5），没有新增 partition，没有 http pass-through，真实页面浏览路径零改动。
 

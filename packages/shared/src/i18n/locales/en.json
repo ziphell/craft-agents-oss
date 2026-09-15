@@ -807,6 +807,8 @@
   "prototypeInfo.addReference": "Add reference",
   "prototypeInfo.addReferenceHint": "Creates a separate overlay prototype for the page you want to study, then links it here. To study a prototype that already exists, link it above instead.",
   "prototypeInfo.apply": "Apply to page",
+  "prototypeInfo.applyAlreadyInlined": "Nothing to inject — this page already carries all {{skipped}} patch(es). Reload it to pick up a patch whose contents changed.",
+  "prototypeInfo.applyNoPatches": "This prototype has no patches to apply yet.",
   "prototypeInfo.applySuccess": "Injected {{applied}} patch(es) into the page",
   "prototypeInfo.applying": "Applying…",
   "prototypeInfo.baseHtml": "Base page",

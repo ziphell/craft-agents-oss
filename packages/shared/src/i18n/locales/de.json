@@ -807,6 +807,8 @@
   "prototypeInfo.addReference": "Referenz hinzufügen",
   "prototypeInfo.addReferenceHint": "Legt einen eigenen Overlay-Prototyp für die zu untersuchende Seite an und verknüpft ihn hier. Um einen bereits vorhandenen Prototyp zu referenzieren, verknüpfe ihn oben über seinen Namen.",
   "prototypeInfo.apply": "Auf Seite anwenden",
+  "prototypeInfo.applyAlreadyInlined": "Nichts zu injizieren – diese Seite enthält bereits alle {{skipped}} Patch(es). Ein Patch mit geändertem Inhalt erscheint nach dem Neuladen.",
+  "prototypeInfo.applyNoPatches": "Dieser Prototyp hat noch keine Patches zum Anwenden.",
   "prototypeInfo.applySuccess": "{{applied}} Patches in die Seite eingefügt",
   "prototypeInfo.applying": "Wende an…",
   "prototypeInfo.baseHtml": "Basisseite",

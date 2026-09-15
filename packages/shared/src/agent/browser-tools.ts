@@ -182,8 +182,12 @@ export interface BrowserPaneFns {
   /**
    * Replay a prototype's patches in this session's browser and register
    * them for future documents (so they survive a reload).
+   *
+   * Patches the page already carries — a page opened from the workbench arrives
+   * with them inlined — are left alone and reported in `skipped`, so a JS patch
+   * cannot run a second time over a document that already has its effect.
    */
-  applyPrototype: (slug: string) => Promise<{ slug: string; applied: number; files: string[] }>;
+  applyPrototype: (slug: string) => Promise<{ slug: string; applied: number; files: string[]; skipped: string[] }>;
   /** Remove a prototype's patches from this session's browser. */
   clearPrototype: (slug: string) => Promise<{ slug: string; removed: string[] }>;
   /**

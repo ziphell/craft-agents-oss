@@ -20,12 +20,12 @@
  * `baseHtmlPresent` true, hide the guidance that says how to get a first page,
  * and hand Export an empty document to write. The earlier worry (a brand-new
  * prototype with every action greyed out) is answered by the panel instead of by
- * a fake file: Open is disabled from `PrototypeStatus.pageAvailable`, while
+ * a fake file: Open is disabled until there is a base page to render, while
  * "open a browser window" needs no page at all, so capturing one is always
  * reachable (§7 of docs/prototype-workbench-plan.md).
  *
  * "Is there a page?" is never inferred from the kind or from disk by guessing:
- * `PrototypeStatus.pageAvailable` answers that, and it counts an export as a page.
+ * `PrototypeStatus.baseHtmlPresent` answers that.
  *
  * Whether the product page is reached through a local dev server, a test
  * environment, or production is not a distinction this model cares about: the

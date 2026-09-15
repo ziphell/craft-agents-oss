@@ -1863,15 +1863,27 @@ async function executeSingleCommand(args: {
     const slug = resolvePrototypeSlug(fns, parts, 'prototype-apply');
 
     const result = await fns.applyPrototype(slug);
-    const lines = [
-      `Prototype "${result.slug}": applied ${result.applied} patch${result.applied === 1 ? '' : 'es'}`,
-    ];
-    if (result.files.length > 0) {
+    const count = (n: number) => `${n} patch${n === 1 ? '' : 'es'}`;
+    const lines: string[] = [];
+
+    if (result.applied > 0) {
+      lines.push(`Prototype "${result.slug}": applied ${count(result.applied)}`);
       lines.push(...result.files.map((file) => `  • ${file}`));
+      lines.push('Patches are also registered for future documents, so they survive a page reload.');
+    } else if (result.skipped.length > 0) {
+      // The rendered page is the normal case for this: it arrives with every
+      // patch inlined, so there is genuinely nothing to do.
+      lines.push(`Prototype "${result.slug}": nothing to inject — this page already carries all ${count(result.skipped.length)}.`);
     } else {
-      lines.push('  (no patch files found — expected patches/{lane}-{nnn}-{slug}.{css|js})');
+      lines.push(`Prototype "${result.slug}": nothing to inject — no patch files found (expected patches/{lane}-{nnn}-{name}.{css|js}).`);
     }
-    lines.push('Patches are also registered for future documents, so they survive a page reload.');
+
+    if (result.applied > 0 && result.skipped.length > 0) {
+      lines.push(`Left alone, already inlined here: ${result.skipped.join(', ')}.`);
+    }
+    if (result.skipped.length > 0) {
+      lines.push('Inlined means the host rendered it from disk — a patch whose contents changed since then still counts as inlined, so reload the page to pick the change up.');
+    }
 
     return { output: lines.join('\n'), appendReleaseHint: true };
   }
@@ -2061,11 +2073,8 @@ async function executeSingleCommand(args: {
       output: [
         `Prototype "${slug}": opened its page — every patch applied, built from`,
         `  ${entry.path}`,
-        ...(entry.kind === 'export'
-          // No base page left to build from, so the address falls back to the file.
-          ? ['  (no base page exists, so this is the frozen exported deliverable — it may be stale)']
-          : []),
         `  Title: ${result.title || '(untitled)'}`,
+        'Edit and re-apply from here: patches added since this render still land on it.',
       ].join('\n'),
       appendReleaseHint: true,
     };

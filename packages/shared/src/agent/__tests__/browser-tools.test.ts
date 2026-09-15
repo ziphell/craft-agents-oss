@@ -59,7 +59,7 @@ function createMockFns(): BrowserPaneFns {
       text: 'Pay now',
       rect: { x: 10, y: 20, width: 120, height: 40 },
     }),
-    applyPrototype: async (slug: string) => ({ slug, applied: 2, files: ['A-001-btn.css', 'A-002-guard.js'] }),
+    applyPrototype: async (slug: string) => ({ slug, applied: 2, files: ['A-001-btn.css', 'A-002-guard.js'], skipped: [] }),
     clearPrototype: async (slug: string) => ({ slug, removed: [`prototype:${slug}:A-001-btn.css`] }),
     exportPrototype: async (slug: string) => ({
       slug,
@@ -97,7 +97,6 @@ function createMockFns(): BrowserPaneFns {
       kind: 'overlay' as const,
       references: [],
       baseHtmlPresent: true,
-      pageAvailable: true,
       baseHtmlPath: `/tmp/prototypes/${slug}/base.html`,
       patches: { total: 2, byLane: { A: 2 }, files: [] },
       services: [
@@ -108,7 +107,6 @@ function createMockFns(): BrowserPaneFns {
       lanes: { A: 'UI / interaction (patches)' },
     }),
     prototypeEntry: async ({ slug }: { slug: string }) => ({
-      kind: 'page' as const,
       path: `/tmp/prototypes/${slug}/base.html`,
       url: `http://${slug}.localhost:41234/`,
     }),
@@ -156,7 +154,6 @@ function prototypeStatus(slug: string, overrides: Partial<PrototypeStatus> = {})
     kind: 'overlay',
     references: [],
     baseHtmlPresent: true,
-    pageAvailable: true,
     baseHtmlPath: `/tmp/prototypes/${slug}/base.html`,
     patches: { total: 1, byLane: { A: 1 }, files: [] },
     services: [],
@@ -988,9 +985,27 @@ describe('createBrowserTools', () => {
     })
 
     it('reports when prototype-apply finds no patch files', async () => {
-      mockFns.applyPrototype = async (slug) => ({ slug, applied: 0, files: [] })
+      mockFns.applyPrototype = async (slug) => ({ slug, applied: 0, files: [], skipped: [] })
       const result = await executeTool(tools, 'browser_tool', { command: 'prototype-apply empty-flow' })
       expect(result.content[0].text).toContain('no patch files found')
+    })
+
+    /**
+     * The rendered page arrives with its patches inlined, so there is nothing to
+     * inject — and saying "applied 0 patches" would read as a failure.
+     */
+    it('distinguishes "already on the page" from "no patches exist"', async () => {
+      mockFns.applyPrototype = async (slug) => ({
+        slug,
+        applied: 0,
+        files: [],
+        skipped: ['A-001-btn.css'],
+      })
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-apply checkout-flow' })
+
+      expect(result.content[0].text).toContain('already carries all 1 patch')
+      expect(result.content[0].text).toContain('reload the page')
+      expect(result.content[0].text).not.toContain('no patch files found')
     })
 
     it('requires a slug for prototype-apply', async () => {
@@ -1166,21 +1181,6 @@ describe('createBrowserTools', () => {
       expect(result.content[0].text).toContain('every patch applied')
       expect(result.content[0].text).toContain('base.html')
       expect(result.content[0].text).toContain('Checkout')
-      expect(result.content[0].text).not.toContain('frozen')
-    })
-
-    it('says so when the address has to fall back to a stale export', async () => {
-      mockFns.prototypeEntry = async ({ slug }) => ({
-        kind: 'export',
-        path: `/tmp/prototypes/${slug}/dist/prototype.html`,
-        url: `http://${slug}.localhost:41234/dist/prototype.html`,
-      })
-      mockFns.navigate = async (url) => ({ url, title: 'Draft' })
-
-      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-open checkout-flow' })
-
-      expect(result.content[0].text).toContain('frozen exported deliverable')
-      expect(result.content[0].text).toContain('may be stale')
     })
 
     it('requires a slug for prototype-open', async () => {

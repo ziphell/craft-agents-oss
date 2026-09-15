@@ -484,7 +484,7 @@ export interface ElectronAPI {
   onPrototypesChanged(callback: (workspaceId: string, file: string | null) => void): () => void
   /** Every prototype in the workspace, each with its derived status. */
   listPrototypes(workspaceId: string): Promise<unknown>
-  /** Where to open a prototype (exported deliverable, else `base.html`). */
+  /** Where to open a prototype: its origin root, i.e. the page rendered from `base.html` with every patch applied. */
   getPrototypeEntry(workspaceId: string, slug: string): Promise<unknown>
   /** Write `dist/*` for a prototype so it can be handed to developers. */
   exportPrototype(workspaceId: string, slug: string): Promise<unknown>

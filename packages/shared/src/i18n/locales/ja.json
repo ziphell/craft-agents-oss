@@ -807,6 +807,8 @@
   "prototypeInfo.addReference": "参考を追加",
   "prototypeInfo.addReferenceHint": "研究したいページ用に別の overlay プロトタイプを作成し、ここに関連付けます。すでにあるプロトタイプを参考にする場合は、上の名前から関連付けてください。",
   "prototypeInfo.apply": "ページに適用",
+  "prototypeInfo.applyAlreadyInlined": "注入するものはありません — このページには既に {{skipped}} 件のパッチが入っています。内容を変更したパッチはページを再読み込みすると反映されます。",
+  "prototypeInfo.applyNoPatches": "このプロトタイプにはまだ適用できるパッチがありません。",
   "prototypeInfo.applySuccess": "ページに {{applied}} 件のパッチを適用しました",
   "prototypeInfo.applying": "適用中…",
   "prototypeInfo.baseHtml": "ベースページ",

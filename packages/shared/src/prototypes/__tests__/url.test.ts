@@ -70,10 +70,19 @@ describe('prototypeDocumentUrl', () => {
     setPrototypeBaseUrlResolver(() => 'http://checkout-flow-abc123ab.localhost:41234')
 
     const entry = resolvePrototypeEntry(workspaceRoot, SLUG)
-    expect(entry.kind).toBe('page')
     // The origin root, not the file: that address is the base page rendered with
     // every patch applied, which no single file on disk represents.
     expect(entry.url).toBe('http://checkout-flow-abc123ab.localhost:41234')
     expect(entry.path.endsWith('base.html')).toBe(true)
+  })
+
+  // Without a rendering host there is nothing to open that would show the
+  // patches. Handing back `file://base.html` would look like the prototype while
+  // being the one document that has none of them.
+  it('refuses to resolve an entry when no host serves prototypes', () => {
+    ;({ workspaceRoot, dir } = makeWorkspace())
+    writeFileSync(join(dir, 'base.html'), '<!doctype html><html></html>', 'utf-8')
+
+    expect(() => resolvePrototypeEntry(workspaceRoot, SLUG)).toThrow(/No host is serving prototypes/)
   })
 })

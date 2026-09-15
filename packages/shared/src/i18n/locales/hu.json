@@ -807,6 +807,8 @@
   "prototypeInfo.addReference": "Hivatkozás hozzáadása",
   "prototypeInfo.addReferenceHint": "Külön overlay prototípust hoz létre a vizsgálni kívánt oldalhoz, és ide kapcsolja. Már létező prototípus referálásához fent a nevére kattintva kapcsold hozzá.",
   "prototypeInfo.apply": "Alkalmazás az oldalra",
+  "prototypeInfo.applyAlreadyInlined": "Nincs mit injektálni – ez az oldal már tartalmazza mind a(z) {{skipped}} patch-et. A megváltozott tartalmú patch újratöltés után jelenik meg.",
+  "prototypeInfo.applyNoPatches": "Ennek a prototípusnak még nincsenek alkalmazható patch-ei.",
   "prototypeInfo.applySuccess": "{{applied}} javítás beillesztve az oldalba",
   "prototypeInfo.applying": "Alkalmazás…",
   "prototypeInfo.baseHtml": "Alap oldal",

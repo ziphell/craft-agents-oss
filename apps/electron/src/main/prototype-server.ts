@@ -55,10 +55,11 @@
  *   address for it in this run (that is the registration step, and it is also the
  *   security boundary). Pasting a URL from a previous session into a fresh one
  *   therefore 404s — as it must, since the port changed too.
- * - Because the page arrives with its patches already inlined, `prototype-apply`
- *   is not needed for it — that command is for a *foreign* document (the real
- *   product page an overlay targets, or a raw file). Applying to a page that is
- *   already baked runs the JS patches a second time.
+ * - Because the page arrives with its patches already inlined, there is nothing
+ *   for `prototype-apply` to do on it — and running the JS patches again would
+ *   apply their effects twice. The injector therefore reads the list of what is
+ *   already inlined off the document and skips exactly those; patches written
+ *   since the render still land on it.
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
@@ -70,7 +71,6 @@ import {
   buildSelfContainedHtml,
   getPrototypeDirPath,
   readPrototypeBase,
-  resolvePrototypeEntry,
   scanPrototypePatches,
   setPrototypeBaseUrlResolver,
 } from '@craft-agent/shared/prototypes'
@@ -85,45 +85,10 @@ const HASH_LENGTH = 8
 const SLUG_BUDGET = MAX_LABEL_LENGTH - HASH_LENGTH - 1
 
 interface ServedPrototype {
-  /** Needed to ask `resolvePrototypeEntry` for the page — it takes (root, slug). */
   workspaceRootPath: string
   slug: string
   /** Absolute prototype directory — this host's root. */
   dir: string
-}
-
-/**
- * The prototype's page: `base.html` with every patch applied.
- *
- * This is the exporter's transform, computed instead of written — so the address
- * always shows the current state, and the page a reviewer opens is byte-identical
- * to what `prototype-export` would produce right now. Serving the raw base page
- * would show a document with none of the changes, and serving a previously
- * exported file would show one frozen at export time; neither is the prototype.
- *
- * Returns null when there is no base page to build from (see {@link entryDocument}
- * for what the address falls back to).
- */
-function renderPage(prototype: ServedPrototype): string | null {
-  const base = readPrototypeBase(prototype.workspaceRootPath, prototype.slug)
-  if (base === null) return null
-  return buildSelfContainedHtml(base, scanPrototypePatches(prototype.workspaceRootPath, prototype.slug))
-}
-
-/**
- * The file the page falls back to when there is nothing to render — the frozen
- * deliverable, for a prototype whose base page was deleted after exporting.
- *
- * Asks `resolvePrototypeEntry` rather than deciding again, so the address the
- * workbench hands out and what this server serves cannot drift apart.
- */
-function entryDocument(prototype: ServedPrototype): string | null {
-  try {
-    return resolvePrototypeEntry(prototype.workspaceRootPath, prototype.slug).path
-  } catch {
-    // Nothing to serve at all — not an error state, just an empty prototype.
-    return null
-  }
 }
 
 /** label → prototype. Populated only by the resolver below. */
@@ -237,17 +202,24 @@ async function filePayload(path: string): Promise<Payload> {
 }
 
 /**
- * What the prototype's own address serves: the rendered page, or — when there is
- * no base page left to render — the frozen deliverable.
+ * What the prototype's own address serves: `base.html` rendered with every patch.
+ *
+ * This is the exporter's transform, computed instead of written — so the address
+ * always shows the current state, and the page a reviewer opens is byte-identical
+ * to what `prototype-export` would produce right now.
+ *
+ * Nothing stands in for it. A previously exported `dist/prototype.html` stays
+ * reachable *by name* for anyone who wants to look at the deliverable, but it is
+ * a snapshot of an earlier state and not a page you can go on editing, so it is
+ * never what the address means. A prototype with no base page therefore has no
+ * page, and the server says so rather than serving something else.
  */
-async function pagePayload(prototype: ServedPrototype): Promise<Payload | null> {
-  const rendered = renderPage(prototype)
-  if (rendered !== null) {
-    return { body: Buffer.from(rendered, 'utf8'), contentType: 'text/html; charset=utf-8' }
-  }
+function pagePayload(prototype: ServedPrototype): Payload | null {
+  const base = readPrototypeBase(prototype.workspaceRootPath, prototype.slug)
+  if (base === null) return null
 
-  const fallback = entryDocument(prototype)
-  return fallback && (await isFile(fallback)) ? filePayload(fallback) : null
+  const rendered = buildSelfContainedHtml(base, scanPrototypePatches(prototype.workspaceRootPath, prototype.slug))
+  return { body: Buffer.from(rendered, 'utf8'), contentType: 'text/html; charset=utf-8' }
 }
 
 async function serve(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -275,7 +247,7 @@ async function serve(request: IncomingMessage, response: ServerResponse): Promis
   let payload: Payload | null = null
   if (!requested) {
     // The origin root is the prototype's page, so a bare address is openable.
-    payload = await pagePayload(prototype)
+    payload = pagePayload(prototype)
   } else {
     const candidate = resolveServedPath(prototype.dir, requested)
     if (!candidate) {
@@ -286,7 +258,7 @@ async function serve(request: IncomingMessage, response: ServerResponse): Promis
       payload = await filePayload(candidate)
     } else if (isDocumentRequest(pathname, request.headers.accept)) {
       // A history-API route: no such file, but the SPA owns this path.
-      payload = await pagePayload(prototype)
+      payload = pagePayload(prototype)
     }
   }
 

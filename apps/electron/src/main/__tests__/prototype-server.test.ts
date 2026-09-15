@@ -11,6 +11,22 @@ import { installPrototypeBaseUrlResolver, resolveServedPath, startPrototypeServe
 
 const DIR = resolve('/tmp/workspace/prototypes/checkout-flow')
 
+/**
+ * Go through loopback directly and carry the host in a header.
+ *
+ * Chromium resolves `*.localhost` to loopback (verified against this Electron
+ * build), but Node's resolver does not, so the tests cannot dial the URL as
+ * written. The server routes on the Host header either way, so overriding it
+ * exercises the same code path.
+ */
+function fetchServed(url: string, init: RequestInit = {}) {
+  const parsed = new URL(url)
+  return fetch(`http://127.0.0.1:${parsed.port}${parsed.pathname}`, {
+    ...init,
+    headers: { ...(init.headers as Record<string, string> | undefined), host: parsed.hostname },
+  })
+}
+
 describe('resolveServedPath', () => {
   it('resolves a file inside the prototype', () => {
     expect(resolveServedPath(DIR, 'base.html')).toBe(resolve(DIR, 'base.html'))
@@ -75,22 +91,6 @@ describe('prototype server over real HTTP', () => {
     setPrototypeBaseUrlResolver(null)
     rmSync(workspaceRoot, { recursive: true, force: true })
   })
-
-  /**
-   * Go through loopback directly and carry the host in a header.
-   *
-   * Chromium resolves `*.localhost` to loopback (verified against this Electron
-   * build), but Node's resolver does not, so the tests cannot dial the URL as
-   * written. The server routes on the Host header either way, so overriding it
-   * exercises the same code path.
-   */
-  const fetchServed = (url: string, init: RequestInit = {}) => {
-    const parsed = new URL(url)
-    return fetch(`http://127.0.0.1:${parsed.port}${parsed.pathname}`, {
-      ...init,
-      headers: { ...(init.headers as Record<string, string> | undefined), host: parsed.hostname },
-    })
-  }
 
   it('starts on a loopback port and hands out one host per prototype', () => {
     expect(port).toBeGreaterThan(0)
@@ -202,5 +202,48 @@ describe('prototype server over real HTTP', () => {
     const posted = await fetchServed(entryUrl, { method: 'POST' })
     expect(posted.status).toBe(405)
     expect(posted.headers.get('allow')).toBe('GET, HEAD')
+  })
+})
+
+/**
+ * A prototype whose base page is gone but whose deliverable is still on disk.
+ *
+ * The two must not be confused: the deliverable is reachable by name, and the
+ * origin root is not a place to serve it from. Doing so would hand back a page
+ * that looks like the prototype while being a frozen snapshot of an older state
+ * — and one you cannot go on editing.
+ */
+describe('a prototype with no base page', () => {
+  const SLUG = 'exported-only'
+  let workspaceRoot = ''
+  let origin = ''
+
+  beforeAll(async () => {
+    workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-prototype-server-nobase-'))
+    const dir = getPrototypeDirPath(workspaceRoot, SLUG)
+    mkdirSync(join(dir, 'dist'), { recursive: true })
+    writeFileSync(join(dir, 'dist', 'prototype.html'), '<!doctype html><html><body>frozen</body></html>', 'utf-8')
+
+    await startPrototypeServer()
+    installPrototypeBaseUrlResolver()
+    // Registering happens through the resolver, exactly as the app does it.
+    origin = new URL(prototypeDocumentUrl(workspaceRoot, SLUG, join(dir, 'base.html'))).origin
+  })
+
+  afterAll(() => {
+    setPrototypeBaseUrlResolver(null)
+    rmSync(workspaceRoot, { recursive: true, force: true })
+  })
+
+  it('serves nothing at the origin root', async () => {
+    const response = await fetchServed(`${origin}/`)
+    expect(response.status).toBe(404)
+    expect(await response.text()).toContain('no page yet')
+  })
+
+  it('still serves the exported deliverable when it is named', async () => {
+    const response = await fetchServed(`${origin}/dist/prototype.html`)
+    expect(response.status).toBe(200)
+    expect(await response.text()).toContain('frozen')
   })
 })

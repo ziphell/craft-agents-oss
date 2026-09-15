@@ -97,8 +97,9 @@ export type { PrototypeEntry, PrototypeExportResult } from './export.ts'
 export {
   buildSelfContainedHtml,
   buildDevSpec,
+  buildInlinedPatchProbeScript,
   exportPrototype,
-  hasPrototypePage,
+  INLINED_PATCHES_ELEMENT_ID,
   resolvePrototypeEntry,
 } from './export.ts'
 

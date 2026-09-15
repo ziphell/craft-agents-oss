@@ -127,8 +127,10 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
     await window.electronAPI.browserPane.focus(instanceId)
   }, [])
 
-  // Open the prototype in a browser pane. Prefers the exported deliverable,
-  // else base.html — `getPrototypeEntry` throws when neither exists.
+  // Open the prototype in a browser pane: its origin root, which the host renders
+  // from base.html with every patch applied. Never the exported deliverable — that
+  // is a snapshot of an earlier state, and the page here is the one you can go on
+  // editing. `getPrototypeEntry` throws when there is no base page to render.
   const handleOpen = useCallback(async () => {
     if (!workspaceId) return
     setActionError(null)
@@ -160,6 +162,9 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
   }, [workspaceId, prototypeSlug, loadStatus])
 
   // Inject this prototype's patches into the live page the user is looking at.
+  // On a page opened from here there is usually nothing to do — it arrives with
+  // its patches inlined — so say which case this was instead of reporting a bare
+  // "0 patches", which reads as a failure.
   const handleApply = useCallback(async () => {
     if (!workspaceId || !activeBrowserInstanceId) return
     setApplying(true)
@@ -169,8 +174,14 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
         workspaceId,
         activeBrowserInstanceId,
         prototypeSlug,
-      )) as { applied: number }
-      toast.success(t('prototypeInfo.applySuccess', { applied: result.applied }))
+      )) as { applied: number; skipped: string[] }
+      if (result.applied > 0) {
+        toast.success(t('prototypeInfo.applySuccess', { applied: result.applied }))
+      } else if (result.skipped.length > 0) {
+        toast.success(t('prototypeInfo.applyAlreadyInlined', { skipped: result.skipped.length }))
+      } else {
+        toast.success(t('prototypeInfo.applyNoPatches'))
+      }
     } catch (err) {
       console.error('[PrototypeInfoPage] Failed to apply patches:', err)
       setActionError(err instanceof Error ? err.message : String(err))
@@ -499,9 +510,10 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
               onClick={handleOpen}
               // Nothing to open yet: offering the button would only produce an
               // error message written for the agent. The alert below says what to
-              // do instead, and it is kind-aware (capture vs. write it yourself).
-              disabled={!status.pageAvailable}
-              title={status.pageAvailable ? undefined : t('prototypeInfo.baseHtmlMissing')}
+              // do instead, and it is kind-aware (capture / write / import vs.
+              // capture the target page).
+              disabled={!status.baseHtmlPresent}
+              title={status.baseHtmlPresent ? undefined : t('prototypeInfo.baseHtmlMissing')}
             >
               <ExternalLink className="h-3.5 w-3.5" />
               {t('prototypeInfo.open')}
