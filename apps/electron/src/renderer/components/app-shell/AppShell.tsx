@@ -33,6 +33,7 @@ import {
   Info,
   MailOpen,
   FolderKanban,
+  FlaskConical,
 } from "lucide-react"
 // SessionStatusIcons no longer used - icons come from dynamic sessionStatuses
 import { SourceAvatar } from "@/components/ui/source-avatar"
@@ -105,6 +106,7 @@ import { createLabelMenuItems, filterItems as filterLabelMenuItems, type LabelMe
 import { buildLabelTree, getDescendantIds, getLabelDisplayName, flattenLabels, extractLabelId, findLabelById, sortLabelsForDisplay, matchesLabelFilter } from "@craft-agent/shared/labels"
 import type { LabelConfig, LabelTreeNode } from "@craft-agent/shared/labels"
 import { resolveEntityColor } from "@craft-agent/shared/colors"
+import type { CreatedPrototype } from "@craft-agent/shared/prototypes"
 import * as storage from "@/lib/local-storage"
 import { toast } from "sonner"
 import { navigate, routes } from "@/lib/navigate"
@@ -117,6 +119,7 @@ import {
   isSkillsNavigation,
   isAutomationsNavigation,
   isProjectsNavigation,
+  isPrototypesNavigation,
   type NavigationState,
 } from "@/contexts/NavigationContext"
 import type { SettingsSubpage } from "../../../shared/types"
@@ -124,14 +127,17 @@ import { SourcesListPanel } from "./SourcesListPanel"
 import { SkillsListPanel } from "./SkillsListPanel"
 import { AutomationsListPanel } from "../automations/AutomationsListPanel"
 import { ProjectsListPanel } from "./ProjectsListPanel"
+import { PrototypesListPanel } from "./PrototypesListPanel"
 import { APP_EVENTS, AGENT_EVENTS, type AutomationFilterKind, AUTOMATION_TYPE_TO_FILTER_KIND } from "../automations/types"
 import { useAutomations } from "@/hooks/useAutomations"
 import { useProjects } from "@/hooks/useProjects"
+import { usePrototypes } from "@/hooks/usePrototypes"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { PanelHeader } from "./PanelHeader"
 import { FabNewChat } from "./FabNewChat"
 import { SendToWorkspaceDialog } from "./SendToWorkspaceDialog"
 import { CreateProjectDialog } from "../projects/CreateProjectDialog"
+import { CreatePrototypeDialog } from "../prototypes/CreatePrototypeDialog"
 import { MessagingDialogHost } from "@/components/messaging/MessagingDialogHost"
 import { EditPopover, getEditConfig, type EditContextKey } from "@/components/ui/EditPopover"
 import SettingsNavigator from "@/pages/settings/SettingsNavigator"
@@ -932,6 +938,7 @@ function AppShellContent({
   } = useAutomations(activeWorkspaceId)
 
   const { projects } = useProjects(activeWorkspaceId)
+  const { prototypes } = usePrototypes(activeWorkspaceId)
   const projectMenuOptions = useMemo(
     () => projects.map(p => ({ id: p.config.id, slug: p.config.slug, name: p.config.name, color: p.config.color })),
     [projects],
@@ -1828,6 +1835,11 @@ function AppShellContent({
     navigate(routes.view.projects())
   }, [])
 
+  // Handler for prototypes view
+  const handlePrototypesClick = useCallback(() => {
+    navigate(routes.view.prototypes())
+  }, [])
+
   const handleAutomationsScheduledClick = useCallback(() => {
     navigate(routes.view.automationsScheduled())
   }, [])
@@ -2006,6 +2018,26 @@ function AppShellContent({
     }
   }, [activeWorkspace?.id, navigate, t])
 
+  // Handler for "Add Prototype" — same shape as openAddProject: prompt for a
+  // name up front so the slug is meaningful and not "new-prototype-3".
+  const [createPrototypeDialogOpen, setCreatePrototypeDialogOpen] = useState(false)
+  const openAddPrototype = useCallback(() => {
+    if (!activeWorkspace?.id) return
+    setCreatePrototypeDialogOpen(true)
+  }, [activeWorkspace?.id])
+  const handleCreatePrototypeSubmit = useCallback(async (name: string) => {
+    if (!activeWorkspace?.id) return
+    // Deliberately does NOT catch: createPrototype rejects on a taken slug or
+    // an unusable name, and CreatePrototypeDialog renders that message inline.
+    const created = (await window.electronAPI.createPrototype(
+      activeWorkspace.id,
+      { name }
+    )) as CreatedPrototype
+    setCreatePrototypeDialogOpen(false)
+    toast.success(t('prototypeCreate.success', { name }))
+    navigate(routes.view.prototypes(created.slug))
+  }, [activeWorkspace?.id, t])
+
   /**
    * Resolve the "inherit sole active filter" rule for new sessions. Only
    * include-mode filters are candidates — an excluded status/label/project must
@@ -2119,11 +2151,12 @@ function AppShellContent({
     result.push({ id: 'nav:sources', type: 'nav', action: handleSourcesClick })
     result.push({ id: 'nav:skills', type: 'nav', action: handleSkillsClick })
     result.push({ id: 'nav:automations', type: 'nav', action: handleAutomationsClick })
+    result.push({ id: 'nav:prototypes', type: 'nav', action: handlePrototypesClick })
     result.push({ id: 'nav:settings', type: 'nav', action: () => handleSettingsClick() })
     result.push({ id: 'nav:whats-new', type: 'nav', action: handleWhatsNewClick })
 
     return result
-  }, [handleAllSessionsClick, handleFlaggedClick, handleArchivedClick, handleSessionStatusClick, effectiveSessionStatuses, handleLabelClick, labelConfigs, labelTree, viewConfigs, handleViewClick, handleSourcesClick, handleSkillsClick, handleAutomationsClick, handleSettingsClick, handleWhatsNewClick])
+  }, [handleAllSessionsClick, handleFlaggedClick, handleArchivedClick, handleSessionStatusClick, effectiveSessionStatuses, handleLabelClick, labelConfigs, labelTree, viewConfigs, handleViewClick, handleSourcesClick, handleSkillsClick, handleAutomationsClick, handlePrototypesClick, handleSettingsClick, handleWhatsNewClick])
 
   // Toggle folder expanded state
   const handleToggleFolder = React.useCallback((path: string) => {
@@ -2245,6 +2278,11 @@ function AppShellContent({
     // Projects navigator
     if (isProjectsNavigation(navState)) {
       return t("sidebar.allProjects")
+    }
+
+    // Prototypes navigator
+    if (isPrototypesNavigation(navState)) {
+      return t("sidebar.allPrototypes")
     }
 
     // Automations navigator
@@ -2610,6 +2648,15 @@ function AppShellContent({
                         variant: (sessionFilter?.kind === 'allSessions' && projectFilter.get(p.config.id) === 'include') ? "default" as const : "ghost" as const,
                         onClick: () => handleJumpToProjectSessions(p.config.id),
                       })),
+                    },
+                    {
+                      id: "nav:prototypes",
+                      title: t("sidebar.prototypes"),
+                      label: String(prototypes.length),
+                      icon: FlaskConical,
+                      // Highlight only when on Prototypes view itself
+                      variant: isPrototypesNavigation(navState) ? "default" : "ghost",
+                      onClick: handlePrototypesClick,
                     },
                     {
                       id: "nav:automations",
@@ -3457,6 +3504,14 @@ function AppShellContent({
                       onClick={openAddProject}
                     />
                   )}
+                  {/* Add Prototype button (only for prototypes mode) */}
+                  {isPrototypesNavigation(navState) && activeWorkspace && (
+                    <HeaderIconButton
+                      icon={<Plus className="h-4 w-4" />}
+                      tooltip={t("sidebarMenu.addPrototype")}
+                      onClick={openAddPrototype}
+                    />
+                  )}
                 </>
               }
             />
@@ -3493,6 +3548,15 @@ function AppShellContent({
                 onAddProject={openAddProject}
                 onJumpToSessions={handleJumpToProjectSessions}
                 selectedProjectSlug={isProjectsNavigation(navState) ? navState.details?.projectSlug ?? null : null}
+              />
+            )}
+            {isPrototypesNavigation(navState) && (
+              /* Prototypes List */
+              <PrototypesListPanel
+                prototypes={prototypes}
+                onPrototypeClick={(slug) => navigate(routes.view.prototypes(slug))}
+                onAddPrototype={openAddPrototype}
+                selectedPrototypeSlug={isPrototypesNavigation(navState) ? navState.details?.prototypeSlug ?? null : null}
               />
             )}
             {isAutomationsNavigation(navState) && (
@@ -3882,6 +3946,13 @@ function AppShellContent({
         open={createProjectDialogOpen}
         onCancel={() => setCreateProjectDialogOpen(false)}
         onSubmit={handleCreateProjectSubmit}
+      />
+
+      {/* Create Prototype dialog — same reason, plus duplicate-slug errors are shown inside */}
+      <CreatePrototypeDialog
+        open={createPrototypeDialogOpen}
+        onCancel={() => setCreatePrototypeDialogOpen(false)}
+        onSubmit={handleCreatePrototypeSubmit}
       />
 
       {/* Messaging dialogs (pairing-code + WA connect) — driven by messagingDialogAtom.

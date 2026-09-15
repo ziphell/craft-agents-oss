@@ -12,6 +12,10 @@
 
 import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
+import type { PickedElement } from '../protocol/dto.ts';
+import type { PrototypeEntry, PrototypeExportResult } from '../prototypes/export.ts';
+import type { ContractExportResult } from '../prototypes/contract.ts';
+import type { PrototypeStatus } from '../prototypes/status.ts';
 import { executeBrowserToolCommand } from './browser-tool-runtime.ts';
 
 // Tool result type - matches MCP CallToolResult content blocks
@@ -145,6 +149,54 @@ export interface BrowserPaneFns {
   goBack: () => Promise<void>;
   goForward: () => Promise<void>;
   evaluate: (expression: string) => Promise<unknown>;
+  /** Prompt the user to click an element; resolves null on cancel/timeout. */
+  pick: (options?: { timeoutMs?: number }) => Promise<PickedElement | null>;
+  /**
+   * Replay a prototype project's patches in this session's browser and register
+   * them for future documents (so they survive a reload).
+   */
+  applyPrototype: (slug: string) => Promise<{ slug: string; applied: number; files: string[] }>;
+  /** Remove a prototype's patches from this session's browser. */
+  clearPrototype: (slug: string) => Promise<{ slug: string; removed: string[] }>;
+  /**
+   * Write a prototype's deliverables: a self-contained HTML plus a change spec.
+   * Does not need a browser window — it is a pure file export.
+   */
+  exportPrototype: (slug: string) => Promise<PrototypeExportResult>;
+  /**
+   * Compose `services/{svc}/paths/*.yaml` fragments into `services/{svc}/openapi.yaml`.
+   * `service` may be omitted when the prototype has exactly one service.
+   */
+  composeContract: (options: { slug: string; service?: string }) => Promise<{
+    service: string;
+    endpoints: number;
+    conflicts: string[];
+    missingFixtures: string[];
+  }>;
+  /** Write the backend deliverables (`dist/openapi.yaml` + `dist/contract.md` + fixtures). */
+  exportContract: (options: { slug: string; service?: string }) => Promise<ContractExportResult>;
+  /**
+   * Serve the service's `x-mock` responses at the browser's network layer, so
+   * the prototype runs before the backend exists.
+   */
+  applyMock: (options: { slug: string; service?: string }) => Promise<{
+    service: string;
+    routes: number;
+    missingFixtures: string[];
+    unmocked: string[];
+  }>;
+  /** Stop serving the mock; requests fall through to the real network. */
+  clearMock: () => Promise<void>;
+  /**
+   * Inspect a prototype project: patches, services, contract coverage, exports
+   * and ownership violations. Pure file inspection — no browser needed.
+   */
+  prototypeStatus: (slug: string) => Promise<PrototypeStatus>;
+  /**
+   * Resolve which file to show for a prototype (the exported deliverable when it
+   * exists, otherwise `base.html`) and return its `file://` URL.
+   */
+  prototypeEntry: (options: { slug: string }) => Promise<PrototypeEntry>;
   focusWindow: (instanceId?: string) => Promise<{ instanceId: string; title: string; url: string }>;
   releaseControl: (instanceId?: string) => Promise<BrowserLifecycleActionResult>;
   closeWindow: (instanceId?: string) => Promise<BrowserLifecycleActionResult>;
@@ -208,6 +260,16 @@ Examples:
 - \`upload @e3 /path/to/file.pdf\` — attach local file(s) to a file input
 - \`scroll down 800\`
 - \`evaluate document.title\`
+- \`pick\` — ask the user to click an element; returns a stable selector + geometry
+- \`prototype-apply checkout-flow\` — replay a prototype's patches (survives reload)
+- \`prototype-clear checkout-flow\` — remove a prototype's patches
+- \`prototype-export checkout-flow\` — write dist/prototype.html + dist/dev-spec.md
+- \`prototype-contract-compose checkout-flow\` — fragments → services/<svc>/openapi.yaml
+- \`prototype-contract-export checkout-flow\` — dist/openapi.yaml + dist/contract.md + fixtures
+- \`prototype-mock-apply checkout-flow\` — serve the contract's x-mock responses
+- \`prototype-mock-clear\` — stop serving the mock
+- \`prototype-status checkout-flow\` — inspect patches, services, exports, ownership
+- \`prototype-open checkout-flow\` — open the exported page (or base.html)
 - \`console 50 error\`
 - \`screenshot\` — raw screenshot
 - \`screenshot --annotated\` — screenshot with @eN labels overlaid on interactive elements

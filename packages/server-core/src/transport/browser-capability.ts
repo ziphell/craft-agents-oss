@@ -47,6 +47,13 @@ export type BrowserCapabilityMethod =
   | 'scroll'
   | 'waitFor'
   | 'evaluate'
+  | 'pickElement'
+  // Persistent injection
+  | 'addInitScript'
+  | 'clearInitScripts'
+  // Network-level mock
+  | 'setFetchMock'
+  | 'clearFetchMock'
   // Clipboard
   | 'setClipboard'
   | 'getClipboard'

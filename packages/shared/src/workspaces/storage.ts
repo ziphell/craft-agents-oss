@@ -88,6 +88,33 @@ export function getWorkspaceSkillsPath(rootPath: string): string {
   return join(rootPath, 'skills');
 }
 
+/**
+ * Directory name (under a workspace root) holding prototype-workbench artifacts.
+ * Lives at the workspace level so deliverables survive individual sessions.
+ * @see docs/prototype-workbench-plan.md §4
+ */
+export const PROTOTYPES_DIRNAME = 'prototypes';
+
+/**
+ * Get path to the workspace prototypes directory (prototype-workbench artifacts)
+ * @param rootPath - Absolute path to workspace root folder
+ */
+export function getWorkspacePrototypesPath(rootPath: string): string {
+  return join(rootPath, PROTOTYPES_DIRNAME);
+}
+
+/**
+ * Ensure the workspace prototypes directory exists, returning its path.
+ * @param rootPath - Absolute path to workspace root folder
+ */
+export function ensureWorkspacePrototypesPath(rootPath: string): string {
+  const prototypesPath = getWorkspacePrototypesPath(rootPath);
+  if (!existsSync(prototypesPath)) {
+    mkdirSync(prototypesPath, { recursive: true });
+  }
+  return prototypesPath;
+}
+
 // ============================================================
 // Config Operations
 // ============================================================

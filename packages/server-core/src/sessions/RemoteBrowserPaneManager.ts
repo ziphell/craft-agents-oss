@@ -14,7 +14,8 @@
  */
 
 import { CodedError } from '@craft-agent/shared/protocol'
-import type { BrowserInstanceInfo } from '@craft-agent/shared/protocol'
+import type { BrowserInstanceInfo, PickedElement } from '@craft-agent/shared/protocol'
+import type { MockRoute } from '@craft-agent/shared/prototypes'
 import type {
   IBrowserPaneManager,
   BrowserScreenshotOptions,
@@ -284,6 +285,26 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
   }
   async evaluate(id: string, expression: string): Promise<unknown> {
     return await this.invoke('evaluate', [id, expression])
+  }
+
+  async pickElement(id: string, options?: { timeoutMs?: number; pollMs?: number }): Promise<PickedElement | null> {
+    return await this.invoke<PickedElement | null>('pickElement', [id, options])
+  }
+
+  async addInitScript(id: string, key: string, source: string): Promise<string> {
+    return await this.invoke<string>('addInitScript', [id, key, source])
+  }
+
+  async clearInitScripts(id: string, keyPrefix: string): Promise<string[]> {
+    return await this.invoke<string[]>('clearInitScripts', [id, keyPrefix])
+  }
+
+  async setFetchMock(id: string, routes: MockRoute[]): Promise<number> {
+    return await this.invoke<number>('setFetchMock', [id, routes])
+  }
+
+  async clearFetchMock(id: string): Promise<void> {
+    await this.invoke<void>('clearFetchMock', [id])
   }
 
   async screenshot(id: string, options?: BrowserScreenshotOptions): Promise<BrowserScreenshotResult> {

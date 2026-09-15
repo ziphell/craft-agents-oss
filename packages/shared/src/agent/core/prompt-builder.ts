@@ -17,6 +17,7 @@ import { formatPreferencesForPrompt } from '../../config/preferences.ts';
 import { formatSessionState } from '../mode-manager.ts';
 import { getDateTimeContext, getWorkingDirectoryContext } from '../../prompts/system.ts';
 import { getSessionPlansPath, getSessionDataPath, getSessionPath } from '../../sessions/storage.ts';
+import { getWorkspacePrototypesPath } from '../../workspaces/storage.ts';
 import type {
   PromptBuilderConfig,
   ContextBlockOptions,
@@ -118,9 +119,12 @@ export class PromptBuilder {
       getSessionPlansPath(this.workspaceRootPath, sessionId);
     const dataFolderPath = options.dataFolderPath ??
       getSessionDataPath(this.workspaceRootPath, sessionId);
+    const prototypesFolderPath = options.prototypesFolderPath ??
+      getWorkspacePrototypesPath(this.workspaceRootPath);
     parts.push(formatSessionState(sessionId, {
       plansFolderPath,
       dataFolderPath,
+      prototypesFolderPath,
       consumeModeChangeUserSignal: true,
     }));
 

@@ -24,7 +24,8 @@ import type {
   BrowserWaitArgs,
   BrowserWaitResult,
 } from '../handlers/browser-pane-manager-interface'
-import type { BrowserInstanceInfo } from '@craft-agent/shared/protocol'
+import type { BrowserInstanceInfo, PickedElement } from '@craft-agent/shared/protocol'
+import type { MockRoute } from '@craft-agent/shared/prototypes'
 
 const NOT_AVAILABLE = 'Browser automation is not available in headless mode'
 
@@ -83,6 +84,11 @@ export class NullBrowserPaneManager implements IBrowserPaneManager {
   async sendKey(_id: string, _args: BrowserKeyArgs): Promise<void> { unavailable('sendKey') }
   async uploadFile(_id: string, _ref: string, _filePaths: string[]): Promise<unknown> { return unavailable('uploadFile') }
   async evaluate(_id: string, _expression: string): Promise<unknown> { return unavailable('evaluate') }
+  async pickElement(_id: string, _options?: { timeoutMs?: number; pollMs?: number }): Promise<PickedElement | null> { return unavailable('pickElement') }
+  async addInitScript(_id: string, _key: string, _source: string): Promise<string> { return unavailable('addInitScript') }
+  async clearInitScripts(_id: string, _keyPrefix: string): Promise<string[]> { return unavailable('clearInitScripts') }
+  async setFetchMock(_id: string, _routes: MockRoute[]): Promise<number> { return unavailable('setFetchMock') }
+  async clearFetchMock(_id: string): Promise<void> { unavailable('clearFetchMock') }
 
   // -- Screenshot --
   async screenshot(_id: string, _options?: BrowserScreenshotOptions): Promise<BrowserScreenshotResult> { return unavailable('screenshot') }

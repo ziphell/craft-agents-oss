@@ -182,6 +182,123 @@ Debug runtime issues, requests, synchronization points, and download progress.
 
 `downloads` output includes the resolved local `savePath` when available so you can reference the downloaded file directly.
 
+### `pick [--timeout <ms>]`
+Ask the user to click an element on the page. Blocks until they click, press `Escape`, or the timeout elapses (default 120s, min 1s).
+
+Returns a **stable selector** resolved as `data-testid` → `id` → `:nth-of-type` path, plus the tag name, trimmed text, and viewport rect. Returns `Pick cancelled or timed out — no element was selected.` when nothing was chosen.
+
+Use this instead of guessing a CSS selector when the target is easier to point at than to describe (browser-based design/prototyping work).
+
+### `prototype-apply <slug>` / `prototype-clear <slug>`
+Replay (or remove) a prototype project's patches in the current browser.
+
+A prototype lives under `{workspace}/prototypes/{slug}/` and its patches are ordinary files named `{lane}-{nnn}-{slug}.{css|js}`:
+
+```
+prototypes/checkout-flow/patches/A-001-btn-radius.css
+prototypes/checkout-flow/patches/A-002-flow-guard.js
+```
+
+- Files that do not follow the naming convention are ignored (READMEs, editor backups, dotfiles), so nothing unexpected gets executed.
+- Replay order is `lane` → numeric order → file name.
+- Patches are applied to the current page **and** registered for every future document, so they survive a reload. The index is recomputed from disk on every `prototype-apply`, so editing a patch file and re-running the command is all that is needed — deleting a patch file also un-applies it.
+- `prototype-clear` unregisters a prototype's patches; the current document keeps their effects until you reload.
+
+### `prototype-export <slug>`
+Write the prototype's deliverables into `prototypes/{slug}/dist/`:
+
+- `prototype.html` — one self-contained file (css inlined into `<head>`, js inlined before `</body>`), so it runs standalone with no network and no workbench.
+- `dev-spec.md` — the change list: every patch in replay order, with its lane, kind and full content.
+
+The command prints a `file://` URL for the HTML. Verify the deliverable the same way you view anything else:
+
+```
+navigate file:///…/prototypes/checkout-flow/dist/prototype.html
+```
+
+Exports fail with a clear error when the project has no `base.html` — there would be nothing to apply the patches to.
+
+### `prototype-contract-compose <slug> [--service <svc>]`
+Compose the API contract fragments into one spec.
+
+A service lives under `prototypes/{slug}/services/{svc}/`:
+
+```
+services/checkout-api/config.json          baseUrl / authType / title
+services/checkout-api/paths/list-orders.yaml   OpenAPI path items (a `paths:` block or bare `/…` keys)
+services/checkout-api/fixtures/list-orders-200.json
+```
+
+`paths/*.yaml` are the source of truth; `openapi.yaml` is generated from them and should not be edited by hand. Each operation may declare what to serve while the backend does not exist yet:
+
+```yaml
+paths:
+  /orders:
+    get:
+      summary: List orders
+      x-mock:
+        status: 200
+        fixture: list-orders-200   # → fixtures/list-orders-200.json
+      responses:
+        '200': { description: OK }
+        '500': { description: Boom }
+```
+
+The command reports duplicate paths (last fragment in file-name order wins) and `x-mock` fixture references that have no file. With more than one service present, pass `--service`.
+
+### `prototype-contract-export <slug> [--service <svc>]`
+Write the backend-facing deliverables into `dist/`:
+
+- `openapi.yaml` — the composed contract.
+- `contract.md` — endpoints table, declared error responses, auth, and any `x-contract` notes.
+- `fixtures/*.json` — the response samples.
+
+`contract.md` deliberately calls out what is **not** declared (no error responses, no `authType`, no `x-contract` notes covering pagination/idempotency/concurrency) so an incomplete handoff is visible rather than silent.
+
+### `prototype-mock-apply <slug> [--service <svc>]` / `prototype-mock-clear`
+Serve the contract's `x-mock` responses so the prototype runs before the backend exists.
+
+Interception happens in the browser's **network layer** (CDP `Fetch`), which means:
+
+- `fetch` **and** `XMLHttpRequest` (axios et al.) are both covered, along with every other resource type — nothing is monkey-patched into the page.
+- The app does **not** need to point at a mock server: requests are matched by pathname, so absolute URLs, `baseUrl`-prefixed URLs and same-origin relative paths all hit.
+- Fulfilled responses carry `access-control-allow-origin: *`, since cross-origin calls would otherwise be blocked by CORS even though we are the one answering.
+
+The command reports endpoints that declare no `x-mock` (they pass through to the real backend) and `x-mock` fixtures that have no file — those routes are **skipped rather than served empty**, because a silently-empty response is far harder to debug than a 404.
+
+`prototype-mock-clear` stops intercepting; requests fall through to the real network again.
+
+While the mock is active the debugger stays attached — CDP drops interception on detach, so the client deliberately holds it.
+
+### `prototype-status <slug>`
+Read-only report on a prototype project:
+
+```
+Prototype "checkout-flow"
+  dir:        /…/prototypes/checkout-flow
+  base.html:  present
+  patches:    3 (A: 2, B: 1)
+  service checkout-api: 4 endpoints, 3 mocked, 2 fragments, 2 fixtures
+  dist:       prototype.html, dev-spec.md, openapi.yaml, contract.md
+  ownership:  1 violation(s)
+    • patches/oops.css — misnamed patch — expected {lane}-{nnn}-{name}.{css|js}
+```
+
+**Ownership** is how parallel work stays safe here: every artifact path belongs to exactly one writer, and lanes never write each other's files. The check flags three things that are otherwise silent:
+
+- a patch whose lane prefix is not a declared lane (`patches/Z-…`) — it would never be replayed;
+- a misnamed patch (`patches/oops.css`) — the patch scanner ignores it;
+- a path no lane or the control plane owns (`README.md`, `services/*/random.txt`).
+
+Declared lanes: `A` UI/interaction (patches), `B` service contract (`paths/`, `config.json`), `C` data (`fixtures/`), `D` verification (read-only). `base.html`, `services/*/openapi.yaml` and everything under `dist/` are control-plane outputs.
+
+### `prototype-open <slug>`
+Open a prototype in the browser.
+
+Picks the **exported deliverable** (`dist/prototype.html`) when it exists, because that is the artifact being shipped; otherwise falls back to `base.html`. When neither exists the command fails with both remedies named, rather than letting the browser show a confusing load error.
+
+Starting from nothing needs no special command: write `prototypes/{slug}/base.html` (the agent's `Write` tool is allowed to), then run `prototype-open`.
+
 ### `focus [windowId]` / `windows`
 Manage and inspect browser window ownership and visibility.
 

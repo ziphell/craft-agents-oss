@@ -86,6 +86,7 @@ export const CHANNEL_MAP = {
   readFileDataUrl: invoke(RPC_CHANNELS.file.READ_DATA_URL),
   readFilePreviewDataUrl: invoke(RPC_CHANNELS.file.READ_PREVIEW_DATA_URL),
   readFileBinary: invoke(RPC_CHANNELS.file.READ_BINARY),
+  writeFile: invoke(RPC_CHANNELS.file.WRITE),
   openFileDialog: invoke(RPC_CHANNELS.file.OPEN_DIALOG),
   readFileAttachment: invoke(RPC_CHANNELS.file.READ_ATTACHMENT),
   readUserAttachment: invoke(RPC_CHANNELS.file.READ_USER_ATTACHMENT),
@@ -216,6 +217,17 @@ export const CHANNEL_MAP = {
   watchSessionFiles: invoke(RPC_CHANNELS.sessions.WATCH_FILES),
   unwatchSessionFiles: invoke(RPC_CHANNELS.sessions.UNWATCH_FILES),
   onSessionFilesChanged: listener(RPC_CHANNELS.sessions.FILES_CHANGED),
+
+  // Prototype workbench artifacts (workspace-level)
+  watchPrototypes: invoke(RPC_CHANNELS.prototypes.WATCH),
+  unwatchPrototypes: invoke(RPC_CHANNELS.prototypes.UNWATCH),
+  listPrototypes: invoke(RPC_CHANNELS.prototypes.LIST),
+  getPrototypeEntry: invoke(RPC_CHANNELS.prototypes.ENTRY),
+  exportPrototype: invoke(RPC_CHANNELS.prototypes.EXPORT),
+  createPrototype: invoke(RPC_CHANNELS.prototypes.CREATE),
+  applyPrototype: invoke(RPC_CHANNELS.prototypes.APPLY),
+  capturePrototypeBase: invoke(RPC_CHANNELS.prototypes.CAPTURE),
+  onPrototypesChanged: listener(RPC_CHANNELS.prototypes.CHANGED),
 
   // Sources
   getSources: invoke(RPC_CHANNELS.sources.GET),

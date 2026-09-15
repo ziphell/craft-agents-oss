@@ -171,13 +171,22 @@ win:
     # See: https://github.com/electron-userland/electron-builder/issues/8250
     - "!vendor/bun/**/*"
     - "!**/resources/bin/win32-x64/**"
+    # Exclude subprocess servers from regular files — moved to extraResources
+    # to avoid EBUSY file locking (same as bun.exe above).
+    - "!**/resources/pi-agent-server/**/*"
+    - "!**/resources/session-mcp-server/**/*"
   # Copy executables as extraResources to avoid EBUSY file locking (see comment above)
   extraResources:
-    - from: node_modules/@anthropic-ai/claude-agent-sdk
+    # SDK core from root node_modules (monorepo hoisting — no node_modules in apps/electron/)
+    - from: ../../node_modules/@anthropic-ai/claude-agent-sdk
       to: app/node_modules/@anthropic-ai/claude-agent-sdk
-    - from: node_modules/@anthropic-ai/claude-agent-sdk-binary
-      to: app/node_modules/@anthropic-ai/claude-agent-sdk-binary
-    - from: node_modules/@vscode/ripgrep
+    # SDK native binary — use platform-specific package (build script creates
+    # claude-agent-sdk-binary alias, but it doesn't exist in root node_modules;
+    # runtime-resolver.ts falls back to the platform-specific package).
+    - from: ../../node_modules/@anthropic-ai/claude-agent-sdk-win32-x64
+      to: app/node_modules/@anthropic-ai/claude-agent-sdk-win32-x64
+    # ripgrep from root node_modules
+    - from: ../../node_modules/@vscode/ripgrep
       to: app/node_modules/@vscode/ripgrep
     - from: vendor/bun/bun.exe
       to: vendor/bun/bun.exe
@@ -186,6 +195,12 @@ win:
     # WhatsApp worker subprocess (self-contained; Baileys bundled in).
     - from: ../../packages/messaging-whatsapp-worker/dist/worker.cjs
       to: messaging-whatsapp-worker/worker.cjs
+    # Pi agent server subprocess (for Pi SDK sessions).
+    - from: resources/pi-agent-server
+      to: app/resources/pi-agent-server
+    # Session MCP server subprocess (for Codex sessions).
+    - from: resources/session-mcp-server
+      to: app/resources/session-mcp-server
 
 nsis:
   oneClick: true

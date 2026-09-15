@@ -60,6 +60,7 @@ import { PrerequisiteManager } from './core/prerequisite-manager.ts';
 import type { AutomationSystem } from '../automations/automation-system.ts';
 import type { AgentEvent as AutomationAgentEvent, SdkAutomationInput } from '../automations/types.ts';
 import { getSessionPlansPath, getSessionDataPath, getSessionPath } from '../sessions/storage.ts';
+import { getWorkspacePrototypesPath } from '../workspaces/storage.ts';
 import { getMiniAgentSystemPrompt } from '../prompts/system.ts';
 import { buildTitlePrompt, buildRegenerateTitlePrompt, validateTitle } from '../utils/title-generator.ts';
 
@@ -284,6 +285,7 @@ export abstract class BaseAgent implements AgentBackend {
       workingDirectory: this.workingDirectory,
       plansFolderPath: getSessionPlansPath(config.workspace.rootPath, this._sessionId),
       dataFolderPath: getSessionDataPath(config.workspace.rootPath, this._sessionId),
+      prototypesFolderPath: getWorkspacePrototypesPath(config.workspace.rootPath),
     });
 
     // SourceManager: tracks active/inactive sources and formats state for context injection

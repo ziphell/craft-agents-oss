@@ -241,7 +241,18 @@ foreach ($dep in @("interceptor-common.ts", "feature-flags.ts", "interceptor-req
     }
 }
 
-# 6. Build Electron app
+# 6. Build subprocess servers (MCP servers + Pi agent server)
+Write-Host "  Building subprocess servers..."
+Push-Location $RootDir
+try {
+    # Builds session-mcp-server and pi-agent-server to packages/*/dist/index.js
+    bun run server:build:subprocess
+    if ($LASTEXITCODE -ne 0) { throw "Subprocess server build failed" }
+} finally {
+    Pop-Location
+}
+
+# Build Electron app
 Write-Host "Building Electron app..."
 
 # Build main process with OAuth credentials
@@ -278,7 +289,7 @@ if ($env:MICROSOFT_OAUTH_CLIENT_ID) {
 }
 Push-Location $RootDir
 try {
-    & npx esbuild @MainArgs
+    & bunx esbuild @MainArgs
     if ($LASTEXITCODE -ne 0) { throw "Main process build failed" }
 } finally {
     Pop-Location
@@ -303,7 +314,7 @@ try {
     if (Test-Path $RendererDir) { Remove-Item -Recurse -Force $RendererDir }
 
     # Run vite build
-    npx vite build --config apps/electron/vite.config.ts
+    bunx vite build --config apps/electron/vite.config.ts
     if ($LASTEXITCODE -ne 0) { throw "Renderer build failed" }
 
     # Verify renderer was built
@@ -326,6 +337,24 @@ try {
     Write-Host "  Assets copied" -ForegroundColor Green
 } finally {
     Pop-Location
+}
+
+# Copy MCP servers and Pi agent server subprocess to resources/
+# Required by electron-builder.yml (resources/session-mcp-server/**/*, resources/pi-agent-server/**/*)
+Write-Host "  Copying MCP servers and Pi subprocess..."
+$SubprocessServers = @(
+    @{ Name = "session-mcp-server"; Source = "$RootDir\packages\session-mcp-server\dist\index.js" },
+    @{ Name = "pi-agent-server";    Source = "$RootDir\packages\pi-agent-server\dist\index.js" }
+)
+foreach ($server in $SubprocessServers) {
+    $DestDir = "$ElectronDir\resources\$($server.Name)"
+    if (Test-Path $server.Source) {
+        New-Item -ItemType Directory -Force -Path $DestDir | Out-Null
+        Copy-Item $server.Source "$DestDir\index.js"
+        Write-Host "    Copied $($server.Name)/index.js" -ForegroundColor Green
+    } else {
+        Write-Host "    WARNING: $($server.Name) build not found at $($server.Source)" -ForegroundColor Yellow
+    }
 }
 
 # 7. Package with electron-builder
@@ -428,7 +457,7 @@ while (-not $builderSuccess -and $builderRetry -lt $maxBuilderRetries) {
         Start-Sleep -Seconds 1
     }
 
-    npx electron-builder --win --x64 2>&1 | Tee-Object -Variable builderOutput
+    bunx electron-builder --win --x64 2>&1 | Tee-Object -Variable builderOutput
 
     if ($LASTEXITCODE -eq 0) {
         $builderSuccess = $true

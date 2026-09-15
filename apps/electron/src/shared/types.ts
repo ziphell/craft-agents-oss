@@ -331,6 +331,8 @@ export interface ElectronAPI {
   readFileDataUrl(path: string): Promise<string>
   /** Read an image file as a size-bounded preview data URL for lightweight thumbnail rendering. */
   readFilePreviewDataUrl(path: string, maxSize?: number): Promise<string>
+  /** Write UTF-8 content to a file. Restricted to the workspace prototypes folder. */
+  writeFile(path: string, content: string): Promise<{ path: string }>
   openFileDialog(): Promise<string[]>
   readFileAttachment(path: string): Promise<FileAttachment | null>
   /** Re-read a user-attached file by absolute path (bypasses workspace-dir validation).
@@ -472,6 +474,23 @@ export interface ElectronAPI {
   watchSessionFiles(sessionId: string): Promise<void>
   unwatchSessionFiles(): Promise<void>
   onSessionFilesChanged(callback: (sessionId: string) => void): () => void
+
+  // Prototype workbench artifacts (workspace-level)
+  watchPrototypes(): Promise<void>
+  unwatchPrototypes(): Promise<void>
+  onPrototypesChanged(callback: (workspaceId: string, file: string | null) => void): () => void
+  /** Every prototype in the workspace, each with its derived status. */
+  listPrototypes(workspaceId: string): Promise<unknown>
+  /** Where to open a prototype (exported deliverable, else `base.html`). */
+  getPrototypeEntry(workspaceId: string, slug: string): Promise<unknown>
+  /** Write `dist/*` for a prototype so it can be handed to developers. */
+  exportPrototype(workspaceId: string, slug: string): Promise<unknown>
+  /** Create a prototype project and seed its starter `base.html`. */
+  createPrototype(workspaceId: string, input: { name: string }): Promise<unknown>
+  /** Replay a prototype's patches into a live browser instance. */
+  applyPrototype(workspaceId: string, instanceId: string, slug: string): Promise<unknown>
+  /** Replace `base.html` with the rendered document of a live page. */
+  capturePrototypeBase(workspaceId: string, instanceId: string, slug: string): Promise<unknown>
 
   // Sources
   getSources(workspaceId: string): Promise<LoadedSource[]>
@@ -903,6 +922,15 @@ export interface ProjectsNavigationState {
 }
 
 /**
+ * Prototypes navigation state
+ */
+export interface PrototypesNavigationState {
+  navigator: 'prototypes'
+  details: { type: 'prototype'; prototypeSlug: string } | null
+  rightSidebar?: RightSidebarPanel
+}
+
+/**
  * Unified navigation state
  */
 export type NavigationState =
@@ -912,6 +940,7 @@ export type NavigationState =
   | SkillsNavigationState
   | AutomationsNavigationState
   | ProjectsNavigationState
+  | PrototypesNavigationState
 
 export const isSessionsNavigation = (
   state: NavigationState
@@ -936,6 +965,10 @@ export const isAutomationsNavigation = (
 export const isProjectsNavigation = (
   state: NavigationState
 ): state is ProjectsNavigationState => state.navigator === 'projects'
+
+export const isPrototypesNavigation = (
+  state: NavigationState
+): state is PrototypesNavigationState => state.navigator === 'prototypes'
 
 export const DEFAULT_NAVIGATION_STATE: NavigationState = {
   navigator: 'sessions',
@@ -967,6 +1000,12 @@ export const getNavigationStateKey = (state: NavigationState): string => {
       return `projects/project/${state.details.projectSlug}`
     }
     return 'projects'
+  }
+  if (state.navigator === 'prototypes') {
+    if (state.details?.type === 'prototype') {
+      return `prototypes/prototype/${state.details.prototypeSlug}`
+    }
+    return 'prototypes'
   }
   if (state.navigator === 'settings') {
     if (state.subpage === null) return 'settings'
@@ -1024,6 +1063,16 @@ export const parseNavigationStateKey = (key: string): NavigationState | null => 
       return { navigator: 'projects', details: { type: 'project', projectSlug } }
     }
     return { navigator: 'projects', details: null }
+  }
+
+  // Handle prototypes
+  if (key === 'prototypes') return { navigator: 'prototypes', details: null }
+  if (key.startsWith('prototypes/prototype/')) {
+    const prototypeSlug = key.slice(21)
+    if (prototypeSlug) {
+      return { navigator: 'prototypes', details: { type: 'prototype', prototypeSlug } }
+    }
+    return { navigator: 'prototypes', details: null }
   }
 
   // Handle settings

@@ -32,6 +32,7 @@ import {
   isSkillsNavigation,
   isAutomationsNavigation,
   isProjectsNavigation,
+  isPrototypesNavigation,
 } from '@/contexts/NavigationContext'
 import { useSessionSelection, useIsMultiSelectActive, useSelectedIds, useSelectionCount } from '@/hooks/useSession'
 import { sourceSelection, skillSelection, automationSelection } from '@/hooks/useEntitySelection'
@@ -42,6 +43,7 @@ import SkillInfoPage from '@/pages/SkillInfoPage'
 import { getSettingsPageComponent } from '@/pages/settings/settings-pages'
 import { AutomationInfoPage } from '../automations/AutomationInfoPage'
 import ProjectInfoPage from '@/pages/ProjectInfoPage'
+import PrototypeInfoPage from '@/pages/PrototypeInfoPage'
 import { KanbanBoardContainer } from './kanban/KanbanBoardContainer'
 import type { ExecutionEntry } from '../automations/types'
 import { automationsAtom } from '@/atoms/automations'
@@ -372,6 +374,25 @@ export function MainContentPanel({
       <Panel variant="grow" className={className}>
         <div className="flex items-center justify-center h-full text-muted-foreground">
           <p className="text-sm">{t("projectsList.noProjectSelected")}</p>
+        </div>
+      </Panel>
+    )
+  }
+
+  // Prototypes navigator - show prototype detail page or empty state
+  if (isPrototypesNavigation(navState)) {
+    const prototypeDetails = navState.details
+    if (prototypeDetails && prototypeDetails.type === 'prototype') {
+      return wrapWithStoplight(
+        <Panel variant="grow" className={className}>
+          <PrototypeInfoPage prototypeSlug={prototypeDetails.prototypeSlug} />
+        </Panel>
+      )
+    }
+    return wrapWithStoplight(
+      <Panel variant="grow" className={className}>
+        <div className="flex items-center justify-center h-full text-muted-foreground">
+          <p className="text-sm">{t("prototypesList.noPrototypeSelected")}</p>
         </div>
       </Panel>
     )

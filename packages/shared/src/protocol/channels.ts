@@ -97,6 +97,7 @@ export const RPC_CHANNELS = {
     READ_DATA_URL: 'file:readDataUrl',
     READ_PREVIEW_DATA_URL: 'file:readPreviewDataUrl',
     READ_BINARY: 'file:readBinary',
+    WRITE: 'file:write',
     OPEN_DIALOG: 'file:openDialog',
     READ_ATTACHMENT: 'file:readAttachment',
     READ_USER_ATTACHMENT: 'file:readUserAttachment',
@@ -106,6 +107,23 @@ export const RPC_CHANNELS = {
   fs: {
     SEARCH: 'fs:search',
     LIST_DIRECTORY: 'fs:listDirectory',
+  },
+  prototypes: {
+    WATCH: 'prototypes:watch',
+    UNWATCH: 'prototypes:unwatch',
+    CHANGED: 'prototypes:changed',
+    /** Read-only listing of every prototype in a workspace (drives the panel). */
+    LIST: 'prototypes:list',
+    /** Where to open a prototype: the exported deliverable, else `base.html`. */
+    ENTRY: 'prototypes:entry',
+    /** Write `dist/*` so the prototype can be handed to developers. */
+    EXPORT: 'prototypes:export',
+    /** Create a prototype project (the panel's "New Prototype"). */
+    CREATE: 'prototypes:create',
+    /** Replay a prototype's patches into a live browser instance. */
+    APPLY: 'prototypes:apply',
+    /** Replace `base.html` with the rendered document of a live page. */
+    CAPTURE: 'prototypes:capture',
   },
   debug: {
     LOG: 'debug:log',

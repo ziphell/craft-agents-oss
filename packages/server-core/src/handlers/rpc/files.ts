@@ -1,5 +1,5 @@
 import { readFile, writeFile, unlink, mkdir, readdir, stat } from 'fs/promises'
-import { isAbsolute, join, resolve, dirname, parse as parsePath } from 'path'
+import { isAbsolute, join, relative, resolve, dirname, parse as parsePath } from 'path'
 import { homedir } from 'os'
 import { validatePathFormat } from '../../utils/path-validation'
 import { randomUUID } from 'crypto'
@@ -8,6 +8,7 @@ import type { StoredAttachment } from '@craft-agent/core/types'
 import { readFileAttachment, validateImageForClaudeAPI, IMAGE_LIMITS } from '@craft-agent/shared/utils'
 import { getSessionAttachmentsPath, validateSessionId } from '@craft-agent/shared/sessions'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
+import { getWorkspacePrototypesPath } from '@craft-agent/shared/workspaces'
 import { resizeImageForAPI, inspectImageBuffer } from '@craft-agent/server-core/services'
 import { sanitizeFilename, validateFilePath, getWorkspaceAllowedDirs } from '@craft-agent/server-core/handlers'
 import { MarkItDown } from 'markitdown-js'
@@ -20,6 +21,7 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.file.READ_DATA_URL,
   RPC_CHANNELS.file.READ_PREVIEW_DATA_URL,
   RPC_CHANNELS.file.READ_BINARY,
+  RPC_CHANNELS.file.WRITE,
   RPC_CHANNELS.file.OPEN_DIALOG,
   RPC_CHANNELS.file.READ_ATTACHMENT,
   RPC_CHANNELS.file.READ_USER_ATTACHMENT,
@@ -28,6 +30,17 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.fs.SEARCH,
   RPC_CHANNELS.fs.LIST_DIRECTORY,
 ] as const
+
+/**
+ * Scope-narrowing check for file:write — the validated path must sit inside the
+ * workspace prototypes subtree. Uses path.relative semantics to avoid
+ * sibling-prefix bypasses (e.g. `prototypes-evil/`). This narrows further on top
+ * of validateFilePath(), which already confines paths to the workspace root.
+ */
+function isWithinPrototypesDir(targetPath: string, prototypesRoot: string): boolean {
+  const rel = relative(resolve(prototypesRoot), resolve(targetPath))
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+}
 
 export function registerFilesHandlers(server: RpcServer, deps: HandlerDeps): void {
   // Read a file (with path validation to prevent traversal attacks)
@@ -46,6 +59,35 @@ export function registerFilesHandlers(server: RpcServer, deps: HandlerDeps): voi
         deps.platform.logger.error('readFile error:', path, message)
       }
       throw new Error(`Failed to read file: ${message}`)
+    }
+  })
+
+  // Write a UTF-8 file inside the workspace prototypes folder.
+  // Deliberately narrower than a general-purpose write: the validated path must
+  // resolve inside `<workspaceRoot>/prototypes` so the renderer / control plane
+  // cannot write anywhere else in the workspace.
+  server.handle(RPC_CHANNELS.file.WRITE, async (ctx, path: string, content: string) => {
+    try {
+      const workspaceId = ctx.workspaceId ?? deps.windowManager?.getWorkspaceForWindow(ctx.webContentsId!)
+      const safePath = await validateFilePath(path, getWorkspaceAllowedDirs(workspaceId))
+
+      const workspace = getWorkspaceByNameOrId(workspaceId ?? '')
+      if (!workspace) {
+        throw new Error('Unknown workspace')
+      }
+      const prototypesRoot = getWorkspacePrototypesPath(workspace.rootPath)
+      if (!isWithinPrototypesDir(safePath, prototypesRoot)) {
+        throw new Error(`Only paths inside the workspace prototypes folder are writable: ${prototypesRoot}`)
+      }
+
+      await mkdir(dirname(safePath), { recursive: true })
+      await writeFile(safePath, content, 'utf-8')
+      deps.platform.logger.debug('writeFile: wrote', safePath)
+      return { path: safePath }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      deps.platform.logger.error('writeFile error:', path, message)
+      throw new Error(`Failed to write file: ${message}`)
     }
   })
 

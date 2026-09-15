@@ -10,6 +10,17 @@ import { readFile, writeFile, mkdir } from 'fs/promises'
 import { randomUUID } from 'node:crypto'
 import { type AgentEvent, setPermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserPaneFns, generateConversationSummary, resolveKeepBackgroundTasksAlive } from '@craft-agent/shared/agent'
 import {
+  exportPrototype as exportPrototypeArtifacts,
+  resolveContractServiceSlug,
+  writeComposedContract,
+  exportContractDeliverable,
+  loadContractService,
+  buildMockRoutes,
+  buildPrototypeStatus,
+  resolvePrototypeEntry,
+} from '@craft-agent/shared/prototypes'
+import { applyPrototypeToBrowser, clearPrototypeFromBrowser } from '../domain/apply-prototype'
+import {
   resolveSessionConnection,
   createBackendFromConnection,
   resolveBackendContext,
@@ -3843,6 +3854,57 @@ export class SessionManager implements ISessionManager {
             evaluate: async (expression) => {
               const instanceId = await resolveSessionBrowserInstance('browser_evaluate')
               return bpm.evaluate(instanceId, expression)
+            },
+            pick: async (options) => {
+              const instanceId = await resolveSessionBrowserInstance('browser_pick')
+              return bpm.pickElement(instanceId, options)
+            },
+            applyPrototype: async (prototypeSlug) => {
+              const instanceId = await resolveSessionBrowserInstance('browser_prototype_apply')
+              return applyPrototypeToBrowser(bpm, instanceId, managed.workspace.rootPath, prototypeSlug)
+            },
+            clearPrototype: async (prototypeSlug) => {
+              const instanceId = await resolveSessionBrowserInstance('browser_prototype_clear')
+              return clearPrototypeFromBrowser(bpm, instanceId, prototypeSlug)
+            },
+            // Pure file export — deliberately does not resolve a browser instance.
+            exportPrototype: async (prototypeSlug) => {
+              return exportPrototypeArtifacts(managed.workspace.rootPath, prototypeSlug)
+            },
+            composeContract: async ({ slug: prototypeSlug, service }) => {
+              const serviceSlug = resolveContractServiceSlug(managed.workspace.rootPath, prototypeSlug, service)
+              const composed = writeComposedContract(managed.workspace.rootPath, prototypeSlug, serviceSlug)
+              return {
+                service: serviceSlug,
+                endpoints: composed.endpoints.length,
+                conflicts: composed.conflicts,
+                missingFixtures: composed.missingFixtures,
+              }
+            },
+            exportContract: async ({ slug: prototypeSlug, service }) => {
+              const serviceSlug = resolveContractServiceSlug(managed.workspace.rootPath, prototypeSlug, service)
+              return exportContractDeliverable(managed.workspace.rootPath, prototypeSlug, serviceSlug)
+            },
+            applyMock: async ({ slug: prototypeSlug, service }) => {
+              const instanceId = await resolveSessionBrowserInstance('browser_mock_apply')
+              const serviceSlug = resolveContractServiceSlug(managed.workspace.rootPath, prototypeSlug, service)
+              const { routes, missingFixtures, unmocked } = buildMockRoutes(
+                loadContractService(managed.workspace.rootPath, prototypeSlug, serviceSlug),
+              )
+              const applied = await bpm.setFetchMock(instanceId, routes)
+              return { service: serviceSlug, routes: applied, missingFixtures, unmocked }
+            },
+            clearMock: async () => {
+              const instanceId = await resolveSessionBrowserInstance('browser_mock_clear')
+              await bpm.clearFetchMock(instanceId)
+            },
+            // Pure file inspection — deliberately does not resolve a browser instance.
+            prototypeStatus: async (prototypeSlug) => {
+              return buildPrototypeStatus(managed.workspace.rootPath, prototypeSlug)
+            },
+            // Pure path resolution; the caller navigates to the returned URL.
+            prototypeEntry: async ({ slug: prototypeSlug }) => {
+              return resolvePrototypeEntry(managed.workspace.rootPath, prototypeSlug)
             },
             focusWindow: async (targetInstanceId) => {
               const windows = await bpm.listInstancesAsync()

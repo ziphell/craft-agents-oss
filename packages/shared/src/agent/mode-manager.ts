@@ -1807,6 +1807,7 @@ export function shouldAllowToolInMode(
   options?: {
     plansFolderPath?: string;
     dataFolderPath?: string;
+    prototypesFolderPath?: string;
     permissionsContext?: PermissionsContext;
   }
 ): ToolCheckResult {
@@ -1871,7 +1872,7 @@ export function shouldAllowToolInMode(
         (rejection.type === 'dangerous_operator' && rejection.operatorType === 'redirect') ||
         looksLikePotentialWrite(command);
 
-      if (likelyWriteAttempt && (options?.plansFolderPath || options?.dataFolderPath)) {
+      if (likelyWriteAttempt && (options?.plansFolderPath || options?.dataFolderPath || options?.prototypesFolderPath)) {
         const targetPath = extractBashWriteTarget(command) ?? extractPowerShellWriteTarget(command);
         if (targetPath) {
           // Check plans folder with robust path containment (prevents sibling-prefix bypasses)
@@ -1886,8 +1887,14 @@ export function shouldAllowToolInMode(
             return { allowed: true };
           }
 
+          // Check prototypes folder (workspace-level prototype-workbench artifacts)
+          if (options?.prototypesFolderPath && isPathWithinDirectory(targetPath, options.prototypesFolderPath)) {
+            debug(`[Mode] Allowing write to prototypes folder: ${targetPath}`);
+            return { allowed: true };
+          }
+
           // Target path extracted but not in any allowed folder - give specific error with helpful hint
-          debug(`[Mode] Write target "${targetPath}" is not in plans or data folder`);
+          debug(`[Mode] Write target "${targetPath}" is not in any allowed folder`);
           const pathHint = options?.plansFolderPath ? getPathHint(targetPath, options.plansFolderPath, options?.dataFolderPath) : null;
           const lines = [
             `Write blocked (Explore mode) - target not in allowed folders:`,
@@ -1900,15 +1907,19 @@ export function shouldAllowToolInMode(
           if (options?.dataFolderPath) {
             lines.push(`  Data:   ${options.dataFolderPath}`);
           }
+          if (options?.prototypesFolderPath) {
+            lines.push(`  Prototypes: ${options.prototypesFolderPath}`);
+          }
           if (pathHint) {
             lines.push(``, pathHint);
           }
           const plansHint = options?.plansFolderPath ? `For plans, write to: ${options.plansFolderPath}` : null;
           const dataHint = options?.dataFolderPath ? `For data output, write to: ${options.dataFolderPath}` : null;
+          const prototypesHint = options?.prototypesFolderPath ? `For prototype artifacts, write to: ${options.prototypesFolderPath}` : null;
           lines.push(
             ``,
             `Allowed paths in Explore mode:`,
-            ...[plansHint, dataHint].filter(Boolean).map(p => `• ${p}`),
+            ...[plansHint, dataHint, prototypesHint].filter(Boolean).map(p => `• ${p}`),
             `• Or ask the user to switch to Ask or Auto mode (${config.shortcutHint}) to enable writes anywhere`
           );
           return {
@@ -1952,6 +1963,12 @@ export function shouldAllowToolInMode(
         return { allowed: true };
       }
 
+      // Check prototypes folder exception (workspace-level prototype-workbench artifacts)
+      if (options?.prototypesFolderPath && isPathWithinDirectory(filePath, options.prototypesFolderPath)) {
+        debug(`[Mode] Allowing ${toolName} to prototypes folder`);
+        return { allowed: true };
+      }
+
       // Check allowedWritePaths from permissions config
       if (config.allowedWritePaths && config.allowedWritePaths.length > 0) {
         if (matchesAllowedWritePath(filePath, config.allowedWritePaths)) {
@@ -1961,7 +1978,7 @@ export function shouldAllowToolInMode(
       }
 
       // Not in plans/data folder and not in allowedWritePaths - provide detailed rejection
-      if (options?.plansFolderPath || options?.dataFolderPath) {
+      if (options?.plansFolderPath || options?.dataFolderPath || options?.prototypesFolderPath) {
         debug(`[Mode] ${toolName} target "${filePath}" not in allowed folders or allowedWritePaths`);
         const pathHint = options?.plansFolderPath ? getPathHint(filePath, options.plansFolderPath, options?.dataFolderPath) : null;
         const lines = [
@@ -1975,15 +1992,19 @@ export function shouldAllowToolInMode(
         if (options?.dataFolderPath) {
           lines.push(`  Data:   ${options.dataFolderPath}`);
         }
+        if (options?.prototypesFolderPath) {
+          lines.push(`  Prototypes: ${options.prototypesFolderPath}`);
+        }
         if (pathHint) {
           lines.push(``, pathHint);
         }
         const plansHint = options?.plansFolderPath ? `For plans, write to: ${options.plansFolderPath}` : null;
         const dataHint = options?.dataFolderPath ? `For data output, write to: ${options.dataFolderPath}` : null;
+        const prototypesHint = options?.prototypesFolderPath ? `For prototype artifacts, write to: ${options.prototypesFolderPath}` : null;
         lines.push(
           ``,
           `Allowed paths in Explore mode:`,
-          ...[plansHint, dataHint].filter(Boolean).map(p => `• ${p}`),
+          ...[plansHint, dataHint, prototypesHint].filter(Boolean).map(p => `• ${p}`),
           `• Or ask the user to switch to Ask or Auto mode (${config.shortcutHint}) to enable writes anywhere`
         );
         return {
@@ -2135,7 +2156,7 @@ export function getSessionState(sessionId: string): { permissionMode: Permission
  */
 export function formatSessionState(
   sessionId: string,
-  options?: { plansFolderPath?: string; dataFolderPath?: string; consumeModeChangeUserSignal?: boolean }
+  options?: { plansFolderPath?: string; dataFolderPath?: string; prototypesFolderPath?: string; consumeModeChangeUserSignal?: boolean }
 ): string {
   const diagnostics = getPermissionModeDiagnostics(sessionId);
 
@@ -2169,6 +2190,11 @@ export function formatSessionState(
   // Include data folder path so agent knows where transform_data output goes
   if (options?.dataFolderPath) {
     result += `\ndataFolderPath: ${options.dataFolderPath}`;
+  }
+
+  // Include prototypes folder path so agent knows where prototype-workbench artifacts go
+  if (options?.prototypesFolderPath) {
+    result += `\nprototypesFolderPath: ${options.prototypesFolderPath}`;
   }
 
   result += '\n</session_state>';

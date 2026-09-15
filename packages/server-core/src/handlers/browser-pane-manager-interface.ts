@@ -8,7 +8,8 @@
  * so releaseBrowserOwnershipOnForcedStop() accepts IBrowserPaneManager.
  */
 
-import type { BrowserInstanceInfo } from '@craft-agent/shared/protocol'
+import type { BrowserInstanceInfo, PickedElement } from '@craft-agent/shared/protocol'
+import type { MockRoute } from '@craft-agent/shared/prototypes'
 
 // ---------------------------------------------------------------------------
 // Supporting types — minimal subsets of BPM's internal types
@@ -241,6 +242,45 @@ export interface IBrowserPaneManager {
   sendKey(id: string, args: BrowserKeyArgs): Promise<void>
   uploadFile(id: string, ref: string, filePaths: string[]): Promise<unknown>
   evaluate(id: string, expression: string): Promise<unknown>
+
+  /**
+   * Prompt the user to click an element on the page. Resolves with the picked
+   * element's stable selector + geometry, or `null` on cancel/timeout.
+   */
+  pickElement(id: string, options?: { timeoutMs?: number; pollMs?: number }): Promise<PickedElement | null>
+
+  // -- Persistent injection -------------------------------------------------
+
+  /**
+   * Register `source` to run in every new document of this instance, before the
+   * page's own scripts. This is what makes prototype patches survive a reload.
+   *
+   * `key` is caller-chosen; re-registering the same key replaces the previous
+   * script so re-applying an edited patch is idempotent.
+   *
+   * @returns the underlying CDP identifier
+   */
+  addInitScript(id: string, key: string, source: string): Promise<string>
+
+  /**
+   * Remove every init script whose key starts with `keyPrefix`.
+   * @returns the keys that were removed
+   */
+  clearInitScripts(id: string, keyPrefix: string): Promise<string[]>
+
+  // -- Network-level mock ---------------------------------------------------
+
+  /**
+   * Serve `routes` for matching requests at the browser's network layer
+   * (CDP Fetch interception), so `fetch`, XHR and every other resource type are
+   * covered without patching page globals.
+   *
+   * @returns the number of routes now being served
+   */
+  setFetchMock(id: string, routes: MockRoute[]): Promise<number>
+
+  /** Stop intercepting; requests fall through to the real network again. */
+  clearFetchMock(id: string): Promise<void>
 
   // -- Screenshot ----------------------------------------------------------
 

@@ -1598,6 +1598,77 @@ describe('shouldAllowToolInMode - Bash plans folder exception', () => {
     });
   });
 
+  describe('should allow writes to the workspace prototypes folder', () => {
+    const prototypesFolderPath = join(testRoot, 'prototypes');
+    const patchesPath = join(prototypesFolderPath, 'checkout-flow', 'patches');
+    const pathsFragmentPath = join(prototypesFolderPath, 'checkout-flow', 'services', 'checkout-api', 'paths');
+
+    beforeAll(() => {
+      mkdirSync(patchesPath, { recursive: true });
+      mkdirSync(pathsFragmentPath, { recursive: true });
+    });
+
+    it('should allow Write to a prototype patch file', () => {
+      const result = shouldAllowToolInMode(
+        'Write',
+        { file_path: join(patchesPath, 'A-001-btn.css'), content: '.btn{}' },
+        'safe',
+        { prototypesFolderPath }
+      );
+      expect(result.allowed).toBe(true);
+    });
+
+    it('should allow Edit to an API contract fragment', () => {
+      const result = shouldAllowToolInMode(
+        'Edit',
+        { file_path: join(pathsFragmentPath, 'list-orders.yaml'), old_string: 'a', new_string: 'b' },
+        'safe',
+        { prototypesFolderPath }
+      );
+      expect(result.allowed).toBe(true);
+    });
+
+    it('should allow a bash redirect into the prototypes folder', () => {
+      const result = shouldAllowToolInMode(
+        'Bash',
+        { command: `echo '{}' > "${join(patchesPath, 'A-002-fixture.json')}"` },
+        'safe',
+        { prototypesFolderPath }
+      );
+      expect(result.allowed).toBe(true);
+    });
+
+    it('should block Write outside the prototypes folder', () => {
+      const result = shouldAllowToolInMode(
+        'Write',
+        { file_path: join(testRoot, 'outside.txt'), content: 'x' },
+        'safe',
+        { prototypesFolderPath }
+      );
+      expect(result.allowed).toBe(false);
+    });
+
+    it('should not treat a sibling prefix as inside the prototypes folder', () => {
+      const result = shouldAllowToolInMode(
+        'Write',
+        { file_path: join(`${prototypesFolderPath}-evil`, 'x.css'), content: 'x' },
+        'safe',
+        { prototypesFolderPath }
+      );
+      expect(result.allowed).toBe(false);
+    });
+
+    it('should still block writes when no prototypes folder is provided', () => {
+      const result = shouldAllowToolInMode(
+        'Write',
+        { file_path: join(patchesPath, 'A-003.css'), content: 'x' },
+        'safe',
+        {}
+      );
+      expect(result.allowed).toBe(false);
+    });
+  });
+
   describe('should block bash writes to other paths in safe mode', () => {
     it('should block Codex-style zsh write to non-plans path', () => {
       const command = `/bin/zsh -lc "cat <<'EOF' > /tmp/evil.sh\nrm -rf /\nEOF"`;

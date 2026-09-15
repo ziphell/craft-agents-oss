@@ -622,6 +622,8 @@ export interface PreToolUseInput {
   plansFolderPath?: string;
   /** Data folder path (writes allowed in explore mode for transform_data output) */
   dataFolderPath?: string;
+  /** Prototypes folder path (writes allowed in explore mode for prototype-workbench artifacts) */
+  prototypesFolderPath?: string;
   /** Working directory override (for skill resolution) */
   workingDirectory?: string;
   /** Currently active source slugs */
@@ -707,6 +709,7 @@ export function runPreToolUseChecks(ctx: PreToolUseInput): PreToolUseCheckResult
     workspaceId,
     plansFolderPath,
     dataFolderPath,
+    prototypesFolderPath,
     workingDirectory,
     activeSourceSlugs,
     allSourceSlugs,
@@ -742,7 +745,7 @@ export function runPreToolUseChecks(ctx: PreToolUseInput): PreToolUseCheckResult
     toolName,
     input,
     effectivePermissionMode,
-    { plansFolderPath, dataFolderPath, permissionsContext }
+    { plansFolderPath, dataFolderPath, prototypesFolderPath, permissionsContext }
   );
 
   if (!modeResult.allowed) {

@@ -13,6 +13,64 @@ import { resolveBackendRuntimePaths } from '../internal/runtime-resolver.ts';
 import { resolveBackendHostTooling } from '../factory.ts';
 import type { BackendHostRuntimeContext } from '../types.ts';
 
+describe('resolveBundledRuntimePath (pi-agent-server bun runtime)', () => {
+  const tmpBase = join(tmpdir(), `bun-runtime-resolver-test-${Date.now()}`);
+
+  afterEach(() => {
+    try { rmSync(tmpBase, { recursive: true, force: true }); } catch {}
+  });
+
+  const envKeys = ['CRAFT_BUN', 'CRAFT_RESOURCES_BASE'] as const;
+  function withEnv(env: Partial<Record<(typeof envKeys)[number], string>>, fn: () => void): void {
+    const prev = new Map<(typeof envKeys)[number], string | undefined>();
+    for (const key of envKeys) prev.set(key, process.env[key]);
+    for (const key of envKeys) {
+      if (env[key] !== undefined) process.env[key] = env[key];
+      else delete process.env[key];
+    }
+    try { fn(); } finally {
+      for (const key of envKeys) {
+        const value = prev.get(key);
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  }
+
+  it('prefers CRAFT_BUN when it points to an existing bun binary', () => {
+    const bunBinary = process.platform === 'win32' ? 'bun.exe' : 'bun';
+    const bunPath = join(tmpBase, bunBinary);
+    mkdirSync(tmpBase, { recursive: true });
+    writeFileSync(bunPath, '// stub');
+
+    withEnv({ CRAFT_BUN: bunPath }, () => {
+      const paths = resolveBackendRuntimePaths({
+        appRootPath: tmpBase,
+        resourcesPath: tmpBase,
+        isPackaged: true,
+      });
+      expect(paths.nodeRuntimePath).toBe(bunPath);
+    });
+  });
+
+  it('finds the dev-layout vendored bun under CRAFT_RESOURCES_BASE/vendor/bun', () => {
+    const bunBinary = process.platform === 'win32' ? 'bun.exe' : 'bun';
+    const resourcesBase = join(tmpBase, 'apps', 'electron');
+    const bunPath = join(resourcesBase, 'vendor', 'bun', bunBinary);
+    mkdirSync(join(resourcesBase, 'vendor', 'bun'), { recursive: true });
+    writeFileSync(bunPath, '// stub');
+
+    withEnv({ CRAFT_RESOURCES_BASE: resourcesBase }, () => {
+      const paths = resolveBackendRuntimePaths({
+        appRootPath: join(tmpBase, 'repo-root'),
+        resourcesPath: tmpBase,
+        isPackaged: false,
+      });
+      expect(paths.nodeRuntimePath).toBe(bunPath);
+    });
+  });
+});
+
 describe('resolveServerPath fallback', () => {
   const tmpBase = join(tmpdir(), `resolver-test-${Date.now()}`);
 

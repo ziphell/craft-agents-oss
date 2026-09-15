@@ -62,21 +62,65 @@ function resolveUpwards(base: string, relativePath: string, maxLevels = 4): stri
 
 function resolveBundledRuntimePath(hostRuntime: BackendHostRuntimeContext): string | undefined {
   const bunBinary = process.platform === 'win32' ? 'bun.exe' : 'bun';
-  const bunBasePath = process.platform === 'win32'
-    ? (hostRuntime.resourcesPath || hostRuntime.appRootPath)
-    : hostRuntime.appRootPath;
-  const bunPath = join(bunBasePath, 'vendor', 'bun', bunBinary);
-  if (existsSync(bunPath)) return bunPath;
+
+  // Electron main pre-resolves the bundled bun (packaged: resources/vendor/bun,
+  // dev: apps/electron/vendor/bun) into CRAFT_BUN. Prefer it so the dev flow
+  // doesn't depend on a system bun install matching the bun-built bundle.
+  const envBun = process.env.CRAFT_BUN;
+  if (envBun && existsSync(envBun)) return envBun;
+
+  // Bundled layouts:
+  // - resourcesPath/vendor/bun/<bin>        packaged extraResources
+  // - CRAFT_RESOURCES_BASE/vendor/bun/<bin> dev (apps/electron) or packaged app dir
+  // - appRootPath/vendor/bun/<bin>          generic app-root layout
+  for (const base of [
+    hostRuntime.resourcesPath,
+    process.env.CRAFT_RESOURCES_BASE,
+    hostRuntime.appRootPath,
+  ]) {
+    if (!base) continue;
+    const bunPath = join(base, 'vendor', 'bun', bunBinary);
+    if (existsSync(bunPath)) return bunPath;
+  }
 
   // Non-packaged (headless server, dev mode): fall back to system bun via PATH.
   // Packaged apps must ship their own bundled bun — never resolve from PATH
   // to avoid picking up an incompatible system install.
   if (!hostRuntime.isPackaged) {
-    try {
-      const whichCmd = process.platform === 'win32' ? 'where' : 'which';
-      const systemBun = execFileSync(whichCmd, ['bun'], { encoding: 'utf-8' }).trim();
-      if (systemBun && existsSync(systemBun)) return systemBun;
-    } catch { /* system bun not found */ }
+    const systemBun = resolveSystemBunPath();
+    if (systemBun) return systemBun;
+  }
+  return undefined;
+}
+
+/**
+ * Resolve the system bun executable via PATH. Windows `where` may return
+ * multiple candidates (e.g. an extensionless shim plus a `.cmd`), so treat
+ * the output as a line list and prefer a real `.exe`, then a `.cmd`/`.bat`
+ * shim, skipping anything that doesn't exist on disk.
+ */
+function resolveSystemBunPath(): string | undefined {
+  const whichCmd = process.platform === 'win32' ? 'where' : 'which';
+  let candidates: string[];
+  try {
+    candidates = execFileSync(whichCmd, ['bun'], { encoding: 'utf-8' })
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+  } catch {
+    return undefined; // bun not found on PATH
+  }
+
+  if (process.platform === 'win32') {
+    candidates = [
+      ...candidates.filter((c) => /\.exe$/i.test(c)),
+      ...candidates.filter((c) => /\.(cmd|bat)$/i.test(c)),
+      ...candidates.filter((c) => !/\.(exe|cmd|bat)$/i.test(c)),
+    ];
+  }
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
   }
   return undefined;
 }

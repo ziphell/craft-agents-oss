@@ -20,6 +20,8 @@ import {
 } from '../shared/types'
 import { DEFAULT_THEME, loadAppTheme, getAllowRemoteEvaluate } from '@craft-agent/shared/config'
 import { CodedError } from '@craft-agent/shared/protocol'
+import type { PickedElement } from '@craft-agent/shared/protocol'
+import type { MockRoute } from '@craft-agent/shared/prototypes'
 import { getBrowserLiveFxCornerRadii } from '../shared/browser-live-fx'
 import type {
   IBrowserPaneManager,
@@ -1645,6 +1647,49 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     return instance.pageView.webContents.executeJavaScript(expression)
   }
 
+  /**
+   * Prompt the user to click an element on the page.
+   * Resolves null when the user cancels (Escape) or the pick times out.
+   */
+  async pickElement(id: string, options?: { timeoutMs?: number; pollMs?: number }): Promise<PickedElement | null> {
+    const instance = this.requireAliveInstance(id)
+    return instance.cdp.pickElement(options)
+  }
+
+  /**
+   * Register `source` to run in every new document (survives reload/navigation).
+   * Re-registering the same key replaces the previous script.
+   */
+  async addInitScript(id: string, key: string, source: string): Promise<string> {
+    const instance = this.requireAliveInstance(id)
+    return instance.cdp.addInitScript(key, source)
+  }
+
+  /** Remove every init script whose key starts with `keyPrefix`. */
+  async clearInitScripts(id: string, keyPrefix: string): Promise<string[]> {
+    const instance = this.requireAliveInstance(id)
+    const keys = instance.cdp.listInitScriptKeys().filter((key) => key.startsWith(keyPrefix))
+    for (const key of keys) {
+      await instance.cdp.removeInitScript(key)
+    }
+    return keys
+  }
+
+  /**
+   * Serve `routes` for matching requests at the browser's network layer.
+   * Covers fetch and XHR alike, with no page-level patching.
+   */
+  async setFetchMock(id: string, routes: MockRoute[]): Promise<number> {
+    const instance = this.requireAliveInstance(id)
+    return instance.cdp.setFetchMockRoutes(routes)
+  }
+
+  /** Stop intercepting; requests fall through to the real network again. */
+  async clearFetchMock(id: string): Promise<void> {
+    const instance = this.requireAliveInstance(id)
+    await instance.cdp.clearFetchMock()
+  }
+
   async detectSecurityChallenge(id: string): Promise<{ detected: boolean; provider: string; signals: string[] }> {
     const instance = this.instances.get(id)
     if (!instance || instance.window.isDestroyed()) return { detected: false, provider: 'none', signals: [] }
@@ -2677,6 +2722,43 @@ export class BrowserPaneManager implements IBrowserPaneManager {
             'JavaScript evaluation from remote agents is disabled in this client.')
         }
         return this.evaluate(instanceId, expression)
+      }
+      case 'pickElement': {
+        const [instanceId, pickOptions] = args as [string, { timeoutMs?: number; pollMs?: number } | undefined]
+        this.requireOwnedInstance(instanceId, ownerKey)
+        if (!getAllowRemoteEvaluate()) {
+          throw new CodedError('BROWSER_REMOTE_PICK_BLOCKED',
+            'Element picking from remote agents is disabled in this client.')
+        }
+        return this.pickElement(instanceId, pickOptions)
+      }
+      case 'addInitScript': {
+        const [instanceId, key, source] = args as [string, string, string]
+        this.requireOwnedInstance(instanceId, ownerKey)
+        if (!getAllowRemoteEvaluate()) {
+          throw new CodedError('BROWSER_REMOTE_EVALUATE_BLOCKED',
+            'Persistent script injection from remote agents is disabled in this client.')
+        }
+        return this.addInitScript(instanceId, key, source)
+      }
+      case 'clearInitScripts': {
+        const [instanceId, keyPrefix] = args as [string, string]
+        this.requireOwnedInstance(instanceId, ownerKey)
+        return this.clearInitScripts(instanceId, keyPrefix)
+      }
+      case 'setFetchMock': {
+        const [instanceId, routes] = args as [string, MockRoute[]]
+        this.requireOwnedInstance(instanceId, ownerKey)
+        if (!getAllowRemoteEvaluate()) {
+          throw new CodedError('BROWSER_REMOTE_EVALUATE_BLOCKED',
+            'Network mocking from remote agents is disabled in this client.')
+        }
+        return this.setFetchMock(instanceId, routes)
+      }
+      case 'clearFetchMock': {
+        const [instanceId] = args as [string]
+        this.requireOwnedInstance(instanceId, ownerKey)
+        return this.clearFetchMock(instanceId)
       }
 
       // -- Clipboard -----------------------------------------------------------

@@ -10,6 +10,8 @@
  */
 
 import type { WebContents } from 'electron'
+import type { PickedElement } from '@craft-agent/shared/protocol'
+import type { MockRoute } from '@craft-agent/shared/prototypes'
 import { mainLog } from './logger'
 
 export interface AccessibilityNode {
@@ -90,6 +92,144 @@ function summarizeTopCounts(map: Map<string, number>, maxEntries = 8): string {
 
 const CDP_IDLE_DETACH_MS = 5_000
 
+/** Subset of the `Fetch.requestPaused` payload we act on. */
+interface CdpPausedRequest {
+  requestId?: string
+  request?: { url?: string; method?: string }
+}
+
+// ---------------------------------------------------------------------------
+// Element picker (prototype workbench)
+// ---------------------------------------------------------------------------
+
+/** Window key the injected picker publishes its state into. */
+const PICKER_STATE_KEY = '__craft_agent_picker_state__'
+/** Window key exposing the injected picker's cancel handle. */
+const PICKER_CANCEL_KEY = '__craft_agent_picker_cancel__'
+const PICKER_OVERLAY_ID = '__craft_agent_picker_overlay__'
+
+/**
+ * Injected picker: highlights the element under the cursor and turns the user's
+ * click into a stable selector. It reports into `PICKER_STATE_KEY` rather than
+ * resolving a long-lived promise, so the caller can poll with short CDP calls
+ * and the idle-detach timer never fires mid-pick.
+ *
+ * Injected through CDP, so it is unaffected by the page's CSP and needs no
+ * `webPreferences` changes (stays sandboxed).
+ */
+const PICKER_INJECT_SCRIPT = `(() => {
+  try { window.${PICKER_CANCEL_KEY} && window.${PICKER_CANCEL_KEY}(); } catch (e) {}
+
+  const root = document.createElement('div');
+  root.id = '${PICKER_OVERLAY_ID}';
+  root.setAttribute('style', 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;');
+
+  const box = document.createElement('div');
+  box.setAttribute('style', 'position:fixed;display:none;border:2px solid rgba(59,130,246,0.95);background:rgba(59,130,246,0.12);border-radius:4px;pointer-events:none;');
+  root.appendChild(box);
+
+  const label = document.createElement('div');
+  label.setAttribute('style', 'position:fixed;display:none;padding:2px 6px;border-radius:6px;font:12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;background:rgba(15,23,42,0.92);color:#fff;pointer-events:none;max-width:70vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;');
+  root.appendChild(label);
+
+  document.documentElement.appendChild(root);
+
+  const buildStableSelector = (el) => {
+    if (!el || el.nodeType !== 1) return '';
+    const testId = el.getAttribute('data-testid') || el.getAttribute('data-test-id') || el.getAttribute('data-test');
+    if (testId) return '[data-testid="' + testId + '"]';
+    if (el.id && !/^[0-9]/.test(el.id)) return '#' + el.id;
+
+    const parts = [];
+    let cur = el;
+    while (cur && cur.nodeType === 1 && parts.length < 6 && cur !== document.documentElement) {
+      if (cur.id && !/^[0-9]/.test(cur.id)) { parts.unshift('#' + cur.id); break; }
+      let part = cur.tagName.toLowerCase();
+      const parent = cur.parentElement;
+      if (parent) {
+        const sameTag = [];
+        for (const child of parent.children) { if (child.tagName === cur.tagName) sameTag.push(child); }
+        if (sameTag.length > 1) part += ':nth-of-type(' + (sameTag.indexOf(cur) + 1) + ')';
+      }
+      parts.unshift(part);
+      cur = parent;
+    }
+    return parts.join(' > ');
+  };
+
+  let current = null;
+
+  const paint = (el) => {
+    if (!el) { box.style.display = 'none'; label.style.display = 'none'; return; }
+    const r = el.getBoundingClientRect();
+    box.style.display = 'block';
+    box.style.left = r.left + 'px';
+    box.style.top = r.top + 'px';
+    box.style.width = r.width + 'px';
+    box.style.height = r.height + 'px';
+    label.style.display = 'block';
+    label.style.left = r.left + 'px';
+    label.style.top = Math.max(4, r.top - 22) + 'px';
+    label.textContent = buildStableSelector(el);
+  };
+
+  const onMove = (e) => {
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    if (el && el !== current) { current = el; paint(el); }
+  };
+
+  function cleanup() {
+    document.removeEventListener('mousemove', onMove, true);
+    document.removeEventListener('click', onClick, true);
+    document.removeEventListener('keydown', onKey, true);
+    window.removeEventListener('scroll', onViewportChange, true);
+    window.removeEventListener('resize', onViewportChange, true);
+    const existing = document.getElementById('${PICKER_OVERLAY_ID}');
+    if (existing) existing.remove();
+    try { delete window.${PICKER_CANCEL_KEY}; } catch (e) { window.${PICKER_CANCEL_KEY} = undefined; }
+  }
+
+  function finish(status, result) {
+    cleanup();
+    window.${PICKER_STATE_KEY} = { status: status, result: result };
+  }
+
+  const onClick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const el = current || document.elementFromPoint(e.clientX, e.clientY);
+    if (!el) { finish('cancelled', null); return; }
+    const r = el.getBoundingClientRect();
+    finish('picked', {
+      selector: buildStableSelector(el),
+      tag: el.tagName ? el.tagName.toLowerCase() : '',
+      text: (el.textContent || '').trim().slice(0, 200),
+      rect: { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) },
+    });
+  };
+
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish('cancelled', null); }
+  };
+
+  const onViewportChange = () => { if (current) paint(current); };
+
+  window.${PICKER_CANCEL_KEY} = () => finish('cancelled', null);
+  window.${PICKER_STATE_KEY} = { status: 'pending', result: null };
+
+  document.addEventListener('mousemove', onMove, true);
+  document.addEventListener('click', onClick, true);
+  document.addEventListener('keydown', onKey, true);
+  window.addEventListener('scroll', onViewportChange, true);
+  window.addEventListener('resize', onViewportChange, true);
+
+  return true;
+})()`
+
+const PICKER_STATE_EXPRESSION = `(() => JSON.stringify(window.${PICKER_STATE_KEY} || { status: 'missing' }))()`
+
+const PICKER_CANCEL_EXPRESSION = `(() => { try { window.${PICKER_CANCEL_KEY} && window.${PICKER_CANCEL_KEY}(); } catch (e) {} })()`
+
 export class BrowserCDP {
   private webContents: WebContents
   private attached = false
@@ -102,6 +242,13 @@ export class BrowserCDP {
   // Stable mapping for backend DOM nodes across snapshots.
   private backendNodeRefMap: Map<number, string> = new Map()
   private nextRefCounter = 0
+  // Caller-supplied init-script key → CDP identifier. Also gates idle detach:
+  // CDP drops `addScriptToEvaluateOnNewDocument` registrations on detach.
+  private initScriptIds: Map<string, string> = new Map()
+  // CDP `Fetch.enable` state plus the route table served while it is on.
+  private fetchMockEnabled = false
+  private fetchMockRoutes: MockRoute[] = []
+  private debuggerMessageListenerRegistered = false
 
   constructor(webContents: WebContents) {
     this.webContents = webContents
@@ -127,12 +274,34 @@ export class BrowserCDP {
         this.attached = false
       })
     }
+
+    if (!this.debuggerMessageListenerRegistered) {
+      this.debuggerMessageListenerRegistered = true
+      this.webContents.debugger.on('message', (_event, method, params) => {
+        if (method === 'Fetch.requestPaused') {
+          void this.handlePausedRequest(params as CdpPausedRequest)
+        }
+      })
+    }
+  }
+
+  /**
+   * Both persistent injections and network interception live in the CDP session:
+   * detaching silently drops them. Hold the attachment while either is active;
+   * the idle timer resumes once both are off.
+   */
+  private holdsSessionState(): boolean {
+    return this.initScriptIds.size > 0 || this.fetchMockEnabled
   }
 
   private resetIdleDetachTimer(): void {
     if (this.idleDetachTimer) {
       clearTimeout(this.idleDetachTimer)
+      this.idleDetachTimer = null
     }
+
+    if (this.holdsSessionState()) return
+
     this.idleDetachTimer = setTimeout(() => {
       if (this.attached) {
         mainLog.info('[browser-cdp] idle detach — detaching debugger after inactivity')
@@ -152,6 +321,10 @@ export class BrowserCDP {
       } catch { /* ignore */ }
       this.attached = false
     }
+    // CDP registrations die with the session, so our bookkeeping must too.
+    this.initScriptIds.clear()
+    this.fetchMockEnabled = false
+    this.fetchMockRoutes = []
   }
 
   private async send(method: string, params?: Record<string, unknown>): Promise<any> {
@@ -568,6 +741,214 @@ export class BrowserCDP {
         if (existing) existing.remove();
       })()`,
     })
+  }
+
+  // ---------------------------------------------------------------------------
+  // Element picker (prototype workbench)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Prompt the user to click an element on the page.
+   *
+   * Returns the picked element's stable selector + geometry, or `null` when the
+   * user pressed Escape, the pick was cancelled, or the timeout elapsed.
+   *
+   * Polls `PICKER_STATE_KEY` instead of awaiting one long-lived CDP promise:
+   * each poll is a short call, so the idle-detach timer keeps being reset and
+   * cannot fire while a pick is in flight.
+   */
+  async pickElement(options?: { timeoutMs?: number; pollMs?: number }): Promise<PickedElement | null> {
+    const timeoutMs = Math.max(1_000, options?.timeoutMs ?? 120_000)
+    const pollMs = Math.max(50, options?.pollMs ?? 200)
+
+    await this.send('Runtime.evaluate', { expression: PICKER_INJECT_SCRIPT })
+
+    const deadline = Date.now() + timeoutMs
+    try {
+      while (Date.now() < deadline) {
+        const res = await this.send('Runtime.evaluate', {
+          expression: PICKER_STATE_EXPRESSION,
+          returnByValue: true,
+        })
+
+        const raw = res?.result?.value
+        if (typeof raw === 'string') {
+          let state: { status?: string; result?: PickedElement | null } | null = null
+          try {
+            state = JSON.parse(raw)
+          } catch {
+            state = null
+          }
+
+          if (state?.status === 'picked') return state.result ?? null
+          if (state?.status === 'cancelled' || state?.status === 'missing') return null
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, pollMs))
+      }
+
+      mainLog.info('[browser-cdp] picker timed out — no element selected')
+      return null
+    } finally {
+      await this.cancelPicker()
+    }
+  }
+
+  /** Tear down an in-flight picker. Safe to call when no pick is running. */
+  async cancelPicker(): Promise<void> {
+    try {
+      await this.send('Runtime.evaluate', { expression: PICKER_CANCEL_EXPRESSION })
+    } catch (err) {
+      mainLog.debug(`[browser-cdp] cancelPicker ignored: ${String(err)}`)
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Persistent injection (survives reload / navigation)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Register a script that runs in every new document, before the page's own
+   * scripts. This is the mechanism behind "reload keeps my changes".
+   *
+   * `key` is caller-chosen and re-registering the same key replaces the previous
+   * script, so re-applying an edited patch is idempotent.
+   *
+   * While any init script is registered the debugger is held attached, because
+   * CDP drops these registrations when the session detaches.
+   */
+  async addInitScript(key: string, source: string): Promise<string> {
+    await this.removeInitScript(key)
+
+    const result = await this.send('Page.addScriptToEvaluateOnNewDocument', { source })
+    const identifier = String(result?.identifier ?? '')
+    if (identifier) {
+      this.initScriptIds.set(key, identifier)
+    }
+    this.resetIdleDetachTimer()
+    return identifier
+  }
+
+  /** Unregister a previously added init script. No-op when the key is unknown. */
+  async removeInitScript(key: string): Promise<void> {
+    const identifier = this.initScriptIds.get(key)
+    if (!identifier) return
+
+    this.initScriptIds.delete(key)
+    try {
+      await this.send('Page.removeScriptToEvaluateOnNewDocument', { identifier })
+    } catch (err) {
+      mainLog.debug(`[browser-cdp] removeInitScript(${key}) ignored: ${String(err)}`)
+    }
+    this.resetIdleDetachTimer()
+  }
+
+  /** Keys of every currently registered init script, in registration order. */
+  listInitScriptKeys(): string[] {
+    return Array.from(this.initScriptIds.keys())
+  }
+
+  // ---------------------------------------------------------------------------
+  // Network-level mock (CDP Fetch interception)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Serve `routes` for matching requests.
+   *
+   * Interception happens in the browser's network stack, so it covers `fetch`,
+   * `XMLHttpRequest` (axios) and every other resource type, without patching any
+   * page globals and without the app having to point at a mock server.
+   *
+   * Like init scripts this is CDP session state, so the debugger is held
+   * attached while it is active.
+   */
+  async setFetchMockRoutes(routes: MockRoute[]): Promise<number> {
+    this.fetchMockRoutes = routes.map((route) => ({ ...route, method: route.method.toUpperCase() }))
+
+    if (!this.fetchMockEnabled) {
+      await this.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] })
+      this.fetchMockEnabled = true
+    }
+
+    this.resetIdleDetachTimer()
+    return this.fetchMockRoutes.length
+  }
+
+  /** Stop intercepting. Requests fall through to the real network again. */
+  async clearFetchMock(): Promise<void> {
+    this.fetchMockRoutes = []
+
+    if (this.fetchMockEnabled) {
+      this.fetchMockEnabled = false
+      try {
+        await this.send('Fetch.disable')
+      } catch (err) {
+        mainLog.debug(`[browser-cdp] Fetch.disable ignored: ${String(err)}`)
+      }
+    }
+
+    this.resetIdleDetachTimer()
+  }
+
+  /** Routes currently being served. */
+  listFetchMockRoutes(): MockRoute[] {
+    return [...this.fetchMockRoutes]
+  }
+
+  /**
+   * Match on pathname only, so it works whether the app calls the mock with an
+   * absolute URL, a baseUrl-prefixed URL, or a same-origin relative path.
+   * The leading `/` in the route path keeps `endsWith` boundary-safe.
+   */
+  private matchFetchMockRoute(method: string, url: string): MockRoute | null {
+    let pathname = url
+    try {
+      pathname = new URL(url).pathname
+    } catch {
+      // Not an absolute URL — fall back to the raw value.
+    }
+
+    for (const route of this.fetchMockRoutes) {
+      if (route.method !== method) continue
+      if (pathname === route.path || pathname.endsWith(route.path)) return route
+    }
+
+    return null
+  }
+
+  private async handlePausedRequest(params: CdpPausedRequest): Promise<void> {
+    const requestId = params.requestId
+    if (!requestId) return
+
+    const url = String(params.request?.url ?? '')
+    const method = String(params.request?.method ?? 'GET').toUpperCase()
+    const route = this.matchFetchMockRoute(method, url)
+
+    try {
+      if (!route) {
+        await this.send('Fetch.continueRequest', { requestId })
+        return
+      }
+
+      await this.send('Fetch.fulfillRequest', {
+        requestId,
+        responseCode: route.status,
+        responseHeaders: [
+          { name: 'content-type', value: 'application/json' },
+          // Cross-origin API calls would otherwise be blocked by CORS even
+          // though we are the ones answering them.
+          { name: 'access-control-allow-origin', value: '*' },
+          { name: 'x-craft-mock', value: '1' },
+        ],
+        body: Buffer.from(JSON.stringify(route.body ?? null)).toString('base64'),
+      })
+    } catch (err) {
+      mainLog.debug(`[browser-cdp] fetch mock failed for ${method} ${url}: ${String(err)}`)
+      // A paused request with no disposition freezes the page, so always release it.
+      try {
+        await this.send('Fetch.continueRequest', { requestId })
+      } catch { /* the request is already gone */ }
+    }
   }
 
   // ---------------------------------------------------------------------------

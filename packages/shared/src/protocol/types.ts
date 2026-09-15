@@ -91,6 +91,7 @@ export type ErrorCode =
   | 'BROWSER_INSTANCE_NOT_OWNED'
   | 'BROWSER_REMOTE_UPLOAD_NOT_SUPPORTED'
   | 'BROWSER_REMOTE_EVALUATE_BLOCKED'
+  | 'BROWSER_REMOTE_PICK_BLOCKED'
 
 const KNOWN_ERROR_CODES: ReadonlySet<string> = new Set<ErrorCode>([
   'HANDLER_ERROR',
@@ -111,6 +112,7 @@ const KNOWN_ERROR_CODES: ReadonlySet<string> = new Set<ErrorCode>([
   'BROWSER_INSTANCE_NOT_OWNED',
   'BROWSER_REMOTE_UPLOAD_NOT_SUPPORTED',
   'BROWSER_REMOTE_EVALUATE_BLOCKED',
+  'BROWSER_REMOTE_PICK_BLOCKED',
 ])
 
 export function isErrorCode(value: unknown): value is ErrorCode {

@@ -83,6 +83,14 @@ export interface PlatformActions {
   onReadFile?: (path: string) => Promise<string>
 
   /**
+   * Write a file's contents as UTF-8 string (Electron: fs.writeFile via IPC).
+   * Restricted to the workspace prototypes folder — used by the prototype
+   * workbench to persist patches / contract fragments produced by direct edits.
+   * Resolves with the absolute path that was written.
+   */
+  onWriteFile?: (path: string, content: string) => Promise<{ path: string }>
+
+  /**
    * Read a file as data URL (Electron: fs.readFile via IPC + base64 encode)
    * Used by image-preview blocks and image overlays
    */

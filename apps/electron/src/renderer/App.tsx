@@ -1946,6 +1946,8 @@ export default function App() {
     onReadFileDataUrl: (path: string) => window.electronAPI.readFileDataUrl(path),
     // Read file as binary Uint8Array (used by PDF preview blocks)
     onReadFileBinary: (path: string) => window.electronAPI.readFileBinary(path),
+    // Write file contents as UTF-8 string (prototype workbench: patches/contract fragments)
+    onWriteFile: (path: string, content: string) => window.electronAPI.writeFile(path, content),
     // Reveal a file in the system file manager (Finder on macOS, Explorer on Windows, etc.)
     onRevealInFinder: (path: string) => {
       window.electronAPI.showInFolder(path).catch(() => {})

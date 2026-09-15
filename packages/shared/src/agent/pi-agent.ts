@@ -88,6 +88,7 @@ import { homedir } from 'os';
 
 // Session storage (plans folder path)
 import { getSessionDataPath, getSessionPath, getSessionPlansPath } from '../sessions/storage.ts';
+import { getWorkspacePrototypesPath } from '../workspaces/storage.ts';
 
 // Error typing
 import { parseError, type AgentError } from './errors.ts';
@@ -1224,6 +1225,7 @@ export class PiAgent extends BaseAgent {
     const dataFolderPath = sessionId
       ? getSessionDataPath(rootPath, sessionId)
       : undefined;
+    const prototypesFolderPath = getWorkspacePrototypesPath(rootPath);
 
     // Build RTK context fresh per call so toggling the preference takes
     // effect without restart. `getRtkPath()` is cached per process.
@@ -1240,6 +1242,7 @@ export class PiAgent extends BaseAgent {
       workspaceId: workspaceSlug,
       plansFolderPath,
       dataFolderPath,
+      prototypesFolderPath,
       workingDirectory: this.config.session?.workingDirectory,
       activeSourceSlugs: Array.from(this.sourceManager.getActiveSlugs()),
       allSourceSlugs: this.sourceManager.getAllSources().map(s => s.config.slug),

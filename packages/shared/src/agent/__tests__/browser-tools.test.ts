@@ -51,6 +51,62 @@ function createMockFns(): BrowserPaneFns {
     goBack: async () => {},
     goForward: async () => {},
     evaluate: async (expr: string) => eval(expr),
+    pick: async (_options?: { timeoutMs?: number }) => ({
+      selector: '[data-testid="pay"]',
+      tag: 'button',
+      text: 'Pay now',
+      rect: { x: 10, y: 20, width: 120, height: 40 },
+    }),
+    applyPrototype: async (slug: string) => ({ slug, applied: 2, files: ['A-001-btn.css', 'A-002-guard.js'] }),
+    clearPrototype: async (slug: string) => ({ slug, removed: [`prototype:${slug}:A-001-btn.css`] }),
+    exportPrototype: async (slug: string) => ({
+      slug,
+      htmlPath: `/tmp/prototypes/${slug}/dist/prototype.html`,
+      htmlUrl: `file:///tmp/prototypes/${slug}/dist/prototype.html`,
+      specPath: `/tmp/prototypes/${slug}/dist/dev-spec.md`,
+      applied: 2,
+    }),
+    composeContract: async ({ slug, service }: { slug: string; service?: string }) => ({
+      service: service ?? 'checkout-api',
+      endpoints: 3,
+      conflicts: [],
+      missingFixtures: [],
+    }),
+    exportContract: async ({ slug, service }: { slug: string; service?: string }) => ({
+      service: service ?? 'checkout-api',
+      openapiPath: `/tmp/prototypes/${slug}/dist/openapi.yaml`,
+      docPath: `/tmp/prototypes/${slug}/dist/contract.md`,
+      fixturesDir: `/tmp/prototypes/${slug}/dist/fixtures`,
+      endpoints: 3,
+      fixtures: 2,
+      missingFixtures: [],
+      conflicts: [],
+    }),
+    applyMock: async ({ slug, service }: { slug: string; service?: string }) => ({
+      service: service ?? 'checkout-api',
+      routes: 3,
+      missingFixtures: [],
+      unmocked: [],
+    }),
+    clearMock: async () => {},
+    prototypeStatus: async (slug: string) => ({
+      slug,
+      dir: `/tmp/prototypes/${slug}`,
+      baseHtmlPresent: true,
+      baseHtmlPath: `/tmp/prototypes/${slug}/base.html`,
+      patches: { total: 2, byLane: { A: 2 }, files: [] },
+      services: [
+        { slug: 'checkout-api', fragments: 1, fixtures: 1, endpoints: 2, mockedEndpoints: 1, missingFixtures: [] },
+      ],
+      distFiles: ['prototype.html', 'dev-spec.md'],
+      ownership: { inspected: 4, violations: [] },
+      lanes: { A: 'UI / interaction (patches)' },
+    }),
+    prototypeEntry: async ({ slug }: { slug: string }) => ({
+      kind: 'export' as const,
+      path: `/tmp/prototypes/${slug}/dist/prototype.html`,
+      url: `file:///tmp/prototypes/${slug}/dist/prototype.html`,
+    }),
     focusWindow: async (instanceId?: string) => ({ instanceId: instanceId ?? 'browser-1', title: 'Example Domain', url: 'https://example.com' }),
     releaseControl: async (_instanceId?: string) => ({ action: 'released' as const, resolvedInstanceId: 'browser-1', affectedIds: ['browser-1'] }),
     closeWindow: async (_instanceId?: string) => ({ action: 'closed' as const, resolvedInstanceId: 'browser-1', affectedIds: ['browser-1'] }),
@@ -855,6 +911,186 @@ describe('createBrowserTools', () => {
 
       expect(evaluatedExpression).toBe("document.title + ';' + location.href")
       expect(result.content[0].text).toContain('ok')
+    })
+
+    it('routes pick command and reports the picked element', async () => {
+      const result = await executeTool(tools, 'browser_tool', { command: 'pick' })
+      expect(result.content[0].text).toContain('Picked element:')
+      expect(result.content[0].text).toContain('[data-testid="pay"]')
+      expect(result.content[0].text).toContain('Pay now')
+    })
+
+    it('forwards pick --timeout and reports a cancelled pick', async () => {
+      let receivedOptions: { timeoutMs?: number } | undefined
+      mockFns.pick = async (options) => {
+        receivedOptions = options
+        return null
+      }
+
+      const result = await executeTool(tools, 'browser_tool', { command: 'pick --timeout 5000' })
+      expect(receivedOptions?.timeoutMs).toBe(5000)
+      expect(result.content[0].text).toContain('no element was selected')
+    })
+
+    it('routes prototype-apply and reports the applied patches', async () => {
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-apply checkout-flow' })
+      expect(result.content[0].text).toContain('Prototype "checkout-flow": applied 2 patches')
+      expect(result.content[0].text).toContain('A-001-btn.css')
+    })
+
+    it('reports when prototype-apply finds no patch files', async () => {
+      mockFns.applyPrototype = async (slug) => ({ slug, applied: 0, files: [] })
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-apply empty-flow' })
+      expect(result.content[0].text).toContain('no patch files found')
+    })
+
+    it('requires a slug for prototype-apply', async () => {
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-apply' })
+      expect(result.content[0].text).toContain('requires a prototype slug')
+    })
+
+    it('routes prototype-clear and lists the removed keys', async () => {
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-clear checkout-flow' })
+      expect(result.content[0].text).toContain('removed 1 patch')
+      expect(result.content[0].text).toContain('prototype:checkout-flow:A-001-btn.css')
+    })
+
+    it('routes prototype-export and points at the deliverable', async () => {
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-export checkout-flow' })
+      expect(result.content[0].text).toContain('exported 2 patches')
+      expect(result.content[0].text).toContain('/dist/prototype.html')
+      expect(result.content[0].text).toContain('/dist/dev-spec.md')
+      expect(result.content[0].text).toContain('browser_tool navigate file://')
+    })
+
+    it('requires a slug for prototype-export', async () => {
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-export' })
+      expect(result.content[0].text).toContain('requires a prototype slug')
+    })
+
+    it('routes prototype-contract-compose with a service flag', async () => {
+      let received: { slug: string; service?: string } | undefined
+      mockFns.composeContract = async (options) => {
+        received = options
+        return { service: 'checkout-api', endpoints: 5, conflicts: ['/orders'], missingFixtures: ['x-200'] }
+      }
+
+      const result = await executeTool(tools, 'browser_tool', {
+        command: 'prototype-contract-compose checkout-flow --service checkout-api',
+      })
+
+      expect(received).toEqual({ slug: 'checkout-flow', service: 'checkout-api' })
+      expect(result.content[0].text).toContain('composed 5 endpoints')
+      expect(result.content[0].text).toContain('Duplicate path')
+      expect(result.content[0].text).toContain('x-200')
+    })
+
+    it('routes prototype-contract-export and reports the deliverables', async () => {
+      const result = await executeTool(tools, 'browser_tool', {
+        command: 'prototype-contract-export checkout-flow',
+      })
+
+      expect(result.content[0].text).toContain('exported contract with 3 endpoints')
+      expect(result.content[0].text).toContain('/dist/openapi.yaml')
+      expect(result.content[0].text).toContain('/dist/contract.md')
+      expect(result.content[0].text).toContain('/dist/fixtures')
+    })
+
+    it('routes prototype-mock-apply and reports skipped/unmocked endpoints', async () => {
+      mockFns.applyMock = async (_options) => ({
+        service: 'checkout-api',
+        routes: 2,
+        missingFixtures: ['nope-200'],
+        unmocked: ['GET /health'],
+      })
+
+      const result = await executeTool(tools, 'browser_tool', {
+        command: 'prototype-mock-apply checkout-flow --service checkout-api',
+      })
+
+      expect(result.content[0].text).toContain('serving 2 mock routes')
+      expect(result.content[0].text).toContain('GET /health')
+      expect(result.content[0].text).toContain('nope-200')
+    })
+
+    it('routes prototype-mock-clear', async () => {
+      let cleared = false
+      mockFns.clearMock = async () => {
+        cleared = true
+      }
+
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-mock-clear' })
+
+      expect(cleared).toBe(true)
+      expect(result.content[0].text).toContain('Mock cleared')
+    })
+
+    it('requires a slug for prototype-mock-apply', async () => {
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-mock-apply' })
+      expect(result.content[0].text).toContain('requires a prototype slug')
+    })
+
+    it('routes prototype-status and reports the summary plus ownership violations', async () => {
+      mockFns.prototypeStatus = async (slug) => ({
+        slug,
+        dir: `/tmp/prototypes/${slug}`,
+        baseHtmlPresent: true,
+        baseHtmlPath: `/tmp/prototypes/${slug}/base.html`,
+        patches: { total: 2, byLane: { A: 2 }, files: [] },
+        services: [
+          { slug: 'checkout-api', fragments: 1, fixtures: 1, endpoints: 2, mockedEndpoints: 1, missingFixtures: ['nope-200'] },
+        ],
+        distFiles: ['prototype.html'],
+        ownership: { inspected: 5, violations: [{ path: 'patches/oops.css', reason: 'misnamed patch' }] },
+        lanes: { A: 'UI / interaction (patches)' },
+      })
+
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-status checkout-flow' })
+
+      expect(result.content[0].text).toContain('patches:    2 (A: 2)')
+      expect(result.content[0].text).toContain('2 endpoints, 1 mocked')
+      expect(result.content[0].text).toContain('missing fixtures: nope-200')
+      expect(result.content[0].text).toContain('dist:       prototype.html')
+      expect(result.content[0].text).toContain('ownership:  1 violation(s)')
+      expect(result.content[0].text).toContain('patches/oops.css')
+    })
+
+    it('reports a clean ownership check when there are no violations', async () => {
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-status checkout-flow' })
+      expect(result.content[0].text).toContain('ownership:  OK (4 files)')
+    })
+
+    it('routes prototype-open to the exported deliverable', async () => {
+      let navigated = ''
+      mockFns.navigate = async (url) => {
+        navigated = url
+        return { url, title: 'Checkout' }
+      }
+
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-open checkout-flow' })
+
+      expect(navigated).toContain('dist/prototype.html')
+      expect(result.content[0].text).toContain('opened the exported deliverable')
+      expect(result.content[0].text).toContain('Checkout')
+    })
+
+    it('notes when prototype-open falls back to the un-exported base.html', async () => {
+      mockFns.prototypeEntry = async ({ slug }) => ({
+        kind: 'base',
+        path: `/tmp/prototypes/${slug}/base.html`,
+        url: `file:///tmp/prototypes/${slug}/base.html`,
+      })
+      mockFns.navigate = async (url) => ({ url, title: 'Draft' })
+
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-open checkout-flow' })
+
+      expect(result.content[0].text).toContain('opened base.html')
+      expect(result.content[0].text).toContain('un-exported page')
+    })
+
+    it('requires a slug for prototype-open', async () => {
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-open' })
+      expect(result.content[0].text).toContain('requires a prototype slug')
     })
 
     it('lists browser windows via windows command without release hint', async () => {

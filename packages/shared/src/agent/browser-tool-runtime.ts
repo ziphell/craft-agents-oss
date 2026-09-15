@@ -71,6 +71,16 @@ export function getBrowserToolHelp(): string {
     '  back',
     '  forward',
     '  evaluate <expression>',
+    '  pick [--timeout <ms>]                          ask the user to click an element; returns a stable selector',
+    '  prototype-apply <slug>                         replay prototype patches (survives reload)',
+    '  prototype-clear <slug>                         remove prototype patches',
+    '  prototype-export <slug>                        write dist HTML + dev spec',
+    '  prototype-contract-compose <slug> [--service <svc>]   fragments → services/<svc>/openapi.yaml',
+    '  prototype-contract-export <slug> [--service <svc>]    dist contract for the backend',
+    '  prototype-mock-apply <slug> [--service <svc>]         serve x-mock responses (fetch + XHR)',
+    '  prototype-mock-clear                                  stop serving the mock',
+    '  prototype-status <slug>                               patches, services, exports, ownership',
+    '  prototype-open <slug>                                 open the exported page (or base.html)',
     '  focus [windowId]                               focus existing browser window (no new window)',
     '  windows',
     '  release [windowId|all]                         dismiss agent overlay (user keeps browsing)',
@@ -97,6 +107,10 @@ export function getBrowserToolHelp(): string {
     '  paste Name\\tAge\\nAlice\\t30',
     '  scroll down 800',
     '  evaluate document.title',
+    '  pick',
+    '  prototype-apply checkout-flow',
+    '  prototype-export checkout-flow',
+    '  prototype-contract-compose checkout-flow --service checkout-api',
     '  screenshot --annotated',
     '  screenshot --png',
     '  screenshot-region --ref @e9 --padding 12',
@@ -1599,6 +1613,235 @@ async function executeSingleCommand(args: {
 
     return {
       output: [`Evaluate result type: ${type}`, rendered].join('\n'),
+      appendReleaseHint: true,
+    };
+  }
+
+  if (cmd === 'pick') {
+    const timeoutIdx = parts.indexOf('--timeout');
+    const rawTimeout = timeoutIdx >= 0 ? Number(parts[timeoutIdx + 1]) : NaN;
+    const options = Number.isFinite(rawTimeout) && rawTimeout > 0 ? { timeoutMs: rawTimeout } : undefined;
+
+    const picked = await fns.pick(options);
+    if (!picked) {
+      return {
+        output: 'Pick cancelled or timed out — no element was selected.',
+        appendReleaseHint: true,
+      };
+    }
+
+    return {
+      output: [
+        'Picked element:',
+        `  Selector: ${picked.selector}`,
+        `  Tag: ${picked.tag || '(unknown)'}`,
+        `  Text: ${picked.text || '(empty)'}`,
+        `  Rect: x=${picked.rect.x} y=${picked.rect.y} w=${picked.rect.width} h=${picked.rect.height}`,
+      ].join('\n'),
+      appendReleaseHint: true,
+    };
+  }
+
+  if (cmd === 'prototype-apply') {
+    const slug = parts[1];
+    if (!slug) {
+      throw new Error('prototype-apply requires a prototype slug. Example: prototype-apply checkout-flow');
+    }
+
+    const result = await fns.applyPrototype(slug);
+    const lines = [
+      `Prototype "${result.slug}": applied ${result.applied} patch${result.applied === 1 ? '' : 'es'}`,
+    ];
+    if (result.files.length > 0) {
+      lines.push(...result.files.map((file) => `  • ${file}`));
+    } else {
+      lines.push('  (no patch files found — expected patches/{lane}-{nnn}-{slug}.{css|js})');
+    }
+    lines.push('Patches are also registered for future documents, so they survive a page reload.');
+
+    return { output: lines.join('\n'), appendReleaseHint: true };
+  }
+
+  if (cmd === 'prototype-clear') {
+    const slug = parts[1];
+    if (!slug) {
+      throw new Error('prototype-clear requires a prototype slug. Example: prototype-clear checkout-flow');
+    }
+
+    const result = await fns.clearPrototype(slug);
+    const lines = [
+      `Prototype "${result.slug}": removed ${result.removed.length} patch${result.removed.length === 1 ? '' : 'es'}`,
+    ];
+    if (result.removed.length > 0) {
+      lines.push(...result.removed.map((key) => `  • ${key}`));
+    }
+    lines.push('Reload the page to drop their effects from the current document.');
+
+    return { output: lines.join('\n'), appendReleaseHint: true };
+  }
+
+  if (cmd === 'prototype-export') {
+    const slug = parts[1];
+    if (!slug) {
+      throw new Error('prototype-export requires a prototype slug. Example: prototype-export checkout-flow');
+    }
+
+    const result = await fns.exportPrototype(slug);
+    return {
+      output: [
+        `Prototype "${result.slug}": exported ${result.applied} patch${result.applied === 1 ? '' : 'es'}`,
+        `  HTML: ${result.htmlPath}`,
+        `  Spec: ${result.specPath}`,
+        '',
+        'The HTML is self-contained — open it to verify it runs standalone:',
+        `  browser_tool navigate ${result.htmlUrl}`,
+      ].join('\n'),
+      appendReleaseHint: true,
+    };
+  }
+
+  if (cmd === 'prototype-contract-compose') {
+    const slug = parts[1];
+    if (!slug) {
+      throw new Error('prototype-contract-compose requires a prototype slug. Example: prototype-contract-compose checkout-flow --service checkout-api');
+    }
+    const serviceIdx = parts.indexOf('--service');
+    const service = serviceIdx >= 0 ? parts[serviceIdx + 1] : undefined;
+
+    const result = await fns.composeContract({ slug, service });
+    const lines = [
+      `Prototype "${slug}" service "${result.service}": composed ${result.endpoints} endpoint${result.endpoints === 1 ? '' : 's'}`,
+      'Wrote services/<service>/openapi.yaml from the paths/ fragments.',
+    ];
+    if (result.conflicts.length > 0) {
+      lines.push(`Duplicate path${result.conflicts.length === 1 ? '' : 's'} (last fragment in file-name order won): ${result.conflicts.join(', ')}`);
+    }
+    if (result.missingFixtures.length > 0) {
+      lines.push(`x-mock fixtures referenced but missing: ${result.missingFixtures.join(', ')}`);
+    }
+
+    return { output: lines.join('\n'), appendReleaseHint: true };
+  }
+
+  if (cmd === 'prototype-contract-export') {
+    const slug = parts[1];
+    if (!slug) {
+      throw new Error('prototype-contract-export requires a prototype slug. Example: prototype-contract-export checkout-flow --service checkout-api');
+    }
+    const serviceIdx = parts.indexOf('--service');
+    const service = serviceIdx >= 0 ? parts[serviceIdx + 1] : undefined;
+
+    const result = await fns.exportContract({ slug, service });
+    const lines = [
+      `Prototype "${slug}" service "${result.service}": exported contract with ${result.endpoints} endpoint${result.endpoints === 1 ? '' : 's'}`,
+      `  openapi.yaml: ${result.openapiPath}`,
+      `  contract.md:  ${result.docPath}`,
+      `  fixtures:     ${result.fixtures} → ${result.fixturesDir}`,
+    ];
+    if (result.missingFixtures.length > 0) {
+      lines.push(`Missing fixtures: ${result.missingFixtures.join(', ')}`);
+    }
+
+    return { output: lines.join('\n'), appendReleaseHint: true };
+  }
+
+  if (cmd === 'prototype-mock-apply') {
+    const slug = parts[1];
+    if (!slug) {
+      throw new Error('prototype-mock-apply requires a prototype slug. Example: prototype-mock-apply checkout-flow --service checkout-api');
+    }
+    const serviceIdx = parts.indexOf('--service');
+    const service = serviceIdx >= 0 ? parts[serviceIdx + 1] : undefined;
+
+    const result = await fns.applyMock({ slug, service });
+    const lines = [
+      `Prototype "${slug}" service "${result.service}": serving ${result.routes} mock route${result.routes === 1 ? '' : 's'} at the network layer`,
+      'Covers fetch and XHR alike — the app does not need to point anywhere else.',
+    ];
+    if (result.unmocked.length > 0) {
+      lines.push(`Unmocked endpoints (${result.unmocked.length}): ${result.unmocked.join(', ')}`);
+    }
+    if (result.missingFixtures.length > 0) {
+      lines.push(`Skipped — x-mock fixtures not found: ${result.missingFixtures.join(', ')}`);
+    }
+
+    return { output: lines.join('\n'), appendReleaseHint: true };
+  }
+
+  if (cmd === 'prototype-mock-clear') {
+    await fns.clearMock();
+    return {
+      output: 'Mock cleared — requests fall through to the real network again.',
+      appendReleaseHint: true,
+    };
+  }
+
+  if (cmd === 'prototype-status') {
+    const slug = parts[1];
+    if (!slug) {
+      throw new Error('prototype-status requires a prototype slug. Example: prototype-status checkout-flow');
+    }
+
+    const status = await fns.prototypeStatus(slug);
+    const laneSummary = Object.entries(status.patches.byLane)
+      .map(([lane, count]) => `${lane}: ${count}`)
+      .join(', ');
+
+    const lines = [
+      `Prototype "${status.slug}"`,
+      `  dir:        ${status.dir}`,
+      `  base.html:  ${status.baseHtmlPresent ? 'present' : 'MISSING — nothing to apply patches to'}`,
+      `  patches:    ${status.patches.total}${laneSummary ? ` (${laneSummary})` : ''}`,
+    ];
+
+    if (status.services.length === 0) {
+      lines.push('  services:   none');
+    } else {
+      for (const service of status.services) {
+        lines.push(
+          `  service ${service.slug}: ${service.endpoints} endpoints, ${service.mockedEndpoints} mocked, ` +
+          `${service.fragments} fragments, ${service.fixtures} fixtures`,
+        );
+        if (service.missingFixtures.length > 0) {
+          lines.push(`    missing fixtures: ${service.missingFixtures.join(', ')}`);
+        }
+      }
+    }
+
+    lines.push(`  dist:       ${status.distFiles.length > 0 ? status.distFiles.join(', ') : 'empty'}`);
+
+    if (status.ownership.violations.length === 0) {
+      lines.push(`  ownership:  OK (${status.ownership.inspected} files)`);
+    } else {
+      lines.push(`  ownership:  ${status.ownership.violations.length} violation(s)`);
+      for (const violation of status.ownership.violations) {
+        lines.push(`    • ${violation.path} — ${violation.reason}`);
+      }
+    }
+
+    return { output: lines.join('\n'), appendReleaseHint: true };
+  }
+
+  if (cmd === 'prototype-open') {
+    const slug = parts[1];
+    if (!slug) {
+      throw new Error('prototype-open requires a prototype slug. Example: prototype-open checkout-flow');
+    }
+
+    const entry = await fns.prototypeEntry({ slug });
+    const result = await fns.navigate(entry.url);
+
+    return {
+      output: [
+        `Prototype "${slug}": opened ${entry.kind === 'export' ? 'the exported deliverable' : 'base.html'}`,
+        `  ${entry.path}`,
+        `  Title: ${result.title || '(untitled)'}`,
+        entry.kind === 'base'
+          ? '  Note: this is the un-exported page — patches are replayed separately with prototype-apply.'
+          : '',
+      ]
+        .filter(Boolean)
+        .join('\n'),
       appendReleaseHint: true,
     };
   }

@@ -802,6 +802,24 @@ export interface WindowCloseRequest {
 // Browser / navigation types (data shapes used by BroadcastEventMap)
 // ---------------------------------------------------------------------------
 
+/**
+ * Element picked by the prototype-workbench element picker.
+ *
+ * Shared across the picker (BrowserCDP), the browser-pane capability wire
+ * protocol, and the `browser_tool pick` command — defined once here so the
+ * shape cannot drift between the three.
+ */
+export interface PickedElement {
+  /** Stable selector: `data-testid` > `id` > `:nth-of-type` path. */
+  selector: string
+  /** Lowercase tag name. */
+  tag: string
+  /** Trimmed text content, truncated to 200 chars. */
+  text: string
+  /** Viewport-relative bounding box. */
+  rect: { x: number; y: number; width: number; height: number }
+}
+
 export interface BrowserInstanceInfo {
   id: string
   url: string

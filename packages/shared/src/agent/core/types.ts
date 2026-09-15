@@ -53,6 +53,8 @@ export interface PermissionManagerConfig {
   plansFolderPath?: string;
   /** Data folder path (writes to this folder are allowed in Explore mode for transform_data output) */
   dataFolderPath?: string;
+  /** Prototypes folder path (writes to this folder are allowed in Explore mode for prototype-workbench artifacts) */
+  prototypesFolderPath?: string;
 }
 
 /**
@@ -108,6 +110,8 @@ export interface ContextBlockOptions {
   plansFolderPath?: string;
   /** Data folder path (transform_data tool output) */
   dataFolderPath?: string;
+  /** Prototypes folder path (prototype-workbench artifacts) */
+  prototypesFolderPath?: string;
   /** Active source slugs */
   activeSources?: string[];
   /** Inactive source slugs */
