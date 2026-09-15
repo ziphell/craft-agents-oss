@@ -76,3 +76,6 @@ export {
 
 export type { PrototypeEntry, PrototypeExportResult } from './export.ts'
 export { buildSelfContainedHtml, buildDevSpec, exportPrototype, resolvePrototypeEntry } from './export.ts'
+
+export type { PrototypePromptContext } from './prompt.ts'
+export { buildPrototypePromptContext, formatPrototypeContextForPrompt } from './prompt.ts'

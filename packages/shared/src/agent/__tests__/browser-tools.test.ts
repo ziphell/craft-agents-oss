@@ -7,6 +7,7 @@
 
 import { describe, it, expect, beforeEach } from 'bun:test'
 import { createBrowserTools, type BrowserPaneFns } from '../browser-tools'
+import type { PrototypeStatus } from '../../prototypes/status'
 
 // ============================================================================
 // Mock BrowserPaneFns
@@ -107,6 +108,15 @@ function createMockFns(): BrowserPaneFns {
       path: `/tmp/prototypes/${slug}/dist/prototype.html`,
       url: `file:///tmp/prototypes/${slug}/dist/prototype.html`,
     }),
+    // Unbound by default; tests that exercise the no-slug fallback override it.
+    getBoundPrototypeSlug: () => null,
+    listPrototypes: async () => [],
+    createPrototype: async (name: string) => ({
+      slug: name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
+      dir: `/tmp/prototypes/${name}`,
+      baseHtmlPath: `/tmp/prototypes/${name}/base.html`,
+    }),
+    bindPrototype: async (_slug: string | null) => {},
     focusWindow: async (instanceId?: string) => ({ instanceId: instanceId ?? 'browser-1', title: 'Example Domain', url: 'https://example.com' }),
     releaseControl: async (_instanceId?: string) => ({ action: 'released' as const, resolvedInstanceId: 'browser-1', affectedIds: ['browser-1'] }),
     closeWindow: async (_instanceId?: string) => ({ action: 'closed' as const, resolvedInstanceId: 'browser-1', affectedIds: ['browser-1'] }),
@@ -124,6 +134,26 @@ function createMockFns(): BrowserPaneFns {
       },
     ]),
     detectChallenge: async () => ({ detected: false, provider: 'none', signals: [] }),
+  }
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+/** Minimal PrototypeStatus for `prototype-list` tests — only the listed fields are read. */
+function prototypeStatus(slug: string, overrides: Partial<PrototypeStatus> = {}): PrototypeStatus {
+  return {
+    slug,
+    dir: `/tmp/prototypes/${slug}`,
+    baseHtmlPresent: true,
+    baseHtmlPath: `/tmp/prototypes/${slug}/base.html`,
+    patches: { total: 1, byLane: { A: 1 }, files: [] },
+    services: [],
+    distFiles: [],
+    ownership: { inspected: 1, violations: [] },
+    lanes: {},
+    ...overrides,
   }
 }
 
@@ -946,7 +976,7 @@ describe('createBrowserTools', () => {
 
     it('requires a slug for prototype-apply', async () => {
       const result = await executeTool(tools, 'browser_tool', { command: 'prototype-apply' })
-      expect(result.content[0].text).toContain('requires a prototype slug')
+      expect(result.content[0].text).toContain('needs a prototype')
     })
 
     it('routes prototype-clear and lists the removed keys', async () => {
@@ -965,7 +995,7 @@ describe('createBrowserTools', () => {
 
     it('requires a slug for prototype-export', async () => {
       const result = await executeTool(tools, 'browser_tool', { command: 'prototype-export' })
-      expect(result.content[0].text).toContain('requires a prototype slug')
+      expect(result.content[0].text).toContain('needs a prototype')
     })
 
     it('routes prototype-contract-compose with a service flag', async () => {
@@ -1027,7 +1057,7 @@ describe('createBrowserTools', () => {
 
     it('requires a slug for prototype-mock-apply', async () => {
       const result = await executeTool(tools, 'browser_tool', { command: 'prototype-mock-apply' })
-      expect(result.content[0].text).toContain('requires a prototype slug')
+      expect(result.content[0].text).toContain('needs a prototype')
     })
 
     it('routes prototype-status and reports the summary plus ownership violations', async () => {
@@ -1090,7 +1120,83 @@ describe('createBrowserTools', () => {
 
     it('requires a slug for prototype-open', async () => {
       const result = await executeTool(tools, 'browser_tool', { command: 'prototype-open' })
-      expect(result.content[0].text).toContain('requires a prototype slug')
+      expect(result.content[0].text).toContain('needs a prototype')
+    })
+
+    // ========================================================================
+    // Prototype binding — a bound session drives the prototype without slugs.
+    // ========================================================================
+
+    it('falls back to the bound prototype when no slug is passed', async () => {
+      mockFns.getBoundPrototypeSlug = () => 'bound-flow'
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-apply' })
+      expect(result.content[0].text).toContain('Prototype "bound-flow": applied 2 patches')
+    })
+
+    it('lets an explicit slug win over the binding', async () => {
+      mockFns.getBoundPrototypeSlug = () => 'bound-flow'
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-apply other-flow' })
+      expect(result.content[0].text).toContain('Prototype "other-flow"')
+    })
+
+    it('treats a leading flag as "no slug" so options can follow the command directly', async () => {
+      mockFns.getBoundPrototypeSlug = () => 'bound-flow'
+      const result = await executeTool(tools, 'browser_tool', {
+        command: 'prototype-contract-compose --service checkout-api',
+      })
+      // The bound slug was used, not the literal "--service".
+      expect(result.content[0].text).toContain('Prototype "bound-flow" service "checkout-api"')
+    })
+
+    it('names both ways out when there is no slug and no binding', async () => {
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-apply' })
+      expect(result.content[0].text).toContain('prototype-bind')
+      expect(result.content[0].text).toContain('prototype-list')
+    })
+
+    it('lists prototypes and marks the bound one', async () => {
+      mockFns.getBoundPrototypeSlug = () => 'checkout-flow'
+      mockFns.listPrototypes = async () => [
+        prototypeStatus('checkout-flow'),
+        prototypeStatus('draft', { baseHtmlPresent: false, baseHtmlPath: null, patches: { total: 0, byLane: {}, files: [] } }),
+      ]
+
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-list' })
+      expect(result.content[0].text).toContain('bound to "checkout-flow"')
+      expect(result.content[0].text).toContain('BOUND')
+      expect(result.content[0].text).toContain('no base.html')
+    })
+
+    it('creates a prototype and binds the session in the same step', async () => {
+      const bound: Array<string | null> = []
+      mockFns.bindPrototype = async (slug) => { bound.push(slug) }
+
+      const result = await executeTool(tools, 'browser_tool', {
+        command: 'prototype-create Checkout flow',
+      })
+
+      expect(result.content[0].text).toContain('Created prototype "checkout-flow"')
+      expect(bound).toEqual(['checkout-flow'])
+    })
+
+    it('refuses to bind a slug that does not exist, and lists what does', async () => {
+      mockFns.listPrototypes = async () => [prototypeStatus('checkout-flow')]
+      let bound = false
+      mockFns.bindPrototype = async () => { bound = true }
+
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-bind nope' })
+      expect(result.content[0].text).toContain('No prototype "nope"')
+      expect(result.content[0].text).toContain('checkout-flow')
+      expect(bound).toBe(false)
+    })
+
+    it('unbinds with prototype-bind --clear', async () => {
+      const bound: Array<string | null> = []
+      mockFns.bindPrototype = async (slug) => { bound.push(slug) }
+
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-bind --clear' })
+      expect(result.content[0].text).toContain('Unbound')
+      expect(bound).toEqual([null])
     })
 
     it('lists browser windows via windows command without release hint', async () => {

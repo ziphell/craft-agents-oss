@@ -188,6 +188,8 @@ export async function createSession(
     labels?: string[];
     isFlagged?: boolean;
     projectId?: string;
+    /** Bind the new session to a prototype (a slug under the workspace's prototypes/ folder). */
+    prototypeSlug?: string;
     parentSessionId?: string;
     taskSlug?: string;
     taskRunId?: string;
@@ -225,6 +227,7 @@ export async function createSession(
     labels: options?.labels,
     isFlagged: options?.isFlagged,
     projectId: options?.projectId,
+    prototypeSlug: options?.prototypeSlug,
     parentSessionId: options?.parentSessionId,
     taskSlug: options?.taskSlug,
     taskRunId: options?.taskRunId,

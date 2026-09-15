@@ -12,11 +12,13 @@
  */
 
 import { useTranslation } from 'react-i18next'
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useAtomValue } from 'jotai'
-import { Camera, Download, ExternalLink, FileCode, FlaskConical, FolderOpen, RefreshCw, TriangleAlert, Zap } from 'lucide-react'
+import { Camera, Download, ExternalLink, FileCode, FlaskConical, FolderOpen, MessageSquare, RefreshCw, TriangleAlert, Zap } from 'lucide-react'
 import { toast } from 'sonner'
-import { useActiveWorkspace } from '@/context/AppShellContext'
+import { useActiveWorkspace, useAppShellContext } from '@/context/AppShellContext'
+import { navigate, routes } from '@/lib/navigate'
+import { sessionMetaMapAtom } from '@/atoms/sessions'
 import { activeBrowserInstanceIdAtom } from '@/atoms/browser-pane'
 import { Info_Page, Info_Section, Info_Table, Info_Alert } from '@/components/info'
 import { Button } from '@/components/ui/button'
@@ -38,6 +40,8 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
   const { t } = useTranslation()
   const workspace = useActiveWorkspace()
   const workspaceId = workspace?.id
+  const { onCreateSession } = useAppShellContext()
+  const sessionMetaMap = useAtomValue(sessionMetaMapAtom)
 
   const [status, setStatus] = useState<PrototypeStatus | null>(null)
   const [loading, setLoading] = useState(true)
@@ -174,6 +178,41 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
     }
   }, [workspaceId, activeBrowserInstanceId, prototypeSlug, t, loadStatus])
 
+  // Conversations already bound to this prototype (any session bound to it, from
+  // any entry point). `prototypeSlug` is on the persisted header, so this is a
+  // pure read of what the sidebar already has.
+  const prototypeSessions = useMemo(() => {
+    const result: Array<{ id: string; name: string }> = []
+    for (const meta of sessionMetaMap.values()) {
+      if ((meta as { prototypeSlug?: string }).prototypeSlug === prototypeSlug) {
+        result.push({ id: meta.id, name: meta.name ?? meta.id })
+      }
+    }
+    return result
+  }, [sessionMetaMap, prototypeSlug])
+
+  // Open the conversation for this prototype, reusing the existing one when there
+  // is one. A prototype is long-lived and gets revisited, so always creating a new
+  // session would both pile up sessions and lose the earlier discussion.
+  const handleOpenChat = useCallback(async () => {
+    if (!workspaceId) return
+    setActionError(null)
+
+    const existing = prototypeSessions[0]
+    if (existing) {
+      navigate(routes.view.allSessions(existing.id))
+      return
+    }
+
+    try {
+      const session = await onCreateSession(workspaceId, { prototypeSlug, name: prototypeSlug })
+      if (session?.id) navigate(routes.view.allSessions(session.id))
+    } catch (err) {
+      console.error('[PrototypeInfoPage] Failed to open a conversation:', err)
+      setActionError(err instanceof Error ? err.message : String(err))
+    }
+  }, [workspaceId, prototypeSessions, onCreateSession, prototypeSlug])
+
   const handleRevealFolder = useCallback(async () => {
     if (!status) return
     try {
@@ -201,6 +240,12 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
 
           {/* Actions — Apply and Capture act on the browser window the user is viewing */}
           <div className="flex flex-wrap items-center gap-2 pl-1">
+            {/* Primary action: the conversation is where the prototype gets built,
+                and a bound session stops every command needing a slug. */}
+            <Button size="sm" onClick={() => void handleOpenChat()}>
+              <MessageSquare className="h-3.5 w-3.5" />
+              {prototypeSessions.length > 0 ? t('prototypeInfo.openChat') : t('prototypeInfo.startChat')}
+            </Button>
             <Button size="sm" variant="outline" onClick={handleApply} disabled={applying || !activeBrowserInstanceId}>
               <Zap className="h-3.5 w-3.5" />
               {applying ? t('prototypeInfo.applying') : t('prototypeInfo.apply')}
@@ -209,7 +254,7 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
               <Camera className="h-3.5 w-3.5" />
               {capturing ? t('prototypeInfo.capturing') : t('prototypeInfo.captureBase')}
             </Button>
-            <Button size="sm" onClick={handleOpen}>
+            <Button size="sm" variant="outline" onClick={handleOpen}>
               <ExternalLink className="h-3.5 w-3.5" />
               {t('prototypeInfo.open')}
             </Button>

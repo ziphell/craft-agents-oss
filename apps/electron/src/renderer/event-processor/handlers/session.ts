@@ -14,6 +14,7 @@ import type {
   SourcesChangedEvent,
   LabelsChangedEvent,
   ProjectIdChangedEvent,
+  PrototypeSlugChangedEvent,
   SessionStatusChangedEvent,
   SessionMetadataChangedEvent,
   SessionFlaggedEvent,
@@ -675,6 +676,27 @@ export function handleProjectIdChanged(
       session: {
         ...session,
         projectId: event.projectId ?? undefined,
+      },
+      streaming,
+    },
+    effects: [],
+  }
+}
+
+/**
+ * Handle prototype_slug_changed - update session's prototypeSlug binding
+ */
+export function handlePrototypeSlugChanged(
+  state: SessionState,
+  event: PrototypeSlugChangedEvent
+): ProcessResult {
+  const { session, streaming } = state
+
+  return {
+    state: {
+      session: {
+        ...session,
+        prototypeSlug: event.prototypeSlug ?? undefined,
       },
       streaming,
     },

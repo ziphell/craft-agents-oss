@@ -18,6 +18,8 @@ import {
   buildMockRoutes,
   buildPrototypeStatus,
   resolvePrototypeEntry,
+  listPrototypeStatuses,
+  createPrototype as createPrototypeProject,
 } from '@craft-agent/shared/prototypes'
 import { applyPrototypeToBrowser, clearPrototypeFromBrowser } from '../domain/apply-prototype'
 import {
@@ -870,6 +872,10 @@ interface ManagedSession {
   labels?: string[]
   // Workspace-scoped project binding (undefined = unbound)
   projectId?: string
+  // Prototype binding (slug under the workspace's prototypes/ folder; undefined = unbound).
+  // Resolved into <prototype_context> for the agent and used as the default
+  // target of every `prototype-*` browser_tool command.
+  prototypeSlug?: string
   // Parent session id — when set, this session is a subtask of the parent (undefined = top-level task)
   parentSessionId?: string
   // Kanban board column id ('todo' | 'in-progress' | 'done'); independent of sessionStatus
@@ -1543,6 +1549,13 @@ export class SessionManager implements ISessionManager {
     // Project binding (no dedicated event today — handled via metaChanged broadcast)
     if (managed.projectId !== header.projectId) {
       managed.projectId = header.projectId
+      changed = true
+    }
+
+    // Prototype binding — mirrors the project binding: external edits (another
+    // window, the file itself) reconcile in without a dedicated event.
+    if (managed.prototypeSlug !== header.prototypeSlug) {
+      managed.prototypeSlug = header.prototypeSlug
       changed = true
     }
 
@@ -2909,6 +2922,7 @@ export class SessionManager implements ISessionManager {
       labels: options?.labels,
       isFlagged: options?.isFlagged,
       projectId: resolvedProjectId,
+      prototypeSlug: options?.prototypeSlug,
       parentSessionId: options?.parentSessionId,
       taskSlug: options?.taskSlug,
       taskRunId: options?.taskRunId,
@@ -3455,6 +3469,7 @@ export class SessionManager implements ISessionManager {
         permissionMode: managed.permissionMode,
         previousPermissionMode: managed.previousPermissionMode,
         projectId: managed.projectId,
+        prototypeSlug: managed.prototypeSlug,
       }
 
       const onSdkSessionIdUpdate = (sdkSessionId: string) => {
@@ -3858,6 +3873,21 @@ export class SessionManager implements ISessionManager {
             pick: async (options) => {
               const instanceId = await resolveSessionBrowserInstance('browser_pick')
               return bpm.pickElement(instanceId, options)
+            },
+            // A pure read of the session binding — no browser instance needed, so
+            // `prototype-list` and the no-slug fallback work before any window exists.
+            getBoundPrototypeSlug: () => managed.prototypeSlug ?? null,
+            listPrototypes: async () => {
+              return listPrototypeStatuses(managed.workspace.rootPath)
+            },
+            createPrototype: async (name) => {
+              return createPrototypeProject(managed.workspace.rootPath, { name })
+            },
+            // Writing through the setter (rather than `managed.prototypeSlug = …`)
+            // is what emits prototype_slug_changed and persists the header, so the
+            // UI badge and a later resume both see the new binding.
+            bindPrototype: async (prototypeSlug) => {
+              await this.setSessionPrototypeSlug(managed.id, prototypeSlug)
             },
             applyPrototype: async (prototypeSlug) => {
               const instanceId = await resolveSessionBrowserInstance('browser_prototype_apply')
@@ -4296,6 +4326,10 @@ export class SessionManager implements ISessionManager {
           labels: request.labels ?? managed.labels,
           workingDirectory: request.workingDirectory,
           projectId: request.projectId ?? managed.projectId,
+          // A subtask of a prototype-bound session works on the same prototype —
+          // inheriting it is what keeps the child's prototype-* commands aimed at
+          // the right project without the parent having to pass it down.
+          prototypeSlug: managed.prototypeSlug,
           // Spawned sessions become subtasks of the spawning session.
           parentSessionId: managed.id,
         })
@@ -7316,6 +7350,37 @@ export class SessionManager implements ISessionManager {
         type: 'project_id_changed',
         sessionId: managed.id,
         projectId: managed.projectId ?? null,
+      }, managed.workspace.id)
+
+      this.persistSession(managed)
+      await this.flushSession(managed.id)
+      const watcher = this.configWatchers.get(managed.workspace.rootPath)
+      watcher?.notifyFileChange(`sessions/${sessionId}/session.jsonl`)
+    }
+  }
+
+  /**
+   * Bind or unbind a session to/from a prototype project.
+   * Pass `null` to unbind.
+   *
+   * Binding is what makes the conversation usable without naming artifacts:
+   * the agent gets the prototype as `<prototype_context>` in its system prompt
+   * and every `prototype-*` browser_tool command defaults to it.
+   *
+   * The slug is NOT validated against disk here — a prototype can legitimately
+   * be deleted and re-created while a session stays bound, and refusing to bind
+   * a not-yet-created slug would break "create one from this conversation".
+   */
+  async setSessionPrototypeSlug(sessionId: string, prototypeSlug: string | null): Promise<void> {
+    const managed = this.sessions.get(sessionId)
+    if (managed) {
+      managed.prototypeSlug = prototypeSlug ?? undefined
+      this.setMetadataWriteGuard(managed)
+
+      this.sendEvent({
+        type: 'prototype_slug_changed',
+        sessionId: managed.id,
+        prototypeSlug: managed.prototypeSlug ?? null,
       }, managed.workspace.id)
 
       this.persistSession(managed)

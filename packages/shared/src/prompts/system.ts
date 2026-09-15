@@ -12,6 +12,8 @@ import { formatBytes } from '../utils/binary-detection.ts';
 import { globSync } from 'glob';
 import os from 'os';
 import type { ProjectPromptContext } from '../projects/types.ts';
+import { formatPrototypeContextForPrompt } from '../prototypes/prompt.ts';
+import type { PrototypePromptContext } from '../prototypes/prompt.ts';
 
 /** Maximum size of CLAUDE.md file to include (10KB) */
 const MAX_CONTEXT_FILE_SIZE = 10 * 1024;
@@ -344,6 +346,8 @@ Use config_validate to verify changes match the expected schema.
  * @param workingDirectory - Working directory for context file discovery
  * @param preset - System prompt preset ('default' | 'mini' | custom string)
  * @param backendName - Backend name for "powered by X" text (default: 'Claude Code')
+ * @param projectContext - Bound workspace project, when the session has one
+ * @param prototypeContext - Bound prototype, when the session has one
  */
 export function getSystemPrompt(
   pinnedPreferencesPrompt?: string,
@@ -354,6 +358,7 @@ export function getSystemPrompt(
   backendName?: string,
   includeCoAuthoredBy?: boolean,
   projectContext?: ProjectPromptContext,
+  prototypeContext?: PrototypePromptContext,
 ): string {
   // Use mini agent prompt for quick edits (pass workspace root for config paths)
   if (preset === 'mini') {
@@ -371,6 +376,10 @@ export function getSystemPrompt(
   // Optional workspace-project context (injected after preferences, before debug+context-files)
   const projectBlock = projectContext ? formatProjectContextForPrompt(projectContext) : '';
 
+  // Optional prototype context — sits next to the project block so the two
+  // "what is this session about" statements read together.
+  const prototypeBlock = prototypeContext ? formatPrototypeContextForPrompt(prototypeContext) : '';
+
   // Fall back to the user's current preference when callers don't pin/pass a value,
   // so forgetting the argument can't silently re-enable the co-author trailer (see #576).
   const resolvedIncludeCoAuthoredBy = includeCoAuthoredBy ?? getCoAuthorPreference();
@@ -379,7 +388,7 @@ export function getSystemPrompt(
   // to enable prompt caching. The system prompt stays static and cacheable.
   // Safe Mode context is also in user messages for the same reason.
   const basePrompt = getCraftAssistantPrompt(workspaceRootPath, backendName, resolvedIncludeCoAuthoredBy);
-  const fullPrompt = `${basePrompt}${preferences}${projectBlock}${debugContext}${projectContextFiles}`;
+  const fullPrompt = `${basePrompt}${preferences}${projectBlock}${prototypeBlock}${debugContext}${projectContextFiles}`;
 
   debug('[getSystemPrompt] full prompt length:', fullPrompt.length);
 

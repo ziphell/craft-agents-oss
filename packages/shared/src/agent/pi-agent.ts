@@ -48,6 +48,8 @@ import { getSystemPrompt } from '../prompts/system.ts';
 import { getCoAuthorPreference } from '../config/preferences.ts';
 import { loadProjectById, getProjectAssetsPath, listProjectAssets, getProjectMemoryPath, loadProjectMemory } from '../projects/storage.ts';
 import type { ProjectPromptContext } from '../projects/types.ts';
+import { buildPrototypePromptContext } from '../prototypes/prompt.ts';
+import type { PrototypePromptContext } from '../prototypes/prompt.ts';
 
 // Credential manager for token storage
 import { getCredentialManager } from '../credentials/manager.ts';
@@ -221,6 +223,23 @@ export class PiAgent extends BaseAgent {
       };
     } catch (error) {
       this.debug(`[resolveProjectContext] Failed to load project ${projectId}: ${error instanceof Error ? error.message : error}`);
+      return null;
+    }
+  }
+
+  /**
+   * Look up the bound prototype (if any) and return a snapshot for system-prompt injection.
+   * Resolved per turn (unlike ClaudeAgent, which pins on the first chat) because this
+   * backend rebuilds its prompt each time anyway.
+   */
+  private resolvePrototypeContext(): PrototypePromptContext | null {
+    const slug = this.config.session?.prototypeSlug;
+    if (!slug) return null;
+
+    try {
+      return buildPrototypePromptContext(this.config.workspace.rootPath, slug);
+    } catch (error) {
+      this.debug(`[resolvePrototypeContext] Failed to load prototype ${slug}: ${error instanceof Error ? error.message : error}`);
       return null;
     }
   }
@@ -2031,6 +2050,7 @@ export class PiAgent extends BaseAgent {
 
       // Build system prompt
       const projectContext = this.resolveProjectContext();
+      const prototypeContext = this.resolvePrototypeContext();
       const systemPrompt = getSystemPrompt(
         undefined, // pinnedPreferencesPrompt
         this.config.debugMode,
@@ -2040,6 +2060,7 @@ export class PiAgent extends BaseAgent {
         'Craft Agents Backend', // backendName
         getCoAuthorPreference(), // respect user's includeCoAuthoredBy preference (#576)
         projectContext ?? undefined,
+        prototypeContext ?? undefined,
       );
 
       // Build context from sources

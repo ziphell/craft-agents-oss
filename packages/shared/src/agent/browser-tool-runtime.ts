@@ -72,20 +72,27 @@ export function getBrowserToolHelp(): string {
     '  forward',
     '  evaluate <expression>',
     '  pick [--timeout <ms>]                          ask the user to click an element; returns a stable selector',
-    '  prototype-apply <slug>                         replay prototype patches (survives reload)',
-    '  prototype-clear <slug>                         remove prototype patches',
-    '  prototype-export <slug>                        write dist HTML + dev spec',
-    '  prototype-contract-compose <slug> [--service <svc>]   fragments → services/<svc>/openapi.yaml',
-    '  prototype-contract-export <slug> [--service <svc>]    dist contract for the backend',
-    '  prototype-mock-apply <slug> [--service <svc>]         serve x-mock responses (fetch + XHR)',
+    '  prototype-list                                 prototypes in this workspace, and which one is bound',
+    '  prototype-create <name>                        create a prototype and bind this session to it',
+    '  prototype-bind <slug|--clear>                  bind (or unbind) this session\'s prototype',
+    '  prototype-apply [slug]                         replay prototype patches (survives reload)',
+    '  prototype-clear [slug]                         remove prototype patches',
+    '  prototype-export [slug]                        write dist HTML + dev spec',
+    '  prototype-contract-compose [slug] [--service <svc>]   fragments → services/<svc>/openapi.yaml',
+    '  prototype-contract-export [slug] [--service <svc>]    dist contract for the backend',
+    '  prototype-mock-apply [slug] [--service <svc>]         serve x-mock responses (fetch + XHR)',
     '  prototype-mock-clear                                  stop serving the mock',
-    '  prototype-status <slug>                               patches, services, exports, ownership',
-    '  prototype-open <slug>                                 open the exported page (or base.html)',
+    '  prototype-status [slug]                               patches, services, exports, ownership',
+    '  prototype-open [slug]                                 open the exported page (or base.html)',
     '  focus [windowId]                               focus existing browser window (no new window)',
     '  windows',
     '  release [windowId|all]                         dismiss agent overlay (user keeps browsing)',
     '  close [windowId]                               close & destroy the browser window',
     '  hide [windowId]                                hide the window (keeps state, "open" re-shows)',
+    '',
+    'Every prototype-* command except list/create/bind defaults to the prototype this session is',
+    'bound to, so no slug is needed. Pass one to target a different prototype.',
+    'Use "prototype-list" to see what exists and which one is bound.',
     '',
     'Batching (string mode, semicolon-separated, stops after navigation commands):',
     '  fill @e1 user@example.com; fill @e2 password123; click @e3',
@@ -108,9 +115,11 @@ export function getBrowserToolHelp(): string {
     '  scroll down 800',
     '  evaluate document.title',
     '  pick',
-    '  prototype-apply checkout-flow',
-    '  prototype-export checkout-flow',
-    '  prototype-contract-compose checkout-flow --service checkout-api',
+    '  prototype-list',
+    '  prototype-create Checkout flow',
+    '  prototype-apply                                (targets the bound prototype)',
+    '  prototype-apply checkout-flow                  (explicit target)',
+    '  prototype-contract-compose --service checkout-api',
     '  screenshot --annotated',
     '  screenshot --png',
     '  screenshot-region --ref @e9 --padding 12',
@@ -691,6 +700,30 @@ async function executeBatchCommands(args: {
     appendReleaseHint,
     image: lastImage,
   };
+}
+
+/**
+ * Resolve which prototype a command targets.
+ *
+ * An explicit slug always wins, so a bound session can still reach a different
+ * prototype for a one-off. Only when no argument is given do we fall back to the
+ * session's binding — that fallback is the point of binding, and when there is
+ * neither, the error names both ways out.
+ *
+ * A leading `--` is treated as "no slug" so that flags can follow the command
+ * directly (`prototype-contract-compose --service checkout-api`).
+ */
+function resolvePrototypeSlug(fns: BrowserPaneFns, parts: string[], command: string): string {
+  const explicit = parts[1];
+  if (explicit && !explicit.startsWith('--')) return explicit;
+
+  const bound = fns.getBoundPrototypeSlug?.();
+  if (bound) return bound;
+
+  throw new Error(
+    `${command} needs a prototype. Pass one — "${command} <slug>" — or bind this session with ` +
+    `"prototype-bind <slug>". "prototype-list" shows what exists.`,
+  );
 }
 
 async function executeSingleCommand(args: {
@@ -1642,11 +1675,92 @@ async function executeSingleCommand(args: {
     };
   }
 
-  if (cmd === 'prototype-apply') {
-    const slug = parts[1];
-    if (!slug) {
-      throw new Error('prototype-apply requires a prototype slug. Example: prototype-apply checkout-flow');
+  if (cmd === 'prototype-list') {
+    const prototypes = await fns.listPrototypes();
+    const bound = fns.getBoundPrototypeSlug?.() ?? null;
+
+    if (prototypes.length === 0) {
+      return {
+        output: [
+          'No prototypes in this workspace yet.',
+          'Create one with "prototype-create <name>", then open the running product and use "Capture base" to capture its rendered page.',
+        ].join('\n'),
+        appendReleaseHint: false,
+      };
     }
+
+    const lines = [
+      `${prototypes.length} prototype${prototypes.length === 1 ? '' : 's'} in this workspace` +
+      `${bound ? ` (this session is bound to "${bound}")` : ' (this session is not bound to one)'}:`,
+    ];
+    for (const prototype of prototypes) {
+      const notes: string[] = [];
+      if (prototype.slug === bound) notes.push('BOUND');
+      if (!prototype.baseHtmlPresent) notes.push('no base.html');
+      notes.push(`${prototype.patches.total} patch${prototype.patches.total === 1 ? '' : 'es'}`);
+      lines.push(`  • ${prototype.slug} — ${notes.join(', ')}`);
+    }
+
+    return { output: lines.join('\n'), appendReleaseHint: false };
+  }
+
+  if (cmd === 'prototype-create') {
+    const name = parts.slice(1).join(' ').trim();
+    if (!name) {
+      throw new Error('prototype-create needs a name. Example: prototype-create Checkout flow');
+    }
+
+    // Creating binds the session in the same step: the point of creating one from
+    // a conversation is to work on it, and an unbound create would force the very
+    // slug-passing this binding exists to remove.
+    const created = await fns.createPrototype(name);
+    await fns.bindPrototype(created.slug);
+
+    return {
+      output: [
+        `Created prototype "${created.slug}" and bound this session to it.`,
+        `  dir:  ${created.dir}`,
+        `  base: ${created.baseHtmlPath} (starter page)`,
+        '',
+        'The prototype-* commands now target it by default.',
+        'To start from the real product instead, open it in a browser window and have the user press "Capture base".',
+      ].join('\n'),
+      appendReleaseHint: false,
+    };
+  }
+
+  if (cmd === 'prototype-bind') {
+    const explicit = parts[1];
+    // `--clear` is the escape hatch: unbind without needing a slug to name.
+    if (explicit === '--clear' || explicit === '--none') {
+      await fns.bindPrototype(null);
+      return { output: 'Unbound this session from its prototype.', appendReleaseHint: false };
+    }
+
+    if (!explicit || explicit.startsWith('--')) {
+      throw new Error(
+        'prototype-bind needs a slug. Example: prototype-bind checkout-flow (or prototype-bind --clear to unbind)',
+      );
+    }
+
+    // Refuse a slug that does not exist: binding to nothing would silently make
+    // every later command fail here instead of at the bind.
+    const known = await fns.listPrototypes();
+    if (!known.some((prototype) => prototype.slug === explicit)) {
+      throw new Error(
+        `No prototype "${explicit}" in this workspace. Available: ${known.map((p) => p.slug).join(', ') || '(none)'}`,
+      );
+    }
+
+    await fns.bindPrototype(explicit);
+    return {
+      output: `Bound this session to prototype "${explicit}" — prototype-* commands now target it by default.`,
+      appendReleaseHint: false,
+    };
+  }
+
+  if (cmd === 'prototype-apply') {
+    const slug = resolvePrototypeSlug(fns, parts, 'prototype-apply');
 
     const result = await fns.applyPrototype(slug);
     const lines = [
@@ -1663,10 +1777,7 @@ async function executeSingleCommand(args: {
   }
 
   if (cmd === 'prototype-clear') {
-    const slug = parts[1];
-    if (!slug) {
-      throw new Error('prototype-clear requires a prototype slug. Example: prototype-clear checkout-flow');
-    }
+    const slug = resolvePrototypeSlug(fns, parts, 'prototype-clear');
 
     const result = await fns.clearPrototype(slug);
     const lines = [
@@ -1681,10 +1792,7 @@ async function executeSingleCommand(args: {
   }
 
   if (cmd === 'prototype-export') {
-    const slug = parts[1];
-    if (!slug) {
-      throw new Error('prototype-export requires a prototype slug. Example: prototype-export checkout-flow');
-    }
+    const slug = resolvePrototypeSlug(fns, parts, 'prototype-export');
 
     const result = await fns.exportPrototype(slug);
     return {
@@ -1701,10 +1809,7 @@ async function executeSingleCommand(args: {
   }
 
   if (cmd === 'prototype-contract-compose') {
-    const slug = parts[1];
-    if (!slug) {
-      throw new Error('prototype-contract-compose requires a prototype slug. Example: prototype-contract-compose checkout-flow --service checkout-api');
-    }
+    const slug = resolvePrototypeSlug(fns, parts, 'prototype-contract-compose');
     const serviceIdx = parts.indexOf('--service');
     const service = serviceIdx >= 0 ? parts[serviceIdx + 1] : undefined;
 
@@ -1724,10 +1829,7 @@ async function executeSingleCommand(args: {
   }
 
   if (cmd === 'prototype-contract-export') {
-    const slug = parts[1];
-    if (!slug) {
-      throw new Error('prototype-contract-export requires a prototype slug. Example: prototype-contract-export checkout-flow --service checkout-api');
-    }
+    const slug = resolvePrototypeSlug(fns, parts, 'prototype-contract-export');
     const serviceIdx = parts.indexOf('--service');
     const service = serviceIdx >= 0 ? parts[serviceIdx + 1] : undefined;
 
@@ -1746,10 +1848,7 @@ async function executeSingleCommand(args: {
   }
 
   if (cmd === 'prototype-mock-apply') {
-    const slug = parts[1];
-    if (!slug) {
-      throw new Error('prototype-mock-apply requires a prototype slug. Example: prototype-mock-apply checkout-flow --service checkout-api');
-    }
+    const slug = resolvePrototypeSlug(fns, parts, 'prototype-mock-apply');
     const serviceIdx = parts.indexOf('--service');
     const service = serviceIdx >= 0 ? parts[serviceIdx + 1] : undefined;
 
@@ -1777,10 +1876,7 @@ async function executeSingleCommand(args: {
   }
 
   if (cmd === 'prototype-status') {
-    const slug = parts[1];
-    if (!slug) {
-      throw new Error('prototype-status requires a prototype slug. Example: prototype-status checkout-flow');
-    }
+    const slug = resolvePrototypeSlug(fns, parts, 'prototype-status');
 
     const status = await fns.prototypeStatus(slug);
     const laneSummary = Object.entries(status.patches.byLane)
@@ -1823,10 +1919,7 @@ async function executeSingleCommand(args: {
   }
 
   if (cmd === 'prototype-open') {
-    const slug = parts[1];
-    if (!slug) {
-      throw new Error('prototype-open requires a prototype slug. Example: prototype-open checkout-flow');
-    }
+    const slug = resolvePrototypeSlug(fns, parts, 'prototype-open');
 
     const entry = await fns.prototypeEntry({ slug });
     const result = await fns.navigate(entry.url);

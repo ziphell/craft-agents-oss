@@ -157,6 +157,15 @@ export interface ProjectIdChangedEvent {
 }
 
 /**
+ * Prototype slug changed event (session bound/unbound to a prototype)
+ */
+export interface PrototypeSlugChangedEvent {
+  type: 'prototype_slug_changed'
+  sessionId: string
+  prototypeSlug: string | null
+}
+
+/**
  * Todo state changed event (external metadata change or agent tool)
  */
 export interface SessionStatusChangedEvent {
@@ -172,7 +181,7 @@ export interface SessionStatusChangedEvent {
 export interface SessionMetadataChangedEvent {
   type: 'session_metadata_changed'
   sessionId: string
-  changes: Partial<Pick<Session, 'taskNodeCount' | 'kanbanColumn' | 'taskDraft' | 'taskSlug' | 'projectId'>>
+  changes: Partial<Pick<Session, 'taskNodeCount' | 'kanbanColumn' | 'taskDraft' | 'taskSlug' | 'projectId' | 'prototypeSlug'>>
 }
 
 /**
@@ -527,6 +536,7 @@ export type AgentEvent =
   | SourcesChangedEvent
   | LabelsChangedEvent
   | ProjectIdChangedEvent
+  | PrototypeSlugChangedEvent
   | SessionStatusChangedEvent
   | SessionMetadataChangedEvent
   | SessionFlaggedEvent

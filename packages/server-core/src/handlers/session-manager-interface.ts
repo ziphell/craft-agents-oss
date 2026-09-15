@@ -88,6 +88,8 @@ export interface ISessionManager {
     opts?: { parentSessionId?: string },
   ): Promise<{ labelId: string } | undefined>
   setSessionProjectId(sessionId: string, projectId: string | null): Promise<void>
+  /** Bind or unbind a session to a prototype (a slug under the workspace's prototypes/ folder). */
+  setSessionPrototypeSlug(sessionId: string, prototypeSlug: string | null): Promise<void>
   setKanbanColumn(sessionId: string, column: string | null): Promise<void>
   setTaskNodeCount(sessionId: string, count: number): Promise<void>
   adoptGeneratedTaskOrchestrator(

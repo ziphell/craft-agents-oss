@@ -1,6 +1,6 @@
 # 产品经理需求生产工作台 — 实施方案
 
-> 状态：阶段 1–6 全部完成；阶段 7 完成两项（无中生有入口、改写真实后端返回），放开面经决策**确定不开**，跨域 iframe 读取与响应头就地改写未做。UI 闭环已完成：创建入口（侧边栏「原型」+ 面板「+」+ 空态按钮）→ 详情页 Open / Apply / Capture base / Export，以及产物文件就地编辑（base.html 与 patches/*）。下一步：端到端试用（见 §10）；仍未进 UI 的是「选择元素」按钮（agent 侧 `browser_tool pick` 已可用）。
+> 状态：阶段 1–6 全部完成；阶段 7 完成两项（无中生有入口、改写真实后端返回），放开面经决策**确定不开**，跨域 iframe 读取与响应头就地改写未做。UI 闭环已完成：创建入口（侧边栏「原型」+ 面板「+」+ 空态按钮）→ 详情页 Open / Apply / Capture base / Export，以及产物文件就地编辑（base.html 与 patches/*）。**会话绑定已完成（§11）**：会话绑定原型后，agent 的 system prompt 里带 `<prototype_context>`，且 `prototype-*` 的 slug 变为可选。下一步：端到端试用（见 §10）；仍未进 UI 的是「选择元素」按钮（agent 侧 `browser_tool pick` 已可用）。
 > 范围：MVP（个人使用，先增量模式）
 > 前置结论：本方案基于对现有代码的实测核对，所有引用均带文件路径与行号。
 
@@ -57,6 +57,7 @@
 | D13 | lane 划分 | **按平面切**（UI / 契约 / 数据 / 验证） | 每个 lane 写不同文件类型，所有权最干净 |
 | D14 | lane 通信 | **只读通信**，lane 间不共享写 | 共享写是并线的唯一致命伤 |
 | D15 | 渲染面角色 | **只读**；拾取器是**传感器**不是写者 | 渲染一旦写文件就破坏所有权模型（修正 D4 的执行者） |
+| D16 | 会话与原型的关系 | **绑定**（session.prototypeSlug），复用 session↔project 的既有范式 | 让 agent 不必每轮被告知操作对象；`prototype-*` 的 slug 因此可选（见 §11） |
 
 ---
 
@@ -528,6 +529,8 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 
 > ⚠️ **端口**：`bun run electron:dev` 会占用 **5173**（renderer 的 vite）。所以你的产品 dev server 必须跑在**别的端口**（示例用 3000）。另外 `electron-dev.ts` 启动时会**无条件 kill 掉占用 5173 的进程**，别让产品 dev server 占这个口。
 
+> **关于 slug**：A–E 保留了显式 slug 的写法（便于照抄，也验证显式路径）。若会话已绑定该原型（§11 / 步骤 F），这些命令的 slug 都可以省略。
+
 ### A. 在真实页面上改（核心闭环）
 
 1. `browser_tool navigate http://localhost:3000/checkout`（你的产品 dev server，**不是** 5173）
@@ -575,3 +578,65 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 |---|---|---|
 | reload 后 patch 还在吗 | 依赖"持有连接以免 detach"的改动 | 看主进程日志有没有 `idle detach` |
 | 开着 mock 时页面是否明显变慢 | `Fetch.enable` 目前用 `*` 匹配**所有**请求，每个都过主进程一轮 | 把 pattern 收窄到目标接口域（`browser-cdp.ts` 的 `setFetchMockRoutes`） |
+
+### F. 对话入口与绑定（§11 的验收）
+
+17. 在原型详情页点 **Open conversation** → 进入一个已绑定该原型的会话（已有绑定会话时直接跳过去，不新建）
+18. 在这个会话里说「应用补丁」——**不用提原型名**，agent 会执行 `prototype-apply` 并落到该原型
+19. 对 agent 说「列一下有哪些原型」→ `prototype-list`，输出里当前绑定的那个标 **BOUND**
+20. 点会话标题右侧的**烧瓶图标** → 切换/解绑原型；切换后 badge 立即变化（靠 `prototype_slug_changed` 事件，不是本地状态）
+21. 在**新会话**里对 agent 说「给我建个 checkout 原型」→ `prototype-create checkout`，它会**建完自动绑定**，随后 `prototype-apply` 无需 slug
+
+> 第 18 步是本节的验收点：它验证的是 prompt 注入（agent 知道当前原型）+ slug 回退（命令缺省取绑定）**两条链路都通**。若 agent 仍要求你提供 slug，看主进程日志里 system prompt 是否含 `<prototype_context>`。
+
+---
+
+## 11. 会话 ↔ 原型绑定（对话入口）
+
+**问题**：`prototype-*` 命令原本每条都必须显式传 slug，而 agent 无从知道"当前在哪个原型"——一个 workspace 可以有多个原型。于是每次对话都要人肉报名。
+
+**结论**：复用仓库里**已有**的 session ↔ project 绑定范式，不发明新机制。该范式五层俱全，照抄即可。
+
+### 11.1 五层链路
+
+| 层 | 位置 | 说明 |
+|---|---|---|
+| L1 字段 | `SESSION_PERSISTENT_FIELDS` + `SessionConfig.prototypeSlug` | 加入白名单数组即自动获得 JSONL 读写（`pickSessionFields` 驱动） |
+| L2 设置 | `SessionManager.setSessionPrototypeSlug()` | 镜像 `setSessionProjectId`：写字段 → 推事件 → 持久化 → 通知 watcher |
+| L3 通道 | `sessionCommand { type: 'setPrototypeSlug' }` + `prototype_slug_changed` 事件 | 渲染层 → 主进程；事件回流刷新 badge |
+| L4 注入 | `buildPrototypePromptContext()` → `<prototype_context>` | 与 `<project_context>` 并列注入 system prompt |
+| L5 工具 | `resolvePrototypeSlug()`：显式 slug → 会话绑定 → 报错 | 缺省取绑定，这才是"不用报名"的兑现点 |
+
+### 11.2 三个设计判断
+
+**① prompt 块是快照，不是实时视图。**
+`ClaudeAgent` 在首次 chat 时 pin 住（与 `pinnedProjectContext` 一致），因为 SDK resume 与 prompt caching 都要求 system prompt 稳定。代价是 agent 看不到本轮新增的 patch —— 所以块内**明确写了这一点**并指示它用 `prototype-status` 复查。稳定性换来的收益大于实时性。
+
+**② 绑定不校验 slug 是否存在。**
+`setSessionPrototypeSlug` 故意不检查磁盘。理由：`prototype-create` 需要"建完即绑"，若先要求存在就死锁；且原型可被删除重建而会话不该因此报错。校验放在**命令**侧（`prototype-bind` 会拒绝未知 slug 并列出可选项），因为那里有 `listPrototypes` 可用。
+
+**③ `prototype-create` 顺带绑定。**
+创建的目的是用它；分开两步会强制用户走一遍正是绑定要消除的 slug 流程。这是**唯一**带隐含副作用的命令，输出里明说了"已绑定"。
+
+### 11.3 新增的三个命令
+
+| 命令 | 作用 |
+|---|---|
+| `prototype-list` | 列出工作区所有原型 + 标注当前绑定（`BOUND`）。**没有它，未绑定会话里的 agent 无法发现任何原型** |
+| `prototype-create <name>` | 创建 + 自动绑定 |
+| `prototype-bind <slug\|--clear>` | 绑定已有原型 / 解绑；拒绝不存在的 slug 并列出可选项 |
+
+### 11.4 两处 UI 入口
+
+- **正向（面板 → 会话）**：原型详情页的 **Open conversation**。已存在绑定会话则跳过去，否则新建。理由是原型长期存在且会被反复回来，"每次都新建"既堆积会话又丢掉之前的讨论。
+- **反向（会话 → 面板）**：会话标题栏的烧瓶图标（`PrototypeBindingMenu`）。显示当前绑定（有绑定则高亮），可切换、解绑、跳回面板。原型列表在**打开菜单时**读取，避免用页面加载时的陈旧快照。
+
+### 11.5 与 project 绑定的差异（有意为之）
+
+| 维度 | project | prototype |
+|---|---|---|
+| 创建时绑定 | 继承项目 `workingDirectory` | 继承父会话绑定（子任务同属一个原型） |
+| prompt 块 | 名称 / 描述 / assets / MEMORY.md | slug / base 状态 / patch 清单 / 契约覆盖 / 所有权违规 |
+| 命令回退 | 无（project 不驱动工具） | **有**：9 个 `prototype-*` 命令缺省取绑定 |
+| 缺失处理 | 项目被删 → 解析为 null，退化为未绑定 | 同左（`existsSync` 判目录，因为 `buildPrototypeStatus` 对不存在的项目返回"空项目"而非报错） |
+

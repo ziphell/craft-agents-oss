@@ -43,6 +43,8 @@ export interface SessionMeta {
   hasUnread?: boolean
   /** Labels for filtering (additive tags, many-per-session) */
   labels?: string[]
+  /** Prototype this session is bound to (undefined = unbound) */
+  prototypeSlug?: string
   /** Permission mode ('safe', 'ask', 'allow-all') — used by view expressions */
   permissionMode?: string
   /** Session status for filtering */

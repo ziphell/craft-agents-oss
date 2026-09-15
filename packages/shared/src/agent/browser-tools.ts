@@ -14,6 +14,7 @@ import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { PickedElement } from '../protocol/dto.ts';
 import type { PrototypeEntry, PrototypeExportResult } from '../prototypes/export.ts';
+import type { CreatedPrototype } from '../prototypes/create.ts';
 import type { ContractExportResult } from '../prototypes/contract.ts';
 import type { PrototypeStatus } from '../prototypes/status.ts';
 import { executeBrowserToolCommand } from './browser-tool-runtime.ts';
@@ -152,6 +153,19 @@ export interface BrowserPaneFns {
   /** Prompt the user to click an element; resolves null on cancel/timeout. */
   pick: (options?: { timeoutMs?: number }) => Promise<PickedElement | null>;
   /**
+   * The prototype this session is bound to, or null when unbound.
+   *
+   * Every `prototype-*` command falls back to this when no slug is passed,
+   * which is what lets a bound conversation be driven without naming artifacts.
+   */
+  getBoundPrototypeSlug?: () => string | null;
+  /** Every prototype in the workspace, with its derived status. */
+  listPrototypes: () => Promise<PrototypeStatus[]>;
+  /** Create a prototype project by display name. */
+  createPrototype: (name: string) => Promise<CreatedPrototype>;
+  /** Bind (or unbind, with null) this session's prototype. */
+  bindPrototype: (slug: string | null) => Promise<void>;
+  /**
    * Replay a prototype project's patches in this session's browser and register
    * them for future documents (so they survive a reload).
    */
@@ -261,15 +275,19 @@ Examples:
 - \`scroll down 800\`
 - \`evaluate document.title\`
 - \`pick\` — ask the user to click an element; returns a stable selector + geometry
-- \`prototype-apply checkout-flow\` — replay a prototype's patches (survives reload)
-- \`prototype-clear checkout-flow\` — remove a prototype's patches
-- \`prototype-export checkout-flow\` — write dist/prototype.html + dist/dev-spec.md
-- \`prototype-contract-compose checkout-flow\` — fragments → services/<svc>/openapi.yaml
-- \`prototype-contract-export checkout-flow\` — dist/openapi.yaml + dist/contract.md + fixtures
-- \`prototype-mock-apply checkout-flow\` — serve the contract's x-mock responses
+- \`prototype-list\` — prototypes in this workspace, and which one is bound
+- \`prototype-create Checkout flow\` — create a prototype and bind this session to it
+- \`prototype-bind checkout-flow\` — bind this session (or \`prototype-bind --clear\` to unbind)
+- \`prototype-apply\` — replay the bound prototype's patches (survives reload)
+- \`prototype-apply checkout-flow\` — same, for an explicitly named prototype
+- \`prototype-clear\` — remove the bound prototype's patches
+- \`prototype-export\` — write dist/prototype.html + dist/dev-spec.md
+- \`prototype-contract-compose\` — fragments → services/<svc>/openapi.yaml
+- \`prototype-contract-export\` — dist/openapi.yaml + dist/contract.md + fixtures
+- \`prototype-mock-apply\` — serve the contract's x-mock responses
 - \`prototype-mock-clear\` — stop serving the mock
-- \`prototype-status checkout-flow\` — inspect patches, services, exports, ownership
-- \`prototype-open checkout-flow\` — open the exported page (or base.html)
+- \`prototype-status\` — inspect patches, services, exports, ownership
+- \`prototype-open\` — open the exported page (or base.html)
 - \`console 50 error\`
 - \`screenshot\` — raw screenshot
 - \`screenshot --annotated\` — screenshot with @eN labels overlaid on interactive elements
@@ -286,7 +304,10 @@ Examples:
 - \`windows\` — list current browser windows and ownership state
 - \`release [windowId|all]\` — dismiss the agent control overlay when done
 - \`close [windowId]\` — close and destroy the browser window
-- \`hide [windowId]\` — hide the window while preserving state`;
+- \`hide [windowId]\` — hide the window while preserving state
+
+The prototype-* commands default to the prototype this session is bound to, so a slug is
+optional for all of them except list/create/bind.`;
 
 // ============================================================================
 // Tool Factories
