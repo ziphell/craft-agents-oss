@@ -19,6 +19,7 @@ import { useTranslation } from 'react-i18next'
 import { browserInstancesAtom } from '@/atoms/browser-pane'
 import { sessionMetaMapAtom } from '@/atoms/sessions'
 import type { PickedElement } from '@craft-agent/shared/protocol'
+import type { PrototypeEntry } from '@craft-agent/shared/prototypes'
 
 export interface EditElementRequest {
   element: PickedElement
@@ -46,22 +47,64 @@ export function useBrowserToolbarActions({
   /**
    * Which prototype the panel's window belongs to, and which session owns it.
    *
-   * `boundSessionId` is the agent-owned binding; `ownerSessionId` covers windows
-   * a session opened but has not formally claimed. A window with neither is a
-   * plain manual browser and has no prototype.
+   * The prototype comes from the main process (`prototypeSlug`), which is the only
+   * side that knows: a window opened for a prototype says so even before any
+   * conversation exists, and an overlay's view sits on a third-party address, so
+   * neither the URL nor the session is enough on its own. The session is only
+   * about *who may drive the window*.
    */
   const resolveBinding = useCallback((instanceId: string): { slug: string | null; sessionId: string | null } => {
     const instance = instances.find((item) => item.id === instanceId)
     if (!instance) return { slug: null, sessionId: null }
     const sessionId = instance.boundSessionId ?? instance.ownerSessionId
-    if (!sessionId) return { slug: null, sessionId: null }
-    return { slug: sessionMetaMap.get(sessionId)?.prototypeSlug ?? null, sessionId }
+    const slug = instance.prototypeSlug ?? (sessionId ? sessionMetaMap.get(sessionId)?.prototypeSlug ?? null : null)
+    return { slug, sessionId }
   }, [instances, sessionMetaMap])
+
+  /**
+   * Open a prototype — or one of its pages — in one of the panel's windows.
+   *
+   * Mirrors the panel's own preview: the address comes from `getPrototypeEntry` —
+   * a live page's own address for an overlay page, the host's rendering of the
+   * document for a page of ours, the page index when no page is the entry — and
+   * only a live page needs its patches replayed afterwards. Nothing here is new
+   * machinery; it is the same two RPCs the preview button calls.
+   *
+   * `page` is how the address bar's own answer gets acted on: the bar names a
+   * prototype and a page (`/pay`), and this resolves that page rather than letting
+   * the view be redirected to it.
+   */
+  const openPrototype = useCallback(async (instanceId: string, slug: string, page?: string | null) => {
+    if (!workspaceId) return
+    try {
+      const entry = (await window.electronAPI.getPrototypeEntry(workspaceId, slug, page)) as PrototypeEntry
+      await window.electronAPI.browserPane.navigate(instanceId, entry.url)
+      if (entry.injectPatches) {
+        await window.electronAPI.applyPrototype(workspaceId, instanceId, slug)
+      }
+    } catch (err) {
+      console.error('[useBrowserToolbarActions] Failed to open prototype:', err)
+      toast.error(t('browserEdit.openPrototypeFailed'), {
+        description: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }, [workspaceId, t])
 
   useEffect(() => {
     const off = window.electronAPI.browserPane.onToolbarAction((action) => {
       if (action.kind === 'pick-failed') {
         toast.error(t('browserEdit.pickFailed'), { description: action.message })
+        return
+      }
+
+      // Typing a prototype's address in the panel asks for the prototype, not
+      // for that URL — so it takes the same route the panel's own preview does:
+      // resolve where the prototype is shown, then replay its patches into it.
+      // (The main process binds the window to the prototype as it recognises the
+      // address, so the bar keeps naming the prototype after the view navigates.)
+      if (action.kind === 'open-prototype') {
+        if (!workspaceId) return
+        void openPrototype(action.instanceId, action.slug, action.page)
         return
       }
 
@@ -97,5 +140,5 @@ export function useBrowserToolbarActions({
     return () => {
       if (typeof off === 'function') off()
     }
-  }, [resolveBinding, workspaceId, onEditElement, t])
+  }, [resolveBinding, openPrototype, workspaceId, onEditElement, t])
 }

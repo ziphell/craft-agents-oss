@@ -12,14 +12,15 @@
  *    loop is unusable on an exported deliverable.
  * 3. **No ES modules** — `<script type="module">` is fetched with CORS and fails.
  *
- * So the host may install a resolver that maps (workspace, slug) onto a loopback
- * HTTP address it serves (`apps/electron/src/main/prototype-server.ts`). An HTTP
- * origin gives all three back, and it is what lets the mock layer answer a
- * prototype's own API calls.
+ * So the host installs a resolver that maps (workspace, slug) onto an HTTP origin
+ * it answers itself (`apps/electron/src/main/prototype-host.ts`). An HTTP origin
+ * gives all three back, and it is what lets the mock layer answer a prototype's
+ * own API calls.
  *
- * With no resolver installed — unit tests, or any host that runs no such server
- * — URLs fall back to `file://`. That is still correct for a document with no
- * cookies, no API calls and no modules, so nothing breaks for those callers.
+ * With no resolver installed — unit tests, or any host that answers no such
+ * address — URLs fall back to `file://`. That is still correct for a document
+ * with no cookies, no API calls and no modules, so nothing breaks for those
+ * callers.
  */
 
 import { relative, sep } from 'path'
@@ -45,11 +46,12 @@ export function setPrototypeBaseUrlResolver(resolver: PrototypeBaseUrlResolver |
 }
 
 /**
- * The prototype's origin root — where its **rendered page** is served.
+ * The prototype's origin root — where its rendered pages are served.
  *
- * That page is `base.html` with every patch applied, computed per request (see
- * `prototype-server.ts`), so the address is stable no matter which patches exist
- * or whether anything has been exported. Null when nothing serves prototypes.
+ * A page of ours is its document with the patches that apply to it, computed per
+ * request (see `prototype-host.ts`), so the address is stable no matter which
+ * patches exist or whether anything has been exported. Null when nothing answers
+ * prototypes.
  */
 export function prototypeOriginUrl(workspaceRootPath: string, slug: string): string | null {
   return resolveBaseUrl?.(workspaceRootPath, slug) ?? null
@@ -69,7 +71,7 @@ export function prototypeOriginUrl(workspaceRootPath: string, slug: string): str
  *   entry document sits at the root too.
  *
  * Prefer {@link prototypeOriginUrl} when you mean "the prototype's page" — this
- * one is for naming a *specific* file (`/base.html`, `/dist/prototype.html`).
+ * one is for naming a *specific* file (`/cart.html`, `/dist/extension/index.html`).
  */
 export function prototypeDocumentUrl(workspaceRootPath: string, slug: string, filePath: string): string {
   const base = resolveBaseUrl?.(workspaceRootPath, slug)

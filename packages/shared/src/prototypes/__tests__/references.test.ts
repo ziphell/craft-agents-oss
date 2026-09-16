@@ -14,14 +14,15 @@ import {
 const READER = 'checkout-flow'
 const REFERENCE = 'rival-checkout'
 
-/** A workspace with a scratch reader and one overlay prototype to study. */
+/** A workspace with a reader and one prototype to study. */
 function makeWorkspace(options: { withReference?: boolean } = {}): string {
   const workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-prototype-refs-'))
   mkdirSync(getPrototypeDirPath(workspaceRoot, READER), { recursive: true })
-  writePrototypeConfig(workspaceRoot, READER, { kind: 'scratch' })
   if (options.withReference !== false) {
     mkdirSync(getPrototypeDirPath(workspaceRoot, REFERENCE), { recursive: true })
-    writePrototypeConfig(workspaceRoot, REFERENCE, { kind: 'overlay', targetUrl: 'https://rival.example.com/cart' })
+    writePrototypeConfig(workspaceRoot, REFERENCE, {
+      pages: [{ name: 'cart', kind: 'overlay', url: 'https://rival.example.com/cart', entry: true }],
+    })
   }
   return workspaceRoot
 }
@@ -42,11 +43,17 @@ describe('linkPrototypeReference', () => {
     expect(getPrototypeReferences(workspaceRoot, REFERENCE)).toEqual([])
   })
 
-  it('keeps the reader its own kind and target', () => {
+  // A reference is an edge between two prototypes; it says nothing about what the
+  // reader itself is made of, so the page table has to survive untouched.
+  it('keeps the reader its own page table', () => {
     workspaceRoot = makeWorkspace()
+    writePrototypeConfig(workspaceRoot, READER, {
+      pages: [{ name: 'cart', kind: 'scratch', entry: true }],
+    })
     linkPrototypeReference(workspaceRoot, READER, REFERENCE)
+
     expect(readPrototypeConfig(workspaceRoot, READER)).toEqual({
-      kind: 'scratch',
+      pages: [{ name: 'cart', kind: 'scratch', entry: true }],
       references: [REFERENCE],
     })
   })
@@ -62,25 +69,31 @@ describe('linkPrototypeReference', () => {
     workspaceRoot = makeWorkspace()
     for (const slug of ['second-rival', 'third-rival']) {
       mkdirSync(getPrototypeDirPath(workspaceRoot, slug), { recursive: true })
-      writePrototypeConfig(workspaceRoot, slug, { kind: 'overlay' })
+      writePrototypeConfig(workspaceRoot, slug, {
+        pages: [{ name: 'cart', kind: 'overlay', url: `https://${slug}.example.com/cart`, entry: true }],
+      })
     }
     linkPrototypeReference(workspaceRoot, READER, 'second-rival')
     linkPrototypeReference(workspaceRoot, READER, 'third-rival')
     expect(getPrototypeReferences(workspaceRoot, READER)).toEqual(['second-rival', 'third-rival'])
   })
 
-  // The relation is kind-agnostic: a scratch referencing another scratch is the
-  // same thing as one referencing an overlay, because what matters is that the
-  // two prototypes are independent — not what either of them is.
-  it('accepts a scratch prototype, and a scratch reader, without special-casing either', () => {
+  // The relation is kind-agnostic: a prototype of our own documents referencing
+  // another one is the same thing as one referencing live pages, because what
+  // matters is that the two prototypes are independent — not what either is.
+  it('accepts a prototype of our own documents, and a reader of the same kind', () => {
     workspaceRoot = makeWorkspace()
     mkdirSync(getPrototypeDirPath(workspaceRoot, 'our-other-page'), { recursive: true })
-    writePrototypeConfig(workspaceRoot, 'our-other-page', { kind: 'scratch' })
+    writePrototypeConfig(workspaceRoot, 'our-other-page', {
+      pages: [{ name: 'quotes', kind: 'scratch', entry: true }],
+    })
 
     linkPrototypeReference(workspaceRoot, READER, 'our-other-page')
 
     expect(getPrototypeReferences(workspaceRoot, READER)).toEqual(['our-other-page'])
-    expect(readPrototypeConfig(workspaceRoot, 'our-other-page')).toEqual({ kind: 'scratch' })
+    expect(readPrototypeConfig(workspaceRoot, 'our-other-page')).toEqual({
+      pages: [{ name: 'quotes', kind: 'scratch', entry: true }],
+    })
   })
 
   // A relation that cannot be honoured is worse than a failed command that says
@@ -115,10 +128,16 @@ describe('unlinkPrototypeReference', () => {
 
   it('drops the relation and leaves the rest of the config intact', () => {
     workspaceRoot = makeWorkspace()
+    writePrototypeConfig(workspaceRoot, READER, {
+      pages: [{ name: 'cart', kind: 'scratch', entry: true }],
+    })
     linkPrototypeReference(workspaceRoot, READER, REFERENCE)
+
     unlinkPrototypeReference(workspaceRoot, READER, REFERENCE)
 
-    expect(readPrototypeConfig(workspaceRoot, READER)).toEqual({ kind: 'scratch' })
+    expect(readPrototypeConfig(workspaceRoot, READER)).toEqual({
+      pages: [{ name: 'cart', kind: 'scratch', entry: true }],
+    })
   })
 
   it('is a no-op for a reference that was never linked', () => {

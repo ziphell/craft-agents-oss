@@ -6,9 +6,12 @@ import {
   buildPrototypeStatus,
   canLaneWrite,
   classifyPrototypePath,
+  createPrototype,
   getContractFixturesPath,
   getContractPathsPath,
+  getPrototypeConfigPath,
   getPrototypeDistPath,
+  getPrototypePagePatchesPath,
   getPrototypePatchesPath,
   getPrototypeDirPath,
   isPrototypeLane,
@@ -17,13 +20,21 @@ import {
   resolvePrototypeEntry,
   setPrototypeBaseUrlResolver,
   writePrototypeConfig,
+  writePrototypePage,
+  type PrototypePageEntry,
 } from '..'
 import { getWorkspacePrototypesPath } from '../../workspaces/storage'
 
+const DOCUMENT = '<!doctype html><html><body><h1>Cart</h1></body></html>'
+
 describe('prototype path ownership', () => {
   it('assigns control-plane paths', () => {
-    expect(classifyPrototypePath('base.html')).toEqual({ owner: { kind: 'control-plane' } })
-    expect(classifyPrototypePath('dist/prototype.html')).toEqual({ owner: { kind: 'control-plane' } })
+    // Top-level documents and the page table are written by the control plane (the
+    // agent, on the human's behalf) and read by the lanes.
+    expect(classifyPrototypePath('cart.html')).toEqual({ owner: { kind: 'control-plane' } })
+    expect(classifyPrototypePath('_layout.html')).toEqual({ owner: { kind: 'control-plane' } })
+    expect(classifyPrototypePath('config.json')).toEqual({ owner: { kind: 'control-plane' } })
+    expect(classifyPrototypePath('dist/extension/cart.html')).toEqual({ owner: { kind: 'control-plane' } })
     expect(classifyPrototypePath('services/checkout-api/openapi.yaml')).toEqual({
       owner: { kind: 'control-plane' },
     })
@@ -32,6 +43,9 @@ describe('prototype path ownership', () => {
   it('derives patch ownership from the lane in the file name', () => {
     expect(classifyPrototypePath('patches/A-001-btn.css')).toEqual({ owner: { kind: 'lane', lane: 'A' } })
     expect(classifyPrototypePath('patches/b-012-guard.js')).toEqual({ owner: { kind: 'lane', lane: 'B' } })
+    // One level deeper is a page's own patch: the lane still owns it, and the
+    // directory decides which page it changes (plan §19.4).
+    expect(classifyPrototypePath('patches/cart/A-002-total.css')).toEqual({ owner: { kind: 'lane', lane: 'A' } })
   })
 
   it('flags a patch whose lane prefix is not a declared lane', () => {
@@ -42,7 +56,7 @@ describe('prototype path ownership', () => {
 
   it('flags a misnamed patch rather than silently ignoring it', () => {
     expect(classifyPrototypePath('patches/notes.txt')).toEqual({
-      violation: 'misnamed patch — expected {lane}-{nnn}-{name}.{css|js}',
+      violation: 'misnamed patch — expected {lane}-{nnn}-{name}.{css|js}, optionally under patches/<page>/',
     })
   })
 
@@ -73,6 +87,7 @@ describe('prototype path ownership', () => {
 describe('lane write guard', () => {
   it('lets a lane write its own artifacts', () => {
     expect(canLaneWrite('patches/A-001-btn.css', 'A').ok).toBe(true)
+    expect(canLaneWrite('patches/cart/A-002-total.css', 'A').ok).toBe(true)
     expect(canLaneWrite('services/api/paths/x.yaml', 'B').ok).toBe(true)
     expect(canLaneWrite('services/api/fixtures/x.json', 'C').ok).toBe(true)
   })
@@ -84,8 +99,9 @@ describe('lane write guard', () => {
   })
 
   it('refuses writes to control-plane outputs', () => {
-    expect(canLaneWrite('dist/prototype.html', 'A').reason).toBe('owned by the control plane')
-    expect(canLaneWrite('base.html', 'A').reason).toBe('owned by the control plane')
+    expect(canLaneWrite('dist/extension/cart.html', 'A').reason).toBe('owned by the control plane')
+    expect(canLaneWrite('cart.html', 'A').reason).toBe('owned by the control plane')
+    expect(canLaneWrite('config.json', 'A').reason).toBe('owned by the control plane')
     expect(canLaneWrite('services/api/openapi.yaml', 'B').reason).toBe('owned by the control plane')
   })
 
@@ -104,7 +120,8 @@ describe('resolvePrototypeOwnership', () => {
     const prototypeDir = getPrototypeDirPath(workspaceRoot, slug)
     const patchesDir = getPrototypePatchesPath(workspaceRoot, slug)
     mkdirSync(patchesDir, { recursive: true })
-    writeFileSync(join(prototypeDir, 'base.html'), '<html></html>', 'utf-8')
+    mkdirSync(getPrototypePagePatchesPath(workspaceRoot, slug, 'cart'), { recursive: true })
+    writeFileSync(join(prototypeDir, 'cart.html'), DOCUMENT, 'utf-8')
     writeFileSync(join(patchesDir, 'A-001-btn.css'), '.btn{}', 'utf-8')
     writeFileSync(join(patchesDir, 'oops.css'), '.x{}', 'utf-8')
     writeFileSync(join(patchesDir, '.DS_Store'), '', 'utf-8')
@@ -119,7 +136,7 @@ describe('resolvePrototypeOwnership', () => {
 
     expect(report.inspected).toBe(3)
     expect(report.violations).toEqual([
-      { path: 'patches/oops.css', reason: 'misnamed patch — expected {lane}-{nnn}-{name}.{css|js}' },
+      { path: 'patches/oops.css', reason: 'misnamed patch — expected {lane}-{nnn}-{name}.{css|js}, optionally under patches/<page>/' },
     ])
     expect(report.entries.some((entry) => entry.path === '.DS_Store')).toBe(false)
   })
@@ -160,7 +177,9 @@ describe('listPrototypeStatuses', () => {
     expect(slugs).toEqual(['alpha', 'checkout-flow'])
   })
 
-  it('includes a prototype that has patches but no base.html, and says so', () => {
+  // Patches can legitimately be collected before a page is written, so a prototype
+  // with patches and no pages is a state worth reporting rather than hiding.
+  it('includes a prototype that has patches but no page, and says it has nothing to open', () => {
     const patchesDir = getPrototypePatchesPath(workspaceRoot, 'draft')
     mkdirSync(patchesDir, { recursive: true })
     writeFileSync(join(patchesDir, 'A-001-btn.css'), '.btn{}', 'utf-8')
@@ -168,7 +187,8 @@ describe('listPrototypeStatuses', () => {
     const [status] = listPrototypeStatuses(workspaceRoot)
 
     expect(status?.slug).toBe('draft')
-    expect(status?.baseHtmlPresent).toBe(false)
+    expect(status?.pages).toEqual([])
+    expect(status?.pageAvailable).toBe(false)
     expect(status?.patches.total).toBe(1)
   })
 })
@@ -179,10 +199,9 @@ describe('buildPrototypeStatus', () => {
 
   beforeEach(() => {
     workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-status-'))
-    const prototypeDir = getPrototypeDirPath(workspaceRoot, slug)
+    createPrototype(workspaceRoot, { name: slug })
     const patchesDir = getPrototypePatchesPath(workspaceRoot, slug)
-    mkdirSync(patchesDir, { recursive: true })
-    writeFileSync(join(prototypeDir, 'base.html'), '<html></html>', 'utf-8')
+    writePrototypePage(workspaceRoot, slug, 'base', DOCUMENT)
     writeFileSync(join(patchesDir, 'A-001-btn.css'), '.btn{}', 'utf-8')
     writeFileSync(join(patchesDir, 'oops.css'), '.x{}', 'utf-8')
 
@@ -199,7 +218,7 @@ describe('buildPrototypeStatus', () => {
     writeFileSync(join(fixturesDir, 'list-orders-200.json'), '[]', 'utf-8')
 
     mkdirSync(getPrototypeDistPath(workspaceRoot, slug), { recursive: true })
-    writeFileSync(join(getPrototypeDistPath(workspaceRoot, slug), 'prototype.html'), '<html></html>', 'utf-8')
+    writeFileSync(join(getPrototypeDistPath(workspaceRoot, slug), 'dev-spec.md'), 'spec', 'utf-8')
   })
 
   afterEach(() => {
@@ -208,15 +227,26 @@ describe('buildPrototypeStatus', () => {
     rmSync(workspaceRoot, { recursive: true, force: true })
   })
 
-  it('summarises patches by lane, service coverage, exports and violations', () => {
+  it('summarises the pages, the patches by lane, service coverage, exports and violations', () => {
+    // A page of ours is rendered by the host, so "is there something to open"
+    // depends on one being there — which it always is where the panel runs.
+    setPrototypeBaseUrlResolver((_workspaceRootPath, prototypeSlug) => `http://${prototypeSlug}-hash.localhost`)
     const status = buildPrototypeStatus(workspaceRoot, slug)
 
     expect(status.slug).toBe(slug)
-    expect(status.baseHtmlPresent).toBe(true)
-    expect(status.baseHtmlPath).toBe(join(getPrototypeDirPath(workspaceRoot, slug), 'base.html'))
+
+    // The filesystem says what exists: base.html is a page with nothing declared.
+    expect(status.pages.map((page) => `${page.name}:${page.kind}`)).toEqual(['base:scratch'])
+    // No row carries the entry flag, so the address root shows the page index.
+    expect(status.entryPage).toBeNull()
+    expect(status.pageAvailable).toBe(true)
+    expect(status.pageIssues).toEqual([])
+
     // Only the well-named patch counts; the misnamed one surfaces as a violation.
     expect(status.patches.total).toBe(1)
     expect(status.patches.byLane).toEqual({ A: 1 })
+    // Nothing sits under `patches/<page>/`, so no patch is page-scoped.
+    expect(status.patches.scoped).toBe(0)
     // The file list is the replayable set, so the panel can never open a file
     // that the injector would ignore.
     expect(status.patches.files).toEqual([join(getPrototypePatchesPath(workspaceRoot, slug), 'A-001-btn.css')])
@@ -227,7 +257,7 @@ describe('buildPrototypeStatus', () => {
     expect(status.services[0]?.mockedEndpoints).toBe(1)
     expect(status.services[0]?.fixtures).toBe(1)
 
-    expect(status.distFiles).toEqual(['prototype.html'])
+    expect(status.distFiles).toEqual(['dev-spec.md'])
     expect(status.ownership.violations).toHaveLength(1)
     expect(status.lanes.A).toContain('UI')
   })
@@ -235,8 +265,10 @@ describe('buildPrototypeStatus', () => {
   it('reports an empty prototype without throwing', () => {
     const status = buildPrototypeStatus(workspaceRoot, 'does-not-exist')
 
-    expect(status.baseHtmlPresent).toBe(false)
-    expect(status.baseHtmlPath).toBeNull()
+    expect(status.pages).toEqual([])
+    expect(status.entryPage).toBeNull()
+    expect(status.pageAvailable).toBe(false)
+    expect(status.pageIssues).toEqual([])
     expect(status.patches.total).toBe(0)
     expect(status.patches.files).toEqual([])
     expect(status.services).toEqual([])
@@ -246,25 +278,59 @@ describe('buildPrototypeStatus', () => {
 
   /**
    * `pageAvailable` is what lets the UI offer Open only when it can work, and it
-   * is *not* `baseHtmlPresent`: the two kinds get their page from different places.
-   * An overlay opens the live address it was made against and needs no file at
-   * all — which is the whole reason a captured copy of that page was dropped;
-   * a from-scratch prototype opens the host's rendering of its own document.
+   * is not "a document exists": a page of ours opens the document, while a live
+   * page opens the address it records and needs no file at all.
    */
-  it('counts an overlay with a target page as openable, without any file', () => {
+  it('counts a live page as openable, without any document', () => {
     const slug = 'overlay-no-file'
-    mkdirSync(getPrototypeDirPath(workspaceRoot, slug), { recursive: true })
-    writePrototypeConfig(workspaceRoot, slug, { kind: 'overlay', targetUrl: 'https://app.example.com/checkout' })
+    createPrototype(workspaceRoot, { name: slug })
+    writePrototypeConfig(workspaceRoot, slug, {
+      pages: [{ name: 'pay', kind: 'overlay', url: 'https://app.example.com/checkout', entry: true }],
+    })
 
     const status = buildPrototypeStatus(workspaceRoot, slug)
 
     expect(status.pageAvailable).toBe(true)
-    expect(status.baseHtmlPresent).toBe(false)
+    expect(status.entryPage).toBe('pay')
+    expect(status.pages.map((page) => page.file)).toEqual([null])
 
-    // An overlay with nothing to point at has nothing to open — and that is a
-    // state worth naming, since the address cannot be guessed.
-    writePrototypeConfig(workspaceRoot, slug, { kind: 'overlay' })
-    expect(buildPrototypeStatus(workspaceRoot, slug).pageAvailable).toBe(false)
+    // A row with no address is not a page — and that is a state worth naming,
+    // since the address cannot be guessed.
+    writeFileSync(
+      getPrototypeConfigPath(workspaceRoot, slug),
+      JSON.stringify({ pages: [{ name: 'pay', kind: 'overlay' }] }),
+      'utf-8',
+    )
+
+    const empty = buildPrototypeStatus(workspaceRoot, slug)
+    expect(empty.pages).toEqual([])
+    expect(empty.pageAvailable).toBe(false)
+    expect(empty.pageIssues.join('\n')).toContain('an overlay page needs a url')
+  })
+
+  /**
+   * The patch directories are the page scopes (plan §19.4), so a directory that
+   * matches no page is a change nothing will ever replay — the most expensive kind
+   * of silent failure this model has.
+   */
+  it('counts the page-scoped patches, and names a patch directory that matches no page', () => {
+    const slug = 'scoped'
+    createPrototype(workspaceRoot, { name: slug })
+    writePrototypePage(workspaceRoot, slug, 'cart', DOCUMENT)
+    mkdirSync(getPrototypePagePatchesPath(workspaceRoot, slug, 'cart'), { recursive: true })
+    mkdirSync(getPrototypePagePatchesPath(workspaceRoot, slug, 'nope'), { recursive: true })
+
+    writeFileSync(join(getPrototypePatchesPath(workspaceRoot, slug), 'A-001-shared.css'), '.shared{}', 'utf-8')
+    writeFileSync(join(getPrototypePagePatchesPath(workspaceRoot, slug, 'cart'), 'B-001-cart.css'), '.cart{}', 'utf-8')
+    writeFileSync(join(getPrototypePagePatchesPath(workspaceRoot, slug, 'nope'), 'C-001-x.css'), '.x{}', 'utf-8')
+
+    const status = buildPrototypeStatus(workspaceRoot, slug)
+    const issues = status.pageIssues.join('\n')
+
+    expect(status.patches.total).toBe(3)
+    expect(status.patches.scoped).toBe(2)
+    expect(issues).toContain('patches/nope/ belongs to no page of this prototype')
+    expect(issues).not.toContain('patches/cart/')
   })
 
   /**
@@ -275,31 +341,43 @@ describe('buildPrototypeStatus', () => {
   it('agrees with resolvePrototypeEntry about what can be opened', () => {
     setPrototypeBaseUrlResolver(() => 'http://case-abc123ab.localhost:41234')
 
-    const cases = [
-      { kind: 'overlay' as const, targetUrl: 'https://app.example.com/checkout', base: false },
-      { kind: 'overlay' as const, targetUrl: 'https://app.example.com/checkout', base: true },
-      { kind: 'overlay' as const, targetUrl: undefined, base: true },
-      { kind: 'overlay' as const, targetUrl: undefined, base: false },
-      { kind: 'scratch' as const, targetUrl: undefined, base: true },
-      { kind: 'scratch' as const, targetUrl: undefined, base: false },
+    const cases: Array<{ label: string; pages: PrototypePageEntry[]; documents: string[] }> = [
+      {
+        label: 'live-entry',
+        pages: [{ name: 'pay', kind: 'overlay', url: 'https://app.example.com/checkout', entry: true }],
+        documents: [],
+      },
+      { label: 'live-entry-with-no-address', pages: [{ name: 'pay', kind: 'overlay' }], documents: [] },
+      { label: 'our-entry', pages: [{ name: 'cart', kind: 'scratch', entry: true }], documents: ['cart'] },
+      { label: 'our-entry-with-no-document', pages: [{ name: 'cart', kind: 'scratch', entry: true }], documents: [] },
+      { label: 'no-entry-with-a-page', pages: [], documents: ['cart'] },
+      { label: 'no-entry-and-no-pages', pages: [], documents: [] },
+      {
+        label: 'live-page-beside-our-entry',
+        pages: [
+          { name: 'cart', kind: 'scratch', entry: true },
+          { name: 'pay', kind: 'overlay', url: 'https://app.example.com/pay' },
+        ],
+        documents: ['cart'],
+      },
     ]
 
     for (const scenario of cases) {
-      const slug = `${scenario.kind}-${scenario.targetUrl ? 'url' : 'nourl'}-${scenario.base ? 'base' : 'nobase'}`
-      mkdirSync(getPrototypeDirPath(workspaceRoot, slug), { recursive: true })
-      writePrototypeConfig(workspaceRoot, slug, { kind: scenario.kind, targetUrl: scenario.targetUrl })
-      if (scenario.base) {
-        writeFileSync(join(getPrototypeDirPath(workspaceRoot, slug), 'base.html'), '<!doctype html><html></html>', 'utf-8')
+      createPrototype(workspaceRoot, { name: scenario.label })
+      for (const page of scenario.documents) {
+        writePrototypePage(workspaceRoot, scenario.label, page, DOCUMENT)
       }
+      writePrototypeConfig(workspaceRoot, scenario.label, { pages: scenario.pages })
 
       let openable = true
       try {
-        resolvePrototypeEntry(workspaceRoot, slug)
+        resolvePrototypeEntry(workspaceRoot, scenario.label)
       } catch {
         openable = false
       }
 
-      expect(`${slug}: ${buildPrototypeStatus(workspaceRoot, slug).pageAvailable}`).toBe(`${slug}: ${openable}`)
+      expect(`${scenario.label}: ${buildPrototypeStatus(workspaceRoot, scenario.label).pageAvailable}`)
+        .toBe(`${scenario.label}: ${openable}`)
     }
   })
 })

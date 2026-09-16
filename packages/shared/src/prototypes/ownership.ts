@@ -37,20 +37,25 @@ export type PrototypePathClassification =
   | { owner: PrototypeOwner }
   | { violation: string }
 
-/** `patches/{lane}-{nnn}-{name}.{css|js}` — the lane in the name is the owner. */
-const PATCH_RE = /^patches\/([A-Za-z])-\d+-.+\.(css|js)$/
+/** `patches/{lane}-{nnn}-{name}.{css|js}`, or one level deeper for a page's own — the lane in the name is the owner. */
+const PATCH_RE = /^patches\/(?:[^/]+\/)?([A-Za-z])-\d+-.+\.(css|js)$/
+
+/** A page document of ours: a top-level `.html` (the page table names them; `_layout.html` is one of ours too). */
+const PAGE_DOCUMENT_RE = /^[^/]+\.html?$/i
 
 /**
  * Classify a prototype-relative path (always `/`-separated).
  *
  * Patch ownership is derived from the **lane encoded in the file name** rather
  * than a fixed rule, because any lane may append its own patches — that is what
- * makes patch writing contention-free in the first place.
+ * makes patch writing contention-free in the first place. Which directory a patch
+ * sits in decides the *page* it changes, not who may write it (plan §19.4).
  */
 export function classifyPrototypePath(relativePath: string): PrototypePathClassification {
-  // Root-level control-plane files: the base page, and the kind/target config.
-  // Both are written by the control plane only, so they are not lane-owned.
-  if (relativePath === 'base.html' || relativePath === 'config.json') {
+  // Root-level control-plane files: the page table, and the documents the pages
+  // are. Both are written by the control plane (the agent, on the human's behalf)
+  // and read by the lanes, so they are not lane-owned.
+  if (relativePath === 'config.json' || PAGE_DOCUMENT_RE.test(relativePath)) {
     return { owner: { kind: 'control-plane' } }
   }
 
@@ -65,7 +70,9 @@ export function classifyPrototypePath(relativePath: string): PrototypePathClassi
     return { owner: { kind: 'lane', lane } }
   }
   if (relativePath.startsWith('patches/')) {
-    return { violation: 'misnamed patch — expected {lane}-{nnn}-{name}.{css|js}' }
+    return {
+      violation: 'misnamed patch — expected {lane}-{nnn}-{name}.{css|js}, optionally under patches/<page>/',
+    }
   }
 
   if (/^services\/[^/]+\/openapi\.ya?ml$/.test(relativePath)) {

@@ -1,8 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { getPrototypePatchesPath, loadPrototypeArtifacts, scanPrototypePatches } from '../storage'
+import {
+  getPrototypePatchesPath,
+  getPrototypePagePatchesPath,
+  listPrototypePatchPages,
+  loadPrototypeArtifacts,
+  scanPrototypePatches,
+  scanPrototypePatchesForPage,
+} from '../storage'
 import { buildPatchInitScript, buildPatchStyleElementId } from '../patch-script'
 import type { PrototypePatch } from '../types'
 
@@ -40,6 +47,8 @@ describe('prototype patch index', () => {
     expect(patches[2]?.lane).toBe('B')
     expect(patches[0]?.key).toBe(`prototype:${slug}:A-001-first.css`)
     expect(patches[0]?.source).toBe('.first{}')
+    // A patch at the root of `patches/` belongs to every page (plan §19.4).
+    expect(patches[0]?.page).toBeNull()
   })
 
   it('ignores files that do not follow the naming convention', () => {
@@ -54,6 +63,50 @@ describe('prototype patch index', () => {
 
   it('returns an empty index when the prototype has no patches directory', () => {
     expect(scanPrototypePatches(workspaceRoot, 'missing-prototype')).toEqual([])
+  })
+
+  /**
+   * The directory is the ownership rule (plan §19.4): `patches/*` is shared by
+   * every page, `patches/<page>/*` belongs to that page alone. Both are the same
+   * mechanism, so the root's meaning is unchanged from before pages had names.
+   */
+  describe('scoping a patch to a page', () => {
+    beforeEach(() => {
+      writeFileSync(join(patchesDir, 'A-001-shared.css'), '.shared{}')
+      mkdirSync(join(patchesDir, 'cart'), { recursive: true })
+      writeFileSync(join(patchesDir, 'cart', 'A-001-total.css'), '.total{}')
+    })
+
+    it('reports the page a patch belongs to, and null for a shared one', () => {
+      const patches = scanPrototypePatches(workspaceRoot, slug)
+
+      expect(patches.map((patch) => `${patch.file}:${patch.page}`)).toEqual([
+        'A-001-shared.css:null',
+        'cart/A-001-total.css:cart',
+      ])
+      // The reported path is relative to `patches/`, so two pages can each have an
+      // `A-001-*.css` without their registrations colliding.
+      expect(patches[1]?.key).toBe(`prototype:${slug}:cart/A-001-total.css`)
+    })
+
+    it('hands one page the shared patches plus its own, and nothing else', () => {
+      expect(scanPrototypePatchesForPage(workspaceRoot, slug, 'cart').map((patch) => patch.file))
+        .toEqual(['A-001-shared.css', 'cart/A-001-total.css'])
+      expect(scanPrototypePatchesForPage(workspaceRoot, slug, 'orders').map((patch) => patch.file))
+        .toEqual(['A-001-shared.css'])
+      // A page nobody has patches for still carries the shared ones.
+      expect(scanPrototypePatchesForPage(workspaceRoot, slug, 'nope').map((patch) => patch.file))
+        .toEqual(['A-001-shared.css'])
+    })
+
+    // The listing is names only: a directory is a scope, and whether it names a
+    // real page is the status report's question (`pageIssues`).
+    it('lists the patch directories, valid page names or not', () => {
+      expect(listPrototypePatchPages(workspaceRoot, slug)).toEqual(['cart'])
+
+      mkdirSync(getPrototypePagePatchesPath(workspaceRoot, slug, 'nope'), { recursive: true })
+      expect(listPrototypePatchPages(workspaceRoot, slug)).toEqual(['cart', 'nope'])
+    })
   })
 
   it('exposes the derived index through loadPrototypeArtifacts', () => {
@@ -74,6 +127,7 @@ describe('buildPatchInitScript', () => {
     lane: 'A',
     order: 1,
     source: '.btn { border-radius: 12px }',
+    page: null,
     key: 'prototype:checkout-flow:A-001-btn.css',
   }
 
@@ -123,8 +177,8 @@ describe('buildPatchInitScript', () => {
 
   /**
    * These scripts get concatenated — into one `<script>` in the self-contained
-   * page, into one bundle for the overlay preview. Two js patches in a row used
-   * to parse as a call chain on the first patch's *result*, so the first ran and
+   * page, into one bundle for a live page. Two js patches in a row used to parse
+   * as a call chain on the first patch's *result*, so the first ran and
    * everything after it silently did not.
    */
   it('terminates itself, so two scripts in a row both run', () => {

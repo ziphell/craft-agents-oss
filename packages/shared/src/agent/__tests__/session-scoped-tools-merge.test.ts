@@ -5,7 +5,7 @@ import {
   getSessionScopedToolCallbacks,
   unregisterSessionScopedToolCallbacks,
 } from '../session-scoped-tools.ts';
-import type { PrototypeKind } from '../../prototypes/config.ts';
+import type { BrowserPaneFns } from '../browser-tools.ts';
 
 describe('session-scoped tool callback merge', () => {
   const sessionId = 'test-session-merge';
@@ -15,7 +15,7 @@ describe('session-scoped tool callback merge', () => {
   });
 
   it('preserves existing browserPaneFns when merging turn-level callbacks', () => {
-    const browserPaneFns = {
+    const browserPaneFns: BrowserPaneFns = {
       openPanel: async () => ({ instanceId: 'browser-1' }),
       navigate: async () => ({ url: 'https://example.com', title: 'Example' }),
       snapshot: async () => ({ url: 'https://example.com', title: 'Example', nodes: [] }),
@@ -43,20 +43,16 @@ describe('session-scoped tool callback merge', () => {
       pick: async () => null,
       applyPrototype: async (slug: string) => ({ slug, applied: 0, files: [], skipped: [] }),
       clearPrototype: async (slug: string) => ({ slug, removed: [] }),
-      importPrototype: async (slug: string, sourceSlug: string) => ({
-        slug,
-        sourceSlug,
-        baseHtmlPath: '/tmp/base.html',
-        bytes: 0,
-        copiedPatches: [],
-        skippedPatches: [],
-      }),
       exportPrototype: async (slug: string) => ({
         slug,
-        htmlPath: '/tmp/prototype.html',
-        htmlUrl: 'file:///tmp/prototype.html',
+        extensionDir: '/tmp/prototypes/checkout-flow/dist/extension',
+        pagePath: null,
+        pageUrl: null,
+        version: '1.20000.630',
         specPath: '/tmp/dev-spec.md',
         applied: 0,
+        pageCount: 0,
+        warnings: [],
       }),
       composeContract: async ({ slug, service }: { slug: string; service?: string }) => ({
         service: service ?? 'api',
@@ -84,31 +80,35 @@ describe('session-scoped tool callback merge', () => {
       prototypeStatus: async (slug: string) => ({
         slug,
         dir: '/tmp/prototypes',
-        kind: 'overlay' as const,
         references: [],
-        baseHtmlPresent: false,
+        pages: [],
+        entryPage: null,
+        pageIssues: [],
         pageAvailable: false,
-        baseHtmlPath: null,
-        patches: { total: 0, byLane: {}, files: [] },
+        patches: { total: 0, byLane: {}, scoped: 0, files: [] },
         services: [],
         distFiles: [],
         ownership: { inspected: 0, violations: [] },
         lanes: {},
       }),
       prototypeEntry: async ({ slug }: { slug: string }) => ({
-        path: '/tmp/base.html',
-        url: 'http://checkout-flow.localhost:41234/',
+        page: null,
+        path: null,
+        url: `http://${slug}.localhost:41234/`,
+        origin: `http://${slug}.localhost:41234`,
         injectPatches: false,
       }),
       getBoundPrototypeSlug: () => null,
       listPrototypes: async () => [],
-      createPrototype: async ({ name, kind }: { name: string; kind?: PrototypeKind; targetUrl?: string }) => ({
+      createPrototype: async ({ name }: { name: string }) => ({
         slug: name,
         dir: `/tmp/prototypes/${name}`,
-        baseHtmlPath: `/tmp/prototypes/${name}/base.html`,
-        kind: kind ?? 'scratch',
+        patchesPath: `/tmp/prototypes/${name}/patches`,
       }),
-      setPrototypeTarget: async (_slug: string, targetUrl: string) => ({ kind: 'overlay' as const, targetUrl }),
+      setPrototypePageUrl: async (_slug: string, url: string, page?: string) => ({
+        pages: [{ name: page ?? 'entry', kind: 'overlay' as const, url, entry: page === undefined }],
+      }),
+      setPrototypePages: async (slug: string) => ({ slug, pages: [], note: 'no change' }),
       bindPrototype: async (_slug: string | null) => {},
       linkPrototypeReference: async (_slug: string, referenceSlug: string) => ({ references: [referenceSlug] }),
       unlinkPrototypeReference: async () => ({ references: [] }),

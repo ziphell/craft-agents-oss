@@ -5,14 +5,25 @@
  * workbench. See docs/prototype-workbench-plan.md.
  */
 
-export type { PrototypeArtifacts, PrototypePatch, PrototypePatchKind } from './types.ts'
+export type { PrototypeArtifacts, PrototypePatch, PrototypePatchKind, PrototypeWindowDescriptor, PageKind } from './types.ts'
+export {
+  DEFAULT_PAGE_KIND,
+  LEGACY_BASE_PAGE_NAME,
+  LEGACY_ENTRY_PAGE_NAME,
+  PROTOTYPE_LAYOUT_FILENAME,
+  PROTOTYPE_LAYOUT_SLOT,
+} from './types.ts'
 
 export {
   getPrototypeDirPath,
   getPrototypePatchesPath,
+  getPrototypePagePatchesPath,
+  getPrototypeLayoutPath,
   getPrototypeDistPath,
   getPrototypePatchKey,
+  listPrototypePatchPages,
   scanPrototypePatches,
+  scanPrototypePatchesForPage,
   loadPrototypeArtifacts,
 } from './storage.ts'
 
@@ -65,15 +76,15 @@ export {
 export type { PrototypeStatus, PrototypeStatusService } from './status.ts'
 export { buildPrototypeStatus, listPrototypeStatuses } from './status.ts'
 
-// The kind and its default come from `types.ts` (no imports), re-exported through
-// `config.ts` as well — see the note there for why a renderer must not reach this
-// barrel for a *value*.
-export type { PrototypeKind, PrototypeConfig } from './config.ts'
+// The page kind and its default live in `types.ts` (which imports nothing) — see
+// the note there for why a renderer must not reach a barrel for a *value*.
+export type { PrototypeConfig, PrototypePageEntry } from './config.ts'
 export {
   PROTOTYPE_CONFIG_FILENAME,
-  DEFAULT_PROTOTYPE_KIND,
   getPrototypeConfigPath,
-  isPrototypeKind,
+  isPageKind,
+  legacyPageRows,
+  normalizePrototypePages,
   normalizePrototypeReferences,
   readPrototypeConfig,
   writePrototypeConfig,
@@ -85,16 +96,35 @@ export {
   unlinkPrototypeReference,
 } from './references.ts'
 
-export type { WrittenBase, CreatedPrototype, CreatePrototypeInput } from './create.ts'
+export type { WrittenPage, CreatedPrototype, CreatePrototypeInput } from './create.ts'
 export {
   createPrototype,
   prototypeSlugFromName,
-  readPrototypeBase,
-  writePrototypeBase,
+  readPrototypeLayout,
+  readPrototypePage,
+  writePrototypePage,
 } from './create.ts'
 
-export type { ImportedPrototype } from './import.ts'
-export { importPrototype } from './import.ts'
+export type { DuplicatedPrototype, DuplicatePrototypeOptions } from './duplicate.ts'
+export { duplicatePrototype } from './duplicate.ts'
+
+export type { DeletedPrototype } from './delete.ts'
+export { deletePrototype } from './delete.ts'
+
+export type { PrototypePage, PrototypePageTable, PrototypePagesChange, PrototypePagesResult } from './pages.ts'
+export {
+  PROTOTYPE_INDEX_PATH,
+  describePrototypePages,
+  findEntryPage,
+  isPrototypePagePath,
+  listPrototypePages,
+  matchPrototypePage,
+  pageFileName,
+  pageNameForFile,
+  updatePrototypePages,
+} from './pages.ts'
+
+export { applyPrototypeLayout, buildLayoutShell, buildPrototypeIndexDocument } from './page-document.ts'
 
 export type { PrototypeEntry, PrototypeExportResult } from './export.ts'
 export {
@@ -106,9 +136,7 @@ export {
   resolvePrototypeEntry,
 } from './export.ts'
 
-export { buildOverlayPreviewHtml, buildPatchBundle, toBookmarkletUrl } from './bookmarklet.ts'
-
-export { requireTargetUrl, setPrototypeTargetUrl } from './target.ts'
+export { pickOverlayPage, requireTargetUrl, setPrototypePageUrl } from './target.ts'
 
 export type { PrototypeBaseUrlResolver } from './url.ts'
 export { prototypeDocumentUrl, prototypeOriginUrl, setPrototypeBaseUrlResolver } from './url.ts'

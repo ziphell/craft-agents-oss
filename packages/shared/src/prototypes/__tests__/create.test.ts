@@ -1,15 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import {
   createPrototype,
-  getPrototypePatchesPath,
+  getPrototypeConfigPath,
   getPrototypeDirPath,
+  getPrototypePatchesPath,
+  listPrototypePages,
+  PROTOTYPE_LAYOUT_SLOT,
   prototypeSlugFromName,
-  readPrototypeBase,
-  readPrototypeConfig,
-  writePrototypeBase,
+  readPrototypeLayout,
+  readPrototypePage,
+  updatePrototypePages,
+  writePrototypePage,
 } from '..'
 
 describe('prototypeSlugFromName', () => {
@@ -46,66 +50,46 @@ describe('createPrototype', () => {
     rmSync(workspaceRoot, { recursive: true, force: true })
   })
 
-  it('creates the prototype and its patches folder, and seeds no base page', () => {
-    // The default kind owns its own document, so there is nothing to be missing
-    // on the other side of it: a new prototype is asked only for a name, and its
-    // next step (write base.html, or import one) is always available.
+  /**
+   * Creation asks for a name and nothing else (plan §19.8): it writes no page and
+   * no config, because "this prototype has no pages yet" is a true statement, and
+   * a seeded document would assert a screen that is not there. What it does write
+   * is a shell to copy from — not a page, so it claims nothing about the contents,
+   * and it gives the first screen one validated shape to follow instead of being
+   * invented per screen.
+   */
+  it('creates the directory, its patches folder, and a shell to copy from', () => {
     const created = createPrototype(workspaceRoot, { name: 'Checkout Flow' })
 
     expect(created.slug).toBe('checkout-flow')
-    expect(created.kind).toBe('scratch')
-    expect(existsSync(getPrototypePatchesPath(workspaceRoot, 'checkout-flow'))).toBe(true)
-    expect(existsSync(created.baseHtmlPath)).toBe(false)
-    expect(readPrototypeBase(workspaceRoot, 'checkout-flow')).toBeNull()
+    expect(created.dir).toBe(getPrototypeDirPath(workspaceRoot, 'checkout-flow'))
+    expect(existsSync(created.patchesPath)).toBe(true)
+
+    // The whole directory, so the shape of a new prototype is checkable rather than
+    // assumed.
+    expect(readdirSync(created.dir).sort()).toEqual(['_layout.html', 'patches'])
+    expect(existsSync(getPrototypeConfigPath(workspaceRoot, 'checkout-flow'))).toBe(false)
+    expect(listPrototypePages(workspaceRoot, 'checkout-flow')).toEqual([])
+
+    // The shell has to be able to hold a page, or it is just a file: the slot is
+    // what makes it a frame, and `_` is what keeps it out of the page list.
+    expect(readPrototypeLayout(workspaceRoot, 'checkout-flow')).toContain(PROTOTYPE_LAYOUT_SLOT)
   })
 
   /**
-   * An overlay's page *is* the address it was created against, and the kind is
-   * fixed for the prototype's lifetime — so one created without an address would
-   * have nothing to open, nothing to export against and no way to fill it in.
-   * Creation is the only moment the address is still at hand, which is why the
-   * refusal lives here rather than at the first command that needs it.
+   * A kind and an address are facts about a *page*, so neither belongs here any
+   * more: they are asked for where a page is added, which is also the only moment
+   * an address is still at hand.
    */
-  it('refuses an overlay with no target page', () => {
-    expect(() => createPrototype(workspaceRoot, { name: 'Rival', kind: 'overlay' })).toThrow(/needs that page's address/)
+  it('takes a name and nothing else — a kind is asked for where a page is added', () => {
+    const created = createPrototype(workspaceRoot, { name: 'Rival checkout' })
 
-    // …and leaves nothing behind, rather than a directory that looks deliberate.
-    expect(existsSync(getPrototypeDirPath(workspaceRoot, 'rival'))).toBe(false)
-  })
-
-  it('takes an overlay with a target page, and records it', () => {
-    const created = createPrototype(workspaceRoot, {
-      name: 'Rival checkout',
-      kind: 'overlay',
-      targetUrl: 'https://rival.example.com/cart',
-    })
-
-    expect(created.kind).toBe('overlay')
-    expect(readPrototypeConfig(workspaceRoot, created.slug)).toEqual({
-      kind: 'overlay',
-      targetUrl: 'https://rival.example.com/cart',
-    })
-  })
-
-  // The same shape rule the later "change the address" path enforces (target.ts):
-  // one rule with two entry points, so neither can be laxer than the other.
-  it('refuses a target page a browser could not open', () => {
-    expect(() => createPrototype(workspaceRoot, {
-      name: 'Rival',
-      kind: 'overlay',
-      targetUrl: 'rival.example.com/cart',
-    })).toThrow(/Include the scheme/)
-  })
-
-  // Same for scratch, even though its base will be our own document: an empty
-  // one would claim a page exists, and both real ways to get a first page
-  // (write it, import it) are reachable without one.
-  it('seeds no base page for a scratch prototype either', () => {
-    const created = createPrototype(workspaceRoot, { name: 'Quotes Flow', kind: 'scratch' })
-
-    expect(created.kind).toBe('scratch')
-    expect(existsSync(created.baseHtmlPath)).toBe(false)
-    expect(readPrototypeBase(workspaceRoot, created.slug)).toBeNull()
+    expect(listPrototypePages(workspaceRoot, created.slug)).toEqual([])
+    expect(() => updatePrototypePages(workspaceRoot, created.slug, {
+      op: 'add',
+      name: 'pay',
+      url: 'rival.example.com/cart',
+    })).toThrow(/browser can open/)
   })
 
   it('refuses to reuse an existing prototype rather than mixing two sets of patches', () => {
@@ -121,60 +105,76 @@ describe('createPrototype', () => {
   })
 })
 
-describe('writePrototypeBase', () => {
+describe('writePrototypePage', () => {
   let workspaceRoot = ''
 
   beforeEach(() => {
-    workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-write-base-'))
-    createPrototype(workspaceRoot, { name: 'Checkout Flow', kind: 'scratch' })
+    workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-write-page-'))
+    createPrototype(workspaceRoot, { name: 'Checkout Flow' })
   })
 
   afterEach(() => {
     rmSync(workspaceRoot, { recursive: true, force: true })
   })
 
-  it('writes base.html and reports its size', () => {
+  it('writes the page under its own name and reports its size', () => {
     const markup = '<html><body><h1>Rendered</h1></body></html>'
 
-    const written = writePrototypeBase(workspaceRoot, 'checkout-flow', markup)
+    const written = writePrototypePage(workspaceRoot, 'checkout-flow', 'cart', markup)
 
+    expect(written.page).toBe('cart')
+    expect(written.path.endsWith('cart.html')).toBe(true)
     expect(written.bytes).toBe(Buffer.byteLength(markup, 'utf-8'))
-    expect(readPrototypeBase(workspaceRoot, 'checkout-flow')).toBe(markup)
+    expect(readPrototypePage(workspaceRoot, 'checkout-flow', 'cart.html')).toBe(markup)
+    // Writing the file is enough to have a page: nothing has to be declared.
+    expect(listPrototypePages(workspaceRoot, 'checkout-flow').map((page) => page.name)).toEqual(['cart'])
   })
 
   it('accepts a doctype-prefixed document', () => {
     const markup = '<!doctype html><html><body>x</body></html>'
-    expect(() => writePrototypeBase(workspaceRoot, 'checkout-flow', markup)).not.toThrow()
+    expect(() => writePrototypePage(workspaceRoot, 'checkout-flow', 'cart', markup)).not.toThrow()
   })
 
   it('rejects a fragment, which would only fail later at export time', () => {
-    expect(() => writePrototypeBase(workspaceRoot, 'checkout-flow', '<div>nope</div>')).toThrow(
+    expect(() => writePrototypePage(workspaceRoot, 'checkout-flow', 'cart', '<div>nope</div>')).toThrow(
       /complete HTML document/,
     )
   })
 
+  // The name becomes the file name and an address segment, so it has to be usable
+  // as both — and a leading "_" is the host's own namespace (the shell, the index).
+  it('refuses a name that cannot be a page', () => {
+    expect(() => writePrototypePage(workspaceRoot, 'checkout-flow', '_layout', '<html></html>')).toThrow(
+      /cannot be a page name/,
+    )
+    expect(() => writePrototypePage(workspaceRoot, 'checkout-flow', 'flows/cart', '<html></html>')).toThrow(
+      /cannot be a page name/,
+    )
+  })
+
   it('refuses to write into a prototype that does not exist', () => {
-    expect(() => writePrototypeBase(workspaceRoot, 'nope', '<html></html>')).toThrow(/does not exist/)
+    expect(() => writePrototypePage(workspaceRoot, 'nope', 'cart', '<html></html>')).toThrow(/does not exist/)
   })
 })
 
-describe('readPrototypeBase', () => {
-  it('returns null when the prototype has no base page', () => {
-    const workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-read-base-'))
+describe('readPrototypePage', () => {
+  it('returns null when the document is not there', () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-read-page-'))
     try {
       mkdirSync(getPrototypeDirPath(workspaceRoot, 'empty'), { recursive: true })
-      expect(readPrototypeBase(workspaceRoot, 'empty')).toBeNull()
+      expect(readPrototypePage(workspaceRoot, 'empty', 'cart.html')).toBeNull()
     } finally {
       rmSync(workspaceRoot, { recursive: true, force: true })
     }
   })
 
   it('reads back what was written', () => {
-    const workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-read-base-2-'))
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-read-page-2-'))
     try {
-      createPrototype(workspaceRoot, { name: 'Quotes', kind: 'scratch' })
-      writePrototypeBase(workspaceRoot, 'quotes', '<html><body>quotes</body></html>')
-      expect(readPrototypeBase(workspaceRoot, 'quotes')).toBe('<html><body>quotes</body></html>')
+      createPrototype(workspaceRoot, { name: 'Quotes' })
+      writePrototypePage(workspaceRoot, 'quotes', 'quotes', '<html><body>quotes</body></html>')
+      expect(readPrototypePage(workspaceRoot, 'quotes', 'quotes.html')).toBe('<html><body>quotes</body></html>')
+      expect(existsSync(getPrototypePatchesPath(workspaceRoot, 'quotes'))).toBe(true)
     } finally {
       rmSync(workspaceRoot, { recursive: true, force: true })
     }

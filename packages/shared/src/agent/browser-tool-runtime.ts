@@ -7,6 +7,8 @@ import type {
   BrowserScreenshotRegionArgs,
   BrowserWaitArgs,
 } from './browser-tools.ts';
+import type { PrototypeWindowDescriptor } from '../prototypes/types.ts';
+import type { PrototypePagesChange } from '../prototypes/pages.ts';
 
 export interface BrowserCommandImage {
   data: string;
@@ -72,27 +74,27 @@ export function getBrowserToolHelp(): string {
     '  forward',
     '  evaluate <expression>',
     '  pick [--timeout <ms>]                          ask the user to click an element; returns a stable selector',
-    '  prototype-list                                 prototypes in this workspace, and which one is bound',
-    '  prototype-create <name> [--url <page>] [--no-bind]',
-    '                                                 create (default = a page of our own;',
-    '                                                 --url <page> = patches on that existing page,',
-    '                                                 which then requires the address;',
-    '                                                 --no-bind = do not bind the session)',
-    '  prototype-target <url>                         point the bound overlay at another address',
+    '  prototype-list                                 prototypes in this workspace, their pages, and which is bound',
+    '  prototype-create <name> [--no-bind]            create a prototype (a container: it starts with no pages)',
+    '  prototype-pages [slug] [--add <name>[=<url>]] [--rename <old>=<new>] [--remove <name>]',
+    '                                                 the flow\'s pages, in order. <name>=<url> adds a live page;',
+    '                                                 <name> alone places an existing document; --remove deletes a',
+    '                                                 document of ours with its page',
+    '  prototype-entry <name|none>                    which page the address root opens (none = the page index)',
+    '  prototype-target <url> [--page <name>]        point one overlay page at another address',
     '                                                 (same page in another environment; say so, since the',
     '                                                 patches were written against the old one)',
     '  prototype-reference <slug> [--remove]          study another prototype (reference, not a copy)',
-    '  prototype-import --from <slug>                 copy another prototype\'s page + patches in as the start',
     '  prototype-bind <slug|--clear>                  bind (or unbind) this session\'s prototype',
     '  prototype-apply [slug]                         replay prototype patches (survives reload)',
     '  prototype-clear [slug]                         remove prototype patches',
-    '  prototype-export [slug]                        write dist HTML + dev spec',
+    '  prototype-export [slug]                        write dist/extension + dev spec',
     '  prototype-contract-compose [slug] [--service <svc>]   fragments → services/<svc>/openapi.yaml',
     '  prototype-contract-export [slug] [--service <svc>]    dist contract for the backend',
     '  prototype-mock-apply [slug] [--service <svc>]         serve x-mock responses (fetch + XHR)',
     '  prototype-mock-clear                                  stop serving the mock',
-    '  prototype-status [slug]                               patches, services, exports, ownership',
-    '  prototype-open [slug]                                 open its page (base + every patch, live)',
+    '  prototype-status [slug]                               pages, patches, services, exports, ownership',
+    '  prototype-open [slug] [--page <name>]                 open it (the page you are on, else entry, else index)',
     '  focus [windowId]                               focus existing browser window (no new window)',
     '  windows',
     '  release [windowId|all]                         dismiss agent overlay (user keeps browsing)',
@@ -101,7 +103,11 @@ export function getBrowserToolHelp(): string {
     '',
     'Every prototype-* command except list/create/bind/reference defaults to the prototype this',
     'session is bound to, so no slug is needed. Pass one to target a different prototype.',
-    'Use "prototype-list" for what exists, each one\'s kind, and how they reference each other.',
+    'Use "prototype-list" for what exists, each one\'s pages, and how they reference each other.',
+    'A page\'s name is its identity: "--page <name>" on the commands, "/<name>" on the address, and',
+    '"patches/<name>/" for that page\'s own changes (patches/ at the root applies to every page).',
+    '"prototype-entry <name|none>" decides what the address root opens; "/_index" always lists the pages.',
+    'Full rules and examples: docs/browser-tools.md.',
     '',
     'Batching (string mode, semicolon-separated, stops after navigation commands):',
     '  fill @e1 user@example.com; fill @e2 password123; click @e3',
@@ -125,13 +131,15 @@ export function getBrowserToolHelp(): string {
     '  evaluate document.title',
     '  pick',
     '  prototype-list',
-    '  prototype-create Checkout flow --url https://app.example.com/checkout',
-    '  prototype-create Landing page                 (no --url = a page of our own)',
-    '  prototype-create Rival checkout --url https://rival.example.com/cart --no-bind',
-    '  prototype-target https://staging.example.com/checkout   (the bound overlay, another environment)',
+    '  prototype-create Landing page                  (a container for pages; write cart.html and that is the first)',
+    '  prototype-create Rival checkout --no-bind',
+    '  prototype-pages --add payment=https://app.example.com/pay   (a live page, in flow order)',
+    '  prototype-pages --add cart                     (place an existing cart.html in the flow)',
+    '  prototype-entry cart                           (the address root opens cart from now on)',
+    '  prototype-target https://staging.example.com/checkout --page cart   (one page, another environment)',
     '  prototype-reference rival-checkout            (study it from the bound prototype)',
-    '  prototype-import --from rival-checkout        (start from another prototype\'s page and patches)',
     '  prototype-apply                                (targets the bound prototype)',
+    '  prototype-open checkout-flow --page orders      (one page of a multi-page prototype)',
     '  prototype-apply checkout-flow                  (explicit target)',
     '  prototype-contract-compose --service checkout-api',
     '  screenshot --annotated',
@@ -284,6 +292,39 @@ function summarizeWindows(windows: Awaited<ReturnType<BrowserPaneFns['listWindow
   const locked = windows.filter((w) => !!w.boundSessionId).length;
   const withOverlay = windows.filter((w) => !!w.agentControlActive).length;
   return `total=${windows.length}, visible=${visible}, locked=${locked}, overlays=${withOverlay}`;
+}
+
+/** `checkout-flow — page "orders" (overlay), its own address http://…`: which prototype, which screen, where it lives. */
+function describePrototypeAt(prototype: PrototypeWindowDescriptor): string {
+  const page = prototype.page
+    ? ` — page "${prototype.page}"${prototype.kind ? ` (${prototype.kind})` : ''}`
+    : ' — the page index';
+  const origin = prototype.origin ? `, its own address ${prototype.origin}` : '';
+  return `${prototype.slug}${page}${origin}`;
+}
+
+/**
+ * The prototype a window is showing, and what that means for the next move.
+ *
+ * Both addresses are stated because they are two different facts: the `URL` above
+ * is the page on screen, this is where the prototype itself lives — for an overlay
+ * page they are different addresses, for a page of ours they are the same one.
+ * The kind is the decisive part: a document of ours is changed by editing files, an
+ * overlay page belongs to a real site and is only ever patched. Without this the
+ * agent is looking at an address and guessing.
+ */
+function describeSnapshotPrototype(
+  prototype: PrototypeWindowDescriptor | null | undefined,
+): string[] {
+  if (!prototype) return [];
+  return [
+    `Prototype: ${describePrototypeAt(prototype)}`,
+    prototype.kind === 'overlay'
+      ? "  (the page above is the live site's own page, with this prototype's patches injected — patch it, never edit it in place)"
+      : prototype.kind === 'scratch'
+        ? '  (the document above is ours: that file rendered with its patches applied — changed by editing files)'
+        : "  (the window is on the prototype's own address but not on one of its pages — the page index, or a path the table does not describe)",
+  ];
 }
 
 function getOpenVisibilitySettleTimeoutMs(override?: number): number {
@@ -861,6 +902,7 @@ async function executeSingleCommand(args: {
     const lines: string[] = [
       `URL: ${snapshot.url}`,
       `Title: ${snapshot.title}`,
+      ...describeSnapshotPrototype(snapshot.prototype),
       `Elements: ${snapshot.nodes.length}${roleSummary ? ` (${roleSummary})` : ''}`,
       `Focused ref: ${focusedRef ?? 'none'}, disabled: ${disabledCount}`,
       '',
@@ -899,6 +941,7 @@ async function executeSingleCommand(args: {
           `Security verification detected (${challenge.provider}).`,
           `Signals: ${challenge.signals.join(', ')}`,
           `URL: ${snapshot.url}`,
+          ...describeSnapshotPrototype(snapshot.prototype),
           '',
           `Detected only ${actionableCount} actionable element(s) out of ${snapshot.nodes.length} accessibility nodes.`,
           'This is consistent with a security challenge page blocking normal interaction.',
@@ -1697,8 +1740,8 @@ async function executeSingleCommand(args: {
       return {
         output: [
           'No prototypes in this workspace yet.',
-          'Create one with "prototype-create <name>" for a page of our own, or',
-          '"prototype-create <name> --url <the page it changes>" to patch a page that already exists.',
+          'Create one with "prototype-create <name>" — it is a container for pages: a page is either',
+          'a document of ours (write cart.html) or a live page of someone else\'s (prototype-pages --add pay=<url>).',
         ].join('\n'),
         appendReleaseHint: false,
       };
@@ -1720,53 +1763,53 @@ async function executeSingleCommand(args: {
     for (const prototype of prototypes) {
       const notes: string[] = [];
       if (prototype.slug === bound) notes.push('BOUND');
-      // "no base.html" is the normal state of an overlay, so saying it there
-      // would train the reader to ignore it. What matters either way is the same
-      // thing the Open button asks: is there a page to show?
-      if (!prototype.pageAvailable) {
-        notes.push(prototype.kind === 'overlay' ? 'no target page' : 'no base.html');
-      }
+      // Having no pages is the normal state of a new prototype, so it is said the
+      // same way the panel says it — as the thing that decides whether anything
+      // can be opened at all.
+      if (!prototype.pageAvailable) notes.push('no pages yet');
+      notes.push(`${prototype.pages.length} page${prototype.pages.length === 1 ? '' : 's'}`);
       notes.push(`${prototype.patches.total} patch${prototype.patches.total === 1 ? '' : 'es'}`);
-      if (prototype.targetUrl) notes.push(`target: ${prototype.targetUrl}`);
+      if (prototype.entryPage) notes.push(`entry: ${prototype.entryPage}`);
       if (prototype.references.length > 0) notes.push(`references: ${prototype.references.join(', ')}`);
       const studying = referencedBy.get(prototype.slug)
       if (studying?.length) notes.push(`referenced by: ${studying.join(', ')}`);
-      // The kind is part of the identifier, not a footnote: it decides where
-      // base.html comes from and what the deliverable is.
-      lines.push(`  • ${prototype.slug} (${prototype.kind}) — ${notes.join(', ')}`);
+      lines.push(`  • ${prototype.slug} — ${notes.join(', ')}`);
+      // The pages are the prototype's own shape, and a page's kind decides how it
+      // is changed — so they are listed here rather than left for a second command.
+      for (const page of prototype.pages) {
+        const where = page.kind === 'overlay' ? (page.url ?? 'no address') : (page.file ?? 'document missing');
+        lines.push(`      ${page.name} (${page.kind})${page.entry ? ' [entry]' : ''} — ${where}`);
+      }
+      if (prototype.pageIssues.length > 0) {
+        for (const issue of prototype.pageIssues) lines.push(`      ! ${issue}`);
+      }
     }
 
     return { output: lines.join('\n'), appendReleaseHint: false };
   }
 
   if (cmd === 'prototype-create') {
-    const scratch = parts.includes('--scratch');
     // `--no-bind` exists for one reason: creating a *reference* must not steal
     // the session's binding, or every later slug-less command would retarget the
     // page being studied instead of the page being built.
     const noBind = parts.includes('--no-bind');
-    const urlIndex = parts.indexOf('--url');
-    const targetUrl = urlIndex >= 0 ? parts[urlIndex + 1] : undefined;
 
-    if (urlIndex >= 0 && (!targetUrl || targetUrl.startsWith('--'))) {
-      throw new Error('prototype-create --url needs a value. Example: prototype-create checkout --url https://app.example.com/checkout');
-    }
-    if (scratch && targetUrl) {
+    // Creation takes a name and nothing else (plan §19.8). A leftover flag from
+    // when it also asked for a kind or an address would otherwise be swallowed by
+    // the name — and an address silently folded into a slug is not a mistake
+    // anyone would find later.
+    const unknownFlag = parts.slice(1).find((part) => part.startsWith('--') && part !== '--no-bind');
+    if (unknownFlag) {
       throw new Error(
-        'prototype-create takes either --scratch (a page of our own) or --url <page> (patches on an existing one), ' +
-          'not both — the page is what the two kinds disagree about.',
+        `prototype-create does not take "${unknownFlag}". It only needs a name — pages come afterwards: ` +
+          `write <name>.html for a page of ours, or "prototype-pages --add <name>=<url>" for one that belongs ` +
+          `to a real site.`,
       );
     }
 
-    // The name is whatever is left once the flags (and the --url value) are
-    // removed, so `prototype-create Checkout flow` keeps its spaces.
     const name = parts
       .slice(1)
-      .filter((part, index, all) => {
-        if (part === '--scratch' || part === '--no-bind' || part === '--url') return false;
-        if (index > 0 && all[index - 1] === '--url') return false;
-        return true;
-      })
+      .filter((part) => part !== '--no-bind')
       .join(' ')
       .trim();
 
@@ -1774,40 +1817,29 @@ async function executeSingleCommand(args: {
       throw new Error('prototype-create needs a name. Example: prototype-create Checkout flow');
     }
 
-    // The address decides the kind, because the address is what the kinds
-    // disagree about: an address means the base is someone else's live page, and
-    // its absence means the base is ours. So the default is the from-scratch
-    // kind — the only one that needs nothing we have not already been told.
-    const kind = targetUrl ? 'overlay' : 'scratch';
-
-    // Creating normally binds the session in the same step: the point of creating
-    // one from a conversation is to work on it, and an unbound create would force
-    // the very slug-passing this binding exists to remove.
-    const created = await fns.createPrototype({ name, kind, targetUrl });
+    // Nothing about the pages is decided here: a page's kind is a fact about that
+    // page, and creation is the container (plan §19.8). The address used to be
+    // required at this point, which made the container carry a page's fact.
+    const created = await fns.createPrototype({ name });
     if (!noBind) await fns.bindPrototype(created.slug);
 
     const lines = [
       noBind
-        ? `Created ${kind} prototype "${created.slug}" (not bound — this session still targets its own prototype).`
-        : `Created ${kind} prototype "${created.slug}" and bound this session to it.`,
+        ? `Created prototype "${created.slug}" (not bound — this session still targets its own prototype).`
+        : `Created prototype "${created.slug}" and bound this session to it.`,
       `  dir: ${created.dir}`,
-      ...(kind === 'overlay'
-        ? ['  (no base.html — an overlay\'s page is the live target, not a copy of it)']
-        : ['  (no base.html yet — write it, or import another prototype\'s page)']),
       '',
+      'It has no pages yet — a starting state, not a mistake. A page is one of two things:',
+      '  • a document of ours: write cart.html with the file tools, and it is a page.',
+      '  • a page that belongs to a real site: prototype-pages --add pay=https://app.example.com/pay',
+      '     (study it with the browser tool before writing selectors — the live DOM is the only thing',
+      '      that says what they will match).',
+      '',
+      'Then "prototype-entry cart" if the address root should open one of them (without an entry it lists',
+      'them), and "prototype-open" to look at the result.',
     ];
 
-    if (!noBind) lines.push('The prototype-* commands now target it by default.', '');
-
-    if (kind === 'overlay') {
-      lines.push(`Target page: ${targetUrl}`);
-      lines.push('Next: open it with the browser tool and study the DOM you are about to change. The live page');
-      lines.push('*is* the base (never a copy of it), and patches are injected into it.');
-    } else {
-      lines.push('Next: write base.html yourself — this kind owns its whole document, with no external page.');
-      lines.push('It can also start from another prototype: "prototype-import --from <slug>".');
-      lines.push('To patch a page that already exists instead, create one with: prototype-create <name> --url <page>.');
-    }
+    if (!noBind) lines.push('', 'The prototype-* commands now target it by default.');
 
     return { output: lines.join('\n'), appendReleaseHint: false };
   }
@@ -1821,10 +1853,17 @@ async function executeSingleCommand(args: {
   // any conversation that is working on one.
   if (cmd === 'prototype-target') {
     const url = parts.slice(1).find((part) => !part.startsWith('--'));
+    const pageFlag = parts.indexOf('--page');
+    const wantedPage = pageFlag >= 0 ? parts[pageFlag + 1] : undefined;
 
     if (!url) {
       throw new Error(
         'prototype-target needs the address to point at. Example: prototype-target https://staging.example.com/checkout',
+      );
+    }
+    if (pageFlag >= 0 && (!wantedPage || wantedPage.startsWith('--'))) {
+      throw new Error(
+        'prototype-target --page needs a page name. Example: prototype-target https://staging.example.com/checkout --page cart',
       );
     }
 
@@ -1837,23 +1876,185 @@ async function executeSingleCommand(args: {
     }
 
     const before = await fns.prototypeStatus(slug);
-    const updated = await fns.setPrototypeTarget(slug, url);
+    // Which page moves: the named one, or the entry page when it is a live one,
+    // or the first live one — the same rule `pickOverlayPage` applies, so the page
+    // this reports is the page the change actually lands on.
+    const target = wantedPage
+      ? before.pages.find((page) => page.name === wantedPage)
+      : before.pages.find((page) => page.entry && page.kind === 'overlay') ??
+        before.pages.find((page) => page.kind === 'overlay');
 
-    const lines = [`Prototype "${slug}": target page ${before.targetUrl ? 'changed' : 'set'}`];
-    if (before.targetUrl) lines.push(`  from: ${before.targetUrl}`);
-    lines.push(`  to:   ${updated.targetUrl}`, '');
+    if (wantedPage && !target) {
+      throw new Error(
+        `Prototype "${slug}" has no page "${wantedPage}". Pages: ${before.pages.map((page) => page.name).join(', ') || 'none'}`,
+      );
+    }
+    if (!target) {
+      throw new Error(
+        `Prototype "${slug}" has no page that belongs to a real site, so there is no address to point. ` +
+          `Add one with "prototype-pages --add <name>=<url>".`,
+      );
+    }
+
+    const updated = await fns.setPrototypePageUrl(slug, url, target.name);
+    const rows = updated.pages ?? [];
+    const after = rows.find((page) => page.name === target.name)?.url;
+
+    const lines = [
+      `Prototype "${slug}": page "${target.name}" ${target.url ? 'pointed somewhere else' : 'given an address'}`,
+    ];
+    if (target.url) lines.push(`  from: ${target.url}`);
+    lines.push(`  to:   ${after ?? url}`, '');
     // The two things that go stale silently are named here rather than discovered
     // later as "the patches did nothing".
     lines.push(
       'What follows from this:',
       '  • "prototype-open" goes to the new address, and the next "prototype-export" names it in dev-spec.md and',
-      '    in the preview carrier.',
+      '    scopes the extension to it.',
       '  • Windows already showing the old page keep it until they navigate again — re-open to move them.',
       '  • The patches were written against the old page. Another environment (or the same one after a deploy) may',
       '    not have the same DOM, and a patch that matches nothing looks exactly like a patch that did nothing —',
       '    re-check them on the new address.',
-      '  • The kind is still fixed: this changes where the page is, not what the prototype is.',
+      '  • The page\'s kind is still fixed: this changes where the page is, not what it is.',
     );
+
+    return { output: lines.join('\n'), appendReleaseHint: true };
+  }
+
+  // Which page the address root opens (plan §19.3). Its own command rather than a
+  // flag on prototype-pages: it is the one change to the table that is about the
+  // prototype's front door rather than about the flow.
+  //
+  // Like prototype-target, its only positional argument is a page name, so it does
+  // not go through `resolvePrototypeSlug` — binding names the prototype.
+  if (cmd === 'prototype-entry') {
+    const value = parts.slice(1).find((part) => !part.startsWith('--'));
+    if (!value) {
+      throw new Error('prototype-entry needs a page name, or "none". Example: prototype-entry cart');
+    }
+
+    const slug = fns.getBoundPrototypeSlug?.() ?? null;
+    if (!slug) {
+      throw new Error(
+        `prototype-entry changes the prototype this session is bound to, and it is not bound to one. ` +
+          `Bind it with "prototype-bind <slug>" — "prototype-list" shows what exists.`,
+      );
+    }
+
+    const result = await fns.setPrototypePages(slug, {
+      op: 'entry',
+      name: value.toLowerCase() === 'none' ? null : value,
+    });
+
+    const lines = [`Prototype "${slug}": ${result.note}.`];
+    lines.push(
+      ...(result.pages.length === 0
+        ? ['  no pages declared yet']
+        : result.pages.map(
+            (page) =>
+              `  ${page.name} (${page.kind})${page.entry ? ' [entry]' : ''} — ${page.url ?? 'a document of ours'}`,
+          )),
+      '',
+      'The generated page index stays reachable at /_index, so configuring an entry never takes the list away.',
+      'Re-export to put this in the delivered extension (the toolbar icon opens the entry page).',
+    );
+
+    return { output: lines.join('\n'), appendReleaseHint: true };
+  }
+
+  // The page table: the flow's *other* real addresses. One list, because the same
+  // data feeds "prototype-status", "prototype-open --page", the page name in
+  // "snapshot", and the extension's match patterns — a second place to edit it
+  // would be a second thing to drift.
+  if (cmd === 'prototype-pages') {
+    const slug = resolvePrototypeSlug(fns, parts, 'prototype-pages');
+
+    // One change at a time: "add this page and rename that one" is two decisions,
+    // and reporting them as one line would hide which one failed.
+    const flags = ['--add', '--remove', '--rename'].filter((flag) => parts.includes(flag));
+    if (flags.length > 1) {
+      throw new Error(`prototype-pages takes one change at a time (got ${flags.join(' and ')}).`);
+    }
+    const flag = flags[0];
+    const value = flag ? parts[parts.indexOf(flag) + 1] : undefined;
+    if (flag && (!value || value.startsWith('--'))) {
+      throw new Error(
+        flag === '--remove'
+          ? 'prototype-pages --remove needs a page name. Example: prototype-pages --remove payment'
+          : flag === '--rename'
+            ? 'prototype-pages --rename needs old=new. Example: prototype-pages --rename cart=basket'
+            : 'prototype-pages --add needs a page name, and a url for a live page. Examples: ' +
+              'prototype-pages --add payment=https://app.example.com/pay · prototype-pages --add orders',
+      );
+    }
+
+    let change: PrototypePagesChange | null = null;
+    if (flag === '--remove') {
+      change = { op: 'remove', name: value! };
+    } else if (flag === '--rename') {
+      const separator = value!.indexOf('=');
+      if (separator <= 0) {
+        throw new Error('prototype-pages --rename needs old=new. Example: prototype-pages --rename cart=basket');
+      }
+      change = { op: 'rename', from: value!.slice(0, separator), to: value!.slice(separator + 1) };
+    } else if (flag === '--add') {
+      // `name=url` adds a page that belongs to a real site; a bare `name` places
+      // one of our documents in the flow order, which is the only thing the table
+      // can do about a page that is a file (plan §19.8).
+      const separator = value!.indexOf('=');
+      change = separator <= 0
+        ? { op: 'add', name: value! }
+        : { op: 'add', name: value!.slice(0, separator), url: value!.slice(separator + 1) };
+    }
+
+    if (change) {
+      const result = await fns.setPrototypePages(slug, change);
+      const lines = [`Prototype "${slug}": ${result.note}.`];
+      lines.push(
+        ...(result.pages.length === 0
+          ? ['  the table is empty — a document in the prototype directory is still a page']
+          : result.pages.map(
+              (page) =>
+                `  ${page.name} (${page.kind})${page.entry ? ' [entry]' : ''} — ${page.url ?? 'a document of ours'}`,
+            )),
+        '',
+        // The deliverable is a snapshot (§17.4): a page added now is not in the
+        // extension someone already loaded, and nothing else would say so.
+        'Re-export to put this in the delivered extension: the package is a snapshot of the prototype, so it does',
+        'not see this change until it is built again.',
+      );
+      return { output: lines.join('\n'), appendReleaseHint: true };
+    }
+
+    const status = await fns.prototypeStatus(slug);
+    if (status.pages.length === 0) {
+      return {
+        output:
+          `Prototype "${slug}": no pages yet. Write one (a top-level <name>.html in ${status.dir}), or add a live ` +
+          `page with "prototype-pages --add <name>=<url>".`,
+        appendReleaseHint: true,
+      };
+    }
+
+    const lines = [`Prototype "${slug}": ${status.pages.length} page(s), in flow order`];
+    for (const page of status.pages) {
+      const where = page.kind === 'overlay' ? (page.url ?? 'no address') : (page.file ?? 'document missing');
+      lines.push(`  ${page.name} (${page.kind})${page.entry ? ' [entry]' : ''} — ${where}`);
+    }
+    lines.push('');
+    lines.push(
+      status.entryPage
+        ? `The address root opens "${status.entryPage}" — change that with "prototype-entry <name|none>".`
+        : 'The address root shows the generated page index — "prototype-entry <name>" picks a page instead.',
+    );
+    lines.push('Change the flow:');
+    lines.push('  prototype-pages --add <name>=<url>    add a page that belongs to a real site (we patch it in place)');
+    lines.push('  prototype-pages --add <name>          place an existing <name>.html in the flow order');
+    lines.push('  prototype-pages --rename <old>=<new>  ·  --remove <name>  (removing a page of ours deletes its document)');
+    if (status.pageIssues.length > 0) {
+      lines.push('', 'Issues (fix or acknowledge these — they are screens or patches nothing will reach):');
+      for (const issue of status.pageIssues) lines.push(`  • ${issue}`);
+    }
 
     return { output: lines.join('\n'), appendReleaseHint: true };
   }
@@ -1940,8 +2141,14 @@ async function executeSingleCommand(args: {
     const count = (n: number) => `${n} patch${n === 1 ? '' : 'es'}`;
     const lines: string[] = [];
 
+    // Which page's patches these are is not decoration: a page-scoped patch
+    // (`patches/<page>/…`) only ever lands on that page, so "the patch did nothing"
+    // and "the patch belongs to another page" have to be distinguishable here.
     if (result.applied > 0) {
-      lines.push(`Prototype "${result.slug}": applied ${count(result.applied)}`);
+      lines.push(
+        `Prototype "${result.slug}": applied ${count(result.applied)}` +
+          `${result.page ? ` for page "${result.page}"` : ' (the shared patches only — no page of this flow is on screen)'}`,
+      );
       lines.push(...result.files.map((file) => `  • ${file}`));
       lines.push('Patches are also registered for future documents, so they survive a page reload.');
     } else if (result.skipped.length > 0) {
@@ -1977,71 +2184,47 @@ async function executeSingleCommand(args: {
     return { output: lines.join('\n'), appendReleaseHint: true };
   }
 
-  if (cmd === 'prototype-import') {
-    const fromIndex = parts.indexOf('--from');
-    const source = fromIndex >= 0 ? parts[fromIndex + 1] : undefined;
-
-    if (fromIndex >= 0 && (!source || source.startsWith('--'))) {
-      throw new Error('prototype-import --from needs a value. Example: prototype-import --from rival-checkout');
-    }
-    if (!source) {
-      throw new Error(
-        'prototype-import needs the prototype to copy from. Example: prototype-import --from rival-checkout ' +
-          '("prototype-list" shows what exists).',
-      );
-    }
-
-    // The target is always the prototype this session is working on: you import
-    // *into* what you are building, so the source is the only thing to name.
-    const slug = resolvePrototypeSlug(fns, ['prototype-import'], 'prototype-import');
-    const imported = await fns.importPrototype(slug, source);
-
-    const lines = [
-      `Prototype "${slug}": took "${source}" as its starting point.`,
-      `  page:    ${imported.baseHtmlPath} (${formatBytes(imported.bytes)})`,
-      `  patches: ${imported.copiedPatches.length} copied${imported.copiedPatches.length > 0 ? ` — ${imported.copiedPatches.join(', ')}` : ''}`,
-    ];
-
-    // Non-empty means the two patch sets were *not* merged. Reporting only the
-    // copy would hide the files that stayed as they were.
-    if (imported.skippedPatches.length > 0) {
-      lines.push(
-        `  kept as they were: ${imported.skippedPatches.join(', ')}`,
-        '  (that file name already existed here — nothing was overwritten or deleted)',
-      );
-    }
-    lines.push('The kind, target page and references of this prototype did not change — only the page and patches moved.');
-
-    return { output: lines.join('\n'), appendReleaseHint: true };
-  }
-
   if (cmd === 'prototype-export') {
     const slug = resolvePrototypeSlug(fns, parts, 'prototype-export');
 
     const result = await fns.exportPrototype(slug);
-    const kind = (await fns.prototypeStatus(slug)).kind;
+    const status = await fns.prototypeStatus(slug);
+    const livePages = status.pages.filter((page) => page.kind === 'overlay').length;
+    const ourPages = status.pages.length - livePages;
 
-    // What the HTML *is* differs by kind, and so does what to do with it: one is
-    // the page, the other is a carrier that puts the patches onto someone else's
-    // page. Telling the agent to "verify it runs standalone" for an overlay would
-    // send it to open a file that only contains instructions.
     const lines = [
-      `Prototype "${result.slug}": exported ${result.applied} patch${result.applied === 1 ? '' : 'es'}`,
-      `  HTML: ${result.htmlPath}`,
+      `Prototype "${result.slug}": exported ${result.pageCount} page(s) and ${result.applied} patch` +
+        `${result.applied === 1 ? '' : 'es'} (build ${result.version})`,
+      `  Extension: ${result.extensionDir}`,
       `  Spec: ${result.specPath}`,
       '',
     ];
-    lines.push(
-      ...(kind === 'overlay'
-        ? [
-            'The HTML is the preview carrier: a draggable bookmarklet (plus the same bundle for the console)',
-            'that applies these patches to the live target page. Hand it over — the patches run on that page,',
-            'not in this file. Say which page it applies to when you hand it over; a page with a strict',
-            'Content-Security-Policy will refuse the bookmarklet, which is why the bundle is there twice.',
-          ]
-        : ['The HTML is self-contained — open it to verify it runs standalone:']),
-      `  browser_tool navigate ${result.htmlUrl}`,
-    );
+    // The folder is one deliverable either way, but what it *does* differs by the
+    // pages it covers, and so does what to tell the agent to verify: a live page
+    // gets patched in a real browser, a page of ours is shipped inside the package.
+    lines.push('The folder is the deliverable: a loadable Chrome extension. Hand it over as it is; the README in it');
+    lines.push('says where it applies, which responses are faked, and which build it is.');
+    if (livePages > 0) {
+      lines.push(
+        `Loading it (chrome://extensions → Developer mode → Load unpacked) puts its patches on the ${livePages} live`,
+        'page(s) it covers — nothing to click, and they survive a reload. After a re-export the recipient presses',
+        'Reload on the extension.',
+      );
+    }
+    if (ourPages > 0) {
+      lines.push(
+        `The ${ourPages} page(s) of ours ship inside the package: the recipient opens Options (or the toolbar icon),`,
+        'which shows the page index. To check that side here first:',
+      );
+    }
+    if (result.pageUrl) lines.push(`  browser_tool navigate ${result.pageUrl}`);
+    if (result.warnings.length > 0) {
+      lines.push(
+        '',
+        'The document had to be adapted for the extension (behaviour is unchanged):',
+        ...result.warnings.map((warning) => `  - ${warning}`),
+      );
+    }
 
     return { output: lines.join('\n'), appendReleaseHint: true };
   }
@@ -2130,13 +2313,36 @@ async function executeSingleCommand(args: {
     const lines = [
       `Prototype "${status.slug}"`,
       `  dir:        ${status.dir}`,
-      `  kind:       ${status.kind === 'overlay'
-        ? 'overlay — patches on someone else\'s page; the page is the live target, never copied'
-        : 'scratch — our own page; base.html is ours, and nothing external to keep in sync'}`,
+      `  openable:   ${status.pageAvailable ? 'yes' : 'no pages yet — nothing to open'}`,
     ];
 
-    if (status.kind === 'overlay') {
-      lines.push(`  target:     ${status.targetUrl ?? 'none recorded — nothing to open'}`);
+    // The prototype is a flow, so its screens are listed the way its patches are:
+    // as the facts an agent needs before it decides what to change. A page of ours
+    // is a document in the directory, a live page is a URL on the real site — and
+    // the kind decides how each one is changed.
+    if (status.pages.length === 0) {
+      lines.push('  pages:      none yet');
+    } else {
+      status.pages.forEach((page, index) => {
+        const entryMark = page.entry ? ' [entry]' : '';
+        const where = page.kind === 'overlay'
+          ? `— ${page.url ?? 'no address'}`
+          : `— ${page.file ?? 'document missing'}`;
+        lines.push(`  ${index === 0 ? 'pages:' : '      '}      ${page.name} (${page.kind})${entryMark} ${where}`);
+      });
+      lines.push(
+        `  root:       ${status.entryPage ? `opens "${status.entryPage}"` : 'shows the generated page index'}`,
+      );
+    }
+
+    if (status.pageIssues.length > 0) {
+      // Anything dropped rather than guessed at, a document that is gone, a patch
+      // directory nothing reaches: in every case the flow is missing a screen (or a
+      // change is reaching nowhere), and this is the only place that says which.
+      lines.push(`  page issues: ${status.pageIssues.length}`);
+      for (const issue of status.pageIssues) {
+        lines.push(`    • ${issue}`);
+      }
     }
 
     if (status.references.length === 0) {
@@ -2145,7 +2351,7 @@ async function executeSingleCommand(args: {
       status.references.forEach((referenceSlug, index) => {
         const reference = bySlug.get(referenceSlug);
         const described = reference
-          ? `${reference.kind}${reference.targetUrl ? ` — ${reference.targetUrl}` : ''}`
+          ? `${reference.pages.length} page(s)${reference.entryPage ? `, entry "${reference.entryPage}"` : ''}`
           : 'MISSING — no prototype with that slug'
         lines.push(`  ${index === 0 ? 'references:' : '          '}    ${referenceSlug} (${described})`);
       });
@@ -2158,8 +2364,10 @@ async function executeSingleCommand(args: {
       lines.push(`  referenced by: ${referencedBy.join(', ')}`);
     }
 
-    lines.push(`  base.html:  ${status.baseHtmlPresent ? 'present' : 'MISSING — nothing to apply patches to'}`);
-    lines.push(`  patches:    ${status.patches.total}${laneSummary ? ` (${laneSummary})` : ''}`);
+    lines.push(
+      `  patches:    ${status.patches.total}${laneSummary ? ` (${laneSummary})` : ''}` +
+        `${status.patches.total > 0 ? ` — ${status.patches.scoped} page-scoped, ${status.patches.total - status.patches.scoped} shared` : ''}`,
+    );
 
     if (status.services.length === 0) {
       lines.push('  services:   none');
@@ -2192,23 +2400,81 @@ async function executeSingleCommand(args: {
   if (cmd === 'prototype-open') {
     const slug = resolvePrototypeSlug(fns, parts, 'prototype-open');
 
+    const pageFlagIndex = parts.indexOf('--page');
+    let requestedPage = pageFlagIndex >= 0 ? parts[pageFlagIndex + 1] : undefined;
+    if (pageFlagIndex >= 0 && (!requestedPage || requestedPage.startsWith('--'))) {
+      throw new Error('prototype-open --page needs a page name. Example: prototype-open checkout-flow --page orders');
+    }
+
     const entry = await fns.prototypeEntry({ slug });
-    const result = await fns.navigate(entry.url);
 
-    // An overlay's page is the site's own page, which knows nothing about the
-    // prototype until the patches land in it — opening the address and stopping
-    // there would show the target page, not the prototype. A from-scratch page
-    // is rendered by the host with the patches already inlined, so it needs
-    // nothing here.
-    const applied = entry.injectPatches ? await fns.applyPrototype(slug) : null;
+    // With more than one page, "open the prototype" no longer has a single
+    // meaning, so an unqualified open starts from the page the bound window is
+    // already on (plan §19.6) and falls back to the entry page — which itself
+    // falls back to the generated index. A window that cannot be read is not a
+    // reason to refuse the open; it just means there is no current page to prefer.
+    if (!requestedPage) {
+      try {
+        const snapshot = await fns.snapshot();
+        const window = snapshot.prototype;
+        if (window?.slug === slug && window.page) requestedPage = window.page;
+      } catch {
+        // No browser window to ask — the entry page is the answer.
+      }
+    }
 
+    // `--page` names a later screen; the list comes from the prototype's own
+    // status, which is also what tells the agent which names exist.
+    let url = entry.url;
+    let openedPage: { name: string; kind: string } | null = null;
+    if (requestedPage) {
+      const status = await fns.prototypeStatus(slug);
+      const page = status.pages.find((candidate) => candidate.name === requestedPage);
+      if (!page) {
+        const names = status.pages.map((candidate) => candidate.name).join(', ') || 'none';
+        throw new Error(`Prototype "${slug}" has no page "${requestedPage}". Pages: ${names}`);
+      }
+      if (!page.url) {
+        throw new Error(
+          `Page "${requestedPage}" of "${slug}" has no address${
+            page.kind === 'scratch' ? ' — its document is missing' : ' — nothing is serving this prototype\'s pages'
+          }.`,
+        );
+      }
+      url = page.url;
+      openedPage = { name: page.name, kind: page.kind };
+    }
+
+    const result = await fns.navigate(url);
+
+    // A live page is the site's own, which knows nothing about the prototype until
+    // the patches land in it — opening the address and stopping there would show
+    // the target page, not the prototype. A page of ours is rendered by the host
+    // with its patches already inlined, so it needs nothing here.
+    const opensLivePage = openedPage ? openedPage.kind === 'overlay' : entry.injectPatches;
+    const applied = opensLivePage ? await fns.applyPrototype(slug) : null;
+
+    // `entry.url` is the address we *asked* for — for a live page, the address
+    // recorded on the prototype. Real sites redirect away from it all the time (a
+    // sign-in wall is the usual reason), and the page on screen now is the one the
+    // patches just landed on. So read where the window actually is instead of
+    // reporting the request as if it were the result: the live URL comes from the
+    // document itself, never from the prototype's config.
+    const live = await getPageMetrics(fns);
+
+    const target = openedPage
+      ? `page "${openedPage.name}" (${openedPage.kind})`
+      : entry.page
+        ? `entry page "${entry.page}"`
+        : 'the page index (no entry page is set)';
     const lines = [
-      entry.injectPatches
-        ? `Prototype "${slug}": opened the live page it changes, and replayed its patches into it:`
-        : `Prototype "${slug}": opened its page — every patch applied, built from`,
-      `  ${entry.url}`,
+      opensLivePage
+        ? `Prototype "${slug}": opened ${target} — the live page it changes — and replayed its patches into it:`
+        : `Prototype "${slug}": opened ${target} with every patch applied:`,
+      `  ${url}`,
     ];
-    if (!entry.injectPatches && entry.path) lines.push(`  base: ${entry.path}`);
+    if (live?.url && live.url !== url) lines.push(`  landed on: ${live.url}`);
+    if (!openedPage && !entry.injectPatches && entry.path) lines.push(`  base: ${entry.path}`);
     lines.push(`  Title: ${result.title || '(untitled)'}`);
     if (applied && applied.applied > 0) {
       lines.push(`Replayed ${applied.applied} patch${applied.applied === 1 ? '' : 'es'}: ${applied.files.join(', ')}`);
@@ -2254,6 +2520,9 @@ async function executeSingleCommand(args: {
         `- ${w.id}`,
         `  title: ${w.title || 'New Tab'}`,
         `  url: ${w.url || 'about:blank'}`,
+        ...(w.prototype
+          ? [`  prototype: ${describePrototypeAt(w.prototype)}`]
+          : []),
         `  visible: ${w.isVisible}`,
         `  ownerType: ${w.ownerType}`,
         `  ownerSessionId: ${w.ownerSessionId ?? 'none'}`,

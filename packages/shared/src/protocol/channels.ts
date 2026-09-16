@@ -120,6 +120,16 @@ export const RPC_CHANNELS = {
     EXPORT: 'prototypes:export',
     /** Create a prototype (the panel's "New Prototype"). */
     CREATE: 'prototypes:create',
+    /**
+     * Copy a prototype into a new one: same page, same patches, its own slug and
+     * `config.json` (the list's "Duplicate"). The two are independent afterwards.
+     */
+    DUPLICATE: 'prototypes:duplicate',
+    /**
+     * Remove a prototype and everything in it. Irreversible, and the caller is
+     * the one that asked the user first — the agent has no command for this.
+     */
+    DELETE: 'prototypes:delete',
     /** Replay a prototype's patches into a live browser instance. */
     APPLY: 'prototypes:apply',
     /** Declare that a prototype is studied from another one (plan §14). */
@@ -127,14 +137,16 @@ export const RPC_CHANNELS = {
     /** Drop that relation. Idempotent, and the way a dangling reference is cleaned up. */
     UNLINK_REFERENCE: 'prototypes:unlinkReference',
     /**
-     * Copy another prototype's page and patches in as a starting point. Distinct
-     * from a reference: this one *does* move material, into a `scratch` target.
+     * Change one prototype's page table — add, remove, rename, or mark which page
+     * the address root opens (plan §19). The panel's prototype list drives it; the
+     * agent reaches the same data through `prototype-pages` / `prototype-entry`.
      */
-    IMPORT: 'prototypes:import',
+    SET_PAGES: 'prototypes:setPages',
     /**
-     * Point an overlay at the same page in another environment. The address is a
-     * fact about where the page is, not a rule of the kind, so it is changeable —
-     * see target.ts for what goes stale with it.
+     * Point one live page at the same page in another environment. The address is a
+     * fact about where the page is, not a rule of the page's kind, so it is
+     * changeable — see target.ts for what goes stale with it. `page` names which
+     * page moves; without it the entry page moves when it is a live one.
      */
     SET_TARGET: 'prototypes:setTarget',
   },

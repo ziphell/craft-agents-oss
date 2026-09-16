@@ -3,7 +3,7 @@
 // =============================================================================
 export * from '@craft-agent/shared/protocol'
 
-import type { PrototypeKind } from '@craft-agent/shared/prototypes'
+import type { PageKind } from '@craft-agent/shared/prototypes'
 
 // =============================================================================
 // Package re-exports (convenience for renderer imports)
@@ -110,6 +110,15 @@ export interface BrowserPaneCreateOptions {
   id?: string
   show?: boolean
   bindToSessionId?: string
+  /**
+   * The prototype this window is being opened for: its slug and its own origin
+   * (`http://<slug>-<hash>.localhost/`), which is what the address bar reads.
+   *
+   * Needed because the opener knows something the window cannot find out later:
+   * an overlay's page is a third-party address, so once the view loads it, no
+   * URL says which prototype the window is working on (see `PrototypeEntry.origin`).
+   */
+  prototype?: { slug: string; origin: string }
 }
 
 /**
@@ -484,19 +493,21 @@ export interface ElectronAPI {
   onPrototypesChanged(callback: (workspaceId: string, file: string | null) => void): () => void
   /** Every prototype in the workspace, each with its derived status. */
   listPrototypes(workspaceId: string): Promise<unknown>
-  /** Where to open a prototype: its origin root, i.e. the page rendered from `base.html` with every patch applied. */
-  getPrototypeEntry(workspaceId: string, slug: string): Promise<unknown>
+  /**
+   * Where to open a prototype — its entry page, the generated page index when no
+   * page is the entry, or one named page (`page`). A live page's answer is its own
+   * real address; a page of ours resolves to the host's address for that document.
+   * Either way the caller loads the answer rather than being redirected to it.
+   */
+  getPrototypeEntry(workspaceId: string, slug: string, page?: string | null): Promise<unknown>
   /** Write `dist/*` for a prototype so it can be handed to developers. */
   exportPrototype(workspaceId: string, slug: string): Promise<unknown>
   /**
-   * Create a prototype. `kind` defaults to `scratch` (owns its own `base.html`);
-   * `overlay` injects patches into a real page and requires that page's
-   * `targetUrl` — see create.ts. No base page is seeded either way.
+   * Create a prototype: a container for pages. It has none to begin with — a page
+   * is either a document of ours (something writes `<name>.html`) or a live page
+   * added afterwards — so creation asks for nothing but a name (plan §19.8).
    */
-  createPrototype(
-    workspaceId: string,
-    input: { name: string; kind?: PrototypeKind; targetUrl?: string },
-  ): Promise<unknown>
+  createPrototype(workspaceId: string, input: { name: string }): Promise<unknown>
   /** Replay a prototype's patches into a live browser instance. */
   applyPrototype(workspaceId: string, instanceId: string, slug: string): Promise<unknown>
   /**
@@ -508,19 +519,40 @@ export interface ElectronAPI {
   /** Drop the relation. Idempotent, and how a dangling reference is cleaned up. */
   unlinkPrototypeReference(workspaceId: string, slug: string, referenceSlug: string): Promise<unknown>
   /**
-   * Copy another prototype's `base.html` and its replayable patches in as a
-   * starting point (plan §13.1). Material, not identity: the target keeps its own
-   * kind and target page, and patches it already has are left alone rather than
-   * overwritten. `scratch` targets only — an overlay's base is its own snapshot.
+   * Copy a prototype into a new one (the list's "Duplicate"). Same page and same
+   * patches, its own slug and `config.json`; the two are independent afterwards.
+   * `name` only derives the new slug — omitted, the copy is `<slug> copy`.
    */
-  importPrototype(workspaceId: string, slug: string, sourceSlug: string): Promise<unknown>
+  duplicatePrototype(workspaceId: string, slug: string, name?: string): Promise<unknown>
   /**
-   * Repoint an overlay at the same page in another environment (plan §13.2.1).
-   * Only the kind's own rules are enforced; the caller is expected to say what
+   * Remove a prototype and everything in it. Irreversible — the caller asks the
+   * user first. Returns the slugs of prototypes still referencing it, which are
+   * now dangling.
+   */
+  deletePrototype(workspaceId: string, slug: string): Promise<unknown>
+  /**
+   * Change one prototype's page table (plan §19): add a page, remove one, rename
+   * one, or mark which page the address root opens. The same data the agent
+   * reaches through `prototype-pages` / `prototype-entry`.
+   */
+  setPrototypePages(
+    workspaceId: string,
+    slug: string,
+    change:
+      | { op: 'add'; name: string; url?: string }
+      | { op: 'remove'; name: string }
+      | { op: 'rename'; from: string; to: string }
+      | { op: 'entry'; name: string | null },
+  ): Promise<unknown>
+  /**
+   * Point one live page at the same page in another environment (plan §13.2.1).
+   * Only the page's own rules are enforced; the caller is expected to say what
    * goes stale with it (windows open on the old page, selectors written against
    * the old DOM) — that is what the panel's warning next to the field is for.
+   * `page` names which page moves; without it the entry page moves when it is a
+   * live one, otherwise the first live page.
    */
-  setPrototypeTarget(workspaceId: string, slug: string, targetUrl: string): Promise<unknown>
+  setPrototypeTarget(workspaceId: string, slug: string, targetUrl: string, page?: string): Promise<unknown>
 
   // Sources
   getSources(workspaceId: string): Promise<LoadedSource[]>

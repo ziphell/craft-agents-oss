@@ -605,6 +605,59 @@ describe('BrowserPaneManager', () => {
     )
   })
 
+  /**
+   * Electron hands an abort to whichever `loadURL` promise is *current*, so
+   * creating a window (which loads the empty state) and pointing it somewhere in
+   * the same breath makes a **successful** navigation reject with the *previous*
+   * document's abort. Reported as a failure it says "navigate failed" about a page
+   * that is already on screen — and the fields that would identify it are empty in
+   * practice (`{"errno":-3,"code":"","url":"file:///…/browser-empty-state.html"}`),
+   * so `errno` is what we match on.
+   */
+  it('does not report a navigation as failed when it aborted an earlier load', async () => {
+    manager.createInstance('nav-superseded')
+    const instance = (manager as any).instances.get('nav-superseded')
+    instance.currentUrl = 'https://example.com'
+    instance.title = 'Example'
+    instance.pageView.webContents.loadURL = mock(async () => {
+      throw Object.assign(new Error("ERR_ABORTED (-3) loading 'browser-empty-state.html'"), {
+        errno: -3,
+        code: '',
+        url: 'file:///C:/app/dist/renderer/browser-empty-state.html',
+      })
+    })
+
+    const result = await manager.navigate('nav-superseded', 'https://example.com')
+
+    expect(result).toEqual({ url: 'https://example.com', title: 'Example' })
+  })
+
+  // …but an abort of the URL we asked for means we are not there, and a failure
+  // that is not an abort stays a failure.
+  it('still fails when the aborted load was the one it asked for', async () => {
+    manager.createInstance('nav-aborted-self')
+    const instance = (manager as any).instances.get('nav-aborted-self')
+    instance.pageView.webContents.loadURL = mock(async () => {
+      throw Object.assign(new Error('ERR_ABORTED (-3) loading'), {
+        errno: -3,
+        code: '',
+        url: 'https://example.com',
+      })
+    })
+
+    await expect(manager.navigate('nav-aborted-self', 'https://example.com')).rejects.toThrow('ERR_ABORTED')
+  })
+
+  it('still fails on a load error that is not an abort', async () => {
+    manager.createInstance('nav-broken')
+    const instance = (manager as any).instances.get('nav-broken')
+    instance.pageView.webContents.loadURL = mock(async () => {
+      throw Object.assign(new Error('ERR_NAME_NOT_RESOLVED'), { errno: -105, code: 'ERR_NAME_NOT_RESOLVED' })
+    })
+
+    await expect(manager.navigate('nav-broken', 'https://nope.invalid')).rejects.toThrow('ERR_NAME_NOT_RESOLVED')
+  })
+
   it('clears navigation timeout timer on success', async () => {
     manager.createInstance('nav-timeout')
 
@@ -817,10 +870,10 @@ describe('BrowserPaneManager', () => {
     instance.canGoForward = false
     instance.themeColor = '#123456'
 
-    const sendsBeforeShow = instance.window.webContents.send.mock.calls.length
+    const sendsBeforeShow = instance.toolbarView.webContents.send.mock.calls.length
     instance.window._emit('show')
 
-    const sendCallsAfterShow = instance.window.webContents.send.mock.calls.slice(sendsBeforeShow)
+    const sendCallsAfterShow = instance.toolbarView.webContents.send.mock.calls.slice(sendsBeforeShow)
     expect(sendCallsAfterShow).toContainEqual([
       'browser-toolbar:state-update',
       {
@@ -830,6 +883,9 @@ describe('BrowserPaneManager', () => {
         canGoBack: true,
         canGoForward: false,
         themeColor: '#123456',
+        // No resolver is installed here, and nothing is bound: the toolbar's
+        // prototype actions have nothing to act on.
+        prototypeSlug: null,
       },
     ])
   })
@@ -848,10 +904,10 @@ describe('BrowserPaneManager', () => {
 
     instance.toolbarView.webContents.getURL = mock(() => 'http://localhost:5173/browser-toolbar.html?instanceId=toolbar-finish-load-replay')
 
-    const sendsBeforeFinishLoad = instance.window.webContents.send.mock.calls.length
+    const sendsBeforeFinishLoad = instance.toolbarView.webContents.send.mock.calls.length
     instance.toolbarView.webContents._emit('did-finish-load')
 
-    const sendCallsAfterFinishLoad = instance.window.webContents.send.mock.calls.slice(sendsBeforeFinishLoad)
+    const sendCallsAfterFinishLoad = instance.toolbarView.webContents.send.mock.calls.slice(sendsBeforeFinishLoad)
     expect(sendCallsAfterFinishLoad).toContainEqual([
       'browser-toolbar:state-update',
       {
@@ -861,8 +917,275 @@ describe('BrowserPaneManager', () => {
         canGoBack: true,
         canGoForward: true,
         themeColor: '#654321',
+        prototypeSlug: null,
       },
     ])
+  })
+
+  /**
+   * The window is an app surface: what it is working on is the prototype, and
+   * the address bar is where that is said. An overlay renders a third-party page,
+   * so without this the bar would describe the site instead of the work.
+   */
+  describe('the address bar names the prototype', () => {
+    const ORIGIN = 'http://checkout-flow-abc123ab.localhost:41234'
+
+    /** The last toolbar state pushed to a window. */
+    function lastToolbarState(instance: any): { url: string; prototypeSlug: string | null } {
+      const calls = instance.toolbarView.webContents.send.mock.calls.filter(
+        (call: unknown[]) => call[0] === 'browser-toolbar:state-update',
+      )
+      return calls[calls.length - 1]?.[1]
+    }
+
+    /**
+     * Stands in for the server's own label→prototype map plus `pageOfPrototypeUrl`:
+     * the root names the prototype (`page: null`), `/<name>` names one of its pages
+     * when that page exists, and anything else on that host — a file, an SPA route
+     * — is not ours to resolve (`null`), so it stays an ordinary navigation.
+     */
+    function addressResolverFor(pages: string[] = []) {
+      return (url: string): { binding: { slug: string; origin: string }; page: string | null } | null => {
+        let parsed: URL
+        try {
+          parsed = new URL(url)
+        } catch {
+          return null
+        }
+        if (parsed.host !== new URL(ORIGIN).host) return null
+
+        const segment = parsed.pathname.replace(/^\/+/, '').replace(/\/+$/, '')
+        const binding = { slug: 'checkout-flow', origin: ORIGIN }
+        if (!segment) return { binding, page: null }
+        return segment.includes('/') || !pages.includes(segment) ? null : { binding, page: segment }
+      }
+    }
+
+    /** The registered `browser-toolbar:navigate` handler. */
+    function navigateHandler(): (_event: unknown, instanceId: string, url: string) => Promise<void> {
+      const registration = (
+        mockIpcMainHandle.mock.calls as unknown as Array<
+          [string, (_event: unknown, instanceId: string, url: string) => Promise<void>]
+        >
+      ).find(([channel]) => channel === 'browser-toolbar:navigate')
+      if (!registration) throw new Error('Expected browser-toolbar:navigate IPC registration')
+      return registration[1]
+    }
+
+    /** Replaces the navigation itself, so the test can see whether it happened. */
+    function spyOnNavigate(): ReturnType<typeof mock> {
+      const spy = mock(async (_id: string, _url: string) => ({ url: '', title: '' }))
+      manager.navigate = spy as unknown as typeof manager.navigate
+      return spy
+    }
+
+    /** A window bound to a session that works on `checkout-flow`. */
+    function boundWindow(id: string): any {
+      manager.setPrototypeWindowResolver((sessionId) =>
+        sessionId === 'session-1' ? { slug: 'checkout-flow', origin: ORIGIN } : null,
+      )
+      manager.createInstance(id)
+      const instance = (manager as any).instances.get(id)
+      instance.boundSessionId = 'session-1'
+      instance.ownerSessionId = 'session-1'
+      return instance
+    }
+
+    it('shows the prototype for an overlay, whose page is a third-party site', () => {
+      const instance = boundWindow('overlay-window')
+      instance.currentUrl = 'https://app.example.com/checkout'
+
+      instance.window._emit('show')
+
+      expect(lastToolbarState(instance)).toMatchObject({ url: ORIGIN, prototypeSlug: 'checkout-flow' })
+    })
+
+    /**
+     * Which page belongs in the bar as much as which prototype: the root alone
+     * hides the page you are on and — since typing it opens the entry page — loses
+     * it. The page's own address is what survives being typed back.
+     */
+    it('shows which page an overlay window is on, not just the prototype', () => {
+      const instance = boundWindow('overlay-page-window')
+      instance.currentUrl = 'https://app.example.com/checkout/pay'
+      // Stands in for the page table: that address is the page called `pay`.
+      manager.setPrototypePageResolver((slug, _origin, url) =>
+        slug === 'checkout-flow' && url === 'https://app.example.com/checkout/pay' ? 'pay' : null,
+      )
+
+      instance.window._emit('show')
+
+      expect(lastToolbarState(instance)).toMatchObject({
+        url: `${ORIGIN}/pay`,
+        prototypeSlug: 'checkout-flow',
+      })
+    })
+
+    // And when the window is somewhere the flow does not describe, the bar falls
+    // back to the root rather than inventing a page.
+    it('falls back to the prototype root when the window is on none of its pages', () => {
+      const instance = boundWindow('overlay-stray-window')
+      instance.currentUrl = 'https://elsewhere.example.com/'
+      manager.setPrototypePageResolver(() => null)
+
+      instance.window._emit('show')
+
+      expect(lastToolbarState(instance)).toMatchObject({ url: ORIGIN, prototypeSlug: 'checkout-flow' })
+    })
+
+    it('keeps the real URL while the document is already served by the prototype', () => {
+      const instance = boundWindow('scratch-window')
+      instance.currentUrl = `${ORIGIN}/dist/prototype.html`
+
+      instance.window._emit('show')
+
+      expect(lastToolbarState(instance)).toMatchObject({
+        url: `${ORIGIN}/dist/prototype.html`,
+        prototypeSlug: 'checkout-flow',
+      })
+    })
+
+    // Typing an address that names a prototype asks for *the prototype*: an
+    // overlay has no page of its own at that address, so fetching it would 404 on
+    // a perfectly valid request. It goes to the workbench instead, which resolves
+    // per kind and replays the patches (the path the panel's preview takes).
+    it('routes a typed prototype address to the workbench instead of fetching it', async () => {
+      const actions: Array<{ kind: string; instanceId: string; slug?: string; page?: string | null }> = []
+      manager.setWindowManager({
+        getRpcEventSink: () => (_channel: string, _routing: unknown, payload: unknown) => {
+          actions.push(payload as { kind: string; instanceId: string; slug?: string })
+        },
+      } as any)
+      manager.setPrototypeAddressResolver(addressResolverFor())
+      const instance = boundWindow('typed-window')
+      instance.currentUrl = 'https://app.example.com/checkout'
+      const navigate = spyOnNavigate()
+      manager.registerToolbarIpc()
+
+      await navigateHandler()({}, 'typed-window', `${ORIGIN}/`)
+
+      expect(actions).toContainEqual({
+        kind: 'open-prototype',
+        instanceId: 'typed-window',
+        slug: 'checkout-flow',
+        page: null,
+      })
+      expect(navigate).not.toHaveBeenCalled()
+    })
+
+    // A path below the root is a file, not a page (§16.3) — that stays an ordinary
+    // navigation, so `/dist/prototype.html` still works from the bar.
+    it('navigates normally to a path inside a prototype', async () => {
+      manager.setPrototypeAddressResolver(addressResolverFor(['pay']))
+      boundWindow('file-window')
+      const navigate = spyOnNavigate()
+      manager.registerToolbarIpc()
+
+      await navigateHandler()({}, 'file-window', `${ORIGIN}/dist/prototype.html`)
+
+      expect(navigate).toHaveBeenCalledWith('file-window', `${ORIGIN}/dist/prototype.html`)
+    })
+
+    /**
+     * A page's own address looks like the root but is not it: it names one page, and
+     * the answer is where that page actually is. The view then loads that real
+     * address (a live page's own, or the host's rendering of one of ours) — nothing
+     * is redirected through the prototype — while the bar keeps saying which page
+     * this is.
+     */
+    it('resolves a page address to that page, rather than fetching the address', async () => {
+      const actions: Array<{ kind: string; instanceId: string; slug?: string; page?: string | null }> = []
+      manager.setWindowManager({
+        getRpcEventSink: () => (_channel: string, _routing: unknown, payload: unknown) => {
+          actions.push(payload as { kind: string; instanceId: string; slug?: string; page?: string | null })
+        },
+      } as any)
+      manager.setPrototypeAddressResolver(addressResolverFor(['pay']))
+      boundWindow('page-address-window')
+      const navigate = spyOnNavigate()
+      manager.registerToolbarIpc()
+
+      await navigateHandler()({}, 'page-address-window', `${ORIGIN}/pay`)
+
+      expect(actions).toContainEqual({
+        kind: 'open-prototype',
+        instanceId: 'page-address-window',
+        slug: 'checkout-flow',
+        page: 'pay',
+      })
+      expect(navigate).not.toHaveBeenCalled()
+    })
+
+    it('shows the page itself for a window that has no prototype', () => {
+      manager.createInstance('plain-window')
+      const instance = (manager as any).instances.get('plain-window')
+      instance.currentUrl = 'https://example.com/'
+
+      instance.window._emit('show')
+
+      expect(lastToolbarState(instance)).toMatchObject({ url: 'https://example.com/', prototypeSlug: null })
+    })
+
+    /**
+     * The case that matters most, and the one that was broken: create a prototype,
+     * press Open — and there is no conversation yet, so the session chain has
+     * nothing to say. The bar read the third-party address and the prototype
+     * actions were greyed out, i.e. the window did not know it was the prototype's.
+     * Identity is stated by the opener (the entry's `origin`) instead of deduced.
+     */
+    it('is told which prototype it was opened for, with no conversation in sight', () => {
+      manager.createInstance('opened-window')
+      const instance = (manager as any).instances.get('opened-window')
+      manager.bindPrototype('opened-window', { slug: 'checkout-flow', origin: ORIGIN })
+      instance.currentUrl = 'https://app.example.com/checkout'
+
+      instance.window._emit('show')
+
+      expect(instance.boundSessionId).toBeNull()
+      expect(lastToolbarState(instance)).toMatchObject({ url: ORIGIN, prototypeSlug: 'checkout-flow' })
+    })
+
+    // Typing the address is the other explicit instruction that says so, and it
+    // has to stick: the view immediately navigates on to the live page, which
+    // would otherwise leave the bar describing that page again.
+    it('is bound to the prototype whose address was typed into it', async () => {
+      manager.setPrototypeAddressResolver(addressResolverFor())
+      manager.createInstance('typed-unbound')
+      const instance = (manager as any).instances.get('typed-unbound')
+      manager.registerToolbarIpc()
+      spyOnNavigate()
+
+      await navigateHandler()({}, 'typed-unbound', `${ORIGIN}/`)
+      instance.currentUrl = 'https://app.example.com/checkout'
+      instance.window._emit('show')
+
+      expect(lastToolbarState(instance)).toMatchObject({ url: ORIGIN, prototypeSlug: 'checkout-flow' })
+    })
+
+    // A window opened for a prototype outranks what its session is working on:
+    // the window is the more specific fact, and it is the one the user is looking at.
+    it('prefers the window own binding over the session one', () => {
+      manager.setPrototypeWindowResolver(() => ({ slug: 'another-prototype', origin: 'http://another-1a2b3c4d.localhost' }))
+      manager.createInstance('both-bindings')
+      const instance = (manager as any).instances.get('both-bindings')
+      instance.boundSessionId = 'session-1'
+      manager.bindPrototype('both-bindings', { slug: 'checkout-flow', origin: ORIGIN })
+      instance.currentUrl = 'https://app.example.com/checkout'
+
+      instance.window._emit('show')
+
+      expect(lastToolbarState(instance)).toMatchObject({ url: ORIGIN, prototypeSlug: 'checkout-flow' })
+    })
+
+    // The panel resolves the same fact out of the window list (its actions need
+    // the slug), so the list has to carry it — a slug only the toolbar knew would
+    // mean the bar named the prototype while the buttons stayed greyed out.
+    it('reports the prototype in the window list', () => {
+      manager.createInstance('listed-window')
+      manager.bindPrototype('listed-window', { slug: 'checkout-flow', origin: ORIGIN })
+
+      expect(manager.listInstances().find((item) => item.id === 'listed-window')?.prototypeSlug).toBe('checkout-flow')
+    })
   })
 
   it('does not mark toolbar ready for about:blank did-finish-load', () => {

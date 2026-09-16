@@ -55,6 +55,44 @@ const EARLY_THEME_EXTRACTION_DELAY_MS = 100
 const BROWSER_EMPTY_STATE_PAGE = 'browser-empty-state.html'
 const CRAFT_DEEPLINK_SCHEME_PREFIX = `${process.env.CRAFT_DEEPLINK_SCHEME || 'craftagents'}://`
 
+/**
+ * A load that a **newer navigation aborted**, as opposed to one that failed.
+ *
+ * `ERR_ABORTED` (`errno: -3`) is what Chromium reports when something else took
+ * the WebContents over — creating a window and pointing it somewhere in the same
+ * breath does exactly that to the empty-state page.
+ *
+ * Electron delivers that abort to whichever `loadURL` promise is *current*, not
+ * to the one that was superseded, so a navigation that succeeded rejects with the
+ * **previous** document's abort. Read as a failure it says "navigate failed"
+ * about a page that is on screen — and the two fields that would identify it are
+ * empty in practice (`{"errno":-3,"code":"","url":"file:///…/browser-empty-state.html"}`),
+ * so `errno` is the one to match on. See dev notes §3.3.
+ *
+ * Returns the URL the aborted load was for, or null when this is a real failure.
+ */
+function abortedLoad(error: unknown): { url: string | null } | null {
+  const fields = error as { errno?: number; code?: string; url?: string } | null
+  const message = error instanceof Error ? error.message : ''
+  const aborted = fields?.errno === -3 || fields?.code === 'ERR_ABORTED' || message.includes('ERR_ABORTED')
+  return aborted ? { url: fields?.url ?? null } : null
+}
+
+/**
+ * Whether two addresses are on the same host.
+ *
+ * Host, not origin: the scheme and port are ours to know, and a document served
+ * by the prototype's own server is "inside" it whatever path it is on. Anything
+ * unparsable (about:blank, a failed load) is not a match.
+ */
+function sameHost(a: string, b: string): boolean {
+  try {
+    return new URL(a).host === new URL(b).host
+  } catch {
+    return false
+  }
+}
+
 const THEME_COLOR_EXTRACTOR_FN = String.raw`
 () => {
   const toHex = (r, g, b) => '#' + [r, g, b].map(c => c.toString(16).padStart(2, '0')).join('');
@@ -165,6 +203,23 @@ interface BrowserInstance {
   canGoBack: boolean
   canGoForward: boolean
   boundSessionId: string | null
+  /**
+   * The prototype this window was opened for, if it was opened for one.
+   *
+   * The window's identity, and it has to be stated at open time rather than read
+   * off the page: an overlay's view sits on a third-party address, so once it
+   * loads, nothing in the URL says which prototype is being worked on. The
+   * session chain (see {@link prototypeBindingFor}) covers windows a session
+   * happened to open; this covers the case that matters most — a prototype
+   * opened from its own page, which may have no conversation at all yet.
+   *
+   * Rebinding happens on an explicit instruction only: opening the prototype
+   * again, or typing a prototype's address (see the toolbar NAVIGATE handler).
+   * Wandering off with a normal navigation does not unbind it — the window is
+   * still the prototype's window, and "apply it to whatever is here" is a
+   * legitimate thing to want.
+   */
+  boundPrototype: PrototypeWindowBinding | null
   ownerType: 'session' | 'manual'
   ownerSessionId: string | null
   /**
@@ -213,6 +268,32 @@ export interface BrowserScreenshotOptions {
   annotate?: boolean
   format?: 'png' | 'jpeg'
   jpegQuality?: number
+}
+
+/**
+ * The prototype a browser window belongs to, as its own address says it.
+ *
+ * `origin` is the prototype's *own* origin (`http://<slug>-<hash>.localhost`),
+ * which is what the window's address bar shows — including for an overlay, whose
+ * view is on the third-party page it patches. `slug` is pushed alongside so the
+ * toolbar can name the prototype without parsing a URL.
+ */
+export interface PrototypeWindowBinding {
+  slug: string
+  origin: string
+}
+
+/**
+ * What a prototype address names, once it has been looked up: the prototype, and
+ * which of its pages the address is — `page` null means the address *is* the
+ * prototype's root, which stands for the prototype itself rather than for a page.
+ *
+ * The two come back together because they answer one question from one lookup:
+ * what should this window show, and what should its bar keep saying.
+ */
+export interface PrototypeAddressTarget {
+  binding: PrototypeWindowBinding
+  page: string | null
 }
 
 export interface BrowserConsoleEntry {
@@ -353,6 +434,47 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   private popupParentByWebContentsId = new Map<number, string>()
   private windowManager: WindowManager | null = null
   private sessionPathResolver: ((sessionId: string) => string | null) | null = null
+  /**
+   * Which prototype a window's session is working on, asked per toolbar state
+   * push. Injected because this manager owns windows, not conversations (see
+   * main/index.ts).
+   *
+   * Two things come out of it, and they are the same fact twice: the window's
+   * address bar reads as the prototype's own origin — even for an overlay, whose
+   * page is a third-party address the view keeps loading — and the toolbar's two
+   * prototype actions exist only when there is a prototype to act on. Deriving
+   * both from one lookup is what keeps the address and the affordances from
+   * disagreeing (plan §7: an entry point's precondition is shown before the
+   * click, not answered after it).
+   */
+  private prototypeWindowResolver: ((sessionId: string) => PrototypeWindowBinding | null) | null = null
+  /**
+   * Which prototype an address names — and which of its pages, when it names one.
+   * Also injected (see main/index.ts), and used for the opposite direction: a
+   * *typed* address.
+   *
+   * A prototype's root is not a page you can navigate to (a live page has nothing
+   * there at all), so typing it asks for the prototype rather than for that URL.
+   * A page's own address (`/<name>`, plan §19.3) does have something to load, and
+   * the answer is where: the caller resolves it here and loads *that*, instead of
+   * handing the view an address the host would have to redirect — the bar is a
+   * display of where the window is, not a request.
+   *
+   * Only prototypes this host has actually served are known, which is the same set
+   * whose addresses it handed out.
+   */
+  private prototypeAddressResolver: ((url: string) => PrototypeAddressTarget | null) | null = null
+  /**
+   * Which **page** of a prototype a window is on, given its real address. Also
+   * injected (see main/index.ts).
+   *
+   * The address bar cannot read this off the URL: an overlay page's address is a
+   * third-party one, and only the prototype's page table knows that
+   * `https://app.example.com/checkout/pay` is the page called `pay`. That name is
+   * what makes the bar useful for an overlay — it can say which page you are on,
+   * and typing it back returns you to that page instead of to the flow's entry.
+   */
+  private prototypePageResolver: ((slug: string, origin: string, url: string) => string | null) | null = null
 
   setWindowManager(windowManager: WindowManager): void {
     this.windowManager = windowManager
@@ -360,6 +482,38 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   setSessionPathResolver(fn: (sessionId: string) => string | null): void {
     this.sessionPathResolver = fn
+  }
+
+  setPrototypeWindowResolver(fn: (sessionId: string) => PrototypeWindowBinding | null): void {
+    this.prototypeWindowResolver = fn
+  }
+
+  setPrototypeAddressResolver(fn: (url: string) => PrototypeAddressTarget | null): void {
+    this.prototypeAddressResolver = fn
+  }
+
+  setPrototypePageResolver(fn: (slug: string, origin: string, url: string) => string | null): void {
+    this.prototypePageResolver = fn
+  }
+
+  /**
+   * Say which prototype a window is **for**.
+   *
+   * Called when a window is opened for one — the detail page's Open, the panel's
+   * preview — because that is a fact the window cannot deduce later: an overlay's
+   * view loads a third-party address, so nothing in the URL remembers it. The
+   * address bar and the two prototype actions both read the answer from here
+   * (see `prototypeBindingFor`), which is why a prototype with no conversation
+   * yet still opens as *its own* window rather than as a plain browser tab.
+   *
+   * A missing instance is not an error: the window may have been closed in the
+   * same breath, and that should not fail the open that asked for it.
+   */
+  bindPrototype(id: string, binding: PrototypeWindowBinding): void {
+    const instance = this.instances.get(id)
+    if (!instance) return
+    instance.boundPrototype = binding
+    this.pushToolbarState(instance)
   }
 
   onStateChange(callback: (info: BrowserInstanceInfo) => void): void {
@@ -471,6 +625,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       canGoBack: false,
       canGoForward: false,
       boundSessionId: ownerSessionId,
+      boundPrototype: null,
       ownerType,
       ownerSessionId,
       workspaceId,
@@ -535,12 +690,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // Forcing `about:blank` here would abort *that* navigation and fail it, with
       // the error surfacing against `about:blank` (so the real navigation looks
       // broken when it actually succeeded). Only take over when nothing else did.
-      //
-      // Matched on the message as well as the code: the rejection is only observed
-      // through its message in the logs, so do not depend on one field.
-      const aborted = (error as { code?: string } | null)?.code === 'ERR_ABORTED'
-        || (error instanceof Error && error.message.includes('ERR_ABORTED'))
-      if (aborted) return
+      const superseded = abortedLoad(error)
+      if (superseded) {
+        mainLog.info(`[browser-pane] empty-state load superseded id=${instance.id} aborted=${superseded.url ?? 'unknown'}`)
+        return
+      }
 
       void pageView.webContents.loadURL('about:blank').catch((fallbackError) => {
         mainLog.warn(`[browser-pane] about:blank fallback failed id=${instance.id}: ${String(fallbackError)}`)
@@ -782,14 +936,22 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         timeoutHandle = setTimeout(() => reject(new Error(`Navigation to "${normalizedUrl}" timed out after ${timeoutMs / 1000}s`)), timeoutMs)
       })
       await Promise.race([loaded, timeout])
-      this.pushToolbarState(instance)
-
-      return { url: instance.currentUrl, title: instance.title }
+    } catch (error) {
+      // A *previous* load's abort is not this navigation failing: Electron hands
+      // the abort to whichever `loadURL` promise is current, so the window is
+      // already on the page we asked for (see `abortedLoad`). An abort of the URL
+      // we asked for is a real "did not get there" — and so is anything else.
+      const superseded = abortedLoad(error)
+      if (!superseded || superseded.url === normalizedUrl) throw error
+      mainLog.info(`[browser-pane] navigation superseded a pending load id=${id} aborted=${superseded.url ?? 'unknown'}`)
     } finally {
       if (timeoutHandle) {
         clearTimeout(timeoutHandle)
       }
     }
+
+    this.pushToolbarState(instance)
+    return { url: instance.currentUrl, title: instance.title }
   }
 
   async goBack(id: string): Promise<void> {
@@ -1809,6 +1971,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       if (options?.workspaceId !== undefined) {
         instance.workspaceId = options.workspaceId
       }
+      // Binding decides what the toolbar offers (a window with no prototype has
+      // no prototype actions), so the toolbar has to hear about it.
+      this.pushToolbarState(instance)
       this.emitStateChange(instance)
     }
   }
@@ -1819,6 +1984,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       instance.boundSessionId = null
       instance.ownerType = 'manual'
       // Preserve ownerSessionId as last-known owner for lifecycle targeting.
+      // (No toolbar push: the owner chain is unchanged, so what the toolbar
+      // offers is unchanged too.)
       this.emitStateChange(instance)
     }
   }
@@ -2372,15 +2539,76 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     return new Promise(resolve => setTimeout(resolve, ms))
   }
 
+  /**
+   * What the address bar shows for a window.
+   *
+   * A prototype window reads as the prototype's **own** address, not as the page
+   * underneath it: the window is an app surface whose identity is the prototype it
+   * works on, so an overlay's window says the prototype rather than the
+   * third-party address it happens to render (the view keeps loading that address
+   * — its session, its JavaScript and its origin all have to stay real).
+   *
+   * On the prototype's own origin the real URL says more — a page of ours keeps
+   * showing the path inside itself (`/cart.html`, an SPA route) — so it is left
+   * alone.
+   *
+   * Anywhere else the window is an overlay on someone else's page, and which
+   * *page* is part of the answer. The root alone says "this prototype", and typing
+   * it opens the entry page, so an overlay window would both hide which page is on
+   * screen and lose it on Enter. The page's own address (`/<name>`, plan §19.3)
+   * says which page and survives being typed — the host answers it with a redirect
+   * to the real address. `binding` null means the bar mirrors the page, unchanged
+   * from a plain browser.
+   */
+  private toolbarAddress(
+    instance: BrowserInstance,
+    binding: PrototypeWindowBinding | null,
+    page: string | null,
+  ): string {
+    if (!binding) return instance.currentUrl
+    if (sameHost(instance.currentUrl, binding.origin)) return instance.currentUrl
+
+    const root = binding.origin.replace(/\/+$/, '')
+    return page ? `${root}/${page}` : binding.origin
+  }
+
+  /**
+   * Which prototype a window is working on — the one fact behind both its
+   * address bar and its prototype actions (plan §7: an entry point's
+   * precondition is shown before the click, not answered after it).
+   *
+   * Two sources, in this order:
+   *
+   * 1. the prototype the window was **opened for** — a statement about this
+   *    window, and the only one that survives an overlay's view loading a
+   *    third-party address;
+   * 2. the prototype its **session** is working on, which covers windows nobody
+   *    opened for a prototype (one a session created and is driving).
+   */
+  private prototypeBindingFor(instance: BrowserInstance): PrototypeWindowBinding | null {
+    if (instance.boundPrototype) return instance.boundPrototype
+    const sessionId = instance.boundSessionId ?? instance.ownerSessionId
+    return sessionId ? this.prototypeWindowResolver?.(sessionId) ?? null : null
+  }
+
   private pushToolbarState(instance: BrowserInstance): void {
     if (instance.window.isDestroyed() || instance.toolbarView.webContents.isDestroyed()) return
+    // One lookup for both answers, so the address bar and what a click would do
+    // cannot disagree (see `prototypeBindingFor`).
+    const binding = this.prototypeBindingFor(instance)
+    // Which page, for the bar's sake: only the prototype's page table knows that a
+    // third-party address is the page called `cart` (see `prototypePageResolver`).
+    const page = binding ? this.prototypePageResolver?.(binding.slug, binding.origin, instance.currentUrl) ?? null : null
     const state = {
-      url: instance.currentUrl,
+      url: this.toolbarAddress(instance, binding, page),
       title: instance.title,
       isLoading: instance.isLoading,
       canGoBack: instance.canGoBack,
       canGoForward: instance.canGoForward,
       themeColor: instance.themeColor,
+      /** `null` = no prototype here, which is also when the two prototype
+       *  actions below are withheld. Never `undefined` after the first push. */
+      prototypeSlug: binding?.slug ?? null,
     }
     instance.toolbarView.webContents.send(TOOLBAR_CHANNELS.STATE_UPDATE, state)
   }
@@ -2393,7 +2621,31 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     ipcMain.handle(TOOLBAR_CHANNELS.NAVIGATE, async (_event, instanceId: string, url: string) => {
       const inst = findInstance(instanceId)
-      if (inst) await this.navigate(inst.id, url)
+      if (!inst) return
+
+      // A prototype's own addresses are the one thing here that is not a page
+      // request. The root stands for the prototype itself — which is per page, so
+      // there is nothing to fetch — and goes to whoever knows the workspaces (the
+      // same path the panel's preview takes). A page's address resolves to *that
+      // page's* address and is loaded directly: the view goes to the real page
+      // (or to the host's rendering of a document of ours), and no redirect is
+      // involved — an overlay page is loaded, not bounced through the prototype.
+      const named = this.prototypeAddressResolver?.(url)
+      if (named) {
+        // Either way the window becomes this prototype's window: the address named
+        // it, so the bar must keep saying so after the view loads (that is the
+        // whole reason an overlay's identity cannot come from the URL).
+        inst.boundPrototype = named.binding
+        this.emitToolbarAction({
+          kind: 'open-prototype',
+          instanceId: inst.id,
+          slug: named.binding.slug,
+          page: named.page,
+        })
+        return
+      }
+
+      await this.navigate(inst.id, url)
     })
 
     ipcMain.handle(TOOLBAR_CHANNELS.GO_BACK, async (_event, instanceId: string) => {
@@ -3760,6 +4012,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       canGoBack: instance.canGoBack,
       canGoForward: instance.canGoForward,
       boundSessionId: instance.boundSessionId,
+      prototypeSlug: this.prototypeBindingFor(instance)?.slug ?? null,
       ownerType: instance.ownerType,
       ownerSessionId: instance.ownerSessionId,
       isVisible: instance.isVisible,

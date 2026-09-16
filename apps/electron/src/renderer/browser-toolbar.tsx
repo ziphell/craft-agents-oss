@@ -31,12 +31,27 @@ setupI18n([LanguageDetector, initReactI18next])
 /* ------------------------------------------------------------------ */
 
 interface ToolbarState {
+  /**
+   * What the URL bar shows. For a window that is working on a prototype this is
+   * the prototype's **own** address, never the third-party page an overlay is
+   * rendering — the window belongs to the prototype, and the bar says so.
+   */
   url: string
   title: string
   isLoading: boolean
   canGoBack: boolean
   canGoForward: boolean
   themeColor?: string | null
+  /**
+   * The prototype the URL above names, or `null` for a window that is not one
+   * (no conversation, a conversation without a prototype, or a window the user
+   * steered away by typing an address).
+   *
+   * `undefined` = no state has arrived yet, which is treated as "unknown" rather
+   * than "none" so the buttons do not flash disabled while the first push is in
+   * flight.
+   */
+  prototypeSlug?: string | null
 }
 
 declare global {
@@ -83,6 +98,16 @@ function BrowserToolbarApp() {
    */
   const [picking, setPicking] = useState(false)
   const menuContentRef = useRef<HTMLDivElement | null>(null)
+
+  /**
+   * Whether the two prototype actions have anything to act on.
+   *
+   * Both resolve through the prototype this window is showing, which is what the
+   * URL bar already states, so the answer comes straight from that: a window
+   * that is not a prototype's never accepts a click it would have to explain
+   * away afterwards.
+   */
+  const hasPrototype = state.prototypeSlug === undefined || state.prototypeSlug !== null
 
   const api = window.browserToolbar
 
@@ -242,6 +267,9 @@ function BrowserToolbarApp() {
               aria-label={picking ? t('browser.cancelPick') : t('browser.pickElement')}
               className={picking ? 'bg-accent/15 text-accent' : undefined}
               style={!picking && themeColor ? { color: 'var(--tb-fg)' } : undefined}
+              // Still clickable while picking: cancelling must not be taken away
+              // by a binding change that happens mid-pick.
+              disabled={!hasPrototype && !picking}
               onClick={() => { void handleTogglePick() }}
             />
 
@@ -249,6 +277,7 @@ function BrowserToolbarApp() {
               icon={<Zap className="h-3.5 w-3.5" />}
               aria-label={t('browser.applyPrototype')}
               style={themeColor ? { color: 'var(--tb-fg)' } : undefined}
+              disabled={!hasPrototype}
               onClick={handleApplyPrototype}
             />
 

@@ -38,14 +38,20 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
       return browserPaneManager.createInstance(input, { workspaceId })
     }
 
-    if (input?.bindToSessionId) {
-      return browserPaneManager.createForSession(input.bindToSessionId, {
-        show: input.show ?? false,
-        workspaceId,
-      })
-    }
+    const instanceId = input?.bindToSessionId
+      ? browserPaneManager.createForSession(input.bindToSessionId, {
+          show: input.show ?? false,
+          workspaceId,
+        })
+      : browserPaneManager.createInstance(input?.id, { show: input?.show, workspaceId })
 
-    return browserPaneManager.createInstance(input?.id, { show: input?.show, workspaceId })
+    // The opener knows which prototype this window is for; the window cannot find
+    // out on its own, because an overlay's page is somebody else's address. Said
+    // to whatever instance came back — `createForSession` may hand back a window
+    // the session already had.
+    if (input?.prototype) browserPaneManager.bindPrototype(instanceId, input.prototype)
+
+    return instanceId
   })
 
   server.handle(RPC_CHANNELS.browserPane.DESTROY, (_ctx, id: string) => {

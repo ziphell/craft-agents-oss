@@ -1,11 +1,15 @@
 /**
- * EditTargetPageDialog — change which page an overlay points at.
+ * EditTargetPageDialog — change the address one live page points at.
  *
- * The address is a fact about where the page is, not a rule of the kind: the same
+ * The address is a fact about where a page is, not a rule of the kind: the same
  * page usually exists in a dev, a staging and a production environment, and the
  * same patches are meant to be looked at in each (plan §13.2.1). So this is an
  * ordinary field — the point is to keep the address visible and changeable, not
  * to put it behind a warning wall.
+ *
+ * The dialog edits **one page** of a prototype (plan §19.4): a flow may hold
+ * several live addresses, so the page name is part of what is being changed and
+ * is shown, and the caller passes it to `setPrototypeTarget`.
  *
  * The warning is there because two things go stale **silently** when it changes:
  * a window already open on the old page keeps showing it, and the selectors were
@@ -33,6 +37,8 @@ interface EditTargetPageDialogProps {
   open: boolean
   /** Shown in the title, so the dialog says which prototype it will change. */
   slug: string
+  /** The page whose address moves — a prototype may have more than one live page. */
+  page: string
   currentUrl: string
   onCancel: () => void
   /** Rejections are surfaced in the dialog — the caller must not swallow the RPC error. */
@@ -42,6 +48,7 @@ interface EditTargetPageDialogProps {
 export function EditTargetPageDialog({
   open,
   slug,
+  page,
   currentUrl,
   onCancel,
   onSubmit,
@@ -78,7 +85,7 @@ export function EditTargetPageDialog({
     try {
       await onSubmit(trimmed)
     } catch (err) {
-      // The RPC message names what to fix (a from-scratch prototype, a scheme-less
+      // The RPC message names what to fix (a page of ours, a scheme-less
       // address), so show it verbatim and only fall back to the generic label.
       setError(err instanceof Error && err.message ? err.message : t('prototypeTarget.failed'))
     } finally {
@@ -91,7 +98,7 @@ export function EditTargetPageDialog({
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{t('prototypeTarget.title')}</DialogTitle>
-          <DialogDescription className="font-mono text-xs">{slug}</DialogDescription>
+          <DialogDescription className="font-mono text-xs">{`${slug} · ${page}`}</DialogDescription>
         </DialogHeader>
 
         <div className="space-y-1.5 pt-2">
@@ -104,7 +111,7 @@ export function EditTargetPageDialog({
             value={url}
             disabled={submitting}
             onChange={(e) => setUrl(e.target.value)}
-            placeholder={t('prototypeCreate.targetUrlPlaceholder')}
+            placeholder={t('prototypePage.urlPlaceholder')}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && canSubmit) {
                 e.preventDefault()

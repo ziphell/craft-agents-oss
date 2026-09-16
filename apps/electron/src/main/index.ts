@@ -3,7 +3,7 @@
 import { loadShellEnv } from './shell-env'
 loadShellEnv()
 
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, nativeTheme, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, nativeTheme, net, session, shell } from 'electron'
 import { createHash, randomUUID } from 'crypto'
 import { hostname, homedir } from 'os'
 import * as Sentry from '@sentry/electron/main'
@@ -108,14 +108,15 @@ import { setBundledAssetsRoot } from '@craft-agent/shared/utils'
 import { initializeBackendHostRuntime } from '@craft-agent/shared/agent/backend'
 import { setPowerShellValidatorRoot } from '@craft-agent/shared/agent'
 import { handleDeepLink } from './deep-link'
-import { BrowserPaneManager } from './browser-pane-manager'
+import { BrowserPaneManager, BROWSER_PANE_SESSION_PARTITION } from './browser-pane-manager'
 import { OAuthFlowStore } from '@craft-agent/shared/auth'
 import { registerThumbnailScheme, registerThumbnailHandler } from './thumbnail-protocol'
-import { installPrototypeBaseUrlResolver, startPrototypeServer } from './prototype-server'
+import { installPrototypeBaseUrlResolver, registerPrototypeProtocolHandler, resolveServedPrototype } from './prototype-host'
 import log, { isDebugMode, mainLog, getLogFilePath, getMessagingGatewayLogFilePath, messagingGatewayLog, autoUpdateLog } from './logger'
 import { setPerfEnabled, enableDebug } from '@craft-agent/shared/utils'
 import { registerPiModelResolver } from '@craft-agent/shared/config'
 import { getPiModelsForAuthProvider, getAllPiModels } from '@craft-agent/shared/config'
+import { listPrototypePages, matchPrototypePage, prototypeOriginUrl } from '@craft-agent/shared/prototypes'
 import { initNotificationService, initBadgeIcon, initInstanceBadge, updateBadgeCount } from './notifications'
 import { checkForUpdatesOnLaunch, setAutoUpdateEventSink, isUpdating, setBeforeUpdateQuitHook, setBeforeUpdateInstallHook, setInstallQuitFailedHook } from './auto-update'
 import type { EventSink } from '@craft-agent/server-core/transport'
@@ -419,11 +420,14 @@ app.whenReady().then(async () => {
   // Register thumbnail:// protocol handler (scheme was registered earlier, before app.whenReady)
   registerThumbnailHandler()
 
-  // Prototype documents open over a loopback HTTP origin instead of file://, which
-  // has an opaque origin: no cookie jar, no relative fetch (so the mock layer never
-  // sees a request to answer), no ES modules. Installed after the start attempt
-  // either way — with no port the resolver returns null and URLs stay file://.
-  await startPrototypeServer()
+  // Prototype documents need a real origin: file:// is opaque, which costs the
+  // cookie jar, relative fetch (so the mock layer never sees a request to answer)
+  // and ES modules. They are answered by an http handler on the browser session —
+  // no port, so the address is the same on every start, and anything that is not
+  // one of our hosts goes straight back to Chromium's network stack.
+  registerPrototypeProtocolHandler(session.fromPartition(BROWSER_PANE_SESSION_PARTITION), (request) =>
+    net.fetch(request, { bypassCustomProtocolHandlers: true }),
+  )
   installPrototypeBaseUrlResolver()
 
   // Re-apply proxy settings now that Electron sessions are available
@@ -741,6 +745,92 @@ app.whenReady().then(async () => {
       oauthFlowStore = instance.oauthFlowStore
       moduleSink = instance.wsServer.push.bind(instance.wsServer)
       moduleClientResolver = resolveClientId
+
+      // The browser toolbar reads a window's prototype off its own address: for
+      // an overlay that address is the prototype's origin, not the third-party
+      // page the view is loading. The pane manager owns windows and cannot know
+      // conversations, so hand it the one lookup that answers both questions —
+      // which prototype, and what its address is. Late-bound on purpose: windows
+      // can be created before (and after) this assignment.
+      browserPaneManager?.setPrototypeWindowResolver((sessionId) => {
+        const binding = sessionManager?.getSessionPrototypeBinding(sessionId)
+        if (!binding) return null
+        const origin = prototypeOriginUrl(binding.workspaceRootPath, binding.slug)
+        if (!origin) return null
+        return { slug: binding.slug, origin }
+      })
+
+      /**
+       * Which page a prototype's own address names, for the bar's other direction.
+       *
+       * Three answers, because three things can be typed: the root, which stands
+       * for the prototype itself (`null`); a page's own address (`/<name>` — one
+       * segment, and a page that actually exists); and anything else on that host,
+       * such as a file (`/dist/extension/index.html`) or an SPA route no page
+       * describes (`undefined`) — which is an ordinary navigation the host answers
+       * itself, and not something to resolve here.
+       */
+      const pageOfPrototypeUrl = (
+        prototype: { workspaceRootPath: string; slug: string },
+        url: string,
+      ): string | null | undefined => {
+        let pathname: string
+        try {
+          pathname = new URL(url).pathname
+        } catch {
+          return undefined
+        }
+        if (pathname === '' || pathname === '/') return null
+
+        const segment = pathname.replace(/^\/+/, '').replace(/\/+$/, '')
+        if (!segment || segment.includes('/')) return undefined
+
+        let name: string
+        try {
+          name = decodeURIComponent(segment)
+        } catch {
+          return undefined
+        }
+        return listPrototypePages(prototype.workspaceRootPath, prototype.slug).some(
+          (page) => page.name === name,
+        )
+          ? name
+          : undefined
+      }
+
+      // The other direction: an address the user typed into that bar. A
+      // prototype's root names the prototype, not a page, so the pane manager
+      // needs to be able to tell whose address it is; a page's own address
+      // (`/<name>`) names a page, and the answer says which — the window then
+      // loads that page's real address directly, with no redirect through the
+      // host. Only prototypes this host actually served are known, which is
+      // exactly the set whose addresses it handed out, and each of them
+      // registered itself when its address was built for the bar.
+      browserPaneManager?.setPrototypeAddressResolver((url) => {
+        const served = resolveServedPrototype(url)
+        if (!served) return null
+        const origin = prototypeOriginUrl(served.workspaceRootPath, served.slug)
+        if (!origin) return null
+        const page = pageOfPrototypeUrl(served, url)
+        // Anything else on that host is a file request (`/dist/…`, `/assets/…`,
+        // `/cart.html`): the host serves those directly, so it stays an ordinary
+        // navigation rather than something to resolve here.
+        if (page === undefined) return null
+        // Both halves, because the window keeps this as its identity after the
+        // view loads: a live page leaves no trace of the prototype in its URL, so
+        // the bar has to be told rather than made to read it.
+        return { binding: { slug: served.slug, origin }, page }
+      })
+
+      // Which page of that prototype a window is on, for the address bar. Only the
+      // page table can answer this — a live page's own address carries no trace of
+      // the name the flow knows it by — and the bar needs the name to show which
+      // page you are on (plan §19.3).
+      browserPaneManager?.setPrototypePageResolver((slug, origin, url) => {
+        const served = resolveServedPrototype(`${origin.replace(/\/+$/, '')}/`)
+        if (!served || served.slug !== slug) return null
+        return matchPrototypePage(listPrototypePages(served.workspaceRootPath, served.slug), url)
+      })
 
       // -----------------------------------------------------------------------
       // Messaging Gateway — attach the WS publisher, init local workspaces,

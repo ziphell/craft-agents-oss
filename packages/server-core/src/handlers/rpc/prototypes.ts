@@ -14,8 +14,8 @@ import { watch } from 'fs'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import { ensureWorkspacePrototypesPath } from '@craft-agent/shared/workspaces'
-import { exportPrototype, createPrototype, importPrototype, linkPrototypeReference, listPrototypeStatuses, resolvePrototypeEntry, setPrototypeTargetUrl, unlinkPrototypeReference } from '@craft-agent/shared/prototypes'
-import type { PrototypeKind } from '@craft-agent/shared/prototypes'
+import { exportPrototype, createPrototype, deletePrototype, duplicatePrototype, linkPrototypeReference, listPrototypeStatuses, resolvePrototypeEntry, setPrototypePageUrl, unlinkPrototypeReference, updatePrototypePages } from '@craft-agent/shared/prototypes'
+import type { PrototypePagesChange } from '@craft-agent/shared/prototypes'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import {
   applyPrototypeToBrowser,
@@ -29,10 +29,12 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.prototypes.ENTRY,
   RPC_CHANNELS.prototypes.EXPORT,
   RPC_CHANNELS.prototypes.CREATE,
+  RPC_CHANNELS.prototypes.DUPLICATE,
+  RPC_CHANNELS.prototypes.DELETE,
   RPC_CHANNELS.prototypes.APPLY,
   RPC_CHANNELS.prototypes.LINK_REFERENCE,
   RPC_CHANNELS.prototypes.UNLINK_REFERENCE,
-  RPC_CHANNELS.prototypes.IMPORT,
+  RPC_CHANNELS.prototypes.SET_PAGES,
   RPC_CHANNELS.prototypes.SET_TARGET,
 ] as const
 
@@ -76,39 +78,43 @@ export function registerPrototypesHandlers(server: RpcServer, deps: HandlerDeps)
   })
 
   // Resolve what to open. Two kinds, two answers: an overlay opens the live
-  // address it was made against and needs its patches injected into that page,
-  // a from-scratch prototype opens the host rendering its own base.html with
-  // every patch already inlined. Never the exported deliverable — that is a
-  // stale copy from an earlier export, not a page you can go on editing. Throws
-  // with what is missing named when there is nothing to open, so the panel
-  // surfaces that message instead of a failed page load.
-  server.handle(RPC_CHANNELS.prototypes.ENTRY, async (_ctx, workspaceId: string, slug: string) => {
-    const workspace = getWorkspaceByNameOrId(workspaceId)
-    if (!workspace) throw new Error(`PROTOTYPES_ENTRY: Workspace not found: ${workspaceId}`)
-    return resolvePrototypeEntry(workspace.rootPath, slug)
-  })
+  // address it was made against and needs its patches injected into that page; a
+  // page of ours opens at the host's address for that document, with its patches
+  // already inlined; with no entry page the root shows the generated index. A named
+  // page resolves to that page — the address bar's own answer, which the caller
+  // loads rather than being redirected to (the bar and the view are two things).
+  // Never the exported deliverable — that is a stale copy from an earlier export,
+  // not a page you can go on editing. Throws with what is missing named when there
+  // is nothing to open, so the panel surfaces that message instead of a failed page
+  // load.
+  server.handle(
+    RPC_CHANNELS.prototypes.ENTRY,
+    async (_ctx, workspaceId: string, slug: string, page?: string | null) => {
+      const workspace = getWorkspaceByNameOrId(workspaceId)
+      if (!workspace) throw new Error(`PROTOTYPES_ENTRY: Workspace not found: ${workspaceId}`)
+      return resolvePrototypeEntry(workspace.rootPath, slug, page)
+    },
+  )
 
   // Write dist/* for a prototype so it can be handed to developers.
   server.handle(RPC_CHANNELS.prototypes.EXPORT, async (_ctx, workspaceId: string, slug: string) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`PROTOTYPES_EXPORT: Workspace not found: ${workspaceId}`)
     const result = exportPrototype(workspace.rootPath, slug)
-    log.info(`PROTOTYPES_EXPORT: ${slug} → ${result.htmlPath} (${result.applied} patches)`)
+    log.info(`PROTOTYPES_EXPORT: ${slug} → ${result.extensionDir} (${result.applied} patches)`)
     return result
   })
 
-  // Create a prototype (the panel's "New Prototype").
+  // Create a prototype (the panel's "New Prototype"). It is a container for pages
+  // and gets none: a page is either a document of ours or a live page added
+  // afterwards, so creation asks for nothing but a name (plan §19.8).
   server.handle(
     RPC_CHANNELS.prototypes.CREATE,
-    async (_ctx, workspaceId: string, input: { name?: string; kind?: PrototypeKind; targetUrl?: string }) => {
+    async (_ctx, workspaceId: string, input: { name?: string }) => {
       const workspace = getWorkspaceByNameOrId(workspaceId)
       if (!workspace) throw new Error(`PROTOTYPES_CREATE: Workspace not found: ${workspaceId}`)
-      const created = createPrototype(workspace.rootPath, {
-        name: input?.name ?? '',
-        kind: input?.kind,
-        targetUrl: input?.targetUrl,
-      })
-      log.info(`PROTOTYPES_CREATE: ${created.slug} (${created.kind})`)
+      const created = createPrototype(workspace.rootPath, { name: input?.name ?? '' })
+      log.info(`PROTOTYPES_CREATE: ${created.slug}`)
       return created
     },
   )
@@ -159,35 +165,63 @@ export function registerPrototypesHandlers(server: RpcServer, deps: HandlerDeps)
     },
   )
 
-  // Copy another prototype's page and patches in. The counterpart of a reference,
-  // and deliberately not the same thing: a reference keeps the other prototype's
-  // patches out of this one, an import moves them in.
+  // Copy a prototype into a new one — the panel's "Duplicate". Two prototypes
+  // stop sharing anything the moment the copy exists; the caller is told the new
+  // slug so it can open it.
   server.handle(
-    RPC_CHANNELS.prototypes.IMPORT,
-    async (_ctx, workspaceId: string, slug: string, sourceSlug: string) => {
+    RPC_CHANNELS.prototypes.DUPLICATE,
+    async (_ctx, workspaceId: string, slug: string, name?: string) => {
       const workspace = getWorkspaceByNameOrId(workspaceId)
-      if (!workspace) throw new Error(`PROTOTYPES_IMPORT: Workspace not found: ${workspaceId}`)
-      const imported = importPrototype(workspace.rootPath, slug, sourceSlug)
-      log.info(
-        `PROTOTYPES_IMPORT: ${slug} ← ${sourceSlug} (${imported.copiedPatches.length} patches, ` +
-          `${imported.skippedPatches.length} left as they were)`,
-      )
-      return imported
+      if (!workspace) throw new Error(`PROTOTYPES_DUPLICATE: Workspace not found: ${workspaceId}`)
+      const copied = duplicatePrototype(workspace.rootPath, slug, { name })
+      log.info(`PROTOTYPES_DUPLICATE: ${slug} → ${copied.slug} (${copied.copiedPatches.length} patches)`)
+      return copied
     },
   )
 
-  // Repoint an overlay at the same page in another environment. File work only,
+  // Delete a prototype. No confirmation here: this is the layer that does what
+  // it is told, and the panel has already asked (the agent has no command that
+  // reaches this). Readers left pointing at the gone slug are reported.
+  server.handle(
+    RPC_CHANNELS.prototypes.DELETE,
+    async (_ctx, workspaceId: string, slug: string) => {
+      const workspace = getWorkspaceByNameOrId(workspaceId)
+      if (!workspace) throw new Error(`PROTOTYPES_DELETE: Workspace not found: ${workspaceId}`)
+      const deleted = deletePrototype(workspace.rootPath, slug)
+      log.info(
+        `PROTOTYPES_DELETE: ${slug} (${deleted.referencedBy.length} prototype(s) still reference it)`,
+      )
+      return deleted
+    },
+  )
+
+  // Change one prototype's page table: add a page, remove one, rename one, or mark
+  // which page the address root opens (plan §19). File work only, and one operation
+  // at a time so the caller can say what it meant — and so the answer can name it
+  // back without guessing from a diff.
+  server.handle(
+    RPC_CHANNELS.prototypes.SET_PAGES,
+    async (_ctx, workspaceId: string, slug: string, change: PrototypePagesChange) => {
+      const workspace = getWorkspaceByNameOrId(workspaceId)
+      if (!workspace) throw new Error(`PROTOTYPES_SET_PAGES: Workspace not found: ${workspaceId}`)
+      const result = updatePrototypePages(workspace.rootPath, slug, change)
+      log.info(`PROTOTYPES_SET_PAGES: ${slug} — ${result.note}`)
+      return result
+    },
+  )
+
+  // Repoint one live page at the same page in another environment. File work only,
   // and no confirmation step: the address is a fact about where the page is, not a
-  // rule of the kind. The two things that go stale silently (windows open on the
+  // rule of its kind. The two things that go stale silently (windows open on the
   // old page, selectors written against the old DOM) are said by whoever asks —
   // the command says them, and the panel puts them next to the field.
   server.handle(
     RPC_CHANNELS.prototypes.SET_TARGET,
-    async (_ctx, workspaceId: string, slug: string, targetUrl: string) => {
+    async (_ctx, workspaceId: string, slug: string, targetUrl: string, page?: string) => {
       const workspace = getWorkspaceByNameOrId(workspaceId)
       if (!workspace) throw new Error(`PROTOTYPES_SET_TARGET: Workspace not found: ${workspaceId}`)
-      const config = setPrototypeTargetUrl(workspace.rootPath, slug, targetUrl)
-      log.info(`PROTOTYPES_SET_TARGET: ${slug} → ${config.targetUrl}`)
+      const config = setPrototypePageUrl(workspace.rootPath, slug, targetUrl, page)
+      log.info(`PROTOTYPES_SET_TARGET: ${slug}${page ? ` page "${page}"` : ''} → ${targetUrl}`)
       return config
     },
   )

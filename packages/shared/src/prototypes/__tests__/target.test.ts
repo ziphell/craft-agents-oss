@@ -7,12 +7,15 @@ import {
   linkPrototypeReference,
   readPrototypeConfig,
   requireTargetUrl,
-  setPrototypeTargetUrl,
+  setPrototypePageUrl,
+  writePrototypeConfig,
+  writePrototypePage,
 } from '..'
 
 const SLUG = 'checkout-flow'
+const PAGE = '<!doctype html><html><body><h1>Quotes</h1></body></html>'
 
-describe('setPrototypeTargetUrl', () => {
+describe('setPrototypePageUrl', () => {
   let workspaceRoot = ''
 
   beforeEach(() => {
@@ -23,8 +26,13 @@ describe('setPrototypeTargetUrl', () => {
     rmSync(workspaceRoot, { recursive: true, force: true })
   })
 
-  function makeOverlay(slug = SLUG, targetUrl = 'https://app.example.com/checkout'): string {
-    return createPrototype(workspaceRoot, { name: slug, kind: 'overlay', targetUrl }).slug
+  /** A prototype whose one page is a live address. */
+  function makeOverlay(slug = SLUG, url = 'https://app.example.com/checkout'): string {
+    createPrototype(workspaceRoot, { name: slug })
+    writePrototypeConfig(workspaceRoot, slug, {
+      pages: [{ name: 'entry', kind: 'overlay', url, entry: true }],
+    })
+    return slug
   }
 
   /**
@@ -32,62 +40,121 @@ describe('setPrototypeTargetUrl', () => {
    * patches are meant to be looked at in each, and an immutable address would turn
    * "look at it on staging" into "copy everything into a second prototype".
    */
-  it('repoints an overlay at the same page in another environment', () => {
+  it('repoints a live page at the same page in another environment', () => {
     const slug = makeOverlay()
 
-    const updated = setPrototypeTargetUrl(workspaceRoot, slug, 'https://staging.example.com/checkout')
+    const updated = setPrototypePageUrl(workspaceRoot, slug, 'https://staging.example.com/checkout')
 
-    expect(updated.targetUrl).toBe('https://staging.example.com/checkout')
+    expect(updated.pages).toEqual([
+      { name: 'entry', kind: 'overlay', url: 'https://staging.example.com/checkout', entry: true },
+    ])
     expect(readPrototypeConfig(workspaceRoot, slug)).toEqual({
-      kind: 'overlay',
-      targetUrl: 'https://staging.example.com/checkout',
+      pages: [{ name: 'entry', kind: 'overlay', url: 'https://staging.example.com/checkout', entry: true }],
     })
+  })
+
+  function makeTwoOverlays(): string {
+    createPrototype(workspaceRoot, { name: SLUG })
+    writePrototypeConfig(workspaceRoot, SLUG, {
+      pages: [
+        { name: 'cart', kind: 'overlay', url: 'https://app.example.com/cart', entry: true },
+        { name: 'pay', kind: 'overlay', url: 'https://app.example.com/pay' },
+      ],
+    })
+    return SLUG
+  }
+
+  // A flow has several live pages, and "point it somewhere else" has to be able to
+  // name which one.
+  it('repoints the page it is told to, not the first one', () => {
+    const slug = makeTwoOverlays()
+
+    const updated = setPrototypePageUrl(workspaceRoot, slug, 'https://staging.example.com/pay', 'pay')
+
+    expect(updated.pages).toEqual([
+      { name: 'cart', kind: 'overlay', url: 'https://app.example.com/cart', entry: true },
+      { name: 'pay', kind: 'overlay', url: 'https://staging.example.com/pay' },
+    ])
+  })
+
+  it('repoints the entry page when it is not told which one', () => {
+    const slug = makeTwoOverlays()
+
+    setPrototypePageUrl(workspaceRoot, slug, 'https://staging.example.com/cart')
+
+    expect(readPrototypeConfig(workspaceRoot, slug).pages?.[0]?.url).toBe('https://staging.example.com/cart')
   })
 
   it('leaves everything else about the prototype alone', () => {
     const slug = makeOverlay()
-    createPrototype(workspaceRoot, { name: 'rival-cart', kind: 'overlay', targetUrl: 'https://rival.example.com/cart' })
+    createPrototype(workspaceRoot, { name: 'rival-cart' })
+    writePrototypeConfig(workspaceRoot, 'rival-cart', {
+      pages: [{ name: 'cart', kind: 'scratch', entry: true }],
+    })
     linkPrototypeReference(workspaceRoot, slug, 'rival-cart')
 
-    setPrototypeTargetUrl(workspaceRoot, slug, 'http://localhost:3000/checkout')
+    setPrototypePageUrl(workspaceRoot, slug, 'http://localhost:3000/checkout')
 
     const config = readPrototypeConfig(workspaceRoot, slug)
-    expect(config.kind).toBe('overlay')
-    expect(config.targetUrl).toBe('http://localhost:3000/checkout')
+    expect(config.pages).toEqual([
+      { name: 'entry', kind: 'overlay', url: 'http://localhost:3000/checkout', entry: true },
+    ])
     expect(config.references).toEqual(['rival-cart'])
   })
 
   /**
-   * A from-scratch prototype's page is its own document; a URL stored against it
-   * would be a claim nothing honours (the same reason `writePrototypeConfig` drops
-   * one). This is the only refusal left in this module — the risk of patches not
-   * fitting another environment is the caller's to take, see the module note.
+   * A page of ours is a document in this prototype; a URL stored against it would
+   * be a claim nothing honours (the same reason `writePrototypeConfig` drops one).
+   * This is the one refusal left in this module — the risk of patches not fitting
+   * another environment is the caller's to take, see the module note.
    */
-  it('refuses a from-scratch prototype, which has no external page', () => {
-    createPrototype(workspaceRoot, { name: 'quotes-flow', kind: 'scratch' })
+  it('refuses a page of ours, which has no external page for an address to mean', () => {
+    createPrototype(workspaceRoot, { name: 'quotes-flow' })
+    writePrototypePage(workspaceRoot, 'quotes-flow', 'cart', PAGE)
 
-    expect(() => setPrototypeTargetUrl(workspaceRoot, 'quotes-flow', 'https://app.example.com/x'))
-      .toThrow(/from-scratch/)
+    expect(() => setPrototypePageUrl(workspaceRoot, 'quotes-flow', 'https://app.example.com/x'))
+      .toThrow(/scratch page/)
+    // …and the same when the caller names it explicitly.
+    expect(() => setPrototypePageUrl(workspaceRoot, 'quotes-flow', 'https://app.example.com/x', 'cart'))
+      .toThrow(/scratch page/)
+  })
+
+  it('refuses a prototype with no pages, since there is nothing to point', () => {
+    createPrototype(workspaceRoot, { name: 'empty' })
+
+    expect(() => setPrototypePageUrl(workspaceRoot, 'empty', 'https://app.example.com/x'))
+      .toThrow(/has no pages/)
+    expect(() => setPrototypePageUrl(workspaceRoot, 'empty', 'https://app.example.com/x'))
+      .toThrow(/prototype-pages --add/)
+  })
+
+  // One screen, one name: two pages claiming one address would make "which page am
+  // I looking at" ambiguous rather than merely redundant.
+  it('refuses an address another page of the flow already claims', () => {
+    const slug = makeTwoOverlays()
+
+    expect(() => setPrototypePageUrl(workspaceRoot, slug, 'https://app.example.com/pay', 'cart'))
+      .toThrow(/already has page "pay"/)
   })
 
   it('refuses a prototype that does not exist, naming how to list them', () => {
-    expect(() => setPrototypeTargetUrl(workspaceRoot, 'nope', 'https://app.example.com/x'))
+    expect(() => setPrototypePageUrl(workspaceRoot, 'nope', 'https://app.example.com/x'))
       .toThrow(/prototype-list/)
   })
 
   it('refuses a value a browser cannot open', () => {
     const slug = makeOverlay()
 
-    expect(() => setPrototypeTargetUrl(workspaceRoot, slug, 'app.example.com/checkout'))
+    expect(() => setPrototypePageUrl(workspaceRoot, slug, 'app.example.com/checkout'))
       .toThrow(/Include the scheme/)
     // …and the old address is untouched.
-    expect(readPrototypeConfig(workspaceRoot, slug).targetUrl).toBe('https://app.example.com/checkout')
+    expect(readPrototypeConfig(workspaceRoot, slug).pages?.[0]?.url).toBe('https://app.example.com/checkout')
   })
 
   it('trims the address rather than storing whitespace around it', () => {
     const slug = makeOverlay()
 
-    expect(setPrototypeTargetUrl(workspaceRoot, slug, '  https://staging.example.com/checkout  ').targetUrl)
+    expect(setPrototypePageUrl(workspaceRoot, slug, '  https://staging.example.com/checkout  ').pages?.[0]?.url)
       .toBe('https://staging.example.com/checkout')
   })
 })

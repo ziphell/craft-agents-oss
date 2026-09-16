@@ -189,37 +189,155 @@ Returns a **stable selector** resolved as `data-testid` → `id` → `:nth-of-ty
 
 Use this instead of guessing a CSS selector when the target is easier to point at than to describe (browser-based design/prototyping work).
 
+### `prototype-create <name> [--no-bind]`
+Create a prototype: a **container for pages**, and nothing else. Creation asks for a name and nothing more — no kind and no address, because both of those are facts about a *page* — and it creates no page at all: "this prototype has no pages yet" is a true statement, not a broken state. `--no-bind` leaves the session's current binding alone, which is what studying another prototype needs.
+
+Pages arrive afterwards, one of two ways: write `<name>.html` for a page of ours (the agent's `Write` tool is allowed to), or add a live page with `prototype-pages --add <name>=<url>`.
+
+### Writing a page of ours (the shape to copy)
+
+A page of ours is an ordinary HTML document — no build step, no template language — and the prototype's
+directory *is* the origin root. Every new prototype starts with a shell (`_layout.html`) that wraps each of
+its pages, so a page carries only its own screen and reuses the shell's tokens:
+
+```html
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cart</title>
+</head>
+<body>
+  <div class="app">
+    <h1>Cart</h1>
+    <section class="card stack">
+      <div class="row"><span>Delivery</span><span class="muted">Free</span></div>
+      <button class="row">Checkout</button>
+    </section>
+  </div>
+</body>
+</html>
+```
+
+`var(--accent)`, `.card`, `.row`, `.stack` and `.muted` come from the shell, as do the scale tokens behind
+them (`--size-2`, `--gray-8`, `--radius-2`). Prefer the meaning, reach for the scale when there is no word
+for what you need. **Do not copy the frame** (header, nav, tokens) into a page — that is what `_layout.html`
+is for, and two copies drift.
+
+What bites later, in order of how often it does:
+
+- **Reach for standard HTML before writing any JS**: `<details>` for disclosure, `<dialog>` for modals,
+  `:has()` / `:checked` for state-driven styling, `required` / `pattern` / `minlength` on inputs for
+  validation, `<template>` + `<slot>` for reuse. Most prototype interaction needs no script at all — and
+  the standard version behaves identically in the preview and in the delivered package.
+- **Assets use root-absolute paths** (`/assets/app.css`). No CDN and no external host: the prototype is
+  opened offline and only its own directory answers. Files under `assets/` travel with the package (text
+  files as they are; a binary such as an image is reported as not delivered yet, rather than arriving broken).
+- **Check the page after writing it**: `prototype-open`, then `console 50 error`. Nothing else in the
+  workbench validates a page, so a thrown error is invisible until someone looks.
+- **No `eval` and no `new Function`** — the delivered extension forbids them and the export would fail.
+  **No bundler**: plain `<script>`, `<style>`, and `<script type="module">` with relative imports are fine.
+- **Reuse has two places, not a third**: shared structure goes in the shell, shared helpers go in
+  `assets/lib/` (the JS shape below). There is no template engine, by design.
+- **Data**: `fetch('/api/…')` (relative), answered by the contract's fixtures when mocked. State belongs in
+  `localStorage` — the prototype's origin is stable, so it survives.
+- **Add a screen by writing a page; change how an existing screen looks by writing a patch** under
+  `patches/<page>/`. Rewriting a page document to restyle it is the one thing that is always wrong.
+
+#### Vanilla JS that survives (the shape to copy)
+
+One module per page, loaded by that page alone:
+`<script type="module" defer src="/assets/pages/cart.js"></script>`. Relative imports stay inside the
+package, so the same file runs in the preview and in the delivered extension.
+
+```js
+// assets/pages/cart.js
+import { formatMoney } from '../lib/format.js'
+
+const HOOK = { list: '[data-cart-list]', row: '[data-cart-row]', total: '[data-cart-total]' }
+
+function init(root = document) {
+  const list = root.querySelector(HOOK.list)
+  if (!list || list.dataset.cartReady) return // idempotent: this may run again
+  list.dataset.cartReady = 'true'
+
+  // Delegation: rows added later are covered without rebinding.
+  list.addEventListener('click', (event) => {
+    const row = event.target.closest(HOOK.row)
+    if (!row || !list.contains(row)) return
+    render(root)
+  })
+
+  render(root)
+}
+
+async function render(root) {
+  const total = root.querySelector(HOOK.total)
+  if (!total) return
+  try {
+    const res = await fetch('/api/cart') // relative: the contract's mock answers this
+    if (!res.ok) throw new Error(String(res.status))
+    total.textContent = formatMoney((await res.json()).total)
+  } catch {
+    total.textContent = '—' // a missing fixture has to be visible, not a blank screen
+  }
+}
+
+init()
+```
+
+| Do | Don't |
+| --- | --- |
+| `[data-…]` as JS hooks | classes as hooks — classes are the patches' territory |
+| Idempotent `init` (a `dataset.xReady` guard) | assuming it runs once |
+| Delegate to a container, then `closest(...)` | binding every row |
+| `textContent` / `classList` / a `<template>` clone | building markup with `innerHTML` |
+| URL and `localStorage` as the truth (the origin is stable) | state in memory only |
+| `fetch('/api/…')` relative, with its error branch | absolute hosts and no mock behind them |
+| One module per page, shared helpers in `assets/lib/` | a pile of globals per page |
+| Making failure visible | a silent `catch {}` |
+
+Four boundaries, and keeping them apart is what stops a prototype from rotting: **structure changes go in a
+patch, behaviour goes in a page's module, shared structure goes in the shell, shared helpers go in
+`assets/lib/`.**
+
 ### `prototype-apply <slug>` / `prototype-clear <slug>`
 Replay (or remove) a prototype's patches in the current browser.
 
 A prototype lives under `{workspace}/prototypes/{slug}/` and its patches are ordinary files named `{lane}-{nnn}-{slug}.{css|js}`:
 
 ```
-prototypes/checkout-flow/patches/A-001-btn-radius.css
-prototypes/checkout-flow/patches/A-002-flow-guard.js
+prototypes/checkout-flow/patches/A-001-btn-radius.css          ← every page
+prototypes/checkout-flow/patches/cart/A-002-flow-guard.js      ← the page `cart` only
 ```
 
 - Files that do not follow the naming convention are ignored (READMEs, editor backups, dotfiles), so nothing unexpected gets executed.
 - Replay order is `lane` → numeric order → file name.
+- **Where a patch sits is which page it changes**: `patches/*` applies to every page of the flow, `patches/<page>/*` to that page alone. A directory that matches no page is reported by `prototype-status` rather than silently replayed.
+- Which patches this command replays follows the **window**: the page it is on brings the shared patches plus its own, and a window on no page of the prototype gets the shared ones only — the command says which page it used, so "the patch did nothing" and "the patch belongs to another page" read differently.
 - Patches are applied to the current page **and** registered for every future document, so they survive a reload. The index is recomputed from disk on every `prototype-apply`, so editing a patch file and re-running the command is all that is needed — deleting a patch file also un-applies it.
+- A page the host rendered (a page of ours, served from the prototype's own address) arrives with its patches already inlined, so there is nothing to inject into it; that is reported as *nothing to inject*, not as a failure. Patches written since that render still land on it.
 - `prototype-clear` unregisters a prototype's patches; the current document keeps their effects until you reload.
 
 ### `prototype-export <slug>`
-Write the prototype's deliverables into `prototypes/{slug}/dist/`:
+Build the prototype's deliverable into `prototypes/{slug}/dist/`:
 
-- `dev-spec.md` — the change list: every patch in replay order, with its lane, kind and full content. Both kinds get this, and for an **overlay** it opens with `Applies to: <the address the changes belong to>`.
-- an HTML artifact, whose shape depends on the kind:
-  - **from-scratch** → `prototype.html`: one self-contained file (css inlined into `<head>`, js before `</body>`), so it runs standalone with no network and no workbench. It fails with a clear error when there is no `base.html` — there would be nothing to apply the patches to.
-  - **overlay** → `overlay-preview.html`: the carrier that puts the patches onto the live page, because nothing we write can *be* that page. It holds instructions, a **draggable bookmarklet** (the whole patch set as one `javascript:` URL), the same bundle as a console snippet, and the list of what will change. The recipient opens the target page and clicks the bookmark; no install, no server, and our app does not have to be running. It fails with a clear error when the prototype has no target page.
+- `extension/` — **a loadable Chrome extension covering the whole flow**, and the only thing to hand over. Nothing is published to a store: the recipient opens `chrome://extensions`, turns on **Developer mode**, and clicks **Load unpacked** on this folder. One package, whatever the flow is made of:
+  - **pages of ours ship in it** — each document under the name it has on disk (`cart.html`), so the links an author wrote between pages keep working; each carries only the patches that apply to it (the shared ones plus its own), and the layout shell is applied exactly as the host applies it.
+  - **live pages are injected into** — one content script per live page, which Chrome itself scopes to that page's address. The patches are simply there when the page loads: nothing to click, and they survive a reload. `README.md` says where it applies. Nothing is copied or frozen, so the page keeps its own JavaScript, session and data.
+  - The extension's **options** page is the generated **page index** (every page with a way into each: our documents are package files, live pages are their addresses), and the toolbar icon opens the entry page — the index when no page is marked as the entry.
+  - The package carries the contract's `x-mock` routes when there are any: a script in the page's own world (`world: "MAIN"`, `document_start`) answers them by wrapping the page's `fetch`/`XHR`, and `README.md` lists exactly which requests are faked — and what that cannot cover (requests a PWA's own service worker makes never pass through the page).
+  - The package carries a `version` and a build time, so "which build am I looking at?" has an answer. The package is a **snapshot**: after a re-export, press **Reload** on the extension in `chrome://extensions` (and refresh the page) to pick the change up.
+  - An extension page cannot run inline script (MV3's CSP, and `eval` is out), so an inline `<script>` block is hoisted into a file and an inline `on<event>="…"` becomes a generated function a small runtime binds. Behaviour is unchanged, and every such change is reported back in the command's output, named per page.
+  - It fails with a clear error when there is nothing to hand over: no pages at all, a page in the table whose document is gone (named), or a live page whose address cannot become a match pattern (also named).
+- `dev-spec.md` — the change list, **grouped by page**: every patch in replay order with its lane, kind and full content. The shared patches (`patches/*`) are listed once, and each page says how many of them it also carries.
 
-  Two things to know before handing an overlay preview over. A page that sends `Content-Security-Policy: script-src 'self'` **refuses bookmarklets** — a bookmarklet is an inline script in the page's context, so the page's policy applies to it — which is why the console snippet is in the same file (the console is not subject to that policy). And a bookmark applies to the current document only: reloading clears it, one click brings it back, while moving between views of a single-page app replays it automatically.
+Keep the patch set small and delete patches that no longer change anything: all of them ship in the package, and everything in it is something a reviewer has to read. Patches are shipped unminified on purpose — the recipient runs this on their own page, and being able to read it is what makes that reasonable.
 
-  The bundle travels inside one URL, so keep the patch set small and delete patches that no longer change anything. Patches are shipped unminified on purpose — the recipient is asked to run this on their own page, and being able to read it is what makes that reasonable.
-
-The command prints a URL for the HTML deliverable. Each prototype is served from its own loopback HTTP origin — `http://<slug>-<hash>.localhost:<port>/…`, with the prototype's directory as that origin's root — rather than `file://`, which has an opaque origin: no cookie jar, no relative `fetch`/XHR (so the mock layer would never see a request) and no ES modules. Root-absolute paths (`/assets/app.css`) and SPA history routes therefore work. Verify the deliverable the same way you view anything else:
+The command prints the package's path and, when there is a page of ours to open, a URL for it inside the package. Each prototype is served from its own origin — `http://<slug>-<hash>.localhost/…`, answered by Electron itself (no port, so the address is the same on every run), with the prototype's directory as that origin's root — rather than `file://`, which has an opaque origin: no cookie jar, no relative `fetch`/XHR (so the mock layer would never see a request) and no ES modules. Root-absolute paths (`/assets/app.css`) and SPA history routes therefore work. To look at the packaged page before handing it over:
 
 ```
-navigate http://checkout-flow-9f3a2b1c.localhost:9793/dist/prototype.html
+navigate http://checkout-flow-9f3a2b1c.localhost/dist/extension/cart.html
 ```
 
 ### `prototype-contract-compose <slug> [--service <svc>]`
@@ -280,16 +398,21 @@ Read-only report on a prototype:
 ```
 Prototype "checkout-flow"
   dir:        /…/prototypes/checkout-flow
-  kind:       overlay — patches on someone else's page; the page is the live target, never copied
-  target:     https://app.example.com/checkout
-  patches:    3 (A: 2, B: 1)
+  openable:   yes
+  pages:      cart (scratch) [entry] — cart.html
+              orders (scratch) — orders.html
+              pay (overlay) — https://app.example.com/pay
+  root:       opens "cart"
+  page issues: 1
+    • patches/nope/ belongs to no page of this prototype, so nothing there is replayed. Pages: cart, orders, pay
+  patches:    3 (A: 2, B: 1) — 1 page-scoped, 2 shared
   service checkout-api: 4 endpoints, 3 mocked, 2 fragments, 2 fixtures
-  dist:       prototype.html, dev-spec.md, openapi.yaml, contract.md
+  dist:       extension/, dev-spec.md, openapi.yaml, contract.md
   ownership:  1 violation(s)
-    • patches/oops.css — misnamed patch — expected {lane}-{nnn}-{name}.{css|js}
+    • patches/oops.css — misnamed patch — expected {lane}-{nnn}-{name}.{css|js}, optionally under patches/<page>/
 ```
 
-A **from-scratch** prototype prints `base.html: present|MISSING` instead of `target:`, and a target page with nothing recorded prints `target: none recorded — nothing to open`.
+A prototype with no pages yet prints `pages: none yet` and `openable: no` — that is a starting state, not an error. `root:` says what the address root opens: a page name, or the generated page index. Entries of `pages` that could not be read, a declared page whose document is gone, and a `patches/<name>/` that matches no page are all listed as `page issues:` — a dropped page is a screen the flow no longer has, and a patch directory nothing reaches is a change that never lands, so neither is silent.
 
 **Ownership** is how parallel work stays safe here: every artifact path belongs to exactly one writer, and lanes never write each other's files. The check flags three things that are otherwise silent:
 
@@ -297,19 +420,42 @@ A **from-scratch** prototype prints `base.html: present|MISSING` instead of `tar
 - a misnamed patch (`patches/oops.css`) — the patch scanner ignores it;
 - a path no lane or the control plane owns (`README.md`, `services/*/random.txt`).
 
-Declared lanes: `A` UI/interaction (patches), `B` service contract (`paths/`, `config.json`), `C` data (`fixtures/`), `D` verification (read-only). `base.html`, `services/*/openapi.yaml` and everything under `dist/` are control-plane outputs.
+Declared lanes: `A` UI/interaction (patches), `B` service contract (`paths/`, `config.json`), `C` data (`fixtures/`), `D` verification (read-only). The page documents (any top-level `.html`, `_layout.html` included), `config.json`, `services/*/openapi.yaml` and everything under `dist/` are control-plane outputs. Which lane owns a patch is still the prefix in its file name — a `patches/<page>/` directory only says *which page* it changes.
 
 ### `prototype-open <slug>`
 Open a prototype in the browser, and replay its patches into what opens.
 
-What opens depends on the kind, which is the point of having kinds:
+A prototype is a **flow of pages**, and each page is one of two kinds — which is what decides where opening it goes:
 
-- **overlay** — the live address recorded as its target page, with the patches injected into it. That page brings its own JavaScript, its own session and its own data; nothing is copied or frozen, because a copy could not run any of that and would only *look* like the page. Opening it and stopping there would show the target page rather than the prototype, so the replay is part of this command.
-- **from-scratch** — the prototype's **origin root**, which the workbench serves as `base.html` rendered with every patch applied, computed per request so it is byte-identical to what `prototype-export` would write right now. That is why the address is not a file: pointing at `base.html` would show none of the patches, and pointing at a previously exported `dist/prototype.html` would show a document frozen at export time. Individual files stay openable by name (`/base.html`, `/dist/prototype.html`).
+- **a live page** (`overlay`) — the real address it records, with the patches injected into it. That page brings its own JavaScript, its own session and its own data; nothing is copied or frozen, because a copy could not run any of that and would only *look* like the page. Opening it and stopping there would show the target page rather than the prototype, so the replay is part of this command.
+- **a page of ours** (`scratch`) — the prototype's **own address**, where the workbench renders it: `/` renders the entry page and `/<name>.html` renders that page, and either way the document is rendered with the patches it carries (the shared ones plus its own), computed per request, so it always shows the patches that exist now. A top-level `.html` is therefore never served raw, and the copy inside a previously exported package (`/dist/extension/cart.html`, a file in a subdirectory) is a document frozen at export time rather than the page.
 
-Nothing stands in for a page that does not exist: an overlay with no target page, or a from-scratch prototype with no `base.html`, fails with the remedy named rather than letting the browser show a confusing load error.
+With no `--page`, "open the prototype" means the page the bound browser window is already on, then the entry page, then the generated page index — so a flow with no entry page opens its index (a list of every page) rather than pretending one page is the first.
 
-Starting from nothing needs no special command: write `prototypes/{slug}/base.html` (the agent's `Write` tool is allowed to) or import another prototype's page, then run `prototype-open`.
+Nothing stands in for a page that does not exist: a live page with no address, or a page of ours whose document is gone, fails with the remedy named rather than letting the browser show a confusing load error.
+
+Starting from nothing needs no special command: write `prototypes/{slug}/cart.html` (the agent's `Write` tool is allowed to) — that alone makes it a page — or duplicate another prototype from the panel, then run `prototype-open`.
+
+`--page <name>` opens that page instead; a name that does not exist is refused with the list of names that do.
+
+### `prototype-pages [slug]`
+The flow's pages, in order — which screens this prototype covers. One change at a time:
+
+- `--add payment=https://app.example.com/pay` adds a **live page**: that address *is* the page, and it is patched in place.
+- `--add orders` places an existing document (`orders.html`) in the flow order. It does not create a page: a page of ours **is** a file, so the file has to be there first — write it and it is already a page, declared or not.
+- `--rename cart=basket` · `--remove payment`. Renaming a page of ours takes its document and its own patches along; removing one deletes its document (and those patches), while a live page is only taken out of the flow.
+
+**The filesystem says what exists; the table says the order and the entry.** Every top-level `.html` in the prototype directory is a page of it (`cart.html` → page `cart`) and needs no declaration at all; declaring one only puts it in the flow order, and `prototype-entry` is what hands it the address root. Two things are deliberately not pages: `_`-prefixed files (`_layout.html`, the shared shell, and the generated `/_index`) and documents in subdirectories (assets).
+
+A name has to be free and usable (a leading `_` belongs to the host's own files, and no two pages may share an address), and a live page needs an address a browser can open — a scheme-less value is refused here rather than becoming a page nothing covers. The same list feeds `prototype-status`, `prototype-open --page`, the `page` name in `snapshot`, and the extension's content scripts (one per live page), so re-export after a change: the delivered package is a snapshot and does not see it until then.
+
+### `prototype-entry <name|none>`
+Which page the address root (`/`) opens. `<name>` marks one page as the entry — that page is what `/` renders or redirects to; `none` clears it, and `/` shows the generated **page index** again, which is the default because no page of a flow is naturally the first one. The index stays reachable at `/_index` either way: configuring an entry changes what `/` opens, and never takes the list away. A configured entry whose document is gone is an error naming the page, not a quiet fall back to the index.
+
+Re-export after changing it: the extension's toolbar icon opens the entry page (the index when there is none).
+
+### `prototype-target <url> [--page <name>]`
+Point one **live page** at the same page in another environment — a local dev server, staging, production. The address is a fact about where the page is, not part of its identity, so this is an ordinary edit. Without `--page` it moves the entry page when that one is live, otherwise the first live page. Two things go stale silently, and are said out loud when it changes: windows already open keep the old page until they navigate again, and the selectors were written against the old DOM (a patch that matches nothing looks exactly like a patch that did nothing). A page of ours is refused — it is our own document, so there is no external page for an address to mean.
 
 ### `focus [windowId]` / `windows`
 Manage and inspect browser window ownership and visibility.

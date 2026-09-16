@@ -842,6 +842,18 @@ export type BrowserToolbarAction =
       element: PickedElement | null
     }
   | { kind: 'apply-requested'; instanceId: string }
+  /**
+   * The user typed one of a prototype's own addresses into the window's address
+   * bar.
+   *
+   * Two shapes, and both are "where the view should actually load": the root names
+   * the prototype, so it is opened the way the workbench opens one (its entry
+   * page, or the page index) and the bar keeps saying which prototype this is;
+   * `page` names one page, which is resolved to that page's own address and loaded
+   * directly — the bar is a display of where the window is, not a request the host
+   * has to redirect.
+   */
+  | { kind: 'open-prototype'; instanceId: string; slug: string; page?: string | null }
   | { kind: 'pick-failed'; instanceId: string; message: string }
 
 export interface BrowserInstanceInfo {
@@ -853,6 +865,15 @@ export interface BrowserInstanceInfo {
   canGoBack: boolean
   canGoForward: boolean
   boundSessionId: string | null
+  /**
+   * The prototype this window is working on, or `null` for a plain browser
+   * window. The main process's answer, not something a renderer derives: an
+   * overlay's view sits on a third-party address, so the URL cannot say it.
+   *
+   * Optional so a renderer that pre-dates the field keeps working — treat
+   * missing as `null`.
+   */
+  prototypeSlug?: string | null
   ownerType: 'session' | 'manual'
   ownerSessionId: string | null
   isVisible: boolean

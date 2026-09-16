@@ -1,66 +1,51 @@
 /**
- * Prototype creation and the base page.
+ * Prototype creation, and writing a page document.
  *
- * A prototype is a directory with a `patches/` folder and — for the
- * from-scratch kind — a `base.html` of our own. Creation writes **no**
- * `base.html`: the absence of the file is a *true* statement, "this prototype
- * has no page yet", and an empty seeded document would assert a state that does
- * not exist (it would make `baseHtmlPresent` true, hide the guidance that says
- * how to get a first page, and hand Export an empty document to write). The
- * earlier worry — a brand-new prototype with every action greyed out — is
- * answered by the panel instead of by a fake file: Open is disabled until there
- * is a page to show.
+ * A prototype is a directory with a `patches/` folder and — later — its page
+ * documents. Creation writes **no** page: the absence is a *true* statement,
+ * "this prototype has no pages yet", and a seeded empty document would assert a
+ * state that does not exist (it would make the page table list a screen that is
+ * not there, hide the guidance that says how to write the first one, and hand
+ * Export an empty document to write). The earlier worry — a brand-new prototype
+ * with every action greyed out — is answered by the entry points instead of by a
+ * fake file: Open is disabled until there is a page to show.
  *
- * Two kinds, and they get their page in different ways:
+ * Creation asks for a name and nothing else (plan §19.8). It used to ask for a
+ * kind and, for an overlay, the address it changes; both of those are facts about
+ * a **page**, so both moved to {@link updatePrototypePages} in pages.ts, where a
+ * page is added. A prototype is a container either way.
  *
- * - **overlay** — the page is the live address the prototype was created
- *   against. Nothing is written and nothing is captured: the page belongs to
- *   someone else, brings its own JavaScript and its own session, and the
- *   prototype is that page with patches replayed into it.
- * - **scratch** — the page is a document we own. It arrives one of two ways:
- *   written with the file tools ({@link writePrototypeBase}), or copied from
- *   another prototype ({@link importPrototype} in import.ts).
+ * Pages arrive one of two ways: written with the file tools
+ * ({@link writePrototypePage}), or copied from another prototype
+ * ({@link duplicatePrototype} in duplicate.ts), which makes a second prototype
+ * rather than filling this one in.
  *
  * Whether the product page is reached through a local dev server, a test
- * environment, or production is not a distinction this model cares about: the
- * patches are an overlay on someone else's page either way, and never flow back
- * into that source. See docs/prototype-workbench-plan.md §1.
+ * environment, or production is not a distinction this model cares about: an
+ * overlay page's patches are an overlay on someone else's page either way, and
+ * never flow back into that source. See docs/prototype-workbench-plan.md §1.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { getPrototypePatchesPath, getPrototypeDirPath } from './storage.ts'
-import { requireTargetUrl } from './target.ts'
-import { DEFAULT_PROTOTYPE_KIND, writePrototypeConfig, type PrototypeKind } from './config.ts'
-
-const BASE_FILENAME = 'base.html'
+import { getPrototypeDirPath, getPrototypeLayoutPath, getPrototypePatchesPath } from './storage.ts'
+import { buildLayoutShell } from './page-document.ts'
+import { pageFileName } from './pages.ts'
 
 /** Slug characters that cannot escape the prototypes directory. */
 const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/
 
 export interface CreatePrototypeInput {
+  /** Display name; the slug is derived from it and is the prototype's name from then on. */
   name: string
-  /**
-   * What kind of prototype to create. Defaults to {@link DEFAULT_PROTOTYPE_KIND}
-   * (`scratch`) — the kind that owns its document, and so is never left with
-   * nothing to do next.
-   */
-  kind?: PrototypeKind
-  /** `overlay` only, and **required** for it: the page this prototype injects into. */
-  targetUrl?: string
 }
 
 export interface CreatedPrototype {
   slug: string
   /** Absolute path to the prototype's directory. */
   dir: string
-  /**
-   * Absolute path to `base.html`. This is where the file will live — creation
-   * never writes it, so it appears later: captured, hand-written, or imported.
-   */
-  baseHtmlPath: string
-  /** The kind this prototype was created as (fixed for its lifetime). */
-  kind: PrototypeKind
+  /** Absolute path to the (empty) patches directory. The shared patches live here. */
+  patchesPath: string
 }
 
 /**
@@ -82,15 +67,15 @@ export function prototypeSlugFromName(name: string): string {
 /**
  * Create a prototype directory.
  *
- * Writes `config.json` and an empty `patches/`, and nothing else: `base.html` is
- * authored later (hand-written, captured, or imported) and its absence is the
- * truth about the prototype's state. See the module note.
+ * Writes an empty `patches/`, a `_layout.html` to copy from, and nothing else — no
+ * page, and no `config.json` either: with no pages and no references there is
+ * nothing to declare, and an empty file would only be a second way of saying that.
+ * The shell is not a page (nothing lists it), so its presence says nothing about
+ * what the prototype contains; it is there so the first page has a validated shape
+ * to follow.
  *
- * The returned `baseHtmlPath` is where it *will* live.
- *
- * @throws when the name produces an empty slug, when the prototype already
- *   exists (silently reusing a directory would mix two prototypes' patches), or
- *   when an overlay is requested without the page it changes — see below.
+ * @throws when the name produces an empty slug, or when the prototype already
+ *   exists (silently reusing a directory would mix two prototypes' patches).
  */
 export function createPrototype(workspaceRootPath: string, input: CreatePrototypeInput): CreatedPrototype {
   const title = input.name.trim()
@@ -101,82 +86,95 @@ export function createPrototype(workspaceRootPath: string, input: CreatePrototyp
   }
 
   const dir = getPrototypeDirPath(workspaceRootPath, slug)
-  const baseHtmlPath = join(dir, BASE_FILENAME)
-
   if (existsSync(dir)) {
     throw new Error(`Prototype "${slug}" already exists.`)
   }
 
-  const kind = input.kind ?? DEFAULT_PROTOTYPE_KIND
-
-  // An overlay's page *is* its address, and the kind is fixed for the
-  // prototype's lifetime — so an overlay created without one has nothing to
-  // open, nothing to export against, and no command that can fill it in later.
-  // Refusing here is the only moment the address is still at hand; every later
-  // failure would be a dead end with a working-looking prototype in front of it.
-  //
-  // The shape check is `requireTargetUrl`'s, shared with the later "change the
-  // address" path (target.ts): one rule, two entry points, so neither can end up
-  // stricter than the other.
-  let targetUrl: string | undefined
-  if (kind === 'overlay') {
-    if (!input.targetUrl?.trim()) {
-      throw new Error(
-        `An overlay prototype changes a page that already exists, so it needs that page's address — ` +
-          `"${title}" was created without one. Pass the address it changes, or create it as a ` +
-          `from-scratch prototype, which owns its own document instead.`,
-      )
-    }
-    targetUrl = requireTargetUrl(input.targetUrl)
-  }
-
   mkdirSync(dir, { recursive: true })
-  mkdirSync(getPrototypePatchesPath(workspaceRootPath, slug), { recursive: true })
-  // Written before anything can observe the prototype: a prototype whose kind is
-  // unknown would render the wrong guidance (patch someone's page vs. write ours).
-  writePrototypeConfig(workspaceRootPath, slug, { kind, targetUrl })
+  const patchesPath = getPrototypePatchesPath(workspaceRootPath, slug)
+  mkdirSync(patchesPath, { recursive: true })
+  // A shell to copy from, not a page: `_layout.html` is never listed as a page, so
+  // writing it claims nothing about what the prototype contains — "no pages yet"
+  // stays true until someone writes one. It exists so the first page has one
+  // validated shape to follow instead of being invented per screen (plan §19.2).
+  writeFileSync(getPrototypeLayoutPath(workspaceRootPath, slug), buildLayoutShell(), 'utf-8')
 
-  return { slug, dir, baseHtmlPath, kind }
+  return { slug, dir, patchesPath }
 }
 
-export interface WrittenBase {
+export interface WrittenPage {
   slug: string
-  baseHtmlPath: string
+  /** Page name, as the table and the address know it. */
+  page: string
+  /** Absolute path to the written document. */
+  path: string
   /** Size of the written markup, in bytes. */
   bytes: number
 }
 
 /**
- * Replace a prototype's `base.html`.
+ * Write (or replace) one page of a prototype.
  *
- * Used by both ways a from-scratch prototype gets its document: writing one by
- * hand, and importing another prototype's page. The write is unconditional — a
- * caller that would discard edits is responsible for asking first.
+ * This is the way a scratch page gets its document: written by hand or by the
+ * agent's file tools. The write is unconditional — a caller that would discard
+ * edits is responsible for asking first.
  *
- * @throws when the prototype does not exist, or the markup is not a whole document.
+ * @throws when the prototype does not exist, when the name cannot be a page, or
+ *   when the markup is not a whole document.
  */
-export function writePrototypeBase(workspaceRootPath: string, slug: string, html: string): WrittenBase {
+export function writePrototypePage(
+  workspaceRootPath: string,
+  slug: string,
+  page: string,
+  html: string,
+): WrittenPage {
   const dir = getPrototypeDirPath(workspaceRootPath, slug)
   if (!existsSync(dir)) {
     throw new Error(`Prototype "${slug}" does not exist. Create it first.`)
   }
 
-  const markup = html.trim()
-  // A partial fragment would produce a base that patches cannot be applied to,
-  // and the failure would only show up later at export time.
-  if (!/^<html[\s>]/i.test(markup) && !/^<!doctype html/i.test(markup)) {
-    throw new Error('base.html is not a complete HTML document (expected <html> or <!doctype html>).')
+  const name = page.trim()
+  if (!name || /[\\/]/.test(name) || name.startsWith('_')) {
+    throw new Error(`"${page}" cannot be a page name: it becomes a file name and an address segment.`)
   }
 
-  const baseHtmlPath = join(dir, BASE_FILENAME)
-  writeFileSync(baseHtmlPath, markup, 'utf-8')
+  const markup = html.trim()
+  // A partial fragment would produce a page that patches cannot be applied to,
+  // and the failure would only show up later at export time.
+  if (!/^<html[\s>]/i.test(markup) && !/^<!doctype html/i.test(markup)) {
+    throw new Error(
+      `Page "${name}" is not a complete HTML document (expected <html> or <!doctype html>). ` +
+        `Use ${pageFileName(name)} for the file name.`,
+    )
+  }
 
-  return { slug, baseHtmlPath, bytes: Buffer.byteLength(markup, 'utf-8') }
+  const path = join(dir, pageFileName(name))
+  writeFileSync(path, markup, 'utf-8')
+
+  return { slug, page: name, path, bytes: Buffer.byteLength(markup, 'utf-8') }
 }
 
-/** Read a prototype's base page, or null when it has none. */
-export function readPrototypeBase(workspaceRootPath: string, slug: string): string | null {
-  const baseHtmlPath = join(getPrototypeDirPath(workspaceRootPath, slug), BASE_FILENAME)
-  if (!existsSync(baseHtmlPath)) return null
-  return readFileSync(baseHtmlPath, 'utf-8')
+/** Read one of a prototype's page documents, or null when it is not there. */
+export function readPrototypePage(
+  workspaceRootPath: string,
+  slug: string,
+  file: string,
+): string | null {
+  const path = join(getPrototypeDirPath(workspaceRootPath, slug), file)
+  if (!existsSync(path)) return null
+  return readFileSync(path, 'utf-8')
+}
+
+/**
+ * Read the optional shell a page of ours is rendered inside, or null when there is
+ * none (plan §19.2).
+ *
+ * The shell is applied wherever a page is turned into a document — the host on
+ * every request, and export when it writes the package — so the delivered page is
+ * the page that was previewed, shell and all.
+ */
+export function readPrototypeLayout(workspaceRootPath: string, slug: string): string | null {
+  const path = getPrototypeLayoutPath(workspaceRootPath, slug)
+  if (!existsSync(path)) return null
+  return readFileSync(path, 'utf-8')
 }

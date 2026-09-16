@@ -1,9 +1,9 @@
 /**
  * Prototype status — the control-plane view of a prototype.
  *
- * Composes the derived facts (patches, services, contract, exports) with the
- * ownership check into one report, so the state of a prototype can be inspected
- * without opening the filesystem by hand.
+ * Composes the derived facts (pages, patches, services, contract, exports) with
+ * the ownership check into one report, so the state of a prototype can be
+ * inspected without opening the filesystem by hand.
  *
  * All facts are recomputed from disk; nothing here is cached or persisted.
  */
@@ -11,12 +11,18 @@
 import { existsSync, readdirSync } from 'fs'
 import { join } from 'path'
 import { getWorkspacePrototypesPath } from '../workspaces/storage.ts'
-import { readPrototypeConfig, type PrototypeKind } from './config.ts'
+import { readPrototypeConfig } from './config.ts'
 import { buildMockRoutes, composeContract, listContractServices, loadContractService } from './contract.ts'
+import { describePrototypePages, findEntryPage, type PrototypePage } from './pages.ts'
 import { PROTOTYPE_LANES, resolvePrototypeOwnership } from './ownership.ts'
-import { getPrototypeDistPath, getPrototypePatchesPath, getPrototypeDirPath, scanPrototypePatches } from './storage.ts'
-
-const BASE_FILENAME = 'base.html'
+import { prototypeOriginUrl } from './url.ts'
+import {
+  getPrototypeDistPath,
+  getPrototypePatchesPath,
+  getPrototypeDirPath,
+  listPrototypePatchPages,
+  scanPrototypePatches,
+} from './storage.ts'
 
 export interface PrototypeStatusService {
   slug: string
@@ -32,40 +38,44 @@ export interface PrototypeStatus {
   slug: string
   /** Absolute path to the prototype's directory. */
   dir: string
-  /** Which kind of prototype this is (fixed at creation). */
-  kind: PrototypeKind
-  /** `overlay` only: the page this prototype injects into. */
-  targetUrl?: string
   /**
    * Slugs of prototypes this one is studied from (plan §14). Raw slugs rather
    * than resolved values: callers that need more join against their own status
-   * list, and the one caller that needs `kind`/`targetUrl` (the prompt) resolves
-   * it from that reference's own config.
+   * list, and the one caller that needs a page (the prompt) resolves it from that
+   * reference's own table.
    */
   references: string[]
   /**
-   * Whether a `base.html` exists on disk. It is the page for a from-scratch
-   * prototype, and by design absent for an overlay, whose page is a live
-   * address. For "is there something to open", use {@link pageAvailable}.
+   * The pages of this prototype, in flow order (plan §19): declared rows first,
+   * then the documents nobody declared, by name.
    */
-  baseHtmlPresent: boolean
+  pages: PrototypePage[]
   /**
-   * Whether there is a page to open — the same condition `resolvePrototypeEntry`
-   * enforces, and deliberately not just `baseHtmlPresent`.
-   *
-   * The two kinds get their page from different places, so "is there something to
-   * open" is not one question: an overlay's page is the live address it was
-   * created against (it needs no file at all), while a from-scratch prototype's
-   * page is its own `base.html` rendered by the host. Two statements of one rule
-   * can drift, so a test asserts this agrees with `resolvePrototypeEntry` for
-   * every combination.
+   * The page the address root opens, or null when it shows the **generated page
+   * index** — the default, because no page of a flow is naturally the first one
+   * (plan §19.3).
+   */
+  entryPage: string | null
+  /**
+   * Everything worth saying out loud about the table: rows that could not be read
+   * (`config.ts`), a declared page whose document is gone, and a
+   * `patches/<name>/` directory that matches no page. All three are silent
+   * failures otherwise — a screen that is not there, or a patch nothing replays.
+   */
+  pageIssues: string[]
+  /**
+   * Whether there is something to open — the same condition
+   * `resolvePrototypeEntry` enforces, so the panel cannot offer a button that
+   * fails: there has to be a page, and an address to show it on (a live page's own
+   * address, or the host that renders ours). Two statements of one rule can drift,
+   * so a test walks every combination of entry/page/host.
    */
   pageAvailable: boolean
-  /** Absolute path to `base.html`, or null when the prototype has none. */
-  baseHtmlPath: string | null
   patches: {
     total: number
     byLane: Record<string, number>
+    /** How many patches are page-scoped (`patches/<page>/…`) rather than shared. */
+    scoped: number
     /**
      * Absolute paths of every patch that will actually be replayed, in replay
      * order. Files whose names do not match the convention are absent — the
@@ -75,7 +85,11 @@ export interface PrototypeStatus {
     files: string[]
   }
   services: PrototypeStatusService[]
-  /** File names under `dist/`. */
+  /**
+   * Entries under `dist/`. Folders are listed with a trailing `/` — the
+   * deliverable *is* one (`extension/`), so a listing that only counted files
+   * would report an exported prototype as having nothing exported.
+   */
   distFiles: string[]
   ownership: { inspected: number; violations: Array<{ path: string; reason: string }> }
   /** Lane id → description, so callers can render names without a second import. */
@@ -86,8 +100,8 @@ function listFileNames(dir: string): string[] {
   if (!existsSync(dir)) return []
   try {
     return readdirSync(dir, { withFileTypes: true })
-      .filter((entry) => entry.isFile())
-      .map((entry) => entry.name)
+      .map((entry) => (entry.isDirectory() ? `${entry.name}/` : entry.isFile() ? entry.name : null))
+      .filter((name): name is string => name !== null)
       .sort()
   } catch {
     return []
@@ -97,9 +111,9 @@ function listFileNames(dir: string): string[] {
 /**
  * List every prototype in a workspace, each with its full status.
  *
- * A directory under `prototypes/` counts as a prototype even without `base.html` — patches
- * can legitimately be collected before the base page is written, and the status
- * reports `baseHtmlPresent: false` so the caller can say so.
+ * A directory under `prototypes/` counts as a prototype even without pages —
+ * patches can legitimately be collected before a page is written, and the status
+ * reports `pageAvailable: false` so the caller can say so.
  */
 export function listPrototypeStatuses(workspaceRootPath: string): PrototypeStatus[] {
   let entries
@@ -143,22 +157,46 @@ export function buildPrototypeStatus(workspaceRootPath: string, slug: string): P
     }
   })
 
-  const ownership = resolvePrototypeOwnership(workspaceRootPath, slug)
-  const baseHtmlPath = join(dir, BASE_FILENAME)
   const config = readPrototypeConfig(workspaceRootPath, slug)
+  const { pages, issues } = describePrototypePages(workspaceRootPath, slug)
+  const entry = findEntryPage(pages)
+  const origin = prototypeOriginUrl(workspaceRootPath, slug)
+
+  // A patch directory that matches no page is a change nothing will ever replay:
+  // the directory *is* the ownership rule (plan §19.4), so a name that is not a
+  // page is a typo rather than an empty scope.
+  const pageNames = new Set(pages.map((page) => page.name))
+  for (const patchPage of listPrototypePatchPages(workspaceRootPath, slug)) {
+    if (!pageNames.has(patchPage)) {
+      issues.push(
+        `patches/${patchPage}/ belongs to no page of this prototype, so nothing there is replayed. ` +
+          `Pages: ${[...pageNames].join(', ') || 'none'}`,
+      )
+    }
+  }
+
+  const ownership = resolvePrototypeOwnership(workspaceRootPath, slug)
 
   return {
     slug,
     dir,
-    kind: config.kind,
-    ...(config.targetUrl ? { targetUrl: config.targetUrl } : {}),
     references: config.references ?? [],
-    baseHtmlPresent: existsSync(baseHtmlPath),
-    pageAvailable: config.kind === 'overlay' ? Boolean(config.targetUrl) : existsSync(baseHtmlPath),
-    baseHtmlPath: existsSync(baseHtmlPath) ? baseHtmlPath : null,
+    pages,
+    entryPage: entry?.name ?? null,
+    pageIssues: issues,
+    // Opening needs a page and an address. An overlay page's address is its own —
+    // it is a real site — while a document of ours and the generated page index are
+    // rendered by the host, so with no host there is nothing to open; a document
+    // that is gone is not a page either. The same condition
+    // `resolvePrototypeEntry` enforces, combination by combination (a test walks
+    // them).
+    pageAvailable:
+      pages.length > 0 &&
+      (entry?.kind === 'overlay' ? entry.url !== null : origin !== null && (!entry || entry.file !== null)),
     patches: {
       total: patches.length,
       byLane,
+      scoped: patches.filter((patch) => patch.page !== null).length,
       files: patches.map((patch) => join(patchesDir, patch.file)),
     },
     services,

@@ -9,6 +9,7 @@ import { existsSync } from 'fs'
 import { readFile, writeFile, mkdir } from 'fs/promises'
 import { randomUUID } from 'node:crypto'
 import { type AgentEvent, setPermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserPaneFns, generateConversationSummary, resolveKeepBackgroundTasksAlive } from '@craft-agent/shared/agent'
+import type { PrototypeWindowDescriptor } from '@craft-agent/shared/prototypes'
 import {
   exportPrototype as exportPrototypeArtifacts,
   resolveContractServiceSlug,
@@ -20,8 +21,11 @@ import {
   resolvePrototypeEntry,
   listPrototypeStatuses,
   createPrototype as createNewPrototype,
-  importPrototype as importIntoPrototype,
-  setPrototypeTargetUrl,
+  setPrototypePageUrl as setPrototypePageUrlImpl,
+  prototypeOriginUrl,
+  listPrototypePages,
+  matchPrototypePage,
+  updatePrototypePages,
   linkPrototypeReference as linkReference,
   unlinkPrototypeReference as unlinkReference,
 } from '@craft-agent/shared/prototypes'
@@ -3788,7 +3792,12 @@ export class SessionManager implements ISessionManager {
             },
             snapshot: async () => {
               const instanceId = await resolveSessionBrowserInstance('browser_snapshot')
-              return bpm.getAccessibilitySnapshot(instanceId)
+              const snapshot = await bpm.getAccessibilitySnapshot(instanceId)
+              // The window is this session's by construction, so the prototype is
+              // this conversation's. Say it, because the page's own URL is not
+              // enough to act on: it does not tell an overlay page (a real site's
+              // page to patch) from a scratch one (our own document to edit).
+              return { ...snapshot, prototype: this.describeWindowPrototype(sid, snapshot.url) }
             },
             click: async (ref, options) => {
               const instanceId = await resolveSessionBrowserInstance('browser_click')
@@ -3912,25 +3921,22 @@ export class SessionManager implements ISessionManager {
               const instanceId = await resolveSessionBrowserInstance('browser_prototype_clear')
               return clearPrototypeFromBrowser(bpm, instanceId, prototypeSlug)
             },
-            /**
-             * Copy another prototype's page + patches in. File work only — no window.
-             *
-             * There is no counterpart for "capture a live page": for an overlay the
-             * live page *is* the base (patches are injected into it), and for a
-             * from-scratch prototype the document is written. Freezing a rendered
-             * page into a file produced something that could not run its own JS and
-             * carried no session — a base that only looks like the page.
-             */
-            importPrototype: async (prototypeSlug, sourceSlug) => {
-              return importIntoPrototype(managed.workspace.rootPath, prototypeSlug, sourceSlug)
+            // File work only, and deliberately no confirmation step: a page's
+            // address is not a rule of its kind, it is a fact about where the page
+            // is (the same page lives in a dev, a staging and a production
+            // environment). `page` names which page moves — an overlay one, since a
+            // document of ours has no address to record. What *is* worth saying —
+            // that open windows keep the old page and that selectors were written
+            // against the old DOM — is said by the command that calls this.
+            setPrototypePageUrl: async (prototypeSlug, url, page) => {
+              return setPrototypePageUrlImpl(managed.workspace.rootPath, prototypeSlug, url, page)
             },
-            // File work only, and deliberately no confirmation step: the address is
-            // not a rule, it is a fact about where the page is (the same page lives
-            // in a dev, a staging and a production environment). What *is* worth
-            // saying — that open windows keep the old page and that selectors were
-            // written against the old DOM — is said by the command that calls this.
-            setPrototypeTarget: async (prototypeSlug, targetUrl) => {
-              return setPrototypeTargetUrl(managed.workspace.rootPath, prototypeSlug, targetUrl)
+            // The same file, the other fact in it: which pages this flow is made
+            // of, in what order, and which one the address root opens. A page table
+            // is not a rule about a page, it is the flow itself, so nothing here
+            // needs confirming.
+            setPrototypePages: async (prototypeSlug, change) => {
+              return updatePrototypePages(managed.workspace.rootPath, prototypeSlug, change)
             },
             // Pure file export — deliberately does not resolve a browser instance.
             exportPrototype: async (prototypeSlug) => {
@@ -4092,7 +4098,18 @@ export class SessionManager implements ISessionManager {
               }
             },
             listWindows: async () => {
-              return bpm.listInstancesAsync()
+              const windows = await bpm.listInstancesAsync()
+              // Each window carries the prototype it is showing, so the list says
+              // which of them are prototype windows, which page of the flow each is
+              // on, and of which kind — the URL alone cannot tell an overlay page
+              // (a live site's page) from a scratch one (our own rendered document).
+              return windows.map((window) => ({
+                ...window,
+                prototype: this.describeWindowPrototype(
+                  window.boundSessionId ?? window.ownerSessionId,
+                  window.url,
+                ),
+              }))
             },
             detectChallenge: async () => {
               const instanceId = await resolveSessionBrowserInstance('browser_detect_challenge')
@@ -7391,6 +7408,63 @@ export class SessionManager implements ISessionManager {
       await this.flushSession(managed.id)
       const watcher = this.configWatchers.get(managed.workspace.rootPath)
       watcher?.notifyFileChange(`sessions/${sessionId}/session.jsonl`)
+    }
+  }
+
+  /**
+   * Which prototype a session is working on, and the workspace that owns it.
+   *
+   * Read by the browser toolbar (through the pane manager's injected resolver),
+   * which needs both: the workspace to build the prototype's own address, and the
+   * slug to say which prototype the window is. A window whose conversation has no
+   * prototype shows the page it is actually on and offers no prototype actions —
+   * see plan §7: an entry point's precondition is shown before the click, not
+   * answered after it.
+   */
+  getSessionPrototypeBinding(sessionId: string): { slug: string; workspaceRootPath: string } | null {
+    const managed = this.sessions.get(sessionId)
+    if (!managed?.prototypeSlug) return null
+    return { slug: managed.prototypeSlug, workspaceRootPath: managed.workspace.rootPath }
+  }
+
+  /**
+   * Which prototype a browser window is showing — what the agent-side browser
+   * tools attach to a window, next to the page's real URL.
+   *
+   * A window belongs to the conversation that opened it, so the prototype comes
+   * from that session. The **kind** is a fact about a *page*, not about the
+   * prototype (plan §19): one flow may mix pages of ours with pages of someone
+   * else's site, so both the kind and the page name are read off the page the
+   * window is actually on (`matchPrototypePage` against the page table). A
+   * `scratch` page is a document we own, rendered from its file with its patches
+   * applied and changed by editing files; an `overlay` page is a real site's page
+   * (its own JavaScript, its own session) which is patched, never edited. Both
+   * are null when the window is on the prototype's address but on no page the
+   * table describes — the generated page index, or a path no page claims.
+   *
+   * `origin` travels as well, and is the prototype's **own** address: it differs
+   * from the page's URL for an overlay and coincides with it for a page of ours.
+   *
+   * `currentUrl` decides which *page* of the prototype is on screen: a prototype is
+   * a flow, and once it has more than one screen the URL no longer says which one
+   * (plan §18/§19).
+   */
+  private describeWindowPrototype(
+    sessionId: string | null | undefined,
+    currentUrl: string | null | undefined,
+  ): PrototypeWindowDescriptor | null {
+    if (!sessionId) return null
+
+    const binding = this.getSessionPrototypeBinding(sessionId)
+    if (!binding) return null
+
+    const pages = listPrototypePages(binding.workspaceRootPath, binding.slug)
+    const page = matchPrototypePage(pages, currentUrl)
+    return {
+      slug: binding.slug,
+      kind: pages.find((candidate) => candidate.name === page)?.kind ?? null,
+      origin: prototypeOriginUrl(binding.workspaceRootPath, binding.slug),
+      page,
     }
   }
 
