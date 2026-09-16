@@ -16,6 +16,7 @@ const cssPatch: PrototypePatch = {
   lane: 'A',
   order: 1,
   source: '.btn { color: red }',
+  targets: [],
   page: null,
   key: 'k1',
 }
@@ -26,6 +27,7 @@ const jsPatch: PrototypePatch = {
   lane: 'B',
   order: 2,
   source: "document.querySelector('.total')?.classList.add('is-big');",
+  targets: [],
   page: null,
   key: 'k2',
 }

@@ -28,8 +28,17 @@ import {
   updatePrototypePages,
   linkPrototypeReference as linkReference,
   unlinkPrototypeReference as unlinkReference,
+  setPrototypeProject as setPrototypeProjectArtifacts,
+  resolveProjectPrototype,
+  commitPrototype as commitPrototypeArtifacts,
 } from '@craft-agent/shared/prototypes'
 import { applyPrototypeToBrowser, clearPrototypeFromBrowser } from '../domain/apply-prototype'
+import {
+  startPrototypeFrameCapture,
+  stopPrototypeFrameCapture,
+} from '../domain/record-prototype-frames'
+import { importPrototypeVideo as importPrototypeVideoArtifacts } from '../domain/import-prototype-video'
+import { verifyPrototype as verifyPrototypeArtifacts } from '../domain/verify-prototype'
 import {
   resolveSessionConnection,
   createBackendFromConnection,
@@ -61,6 +70,7 @@ import {
 } from '@craft-agent/shared/config'
 import type { ActiveSessionInfo, SessionProcessingStatus } from '@craft-agent/core/types'
 import { loadWorkspaceConfig } from '@craft-agent/shared/workspaces'
+import { loadProjectById } from '@craft-agent/shared/projects'
 import {
   // Session persistence functions
   listSessions as listStoredSessions,
@@ -3477,7 +3487,10 @@ export class SessionManager implements ISessionManager {
         permissionMode: managed.permissionMode,
         previousPermissionMode: managed.previousPermissionMode,
         projectId: managed.projectId,
-        prototypeSlug: managed.prototypeSlug,
+        // Effective, not explicit: the prompt's prototype context follows the same
+        // resolution the window and the commands do, so a project's conversations
+        // describe the prototype they are actually working on.
+        prototypeSlug: this.effectivePrototypeSlug(managed),
       }
 
       const onSdkSessionIdUpdate = (sdkSessionId: string) => {
@@ -3592,6 +3605,11 @@ export class SessionManager implements ISessionManager {
         getBranchFallbackMessages,
         getBranchSeedMessages,
         markBranchSeedApplied,
+        // Asked live rather than read off the session snapshot, so the agent can
+        // tell when this conversation's prototype moved on since its prompt was
+        // pinned (plan §15.1) — and so a Pi turn, which rebuilds its prompt, is
+        // rebuilding it from the current answer.
+        getPrototypeSlug: () => this.effectivePrototypeSlug(managed) ?? null,
         getTransferredSessionSummary,
         markTransferredSessionSummaryApplied,
         mcpPool: managed.mcpPool,
@@ -3889,7 +3907,9 @@ export class SessionManager implements ISessionManager {
             },
             // A pure read of the session binding — no browser instance needed, so
             // `prototype-list` and the no-slug fallback work before any window exists.
-            getBoundPrototypeSlug: () => managed.prototypeSlug ?? null,
+            // Effective, not explicit: a command in a project's conversation resolves
+            // the project's prototype the same way the window and the prompt do.
+            getBoundPrototypeSlug: () => this.effectivePrototypeSlug(managed) ?? null,
             listPrototypes: async () => {
               return listPrototypeStatuses(managed.workspace.rootPath)
             },
@@ -3920,6 +3940,54 @@ export class SessionManager implements ISessionManager {
             clearPrototype: async (prototypeSlug) => {
               const instanceId = await resolveSessionBrowserInstance('browser_prototype_clear')
               return clearPrototypeFromBrowser(bpm, instanceId, prototypeSlug)
+            },
+            // Folding the delta layer is a pure file operation — no browser, no
+            // session state — because it is about where a change *lives*, not about
+            // the page it is on (plan §21.3). Open windows pick it up through the
+            // file watcher's auto-replay.
+            commitPrototype: async (prototypeSlug, options) => {
+              return commitPrototypeArtifacts(managed.workspace.rootPath, prototypeSlug, options)
+            },
+            // Frames are evidence, not a deliverable: they are written under the
+            // prototype's `research/` and ship with nothing (plan §20.3). The
+            // window is resolved like every other browser command's, so a capture
+            // runs against the window this session already has.
+            startPrototypeFrames: async (options) => {
+              const instanceId = await resolveSessionBrowserInstance('browser_prototype_record')
+              return startPrototypeFrameCapture(bpm, instanceId, options)
+            },
+            stopPrototypeFrames: async (prototypeSlug) => {
+              const instanceId = await resolveSessionBrowserInstance('browser_prototype_record')
+              return stopPrototypeFrameCapture(bpm, instanceId, managed.workspace.rootPath, prototypeSlug)
+            },
+            // No browser instance: a recording is decoded by a hidden window, not
+            // by the one the session is driving, so this works in a session that
+            // has never opened a page (plan §20.5).
+            importPrototypeVideo: async ({ slug: prototypeSlug, path, mode, everyMs, maxFrames }) => {
+              return importPrototypeVideoArtifacts(bpm, managed.workspace.rootPath, prototypeSlug, {
+                path,
+                mode,
+                everyMs,
+                maxFrames,
+              })
+            },
+            // Reads a window rather than creating one: a verification should not
+            // open a browser, and with none the page checks come back as skipped —
+            // a true answer, not a failure (plan §20.7).
+            verifyPrototype: async (prototypeSlug) => {
+              const instances = await bpm.listInstancesAsync().catch(() => [])
+              const instanceId = instances.find((instance) => instance.boundSessionId === sid)?.id ?? null
+              return verifyPrototypeArtifacts(bpm, instanceId, managed.workspace.rootPath, prototypeSlug)
+            },
+            // File work only: recording which project a prototype was made for is
+            // one field in its config, and needs no browser (plan §15.1).
+            setPrototypeProject: async ({ slug: prototypeSlug, projectSlug }) => {
+              const config = setPrototypeProjectArtifacts(
+                managed.workspace.rootPath,
+                prototypeSlug,
+                projectSlug,
+              )
+              return { slug: prototypeSlug, projectSlug: config.projectSlug ?? null }
             },
             // File work only, and deliberately no confirmation step: a page's
             // address is not a rule of its kind, it is a fact about where the page
@@ -7423,8 +7491,40 @@ export class SessionManager implements ISessionManager {
    */
   getSessionPrototypeBinding(sessionId: string): { slug: string; workspaceRootPath: string } | null {
     const managed = this.sessions.get(sessionId)
-    if (!managed?.prototypeSlug) return null
-    return { slug: managed.prototypeSlug, workspaceRootPath: managed.workspace.rootPath }
+    if (!managed) return null
+
+    const slug = this.effectivePrototypeSlug(managed)
+    if (!slug) return null
+    return { slug, workspaceRootPath: managed.workspace.rootPath }
+  }
+
+  /**
+   * The prototype a conversation is working on — the shape every prototype path
+   * asks for, so they cannot disagree about which one it is.
+   *
+   * Two sources, in this order (plan §15.1): the session's own binding, which is
+   * an explicit statement about this conversation, then the one its project
+   * provides, which is the whole point of binding a prototype to a project — the
+   * conversations inside it stop having to be bound one at a time. Resolution is
+   * live rather than copied at creation, so a session that existed before the
+   * project had a prototype benefits too, and changing the project's prototype
+   * moves its conversations with it.
+   *
+   * The project's prototype is derived, one scan away: `resolveProjectPrototype`
+   * reads the prototypes folder and answers only when exactly one of them claims
+   * the project (see there for why "several" is answered with nothing). Sessions
+   * carry the project's *id* while the edge records its *slug*, hence the lookup
+   * in between. Nothing is cached: an edge is a person's action, and the read is
+   * the same one `prototype-list` does — but it only happens for a session that
+   * has no binding of its own.
+   */
+  private effectivePrototypeSlug(managed: ManagedSession): string | undefined {
+    if (managed.prototypeSlug) return managed.prototypeSlug
+    if (!managed.projectId) return undefined
+
+    const project = loadProjectById(managed.workspace.rootPath, managed.projectId)
+    if (!project) return undefined
+    return resolveProjectPrototype(managed.workspace.rootPath, project.config.slug) ?? undefined
   }
 
   /**

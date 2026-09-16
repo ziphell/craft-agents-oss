@@ -9,11 +9,12 @@ import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useAtomValue } from 'jotai'
-import { FolderKanban, FolderOpen, Plus, Trash2, Upload } from 'lucide-react'
+import { FlaskConical, FolderKanban, FolderOpen, Plus, Trash2, Upload } from 'lucide-react'
 import { toast } from 'sonner'
 import { useActiveWorkspace, useAppShellContext } from '@/context/AppShellContext'
 import { navigate, routes } from '@/lib/navigate'
 import { sessionMetaMapAtom } from '@/atoms/sessions'
+import { prototypesAtom } from '@/atoms/prototypes'
 import {
   Info_Page,
   Info_Section,
@@ -22,6 +23,11 @@ import {
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Input } from '@/components/ui/input'
+import { DropdownMenu, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import {
+  StyledDropdownMenuContent,
+  StyledDropdownMenuItem,
+} from '@/components/ui/styled-dropdown'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@craft-agent/ui'
 import { cn } from '@/lib/utils'
 import { PROJECT_COLOR_PALETTE } from '@/utils/project-colors'
@@ -32,13 +38,14 @@ interface ProjectInfoPageProps {
   projectSlug: string
 }
 
-type TabKey = 'sessions' | 'assets' | 'settings'
+type TabKey = 'sessions' | 'prototypes' | 'assets' | 'settings'
 
 export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
   const { t } = useTranslation()
   const workspace = useActiveWorkspace()
   const workspaceId = workspace?.id
   const sessionMetaMap = useAtomValue(sessionMetaMapAtom)
+  const prototypes = useAtomValue(prototypesAtom)
   const { onCreateSession } = useAppShellContext()
 
   const [project, setProject] = useState<LoadedProject | null>(null)
@@ -119,6 +126,40 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
     }
     return result
   }, [project, sessionMetaMap])
+
+  // The edge lives on the prototype (`projectSlug`), so "this project's
+  // prototypes" is a filter over the workspace list rather than a field on the
+  // project — one record, which is what keeps the two directions from disagreeing
+  // (plan §15.1). Exactly one of them is what the conversations in here inherit.
+  const projectPrototypes = useMemo(
+    () => (project ? prototypes.filter((item) => item.projectSlug === project.config.slug) : []),
+    [project, prototypes],
+  )
+  const linkablePrototypes = useMemo(
+    () => (project ? prototypes.filter((item) => item.projectSlug !== project.config.slug) : []),
+    [project, prototypes],
+  )
+
+  const [linkingPrototype, setLinkingPrototype] = React.useState(false)
+
+  /**
+   * Point a prototype at this project, or clear that (`null`). One write path for
+   * the edge, shared with the prototype page's own picker: a prototype belongs to
+   * one project, so linking one that already has a project moves it — which the
+   * menu says before the click rather than after.
+   */
+  const handleSetPrototypeProject = useCallback(async (slug: string, targetProjectSlug: string | null) => {
+    if (!workspaceId) return
+    setLinkingPrototype(true)
+    try {
+      await window.electronAPI.setPrototypeProject(workspaceId, slug, targetProjectSlug)
+    } catch (err) {
+      console.error('[ProjectInfoPage] Failed to set the prototype\'s project:', err)
+      toast.error(t('projectInfo.prototypeLinkFailed'))
+    } finally {
+      setLinkingPrototype(false)
+    }
+  }, [workspaceId, t])
 
   const handleStartSession = useCallback(async () => {
     if (!workspaceId || !project) return
@@ -225,6 +266,9 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
             <TabButton active={tab === 'sessions'} onClick={() => setTab('sessions')}>
               {t('projectInfo.tabSessions')}
             </TabButton>
+            <TabButton active={tab === 'prototypes'} onClick={() => setTab('prototypes')}>
+              {t('projectInfo.tabPrototypes')}
+            </TabButton>
             <TabButton active={tab === 'assets'} onClick={() => setTab('assets')}>
               {t('projectInfo.tabAssets')}
             </TabButton>
@@ -262,6 +306,94 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
                     </li>
                   ))}
                 </ul>
+              )}
+            </Info_Section>
+          )}
+
+          {/* Prototypes tab — what this project was worked on with. The link is
+              stored on the prototype, so this reads the same field the prototype
+              page writes, and exactly one of them is what the conversations in
+              here inherit (plan §15.1). */}
+          {tab === 'prototypes' && (
+            <Info_Section
+              title={t('projectInfo.tabPrototypes')}
+              description={t('projectInfo.prototypesHint')}
+              actions={
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button size="sm" variant="ghost" disabled={linkingPrototype}>
+                      <Plus className="h-3.5 w-3.5 mr-1" />
+                      {t('projectInfo.prototypeAdd')}
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <StyledDropdownMenuContent align="end">
+                    {linkablePrototypes.length === 0 ? (
+                      <div className="px-2 py-1.5 text-xs text-muted-foreground">
+                        {t('projectInfo.prototypeNoCandidates')}
+                      </div>
+                    ) : (
+                      linkablePrototypes.map((prototype) => (
+                        <StyledDropdownMenuItem
+                          key={prototype.slug}
+                          onClick={() => void handleSetPrototypeProject(prototype.slug, project.config.slug)}
+                        >
+                          <FlaskConical className="h-3.5 w-3.5" />
+                          <span className="flex-1 font-mono text-xs">{prototype.slug}</span>
+                          {/* A prototype belongs to one project, so naming another
+                              one moves it — said here, before the click. */}
+                          {prototype.projectSlug && (
+                            <span className="text-[11px] text-muted-foreground">
+                              {t('projectInfo.prototypeMovesFrom', { project: prototype.projectSlug })}
+                            </span>
+                          )}
+                        </StyledDropdownMenuItem>
+                      ))
+                    )}
+                  </StyledDropdownMenuContent>
+                </DropdownMenu>
+              }
+            >
+              {projectPrototypes.length === 0 ? (
+                <div className="px-4 py-6 text-sm text-muted-foreground">
+                  {t('projectInfo.prototypesEmpty')}
+                </div>
+              ) : (
+                <ul className="divide-y divide-border/50">
+                  {projectPrototypes.map((prototype) => (
+                    <li key={prototype.slug} className="px-4 py-2 flex items-center gap-3">
+                      <div className="flex-1 min-w-0">
+                        <button
+                          type="button"
+                          className="text-sm font-mono text-foreground hover:underline text-left"
+                          onClick={() => navigate(routes.view.prototypes(prototype.slug))}
+                        >
+                          {prototype.slug}
+                        </button>
+                        {projectPrototypes.length === 1 && (
+                          <div className="text-xs text-foreground/50">
+                            {t('projectInfo.prototypeInherited')}
+                          </div>
+                        )}
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={linkingPrototype}
+                        onClick={() => void handleSetPrototypeProject(prototype.slug, null)}
+                      >
+                        {t('common.remove')}
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {/* Several is not a state to guess at: the inheritance simply does
+                  not apply, and saying so is the difference between "unbound" and
+                  "unbound and wondering why". */}
+              {projectPrototypes.length > 1 && (
+                <div className="px-4 pb-3 text-xs text-muted-foreground">
+                  {t('projectInfo.prototypesAmbiguous', { count: projectPrototypes.length })}
+                </div>
               )}
             </Info_Section>
           )}

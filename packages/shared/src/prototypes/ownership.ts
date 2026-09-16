@@ -14,13 +14,22 @@
 import { readdirSync } from 'fs'
 import { join } from 'path'
 import { getPrototypeDirPath } from './storage.ts'
+import { CONSOLIDATED_LANE } from './types.ts'
 
-/** Declared lanes, in the order the plan introduces them. */
+/**
+ * Declared lanes, in the order the plan introduces them.
+ *
+ * `Z` is the consolidated layer (`commit.ts`): a patch a commit folded other
+ * patches into. It is a lane because it is still a patch — same naming, same
+ * single writer, same replay — but it is written by the control plane rather
+ * than by a contributor, and it replays last by rule (`byReplayOrder`).
+ */
 export const PROTOTYPE_LANES = {
   A: 'UI / interaction (patches)',
   B: 'service contract (paths, config)',
   C: 'data (fixtures)',
   D: 'verification (read-only)',
+  [CONSOLIDATED_LANE]: 'consolidated by prototype-commit (control plane)',
 } as const
 
 export type PrototypeLaneId = keyof typeof PROTOTYPE_LANES

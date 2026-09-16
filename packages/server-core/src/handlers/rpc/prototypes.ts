@@ -14,12 +14,14 @@ import { watch } from 'fs'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import { ensureWorkspacePrototypesPath } from '@craft-agent/shared/workspaces'
-import { exportPrototype, createPrototype, deletePrototype, duplicatePrototype, linkPrototypeReference, listPrototypeStatuses, resolvePrototypeEntry, setPrototypePageUrl, unlinkPrototypeReference, updatePrototypePages } from '@craft-agent/shared/prototypes'
+import { exportPrototype, commitPrototype, createPrototype, deletePrototype, duplicatePrototype, linkPrototypeReference, listPrototypeStatuses, resolvePrototypeEntry, setPrototypePageUrl, setPrototypeProject, unlinkPrototypeReference, updatePrototypePages } from '@craft-agent/shared/prototypes'
 import type { PrototypePagesChange } from '@craft-agent/shared/prototypes'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import {
   applyPrototypeToBrowser,
+  replayPrototypeInBrowser,
 } from '../../domain/apply-prototype'
+import { importPrototypeVideo } from '../../domain/import-prototype-video'
 import type { HandlerDeps } from '../handler-deps'
 
 export const HANDLED_CHANNELS = [
@@ -28,6 +30,7 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.prototypes.LIST,
   RPC_CHANNELS.prototypes.ENTRY,
   RPC_CHANNELS.prototypes.EXPORT,
+  RPC_CHANNELS.prototypes.IMPORT_VIDEO,
   RPC_CHANNELS.prototypes.CREATE,
   RPC_CHANNELS.prototypes.DUPLICATE,
   RPC_CHANNELS.prototypes.DELETE,
@@ -36,6 +39,9 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.prototypes.UNLINK_REFERENCE,
   RPC_CHANNELS.prototypes.SET_PAGES,
   RPC_CHANNELS.prototypes.SET_TARGET,
+  RPC_CHANNELS.prototypes.SET_PROJECT,
+  RPC_CHANNELS.prototypes.REPLAY,
+  RPC_CHANNELS.prototypes.COMMIT,
 ] as const
 
 /** Batch rapid changes before notifying (matches the session file watcher). */
@@ -96,6 +102,29 @@ export function registerPrototypesHandlers(server: RpcServer, deps: HandlerDeps)
     },
   )
 
+  // Sample frames out of a video the user recorded elsewhere (plan §20.5). The
+  // picker runs in the client, so this is the same call locally and remotely and
+  // the panel never handles a path. Returns null when the dialog was dismissed.
+  server.handle(
+    RPC_CHANNELS.prototypes.IMPORT_VIDEO,
+    async (
+      _ctx,
+      workspaceId: string,
+      slug: string,
+      options?: Parameters<typeof importPrototypeVideo>[3],
+    ) => {
+      const workspace = getWorkspaceByNameOrId(workspaceId)
+      if (!workspace) throw new Error(`PROTOTYPES_IMPORT_VIDEO: Workspace not found: ${workspaceId}`)
+
+      // The pane manager is what decodes the recording, and a runtime without one
+      // cannot import — said out loud rather than cast away.
+      const bpm = deps.browserPaneManager
+      if (!bpm) throw new Error('PROTOTYPES_IMPORT_VIDEO: this runtime has no browser pane manager.')
+
+      return importPrototypeVideo(bpm, workspace.rootPath, slug, options ?? {})
+    },
+  )
+
   // Write dist/* for a prototype so it can be handed to developers.
   server.handle(RPC_CHANNELS.prototypes.EXPORT, async (_ctx, workspaceId: string, slug: string) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
@@ -140,6 +169,60 @@ export function registerPrototypesHandlers(server: RpcServer, deps: HandlerDeps)
     },
   )
 
+  // Replay one prototype into every window showing it, after its files changed
+  // (plan §21.4). No instance id: the caller knows *what* changed (the watcher
+  // named the file), the main process knows *which windows* are on it — and the
+  // decision of what a replay means (reload, or inject) is made per window, from
+  // the document itself, in `replayPrototypeInBrowser`.
+  server.handle(
+    RPC_CHANNELS.prototypes.REPLAY,
+    async (_ctx, workspaceId: string, slug: string) => {
+      const workspace = getWorkspaceByNameOrId(workspaceId)
+      if (!workspace) throw new Error(`PROTOTYPES_REPLAY: Workspace not found: ${workspaceId}`)
+      if (!deps.browserPaneManager) {
+        throw new Error('PROTOTYPES_REPLAY: this host has no browser pane manager.')
+      }
+
+      // A window with no workspace recorded passes the filter, exactly as the
+      // renderer's own tab strip does: a window we cannot place must not be
+      // silently skipped.
+      const wanted = new Set([workspaceId, workspace.id])
+      const instances = (await deps.browserPaneManager.listInstancesAsync()).filter(
+        (instance) => instance.prototypeSlug === slug && (!instance.workspaceId || wanted.has(instance.workspaceId)),
+      )
+
+      const results = []
+      for (const instance of instances) {
+        try {
+          results.push(await replayPrototypeInBrowser(deps.browserPaneManager, instance.id, workspace.rootPath, slug))
+        } catch (error) {
+          // One window failing to reload must not stop the others: the remaining
+          // windows are still showing a prototype whose files changed.
+          log.warn(`PROTOTYPES_REPLAY: ${slug} failed in ${instance.id}: ${String(error)}`)
+        }
+      }
+
+      log.info(`PROTOTYPES_REPLAY: ${slug} → ${results.length} window(s)`)
+      return { slug, windows: results.length, results }
+    },
+  )
+
+  // Fold the delta layer into what owns it (plan §21.3). Pure files, no browser:
+  // which file a change belongs in is a question about the artifact, not about
+  // the page. Open windows pick the result up through REPLAY above.
+  server.handle(
+    RPC_CHANNELS.prototypes.COMMIT,
+    async (_ctx, workspaceId: string, slug: string, options?: { page?: string }) => {
+      const workspace = getWorkspaceByNameOrId(workspaceId)
+      if (!workspace) throw new Error(`PROTOTYPES_COMMIT: Workspace not found: ${workspaceId}`)
+      const result = commitPrototype(workspace.rootPath, slug, options)
+      log.info(
+        `PROTOTYPES_COMMIT: ${slug} → ${result.scopes.reduce((total, scope) => total + scope.folded.length, 0)} folded`,
+      )
+      return result
+    },
+  )
+
   // References are a relation between two prototypes, not a third kind: the
   // reader keeps its own patches and the reference keeps its own, which is what
   // stops reference selectors from being inlined into the reader's deliverable.
@@ -161,6 +244,21 @@ export function registerPrototypesHandlers(server: RpcServer, deps: HandlerDeps)
       if (!workspace) throw new Error(`PROTOTYPES_UNLINK_REFERENCE: Workspace not found: ${workspaceId}`)
       const config = unlinkPrototypeReference(workspace.rootPath, slug, referenceSlug)
       log.info(`PROTOTYPES_UNLINK_REFERENCE: ${slug} ↛ reference ${referenceSlug}`)
+      return config
+    },
+  )
+
+  // Which project a prototype was made for (plan §15.1). The same edge the agent
+  // reaches through `prototype-project`, exposed so a detail page can set it
+  // without an agent turn — and the only write path for it, so the two directions
+  // (`projectSlug` here, "this project's prototype" derived from it) cannot drift.
+  server.handle(
+    RPC_CHANNELS.prototypes.SET_PROJECT,
+    async (_ctx, workspaceId: string, slug: string, projectSlug: string | null) => {
+      const workspace = getWorkspaceByNameOrId(workspaceId)
+      if (!workspace) throw new Error(`PROTOTYPES_SET_PROJECT: Workspace not found: ${workspaceId}`)
+      const config = setPrototypeProject(workspace.rootPath, slug, projectSlug)
+      log.info(`PROTOTYPES_SET_PROJECT: ${slug} → ${config.projectSlug ?? 'no project'}`)
       return config
     },
   )

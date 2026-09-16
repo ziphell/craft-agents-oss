@@ -2,7 +2,8 @@ import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { coerceInputText } from '@/lib/input-text'
 import { cn } from '@/lib/utils'
-import { findMentionMatches, parseMentions, type MentionMatch } from '@/lib/mentions'
+import { findMentionMatches, parseMentions, type ComposerMentionType, type MentionMatch } from '@/lib/mentions'
+import { elementLabel, parseElementMention } from '@/lib/element-mention'
 import {
   loadSourceIcon,
   loadSkillIcon,
@@ -11,7 +12,6 @@ import {
   EMOJI_ICON_PREFIX,
 } from '@/lib/icon-cache'
 import type { LoadedSkill, LoadedSource } from '../../../shared/types'
-import type { MentionItemType } from './mention-menu'
 
 // ============================================================================
 // Types
@@ -102,6 +102,9 @@ const CODE_FILE_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="12" h
 // Folder icon (open folder) - matches UserMessageBubble style (12x12, text-muted-foreground)
 const FOLDER_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" class="shrink-0 text-muted-foreground"><path d="M20.5 10C20.5 9.07003 20.5 8.60504 20.3978 8.22354C20.1204 7.18827 19.3117 6.37962 18.2765 6.10222C17.895 6 17.43 6 16.5 6H13.1008C12.4742 6 12.1609 6 11.8739 5.91181C11.6824 5.85298 11.5009 5.76572 11.3353 5.65295C11.0871 5.48389 10.8914 5.23926 10.5 4.75L10.4095 4.63693C10.107 4.25881 9.9558 4.06975 9.7736 3.92674C9.54464 3.74703 9.27921 3.61946 8.99585 3.55294C8.77037 3.5 8.52825 3.5 8.04402 3.5C6.60485 3.5 5.88527 3.5 5.32008 3.74178C4.61056 4.0453 4.0453 4.61056 3.74178 5.32008C3.5 5.88527 3.5 6.60485 3.5 8.04402V10M9.46502 20.5H14.535C16.9102 20.5 18.0978 20.5 18.9301 19.8113C19.7624 19.1226 19.9846 17.9559 20.429 15.6227L20.8217 13.5613C21.1358 11.9121 21.2929 11.0874 20.843 10.5437C20.393 10 19.5536 10 17.8746 10H6.12537C4.44643 10 3.60696 10 3.15704 10.5437C2.70713 11.0874 2.8642 11.9121 3.17835 13.5613L3.57099 15.6227C4.01541 17.9559 4.23763 19.1226 5.06992 19.8113C5.90221 20.5 7.08981 20.5 9.46502 20.5Z"/></svg>`
 
+// Picked page element (cursor) - matches UserMessageBubble style (12x12, text-muted-foreground)
+const ELEMENT_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-muted-foreground"><path d="M4.037 4.688a.495.495 0 0 1 .651-.651l16 6.5a.5.5 0 0 1-.063.947l-6.124 1.58a2 2 0 0 0-1.438 1.435l-1.579 6.126a.5.5 0 0 1-.947.063z"/></svg>`
+
 /** Known code file extensions - used to pick code file icon vs generic file icon */
 const CODE_EXTENSIONS = new Set([
   'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs',
@@ -120,7 +123,7 @@ function isCodeFile(name: string): boolean {
 }
 
 function renderBadgeHTML(
-  type: MentionItemType,
+  type: ComposerMentionType,
   label: string,
   skill?: LoadedSkill,
   source?: LoadedSource,
@@ -157,6 +160,8 @@ function renderBadgeHTML(
       iconHtml = isCodeFile(label) ? CODE_FILE_ICON_SVG : FILE_ICON_SVG
     } else if (type === 'folder') {
       iconHtml = FOLDER_ICON_SVG
+    } else if (type === 'element') {
+      iconHtml = ELEMENT_ICON_SVG
     }
   }
 
@@ -352,7 +357,13 @@ function setCursorPosition(element: HTMLElement, targetPosition: number): void {
 // Convert text with mentions to HTML
 // ============================================================================
 
-function textToHTML(
+/**
+ * Turn the composer's text into the DOM it renders as — plain text, plus one
+ * `contenteditable="false"` badge per mention. Exported so the badge rules (label,
+ * tooltip, and the `data-mention-text` that has to survive the round-trip back)
+ * can be tested without a real contenteditable.
+ */
+export function textToHTML(
   text: string,
   skills: LoadedSkill[],
   sources: LoadedSource[],
@@ -409,6 +420,15 @@ function textToHTML(
       // Show folder name as badge label, full path as tooltip
       label = match.id.split('/').pop() || match.id
       tooltip = match.id
+    } else if (match.type === 'element') {
+      // The id is the encoded payload (see element-mention): show what the element
+      // says, and its selector on hover so it stays identifiable when two elements
+      // read the same.
+      const ref = parseElementMention(match.id)
+      if (ref) {
+        label = elementLabel(ref)
+        tooltip = ref.selector
+      }
     }
 
     // Render badge with data-mention-text storing the original text

@@ -258,6 +258,20 @@ export interface CoreBackendConfig {
   /** Callback invoked after branch seed context has been injected. */
   markBranchSeedApplied?: () => void;
 
+  /**
+   * The prototype this conversation is working on *right now*, resolved by the host:
+   * its own binding, or the one its project provides when it has none (plan §15.1).
+   *
+   * Asked live rather than read off `session.prototypeSlug`, because that field is a
+   * snapshot taken when the agent was created — a conversation can be moved to
+   * another prototype, or its project's prototype can change, while this agent is
+   * alive. The system prompt is pinned on the first turn regardless (the SDK's
+   * resume expects a session's prompt to be stable), so the two answers differ
+   * exactly when the conversation has moved on and the prompt has not. That gap is
+   * the agent's to report, not to paper over.
+   */
+  getPrototypeSlug?: () => string | null;
+
   /** One-shot hidden summary to inject on the first turn of a transferred session. */
   getTransferredSessionSummary?: () => string | null;
 

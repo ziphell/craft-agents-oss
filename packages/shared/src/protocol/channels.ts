@@ -118,6 +118,12 @@ export const RPC_CHANNELS = {
     ENTRY: 'prototypes:entry',
     /** Write `dist/*` so the prototype can be handed to developers. */
     EXPORT: 'prototypes:export',
+    /**
+     * Sample frames out of a video the user recorded elsewhere (plan §20.5).
+     *
+     * The file picker runs in the client, so the panel never handles a path.
+     */
+    IMPORT_VIDEO: 'prototypes:importVideo',
     /** Create a prototype (the panel's "New Prototype"). */
     CREATE: 'prototypes:create',
     /**
@@ -132,6 +138,21 @@ export const RPC_CHANNELS = {
     DELETE: 'prototypes:delete',
     /** Replay a prototype's patches into a live browser instance. */
     APPLY: 'prototypes:apply',
+    /**
+     * Replay one prototype into every window that is showing it (plan §21.4).
+     *
+     * Sent after a file change, so an edit made in an external editor shows up in
+     * the open window without anyone clicking apply: a page of ours is reloaded
+     * (the host re-renders from disk), someone else's page is re-applied.
+     */
+    REPLAY: 'prototypes:replay',
+    /**
+     * Fold a prototype's delta layer into what owns it (plan §21.3): a page of
+     * ours takes it into `assets/<page>/committed.*`, a live page into
+     * `patches/<page>/Z-001-upper.css`. The folded patches are deleted, so this
+     * is the one prototype action with no undo — the caller asks first.
+     */
+    COMMIT: 'prototypes:commit',
     /** Declare that a prototype is studied from another one (plan §14). */
     LINK_REFERENCE: 'prototypes:linkReference',
     /** Drop that relation. Idempotent, and the way a dangling reference is cleaned up. */
@@ -149,6 +170,12 @@ export const RPC_CHANNELS = {
      * page moves; without it the entry page moves when it is a live one.
      */
     SET_TARGET: 'prototypes:setTarget',
+    /**
+     * Which project a prototype was made for (plan §15.1) — the edge both detail
+     * pages edit, and what a project's conversations inherit their prototype from
+     * when exactly one prototype claims it. `null` clears it.
+     */
+    SET_PROJECT: 'prototypes:setProject',
   },
   debug: {
     LOG: 'debug:log',

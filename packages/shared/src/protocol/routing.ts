@@ -259,6 +259,7 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.prototypes.LIST,
   RPC_CHANNELS.prototypes.ENTRY,
   RPC_CHANNELS.prototypes.EXPORT,
+  RPC_CHANNELS.prototypes.IMPORT_VIDEO,
   RPC_CHANNELS.prototypes.CREATE,
   RPC_CHANNELS.prototypes.DUPLICATE,
   RPC_CHANNELS.prototypes.DELETE,

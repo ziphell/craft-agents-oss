@@ -18,6 +18,7 @@ import type { CreatedPrototype } from '../prototypes/create.ts';
 import type { PrototypeConfig } from '../prototypes/config.ts';
 import type { PageKind, PrototypeWindowDescriptor } from '../prototypes/types.ts';
 import type { PrototypePagesChange, PrototypePagesResult } from '../prototypes/pages.ts';
+import type { PrototypeCommitResult } from '../prototypes/commit.ts';
 import type { ContractExportResult } from '../prototypes/contract.ts';
 import type { PrototypeStatus } from '../prototypes/status.ts';
 import { executeBrowserToolCommand } from './browser-tool-runtime.ts';
@@ -214,9 +215,120 @@ export interface BrowserPaneFns {
      * that belongs to another page.
      */
     page?: string | null;
+    /**
+     * What each declared `@target` matched (plan §21.1). Every patch that carries
+     * a marker is checked, so "matched nothing" can no longer be confused with
+     * "changed nothing".
+     */
+    targets?: Array<{ file: string; target: string; matched: number | null; recorded: boolean }>;
+    /** Declared targets that matched nothing and had never matched — a wrong selector. */
+    unmatched?: string[];
+    /**
+     * Targets that matched before and do not now: the page moved. Each carries
+     * when it last matched and selectors that resolve to one element now, so the
+     * fix is a re-anchor rather than a guess.
+     */
+    drifted?: Array<{ target: string; lastMatchedAt: string; suggestions: string[] }>;
+    /** Patches with no `@target`, so nothing about them could be checked. */
+    untargeted?: string[];
   }>;
+  /**
+   * Fold the delta layer into what owns it (plan §21.3).
+   *
+   * A page of ours has its css folded into `assets/<page>/committed.css` and its
+   * js promoted into `assets/<page>/committed.js`, both referenced from the
+   * document; a live page's patches are folded into
+   * `patches/<page>/Z-001-upper.css` / `Z-002-upper.js`, which replay last. The
+   * patch files that were folded are deleted — which is what makes a commit the
+   * one irreversible prototype action, and why there is no command to undo it.
+   */
+  commitPrototype: (slug: string, options?: { page?: string }) => Promise<PrototypeCommitResult>;
   /** Remove a prototype's patches from this session's browser. */
   clearPrototype: (slug: string) => Promise<{ slug: string; removed: string[] }>;
+  /**
+   * Say which workspace project a prototype was made for — one edge, not a move
+   * (plan §15.1). Pass null to clear it.
+   *
+   * Fails when either end does not exist, rather than recording a relationship
+   * that is not true.
+   */
+  setPrototypeProject: (args: {
+    slug: string;
+    projectSlug: string | null;
+  }) => Promise<{ slug: string; projectSlug: string | null }>;
+  /**
+   * Run the acceptance checks the PRD puts under its requirements (plan §20.7):
+   * `check: selector <css>` against the page this session's window is on, and
+   * `check: endpoint <METHOD> <path>` against the contract.
+   *
+   * Page checks are `skip` when there is no page to look at — "could not look" is
+   * not "not there". Writes `dist/acceptance.md`.
+   */
+  verifyPrototype: (slug: string) => Promise<{
+    slug: string;
+    page: string | null;
+    passed: number;
+    failed: number;
+    skipped: number;
+    reportPath: string;
+    results: Array<{ requirementId: string; target: string; status: string; detail: string }>;
+  }>;
+  /**
+   * Start keeping frames of this session's browser window: the screen is compared
+   * on an interval and a frame is kept when enough of it has changed.
+   *
+   * Frames rather than a video, because what reads them is a model: a video would
+   * have to be decoded and sampled again, and whoever sampled it would not know
+   * where the screen actually changed (plan §20.3).
+   */
+  startPrototypeFrames: (options: {
+    /** How often the screen is compared. Default 400 ms. */
+    intervalMs?: number;
+    /** Share of the sampled screen that must differ to keep a frame. Default 0.005. */
+    threshold?: number;
+    /** Ceiling on frames per capture. Default 60. */
+    maxFrames?: number;
+  }) => Promise<{ startedAt: string; intervalMs: number; threshold: number; maxFrames: number }>;
+  /**
+   * Stop the capture and write it under `research/frames/` of `slug`. Returns null
+   * when no capture was running.
+   */
+  stopPrototypeFrames: (slug: string) => Promise<{
+    /** Absolute path to the session directory. */
+    dir: string;
+    frames: number;
+    files: string[];
+    /** True when the capture hit its frame ceiling — a sample, not the whole session. */
+    truncated: boolean;
+  } | null>;
+  /**
+   * Sample frames out of a video the user recorded elsewhere, and write them under
+   * `research/frames/` (plan §20.5).
+   *
+   * The video is copied into `research/videos/` first: a capture whose source has
+   * since been cleaned up cannot be re-sampled, and re-reading it is most of what
+   * having a source is for. Decoding happens in Chromium — no ffmpeg — so a codec
+   * Chromium does not implement is reported rather than half-read.
+   */
+  importPrototypeVideo: (args: {
+    slug: string;
+    /** The recording to sample. Omitted by the panel, which asks for a file instead. */
+    path?: string;
+    /** `timeline` samples on an interval; `changes` keeps only what moved. */
+    mode?: 'timeline' | 'changes';
+    /** Sampling interval for `timeline`, ms. */
+    everyMs?: number;
+    /** Ceiling on frames. */
+    maxFrames?: number;
+  }) => Promise<{
+    /** Empty path → the picker was dismissed, and nothing was written. */
+    session: string;
+    video: string;
+    frames: number;
+    files: string[];
+    truncated: boolean;
+    durationMs: number;
+  } | null>;
   /**
    * Build a prototype's deliverable: one loadable Chrome extension covering the
    * whole flow (our documents shipped in the package, the patches applied to the
@@ -368,9 +480,16 @@ Examples:
 - \`prototype-target https://staging.example.com/checkout --page cart\` — point one overlay page at the same page in another environment (no \`--page\` means the entry page). Say what goes stale with it: windows already open keep the old page, and the patches were written against the old DOM
 - \`prototype-reference rival-checkout\` — study another prototype from the bound one, whatever either is made of. Its patches were written against a different document: read them for intent, never copy them into the bound prototype's patches/ (they would ship silently inside its deliverable)
 - \`prototype-bind checkout-flow\` — bind this session (or \`prototype-bind --clear\` to unbind)
-- \`prototype-apply\` — replay the bound prototype's patches (survives reload)
+- \`prototype-project acme-redesign\` — record which workspace project this prototype was made for (\`--clear\` removes the edge). It is an edge, not a container: the prototype stays where it is, and a session that has both in its context is told which side a new file belongs on
+- \`prototype-verify\` — run the acceptance checks the PRD puts under its requirements (\`check: selector [data-total]\`, \`check: endpoint GET /api/cart\`) and write \`dist/acceptance.md\`. Page checks need a page open; without one they are reported as skipped, not failed
+- \`prototype-apply\` — replay the bound prototype's patches (survives reload). Reports each declared \`@target\`: one that matched nothing is named, and one that used to match and does not means the page moved
 - \`prototype-apply checkout-flow\` — same, for an explicitly named prototype
+- \`prototype-commit\` — fold the delta layer into what owns it: a page of ours takes the changes into \`assets/<page>/committed.*\` (linked from the document), a live page into \`patches/<page>/Z-001-upper.css\` (replaying last). The folded patch files are deleted — irreversible, so commit when the work has stopped moving
+- \`prototype-commit --page cart\` — fold only that page's own patches
 - \`prototype-clear\` — remove the bound prototype's patches
+- \`prototype-record start\` — keep frames of this window: the screen is compared every 400 ms, and a frame is written when more than 0.5% of it changed (\`--interval <ms>\`, \`--threshold <ratio>\`, \`--max <n>\`)
+- \`prototype-record stop\` — write them to \`research/frames/<session>/\` as numbered JPEGs plus \`frames.json\` and \`index.md\`, and cite them from a finding's \`evidence:\` line
+- \`prototype-record import ~/Desktop/demo.mp4\` — copy a recording into \`research/videos/\` and sample frames from it every 2 s (\`--every 500ms\`, \`--changes\` for only what moved, \`--max 40\`). Chromium does the decoding, so a codec it cannot read fails loudly instead of quietly
 - \`prototype-export\` — build the deliverable (a loadable extension) + dist/dev-spec.md
 - \`prototype-contract-compose\` — fragments → services/<svc>/openapi.yaml
 - \`prototype-contract-export\` — dist/openapi.yaml + dist/contract.md + fixtures

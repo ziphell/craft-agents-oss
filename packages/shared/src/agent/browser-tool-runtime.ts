@@ -87,6 +87,7 @@ export function getBrowserToolHelp(): string {
     '  prototype-reference <slug> [--remove]          study another prototype (reference, not a copy)',
     '  prototype-bind <slug|--clear>                  bind (or unbind) this session\'s prototype',
     '  prototype-apply [slug]                         replay prototype patches (survives reload)',
+    '  prototype-commit [slug] [--page <name>]        fold the delta layer into what owns it (irreversible)',
     '  prototype-clear [slug]                         remove prototype patches',
     '  prototype-export [slug]                        write dist/extension + dev spec',
     '  prototype-contract-compose [slug] [--service <svc>]   fragments → services/<svc>/openapi.yaml',
@@ -141,6 +142,8 @@ export function getBrowserToolHelp(): string {
     '  prototype-apply                                (targets the bound prototype)',
     '  prototype-open checkout-flow --page orders      (one page of a multi-page prototype)',
     '  prototype-apply checkout-flow                  (explicit target)',
+    '  prototype-commit                               (fold what is done; the patch files go away)',
+    '  prototype-commit --page cart                   (fold one page of ours only)',
     '  prototype-contract-compose --service checkout-api',
     '  screenshot --annotated',
     '  screenshot --png',
@@ -755,6 +758,37 @@ async function executeBatchCommands(args: {
     appendReleaseHint,
     image: lastImage,
   };
+}
+
+/** Read a numeric option (`--interval 200`), bounded, falling back to a default. */
+function numberOption(parts: string[], flag: string, fallback: number, min: number, max: number): number {
+  const value = Number(parts[parts.indexOf(flag) + 1]);
+  if (parts.indexOf(flag) === -1 || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, value));
+}
+
+/** Read a ratio option, accepting `2%` and `0.02` alike. */
+function ratioOption(parts: string[], flag: string, fallback: number): number {
+  const at = parts.indexOf(flag);
+  if (at === -1) return fallback;
+  const raw = (parts[at + 1] ?? '').trim();
+  const value = raw.endsWith('%') ? Number(raw.slice(0, -1)) / 100 : Number(raw);
+  if (!Number.isFinite(value) || value <= 0) return fallback;
+  return Math.min(1, value);
+}
+
+/** Read a duration option (`--every 2s`, `--every 500ms`, `--every 2`), in ms. */
+function durationOption(parts: string[], flag: string, fallbackMs: number): number {
+  const at = parts.indexOf(flag);
+  if (at === -1) return fallbackMs;
+
+  const match = /^(\d+(?:\.\d+)?)(ms|s|m)?$/.exec((parts[at + 1] ?? '').trim().toLowerCase());
+  if (!match) return fallbackMs;
+
+  const value = Number(match[1]);
+  const unit = match[2] ?? 's';
+  const ms = unit === 'ms' ? value : unit === 'm' ? value * 60_000 : value * 1000;
+  return Math.min(600_000, Math.max(100, Math.round(ms)));
 }
 
 /**
@@ -2166,7 +2200,213 @@ async function executeSingleCommand(args: {
       lines.push('Inlined means the host rendered it from disk — a patch whose contents changed since then still counts as inlined, so reload the page to pick the change up.');
     }
 
+    // What the patches made of the page (plan §21.1). This is the difference
+    // between "the change did nothing" and "the selector is wrong", and between
+    // both of those and "the page moved since the patch was written".
+    if (result.unmatched && result.unmatched.length > 0) {
+      lines.push(
+        `Declared targets that matched nothing (and have never matched): ${result.unmatched.join(', ')} — ` +
+          `the selectors are wrong, or the page is not the one they were written against.`,
+      );
+    }
+    for (const drift of result.drifted ?? []) {
+      const when = drift.lastMatchedAt ? `last matched ${drift.lastMatchedAt}` : 'recorded by an earlier apply';
+      const suggestions =
+        drift.suggestions.length > 0
+          ? ` On the page now: ${drift.suggestions.join(', ')}.`
+          : '';
+      lines.push(
+        `Target "${drift.target}" matched nothing but is on record (${when}) — the page moved rather than the patch ` +
+          `being wrong.${suggestions}`,
+      );
+    }
+    if (result.untargeted && result.untargeted.length > 0) {
+      lines.push(
+        `No "@target" declared, so nothing could check these: ${result.untargeted.join(', ')}. ` +
+          `Add a header line '@target <css selector>' and the next apply will say whether it still matches.`,
+      );
+    }
+
     return { output: lines.join('\n'), appendReleaseHint: true };
+  }
+
+  if (cmd === 'prototype-commit') {
+    const slug = resolvePrototypeSlug(fns, parts, 'prototype-commit');
+
+    const pageFlag = parts.indexOf('--page');
+    const requestedPage = pageFlag >= 0 ? parts[pageFlag + 1] : undefined;
+    if (pageFlag >= 0 && (!requestedPage || requestedPage.startsWith('--'))) {
+      throw new Error('prototype-commit --page needs a page name. Example: prototype-commit --page cart');
+    }
+
+    const result = await fns.commitPrototype(slug, requestedPage ? { page: requestedPage } : undefined);
+
+    if (result.nothingToCommit) {
+      return {
+        output:
+          `Prototype "${result.slug}": nothing to fold — no patch is waiting to be consolidated. ` +
+          `(A page with no document is the one case that is refused rather than empty; run 'prototype-status' if you expected something here.)`,
+        appendReleaseHint: true,
+      };
+    }
+
+    const lines: string[] = [`Prototype "${result.slug}": committed.`];
+    for (const scope of result.scopes) {
+      lines.push(`${scope.page ? `page "${scope.page}" (${scope.kind})` : 'the shared patches'}:`);
+      for (const file of scope.wrote) lines.push(`  wrote ${file}`);
+      for (const file of scope.folded) lines.push(`  folded patches/${file}`);
+      for (const file of scope.promoted) lines.push(`  promoted patches/${file} (now a script the page loads)`);
+      for (const file of scope.deleted) lines.push(`  deleted patches/${file}`);
+      if (scope.unverified.length > 0) {
+        lines.push(
+          `  not checked: ${scope.unverified.map((file) => `patches/${file}`).join(', ')} — no "@target", ` +
+            `so nothing verified what they matched.`,
+        );
+      }
+      for (const refusal of scope.refused) {
+        lines.push(`  left alone: patches/${refusal.file} — ${refusal.reason}`);
+      }
+    }
+    lines.push(
+      'The folded patches no longer exist as files; what they changed lives in the file named above. ' +
+        'Write new patches as usual — the layer starts empty, and the next commit folds those.',
+    );
+
+    return { output: lines.join('\n'), appendReleaseHint: true };
+  }
+
+  if (cmd === 'prototype-record') {
+    const action = parts[1] ?? 'start';
+
+    if (action === 'stop') {
+      // The action name comes first, so the slug is the *second* argument here —
+      // `resolvePrototypeSlug` reads the first and would take "stop" for one.
+      const explicit = parts[2];
+      const slug =
+        explicit && !explicit.startsWith('--') ? explicit : fns.getBoundPrototypeSlug?.();
+      if (!slug) {
+        throw new Error(
+          'No prototype to keep the frames in: this session is not bound to one. Pass a slug ' +
+            '("prototype-record stop <slug>"), or bind this session first ("prototype-bind <slug>").',
+        );
+      }
+
+      const result = await fns.stopPrototypeFrames(slug);
+      if (!result) {
+        return { output: 'No frame capture was running in this window.', appendReleaseHint: true };
+      }
+
+      const lines = [
+        `Stopped: ${result.frames} frame${result.frames === 1 ? '' : 's'} written to ${result.dir}`,
+        ...result.files.map((file) => `  • ${file}`),
+      ];
+      if (result.truncated) {
+        lines.push('The capture hit its frame ceiling, so this is a sample — later changes were not recorded.');
+      }
+      lines.push('Cite these from a finding (evidence: frames/<session>/frame-0001.jpg).');
+
+      return { output: lines.join('\n'), appendReleaseHint: true };
+    }
+
+    if (action === 'import') {
+      const path = parts[2];
+      if (!path || path.startsWith('--')) {
+        throw new Error(
+          'Which recording? "prototype-record import <path>" — the video to sample frames out of.',
+        );
+      }
+
+      const slug = fns.getBoundPrototypeSlug?.();
+      if (!slug) {
+        throw new Error(
+          'No prototype to keep the frames in: this session is not bound to one. Bind it first ' +
+            '("prototype-bind <slug>").',
+        );
+      }
+
+      const result = await fns.importPrototypeVideo({
+        slug,
+        path,
+        mode: parts.includes('--changes') ? 'changes' : 'timeline',
+        everyMs: durationOption(parts, '--every', 2000),
+        maxFrames: numberOption(parts, '--max', 40, 1, 400),
+      });
+
+      if (!result) {
+        return { output: 'Nothing was sampled: the recording could not be read.', appendReleaseHint: true };
+      }
+
+      const lines = [
+        `Sampled ${result.frames} frame${result.frames === 1 ? '' : 's'} out of ${result.video} ` +
+          `(${Math.round(result.durationMs / 1000)}s long) into research/frames/${result.session}/`,
+        ...result.files.map((file) => `  • ${file}`),
+      ];
+      if (result.truncated) {
+        lines.push('The capture hit its frame ceiling, so this is a sample of the recording.');
+      }
+      lines.push('Cite these from a finding (evidence: frames/<session>/frame-0001.jpg).');
+
+      return { output: lines.join('\n'), appendReleaseHint: true };
+    }
+
+    if (action !== 'start') {
+      throw new Error(
+        `Unknown "prototype-record ${action}". Use "prototype-record start" or "prototype-record stop".`,
+      );
+    }
+
+    const started = await fns.startPrototypeFrames({
+      intervalMs: numberOption(parts, '--interval', 400, 50, 10_000),
+      threshold: ratioOption(parts, '--threshold', 0.005),
+      maxFrames: numberOption(parts, '--max', 60, 1, 600),
+    });
+
+    return {
+      output: [
+        `Recording frames of this window: the screen is compared every ${started.intervalMs} ms and kept when more`,
+        `than ${(started.threshold * 100).toFixed(1)}% of it changed (at most ${started.maxFrames} frames).`,
+        'Interact with the page, then run "prototype-record stop" to write them under research/frames/.',
+      ].join('\n'),
+      appendReleaseHint: true,
+    };
+  }
+
+  if (cmd === 'prototype-verify') {
+    const slug = resolvePrototypeSlug(fns, parts, 'prototype-verify');
+    const result = await fns.verifyPrototype(slug);
+
+    const lines = [
+      `Acceptance — ${result.passed} passed, ${result.failed} failed, ${result.skipped} skipped`,
+      result.page
+        ? `Page checks ran against ${result.page}.`
+        : 'No page was open, so page checks were skipped.',
+      '',
+      ...result.results.map(
+        (entry) => `${entry.status.toUpperCase().padEnd(4)} ${entry.requirementId} ${entry.target} — ${entry.detail}`,
+      ),
+      '',
+      `Written to ${result.reportPath}`,
+    ];
+
+    return { output: lines.join('\n'), appendReleaseHint: true };
+  }
+
+  if (cmd === 'prototype-project') {
+    const slug = resolvePrototypeSlug(fns, parts, 'prototype-project');
+    const explicit = parts[1] && !parts[1].startsWith('--') ? parts[2] : parts[1];
+    // `--clear` and no argument both mean "no project": the edge is optional, and
+    // removing it is the same kind of edit as setting it.
+    const projectSlug =
+      parts.includes('--clear') || !explicit || explicit.startsWith('--') ? null : explicit;
+
+    const result = await fns.setPrototypeProject({ slug, projectSlug });
+
+    return {
+      output: result.projectSlug
+        ? `Prototype "${result.slug}" now belongs to project "${result.projectSlug}". It stays where it is — the edge is not a container.`
+        : `Prototype "${result.slug}" no longer belongs to a project.`,
+      appendReleaseHint: true,
+    };
   }
 
   if (cmd === 'prototype-clear') {

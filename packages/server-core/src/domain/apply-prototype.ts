@@ -1,24 +1,65 @@
 /**
  * Prototype ↔ live-browser bridge.
  *
- * Shared by the agent tool (`browser_tool prototype-apply`) and the prototype
- * panel's buttons, so both paths produce identical results — a divergence here
- * would mean the UI and the agent disagree about what is on the page.
+ * Shared by the agent tool (`browser_tool prototype-apply`), the prototype
+ * panel's buttons and the auto-replay that follows a file change, so every path
+ * produces identical results — a divergence here would mean the UI and the agent
+ * disagree about what is on the page.
  *
- * @see docs/prototype-workbench-plan.md §3 (阶段 3 持久注入), §19.4 (按页归属)
+ * The second half of the job is the answer the replay alone cannot give: **did
+ * the patches do anything?** Each patch reports what it observed about itself
+ * (`patch-script.ts`), and this module turns that into three facts the caller can
+ * act on (plan §21.1/§21.2):
+ *
+ * - a declared `@target` that matched nothing and was never recorded is a
+ *   selector that is wrong;
+ * - a recorded `@target` that matched before and does not now means the page
+ *   moved — and a fingerprint of what it looked like is kept, so a replacement
+ *   selector can be proposed rather than only complained about;
+ * - a patch with no `@target` cannot be checked at all, which is said out loud
+ *   instead of being reported as a clean run.
+ *
+ * @see docs/prototype-workbench-plan.md §3 (阶段 3 持久注入), §19.4 (按页归属), §21
  */
 
 import {
+  buildAnchorCandidateScript,
+  buildAnchorProbeScript,
   buildInlinedPatchProbeScript,
   buildPatchInitScript,
+  buildPatchStateProbeScript,
   findEntryPage,
   listPrototypePages,
   matchPrototypePage,
+  readPrototypeAnchors,
+  recordPrototypeAnchors,
+  resolveAnchorDrift,
   scanPrototypePatches,
   scanPrototypePatchesForPage,
+  type PrototypeAnchorFingerprint,
+  type PrototypeAnchorObservation,
   type PrototypePage,
 } from '@craft-agent/shared/prototypes'
 import type { IBrowserPaneManager } from '../handlers/browser-pane-manager-interface'
+
+/** What one declared target matched, and whether it had matched before. */
+export interface PrototypeApplyTargetReport {
+  /** The patch that declares it, as `patches/…`. */
+  file: string
+  target: string
+  /** Elements matched at apply time, or null when nothing measured this target. */
+  matched: number | null
+  /** True when this target was recorded by an earlier apply. */
+  recorded: boolean
+}
+
+export interface PrototypeDriftReport {
+  target: string
+  /** When it last matched — the date the page is known to have been good. */
+  lastMatchedAt: string
+  /** Selectors that resolve to exactly one element now, best first. */
+  suggestions: string[]
+}
 
 export interface PrototypeApplyResult {
   slug: string
@@ -44,6 +85,14 @@ export interface PrototypeApplyResult {
    * reporting a smaller number with no explanation.
    */
   skipped: string[]
+  /** Every declared target and what it matched (`@target`). */
+  targets: PrototypeApplyTargetReport[]
+  /** Declared targets that matched nothing and had never matched — a wrong selector. */
+  unmatched: string[]
+  /** Targets that matched before and do not now — the page moved. */
+  drifted: PrototypeDriftReport[]
+  /** Patches that declare no `@target`, so nothing about them could be checked. */
+  untargeted: string[]
 }
 
 export interface PrototypeClearResult {
@@ -51,8 +100,68 @@ export interface PrototypeClearResult {
   removed: string[]
 }
 
+/** What an automatic replay did — a reload, or an injection into a foreign page. */
+export interface PrototypeReplayResult {
+  slug: string
+  page: string | null
+  action: 'reloaded' | 'applied'
+  /** Patches injected; always 0 for a reload, which re-renders from disk. */
+  applied: number
+}
+
+/** `{ [file]: { matches: { [target]: number | null }, error } }`, as the page reports it. */
+type PatchState = Record<string, { matches: Record<string, number | null>; error: string | null }>
+
+function readPatchState(raw: unknown): PatchState {
+  if (typeof raw !== 'object' || raw === null) return {}
+  const out: PatchState = {}
+  for (const [file, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value !== 'object' || value === null) continue
+    const entry = value as { matches?: unknown; error?: unknown }
+    const matches: Record<string, number | null> = {}
+    if (typeof entry.matches === 'object' && entry.matches !== null) {
+      for (const [target, count] of Object.entries(entry.matches as Record<string, unknown>)) {
+        matches[target] = typeof count === 'number' ? count : null
+      }
+    }
+    out[file] = { matches, error: typeof entry.error === 'string' ? entry.error : null }
+  }
+  return out
+}
+
+function readFingerprints(raw: unknown): Record<string, PrototypeAnchorFingerprint | null> {
+  if (typeof raw !== 'object' || raw === null) return {}
+  const out: Record<string, PrototypeAnchorFingerprint | null> = {}
+  for (const [target, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value !== 'object' || value === null) {
+      out[target] = null
+      continue
+    }
+    const entry = value as Record<string, unknown>
+    out[target] = {
+      tag: typeof entry.tag === 'string' ? entry.tag : '',
+      text: typeof entry.text === 'string' ? entry.text : '',
+      path: typeof entry.path === 'string' ? entry.path : '',
+      attrs: Array.isArray(entry.attrs)
+        ? entry.attrs.filter((item): item is string => typeof item === 'string')
+        : [],
+    }
+  }
+  return out
+}
+
+function readSuggestions(raw: unknown): Record<string, string[]> {
+  if (typeof raw !== 'object' || raw === null) return {}
+  const out: Record<string, string[]> = {}
+  for (const [target, value] of Object.entries(raw as Record<string, unknown>)) {
+    out[target] = Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+  }
+  return out
+}
+
 /**
- * Replay a prototype's patches into a live browser instance.
+ * Replay a prototype's patches into a live browser instance, and report what
+ * each declared target made of it.
  *
  * Each patch is registered as an init script (which is what survives a reload)
  * and then evaluated immediately (so the change is visible without reloading),
@@ -69,9 +178,9 @@ export interface PrototypeClearResult {
  * reopened elsewhere.
  *
  * The consequence to know about: a patch whose *content* changed is already listed
- * as inlined, so re-applying will not refresh it — reload the page, which re-renders
- * from disk. Patches added since the render are injected normally, which is what
- * keeps editing going on an open page.
+ * as inlined, so re-applying will not refresh it — a reload re-renders from disk,
+ * which is why a file change is followed by a reload rather than a second apply
+ * ({@link replayPrototypeInBrowser}).
  *
  * **Which patches** is decided by the window (plan §19.4): the page it is on brings
  * its own (`patches/<page>/…`) plus the shared ones (`patches/*`), and a patch of
@@ -111,13 +220,154 @@ export async function applyPrototypeToBrowser(
     await bpm.evaluate(instanceId, script)
   }
 
+  const inspection = await inspectTargets(bpm, instanceId, workspaceRootPath, slug, page, patches)
+
   return {
     slug,
     page,
     applied: pending.length,
     files: pending.map((patch) => patch.file),
     skipped: patches.filter((patch) => alreadyInlined.has(patch.file)).map((patch) => patch.file),
+    ...inspection,
   }
+}
+
+/**
+ * What every declared target matched, what that means, and the record of it.
+ *
+ * Split out of the apply so the reading order is visible: measure, compare with
+ * the record that already exists (that comparison *is* the drift check), then
+ * write the new record. Doing it in the other order would erase the evidence on
+ * every run.
+ */
+async function inspectTargets(
+  bpm: IBrowserPaneManager,
+  instanceId: string,
+  workspaceRootPath: string,
+  slug: string,
+  page: string | null,
+  patches: Array<{ file: string; targets: string[] }>,
+): Promise<Pick<PrototypeApplyResult, 'targets' | 'unmatched' | 'drifted' | 'untargeted'>> {
+  const untargeted = patches.filter((patch) => patch.targets.length === 0).map((patch) => patch.file)
+  const declared = patches.flatMap((patch) => patch.targets.map((target) => ({ file: patch.file, target })))
+
+  if (declared.length === 0) return { targets: [], unmatched: [], drifted: [], untargeted }
+
+  const state = readPatchState(await bpm.evaluate(instanceId, buildPatchStateProbeScript()))
+
+  // Only what the page actually measured counts. A js patch may declare a
+  // selector without there being a count for it, and "nothing measured this" must
+  // not be reported as "matched nothing" — the second is evidence, the first is
+  // the absence of any.
+  const measured = declared.map(({ file, target }) => ({
+    file,
+    target,
+    matched: state[file]?.matches?.[target] ?? null,
+  }))
+
+  const existing = readPrototypeAnchors(workspaceRootPath, slug, page)
+
+  const observations: PrototypeAnchorObservation[] = measured.map(({ file, target, matched }) => ({
+    target,
+    matched: matched ?? 0,
+    patches: [...new Set(measured.filter((entry) => entry.target === target).map((entry) => entry.file))],
+    fingerprint: null,
+  }))
+
+  const drift = resolveAnchorDrift(existing, observations)
+  const recorded = new Set(existing?.anchors.filter((anchor) => anchor.lastMatchedAt !== '').map((anchor) => anchor.target) ?? [])
+
+  const unmatched = [
+    ...new Set(
+      measured
+        .filter((entry) => entry.matched === 0 && !recorded.has(entry.target))
+        .map((entry) => entry.target),
+    ),
+  ]
+  const driftedTargets = [...new Set(drift.map((anchor) => anchor.target))]
+
+  // Fingerprints for what did match, so the record describes the page that was
+  // patched rather than the one that was expected.
+  const toFingerprint = [...new Set(measured.filter((entry) => (entry.matched ?? 0) > 0).map((entry) => entry.target))]
+  const fingerprints =
+    toFingerprint.length > 0 ? readFingerprints(await bpm.evaluate(instanceId, buildAnchorProbeScript(toFingerprint))) : {}
+
+  const url = (await bpm.getInstanceAsync(instanceId))?.currentUrl ?? null
+  // Only what is worth remembering is written: a target that just matched (so the
+  // fingerprint is real), and one that already had a record (so "it stopped
+  // matching" stays visible). A target nobody has ever seen match is reported as
+  // `unmatched` and left out of the record — an anchor with no date beside it
+  // would read as evidence of something, and there is none.
+  const known = new Set(existing?.anchors.map((anchor) => anchor.target) ?? [])
+  recordPrototypeAnchors(workspaceRootPath, slug, page, {
+    url,
+    observed: observations
+      .filter((observation) => fingerprints[observation.target] != null || known.has(observation.target))
+      .map((observation) => ({
+        ...observation,
+        fingerprint: fingerprints[observation.target] ?? null,
+      })),
+  })
+
+  // Suggestions are asked for last and only for the targets that need them: the
+  // probe is a page-wide scan, and running it on a healthy page would be work
+  // nobody reads.
+  const suggestionEntries = drift
+    .filter((anchor) => anchor.fingerprint.tag !== '' || anchor.fingerprint.text !== '')
+    .map((anchor) => ({ target: anchor.target, fingerprint: anchor.fingerprint }))
+  const suggestions =
+    suggestionEntries.length > 0
+      ? readSuggestions(await bpm.evaluate(instanceId, buildAnchorCandidateScript(suggestionEntries)))
+      : {}
+
+  return {
+    targets: measured.map((entry) => ({
+      ...entry,
+      recorded: recorded.has(entry.target),
+    })),
+    unmatched,
+    drifted: driftedTargets.map((target) => ({
+      target,
+      lastMatchedAt: drift.find((anchor) => anchor.target === target)?.lastMatchedAt ?? '',
+      suggestions: suggestions[target] ?? [],
+    })),
+    untargeted,
+  }
+}
+
+/**
+ * Replay a prototype into a window after its files changed (plan §21.4).
+ *
+ * Two cases, and which one applies is read off the document rather than assumed:
+ *
+ * - **a page of ours** arrives from the host with its patches inlined, so a
+ *   reload is the whole answer — the host renders from disk on every request.
+ *   Registering anything here would double the js patches on the next render.
+ * - **someone else's page** has no such machinery, so it is re-applied: the
+ *   patches are registered and evaluated into the document that is on screen.
+ *
+ * Deliberately *not* "apply, then reload": evaluating a patch that the document
+ * already carries runs its js a second time, which is exactly the double-apply
+ * the inlined marker exists to prevent.
+ */
+export async function replayPrototypeInBrowser(
+  bpm: IBrowserPaneManager,
+  instanceId: string,
+  workspaceRootPath: string,
+  slug: string,
+): Promise<PrototypeReplayResult> {
+  const inlined = await bpm.evaluate(instanceId, buildInlinedPatchProbeScript())
+  const carriesPatches = Array.isArray(inlined) && inlined.length > 0
+
+  if (carriesPatches) {
+    const url = (await bpm.getInstanceAsync(instanceId))?.currentUrl ?? null
+    const page = matchPrototypePage(listPrototypePages(workspaceRootPath, slug), url)
+    bpm.reload(instanceId)
+    return { slug, page, action: 'reloaded', applied: 0 }
+  }
+
+  const result = await applyPrototypeToBrowser(bpm, instanceId, workspaceRootPath, slug)
+  return { slug, page: result.page, action: 'applied', applied: result.applied }
 }
 
 /**

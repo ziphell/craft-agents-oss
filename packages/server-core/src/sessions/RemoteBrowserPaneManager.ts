@@ -21,6 +21,11 @@ import type {
   BrowserScreenshotOptions,
   BrowserScreenshotRegionTarget,
   BrowserScreenshotResult,
+  FrameCaptureOptions,
+  FrameCaptureResult,
+  FrameCaptureStarted,
+  VideoFrameExtractionResult,
+  VideoFrameOptions,
   BrowserConsoleOptions,
   BrowserConsoleEntry,
   BrowserNetworkOptions,
@@ -239,6 +244,12 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
   async goForward(id: string): Promise<void> {
     await this.invoke('goForward', [id])
   }
+  reload(id: string): void {
+    // Not awaited, for the same reason the toolbar's reload is not: nothing waits
+    // for a document to load. A round-trip that fails means the page did not
+    // reload, which the next state push makes visible.
+    void this.invoke('reload', [id]).catch(() => {})
+  }
 
   async getAccessibilitySnapshot(id: string): Promise<AccessibilitySnapshot> {
     return await this.invoke('getAccessibilitySnapshot', [id])
@@ -297,6 +308,25 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
 
   async clearInitScripts(id: string, keyPrefix: string): Promise<string[]> {
     return await this.invoke<string[]>('clearInitScripts', [id, keyPrefix])
+  }
+
+  async startFrameCapture(id: string, options?: FrameCaptureOptions): Promise<FrameCaptureStarted> {
+    return await this.invoke<FrameCaptureStarted>('startFrameCapture', [id, options])
+  }
+
+  async stopFrameCapture(id: string): Promise<FrameCaptureResult | null> {
+    return await this.invoke<FrameCaptureResult | null>('stopFrameCapture', [id])
+  }
+
+  async pickVideoFile(): Promise<string | null> {
+    return await this.invoke<string | null>('pickVideoFile', [])
+  }
+
+  async extractVideoFrames(
+    filePath: string,
+    options: VideoFrameOptions,
+  ): Promise<VideoFrameExtractionResult> {
+    return await this.invoke<VideoFrameExtractionResult>('extractVideoFrames', [filePath, options])
   }
 
   async setFetchMock(id: string, routes: MockRoute[]): Promise<number> {

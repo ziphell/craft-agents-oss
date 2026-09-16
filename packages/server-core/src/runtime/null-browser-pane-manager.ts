@@ -69,6 +69,8 @@ export class NullBrowserPaneManager implements IBrowserPaneManager {
   async navigate(_id: string, _url: string): Promise<{ url: string; title: string }> { unavailable('navigate') }
   async goBack(_id: string): Promise<void> { unavailable('goBack') }
   async goForward(_id: string): Promise<void> { unavailable('goForward') }
+  /** A no-op rather than a failure: with no browser panes there is no page to reload. */
+  reload(_id: string): void {}
 
   // -- Interaction --
   async getAccessibilitySnapshot(_id: string): Promise<AccessibilitySnapshot> { unavailable('getAccessibilitySnapshot') }
@@ -87,6 +89,25 @@ export class NullBrowserPaneManager implements IBrowserPaneManager {
   async pickElement(_id: string, _options?: { timeoutMs?: number; pollMs?: number }): Promise<PickedElement | null> { return unavailable('pickElement') }
   async addInitScript(_id: string, _key: string, _source: string): Promise<string> { return unavailable('addInitScript') }
   async clearInitScripts(_id: string, _keyPrefix: string): Promise<string[]> { return unavailable('clearInitScripts') }
+  async startFrameCapture(
+    _id: string,
+    _options?: { intervalMs?: number; threshold?: number; maxFrames?: number },
+  ): Promise<{ startedAt: string; intervalMs: number; threshold: number; maxFrames: number }> {
+    return unavailable('startFrameCapture')
+  }
+  async stopFrameCapture(_id: string): Promise<null> { return unavailable('stopFrameCapture') }
+  async pickVideoFile(): Promise<null> { return unavailable('pickVideoFile') }
+  async extractVideoFrames(
+    _filePath: string,
+    _options: { mode: 'timeline' | 'changes'; everyMs: number; maxFrames: number },
+  ): Promise<{
+    durationMs: number
+    viewport: { width: number; height: number } | null
+    truncated: boolean
+    frames: Array<{ offsetMs: number; bytes: Uint8Array }>
+  }> {
+    return unavailable('extractVideoFrames')
+  }
   async setFetchMock(_id: string, _routes: MockRoute[]): Promise<number> { return unavailable('setFetchMock') }
   async clearFetchMock(_id: string): Promise<void> { unavailable('clearFetchMock') }
 

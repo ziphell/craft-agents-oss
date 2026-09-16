@@ -162,6 +162,8 @@ import {
 import { hasOpenOverlay } from "@/lib/overlay-detection"
 import { clearSourceIconCaches } from "@/lib/icon-cache"
 import { dispatchFocusInputEvent } from "./input/focus-input-events"
+import { appendRestoredInput } from "@/lib/input-text"
+import { buildElementMention } from "@/lib/element-mention"
 
 /**
  * AppShellProps - Minimal props interface for AppShell component
@@ -540,6 +542,7 @@ function AppShellContent({
     onOpenKeyboardShortcuts,
     onOpenStoredUserPreferences,
     onInputChange,
+    getDraft,
     onReset,
     onSendMessage,
     openNewChat,
@@ -958,6 +961,10 @@ function AppShellContent({
    * point of this workbench is that changes are described rather than typed
    * straight into the DOM.
    *
+   * The prompt is a sentence ending in a colon that the user completes, so it is
+   * *prepended*: their draft reads on as the answer instead of following a dangling
+   * colon. Nothing they wrote is dropped.
+   *
    * The panel has no workspace or session context, so it forwards the pick here
    * and this decides what it means.
    */
@@ -974,13 +981,50 @@ function AppShellContent({
 
     // Write the draft (read on mount) *and* dispatch (applies immediately when
     // the session is already open), then navigate — one of the two always lands.
-    onInputChange(request.sessionId, prompt)
+    // Both carry the whole text, so the second cannot drop what the first wrote.
+    const next = appendRestoredInput(prompt, getDraft(request.sessionId))
+    onInputChange(request.sessionId, next)
     window.dispatchEvent(new CustomEvent('craft:restore-input', {
-      detail: { sessionId: request.sessionId, text: prompt },
+      detail: { sessionId: request.sessionId, text: next },
     }))
     navigate(routes.view.allSessions(request.sessionId))
-  }, [onInputChange, t])
-  useBrowserToolbarActions({ workspaceId: activeWorkspaceId, onEditElement: handleElementPicked })
+  }, [getDraft, onInputChange, t])
+  useBrowserToolbarActions({
+    workspaceId: activeWorkspaceId,
+    onEditElement: handleElementPicked,
+    /**
+     * Hand an element to the conversation (plan §12.7).
+     *
+     * The element is inserted as a chip — a marker in the composer's text that the
+     * input renders as an inline badge and that `FreeFormInput` expands into a
+     * readable reference on send (see element-mention). It is *appended*: picking an
+     * element adds a reference to the question being written, so the question has to
+     * survive the pick.
+     *
+     * The same two-step write the prototype flow uses — the draft for when the
+     * session is mounted later, the event for when it is already open — because
+     * neither step alone lands in every case. Defined inline so its parameter is
+     * typed by the hook, which is the only place that knows the request shape.
+     */
+    onAddElementToConversation: (request) => {
+      const chip = `${buildElementMention({
+        selector: request.element.selector,
+        text: request.element.text,
+      })} `
+      const next = appendRestoredInput(getDraft(request.sessionId), chip)
+
+      onInputChange(request.sessionId, next)
+      window.dispatchEvent(
+        new CustomEvent('craft:restore-input', {
+          detail: { sessionId: request.sessionId, text: next },
+        }),
+      )
+      // The pick came from another panel, so the caret is elsewhere; put it back in
+      // the composer, where the user now has a chip to write after.
+      dispatchFocusInputEvent({ sessionId: request.sessionId })
+      navigate(routes.view.allSessions(request.sessionId))
+    },
+  })
   const projectMenuOptions = useMemo(
     () => projects.map(p => ({ id: p.config.id, slug: p.config.slug, name: p.config.name, color: p.config.color })),
     [projects],

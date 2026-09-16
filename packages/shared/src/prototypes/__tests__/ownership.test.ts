@@ -49,9 +49,23 @@ describe('prototype path ownership', () => {
   })
 
   it('flags a patch whose lane prefix is not a declared lane', () => {
-    const result = classifyPrototypePath('patches/Z-001-btn.css')
+    const result = classifyPrototypePath('patches/Y-001-btn.css')
     expect(result).toHaveProperty('violation')
-    expect((result as { violation: string }).violation).toContain('unknown lane prefix "Z"')
+    expect((result as { violation: string }).violation).toContain('unknown lane prefix "Y"')
+  })
+
+  /**
+   * The consolidated lane is a lane (plan §21.3) — a folded patch is an ordinary
+   * patch written by the control plane, so it is classified like one rather than
+   * reported as an unknown prefix.
+   */
+  it('accepts the consolidated lane that a commit writes', () => {
+    expect(classifyPrototypePath('patches/Z-001-upper.css')).toEqual({
+      owner: { kind: 'lane', lane: 'Z' },
+    })
+    expect(classifyPrototypePath('patches/cart/Z-002-upper.js')).toEqual({
+      owner: { kind: 'lane', lane: 'Z' },
+    })
   })
 
   it('flags a misnamed patch rather than silently ignoring it', () => {
@@ -80,7 +94,10 @@ describe('prototype path ownership', () => {
   it('knows which lane ids are declared', () => {
     expect(isPrototypeLane('A')).toBe(true)
     expect(isPrototypeLane('D')).toBe(true)
-    expect(isPrototypeLane('Z')).toBe(false)
+    // Z is the consolidated lane a commit writes into (§21.3), so it is declared
+    // like any other — what makes it different is its replay order, not its id.
+    expect(isPrototypeLane('Z')).toBe(true)
+    expect(isPrototypeLane('Y')).toBe(false)
   })
 })
 

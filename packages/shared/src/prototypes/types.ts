@@ -81,6 +81,28 @@ export const PROTOTYPE_LAYOUT_FILENAME = '_layout.html'
 export const PROTOTYPE_LAYOUT_SLOT = '<slot name="page"></slot>'
 
 /**
+ * The directory a prototype's **findings** live in — what was learned about
+ * someone else's product, with the source and the evidence for it (plan §20.2).
+ *
+ * Here, next to the other directory names that several modules have to agree on,
+ * because the distinction it draws is a rule rather than a preference: `assets/`
+ * is what a page loads at runtime and therefore ships in the package, while
+ * `research/` is how the author got to the requirements and therefore does not.
+ */
+export const PROTOTYPE_RESEARCH_DIRNAME = 'research'
+
+/**
+ * The directory a prototype's **anchors** live in: one record per scope of what
+ * each declared `@target` matched, and when (`anchors.ts`).
+ *
+ * A sibling of `research/` rather than something inside `patches/`, because it
+ * is not a change: nothing here is ever rendered or replayed. It is the
+ * *evidence* for a change — the page as it was when the selector was written —
+ * which is what makes drift and re-anchoring answerable at all (plan §21.2).
+ */
+export const PROTOTYPE_ANCHORS_DIRNAME = 'anchors'
+
+/**
  * The slot as it was first written, read for compatibility only.
  *
  * A shell written before the standard spelling would otherwise look like "a shell
@@ -94,6 +116,20 @@ export const LEGACY_PROTOTYPE_LAYOUT_SLOT = '<!-- @page -->'
 /** Patch kinds supported by the replay engine. */
 export type PrototypePatchKind = 'css' | 'js'
 
+/**
+ * The lane a `prototype-commit` fold lands in (`commit.ts`), and the reason it
+ * is a lane rather than a new artifact kind: a consolidated file is still a
+ * patch — same naming, same ownership, same replay — and the only thing that
+ * makes it special is that it must replay **after** everything it folded.
+ *
+ * `Z` sorts last by the alphabet, but the rule is stated rather than inherited
+ * (`byReplayOrder` in `storage.ts`): a patch's semantics may not depend on which
+ * lane letter another patch happens to use. It lives here, in the module that
+ * imports nothing, because both `ownership.ts` (the lane table) and `storage.ts`
+ * (the order) need it and neither may import the other.
+ */
+export const CONSOLIDATED_LANE = 'Z'
+
 /** One patch file plus the metadata derived from its name. */
 export interface PrototypePatch {
   /** Path relative to the patches directory, e.g. `A-001-btn.css` or `cart/A-002.js`. */
@@ -106,6 +142,18 @@ export interface PrototypePatch {
   order: number
   /** File contents. */
   source: string
+  /**
+   * The selectors the patch declares it is aimed at (`@target …` in its header),
+   * in declaration order, empty when it declares none (`patch-header.ts`).
+   *
+   * Empty and "declared these" are different facts and stay different: empty
+   * means nothing can be checked about what the patch matched, which is not the
+   * same as a selector that matched nothing.
+   *
+   * A list because a consolidated file (`commit.ts`) carries the markers of
+   * everything it folded, so the anchors of the patches it replaced stay alive.
+   */
+  targets: string[]
   /**
    * The page this patch belongs to, or null when it belongs to the whole flow.
    *

@@ -825,6 +825,16 @@ export interface PickedElement {
   text: string
   /** Viewport-relative bounding box. */
   rect: { x: number; y: number; width: number; height: number }
+  /**
+   * What the person asked for by the way they picked it (plan §12.7).
+   *
+   * The picker can show one button under the highlight — "add to conversation" —
+   * and which button was used is a fact about the gesture, not about the element.
+   * It rides along on the element so it travels the existing paths (toolbar
+   * action, agent command) instead of needing a second result channel: an element
+   * picked that way is still an element, one that was picked *for* something.
+   */
+  intent?: 'add-to-conversation'
 }
 
 /**
@@ -842,6 +852,15 @@ export type BrowserToolbarAction =
       element: PickedElement | null
     }
   | { kind: 'apply-requested'; instanceId: string }
+  /**
+   * The person used the bar under the highlight: the element goes into this
+   * window's conversation rather than into a prototype patch (plan §12.7).
+   *
+   * Separate from `picked` because the two do different things with the same
+   * element — one opens the prototype's edit flow, the other writes a draft — and
+   * this one needs no prototype at all, only a conversation.
+   */
+  | { kind: 'add-to-conversation'; instanceId: string; element: PickedElement }
   /**
    * The user typed one of a prototype's own addresses into the window's address
    * bar.

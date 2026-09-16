@@ -10,6 +10,7 @@
  */
 import { describe, it, expect } from 'bun:test'
 import { parseMentions, findMentionMatches, removeMention, stripAllMentions, resolveSkillMentions, resolveSourceMentions, extractBadges } from '../mentions'
+import { buildElementMention, parseElementMention } from '../element-mention'
 
 // ============================================================================
 // parseMentions - Skill Pattern Tests
@@ -136,6 +137,37 @@ describe('findMentionMatches - skill pattern with workspace IDs', () => {
     const text = 'Please use [skill:My Workspace:commit] for this'
     const matches = findMentionMatches(text, availableSkills, [])
     expect(matches[0]?.startIndex).toBe(11)
+  })
+})
+
+// ============================================================================
+// findMentionMatches / extractBadges - Element Pattern Tests
+// ============================================================================
+
+describe('element mentions', () => {
+  it('finds an element marker so the composer can render it as a chip', () => {
+    const marker = buildElementMention({ selector: '#submit', text: 'Submit' })
+    const matches = findMentionMatches(`change ${marker} please`, [], [])
+
+    expect(matches).toHaveLength(1)
+    expect(matches[0]).toMatchObject({
+      type: 'element',
+      fullMatch: marker,
+      startIndex: 7,
+    })
+    expect(parseElementMention(matches[0]!.id)).toEqual({ selector: '#submit', text: 'Submit' })
+  })
+
+  it('keeps element matches in text order alongside other mentions', () => {
+    const marker = buildElementMention({ selector: '.a', text: 'A' })
+    const matches = findMentionMatches(`${marker} then [folder:src]`, [], [])
+
+    expect(matches.map(m => m.type)).toEqual(['element', 'folder'])
+  })
+
+  it('produces no badge for an element: the marker is expanded before send', () => {
+    const marker = buildElementMention({ selector: '.a', text: 'A' })
+    expect(extractBadges(`see ${marker}`, [], [], 'ws')).toEqual([])
   })
 })
 

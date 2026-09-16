@@ -45,7 +45,7 @@ contextBridge.exposeInMainWorld('browserToolbar', {
    * `picked` payload on the host side, which is what actually drives the editor.
    * Page clicks are suppressed while this is in flight.
    */
-  pickElement: () => ipcRenderer.invoke(CHANNELS.PICK_ELEMENT, instanceId),
+  pickElement: (addLabel?: string) => ipcRenderer.invoke(CHANNELS.PICK_ELEMENT, instanceId, addLabel),
   cancelPick: () => ipcRenderer.invoke(CHANNELS.CANCEL_PICK, instanceId),
   /** Ask the host to replay this session's prototype patches into this window. */
   applyPrototype: () => ipcRenderer.invoke(CHANNELS.APPLY_PROTOTYPE, instanceId),

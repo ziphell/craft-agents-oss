@@ -14,15 +14,18 @@
 |---|---|
 | `types.ts` | **零依赖**的类型与常量（`PageKind`、`DEFAULT_PAGE_KIND`、提升用的页名 `LEGACY_BASE_PAGE_NAME` / `LEGACY_ENTRY_PAGE_NAME`、`_layout.html` 与它的插槽、带 `page` 的 `PrototypePatch` 与 `PrototypeWindowDescriptor`）。**这里的"零依赖"是硬约束**，见 §3.6 |
 | `config.ts` | `config.json`（页表 `pages` + `references`）的读写与规范化；旧形状（顶层 `kind` / `targetUrl`）**读时提升**成行（`legacyPageRows`）；读不干净的条目丢弃进 `pageIssues`，该字段永不写回 |
-| `storage.ts` | 路径工具 + `scanPrototypePatches()`（**派生索引**，不落盘；补丁的页域就是目录——根 = 每页都重放、`patches/<页名>/` = 只那一页）+ `scanPrototypePatchesForPage()` / `listPrototypePatchPages()` |
+| `storage.ts` | 路径工具（含 `getPrototypeAnchorsPath`）+ `scanPrototypePatches()`（**派生索引**，不落盘；补丁的页域就是目录——根 = 每页都重放、`patches/<页名>/` = 只那一页；顺序 = **`Z` 按规则排最后**，再按 lane → 序号 → 文件名）+ `scanPrototypePatchesForPage()` / `listPrototypePatchPages()` |
 | `pages.ts` | 页的判定与页表合并（`isPrototypePagePath` / `describePrototypePages` / `listPrototypePages` / `findEntryPage` / `matchPrototypePage`）与页表增删改（`updatePrototypePages`：add / remove / rename / entry） |
 | `page-document.ts` | 生成的**页索引**（`buildPrototypeIndexDocument`：`/` 没有入口时的落点，也是导出包的 options 页）与**共享外壳**（`applyPrototypeLayout`：`_layout.html` 的单插槽，纯文本替换第一次出现） |
-| `patch-script.ts` | `buildPatchInitScript()`：patch → init script 的纯变换（live 注入与导出共用，见 §3.4） |
+| `patch-script.ts` | `buildPatchInitScript()`：patch → init script 的纯变换（live 注入与导出共用，见 §3.4）；外加**每个补丁的自我报告**——css 报 `@target` 命中了几个元素、js 报有没有抛错，写进 `window.__craft_patch_state__`，由 `buildPatchStateProbeScript()` 读回；宿主页的 css 是纯文本内联、没有脚本可报，所以另有一个批量记录脚本（`buildPatchMatchRecorderScript`，只对声明了 `@target` 的补丁生成） |
+| `patch-header.ts` | 标记解析（`@requirement` / `@target`），**零依赖**：`storage.ts`（补丁记录）与 `requirements.ts`（需求线）都要用它，而后者已经依赖 storage |
+| `anchors.ts` | **虚拟 base**（§21.2）：`anchors/<页名\|shared>.json` 的读/合并写、漂移与孤儿判定、`dropPrototypeAnchors`，以及两个页面探针（`buildAnchorProbeScript` 取 fingerprint / `buildAnchorCandidateScript` 取候选选择器） |
+| `commit.ts` | **收敛**（§21.3）：`commitPrototype()` 把差量层折进它该在的地方——scratch 页 → `assets/<页名>/committed.*` + 文档里的引用；overlay 页 → `patches/<页名>/Z-00x-upper.*`。含 provenance 标记、拒绝（文档不在）与"没人检查过"的报告 |
 | `export.ts` | `buildSelfContainedHtml()`（渲染与导出共用的那一个变换，补丁按页取）、`buildDevSpec()`（**按页分节**）、`resolvePrototypeEntry()`（入口页或生成的页索引）、`exportPrototype()`（一个扩展覆盖整条流程） |
 | `extension.ts` | 交付物打包：manifest / README / 匹配模式 / 版本号 / 页面变换（内联脚本与 `on<event>` 提取）/ mock 编译 / **按页分文件**（每页自己的 css·js 列表与 `assets/<页名>/`；options 页 = 页索引，工具栏图标开入口页） |
-| `status.ts` | 只读全貌（`buildPrototypeStatus` / `listPrototypeStatuses`）：页表 + `entryPage` + `pageIssues` + `pageAvailable` + 按页/共享补丁计数 |
-| `prompt.ts` | `<prototype_context>` 的构造与渲染：页列表（名字 / 类型 / 地址或文件 / 是否入口）与每条补丁的页域 |
-| `ownership.ts` | 所有权矩阵的可执行判据（`classifyPrototypePath` / `canLaneWrite`）：lane 仍由补丁**文件名里的前缀**决定，页目录只决定"改哪一页"；页文档与 `config.json` 属控制面 |
+| `status.ts` | 只读全貌（`buildPrototypeStatus` / `listPrototypeStatuses`）：页表 + `entryPage` + `pageIssues` + `pageAvailable` + 按页/共享补丁计数 + **每条补丁的标记**（页 / `@target`）+ **锚点记录**与它的孤儿点名 |
+| `prompt.ts` | `<prototype_context>` 的构造与渲染：页列表（名字 / 类型 / 地址或文件 / 是否入口）、每条补丁的页域与它的 `@target`、写补丁的规矩（含"标出你对着什么"）、以及 commit 折什么／为什么不可逆 |
+| `ownership.ts` | 所有权矩阵的可执行判据（`classifyPrototypePath` / `canLaneWrite`）：lane 仍由补丁**文件名里的前缀**决定，页目录只决定"改哪一页"；页文档与 `config.json` 属控制面；`Z` 是**收敛车道**（由 commit 写），所以它是一条普通 lane，特殊之处只在重放顺序 |
 | `contract.ts` | 契约 fragment 解析与合成、`buildMockRoutes()` |
 | `url.ts` | `prototypeOriginUrl` / `prototypeDocumentUrl` / `setPrototypeBaseUrlResolver` |
 | `target.ts` | `requireTargetUrl` / `pickOverlayPage` / `setPrototypePageUrl`（改**某一页** overlay 的地址） |
@@ -37,15 +40,17 @@
 ### 服务端 / 主进程
 
 - `packages/server-core/src/sessions/SessionManager.ts`：把 `BrowserPaneFns` 装配到真实实现；`describeWindowPrototype` 给 `snapshot`／`windows` 补原型行（slug、页的类型与页名、原型自己的地址）。
-- `packages/server-core/src/domain/apply-prototype.ts`：把补丁注入浏览器——只注入**窗口所在页**的补丁（`matchPrototypePage` → 入口页 → 只有共享补丁，并把这个页名报回去）；先读"已内联"标记再决定注册什么。
-- `packages/server-core/src/handlers/rpc/prototypes.ts`：给渲染层用的 RPC（列表 / 导出 / 页表 `SET_PAGES` / 改某一页地址 / 入口解析等）。
+- `packages/server-core/src/domain/apply-prototype.ts`：把补丁注入浏览器——只注入**窗口所在页**的补丁（`matchPrototypePage` → 入口页 → 只有共享补丁，并把这个页名报回去）；先读"已内联"标记再决定注册什么；注入后读回每个补丁的自我报告，算出**命中 / 未命中 / 漂移**并写锚点记录。`replayPrototypeInBrowser()` 是文件变更后的那条路：我们自己的页 → 刷新，别人的页 → 重新 apply（**故意不是"apply 再刷新"**，见 §3.12）。
+- `packages/server-core/src/handlers/rpc/prototypes.ts`：给渲染层用的 RPC（列表 / 导出 / 页表 `SET_PAGES` / 改某一页地址 / 入口解析 / **`prototypes:replay`**（按 slug 找所有在显示它的窗口并重放）/ **`prototypes:commit`**（纯文件，不碰浏览器）等）。
 - `apps/electron/src/main/prototype-host.ts`：原型文档的应答——`/` = 入口页（是 overlay 就 302）或生成的页索引、`/_index` 恒可达、`/<页名>` 对 overlay 是 302、**文件优先**、SPA 路由回退到入口文档（`handlePrototypeRequest` 路由、`registerPrototypeProtocolHandler` 在浏览器 session 上拦 `http`、`installPrototypeBaseUrlResolver` 发地址）。
 - `apps/electron/src/main/browser-cdp.ts`：`pickElement`、init script 注册、`setFetchMockRoutes`。
-- `apps/electron/src/main/browser-pane-manager.ts`：无边框窗口 / 3 个 BrowserView / 工具栏状态推送 / 地址→原型的反查。
+- `apps/electron/src/main/browser-pane-manager.ts`：无边框窗口 / 3 个 BrowserView / 工具栏状态推送 / 地址→原型的反查；`reload(id)` 现在也在 `IBrowserPaneManager` 上（自动重放要用，远程桥照旧 fire-and-forget）。
 
 ### 渲染层
 
-- `apps/electron/src/renderer/pages/PrototypeInfoPage.tsx`：原型详情页（Pages 区块 = 页表 + 每页的入口 / 地址 / 改名 / 删除；动作只有三个 + 数据行上的铅笔）。
+- `apps/electron/src/renderer/pages/PrototypeInfoPage.tsx`：原型详情页（Pages 区块 = 页表 + 每页的入口 / 地址 / 改名 / 删除；动作只有三个 + 数据行上的铅笔）；补丁区块逐条列出文件名 / 页 / `@target`，带「改动自动重放」开关与「收敛成一份」按钮；锚点区块列出记录与命中状态。
+- `apps/electron/src/renderer/hooks/usePrototypes.ts`：原型的读取与 watcher；**自动重放**也在这里（它是对 watcher 的唯一持有者），`prototypeSlugForChangedFile()` 决定哪些变更值得重放（`patches/`、`assets/`、顶层 `.html`）。
+- `apps/electron/src/renderer/atoms/prototypes.ts`：列表 atom + 「自动重放」这个偏好（在 `~/.craft-agent/preferences.json` 里，经 `lib/prototypeAutoReplayPreference.ts` 读写；**默认开**，因为它就是"保存了却没反应"的解药）。
 - `apps/electron/src/renderer/components/app-shell/PrototypesListPanel.tsx`：两级下钻列表（原型 → 它的页）与菜单（新建页 / 设为入口 / 改名 / 删除，以及复制 / 删除原型）。
 - `apps/electron/src/renderer/components/prototypes/CreatePrototypeDialog.tsx` / `CreatePageDialog.tsx`：只问名字的创建对话框，与按页问类型的"新建页"对话框（类型搬到这里才被问到——它的收益，如引导文案，也一起搬过来）。
 - `apps/electron/src/renderer/hooks/useBrowserToolbarActions.ts`：面板工具栏动作 → 主窗口的实际调用。
@@ -77,6 +82,11 @@
 | 19.8 创建 | 创建时问类型，overlay 还要问地址 | `prototype-create` 只要一个名字，建出来的原型**没有页**（连 `config.json` 都不写：没有东西可声明） | 类型与地址都是**页**的事实；"还没有页"是一句真话，不是错误状态 |
 | 19.4 重放范围 | `prototype-apply` 整原型全量重放 | 按**窗口所在页**取补丁（`matchPrototypePage`），没有所在页就落到入口页，再落到"只有共享补丁"，并把这个页名报出来 | `patches/<页名>/…` 只落那一页，否则"补丁没生效"和"补丁属于另一页"从结果上分辨不出来 |
 | 19.9 面板 | 一级列表 + 右键菜单（复制 / 删除） | 两级下钻（原型 → 页）；类型改由**新建页**对话框问；详情页有 Pages 区块 | 粒度现在真是项目的粒度：原型是一条流程、一个交付单位（config / patches / services / dist 都在它下面），页是文件与地址的粒度 |
+| 21 标记 | `@requirement` 只在 `coverage.ts` 里解析；补丁没有 `@target` | 两个标记一起收进 `patch-header.ts`（**零依赖**），`@target` 解析成**列表** | `storage.ts` 要读 `@target`，而 `requirements.ts` 已经依赖 storage——放在 requirements 会成环。列表是因为 commit 会把多条补丁的标记写进一个文件（§21.1） |
+| 21 锚点 | 无（S4 只写了"命中报告"） | `anchors/<scope>.json`：**只记命中过的**（加上已有记录的），不匹配时**保留**旧 fingerprint 并把 `matched` 置 0 | 一条没有 `lastMatchedAt` 的锚点读起来像证据，而它不是；而保留旧 fingerprint 才能说"页面变了"而不是"没匹配"（§21.2） |
+| 21 收敛 | 无（差量层只会变长） | scratch → `assets/<页名>/committed.*` + 文档引用；overlay → `patches/<页名>/Z-00x-upper.*`；折完删原文件 | base 归谁决定能不能合：我们自己的文档能重写，别人的活地址不能（§21.3）。JS 是**升格**不是折入——折进去等于"执行后序列化 DOM"，那是 §14.1 删掉的方案 |
+| 21 自动重放 | 无（只有显式 apply / 手动刷新） | 文件变更 → 宿主页**刷新**、活页面**重新 apply**；300ms 合并、可在详情页关掉 | 对已内联的补丁求值会跑第二遍 JS，而那正是内联标记存在的意义；重放活页面会丢掉窗口里正在填的东西，决定权在知道那窗口在干什么的人 |
+| 21 状态与面板 | 补丁只报总数与 lane 分布 | 逐条列出文件名 / 页 / `@target`；新增锚点区块（命中数 / 上次命中）/  提交按钮 / 自动重放开关 | "这条对着什么、有没有人检查过"是读补丁清单时最先要回答的问题，而原来一个都答不上 |
 
 **"`*.localhost` 能不能当 origin"是一次探针实测，不是推断**（实施方案 §16.2 引用的就是它）：一个一次性 Electron 探针在 `http://probe.localhost:8420/` 上确认了四条，全部成立——
 
@@ -191,6 +201,24 @@ storage: true        moduleRan: true               ← localStorage 与 <script 
 - **根因**：一个判断被写了两次——`status.ts` 要它来决定按钮的可用性，`export.ts` 要它来决定"到底能不能打开"——两次的条件一旦不完全一样，面板就会提供一个必然失败的按钮，或者藏起一个能用的。
 - **修法**：`pageAvailable` 就是 `resolvePrototypeEntry` 的判据，逐支对齐：有页 **且**（入口是 overlay → 它自己有地址；否则 → 有宿主，且入口页的文档在）；没有入口时同样要求有宿主（`/` 要给出生成的页索引）。用例走遍 entry / 页 / 宿主 的组合（`ownership.test.ts` 的 `agrees with resolvePrototypeEntry about what can be opened`），两处的注释也互相指认。
 
+### 3.16 自动重放：刷新还是注入，取决于**文档自己**
+
+- **症状**（写之前就能预见，测试把它钉住了）：文件一变就"重放"，活页面上的 JS 补丁跑了两遍——而页面看起来完全正常。
+- **根因**：`prototype-apply` 会跳过"文档已经内联的补丁"，所以"内容改过的那条补丁"在 apply 时是被**当作已应用**跳过的（这是 §3.5 那条不变式的代价）。于是两种天真的做法都错：**只 apply 不刷新** → 改过的补丁不会被重新执行；**apply 再刷新** → 对已经内联的那批补丁求值一次，JS 跑了两遍。
+- **修法**：`replayPrototypeInBrowser()` 先读内联标记，**按结果二选一**——文档带标记（我们自己的页，宿主按请求现渲染）→ 只 `reload()`；没标记（别人的活页面）→ 走完整的 apply（重建注册 + 立即求值）。判据来自文档本身而不是地址或页类型，所以存到别处再打开的文档也一样成立。
+
+### 3.17 生成的文本里出现标记**字面**，就会被当成标记
+
+- **症状**：`prototype-commit` 折出来的文件，`scanPrototypePatches` 读到的 `@target` 除了真的选择器，还多了一条 `markers, which the workbench reads).`——`commit.test.ts` 当场抓到。
+- **根因**：banner 里写了一句"每个来源都保留它自己的 provenance 头（以及它的 `@target` 标记…）"。解析器按行扫、把标记之后到行尾都当成它的值——**它没法区分"标记"和"谈论标记"**。
+- **修法**：生成的文本里不写标记字面（那句改成"它携带的标记"，不点名字）。同一条规矩也约束 provenance 注释：**每个标记各占一行**，`@requirement` 在前、`@target` 在后，因为同一行上的第二个标记会被第一个吞掉。
+
+### 3.18 测试桩不能靠"包含某个字符串"来认探针
+
+- **症状**：加了"每个补丁自报命中"之后，`apply-prototype.test.ts` 里 4 个用例的 `evaluated` 突然变成空数组——补丁脚本压根没被执行到。
+- **根因**：测试桩用 `expression.includes('__craft_patch_state__')` 认状态探针，而**每个补丁脚本现在也含这个 key**（它要往里写）——于是补丁脚本被当成探针"答完就走"。
+- **修法**：按探针特有的一行来认（`const measured = (entry.matches`、`const entries =`、`out[target] = el ?`）。教训是通用的：**当被测代码开始包含某个 key，用 key 认它就不成立了**，要认形状。
+
 ---
 
 ## 4. 已删除的机制（墓园）
@@ -224,17 +252,18 @@ bun run typecheck:shared
 bun run typecheck:electron
 cd packages/server-core && bun run tsc --noEmit
 
-# 测试（原型相关的四个；前两条合计 408 pass；把路径换成任意文件即可单跑一个）
-cd packages/shared      && bun test src/prototypes                              # 253 pass
-cd packages/shared      && bun test src/agent/__tests__/browser-tools.test.ts   # 155 pass
-cd packages/server-core && bun test src/domain/__tests__/apply-prototype.test.ts  # 9 pass
+# 测试（原型相关的四个；前两条合计 468 pass；把路径换成任意文件即可单跑一个）
+cd packages/shared      && bun test src/prototypes                              # 309 pass
+cd packages/shared      && bun test src/agent/__tests__/browser-tools.test.ts   # 159 pass
+cd packages/server-core && bun test src/domain/__tests__/apply-prototype.test.ts  # 14 pass
 cd apps/electron        && bun test src/main/__tests__/prototype-host.test.ts   # 38 pass
 
 # 全量（失败基线见 §5.2）
 cd packages/shared      && bun test
 
 # i18n（改到 strings/locales 时）
-bun run lint:i18n:parity                    # i18n parity OK (6 locales, 1801 keys each)
+bun run lint:i18n:parity                    # i18n parity OK (6 locales, 1855 keys each)
+bun scripts/sort-locales.ts                 # 加过 key 之后跑一次，排序是 lint 强制的
 # lint:i18n:coverage 在这个 checkout 跑不了：scripts/check-i18n-coverage.ts 不存在（§3.10）
 
 # 渲染层构建（改到 renderer 或共享包导出时务必跑，见 §3.6）
@@ -253,7 +282,10 @@ cd apps/electron && bun run build:renderer
 
 | 模块 | 测试 |
 |---|---|
-| patch 变换 | `packages/shared/src/prototypes/__tests__/prototypes.test.ts` |
+| 补丁变换 | `packages/shared/src/prototypes/__tests__/prototypes.test.ts` |
+| 标记解析（`@target` / `@requirement`，含"写成词就不算"与"一行一个"） | `__tests__/patch-header.test.ts` |
+| 锚点记录（合并写、fingerprint 保留、漂移 / 孤儿判定、坏 JSON 容错、两个探针可编译） | `__tests__/anchors.test.ts` |
+| 收敛（两类页各自的落点、provenance 标记存活、幂等、拒绝、`--page` 作用域、锚点清理、Z 排最后） | `__tests__/commit.test.ts` |
 | 索引扫描 / 命名过滤 / 补丁的页域（`scanPrototypePatchesForPage`、`listPrototypePatchPages`） | 同上 |
 | 配置与页表规范化、旧配置的读时提升（`legacyPageRows`） | `__tests__/config.test.ts` |
 | 页的判定与页表合并、页表增删改（add / remove / rename / entry） | `__tests__/pages.test.ts` |
@@ -263,7 +295,7 @@ cd apps/electron && bun run build:renderer
 | 契约合成与 mock 路由 | `__tests__/contract.test.ts` |
 | prompt 块（页列表与每条补丁的页域） | `__tests__/prompt.test.ts` |
 | 命令层（runtime） | `src/agent/__tests__/browser-tools.test.ts` |
-| 注入时跳过已内联 | `packages/server-core/src/domain/__tests__/apply-prototype.test.ts` |
+| 注入时跳过已内联；命中 / 未命中 / 漂移的报告与锚点记录；`replayPrototypeInBrowser` 的两种含义 | `packages/server-core/src/domain/__tests__/apply-prototype.test.ts` |
 | 原型的应答（入口页 / `/_index` / 页名 302 / 文件优先 / 入口文档不在 / 越界 / pass-through / SPA 回退） | `apps/electron/src/main/__tests__/prototype-host.test.ts` |
 | 窗口与地址栏 | `apps/electron/src/main/__tests__/browser-pane-manager.test.ts` |
 
@@ -271,6 +303,8 @@ cd apps/electron && bun run build:renderer
 
 | 项 | 怎么验 | 不对时看哪 |
 |---|---|---|
+| 改完即见 | 用外部编辑器改一条补丁 → 该原型**已打开的窗口** 1 秒内自己跟上（我们自己的页刷新、活页面重新打补丁）；连存三个文件只跟上一次 | `usePrototypes` 里的 `prototypeSlugForChangedFile`（路径是不是落在 `patches/`、`assets/`、顶层 `.html`）；`prototypes:replay` 有没有找到那个窗口（它按 `BrowserInstanceInfo.prototypeSlug` 过滤） |
+| 收敛之后效果不变 | 在一个原型上跑 `prototype-commit` → 回到那一页看，改动**还在**且和折入前一样 | 折进去的文件（`patches/<页名>/Z-00x-upper.*` 或 `assets/<页名>/committed.*`）；Z 是不是真的排在最后（`prototype-status` 的补丁清单按重放序列出） |
 | 原型页在无端口地址上打开 | 打开一个页是我们自己的原型 → 地址栏是 `http://<label>.localhost/`，页面带着**这一页**的补丁 | 主进程日志里有没有 `[prototype-host] answering prototypes at …`；handler 是不是装在了 `persist:browser-pane` 上 |
 | 页名与入口在真窗口里对得上 | 开根地址 → 落在入口页；没配入口时落在**页索引**，点一页进得去；`snapshot` 的 `Prototype:` 行带 `page "<名字>"` | `prototype-status` 的 `pages:` / `root:` 两行；`matchPrototypePage` 认不认得出窗口的真实 URL（overlay 的跳转、SPA 路由都算） |
 | 地址栏写着"哪一页"，而且敲得回去 | 在一个 overlay 页上（视图停在真实站点）→ 地址栏是 `http://<label>.localhost/<页名>`；把它敲一遍回车 → 回到**同一页**（不是入口页），地址栏照旧 | `main/index.ts` 注入的 `pageOfPrototypeUrl`（认地址）与 `pageResolver`（认窗口在哪一页）；页名对不上时只写原型域名 |
@@ -287,6 +321,8 @@ cd apps/electron && bun run build:renderer
 - **原型优先于对话**：原型可以先存在，`prototypes/<slug>` 目录建好就有地址与页面；对话是来访者——`handleOpenChat` 在没有对话时新建一个（`prototypeSlug` 落在会话头上），有对话时复用；同一个 `prototypeSlug` 可以挂在多个会话上，`prototype-*` 命令按会话解析。窗口的身份则与对话无关（见上一条）。
 - **面板工具栏为什么不亮**：工具栏在独立渲染进程里，拿不到 workspace / 会话——它只显示主进程推来的地址与 `prototypeSlug`；两个按钮的可用性完全由那个 slug 决定（没有原型就置灰）。slug 有两条来路，主进程按这个顺序答（`prototypeBindingFor`）：**窗口被打开时声明的原型** → **会话链**（窗口所属会话在做哪个原型）。只留后者时，"刚创建、还没有对话"的原型点「打开」会得到地址栏写着真实 URL、按钮全灰的普通窗口——这是 §3.3 同一族的身份缺失，已修。
 - **"补丁没生效"还是"页面不是这一页"**：先看 `prototype-status` 的 `pages:`（每页带类型、地址或文件、`[entry]`）与 `root:` 两行，再看 `page issues:`——`patches/<页名>/` 对不上任何页、声明的页文档不在、行读不干净都在这里点名（§19.4 / §19.8）。`prototype-apply` 的输出也会说这次重放的是**哪一页**的补丁（没有页就是"只有共享补丁"），所以"改错了页"和"补丁没生效"分得开。
+- **"补丁没生效"还是"选择器不对"还是"页面变了"**（§21.1／§21.2）：`prototype-apply` 的输出把三种情形分开了——没写 `@target` → "nothing could check these"；写了但从来没命中过 → "matched nothing"（选择器错，或页不对）；写过且**记录过命中**、现在 0 命中 → "the page moved"，并给出页面上现在的候选选择器。第三种要靠 `anchors/<scope>.json` 里的旧 fingerprint 才判得出来，所以那个文件**别手删**（删了下次 apply 只能重新从零开始记）。
+- **收敛之后效果变了**（§21.3）：`prototype-commit` 是文本折叠，它不知道"语义等价"。先按 §5.4 那两条在真窗口里对照一次；`prototype-status` 的补丁清单按重放序列出，`Z-*` 必须排在最后——不是最后就说明顺序规则被改坏了（`storage.ts` 的 `byReplayOrder`）。
 - **扩展交付物**：`dist/extension/` 在 `chrome://extensions` Load unpacked；**options 页是生成的页索引**（点一页就过去），工具栏图标开入口页；改完补丁要重新导出并在该页点 **Reload**（快照语义，见实施方案 §17.4）。`dist/dev-spec.md` 按页分节。
 - **契约 mock 不生效**：先看路径是否只按 pathname 匹配、以及请求是否由页面自己发出（PWA 的 service worker 请求不经过页面）。
 - **原型页打不开**：先看主进程日志有没有 `[prototype-host] answering prototypes at …`；地址形如 `http://<label>.localhost/`（无端口），而且**只有被打开/导出过的原型才注册过**——没注册过的地址答 404 是对的。根地址答 404 并点名一个页名时，是**入口页的文档不在**（不会退回索引，§19.3）。

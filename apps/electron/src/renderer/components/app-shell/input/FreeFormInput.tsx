@@ -33,6 +33,7 @@ import {
 } from '@/components/ui/label-menu'
 import type { LabelConfig } from '@craft-agent/shared/labels'
 import { parseMentions } from '@/lib/mentions'
+import { expandElementMentions, type ElementRef } from '@/lib/element-mention'
 import { RichTextInput, type RichTextInputHandle } from '@/components/ui/rich-text-input'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@craft-agent/ui'
 import {
@@ -649,11 +650,26 @@ export function FreeFormInput({
 
   const handleToggleModelVision = useModelVisionToggle()
 
+  /**
+   * The reference an element chip turns into when the message is sent.
+   *
+   * A chip is a marker in the composer's text (see element-mention), and the model
+   * should read a sentence rather than a payload — so the marker is rewritten on the
+   * way out. This is the single place outgoing text is translated, which is why it
+   * lives next to the two paths that consume the composer (`submitMessage` and the
+   * plan-approval snapshot).
+   */
+  const formatElementReference = React.useCallback(
+    (ref: ElementRef) =>
+      t('browserEdit.elementReference', { selector: ref.selector, text: ref.text }),
+    [t]
+  )
+
   const consumeInputDraftSnapshot = React.useCallback((): string => {
-    const snapshot = input.trim()
+    const snapshot = expandElementMentions(input.trim(), formatElementReference)
     clearInputDraft()
     return snapshot
-  }, [input, clearInputDraft])
+  }, [input, clearInputDraft, formatElementReference])
 
   type PlanApprovalEventDetail = {
     sessionId?: string
@@ -1270,7 +1286,7 @@ export function FreeFormInput({
     const attachmentSnapshot = attachments
 
     onSubmit(
-      input.trim(),
+      expandElementMentions(input.trim(), formatElementReference),
       attachmentSnapshot.length > 0 ? attachmentSnapshot : undefined,
       mentions.skills.length > 0 ? mentions.skills : undefined
     )
@@ -1288,7 +1304,7 @@ export function FreeFormInput({
     })
 
     return true
-  }, [input, attachments, followUpItems, disabled, disableSend, onInputChange, onAttachmentsChange, onSubmit, skills, sources, optimisticSourceSlugs, onSourcesChange, onWorkingDirectoryChange, homeDir])
+  }, [input, attachments, followUpItems, disabled, disableSend, onInputChange, onAttachmentsChange, onSubmit, skills, sources, optimisticSourceSlugs, onSourcesChange, onWorkingDirectoryChange, homeDir, formatElementReference])
 
   // Listen for craft:submit-input events (simulate pressing the Send button)
   React.useEffect(() => {

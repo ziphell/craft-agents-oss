@@ -503,6 +503,17 @@ export interface ElectronAPI {
   /** Write `dist/*` for a prototype so it can be handed to developers. */
   exportPrototype(workspaceId: string, slug: string): Promise<unknown>
   /**
+   * Sample frames out of a video the user recorded elsewhere (plan §20.5).
+   *
+   * No path is passed: the picker runs in the main process, so the panel never
+   * handles one. Returns null when the dialog was dismissed.
+   */
+  importPrototypeVideo(
+    workspaceId: string,
+    slug: string,
+    options?: { mode?: 'timeline' | 'changes'; everyMs?: number; maxFrames?: number },
+  ): Promise<unknown>
+  /**
    * Create a prototype: a container for pages. It has none to begin with — a page
    * is either a document of ours (something writes `<name>.html`) or a live page
    * added afterwards — so creation asks for nothing but a name (plan §19.8).
@@ -510,6 +521,19 @@ export interface ElectronAPI {
   createPrototype(workspaceId: string, input: { name: string }): Promise<unknown>
   /** Replay a prototype's patches into a live browser instance. */
   applyPrototype(workspaceId: string, instanceId: string, slug: string): Promise<unknown>
+  /**
+   * Replay one prototype into every window showing it, after its files changed
+   * (plan §21.4). The window decides what that means: a page of ours is reloaded
+   * (the host re-renders from disk), someone else's page is re-applied.
+   */
+  replayPrototype(workspaceId: string, slug: string): Promise<unknown>
+  /**
+   * Fold a prototype's delta layer into what owns it (plan §21.3): a page of ours
+   * into `assets/<page>/committed.*`, a live page into
+   * `patches/<page>/Z-001-upper.css`. The folded patch files are deleted, so the
+   * caller asks the user first — there is no undo.
+   */
+  commitPrototype(workspaceId: string, slug: string, options?: { page?: string }): Promise<unknown>
   /**
    * Declare that `slug` is studied from `referenceSlug` (plan §14). The two stay
    * separate projects: that is what keeps the reference's patches out of this
@@ -553,6 +577,13 @@ export interface ElectronAPI {
    * live one, otherwise the first live page.
    */
   setPrototypeTarget(workspaceId: string, slug: string, targetUrl: string, page?: string): Promise<unknown>
+  /**
+   * Which project a prototype was made for (plan §15.1), or `null` to clear it.
+   * The same edge the agent sets with `prototype-project`; both detail pages edit
+   * it here. Rejects a project that does not exist rather than recording a
+   * relationship that is not true.
+   */
+  setPrototypeProject(workspaceId: string, slug: string, projectSlug: string | null): Promise<unknown>
 
   // Sources
   getSources(workspaceId: string): Promise<LoadedSource[]>

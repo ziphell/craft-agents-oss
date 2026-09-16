@@ -117,7 +117,61 @@ const PICKER_OVERLAY_ID = '__craft_agent_picker_overlay__'
  * Injected through CDP, so it is unaffected by the page's CSP and needs no
  * `webPreferences` changes (stays sandboxed).
  */
-const PICKER_INJECT_SCRIPT = `(() => {
+function buildPickerInjectScript(options: {
+  /** Show the "add to conversation" bar under the highlight. */
+  addToConversation: boolean
+  /** Its label, in the caller's language — the toolbar owns the i18n, not this. */
+  addLabel: string
+}): string {
+  // The bar is only built when there is a conversation to add to: a button that
+  // cannot do anything is worse than no button at all.
+  const barMarkup = options.addToConversation
+    ? `
+  const bar = document.createElement('div');
+  bar.setAttribute('style', 'position:fixed;display:none;align-items:center;padding:4px 6px;border-radius:8px;background:rgba(15,23,42,0.95);box-shadow:0 2px 10px rgba(0,0,0,0.35);pointer-events:auto;');
+  const addButton = document.createElement('button');
+  addButton.type = 'button';
+  addButton.textContent = ${JSON.stringify(options.addLabel)};
+  addButton.setAttribute('style', 'all:unset;cursor:pointer;padding:3px 10px;border-radius:6px;background:rgb(59,130,246);color:#fff;font:12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;white-space:nowrap;');
+  bar.appendChild(addButton);
+  root.appendChild(bar);
+`
+    : ''
+
+  const barPosition = options.addToConversation
+    ? `
+    bar.style.display = 'flex';
+    bar.style.left = Math.max(4, Math.min(r.left, window.innerWidth - 190)) + 'px';
+    bar.style.top = Math.max(4, Math.min(r.bottom + 6, window.innerHeight - 34)) + 'px';
+`
+    : ''
+
+  const barHide = options.addToConversation ? `bar.style.display = 'none';` : ''
+  // The window's own click listener is in the capture phase, so it would swallow
+  // a click on the button before the button ever saw it: the bar has to be let
+  // through explicitly.
+  const barGuard = options.addToConversation ? `    if (bar.contains(e.target)) return;\n` : ''
+
+  const barHandler = options.addToConversation
+    ? `
+  addButton.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const el = current;
+    if (!el) { finish('cancelled', null); return; }
+    const r = el.getBoundingClientRect();
+    finish('picked', {
+      selector: buildStableSelector(el),
+      tag: el.tagName ? el.tagName.toLowerCase() : '',
+      text: (el.textContent || '').trim().slice(0, 200),
+      rect: { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) },
+      intent: 'add-to-conversation',
+    });
+  });
+`
+    : ''
+
+  return `(() => {
   try { window.${PICKER_CANCEL_KEY} && window.${PICKER_CANCEL_KEY}(); } catch (e) {}
 
   const root = document.createElement('div');
@@ -130,7 +184,7 @@ const PICKER_INJECT_SCRIPT = `(() => {
 
   const label = document.createElement('div');
   label.setAttribute('style', 'position:fixed;display:none;padding:2px 6px;border-radius:6px;font:12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;background:rgba(15,23,42,0.92);color:#fff;pointer-events:none;max-width:70vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;');
-  root.appendChild(label);
+  root.appendChild(label);${barMarkup}
 
   document.documentElement.appendChild(root);
 
@@ -160,7 +214,7 @@ const PICKER_INJECT_SCRIPT = `(() => {
   let current = null;
 
   const paint = (el) => {
-    if (!el) { box.style.display = 'none'; label.style.display = 'none'; return; }
+    if (!el) { box.style.display = 'none'; label.style.display = 'none'; ${barHide} return; }
     const r = el.getBoundingClientRect();
     box.style.display = 'block';
     box.style.left = r.left + 'px';
@@ -170,7 +224,7 @@ const PICKER_INJECT_SCRIPT = `(() => {
     label.style.display = 'block';
     label.style.left = r.left + 'px';
     label.style.top = Math.max(4, r.top - 22) + 'px';
-    label.textContent = buildStableSelector(el);
+    label.textContent = buildStableSelector(el);${barPosition}
   };
 
   const onMove = (e) => {
@@ -195,7 +249,7 @@ const PICKER_INJECT_SCRIPT = `(() => {
   }
 
   const onClick = (e) => {
-    e.preventDefault();
+  ${barGuard}    e.preventDefault();
     e.stopPropagation();
     const el = current || document.elementFromPoint(e.clientX, e.clientY);
     if (!el) { finish('cancelled', null); return; }
@@ -214,6 +268,7 @@ const PICKER_INJECT_SCRIPT = `(() => {
 
   const onViewportChange = () => { if (current) paint(current); };
 
+${barHandler}
   window.${PICKER_CANCEL_KEY} = () => finish('cancelled', null);
   window.${PICKER_STATE_KEY} = { status: 'pending', result: null };
 
@@ -225,10 +280,18 @@ const PICKER_INJECT_SCRIPT = `(() => {
 
   return true;
 })()`
+}
 
 const PICKER_STATE_EXPRESSION = `(() => JSON.stringify(window.${PICKER_STATE_KEY} || { status: 'missing' }))()`
 
 const PICKER_CANCEL_EXPRESSION = `(() => { try { window.${PICKER_CANCEL_KEY} && window.${PICKER_CANCEL_KEY}(); } catch (e) {} })()`
+
+export interface BrowserPageAction {
+  /** `click` | `type` | `key` | `navigate`. */
+  kind: string
+  /** What it acted on — a key, an address, some text, or coordinates. */
+  target: string
+}
 
 export class BrowserCDP {
   private webContents: WebContents
@@ -249,6 +312,16 @@ export class BrowserCDP {
   private fetchMockEnabled = false
   private fetchMockRoutes: MockRoute[] = []
   private debuggerMessageListenerRegistered = false
+
+  /**
+   * Told about every action taken on the page, read off the CDP traffic.
+   *
+   * Set by the pane manager while a frame capture is running. One hook rather than
+   * one report per verb, because every way of acting on a page goes through
+   * `Input.*` or `Page.navigate`: clicks, typing, selecting and dragging are all
+   * covered without any of them having to remember to say so (plan §20.3).
+   */
+  onAction?: (action: BrowserPageAction) => void
 
   constructor(webContents: WebContents) {
     this.webContents = webContents
@@ -330,10 +403,48 @@ export class BrowserCDP {
   private async send(method: string, params?: Record<string, unknown>): Promise<any> {
     await this.ensureAttached()
     try {
-      return await this.webContents.debugger.sendCommand(method, params)
+      const result = await this.webContents.debugger.sendCommand(method, params)
+      this.reportAction(method, params)
+      return result
     } finally {
       // Keep detach countdown tied to completed calls so we do not detach mid-flight.
       this.resetIdleDetachTimer()
+    }
+  }
+
+  /**
+   * Turn a CDP call into "what somebody did", for the frame capture.
+   *
+   * Only after the call succeeded: a frame whose caption is an action that never
+   * happened would be a lie about the cause, which is the one thing these frames
+   * are for. Deliberate silence is fine — most CDP traffic is not an action, and
+   * the list below is the whole of what counts as one.
+   */
+  private reportAction(method: string, params?: Record<string, unknown>): void {
+    const listener = this.onAction
+    if (!listener) return
+
+    if (method === 'Page.navigate') {
+      listener({ kind: 'navigate', target: String(params?.url ?? '') })
+      return
+    }
+    if (method === 'Input.insertText') {
+      listener({ kind: 'type', target: String(params?.text ?? '').slice(0, 40) })
+      return
+    }
+    if (method === 'Input.dispatchKeyEvent') {
+      // Only a press: keyUp doubles every keystroke, and `char` events are text.
+      if (params?.type !== 'keyDown') return
+      const key = typeof params.key === 'string' ? params.key : ''
+      if (key.length > 1) listener({ kind: 'key', target: key })
+      return
+    }
+    if (method === 'Input.dispatchMouseEvent' && params?.type === 'mousePressed') {
+      const button = typeof params.button === 'string' ? params.button : 'left'
+      const clicks = Number(params.clickCount ?? 1)
+      const x = Math.round(Number(params.x ?? 0))
+      const y = Math.round(Number(params.y ?? 0))
+      listener({ kind: 'click', target: `${button}${clicks > 1 ? ` ×${clicks}` : ''} at ${x},${y}` })
     }
   }
 
@@ -757,11 +868,29 @@ export class BrowserCDP {
    * each poll is a short call, so the idle-detach timer keeps being reset and
    * cannot fire while a pick is in flight.
    */
-  async pickElement(options?: { timeoutMs?: number; pollMs?: number }): Promise<PickedElement | null> {
+  async pickElement(options?: {
+    timeoutMs?: number
+    pollMs?: number
+    /**
+     * Show the "add to conversation" bar under the highlight.
+     *
+     * Decided by the caller, not here: whether there is a conversation to add to
+     * is a fact about the window, and this class only knows about the page.
+     */
+    addToConversation?: boolean
+    /** The bar's label, in the caller's language. */
+    addLabel?: string
+  }): Promise<PickedElement | null> {
     const timeoutMs = Math.max(1_000, options?.timeoutMs ?? 120_000)
     const pollMs = Math.max(50, options?.pollMs ?? 200)
 
-    await this.send('Runtime.evaluate', { expression: PICKER_INJECT_SCRIPT })
+    // Injected through CDP, so the page's CSP is not in the way, and the bar's
+    // markup is built here rather than in the page.
+    const script = buildPickerInjectScript({
+      addToConversation: options?.addToConversation === true,
+      addLabel: options?.addLabel ?? 'Add to conversation',
+    })
+    await this.send('Runtime.evaluate', { expression: script })
 
     const deadline = Date.now() + timeoutMs
     try {

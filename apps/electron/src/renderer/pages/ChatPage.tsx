@@ -645,7 +645,14 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
   const headerActions = (
     <div className="flex items-center gap-1.5">
       {sessionMeta && (
-        <PrototypeBindingMenu sessionId={sessionId} prototypeSlug={sessionMeta.prototypeSlug} />
+        // `projectId` travels too: a project with exactly one prototype provides it
+        // to this conversation, so the menu has to be able to show an inherited
+        // prototype rather than only the one bound here.
+        <PrototypeBindingMenu
+          sessionId={sessionId}
+          prototypeSlug={sessionMeta.prototypeSlug}
+          projectId={sessionMeta.projectId}
+        />
       )}
       {editTaskButton}
       {primaryHeaderAction}

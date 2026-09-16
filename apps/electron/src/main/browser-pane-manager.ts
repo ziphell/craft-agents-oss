@@ -13,6 +13,7 @@ import { BrowserView, BrowserWindow, app, ipcMain, nativeTheme, session, shell, 
 import { mainLog } from './logger'
 import type { WindowManager } from './window-manager'
 import { BrowserCDP, type AccessibilitySnapshot, type ElementGeometry } from './browser-cdp'
+import { pickVideoFile as pickVideoFileWithDialog, sampleVideoFrames } from './video-frames'
 import {
   type BrowserEmptyStateLaunchPayload,
   type BrowserEmptyStateLaunchResult,
@@ -44,6 +45,68 @@ const MAX_DOWNLOAD_LOG_ENTRIES = 200
 const DEFAULT_WAIT_TIMEOUT_MS = 10_000
 const DEFAULT_WAIT_POLL_MS = 100
 const SCREENSHOT_HIDDEN_CAPTURE_ATTEMPTS = 3
+
+/**
+ * Frame capture defaults (plan §20.3).
+ *
+ * A capture has two samplers with different jobs, and both need bounds: four
+ * comparisons a second is fast enough that a streaming answer leaves a trail,
+ * and slow enough that it is not a video encoder; a ceiling per capture is what
+ * keeps a forgotten recording from filling a disk.
+ */
+const FRAME_CAPTURE_INTERVAL_MS = 400
+const FRAME_CAPTURE_MIN_INTERVAL_MS = 100
+const FRAME_CAPTURE_THRESHOLD = 0.005
+const FRAME_CAPTURE_MAX_FRAMES = 60
+const FRAME_CAPTURE_JPEG_QUALITY = 70
+/** How long after an action the "what it produced" frame is taken. */
+const FRAME_CAPTURE_RESULT_DELAY_MS = 350
+/** Every 16th pixel — see {@link changedRatio}. */
+const FRAME_CAPTURE_SAMPLE_STEP_BYTES = 64
+
+/**
+ * Share of the sampled screen that differs between two frames.
+ *
+ * Sampled rather than compared pixel by pixel: a 1280×800 window is 4 MB of BGRA
+ * per frame, and the question is only "did the screen move". Reading every 16th
+ * pixel answers it, at a cost small enough to run four times a second.
+ */
+function changedRatio(previous: Buffer, current: Buffer): number {
+  if (previous.length === 0 || previous.length !== current.length) return 1
+
+  let sampled = 0
+  let changed = 0
+  for (let offset = 0; offset < current.length; offset += FRAME_CAPTURE_SAMPLE_STEP_BYTES) {
+    sampled += 1
+    if (previous[offset] !== current[offset]) changed += 1
+  }
+  return sampled === 0 ? 0 : changed / sampled
+}
+
+/** One capture session, held in memory until it is stopped. */
+interface FrameCaptureState {
+  startedAt: string
+  intervalMs: number
+  threshold: number
+  maxFrames: number
+  /** Size of the first frame, in device pixels. */
+  viewport: { width: number; height: number } | null
+  /** Set once the ceiling was reached: what came back is a sample of the session. */
+  truncated: boolean
+  frames: Array<{
+    index: number
+    at: string
+    url: string
+    reason: 'start' | 'changed' | 'action' | 'result'
+    action?: string
+    bytes: Buffer
+  }>
+  /** The previous frame's pixels, which is what the next one is compared against. */
+  lastBitmap: Buffer | null
+  /** Set while a capture is in flight, so a slow one cannot stack behind itself. */
+  capturing: boolean
+  timer: ReturnType<typeof setInterval> | null
+}
 const SCREENSHOT_RETRY_DELAY_MS = 120
 const SCREENSHOT_RESCUE_PAINT_DELAY_MS = 180
 const SCREENSHOT_NETWORK_IDLE_TIMEOUT_MS = 1_000
@@ -610,6 +673,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     overlayWcWithBg.setBackgroundColor?.('#00000000')
 
     const cdp = new BrowserCDP(pageView.webContents)
+    // Every action the agent takes on a page is a frame, whatever the screen did
+    // with it: a click is a *cause*, and a reader who cannot tell "somebody did
+    // this" from "it moved on its own" has a pile of pictures rather than a
+    // record. The closure reads `instance` lazily — it is defined just below, and
+    // this only ever runs once something acts on the page (plan §20.3).
+    cdp.onAction = (action) => this.noteFrameAction(instance, action)
 
     const instance: BrowserInstance = {
       id: instanceId,
@@ -1845,6 +1914,185 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     return instance.cdp.pickElement(options)
   }
 
+  // -- Frame capture --------------------------------------------------------
+
+  /**
+   * Frame captures, one per window, in memory until they are stopped.
+   *
+   * Keyed by instance rather than kept on `BrowserInstance`: a capture is a
+   * session of observation, not a property of a window, and a window destroyed
+   * mid-capture must leave nothing behind (the state goes when the key does).
+   */
+  private frameCaptures = new Map<string, FrameCaptureState>()
+
+  /**
+   * Start keeping frames of a window.
+   *
+   * Two samplers, because a screen changes for two reasons that are worth
+   * different things: the interval keeps what moved on its own (a stream
+   * answering), and {@link noteFrameAction} keeps what was *done* (a click),
+   * whether or not the screen agreed to move.
+   */
+  async startFrameCapture(
+    id: string,
+    options?: { intervalMs?: number; threshold?: number; maxFrames?: number },
+  ) {
+    const instance = this.requireAliveInstance(id)
+    // One capture per window: starting a second replaces the first rather than
+    // running two timers over the same screen.
+    const previous = this.frameCaptures.get(id)
+    if (previous?.timer) clearInterval(previous.timer)
+
+    const state: FrameCaptureState = {
+      startedAt: new Date().toISOString(),
+      intervalMs: Math.max(FRAME_CAPTURE_MIN_INTERVAL_MS, options?.intervalMs ?? FRAME_CAPTURE_INTERVAL_MS),
+      threshold: Math.min(1, Math.max(0.0001, options?.threshold ?? FRAME_CAPTURE_THRESHOLD)),
+      maxFrames: Math.max(1, Math.min(600, options?.maxFrames ?? FRAME_CAPTURE_MAX_FRAMES)),
+      viewport: null,
+      truncated: false,
+      frames: [],
+      lastBitmap: null,
+      capturing: false,
+      timer: null,
+    }
+    this.frameCaptures.set(id, state)
+
+    // The first frame is forced: without it the first comparison would have
+    // nothing to compare against, and a capture would open on a change rather
+    // than on the screen as it was.
+    await this.captureFrame(instance, state, { reason: 'start', force: true })
+    state.timer = setInterval(
+      () => void this.captureFrame(instance, state, { reason: 'changed' }),
+      state.intervalMs,
+    )
+
+    return {
+      startedAt: state.startedAt,
+      intervalMs: state.intervalMs,
+      threshold: state.threshold,
+      maxFrames: state.maxFrames,
+    }
+  }
+
+  /** Stop a capture and hand back what it kept, or null when none was running. */
+  async stopFrameCapture(id: string) {
+    const state = this.frameCaptures.get(id)
+    if (!state) return null
+    // Removed before it is returned: a timer that fired during serialisation
+    // would push frames into a capture its caller already has.
+    this.frameCaptures.delete(id)
+    if (state.timer) clearInterval(state.timer)
+
+    return {
+      startedAt: state.startedAt,
+      endedAt: new Date().toISOString(),
+      intervalMs: state.intervalMs,
+      threshold: state.threshold,
+      maxFrames: state.maxFrames,
+      viewport: state.viewport,
+      truncated: state.truncated,
+      frames: state.frames,
+    }
+  }
+
+  /**
+   * Keep a frame for an action that was just taken.
+   *
+   * Called from the CDP client, which is the one place every verb passes through.
+   * The action frame is forced — a click that changed nothing is still a click
+   * somebody made, and "nothing happened" is a finding of its own — and a second
+   * frame follows a moment later to catch what it produced.
+   */
+  private noteFrameAction(instance: BrowserInstance, action: { kind: string; target: string }): void {
+    const state = this.frameCaptures.get(instance.id)
+    if (!state) return
+
+    const label = action.target ? `${action.kind} ${action.target}` : action.kind
+    void this.captureFrame(instance, state, { reason: 'action', action: label, force: true })
+
+    // The result frame waits a beat: what an action produces is rarely there in
+    // the same tick, and one taken too early is a picture of the old screen.
+    const timer = setTimeout(() => {
+      if (this.frameCaptures.get(instance.id) !== state) return
+      void this.captureFrame(instance, state, { reason: 'result', force: true })
+    }, FRAME_CAPTURE_RESULT_DELAY_MS)
+    timer.unref?.()
+  }
+
+  private async captureFrame(
+    instance: BrowserInstance,
+    state: FrameCaptureState,
+    frame: { reason: 'start' | 'changed' | 'action' | 'result'; action?: string; force?: boolean },
+  ): Promise<void> {
+    // A capture slower than the interval must not stack up behind itself.
+    if (state.capturing) return
+
+    if (instance.window.isDestroyed()) {
+      this.frameCaptures.delete(instance.id)
+      if (state.timer) clearInterval(state.timer)
+      return
+    }
+
+    state.capturing = true
+    try {
+      const image = await instance.pageView.webContents.capturePage(undefined, {
+        stayHidden: true,
+        stayAwake: true,
+      })
+      if (image.isEmpty()) return
+
+      const bitmap = image.toBitmap()
+      if (!frame.force && state.lastBitmap && changedRatio(state.lastBitmap, bitmap) < state.threshold) return
+      state.lastBitmap = bitmap
+
+      if (state.frames.length >= state.maxFrames) {
+        state.truncated = true
+        if (state.timer) clearInterval(state.timer)
+        state.timer = null
+        return
+      }
+
+      const size = image.getSize()
+      if (!state.viewport) state.viewport = { width: size.width, height: size.height }
+
+      state.frames.push({
+        index: state.frames.length + 1,
+        at: new Date().toISOString(),
+        url: instance.currentUrl,
+        reason: frame.reason,
+        ...(frame.action ? { action: frame.action } : {}),
+        bytes: image.toJPEG(FRAME_CAPTURE_JPEG_QUALITY),
+      })
+    } catch {
+      // A capture that fails is skipped: a window being resized or hidden
+      // mid-shot is ordinary, and losing one frame must not end a recording.
+    } finally {
+      state.capturing = false
+    }
+  }
+
+  /**
+   * Ask the user for a recording. Null when they dismiss the dialog.
+   *
+   * The dialog and the decoder live together in `video-frames.ts`: one answers
+   * "which file", the other reads it, and neither has anything to do with a
+   * browser window — this method exists so the interface stays one surface.
+   */
+  async pickVideoFile(): Promise<string | null> {
+    return pickVideoFileWithDialog()
+  }
+
+  /** Sample frames out of a recording someone recorded elsewhere (plan §20.5). */
+  async extractVideoFrames(
+    filePath: string,
+    options: { mode: 'timeline' | 'changes'; everyMs: number; maxFrames: number },
+  ) {
+    if (!existsSync(filePath)) {
+      throw new Error(`No recording at ${filePath}.`)
+    }
+    return sampleVideoFrames(filePath, options)
+  }
+
   /**
    * Register `source` to run in every new document (survives reload/navigation).
    * Re-registering the same key replaces the previous script.
@@ -1984,9 +2232,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       instance.boundSessionId = null
       instance.ownerType = 'manual'
       // Preserve ownerSessionId as last-known owner for lifecycle targeting.
-      // (No toolbar push: the owner chain is unchanged, so what the toolbar
-      // offers is unchanged too.)
       this.emitStateChange(instance)
+      // The owner chain is unchanged, but one thing the toolbar offers is not:
+      // whether a picked element can be handed to a conversation (plan §12.7), so
+      // this push stopped being optional.
+      this.pushToolbarState(instance)
     }
   }
 
@@ -1999,6 +2249,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         // Keep ownerSessionId for post-turn lifecycle commands like `close` and `hide`.
         instance.ownerSessionId = instance.ownerSessionId ?? sessionId
         this.emitStateChange(instance)
+        // Whether a picked element can still be handed to a conversation changed,
+        // so the toolbar has to hear about it (plan §12.7).
+        this.pushToolbarState(instance)
         mainLog.info(`[browser-pane] Unbound instance ${instance.id} from session ${sessionId} (owner retained: ${instance.ownerSessionId ?? 'none'})`)
       }
     }
@@ -2609,6 +2862,16 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       /** `null` = no prototype here, which is also when the two prototype
        *  actions below are withheld. Never `undefined` after the first push. */
       prototypeSlug: binding?.slug ?? null,
+      /**
+       * Whether this window belongs to a conversation.
+       *
+       * Two different questions are answered by these two fields, and the toolbar
+       * needs both: a prototype decides what a selection can be turned *into*
+       * (a patch), a conversation decides whether it can be handed to the agent
+       * (plan §12.7). A plain web page with a session bound is exactly the case
+       * in between, and it is the one this exists for.
+       */
+      hasSession: instance.boundSessionId !== null,
     }
     instance.toolbarView.webContents.send(TOOLBAR_CHANNELS.STATE_UPDATE, state)
   }
@@ -2713,15 +2976,30 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // forward it there.
     // -------------------------------------------------------------------------
 
-    ipcMain.handle(TOOLBAR_CHANNELS.PICK_ELEMENT, async (_event, instanceId: string) => {
+    ipcMain.handle(TOOLBAR_CHANNELS.PICK_ELEMENT, async (_event, instanceId: string, addLabel?: string) => {
       const inst = findInstance(instanceId)
       if (!inst) return
 
       try {
         // A long timeout on purpose: the user is expected to take their time
         // choosing, and the toolbar exposes its own cancel button.
-        const element = await inst.cdp.pickElement({ timeoutMs: PICK_FROM_TOOLBAR_TIMEOUT_MS })
-        this.emitToolbarAction({ kind: 'picked', instanceId: inst.id, element })
+        //
+        // The bar under the highlight is offered only when this window has a
+        // conversation to add to. The picker cannot know that — it only sees a
+        // page — and a button that could not do anything is worse than none.
+        const element = await inst.cdp.pickElement({
+          timeoutMs: PICK_FROM_TOOLBAR_TIMEOUT_MS,
+          addToConversation: inst.boundSessionId !== null,
+          ...(addLabel ? { addLabel } : {}),
+        })
+
+        // Which of the two the person did travels on the element (`intent`), so
+        // both outcomes still come back through one result channel.
+        if (element?.intent === 'add-to-conversation') {
+          this.emitToolbarAction({ kind: 'add-to-conversation', instanceId: inst.id, element })
+        } else {
+          this.emitToolbarAction({ kind: 'picked', instanceId: inst.id, element })
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         mainLog.warn(`[browser-pane] toolbar pick failed instanceId=${inst.id}: ${message}`)
@@ -3080,6 +3358,30 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         const [instanceId, keyPrefix] = args as [string, string]
         this.requireOwnedInstance(instanceId, ownerKey)
         return this.clearInitScripts(instanceId, keyPrefix)
+      }
+      case 'startFrameCapture': {
+        const [instanceId, options] = args as [
+          string,
+          { intervalMs?: number; threshold?: number; maxFrames?: number } | undefined,
+        ]
+        this.requireOwnedInstance(instanceId, ownerKey)
+        return this.startFrameCapture(instanceId, options)
+      }
+      case 'stopFrameCapture': {
+        const [instanceId] = args as [string]
+        this.requireOwnedInstance(instanceId, ownerKey)
+        return this.stopFrameCapture(instanceId)
+      }
+      case 'pickVideoFile':
+        // No instance: choosing a recording is not an act on a window, and a
+        // remote session that may not open one still may import a video.
+        return this.pickVideoFile()
+      case 'extractVideoFrames': {
+        const [filePath, options] = args as [
+          string,
+          { mode: 'timeline' | 'changes'; everyMs: number; maxFrames: number },
+        ]
+        return this.extractVideoFrames(filePath, options)
       }
       case 'setFetchMock': {
         const [instanceId, routes] = args as [string, MockRoute[]]

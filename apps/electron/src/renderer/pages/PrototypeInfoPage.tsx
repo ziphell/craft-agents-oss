@@ -20,18 +20,26 @@
 
 import { useTranslation } from 'react-i18next'
 import { useEffect, useState, useCallback, useMemo } from 'react'
-import { useAtomValue } from 'jotai'
-import { Download, ExternalLink, FileCode, Flag, FlagOff, FlaskConical, FolderOpen, Globe, Link2, MessageSquare, Pencil, Trash2, TriangleAlert, Unlink } from 'lucide-react'
+import { useAtomValue, useSetAtom } from 'jotai'
+import { Check, Download, ExternalLink, Flag, FlagOff, FlaskConical, FolderKanban, FolderOpen, Globe, Layers, Link2, MessageSquare, Pencil, Trash2, TriangleAlert, Unlink } from 'lucide-react'
 import { useActiveWorkspace, useAppShellContext } from '@/context/AppShellContext'
 import { navigate, routes } from '@/lib/navigate'
 import { sessionMetaMapAtom } from '@/atoms/sessions'
+import { projectsAtom } from '@/atoms/projects'
+import { prototypeAutoReplayAtom, setPrototypeAutoReplayAtom } from '@/atoms/prototypes'
 import { Info_Page, Info_Section, Info_Table, Info_Badge, Info_Alert } from '@/components/info'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { DropdownMenu, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import {
+  StyledDropdownMenuContent,
+  StyledDropdownMenuItem,
+  StyledDropdownMenuSeparator,
+} from '@/components/ui/styled-dropdown'
 import { RenameDialog } from '@/components/ui/rename-dialog'
 import { EditTargetPageDialog } from '@/components/prototypes/EditTargetPageDialog'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@craft-agent/ui'
-import type { CreatedPrototype, PrototypeEntry, PrototypeExportResult, PrototypePage, PrototypeStatus } from '@craft-agent/shared/prototypes'
+import type { CreatedPrototype, PrototypeCommitResult, PrototypeEntry, PrototypeExportResult, PrototypePage, PrototypeStatus } from '@craft-agent/shared/prototypes'
 
 interface PrototypeInfoPageProps {
   prototypeSlug: string
@@ -47,12 +55,6 @@ interface PrototypeInfoPageProps {
  * reserved one.
  */
 const REFERENCE_PAGE_NAME = 'entry'
-
-/** File name without a path module — handles both `/` and `\` separators. */
-function basename(path: string): string {
-  const index = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
-  return index === -1 ? path : path.slice(index + 1)
-}
 
 export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPageProps) {
   const { t } = useTranslation()
@@ -80,6 +82,18 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
   const [renamePageValue, setRenamePageValue] = useState('')
   /** Failure from Open or Export — both surface the throwing RPC's message verbatim. */
   const [actionError, setActionError] = useState<string | null>(null)
+  /** A recording is being sampled — the import shells out to a decoder, so it takes a moment. */
+  const [importingVideo, setImportingVideo] = useState(false)
+  /** The project edge is being written — one write, so the two entries cannot race. */
+  const [linkingProject, setLinkingProject] = useState(false)
+  /** The delta layer is being folded — a write per scope, so it takes a moment. */
+  const [committing, setCommitting] = useState(false)
+  /** What the last commit did (or why it did nothing), in one line. */
+  const [commitOutcome, setCommitOutcome] = useState<string | null>(null)
+  /** Whether an edit under `patches/` is replayed into the open windows (§21.4). */
+  const autoReplay = useAtomValue(prototypeAutoReplayAtom)
+  const setAutoReplay = useSetAtom(setPrototypeAutoReplayAtom)
+  const projects = useAtomValue(projectsAtom)
 
   // Load the status report for this prototype. `listPrototypes` is the only
   // read path for a single prototype's status, so pick our slug out of it.
@@ -224,6 +238,48 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
     }
   }, [workspaceId, prototypeSlug, loadStatus])
 
+  /**
+   * Fold the delta layer into what owns it (plan §21.3).
+   *
+   * Asked for first, because it is the one action on this page with no undo: the
+   * patches it folds are deleted as files, and what they changed lives on in a
+   * page of ours or in a consolidated patch. The outcome is reported in one line
+   * — including anything left alone, which is the only part a person has to act
+   * on.
+   */
+  const handleCommit = useCallback(async () => {
+    if (!workspaceId || !status) return
+    if (!window.confirm(t('prototypeInfo.commitConfirm', { slug: status.slug }))) return
+
+    setCommitting(true)
+    setActionError(null)
+    setCommitOutcome(null)
+    try {
+      const result = (await window.electronAPI.commitPrototype(workspaceId, status.slug)) as PrototypeCommitResult
+      const folded = result.scopes.reduce((total, scope) => total + scope.folded.length + scope.promoted.length, 0)
+      const refused = result.scopes.reduce((total, scope) => total + scope.refused.length, 0)
+      const unverified = result.scopes.reduce((total, scope) => total + scope.unverified.length, 0)
+
+      const parts = [
+        result.nothingToCommit
+          ? t('prototypeInfo.commitNothing')
+          : t('prototypeInfo.commitDone', { count: folded }),
+      ]
+      if (refused + unverified > 0) {
+        parts.push(t('prototypeInfo.commitIssues', { count: refused + unverified }))
+      }
+      setCommitOutcome(parts.join(' · '))
+      // The patches/ directory just changed — reflect it without waiting for the
+      // watcher, so the list below matches what was just reported.
+      await loadStatus(true)
+    } catch (err) {
+      console.error('[PrototypeInfoPage] Failed to commit prototype:', err)
+      setActionError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setCommitting(false)
+    }
+  }, [workspaceId, status, loadStatus, t])
+
   // Open the conversation for this prototype, reusing the existing one when there
   // is one. A prototype is long-lived and gets revisited, so always creating a new
   // session would both pile up sessions and lose the earlier discussion.
@@ -282,6 +338,34 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
    * through `prototype-entry`: the panel is a caller, not a second rule about
    * what a flow is.
    */
+  /**
+   * Import a recording the user made elsewhere and sample frames out of it.
+   *
+   * The file is chosen in the main process, so no path ever passes through this
+   * page; a dismissed dialog comes back as null and is not an error. Frames land
+   * in `research/frames/`, the same place a live capture writes them, which is
+   * what lets a finding cite either without caring which it was (plan §20.5).
+   */
+  const handleImportVideo = useCallback(async () => {
+    if (!workspaceId) return
+    setImportingVideo(true)
+    setActionError(null)
+    try {
+      const result = (await window.electronAPI.importPrototypeVideo(workspaceId, prototypeSlug, {
+        mode: 'timeline',
+        everyMs: 2000,
+        maxFrames: 40,
+      })) as { frames: number } | null
+      // Null means the dialog was dismissed — nothing to re-read.
+      if (result) await loadStatus(true)
+    } catch (err) {
+      console.error('[PrototypeInfoPage] Failed to import the recording:', err)
+      setActionError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setImportingVideo(false)
+    }
+  }, [workspaceId, prototypeSlug, loadStatus])
+
   const handleSetEntryPage = useCallback(async (pageName: string | null) => {
     if (!workspaceId) return
     setActionError(null)
@@ -430,6 +514,28 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
       console.error('[PrototypeInfoPage] Failed to reveal prototype folder:', err)
     }
   }, [status])
+
+  /**
+   * Which project this prototype was made for (plan §15.1), or `null` to clear it.
+   *
+   * The edge is stored *here*, on the prototype, which is why this page can set it
+   * and the project's page reads it — one record, so the two can never disagree.
+   * It also means a project with exactly one prototype hands it to every
+   * conversation inside, and that is what the hint next to the row is about.
+   */
+  const handleSetPrototypeProject = useCallback(async (targetProjectSlug: string | null) => {
+    if (!workspaceId) return
+    setLinkingProject(true)
+    try {
+      await window.electronAPI.setPrototypeProject(workspaceId, prototypeSlug, targetProjectSlug)
+    } catch (err) {
+      console.error('[PrototypeInfoPage] Failed to set the prototype\'s project:', err)
+      setActionError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLinkingProject(false)
+    }
+  }, [workspaceId, prototypeSlug])
+
   const laneEntries = status ? Object.entries(status.patches.byLane) : []
 
   /** The page the address root opens, as the table resolves it. */
@@ -566,6 +672,143 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
             <Info_Alert variant="error" icon={<TriangleAlert className="h-4 w-4" />}>
               <Info_Alert.Title>{t('prototypeInfo.actionFailed')}</Info_Alert.Title>
               <Info_Alert.Description>{actionError}</Info_Alert.Description>
+            </Info_Alert>
+          )}
+
+          {/* Requirements — what the work is *for*, before how it is done. The
+              second line is derived from `@requirement R-00x` markers in patch
+              headers and page documents, so a row without one is a requirement
+              this prototype does not implement (plan §20.1). Findings are shown
+              as evidence, never as implementation: "argued for, never built" must
+              not read as done. */}
+          <Info_Section
+            title={t('prototypeInfo.requirements')}
+            description={t('prototypeInfo.requirementsHint')}
+          >
+            {status.requirements.length === 0 ? (
+              <div className="px-4 py-6 text-sm text-muted-foreground">
+                {t('prototypeInfo.requirementsEmpty')}
+              </div>
+            ) : (
+              <ul className="divide-y divide-border/30">
+                {status.requirements.map((requirement) => {
+                  const covered = [
+                    ...requirement.pages,
+                    ...requirement.patches,
+                    ...requirement.findings.map((id) => `${id} (${t('prototypeInfo.findingsShort')})`),
+                  ]
+                  return (
+                    <li key={requirement.id} className="flex items-start gap-3 px-4 py-2">
+                      <span className="shrink-0 pt-0.5 font-mono text-xs text-foreground/70">
+                        {requirement.id}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm">
+                          {requirement.title || t('prototypeInfo.requirementUntitled')}
+                        </div>
+                        <div className="mt-0.5 font-mono text-xs break-words text-foreground/60">
+                          {covered.length > 0
+                            ? covered.join(', ')
+                            : t('prototypeInfo.requirementUncovered')}
+                        </div>
+                      </div>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+          </Info_Section>
+
+          {/* Research — what was learned about other products. Source and
+              requirements are the two edges that make a finding more than a
+              bookmark, and neither ships with the delivery (plan §20.2). */}
+          <Info_Section title={t('prototypeInfo.research')} description={t('prototypeInfo.researchHint')}>
+            {status.findings.length === 0 ? (
+              <div className="px-4 py-6 text-sm text-muted-foreground">
+                {t('prototypeInfo.researchEmpty')}
+              </div>
+            ) : (
+              <ul className="divide-y divide-border/30">
+                {status.findings.map((finding) => (
+                  <li key={finding.id} className="flex items-start gap-3 px-4 py-2">
+                    <span className="shrink-0 pt-0.5 font-mono text-xs text-foreground/70">
+                      {finding.id}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm">{finding.claim ?? t('prototypeInfo.findingNoClaim')}</div>
+                      <div className="mt-0.5 font-mono text-xs break-words text-foreground/60">
+                        {finding.source ?? finding.file}
+                        {finding.requirements.length > 0
+                          ? ` · ${t('prototypeInfo.findingArguesFor')} ${finding.requirements.join(', ')}`
+                          : ''}
+                      </div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Info_Section>
+
+          {/* Frame captures — the pictures a finding cites (plan §20.3). Listed
+              rather than previewed: the frames are for the model, and the panel's
+              job is to say that a capture exists, how big it is, and whether it
+              is a sample of the session or all of it. */}
+          <Info_Section title={t('prototypeInfo.frames')} description={t('prototypeInfo.framesHint')}>
+            {/* A recording made elsewhere is the other way frames arrive, and the
+                same evidence once they are here. The picker is the main process's,
+                so this button only ever asks for the work. */}
+            <div className="flex flex-wrap items-center gap-2 border-b border-border/30 px-4 py-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => void handleImportVideo()}
+                disabled={importingVideo}
+              >
+                <FolderOpen className="h-3.5 w-3.5" />
+                {importingVideo ? t('prototypeInfo.importingVideo') : t('prototypeInfo.importVideo')}
+              </Button>
+              <span className="text-xs text-muted-foreground">{t('prototypeInfo.importVideoHint')}</span>
+            </div>
+            {status.frameCaptures.length === 0 ? (
+              <div className="px-4 py-6 text-sm text-muted-foreground">
+                {t('prototypeInfo.framesEmpty')}
+              </div>
+            ) : (
+              <ul className="divide-y divide-border/30">
+                {status.frameCaptures.map((capture) => (
+                  <li key={capture.session} className="flex items-center gap-3 px-4 py-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-sm">{capture.session}</span>
+                        {capture.truncated && (
+                          <Info_Badge color="muted" className="!py-0.5 !pl-1.5 !pr-2 !text-[10px]">
+                            {t('prototypeInfo.frameTruncated')}
+                          </Info_Badge>
+                        )}
+                      </div>
+                      <div className="truncate font-mono text-xs text-foreground/60">{capture.file}</div>
+                    </div>
+                    <span className="shrink-0 text-xs text-foreground/60">
+                      {t('prototypeInfo.frameCount', { count: capture.frames })}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Info_Section>
+
+          {/* The silent failures of the layer above — a requirement nothing
+              implements, a marker naming an id the PRD does not define, a finding
+              with no claim or with evidence that is not there (plan §20.1/§20.2).
+              Same shape as the page issues, because they are the same kind of fact. */}
+          {status.briefIssues.length > 0 && (
+            <Info_Alert variant="warning" icon={<TriangleAlert className="h-4 w-4" />}>
+              <Info_Alert.Title>{t('prototypeInfo.briefIssues')}</Info_Alert.Title>
+              <Info_Alert.Description>
+                {status.briefIssues.map((issue) => (
+                  <div key={issue} className="font-mono text-xs break-words">{issue}</div>
+                ))}
+              </Info_Alert.Description>
             </Info_Alert>
           )}
 
@@ -823,7 +1066,10 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
             </div>
           </Info_Section>
 
-          {/* Patches — total + per-lane distribution */}
+          {/* Patches — the changes, what each is aimed at, and the two controls a
+              reader of them needs: whether an edit is replayed into the open
+              windows (§21.4), and the action that folds the layer into what owns
+              it (§21.3). */}
           <Info_Section title={t('prototypeInfo.patches')}>
             <Info_Table>
               <Info_Table.Row label={t('prototypeInfo.patchTotal')} value={String(status.patches.total)} />
@@ -842,21 +1088,102 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
                 />
               ))}
             </Info_Table>
+
+            {/* One row per patch, with the markers its header declares: the page it
+                belongs to and the selectors it is aimed at. A row with no selector
+                is the fact worth seeing — nothing checks what that patch matched. */}
+            {status.patches.entries.length > 0 && (
+              <ul className="divide-y divide-border/30 border-t border-border/40">
+                {status.patches.entries.map((entry) => (
+                  <li key={entry.file} className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 px-4 py-2">
+                    <span className="font-mono text-xs break-all">{entry.file}</span>
+                    <span className="flex flex-wrap items-center justify-end gap-2">
+                      <span className="text-xs text-muted-foreground">
+                        {entry.page ?? t('prototypeInfo.patchShared')}
+                      </span>
+                      {entry.targets.length === 0 ? (
+                        <span className="text-xs text-muted-foreground">—</span>
+                      ) : (
+                        entry.targets.map((target) => (
+                          <code key={target} className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
+                            {target}
+                          </code>
+                        ))
+                      )}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/40 px-4 py-3">
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={autoReplay}
+                  onChange={(event) => setAutoReplay(event.target.checked)}
+                />
+                {t('prototypeInfo.autoReplay')}
+              </label>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => void handleCommit()}
+                disabled={committing || status.patches.total === 0}
+                title={t('prototypeInfo.commitHint')}
+              >
+                <Layers className="h-3.5 w-3.5" />
+                {t('prototypeInfo.commit')}
+              </Button>
+            </div>
+            <p className="px-4 pb-3 text-xs text-muted-foreground">{t('prototypeInfo.autoReplayHint')}</p>
+            {commitOutcome && <p className="px-4 pb-3 text-xs text-muted-foreground">{commitOutcome}</p>}
           </Info_Section>
 
-          {/* Artifacts — what the prototype is made of. Listed so the shape is
-              visible; changes are asked for in the conversation, not typed here.
-              A page of ours is itself an artifact, and it is listed above, where
-              its order and entry are. */}
-          <Info_Section title={t('prototypeInfo.files')}>
-            {status.patches.files.length === 0 ? (
-              <div className="px-4 py-6 text-sm text-muted-foreground">
-                {t('prototypeInfo.filesEmpty')}
-              </div>
+          {/* Anchors — what each declared @target matched, and when (plan §21.2).
+              This is what makes a selector's health a fact rather than a guess: an
+              anchor whose last match is in the past is a page that moved, and the
+              patch itself looks exactly like one that works. */}
+          <Info_Section title={t('prototypeInfo.anchors')}>
+            {status.anchors.files.length === 0 ? (
+              <div className="px-4 py-6 text-sm text-muted-foreground">{t('prototypeInfo.anchorsEmpty')}</div>
             ) : (
               <ul className="divide-y divide-border/30">
-                {status.patches.files.map((file) => (
-                  <ArtifactRow key={file} path={file} />
+                {status.anchors.files.map((file) => (
+                  <li key={file.page ?? 'shared'} className="px-4 py-3">
+                    <div className="flex flex-wrap items-baseline gap-2 text-sm font-medium">
+                      {file.page ?? t('prototypeInfo.patchShared')}
+                      {file.url && (
+                        <span className="font-mono text-xs font-normal text-muted-foreground">{file.url}</span>
+                      )}
+                    </div>
+                    <ul className="mt-1 space-y-0.5">
+                      {file.anchors.map((anchor) => (
+                        <li
+                          key={anchor.target}
+                          className="flex flex-wrap items-baseline justify-between gap-x-4 text-xs"
+                        >
+                          <code className="font-mono break-all">{anchor.target}</code>
+                          <span className={anchor.matched > 0 ? 'text-muted-foreground' : 'text-destructive'}>
+                            {anchor.matched > 0
+                              ? t('prototypeInfo.anchorMatched', { count: anchor.matched })
+                              : t('prototypeInfo.anchorMissing', {
+                                  date: anchor.lastMatchedAt.slice(0, 10) || '—',
+                                })}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {status.anchors.issues.length > 0 && (
+              <ul className="space-y-0.5 border-t border-border/40 px-4 py-3">
+                {status.anchors.issues.map((issue) => (
+                  <li key={issue} className="text-xs text-destructive">
+                    {issue}
+                  </li>
                 ))}
               </ul>
             )}
@@ -955,6 +1282,66 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
           <Info_Section title={t('prototypeInfo.metadata')}>
             <Info_Table>
               <Info_Table.Row label={t('common.slug')} value={status.slug} />
+              {/* Which project this was made for. The only place the edge is
+                  written from the prototype's side, and the reason a project's
+                  conversations can reach this prototype without being bound. */}
+              <Info_Table.Row label={t('prototypeInfo.project')}>
+                <div className="flex items-center gap-2 min-w-0">
+                  {status.projectSlug ? (
+                    <button
+                      type="button"
+                      className="flex-1 min-w-0 truncate text-left text-xs hover:underline"
+                      onClick={() => navigate(routes.view.projects(status.projectSlug!))}
+                    >
+                      {projects.find((item) => item.config.slug === status.projectSlug)?.config.name ??
+                        status.projectSlug}
+                    </button>
+                  ) : (
+                    <span className="flex-1 text-xs text-muted-foreground">
+                      {t('prototypeInfo.projectNone')}
+                    </span>
+                  )}
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        disabled={linkingProject}
+                        className="shrink-0 inline-flex h-6 w-6 items-center justify-center rounded text-foreground/50 hover:text-foreground hover:bg-foreground/5 transition-colors disabled:opacity-50"
+                        aria-label={t('prototypeInfo.projectPick')}
+                      >
+                        <FolderKanban className="h-3.5 w-3.5" />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <StyledDropdownMenuContent align="end">
+                      {projects.length === 0 ? (
+                        <div className="px-2 py-1.5 text-xs text-muted-foreground">
+                          {t('prototypeInfo.projectEmpty')}
+                        </div>
+                      ) : (
+                        projects.map((item) => (
+                          <StyledDropdownMenuItem
+                            key={item.config.slug}
+                            onClick={() => void handleSetPrototypeProject(item.config.slug)}
+                          >
+                            {item.config.slug === status.projectSlug
+                              ? <Check className="h-3.5 w-3.5" />
+                              : <FolderKanban className="h-3.5 w-3.5" />}
+                            <span className="flex-1 text-xs">{item.config.name}</span>
+                          </StyledDropdownMenuItem>
+                        ))
+                      )}
+                      {status.projectSlug && (
+                        <>
+                          <StyledDropdownMenuSeparator />
+                          <StyledDropdownMenuItem onClick={() => void handleSetPrototypeProject(null)}>
+                            <span className="flex-1">{t('prototypeInfo.projectClear')}</span>
+                          </StyledDropdownMenuItem>
+                        </>
+                      )}
+                    </StyledDropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              </Info_Table.Row>
               <Info_Table.Row label={t('common.location')}>
                 <div className="flex items-center gap-2 min-w-0">
                   <span className="flex-1 min-w-0 truncate font-mono text-xs">{status.dir}</span>
@@ -1008,26 +1395,3 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
   )
 }
 
-interface ArtifactRowProps {
-  path: string
-  /** Optional right-hand hint, e.g. which role the file plays. */
-  label?: string
-}
-
-/**
- * One prototype artifact — listed, never editable here.
- *
- * Editing files is not the workbench's job: a change is a sentence in the
- * conversation ("make this button say X"), which the agent turns into the patch
- * it wants. An in-place editor here made every glance at the file list a chance
- * to hand-write one more patch by hand.
- */
-function ArtifactRow({ path, label }: ArtifactRowProps) {
-  return (
-    <li className="flex items-center gap-3 px-4 py-2">
-      <FileCode className="h-3.5 w-3.5 shrink-0 text-foreground/40" />
-      <span className="flex-1 min-w-0 truncate font-mono text-xs">{basename(path)}</span>
-      {label && <span className="shrink-0 text-xs text-muted-foreground">{label}</span>}
-    </li>
-  )
-}

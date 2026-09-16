@@ -52,6 +52,14 @@ interface ToolbarState {
    * flight.
    */
   prototypeSlug?: string | null
+  /**
+   * Whether this window belongs to a conversation (plan §12.7).
+   *
+   * `undefined` = no state has arrived yet, treated the same way the slug is:
+   * unknown rather than "none", so the pick button does not flash disabled while
+   * the first push is in flight.
+   */
+  hasSession?: boolean
 }
 
 declare global {
@@ -66,7 +74,8 @@ declare global {
       setMenuGeometry: (open: boolean, height?: number) => Promise<void>
       hideWindow: () => Promise<void>
       closeWindowEntirely: () => Promise<void>
-      pickElement: () => Promise<void>
+      /** The label is the caller's: the bar is drawn in the page, which has no i18n. */
+      pickElement: (addLabel?: string) => Promise<void>
       cancelPick: () => Promise<void>
       applyPrototype: () => Promise<void>
       onStateUpdate: (callback: (state: ToolbarState) => void) => () => void
@@ -108,6 +117,10 @@ function BrowserToolbarApp() {
    * away afterwards.
    */
   const hasPrototype = state.prototypeSlug === undefined || state.prototypeSlug !== null
+  // Picking an element needs a conversation, not a prototype: a plain web page
+  // bound to a session is exactly the case this exists for, and the prototype
+  // actions below stay gated on the prototype (plan §12.7).
+  const hasSession = state.hasSession === undefined || state.hasSession === true
 
   const api = window.browserToolbar
 
@@ -210,7 +223,7 @@ function BrowserToolbarApp() {
       // Resolves on pick, Escape, cancel, or timeout — every one of which must
       // leave edit mode, so the reset lives in `finally` rather than in the
       // success path only.
-      await api.pickElement()
+      await api.pickElement(t('browser.addToConversation'))
     } finally {
       setPicking(false)
     }
@@ -269,7 +282,12 @@ function BrowserToolbarApp() {
               style={!picking && themeColor ? { color: 'var(--tb-fg)' } : undefined}
               // Still clickable while picking: cancelling must not be taken away
               // by a binding change that happens mid-pick.
-              disabled={!hasPrototype && !picking}
+              //
+              // Gated on a *conversation*, not a prototype: what a picked element
+              // is for is decided by the conversation it is handed to, and a plain
+              // web page with a session bound is exactly the case this exists for.
+              // The prototype actions below stay gated on the prototype (§12.7).
+              disabled={!hasSession && !picking}
               onClick={() => { void handleTogglePick() }}
             />
 

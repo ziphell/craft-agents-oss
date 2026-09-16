@@ -63,6 +63,43 @@ function createMockFns(): BrowserPaneFns {
     }),
     applyPrototype: async (slug: string) => ({ slug, applied: 2, files: ['A-001-btn.css', 'A-002-guard.js'], skipped: [] }),
     clearPrototype: async (slug: string) => ({ slug, removed: [`prototype:${slug}:A-001-btn.css`] }),
+    commitPrototype: async (slug: string) => ({ slug, scopes: [], nothingToCommit: true }),
+    setPrototypeProject: async ({ slug, projectSlug }: { slug: string; projectSlug: string | null }) => ({
+      slug,
+      projectSlug,
+    }),
+    verifyPrototype: async (slug: string) => ({
+      slug,
+      page: 'http://x.localhost/cart',
+      passed: 1,
+      failed: 1,
+      skipped: 0,
+      reportPath: `/tmp/prototypes/${slug}/dist/acceptance.md`,
+      results: [
+        { requirementId: 'R-001', target: 'selector [data-total]', status: 'pass', detail: 'found on the page' },
+        { requirementId: 'R-002', target: 'endpoint GET /api/cart', status: 'fail', detail: 'not declared' },
+      ],
+    }),
+    startPrototypeFrames: async (options: { intervalMs?: number; threshold?: number; maxFrames?: number }) => ({
+      startedAt: '2026-09-15T00:00:00.000Z',
+      intervalMs: options.intervalMs ?? 400,
+      threshold: options.threshold ?? 0.005,
+      maxFrames: options.maxFrames ?? 60,
+    }),
+    stopPrototypeFrames: async (slug: string) => ({
+      dir: `/tmp/prototypes/${slug}/research/frames/20260915-000000`,
+      frames: 2,
+      files: ['frame-0001.jpg', 'frame-0002.jpg', 'frames.json', 'index.md'],
+      truncated: false,
+    }),
+    importPrototypeVideo: async () => ({
+      session: 'import-demo-20260915-000000',
+      video: 'videos/demo.mp4',
+      frames: 3,
+      files: ['frame-0001.jpg', 'frame-0002.jpg', 'frame-0003.jpg', 'frames.json', 'index.md'],
+      truncated: false,
+      durationMs: 6000,
+    }),
     exportPrototype: async (slug: string) => exported(slug),
     composeContract: async ({ slug, service }: { slug: string; service?: string }) => ({
       service: service ?? 'checkout-api',
@@ -91,13 +128,19 @@ function createMockFns(): BrowserPaneFns {
       slug,
       dir: `/tmp/prototypes/${slug}`,
       references: [],
+      projectSlug: null,
       pages: [
         { name: 'entry', kind: 'overlay' as const, file: null, url: 'https://app.example.com/checkout', entry: true },
       ],
       entryPage: 'entry',
       pageIssues: [],
+      requirements: [],
+      findings: [],
+      briefIssues: [],
+      frameCaptures: [],
       pageAvailable: true,
-      patches: { total: 2, byLane: { A: 2 }, scoped: 1, files: [] },
+      patches: { total: 2, byLane: { A: 2 }, scoped: 1, files: [], entries: [] },
+      anchors: { files: [], issues: [] },
       services: [
         { slug: 'checkout-api', fragments: 1, fixtures: 1, endpoints: 2, mockedEndpoints: 1, missingFixtures: [] },
       ],
@@ -163,11 +206,17 @@ function prototypeStatus(slug: string, overrides: Partial<PrototypeStatus> = {})
     slug,
     dir: `/tmp/prototypes/${slug}`,
     references: [],
+    projectSlug: null,
     pages: [],
     entryPage: null,
     pageIssues: [],
+    requirements: [],
+    findings: [],
+    briefIssues: [],
+    frameCaptures: [],
     pageAvailable: true,
-    patches: { total: 1, byLane: { A: 1 }, scoped: 0, files: [] },
+    patches: { total: 1, byLane: { A: 1 }, scoped: 0, files: [], entries: [] },
+    anchors: { files: [], issues: [] },
     services: [],
     distFiles: [],
     ownership: { inspected: 1, violations: [] },
@@ -1133,6 +1182,87 @@ describe('createBrowserTools', () => {
       expect(result.content[0].text).toContain('needs a prototype')
     })
 
+    /**
+     * What the patches made of the page (§21.1): the two failures that used to be
+     * invisible — a selector that matched nothing, and one that matched before —
+     * plus the patches nobody could check at all.
+     */
+    it('names what the patches matched, and what they did not', async () => {
+      mockFns.applyPrototype = async (slug) => ({
+        slug,
+        applied: 2,
+        files: ['A-001-btn.css', 'A-002-guard.js'],
+        skipped: [],
+        targets: [{ file: 'A-001-btn.css', target: '.btn', matched: 0, recorded: true }],
+        unmatched: ['.typo'],
+        drifted: [{ target: '.btn', lastMatchedAt: '2026-09-15T10:00:00.000Z', suggestions: ['#pay'] }],
+        untargeted: ['A-002-guard.js'],
+      })
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-apply checkout-flow' })
+      const text = result.content[0].text
+
+      expect(text).toContain('matched nothing (and have never matched): .typo')
+      expect(text).toContain('the page moved rather than the patch being wrong')
+      expect(text).toContain('#pay')
+      expect(text).toContain('No "@target" declared, so nothing could check these: A-002-guard.js')
+    })
+
+    it('routes prototype-commit and reports where the changes landed', async () => {
+      mockFns.commitPrototype = async (slug) => ({
+        slug,
+        scopes: [
+          {
+            page: 'cart',
+            kind: 'scratch',
+            wrote: ['assets/cart/committed.css'],
+            folded: ['cart/A-001-btn.css'],
+            promoted: [],
+            deleted: ['cart/A-001-btn.css'],
+            unverified: [],
+            refused: [],
+          },
+          {
+            page: 'pay',
+            kind: 'overlay',
+            wrote: ['patches/pay/Z-001-upper.css', 'patches/pay/Z-002-upper.js'],
+            folded: ['pay/A-001-btn.css'],
+            promoted: ['pay/A-002-guard.js'],
+            deleted: ['pay/A-001-btn.css', 'pay/A-002-guard.js'],
+            unverified: ['pay/A-001-btn.css'],
+            refused: [],
+          },
+        ],
+        nothingToCommit: false,
+      })
+
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-commit checkout-flow' })
+      const text = result.content[0].text
+
+      expect(text).toContain('Prototype "checkout-flow": committed.')
+      expect(text).toContain('page "cart" (scratch):')
+      expect(text).toContain('wrote assets/cart/committed.css')
+      expect(text).toContain('wrote patches/pay/Z-001-upper.css')
+      expect(text).toContain('promoted patches/pay/A-002-guard.js (now a script the page loads)')
+      expect(text).toContain('deleted patches/cart/A-001-btn.css')
+      // Both the patch nobody could check and the page that was skipped are named.
+      expect(text).toContain('not checked: patches/pay/A-001-btn.css')
+    })
+
+    it('says a second commit has nothing to fold, rather than reporting zeros', async () => {
+      mockFns.commitPrototype = async (slug) => ({ slug, scopes: [], nothingToCommit: true })
+
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-commit checkout-flow' })
+
+      expect(result.content[0].text).toContain('nothing to fold')
+    })
+
+    it('refuses prototype-commit --page without a page name', async () => {
+      // Bound, so the missing page name is what is wrong — not the missing slug.
+      mockFns.getBoundPrototypeSlug = () => 'checkout-flow'
+      const result = await executeTool(tools, 'browser_tool', { command: 'prototype-commit --page' })
+      expect(result.content[0].text).toContain('prototype-commit --page needs a page name')
+    })
+
     it('routes prototype-clear and lists the removed keys', async () => {
       const result = await executeTool(tools, 'browser_tool', { command: 'prototype-clear checkout-flow' })
       expect(result.content[0].text).toContain('removed 1 patch')
@@ -1426,8 +1556,14 @@ describe('createBrowserTools', () => {
         ],
         entryPage: 'entry',
         pageAvailable: true,
+        projectSlug: null,
         pageIssues: [],
-        patches: { total: 2, byLane: { A: 2 }, scoped: 1, files: [] },
+        requirements: [],
+        findings: [],
+        briefIssues: [],
+        frameCaptures: [],
+        patches: { total: 2, byLane: { A: 2 }, scoped: 1, files: [], entries: [] },
+        anchors: { files: [], issues: [] },
         services: [
           { slug: 'checkout-api', fragments: 1, fixtures: 1, endpoints: 2, mockedEndpoints: 1, missingFixtures: ['nope-200'] },
         ],
@@ -1777,7 +1913,8 @@ describe('createBrowserTools', () => {
         prototypeStatus('checkout-flow'),
         prototypeStatus('draft', {
           pageAvailable: false,
-          patches: { total: 0, byLane: {}, scoped: 0, files: [] },
+          patches: { total: 0, byLane: {}, scoped: 0, files: [], entries: [] },
+          anchors: { files: [], issues: [] },
         }),
         prototypeStatus('no-target', { pageAvailable: false }),
       ]

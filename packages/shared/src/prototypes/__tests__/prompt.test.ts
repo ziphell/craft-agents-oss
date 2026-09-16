@@ -21,6 +21,9 @@ function makeContext(overrides: Partial<PrototypePromptContext> = {}): Prototype
     entryPage: null,
     layoutPath: null,
     references: [],
+    projectSlug: null,
+    requirements: [],
+    findings: [],
     patches: [],
     services: [],
     distFiles: [],
@@ -82,8 +85,8 @@ describe('formatPrototypeContextForPrompt', () => {
         pages: [{ name: 'cart', kind: 'scratch', url: 'http://x/cart.html', file: 'cart.html', entry: true }],
         entryPage: 'cart',
         patches: [
-          { file: 'A-001-btn.css', lane: 'A', kind: 'css', page: null },
-          { file: 'cart/B-002-total.js', lane: 'B', kind: 'js', page: 'cart' },
+          { file: 'A-001-btn.css', lane: 'A', kind: 'css', page: null, targets: [] },
+          { file: 'cart/B-002-total.js', lane: 'B', kind: 'js', page: 'cart', targets: [] },
         ],
       }),
     )

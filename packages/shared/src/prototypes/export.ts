@@ -16,6 +16,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { buildMockRoutes, listContractServices, loadContractService } from './contract.ts'
+import { resolveRequirementCoverage, type RequirementCoverageReport } from './coverage.ts'
 import {
   buildExtensionPackage,
   EXTENSION_INDEX_FILENAME,
@@ -31,11 +32,12 @@ import {
   type PrototypePage,
 } from './pages.ts'
 import { readPrototypeLayout } from './create.ts'
-import { buildPatchInitScript } from './patch-script.ts'
+import { buildPatchInitScript, buildPatchMatchRecorderScript } from './patch-script.ts'
+import { extractPatchHeader } from './patch-header.ts'
 import { getPrototypeDistPath, getPrototypeDirPath, scanPrototypePatches } from './storage.ts'
 import { prototypeDocumentUrl, prototypeOriginUrl } from './url.ts'
 import type { MockRoute } from './contract.ts'
-import type { PrototypePatch } from './types.ts'
+import { CONSOLIDATED_LANE, type PrototypePatch } from './types.ts'
 
 const DEV_SPEC_FILENAME = 'dev-spec.md'
 const EXTENSION_DIRNAME = 'extension'
@@ -145,7 +147,6 @@ export function buildSelfContainedHtml(pageHtml: string, patches: PrototypePatch
     : ''
 
   if (!styleBlock && !scriptBlock) return pageHtml
-
   let out = pageHtml
 
   // The marker goes in on its own, before the styles, so that a document with no
@@ -166,6 +167,15 @@ export function buildSelfContainedHtml(pageHtml: string, patches: PrototypePatch
     out = insertBeforeClosingTag(out, scriptBlock, '</body>') ?? `${out}\n${scriptBlock}`
   }
 
+  // The css above was inlined as text, so it has no script to report what its
+  // selectors matched. One recorder for the whole page fills that in, which is
+  // what keeps "matched nothing" from looking like "changed nothing" on the page
+  // the author is looking at (plan §21.1).
+  const recorder = buildPatchMatchRecorderScript(patches)
+  if (recorder) {
+    out = insertBeforeClosingTag(out, recorder, '</body>') ?? `${out}\n${recorder}`
+  }
+
   return out
 }
 
@@ -180,16 +190,30 @@ function fenceFor(source: string): string {
 function patchSection(patch: PrototypePatch, index: number): string[] {
   const fence = fenceFor(patch.source)
   const scope = patch.page ? `page \`${patch.page}\`` : 'every page'
-  return [
+  const header = extractPatchHeader(patch.source)
+  // What the patch declares about itself, so the reader translating this into
+  // source does not have to read the source to find the markers (§21.1). A patch
+  // that declares nothing says so by omitting both — which is itself the fact
+  // that nothing checks what it matched.
+  const declares = [
+    header.targets.length > 0 ? `Aimed at ${header.targets.map((target) => `\`${target}\``).join(', ')}.` : '',
+    header.requirements.length > 0
+      ? `Serves ${header.requirements.map((id) => `\`${id}\``).join(', ')}.`
+      : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
+  const lines = [
     `#### ${index}. \`${patch.file}\``,
     '',
-    `${patch.kind === 'css' ? 'CSS' : 'JavaScript'} patch, lane ${patch.lane ?? '—'}, order ${patch.order}, ${scope}.`,
-    '',
-    fence + (patch.kind === 'css' ? 'css' : 'javascript'),
-    patch.source,
-    fence,
+    `${patch.kind === 'css' ? 'CSS' : 'JavaScript'} patch, lane ${patch.lane ?? '—'}${
+      patch.lane?.toUpperCase() === CONSOLIDATED_LANE ? ' (consolidated)' : ''
+    }, order ${patch.order}, ${scope}.`,
     '',
   ]
+  if (declares.length > 0) lines.push(declares, '')
+  lines.push(fence + (patch.kind === 'css' ? 'css' : 'javascript'), patch.source, fence, '')
+  return lines
 }
 
 /**
@@ -203,9 +227,9 @@ function patchSection(patch: PrototypePatch, index: number): string[] {
  */
 export function buildDevSpec(
   slug: string,
-  input: { pages: PrototypePage[]; patches: PrototypePatch[] },
+  input: { pages: PrototypePage[]; patches: PrototypePatch[]; coverage?: RequirementCoverageReport },
 ): string {
-  const { pages, patches } = input
+  const { pages, patches, coverage } = input
   const shared = patches.filter((patch) => patch.page === null)
   const entry = findEntryPage(pages)
 
@@ -215,6 +239,37 @@ export function buildDevSpec(
     `${pages.length} page${pages.length === 1 ? '' : 's'}, ${patches.length} patch${patches.length === 1 ? '' : 'es'}. ` +
       `Derived from \`prototypes/${slug}/\` — the listings below are exactly what the prototype applies, in replay order.`,
     '',
+    // Requirements before pages, when there are any: this document is translated
+    // onto a real page by someone who was not in the room, and the *why* is what
+    // decides how that translation goes (plan §20.1).
+    ...(coverage && coverage.requirements.length > 0
+      ? [
+          '## Requirements',
+          '',
+          'From `prd.md`. The last column is derived from `@requirement R-00x` markers in patch headers and page',
+          'documents, so a row without one is a requirement that nothing here implements.',
+          '',
+          '| # | Id | Requirement | Referred to by |',
+          '| --- | --- | --- | --- |',
+          ...coverage.requirements.map((requirement, index) => {
+            const covered = [
+              ...requirement.pages,
+              ...requirement.patches,
+              ...requirement.findings.map((id) => `${id} (finding)`),
+            ]
+            return `| ${index + 1} | \`${requirement.id}\` | ${requirement.title || '—'} | ${
+              covered.map((entry) => `\`${entry}\``).join(', ') || '**nothing**'
+            } |`
+          }),
+          '',
+          ...(coverage.unclaimed.length > 0
+            ? [
+                `Changes that name no requirement: ${coverage.unclaimed.map((path) => `\`${path}\``).join(', ')}.`,
+                '',
+              ]
+            : []),
+        ]
+      : []),
     '## Pages',
     '',
     '| # | Page | Kind | Where | Entry |',
@@ -231,7 +286,9 @@ export function buildDevSpec(
     '',
     '## Patches',
     '',
-    '`patches/*` repeats on every page; `patches/<page>/*` belongs to that page only.',
+    '`patches/*` repeats on every page; `patches/<page>/*` belongs to that page only. Lane `Z` is what',
+    '`prototype-commit` folded together — it replays after everything else, and its provenance comments name',
+    'the patches it replaced.',
     '',
   ]
 
@@ -633,7 +690,11 @@ export function exportPrototype(workspaceRootPath: string, slug: string): Protot
     : join(extensionDir, EXTENSION_INDEX_FILENAME)
 
   const specPath = join(getPrototypeDistPath(workspaceRootPath, slug), DEV_SPEC_FILENAME)
-  writeFileSync(specPath, buildDevSpec(slug, { pages, patches }), 'utf-8')
+  writeFileSync(
+    specPath,
+    buildDevSpec(slug, { pages, patches, coverage: resolveRequirementCoverage(workspaceRootPath, slug) }),
+    'utf-8',
+  )
 
   return {
     slug,

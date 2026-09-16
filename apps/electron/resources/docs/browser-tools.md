@@ -301,6 +301,82 @@ Four boundaries, and keeping them apart is what stops a prototype from rotting: 
 patch, behaviour goes in a page's module, shared structure goes in the shell, shared helpers go in
 `assets/lib/`.**
 
+### Where a requirement, a finding and a change go
+
+Three kinds of file, three jobs, and **all of them are yours to write** — nothing
+in the workbench generates them:
+
+- **`prd.md`** — the requirements. One entry each, headed by a stable id:
+  `## R-001 A cart holds its line until stock runs out`, then the prose under it
+  (who it is for, what happens today, what has to be true). The id is what every
+  other file refers to, so keep it stable when you rewrite the prose around it.
+- **`research/`** — what you learned about other products, one finding per file:
+  `# F-001 <what you found>`, then labelled lines `claim:`, `source:`, `captured:`,
+  `evidence:`, `requirements:`. Evidence names files you keep in `research/`
+  (screenshots go there). Deliberately **not** packaged: the reader receives the
+  requirements, not your notes.
+- **`patches/` and the page documents** — what changed, each one declaring what it
+  serves: `@requirement R-001` in a patch header, or in a comment in the page
+  document it changes. `prototype-status` turns those markers into the two answers
+  nobody can get by reading files one at a time: a requirement nothing implements,
+  and a marker naming an id the PRD does not define. `dist/dev-spec.md` carries the
+  same table to whoever receives the delivery.
+
+Both `prd.md` and `research/` are ordinary files — write them with the Write tool
+like any other, and read them before re-studying something. They also appear in the
+bound prototype's context block, so a session starts knowing what was already found.
+
+### `prototype-record start` / `prototype-record stop [slug]`
+
+Keep frames of this window, then write them under the bound prototype's `research/`.
+
+A screen changes for two different reasons, and the capture keeps both:
+
+- **it moved on its own** — the screen is compared every `--interval` ms (default 400) and a frame is kept
+  when more than `--threshold` of it changed (default `0.005`). This is what catches a page that streams:
+  a chat answering, a list filling in, an animation.
+- **somebody did something** — every action taken on the page (a click, typing, a key, a navigation) is
+  kept whatever the screen did, plus a second frame a moment later to catch what it produced. A click that
+  changed nothing is still a click somebody made, and `index.md` says so.
+
+`stop` writes them to `prototypes/<slug>/research/frames/<session>/` as `frame-0001.jpg` upward, with
+`frames.json` (machine-readable) and `index.md` (the same table, for a person) beside them. Each frame
+carries its address, the page it was on and why it is there — a wall of images with no coordinates is a
+wall of images, nothing in it can be cited.
+
+`--max <n>` caps a capture (default 60); a capture that hits the ceiling says so rather than quietly
+dropping the difference. Frames are deliberately **not** in the delivered package: they are how the
+requirements were reached, not part of what the reader receives.
+
+Cite them from a finding's `evidence:` line — `evidence: frames/20260915-183012/frame-0004.jpg`.
+
+**Importing a recording.** `prototype-record import <path>` samples a video you recorded elsewhere (a phone,
+Loom, QuickTime). `--every 2s` sets the interval, `--changes` keeps only the moments that moved, `--max 40`
+caps the frames. The recording is copied into `research/videos/` first — a capture whose source has been
+cleaned up cannot be re-sampled, and re-sampling is most of what a source is for. Decoding is Chromium's, so
+nothing needs ffmpeg: a codec it cannot read (HEVC/H.265, ProRes, some `.mov`) fails with a message saying so,
+rather than producing a capture of one frame. Imported frames carry their position in the recording
+(`imported [0:12.4]` in `index.md`), which is the coordinate a reader of a video can actually use.
+
+The panel's Frames section has the same thing behind a button — the picker runs in the main process, so no
+path ever passes through the page.
+
+### `prototype-verify [slug]`
+
+Run the acceptance checks the PRD puts under its requirements. Two kinds, both mechanical — an acceptance
+criterion only a person can judge is one nobody runs:
+
+- `check: selector [data-cart-total]` — asserted against the page this session's window is on
+- `check: endpoint GET /api/cart` — asserted against the contract
+
+An unsupported kind is refused when the PRD is parsed rather than silently skipped: `check: expression …`
+would otherwise look like a criterion that is being verified when nothing is looking at it. With no page
+open, page checks come back **skipped**, not failed — "could not look" is not "not there", and collapsing
+the two would make a verification worth running only once.
+
+The run writes `dist/acceptance.md`, a deliverable beside the change spec for the person who has to accept
+the work. It changes nothing else: a failing check leaves the prototype exactly as it was.
+
 ### `prototype-apply <slug>` / `prototype-clear <slug>`
 Replay (or remove) a prototype's patches in the current browser.
 
@@ -317,7 +393,30 @@ prototypes/checkout-flow/patches/cart/A-002-flow-guard.js      ← the page `car
 - Which patches this command replays follows the **window**: the page it is on brings the shared patches plus its own, and a window on no page of the prototype gets the shared ones only — the command says which page it used, so "the patch did nothing" and "the patch belongs to another page" read differently.
 - Patches are applied to the current page **and** registered for every future document, so they survive a reload. The index is recomputed from disk on every `prototype-apply`, so editing a patch file and re-running the command is all that is needed — deleting a patch file also un-applies it.
 - A page the host rendered (a page of ours, served from the prototype's own address) arrives with its patches already inlined, so there is nothing to inject into it; that is reported as *nothing to inject*, not as a failure. Patches written since that render still land on it.
+- **A patch may declare what it is aimed at**, with `@target <css selector>` in its header (next to `@requirement R-001`, which says what it is for). The command then **counts** what each declared selector matched and says so:
+  - a selector that matched nothing and has never matched is named — the selector is wrong, or the page is not the one it was written against;
+  - a selector that matched before and does not now means the page moved, and the command offers selectors that resolve to exactly one element on the page today (a **re-anchor**, not a rewrite);
+  - a patch with no `@target` is named as unchecked rather than treated as a clean run.
+  Every successful match is recorded under `prototypes/{slug}/anchors/` — that record (selector, what the element looked like, when it last matched) is what makes "it stopped matching" distinguishable from "it never worked". Nothing in `anchors/` is rendered, replayed or packaged: it is evidence *about* the page.
 - `prototype-clear` unregisters a prototype's patches; the current document keeps their effects until you reload.
+- Saving a file under `patches/` or `assets/`, or a page document, replays the prototype into every window that is showing it (a page of ours reloads, a live page is re-patched) — no apply needed. The switch for that is on the prototype's page in the app.
+
+### `prototype-commit <slug> [--page <name>]`
+**Fold the change layer into what owns it.** A prototype is a working set of patches on top of a page that is not ours; this is the operation that collapses that layer when the work has stopped moving, so the prototype converges instead of accumulating deltas forever.
+
+Where the fold lands is decided by whose the page is:
+
+| page | folded into |
+|---|---|
+| **ours** (`scratch`) | CSS → `assets/<page>/committed.css`, JS **promoted** → `assets/<page>/committed.js`; the page document gets a `<link>` and a `<script src>` (each added once) |
+| **a live address** (`overlay`) | `patches/<page>/Z-001-upper.css` and `Z-002-upper.js` — a consolidated patch, which replays **after** every other patch by rule |
+
+- **JS is promoted, not folded**: a script is behaviour, and folding behaviour into a static document would mean rendering the page and serializing the result — which loses the readable document (and is why "freeze the live page" was never a thing here). Moving it into a file of ours is the same collapse: it stops being a delta and becomes source.
+- Each folded change leaves a **provenance header** naming the patch it came from, the date, and the markers it carried (`@requirement`, one `@target` per line) — so the anchors recorded for it and the requirement it serves survive the fold.
+- **The folded patch files are deleted.** That is what makes this the one prototype action with no undo: use your own git if you need the before and after, and commit when you mean it rather than after every change.
+- What it cannot do, it says: a page of ours whose document is missing is **refused** (nothing is deleted), and a folded CSS patch with no `@target` is listed as not checked. Running it twice reports "nothing to fold" instead of writing an empty file.
+- `--page <name>` folds that page's own patches only; the shared ones (`patches/*`) and other pages are left alone. Without it, the shared patches fold into `patches/Z-001-upper.css` and every page's own fold into its own place.
+- Folding a page of ours also drops that page's anchor records: the elements now live in a file we own, so there is nothing to drift against. A live page's records are kept — its address is still someone else's.
 
 ### `prototype-export <slug>`
 Build the prototype's deliverable into `prototypes/{slug}/dist/`:

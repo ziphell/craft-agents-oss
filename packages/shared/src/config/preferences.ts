@@ -39,6 +39,12 @@ export interface UserPreferences {
    * Not user-editable; not exposed via the `update_user_preferences` tool.
    */
   uiLanguage?: LanguageCode;
+  /**
+   * Whether an edit under `prototypes/` is replayed into the windows showing that
+   * prototype (plan §21.4). A preference rather than prototype data: it says how
+   * this app watches, not what the artifact is. Absent means on.
+   */
+  prototypeAutoReplay?: boolean;
   // When the preferences were last updated
   updatedAt?: number;
 }

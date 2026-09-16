@@ -18,11 +18,12 @@ import {
   createPrototype,
   getPrototypePagePatchesPath,
   getPrototypePatchesPath,
+  readPrototypeAnchors,
   setPrototypeBaseUrlResolver,
   writePrototypeConfig,
   writePrototypePage,
 } from '@craft-agent/shared/prototypes'
-import { applyPrototypeToBrowser } from '../apply-prototype'
+import { applyPrototypeToBrowser, replayPrototypeInBrowser } from '../apply-prototype'
 import type { IBrowserPaneManager } from '../../handlers/browser-pane-manager-interface'
 
 const PROBE = buildInlinedPatchProbeScript()
@@ -33,10 +34,15 @@ const ORIGIN = 'http://checkout-flow-abc123ab.localhost:41234'
 const PAGE = '<!doctype html><html><body><h1>Checkout</h1></body></html>'
 
 /** A stand-in browser pane that records what was done to the page. */
-function makeBpm(inlined: unknown, currentUrl: string | null = null) {
+function makeBpm(
+  inlined: unknown,
+  currentUrl: string | null = null,
+  answers: { state?: unknown; fingerprints?: unknown; candidates?: unknown } = {},
+) {
   const evaluated: string[] = []
   const registered: string[] = []
   const cleared: string[] = []
+  const reloaded: string[] = []
 
   const bpm = {
     // The window's own URL is what decides which page's patches apply; null is
@@ -47,8 +53,14 @@ function makeBpm(inlined: unknown, currentUrl: string | null = null) {
         : { ownerType: 'session', ownerSessionId: null, isVisible: true, title: '', currentUrl },
     ),
     evaluate: mock(async (_id: string, expression: string) => {
-      // The probe is the only expression whose answer matters to the caller.
+      // The probes are the only expressions whose answer matters to the caller.
+      // Told apart by a distinctive line rather than by identity, because two are
+      // built per call — and *not* by "mentions the state key", which every patch
+      // script does now that each patch reports what it observed.
       if (expression === PROBE) return inlined
+      if (expression.includes('const measured = (entry.matches')) return answers.state ?? {}
+      if (expression.includes('const entries =')) return answers.candidates ?? {}
+      if (expression.includes('out[target] = el ?')) return answers.fingerprints ?? {}
       evaluated.push(expression)
       return undefined
     }),
@@ -60,9 +72,12 @@ function makeBpm(inlined: unknown, currentUrl: string | null = null) {
       cleared.push(prefix)
       return []
     }),
+    reload: mock((id: string) => {
+      reloaded.push(id)
+    }),
   }
 
-  return { bpm: bpm as unknown as IBrowserPaneManager, evaluated, registered, cleared }
+  return { bpm: bpm as unknown as IBrowserPaneManager, evaluated, registered, cleared, reloaded }
 }
 
 describe('applyPrototypeToBrowser', () => {
@@ -249,9 +264,123 @@ describe('applyPrototypeToBrowser', () => {
 
     const result = await applyPrototypeToBrowser(bpm, 'browser-1', workspaceRoot, slug)
 
-    expect(result).toEqual({ slug, page: null, applied: 0, files: [], skipped: [] })
+    expect(result).toEqual({
+      slug,
+      page: null,
+      applied: 0,
+      files: [],
+      skipped: [],
+      targets: [],
+      unmatched: [],
+      drifted: [],
+      untargeted: [],
+    })
     expect(evaluated).toEqual([])
     // Still cleared: a registration left by a patch that was since deleted must go.
     expect(cleared).toEqual([`prototype:${slug}:`])
+  })
+
+  /**
+   * What each declared target made of the page (plan §21.1/§21.2). Without this,
+   * a patch whose selector is wrong and a patch that changes nothing look the
+   * same in every report the workbench produces.
+   */
+  it('names a declared target that matched nothing, and records what did match', async () => {
+    writePatch('A-001-miss.css', '/* @target .gone */\n.gone { color: red }')
+    writePatch('A-002-hit.css', '/* @target .btn */\n.btn { color: red }')
+    const { bpm } = makeBpm([], null, {
+      state: {
+        'A-001-miss.css': { matches: { '.gone': 0 }, error: null },
+        'A-002-hit.css': { matches: { '.btn': 2 }, error: null },
+      },
+      fingerprints: {
+        '.btn': { tag: 'button', text: 'Pay now', path: 'form > button', attrs: ['#pay'] },
+      },
+    })
+
+    const result = await applyPrototypeToBrowser(bpm, 'browser-1', workspaceRoot, slug)
+
+    expect(result.unmatched).toEqual(['.gone'])
+    expect(result.targets).toEqual([
+      { file: 'A-001-miss.css', target: '.gone', matched: 0, recorded: false },
+      { file: 'A-002-hit.css', target: '.btn', matched: 2, recorded: false },
+    ])
+    // The one that matched is the one worth remembering; the one that never did
+    // is reported, not recorded (an anchor with no date beside it would read as
+    // evidence of something).
+    const record = readPrototypeAnchors(workspaceRoot, slug, null)
+    expect(record?.anchors.map((anchor) => anchor.target)).toEqual(['.btn'])
+    expect(record?.anchors[0]?.matched).toBe(2)
+  })
+
+  it('says which patches nothing could check, because they declare no target', async () => {
+    writePatch('A-001-btn.css', '.btn { color: red }')
+    const { bpm } = makeBpm([], null)
+
+    const result = await applyPrototypeToBrowser(bpm, 'browser-1', workspaceRoot, slug)
+
+    expect(result.untargeted).toEqual(['A-001-btn.css'])
+  })
+
+  /**
+   * Drift, which needs the record: the same selector matched when the patch was
+   * written and does not now. That is a page that moved — and because the anchor
+   * kept a fingerprint, a replacement can be proposed instead of only reported.
+   */
+  it('reports a target that used to match as drift, with what it looks like now', async () => {
+    writePatch('A-001-btn.css', '/* @target .btn */\n.btn { color: red }')
+    const fingerprint = { tag: 'button', text: 'Pay now', path: 'form > button', attrs: ['#pay'] }
+
+    const first = makeBpm([], 'https://app.example.com/checkout', {
+      state: { 'A-001-btn.css': { matches: { '.btn': 1 }, error: null } },
+      fingerprints: { '.btn': fingerprint },
+    })
+    await applyPrototypeToBrowser(first.bpm, 'browser-1', workspaceRoot, slug)
+    expect(readPrototypeAnchors(workspaceRoot, slug, null)?.anchors[0]?.fingerprint).toEqual(fingerprint)
+
+    // The site was redeployed: the selector the patch was written against is gone.
+    const second = makeBpm([], 'https://app.example.com/checkout', {
+      state: { 'A-001-btn.css': { matches: { '.btn': 0 }, error: null } },
+      candidates: { '.btn': ['#pay'] },
+    })
+    const result = await applyPrototypeToBrowser(second.bpm, 'browser-1', workspaceRoot, slug)
+
+    // Not "unmatched": it has a record of matching, so this is the page moving.
+    expect(result.unmatched).toEqual([])
+    expect(result.drifted).toHaveLength(1)
+    expect(result.drifted[0]?.target).toBe('.btn')
+    expect(result.drifted[0]?.suggestions).toEqual(['#pay'])
+    expect(result.drifted[0]?.lastMatchedAt).not.toBe('')
+  })
+
+  /**
+   * The replay after a file change (plan §21.4) reads which case it is off the
+   * document: a page of ours arrives with its patches inlined, so re-registering
+   * them would double the js on the next render — it is reloaded instead.
+   */
+  it('reloads a page of ours rather than injecting into it again', async () => {
+    writePage('cart')
+    writePatch('A-001-btn.css', '.btn { color: red }')
+    const { bpm, evaluated, registered, reloaded } = makeBpm(['A-001-btn.css'], `${ORIGIN}/cart.html`)
+
+    const result = await replayPrototypeInBrowser(bpm, 'browser-1', workspaceRoot, slug)
+
+    expect(result.action).toBe('reloaded')
+    expect(result.page).toBe('cart')
+    expect(reloaded).toEqual(['browser-1'])
+    expect(evaluated).toEqual([])
+    expect(registered).toEqual([])
+  })
+
+  it('applies the patches to a page that carries none', async () => {
+    writePatch('A-001-btn.css', '.btn { color: red }')
+    const { bpm, evaluated, reloaded } = makeBpm([], 'https://app.example.com/checkout')
+
+    const result = await replayPrototypeInBrowser(bpm, 'browser-1', workspaceRoot, slug)
+
+    expect(result.action).toBe('applied')
+    expect(result.applied).toBe(1)
+    expect(evaluated).toHaveLength(1)
+    expect(reloaded).toEqual([])
   })
 })

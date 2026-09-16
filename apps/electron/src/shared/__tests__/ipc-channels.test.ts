@@ -210,6 +210,7 @@ const EXPECTED_CHANNELS: string[] = [
   'prototypes:duplicate',
   'prototypes:entry',
   'prototypes:export',
+  'prototypes:importVideo',
   'prototypes:linkReference',
   'prototypes:list',
   'prototypes:setTarget',

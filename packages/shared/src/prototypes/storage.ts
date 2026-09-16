@@ -18,8 +18,8 @@
 import { existsSync, readdirSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { getWorkspacePrototypesPath } from '../workspaces/storage.ts'
-import type { PrototypeArtifacts, PrototypePatch, PrototypePatchKind } from './types.ts'
-import { PROTOTYPE_LAYOUT_FILENAME } from './types.ts'
+import { CONSOLIDATED_LANE, PROTOTYPE_ANCHORS_DIRNAME, PROTOTYPE_LAYOUT_FILENAME, PROTOTYPE_RESEARCH_DIRNAME, type PrototypeArtifacts, type PrototypePatch, type PrototypePatchKind } from './types.ts'
+import { extractPatchTargets } from './patch-header.ts'
 
 const PATCHES_DIRNAME = 'patches'
 const DIST_DIRNAME = 'dist'
@@ -66,6 +66,31 @@ export function getPrototypeDistPath(workspaceRootPath: string, slug: string): s
   return join(getPrototypeDirPath(workspaceRootPath, slug), DIST_DIRNAME)
 }
 
+/**
+ * Absolute path to a prototype's research directory.
+ *
+ * Sits with the other path builders because it is the same kind of fact — a
+ * directory name that more than one module agrees on — and because the
+ * distinction it draws is a rule, not a preference: `assets/` is what a page
+ * loads at runtime and therefore ships in the package, while `research/` is how
+ * the author got to the requirements and therefore does not (plan §20.2).
+ */
+export function getPrototypeResearchPath(workspaceRootPath: string, slug: string): string {
+  return join(getPrototypeDirPath(workspaceRootPath, slug), PROTOTYPE_RESEARCH_DIRNAME)
+}
+
+/**
+ * Absolute path to a prototype's anchor records.
+ *
+ * Same kind of fact as the two above — a directory name more than one module
+ * agrees on — and the same distinction as `research/`: `anchors/` is evidence
+ * about the page (never rendered, never packaged), while `patches/` is the
+ * change itself (plan §21.2).
+ */
+export function getPrototypeAnchorsPath(workspaceRootPath: string, slug: string): string {
+  return join(getPrototypeDirPath(workspaceRootPath, slug), PROTOTYPE_ANCHORS_DIRNAME)
+}
+
 /** Init-script key for a patch — stable across re-scans so re-apply is idempotent. */
 export function getPrototypePatchKey(slug: string, file: string): string {
   return `prototype:${slug}:${file}`
@@ -98,13 +123,26 @@ function readPatch(
     lane: match[1] ?? null,
     order: Number(match[2] ?? 0),
     source,
+    targets: extractPatchTargets(source),
     page,
     key: getPrototypePatchKey(slug, relative),
   }
 }
 
-/** Deterministic replay order: lane → declared order → path, so listing order never matters. */
+/**
+ * Deterministic replay order: the consolidated layer, then lane → declared order
+ * → path, so listing order never matters.
+ *
+ * The consolidated lane (`commit.ts`) is checked first **by rule**, not by the
+ * alphabet: what a commit folded together has to replay after everything it
+ * folded, and a patch's meaning may not depend on which letters the other lanes
+ * happen to use.
+ */
 function byReplayOrder(a: PrototypePatch, b: PrototypePatch): number {
+  const aConsolidated = a.lane?.toUpperCase() === CONSOLIDATED_LANE
+  const bConsolidated = b.lane?.toUpperCase() === CONSOLIDATED_LANE
+  if (aConsolidated !== bConsolidated) return aConsolidated ? 1 : -1
+
   const laneCompare = (a.lane ?? '').localeCompare(b.lane ?? '')
   if (laneCompare !== 0) return laneCompare
   if (a.order !== b.order) return a.order - b.order

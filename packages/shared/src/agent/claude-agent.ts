@@ -205,6 +205,8 @@ export interface ClaudeAgentConfig {
   getBranchSeedMessages?: () => RecoveryMessage[];
   /** Mark branch seed as applied (called after first injection). */
   markBranchSeedApplied?: () => void;
+  /** Live prototype slug for this conversation — see BackendConfig.getPrototypeSlug. */
+  getPrototypeSlug?: () => string | null;
   /** Get transferred session summary for cross-server session context. */
   getTransferredSessionSummary?: () => string | null;
   /** Mark transferred session summary as applied. */
@@ -506,8 +508,16 @@ export class ClaudeAgent extends BaseAgent {
   private pinnedIncludeCoAuthoredBy: boolean | null = null;
   private pinnedProjectContext: import('../projects/types.ts').ProjectPromptContext | null = null;
   private pinnedPrototypeContext: import('../prototypes/prompt.ts').PrototypePromptContext | null = null;
+  /**
+   * The prototype the host resolved when the prompt was pinned — kept beside the
+   * context rather than read off it, because a context that failed to build (the
+   * prototype was deleted) is `null` for a reason that is not "no prototype".
+   */
+  private pinnedPrototypeSlug: string | null = null;
   // Track if preference drift notification has been shown this session
   private preferencesDriftNotified: boolean = false;
+  // Same, for the prototype: said once per session, reset where the pin is.
+  private prototypeDriftNotified: boolean = false;
   // Captured stderr from SDK subprocess (for error diagnostics when process exits with code 1)
   private lastStderrOutput: string[] = [];
   /** Pending steer message — injected via additionalContext on next PreToolUse */
@@ -726,12 +736,13 @@ export class ClaudeAgent extends BaseAgent {
   }
 
   /**
-   * Look up the bound prototype (if any) and return a snapshot for system-prompt injection.
-   * Safe to call on every chat() — resolution no-ops when unbound, and returns null
-   * when the bound prototype no longer exists (deleted since the session started).
+   * Look up the prototype this conversation is on (if any) and return a snapshot
+   * for system-prompt injection. Safe to call on every chat() — resolution
+   * no-ops when there is none, and returns null when the prototype no longer
+   * exists (deleted since the session started).
    */
   private resolvePrototypeContext(): import('../prototypes/prompt.ts').PrototypePromptContext | null {
-    const slug = this.config.session?.prototypeSlug;
+    const slug = this.currentPrototypeSlug();
     if (!slug) return null;
 
     try {
@@ -740,6 +751,16 @@ export class ClaudeAgent extends BaseAgent {
       debug(`[resolvePrototypeContext] Failed to load prototype ${slug}:`, error);
       return null;
     }
+  }
+
+  /**
+   * The prototype this conversation works on *now* — asked of the host, not read
+   * off `config.session`, which is a snapshot from when this agent was created
+   * (see BackendConfig.getPrototypeSlug). Falls back to the snapshot when the host
+   * passes no resolver, so an agent built without one behaves as it always did.
+   */
+  private currentPrototypeSlug(): string | null {
+    return this.config.getPrototypeSlug?.() ?? this.config.session?.prototypeSlug ?? null;
   }
 
   // Callback for permission requests - set by application to receive permission prompts
@@ -1048,6 +1069,7 @@ export class ClaudeAgent extends BaseAgent {
         this.pinnedPreferencesPrompt = currentPreferencesPrompt;
         this.pinnedIncludeCoAuthoredBy = currentCoAuthorPref;
         this.pinnedProjectContext = this.resolveProjectContext();
+        this.pinnedPrototypeSlug = this.currentPrototypeSlug();
         this.pinnedPrototypeContext = this.resolvePrototypeContext();
         debug('[chat] Pinned system prompt components for session consistency');
       } else {
@@ -1061,6 +1083,22 @@ export class ClaudeAgent extends BaseAgent {
           };
           this.preferencesDriftNotified = true;
           debug(`[chat] Detected drift in: preferences`);
+        }
+
+        // The prototype context is pinned like the rest, so a conversation that was
+        // moved to another prototype — or whose project now provides a different one
+        // — goes on describing the old one. Everything else about prototypes is live
+        // (the window, the commands' default slug), so silence here would leave the
+        // agent's own prose as the one place that is wrong. Say it instead.
+        const currentPrototypeSlug = this.currentPrototypeSlug();
+
+        if (currentPrototypeSlug !== this.pinnedPrototypeSlug && !this.prototypeDriftNotified) {
+          yield {
+            type: 'info',
+            message: `Note: This conversation's prototype changed (the system prompt still describes ${this.pinnedPrototypeSlug ?? 'none'}, it is now ${currentPrototypeSlug ?? 'none'}). Start a new session to rebuild the prompt.`,
+          };
+          this.prototypeDriftNotified = true;
+          debug(`[chat] Detected drift in: prototype`);
         }
       }
 
@@ -1963,7 +2001,9 @@ This is a branched conversation. All prior messages in this conversation are par
           this.pinnedIncludeCoAuthoredBy = null;
           this.pinnedProjectContext = null;
           this.pinnedPrototypeContext = null;
+          this.pinnedPrototypeSlug = null;
           this.preferencesDriftNotified = false;
+          this.prototypeDriftNotified = false;
 
           let retryMessage = userMessage;
           const recoveryContext = this.buildRecoveryContext();
@@ -2167,7 +2207,9 @@ This is a branched conversation. All prior messages in this conversation are par
           this.pinnedIncludeCoAuthoredBy = null;
           this.pinnedProjectContext = null;
           this.pinnedPrototypeContext = null;
+          this.pinnedPrototypeSlug = null;
           this.preferencesDriftNotified = false;
+          this.prototypeDriftNotified = false;
 
           let retryMessage = userMessage;
           const recoveryContext = this.buildRecoveryContext();
@@ -2372,7 +2414,9 @@ This is a branched conversation. All prior messages in this conversation are par
           this.pinnedIncludeCoAuthoredBy = null;
           this.pinnedProjectContext = null;
           this.pinnedPrototypeContext = null;
+          this.pinnedPrototypeSlug = null;
           this.preferencesDriftNotified = false;
+          this.prototypeDriftNotified = false;
 
           let retryMessage = userMessage;
           const recoveryContext = this.buildRecoveryContext();
@@ -2776,7 +2820,9 @@ This is a branched conversation. All prior messages in this conversation are par
     this.pinnedIncludeCoAuthoredBy = null;
     this.pinnedProjectContext = null;
     this.pinnedPrototypeContext = null;
+    this.pinnedPrototypeSlug = null;
     this.preferencesDriftNotified = false;
+    this.prototypeDriftNotified = false;
   }
 
   /**
@@ -2952,7 +2998,9 @@ This is a branched conversation. All prior messages in this conversation are par
     this.pinnedIncludeCoAuthoredBy = null;
     this.pinnedProjectContext = null;
     this.pinnedPrototypeContext = null;
+    this.pinnedPrototypeSlug = null;
     this.preferencesDriftNotified = false;
+    this.prototypeDriftNotified = false;
 
     // Clear Claude-specific callbacks (not handled by BaseAgent)
     this.onSourcesListChange = null;
@@ -3128,7 +3176,9 @@ This is a branched conversation. All prior messages in this conversation are par
     this.pinnedIncludeCoAuthoredBy = null;
     this.pinnedProjectContext = null;
     this.pinnedPrototypeContext = null;
+    this.pinnedPrototypeSlug = null;
     this.preferencesDriftNotified = false;
+    this.prototypeDriftNotified = false;
     // Atomic on-disk persistence: clears all four fork fields at once. This
     // supersedes onSdkSessionIdCleared, which only persists sdkSessionId and
     // would leave the branchFromSdk* fields on disk to reload next launch.

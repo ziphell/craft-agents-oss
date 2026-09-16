@@ -16,8 +16,7 @@
  */
 
 import { existsSync } from 'fs'
-import { relative, sep } from 'path'
-import { getPrototypeDirPath, getPrototypeLayoutPath, getPrototypePatchesPath } from './storage.ts'
+import { getPrototypeDirPath, getPrototypeLayoutPath } from './storage.ts'
 import { listPrototypePages } from './pages.ts'
 import { buildPrototypeStatus } from './status.ts'
 import { PROTOTYPE_LANES } from './ownership.ts'
@@ -48,8 +47,26 @@ export interface PrototypePromptContext {
    * means, without reading its config.
    */
   references: Array<{ slug: string; summary: string }>
+  /**
+   * The workspace project this prototype belongs to, or null (plan §15.1).
+   *
+   * Carried because a session can have **both** containers in front of it, and
+   * nothing else in the prompt says which side a new file belongs on.
+   */
+  projectSlug: string | null
+  /**
+   * The PRD's requirements with what refers to each one (plan §20.1). Empty when
+   * there is no `prd.md` — a state the prompt has to name out loud, because the
+   * agent is the only writer of that file.
+   */
+  requirements: Array<{ id: string; title: string; pages: string[]; patches: string[]; findings: string[] }>
+  /**
+   * Findings already recorded under `research/` (plan §20.2). Carried so the agent
+   * reads what it learned last time instead of studying the same product again.
+   */
+  findings: Array<{ id: string; claim: string | null; source: string | null; file: string }>
   /** Replayable patches, in replay order, each with the page it belongs to (null = every page). */
-  patches: Array<{ file: string; lane: string | null; kind: string; page: string | null }>
+  patches: Array<{ file: string; lane: string | null; kind: string; page: string | null; targets: string[] }>
   /** Per-service contract coverage. */
   services: Array<{
     slug: string
@@ -95,9 +112,6 @@ export function buildPrototypePromptContext(
   if (!existsSync(getPrototypeDirPath(workspaceRootPath, slug))) return null
 
   const status = buildPrototypeStatus(workspaceRootPath, slug)
-  // The status reports absolute paths; what the agent needs is the path relative to
-  // `patches/`, because that is what says which page a patch applies to.
-  const patchesDir = getPrototypePatchesPath(workspaceRootPath, slug)
 
   return {
     slug: status.slug,
@@ -114,20 +128,32 @@ export function buildPrototypePromptContext(
       ? getPrototypeLayoutPath(workspaceRootPath, slug)
       : null,
     references: status.references.map((referenceSlug) => describeReference(workspaceRootPath, referenceSlug)),
-    patches: status.patches.files.map((absolute) => {
-      const file = relative(patchesDir, absolute).split(sep).join('/')
-      // Same convention as PATCH_NAME_RE in storage.ts — that regex is what
-      // decided this file is replayable in the first place.
-      const name = file.slice(file.lastIndexOf('/') + 1)
-      const match = /^([A-Za-z])-\d+-.+\.(css|js)$/.exec(name)
-      const page = file.includes('/') ? file.slice(0, file.indexOf('/')) : null
-      return { file, lane: match?.[1] ?? null, kind: match?.[2] ?? '', page }
-    }),
+    projectSlug: status.projectSlug,
+    patches: status.patches.entries.map((entry) => ({
+      file: entry.file,
+      lane: entry.lane,
+      kind: entry.kind,
+      page: entry.page,
+      targets: entry.targets,
+    })),
     services: status.services.map((service) => ({
       slug: service.slug,
       endpoints: service.endpoints,
       mockedEndpoints: service.mockedEndpoints,
       missingFixtures: service.missingFixtures,
+    })),
+    requirements: status.requirements.map((requirement) => ({
+      id: requirement.id,
+      title: requirement.title,
+      pages: requirement.pages,
+      patches: requirement.patches,
+      findings: requirement.findings,
+    })),
+    findings: status.findings.map((finding) => ({
+      id: finding.id,
+      claim: finding.claim,
+      source: finding.source,
+      file: finding.file,
     })),
     distFiles: status.distFiles,
     violations: status.ownership.violations,
@@ -236,6 +262,68 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
     lines.push('')
   }
 
+  // The project edge, and with it the answer to "which directory does this go in".
+  // A session can have both containers in its context at once — the project from
+  // the session's binding, the prototype from this one — and until this was said
+  // out loud, nothing told the agent which side a new file belonged on (§15.1).
+  if (ctx.projectSlug) {
+    lines.push(`This prototype belongs to the workspace project '${sanitize(ctx.projectSlug)}' — an **edge, not a`)
+    lines.push(`container**: nothing of the prototype lives inside the project, and nothing of the project lives`)
+    lines.push(`inside the prototype. Keep the two apart when you write:`)
+    lines.push(`- everything about *this prototype* — pages, patches/<page>/…, prd.md, config.json, research/ and`)
+    lines.push(`  dist/ — goes to the prototype directory above.`)
+    lines.push(`- the project holds its own concerns (its MEMORY.md, its tasks, its shared assets). Do not copy a`)
+    lines.push(`  prototype artifact into it, and do not put project notes into the prototype.`)
+    lines.push('')
+  }
+
+  // Requirements and research come next because they are what the work is *for*,
+  // and because the agent is their only writer: nothing in the workbench produces
+  // `prd.md` or a finding, so a block that does not ask for them leaves them not
+  // existing at all (plan §20).
+  lines.push(`Requirements and research — both are files you write; nothing else here produces them:`)
+  lines.push(`- ${sanitize(ctx.dir)}/prd.md holds the requirements. One entry each, headed by a stable id:`)
+  lines.push(`  '## R-001 <what it is>', then the prose — who it is for, what happens today, what has to be true.`)
+  if (ctx.requirements.length > 0) {
+    lines.push(`  Written so far, and what refers to each:`)
+    for (const requirement of ctx.requirements) {
+      const covered = [
+        ...requirement.pages,
+        ...requirement.patches,
+        ...requirement.findings.map((id) => `${id} (finding)`),
+      ]
+      lines.push(
+        `  - ${sanitize(requirement.id)} ${sanitize(requirement.title)} — ${
+          covered.length > 0
+            ? `referred to by ${covered.map(sanitize).join(', ')}`
+            : '**nothing refers to it yet**'
+        }`,
+      )
+    }
+  } else {
+    lines.push(`  There is no prd.md yet. Write it before building the next screen: a prototype nobody can read a`)
+    lines.push(`  requirement out of is a picture, not a proposal.`)
+  }
+  lines.push(`- Say which requirement a change serves: '@requirement R-001' in a patch header, or in a comment in the`)
+  lines.push(`  page document it changes. 'prototype-status' turns that into the two answers nobody can get by reading`)
+  lines.push(`  files: which requirement nothing implements, and which marker names an id prd.md does not define.`)
+  lines.push(`- ${sanitize(ctx.dir)}/research/ holds what you learned from other products. One finding per file:`)
+  lines.push(`  '# F-001 <what you found>', then labelled lines 'claim:', 'source:', 'captured:', 'evidence:',`)
+  lines.push(`  'requirements:'. Evidence names files you keep in research/ (screenshots go there), and 'requirements:'`)
+  lines.push(`  names the requirements the finding argues for. A finding with no source cannot be checked later.`)
+  if (ctx.findings.length > 0) {
+    lines.push(`  Recorded so far — read these before studying the same product again:`)
+    for (const finding of ctx.findings) {
+      lines.push(
+        `  - ${sanitize(finding.id)} ${sanitize(finding.claim ?? '(no claim)')}${
+          finding.source ? ` — from ${sanitize(finding.source)}` : ''
+        } (${sanitize(finding.file)})`,
+      )
+    }
+  }
+  lines.push(`- research/ is **not** packaged (assets/ is): the reader receives the requirements, not your notes.`)
+  lines.push('')
+
   lines.push(`This session is bound to the prototype above. Commands below target it by default —`)
   lines.push(`you do not need to pass a slug, though you may pass one to work on a different prototype.`)
   lines.push('')
@@ -298,6 +386,10 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
   lines.push(`patches/cart/B-002-total.js for one page) with the Write tool — do not edit a page's document for`)
   lines.push(`presentation work, and do not rewrite an existing patch file owned by another lane. Every patch is`)
   lines.push(`replayed on reload, so the page state is reproducible.`)
+  lines.push(`Say what each patch is aimed at: a header line '@target <css selector>' (and '@requirement R-001').`)
+  lines.push(`That is what makes the patch checkable — 'prototype-apply' reports which targets matched nothing, and`)
+  lines.push(`a target that used to match and does not any more means the page moved, not that the patch was`)
+  lines.push(`ignored. Without a '@target' nothing can tell the two apart, and the patch rots quietly.`)
   lines.push('')
   // These rules exist because the patches are also shipped inside a loadable
   // extension, running on pages we do not control. They are cheap to follow now
@@ -319,7 +411,8 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
     lines.push(`Replayed patches, in order:`)
     for (const patch of ctx.patches) {
       const scope = patch.page ? `page ${sanitize(patch.page)}` : 'every page'
-      lines.push(`- ${sanitize(patch.file)} (lane ${patch.lane ?? '?'}, ${patch.kind}, ${scope})`)
+      const targets = patch.targets.length > 0 ? `, targets ${patch.targets.map(sanitize).join(', ')}` : ''
+      lines.push(`- ${sanitize(patch.file)} (lane ${patch.lane ?? '?'}, ${patch.kind}, ${scope}${targets})`)
     }
   } else {
     lines.push(`Replayed patches: none yet.`)
@@ -351,6 +444,15 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
   lines.push(`window, and 'prototype-export' to build the deliverable — one loadable extension plus the change`)
   lines.push(`spec a developer reads. 'prototype-status' re-reads everything from disk when you need to confirm`)
   lines.push(`what is actually there.`)
+  // Commit is described here rather than with the patches because it is the one
+  // action that *removes* patches: an agent that has not read this would keep
+  // writing new files where the change now has a home.
+  lines.push(`'prototype-commit' folds the delta layer into what owns it, when the work has stopped moving: a`)
+  lines.push(`page of ours gets its css folded into assets/<page>/committed.css and its js promoted into`)
+  lines.push(`assets/<page>/committed.js (the document is linked to both, and the patch files are deleted); a live`)
+  lines.push(`page's patches are folded into patches/<page>/Z-001-upper.css and Z-002-upper.js, which replay last.`)
+  lines.push(`It is irreversible — a folded patch no longer exists as a file — so commit at a point, not after every`)
+  lines.push(`change. Keep writing patches until then; a run of small edits is what the layer is for.`)
   lines.push(`</prototype_context>`)
   lines.push('')
   return lines.join('\n')

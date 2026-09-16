@@ -35,6 +35,7 @@ export type BrowserCapabilityMethod =
   | 'navigate'
   | 'goBack'
   | 'goForward'
+  | 'reload'
   // Interaction
   | 'getAccessibilitySnapshot'
   | 'clickElement'
@@ -51,6 +52,12 @@ export type BrowserCapabilityMethod =
   // Persistent injection
   | 'addInitScript'
   | 'clearInitScripts'
+  // Frame capture
+  | 'startFrameCapture'
+  | 'stopFrameCapture'
+  // Video frames
+  | 'pickVideoFile'
+  | 'extractVideoFrames'
   // Network-level mock
   | 'setFetchMock'
   | 'clearFetchMock'

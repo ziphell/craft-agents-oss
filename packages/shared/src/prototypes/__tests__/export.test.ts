@@ -28,6 +28,7 @@ const cssPatch: PrototypePatch = {
   lane: 'A',
   order: 1,
   source: '.btn { color: red }',
+  targets: [],
   page: null,
   key: 'k1',
 }
@@ -38,6 +39,7 @@ const jsPatch: PrototypePatch = {
   lane: 'A',
   order: 2,
   source: 'window.guard = true;',
+  targets: [],
   page: null,
   key: 'k2',
 }
@@ -120,7 +122,7 @@ describe('buildSelfContainedHtml', () => {
     const script = html.slice(start, html.indexOf('</script>', start))
 
     const state = { value: 0 }
-    new Function('state', script)(state)
+    new Function('state', 'window', script)(state, {})
 
     expect(state.value).toBe(11)
   })

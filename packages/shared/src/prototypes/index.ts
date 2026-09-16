@@ -7,17 +7,30 @@
 
 export type { PrototypeArtifacts, PrototypePatch, PrototypePatchKind, PrototypeWindowDescriptor, PageKind } from './types.ts'
 export {
+  CONSOLIDATED_LANE,
   DEFAULT_PAGE_KIND,
   LEGACY_BASE_PAGE_NAME,
   LEGACY_ENTRY_PAGE_NAME,
+  PROTOTYPE_ANCHORS_DIRNAME,
   PROTOTYPE_LAYOUT_FILENAME,
   PROTOTYPE_LAYOUT_SLOT,
 } from './types.ts'
+
+// The marker parser, which the other modules reach for rather than re-implement
+// (`patch-header.ts`).
+export {
+  extractPatchHeader,
+  extractPatchTargets,
+  extractRequirementIds,
+  normalizeRequirementId,
+} from './patch-header.ts'
+export type { PrototypePatchHeader } from './patch-header.ts'
 
 export {
   getPrototypeDirPath,
   getPrototypePatchesPath,
   getPrototypePagePatchesPath,
+  getPrototypeAnchorsPath,
   getPrototypeLayoutPath,
   getPrototypeDistPath,
   getPrototypePatchKey,
@@ -56,7 +69,38 @@ export {
   buildMockRoutes,
 } from './contract.ts'
 
-export { buildPatchInitScript, buildPatchStyleElementId } from './patch-script.ts'
+export {
+  buildPatchInitScript,
+  buildPatchMatchRecorderScript,
+  buildPatchStateProbeScript,
+  buildPatchStyleElementId,
+  PATCH_STATE_KEY,
+} from './patch-script.ts'
+
+// The virtual base of a live page: what each declared `@target` matched, and
+// whether it is still there (`anchors.ts`, plan §21.2).
+export {
+  buildAnchorCandidateScript,
+  buildAnchorProbeScript,
+  dropPrototypeAnchors,
+  readAllPrototypeAnchors,
+  readPrototypeAnchors,
+  recordPrototypeAnchors,
+  resolveAnchorDrift,
+  resolveAnchorOrphans,
+  SHARED_ANCHOR_SCOPE,
+} from './anchors.ts'
+export type {
+  PrototypeAnchor,
+  PrototypeAnchorFile,
+  PrototypeAnchorFingerprint,
+  PrototypeAnchorObservation,
+  PrototypeAnchorReport,
+} from './anchors.ts'
+
+// Folding the delta layer into what owns it (`commit.ts`, plan §21.3).
+export { commitPrototype } from './commit.ts'
+export type { PrototypeCommitResult, PrototypeCommitScopeResult } from './commit.ts'
 
 export type {
   LaneWriteCheck,
@@ -73,8 +117,20 @@ export {
   resolvePrototypeOwnership,
 } from './ownership.ts'
 
-export type { PrototypeStatus, PrototypeStatusService } from './status.ts'
+export type { PrototypeStatus, PrototypeStatusFinding, PrototypeStatusFrameCapture, PrototypeStatusRequirement, PrototypeStatusService } from './status.ts'
 export { buildPrototypeStatus, listPrototypeStatuses } from './status.ts'
+
+export { PROTOTYPE_PRD_FILENAME, getPrototypePrdPath, parsePrototypePrd, readPrototypeRequirements } from './requirements.ts'
+export type { PrototypeCheck, PrototypeCheckKind, PrototypeRequirement, PrototypeRequirements } from './requirements.ts'
+
+export { PROTOTYPE_RESEARCH_DIRNAME, getPrototypeResearchPath, parsePrototypeFinding, readPrototypeFindings } from './research.ts'
+export type { PrototypeFinding, PrototypeFindings } from './research.ts'
+
+export { PROTOTYPE_FRAMES_DIRNAME, PROTOTYPE_VIDEOS_DIRNAME, buildFramesIndexDoc, copyPrototypeVideo, formatOffset, frameFileName, getPrototypeFramesPath, getPrototypeVideosPath, listFrameCaptures, sessionDirName, writeFrameCapture } from './frames.ts'
+export type { PrototypeFrame, PrototypeFrameCapture, PrototypeFrameCaptureSummary, PrototypeFrameReason, WrittenFrameCapture } from './frames.ts'
+
+export { resolveRequirementCoverage } from './coverage.ts'
+export type { RequirementCoverage, RequirementCoverageReport } from './coverage.ts'
 
 // The page kind and its default live in `types.ts` (which imports nothing) — see
 // the note there for why a renderer must not reach a barrel for a *value*.
@@ -95,6 +151,13 @@ export {
   linkPrototypeReference,
   unlinkPrototypeReference,
 } from './references.ts'
+
+export {
+  getPrototypeProject,
+  listPrototypesForProject,
+  resolveProjectPrototype,
+  setPrototypeProject,
+} from './project-link.ts'
 
 export type { WrittenPage, CreatedPrototype, CreatePrototypeInput } from './create.ts'
 export {

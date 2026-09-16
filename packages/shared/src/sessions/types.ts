@@ -213,9 +213,14 @@ export interface SessionConfig {
   /** Workspace-scoped project id this session belongs to (undefined = unbound). */
   projectId?: string;
   /**
-   * Prototype this session is bound to (a slug under the workspace's
-   * `prototypes/` folder; undefined = unbound). Binding is what lets the agent
+   * Prototype this session is working on (a slug under the workspace's
+   * `prototypes/` folder; undefined = none). Binding is what lets the agent
    * resolve `prototype-*` commands without being told a slug every turn.
+   *
+   * This is the *effective* prototype, not necessarily the session's own: a
+   * conversation inside a project whose prototype is unambiguous works on that
+   * one without being bound (see `resolveProjectPrototype`). The persisted
+   * header keeps what was explicitly set.
    */
   prototypeSlug?: string;
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */

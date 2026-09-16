@@ -13,6 +13,7 @@ import type { MentionItemType } from '@/components/ui/mention-menu'
 import type { LoadedSkill, LoadedSource } from '../../shared/types'
 import { AGENTS_PLUGIN_NAME } from '@craft-agent/shared/skills/types'
 import { getSourceIconSync, getSkillIconSync } from './icon-cache'
+import { findElementMentions, parseElementMention } from './element-mention'
 
 // Import and re-export parsing functions from shared (pure string operations, no renderer deps)
 import { parseMentions, stripAllMentions, resolveSkillMentions, resolveSourceMentions, type ParsedMentions } from '@craft-agent/shared/mentions'
@@ -30,8 +31,17 @@ const WS_ID_CHARS = '[\\w .-]'
 // Types
 // ============================================================================
 
+/**
+ * Mention kinds the composer can hold.
+ *
+ * `element` is the odd one out: the `@` menu never yields it (the browser panel
+ * inserts it when a page element is picked), so it is deliberately not part of
+ * `MentionItemType`.
+ */
+export type ComposerMentionType = MentionItemType | 'element'
+
 export interface MentionMatch {
-  type: MentionItemType
+  type: ComposerMentionType
   id: string
   /** Full match text including @ prefix */
   fullMatch: string
@@ -108,6 +118,17 @@ export function findMentionMatches(
       id: match[2],
       fullMatch: match[1],
       startIndex: match.index,
+    })
+  }
+
+  // Match element mentions: [element:<selector>|<text>] — an encoded payload, so
+  // the id here is the raw payload and consumers decode it (see element-mention).
+  for (const element of findElementMentions(text)) {
+    matches.push({
+      type: 'element',
+      id: element.payload,
+      fullMatch: element.fullMatch,
+      startIndex: element.startIndex,
     })
   }
 
@@ -214,7 +235,12 @@ export function extractBadges(
   const skillsBySlug = new Map(skills.map(s => [s.slug, s]))
   const sourcesBySlug = new Map(sources.map(s => [s.config.slug, s]))
 
-  return matches.map(match => {
+  return matches.flatMap(match => {
+    // Element references never reach a stored message: the composer expands them
+    // into readable text at send time (see element-mention), so there is nothing
+    // here to badge.
+    if (match.type === 'element') return []
+
     let label = match.id
     let iconDataUrl: string | undefined
     let filePath: string | undefined
@@ -251,7 +277,7 @@ export function extractBadges(
       rawText = `[skill:${pluginName}:${match.id}]`
     }
 
-    return {
+    return [{
       type: match.type as 'source' | 'skill' | 'file' | 'folder',
       label,
       rawText,
@@ -259,7 +285,7 @@ export function extractBadges(
       filePath,
       start: match.startIndex,
       end: match.startIndex + match.fullMatch.length,
-    }
+    }]
   })
 }
 

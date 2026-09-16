@@ -127,6 +127,7 @@ describe('buildPatchInitScript', () => {
     lane: 'A',
     order: 1,
     source: '.btn { border-radius: 12px }',
+    targets: [],
     page: null,
     key: 'prototype:checkout-flow:A-001-btn.css',
   }
@@ -186,7 +187,9 @@ describe('buildPatchInitScript', () => {
       buildPatchInitScript({ ...cssPatch, file, kind: 'js', source: 'state.value += 1;' })
 
     const state = { value: 0 }
-    new Function('state', `${patch('A-001-one.js')}\n${patch('A-002-two.js')}`)(state)
+    // `window` is where a patch records what it observed about itself (§21.1), so
+    // the sandbox has to provide one — the same object the page would have.
+    new Function('state', 'window', `${patch('A-001-one.js')}\n${patch('A-002-two.js')}`)(state, {})
 
     expect(state.value).toBe(2)
   })

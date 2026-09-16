@@ -228,12 +228,17 @@ export class PiAgent extends BaseAgent {
   }
 
   /**
-   * Look up the bound prototype (if any) and return a snapshot for system-prompt injection.
-   * Resolved per turn (unlike ClaudeAgent, which pins on the first chat) because this
-   * backend rebuilds its prompt each time anyway.
+   * Look up the prototype this conversation is on (if any) and return a snapshot
+   * for system-prompt injection.
+   *
+   * Resolved per turn (unlike ClaudeAgent, which pins on the first chat) because
+   * this backend rebuilds its prompt each time anyway — and asked of the host
+   * rather than read off `config.session`, which is a snapshot from agent creation
+   * and would make "per turn" mean "per turn, from a stale value"
+   * (see BackendConfig.getPrototypeSlug).
    */
   private resolvePrototypeContext(): PrototypePromptContext | null {
-    const slug = this.config.session?.prototypeSlug;
+    const slug = this.config.getPrototypeSlug?.() ?? this.config.session?.prototypeSlug ?? null;
     if (!slug) return null;
 
     try {

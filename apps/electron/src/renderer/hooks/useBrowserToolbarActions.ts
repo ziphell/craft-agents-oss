@@ -30,15 +30,31 @@ export interface EditElementRequest {
   sessionId: string | null
 }
 
+/**
+ * An element handed to a conversation rather than to a prototype (plan §12.7).
+ *
+ * No slug, and that is the point: picking an element to talk about needs a
+ * conversation and nothing else, so a plain page someone opened in a bound window
+ * works exactly like a prototype's.
+ */
+export interface AddElementRequest {
+  element: PickedElement
+  instanceId: string
+  sessionId: string
+}
+
 export interface UseBrowserToolbarActionsOptions {
   workspaceId: string | null | undefined
   /** Called when the user picked an element in a bound panel. */
   onEditElement: (request: EditElementRequest) => void
+  /** Called when the user used the bar under the highlight. */
+  onAddElementToConversation: (request: AddElementRequest) => void
 }
 
 export function useBrowserToolbarActions({
   workspaceId,
   onEditElement,
+  onAddElementToConversation,
 }: UseBrowserToolbarActionsOptions): void {
   const { t } = useTranslation()
   const instances = useAtomValue(browserInstancesAtom)
@@ -108,6 +124,19 @@ export function useBrowserToolbarActions({
         return
       }
 
+      // The bar under the highlight needs no prototype — a page nobody owns is
+      // the case it exists for — so it is answered before the prototype check
+      // rather than gated behind it (plan §12.7).
+      if (action.kind === 'add-to-conversation') {
+        const { sessionId } = resolveBinding(action.instanceId)
+        if (!sessionId) {
+          toast.info(t('browserEdit.noSession'))
+          return
+        }
+        onAddElementToConversation({ element: action.element, instanceId: action.instanceId, sessionId })
+        return
+      }
+
       const { slug, sessionId } = resolveBinding(action.instanceId)
       if (!slug) {
         // Not an error worth an alert — the user simply has not bound anything,
@@ -121,7 +150,28 @@ export function useBrowserToolbarActions({
         void window.electronAPI
           .applyPrototype(workspaceId, action.instanceId, slug)
           .then((result) => {
-            toast.success(t('browserEdit.applied', { applied: (result as { applied: number }).applied }))
+            const report = result as {
+              applied: number
+              unmatched?: string[]
+              drifted?: Array<{ target: string }>
+              untargeted?: string[]
+            }
+            // What the patches made of the page (plan §21.1). A count alone hides
+            // the one thing worth knowing: that a patch matched nothing, which is
+            // otherwise indistinguishable from one that changed nothing.
+            const notes: string[] = []
+            if (report.unmatched && report.unmatched.length > 0) {
+              notes.push(t('browserEdit.unmatched', { targets: report.unmatched.join(', ') }))
+            }
+            if (report.drifted && report.drifted.length > 0) {
+              notes.push(t('browserEdit.drifted', { targets: report.drifted.map((d) => d.target).join(', ') }))
+            }
+            if (report.untargeted && report.untargeted.length > 0) {
+              notes.push(t('browserEdit.untargeted', { count: report.untargeted.length }))
+            }
+            toast.success(t('browserEdit.applied', { applied: report.applied }), {
+              description: notes.length > 0 ? notes.join(' · ') : undefined,
+            })
           })
           .catch((err: unknown) => {
             console.error('[useBrowserToolbarActions] Failed to apply prototype:', err)
@@ -140,5 +190,5 @@ export function useBrowserToolbarActions({
     return () => {
       if (typeof off === 'function') off()
     }
-  }, [resolveBinding, openPrototype, workspaceId, onEditElement, t])
+  }, [resolveBinding, openPrototype, workspaceId, onEditElement, onAddElementToConversation, t])
 }
