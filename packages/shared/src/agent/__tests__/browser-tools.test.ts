@@ -30,6 +30,7 @@ function tabRow(overrides: Partial<BrowserTabSummary> & { id: string }): Browser
     disposition: null,
     openedBySessionId: null,
     driverSessionId: null,
+    lockedBy: null,
     ...overrides,
   }
 }
@@ -2406,6 +2407,30 @@ describe('createBrowserTools', () => {
       // The two halves are named, because a reader that takes a declaration for a
       // measurement is the failure this split exists to prevent.
       expect(text).toContain('"opened by" and "driven by" are')
+    })
+
+    // A page that is held right now says so — and says it about *that page*, since with a
+    // shared window the neighbouring pages are free even while one of them is locked.
+    it('says which page is locked, and whose work is holding it', async () => {
+      mockFns.listTabs = async () => ([
+        tabRow({
+          id: 'tab-1',
+          url: 'https://app.example.com/checkout',
+          title: 'Checkout',
+          active: true,
+          openedBySessionId: 'session-a',
+          driverSessionId: 'session-b',
+          lockedBy: 'session-b',
+        }),
+        tabRow({ id: 'tab-2', url: 'https://docs.example.com', title: 'Docs' }),
+      ])
+
+      const text = (await executeTool(tools, 'browser_tool', { command: 'tabs' })).content[0].text
+
+      expect(text).toContain('locked:     session-b is working on it, so it is held until that turn ends')
+      // The page nobody is holding says nothing about being held.
+      expect(text.match(/locked: {5}/g)).toHaveLength(1)
+      expect(text).toContain('"locked" is the lease')
     })
 
     // A page the prototype's own table does not describe is said so, rather than

@@ -289,6 +289,7 @@ function tabSummary(overrides: Partial<BrowserTabSummary> & { id: string }): Bro
     disposition: null,
     openedBySessionId: null,
     driverSessionId: null,
+    lockedBy: null,
     ...overrides,
   }
 }
@@ -1048,6 +1049,9 @@ describe('BrowserPaneManager', () => {
         tabs: [
           tabSummary({ id: instance.tabs[0].id, url: 'https://example.com', title: 'Example', active: true }),
         ],
+        // Nothing opened these pages through a conversation, so there is no group to
+        // name — the rail draws no headers for a window that is all one person's.
+        sessionLabels: {},
       },
     ])
   })
@@ -1082,6 +1086,7 @@ describe('BrowserPaneManager', () => {
         tabs: [
           tabSummary({ id: instance.tabs[0].id, url: 'https://craft.do', title: 'Craft', isLoading: true, active: true }),
         ],
+        sessionLabels: {},
       },
     ])
   })
@@ -1585,6 +1590,15 @@ describe('BrowserPaneManager', () => {
   })
 
   describe('agent control overlay', () => {
+    /**
+     * The script the **page on screen's** overlay was last told to run — the shield is
+     * drawn there and nowhere else, so this is where it is observable.
+     */
+    const overlayScript = (instance: any): string => {
+      const active = instance.tabs.find((tab: any) => tab.id === instance.activeTabId)
+      return active?.nativeOverlayView.webContents.executeJavaScript.mock.calls.at(-1)?.[0] ?? ''
+    }
+
     it('setAgentControl activates native overlay on bound instance', async () => {
       manager.createInstance('ac-1')
       manager.bindSession('ac-1', 'sess-1')
@@ -1602,6 +1616,50 @@ describe('BrowserPaneManager', () => {
       expect(page(instance).nativeOverlayView.webContents.executeJavaScript).toHaveBeenCalled()
       expect(page(instance).nativeOverlayView.webContents.focus).not.toHaveBeenCalled()
       expect(manager.listInstances().find(i => i.id === 'ac-1')?.agentControlActive).toBe(true)
+    })
+
+    // The lock is drawn on the page, not the window (plan §22, 第九轮): the shield covers
+    // the page being worked on, and switching away hands the mouse and keyboard back
+    // without releasing anything — the agent is still on *its* page.
+    it('arms the page shield only while the page on screen is the one being worked on', async () => {
+      /** Enough microtasks for a page's overlay document to finish loading. */
+      const settle = async (): Promise<void> => {
+        for (let i = 0; i < 4; i += 1) await Promise.resolve()
+      }
+
+      manager.createInstance('ac-lock')
+      manager.bindSession('ac-lock', 'sess-lock')
+      const instance = (manager as any).instances.get('ac-lock')
+      instance.tabs[0].currentUrl = 'https://first.example.com/'
+      // The page the session is working on is the one on screen — commands act on the
+      // page in front, which is what the lock follows.
+      const heldId = manager.createTab('ac-lock', {
+        url: 'https://held.example.com/',
+        openedBySessionId: 'sess-lock',
+      })
+      const otherId = manager.createTab('ac-lock', { url: 'https://other.example.com/' })
+      manager.activateTab('ac-lock', heldId)
+      await settle()
+
+      manager.setAgentControl('sess-lock', { displayName: 'Click', intent: 'Pressing Buy' })
+      await settle()
+
+      // The held page is on screen: locked, and the pointer says so.
+      expect(overlayScript(instance)).toContain('const shieldActive = true;')
+      expect(overlayScript(instance)).toContain('const locked = true;')
+
+      manager.activateTab('ac-lock', otherId)
+      await settle()
+
+      // A page the person switched to is not the agent's to hold.
+      expect(overlayScript(instance)).toContain('const shieldActive = false;')
+      expect(overlayScript(instance)).toContain('const locked = false;')
+      // …while the page it *is* working on stays locked in the model.
+      expect(manager.listTabs('ac-lock').find((tab) => tab.id === heldId)?.lockedBy).toBe('sess-lock')
+
+      manager.activateTab('ac-lock', heldId)
+      await settle()
+      expect(overlayScript(instance)).toContain('const shieldActive = true;')
     })
 
     it('keeps native overlay visible for active session control', async () => {
@@ -2031,6 +2089,47 @@ describe('BrowserPaneManager', () => {
       // group them without asking the manager anything else.
       expect(lastToolbarState(instance).tabs).toHaveLength(2)
       expect(manager.listInstances().find((item) => item.id === 'tabs-meta')?.tabs).toHaveLength(2)
+    })
+
+    // The rail groups a window's pages by who opened them, and needs a name to write on
+    // each group: `openedBySessionId` is an id, and an id is not something a person can
+    // read. Names only — an opener with no name yet is left out, because the chrome has
+    // a generic label for that and printing an id is worse than saying nothing.
+    it('names the conversations whose pages are in the window', () => {
+      manager.setSessionLabelResolver((sessionId) => (sessionId === 'session-a' ? 'Checkout fix' : null))
+      manager.createInstance('tabs-labels')
+      const instance = (manager as any).instances.get('tabs-labels')
+      instance.tabs[0].currentUrl = 'https://first.example.com/'
+
+      manager.createTab('tabs-labels', { openedBySessionId: 'session-a' })
+      manager.createTab('tabs-labels', { openedBySessionId: 'session-unnamed' })
+
+      expect(lastToolbarState(instance).sessionLabels).toEqual({ 'session-a': 'Checkout fix' })
+    })
+
+    // The lock is a page-level fact (plan §22, 第九轮): a page the session with the overlay
+    // is working on is held, the others are not. Window-wide locking is what this replaces
+    // — the same overlay, one page narrower.
+    it('reports which page a working session has locked, and only that one', () => {
+      manager.createInstance('tabs-lock')
+      manager.bindSession('tabs-lock', 'session-a')
+      const instance = (manager as any).instances.get('tabs-lock')
+      instance.tabs[0].currentUrl = 'https://first.example.com/'
+      manager.createTab('tabs-lock', { url: 'https://second.example.com/', openedBySessionId: 'session-a' })
+
+      // No overlay yet: the page is *driven* by whoever opened it, which is not a lock.
+      expect(manager.listTabs('tabs-lock').map((tab) => tab.lockedBy)).toEqual([null, null])
+
+      manager.setAgentControl('session-a', { displayName: 'Click', intent: 'Pressing Buy' })
+
+      expect(manager.listTabs('tabs-lock').map((tab) => tab.lockedBy)).toEqual([null, 'session-a'])
+      // And the page the window came with stays free: the lock follows the work, not the
+      // window.
+      expect(manager.listTabs('tabs-lock')[0].driverSessionId).toBeNull()
+
+      manager.clearAgentControl('session-a')
+
+      expect(manager.listTabs('tabs-lock').map((tab) => tab.lockedBy)).toEqual([null, null])
     })
 
     // Which page of the prototype it is on is the page table's answer, and it is

@@ -122,6 +122,8 @@
   "browser.closeWindowEntirely": "Zamknij okno całkowicie",
   "browser.hideWindow": "Ukryj okno",
   "browser.newPage": "Nowa strona",
+  "browser.openedByConversation": "Rozmowa",
+  "browser.openedByYou": "Ty",
   "browser.pageInUse": "Agent pracuje teraz na tej stronie",
   "browser.pages": "Strony",
   "browser.pickElement": "Wybierz element na stronie",

@@ -931,6 +931,9 @@ export interface BrowserTabPrototype {
  * Keeping them apart is the point: a caller that reads a declaration as a
  * measurement is reading somebody's intention as a fact, and one that reads a lease
  * as ownership will close work that is not theirs.
+ *
+ * `lockedBy` is none of the three: it is what the lease *adds up to* when the window
+ * also has an overlay up, so it is derived here rather than stored (see the field).
  */
 export interface BrowserTabSummary {
   /** Stable across the page's life; what `--tab` and the toolbar name it by. */
@@ -994,6 +997,23 @@ export interface BrowserTabSummary {
    * this is what makes "who is moving which page" answerable instead of guessed.
    */
   driverSessionId: string | null
+
+  // -- Lease, enforced -----------------------------------------------------
+  /**
+   * Which session has this page **locked at the moment**, or `null` when nobody has.
+   *
+   * A page is locked while a conversation is working on it: the window's overlay is up
+   * for that session *and* this page is the one its commands are landing on (the
+   * lease). While it is locked, a person cannot click or type into the page and
+   * another conversation's commands that name it are refused (plan §22, 第九轮) —
+   * narrower than the window-wide lock this replaces: the chrome, the other pages and
+   * the window itself stay usable.
+   *
+   * Derived, not stored, from the overlay plus the page's own lease — so it cannot
+   * drift from either: an overlay with no page behind it would be a lock on nothing,
+   * and a page with no overlay is being driven, not held.
+   */
+  lockedBy: string | null
 }
 
 export interface BrowserInstanceInfo {

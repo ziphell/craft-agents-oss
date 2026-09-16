@@ -832,6 +832,13 @@ app.whenReady().then(async () => {
         return matchPrototypePage(listPrototypePages(served.workspaceRootPath, served.slug), url)
       })
 
+      // What to write on the page rail's group headers. A page says which session
+      // opened it, and the window is one window for the whole workspace — so the rail
+      // is where several conversations' pages sit side by side, and a session id is
+      // not a name a person can read. Same late-bound shape as the resolvers above,
+      // and only a name: whose page it is stays `openedBySessionId`'s answer.
+      browserPaneManager?.setSessionLabelResolver((sessionId) => sessionManager?.getSessionName(sessionId) ?? null)
+
       // -----------------------------------------------------------------------
       // Messaging Gateway — attach the WS publisher, init local workspaces,
       // install the fan-out event sink. The handle was created inside

@@ -101,14 +101,15 @@ export function getBrowserToolHelp(): string {
     '  tab-close <id>                                 close a page you opened (the last one closes the window)',
     '  focus [windowId]                               focus a browser window (no new window)',
     '  windows                                        the workspace\'s windows, who is driving them, what each shows',
-    '  release [windowId|all]                         dismiss agent overlay (user keeps browsing)',
+    '  release [windowId|all]                         dismiss agent overlay, and unlock the page it held',
     '  close [windowId]                               close a window of your own; on the workspace\'s, close your own pages',
     '  hide [windowId]                                hide the window (keeps state, "open" re-shows)',
     '',
     'There is one browser window per workspace, used by every conversation in it and by the user, for any',
     'task: "open" and "prototype-open" add a page to it rather than making a second window. The window',
     'itself is nobody\'s to close; the pages you opened are — "close" and "tab-close <id>" do that, and',
-    '"release" drops your overlay.',
+    '"release" drops your overlay and unlocks the page it was holding — the window, the other',
+    'pages and the person\'s chrome were never held by it.',
     '',
     'Every prototype-* command except list/create/bind/reference defaults to the prototype this',
     'session is bound to, so no slug is needed. Pass one to target a different prototype.',
@@ -2929,13 +2930,23 @@ async function executeSingleCommand(args: {
           ? `${tab.driverSessionId}${tab.driverSessionId === args.sessionId ? ' (you)' : ''}`
           : 'nobody right now'}`,
       );
+      // Held right now, as opposed to merely driven: while this is up, the page is the
+      // lock's — a person cannot click or type there, and a command that names it from
+      // anybody else is refused. Said out loud because it is the one state where the
+      // page is not yours to act on even though it may be yours to work in.
+      if (tab.lockedBy) {
+        lines.push(
+          `      locked:     ${tab.lockedBy}${tab.lockedBy === args.sessionId ? ' (you)' : ''} is working on it, so it is held until that turn ends`,
+        );
+      }
     }
 
     lines.push(
       '',
       'Everything above "opened by" is what the page itself reports. "opened by" and "driven by" are',
       'not: one is who asked for the page (your own pages are the ones you may close), the other is who',
-      'is working on it at this moment (a lease, released when a turn ends).',
+      'is working on it at this moment (a lease, released when a turn ends). "locked" is the lease',
+      'enforced: while it is up, that page takes no input from anybody else.',
     );
 
     return { output: lines.join('\n'), appendReleaseHint: false };

@@ -1,4 +1,4 @@
-﻿﻿﻿﻿import type { EventSink, RpcServer } from '@craft-agent/server-core/transport'
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿import type { EventSink, RpcServer } from '@craft-agent/server-core/transport'
 import { CLIENT_BROWSER_INVOKE } from '@craft-agent/server-core/transport'
 import type { ISessionManager, IBrowserPaneManager, ExecutePromptAutomationInput } from '@craft-agent/server-core/handlers'
 import { RemoteBrowserPaneManager } from './RemoteBrowserPaneManager'
@@ -37,7 +37,7 @@ import {
 import { importPrototypeVideo as importPrototypeVideoArtifacts } from '../domain/import-prototype-video'
 import { verifyPrototype as verifyPrototypeArtifacts } from '../domain/verify-prototype'
 import { describePrototypeAtPage } from '../domain/prototype-page'
-import { whyTabIsNotMineToClose, whyTabIsOutOfReach } from '../domain/tab-access'
+import { whyTabIsLocked, whyTabIsNotMineToClose, whyTabIsOutOfReach } from '../domain/tab-access'
 import {
   resolveSessionConnection,
   createBackendFromConnection,
@@ -3739,22 +3739,36 @@ export class SessionManager implements ISessionManager {
 
         /**
          * The page a command is about, refused when it is not this conversation's to
-         * touch (plan §22).
+         * touch (plan §22) or is locked by another one at this moment (第九轮).
          *
-         * The rule itself is `whyTabIsOutOfReach` — reach is decided by the page's
-         * prototype against the one this conversation works on, with the two
-         * exceptions that make the shared window usable at all (an ordinary page is
-         * anybody's, and a page this conversation opened is its own). Here it only
-         * gets the conversation's side of the answer.
+         * Two rules, in this order. `whyTabIsOutOfReach` is the standing one — reach is
+         * decided by the page's prototype against the one this conversation works on,
+         * with the two exceptions that make the shared window usable at all (an ordinary
+         * page is anybody's, and a page this conversation opened is its own).
+         * `whyTabIsLocked` is the clock: the page may be yours in principle and busy
+         * right now, and its answer is "wait" rather than "never".
          */
-        const assertTabInReach = (tab: BrowserTabSummary): void => {
-          const why = whyTabIsOutOfReach(tab, sid, this.effectivePrototypeSlug(managed))
+        const assertTabUsable = (tab: BrowserTabSummary): void => {
+          const why =
+            whyTabIsOutOfReach(tab, sid, this.effectivePrototypeSlug(managed)) ?? whyTabIsLocked(tab, sid)
           if (why) throw new Error(why)
         }
 
         /** Closing is housekeeping, and housekeeping is only the pages this conversation opened. */
         const assertTabIsMineToClose = (tab: BrowserTabSummary): void => {
           const why = whyTabIsNotMineToClose(tab, sid)
+          if (why) throw new Error(why)
+        }
+
+        /**
+         * …and not while somebody else is in the middle of working on it.
+         *
+         * A page this conversation opened can still be locked by another one that took it
+         * over (a shared page is shared), and closing it under that conversation's feet is
+         * exactly what the lock is for.
+         */
+        const assertTabUnlocked = (tab: BrowserTabSummary): void => {
+          const why = whyTabIsLocked(tab, sid)
           if (why) throw new Error(why)
         }
 
@@ -3777,11 +3791,11 @@ export class SessionManager implements ISessionManager {
           sessionLog.info(`[browser-pane] tool target resolved: ${toolName} session=${sid} instance=${instanceId} ownerType=${info?.ownerType ?? 'unknown'} ownerSessionId=${info?.ownerSessionId ?? 'none'} visible=${info?.isVisible ?? false}`)
 
           // The page this command will act on is the one on screen — `--tab` already
-          // brought it forward — and whether it is in reach is decided here, before the
-          // command does anything (plan §22).
+          // brought it forward — and whether it may be touched is decided here, before the
+          // command does anything (plan §22: in reach, and not locked right now).
           const active = (await bpm.listTabsAsync(instanceId).catch(() => []))
             .find((tab) => tab.active)
-          if (active) assertTabInReach(active)
+          if (active) assertTabUsable(active)
 
           return instanceId
         }
@@ -4325,7 +4339,7 @@ export class SessionManager implements ISessionManager {
               }
               // Checked on the *named* page, before the window is moved to it: naming
               // somebody else's work is refused here rather than after the switch.
-              assertTabInReach(await requireTab(instanceId, tabId))
+              assertTabUsable(await requireTab(instanceId, tabId))
               bpm.activateTab(instanceId, tabId)
             },
             closeTab: async (tabId) => {
@@ -4333,7 +4347,9 @@ export class SessionManager implements ISessionManager {
               if (!instanceId) {
                 throw new Error('No browser window is open for this workspace, so there is no page to close.')
               }
-              assertTabIsMineToClose(await requireTab(instanceId, tabId))
+              const target = await requireTab(instanceId, tabId)
+              assertTabIsMineToClose(target)
+              assertTabUnlocked(target)
               bpm.closeTab(instanceId, tabId)
               // Read back rather than assume: closing the last page takes the
               // window with it, and that is worth saying rather than leaving the
@@ -7688,6 +7704,21 @@ export class SessionManager implements ISessionManager {
     const slug = this.effectivePrototypeSlug(managed)
     if (!slug) return null
     return { slug, workspaceRootPath: managed.workspace.rootPath }
+  }
+
+  /**
+   * What a conversation is called, for a window that is showing its pages.
+   *
+   * Read by the page rail's group headers, through the pane manager's injected
+   * resolver (see main/index.ts): the rail lists several conversations' pages side by
+   * side in one window, and the only thing a page knows about its opener is an id.
+   * Only the name — whose pages are whose stays the page's own `openedBySessionId`,
+   * and nothing here is consulted for a permission. `null` for a conversation that is
+   * gone or has not been named yet; the caller falls back to a generic label rather
+   * than printing an id.
+   */
+  getSessionName(sessionId: string): string | null {
+    return this.sessions.get(sessionId)?.name || null
   }
 
   /**

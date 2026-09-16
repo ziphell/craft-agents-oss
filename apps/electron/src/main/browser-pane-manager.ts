@@ -276,11 +276,6 @@ interface AgentControlState {
   intent?: string
 }
 
-interface AgentControlLockState {
-  active: boolean
-  previousResizable: boolean
-}
-
 /**
  * One page of a window.
  *
@@ -459,7 +454,6 @@ interface BrowserInstance {
   pendingShowToken: number
   lastAction: LastBrowserAction | null
   agentControl: AgentControlState | null
-  lockState: AgentControlLockState
   lastLaunchToken: string | null
   /**
    * Whether the element picker is **armed on this window** (plan §12.7).
@@ -750,6 +744,17 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * and typing it back returns you to that page instead of to the flow's entry.
    */
   private prototypePageResolver: ((slug: string, origin: string, url: string) => string | null) | null = null
+  /**
+   * What to call a conversation, for the page rail's group headers. Also injected
+   * (see main/index.ts).
+   *
+   * A page says who opened it by **session id**, and an id is not something a person
+   * can tell one conversation from another by. This is a *name for a group*, not a
+   * second owner: the grouping reads `openedBySessionId` and nothing here can change
+   * it. `null` for a session that is gone or has no name yet, and the chrome falls
+   * back to a generic label rather than showing an id.
+   */
+  private sessionLabelResolver: ((sessionId: string) => string | null) | null = null
 
   setWindowManager(windowManager: WindowManager): void {
     this.windowManager = windowManager
@@ -769,6 +774,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   setPrototypePageResolver(fn: (slug: string, origin: string, url: string) => string | null): void {
     this.prototypePageResolver = fn
+  }
+
+  setSessionLabelResolver(fn: (sessionId: string) => string | null): void {
+    this.sessionLabelResolver = fn
   }
 
   onStateChange(callback: (info: BrowserInstanceInfo) => void): void {
@@ -940,10 +949,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       pendingShowToken: 0,
       lastAction: null,
       agentControl: null,
-      lockState: {
-        active: false,
-        previousResizable: this.getWindowResizable(window),
-      },
       lastLaunchToken: null,
       picking: false,
       pickLabel: 'Add to conversation',
@@ -1176,7 +1181,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     instance.activeTabId = tab.id
     this.forceCloseToolbarMenu(instance, 'tab-switch')
     this.layoutAllViews(instance)
-    this.reapplyAgentControlVisual(instance)
+    this.updateNativeOverlayState(instance)
     this.emitStateChange(instance)
     this.pushToolbarState(instance)
     // The picker is the window's mode, so it follows the page that just came
@@ -1226,7 +1231,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         instance.activeTabId = next.id
         this.forceCloseToolbarMenu(instance, 'tab-closed')
         this.layoutAllViews(instance)
-        this.reapplyAgentControlVisual(instance)
+        this.updateNativeOverlayState(instance)
         this.emitStateChange(instance)
         this.pushToolbarState(instance)
         // Whatever page the window shows next is where an armed picker belongs.
@@ -1425,7 +1430,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       }
     }
 
-    runCleanup('applyAgentControlLock', () => this.applyAgentControlLock(instance, false))
     runCleanup('updateNativeOverlayState', () => this.updateNativeOverlayState(instance))
 
     try {
@@ -3056,7 +3060,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     for (const instance of this.instances.values()) {
       if (instance.boundSessionId === sessionId) {
         instance.agentControl = null
-        this.applyAgentControlLock(instance, false)
         this.updateNativeOverlayState(instance)
         this.emitStateChange(instance)
       }
@@ -3069,12 +3072,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
 
     return agentControl?.displayName ?? 'Agent is working…'
-  }
-
-  private reapplyAgentControlVisual(instance: BrowserInstance): void {
-    const active = !!instance.agentControl?.active
-    this.applyAgentControlLock(instance, active)
-    this.updateNativeOverlayState(instance)
   }
 
   /** Resolve the app's current accent color as a concrete CSS value (not a var reference). */
@@ -3284,6 +3281,27 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     instance.railView.setAutoResize({ width: false, height: true })
   }
 
+  /**
+   * Which session has this page locked at the moment, or `null` when nobody has.
+   *
+   * Two facts multiplied, and neither alone holds a page: the window has an overlay up
+   * for a session (that session's turn is running commands), and this page is the one
+   * those commands are landing on (its lease). An overlay with no lease behind it is a
+   * label, and a lease with no overlay is a page somebody *did* something to rather than
+   * one they are in the middle of.
+   *
+   * What the lock buys, and what it deliberately does not: a person cannot click or type
+   * into this page, and another conversation's commands that name it are refused — while
+   * the chrome, the other pages and the window itself stay usable (plan §22, 第九轮).
+   * The window-wide lock this replaces held all of that, which is why it could not
+   * survive the window becoming everyone's.
+   */
+  private pageLockerId(instance: BrowserInstance, tab: BrowserTab): string | null {
+    const control = instance.agentControl
+    if (!control?.active) return null
+    return tab.driverSessionId === control.sessionId ? control.sessionId : null
+  }
+
   private updateNativeOverlayState(instance: BrowserInstance): void {
     const control = instance.agentControl
     const agentActive = !!control?.active
@@ -3318,69 +3336,48 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     activeTab(instance).nativeOverlayView.setAutoResize({ width: true, height: true })
     this.raiseChromeViews(instance)
 
-    if (agentActive) {
-      const label = this.getAgentControlLabel(control)
-      const accent = this.getResolvedAccentColor()
+    // Two independent things are drawn here, and only one of them takes input.
+    const activeLocker = this.pageLockerId(instance, activeTab(instance))
+    const label = agentActive ? this.getAgentControlLabel(control) : ''
+    const accent = agentActive ? this.getResolvedAccentColor() : 'transparent'
+    // The page on screen is the only one a person can touch, so this is where the shield
+    // belongs — and only while that page is the locked one, or a menu of ours is open.
+    // Switching to another page therefore hands the keyboard and mouse straight back.
+    const shieldActive = menuActive || activeLocker !== null
 
-      void activeTab(instance).nativeOverlayView.webContents.executeJavaScript(`(() => {
-        const overlay = document.getElementById('overlay');
-        const chip = document.getElementById('chip');
-        const shield = document.getElementById('shield');
-        if (!overlay || !chip || !shield) return;
-
-        overlay.style.borderColor = ${JSON.stringify(accent)};
-        overlay.style.boxShadow = 'inset 0 0 0 1px color-mix(in oklab, ' + ${JSON.stringify(accent)} + ' 45%, transparent), inset 0 0 24px color-mix(in oklab, ' + ${JSON.stringify(accent)} + ' 28%, transparent)';
-        chip.textContent = ${JSON.stringify(label)};
-        chip.style.display = 'inline-flex';
-        shield.style.pointerEvents = 'auto';
-        shield.style.cursor = 'not-allowed';
-        shield.style.background = 'rgba(2, 6, 23, 0.03)';
-      })()`).catch(() => {})
-      return
-    }
-
-    // Menu mode: transparent full-page tap-catcher, no visuals
     void activeTab(instance).nativeOverlayView.webContents.executeJavaScript(`(() => {
       const overlay = document.getElementById('overlay');
       const chip = document.getElementById('chip');
       const shield = document.getElementById('shield');
       if (!overlay || !chip || !shield) return;
 
-      overlay.style.borderColor = 'transparent';
-      overlay.style.boxShadow = 'none';
-      chip.style.display = 'none';
-      shield.style.pointerEvents = 'auto';
-      shield.style.cursor = 'default';
-      shield.style.background = 'rgba(0, 0, 0, 0.001)';
+      const agentActive = ${agentActive};
+      const shieldActive = ${shieldActive};
+      const locked = ${activeLocker !== null};
+
+      // The agent's outline and chip say which window is being worked on and what is
+      // being done — on every page of it, because the window is what carries the overlay.
+      if (agentActive) {
+        overlay.style.borderColor = ${JSON.stringify(accent)};
+        overlay.style.boxShadow = 'inset 0 0 0 1px color-mix(in oklab, ' + ${JSON.stringify(accent)} + ' 45%, transparent), inset 0 0 24px color-mix(in oklab, ' + ${JSON.stringify(accent)} + ' 28%, transparent)';
+        chip.textContent = ${JSON.stringify(label)};
+        chip.style.display = 'inline-flex';
+      } else {
+        overlay.style.borderColor = 'transparent';
+        overlay.style.boxShadow = 'none';
+        chip.style.display = 'none';
+      }
+
+      // The shield takes input for two reasons and no more: this page is locked by the
+      // conversation working on it (plan §22, 第九轮 — the lock is on the page, so the
+      // rail, the address bar and the window's own size stay the person's), or a menu of
+      // ours is open above the page and a click on the page is how it is dismissed.
+      shield.style.pointerEvents = shieldActive ? 'auto' : 'none';
+      shield.style.cursor = locked ? 'not-allowed' : 'default';
+      shield.style.background = locked
+        ? 'rgba(2, 6, 23, 0.03)'
+        : (shieldActive ? 'rgba(0, 0, 0, 0.001)' : 'transparent');
     })()`).catch(() => {})
-  }
-
-  private getWindowResizable(window: BrowserWindow): boolean {
-    return typeof window.isResizable === 'function' ? window.isResizable() : true
-  }
-
-  private setWindowResizable(window: BrowserWindow, value: boolean): void {
-    if (typeof window.setResizable === 'function') {
-      window.setResizable(value)
-    }
-  }
-
-  private applyAgentControlLock(instance: BrowserInstance, active: boolean): void {
-    const wantsLock = active && !!instance.agentControl?.active
-
-    if (wantsLock && !instance.lockState.active) {
-      instance.lockState.previousResizable = this.getWindowResizable(instance.window)
-      this.setWindowResizable(instance.window, false)
-      instance.lockState.active = true
-      mainLog.info(`[browser-pane] interaction lock enabled id=${instance.id}`)
-      return
-    }
-
-    if (!wantsLock && instance.lockState.active) {
-      this.setWindowResizable(instance.window, instance.lockState.previousResizable)
-      instance.lockState.active = false
-      mainLog.info(`[browser-pane] interaction lock released id=${instance.id}`)
-    }
   }
 
   destroyAll(): void {
@@ -3395,7 +3392,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
 
     this.destroyingIds.delete(instance.id)
-    this.applyAgentControlLock(instance, false)
     this.updateNativeOverlayState(instance)
     activeTab(instance).cdp.detach()
     this.instances.delete(instance.id)
@@ -3683,6 +3679,25 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     return sessionId ? this.prototypeWindowResolver?.(sessionId) ?? null : null
   }
 
+  /**
+   * Names for the conversations that opened some of this window's pages.
+   *
+   * The rail groups the pages by opener and needs something to write on each group —
+   * `openedBySessionId` is an id, and a header reading `session-4f2a…` is not an
+   * answer to "whose pages are these". Only openers that have a name are included;
+   * the chrome has its own fallback, so a nameless (or deleted) session still groups.
+   */
+  private sessionLabelsFor(instance: BrowserInstance): Record<string, string> {
+    const labels: Record<string, string> = {}
+    for (const tab of instance.tabs) {
+      const sessionId = tab.openedBySessionId
+      if (!sessionId || sessionId in labels) continue
+      const label = this.sessionLabelResolver?.(sessionId)
+      if (label) labels[sessionId] = label
+    }
+    return labels
+  }
+
   private pushToolbarState(instance: BrowserInstance): void {
     if (instance.window.isDestroyed() || instance.toolbarView.webContents.isDestroyed()) return
     // One lookup for both answers, so the address bar and what a click would do
@@ -3719,6 +3734,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
        * pushed, so there is no second answer to disagree with.
        */
       tabs: instance.tabs.map((tab) => this.toTabSummary(instance, tab)),
+      /**
+       * How to name the conversations those pages came from, for the rail's group
+       * headers. Keyed by session id; a missing id is a session with no name yet, and
+       * the rail says so generically rather than printing an id.
+       */
+      sessionLabels: this.sessionLabelsFor(instance),
     }
     this.sendToChrome(instance, TOOLBAR_CHANNELS.STATE_UPDATE, state)
   }
@@ -4421,7 +4442,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
         const label = this.getAgentControlLabel(instance.agentControl)
 
-        this.reapplyAgentControlVisual(instance)
+        this.updateNativeOverlayState(instance)
         this.emitStateChange(instance)
 
         mainLog.info(`[browser-pane] agent control activated session=${sessionId} label=${label}`)
@@ -4438,7 +4459,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     for (const instance of this.instances.values()) {
       if (instance.boundSessionId === sessionId && instance.agentControl?.active) {
         instance.agentControl = null
-        this.applyAgentControlLock(instance, false)
         this.updateNativeOverlayState(instance)
         this.emitStateChange(instance)
         mainLog.info(`[browser-pane] agent control released session=${sessionId}`)
@@ -4467,7 +4487,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
 
     instance.agentControl = null
-    this.applyAgentControlLock(instance, false)
     this.updateNativeOverlayState(instance)
     this.emitStateChange(instance)
     mainLog.info(`[browser-pane] agent control released instance=${instanceId}${sessionId ? ` session=${sessionId}` : ''}`)
@@ -4897,25 +4916,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       mainLog.warn(`[browser-pane] toolbar did-fail-load id=${instance.id} code=${errorCode} url=${validatedURL} error=${errorDescription}`)
     })
 
-    toolbarWc.on('before-input-event', (event) => {
-      if (instance.lockState.active) {
-        event.preventDefault()
-      }
-    })
-
-    // The rail is the window's other chrome surface: same pushes, same lock, but its
-    // own document — a push sent before it finished loading would be lost, so its own
+    // The rail is the window's other chrome surface: same pushes, and its own document
+    // — a push sent before it finished loading would be lost, so its own
     // `did-finish-load` is where it catches up on the pages it has to draw.
     const railWc = instance.railView.webContents
 
     railWc.on('did-finish-load', () => {
       this.pushToolbarState(instance)
-    })
-
-    railWc.on('before-input-event', (event) => {
-      if (instance.lockState.active) {
-        event.preventDefault()
-      }
     })
 
     instance.window.on('focus', () => {
@@ -4925,7 +4932,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     instance.window.on('show', () => {
       instance.isVisible = true
       this.emitStateChange(instance)
-      this.reapplyAgentControlVisual(instance)
       this.pushToolbarState(instance)
       this.updateNativeOverlayState(instance)
       if (!activeTab(instance).themeColor) {
@@ -5004,7 +5010,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       this.emitStateChange(instance)
       void this.pushToolbarState(instance)
       void this.extractThemeColor(instance, tab)
-      this.reapplyAgentControlVisual(instance)
+      this.updateNativeOverlayState(instance)
     })
 
     pageWc.on('dom-ready', () => {
@@ -5012,9 +5018,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       void this.extractThemeColor(instance, tab)
     })
 
-    pageWc.on('before-input-event', (_event, _input) => {
-      if (instance.lockState.active) {
-        _event.preventDefault()
+    // A locked page takes no input from a person. The shield already swallows the mouse;
+    // this is the keyboard half — typing into a page a conversation is driving is the
+    // same interruption by another route. Read live rather than captured, so the lock
+    // follows the lease: the page stops refusing input when its turn ends or the overlay
+    // goes, and a page the person switched to is never covered by a lock on another.
+    pageWc.on('before-input-event', (event) => {
+      if (this.pageLockerId(instance, tab) !== null) {
+        event.preventDefault()
       }
     })
 
@@ -5049,7 +5060,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       this.emitStateChange(instance)
       void this.pushToolbarState(instance)
       this.scheduleEarlyThemeExtraction(instance, tab, url)
-      this.reapplyAgentControlVisual(instance)
+      this.updateNativeOverlayState(instance)
     })
 
     pageWc.on('did-redirect-navigation', (_event, url, isInPlace, isMainFrame) => {
@@ -5080,7 +5091,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         void this.pushToolbarState(instance)
         this.installThemeObserver(instance, tab)
         tab.inPageThemeTimer = setTimeout(() => { void this.extractThemeColor(instance, tab) }, 300)
-        this.reapplyAgentControlVisual(instance)
+        this.updateNativeOverlayState(instance)
       }).catch((error) => {
         mainLog.warn(`[browser-pane] empty-state launch handling failed id=${instance.id}: ${error instanceof Error ? error.message : String(error)}`)
       })
@@ -5245,6 +5256,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // -- Declaration: who asked for it, and who is working on it now --
       openedBySessionId: tab.openedBySessionId,
       driverSessionId: tab.driverSessionId,
+      // -- Lease, enforced: the same lease while the window's overlay backs it --
+      lockedBy: this.pageLockerId(instance, tab),
       // How the browser asked for it, when it did (plan §22).
       disposition: tab.disposition,
     }

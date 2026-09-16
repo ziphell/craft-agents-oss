@@ -586,6 +586,10 @@ A browser **window** is a container and a **page** is the thing in it, so severa
 
 **Two questions, two rules.** *May I work here?* A page is yours to work on when it belongs to no prototype (an ordinary page — anybody's to use, which is what "you open it, the agent takes over" means), when it is for the prototype this conversation works on, or when this conversation opened it (so `prototype-open` on a prototype you are not bound to still works). Another conversation's prototype is refused, and the refusal names it. *May I close it?* Only pages **this conversation opened**: the user's pages, and another conversation's, are not yours to close however convenient it would be.
 
+**A page can be locked; the window cannot.** While a conversation is working on a page — its overlay is up for that turn and its commands are landing there — **that page is locked**: a person cannot click or type into it, and another conversation's command that names it is refused with "it is locked while session-… works on it, until that turn ends". Everything around it stays free, for the user and for other conversations alike: the page rail, the address bar, the window's size, and every other page. The lock is *derived* — that page's lease plus the overlay being up — so it cannot be claimed, inherited or forgotten, and it ends with the turn (`release` drops it early). `tabs` prints `locked: <session> is working on it` while it holds.
+
+That is deliberately narrower than locking the window, which is what this used to do: one window is shared by the whole workspace, so holding *the window* held the user's own browsing and everybody else's pages with it. Holding the page you are actually working on costs nobody anything but a wait — and a command that would rather not wait can name another page with `--tab <id>`.
+
 **Which prototype a command means** is read off the page in front of you first (`page: <name>`, and the prototype the page is for), and only falls back to this conversation's binding when the page belongs to none. That is what lets one conversation work on several prototypes without binding any of them: `--tab` picks the page, and the page says whose it is.
 
 A page whose address the prototype's own page table does not describe says so (`none of the prototype's pages`) rather than being given the nearest page name — a file, an SPA route, or a page that belongs to another flow entirely.
@@ -602,7 +606,7 @@ Naming a page brings it to the front and the command then runs against the windo
 Manage and inspect browser windows and who is driving them. `windows` lists every window the workspace has, with `driver:` (who is using it right now — see "The window is shared" above), `availableToSession:`, and the prototype of the page each one is showing.
 
 ### Lifecycle commands
-- `release` — dismiss agent overlay, keep window visible for user
+- `release` — dismiss the agent overlay, which also releases the page lock it held. The lock is **on the page**, not the window: the rail, the address bar, the window's size and every other page were never blocked by it.
 - `hide` — hide window but preserve session state
 - `close` — close and destroy a window of your own. On the workspace's window it closes **the pages you opened** instead (a fresh page takes their place if they were all of them), and says so; the window itself belongs to the workspace and is never closed by a conversation.
 

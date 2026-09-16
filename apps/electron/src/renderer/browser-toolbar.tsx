@@ -11,11 +11,12 @@ import ReactDOM from 'react-dom/client'
 import { useTranslation, initReactI18next } from 'react-i18next'
 import LanguageDetector from 'i18next-browser-languagedetector'
 import { setupI18n } from '@craft-agent/shared/i18n'
-import { Bot, EyeOff, Globe, MousePointerClick, Plus, X, XCircle, Zap } from 'lucide-react'
+import { Bot, EyeOff, Globe, Lock, MousePointerClick, Plus, X, XCircle, Zap } from 'lucide-react'
 import { BrowserControls, Spinner } from '@craft-agent/ui'
 import { HeaderIconButton } from '@/components/ui/HeaderIconButton'
 import { cn } from '@/lib/utils'
 import { getHostname } from '@/components/browser/utils'
+import { groupTabsByOpener, shouldShowGroupHeaders } from '@/components/browser/page-groups'
 import type { BrowserTabSummary } from '../shared/types'
 import {
   DropdownMenu,
@@ -70,6 +71,14 @@ interface ToolbarState {
    * with no content.
    */
   tabs?: BrowserTabSummary[]
+  /**
+   * What to call each conversation whose pages are in `tabs`, by opener id.
+   *
+   * The rail groups pages by who opened them (plan §22, 第八轮), and a session id is
+   * not a name. A missing entry is a conversation with no name yet — the rail says
+   * something generic rather than printing an id.
+   */
+  sessionLabels?: Record<string, string>
 }
 
 declare global {
@@ -129,11 +138,13 @@ const IS_RAIL = new URLSearchParams(window.location.search).get('view') === 'rai
  */
 function PageRail({
   tabs,
+  sessionLabels,
   onSelect,
   onClose,
   onNew,
 }: {
   tabs: BrowserTabSummary[]
+  sessionLabels: Record<string, string>
   onSelect: (tabId: string) => void
   onClose: (tabId: string) => void
   onNew: () => void
@@ -144,6 +155,24 @@ function PageRail({
     active: 'bg-foreground/[0.07] text-foreground/85',
     hover: 'hover:bg-foreground/[0.04]',
   }
+
+  /**
+   * The pages, sectioned by who opened them — a person, or one of the conversations
+   * this window is shared with (plan §22, 第八轮).
+   *
+   * The rule lives in `groupTabsByOpener` because the badge's page list in the top bar
+   * draws the same list and the two must not disagree about it. Headers only appear
+   * when there is more than one group: with a single group they would be a row saying
+   * "all of these are yours" over all of them.
+   */
+  const groups = groupTabsByOpener(tabs)
+  const showHeaders = shouldShowGroupHeaders(groups)
+
+  /** What to write on a group's header: a name, never an id. */
+  const groupLabel = (sessionId: string | null): string =>
+    sessionId === null
+      ? t('browser.openedByYou')
+      : sessionLabels[sessionId] ?? t('browser.openedByConversation')
 
   return (
     // `h-screen`, not `h-full`: the rail's document has no height of its own to
@@ -173,74 +202,101 @@ function PageRail({
       </div>
 
       <div className="titlebar-drag-region scrollbar-hide flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-1.5 pb-1.5">
-        {tabs.map((tab) => {
-          const label = tab.title.trim() || getHostname(tab.url) || t('browser.untitledPage')
-          // Which prototype, and which of its pages — the two facts the address bar
-          // names for the page on screen, here for every page, since a column of
-          // titles cannot tell one prototype's page from another's.
-          const where = tab.prototype
-            ? `${tab.prototype.slug}${tab.prototypePage ? ` / ${tab.prototypePage}` : ''}`
-            : null
+        {groups.map((group) => (
+          <div key={group.sessionId ?? 'person'} className="flex flex-col gap-0.5">
+            {showHeaders && (
+              <div className={cn('flex items-center gap-1 px-2 pb-0.5 pt-1.5 text-[10px] font-medium', tone.text)}>
+                {group.sessionId !== null && <Bot className="h-3 w-3 shrink-0 opacity-60" />}
+                <span className="truncate">{groupLabel(group.sessionId)}</span>
+              </div>
+            )}
 
-          return (
-            <div
-              key={tab.id}
-              className={cn(
-                'group flex items-center gap-0.5 rounded-[6px] transition-colors',
-                tone.text,
-                tab.active ? tone.active : tone.hover,
-              )}
-            >
-              <button
-                type="button"
-                className="titlebar-no-drag flex min-w-0 flex-1 items-start gap-1.5 px-2 py-1.5 text-left"
-                title={where ? `${where}\n${tab.url}` : tab.url}
-                onClick={() => onSelect(tab.id)}
-              >
-                <span className="mt-px shrink-0">
-                  {tab.isLoading ? (
-                    <Spinner className="text-[9px]" />
-                  ) : (
-                    <Globe className="h-3 w-3 opacity-60" />
+            {group.tabs.map((tab) => {
+              const label = tab.title.trim() || getHostname(tab.url) || t('browser.untitledPage')
+              // Which prototype, and which of its pages — the two facts the address bar
+              // names for the page on screen, here for every page, since a column of
+              // titles cannot tell one prototype's page from another's.
+              const where = tab.prototype
+                ? `${tab.prototype.slug}${tab.prototypePage ? ` / ${tab.prototypePage}` : ''}`
+                : null
+
+              return (
+                <div
+                  key={tab.id}
+                  className={cn(
+                    'group flex items-center gap-0.5 rounded-[6px] transition-colors',
+                    tone.text,
+                    tab.active ? tone.active : tone.hover,
                   )}
-                </span>
-                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <span className="flex min-w-0 items-center gap-1">
-                    <span className="truncate text-[11px]">{label}</span>
-                    {/*
-                      Who opened it, and who is on it. The user is looking at their
-                      own window, so the opener is only worth marking when it was
-                      not them — the same fact the agent reads out of `tabs` to know
-                      what not to close. The dot is the other half: a page some
-                      conversation is working on right now (plan §22).
-                    */}
-                    {tab.openedBySessionId !== null && <Bot className="h-3 w-3 shrink-0 opacity-50" />}
-                    {tab.driverSessionId !== null && (
-                      <span
-                        aria-label={t('browser.pageInUse')}
-                        title={t('browser.pageInUse')}
-                        className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
-                      />
-                    )}
-                  </span>
-                  {where && <span className="truncate text-[10px] opacity-60">{where}</span>}
-                </span>
-              </button>
+                >
+                  <button
+                    type="button"
+                    className="titlebar-no-drag flex min-w-0 flex-1 items-start gap-1.5 px-2 py-1.5 text-left"
+                    title={where ? `${where}\n${tab.url}` : tab.url}
+                    onClick={() => onSelect(tab.id)}
+                  >
+                    <span className="mt-px shrink-0">
+                      {tab.isLoading ? (
+                        <Spinner className="text-[9px]" />
+                      ) : (
+                        <Globe className="h-3 w-3 opacity-60" />
+                      )}
+                    </span>
+                    <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                      <span className="flex min-w-0 items-center gap-1">
+                        <span className="truncate text-[11px]">{label}</span>
+                        {/*
+                          Who opened it, and what is happening to it. The opener is worth
+                          marking when it was not the person, and only when the group header
+                          is not already saying it — a group of one conversation's pages
+                          does not need a bot on every row.
+                        */}
+                        {!showHeaders && tab.openedBySessionId !== null && (
+                          <Bot className="h-3 w-3 shrink-0 opacity-50" />
+                        )}
+                        {/*
+                          Two strengths, one mark. A **lock** is a page a conversation is
+                          working on *right now*: a click there does nothing and the agent
+                          owns it until its turn ends (plan §22, 第九轮 — the lock is on the
+                          page, not the window). A plain dot is the weaker fact, a page
+                          somebody has driven but is not holding.
+                        */}
+                        {tab.lockedBy !== null ? (
+                          <span
+                            aria-label={t('browser.pageInUse')}
+                            title={t('browser.pageInUse')}
+                            className="flex shrink-0 items-center"
+                          >
+                            <Lock className="h-3 w-3 text-accent" />
+                          </span>
+                        ) : tab.driverSessionId !== null ? (
+                          <span
+                            aria-label={t('browser.pageInUse')}
+                            title={t('browser.pageInUse')}
+                            className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
+                          />
+                        ) : null}
+                      </span>
+                      {where && <span className="truncate text-[10px] opacity-60">{where}</span>}
+                    </span>
+                  </button>
 
-              <button
-                type="button"
-                aria-label={t('browser.closePage')}
-                className={cn(
-                  'titlebar-no-drag mr-1 shrink-0 rounded-[4px] p-0.5 transition-opacity hover:bg-black/10 hover:opacity-100',
-                  tab.active ? 'opacity-60' : 'opacity-0 group-hover:opacity-60',
-                )}
-                onClick={() => onClose(tab.id)}
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </div>
-          )
-        })}
+                  <button
+                    type="button"
+                    aria-label={t('browser.closePage')}
+                    className={cn(
+                      'titlebar-no-drag mr-1 shrink-0 rounded-[4px] p-0.5 transition-opacity hover:bg-black/10 hover:opacity-100',
+                      tab.active ? 'opacity-60' : 'opacity-0 group-hover:opacity-60',
+                    )}
+                    onClick={() => onClose(tab.id)}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        ))}
       </div>
     </div>
   )
@@ -401,6 +457,7 @@ function BrowserToolbarApp() {
     return (
       <PageRail
         tabs={state.tabs ?? []}
+        sessionLabels={state.sessionLabels ?? {}}
         onSelect={handleSelectPage}
         onClose={handleClosePage}
         onNew={handleNewPage}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { whyTabIsNotMineToClose, whyTabIsOutOfReach } from '../tab-access'
+import { whyTabIsLocked, whyTabIsNotMineToClose, whyTabIsOutOfReach } from '../tab-access'
 
 const prototype = { slug: 'checkout-flow', origin: 'http://checkout-flow-ab12cd34.localhost' }
 
@@ -55,5 +55,25 @@ describe('whyTabIsNotMineToClose', () => {
 
     expect(why).toContain('was opened by session-b')
     expect(why).toContain('not yours to close')
+  })
+})
+
+describe('whyTabIsLocked', () => {
+  it('lets a conversation work on a page nobody has locked', () => {
+    expect(whyTabIsLocked({ id: 'tab-1', lockedBy: null }, 'session-a')).toBeNull()
+  })
+
+  it('never locks a conversation out of the page it is working on', () => {
+    expect(whyTabIsLocked({ id: 'tab-1', lockedBy: 'session-a' }, 'session-a')).toBeNull()
+  })
+
+  // A different answer from reach, and the difference is the clock: reach is "not yours,
+  // ever", this is "not free, now" — so what it says is how long, not how to qualify.
+  it('refuses the page while another conversation holds it, and says it is temporary', () => {
+    const why = whyTabIsLocked({ id: 'tab-2', lockedBy: 'session-b' }, 'session-a')
+
+    expect(why).toContain('Page tab-2 is locked while session-b works on it')
+    expect(why).toContain('until that turn ends')
+    expect(why).not.toContain('prototype-bind')
   })
 })

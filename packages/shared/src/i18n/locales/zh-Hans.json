@@ -122,6 +122,8 @@
   "browser.closeWindowEntirely": "完全关闭窗口",
   "browser.hideWindow": "隐藏窗口",
   "browser.newPage": "新建页面",
+  "browser.openedByConversation": "某个对话",
+  "browser.openedByYou": "你",
   "browser.pageInUse": "有 agent 正在使用这一页",
   "browser.pages": "页面",
   "browser.pickElement": "在页面上选中元素",

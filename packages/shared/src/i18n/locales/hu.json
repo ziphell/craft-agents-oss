@@ -122,6 +122,8 @@
   "browser.closeWindowEntirely": "Ablak teljes bezárása",
   "browser.hideWindow": "Ablak elrejtése",
   "browser.newPage": "Új lap",
+  "browser.openedByConversation": "Egy beszélgetés",
+  "browser.openedByYou": "Te",
   "browser.pageInUse": "Egy ügynök éppen ezen a lapon dolgozik",
   "browser.pages": "Lapok",
   "browser.pickElement": "Elem kijelölése az oldalon",

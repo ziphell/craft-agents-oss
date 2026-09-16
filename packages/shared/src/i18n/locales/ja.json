@@ -122,6 +122,8 @@
   "browser.closeWindowEntirely": "ウィンドウを完全に閉じる",
   "browser.hideWindow": "ウィンドウを非表示",
   "browser.newPage": "新しいページ",
+  "browser.openedByConversation": "ある会話",
+  "browser.openedByYou": "あなた",
   "browser.pageInUse": "このページはエージェントが作業中です",
   "browser.pages": "ページ",
   "browser.pickElement": "ページ上の要素を選択",

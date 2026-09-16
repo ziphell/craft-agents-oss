@@ -52,6 +52,31 @@ export function whyTabIsOutOfReach(
 }
 
 /**
+ * Why this page is not available to this conversation *at the moment*, or `null` when it is.
+ *
+ * A page is locked while the conversation working on it has its overlay up: the lease on
+ * that page (`driverSessionId`) plus the window's engaged state, which the page reports as
+ * `lockedBy` (plan §22, 第九轮). A different question from reach, and the difference is the
+ * clock: reach asks "is this page your business at all", the lock asks "is it free *right
+ * now*". So the answer here is "wait", not "never", and that is what it says.
+ *
+ * The conversation holding the lock is never locked out of its own page: `lockedBy === sid`
+ * is the one case that returns `null` immediately.
+ */
+export function whyTabIsLocked(
+  tab: Pick<BrowserTabSummary, 'id' | 'lockedBy'>,
+  sessionId: string,
+): string | null {
+  if (!tab.lockedBy || tab.lockedBy === sessionId) return null
+
+  return (
+    `Page ${tab.id} is locked while ${tab.lockedBy} works on it: a person cannot click or type ` +
+    `there, and neither can this conversation, until that turn ends. Work on another page ` +
+    `("tabs" lists them), or wait for it to be released.`
+  )
+}
+
+/**
  * Why this page is not this conversation's to close, or `null` when it is.
  *
  * Nothing about reach helps here: a page of *my* prototype that another

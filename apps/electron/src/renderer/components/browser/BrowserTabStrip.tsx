@@ -6,8 +6,9 @@
  * pages (plan §22): one window is one badge, and its pages are listed inside it.
  */
 
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef } from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
+import { useTranslation } from 'react-i18next'
 import * as Icons from 'lucide-react'
 import { Spinner } from '@craft-agent/ui'
 import {
@@ -29,6 +30,8 @@ import {
   removeBrowserInstanceAtom,
 } from '@/atoms/browser-pane'
 import { useAppShellContext } from '@/context/AppShellContext'
+import { sessionMetaMapAtom } from '@/atoms/sessions'
+import { groupTabsByOpener, shouldShowGroupHeaders } from './page-groups'
 import { BrowserTabBadge } from './BrowserTabBadge'
 import type { BrowserInstanceInfo } from '../../../shared/types'
 import { getHostname } from './utils'
@@ -51,10 +54,19 @@ export function BrowserTabStrip({
   // workspaces have a different `remoteWorkspaceId` (what the remote agent
   // stamps onto its tabs) than the local `activeWorkspaceId` (what locally-
   // opened manual tabs use), so we accept either.
+  const { t } = useTranslation()
   const { activeWorkspaceId, workspaces } = useAppShellContext()
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId)
   const remoteWorkspaceId = activeWorkspace?.remoteServer?.remoteWorkspaceId ?? null
   const allInstances = useAtomValue(browserInstancesAtom)
+  /**
+   * Conversation names for the page list's group headers.
+   *
+   * The badge sits in the app shell, which already holds every conversation's
+   * metadata — the rail, a separate document with its own preload, gets the same
+   * names pushed with the window's state instead.
+   */
+  const sessionMeta = useAtomValue(sessionMetaMapAtom)
   const instances = useMemo(
     () => filterInstancesForWorkspace(allInstances, activeWorkspaceId, remoteWorkspaceId),
     [allInstances, activeWorkspaceId, remoteWorkspaceId],
@@ -233,45 +245,72 @@ export function BrowserTabStrip({
   }, [instancesOverride])
 
   /**
-   * The window's own pages, above its actions.
+   * The window's own pages, above its actions, sectioned by who opened them.
    *
    * One entry per page, the one on screen marked. A single-page window shows
    * nothing here — that page is what the badge already says, and a group of one
-   * is noise. Closing a page is deliberately *not* here: it lives on the strip in
+   * is noise. Closing a page is deliberately *not* here: it lives on the rail in
    * the window, where the page being closed is the one in front of you.
+   *
+   * The sections are the same rule the rail draws (`groupTabsByOpener`), so a person
+   * reading the window and a person reading this menu see the same grouping. Headers
+   * appear only when there is more than one group: with one group, the header would be
+   * a row saying "all of these are yours" over all of them.
    */
   const renderPageList = useCallback((instance: BrowserInstanceInfo) => {
     const tabs = instance.tabs ?? []
     if (tabs.length < 2) return null
 
+    const groups = groupTabsByOpener(tabs)
+    const showHeaders = shouldShowGroupHeaders(groups)
+    /** A name, never an id — a conversation with no name yet says so generically. */
+    const groupLabel = (sessionId: string | null): string =>
+      sessionId === null
+        ? t('browser.openedByYou')
+        : sessionMeta.get(sessionId)?.name || t('browser.openedByConversation')
+
     return (
       <>
-        {tabs.map((tab) => {
-          const label = tab.title.trim() || getHostname(tab.url) || 'Untitled page'
-          return (
-            <StyledDropdownMenuItem key={tab.id} onSelect={() => selectPage(instance, tab.id)}>
-              {tab.active ? (
-                <Icons.Check className="h-3.5 w-3.5 text-accent" />
-              ) : tab.isLoading ? (
-                <Spinner className="text-[10px]" />
-              ) : (
-                <Icons.Globe className="h-3.5 w-3.5 opacity-70" />
-              )}
-              <span className="truncate">{label}</span>
-              {tab.openedBySessionId !== null && <Icons.Bot className="h-3 w-3 shrink-0 opacity-50" />}
-            </StyledDropdownMenuItem>
-          )
-        })}
+        {groups.map((group) => (
+          <Fragment key={group.sessionId ?? 'person'}>
+            {showHeaders && (
+              <div className="flex items-center gap-1 px-2 pb-0.5 pt-1.5 text-[10px] font-medium text-foreground/40">
+                {group.sessionId !== null && <Icons.Bot className="h-3 w-3 shrink-0" />}
+                <span className="truncate">{groupLabel(group.sessionId)}</span>
+              </div>
+            )}
+
+            {group.tabs.map((tab) => {
+              const label = tab.title.trim() || getHostname(tab.url) || t('browser.untitledPage')
+              return (
+                <StyledDropdownMenuItem key={tab.id} onSelect={() => selectPage(instance, tab.id)}>
+                  {tab.active ? (
+                    <Icons.Check className="h-3.5 w-3.5 text-accent" />
+                  ) : tab.isLoading ? (
+                    <Spinner className="text-[10px]" />
+                  ) : (
+                    <Icons.Globe className="h-3.5 w-3.5 opacity-70" />
+                  )}
+                  <span className="truncate">{label}</span>
+                  {/* The header says whose these are when there is one to say it. */}
+                  {!showHeaders && tab.openedBySessionId !== null && (
+                    <Icons.Bot className="h-3 w-3 shrink-0 opacity-50" />
+                  )}
+                </StyledDropdownMenuItem>
+              )
+            })}
+          </Fragment>
+        ))}
 
         <StyledDropdownMenuItem disabled={!!instancesOverride} onSelect={() => addPage(instance)}>
           <Icons.Plus className="h-3.5 w-3.5" />
-          New page
+          {t('browser.newPage')}
         </StyledDropdownMenuItem>
 
         <StyledDropdownMenuSeparator />
       </>
     )
-  }, [addPage, instancesOverride, selectPage])
+  }, [addPage, instancesOverride, selectPage, sessionMeta, t])
 
   const terminateBrowserWindow = useCallback((instance: BrowserInstanceInfo) => {
     if (!instancesOverride) {
