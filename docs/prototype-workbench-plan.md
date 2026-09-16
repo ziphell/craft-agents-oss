@@ -894,7 +894,7 @@ BrowserPaneManager（主进程，只有 instanceId）
 
 **敲别的地址**就是普通导航：视图去那里，而地址栏照旧写着原型 + 当前页（推不出当前页时只写原型域名）——这个窗口始终是这个原型的窗口，两个动作仍然可用（它们作用于**当前文档**）。
 
-链路全在已有的 `STATE_UPDATE` 上，**没有新通道**：`BrowserPaneManager.pushToolbarState` 每次推送时算一次地址与 `prototypeSlug`（`prototypeBindingFor`：窗口被打开时声明的原型优先，否则走会话链），其中窗口那条来自打开时（`bindPrototype`，`PrototypeEntry.origin` 一起带过来），会话那条的 (slug, workspaceRootPath) 由 `SessionManager.getSessionPrototypeBinding` 给出，origin 由 `prototypeOriginUrl` 现算（`main/index.ts` 注入，晚绑定——窗口可能先于它存在）。地址→原型这条反方向的查表（`setPrototypeAddressResolver`）也由那里注入，用于用户敲进地址栏的地址；认出是某个原型的地址时（根或某一页）**同时把窗口绑到该原型**，并把页名一起交给主窗口（否则视图加载真实页面后，地址栏又会退回真实地址/丢掉当前页）。工具栏那侧只做两件事：显示 `url`，按 `prototypeSlug` 决定两个按钮是否可用。
+链路全在已有的 `STATE_UPDATE` 上，**没有新通道**：`BrowserPaneManager.pushToolbarState` 每次推送时算一次地址与 `prototypeSlug`（`prototypeBindingFor`：窗口被打开时声明的原型优先，否则走会话链），其中窗口那条来自打开时（`PrototypeEntry.origin` 一起带过来；页的身份改为"创建时定"之后由 `createTab({ prototype })` 给，见 §22），会话那条的 (slug, workspaceRootPath) 由 `SessionManager.getSessionPrototypeBinding` 给出，origin 由 `prototypeOriginUrl` 现算（`main/index.ts` 注入，晚绑定——窗口可能先于它存在）。地址→原型这条反方向的查表（`setPrototypeAddressResolver`）也由那里注入，用于用户敲进地址栏的地址；认出是某个原型的地址时（根或某一页）**为它新开一页、并把那一页绑到该原型**（§22：打开一律开新页，不再改绑当前页），并把页名一起交给主窗口（否则视图加载真实页面后，地址栏又会退回真实地址/丢掉当前页）。工具栏那侧只做两件事：显示 `url`，按 `prototypeSlug` 决定两个按钮是否可用。
 
 > 与 §12.2 的分工：**动作**走"面板 → 主进程 → 主窗口"（主窗口才知道往哪个会话送元素），**地址栏与可用性**走"主进程 → 面板"（主进程持有窗口）。两条链路对同一个绑定给出同一个答案，因为查的是同一张表。
 
@@ -908,27 +908,38 @@ BrowserPaneManager（主进程，只有 instanceId）
 
 元素选择器原本是原型工作台的能力，但它真正的前提是**有一个对话**，不是有一个原型：用户看到页面上的某个东西想聊它，这件事与它是不是原型页无关。所以：
 
-- **进入选择模式的条件从"有原型"改成"有会话"**（工具栏新增 `hasSession`）。没有会话绑定的窗口仍然不给选择器——它不知道该把结果给谁。
-- **高亮框下方多一条工具条**：注入脚本里新增 `bar` 与一个按钮，且**只在有会话绑定时构建**——做不了事的按钮比没有按钮更糟。框上方仍是原有的选择器标签（stable selector）。
-- **点击后走既有出口**：`PickedElement.intent = 'add-to-conversation'` 随元素回到主进程 → 广播 `{ kind: 'add-to-conversation' }` → 主窗口把它写进该会话的输入框（`onInputChange` + `craft:restore-input` 两步，与原型那条完全同源）。
+- **进入选择模式的条件从"有原型"改成"有对话"**——到**第五轮**更进一步：条件是**没有条件**。窗口的标签可以是任何网页，选择器就常驻在窗口上；选中的元素**落到用户当前看的那个对话**，该工作区里没有这个对话就**新建一个**带给它（不再有"没有会话所以不让选"这一档，`hasSession` 字段随之删除）。
+- **高亮框下方多一条工具条**：注入脚本里新增 `bar` 与一个按钮。按钮**总是**构建——既然没有对话时会新建一个，就总有地方可去，而做不了事的按钮比没有按钮更糟（这条判断没变，变的是"总有地方可去"现在为真）。
+- **点击后走既有出口**：`PickedElement.intent = 'add-to-conversation'` 随元素回到主进程 → 广播 `{ kind: 'add-to-conversation', element, origin }` → 主窗口把它写进那个对话的输入框（`onInputChange` + `craft:restore-input` 两步，与原型那条完全同源）。
 
-四个实现要点：
+三个实现要点：
 
-- **意图挂在元素上**（`intent` 字段），而不是新开一条结果通道：选择器的返回类型、能力协议、agent 的 `pick` 命令三处都不用改签名，`PICKER_STATE_KEY` 的形状也不变。
+- **意图挂在元素上**（`intent` 字段），而不是新开一条结果通道：选择器的返回类型、能力协议、agent 的 `pick` 命令三处都不用改签名。
 - **按钮文案由调用方给**：工具栏是渲染层（有 i18n），注入脚本在主进程（没有），所以 label 随 IPC 传进来。
 - **捕获阶段的点击监听会吞掉工具条的点击**，所以 `onClick` 里必须先判定 `bar.contains(e.target)` 并放行——注入式 UI 的必然代价。
-- **解绑会话后要重推工具栏状态**：`unbindSession` / `unbindAllForSession` 原本刻意不推（"owner 链没变"），但按钮的显隐依赖 `boundSessionId`，所以这条推理不再成立。
+
+**第五轮：常驻**（用户原话：「选择器可以常驻在窗口上了，开启后任意一个标签的网页元素都能选择、添加到对话，只是带上的元信息不同」）。四条：
+
+1. **模式属于窗口，不属于某一次点击**。`BrowserInstance.picking` / `pickLabel` / `pickTabId` / `pickerGeneration` 四个字段。开关一次（`PICK_ELEMENT` 处理器 arm 后立刻返回，不再 await 一次 pick），此后**每次点击都报一次**，直到用户说停：在页面里按 Esc（页面报 `cancelled`），或再点一次工具栏按钮（`CANCEL_PICK` → disarm）。
+2. **页面侧从"一次一个结果"改成"队列 + 状态"**。注入脚本的 `window.__craft_agent_picker_state__` 变成 `{ status, picks[] }`：常驻时命中只 push 不清理，`cancelPicker` 仍走 `finish('cancelled')`。CDP 侧多出 `armPicker`（注入并留在那里）与 `drainPicker`（**读走并清空**，一个表达式里做完，所以两次读不会读到同一个 pick，也不会漏掉两次读之间的那个）。一次性的 `pickElement`（agent 的 `browser_tool pick`）改成在 arm + drain 之上循环，行为不变。
+3. **页跟着走**：切页（`activateTab`）、关活动页（`closeTab` 里邻居接位）、新开页都重新武装到新页，并把上一个页的 overlay 撤掉（`pickTabId` 就是为此存在的：要 disarm 的是 overlay 所在的那一页，而那时活动页可能已经换人）。**页面自己导航**（刷新、SPA 换文档）则由 `status: 'missing'` 兜住——drain 报"这个文档里没有选择器"，循环重新注入，而不是让模式悄悄失效。`pickerGeneration` 是这条的护栏：被接管的那一轮回来后发现自己已不是当前那一轮，就什么都不报，不会把"自己被拆掉"误读成"用户放弃了"。
+4. **元信息随页不同**：每个 pick 带一个 `PickedElementOrigin`（`url` / `title` / `prototype` / `prototypePage`），由 `describePageLocation(instance, tab)` 产出——它与 `toTabSummary` 是**同一个函数**，所以标签条说的"这是哪一页"和元素带来的"它来自哪一页"不可能不一致。它一路进到 chip（见 12.7.1）与 agent 读到的引用里。
+
+**工具栏的 picking 是状态，不是本地判断**：`pushToolbarState` 里加了 `picking`，渲染器读它而不再自己记（Esc 在页面里结束模式这件事，只有主进程知道）。
 
 #### 12.7.1 元素以 chip 进输入框，且是追加
 
-输入框的真值是**纯字符串**（`rich-text-input` 是原生 contenteditable，chip 只是这个字符串的渲染投影），所以一个"token"要活过一次字符串往返，就只能**是**字符串：元素以 `[element:<selector>|<text>]` 落进文本，两段各做 percent-encoding（选择器里本来就有 `[]`，而标记的正则读到第一个 `]` 为止）。
+输入框的真值是**纯字符串**（`rich-text-input` 是原生 contenteditable，chip 只是这个字符串的渲染投影），所以一个"token"要活过一次字符串往返，就只能**是**字符串：元素以 `[element:<selector>|<text>|<url>|<prototype>|<page>]` 落进文本，各段都做 percent-encoding（选择器里本来就有 `[]`，而标记的正则读到第一个 `]` 为止）。
 
-- **放哪**：`renderer/lib/element-mention.ts` —— 编码 / 解析 / 查找 / 展开四个纯函数，带单测。`findMentionMatches` 认得这个标记，但 `ComposerMentionType` 显式把 `element` 排在 `MentionItemType` **之外**：`@` 菜单永远产不出它，把它塞进菜单那个联合类型会误导读者。`rich-text-input` 的 badge 机制原样复用——同一套 `data-mention` 原子节点、同一套光标与选中处理——只多一个图标和解码后的标签。
-- **谁看得见什么**：chip 标签取元素自己的文字，没有文字（图标、空容器）才退回选择器；hover 给选择器，两个元素文字相同时仍能分辨。
-- **出去时展开**：标记**不进消息**。`FreeFormInput` 在 `submitMessage` 与草稿快照两处把它换成 `browserEdit.elementReference` 的可读引用——模型该读到句子，不是 payload。这也顺带省掉了 agent 侧再挂一个 resolver。
+- **后三段是"来自哪一页"**（12.7 第 4 条），**没有就不写**：agent 自己的 `browser_tool pick` 只认得页面不认得原型，产出的就是短标记；两段的旧标记也照样读得回来。放哪：`renderer/lib/element-mention.ts` —— 编码 / 解析 / 查找 / 展开四个纯函数，带单测（含"带来源"、"没有来源"、"旧格式"各一条）。`findMentionMatches` 认得这个标记，但 `ComposerMentionType` 显式把 `element` 排在 `MentionItemType` **之外**：`@` 菜单永远产不出它，把它塞进菜单那个联合类型会误导读者。`rich-text-input` 的 badge 机制原样复用——同一套 `data-mention` 原子节点、同一套光标与选中处理——只多一个图标和解码后的标签。
+- **谁看得见什么**：chip 标签取元素自己的文字，没有文字（图标、空容器）才退回选择器；hover 给选择器**加上**来源（`elementOriginText`，`demo / cart (https://…)`）——两个元素文字相同时，光有选择器还不够分辨。
+- **出去时展开**：标记**不进消息**。`FreeFormInput` 在 `submitMessage` 与草稿快照两处把它换成 `browserEdit.elementReference`（没有来源）/ `browserEdit.elementReferenceFrom`（有来源，多一句 "— picked on …"）——模型该读到句子，不是 payload。来源进句子是因为**agent 没有别的办法知道是哪一页**：同一个元素可以在两页上被选中。
 - **追加，不覆盖**：两条元素路径都改成非破坏式。"添加到对话"把 chip **追加**在草稿之后（元素是对正在写的问题的补充，所以问题必须活下来）；改动模式那条 prompt 以冒号结尾、等用户把话说完，所以**前插**在草稿之前（用户的草稿顺着读就是答案）。两条都走 `appendRestoredInput`，只是实参顺序不同；写完仍是 `onInputChange` + `craft:restore-input` 的"两步都写"，但两步带的是**同一个完整文本**，所以第二步不可能吃掉第一步。
+- **落点 = 用户正在看的那个对话**（`focusedSessionId ?? session.selected`），不是窗口上的租约：窗口是共享的，`boundSessionId` 记的是"agent 刚才在动谁"，不是"人现在看着谁"。没有选中对话（或窗口是独立的一份）时就**新建**一个，chip 只在会话确实存在之后才写，所以创建失败不会留下半截草稿。
 
 **已知取舍**：合并用的底稿取自 `getDraft`，而草稿有 300ms 防抖，所以在最后 300ms 内完成"打字 → 选择元素"会丢掉那几个字。实际路径要先移鼠标到面板、进选择模式、再点元素，这个窗口极小，因此没有为它新增一套"在活输入框里原地插入"的机制（那需要新事件 + 面板侧处理 + 未挂载时的兜底）。
+
+**已知取舍（与 agent 的 `pick` 同时发生）**：两者要的是同一页上的注入，后开的会顶掉前一个。此时用户那一次点击仍然进对话（常驻循环先读到并 drain 走），而 agent 的 `pick` 一直等到超时。没有为此加互斥：两个入口都是"请人点一下"，为此让 agent 的选择请求在用户开着模式时直接失败，代价大于收益。
 
 **未做**：从选择器直接截图。
 
@@ -1851,4 +1862,131 @@ overlay 的页面是别人的活地址，它不会、也不该变成我们的文
 | 锚点的清理命令 | 悬空记录在状态里被点名（不是静默），`--remove` 级别的清理等真有人嫌吵再说 |
 | `dist/` 变更后的重放 | 交付物不是页面在跑的东西；导出后要看效果，重新打开那一页即可 |
 | 把 `anchors/` 当页面快照用 | 那会把它变回"冻一份页面"，§14.1 已经否掉；要全貌另有 §20.3 的帧采集 |
+
+---
+
+## 22. 窗口、标签与"谁在驱动"
+
+> **状态**：模型、标签 API、**打开与目标**、**元信息两分**、**UI（工具栏标签条 + 面板按窗口分组）**、**一个工作区一个浏览器窗口（+ 多标签，含窗口级租约）**、**元素选择器常驻（窗口级模式，跨页可用）**、**页级占用与接管**、**开窗通道收敛（一切开窗都成页）**已落地。**面板按会话分组**未做。这一节记的是方向与规则——它们必须先定，因为它们决定状态放哪。
+
+**问题**：一个窗口 = 一个页面 = 一个原型，于是"同时经营几个原型"这件事没有任何落点；而窗口又**挂在会话上**（`boundSessionId` / `ownerType` / `ownerSessionId`，轮次结束才解绑），于是
+
+| 病 | 今天的表现 |
+|---|---|
+| 窗口**看不见** | 窗口列表只在浏览器面板里；换一个对话就看不到另一个对话开着什么 |
+| 窗口**不可跨对话使用** | agent 的内容命令走 `getBoundForSession`，只认"本会话的窗口"；别的会话开着的窗口要么对它是隐形的，要么被它**夺过来**（而"借用"没有这一档） |
+| 归属是**历史** | `ownerSessionId` 记的是"曾经属于谁"（为了轮次结束后还能复用），不是"它在做什么" |
+| 一个原型**只能生效一个** | 因为一个会话只驱动一个窗口，而一个窗口只装一个页面 |
+
+**结论：窗口是应用级的，标签是对象，驱动是租约。**
+
+- **身份下沉到标签**：`boundPrototype` / 地址 / 页名 / 控制台 / 主题色 / 抽帧的当前画面，都是**页**的属性。窗口降级为容器，只保留窗口级的事（大小、置顶、工具栏、菜单、遮罩、关闭）。这样"一个窗口里两个标签 = 两个原型同时在场"，各自带着自己的地址栏与 apply 目标。
+- **"归属"换成"占用"**：窗口带的是"它在做什么"（原型 + 页），"谁在用它"是运行时的**租约**，不再有 `ownerSessionId` 那种历史字段。
+- **三条规则**（没有它们就不要开多标签）：
+
+| 规则 | 为什么 |
+|---|---|
+| **目标显式** | 驱动某个标签前必须指名它（原型+页，或"当前活动标签"）。今天 `focus` / `close` / `hide` 已经能带 `windowId`，内容命令不能——这条先补齐 |
+| **占用可见** | 谁在驱动哪个标签要看得见；两个对话同时驱动同一标签时，要么排队要么**显式接管**。今天靠"一个会话一个窗口"天然回避了并发 |
+| **边界不松** | 工作区仍然隔离（跨工作区共享意味着 A 的窗口被 B 的 agent 操作）；agent 只能 `release`（放开遮罩），**不能关掉用户的东西** |
+
+**开窗一律开成标签**，含 `target="_blank"` 与 `window.open` 的 popup——"应用级单窗口"之后，裸窗口会变成模型里的第二个窗口身份。代价要说准：popup 若由我们拒掉并在标签里加载，页面拿到的是 **`window.opener === null`**，于是"popup + `postMessage` 回传"式登录（Google GIS 一类）会卡住；整页跳转式的登录不受影响。因此把 `disposition` 记进标签的**观测元信息**，真撞上时"这个标签是被 popup 请求打开的"是可查的，不必靠猜。
+
+**标签元信息分两类**，因为这决定"能不能信"：**观测**（url / title / favicon / 加载态 / 是哪个原型哪一页 / disposition）由视图产出，单一来源，agent 不能改；**声明**（谁开的、用来做什么、承载哪个原型）是人的意图。混在一起，agent 会把昵称当事实。查询按需（`windows` 长成 `tabs`），**提示词不背细节**——集合只需被点名，细节现查（`prototype-status <slug>` 已经是现成的）。这也消掉了"多绑 = 提示词背上 N 份 flow 上下文"这个顾虑。
+
+**已落地**（`browser-pane-manager.ts`）：
+
+- `BrowserTab`：页自己的 view、CDP 会话、地址、标题、favicon、加载态、前进后退、**boundPrototype**、主题色、控制台/网络/下载。
+- `BrowserInstance`：只剩窗口级字段 + `tabs` / `activeTabId`。全文件 150 处"窗口级"读写改道为 `activeTab(instance).x`；`title` / `currentUrl` 保留为**只读**窗口级视图（服务端 `BrowserInstanceSnapshot` 与工具栏状态是按窗口问的），写错地方会编译失败而不是写进没人读的地方。
+- **接线按页拆**：`setupWindowListeners`（窗口 + 工具栏，一窗一次）与 `attachTab(instance, tab)`（一个页面一整套：UA、背景、视图入窗、遮罩文档、CDP 动作钩子、以及全部 `pageWc.on(...)`）。**每个回调写 `tab` 而不是活动标签**——后台页在后台加载时，事实必须落在它自己身上；这一条不是洁癖，是这一步真正要修的东西。主题色的四个助手（`extractThemeColor` / `applyThemeColor` / `installThemeObserver` / `scheduleEarlyThemeExtraction`）随之接上页参数。
+- **标签 API**：`createTab` / `activateTab` / `closeTab` / `listTabs`，`buildTab` 是两条入口共用的构造函数（`createInstance` 与 `createTab` 都走它，页面不可能半成品）。布局只给活动页 bounds，其余**零尺寸停放**（webContents 继续跑，这正是标签的意义）；遮罩只覆盖活动页。`destroyInstance` 清理**每一页**的在途跟踪，不只是当前那页。关掉最后一个标签 = 关掉窗口。
+- 测试：4 条新用例（加页面并置顶、**后台页的导航不串到前台**、切换后窗口读数跟着走、关页面与关窗口）。
+
+**行为变化**：一个窗口现在能装多个页面；单标签时的行为与之前一致（既有的 8 条失败与改动前逐个相同）。
+
+**第二轮（打开 = 开新标签，目标显式）**：
+
+- **协议层打通**：`IBrowserPaneManager` / `BrowserCapabilityMethod` / `RemoteBrowserPaneManager` / `NullBrowserPaneManager` / electron 的 `dispatchCapability` 全部补齐 `createTab`（含 `createTabAsync`）/ `activateTab` / `closeTab` / `listTabs`（含 `listTabsAsync`）。同步/异步成对是这份文件的既有惯例：远程桥需要真实返回值时只能异步。
+- **"空白页复用"是打开一条**：新建窗口自带一页 `about:blank`，那是窗口的构造而不是谁放的页面。所以 `createTab` 在**整窗只有这一页**时**开在它里面**，不再旁边加一页——否则"在新窗口里打开一个原型"会得到两页，其中一页没人创建过、也没法被指名。判定是"整窗只有一页"，不是"活动页是空白"。
+  > **第六轮修正（用户报告）**：复用要求请求问的是"**给我一页**"而不是"**再给我一页**"——所以判据不只是"带着内容"（`url` / `prototype`），还要一个显式说法 `reuseUntouchedWindow` 给"没有 url 也没有身份、只是要一页"的调用方（应用菜单的 "New page"，它会把没开的窗口开起来）。两条用户报告正好是这条线的两端：
+  > - 「**+ 没反应**」：空手要一页被复用吞掉，窗口还是那一页。页栏的 `+`、`tab-new` 不带地址、面板的 New page 都是"再来一页"，一律真加一页（空白页窗口点 `+` 得到第二页）。原因是空白页的 URL 被 `normalizePageState` 归一成 `about:blank`，正好落在复用的判据上。
+  > - 「**新建窗口出现两个标签页**」：AppShell 的 `create` + `tabAction('new')` 两步走，窗口本来是新建的（自带一页）却又加了一页。改成**一次请求**：`create({ newPage: true })`，由主进程判断（`reuseUntouchedWindow`）——没开过就用它自己那页，已在用就真加一页。顺带修掉 `close` 那条同源隐患：它先补的那张新页原本也可能被复用成**正在被关的那一页**，于是关完整个窗口都没了。
+- **打开 = 开新标签**：`prototype-open`、面板预览（`browserPane.create({ prototype })`）与**地址栏敲原型地址**都改成 `createTab({ prototype, activate: true })`；`prototype-open` 的输出添一行说这是哪一页、窗口共几页（标签条出现之前，这是唯一能看见的地方）。
+- **`bindPrototype` 删除**：它是"事后改这一页的身份"，在"页的身份在创建时定"之后没有调用者了。留下的语义只有一条——**页的身份只由创建它的入口给**。
+- **`--tab <id>` 是全局的**：在命令自己解析参数**之前**被摘掉（`extractTabTarget`），因为它是"在哪"而不是"做什么"，每个命令都共享它、也都不该知道它。带 `--tab` 而没给 id 直接报错——回落到"当前那页"正是指名要防的那件事。
+- **语义是"把那一页调到前面，然后命令对窗口执行"**：窗口只显示活动页，所以"对某页操作"和"切到它再操作"在用户可见层面是一回事，而且**看得见正在动谁**。真正的"不切换就操作后台页"属于第 5 项（占用与接管）。
+- **命令面**：`tabs`（列表，`*` 标活动页）、`tab-new [url]`、`tab-close <id>`（关掉最后一页即关掉窗口，输出照实说）。`SessionManager` 侧：建页走 `resolveSessionBrowserInstance`（可能开窗），而**读/切/关不建窗**——命名一个页面要求窗口存在，为空窗造一个只用来报告"它没有页面"的窗口，是工具在编造自己被问到的状态。
+- 测试：runtime 侧 7 条（列表、无窗、`--tab` 选中且不污染命令本身、`--tab` 缺 id、`tab-new`、`tab-close` 两种结局、`prototype-open` 开自己的页并带上身份），窗口侧 2 条（原本的"加页面"改成窗口已被使用的场景，新增"开进未用过的窗口的那一页"），地址栏那条补了"新开一页且原来的页还在"。
+
+**第三轮（元信息两分 + UI 标签条）**：
+
+- **`BrowserTabSummary` 是唯一形状**（放进 `protocol/dto.ts`，服务端接口、工具栏、面板、agent 共用一份）：`id` + 观测（`url` / `title` / `favicon` / `isLoading` / `active` / `prototype{slug,origin}` / `prototypePage`）+ 声明（`openedBy`）。`toTabSummary(instance, tab)` 是**页变成 wire 形状的唯一地方**，三条消费路径不可能对同一页说不同的话。
+- **页名不是视图产出**，是原型页表查出来的：`tabPrototypeBinding` 从 `prototypeBindingFor` 拆出来（同样的两步，只是按页问），`prototypePageResolver` 只在这个页确实属于某原型时才问。查不到就说"不是这个原型的任何一页"，而不是给最近的页名（overlay 的 URL 根本答不了这个问题）。
+- **声明只有一个字段：`openedBy: 'user' | 'agent'`**。由开它的入口写一次，之后没人改；默认 `'user'`（不可错的那个方向）。agent 侧在 `SessionManager.createTab` 一处盖章，而不是各调用点自己写——漏盖会让 agent 自己的页看起来像用户的，而"别动用户的东西"正是读这个字段做的判断。
+- **`disposition`（typed/link/popup）与 `purpose` 明确推迟**：前者要等"开窗一律开标签"（第 4 项）才有产出者——现在每一页都是某次显式"打开"造的，字段会是个常量；后者现在的内容（哪个原型/哪一页）已经能从 `prototype`/`prototypePage` 推出来，而推得出来的东西再声明一遍就是第二个来源。**不造没有产出者的字段**，等第 4/5 项。
+- **`tabs` 命令输出两分**：每个页先列观测（`url` / `prototype` / `page`），再列 `opened by`，并在末尾说明哪一半是页面报的、哪一半是开它的人说的。
+- **UI 标签条**：`TOOLBAR_TABS_HEIGHT = 36`，`toolbarChromeHeight(instance)` = `TOOLBAR_HEIGHT + (tabs.length > 1 ? 36 : 0)`，五处布局（工具栏 bounds、页面 bounds、遮罩内缩、`window-resize` 的加减）全部改用它。**只在多于一个页时出现**：一页就是窗口本身，一行只装一页的 chrome 什么也没说；这也是 `+` 出现的地方。渲染器**不自己判断**是否显示——主进程把 `showTabStrip` 和 `tabs` 一起推过去，同一个布尔值决定留出多少空间和画不画。
+  - > **第六轮修正（用户指出）**：条**常驻**了。它是用户自己那个 `+` 所在，而"窗口只有一页"**正是**要开第二页的时候——藏在两页之后等于把唯一的入口藏起来（用户原话："浏览器窗口缺少标签栏啊，用户也可以自己新建标签"）。于是 `showTabStrip` 恒为 `true`、`toolbarChromeHeight()` 恒为 84，条与 `+` 一直可见；"同一个布尔值决定空间与绘制"这条约束保留（只是它现在恒真）。
+  - > **第六轮再修正（用户指出）**：横条本身不成立，它成了**左侧竖向页栏**。横条在跟地址栏抢宽度：第二条页就把地址栏挤开、后面的页片滚出视野，"几乎没法正常使用"（用户原话）。页是会长长的**列表**，而窗口缺的是**高度**而不是宽度——所以页栏取窗口左边一列（`PAGE_RAIL_WIDTH = 200`）。chrome 因此是两块：`toolbarView`（地址栏）与 `railView`（页栏），因为它们各是一个矩形；同一份 `browser-toolbar.html` 用 `?view=bar|rail` 说自己是哪一面。`TOOLBAR_TABS_HEIGHT` 删除、`toolbarChromeHeight()` 恒为 48（只剩地址栏），页面区域由 `pageAreaBounds` 一处给出（x 让 200、y 让 48），`window-resize` 加回的是 `+200 / +48`。**`showTabStrip` 这个字段随之删除**：竖栏是窗口的一列，不是需要两处商量的状态。
+  - > **第六轮三次修正（用户指出）**：页栏**被盖住**过，而且地址栏不该压在它上面。于是列的归属定死：**`railView` 是整列（y 从 0 到窗口底）且永远是窗口里最上层的 view**（`raiseChromeViews` 最后抬 rail），**地址栏那一行从 x=200 开始**——返回、地址、动作全部在页栏**右边**，"地址栏保持原几何"这条因此让位于"页栏是一列不能被打断"（用户原话："标签栏层级提到最高，返回按钮、地址栏都是在右边"）。菜单展开时地址栏仍然向下压住**页面**，但不再经过页栏；两者的顶行都是 48，横看是一条带子。
+  - > **第六轮四次修正（用户指出）**：chrome 的颜色**不再跟随网页**（用户原话："怎么标签栏、地址栏色颜色会被网页背景影响？"，并选了"都不跟随，一律用应用底色"）。之前是 Safari 式的取色跟随（`theme-color` meta → 吸顶栏 → `body` 背景），跟随的那一半删掉：通道、preload API、工具栏状态字段一起消失，**取色本身留着**——顶栏的窗口徽章与输入框状态条还用它对用户说"这个窗口在显示什么"。判据是：chrome 是应用的面，页面不拥有它。
+- **工具栏渲染器**：`PageRail` 组件（页片：标题、加载态、活动态、"agent 开的"标记、关闭按钮；自己的那一行里放 `+`）。**chrome 用应用自己的底色，不跟随网页取色**（第六轮四次修正，用户决定）：`browser-toolbar:*:theme-color` 通道、preload 的 `onThemeColor`、工具栏状态里的 `themeColor` 全部删除；取色本身（`extractThemeColor` / 页内 observer / `tab.themeColor`）保留，因为顶栏徽章与输入框状态条仍用它说"这个窗口在显示什么"。渲染器读 `?view=` 决定自己是哪一面。
+- **面板按窗口分组**：顶部徽章下拉里，窗口的页列在它的动作之上（活动页打勾，agent 开的带标记），点击 = 切到那一页并前置窗口；`+ New page` 也在那里。**关闭故意不放在这里**：它留在窗口自己的页栏上，正在关的那个页就在眼前。
+- **通道**：工具栏 `browser-toolbar:tabs`、面板 `browser-pane:tab-action`，两者都是**一个通道三个动作**（activate/close/new）——三个按钮挨在一起、指向同一个窗口，分成三个通道只会多三份样板。
+- 测试：窗口侧 5 条（标签条空间随页数伸缩、`listTabs` 两半、按页问原型页名、标签条 IPC 三动作、动作没指名时不做事），面板 2 条（三动作路由、没指名不做事），runtime 侧 `tabs` 两分 + "不是这个原型的页"。
+
+**第四轮（一个工作区一个浏览器窗口 + 多标签）**：
+
+> **粒度是用户定的**：「按 workspace 拆分窗口，不同 workspace 一个窗口 + 多标签」。也就是说**窗口 = 工作区**，不是"全应用一块"。跨工作区仍然隔离——那是既有的安全边界（不同工作区可能信任级别不同），而且它是**唯一**还需要保留的隔离维度：会话之间、会话与用户之间都不再隔离。
+>
+> **别叫它"画布"**（这一条是用户纠正的）：这是**工作区的浏览器窗口**，不是原型工作台的画布。同一个工作区里还有跟原型毫无关系的通用任务（查资料、填表、看后台），它们用的是同一个窗口。窗口的身份是**作用域**（工作区 vs 会话），不是用途。
+
+- **窗口的身份是 `isWorkspaceWindow` + `workspaceId`，不是"谁的窗口"**。`createForSession(sessionId, {workspaceId})` 的语义从"建我的窗口"变成"取这个工作区的窗口，并且**我现在是它的驱动者**"；`sessionId` 可以为 `null`（手动开窗：同一个窗口，没人开车）。所以：
+  - 同一工作区的**所有会话**拿到**同一个** instanceId；
+  - **用户手动开的页也在同一个窗口里**（`browser-pane:create` 无 `id` 时走它；TopBar 的「New Browser Window」因此变成「New page」，菜单项改文案、`browser.newWindow` 键删除，与标签条的 `+` 共用 `browser.newPage`）；
+  - 显式传 `id` 的调用方仍然拿到独立窗口（内部机制、测试用）。
+- **`boundSessionId` 从"归属"改成"租约"**（字段名没改，含义与文档改了，改名留待后续）：每条命令都经 `createForSession` 解析窗口，所以"谁在驱动"自己就刷新了；`unbindAllForSession` 只放租约、不放窗口；**手动开页不刷新租约**（人点几下 ≠ 某个对话停了）。
+- **生命周期**：`destroyForSession` **不销毁这个窗口**（只放租约）——它还可能装着别人和用户的页；`unbindAllForSession` 对它不降级为 `manual`（它不是谁的）。
+- **远程路径**：`listInstancesForOwner` / `requireOwnedInstance` 增加一条"这个窗口属于该工作区"——ownerKey 里已经带了 workspaceId，所以两边能对上。原来"远程 agent 一律给新窗口，免得碰用户窗口"的理由随之消失（agent 和用户看的就是同一个），**但工作区边界没松**。
+- **手动开窗不再是"第二个窗口"**：`sessionWindows()` 成为"这个会话能动哪些窗口"的唯一定义（按工作区过滤），`resolveLifecycleWindowTarget` / `focusWindow` / `listWindows` / `verifyPrototype` 全部改用它。这个窗口对所有会话可见可用；会话自己的旧窗口仍然只属于它。
+- **`close` 的语义跟着规则 3 收紧**：工作区的窗口**不可被某个对话关掉**，拒绝时说明替代方案（`tab-close <id>` 关自己开的页、`release` 撤遮罩）；独立窗口仍可被关。`windows` 输出里 `lockState` 换成 `driver:`（`the workspace's window, driven by X` / `driven by X` / `idle`），`summarizeWindows` 的 `locked=` 改成 `driving=`——"锁"这个词在共享窗口上已经不成立。
+- **多绑收口**：`describeWindowPrototype(sessionId, url)` 删除，换成 [`describePrototypeAtPage`](domain/prototype-page.ts)——**页决定优先**（`tab.prototype`，开页时记的，overlay 载入第三方地址后唯一还成立的答案），会话绑定只在页说不出话时兜底。`snapshot` 与 `listWindows` 都改用它；`getBoundPrototypeSlug` 同样先问活动页（同步读本地面板；远程桥答不了就回落会话绑定，正是它原来的答案）。**这一条就是"一个对话同时经营多个原型"的全部**——不需要新字段，因为页上早就有身份了。
+- 顺带修掉两个多标签留下的洞：`findInstanceByPageWebContentsId` 原来只看活动页（后台页发起 empty-state launch 会找不到窗口）；`browserHostBySession` 这个字段名（按 sessionId 存）保持不动，只是把"canvas 式的命名"从这一层彻底清掉。
+
+**第五轮（元素选择器常驻：模式属于窗口，元信息属于页）**：
+
+> 规则来自第四轮的窗口：一个窗口装着好几个页，那么"选择器"就不该是某一页上的一次性动作，而该是**这个窗口的一个模式**。规格在 §12.7，这里记的是它与窗口/标签的关系。
+
+- **模式在窗口上，命中在页上**：`picking` / `pickLabel` / `pickTabId` / `pickerGeneration` 是窗口级字段；而"这次命中来自哪一页"由 `describePageLocation(instance, tab)` 现算，并作为 `PickedElementOrigin` 挂在 action 上。**页决定优先**这条规则在第五轮换了个位置再次成立：不需要给窗口记"当前元素来自哪个原型"，因为页已经说出了自己是谁。
+- **一个地方产出"这是哪一页"**：`describePageLocation` 与 `toTabSummary` 是同一个函数的两个投影（前者是后者减去视图瞬时态），所以标签条上的页名与元素带来的页名不会各说各话。这是第三轮"`toTabSummary` 是唯一 wire 形状"这条约束的延续。
+- **重新武装的三个时机**（`activateTab` / `closeTab` 的邻居接位 / 页面自己导航报 `missing`）与 `pickerGeneration` 的作用见 §12.7；要点是**撤 overlay 的是它实际所在的那一页**（`pickTabId`），因为接管发生时活动页可能已经换人。
+- **共享窗口让"落点"这条旧推理失效**：原来"有会话才能选"读的是窗口的绑定，而这个绑定是**租约**——"agent 刚才在动谁"。人点元素要去的地方是**人正在看的那个对话**，不是那个租约；没有就新建一个。于是工具栏状态里的 `hasSession` 删除，按钮不再会被禁用。
+
+**第六轮（页级占用与接管；一切开窗都成页）**：
+
+> 两条用户点名的下一项，合在一起是因为它们回答同一个问题：**这一页是谁的、谁在动**。前者的答案是声明与租约，后者是让"新开的页"也有这两样东西。
+
+**页级占用**：
+
+- **页级声明 `openedBySessionId`，不是 `openedBy: 'user' | 'agent'`**。粗的那个答不了"是不是*我*的页"：两个对话共用一个窗口时，"agent 开的"可能是另一个对话的，而"别动别人的东西"正是读它做的判断。`'user' | 'agent'` 退化成**渲染**（agent 的 `tabs` 输出里写成 `opened by: agent (<session>)` / `a person`），不再是第二个存储的来源。
+- **页级租约 `driverSessionId`**：窗口的租约说"谁有这块窗口"，页的说"在动哪一页"。刷新点在 `setWindowDriver`——每条命令都经 `createForSession` 解析窗口（`--tab` 已在命令体之前把那页调到前面），所以"驱动者"自动落在**屏幕上那一页**；轮次结束由 `unbindAllForSession` → `clearPageLeases` 清掉。**它在所有窗口上扫一遍**，因为一个对话可能驱动过某页、之后窗口租约被另一个对话接走：它的轮次结束时仍要放开**它自己**的页。
+- **两条规则，不是一个布尔**（落在 [`domain/tab-access.ts`](domain/tab-access.ts)，纯函数 + 单测，因为它俩是这条边界被评判的地方）：
+  - **够不够得着**（能不能动）：页不属于任何原型（普通网页，谁都能用——这正是"用户先打开、agent 接管"对通用任务成立的原因）、页属于本会话所绑原型、页是本会话自己开的（`prototype-open` 一个没绑定的原型，仍然要能读自己刚开的那页）。其余一律拒绝，并且**说清是哪个原型的**、怎么改。
+  - **是不是我该关的**：只有**本会话开的页**。用户的页、另一个对话的页，都不因为"够得着"就能关——那是别人的活。
+- **`close` 因此有了真正的语义**（用户选了"关完只剩空白页"）：工作区窗口**永不被某个对话关掉**，但 `close` 变成"关掉我开的那些页"；若这些页就是全部，先补一张新页再关，于是窗口回到"刚开窗的样子"而不是空。什么都没开过时说清楚，并给出 `release`。
+- **租约换手，不做互斥**（用户定的）：谁的命令落到这一页，谁就是它的驱动者；被别的对话驱动不构成拒绝理由——拒绝只因为**这页不属于你的原型**。可见性够了，排队是另一层机器。
+- **可见性**：agent 的 `tabs` 每页多两行（`opened by:` / `driven by:`，后者标 `(you)`），窗口左侧页栏给"正被驱动"的页一个点（i18n `browser.pageInUse`）。
+
+**开窗通道收敛**（用户定的：都不开新窗口，同窗口新建标签页，在原来那页**右边**）：
+
+- `setWindowOpenHandler` 里**所有** http(s) 请求都 `deny` + 开一页：`target="_blank"`、`window.open`、popup、原型自己文档上的链接。真·第二窗口那条路整段删掉（`registerPopupWindow` / `unregisterPopupWindow` / `closePopupsForParent` / `did-create-window` / 两张 popup 表），因为再没有它的生产者。
+- **`createTab` 新增 `afterTabId`**：新页插在"要它的那一页"右边（用户的话）。`unwritten` 复用也因此收窄：只在命令加页时生效——**开窗请求要的那一页按定义是在用的**，复用它等于把用户点的那页拿走。
+- **`disposition` 落地**（这是第 4 项一直缺的产出者）：`'link'`（`foreground-tab`/`background-tab`，以及其余非 `new-window` 的说法）与 `'popup'`（`new-window`，即带 features 的脚本 `window.open`）；`null` = 不是浏览器要的（地址栏、`tab-new`、`prototype-open`、面板）。`background-tab` 的请求不进前台。
+- **代价说清**：这样开的页**没有 `window.opener`**，所以等 `postMessage` 回传的 popup（Google 登录是典型）会一直等。`disposition` 就是为此留的——撞上时能查，而不是靠猜。另外 `<a download>` 这类"要窗口其实是要存盘"的请求在 Electron 的类型里根本不会走到这个 handler（`disposition` 的联合类型里没有 `save-to-disk`），所以没有特殊分支。
+- **`disposition` 归观测**：不是谁声明的，是浏览器报的（与标题同类），所以放在 `BrowserTabSummary` 的观测半边；agent 的 `tabs` 在非 null 时多一行 `opened as:`。
+
+**这一轮留下的两个后果**（写下来而不是留着猜）：这样开的页**不可能自己关掉自己**——Chromium 只允许脚本关掉"由脚本打开的窗口"，而这一页不是（它没有 opener），所以 OAuth 之后 `window.close()` 的 popup 会**留在页栏上**，等人或 agent 关；以及窗口自己**导航**（`window.location = …`）仍发生在同一页里，那是"一页去了别处"，不是新页。
+
+**下一轮**：**面板按会话分组**：徽章那一列现在按窗口分组，但没有说"哪个会话在用这个窗口"。
+
 

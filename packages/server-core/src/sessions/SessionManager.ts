@@ -1,4 +1,4 @@
-import type { EventSink, RpcServer } from '@craft-agent/server-core/transport'
+﻿﻿﻿﻿import type { EventSink, RpcServer } from '@craft-agent/server-core/transport'
 import { CLIENT_BROWSER_INVOKE } from '@craft-agent/server-core/transport'
 import type { ISessionManager, IBrowserPaneManager, ExecutePromptAutomationInput } from '@craft-agent/server-core/handlers'
 import { RemoteBrowserPaneManager } from './RemoteBrowserPaneManager'
@@ -9,7 +9,7 @@ import { existsSync } from 'fs'
 import { readFile, writeFile, mkdir } from 'fs/promises'
 import { randomUUID } from 'node:crypto'
 import { type AgentEvent, setPermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserPaneFns, generateConversationSummary, resolveKeepBackgroundTasksAlive } from '@craft-agent/shared/agent'
-import type { PrototypeWindowDescriptor } from '@craft-agent/shared/prototypes'
+import type { BrowserInstanceInfo, BrowserTabSummary } from '@craft-agent/shared/protocol'
 import {
   exportPrototype as exportPrototypeArtifacts,
   resolveContractServiceSlug,
@@ -22,9 +22,6 @@ import {
   listPrototypeStatuses,
   createPrototype as createNewPrototype,
   setPrototypePageUrl as setPrototypePageUrlImpl,
-  prototypeOriginUrl,
-  listPrototypePages,
-  matchPrototypePage,
   updatePrototypePages,
   linkPrototypeReference as linkReference,
   unlinkPrototypeReference as unlinkReference,
@@ -39,6 +36,8 @@ import {
 } from '../domain/record-prototype-frames'
 import { importPrototypeVideo as importPrototypeVideoArtifacts } from '../domain/import-prototype-video'
 import { verifyPrototype as verifyPrototypeArtifacts } from '../domain/verify-prototype'
+import { describePrototypeAtPage } from '../domain/prototype-page'
+import { whyTabIsNotMineToClose, whyTabIsOutOfReach } from '../domain/tab-access'
 import {
   resolveSessionConnection,
   createBackendFromConnection,
@@ -1346,7 +1345,7 @@ export class SessionManager implements ISessionManager {
   private rpcServer: RpcServer | null = null
   private remoteBpms = new Map<string, RemoteBrowserPaneManager>()
   /** Pinned desktop client per session for `client:browser:invoke` routing. */
-  private browserHostByCanvas = new Map<string, string>()
+  private browserHostBySession = new Map<string, string>()
   private eventSink: EventSink | null = null
 
   setEventSink(sink: EventSink): void {
@@ -1415,7 +1414,7 @@ export class SessionManager implements ISessionManager {
    */
   private setLastMessageClientId(sid: string, callerClientId: string | undefined): void {
     if (!callerClientId) return
-    this.browserHostByCanvas.set(sid, callerClientId)
+    this.browserHostBySession.set(sid, callerClientId)
   }
 
   /**
@@ -1424,8 +1423,8 @@ export class SessionManager implements ISessionManager {
    * {@link findClientsWithCapability} instead of trying to ship to a dead client.
    */
   onClientDisconnected(clientId: string): void {
-    for (const [sid, pinned] of this.browserHostByCanvas) {
-      if (pinned === clientId) this.browserHostByCanvas.delete(sid)
+    for (const [sid, pinned] of this.browserHostBySession) {
+      if (pinned === clientId) this.browserHostBySession.delete(sid)
     }
   }
 
@@ -1436,7 +1435,7 @@ export class SessionManager implements ISessionManager {
    */
   private getBrowserHostClient(sid: string): string | null {
     if (!this.rpcServer) return null
-    const pinned = this.browserHostByCanvas.get(sid)
+    const pinned = this.browserHostBySession.get(sid)
     if (pinned && this.rpcServer.hasClientCapability(pinned, CLIENT_BROWSER_INVOKE)) {
       return pinned
     }
@@ -1448,7 +1447,7 @@ export class SessionManager implements ISessionManager {
     )
     const fallback = candidates[0]
     if (!fallback) return null
-    this.browserHostByCanvas.set(sid, fallback)
+    this.browserHostBySession.set(sid, fallback)
     return fallback
   }
 
@@ -3737,6 +3736,38 @@ export class SessionManager implements ISessionManager {
         })
 
         const workspaceId = managed.workspace.id
+
+        /**
+         * The page a command is about, refused when it is not this conversation's to
+         * touch (plan §22).
+         *
+         * The rule itself is `whyTabIsOutOfReach` — reach is decided by the page's
+         * prototype against the one this conversation works on, with the two
+         * exceptions that make the shared window usable at all (an ordinary page is
+         * anybody's, and a page this conversation opened is its own). Here it only
+         * gets the conversation's side of the answer.
+         */
+        const assertTabInReach = (tab: BrowserTabSummary): void => {
+          const why = whyTabIsOutOfReach(tab, sid, this.effectivePrototypeSlug(managed))
+          if (why) throw new Error(why)
+        }
+
+        /** Closing is housekeeping, and housekeeping is only the pages this conversation opened. */
+        const assertTabIsMineToClose = (tab: BrowserTabSummary): void => {
+          const why = whyTabIsNotMineToClose(tab, sid)
+          if (why) throw new Error(why)
+        }
+
+        /** One named page of the workspace's window, or an error saying it is not there. */
+        const requireTab = async (instanceId: string, tabId: string): Promise<BrowserTabSummary> => {
+          const tabs = await bpm.listTabsAsync(instanceId).catch(() => [])
+          const tab = tabs.find((candidate) => candidate.id === tabId)
+          if (!tab) {
+            throw new Error(`This browser window has no page "${tabId}". "tabs" lists them.`)
+          }
+          return tab
+        }
+
         const resolveSessionBrowserInstance = async (toolName: string, options?: { show?: boolean }): Promise<string> => {
           const instanceId = await bpm.createForSessionAsync(sid, {
             show: options?.show ?? false,
@@ -3744,19 +3775,68 @@ export class SessionManager implements ISessionManager {
           })
           const info = await bpm.getInstanceAsync(instanceId)
           sessionLog.info(`[browser-pane] tool target resolved: ${toolName} session=${sid} instance=${instanceId} ownerType=${info?.ownerType ?? 'unknown'} ownerSessionId=${info?.ownerSessionId ?? 'none'} visible=${info?.isVisible ?? false}`)
+
+          // The page this command will act on is the one on screen — `--tab` already
+          // brought it forward — and whether it is in reach is decided here, before the
+          // command does anything (plan §22).
+          const active = (await bpm.listTabsAsync(instanceId).catch(() => []))
+            .find((tab) => tab.active)
+          if (active) assertTabInReach(active)
+
           return instanceId
         }
 
+        /**
+         * The windows this session may act on: its workspace's.
+         *
+         * Worked out in one place because "which windows are mine" stopped being a
+         * question about ownership (plan §22). A workspace's browser window is shared, so
+         * every conversation in it may act on it; another workspace's window is
+         * outside the boundary and stays invisible, which is the one part of the old
+         * model that is still true and still has to be.
+         */
+        const sessionWindows = async (): Promise<BrowserInstanceInfo[]> => {
+          const windows = await bpm.listInstancesAsync().catch(() => [])
+          return windows.filter(
+            (window) => (window.workspaceId ?? null) === (managed.workspace.id ?? null),
+          )
+        }
+
+        /**
+         * This workspace's browser window, if it is open — without making one.
+         *
+         * Every other command opens a browser when there is none, because reading a
+         * page requires one to read. Naming a page does not: pages live in that
+         * window, so a workspace with no window has none, and creating an empty one
+         * to report that would be the tool inventing the state it was asked about.
+         *
+         * Found by what it is rather than by who is asking (plan §22): it belongs to
+         * the workspace, so `boundSessionId` — which is only a lease now — is not
+         * what identifies it. The workspace is what keeps two of them apart.
+         */
+        const resolveWorkspaceWindowId = async (): Promise<string | null> => {
+          const windows = await sessionWindows()
+          return windows.find((window) => window.isWorkspaceWindow)?.id ?? null
+        }
+
         const resolveLifecycleWindowTarget = async (command: 'release' | 'close' | 'hide', requestedInstanceId?: string) => {
-          const windows = await bpm.listInstancesAsync()
+          const windows = await sessionWindows()
 
           if (windows.length === 0) {
-            return { windows, reason: 'No browser windows are available. Use "open" first.' }
+            return { windows, reason: 'No browser window is available. Use "open" first.' }
           }
 
           const validateTarget = (target: (typeof windows)[number] | undefined) => {
             if (!target) {
               return { ok: false as const, reason: `Browser window "${requestedInstanceId}" not found. Use "windows" to list available windows.` }
+            }
+
+            // The workspace's window is never locked: it is the workspace's, and the
+            // lease on it is what "someone is using it right now" means, not a lock
+            // (plan §22). Only a window that is one session's own is closed to the
+            // others.
+            if (target.isWorkspaceWindow) {
+              return { ok: true as const, target }
             }
 
             if (target.boundSessionId && target.boundSessionId !== sid) {
@@ -3778,7 +3858,10 @@ export class SessionManager implements ISessionManager {
             return { windows, target: validated.target }
           }
 
-          const fallbackTarget = windows.find((w) => w.boundSessionId === sid)
+          // Which window it means when none is named: the one it works in, which
+          // is the only window it has unless it opened one of its own.
+          const fallbackTarget = windows.find((w) => w.isWorkspaceWindow)
+            ?? windows.find((w) => w.boundSessionId === sid)
             ?? windows.find((w) => w.ownerSessionId === sid)
 
           if (!fallbackTarget) {
@@ -3811,11 +3894,22 @@ export class SessionManager implements ISessionManager {
             snapshot: async () => {
               const instanceId = await resolveSessionBrowserInstance('browser_snapshot')
               const snapshot = await bpm.getAccessibilitySnapshot(instanceId)
-              // The window is this session's by construction, so the prototype is
-              // this conversation's. Say it, because the page's own URL is not
-              // enough to act on: it does not tell an overlay page (a real site's
-              // page to patch) from a scratch one (our own document to edit).
-              return { ...snapshot, prototype: this.describeWindowPrototype(sid, snapshot.url) }
+              // Which prototype this is, told from *the page* rather than from the
+              // conversation (plan §22): a window holds pages of several prototypes
+              // now, so the conversation's binding is only what to fall back to when
+              // the page belongs to none. The kind comes from the prototype's own page
+              // table, which the browser side cannot read.
+              const tabs = await bpm.listTabsAsync(instanceId).catch(() => [])
+              const active = tabs.find((tab) => tab.active)
+              return {
+                ...snapshot,
+                prototype: describePrototypeAtPage(
+                  active,
+                  this.effectivePrototypeSlug(managed),
+                  snapshot.url,
+                  managed.workspace.rootPath,
+                ),
+              }
             },
             click: async (ref, options) => {
               const instanceId = await resolveSessionBrowserInstance('browser_click')
@@ -3905,11 +3999,14 @@ export class SessionManager implements ISessionManager {
               const instanceId = await resolveSessionBrowserInstance('browser_pick')
               return bpm.pickElement(instanceId, options)
             },
-            // A pure read of the session binding — no browser instance needed, so
-            // `prototype-list` and the no-slug fallback work before any window exists.
-            // Effective, not explicit: a command in a project's conversation resolves
-            // the project's prototype the same way the window and the prompt do.
-            getBoundPrototypeSlug: () => this.effectivePrototypeSlug(managed) ?? null,
+            // The page on screen decides before the conversation does (plan §22): a
+            // window holds pages of several prototypes now, so a command that names
+            // no prototype means the one the page in front is for. The conversation's
+            // binding stays as the fallback — for a page that belongs to no
+            // prototype, and for the remote bridge, whose sync accessors answer
+            // nothing (which is what made the binding the answer in the first place).
+            getBoundPrototypeSlug: () =>
+              this.currentPagePrototypeSlug(managed, bpm) ?? this.effectivePrototypeSlug(managed) ?? null,
             listPrototypes: async () => {
               return listPrototypeStatuses(managed.workspace.rootPath)
             },
@@ -3975,8 +4072,9 @@ export class SessionManager implements ISessionManager {
             // open a browser, and with none the page checks come back as skipped —
             // a true answer, not a failure (plan §20.7).
             verifyPrototype: async (prototypeSlug) => {
-              const instances = await bpm.listInstancesAsync().catch(() => [])
-              const instanceId = instances.find((instance) => instance.boundSessionId === sid)?.id ?? null
+              // The page to check is whatever is on screen in the workspace's window
+              // — that window, not "this session's" (plan §22).
+              const instanceId = await resolveWorkspaceWindowId()
               return verifyPrototypeArtifacts(bpm, instanceId, managed.workspace.rootPath, prototypeSlug)
             },
             // File work only: recording which project a prototype was made for is
@@ -4046,28 +4144,31 @@ export class SessionManager implements ISessionManager {
               return resolvePrototypeEntry(managed.workspace.rootPath, prototypeSlug)
             },
             focusWindow: async (targetInstanceId) => {
-              const windows = await bpm.listInstancesAsync()
+              const windows = await sessionWindows()
               if (windows.length === 0) {
-                throw new Error('No browser windows available to focus. Use "open" first.')
+                throw new Error('No browser window is open in this workspace to focus. Use "open" first.')
               }
 
               const target = targetInstanceId
                 ? windows.find(w => w.id === targetInstanceId)
-                : windows.find(w => w.boundSessionId === sid || w.ownerSessionId === sid)
+                : windows.find(w => w.isWorkspaceWindow) ?? windows.find(w => w.boundSessionId === sid || w.ownerSessionId === sid)
 
               if (!target) {
                 if (targetInstanceId) {
                   throw new Error(`Browser window "${targetInstanceId}" not found. Use "windows" to list available windows.`)
                 }
-                throw new Error('No browser window is currently bound to this session. Use "open --foreground" to create or reuse one.')
+                throw new Error('No browser window is currently associated with this session. Use "open --foreground" to create or reuse one.')
               }
 
-              const availableToSession = !target.boundSessionId || target.boundSessionId === sid
+              // The workspace's window is the workspace's, so the lease on it is not
+              // a lock (plan §22) — focusing it is how a conversation comes to drive
+              // it.
+              const availableToSession = target.isWorkspaceWindow || !target.boundSessionId || target.boundSessionId === sid
               if (!availableToSession) {
                 throw new Error(`Browser window "${target.id}" is locked to session ${target.boundSessionId}.`)
               }
 
-              if (!target.boundSessionId) {
+              if (!target.boundSessionId || target.boundSessionId !== sid) {
                 bpm.bindSession(target.id, sid, { workspaceId })
               }
 
@@ -4133,6 +4234,43 @@ export class SessionManager implements ISessionManager {
                 }
               }
 
+              // The workspace's window is never closed on a conversation's say-so
+              // (plan §22's third rule) — but the pages it opened in it are its own to
+              // clean up, and with page-level occupation `close` can mean exactly that
+              // instead of refusing everything (plan §22, 第六轮).
+              if (resolution.target.isWorkspaceWindow) {
+                const tabs = await bpm.listTabsAsync(resolution.target.id).catch(() => [])
+                const mine = tabs.filter((tab) => tab.openedBySessionId === sid)
+
+                if (mine.length === 0) {
+                  sessionLog.info(`[browser-pane] lifecycle close session=${sid} resolved=${resolution.target.id} result=noop reason=no-own-pages`)
+                  return {
+                    action: 'noop',
+                    requestedInstanceId,
+                    resolvedInstanceId: resolution.target.id,
+                    affectedIds: [],
+                    reason: 'This browser window belongs to the whole workspace, so it is not yours to close, and none of its pages are ones you opened. "tabs" lists them; "release" drops your overlay.',
+                  }
+                }
+
+                // A window is never left with no pages, so when the pages being closed
+                // are all of them, a fresh one takes their place first: the window goes
+                // back to what a window is made of rather than to nothing.
+                if (mine.length === tabs.length) {
+                  await bpm.createTabAsync(resolution.target.id, { activate: false })
+                }
+
+                for (const tab of mine) bpm.closeTab(resolution.target.id, tab.id)
+
+                sessionLog.info(`[browser-pane] lifecycle close session=${sid} resolved=${resolution.target.id} result=pages-closed pages=${mine.map((tab) => tab.id).join(',')}`)
+                return {
+                  action: 'pages-closed',
+                  requestedInstanceId,
+                  resolvedInstanceId: resolution.target.id,
+                  affectedIds: mine.map((tab) => tab.id),
+                }
+              }
+
               bpm.destroyInstance(resolution.target.id)
               sessionLog.info(`[browser-pane] lifecycle close session=${sid} requested=${requestedInstanceId ?? 'auto'} resolved=${resolution.target.id} result=closed`)
 
@@ -4165,17 +4303,71 @@ export class SessionManager implements ISessionManager {
                 affectedIds: [resolution.target.id],
               }
             },
+            // Pages, not windows: this session's window holds them, and a command
+            // acts on the page that is on screen unless it names one with `--tab`
+            // (plan §22). Creating a page is the one tab operation that may open a
+            // window — there is nothing to add a page to otherwise — so it goes
+            // through the same resolver every browser command uses.
+            //
+            // Everything reached through here was asked for by the agent, so the
+            // page says which conversation: `openedBySessionId` is stamped here
+            // rather than at each call site, because a caller that forgot would
+            // leave the agent's own page looking like the user's — and "leave other
+            // people's pages alone" is decided from that field.
+            createTab: async (options) => {
+              const instanceId = await resolveSessionBrowserInstance('browser_tab_new')
+              return await bpm.createTabAsync(instanceId, { ...options, openedBySessionId: sid })
+            },
+            activateTab: async (tabId) => {
+              const instanceId = await resolveWorkspaceWindowId()
+              if (!instanceId) {
+                throw new Error('No browser window is open for this workspace, so there is no page to name. Use "open" first.')
+              }
+              // Checked on the *named* page, before the window is moved to it: naming
+              // somebody else's work is refused here rather than after the switch.
+              assertTabInReach(await requireTab(instanceId, tabId))
+              bpm.activateTab(instanceId, tabId)
+            },
+            closeTab: async (tabId) => {
+              const instanceId = await resolveWorkspaceWindowId()
+              if (!instanceId) {
+                throw new Error('No browser window is open for this workspace, so there is no page to close.')
+              }
+              assertTabIsMineToClose(await requireTab(instanceId, tabId))
+              bpm.closeTab(instanceId, tabId)
+              // Read back rather than assume: closing the last page takes the
+              // window with it, and that is worth saying rather than leaving the
+              // caller to find out on its next command.
+              const remaining = await bpm.listTabsAsync(instanceId).catch(() => [])
+              return { remaining: remaining.length }
+            },
+            listTabs: async () => {
+              const instanceId = await resolveWorkspaceWindowId()
+              if (!instanceId) return []
+              return await bpm.listTabsAsync(instanceId)
+            },
             listWindows: async () => {
-              const windows = await bpm.listInstancesAsync()
-              // Each window carries the prototype it is showing, so the list says
-              // which of them are prototype windows, which page of the flow each is
-              // on, and of which kind — the URL alone cannot tell an overlay page
-              // (a live site's page) from a scratch one (our own rendered document).
+              const windows = await sessionWindows()
+              // Each window carries the prototype of the page **on screen** in it —
+              // which page of which flow, and of which kind — because the URL alone
+              // cannot tell an overlay page (a live site's page) from a scratch one
+              // (our own rendered document), and a window no longer holds one
+              // prototype's pages only (plan §22).
+              //
+              // The conversation's own binding is offered as a fallback for the
+              // windows this session is working in; another window's page is left to
+              // speak for itself rather than being told what it is by a conversation
+              // that has nothing to do with it.
+              const mine = (window: BrowserInstanceInfo) =>
+                !!window.isWorkspaceWindow || window.boundSessionId === sid || window.ownerSessionId === sid
+
               return windows.map((window) => ({
                 ...window,
-                prototype: this.describeWindowPrototype(
-                  window.boundSessionId ?? window.ownerSessionId,
+                prototype: describePrototypeAtPage(
+                  window.tabs?.find((tab) => tab.active),
+                  mine(window) ? this.effectivePrototypeSlug(managed) : undefined,
                   window.url,
+                  managed.workspace.rootPath,
                 ),
               }))
             },
@@ -5945,7 +6137,7 @@ export class SessionManager implements ISessionManager {
     }
     // Drop the per-session remote bridge + host-client pin on destroy.
     this.remoteBpms.delete(sessionId)
-    this.browserHostByCanvas.delete(sessionId)
+    this.browserHostBySession.delete(sessionId)
 
     // Dispose agent to clean up ConfigWatchers, event listeners, MCP connections
     if (managed.agent) {
@@ -7528,44 +7720,22 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
-   * Which prototype a browser window is showing — what the agent-side browser
-   * tools attach to a window, next to the page's real URL.
+   * The prototype the page on screen is for, from the browser side's own answer.
    *
-   * A window belongs to the conversation that opened it, so the prototype comes
-   * from that session. The **kind** is a fact about a *page*, not about the
-   * prototype (plan §19): one flow may mix pages of ours with pages of someone
-   * else's site, so both the kind and the page name are read off the page the
-   * window is actually on (`matchPrototypePage` against the page table). A
-   * `scratch` page is a document we own, rendered from its file with its patches
-   * applied and changed by editing files; an `overlay` page is a real site's page
-   * (its own JavaScript, its own session) which is patched, never edited. Both
-   * are null when the window is on the prototype's address but on no page the
-   * table describes — the generated page index, or a path no page claims.
-   *
-   * `origin` travels as well, and is the prototype's **own** address: it differs
-   * from the page's URL for an overlay and coincides with it for a page of ours.
-   *
-   * `currentUrl` decides which *page* of the prototype is on screen: a prototype is
-   * a flow, and once it has more than one screen the URL no longer says which one
-   * (plan §18/§19).
+   * Read **synchronously**, which is why it deliberately reaches for the sync
+   * accessors: `listInstances`/`listTabs` answer for real only on a local browser
+   * pane manager, and a remote bridge returns nothing here. That is not a hole —
+   * the caller falls back to the conversation's binding, which is what answered
+   * before a window could hold several prototypes' pages at once (plan §22).
    */
-  private describeWindowPrototype(
-    sessionId: string | null | undefined,
-    currentUrl: string | null | undefined,
-  ): PrototypeWindowDescriptor | null {
-    if (!sessionId) return null
+  private currentPagePrototypeSlug(managed: ManagedSession, bpm: IBrowserPaneManager): string | null {
+    const windows = bpm.listInstances()
+    const window = windows.find(
+      (candidate) => candidate.isWorkspaceWindow && (candidate.workspaceId ?? null) === (managed.workspace.id ?? null),
+    ) ?? windows.find((candidate) => candidate.boundSessionId === managed.id)
 
-    const binding = this.getSessionPrototypeBinding(sessionId)
-    if (!binding) return null
-
-    const pages = listPrototypePages(binding.workspaceRootPath, binding.slug)
-    const page = matchPrototypePage(pages, currentUrl)
-    return {
-      slug: binding.slug,
-      kind: pages.find((candidate) => candidate.name === page)?.kind ?? null,
-      origin: prototypeOriginUrl(binding.workspaceRootPath, binding.slug),
-      page,
-    }
+    if (!window) return null
+    return bpm.listTabs(window.id).find((tab) => tab.active)?.prototype?.slug ?? null
   }
 
   /**

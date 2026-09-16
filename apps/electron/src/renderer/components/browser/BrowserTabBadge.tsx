@@ -87,6 +87,17 @@ export const BrowserTabBadge = forwardRef<HTMLButtonElement, BrowserTabBadgeProp
 
       <span className="truncate ml-0.5 leading-[12px]">{displayLabel}</span>
 
+      {/*
+        How many pages this window holds. Only when there is more than one: a
+        window is one thing in the strip, and "1" beside every badge would be
+        noise stating the default.
+      */}
+      {(instance.tabs?.length ?? 0) > 1 && (
+        <span className="shrink-0 rounded-[3px] px-1 text-[9px] leading-[12px] bg-foreground/[0.08] opacity-70">
+          {instance.tabs!.length}
+        </span>
+      )}
+
       <span className="shrink-0 h-3 w-3 flex items-center justify-center opacity-55 group-hover:opacity-90 transition-opacity">
         <Icons.ChevronDown className="h-2.5 w-2.5" />
       </span>

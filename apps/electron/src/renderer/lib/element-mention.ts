@@ -4,8 +4,16 @@
  *
  * The composer's value is a plain string (see `rich-text-input`), so anything that
  * survives a round-trip through it has to *be* text. An element therefore travels as
- * `[element:<selector>|<text>]` with both halves percent-encoded: the payload has to
- * contain no `]`, and selectors do contain brackets (`[data-testid="x"]`).
+ * `[element:<selector>|<text>|<url>|<prototype>|<page>]` with every part
+ * percent-encoded: the payload has to contain no `]`, and selectors do contain
+ * brackets (`[data-testid="x"]`).
+ *
+ * The trailing three are where it was picked, and they are the reason the marker
+ * grew: the picker belongs to the window and stays on while the user moves between
+ * its pages, so the element alone no longer says which page it came from — and that
+ * is what the agent needs to change the right one. They are left off entirely when
+ * a pick carries no origin (the agent's own `browser_tool pick`), which is also why
+ * the two-part form is still read back.
  *
  * The marker is what the composer renders as a chip and what the draft stores. It
  * never reaches the model — `expandElementMentions` rewrites it into a readable
@@ -18,6 +26,12 @@ export interface ElementRef {
   selector: string
   /** The element's own text, shown as the chip's label. May be empty. */
   text: string
+  /** The address of the page it was picked on, when the pick carried it. */
+  url?: string
+  /** The prototype that page belongs to, when it is one's. */
+  prototypeSlug?: string
+  /** Which page of that prototype, when its page table knew. */
+  prototypePage?: string
 }
 
 export interface ElementMention {
@@ -31,9 +45,17 @@ export interface ElementMention {
 
 const MARKER_RE = /\[element:([^\]]+)\]/g
 
-/** Build the marker a picked element is inserted as. */
+/**
+ * Build the marker a picked element is inserted as.
+ *
+ * Absent parts are dropped rather than encoded as empty ones, so a pick that
+ * carries no origin produces the shorter marker it did before this grew.
+ */
 export function buildElementMention(ref: ElementRef): string {
-  return `[element:${encodeURIComponent(ref.selector)}|${encodeURIComponent(ref.text)}]`
+  const parts = [ref.selector, ref.text, ref.url, ref.prototypeSlug, ref.prototypePage]
+  while (parts.length > 2 && !parts[parts.length - 1]) parts.pop()
+
+  return `[element:${parts.map((part) => encodeURIComponent(part ?? '')).join('|')}]`
 }
 
 /**
@@ -44,17 +66,44 @@ export function buildElementMention(ref: ElementRef): string {
  * as a chip that stands for nothing.
  */
 export function parseElementMention(payload: string): ElementRef | null {
-  const separator = payload.indexOf('|')
-  if (separator < 0) return null
+  const parts = payload.split('|')
+  if (parts.length < 2) return null
 
+  let decoded: string[]
   try {
-    return {
-      selector: decodeURIComponent(payload.slice(0, separator)),
-      text: decodeURIComponent(payload.slice(separator + 1)),
-    }
+    decoded = parts.map((part) => decodeURIComponent(part))
   } catch {
     return null
   }
+
+  const [selector, text, url, prototypeSlug, prototypePage] = decoded
+  return {
+    selector: selector ?? '',
+    text: text ?? '',
+    ...(url ? { url } : {}),
+    ...(prototypeSlug ? { prototypeSlug } : {}),
+    ...(prototypePage ? { prototypePage } : {}),
+  }
+}
+
+/** The prototype, with the page of it, when the pick knew either. */
+function prototypeLabel(ref: ElementRef): string {
+  if (!ref.prototypeSlug) return ''
+  return `${ref.prototypeSlug}${ref.prototypePage ? ` / ${ref.prototypePage}` : ''}`
+}
+
+/**
+ * Where the element came from, in one phrase: `demo / cart (https://…)`, or just
+ * the address when the page is nobody's prototype.
+ *
+ * Not prose and not translated — a prototype slug, a page name and an address read
+ * the same in every language — and empty for a pick that carried no origin (the
+ * agent's own `browser_tool pick`).
+ */
+export function elementOriginText(ref: ElementRef): string {
+  const where = prototypeLabel(ref)
+  if (where && ref.url) return `${where} (${ref.url})`
+  return where || ref.url || ''
 }
 
 /** All element markers in a text, in order, with positions for splicing. */

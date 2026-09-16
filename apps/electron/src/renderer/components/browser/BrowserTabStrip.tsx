@@ -2,7 +2,8 @@
  * BrowserTabStrip
  *
  * Rendered in the TopBar, shows compact badges for all active browser instances.
- * Each badge opens a shared action menu.
+ * Each badge opens a shared action menu, whose first group is that window's own
+ * pages (plan §22): one window is one badge, and its pages are listed inside it.
  */
 
 import { useCallback, useEffect, useMemo, useRef } from 'react'
@@ -199,6 +200,79 @@ export function BrowserTabStrip({
     navigate(routes.view.allSessions(sessionId))
   }, [])
 
+  /**
+   * Show one of a window's pages.
+   *
+   * Switching is done through the window (which page is on screen is the
+   * window's own state), so the badge's list is a list of pages *of one window*
+   * rather than a flat list of everything open — which is what "grouped by
+   * window" means here.
+   */
+  const selectPage = useCallback((instance: BrowserInstanceInfo, tabId: string) => {
+    if (instancesOverride) return
+    const browserPaneApi = window.electronAPI?.browserPane
+    if (!browserPaneApi) {
+      console.warn('[BrowserTabStrip] browserPane API unavailable for page switch')
+      return
+    }
+
+    void browserPaneApi.tabAction({ instanceId: instance.id, action: 'activate', tabId }).catch((error) => {
+      console.warn(`[BrowserTabStrip] Failed to switch page ${tabId} of ${instance.id}:`, error)
+    })
+    // Switching a page in a window nobody can see is half an action.
+    void browserPaneApi.focus(instance.id).catch(() => {})
+  }, [instancesOverride])
+
+  const addPage = useCallback((instance: BrowserInstanceInfo) => {
+    if (instancesOverride) return
+    void window.electronAPI?.browserPane
+      .tabAction({ instanceId: instance.id, action: 'new' })
+      .catch((error) => {
+        console.warn(`[BrowserTabStrip] Failed to add a page to ${instance.id}:`, error)
+      })
+  }, [instancesOverride])
+
+  /**
+   * The window's own pages, above its actions.
+   *
+   * One entry per page, the one on screen marked. A single-page window shows
+   * nothing here — that page is what the badge already says, and a group of one
+   * is noise. Closing a page is deliberately *not* here: it lives on the strip in
+   * the window, where the page being closed is the one in front of you.
+   */
+  const renderPageList = useCallback((instance: BrowserInstanceInfo) => {
+    const tabs = instance.tabs ?? []
+    if (tabs.length < 2) return null
+
+    return (
+      <>
+        {tabs.map((tab) => {
+          const label = tab.title.trim() || getHostname(tab.url) || 'Untitled page'
+          return (
+            <StyledDropdownMenuItem key={tab.id} onSelect={() => selectPage(instance, tab.id)}>
+              {tab.active ? (
+                <Icons.Check className="h-3.5 w-3.5 text-accent" />
+              ) : tab.isLoading ? (
+                <Spinner className="text-[10px]" />
+              ) : (
+                <Icons.Globe className="h-3.5 w-3.5 opacity-70" />
+              )}
+              <span className="truncate">{label}</span>
+              {tab.openedBySessionId !== null && <Icons.Bot className="h-3 w-3 shrink-0 opacity-50" />}
+            </StyledDropdownMenuItem>
+          )
+        })}
+
+        <StyledDropdownMenuItem disabled={!!instancesOverride} onSelect={() => addPage(instance)}>
+          <Icons.Plus className="h-3.5 w-3.5" />
+          New page
+        </StyledDropdownMenuItem>
+
+        <StyledDropdownMenuSeparator />
+      </>
+    )
+  }, [addPage, instancesOverride, selectPage])
+
   const terminateBrowserWindow = useCallback((instance: BrowserInstanceInfo) => {
     if (!instancesOverride) {
       const browserPaneApi = window.electronAPI?.browserPane
@@ -229,6 +303,8 @@ export function BrowserTabStrip({
 
     return (
       <>
+        {renderPageList(instance)}
+
         <StyledDropdownMenuItem
           disabled={!canUseLiveWindowActions}
           onSelect={() => focusBrowserWindow(instance)}
@@ -257,7 +333,7 @@ export function BrowserTabStrip({
         </StyledDropdownMenuItem>
       </>
     )
-  }, [instancesOverride, focusBrowserWindow, openSessionUsingWindow, terminateBrowserWindow])
+  }, [instancesOverride, focusBrowserWindow, openSessionUsingWindow, renderPageList, terminateBrowserWindow])
 
   if (orderedInstances.length === 0) return null
 

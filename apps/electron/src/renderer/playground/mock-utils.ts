@@ -260,6 +260,9 @@ export const mockElectronAPI = {
     focus: async (instanceId: string) => {
       console.log('[Playground] browserPane.focus called:', instanceId)
     },
+    tabAction: async (input: { instanceId: string; action: string; tabId?: string }) => {
+      console.log('[Playground] browserPane.tabAction called:', input)
+    },
   },
 
   openFile: async (path: string) => {

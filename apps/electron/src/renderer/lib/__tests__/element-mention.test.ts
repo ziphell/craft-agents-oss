@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test'
 import {
   buildElementMention,
   elementLabel,
+  elementOriginText,
   expandElementMentions,
   findElementMentions,
   parseElementMention,
@@ -40,9 +41,65 @@ describe('buildElementMention / parseElementMention', () => {
     expect(findElementMentions(marker)[0]?.ref).toEqual({ selector: 'svg.icon', text: '' })
   })
 
+  it('round-trips the page the element was picked on', () => {
+    // The picker is the window's and stays on across its pages, so this is what
+    // tells two picks of the same element apart.
+    const marker = buildElementMention({
+      selector: '[data-testid="pay"]',
+      text: 'Pay now',
+      url: 'https://shop.example.com/cart?step=2',
+      prototypeSlug: 'checkout',
+      prototypePage: 'cart',
+    })
+
+    expect(parseElementMention(marker.slice('[element:'.length, -1))).toEqual({
+      selector: '[data-testid="pay"]',
+      text: 'Pay now',
+      url: 'https://shop.example.com/cart?step=2',
+      prototypeSlug: 'checkout',
+      prototypePage: 'cart',
+    })
+  })
+
+  it('drops the parts a pick did not carry', () => {
+    // The agent's own `browser_tool pick` knows a page but not a prototype: the
+    // marker is shorter, and reading it back leaves nothing empty behind.
+    const marker = buildElementMention({ selector: '.a', text: 'A', url: 'https://example.com/' })
+
+    expect(marker).toBe('[element:.a|A|https%3A%2F%2Fexample.com%2F]')
+    expect(parseElementMention('.a|A|https%3A%2F%2Fexample.com%2F')).toEqual({
+      selector: '.a',
+      text: 'A',
+      url: 'https://example.com/',
+    })
+  })
+
+  it('still reads a marker written before picks carried an origin', () => {
+    expect(parseElementMention('%23submit|Submit')).toEqual({ selector: '#submit', text: 'Submit' })
+  })
+
   it('rejects payloads that are not ours', () => {
     expect(parseElementMention('no-separator')).toBeNull()
     expect(parseElementMention('%E0%A4%A|text')).toBeNull()
+  })
+})
+
+describe('elementOriginText', () => {
+  it('names the prototype and its page, then the address', () => {
+    expect(elementOriginText({ selector: '.a', text: 'A', url: 'https://example.com/', prototypeSlug: 'demo', prototypePage: 'cart' }))
+      .toBe('demo / cart (https://example.com/)')
+  })
+
+  it('names the prototype alone when the page is unknown', () => {
+    expect(elementOriginText({ selector: '.a', text: 'A', prototypeSlug: 'demo' })).toBe('demo')
+  })
+
+  it('falls back to the address for a page nobody owns', () => {
+    expect(elementOriginText({ selector: '.a', text: 'A', url: 'https://example.com/' })).toBe('https://example.com/')
+  })
+
+  it('is empty when the pick carried nothing about where it came from', () => {
+    expect(elementOriginText({ selector: '.a', text: 'A' })).toBe('')
   })
 })
 

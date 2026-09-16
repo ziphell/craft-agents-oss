@@ -145,7 +145,7 @@ import {
   type CreatePageValues,
 } from "../prototypes/CreatePageDialog"
 import { RenameDialog } from "@/components/ui/rename-dialog"
-import { useBrowserToolbarActions, type EditElementRequest } from "@/hooks/useBrowserToolbarActions"
+import { useBrowserToolbarActions, type AddElementRequest, type EditElementRequest } from "@/hooks/useBrowserToolbarActions"
 import { MessagingDialogHost } from "@/components/messaging/MessagingDialogHost"
 import { EditPopover, getEditConfig, type EditContextKey } from "@/components/ui/EditPopover"
 import SettingsNavigator from "@/pages/settings/SettingsNavigator"
@@ -989,41 +989,73 @@ function AppShellContent({
     }))
     navigate(routes.view.allSessions(request.sessionId))
   }, [getDraft, onInputChange, t])
+
+  /**
+   * Hand an element to a conversation (plan §12.7).
+   *
+   * The element is inserted as a chip — a marker in the composer's text that the
+   * input renders as an inline badge and that `FreeFormInput` expands into a
+   * readable reference on send (see element-mention). It carries the page it was
+   * picked on, because the picker stays on across the window's pages and the agent
+   * needs to know which one. It is *appended*: picking an element adds a reference
+   * to the question being written, so the question has to survive the pick.
+   *
+   * With no conversation to put it in — nothing selected, or a window of its own —
+   * one is opened for it, rather than the pick being dropped: picking an element is
+   * how a user starts talking about it. The chip is written only once the session
+   * exists, so a failed create leaves no half-written draft behind.
+   *
+   * The same two-step write the prototype flow uses — the draft for when the session
+   * is mounted later, the event for when it is already open — because neither step
+   * alone lands in every case.
+   */
+  const handleAddElementToConversation = useCallback(async (request: AddElementRequest) => {
+    const { origin } = request
+    const chip = `${buildElementMention({
+      selector: request.element.selector,
+      text: request.element.text,
+      ...(origin.url ? { url: origin.url } : {}),
+      ...(origin.prototype ? { prototypeSlug: origin.prototype.slug } : {}),
+      ...(origin.prototypePage ? { prototypePage: origin.prototypePage } : {}),
+    })} `
+
+    let targetSessionId = request.sessionId
+    if (!targetSessionId) {
+      if (!activeWorkspaceId) return
+      try {
+        targetSessionId = (await contextValue.onCreateSession(activeWorkspaceId)).id
+      } catch (err) {
+        console.error('[AppShell] Failed to open a conversation for a picked element:', err)
+        toast.error(t('browserEdit.newSessionFailed'))
+        return
+      }
+    }
+
+    const next = appendRestoredInput(getDraft(targetSessionId), chip)
+    onInputChange(targetSessionId, next)
+    window.dispatchEvent(
+      new CustomEvent('craft:restore-input', {
+        detail: { sessionId: targetSessionId, text: next },
+      }),
+    )
+    // The pick came from another window, so the caret is elsewhere; put it back in
+    // the composer, where the user now has a chip to write after.
+    dispatchFocusInputEvent({ sessionId: targetSessionId })
+    navigate(routes.view.allSessions(targetSessionId))
+  }, [activeWorkspaceId, contextValue.onCreateSession, getDraft, onInputChange, navigate, t])
+
   useBrowserToolbarActions({
     workspaceId: activeWorkspaceId,
-    onEditElement: handleElementPicked,
     /**
-     * Hand an element to the conversation (plan §12.7).
+     * Where a pick goes: the conversation the user is looking at.
      *
-     * The element is inserted as a chip — a marker in the composer's text that the
-     * input renders as an inline badge and that `FreeFormInput` expands into a
-     * readable reference on send (see element-mention). It is *appended*: picking an
-     * element adds a reference to the question being written, so the question has to
-     * survive the pick.
-     *
-     * The same two-step write the prototype flow uses — the draft for when the
-     * session is mounted later, the event for when it is already open — because
-     * neither step alone lands in every case. Defined inline so its parameter is
-     * typed by the hook, which is the only place that knows the request shape.
+     * Not the window's own binding — that is whoever is driving the window, and the
+     * window is shared. The prototype flow above keeps resolving through the window,
+     * because what it is about (a patch) belongs to the window's prototype.
      */
-    onAddElementToConversation: (request) => {
-      const chip = `${buildElementMention({
-        selector: request.element.selector,
-        text: request.element.text,
-      })} `
-      const next = appendRestoredInput(getDraft(request.sessionId), chip)
-
-      onInputChange(request.sessionId, next)
-      window.dispatchEvent(
-        new CustomEvent('craft:restore-input', {
-          detail: { sessionId: request.sessionId, text: next },
-        }),
-      )
-      // The pick came from another panel, so the caret is elsewhere; put it back in
-      // the composer, where the user now has a chip to write after.
-      dispatchFocusInputEvent({ sessionId: request.sessionId })
-      navigate(routes.view.allSessions(request.sessionId))
-    },
+    activeSessionId: focusedSessionId ?? session.selected,
+    onEditElement: handleElementPicked,
+    onAddElementToConversation: handleAddElementToConversation,
   })
   const projectMenuOptions = useMemo(
     () => projects.map(p => ({ id: p.config.id, slug: p.config.slug, name: p.config.name, color: p.config.color })),
@@ -2379,16 +2411,25 @@ function AppShellContent({
     setTimeout(() => focusZone('chat', { intent: 'programmatic' }), 50)
   }, [activeWorkspace, focusZone, navigate, resolveInheritedNewSessionParams])
 
-  // Create a brand new dedicated browser window and focus it.
-  // Intentionally unbound: this action should always create a NEW window.
+  // Open a page in the browser.
+  //
+  // This used to make a window of its own. There is one browser window now — the
+  // workspace's, used by every conversation and by the user (plan §22) — so "a new
+  // browser" means a page in it, and the window comes up if it was not open yet.
+  //
+  // `newPage` is one request rather than "create the window, then add a page to it":
+  // a window that was not up yet already holds the blank page being asked for, so
+  // adding beside it would open two of them (plan §22). The host decides, because it
+  // is the only side that knows whether the window it just handed back is new.
   const handleNewBrowserWindow = useCallback(async () => {
     try {
       const instanceId = await window.electronAPI.browserPane.create({
         show: true,
+        newPage: true,
       })
       await window.electronAPI.browserPane.focus(instanceId)
     } catch (error) {
-      console.error('[Chat] Failed to create browser window:', error)
+      console.error('[Chat] Failed to open a browser page:', error)
       toast.error(t('toast.failedToCreateBrowser'))
     }
   }, [])

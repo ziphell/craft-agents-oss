@@ -23,6 +23,11 @@ export type BrowserCapabilityMethod =
   | 'destroyForSession'
   | 'getInstance'
   | 'listInstances'
+  // Tabs
+  | 'createTab'
+  | 'activateTab'
+  | 'closeTab'
+  | 'listTabs'
   | 'bindSession'
   | 'unbindAllForSession'
   | 'setAgentControl'

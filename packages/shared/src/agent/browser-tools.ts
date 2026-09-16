@@ -12,7 +12,7 @@
 
 import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import type { PickedElement } from '../protocol/dto.ts';
+import type { BrowserTabSummary, PickedElement } from '../protocol/dto.ts';
 import type { PrototypeEntry, PrototypeExportResult } from '../prototypes/export.ts';
 import type { CreatedPrototype } from '../prototypes/create.ts';
 import type { PrototypeConfig } from '../prototypes/config.ts';
@@ -122,11 +122,33 @@ export interface BrowserDownloadsArgs {
 }
 
 export interface BrowserLifecycleActionResult {
-  action: 'closed' | 'hidden' | 'released' | 'noop'
+  /**
+   * What happened. `pages-closed` is the workspace's-window case: a conversation may
+   * not close that window, but it may close the pages it opened in it (plan §22).
+   */
+  action: 'closed' | 'pages-closed' | 'hidden' | 'released' | 'noop'
   requestedInstanceId?: string
   resolvedInstanceId?: string
   affectedIds: string[]
   reason?: string
+}
+
+/** One page of this session's window, as `tabs` reports it (plan §22). */
+export type BrowserTabInfo = BrowserTabSummary
+
+export interface BrowserTabOpenOptions {
+  /** Where the page starts. Omitted → blank, for a caller that navigates itself. */
+  url?: string
+  /** Whether the page comes to the front. Default true. */
+  activate?: boolean
+  /**
+   * The prototype this page is for, when it is one.
+   *
+   * The prototype's **own** origin, not the page's address: an overlay page's
+   * document is someone else's, so once it loads there is nothing left in the URL
+   * to say which prototype the page is working on.
+   */
+  prototype?: { slug: string; origin: string } | null
 }
 
 export interface BrowserPaneFns {
@@ -376,6 +398,27 @@ export interface BrowserPaneFns {
   releaseControl: (instanceId?: string) => Promise<BrowserLifecycleActionResult>;
   closeWindow: (instanceId?: string) => Promise<BrowserLifecycleActionResult>;
   hideWindow: (instanceId?: string) => Promise<BrowserLifecycleActionResult>;
+  /**
+   * Add a page to this session's window — what makes several prototypes workable
+   * at once, since the window is one and its pages are many (plan §22). Returns
+   * the new page's id.
+   *
+   * Opening something into a window that has no page of its own yet opens *into*
+   * that page rather than beside it, so a fresh window ends up with one page.
+   */
+  createTab: (options?: BrowserTabOpenOptions) => Promise<string>;
+  /**
+   * Put one of this session's pages on screen.
+   *
+   * Everything the window reports is read through the page on screen, so this is
+   * what "act on that page" means — and it is what makes the target visible while
+   * the command runs. An unknown id throws.
+   */
+  activateTab: (tabId: string) => Promise<void>;
+  /** Close one page. Closing a window's last page closes the window. */
+  closeTab: (tabId: string) => Promise<{ remaining: number }>;
+  /** This session's window's pages, in the order they were opened. */
+  listTabs: () => Promise<BrowserTabInfo[]>;
   listWindows: () => Promise<Array<{
     id: string;
     title: string;
@@ -452,6 +495,16 @@ them. Referencing is how you build one thing by studying another. \`prototype-li
 with its pages, and which ones reference which.
 Detailed rules and the full command reference: docs/browser-tools.md — read it before the first command.
 
+The window is one and its pages are many: every command can name the page it acts on with \`--tab <id>\`
+(\`tabs\` lists them), and without one it acts on the page on screen. \`prototype-open\` always opens a page
+of its own, which is what lets two prototypes be worked on at once rather than replacing each other.
+
+There is **one browser window per workspace**, shared by every conversation in it and by the user — so
+\`open\` adds a page to it instead of making a window, and the window is not yours to close: use
+\`tab-close <id>\` for the pages you opened, or \`release\` to drop your overlay. \`windows\` says who is
+driving each one and what it is showing. Which prototype a command means is read from the page in front
+of you first, so several prototypes can be driven from one conversation without binding any of them.
+
 Examples:
 - \`--help\`
 - \`open\`
@@ -498,6 +551,10 @@ Examples:
 - \`prototype-status\` — inspect pages, patches, services, exports, ownership
 - \`prototype-open\` — open the prototype (its entry page, or the generated index when there is none)
 - \`prototype-open --page cart\` — open one page of it
+- \`tabs\` — which pages this window has, each with what it is and who opened it
+- \`snapshot --tab tab-3\` — act on a named page (the window shows it while the command runs)
+- \`tab-new https://example.com\` — add a page to the window
+- \`tab-close tab-2\` — close one page (closing the last one closes the window)
 - \`console 50 error\`
 - \`screenshot\` — raw screenshot
 - \`screenshot --annotated\` — screenshot with @eN labels overlaid on interactive elements
@@ -510,10 +567,10 @@ Examples:
 - \`key Enter\`
 - \`key k meta\`
 - \`downloads wait 15000\`
-- \`focus [windowId]\` — focus existing browser window (no new window)
-- \`windows\` — list current browser windows and ownership state
+- \`focus [windowId]\` — focus a browser window (no new window)
+- \`windows\` — the workspace's windows, who is driving each, and what it is showing
 - \`release [windowId|all]\` — dismiss the agent control overlay when done
-- \`close [windowId]\` — close and destroy the browser window
+- \`close [windowId]\` — close a window of your own; the shared window is refused
 - \`hide [windowId]\` — hide the window while preserving state
 
 The prototype-* commands default to the prototype this session is bound to, so a slug is

@@ -50,18 +50,18 @@ class FakeServer {
 // implementation in SessionManager.ts.
 function resolveHostClient(
   rpcServer: RpcServer,
-  pinByCanvas: Map<string, string>,
+  pinByHost: Map<string, string>,
   sessionId: string,
   workspaceId: string,
 ): string | null {
-  const pinned = pinByCanvas.get(sessionId)
+  const pinned = pinByHost.get(sessionId)
   if (pinned && rpcServer.hasClientCapability(pinned, CLIENT_BROWSER_INVOKE)) return pinned
   const fallback = rpcServer.findClientsWithCapability(
     CLIENT_BROWSER_INVOKE,
     { workspaceId },
   )[0]
   if (!fallback) return null
-  pinByCanvas.set(sessionId, fallback)
+  pinByHost.set(sessionId, fallback)
   return fallback
 }
 

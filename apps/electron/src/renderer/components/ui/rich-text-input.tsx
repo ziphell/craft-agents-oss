@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { coerceInputText } from '@/lib/input-text'
 import { cn } from '@/lib/utils'
 import { findMentionMatches, parseMentions, type ComposerMentionType, type MentionMatch } from '@/lib/mentions'
-import { elementLabel, parseElementMention } from '@/lib/element-mention'
+import { elementLabel, elementOriginText, parseElementMention } from '@/lib/element-mention'
 import {
   loadSourceIcon,
   loadSkillIcon,
@@ -422,12 +422,12 @@ export function textToHTML(
       tooltip = match.id
     } else if (match.type === 'element') {
       // The id is the encoded payload (see element-mention): show what the element
-      // says, and its selector on hover so it stays identifiable when two elements
-      // read the same.
+      // says, and — on hover — the selector plus the page it came from, so two
+      // chips that read the same still say where each one lives.
       const ref = parseElementMention(match.id)
       if (ref) {
         label = elementLabel(ref)
-        tooltip = ref.selector
+        tooltip = [ref.selector, elementOriginText(ref)].filter(Boolean).join('\n')
       }
     }
 

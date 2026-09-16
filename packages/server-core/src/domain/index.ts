@@ -1,5 +1,7 @@
 export * from './title-sanitizer'
 export * from './browser-tool-detection'
+export * from './prototype-page'
+export * from './tab-access'
 export * from './init-gate'
 export * from './session-branch-cleanup'
 export * from './session-browser-release'

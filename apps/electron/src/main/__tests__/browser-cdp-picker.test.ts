@@ -55,7 +55,7 @@ describe('BrowserCDP picker', () => {
   it('returns the picked element parsed from the polled state', async () => {
     const { webContents, expressions } = createFakeWebContents((params) => {
       if (params.returnByValue) {
-        return { result: { value: JSON.stringify({ status: 'picked', result: PICKED }) } }
+        return { result: { value: JSON.stringify({ status: 'picked', picks: [PICKED] }) } }
       }
       return {}
     })
@@ -73,7 +73,7 @@ describe('BrowserCDP picker', () => {
     const { webContents } = createFakeWebContents((params) => {
       if (params.returnByValue) {
         polls += 1
-        return { result: { value: JSON.stringify({ status: 'pending', result: null }) } }
+        return { result: { value: JSON.stringify({ status: 'pending', picks: [] }) } }
       }
       return {}
     })
@@ -96,6 +96,41 @@ describe('BrowserCDP picker', () => {
 
     const cdp = new BrowserCDP(webContents)
     expect(await cdp.pickElement({ timeoutMs: 1_000 })).toBe(null)
+    cdp.detach()
+  })
+
+  it('arms a resident picker without tearing it down, and hands back each pick once', async () => {
+    let reads = 0
+    const { webContents, expressions } = createFakeWebContents((params) => {
+      if (!params.returnByValue) return {}
+      reads += 1
+      // The page keeps picking: the same element twice, then nothing new.
+      return {
+        result: {
+          value: JSON.stringify({
+            status: 'pending',
+            picks: reads <= 2 ? [PICKED] : [],
+          }),
+        },
+      }
+    })
+
+    const cdp = new BrowserCDP(webContents)
+    await cdp.armPicker({ addToConversation: true, addLabel: 'Add', resident: true })
+
+    // The injected script must carry the resident flag through, or the page would
+    // tear its own overlay down after the first pick.
+    const injectExpression = expressions[0]!
+    expect(injectExpression).toContain('if (true) return;')
+    expect(() => new Function(injectExpression)).not.toThrow()
+
+    expect((await cdp.drainPicker()).picks).toEqual([PICKED])
+    expect((await cdp.drainPicker()).picks).toEqual([PICKED])
+    expect((await cdp.drainPicker()).picks).toEqual([])
+
+    // Arming is not a pick: one injection, then one call per read, and nothing
+    // tearing the page's overlay down in between.
+    expect(expressions.length).toBe(4)
     cdp.detach()
   })
 })

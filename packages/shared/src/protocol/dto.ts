@@ -838,6 +838,28 @@ export interface PickedElement {
 }
 
 /**
+ * Where a picked element came from: the page it was picked on (plan §12.7).
+ *
+ * The picker belongs to the **window**, and stays armed while the user moves
+ * between its pages — any page's elements can be picked, and the same gesture on
+ * two pages means two different places to change. So the page it happened on
+ * travels with the element, and the chip and the agent read it from there.
+ *
+ * The same three answers a page's summary gives about where it is, which is why
+ * both are produced by one function in the pane manager.
+ */
+export interface PickedElementOrigin {
+  /** The address the page was on when the element was picked. */
+  url: string
+  /** That page's title. */
+  title: string
+  /** The prototype this page is for, if it is one. */
+  prototype: BrowserTabPrototype | null
+  /** Which page of that prototype, when the prototype's page table knows. */
+  prototypePage: string | null
+}
+
+/**
  * An action the browser panel's toolbar forwards to the main window.
  *
  * The panel has no workspace or prototype context of its own (it is a separate
@@ -853,14 +875,18 @@ export type BrowserToolbarAction =
     }
   | { kind: 'apply-requested'; instanceId: string }
   /**
-   * The person used the bar under the highlight: the element goes into this
-   * window's conversation rather than into a prototype patch (plan §12.7).
+   * The person used the bar under the highlight: the element goes into a
+   * conversation rather than into a prototype patch (plan §12.7).
    *
    * Separate from `picked` because the two do different things with the same
    * element — one opens the prototype's edit flow, the other writes a draft — and
    * this one needs no prototype at all, only a conversation.
+   *
+   * `origin` is the page inside the window this pick came from: with the picker
+   * resident across the window's pages, the element alone does not say where it
+   * was picked, and that is the part the conversation needs to act on it.
    */
-  | { kind: 'add-to-conversation'; instanceId: string; element: PickedElement }
+  | { kind: 'add-to-conversation'; instanceId: string; element: PickedElement; origin: PickedElementOrigin }
   /**
    * The user typed one of a prototype's own addresses into the window's address
    * bar.
@@ -875,6 +901,101 @@ export type BrowserToolbarAction =
   | { kind: 'open-prototype'; instanceId: string; slug: string; page?: string | null }
   | { kind: 'pick-failed'; instanceId: string; message: string }
 
+/**
+ * The prototype a page is for: the prototype, and its own origin
+ * (`http://<slug>-<hash>.localhost`).
+ *
+ * The origin rather than the page's address, because an overlay's document is
+ * someone else's — once the view loads it, nothing in the URL says which
+ * prototype the page is working on.
+ */
+export interface BrowserTabPrototype {
+  slug: string
+  origin: string
+}
+
+/**
+ * One page of a browser window (plan §22).
+ *
+ * The fields are in three groups, because they are not equally trustworthy:
+ *
+ * - **observation** — what the page itself reports (address, title, favicon,
+ *   loading, which prototype and which of its pages it is on). One producer, so
+ *   nothing here can disagree with the document it describes.
+ * - **declaration** — who asked for it (`openedBySessionId`). Written once, when the
+ *   page is created, and never changed afterwards: a statement of intent.
+ * - **lease** — who is working on it at the moment (`driverSessionId`). Written by
+ *   whoever is using the page and released when their turn ends: it says nothing
+ *   about who the page belongs to.
+ *
+ * Keeping them apart is the point: a caller that reads a declaration as a
+ * measurement is reading somebody's intention as a fact, and one that reads a lease
+ * as ownership will close work that is not theirs.
+ */
+export interface BrowserTabSummary {
+  /** Stable across the page's life; what `--tab` and the toolbar name it by. */
+  id: string
+
+  // -- Observation ---------------------------------------------------------
+  url: string
+  title: string
+  favicon: string | null
+  isLoading: boolean
+  /** Whether this is the page the window is showing. */
+  active: boolean
+  /** The prototype this page is for, or null for an ordinary page. */
+  prototype: BrowserTabPrototype | null
+  /**
+   * Which page of that prototype is on screen, or null when it cannot be told —
+   * no prototype, or a page of it that the prototype's own page table does not
+   * describe (a file, an SPA route). Read from the page table, never from the
+   * address.
+   */
+  prototypePage: string | null
+  /**
+   * How the browser asked for this page, when the page asked for itself rather than a
+   * command opening it: `'link'` for a `target="_blank"`, `'popup'` for a scripted
+   * `window.open` with features, `null` for every other way a page comes to exist
+   * (the address bar, `tab-new`, `prototype-open`, the panel).
+   *
+   * Here rather than in the declaration half because nobody *stated* it — the browser
+   * reported it, the same way it reports a title. It is worth keeping because both are
+   * now played in the same window, which costs the page its `window.opener`: a popup
+   * that waits for a `postMessage` from the page that opened it (Google's sign-in) will
+   * never get one, and this field is how that becomes diagnosable instead of mysterious
+   * (plan §22).
+   */
+  disposition: 'link' | 'popup' | null
+
+  // -- Declaration ---------------------------------------------------------
+  /**
+   * Which session asked for this page, or `null` when a person did.
+   *
+   * The reason it is here rather than derived: an agent must be able to leave the
+   * user's pages alone (plan §22's third rule), and "which of these did I open"
+   * is not visible in a URL.
+   *
+   * The session rather than a yes/no, because "an agent opened it" is not enough to
+   * act on once several conversations share a window: closing a page is housekeeping
+   * only if *this* conversation opened it, and a second conversation's page is as
+   * much somebody else's as the user's is. The words "opened by agent" are a rendering
+   * of this field, produced where they are needed (the agent's `tabs` output) rather
+   * than stored as well.
+   */
+  openedBySessionId: string | null
+
+  // -- Lease ---------------------------------------------------------------
+  /**
+   * Which session is working on this page **now**, or `null` when nobody is.
+   *
+   * A lease, like the window's, but per page (plan §22): a conversation's command
+   * reaches the page on screen, so that page records who is driving it, and the turn
+   * ending releases it. Two conversations sharing the window take turns *here*, and
+   * this is what makes "who is moving which page" answerable instead of guessed.
+   */
+  driverSessionId: string | null
+}
+
 export interface BrowserInstanceInfo {
   id: string
   url: string
@@ -883,7 +1004,42 @@ export interface BrowserInstanceInfo {
   isLoading: boolean
   canGoBack: boolean
   canGoForward: boolean
+  /**
+   * Which session is driving this window **now**, or `null` when nobody is.
+   *
+   * A lease rather than ownership (plan §22): every command a conversation runs
+   * through the window renews it, and the turn ending releases it. With one shared
+   * window per workspace, "whose window is this" stopped meaning anything — "who is
+   * using it at the moment" is the question that still has an answer.
+   */
   boundSessionId: string | null
+  /**
+   * Whether this window is its **workspace's browser window** — the one every
+   * conversation in that workspace, and the user, work in (plan §22).
+   *
+   * There is one per workspace, and it is found by this flag plus `workspaceId`
+   * rather than by who is asking: no session owns it, so "which window is mine"
+   * stopped being a question with an owner-shaped answer. Its pages are the unit of
+   * work, and they carry what used to be the window's identity (which prototype,
+   * whose).
+   *
+   * Not a prototype thing: the same window is where a general task's browsing
+   * happens, and most of its pages have nothing to do with a prototype at all. The
+   * flag says *whose* the window is — the workspace's rather than a session's.
+   *
+   * Optional so a renderer that pre-dates the field keeps working — treat missing
+   * as `false`. A caller that needs to know whether a window may be closed should
+   * ask this: the workspace's window is never one conversation's to close.
+   */
+  isWorkspaceWindow?: boolean
+  /**
+   * The window's pages, in the order they were opened, with the active one marked.
+   *
+   * Optional so a renderer that pre-dates the field keeps working — treat missing
+   * as a single-page window. The window-level fields above stay the *active*
+   * page's, so a reader that only wants "what is on screen" needs nothing here.
+   */
+  tabs?: BrowserTabSummary[]
   /**
    * The prototype this window is working on, or `null` for a plain browser
    * window. The main process's answer, not something a renderer derives: an

@@ -108,6 +108,20 @@ const PICKER_STATE_KEY = '__craft_agent_picker_state__'
 const PICKER_CANCEL_KEY = '__craft_agent_picker_cancel__'
 const PICKER_OVERLAY_ID = '__craft_agent_picker_overlay__'
 
+/** What the injected picker has reported since the last read. */
+export interface PickerReport {
+  /**
+   * `pending` while the picker is armed and nothing has happened yet; `cancelled`
+   * once the user pressed Escape (that is the page saying "stop", and only the
+   * page knows); `picked` once a one-shot pick has been answered; `missing` when
+   * this document has no picker at all, which is what a navigation looks like
+   * from here.
+   */
+  status: 'pending' | 'picked' | 'cancelled' | 'missing'
+  /** Elements picked since the last read — cleared as they are read. */
+  picks: PickedElement[]
+}
+
 /**
  * Injected picker: highlights the element under the cursor and turns the user's
  * click into a stable selector. It reports into `PICKER_STATE_KEY` rather than
@@ -122,6 +136,15 @@ function buildPickerInjectScript(options: {
   addToConversation: boolean
   /** Its label, in the caller's language — the toolbar owns the i18n, not this. */
   addLabel: string
+  /**
+   * Stay armed after a pick.
+   *
+   * One pick is what the agent asks for (`browser_tool pick`), but a person who
+   * turned the mode on is picking *elements*, plural, and moving between pages
+   * while they do it: the overlay stays, every click is reported, and the mode
+   * ends when they say so (Escape here, or the toolbar button) — plan §12.7.
+   */
+  resident: boolean
 }): string {
   // The bar is only built when there is a conversation to add to: a button that
   // cannot do anything is worse than no button at all.
@@ -158,9 +181,9 @@ function buildPickerInjectScript(options: {
     e.preventDefault();
     e.stopPropagation();
     const el = current;
-    if (!el) { finish('cancelled', null); return; }
+    if (!el) { finish('cancelled'); return; }
     const r = el.getBoundingClientRect();
-    finish('picked', {
+    report({
       selector: buildStableSelector(el),
       tag: el.tagName ? el.tagName.toLowerCase() : '',
       text: (el.textContent || '').trim().slice(0, 200),
@@ -213,6 +236,12 @@ function buildPickerInjectScript(options: {
 
   let current = null;
 
+  // The picker's whole outward state: what it has picked, and whether it is still
+  // armed. Written into the window key at the end of this script, where the caller
+  // polls it — and kept out of cleanup(), so the final status is still readable
+  // after the overlay is gone.
+  const state = { status: 'pending', picks: [] };
+
   const paint = (el) => {
     if (!el) { box.style.display = 'none'; label.style.display = 'none'; ${barHide} return; }
     const r = el.getBoundingClientRect();
@@ -243,18 +272,26 @@ function buildPickerInjectScript(options: {
     try { delete window.${PICKER_CANCEL_KEY}; } catch (e) { window.${PICKER_CANCEL_KEY} = undefined; }
   }
 
-  function finish(status, result) {
+  function finish(status) {
     cleanup();
-    window.${PICKER_STATE_KEY} = { status: status, result: result };
+    state.status = status;
+  }
+
+  function report(payload) {
+    state.picks.push(payload);
+    // A resident picker stays on the page after answering: the user is picking
+    // several elements, and the next click belongs to it too.
+    if (${options.resident}) return;
+    finish('picked');
   }
 
   const onClick = (e) => {
   ${barGuard}    e.preventDefault();
     e.stopPropagation();
     const el = current || document.elementFromPoint(e.clientX, e.clientY);
-    if (!el) { finish('cancelled', null); return; }
+    if (!el) { finish('cancelled'); return; }
     const r = el.getBoundingClientRect();
-    finish('picked', {
+    report({
       selector: buildStableSelector(el),
       tag: el.tagName ? el.tagName.toLowerCase() : '',
       text: (el.textContent || '').trim().slice(0, 200),
@@ -263,14 +300,14 @@ function buildPickerInjectScript(options: {
   };
 
   const onKey = (e) => {
-    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish('cancelled', null); }
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish('cancelled'); }
   };
 
   const onViewportChange = () => { if (current) paint(current); };
 
 ${barHandler}
-  window.${PICKER_CANCEL_KEY} = () => finish('cancelled', null);
-  window.${PICKER_STATE_KEY} = { status: 'pending', result: null };
+  window.${PICKER_CANCEL_KEY} = () => finish('cancelled');
+  window.${PICKER_STATE_KEY} = state;
 
   document.addEventListener('mousemove', onMove, true);
   document.addEventListener('click', onClick, true);
@@ -282,7 +319,20 @@ ${barHandler}
 })()`
 }
 
-const PICKER_STATE_EXPRESSION = `(() => JSON.stringify(window.${PICKER_STATE_KEY} || { status: 'missing' }))()`
+/**
+ * Read the picker's reports and clear them in one expression.
+ *
+ * Read-and-clear as a single step because two reads must not both see the same
+ * pick, and a pick that lands between them must not be dropped — the page's own
+ * script cannot run in the middle of this one.
+ */
+const PICKER_DRAIN_EXPRESSION = `(() => {
+  const state = window.${PICKER_STATE_KEY};
+  if (!state) return JSON.stringify({ status: 'missing', picks: [] });
+  const picks = state.picks || [];
+  state.picks = [];
+  return JSON.stringify({ status: state.status, picks: picks });
+})()`
 
 const PICKER_CANCEL_EXPRESSION = `(() => { try { window.${PICKER_CANCEL_KEY} && window.${PICKER_CANCEL_KEY}(); } catch (e) {} })()`
 
@@ -859,18 +909,13 @@ export class BrowserCDP {
   // ---------------------------------------------------------------------------
 
   /**
-   * Prompt the user to click an element on the page.
+   * Put the picker on the page and leave it there.
    *
-   * Returns the picked element's stable selector + geometry, or `null` when the
-   * user pressed Escape, the pick was cancelled, or the timeout elapsed.
-   *
-   * Polls `PICKER_STATE_KEY` instead of awaiting one long-lived CDP promise:
-   * each poll is a short call, so the idle-detach timer keeps being reset and
-   * cannot fire while a pick is in flight.
+   * Re-injecting is also how a page is re-armed: the script tears down whatever
+   * was installed before it, so an arm is idempotent and a page that navigated
+   * out from under an armed picker gets a fresh one.
    */
-  async pickElement(options?: {
-    timeoutMs?: number
-    pollMs?: number
+  async armPicker(options: {
     /**
      * Show the "add to conversation" bar under the highlight.
      *
@@ -880,38 +925,78 @@ export class BrowserCDP {
     addToConversation?: boolean
     /** The bar's label, in the caller's language. */
     addLabel?: string
+    /** Keep picking after a pick — see `buildPickerInjectScript`. */
+    resident?: boolean
+  }): Promise<void> {
+    // The bar's markup is built here rather than in the page, and the injection
+    // goes through CDP so the page's CSP is not in the way.
+    const script = buildPickerInjectScript({
+      addToConversation: options.addToConversation === true,
+      addLabel: options.addLabel ?? 'Add to conversation',
+      resident: options.resident === true,
+    })
+    await this.send('Runtime.evaluate', { expression: script })
+  }
+
+  /**
+   * Take what the picker has reported since the last call, and clear it.
+   *
+   * Never throws on a missing picker: "there is no picker in this document" is an
+   * answer (the page navigated), not a failure.
+   */
+  async drainPicker(): Promise<PickerReport> {
+    const res = await this.send('Runtime.evaluate', {
+      expression: PICKER_DRAIN_EXPRESSION,
+      returnByValue: true,
+    })
+
+    const raw = res?.result?.value
+    if (typeof raw !== 'string') return { status: 'missing', picks: [] }
+
+    try {
+      const parsed = JSON.parse(raw) as { status?: string; picks?: PickedElement[] }
+      return {
+        status: (parsed.status as PickerReport['status']) ?? 'missing',
+        picks: Array.isArray(parsed.picks) ? parsed.picks : [],
+      }
+    } catch {
+      return { status: 'missing', picks: [] }
+    }
+  }
+
+  /**
+   * Prompt the user to click an element on the page, once.
+   *
+   * Returns the picked element's stable selector + geometry, or `null` when the
+   * user pressed Escape, the pick was cancelled, or the timeout elapsed. The
+   * toolbar's own use of the picker is the resident one (`armPicker` +
+   * `drainPicker`); this is what a caller that asked for one element gets.
+   *
+   * Polls instead of awaiting one long-lived CDP promise: each poll is a short
+   * call, so the idle-detach timer keeps being reset and cannot fire mid-pick.
+   */
+  async pickElement(options?: {
+    timeoutMs?: number
+    pollMs?: number
+    addToConversation?: boolean
+    addLabel?: string
   }): Promise<PickedElement | null> {
     const timeoutMs = Math.max(1_000, options?.timeoutMs ?? 120_000)
     const pollMs = Math.max(50, options?.pollMs ?? 200)
 
-    // Injected through CDP, so the page's CSP is not in the way, and the bar's
-    // markup is built here rather than in the page.
-    const script = buildPickerInjectScript({
+    await this.armPicker({
       addToConversation: options?.addToConversation === true,
-      addLabel: options?.addLabel ?? 'Add to conversation',
+      ...(options?.addLabel ? { addLabel: options.addLabel } : {}),
+      resident: false,
     })
-    await this.send('Runtime.evaluate', { expression: script })
 
     const deadline = Date.now() + timeoutMs
     try {
       while (Date.now() < deadline) {
-        const res = await this.send('Runtime.evaluate', {
-          expression: PICKER_STATE_EXPRESSION,
-          returnByValue: true,
-        })
+        const report = await this.drainPicker()
 
-        const raw = res?.result?.value
-        if (typeof raw === 'string') {
-          let state: { status?: string; result?: PickedElement | null } | null = null
-          try {
-            state = JSON.parse(raw)
-          } catch {
-            state = null
-          }
-
-          if (state?.status === 'picked') return state.result ?? null
-          if (state?.status === 'cancelled' || state?.status === 'missing') return null
-        }
+        if (report.picks.length > 0) return report.picks[0] ?? null
+        if (report.status === 'cancelled' || report.status === 'missing') return null
 
         await new Promise((resolve) => setTimeout(resolve, pollMs))
       }

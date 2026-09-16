@@ -18,7 +18,7 @@ import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
 import { browserInstancesAtom } from '@/atoms/browser-pane'
 import { sessionMetaMapAtom } from '@/atoms/sessions'
-import type { PickedElement } from '@craft-agent/shared/protocol'
+import type { PickedElement, PickedElementOrigin } from '@craft-agent/shared/protocol'
 import type { PrototypeEntry } from '@craft-agent/shared/prototypes'
 
 export interface EditElementRequest {
@@ -40,11 +40,20 @@ export interface EditElementRequest {
 export interface AddElementRequest {
   element: PickedElement
   instanceId: string
-  sessionId: string
+  /** The page it was picked on — see `PickedElementOrigin`. */
+  origin: PickedElementOrigin
+  /**
+   * Where it goes: the conversation the user is looking at, or `null` when there
+   * is none — a window of its own, or nothing selected in the sidebar — in which
+   * case the caller opens one rather than dropping the pick.
+   */
+  sessionId: string | null
 }
 
 export interface UseBrowserToolbarActionsOptions {
   workspaceId: string | null | undefined
+  /** The conversation the user is looking at, if any — where a pick goes. */
+  activeSessionId?: string | null
   /** Called when the user picked an element in a bound panel. */
   onEditElement: (request: EditElementRequest) => void
   /** Called when the user used the bar under the highlight. */
@@ -53,6 +62,7 @@ export interface UseBrowserToolbarActionsOptions {
 
 export function useBrowserToolbarActions({
   workspaceId,
+  activeSessionId,
   onEditElement,
   onAddElementToConversation,
 }: UseBrowserToolbarActionsOptions): void {
@@ -128,12 +138,17 @@ export function useBrowserToolbarActions({
       // the case it exists for — so it is answered before the prototype check
       // rather than gated behind it (plan §12.7).
       if (action.kind === 'add-to-conversation') {
-        const { sessionId } = resolveBinding(action.instanceId)
-        if (!sessionId) {
-          toast.info(t('browserEdit.noSession'))
-          return
-        }
-        onAddElementToConversation({ element: action.element, instanceId: action.instanceId, sessionId })
+        // Where it goes is the conversation the user is looking at, not whoever
+        // happens to be driving the window: the window is shared, so the lease on
+        // it says what the agent last did, not where a person's pick belongs. With
+        // nothing selected, `null` asks the caller to open a conversation — the
+        // pick is never dropped for want of one.
+        onAddElementToConversation({
+          element: action.element,
+          instanceId: action.instanceId,
+          origin: action.origin,
+          sessionId: activeSessionId ?? null,
+        })
         return
       }
 
@@ -190,5 +205,5 @@ export function useBrowserToolbarActions({
     return () => {
       if (typeof off === 'function') off()
     }
-  }, [resolveBinding, openPrototype, workspaceId, onEditElement, onAddElementToConversation, t])
+  }, [resolveBinding, openPrototype, workspaceId, activeSessionId, onEditElement, onAddElementToConversation, t])
 }

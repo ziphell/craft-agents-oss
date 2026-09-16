@@ -64,7 +64,7 @@
 
 | 阶段 | 初稿 | 实际 | 原因 |
 |---|---|---|---|
-| 2 拾取器 | `startPicker()` / `stopPicker()` 两个方法，返回"用户点击时才 resolve 的 Promise" | 单一 `pickElement()`：注入一次 + 200ms 短轮询，结果写进 `window.__craft_agent_picker_state__` | 长挂起的 `Runtime.evaluate` 会被 `CDP_IDLE_DETACH_MS = 5s` 的空闲 detach 打断；短轮询天然重置计时器，不必改既有 detach 逻辑 |
+| 2 拾取器 | `startPicker()` / `stopPicker()` 两个方法，返回"用户点击时才 resolve 的 Promise" | 单一 `pickElement()`：注入一次 + 200ms 短轮询，结果写进 `window.__craft_agent_picker_state__`；**第五轮**起工具栏要的是常驻模式，于是拆成 `armPicker()`（注入并留在那里）+ `drainPicker()`（读走并清空，页内 `picks[]` 队列），一次性的 `pickElement()` 退化成两者之上的循环（agent 的 `pick` 仍然一次一个） | 长挂起的 `Runtime.evaluate` 会被 `CDP_IDLE_DETACH_MS = 5s` 的空闲 detach 打断；短轮询天然重置计时器，不必改既有 detach 逻辑。常驻之所以仍用"轮询 + 读走"而不是"长挂起 + 事件"，还是这条：一次调用不能等一整段时间，否则会被 detach 打断 |
 | 3 注入 | css 走 `injectStyle`、js 走 init script（两条路径） | 两者统一走 init script（css 补丁由脚本自己创建/更新 `<style>`） | 注入的 `<style>` 元素**不随 reload 保留**，init script 会。统一后"reload 重放"只有一条机制，live 与 reload 也不会分叉。因此没有 `injectStyle` |
 | 4 预览 | 新开一条受控渲染通道（现有 HTML 预览 iframe 禁脚本） | 复用浏览器面板打开产物 | 面板本来就是真实引擎、能跑 JS、已沙箱隔离；零新增 UI、渲染环境与工作台一致。产物地址后来由回环 HTTP 提供（§16） |
 | 5 mock | 复用 MSW + Prism，或起一个 Node mock server 注册成 Source | CDP `Fetch` 拦截，在网络层 `fulfillRequest` | 前两条分别要引两个新依赖、且覆盖不到 axios 用的 XHR / 要应用改指向；CDP 版本零新依赖、覆盖 fetch+XHR+任意资源、应用一行不改 |
@@ -109,7 +109,7 @@ storage: true        moduleRan: true               ← localStorage 与 <script 
 | 改 | `config.ts` / `pages.ts` / `status.ts` / `prompt.ts`：页表（`pages`）读写、规范化与 `pageIssues` 上报；顺序 = 表序，没人声明的文档按名字接在后面 |
 | 改 | `browser-tool-runtime.ts` + `browser-tools.ts` + `SessionManager`：`prototype-pages`（list／`--add`／`--remove`／`--rename`）与 `setPrototypePages`；`prototype-export` 的输出（扩展目录 + Load unpacked 三步 + 警告） |
 | 改 | `apps/electron/src/main/prototype-host.ts`（原 `prototype-server.ts`）：回环监听器 → 浏览器 session 上的 `http` 处理器 + `net.fetch` pass-through；origin 去掉端口、地址稳定 |
-| 改 | 窗口身份：`PrototypeEntry.origin`（共享层）+ `browserPane.create({ prototype })` / `bindPrototype` + `prototypeBindingFor`（窗口绑定优先、会话链兜底）+ `BrowserInstanceInfo.prototypeSlug`。修的是"刚创建的原型点「打开」得到普通标签页"——见实施方案 §7 |
+| 改 | 窗口身份：`PrototypeEntry.origin`（共享层）+ `browserPane.create({ prototype })` + `prototypeBindingFor`（页绑定优先、会话链兜底）+ `BrowserInstanceInfo.prototypeSlug`。修的是"刚创建的原型点「打开」得到普通标签页"——见实施方案 §7。（当时还用了 `bindPrototype` 事后绑定；页的身份改为"创建时定"之后它已删除，见实施方案 §22） |
 | 改 | `apps/electron/resources/docs/browser-tools.md`、`release-notes/next.md`、7 个语种的 `prototypeInfo.distEmpty` |
 | 验收 | 实施方案 §10 的 M 组（63–70）与 Q 组（86–93） |
 

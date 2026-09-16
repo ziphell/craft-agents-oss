@@ -11,9 +11,12 @@ import ReactDOM from 'react-dom/client'
 import { useTranslation, initReactI18next } from 'react-i18next'
 import LanguageDetector from 'i18next-browser-languagedetector'
 import { setupI18n } from '@craft-agent/shared/i18n'
-import { EyeOff, MousePointerClick, X, XCircle, Zap } from 'lucide-react'
-import { BrowserControls } from '@craft-agent/ui'
+import { Bot, EyeOff, Globe, MousePointerClick, Plus, X, XCircle, Zap } from 'lucide-react'
+import { BrowserControls, Spinner } from '@craft-agent/ui'
 import { HeaderIconButton } from '@/components/ui/HeaderIconButton'
+import { cn } from '@/lib/utils'
+import { getHostname } from '@/components/browser/utils'
+import type { BrowserTabSummary } from '../shared/types'
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -41,7 +44,6 @@ interface ToolbarState {
   isLoading: boolean
   canGoBack: boolean
   canGoForward: boolean
-  themeColor?: string | null
   /**
    * The prototype the URL above names, or `null` for a window that is not one
    * (no conversation, a conversation without a prototype, or a window the user
@@ -53,13 +55,21 @@ interface ToolbarState {
    */
   prototypeSlug?: string | null
   /**
-   * Whether this window belongs to a conversation (plan §12.7).
+   * Whether the window's element picker is on (plan §12.7).
    *
-   * `undefined` = no state has arrived yet, treated the same way the slug is:
-   * unknown rather than "none", so the pick button does not flash disabled while
-   * the first push is in flight.
+   * The window's mode, reported rather than guessed: it can also end from inside
+   * the page (Escape), which this renderer never sees otherwise. `undefined` = no
+   * state yet, which reads as "off" — the picker is not something to flash on.
    */
-  hasSession?: boolean
+  picking?: boolean
+  /**
+   * The window's pages, in the order they were opened (plan §22).
+   *
+   * `undefined` for a window that has not pushed state yet — the rail draws no
+   * pages until it is told which ones exist, because an empty list would be chrome
+   * with no content.
+   */
+  tabs?: BrowserTabSummary[]
 }
 
 declare global {
@@ -78,11 +88,162 @@ declare global {
       pickElement: (addLabel?: string) => Promise<void>
       cancelPick: () => Promise<void>
       applyPrototype: () => Promise<void>
+      /** Switch to one of this window's pages, close one, or add one. */
+      tabAction: (action: 'activate' | 'close' | 'new', tabId?: string) => Promise<void>
       onStateUpdate: (callback: (state: ToolbarState) => void) => () => void
-      onThemeColor: (callback: (color: string | null) => void) => () => void
       onForceCloseMenu: (callback: (payload: { reason?: string }) => void) => () => void
     }
   }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Which surface this is                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Whether this document is the page rail rather than the address bar.
+ *
+ * The window's chrome is an L — a row and a column — and one `BrowserView` is one
+ * rectangle, so the host loads this same bundle twice and says which surface each
+ * copy is. The document is identical; only the shape of the surface differs.
+ */
+const IS_RAIL = new URLSearchParams(window.location.search).get('view') === 'rail'
+
+/* ------------------------------------------------------------------ */
+/*  Page rail                                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The window's pages, down the window's left edge (plan §22).
+ *
+ * Pages are a list that grows with use, and a window has height to spare rather
+ * than width: as a row across the top the list had to share its room with the
+ * address bar, so a second page pushed the bar aside and every chip after it
+ * scrolled out of sight — which is what made it unusable. A column gives every
+ * page the same width, and the bar keeps the geometry it always had.
+ *
+ * It reads as chrome, so it drags the window like the bar does — except the pages
+ * themselves and the `+`, which are things to click. Its colours are the app's,
+ * not the page's: chrome is not part of the page (the page's own colour still tints
+ * the window's chip in the top bar, which is about *which* window, not this surface).
+ */
+function PageRail({
+  tabs,
+  onSelect,
+  onClose,
+  onNew,
+}: {
+  tabs: BrowserTabSummary[]
+  onSelect: (tabId: string) => void
+  onClose: (tabId: string) => void
+  onNew: () => void
+}) {
+  const { t } = useTranslation()
+  const tone = {
+    text: 'text-foreground/60',
+    active: 'bg-foreground/[0.07] text-foreground/85',
+    hover: 'hover:bg-foreground/[0.04]',
+  }
+
+  return (
+    // `h-screen`, not `h-full`: the rail's document has no height of its own to
+    // inherit (`#root` is auto-height so the bar's own 48px row needs nothing from
+    // it), and the rail is the view's whole height.
+    <div className="flex h-screen flex-col bg-background">
+      {/*
+        The rail's own header row: what the column is, and the way to add to it. `+`
+        lives here rather than beside the pages because it must stay reachable however
+        long the list gets. Same height as the address bar next to it, so the two read
+        as one band across the window's top.
+      */}
+      <div className="titlebar-drag-region flex h-[48px] shrink-0 items-center justify-between pl-3 pr-2">
+        <span className={cn('select-none text-[11px] font-medium', tone.text)}>{t('browser.pages')}</span>
+        <button
+          type="button"
+          aria-label={t('browser.newPage')}
+          className={cn(
+            'titlebar-no-drag flex h-[24px] w-[24px] shrink-0 items-center justify-center rounded-[6px] transition-colors',
+            tone.text,
+            tone.hover,
+          )}
+          onClick={onNew}
+        >
+          <Plus className="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+      <div className="titlebar-drag-region scrollbar-hide flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-1.5 pb-1.5">
+        {tabs.map((tab) => {
+          const label = tab.title.trim() || getHostname(tab.url) || t('browser.untitledPage')
+          // Which prototype, and which of its pages — the two facts the address bar
+          // names for the page on screen, here for every page, since a column of
+          // titles cannot tell one prototype's page from another's.
+          const where = tab.prototype
+            ? `${tab.prototype.slug}${tab.prototypePage ? ` / ${tab.prototypePage}` : ''}`
+            : null
+
+          return (
+            <div
+              key={tab.id}
+              className={cn(
+                'group flex items-center gap-0.5 rounded-[6px] transition-colors',
+                tone.text,
+                tab.active ? tone.active : tone.hover,
+              )}
+            >
+              <button
+                type="button"
+                className="titlebar-no-drag flex min-w-0 flex-1 items-start gap-1.5 px-2 py-1.5 text-left"
+                title={where ? `${where}\n${tab.url}` : tab.url}
+                onClick={() => onSelect(tab.id)}
+              >
+                <span className="mt-px shrink-0">
+                  {tab.isLoading ? (
+                    <Spinner className="text-[9px]" />
+                  ) : (
+                    <Globe className="h-3 w-3 opacity-60" />
+                  )}
+                </span>
+                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <span className="flex min-w-0 items-center gap-1">
+                    <span className="truncate text-[11px]">{label}</span>
+                    {/*
+                      Who opened it, and who is on it. The user is looking at their
+                      own window, so the opener is only worth marking when it was
+                      not them — the same fact the agent reads out of `tabs` to know
+                      what not to close. The dot is the other half: a page some
+                      conversation is working on right now (plan §22).
+                    */}
+                    {tab.openedBySessionId !== null && <Bot className="h-3 w-3 shrink-0 opacity-50" />}
+                    {tab.driverSessionId !== null && (
+                      <span
+                        aria-label={t('browser.pageInUse')}
+                        title={t('browser.pageInUse')}
+                        className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
+                      />
+                    )}
+                  </span>
+                  {where && <span className="truncate text-[10px] opacity-60">{where}</span>}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                aria-label={t('browser.closePage')}
+                className={cn(
+                  'titlebar-no-drag mr-1 shrink-0 rounded-[4px] p-0.5 transition-opacity hover:bg-black/10 hover:opacity-100',
+                  tab.active ? 'opacity-60' : 'opacity-0 group-hover:opacity-60',
+                )}
+                onClick={() => onClose(tab.id)}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
 }
 
 /* ------------------------------------------------------------------ */
@@ -98,14 +259,7 @@ function BrowserToolbarApp() {
     canGoBack: false,
     canGoForward: false,
   })
-  const [themeColor, setThemeColor] = useState<string | null>(null)
   const [windowMenuOpen, setWindowMenuOpen] = useState(false)
-  /**
-   * Edit mode. While true the page suppresses its own click handlers, so a click
-   * selects an element instead of activating it — this is why entering the mode
-   * is an explicit button press rather than something that happens implicitly.
-   */
-  const [picking, setPicking] = useState(false)
   const menuContentRef = useRef<HTMLDivElement | null>(null)
 
   /**
@@ -117,27 +271,20 @@ function BrowserToolbarApp() {
    * away afterwards.
    */
   const hasPrototype = state.prototypeSlug === undefined || state.prototypeSlug !== null
-  // Picking an element needs a conversation, not a prototype: a plain web page
-  // bound to a session is exactly the case this exists for, and the prototype
-  // actions below stay gated on the prototype (plan §12.7).
-  const hasSession = state.hasSession === undefined || state.hasSession === true
+  /**
+   * Edit mode, as the window reports it.
+   *
+   * Not this renderer's own state: the mode outlives a single pick and can also
+   * end in the page (Escape), so the toolbar that drew it has to be told what it
+   * is rather than remember what it asked for (plan §12.7).
+   */
+  const picking = state.picking === true
 
   const api = window.browserToolbar
 
   useEffect(() => {
     if (!api) return
-    return api.onStateUpdate((s) => {
-      setState(s)
-      // Sync theme color from full state push (initial load / reconnection)
-      if ('themeColor' in s) {
-        setThemeColor((s as ToolbarState).themeColor ?? null)
-      }
-    })
-  }, [api])
-
-  useEffect(() => {
-    if (!api) return
-    return api.onThemeColor(setThemeColor)
+    return api.onStateUpdate(setState)
   }, [api])
 
   useEffect(() => {
@@ -148,7 +295,9 @@ function BrowserToolbarApp() {
   }, [api])
 
   useEffect(() => {
-    if (!api) return
+    // The menu belongs to the address bar, and so does its geometry: the rail never
+    // opens one, and it must not report the bar's menu closed behind its back.
+    if (!api || IS_RAIL) return
 
     if (!windowMenuOpen) {
       void api.setMenuGeometry(false, 0)
@@ -209,29 +358,55 @@ function BrowserToolbarApp() {
     void api?.closeWindowEntirely()
   }, [api])
 
-  const handleTogglePick = useCallback(async () => {
+  /**
+   * Turn the window's picker on or off.
+   *
+   * Neither call is awaited for its outcome: the mode is the window's, and it
+   * arrives back as state. Awaiting would mean this renderer had its own idea of
+   * whether picking is on, which is exactly what the state push exists to avoid.
+   */
+  const handleTogglePick = useCallback(() => {
     if (!api) return
-
     if (picking) {
-      setPicking(false)
-      await api.cancelPick()
+      void api.cancelPick()
       return
     }
-
-    setPicking(true)
-    try {
-      // Resolves on pick, Escape, cancel, or timeout — every one of which must
-      // leave edit mode, so the reset lives in `finally` rather than in the
-      // success path only.
-      await api.pickElement(t('browser.addToConversation'))
-    } finally {
-      setPicking(false)
-    }
-  }, [api, picking])
+    void api.pickElement(t('browser.addToConversation'))
+  }, [api, picking, t])
 
   const handleApplyPrototype = useCallback(() => {
     void api?.applyPrototype()
   }, [api])
+
+  const handleSelectPage = useCallback((tabId: string) => {
+    void api?.tabAction('activate', tabId)
+  }, [api])
+
+  const handleClosePage = useCallback((tabId: string) => {
+    void api?.tabAction('close', tabId)
+  }, [api])
+
+  const handleNewPage = useCallback(() => {
+    void api?.tabAction('new')
+  }, [api])
+
+  /**
+   * The rail draws the pages; the bar draws the address.
+   *
+   * Both surfaces exist in every window and both are told everything, so the two
+   * cannot drift apart — but each draws only what it is. Placed after the hooks so
+   * the two surfaces run the same hook list in the same order.
+   */
+  if (IS_RAIL) {
+    return (
+      <PageRail
+        tabs={state.tabs ?? []}
+        onSelect={handleSelectPage}
+        onClose={handleClosePage}
+        onNew={handleNewPage}
+      />
+    )
+  }
 
   return (
     <>
@@ -279,22 +454,16 @@ function BrowserToolbarApp() {
                 : <MousePointerClick className="h-3.5 w-3.5" />}
               aria-label={picking ? t('browser.cancelPick') : t('browser.pickElement')}
               className={picking ? 'bg-accent/15 text-accent' : undefined}
-              style={!picking && themeColor ? { color: 'var(--tb-fg)' } : undefined}
-              // Still clickable while picking: cancelling must not be taken away
-              // by a binding change that happens mid-pick.
-              //
-              // Gated on a *conversation*, not a prototype: what a picked element
-              // is for is decided by the conversation it is handed to, and a plain
-              // web page with a session bound is exactly the case this exists for.
-              // The prototype actions below stay gated on the prototype (§12.7).
-              disabled={!hasSession && !picking}
-              onClick={() => { void handleTogglePick() }}
+              // Always available: picking is not about a prototype (a prototype
+              // decides what a selection can be turned *into*, and only the
+              // action below needs one), and a pick with no conversation to go
+              // to opens one (plan §12.7).
+              onClick={handleTogglePick}
             />
 
             <HeaderIconButton
               icon={<Zap className="h-3.5 w-3.5" />}
               aria-label={t('browser.applyPrototype')}
-              style={themeColor ? { color: 'var(--tb-fg)' } : undefined}
               disabled={!hasPrototype}
               onClick={handleApplyPrototype}
             />
@@ -304,8 +473,7 @@ function BrowserToolbarApp() {
                 <HeaderIconButton
                   icon={<X className="h-3.5 w-3.5" />}
                   aria-label={t('browser.windowOptions')}
-                  className={themeColor ? '' : 'bg-background shadow-minimal hover:bg-foreground/5'}
-                  style={themeColor ? { color: 'var(--tb-fg)' } : undefined}
+                  className="bg-background shadow-minimal hover:bg-foreground/5"
                 />
               </DropdownMenuTrigger>
 
@@ -329,7 +497,6 @@ function BrowserToolbarApp() {
             </DropdownMenu>
           </div>
         )}
-        themeColor={themeColor}
         urlBarClassName="max-w-[600px]"
         className="titlebar-drag-region bg-background"
       />

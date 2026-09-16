@@ -1,14 +1,14 @@
 /**
  * IBrowserPaneManager — interface for browser pane operations used by SessionManager.
  *
- * Covers all 40 methods SessionManager calls on BrowserPaneManager.
+ * Covers all 46 methods SessionManager calls on BrowserPaneManager.
  * The concrete BrowserPaneManager in apps/electron implements this.
  *
  * Structurally compatible with BrowserOwnershipReleaser (domain layer)
  * so releaseBrowserOwnershipOnForcedStop() accepts IBrowserPaneManager.
  */
 
-import type { BrowserInstanceInfo, PickedElement } from '@craft-agent/shared/protocol'
+import type { BrowserInstanceInfo, BrowserTabPrototype, BrowserTabSummary, PickedElement } from '@craft-agent/shared/protocol'
 import type { MockRoute } from '@craft-agent/shared/prototypes'
 
 // ---------------------------------------------------------------------------
@@ -22,6 +22,49 @@ export interface BrowserInstanceSnapshot {
   isVisible: boolean
   title: string
   currentUrl: string
+}
+
+/**
+ * One page of a window: what it is (observation), what its opener said about it
+ * (declaration), and where it sits in a prototype. Defined with the rest of the
+ * wire shapes so the toolbar, the panel and the agent all read the same one.
+ */
+export type { BrowserTabSummary, BrowserTabPrototype }
+
+export interface BrowserTabCreateOptions {
+  /** Where the page starts. Omitted → `about:blank`, for a caller that navigates. */
+  url?: string
+  /** Whether the new page comes to the front. Default true. */
+  activate?: boolean
+  /** The prototype this page is for, when it is one. */
+  prototype?: BrowserTabPrototype | null
+  /**
+   * Which session asked for this page, when one did — omitted means a person did.
+   *
+   * The default has to be the one that is never wrong to assume: the whole point of
+   * the field is knowing which pages are not ours to close, and calling somebody
+   * else's page ours is the mistake that loses work.
+   */
+  openedBySessionId?: string | null
+  /**
+   * Where it goes in the strip: right after this page instead of at the end.
+   *
+   * Used by the browser's own window-open channel, where the page that asked for it is
+   * the one it belongs beside (plan §22).
+   */
+  afterTabId?: string
+  /** How the browser asked for it, when it was the browser — see `BrowserTabSummary.disposition`. */
+  disposition?: 'link' | 'popup' | null
+  /**
+   * The caller wants *a* page to use rather than one more page.
+   *
+   * A window that has never been used already holds the blank page such a caller is
+   * asking for, so its own page is the answer (plan §22). Only the caller can say
+   * which of the two it means: "New page" from the app opens the window if it is not
+   * up, while the rail's `+` is a person asking for one *more* page in a window they
+   * are looking at.
+   */
+  reuseUntouchedWindow?: boolean
 }
 
 export interface BrowserScreenshotOptions {
@@ -245,13 +288,23 @@ export interface IBrowserPaneManager {
 
   // -- Instance management -------------------------------------------------
 
-  /** Create a browser instance for a session (optionally shown) */
-  createForSession(sessionId: string, options?: { show?: boolean; workspaceId?: string | null }): string
+  /**
+   * The window a session works in — its **workspace's browser window** (plan §22).
+   *
+   * One window per workspace, used by every conversation in it and by the user,
+   * whatever the work is, so this is no longer "make my window": the caller becomes
+   * the window's *driver* for now (a lease, renewed by every call) and gets back the
+   * same id whichever session asked.
+   *
+   * `sessionId` may be null when nothing is driving it yet — opening a browser by
+   * hand is the same window with nobody at the wheel.
+   */
+  createForSession(sessionId: string | null, options?: { show?: boolean; workspaceId?: string | null }): string
 
   /**
    * Async equivalent of {@link createForSession}. Required for the remote bridge.
    */
-  createForSessionAsync(sessionId: string, options?: { show?: boolean; workspaceId?: string | null }): Promise<string>
+  createForSessionAsync(sessionId: string | null, options?: { show?: boolean; workspaceId?: string | null }): Promise<string>
 
   /** Get instance info by ID (sync; local-only). For remote-aware code use {@link getInstanceAsync}. */
   getInstance(id: string): BrowserInstanceSnapshot | undefined
@@ -294,6 +347,50 @@ export interface IBrowserPaneManager {
 
   /** Clear agent control overlay for a specific instance */
   clearAgentControlForInstance(instanceId: string, sessionId?: string): { released: boolean; reason?: string }
+
+  // -- Tabs ----------------------------------------------------------------
+
+  /**
+   * Add a page to a window, and return its id.
+   *
+   * A window is a container and a page is the thing in it (plan §22): several
+   * prototypes are worked on at once by being several pages of one window, rather
+   * than by being several windows. `prototype` is a page's identity — the only
+   * place it can be recorded for an overlay, whose document is a third-party
+   * address, and the reason the address bar keeps naming the prototype after the
+   * view has navigated away from it.
+   *
+   * A window that holds only its own untouched page — what a freshly created
+   * window is made of — has nothing to preserve, so the page is created *there*
+   * instead of beside it: opening something into a new window is one page, not one
+   * page and a blank one.
+   */
+  createTab(instanceId: string, options?: BrowserTabCreateOptions): string
+
+  /**
+   * Async equivalent of {@link createTab} — required for the remote bridge, whose
+   * caller needs the real tab id rather than a sentinel.
+   */
+  createTabAsync(instanceId: string, options?: BrowserTabCreateOptions): Promise<string>
+
+  /**
+   * Put one page of a window on screen.
+   *
+   * Everything a window reports — address, title, prototype, console, what its
+   * toolbar actions would act on — is read through the page that is on screen, so
+   * this is what "target that page" means. An unknown tab id throws: the target
+   * was named, so a silent no-op would run the caller's command somewhere else.
+   */
+  activateTab(instanceId: string, tabId: string): void
+
+  /** Close one page of a window. Closing a window's last page closes the window. */
+  closeTab(instanceId: string, tabId: string): void
+
+  /** A window's pages, in the order they were opened, with the active one marked. */
+  listTabs(instanceId: string): BrowserTabSummary[]
+
+  /** Async equivalent of {@link listTabs} — required for the remote bridge. */
+  listTabsAsync(instanceId: string): Promise<BrowserTabSummary[]>
 
   // -- Navigation ----------------------------------------------------------
 

@@ -77,6 +77,10 @@ browser_tool({ command: "key Enter" })
 browser_tool({ command: "downloads wait 15000" })
 browser_tool({ command: "focus" })
 browser_tool({ command: "windows" })
+browser_tool({ command: "tabs" })
+browser_tool({ command: "snapshot --tab tab-2" })
+browser_tool({ command: "tab-new https://example.com" })
+browser_tool({ command: "tab-close tab-2" })
 browser_tool({ command: "release" })
 browser_tool({ command: "hide" })
 browser_tool({ command: "close" })
@@ -531,6 +535,8 @@ A prototype is a **flow of pages**, and each page is one of two kinds — which 
 
 With no `--page`, "open the prototype" means the page the bound browser window is already on, then the entry page, then the generated page index — so a flow with no entry page opens its index (a list of every page) rather than pretending one page is the first.
 
+Opening **adds a page to the window** rather than replacing what it was showing, which is what lets two prototypes be worked on at once (see "Pages in a window" below). A window that has just been created is opened *into* instead: its own blank page is what a window is made of, so a freshly opened prototype is one page, not one page and a blank one.
+
 Nothing stands in for a page that does not exist: a live page with no address, or a page of ours whose document is gone, fails with the remedy named rather than letting the browser show a confusing load error.
 
 Starting from nothing needs no special command: write `prototypes/{slug}/cart.html` (the agent's `Write` tool is allowed to) — that alone makes it a page — or duplicate another prototype from the panel, then run `prototype-open`.
@@ -556,13 +562,49 @@ Re-export after changing it: the extension's toolbar icon opens the entry page (
 ### `prototype-target <url> [--page <name>]`
 Point one **live page** at the same page in another environment — a local dev server, staging, production. The address is a fact about where the page is, not part of its identity, so this is an ordinary edit. Without `--page` it moves the entry page when that one is live, otherwise the first live page. Two things go stale silently, and are said out loud when it changes: windows already open keep the old page until they navigate again, and the selectors were written against the old DOM (a patch that matches nothing looks exactly like a patch that did nothing). A page of ours is refused — it is our own document, so there is no external page for an address to mean.
 
+### The window is shared: one per workspace
+There is exactly **one browser window per workspace**, and every conversation in that workspace — and you — work in it, whatever the task is: a prototype flow, or ordinary browsing with no prototype behind it. What used to be "my window" is now a **page** in that window, which is why `tabs` exists and why nothing here is scoped to one conversation any more.
+
+- **A window belongs to its workspace, not to a conversation.** `windows` reports who is *driving* a window at the moment (`driver: the workspace's window, driven by <session>`), which is a **lease**: every command a conversation runs through the window renews it, and a turn ending releases it. A lease is not a lock — another conversation taking its turn is normal, and nothing about the window is closed to it.
+- **Workspaces stay apart.** Each has its own window; a session in one never sees or touches another's. That is the only boundary left, and it is the one that has to be.
+- **Pages opened by other conversations are in here, and `tabs` says whose.** That is the point of sharing, and it is also the boundary: each page prints `opened by: agent (<session>)` or `opened by: a person`, and `driven by:` says who is working on it at the moment. Closing is limited to the pages you opened, and acting on another conversation's prototype is refused — so `--tab <id>` is a name, not a claim on somebody else's work.
+- **The window itself is nobody's to close.** `close` on the workspace's window closes **the pages you opened** in it (and leaves a fresh page if they were all of them) rather than refusing everything — the window stays, because it is the whole workspace's. A window that is one session's own — an internal one — is still destroyed outright.
+
+### Pages in a window: `tabs`, `tab-new`, `tab-close`, `--tab <id>`
+A browser **window** is a container and a **page** is the thing in it, so several prototypes are looked at at once by being several pages of one window rather than by being several windows. A page carries its own address, title, console, theme colour and — for an overlay, whose document is a third-party address — **the prototype it is for**: that is the only place the identity can live, since nothing in the URL would say it after the view loads.
+
+- `tabs` — this window's pages in the order they were opened, each with what it is, who opened it and who is driving it. This is also how page ids are discovered.
+- `tab-new [url]` — add a page to the window. Opens into the window's own untouched page when the window has never been used.
+- `tab-close <id>` — close one page **you opened**. Closing the last page closes the window, and the output says which of the two happened.
+- `--tab <id>` on **any** command — name the page it acts on. Without one a command acts on the page on screen.
+
+**What `tabs` prints is in three kinds, and the difference matters:**
+
+- **what the page reports** — its real address (for an overlay, the live site's own, never the prototype's), its title, whether it is loading, which prototype it is for and which page of that prototype it is on. One producer: the page. Nothing here can disagree with the document it describes.
+- **who asked for it** — `opened by: agent (session-…)` or `opened by: a person`. Written once, when the page was created. This is the only way to tell your own pages from everybody else's, and the reason it is printed separately: it is a statement of intent, not something measured.
+- **who is driving it** — `driven by: <session>` or `nobody right now`. A **lease**: the conversation whose command reaches a page is driving it, the turn ending releases it. It says nothing about who the page belongs to.
+
+**Two questions, two rules.** *May I work here?* A page is yours to work on when it belongs to no prototype (an ordinary page — anybody's to use, which is what "you open it, the agent takes over" means), when it is for the prototype this conversation works on, or when this conversation opened it (so `prototype-open` on a prototype you are not bound to still works). Another conversation's prototype is refused, and the refusal names it. *May I close it?* Only pages **this conversation opened**: the user's pages, and another conversation's, are not yours to close however convenient it would be.
+
+**Which prototype a command means** is read off the page in front of you first (`page: <name>`, and the prototype the page is for), and only falls back to this conversation's binding when the page belongs to none. That is what lets one conversation work on several prototypes without binding any of them: `--tab` picks the page, and the page says whose it is.
+
+A page whose address the prototype's own page table does not describe says so (`none of the prototype's pages`) rather than being given the nearest page name — a file, an SPA route, or a page that belongs to another flow entirely.
+
+**A click that wants its own window opens a page.** `target="_blank"`, `window.open` and popups all become pages of the same window, inserted right after the page that asked, so nothing ever opens a bare Electron window with no toolbar and no patches. Two consequences worth knowing: such a page has no `window.opener` (a popup waiting for a `postMessage` from the page that opened it — Google's sign-in is the usual one — waits forever), and it cannot close itself (Chromium only lets scripts close windows that scripts opened), so it stays in the strip until you or the user closes it. `tabs` says which way a page was asked for (`opened as: …`) when it was the browser that asked.
+
+`--tab` is read off the command before the command parses its own arguments, so it never becomes part of an argument: `evaluate document.title --tab tab-2` evaluates `document.title`. A `--tab` with no id is refused rather than falling back to the page on screen — running somewhere else is the one outcome a named target exists to prevent.
+
+Naming a page brings it to the front and the command then runs against the window, which is the same thing the user sees: the window shows what is being worked on, so which prototype is in play is never implied. Reading, switching and closing pages do **not** open a window — a page lives in a window, so a workspace with none has no pages, and `tabs` says so instead of opening an empty one.
+
+**In the app**, every window has a strip under its address bar: one chip per page (the one on screen is raised, a page the agent opened is marked, a page being worked on carries a dot), a close button on each, and a `+` for a new page. It is always there, including with a single page — the `+` is how a person opens something themselves, and a window with one page is exactly when they want a second one. The same pages appear in the window's badge in the app's top bar, grouped under that window, for when the window itself is not in front.
+
 ### `focus [windowId]` / `windows`
-Manage and inspect browser window ownership and visibility.
+Manage and inspect browser windows and who is driving them. `windows` lists every window the workspace has, with `driver:` (who is using it right now — see "The window is shared" above), `availableToSession:`, and the prototype of the page each one is showing.
 
 ### Lifecycle commands
 - `release` — dismiss agent overlay, keep window visible for user
 - `hide` — hide window but preserve session state
-- `close` — close and destroy window
+- `close` — close and destroy a window of your own. On the workspace's window it closes **the pages you opened** instead (a fresh page takes their place if they were all of them), and says so; the window itself belongs to the workspace and is never closed by a conversation.
 
 ---
 

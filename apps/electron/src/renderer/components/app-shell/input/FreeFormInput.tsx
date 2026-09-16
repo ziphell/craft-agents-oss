@@ -33,7 +33,7 @@ import {
 } from '@/components/ui/label-menu'
 import type { LabelConfig } from '@craft-agent/shared/labels'
 import { parseMentions } from '@/lib/mentions'
-import { expandElementMentions, type ElementRef } from '@/lib/element-mention'
+import { expandElementMentions, elementOriginText, type ElementRef } from '@/lib/element-mention'
 import { RichTextInput, type RichTextInputHandle } from '@/components/ui/rich-text-input'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@craft-agent/ui'
 import {
@@ -658,12 +658,16 @@ export function FreeFormInput({
    * way out. This is the single place outgoing text is translated, which is why it
    * lives next to the two paths that consume the composer (`submitMessage` and the
    * plan-approval snapshot).
+   *
+   * The page it was picked on is part of the sentence: the picker stays on across
+   * the window's pages, so the same element can be picked from two of them, and
+   * "which page" is the one thing the agent cannot work out from the element.
    */
-  const formatElementReference = React.useCallback(
-    (ref: ElementRef) =>
-      t('browserEdit.elementReference', { selector: ref.selector, text: ref.text }),
-    [t]
-  )
+  const formatElementReference = React.useCallback((ref: ElementRef) => {
+    const where = elementOriginText(ref)
+    if (!where) return t('browserEdit.elementReference', { selector: ref.selector, text: ref.text })
+    return t('browserEdit.elementReferenceFrom', { selector: ref.selector, text: ref.text, where })
+  }, [t])
 
   const consumeInputDraftSnapshot = React.useCallback((): string => {
     const snapshot = expandElementMentions(input.trim(), formatElementReference)

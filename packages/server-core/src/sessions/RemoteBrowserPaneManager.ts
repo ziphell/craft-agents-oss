@@ -36,6 +36,8 @@ import type {
   BrowserDownloadOptions,
   BrowserDownloadEntry,
   BrowserInstanceSnapshot,
+  BrowserTabCreateOptions,
+  BrowserTabSummary,
   AccessibilitySnapshot,
 } from '../handlers/browser-pane-manager-interface'
 import {
@@ -164,12 +166,12 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
   // IBrowserPaneManager — instance management
   // ---------------------------------------------------------------------------
 
-  createForSession(sessionId: string, options?: { show?: boolean; workspaceId?: string | null }): string {
+  createForSession(sessionId: string | null, options?: { show?: boolean; workspaceId?: string | null }): string {
     this.invokeSync('createForSession', [sessionId, options])
-    return `remote-pending:${sessionId}`
+    return `remote-pending:${sessionId ?? 'workspace'}`
   }
 
-  async createForSessionAsync(sessionId: string, options?: { show?: boolean; workspaceId?: string | null }): Promise<string> {
+  async createForSessionAsync(sessionId: string | null, options?: { show?: boolean; workspaceId?: string | null }): Promise<string> {
     return await this.invoke('createForSession', [sessionId, options])
   }
 
@@ -229,6 +231,39 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
     // forced-stop flows treat a successful local cleanup as best-effort.
     this.invokeSync('clearAgentControlForInstance', [instanceId, sessionId])
     return { released: true }
+  }
+
+  // ---------------------------------------------------------------------------
+  // IBrowserPaneManager — tabs
+  // ---------------------------------------------------------------------------
+
+  createTab(instanceId: string, _options?: BrowserTabCreateOptions): string {
+    // Synchronous IBPM return over a WS round-trip: the real id exists only on
+    // the far side. Callers that need it use `createTabAsync`, which is every
+    // caller that does anything with the new page.
+    this.invokeSync('createTab', [instanceId, _options])
+    return ''
+  }
+
+  async createTabAsync(instanceId: string, options?: BrowserTabCreateOptions): Promise<string> {
+    return await this.invoke('createTab', [instanceId, options])
+  }
+
+  activateTab(instanceId: string, tabId: string): void {
+    this.invokeSync('activateTab', [instanceId, tabId])
+  }
+
+  closeTab(instanceId: string, tabId: string): void {
+    this.invokeSync('closeTab', [instanceId, tabId])
+  }
+
+  listTabs(_instanceId: string): BrowserTabSummary[] {
+    // Sync surface returns []; remote-aware code uses `listTabsAsync`.
+    return []
+  }
+
+  async listTabsAsync(instanceId: string): Promise<BrowserTabSummary[]> {
+    return await this.invoke('listTabs', [instanceId])
   }
 
   // ---------------------------------------------------------------------------

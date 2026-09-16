@@ -1,4 +1,4 @@
-import { RPC_CHANNELS, type BrowserPaneCreateOptions, type BrowserEmptyStateLaunchPayload } from '../../shared/types'
+import { RPC_CHANNELS, type BrowserPaneCreateOptions, type BrowserPaneTabAction, type BrowserEmptyStateLaunchPayload } from '../../shared/types'
 import type { BrowserScreenshotOptions } from '../browser-pane-manager'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from './handler-deps'
@@ -13,6 +13,7 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.browserPane.RELOAD,
   RPC_CHANNELS.browserPane.STOP,
   RPC_CHANNELS.browserPane.FOCUS,
+  RPC_CHANNELS.browserPane.TAB_ACTION,
   RPC_CHANNELS.browserPane.LAUNCH,
   RPC_CHANNELS.browserPane.SNAPSHOT,
   RPC_CHANNELS.browserPane.CLICK,
@@ -38,18 +39,36 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
       return browserPaneManager.createInstance(input, { workspaceId })
     }
 
-    const instanceId = input?.bindToSessionId
-      ? browserPaneManager.createForSession(input.bindToSessionId, {
-          show: input.show ?? false,
+    // Which window the caller gets:
+    //
+    // - an **explicit id** is a window of its own, for callers that want one
+    //   (internal machinery, tests);
+    // - everything else lands in the workspace's **browser window** — the one
+    //   window every conversation and the user work in (plan §22). Opening
+    //   "a new browser" adds a page to it rather than making a second window, and
+    //   `bindToSessionId` only says which conversation is driving, not whose window
+    //   it is.
+    const instanceId = input?.id && !input?.bindToSessionId
+      ? browserPaneManager.createInstance(input.id, { show: input?.show, workspaceId })
+      : browserPaneManager.createForSession(input?.bindToSessionId ?? null, {
+          show: input?.show ?? false,
           workspaceId,
         })
-      : browserPaneManager.createInstance(input?.id, { show: input?.show, workspaceId })
 
-    // The opener knows which prototype this window is for; the window cannot find
-    // out on its own, because an overlay's page is somebody else's address. Said
-    // to whatever instance came back — `createForSession` may hand back a window
-    // the session already had.
-    if (input?.prototype) browserPaneManager.bindPrototype(instanceId, input.prototype)
+    // A page is wanted, and the opener may know which prototype it is for: an overlay's
+    // page is somebody else's address, so once the view loads it no URL says whose it
+    // is, and only the caller can. Either way the request is for **a** page rather than
+    // **another** page (`reuseUntouchedWindow`): a window that has never been used
+    // already holds the blank page being asked for, and adding beside it would leave
+    // that blank page behind — "New page" on a browser that was not open yet would come
+    // up with two of them (plan §22).
+    if (input?.prototype || input?.newPage) {
+      browserPaneManager.createTab(instanceId, {
+        prototype: input.prototype,
+        activate: true,
+        reuseUntouchedWindow: true,
+      })
+    }
 
     return instanceId
   })
@@ -105,6 +124,37 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
   server.handle(RPC_CHANNELS.browserPane.FOCUS, (_ctx, id: string) => {
     browserPaneManager.focus(id)
   })
+
+  /**
+   * Manage one window's pages from the main window's badge strip: switch, close,
+   * add.
+   *
+   * The renderer states which page and which window; what a page *is* (its
+   * identity, its opener, the strip's geometry) is the manager's to decide, so
+   * nothing about it is passed back the other way.
+   */
+  server.handle(
+    RPC_CHANNELS.browserPane.TAB_ACTION,
+    (_ctx, input: BrowserPaneTabAction) => {
+      if (!input || !input.instanceId) return
+
+      if (input.action === 'activate') {
+        if (input.tabId) browserPaneManager.activateTab(input.instanceId, input.tabId)
+        return
+      }
+
+      if (input.action === 'close') {
+        if (input.tabId) browserPaneManager.closeTab(input.instanceId, input.tabId)
+        return
+      }
+
+      // A page a person asked for through the strip is theirs, which is what the
+      // default already says (`openedBySessionId: null` — nobody's session asked for
+      // it). Stated by leaving it out, so the two surfaces that add pages (this one
+      // and the toolbar's own `+`) cannot drift apart.
+      browserPaneManager.createTab(input.instanceId, { activate: true })
+    },
+  )
 
   server.handle(RPC_CHANNELS.browserPane.LAUNCH, async (ctx, payload: BrowserEmptyStateLaunchPayload) => {
     try {

@@ -21,6 +21,8 @@ import type {
   BrowserScreenshotOptions,
   BrowserScreenshotRegionTarget,
   BrowserScreenshotResult,
+  BrowserTabCreateOptions,
+  BrowserTabSummary,
   BrowserWaitArgs,
   BrowserWaitResult,
 } from '../handlers/browser-pane-manager-interface'
@@ -54,6 +56,15 @@ export class NullBrowserPaneManager implements IBrowserPaneManager {
   async getInstanceAsync(_id: string): Promise<BrowserInstanceSnapshot | undefined> { return undefined }
   listInstances(): BrowserInstanceInfo[] { return [] }
   async listInstancesAsync(): Promise<BrowserInstanceInfo[]> { return [] }
+
+  // -- Tabs --
+  createTab(_instanceId: string, _options?: BrowserTabCreateOptions): string { return unavailable('createTab') }
+  async createTabAsync(_instanceId: string, _options?: BrowserTabCreateOptions): Promise<string> { return unavailable('createTab') }
+  activateTab(_instanceId: string, _tabId: string): void { unavailable('activateTab') }
+  closeTab(_instanceId: string, _tabId: string): void { unavailable('closeTab') }
+  /** No windows means no pages: an empty list is the true answer, not a failure. */
+  listTabs(_instanceId: string): BrowserTabSummary[] { return [] }
+  async listTabsAsync(_instanceId: string): Promise<BrowserTabSummary[]> { return [] }
   focusBoundForSession(_sessionId: string, _options?: { workspaceId?: string | null }): string { return unavailable('focusBoundForSession') }
   async focusBoundForSessionAsync(_sessionId: string, _options?: { workspaceId?: string | null }): Promise<string> { return unavailable('focusBoundForSession') }
   bindSession(_id: string, _sessionId: string, _options?: { workspaceId?: string | null }): void { unavailable('bindSession') }
