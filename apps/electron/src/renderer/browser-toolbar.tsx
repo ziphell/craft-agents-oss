@@ -11,7 +11,7 @@ import ReactDOM from 'react-dom/client'
 import { useTranslation, initReactI18next } from 'react-i18next'
 import LanguageDetector from 'i18next-browser-languagedetector'
 import { setupI18n } from '@craft-agent/shared/i18n'
-import { Bot, Code, EyeOff, Globe, Lock, MousePointerClick, Plus, X, XCircle, Zap } from 'lucide-react'
+import { EyeOff, Globe, Lock, MessageSquare, MousePointerClick, Plus, X, XCircle, Zap } from 'lucide-react'
 import { BrowserControls, Spinner } from '@craft-agent/ui'
 import { HeaderIconButton } from '@/components/ui/HeaderIconButton'
 import { cn } from '@/lib/utils'
@@ -259,9 +259,9 @@ function TabRail({
    *
    * What the person does with it is set a page up in advance — open the site, get to the
    * screen, sign in — so the conversation it belongs to can carry on from there, which is
-   * why the tab is made the work's rather than the person's. A section with no header at
-   * all is not offered one: a single section is the whole list, and its `+` is the rail's
-   * own.
+   * why the tab is made the work's rather than the person's. It comes with the header, so it
+   * is there whether the window holds one section or several; the person's own section has no
+   * header and no button, because one more of your own tabs is what the rail's `+` above is.
    *
    * Named for the two shapes work comes in, because "put a tab in this group" is not
    * something a person would say to themselves: what they are doing is opening a page for a
@@ -349,7 +349,9 @@ function TabRail({
                   tone.group,
                 )}
               >
-                {group.work !== null && <Bot className="h-3 w-3 shrink-0" />}
+                {/* A message, not a robot: a section is a conversation's work, and the
+                    person reading the rail is looking at conversations. */}
+                {group.work !== null && <MessageSquare className="h-3 w-3 shrink-0" />}
                 <span className="min-w-0 flex-1 truncate">{groupLabel(group)}</span>
                 {group.work !== null && groupAddButton(group.work)}
               </div>
@@ -410,18 +412,7 @@ function TabRail({
                       <TabIcon src={tab.favicon} loading={tab.isLoading} />
                     </span>
                     <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                      <span className="flex min-w-0 items-center gap-1">
-                        <span className="truncate text-[11px]">{label}</span>
-                        {/*
-                          Who opened it, and what is happening to it. The opener is worth
-                          marking when it was not the person, and only when the group header
-                          is not already saying it — a group of one conversation's tabs
-                          does not need a bot on every row.
-                        */}
-                        {!showHeaders && tab.belongsTo !== null && (
-                          <Bot className="h-3 w-3 shrink-0 opacity-50" />
-                        )}
-                      </span>
+                      <span className="truncate text-[11px]">{label}</span>
                       {where && <span className="truncate text-[10px] text-foreground/45">{where}</span>}
                     </span>
                   </button>

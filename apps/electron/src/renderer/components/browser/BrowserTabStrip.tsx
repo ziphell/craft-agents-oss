@@ -344,7 +344,9 @@ export function BrowserTabStrip({
           <Fragment key={group.key}>
             {showHeaders && (
               <div className="flex items-center gap-1 px-2 pb-0.5 pt-1.5 text-[10px] font-medium text-foreground/40">
-                {group.work !== null && <Icons.Bot className="h-3 w-3 shrink-0" />}
+                {/* The same mark the rail draws for a section: a message, because a section is
+                    a conversation's work (see `TabRail`). */}
+                {group.work !== null && <Icons.MessageSquare className="h-3 w-3 shrink-0" />}
                 <span className="truncate">{groupLabel(group)}</span>
               </div>
             )}
@@ -371,10 +373,6 @@ export function BrowserTabStrip({
                     <Icons.Globe className="h-3.5 w-3.5 opacity-70" />
                   )}
                   <span className="min-w-0 truncate">{label}</span>
-                  {/* The header says whose these are when there is one to say it. */}
-                  {!showHeaders && tab.belongsTo !== null && (
-                    <Icons.Bot className="h-3 w-3 shrink-0 opacity-50" />
-                  )}
                 </StyledDropdownMenuItem>
               )
 

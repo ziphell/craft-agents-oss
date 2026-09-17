@@ -2455,6 +2455,22 @@ describe('BrowserPaneManager', () => {
         .toBeGreaterThan(instance.window.contentView.children.indexOf(first.nativeOverlayView))
     })
 
+    it('draws the agent frame over the page edge and into the gutter', () => {
+      manager.createInstance('tabs-lock-frame')
+      const instance = (manager as any).instances.get('tabs-lock-frame')
+      const loaded = String(tab(instance).nativeOverlayView.webContents.loadURL.mock.calls[0]?.[0] ?? '')
+      const html = decodeURIComponent(loaded.slice(loaded.indexOf(',') + 1))
+
+      // The agent's frame is its own element, in the resting line's box (1px outside the page, so
+      // its arcs are concentric with the page's corner) but with its own weight: 2.5px — the outer
+      // pixel fills the gutter, the inner 1.5px covers the page's edge. Covering that edge is the
+      // point: the page's corner is cut by its own view, a hard edge nothing outside the page can
+      // hide.
+      expect(html).toContain('id="lock"')
+      expect(html).toContain('border: 2.5px solid transparent')
+      expect(html).toContain('id="frame"')
+    })
+
     it('closes a tab, and closes the window when the last one goes', () => {
       manager.createInstance('tabs-close')
       const instance = (manager as any).instances.get('tabs-close')
@@ -2485,6 +2501,51 @@ describe('BrowserPaneManager', () => {
 
       manager.closeTab('tabs-close', secondId)
       expect((manager as any).instances.has('tabs-close')).toBe(false)
+    })
+
+    /**
+     * Which tab takes over when the one that closes was the tab on screen.
+     *
+     * A neighbour **of its own section** when its section has one left, and only the neighbour
+     * *by position* when it does not (`successorOf`). The section is what the rail draws, so
+     * this is the handover a person sees: closing a page they opened for a conversation lands on
+     * that conversation's next page rather than on whichever tab sits beside it in the window's
+     * list — which here is somebody else's.
+     */
+    it('hands over inside the closed tab\'s own section, not across sections', () => {
+      const work = { kind: 'session', sessionId: 'session-1' } as const
+      manager.createInstance('tabs-successor')
+      const instance = (manager as any).instances.get('tabs-successor')
+
+      // The window's list, in order: yours, the conversation's, yours, the conversation's.
+      const theirsFirstId = manager.createTab('tabs-successor', { activate: false, belongsTo: work })
+      const mineSecondId = manager.createTab('tabs-successor', { activate: false })
+      const theirsSecondId = manager.createTab('tabs-successor', { activate: false, belongsTo: work })
+
+      manager.activateTab('tabs-successor', theirsFirstId)
+      manager.closeTab('tabs-successor', theirsFirstId)
+      expect(instance.activeTabId).toBe(theirsSecondId)
+
+      // Their section is empty now, so the neighbour by position decides — the tab that was
+      // before it, since it was the last of the window.
+      manager.closeTab('tabs-successor', theirsSecondId)
+      expect(instance.activeTabId).toBe(mineSecondId)
+    })
+
+    it('hands a section over to the tab before it when nothing of that work is left after', () => {
+      const work = { kind: 'session', sessionId: 'session-2' } as const
+      manager.createInstance('tabs-successor-back')
+      const instance = (manager as any).instances.get('tabs-successor-back')
+
+      // yours, the conversation's first, yours, the conversation's second: closing the second is
+      // the end of its section, with somebody else's tab right after it in the window's list.
+      const theirsFirstId = manager.createTab('tabs-successor-back', { activate: false, belongsTo: work })
+      manager.createTab('tabs-successor-back', { activate: false })
+      const theirsSecondId = manager.createTab('tabs-successor-back', { activate: false, belongsTo: work })
+
+      manager.activateTab('tabs-successor-back', theirsSecondId)
+      manager.closeTab('tabs-successor-back', theirsSecondId)
+      expect(instance.activeTabId).toBe(theirsFirstId)
     })
 
     /**

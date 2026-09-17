@@ -994,6 +994,27 @@ export function sameTask(a: TabBelongsTo | null, b: TabBelongsTo | null): boolea
   return a.kind === 'task' && b.kind === 'task' && a.taskSlug === b.taskSlug
 }
 
+/** The section of the tabs nobody's work owns — see {@link tabSectionOf}. */
+export const PERSON_TAB_SECTION = 'person'
+
+/**
+ * Which **section of a window's tab list** a tab is drawn in (plan §22).
+ *
+ * Coarser than `sameWork`, on purpose and not by accident: the rail cuts a window's tabs into
+ * one section per conversation and **one per task** — a task's nodes are one piece of work, so
+ * their tabs are drawn together — and the tabs nobody's work owns are a section of their own.
+ * Two surfaces need to agree on this: the two lists that draw a window's tabs (the rail and the
+ * badge's list), and the window itself, which reads it to decide where the display goes when a
+ * tab closes — the tab that takes over is a neighbour in the same section if there is one.
+ *
+ * **Not** an ownership question. A caller that reads this as reach hands one node of a DAG the
+ * tabs of another; `sameWork` above is the precise one, and it is what `reach` is decided by.
+ */
+export function tabSectionOf(work: TabBelongsTo | null): string {
+  if (!work) return PERSON_TAB_SECTION
+  return work.kind === 'session' ? `session:${work.sessionId}` : `task:${work.taskSlug}`
+}
+
 /**
  * The work a conversation is part of, told from the fields a session carries (plan §22).
  *

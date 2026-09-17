@@ -9,27 +9,35 @@
  * from its own slug — the two have different sources, but only one place decides which
  * tabs go together.
  *
+ * *Which* section a tab falls in is `tabSectionOf` in the protocol rather than a rule of this
+ * file, because it is not only the lists that need it: the window reads the same thing when a
+ * tab closes — the tab that takes over is a neighbour in the closed tab's own section when that
+ * section has one left (`closeTab` on the host). One definition, so the handover follows what
+ * the rail drew and not a second opinion about it.
+ *
  * Three decisions worth naming:
  *
  * - **A task's tabs are one section**, nodes included: a DAG running four nodes in parallel
  *   is one piece of work by one task, and cutting it into four sections would read as four
  *   unrelated things in the rail. The node each tab belongs to is still on the tab itself.
- * - **A section sits where its first tab is.** Tabs keep their order, and a group
- *   appears at the position of the first tab that belongs to it, so the list still
- *   reads in the order the tabs were opened (which is the order `tabs` reports and
- *   the order the rail has always shown). Sorting "yours first" would be a second
- *   order, invented here, and a list that lies about position is worse than a list
- *   that groups.
+ * - **The person's own section is pinned first; every other section sits where its first
+ *   tab is.** A window is read as "what I am looking at" before it is read as "what somebody
+ *   else is doing in it", and which of those two comes first should not depend on the order
+ *   tabs happened to be opened in. The rest keep first-appearance order — a section appears
+ *   at the position of its first tab — so only this one section moves, and the tabs inside
+ *   every section still read in the order `tabs` reports.
  * - **Grouping is a view, not an owner.** Nothing here changes what a tab is or who
  *   may touch it: `belongsTo` is read, never written, and the model's rules
  *   (reach, close, the lease in `driverSessionId`) are untouched. That is the line
  *   between this and the "tab group" that would give a group an owner of its own.
  */
 
-import type { BrowserTabSummary, TabBelongsTo } from '../../../shared/types'
-
-/** The key of the section for tabs a person opened — nobody's work. */
-const PERSON_KEY = 'person'
+import {
+  PERSON_TAB_SECTION,
+  tabSectionOf,
+  type BrowserTabSummary,
+  type TabBelongsTo,
+} from '../../../shared/types'
 
 export interface TabGroup {
   /**
@@ -46,14 +54,8 @@ export interface TabGroup {
   tabs: BrowserTabSummary[]
 }
 
-/** Which section a tab falls in — see the note above on task tabs being one section. */
-function tabGroupKey(work: TabBelongsTo | null): string {
-  if (!work) return PERSON_KEY
-  return work.kind === 'session' ? `session:${work.sessionId}` : `task:${work.taskSlug}`
-}
-
 /**
- * Cut a window's tabs into sections, one per work, in first-appearance order.
+ * Cut a window's tabs into sections, one per work, the person's own section first.
  *
  * Never returns an empty group: a work that no tab names produces no section.
  */
@@ -62,7 +64,7 @@ export function groupTabsByWork(tabs: BrowserTabSummary[]): TabGroup[] {
   const byKey = new Map<string, TabGroup>()
 
   for (const tab of tabs) {
-    const key = tabGroupKey(tab.belongsTo)
+    const key = tabSectionOf(tab.belongsTo)
     let group = byKey.get(key)
     if (!group) {
       group = { key, work: tab.belongsTo, tabs: [] }
@@ -72,16 +74,30 @@ export function groupTabsByWork(tabs: BrowserTabSummary[]): TabGroup[] {
     group.tabs.push(tab)
   }
 
+  // The person's section moves to the front, and nothing else does: the sections somebody
+  // else is working in are what a person looks *past* their own tabs for, and which of the
+  // two comes first is not something the order tabs were opened in should decide (see the
+  // note at the top). Only the sections after it are in first-appearance order.
+  const person = groups.findIndex((group) => group.key === PERSON_TAB_SECTION)
+  if (person > 0) groups.unshift(...groups.splice(person, 1))
+
   return groups
 }
 
 /**
  * Whether the sections are worth drawing headers for.
  *
- * One group is every tab in the list, and a header over all of them ("you opened
- * these") says nothing while taking a row to say it — the same reason the badge
- * leaves a one-tab window's tab list out. Two or more is the answer worth having.
+ * More than one, so the header is what tells the sections apart — and **one section that is
+ * somebody's work**, because then it is saying something the rows cannot: *whose* tabs these
+ * are. The person's own section is the one case a header can say nothing about ("you opened
+ * these" over all of them), and the one that needs it least: nobody's tabs are what a window
+ * reads as by default.
+ *
+ * The single agent section is also the case that has to keep its header for another reason:
+ * the header is where its `+` lives, and a window holding only a conversation's tabs is
+ * exactly where somebody would want to open one more for it (plan §22).
  */
 export function shouldShowGroupHeaders(groups: TabGroup[]): boolean {
-  return groups.length > 1
+  if (groups.length > 1) return true
+  return groups.length === 1 && groups[0].work !== null
 }

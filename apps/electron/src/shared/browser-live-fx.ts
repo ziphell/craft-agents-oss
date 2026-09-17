@@ -16,24 +16,24 @@ export const BROWSER_LIVE_FX_BORDER = {
 } as const
 
 /**
- * The line around the page area — the app's own panel border, in a form a document without the
- * app's CSS variables can use.
+ * The line around the page area — the same line the address bar's own input wears, in a form a
+ * document without the app's CSS variables can use.
  *
- * One flat pixel of the foreground (the person's call: no gradient), at the weight the app's
- * **focused** panel border comes to — that border grades 10%→30% down the panel, so 20% is what
- * it reads as all over, and the quieter 6% ring (`shadow-middle`, for panels that are not the
- * content of their window) reads as no line at all.
+ * That input is bordered by `border-foreground/5` (`BrowserControls.tsx`), i.e. one pixel of the
+ * foreground at 5%: the person's call is that the page's panel and the field beside it are the
+ * same weight, rather than the heavier hand this started as.
  *
  * The overlay document is generated and has no theme variables in scope, so the colour is
  * resolved here — the same treatment {@link resolveBrowserLiveFxBorder} gives the accent.
  */
 export const PAGE_PANEL_RING = {
   width: '1px',
-  alpha: 0.2,
-  /** `--foreground-rgb` per mode, from the renderer's stylesheet — the one the browser window's
-   * chrome is drawn with (`apps/electron/src/renderer/index.css`), not the UI package's defaults:
-   * the chrome overrides both, and a line mixed from the wrong foreground shows up as one that is
-   * too bright or too dim beside it. */
+  alpha: 0.05,
+  /** `--foreground-rgb` per mode, from the renderer's stylesheet — what `border-foreground/5`
+   * resolves to, and the foreground the browser window's chrome is drawn with
+   * (`apps/electron/src/renderer/index.css`), not the UI package's defaults: the chrome
+   * overrides both, and a line mixed from the wrong foreground shows up as one that is too
+   * bright or too dim beside it. */
   foregroundRgb: {
     light: '38, 36, 42',
     dark: '237, 236, 240',

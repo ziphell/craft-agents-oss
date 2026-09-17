@@ -317,6 +317,7 @@ cd apps/electron && bun run build:renderer
 - `packages/shared` 全量：本机（Windows）有一批**环境相关**的既有失败（最近一次实跑约 38 个，数量随 checkout 变化，以实跑为准），集中在：plans 目录/PowerShell 写入判定、session 路径与路径穿越、`sdk-bridge` 环境变量、`buildCallLlmRequest` 附件、`ensureDefaultPermissions`、`uiLanguage` 幂等、`validateStdioMcpConnection` ENOENT、`sanitizeAssetFilename`、`serializeSession`、plan 执行持久化。都别算到新改动头上。
 - **`routing.test.ts` 那两条已经绿了**（实测 `cd packages/shared && bun test src/protocol` 全过）：`prototypes:replay` / `commit` / `setPages` 已经补进分类（§3.7；`setProject` 随 §15.1.4 删掉了）。但**加通道时仍然要同时改注册表与 routing**，否则这两条会立刻红。
 - **typecheck 这条线已经干净**：页的归属改名（`BrowserTabSummary.belongsTo: TabBelongsTo`、`BrowserCapabilityRequest.work`、`assignTab(instanceId, tabId, to, by)`）早已完成，`packages/shared/src/tasks/outputs.ts` 那处 `ParsedOutputs.problems` 也已修，实测 `bun run typecheck:shared` 无报错。（`outputs.ts` 仍是**未跟踪**文件——判断自己有没有引入类型错误时，按包单独跑 `bun run tsc --noEmit` 比 `typecheck:all` 更快定位。）
+- **"哪一段"只有一处定义**：`tabSectionOf`（`packages/shared/src/protocol/dto.ts`——`person` / `session:<id>` / `task:<slug>`）。rail 与徽章画段读它，主进程决定"关掉一个标签页之后谁接替"也读它。**别在 rail 之外再写一遍"按会话/任务分段"**：画出来的段与交接用的段一旦不一致，表现是"接替跳到了别的分组"，从现象看不出是哪一边错。它是 `sameWork` 的粗版（任务的不同节点算同一段），所以**不能当权限判据用**，reach 只认 `sameWork`。
 - `apps/electron` 的 `browser-pane-manager.test.ts`：源码树里 **6 个**窗口生命周期用例失败（`destroys child popups…`、`focus brings the instance window to front`、`dedupes repeated focus calls before ready-to-show`、`still destroys instance when cleanup throws`、`retries toolbar load and recovers`、`loads toolbar fallback page after retry exhaustion`）。都是 `window.show()` 一类 mock 断言，与原型逻辑无关。
 - **测试路径会连带跑 `release/win-unpacked/resources/app/...` 下的旧副本**：`bun test <路径>` 会把打包目录里那份同名测试也收进来，于是失败数与通过数**翻倍**；而且那份旧拷贝会多出 2 个**源码树里已经通过**的失败（`replays toolbar state with theme color when window is shown`、`replays full toolbar state when toolbar renderer finishes loading`）。判断"是不是我引入的"时先排除这些重复项。
 
@@ -343,9 +344,9 @@ cd apps/electron && bun run build:renderer
 | 注入时跳过已内联；命中 / 未命中 / 漂移的报告与锚点记录；`replayPrototypeInBrowser` 的两种含义 | `packages/server-core/src/domain/__tests__/apply-prototype.test.ts` |
 | **验收执行器**（`endpoint` 断言的命中与不命中、无窗口时 `skip` 而非 `fail`、页面读不到时的 `skip`、轮次与 diff 的五类、`skip` 不算红、页面名回填、失败该怎么辩、"没有 check" 与"check 被删光"分开） | `packages/server-core/src/domain/__tests__/verify-prototype.test.ts` |
 | 原型的应答（入口页 / `/_index` / 页名 302 / 文件优先 / 入口文档不在 / 越界 / pass-through / SPA 回退） | `apps/electron/src/main/__tests__/prototype-host.test.ts` |
-| 窗口与地址栏 | `apps/electron/src/main/__tests__/browser-pane-manager.test.ts` |
+| 窗口与地址栏 | `apps/electron/src/main/__tests__/browser-pane-manager.test.ts`（含关闭标签页的接替：同段优先、段内没有才按位置，§22 第十四轮） |
 | 标签页的归属与两条边界（reach / close、`tab-assign`、重跑节点接管旧标签页、兄弟节点不放行、锁在指名的那个标签页上） | `packages/server-core/src/domain/__tests__/tab-access.test.ts` |
-| 标签栏 / 徽章的分段（按"谁的活"分段、段落在第一个标签页的位置、只有一个组时不画段头、从当前标签页找"跳回哪个对话/任务"） | `apps/electron/src/renderer/components/browser/__tests__/tab-groups.test.ts`、`.../utils.test.ts` |
+| 标签栏 / 徽章的分段（按"谁的活"分段、**人的段钉在最前**、任务节点不拆段、**只有"你"一组时不画段头**、段内缩进与引导线、段头的 `+` 建出的标签页归属该段且落在段尾、从当前标签页找"跳回哪个对话/任务"） | `apps/electron/src/renderer/components/browser/__tests__/tab-groups.test.ts`、`.../utils.test.ts` |
 | **并线的两张接缝**（`writes:` 的三条拒绝：不可用 / 保留 `Z` / 同 run 重复；派发时盖章到子会话 `taskWrites`，不声明就不盖；**两个写者同时在飞、各自带自己的身份**） | `packages/shared/src/tasks/schema.test.ts`、`packages/server-core/src/tasks/TaskRunner.test.ts` |
 
 ### 5.4 只能在真实窗口里验的项（跑起 Electron 之后）

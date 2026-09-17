@@ -20,7 +20,7 @@ import {
   type BrowserInstanceInfo,
 } from '../shared/types'
 import { BACKGROUND_HEX, DEFAULT_THEME, getBackgroundColor, loadAppTheme, getAllowRemoteEvaluate } from '@craft-agent/shared/config'
-import { CodedError, RPC_CHANNELS, describeWork, sameWork } from '@craft-agent/shared/protocol'
+import { CodedError, RPC_CHANNELS, describeWork, sameWork, tabSectionOf } from '@craft-agent/shared/protocol'
 import type { PickedElement, PickedElementOrigin, BrowserToolbarAction, BrowserTabSummary, TabBelongsTo } from '@craft-agent/shared/protocol'
 import type { MockProgram } from '@craft-agent/shared/prototypes'
 import { getBrowserLiveFxCornerRadii, PAGE_PANEL_RING, resolvePagePanelRing } from '../shared/browser-live-fx'
@@ -1335,8 +1335,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    *
    * Closing the last one closes the window: a window with no tabs is not a state
    * the rest of this file would know how to be in, and "no tabs" is what closing
-   * the last tab means to a person anyway. The neighbour that takes over is the one
-   * before it when there is one (browsers do the same), otherwise the one after.
+   * the last tab means to a person anyway.
+   *
+   * Which tab takes over is {@link successorOf}'s to decide.
    */
   closeTab(instanceId: string, tabId: string): void {
     const instance = this.instances.get(instanceId)
@@ -1371,9 +1372,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.detachTab(instance, tab)
 
     if (instance.activeTabId === tab.id) {
-      // `splice` already removed it, so the neighbour is at the same index unless
-      // this was the last one — then it is the new last one.
-      const next = instance.tabs[Math.min(index, instance.tabs.length - 1)]
+      const next = this.successorOf(instance, tab, index)
       if (next) {
         instance.activeTabId = next.id
         this.forceCloseToolbarMenu(instance, 'tab-closed')
@@ -1394,6 +1393,40 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
 
     mainLog.info(`[browser-pane] Tab closed instance=${instance.id} tab=${tab.id} remaining=${instance.tabs.length}`)
+  }
+
+  /**
+   * Which tab takes over when one closes.
+   *
+   * Its **own section's** neighbour first: a section is what the rail draws (plan §22, and
+   * `tabSectionOf` is the one definition of it — see the note there), and somebody closing a
+   * page they opened for a conversation means the next page of *that* conversation, not the tab
+   * that happened to sit beside it in the window's list — which may belong to nobody, or to
+   * another conversation entirely. The person's own tabs are a section like the rest, so theirs
+   * hands over inside itself too.
+   *
+   * The direction is the browser's: the tab **after** it, and the one before it when it was the
+   * last of its section (or of the window). Only a section with nothing left in it hands over
+   * outside itself — which this rule makes rare rather than forbids: the alternative would be
+   * dragging the person into another conversation's page because that was the neighbour.
+   */
+  private successorOf(instance: BrowserInstance, closed: BrowserTab, closedIndex: number): BrowserTab | null {
+    const section = tabSectionOf(closed.belongsTo)
+    const inSection = (tab: BrowserTab) => tabSectionOf(tab.belongsTo) === section
+
+    // From the position the closed tab *had*, which `splice` has taken it out of: the first tab
+    // of its section at or past that index is the one that was after it…
+    for (let i = closedIndex; i < instance.tabs.length; i++) {
+      if (inSection(instance.tabs[i])) return instance.tabs[i]
+    }
+    // …otherwise the first one going back, which is the last of that section before it.
+    for (let i = closedIndex - 1; i >= 0; i--) {
+      if (inSection(instance.tabs[i])) return instance.tabs[i]
+    }
+
+    // Nothing of that work left at all: the neighbour by position, the way the window chose
+    // before there were sections.
+    return instance.tabs[Math.min(closedIndex, instance.tabs.length - 1)] ?? null
   }
 
   /**
@@ -3332,23 +3365,28 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   /**
    * The document that draws everything the page's own view cannot: the surface and the panel's
-   * hairline *around* the page, and the agent's markings when it holds this tab.
+   * line *around* the page, and the agent's own frame when it holds this tab.
    *
-   * Three layers, in this order:
+   * Five layers, in this order:
    *
    * - `#mask` fills the page's rectangle (same rounded rect) with the **surface**. It sits
    *   under the page, so what it is really there for is the page's rounded corners: the corner
    *   is cut out of the page's view, and this is what shows through it. It is also what paints
    *   the gutter when the overlay is raised, which is why it fills the whole tab area.
-   * - `#frame` is the page's rectangle with a hairline ring just outside it
-   *   (`PAGE_PANEL_RING`) — the app's own panel ring — which turns accent, with a glow, while
-   *   this tab is the one being worked on. Under the page the ring is all that is visible of it.
-   * - `#chip` and `#shield` are the agent's: what it is doing here, and the lock that stops the
-   *   person's input reaching this tab. Both only mean anything with the overlay *over* the
+   * - `#frame` is the panel's own line — one pixel just outside the page (`PAGE_PANEL_RING`,
+   *   the same line the address bar's input wears), visible only through that pixel band while
+   *   the overlay is under the page.
+   * - `#lock` is the agent's frame, in the resting line's box but with its own weight: 2.5px of
+   *   accent, the outer pixel filling the gutter and the inner 1.5px covering the page's edge —
+   *   corners included — with the lock's glow inside it. It gets its own element because it is a
+   *   different placement of the ink, not just another colour.
+   * - `#chip` and `#shield` are the agent's too: what it is doing here, and the lock that stops
+   *   the person's input reaching this tab. Both only mean anything with the overlay *over* the
    *   page, which is exactly when the tab is held (`updateNativeOverlayState`).
    *
    * Geometry is baked here because it does not change with the theme or with who is working —
-   * only the colours do, and those are pushed on every update so a theme switch reaches them.
+   * only the colours and which frame is shown do, and those are pushed on every update so a
+   * theme switch reaches them.
    */
   private async loadNativeOverlayPage(instance: BrowserInstance, tab: BrowserTab): Promise<void> {
     const cornerRadii = getBrowserLiveFxCornerRadii()
@@ -3382,11 +3420,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         pointer-events: none;
         box-shadow: 0 0 0 9999px transparent;
       }
-      /* One pixel *outside* that rectangle, with the radius one pixel larger: the page sits above
-         this document, so only what falls outside the page's own rectangle can be seen — and
-         with the extra pixel the line's inner edge follows the page's corner exactly. The line is
-         a real border rather than a pseudo-element masked into a ring: same pixel, but a border's
-         arcs are anti-aliased by the browser, which is what a corner of this size needs. */
+      /* The resting panel's line: one pixel *outside* the page's rectangle, with the radius one
+         pixel larger. The page sits above this document, so only what falls outside the page's
+         own rectangle can be seen — and with the extra pixel the line's inner edge follows the
+         page's corner exactly. It is a real border rather than a pseudo-element masked into a
+         ring: same pixel, but a border's arcs are anti-aliased by the browser.
+
+         Only ever visible while nothing is happening on this tab: a held tab drops it for the
+         agent's own frame below. */
       #frame {
         position: fixed;
         left: ${inset.left - 1}px;
@@ -3397,6 +3438,28 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         border: ${PAGE_PANEL_RING.width} solid transparent;
         box-sizing: border-box;
         pointer-events: none;
+      }
+      /* The agent's frame, while it holds this tab: its own element because it is drawn
+         differently, not just in another colour.
+
+         It shares the resting line's box — one pixel *outside* the page, radius one larger, so
+         its arcs stay concentric with the page's corner — and then its border is 2.5px: the
+         outer 1px lands in the gutter the resting line lives in (so the accent reaches all the
+         way to the chrome, with no sliver of surface left beside it) and the inner 1.5px covers
+         the page's own edge, corners included. Covering the edge matters: the page's corner is
+         cut by its view, a hard edge that nothing outside the page can hide — and the overlay is
+         over the page at that moment, so ink here can. */
+      #lock {
+        position: fixed;
+        left: ${inset.left - 1}px;
+        top: ${inset.top - 1}px;
+        right: ${inset.right - 1}px;
+        bottom: ${inset.bottom - 1}px;
+        border-radius: ${PANEL_RADIUS_INNER + 1}px;
+        border: 2.5px solid transparent;
+        box-sizing: border-box;
+        pointer-events: none;
+        display: none;
       }
       #chip {
         position: fixed;
@@ -3425,6 +3488,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   <body>
     <div id="mask"></div>
     <div id="frame"></div>
+    <div id="lock"></div>
     <div id="chip">Agent is working…</div>
     <div id="shield"></div>
   </body>
@@ -3794,9 +3858,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     void activeTab(instance).nativeOverlayView.webContents.executeJavaScript(`(() => {
       const mask = document.getElementById('mask');
       const frame = document.getElementById('frame');
+      const lock = document.getElementById('lock');
       const chip = document.getElementById('chip');
       const shield = document.getElementById('shield');
-      if (!mask || !frame || !chip || !shield) return;
+      if (!mask || !frame || !lock || !chip || !shield) return;
 
       const locked = ${locked};
       const shieldActive = ${shieldActive};
@@ -3806,13 +3871,17 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // panel reads as a panel on this window's surface rather than on a second one.
       mask.style.boxShadow = '0 0 0 9999px ' + ${JSON.stringify(surface)};
 
-      // What the panel *is*: the app's panel line while nothing is happening here, the accent
-      // while this tab is the one being worked on. The glow is the lock, and it is drawn
-      // *inside* the panel — which is only visible with the overlay over the page, i.e. exactly
-      // while the tab is held.
-      frame.style.borderColor = locked ? ${JSON.stringify(accent)} : ${JSON.stringify(ring)};
-      frame.style.boxShadow = locked ? ${JSON.stringify(lockedGlow)} : 'none';
-      frame.style.background = locked ? 'rgba(2, 6, 23, 0.03)' : 'transparent';
+      // Which of the two frames is drawn: the resting line outside the page while nothing is
+      // happening here, and — once this tab is held — the agent's own frame over the page's edge,
+      // with the glow inside it. One or the other and never both: they are two placements of the
+      // same ink, and both would be on screen at once.
+      frame.style.display = locked ? 'none' : 'block';
+      frame.style.borderColor = ${JSON.stringify(ring)};
+
+      lock.style.display = locked ? 'block' : 'none';
+      lock.style.borderColor = ${JSON.stringify(accent)};
+      lock.style.boxShadow = ${JSON.stringify(lockedGlow)};
+      lock.style.background = 'rgba(2, 6, 23, 0.03)';
 
       if (locked) {
         chip.textContent = ${JSON.stringify(label)};

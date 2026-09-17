@@ -20,13 +20,12 @@ describe('getBrowserLiveFxCornerRadii', () => {
 })
 
 /**
- * The frame's line: one flat pixel of the foreground at 20% (the person's call: no gradient) —
- * the weight the app's focused panel border reads as, grading 10%→30% as it does. The page is
- * the content of its window, so it is that panel; the quieter 6% ring read as no line at all.
+ * The frame's line: one pixel of the foreground at 5% — `border-foreground/5`, the line the
+ * address bar's own input wears, so the panel and the field beside it are the same weight.
  */
 describe('resolvePagePanelRing', () => {
-  it('resolves the flat panel line for each mode', () => {
-    expect(resolvePagePanelRing(false)).toBe('rgba(38, 36, 42, 0.2)')
-    expect(resolvePagePanelRing(true)).toBe('rgba(237, 236, 240, 0.2)')
+  it('resolves the address bar input border for each mode', () => {
+    expect(resolvePagePanelRing(false)).toBe('rgba(38, 36, 42, 0.05)')
+    expect(resolvePagePanelRing(true)).toBe('rgba(237, 236, 240, 0.05)')
   })
 })

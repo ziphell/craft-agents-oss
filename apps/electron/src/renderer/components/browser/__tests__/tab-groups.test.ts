@@ -31,24 +31,31 @@ const node = (taskSlug: string, nodeId: string, sessionId: string): TabBelongsTo
 })
 
 describe('groupTabsByWork', () => {
-  // A section appears where its first tab is, and tabs keep their order inside it:
-  // the list still reads in the order the tabs were opened, which is what `tabs`
-  // reports and what the rail showed before it grouped anything.
+  // Every section but the person's appears where its first tab is, and tabs keep their order
+  // inside it: those sections still read in the order the tabs were opened.
   it('sections in first-appearance order, tabs in their own order', () => {
-    const groups = groupTabsByWork([tab('a', null), tab('b', session('session-1')), tab('c', null)])
+    const groups = groupTabsByWork([
+      tab('a', null),
+      tab('b', session('session-1')),
+      tab('c', null),
+      tab('d', session('session-2')),
+    ])
 
-    expect(groups.map((group) => group.work)).toEqual([null, session('session-1')])
+    expect(groups.map((group) => group.work)).toEqual([null, session('session-1'), session('session-2')])
     expect(groups[0].tabs.map((t) => t.id)).toEqual(['a', 'c'])
     expect(groups[1].tabs.map((t) => t.id)).toEqual(['b'])
+    expect(groups[2].tabs.map((t) => t.id)).toEqual(['d'])
   })
 
   // A tab nobody's conversation asked for is a person's tab, and that is a group like
-  // any other — it is not the "default" the others are escaped from.
-  it('puts tabs a person opened in their own group, wherever they sit', () => {
+  // any other — it is not the "default" the others are escaped from. It is the one section
+  // that is *pinned*, though: a window reads as yours first whatever order it was opened in.
+  it('pins tabs a person opened to the top, wherever they sit', () => {
     const groups = groupTabsByWork([tab('a', session('session-1')), tab('b', null)])
 
-    expect(groups.map((group) => group.work)).toEqual([session('session-1'), null])
-    expect(groups[1].tabs.map((t) => t.id)).toEqual(['b'])
+    expect(groups.map((group) => group.work)).toEqual([null, session('session-1')])
+    expect(groups[0].tabs.map((t) => t.id)).toEqual(['b'])
+    expect(groups[1].tabs.map((t) => t.id)).toEqual(['a'])
   })
 
   // One task is one section, its nodes included: a DAG running four nodes in parallel is one
@@ -74,10 +81,15 @@ describe('groupTabsByWork', () => {
 })
 
 describe('shouldShowGroupHeaders', () => {
-  // One group is the whole list: "you opened these" over all of it is a row that says
-  // nothing. Two is the answer worth having — whose tabs are whose.
-  it('is true only when there is more than one group', () => {
+  // More than one section is where a header earns its row — it is what tells the sections
+  // apart. A single section of the person's own tabs is the whole list, and "you opened
+  // these" over all of it says nothing. A single section that is an agent's is the opposite:
+  // the rows cannot say whose tabs they are, and the header is also where that section's `+`
+  // lives, so it keeps its header.
+  it('is true for more than one group, and for one group that is somebody\'s work', () => {
     expect(shouldShowGroupHeaders(groupTabsByWork([tab('a', null), tab('b', null)]))).toBe(false)
+    expect(shouldShowGroupHeaders(groupTabsByWork([tab('a', session('session-1'))]))).toBe(true)
+    expect(shouldShowGroupHeaders(groupTabsByWork([tab('a', node('checkout-flow', 'cart', 'child-1'))]))).toBe(true)
     expect(shouldShowGroupHeaders(groupTabsByWork([tab('a', null), tab('b', session('session-1'))]))).toBe(true)
     expect(shouldShowGroupHeaders(groupTabsByWork([]))).toBe(false)
   })
