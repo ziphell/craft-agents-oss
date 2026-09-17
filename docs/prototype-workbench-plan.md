@@ -955,7 +955,7 @@ tabView（网页）    页面面板      产品页面：`WebContentsView`，一�
 nativeOverlayView 页面周围与下方  同一标签页的遮罩层：留白表面 + 细线（被持有时是 accent 外框 + 光晕 + 胶囊 + `#shield`）
 ```
 
-**页面是主聊天面板那样的面板**（与 `components/app-shell/panel-constants.ts` 同一套数：圆角、边距、细线，见 `shared/panel-geometry.ts`）：它从标签栏起留 6px（`PANEL_GAP`）、离窗口右边和下边各 6px（`PANEL_EDGE_INSET`）、紧贴地址栏下沿，四角圆角 10px，外面一圈 1px 细线（`shadow-middle` 的 6% 前景色环）。**圆角由网页自己的 view 切出来**（`WebContentsView.setBorderRadius`，`applyPageCornerRadius`），因此对任何网页都成立；四角切掉后透出来的是它**下面**那层 overlay（`#mask` 用 `box-shadow: 0 0 0 9999px <surface>` 把页面矩形之外——含四个角的缺口——填成窗口表面色），所以页面上**不盖任何东西**。
+**页面是主聊天面板那样的面板**（与 `components/app-shell/panel-constants.ts` 同一套数：圆角、边距、细线，见 `shared/panel-geometry.ts`）：它从标签栏起留 6px（`PANEL_GAP`）、离窗口右边和下边各 6px（`PANEL_EDGE_INSET`）、地址栏下沿留 **1px**（细线画在页面**外侧**，紧贴的话它会被地址栏那块视图挡在后面 —— 应用自己的面板没这个问题，因为它的标题栏和面板在同一个文档里），四角圆角 10px，外面一圈 1px 细线 —— **应用里"聚焦面板"那条边**（`shadow-panel-focused::before` 同款：前景色竖向 10%→30% 的渐变，`PAGE_PANEL_RING`）。**圆角由网页自己的 view 切出来**（`WebContentsView.setBorderRadius`，`applyPageCornerRadius`），因此对任何网页都成立；四角切掉后透出来的是它**下面**那层 overlay（`#mask` 用 `box-shadow: 0 0 0 9999px <surface>` 把页面矩形之外——含四个角的缺口——填成窗口表面色），所以页面上**不盖任何东西**。`#frame`（画那条线的元素）比页面矩形**外扩 1px**、半径也 **+1px**，这样线落在页面外那一圈、且内缘正好贴合页面的圆角。
 
 **这层 overlay 的上下位置就是"这个标签页有没有被锁"**：平时它在页面**下面**（只看得见页面外那圈细线），人照常点页面、打字；agent 持有这个标签页时它被抬到页面**上面**（那一轮才是 accent 外框 + 光晕 + 胶囊，`#shield` 也才吃输入）。这一条不是审美取舍而是必需：视图**永远按矩形吃输入**（Electron 给 `setBorderRadius` 的注解就是这么写的：切掉的区域照样吃点击），所以任何盖住页面的墨都会把页面的点击一起吃掉 —— 也就是那个"网页不能点"的 bug。
 
@@ -2413,10 +2413,12 @@ overlay 的页面是别人的活地址，它不会、也不该变成我们的文
 - **overlay 的上下位置 = 锁**：`locked || menuActive` 时抬到页面**上面**（那时才有 accent 外框、光晕、胶囊和吃输入的 `#shield`），其余时候在页面**下面**（页面把它的内部盖住，只露出那圈细线）。"这个窗口在被用"由窗口自己的 chrome 说：标签栏那把锁就在被持有的那一行上。
 - **四角一律 10px**：`WebContentsView.setBorderRadius` 只有一个数，所以页面四角同半径，细线（`PAGE_PANEL_RING`）与遮罩的缺口都跟着它；应用自己的面板让最靠窗口的那个角紧一点（8/14px），而这块面板离每条窗口边都还有 6px，没有"窗口自己的角"可言。
 - **页面那一层换成 `WebContentsView`，其余不动**：理由见 §12.1；`window-resize` 的承诺、`#shield`/菜单、截图都不受影响（截图取的是 `tabView.webContents` 自己的像素）。
+- **顶部那条线要有地方画**（用户报告："边框只有左右，上下看不到了"）：细线画在页面外侧 1px，而地址栏是一层压在上面的视图 —— 页面紧贴它时那条线正好画在它背后；现在页面顶留 1px 给这条线（`pagePanelInsets().top = 1`，用户确认 1px 就够）。**开窗位置不要动**（用户定）：中途曾按 `workArea` 夹尺寸并居中，判断依据是"窗口压在任务栏下"，事后用户确认底边其实一直在（只是太淡）—— 那不是病因，而且自己算位置会在小屏上把窗口顶部顶出屏幕，所以改回交给 Electron。
+- **细线用"聚焦面板"那条边，不是 6% 的环**（用户报告："太细了，没注意"）：第一版抄的是 `shadow-middle` 的 1px 6% 环 —— 那是应用里**未聚焦**面板的环；页面是这扇窗的内容面板，对应的是 **`shadow-panel-focused`**（`::before` + mask，前景色竖向 **10%→30%** 的 1px 渐变）。现在按后者画（`PAGE_PANEL_RING` 给出两端透明度与 per-mode 的 `--foreground-rgb`，主进程解析成具体渐变推给 overlay），并且 `#frame` 外扩 1px、半径 +1，让线的内缘正好贴着页面的圆角。
 - **截图不再为遮罩挂起**：截图取的是 `tabView.webContents` 自己的像素，overlay 从来不在画面里（`suspendOverlayForCapture` / `restoreOverlayAfterCapture` 已删）；何况现在把它挂起会让人眼前的面板闪一下。
 - **`window-resize` 的承诺跟着算上边距**：它承诺的是**页面**的视口，所以加窗口尺寸时把 6px 边距一起加进去，返回时再一起减掉（与 rail / bar 同一套算法）。
 - **表面色只有一个来源**（用户报告："圆角外部边缘漏出了灰色底色，和垂直标签页、地址栏颜色不一致"）：遮罩填的那块表面 = 窗口/标签页底色 = `BACKGROUND_HEX`，而它现在**就是 renderer `index.css` 的 `--background`**（`:root` `#f7f8fa` / `.dark` `#080a10`，即 `DEFAULT_THEME` 的 oklch）。此前那两个 hex（`#faf9fb` / `#302f33`）来自 `themes/default.json` 一带的旧值，比窗口自己的 chrome 亮得多 —— 于是面板圆角外沿与留白在标签栏旁边显出一圈灰。同一组旧灰还抄在空状态文档与 chrome 加载失败的兜底页里，一并改到同一来源；细线的两个颜色（`PAGE_PANEL_RING`）也改成 renderer 的 `--foreground-rgb`（暗色是 237,236,240，不是 UI 包默认的 227,226,229）。
-- 验收：`browser-pane-manager.test.ts` 的「rounds the page itself, so any page is a rounded panel the person can click」（页面自己的角 + overlay 在它下面）、「draws the panel without a lock while no tab is held」「arms the tab shield only while the tab on screen is the one being worked on」、两条 viewport 用例（488x446 那条同时钉住边距）、关标签页那两条（页面走 `contentView`、overlay 走 `removeBrowserView`）；`shared/__tests__/browser-live-fx.test.ts` 钉住四个角的半径与细线的两个颜色。
+- 验收：`browser-pane-manager.test.ts` 的「rounds the page itself, so any page is a rounded panel the person can click」（页面自己的角 + overlay 在它下面）、「draws the panel without a lock while no tab is held」「arms the tab shield only while the tab on screen is the one being worked on」、两条 viewport 用例（488x445 那条同时钉住边距与顶部那 1px）、关标签页那两条（页面走 `contentView`、overlay 走 `removeBrowserView`）；`shared/__tests__/browser-live-fx.test.ts` 钉住四个角的半径与细线的两个颜色。
 
 **下一轮**：**面板按会话分组**：徽章那一列现在按窗口分组，但没有说"哪个会话在用这个窗口"。
 

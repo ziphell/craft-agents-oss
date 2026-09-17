@@ -16,23 +16,27 @@ export const BROWSER_LIVE_FX_BORDER = {
 } as const
 
 /**
- * The hairline around the page area — the app's own panel ring, in a form a document without
- * the app's CSS variables can use.
+ * The hairline around the page area — the app's own **focused panel** border, in a form a
+ * document without the app's CSS variables can use.
  *
- * The app's panels are ringed by `shadow-middle` (`renderer/index.css`): 1px of the foreground
- * at 6%. The page area is a `BrowserView` framed by the overlay document (a generated
- * document, with no theme variables in scope), so the ring is resolved to a concrete colour
- * here — the same treatment {@link resolveBrowserLiveFxBorder} gives the accent.
+ * The app draws that border with `shadow-panel-focused::before` (`renderer/index.css`): 1px of
+ * the foreground, graded from 10% at the top to 30% at the bottom. A panel that is the content
+ * of its window is the focused one, which is exactly what the page is here; the quieter 6% ring
+ * (`shadow-middle`) is for panels that are not, and at 6% it reads as "there is no line" — which
+ * is what it looked like before this was taken from the focused recipe.
+ *
+ * The overlay document is generated and has no theme variables in scope, so the ring is resolved
+ * to a concrete gradient here — the same treatment {@link resolveBrowserLiveFxBorder} gives the
+ * accent.
  */
 export const PAGE_PANEL_RING = {
   width: '1px',
-  alpha: 0.06,
-  /**
-   * `--foreground-rgb` per mode, from the renderer's stylesheet — the one the browser window's
-   * chrome is drawn with (`apps/electron/src/renderer/index.css`), not the UI package's
-   * defaults: the chrome overrides both, and a ring mixed from the wrong foreground shows up
-   * as a line that is too bright or too dim beside it.
-   */
+  topAlpha: 0.1,
+  bottomAlpha: 0.3,
+  /** `--foreground-rgb` per mode, from the renderer's stylesheet — the one the browser window's
+   * chrome is drawn with (`apps/electron/src/renderer/index.css`), not the UI package's defaults:
+   * the chrome overrides both, and a ring mixed from the wrong foreground shows up as a line that
+   * is too bright or too dim beside it. */
   foregroundRgb: {
     light: '38, 36, 42',
     dark: '237, 236, 240',
@@ -41,7 +45,7 @@ export const PAGE_PANEL_RING = {
 
 export function resolvePagePanelRing(isDark: boolean): string {
   const rgb = isDark ? PAGE_PANEL_RING.foregroundRgb.dark : PAGE_PANEL_RING.foregroundRgb.light
-  return `rgba(${rgb}, ${PAGE_PANEL_RING.alpha})`
+  return `linear-gradient(to bottom, rgba(${rgb}, ${PAGE_PANEL_RING.topAlpha}), rgba(${rgb}, ${PAGE_PANEL_RING.bottomAlpha}))`
 }
 
 /**
