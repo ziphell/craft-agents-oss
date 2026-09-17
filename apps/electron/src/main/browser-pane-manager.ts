@@ -24,7 +24,7 @@ import { CodedError, RPC_CHANNELS, describeWork, sameWork } from '@craft-agent/s
 import type { PickedElement, PickedElementOrigin, BrowserToolbarAction, BrowserTabSummary, TabBelongsTo } from '@craft-agent/shared/protocol'
 import type { MockProgram } from '@craft-agent/shared/prototypes'
 import { getBrowserLiveFxCornerRadii, PAGE_PANEL_RING, resolvePagePanelRing } from '../shared/browser-live-fx'
-import { PANEL_EDGE_INSET, PANEL_GAP, PANEL_RADIUS_INNER } from '../shared/panel-geometry'
+import { PANEL_EDGE_INSET, PANEL_RADIUS_INNER } from '../shared/panel-geometry'
 import type {
   IBrowserPaneManager,
   BrowserInstanceSnapshot,
@@ -3384,7 +3384,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       }
       /* One pixel *outside* that rectangle, with the radius one pixel larger: the page sits above
          this document, so only what falls outside the page's own rectangle can be seen — and
-         with the extra pixel the line's inner edge follows the page's corner exactly. */
+         with the extra pixel the line's inner edge follows the page's corner exactly. The line is
+         a real border rather than a pseudo-element masked into a ring: same pixel, but a border's
+         arcs are anti-aliased by the browser, which is what a corner of this size needs. */
       #frame {
         position: fixed;
         left: ${inset.left - 1}px;
@@ -3392,23 +3394,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         right: ${inset.right - 1}px;
         bottom: ${inset.bottom - 1}px;
         border-radius: ${PANEL_RADIUS_INNER + 1}px;
+        border: ${PAGE_PANEL_RING.width} solid transparent;
         box-sizing: border-box;
         pointer-events: none;
-        --ring: linear-gradient(transparent, transparent);
-      }
-      /* The ring itself: one pixel of the page's rounded rectangle, the app's focused-panel
-         border (see PAGE_PANEL_RING). The mask is what leaves only the border — the same recipe
-         the app uses for that panel. */
-      #frame::before {
-        content: '';
-        position: absolute;
-        inset: 0;
-        border-radius: inherit;
-        padding: ${PAGE_PANEL_RING.width};
-        background: var(--ring);
-        -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-        -webkit-mask-composite: xor;
-        mask-composite: exclude;
       }
       #chip {
         position: fixed;
@@ -3500,19 +3488,18 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   /**
    * The gutter between the tab area's edges and the page panel drawn inside it.
    *
-   * The page is a panel like the app's own — rounded, ringed, with the surface showing around
-   * it (`shared/panel-geometry.ts`) — so it does not fill the tab area: `PANEL_GAP` from the
-   * rail beside it, `PANEL_EDGE_INSET` from the window's right and bottom edges (the app insets
-   * its own panels by the same amount), and **1px under the bar**.
+   * The page hugs the chrome it sits against — the rail on its left and the bar above it — with
+   * exactly **1px** between them, and keeps `PANEL_EDGE_INSET` from the window's right and bottom
+   * edges, where there is nothing to hug (the app insets its own panels by that much).
    *
-   * That pixel is not spacing (the person's call: the page stays flush under the bar otherwise):
-   * the ring is drawn just *outside* the page, and the bar is a view above this one — flush
-   * against it the ring's top line would be painted behind the bar and never seen. One pixel is
-   * all the line needs, and it is what the app gets for free by drawing its panels' rings in the
-   * same document as its top bar.
+   * Those 1px are not spacing (the person's call: the page stays flush against the chrome
+   * otherwise): the line is drawn just *outside* the page, and both chrome surfaces are views
+   * above this one — flush against them the line's top and left lines would be painted behind
+   * them and never seen. One pixel is all a line needs, and it is what the app gets for free by
+   * drawing its panels' lines in the same document as its chrome.
    */
   private pagePanelInsets(): { left: number; top: number; right: number; bottom: number } {
-    return { left: PANEL_GAP, top: 1, right: PANEL_EDGE_INSET, bottom: PANEL_EDGE_INSET }
+    return { left: 1, top: 1, right: PANEL_EDGE_INSET, bottom: PANEL_EDGE_INSET }
   }
 
   /**
@@ -3802,7 +3789,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const surface = getBackgroundColor(nativeTheme.shouldUseDarkColors)
     const ring = resolvePagePanelRing(nativeTheme.shouldUseDarkColors)
     const accent = this.getResolvedAccentColor()
-    const accentRing = `linear-gradient(${accent}, ${accent})`
     const lockedGlow = `inset 0 0 0 1px color-mix(in oklab, ${accent} 45%, transparent), inset 0 0 24px color-mix(in oklab, ${accent} 28%, transparent)`
 
     void activeTab(instance).nativeOverlayView.webContents.executeJavaScript(`(() => {
@@ -3820,11 +3806,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // panel reads as a panel on this window's surface rather than on a second one.
       mask.style.boxShadow = '0 0 0 9999px ' + ${JSON.stringify(surface)};
 
-      // What the panel *is*: the app's focused-panel border (a 1px gradient, top to bottom)
-      // while nothing is happening here, the accent while this tab is the one being worked on.
-      // The glow is the lock, and it is drawn *inside* the panel — which is only visible with
-      // the overlay over the page, i.e. exactly while the tab is held.
-      frame.style.setProperty('--ring', locked ? ${JSON.stringify(accentRing)} : ${JSON.stringify(ring)});
+      // What the panel *is*: the app's panel line while nothing is happening here, the accent
+      // while this tab is the one being worked on. The glow is the lock, and it is drawn
+      // *inside* the panel — which is only visible with the overlay over the page, i.e. exactly
+      // while the tab is held.
+      frame.style.borderColor = locked ? ${JSON.stringify(accent)} : ${JSON.stringify(ring)};
       frame.style.boxShadow = locked ? ${JSON.stringify(lockedGlow)} : 'none';
       frame.style.background = locked ? 'rgba(2, 6, 23, 0.03)' : 'transparent';
 

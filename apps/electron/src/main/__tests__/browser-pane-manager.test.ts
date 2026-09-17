@@ -1953,10 +1953,10 @@ describe('BrowserPaneManager', () => {
     const resized = manager.windowResize('resize-1', 1280, 720)
 
     const instance = (manager as any).instances.get('resize-1')
-    // 720 of page + everything the page does not get: the 48 address bar, the 200 tab rail and
-    // the panel's gutter — 6px on the right and below, and the 1px under the bar that the
-    // frame's top line lives in (`pagePanelInsets`).
-    expect(instance.window.setContentSize).toHaveBeenCalledWith(1492, 775)
+    // 720 of page + everything the page does not get: the 48 address bar, the 200 tab rail, the
+    // 1px the page keeps against each of them for the line's top and left edges, and 6px on the
+    // right and below (`pagePanelInsets`).
+    expect(instance.window.setContentSize).toHaveBeenCalledWith(1487, 775)
     // The promise is the viewport, and it is kept exactly: what the window ended up with, minus
     // all of that again.
     expect(resized).toEqual({ width: 1280, height: 720 })
@@ -1967,8 +1967,8 @@ describe('BrowserPaneManager', () => {
     const resized = manager.windowResize('resize-min', 200, 200)
 
     // BrowserWindow minWidth/minHeight is 700x500, and the chrome plus the panel's gutter takes
-    // 200 + 12 of the width and 48 + 7 of the height, so the effective viewport is 488x445.
-    expect(resized).toEqual({ width: 488, height: 445 })
+    // 200 + 7 of the width and 48 + 7 of the height, so the effective viewport is 493x445.
+    expect(resized).toEqual({ width: 493, height: 445 })
   })
 
   describe('agent control overlay', () => {
@@ -2411,9 +2411,9 @@ describe('BrowserPaneManager', () => {
       // A tab that is not on screen is laid out at the same area as the one that is — not
       // parked at zero size, which left it with no viewport and nothing painted, and that is
       // what made a background tab useless (plan §22, 第十二轮). The area is the **page
-      // panel**: the tab area minus the 6px gutter on the right and below, and the 1px the
-      // frame's top line lives in.
-      expect(second.tabView.setBounds).toHaveBeenCalledWith({ x: 206, y: 49, width: 988, height: 845 })
+      // panel**: the tab area minus the 1px it keeps against the rail and the bar, and the 6px
+      // it keeps from the window's right and bottom edges.
+      expect(second.tabView.setBounds).toHaveBeenCalledWith({ x: 201, y: 49, width: 993, height: 845 })
     })
 
     it('switches tabs and reports the one that came forward', () => {
@@ -2555,7 +2555,7 @@ describe('BrowserPaneManager', () => {
       // One tab: the rail is still there, because that is when somebody wants a
       // second one and the `+` is the only way to make it.
       expect(tab(instance).tabView.setBounds).toHaveBeenCalledWith({
-        x: 206, y: 49, width: expect.anything(), height: expect.anything(),
+        x: 201, y: 49, width: expect.anything(), height: expect.anything(),
       })
 
       instance.tabs[0].currentUrl = 'https://first.example.com/'
@@ -2563,13 +2563,13 @@ describe('BrowserPaneManager', () => {
       const second = instance.tabs.find((tab: any) => tab.id === secondId)
 
       expect(second.tabView.setBounds).toHaveBeenCalledWith({
-        x: 206, y: 49, width: expect.anything(), height: expect.anything(),
+        x: 201, y: 49, width: expect.anything(), height: expect.anything(),
       })
 
       // And closing back down to one tab does not move it.
       manager.closeTab('tabs-room', secondId)
       expect(instance.tabs[0].tabView.setBounds).toHaveBeenCalledWith({
-        x: 206, y: 49, width: expect.anything(), height: expect.anything(),
+        x: 201, y: 49, width: expect.anything(), height: expect.anything(),
       })
     })
 

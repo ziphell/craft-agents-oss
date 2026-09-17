@@ -20,17 +20,13 @@ describe('getBrowserLiveFxCornerRadii', () => {
 })
 
 /**
- * The frame's line: the app's **focused panel** border — 1px of the foreground, graded from 10%
- * at the top to 30% at the bottom (`shadow-panel-focused::before`), per mode. The page is the
- * content of its window, so it is that panel; the quieter 6% ring read as no line at all.
+ * The frame's line: one flat pixel of the foreground at 20% (the person's call: no gradient) —
+ * the weight the app's focused panel border reads as, grading 10%→30% as it does. The page is
+ * the content of its window, so it is that panel; the quieter 6% ring read as no line at all.
  */
 describe('resolvePagePanelRing', () => {
-  it('resolves the focused panel border for each mode', () => {
-    expect(resolvePagePanelRing(false)).toBe(
-      'linear-gradient(to bottom, rgba(38, 36, 42, 0.1), rgba(38, 36, 42, 0.3))',
-    )
-    expect(resolvePagePanelRing(true)).toBe(
-      'linear-gradient(to bottom, rgba(237, 236, 240, 0.1), rgba(237, 236, 240, 0.3))',
-    )
+  it('resolves the flat panel line for each mode', () => {
+    expect(resolvePagePanelRing(false)).toBe('rgba(38, 36, 42, 0.2)')
+    expect(resolvePagePanelRing(true)).toBe('rgba(237, 236, 240, 0.2)')
   })
 })
