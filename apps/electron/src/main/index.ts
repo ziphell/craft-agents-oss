@@ -242,6 +242,13 @@ if (process.defaultApp) {
   app.setAsDefaultProtocolClient(DEEPLINK_SCHEME)
 }
 
+// Chromium stops producing frames for a window it judges to be fully covered by other windows,
+// and `capturePage` then fails with "current display surface not available for capture" — the
+// agent would have to raise the browser window (stealing the user's view) before every shot it
+// takes in the background. Turning that judgement off keeps a covered window painting; the cost
+// is the power it would have saved while hidden behind something.
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
+
 // Apply network proxy settings early (Node-level only — Electron sessions require app.whenReady)
 import { applyConfiguredProxySettings } from './network-proxy'
 void applyConfiguredProxySettings()

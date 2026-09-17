@@ -19,11 +19,12 @@ import {
   type BrowserEmptyStateLaunchResult,
   type BrowserInstanceInfo,
 } from '../shared/types'
-import { DEFAULT_THEME, loadAppTheme, getAllowRemoteEvaluate } from '@craft-agent/shared/config'
+import { DEFAULT_THEME, getBackgroundColor, loadAppTheme, getAllowRemoteEvaluate } from '@craft-agent/shared/config'
 import { CodedError, RPC_CHANNELS, describeWork, sameWork } from '@craft-agent/shared/protocol'
 import type { PickedElement, PickedElementOrigin, BrowserToolbarAction, BrowserTabSummary, TabBelongsTo } from '@craft-agent/shared/protocol'
 import type { MockProgram } from '@craft-agent/shared/prototypes'
-import { getBrowserLiveFxCornerRadii } from '../shared/browser-live-fx'
+import { getBrowserLiveFxCornerRadii, PAGE_PANEL_RING, resolvePagePanelRing } from '../shared/browser-live-fx'
+import { PANEL_EDGE_INSET, PANEL_GAP } from '../shared/panel-geometry'
 import type {
   IBrowserPaneManager,
   BrowserInstanceSnapshot,
@@ -248,6 +249,7 @@ const TOOLBAR_CHANNELS = {
   CANCEL_PICK: 'browser-toolbar:cancel-pick',
   APPLY_PROTOTYPE: 'browser-toolbar:apply-prototype',
   TABS: 'browser-toolbar:tabs',
+  DEVTOOLS: 'browser-toolbar:devtools',
 } as const
 export const BROWSER_PANE_SESSION_PARTITION = 'persist:browser-pane'
 const SESSION_PARTITION = BROWSER_PANE_SESSION_PARTITION
@@ -878,8 +880,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.setupSessionPermissions(ses)
     this.setupSessionObservers(ses)
 
-    // Match background to current OS theme to prevent black/white flash on open
-    const bgColor = nativeTheme.shouldUseDarkColors ? '#2b292e' : '#fafafb'
+    // Match background to current OS theme to prevent black/white flash on open. The same
+    // value paints the page panel's surroundings in the overlay, so the two cannot disagree
+    // about what "the surface" is.
+    const bgColor = getBackgroundColor(nativeTheme.shouldUseDarkColors)
 
     const window = new BrowserWindow({
       width: 1200,
@@ -917,8 +921,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     // The toolbar's own background, so its transparent chrome does not flash white.
     // A tab's background is set by `attachTab` — it belongs to the tab.
-    const toolbarWcWithBg = toolbarView.webContents as typeof toolbarView.webContents & { setBackgroundColor?: (color: string) => void }
-    toolbarWcWithBg.setBackgroundColor?.('#00000000')
+    toolbarView.setBackgroundColor('#00000000')
 
     // The same document, told to render the tab rail instead of the bar: one entry
     // point, one preload, one state channel, two surfaces (plan §22).
@@ -932,8 +935,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         sandbox: false,
       },
     })
-    const railWcWithBg = railView.webContents as typeof railView.webContents & { setBackgroundColor?: (color: string) => void }
-    railWcWithBg.setBackgroundColor?.('#00000000')
+    railView.setBackgroundColor('#00000000')
 
     // A window is *opened on* something, so it starts with one tab; the tabs a
     // user adds afterwards go through `createTab`.
@@ -1069,6 +1071,17 @@ export class BrowserPaneManager implements IBrowserPaneManager {
        */
       belongsTo?: TabBelongsTo | null
       /**
+       * The **person** opened this one, for the work above rather than as part of it.
+       *
+       * The rail's "new tab in this section": somebody setting a page up for a conversation
+       * to carry on from (plan §22). Everything else follows from `belongsTo` — the tab
+       * groups with that work and becomes the tab its conversation reaches for — but the
+       * **lease** is not taken, because "last moved by" would be the person: the rail's
+       * in-use mark would otherwise appear on a tab no agent has touched. {@link assignTab}
+       * hands a tab over on exactly these terms.
+       */
+      openedByPerson?: boolean
+      /**
        * Open it **right after** this tab instead of at the end of the strip.
        *
        * A tab the browser asked for belongs next to the tab that asked: a link
@@ -1135,7 +1148,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // not make the window say the task's conversation is driving the new tab either
     // (plan §22, 第十一轮).
     const derivedFromAnotherTab = Boolean(options?.afterTabId)
-    if (!derivedFromAnotherTab) {
+    if (!derivedFromAnotherTab && !options?.openedByPerson) {
       // Whoever opened a tab is working on it: the lease starts where the tab does,
       // so a conversation that just opened something does not have to touch it twice
       // before the window says what is going on.
@@ -1152,7 +1165,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // After the tab is in the window: the cursor is written on the tab, so the tab has
     // to be findable by id when this runs.
     if (!derivedFromAnotherTab && tab.belongsTo) {
-      this.recordSessionTab(instance, tab.id, tab.belongsTo.sessionId)
+      if (options?.openedByPerson) {
+        // The person's tab for a conversation is still the tab that conversation reaches
+        // for — that is the whole point of preparing one — but the cursor comes without
+        // the lease: the person moved this tab, not the conversation (`assignTab`).
+        this.pointConversationAt(instance, tab.id, tab.belongsTo.sessionId)
+      } else {
+        this.recordSessionTab(instance, tab.id, tab.belongsTo.sessionId)
+      }
     }
 
     this.attachTab(instance, tab)
@@ -1227,6 +1247,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     if (!tab) throw new Error(`Browser window "${instanceId}" has no tab "${tabId}".`)
 
     if (instance.activeTabId === tab.id) return
+
+    // The developer tools inspect the tab that is on screen, so they leave with the tab
+    // that is leaving: the window must never show one page while its tools describe
+    // another (`toggleTabDevTools`).
+    this.closeTabDevTools(activeTab(instance))
 
     instance.activeTabId = tab.id
     this.forceCloseToolbarMenu(instance, 'tab-switch')
@@ -1348,6 +1373,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    */
   private detachTab(instance: BrowserInstance, tab: BrowserTab): void {
     tab.cdp.detach()
+    // A tab that is going away takes its developer tools with it.
+    this.closeTabDevTools(tab)
 
     for (const view of [tab.tabView, tab.nativeOverlayView]) {
       if (!instance.window.isDestroyed()) {
@@ -1365,6 +1392,33 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         mainLog.debug(`[browser-pane] tab close ignored tab=${tab.id}: ${String(error)}`)
       }
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Developer tools
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Open the developer tools for the tab on screen, or close them if they are up.
+   *
+   * The tools are the **tab's**, because the tab is what they inspect: they belong to
+   * whatever is on screen, so switching tabs puts them away with the tab that leaves
+   * ({@link activateTab}) and closing the tab takes them with it ({@link detachTab}).
+   *
+   * Detached rather than docked: the page is a `BrowserView`, and a docked panel is laid
+   * out inside that view's own rectangle — over the page it is inspecting.
+   */
+  private toggleTabDevTools(instance: BrowserInstance): void {
+    const contents = activeTab(instance).tabView.webContents
+    if (contents.isDevToolsOpened()) contents.closeDevTools()
+    else contents.openDevTools({ mode: 'detach' })
+  }
+
+  /** Put a tab's developer tools away, if they are up. */
+  private closeTabDevTools(tab: BrowserTab): void {
+    const contents = tab.tabView.webContents
+    if (contents.isDestroyed() || !contents.isDevToolsOpened()) return
+    contents.closeDevTools()
   }
 
   // ---------------------------------------------------------------------------
@@ -2130,170 +2184,140 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
   }
 
-  /**
-   * Take the agent's overlay out of the picture, when it is in it.
-   *
-   * The overlay view only ever sits over the tab on screen (`updateNativeOverlayState`), so
-   * a capture of a tab behind that one has nothing to hide — and hiding it anyway would
-   * blink the outline and the shield in front of the person for a shot they are not in.
-   */
-  private suspendOverlayForCapture(instance: BrowserInstance, tab: BrowserTab): boolean {
-    if (tab.id !== instance.activeTabId) return false
-    const shouldSuspend = instance.controlBy.size > 0
-      && tab.nativeOverlayReady
-
-    if (!shouldSuspend) return false
-
-    tab.nativeOverlayView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
-    return true
-  }
-
-  private restoreOverlayAfterCapture(instance: BrowserInstance, suspended: boolean): void {
-    if (!suspended) return
-    this.updateNativeOverlayState(instance)
-  }
-
   async screenshot(id: string, options?: BrowserScreenshotOptions, tabId?: string): Promise<BrowserScreenshotResult> {
     const instance = this.requireAliveInstance(id)
     const tab = this.tabOf(instance, tabId)
 
-    // Hide native agent overlay so it doesn't appear in captures
-    const suspendedOverlay = this.suspendOverlayForCapture(instance, tab)
+    // When annotating, force agent mode and gather refs from accessibility tree
+    const annotate = !!options?.annotate
+    const mode = (annotate || options?.mode === 'agent') ? 'agent' : 'raw'
 
-    try {
-      // When annotating, force agent mode and gather refs from accessibility tree
-      const annotate = !!options?.annotate
-      const mode = (annotate || options?.mode === 'agent') ? 'agent' : 'raw'
+    if (mode === 'raw') {
+      const viewport = await tab.cdp.getViewportMetrics()
+      const captured = await this.capturePageWithRecovery(instance, {
+        tab,
+        mode,
+        errorPrefix: 'screenshot',
+        dpr: viewport.dpr,
+        format: options?.format,
+        jpegQuality: options?.jpegQuality,
+      })
 
-      if (mode === 'raw') {
-        const viewport = await tab.cdp.getViewportMetrics()
-        const captured = await this.capturePageWithRecovery(instance, {
-          tab,
-          mode,
-          errorPrefix: 'screenshot',
-          dpr: viewport.dpr,
-          format: options?.format,
-          jpegQuality: options?.jpegQuality,
-        })
-
-        return {
-          imageBuffer: captured.imageBuffer,
-          imageFormat: captured.imageFormat,
-          metadata: options?.includeMetadata
-            ? {
-              mode: 'raw',
-              warnings: captured.warnings.length > 0 ? captured.warnings : undefined,
-            }
-            : undefined,
-        }
-      }
-
-      const warnings: string[] = []
-      const geometries: ElementGeometry[] = []
-
-      const MAX_ANNOTATED_REFS = 100
-      let refs = options?.refs ?? []
-
-      if (annotate) {
-        try {
-          const snapshot = await tab.cdp.getAccessibilitySnapshot()
-          refs = snapshot.nodes.map((node) => node.ref).slice(0, MAX_ANNOTATED_REFS)
-          if (snapshot.nodes.length > MAX_ANNOTATED_REFS) {
-            warnings.push(`Annotation capped at ${MAX_ANNOTATED_REFS} of ${snapshot.nodes.length} elements`)
+      return {
+        imageBuffer: captured.imageBuffer,
+        imageFormat: captured.imageFormat,
+        metadata: options?.includeMetadata
+          ? {
+            mode: 'raw',
+            warnings: captured.warnings.length > 0 ? captured.warnings : undefined,
           }
-        } catch (error) {
-          warnings.push(`Accessibility snapshot for annotation failed: ${error instanceof Error ? error.message : String(error)}`)
-          refs = []
-        }
+          : undefined,
       }
+    }
 
-      const settled = await Promise.allSettled(
-        refs.map((ref) => tab.cdp.getElementGeometry(ref)),
-      )
+    const warnings: string[] = []
+    const geometries: ElementGeometry[] = []
 
-      for (let i = 0; i < settled.length; i++) {
-        const result = settled[i]!
-        if (result.status === 'fulfilled') {
-          geometries.push(result.value)
-        } else if (!annotate) {
-          const reason = result.reason instanceof Error ? result.reason.message : String(result.reason)
-          warnings.push(`Could not resolve ref ${refs[i]}: ${reason}`)
-        }
-      }
+    const MAX_ANNOTATED_REFS = 100
+    let refs = options?.refs ?? []
 
-      if (options?.includeLastAction && instance.lastAction?.geometry) {
-        geometries.push(instance.lastAction.geometry)
-      }
-
-      const metadataText = instance.lastAction
-        ? `${instance.lastAction.tool} • ${instance.lastAction.status} • ${new Date(instance.lastAction.timestamp).toISOString()}`
-        : `browser_screenshot • ${new Date().toISOString()}`
-
-      let annotationPartial = false
-
+    if (annotate) {
       try {
-        if (geometries.length > 0 || options?.includeMetadata) {
-          await tab.cdp.renderTemporaryOverlay({
-            geometries,
-            includeMetadata: !!options?.includeMetadata,
-            metadataText,
-            includeClickPoints: true,
-          })
+        const snapshot = await tab.cdp.getAccessibilitySnapshot()
+        refs = snapshot.nodes.map((node) => node.ref).slice(0, MAX_ANNOTATED_REFS)
+        if (snapshot.nodes.length > MAX_ANNOTATED_REFS) {
+          warnings.push(`Annotation capped at ${MAX_ANNOTATED_REFS} of ${snapshot.nodes.length} elements`)
         }
       } catch (error) {
-        annotationPartial = true
-        warnings.push(`Annotation overlay failed: ${error instanceof Error ? error.message : String(error)}`)
+        warnings.push(`Accessibility snapshot for annotation failed: ${error instanceof Error ? error.message : String(error)}`)
+        refs = []
+      }
+    }
+
+    const settled = await Promise.allSettled(
+      refs.map((ref) => tab.cdp.getElementGeometry(ref)),
+    )
+
+    for (let i = 0; i < settled.length; i++) {
+      const result = settled[i]!
+      if (result.status === 'fulfilled') {
+        geometries.push(result.value)
+      } else if (!annotate) {
+        const reason = result.reason instanceof Error ? result.reason.message : String(result.reason)
+        warnings.push(`Could not resolve ref ${refs[i]}: ${reason}`)
+      }
+    }
+
+    if (options?.includeLastAction && instance.lastAction?.geometry) {
+      geometries.push(instance.lastAction.geometry)
+    }
+
+    const metadataText = instance.lastAction
+      ? `${instance.lastAction.tool} • ${instance.lastAction.status} • ${new Date(instance.lastAction.timestamp).toISOString()}`
+      : `browser_screenshot • ${new Date().toISOString()}`
+
+    let annotationPartial = false
+
+    try {
+      if (geometries.length > 0 || options?.includeMetadata) {
+        await tab.cdp.renderTemporaryOverlay({
+          geometries,
+          includeMetadata: !!options?.includeMetadata,
+          metadataText,
+          includeClickPoints: true,
+        })
+      }
+    } catch (error) {
+      annotationPartial = true
+      warnings.push(`Annotation overlay failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+
+    try {
+      const viewport = await tab.cdp.getViewportMetrics()
+      const captured = await this.capturePageWithRecovery(instance, {
+        tab,
+        mode,
+        errorPrefix: 'screenshot',
+        dpr: viewport.dpr,
+        format: options?.format,
+        jpegQuality: options?.jpegQuality,
+      })
+
+      if (captured.warnings.length > 0) {
+        warnings.push(...captured.warnings)
       }
 
-      try {
-        const viewport = await tab.cdp.getViewportMetrics()
-        const captured = await this.capturePageWithRecovery(instance, {
-          tab,
-          mode,
-          errorPrefix: 'screenshot',
-          dpr: viewport.dpr,
-          format: options?.format,
-          jpegQuality: options?.jpegQuality,
-        })
-
-        if (captured.warnings.length > 0) {
-          warnings.push(...captured.warnings)
-        }
-
-        return {
-          imageBuffer: captured.imageBuffer,
-          imageFormat: captured.imageFormat,
-          metadata: {
-            mode: 'agent',
-            viewport,
-            targets: geometries.map((g) => ({
-              ref: g.ref,
-              role: g.role,
-              name: g.name,
-              box: g.box,
-              clickPoint: g.clickPoint,
-            })),
-            action: instance.lastAction
-              ? {
-                tool: instance.lastAction.tool,
-                ref: instance.lastAction.ref,
-                status: instance.lastAction.status,
-                timestamp: instance.lastAction.timestamp,
-              }
-              : undefined,
-            annotationPartial,
-            warnings: warnings.length > 0 ? warnings : undefined,
-          },
-        }
-      } finally {
-        try {
-          await tab.cdp.clearTemporaryOverlay()
-        } catch {
-          // ignore cleanup errors
-        }
+      return {
+        imageBuffer: captured.imageBuffer,
+        imageFormat: captured.imageFormat,
+        metadata: {
+          mode: 'agent',
+          viewport,
+          targets: geometries.map((g) => ({
+            ref: g.ref,
+            role: g.role,
+            name: g.name,
+            box: g.box,
+            clickPoint: g.clickPoint,
+          })),
+          action: instance.lastAction
+            ? {
+              tool: instance.lastAction.tool,
+              ref: instance.lastAction.ref,
+              status: instance.lastAction.status,
+              timestamp: instance.lastAction.timestamp,
+            }
+            : undefined,
+          annotationPartial,
+          warnings: warnings.length > 0 ? warnings : undefined,
+        },
       }
     } finally {
-      this.restoreOverlayAfterCapture(instance, suspendedOverlay)
+      try {
+        await tab.cdp.clearTemporaryOverlay()
+      } catch {
+        // ignore cleanup errors
+      }
     }
   }
 
@@ -2318,80 +2342,74 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       throw new Error('Region screenshot target is ambiguous. Provide only one of coordinates, ref, or selector')
     }
 
-    const suspendedOverlay = this.suspendOverlayForCapture(instance, tab)
+    let box: { x: number; y: number; width: number; height: number }
 
-    try {
-      let box: { x: number; y: number; width: number; height: number }
-
-      if (hasRef) {
-        const geometry = await tab.cdp.getElementGeometry(String(target.ref))
-        box = { ...geometry.box }
-      } else if (hasSelector) {
-        const geometry = await tab.cdp.getElementGeometryBySelector(String(target.selector))
-        box = { ...geometry.box }
-      } else {
-        box = {
-          x: Number(target.x),
-          y: Number(target.y),
-          width: Number(target.width),
-          height: Number(target.height),
-        }
-      }
-
-      const padding = Math.max(0, Number(target.padding ?? 0))
+    if (hasRef) {
+      const geometry = await tab.cdp.getElementGeometry(String(target.ref))
+      box = { ...geometry.box }
+    } else if (hasSelector) {
+      const geometry = await tab.cdp.getElementGeometryBySelector(String(target.selector))
+      box = { ...geometry.box }
+    } else {
       box = {
-        x: box.x - padding,
-        y: box.y - padding,
-        width: box.width + padding * 2,
-        height: box.height + padding * 2,
+        x: Number(target.x),
+        y: Number(target.y),
+        width: Number(target.width),
+        height: Number(target.height),
       }
+    }
 
-      const viewport = await tab.cdp.getViewportMetrics()
+    const padding = Math.max(0, Number(target.padding ?? 0))
+    box = {
+      x: box.x - padding,
+      y: box.y - padding,
+      width: box.width + padding * 2,
+      height: box.height + padding * 2,
+    }
 
-      const clippedX = Math.max(0, Math.floor(box.x))
-      const clippedY = Math.max(0, Math.floor(box.y))
-      const maxWidth = Math.max(0, Math.floor(viewport.width - clippedX))
-      const maxHeight = Math.max(0, Math.floor(viewport.height - clippedY))
-      const clippedWidth = Math.min(Math.max(1, Math.floor(box.width)), maxWidth)
-      const clippedHeight = Math.min(Math.max(1, Math.floor(box.height)), maxHeight)
+    const viewport = await tab.cdp.getViewportMetrics()
 
-      if (maxWidth <= 0 || maxHeight <= 0 || clippedWidth <= 0 || clippedHeight <= 0) {
-        throw new Error('Resolved screenshot region is outside the current viewport')
-      }
+    const clippedX = Math.max(0, Math.floor(box.x))
+    const clippedY = Math.max(0, Math.floor(box.y))
+    const maxWidth = Math.max(0, Math.floor(viewport.width - clippedX))
+    const maxHeight = Math.max(0, Math.floor(viewport.height - clippedY))
+    const clippedWidth = Math.min(Math.max(1, Math.floor(box.width)), maxWidth)
+    const clippedHeight = Math.min(Math.max(1, Math.floor(box.height)), maxHeight)
 
-      const captured = await this.capturePageWithRecovery(instance, {
-        tab,
-        mode: 'region',
-        errorPrefix: 'region screenshot',
-        rect: {
+    if (maxWidth <= 0 || maxHeight <= 0 || clippedWidth <= 0 || clippedHeight <= 0) {
+      throw new Error('Resolved screenshot region is outside the current viewport')
+    }
+
+    const captured = await this.capturePageWithRecovery(instance, {
+      tab,
+      mode: 'region',
+      errorPrefix: 'region screenshot',
+      rect: {
+        x: clippedX,
+        y: clippedY,
+        width: clippedWidth,
+        height: clippedHeight,
+      },
+      dpr: viewport.dpr,
+      format: target.format,
+      jpegQuality: target.jpegQuality,
+    })
+
+    return {
+      imageBuffer: captured.imageBuffer,
+      imageFormat: captured.imageFormat,
+      metadata: {
+        mode: 'raw',
+        viewport,
+        region: {
           x: clippedX,
           y: clippedY,
           width: clippedWidth,
           height: clippedHeight,
         },
-        dpr: viewport.dpr,
-        format: target.format,
-        jpegQuality: target.jpegQuality,
-      })
-
-      return {
-        imageBuffer: captured.imageBuffer,
-        imageFormat: captured.imageFormat,
-        metadata: {
-          mode: 'raw',
-          viewport,
-          region: {
-            x: clippedX,
-            y: clippedY,
-            width: clippedWidth,
-            height: clippedHeight,
-          },
-          targetMode: hasRef ? 'ref' : hasSelector ? 'selector' : 'coords',
-          warnings: captured.warnings.length > 0 ? captured.warnings : undefined,
-        },
-      }
-    } finally {
-      this.restoreOverlayAfterCapture(instance, suspendedOverlay)
+        targetMode: hasRef ? 'ref' : hasSelector ? 'selector' : 'coords',
+        warnings: captured.warnings.length > 0 ? captured.warnings : undefined,
+      },
     }
   }
 
@@ -2749,18 +2767,23 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     const requestedViewportWidth = Math.max(320, Math.floor(width))
     const requestedViewportHeight = Math.max(240, Math.floor(height))
-    // The promise is the *tab's* viewport, so the window grows by whatever the chrome
-    // takes: the bar from the top, the rail from the side.
-    instance.window.setContentSize(requestedViewportWidth + TAB_RAIL_WIDTH, requestedViewportHeight + TOOLBAR_HEIGHT)
+    // The promise is the *tab's* viewport, so the window grows by everything the tab does not
+    // get: the bar from the top, the rail from the side, and the panel's gutter
+    // (`pageAreaBounds`).
+    const inset = this.pagePanelInsets()
+    instance.window.setContentSize(
+      requestedViewportWidth + TAB_RAIL_WIDTH + inset.left + inset.right,
+      requestedViewportHeight + TOOLBAR_HEIGHT + inset.top + inset.bottom,
+    )
 
     this.layoutAllViews(instance)
 
     // Return effective viewport dimensions after OS/window min-size constraints are applied.
-    // Both chrome surfaces come back off again — the same two numbers that were added.
-    const [appliedContentWidth, appliedContentHeight] = instance.window.getContentSize()
+    // All of the chrome and the gutter come back off again — the same numbers that were added.
+    const page = this.pageAreaBounds(instance)
     return {
-      width: Math.max(0, Math.floor(appliedContentWidth - TAB_RAIL_WIDTH)),
-      height: Math.max(0, Math.floor(appliedContentHeight - TOOLBAR_HEIGHT)),
+      width: Math.max(0, Math.floor(page.width)),
+      height: Math.max(0, Math.floor(page.height)),
     }
   }
 
@@ -3263,12 +3286,32 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     return accent
   }
 
+  /**
+   * The document that draws the page's panel around it — and the agent's markings when it has
+   * this tab.
+   *
+   * Three layers, in this order:
+   *
+   * - `#mask` paints the **surface** in everything outside the panel's rounded rectangle, which
+   *   is what rounds a `BrowserView`'s corners: a view is a rectangle, so the only way to round
+   *   the page is to paint over its corners — and over the gutter, in the colour the chrome
+   *   beside it is drawn in.
+   * - `#frame` is the page's own rectangle: the app's hairline ring around the panel
+   *   (`PAGE_PANEL_RING`), the accent while this tab is the one being worked on, and the slight
+   *   dim that says a lock is on this page.
+   * - `#shield` takes input, and only ever while the tab is locked or a menu of ours is open
+   *   over it (see `updateNativeOverlayState`).
+   *
+   * Geometry is baked here because it does not change with the theme or with who is working —
+   * only the colours do, and those are pushed on every update so a theme switch reaches them.
+   */
   private async loadNativeOverlayPage(instance: BrowserInstance, tab: BrowserTab): Promise<void> {
     const liveFxPlatform: Parameters<typeof getBrowserLiveFxCornerRadii>[0] =
       process.platform === 'darwin' || process.platform === 'win32' || process.platform === 'linux'
         ? process.platform
         : 'other'
     const cornerRadii = getBrowserLiveFxCornerRadii(liveFxPlatform)
+    const inset = this.pagePanelInsets()
 
     const html = `<!doctype html>
 <html>
@@ -3284,10 +3327,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         overflow: hidden;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       }
-      #overlay {
+      /* The page's rectangle inside the tab area: the same gutter the tab is laid out with
+         (see pagePanelInsets in the main process). */
+      #mask, #frame {
         position: fixed;
-        inset: 0;
-        border: 2px solid transparent;
+        left: ${inset.left}px;
+        top: ${inset.top}px;
+        right: ${inset.right}px;
+        bottom: ${inset.bottom}px;
         border-top-left-radius: ${cornerRadii.topLeft};
         border-top-right-radius: ${cornerRadii.topRight};
         border-bottom-left-radius: ${cornerRadii.bottomLeft};
@@ -3295,10 +3342,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         box-sizing: border-box;
         pointer-events: none;
       }
+      #mask { box-shadow: 0 0 0 9999px transparent; }
+      #frame { box-shadow: 0 0 0 1px transparent; }
       #chip {
         position: fixed;
         top: 8px;
-        right: 8px;
+        right: ${inset.right + 8}px;
         padding: 4px 8px;
         border-radius: 7px;
         background: rgba(2, 6, 23, 0.82);
@@ -3320,17 +3369,17 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     </style>
   </head>
   <body>
-    <div id="overlay">
-      <div id="shield"></div>
-      <div id="chip">Agent is working…</div>
-    </div>
+    <div id="mask"></div>
+    <div id="frame"></div>
+    <div id="chip">Agent is working…</div>
+    <div id="shield"></div>
   </body>
 </html>`
 
     try {
       await tab.nativeOverlayView.webContents.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(html)}`)
       tab.nativeOverlayReady = true
-      mainLog.info(`[browser-pane] native overlay ready id=${instance.id} platform=${liveFxPlatform} corners=${cornerRadii.bottomLeft}/${cornerRadii.bottomRight}`)
+      mainLog.info(`[browser-pane] native overlay ready id=${instance.id} platform=${liveFxPlatform} corners=${cornerRadii.topLeft}/${cornerRadii.bottomRight} gutter=${inset.left}/${inset.right}/${inset.bottom}`)
       this.updateNativeOverlayState(instance)
     } catch (error) {
       tab.nativeOverlayReady = false
@@ -3356,19 +3405,21 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * How much of a window the chrome takes off the top, in px: the address bar.
    *
    * The rail takes its room off the *side* (`TAB_RAIL_WIDTH`), so this is only the
-   * row — and every layout asks `tabAreaBounds` rather than doing the sums, so a tab
-   * is never laid out over its own chrome.
+   * row — and every layout asks `tabAreaBounds`/`pageAreaBounds` rather than doing the
+   * sums, so a tab is never laid out over its own chrome, nor over the gutter its panel
+   * is inset by.
    */
   private toolbarChromeHeight(): number {
     return TOOLBAR_HEIGHT
   }
 
   /**
-   * Where the tab is: right of the rail, below the bar.
+   * Where the tab area is: right of the rail, below the bar.
    *
-   * One answer for every reader — the tab's bounds, the agent overlay's bounds and
-   * the viewport `window-resize` promises — so the three cannot disagree about how much
-   * window a tab actually gets.
+   * One answer for every reader — the agent overlay's bounds (it covers this and nothing else)
+   * and the viewport `window-resize` promises — so they cannot disagree about how much window
+   * the tab area actually gets. The page *inside* it is smaller still: see
+   * {@link pageAreaBounds}.
    */
   private tabAreaBounds(instance: BrowserInstance): { x: number; y: number; width: number; height: number } {
     const [width, height] = instance.window.getContentSize()
@@ -3381,13 +3432,45 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
+   * The gutter between the tab area's edges and the page panel drawn inside it.
+   *
+   * The page is a panel like the app's own — rounded, ringed, with the surface showing around
+   * it (`shared/panel-geometry.ts`) — so it does not fill the tab area:
+   * `PANEL_GAP` from the rail (a panel's distance from what is beside it), `PANEL_EDGE_INSET`
+   * from the window's right and bottom edges (the app insets its panels by the same amount),
+   * and flush under the bar, which is the window's top row — the app's panels sit flush under
+   * its top bar too, and their top corners are interior corners for the same reason.
+   */
+  private pagePanelInsets(): { left: number; top: number; right: number; bottom: number } {
+    return { left: PANEL_GAP, top: 0, right: PANEL_EDGE_INSET, bottom: PANEL_EDGE_INSET }
+  }
+
+  /**
+   * Where the page is: the tab area inset by the panel's gutter.
+   *
+   * This is the tab's bounds — what the site sees as its viewport — while the overlay covers
+   * the whole tab area, because the overlay is what paints the surface in the gutter and the
+   * page's rounded corners over its square ones.
+   */
+  private pageAreaBounds(instance: BrowserInstance): { x: number; y: number; width: number; height: number } {
+    const area = this.tabAreaBounds(instance)
+    const inset = this.pagePanelInsets()
+    return {
+      x: area.x + inset.left,
+      y: area.y + inset.top,
+      width: area.width - inset.left - inset.right,
+      height: area.height - inset.top - inset.bottom,
+    }
+  }
+
+  /**
    * Both chrome surfaces above the tab, the rail on top.
    *
    * The rail goes last so it is the topmost view in the window: it is the one surface
    * a person must always be able to reach, so nothing — tab, agent overlay, or the
    * bar while its menu is expanded over the tab — gets to sit over it. The tab's own
-   * geometry already stops where the rail starts (`tabAreaBounds`); this is the belt
-   * to that pair of braces.
+   * geometry already stops where the rail starts, plus the panel's gutter
+   * (`pageAreaBounds`); this is the belt to that pair of braces.
    */
   private raiseChromeViews(instance: BrowserInstance): void {
     if (instance.window.isDestroyed()) return
@@ -3461,6 +3544,23 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
+   * Which tab a conversation works from — the **cursor** on its own.
+   *
+   * Split out of {@link recordSessionTab} because the two halves of that write do not always
+   * belong together: a conversation's own work takes the tab *and* the lease, while a tab the
+   * person set up for it (`openedByPerson`, and the same terms `assignTab` hands one over on)
+   * takes only the cursor. One conversation has one cursor, so pointing at this tab releases
+   * whatever tab it meant before.
+   */
+  private pointConversationAt(instance: BrowserInstance, tabId: string, sessionId: string): void {
+    for (const tab of instance.tabs) {
+      if (tab.cursorOf === sessionId && tab.id !== tabId) tab.cursorOf = null
+    }
+    const target = tabById(instance, tabId)
+    if (target) target.cursorOf = sessionId
+  }
+
+  /**
    * This conversation is now working **from** this tab.
    *
    * One call for one fact, read at three speeds (plan §22, 第九轮修正 / 第十轮):
@@ -3480,12 +3580,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * instead of a live instance) and is what a command reaches for.
    */
   private recordSessionTab(instance: BrowserInstance, tabId: string, sessionId: string): void {
-    for (const tab of instance.tabs) {
-      if (tab.cursorOf === sessionId && tab.id !== tabId) tab.cursorOf = null
-    }
+    this.pointConversationAt(instance, tabId, sessionId)
     const target = tabById(instance, tabId)
     if (target) {
-      target.cursorOf = sessionId
       // The tab a conversation works from is the tab it is driving: this is the tab the
       // command is about, so the lease is written here rather than where the window was
       // resolved (plan §22, 第十轮). It says "last moved by", not "owned by" — the turn
@@ -3560,18 +3657,22 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     mainLog.info(`[browser-pane] tab lock released with its tab instance=${instance.id} tab=${tabId}`)
   }
 
+  /**
+   * Draw the page's panel around the tab on screen — and the agent's markings, when it holds
+   * that tab.
+   *
+   * The overlay is up whenever the window is, not only while somebody is working: it is what
+   * rounds the page's corners and rings it (`loadNativeOverlayPage`), and nothing else can —
+   * a tab is a `BrowserView`, which is a rectangle. What comes and goes with the work is the
+   * **accent** and the shield: while this tab is held, the ring turns accent, the page dims,
+   * and the tab stops taking input; on any other tab the panel is just the panel.
+   *
+   * A tab that is not the one on screen gets nothing sized, for the reason it always did: an
+   * overlay on a tab nobody is looking at would swallow clicks nobody made.
+   */
   private updateNativeOverlayState(instance: BrowserInstance): void {
+    const heldBy = activeTab(instance).heldBy
     const menuActive = !!instance.toolbarMenuOverlayActive
-    /**
-     * Whether anybody is working in this window at all — the indicator, not the lock.
-     *
-     * Kept window-level on purpose: the person should be able to tell at a glance that this
-     * window is in use even while looking at a tab nobody holds. What it no longer claims
-     * is *which* tab is held: that is the tab's own answer (`heldBy`), and with a parent
-     * and its children working in parallel there is no single tab it could name.
-     */
-    const someoneWorking = instance.controlBy.size > 0
-    const shouldShow = someoneWorking || menuActive
 
     // Only the tab on screen can be overlaid: an overlay on a tab nobody is
     // looking at would swallow clicks nobody made. Auto-resize goes off with it —
@@ -3585,7 +3686,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       }
     }
 
-    if (!shouldShow || !activeTab(instance).nativeOverlayReady || instance.window.isDestroyed()) {
+    if (!activeTab(instance).nativeOverlayReady || instance.window.isDestroyed()) {
       activeTab(instance).nativeOverlayView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
       activeTab(instance).nativeOverlayView.setAutoResize({ width: false, height: false })
       if (!instance.window.isDestroyed()) {
@@ -3594,8 +3695,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       return
     }
 
-    // The overlay covers the tab and only the tab: the chrome is not the agent's to
-    // block, and a person has to be able to switch tabs while it is up.
+    // The overlay covers the whole tab area — the page *and* the gutter the panel is inset by:
+    // it is what paints the surface in that gutter, so it has to reach the rail and the bar.
+    // The chrome is still not covered by it: the rail and the bar stay the person's, and a
+    // person has to be able to switch tabs while it is up.
     const area = this.tabAreaBounds(instance)
     activeTab(instance).nativeOverlayView.setBounds(area)
     activeTab(instance).nativeOverlayView.setAutoResize({ width: true, height: true })
@@ -3605,41 +3708,52 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     instance.window.setTopBrowserView(activeTab(instance).nativeOverlayView)
     this.raiseChromeViews(instance)
 
-    // Two independent things are drawn here, and only one of them takes input.
-    const heldBy = activeTab(instance).heldBy
-    // What is being done is named by whoever is at the wheel *here*: the holder of the tab
-    // on screen when there is one, else whoever started working most recently — both true,
-    // and the tab's own answer is the more specific of the two.
-    const label = this.getAgentControlLabel(
-      heldBy ? instance.controlBy.get(heldBy) : [...instance.controlBy.values()].at(-1),
-    )
-    const accent = someoneWorking ? this.getResolvedAccentColor() : 'transparent'
-    // The tab on screen is the only one a person can touch, so this is where the shield
-    // belongs — and only while that tab is the held one, or a menu of ours is open.
-    // Switching to another tab therefore hands the keyboard and mouse straight back.
-    const shieldActive = menuActive || heldBy !== null
+    // The lock is the tab's, so the accent, the dim and the shield all answer to this one
+    // question, and all three belong to the tab on screen alone (plan §22, 第九轮修正 /
+    // 第十三轮修正).
+    const locked = heldBy !== null
+    // What is being done is named by whoever is at the wheel on *this* tab — the overlay is
+    // this tab's, so there is no other conversation it could be reporting.
+    const label = this.getAgentControlLabel(heldBy ? instance.controlBy.get(heldBy) : null)
+    // The tab on screen is the only one a person can touch, and it takes input back only while
+    // that tab is the held one, or a menu of ours is open above it. Switching to another tab
+    // therefore hands the keyboard and mouse straight back.
+    const shieldActive = locked || menuActive
+
+    // Resolved on every update rather than baked into the document, because both follow the
+    // OS/app theme and the window outlives a theme switch.
+    const surface = getBackgroundColor(nativeTheme.shouldUseDarkColors)
+    const ring = resolvePagePanelRing(nativeTheme.shouldUseDarkColors)
+    const accent = this.getResolvedAccentColor()
+    const lockedShadow = `0 0 0 1.5px ${accent}, inset 0 0 0 1px color-mix(in oklab, ${accent} 45%, transparent), inset 0 0 24px color-mix(in oklab, ${accent} 28%, transparent)`
+    const restingShadow = `0 0 0 ${PAGE_PANEL_RING.width} ${ring}`
 
     void activeTab(instance).nativeOverlayView.webContents.executeJavaScript(`(() => {
-      const overlay = document.getElementById('overlay');
+      const mask = document.getElementById('mask');
+      const frame = document.getElementById('frame');
       const chip = document.getElementById('chip');
       const shield = document.getElementById('shield');
-      if (!overlay || !chip || !shield) return;
+      if (!mask || !frame || !chip || !shield) return;
 
-      const agentActive = ${someoneWorking};
+      const locked = ${locked};
       const shieldActive = ${shieldActive};
-      const locked = ${heldBy !== null};
 
-      // The agent's outline and chip say this window is being worked on and what is being
-      // done here — the lock itself is per tab, so this is the "someone is in here"
-      // indicator rather than a claim about the tab in front of you.
-      if (agentActive) {
-        overlay.style.borderColor = ${JSON.stringify(accent)};
-        overlay.style.boxShadow = 'inset 0 0 0 1px color-mix(in oklab, ' + ${JSON.stringify(accent)} + ' 45%, transparent), inset 0 0 24px color-mix(in oklab, ' + ${JSON.stringify(accent)} + ' 28%, transparent)';
+      // The surface the panel sits on: everything outside the page's rounded rectangle, corner
+      // notches included. It is the colour the rail and the bar beside it are drawn in, so the
+      // panel reads as a panel on this window's surface rather than on a second one.
+      mask.style.boxShadow = '0 0 0 9999px ' + ${JSON.stringify(surface)};
+
+      // What the panel *is*: the app's hairline ring while nothing is happening here, the
+      // accent while this tab is the one being worked on.
+      frame.style.boxShadow = locked
+        ? ${JSON.stringify(lockedShadow)}
+        : ${JSON.stringify(restingShadow)};
+      frame.style.background = locked ? 'rgba(2, 6, 23, 0.03)' : 'transparent';
+
+      if (locked) {
         chip.textContent = ${JSON.stringify(label)};
         chip.style.display = 'inline-flex';
       } else {
-        overlay.style.borderColor = 'transparent';
-        overlay.style.boxShadow = 'none';
         chip.style.display = 'none';
       }
 
@@ -3649,9 +3763,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // ours is open above the tab and a click on the tab is how it is dismissed.
       shield.style.pointerEvents = shieldActive ? 'auto' : 'none';
       shield.style.cursor = locked ? 'not-allowed' : 'default';
-      shield.style.background = locked
-        ? 'rgba(2, 6, 23, 0.03)'
-        : (shieldActive ? 'rgba(0, 0, 0, 0.001)' : 'transparent');
+      shield.style.background = (shieldActive && !locked) ? 'rgba(0, 0, 0, 0.001)' : 'transparent';
     })()`).catch(() => {})
   }
 
@@ -3689,7 +3801,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * tabs that are not on screen never learned they were anywhere else.
    */
   private layoutTabView(instance: BrowserInstance): void {
-    const area = this.tabAreaBounds(instance)
+    // The page panel, not the whole tab area: the gutter around it is the overlay's to paint
+    // (`pageAreaBounds`), and a tab laid out at the tab area's full size would show its square
+    // corners in it.
+    const area = this.pageAreaBounds(instance)
 
     for (const tab of instance.tabs) {
       // Anchored at the chrome's inside corner, so a tab resizes with the window but never
@@ -4056,6 +4171,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
        */
       picking: instance.picking,
       /**
+       * Whether the tab on screen has its developer tools up.
+       *
+       * Read from the tab rather than remembered from the button: the tools are closed
+       * from their own window as often as from here, and the bar has to draw what is
+       * true. Only ever true for the tab on screen — switching or closing a tab puts
+       * them away (`toggleTabDevTools`).
+       */
+      devTools: activeTab(instance).tabView.webContents.isDevToolsOpened(),
+      /**
        * The window's tabs.
        *
        * `tabs` comes from the window itself rather than from the renderer's own
@@ -4174,11 +4298,19 @@ export class BrowserPaneManager implements IBrowserPaneManager {
      * One channel for all four actions rather than four channels: they are one
      * sentence — "do this to this window's tabs" — sent by a renderer that holds
      * the buttons side by side, and an action that names its target cannot mean
-     * anything else.
+     * anything else. Only `new` carries anything beyond its target, and only when
+     * somebody asked for a tab **for** a piece of work rather than one more of their
+     * own (the `+` on a section's header).
      */
     ipcMain.handle(
       TOOLBAR_CHANNELS.TABS,
-      async (_event, instanceId: string, action: 'activate' | 'close' | 'new' | 'release', tabId?: string) => {
+      async (
+        _event,
+        instanceId: string,
+        action: 'activate' | 'close' | 'new' | 'release',
+        tabId?: string,
+        work?: TabBelongsTo | null,
+      ) => {
         const inst = findInstance(instanceId)
         if (!inst) return
 
@@ -4208,7 +4340,16 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         // opens with, rather than a white void that says nothing about what this
         // window can do. That is `createTab`'s job rather than this handler's, so
         // every entry point that adds a tab gets it (see `startEmptyStateLoad`).
-        this.createTab(inst.id, { activate: true })
+        //
+        // With a `work`, the tab is that piece of work's and the person opened it for
+        // it: "here is the page, carry on from it" (see `createTab`'s `openedByPerson`).
+        // Appended like any other, which is what puts it **last in that work's section**:
+        // sections are drawn where their first tab is and collect their own tabs wherever
+        // they sit in the window's list.
+        this.createTab(inst.id, {
+          activate: true,
+          ...(work ? { belongsTo: work, openedByPerson: true } : {}),
+        })
       },
     )
 
@@ -4254,6 +4395,19 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // calls the same RPC the prototype panel's Apply button uses, so the two
       // entry points cannot drift.
       this.emitToolbarAction({ kind: 'apply-requested', instanceId: inst.id })
+    })
+
+    /**
+     * The tab's developer tools, from the bar's button.
+     *
+     * Only the opening and closing are asked for here; whether they are up is read from
+     * the tab on the next state push, which the tab's own `devtools-opened` /
+     * `devtools-closed` events trigger (`attachTab`) — closing them from their own
+     * window reaches the button the same way.
+     */
+    ipcMain.handle(TOOLBAR_CHANNELS.DEVTOOLS, async (_event, instanceId: string) => {
+      const inst = findInstance(instanceId)
+      if (inst) this.toggleTabDevTools(inst)
     })
 
     mainLog.info('[browser-pane] Toolbar IPC handlers registered')
@@ -5335,20 +5489,20 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // Everything a tab needs to be a tab: a user agent that does not announce
     // Electron (the site's own scripts should not see the frame we put it in), its
     // own background so about:blank does not flash, its views in the window, and the
-    // overlay document the agent's control chip is drawn in. Both entry points —
-    // `createInstance` and `createTab` — come through here, so a second tab cannot
-    // be missing one of these.
+    // overlay document the page's panel — its rounded corners, its ring, and the agent's
+    // control chip — is drawn in. Both entry points — `createInstance` and `createTab` —
+    // come through here, so a second tab cannot be missing one of these.
     const defaultUa = tabWc.userAgent || ''
     const sanitizedUa = defaultUa.replace(/\sElectron\/[^\s]+/g, '')
     if (sanitizedUa && sanitizedUa !== defaultUa) {
       tabWc.setUserAgent(sanitizedUa)
     }
 
-    const bgColor = nativeTheme.shouldUseDarkColors ? '#2b292e' : '#fafafb'
-    const tabWcWithBg = tabWc as typeof tabWc & { setBackgroundColor?: (color: string) => void }
-    tabWcWithBg.setBackgroundColor?.(bgColor)
-    const overlayWcWithBg = overlayWc as typeof overlayWc & { setBackgroundColor?: (color: string) => void }
-    overlayWcWithBg.setBackgroundColor?.('#00000000')
+    // The view's own backdrop, so a document that paints nothing — a prototype page with no
+    // background of its own — is not a hole: every tab is laid out at the same bounds, so a
+    // transparent tab would show whichever tab is stacked under it.
+    tab.tabView.setBackgroundColor(getBackgroundColor(nativeTheme.shouldUseDarkColors))
+    tab.nativeOverlayView.setBackgroundColor('#00000000')
 
     instance.window.addBrowserView(tab.tabView)
     instance.window.addBrowserView(tab.nativeOverlayView)
@@ -5478,6 +5632,17 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     tabWc.on('page-favicon-updated', (_event, favicons) => {
       tab.favicon = favicons[0] || null
       this.emitStateChange(instance)
+    })
+
+    // The bar draws whether this tab's developer tools are up, and they are closed from
+    // their own window as often as from the button — so the answer is read when it
+    // changes rather than remembered from the click that asked for it.
+    tabWc.on('devtools-opened', () => {
+      void this.pushToolbarState(instance)
+    })
+
+    tabWc.on('devtools-closed', () => {
+      void this.pushToolbarState(instance)
     })
 
     tabWc.on('did-change-theme-color', (_event, color) => {

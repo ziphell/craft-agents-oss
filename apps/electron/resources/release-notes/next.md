@@ -69,6 +69,8 @@ This file accumulates release notes for the next unreleased version. PRs that ad
 
 ## Improvements
 
+- **The prototype page index looks like a product, not a debug listing** — the list `/` falls back to (and the extension's options page, which is the same document) now shows each page as a row: its place in the flow, its name, `scratch` or `overlay`, which one is the entry, and the file or address it opens — a row you can open is a card you can click, and a page whose document is gone keeps its place and is visibly not openable. It follows the system theme, so it reads the same in light and dark.
+
 - **`prototype-status` lists what each patch is aimed at**, and reports anchor records that outlived the patch that declared them — a record nothing refers to any more is named rather than left looking checked.
 
 - **A prototype page says what is still owed, not only the agent** — the same verdict the agent gets is now on the screen that hands the work over: an alert at the top of the page carrying the outstanding list (a requirement nothing implements, an objection nobody answered, a check the last round failed, or checks that have never been run at all), an **Objections** section listing every dispute that still stands — one whose record no longer matches the files reads as *stale* rather than as settled — and a **Last verification** section with the round, the passed/failed/skipped counts and the failing checks by name. The prototype list's status dot counts the same thing, so a row no longer looks finished while something in it is still owed, and `Export` now names what the package could not carry instead of succeeding with those warnings dropped on the floor.

@@ -1,16 +1,24 @@
 import { isMac } from '@/lib/platform'
+import {
+  PANEL_EDGE_INSET,
+  PANEL_GAP,
+  PANEL_RADIUS_EDGE,
+  PANEL_RADIUS_INNER,
+} from '../../../shared/panel-geometry'
 
-/** Gap between any adjacent panels (sidebar ↔ navigator ↔ content ↔ right sidebar) */
-export const PANEL_GAP = 6
-
-/** Padding from window edges to outermost panels (right, bottom, left when sidebar hidden) */
-export const PANEL_EDGE_INSET = 6
+/**
+ * The panel look's numbers come from `shared/panel-geometry.ts`, because the browser window's
+ * page area is drawn by the main process with the same look. These re-exports are how the
+ * renderer's call sites keep saying `PANEL_GAP` / `RADIUS_INNER` without a second copy of the
+ * values existing.
+ */
+export { PANEL_EDGE_INSET, PANEL_GAP }
 
 /** Corner radius for panel edges touching the window boundary (macOS native corners → larger) */
-export const RADIUS_EDGE = isMac ? 14 : 8
+export const RADIUS_EDGE = isMac ? PANEL_RADIUS_EDGE.darwin : PANEL_RADIUS_EDGE.other
 
 /** Corner radius for interior corners between panels */
-export const RADIUS_INNER = 10
+export const RADIUS_INNER = PANEL_RADIUS_INNER
 
 /** Minimum width for any content panel */
 export const PANEL_MIN_WIDTH = 440

@@ -951,9 +951,11 @@ node 声明 writes: checkout-ui      ← spec 字段，与 outputs 同层；校�
 ```
 railView     左侧 200px  独立渲染进程（标签栏：每个标签页一条，`+` 在这里）
 toolbarView  48px        独立渲染进程（地址栏；整列在标签栏右边）
-tabView     余下整块     产品页面（一个标签页一个 view，只有活动标签页占位）
-nativeOverlayView        仅 agent 操作时的遮罩（纯视觉，无按钮）
+tabView     页面面板      产品页面（一个标签页一个 view，只有活动标签页占位）
+nativeOverlayView        页面面板的框与遮罩（纯视觉，无按钮）+ agent 操作时的标记
 ```
+
+**页面是主聊天面板那样的面板**（与 `components/app-shell/panel-constants.ts` 同一套数：圆角、边距、细线，见 `shared/panel-geometry.ts`）：它从标签栏起留 6px（`PANEL_GAP`）、离窗口右边和下边各 6px（`PANEL_EDGE_INSET`）、紧贴地址栏下沿，四角圆角（内部角 10px，右下那个窗口自己的角 8/14px），一圈 1px 细线（`shadow-middle` 的 6% 前景色环）。`tabView` 与它的四周**不是一个矩形**：`BrowserView` 只能是矩形，所以圆角与那圈细线由 `nativeOverlayView` 画在它上面 —— 遮罩层用 `box-shadow: 0 0 0 9999px <surface>` 把面板矩形之外（含四个角的缺口）填成窗口表面色，因此这层遮罩**常驻**（按屏幕上的那个标签页），只有 accent 外框、变暗与 `#shield` 跟着"这个标签页被持有"走。
 
 含义：renderer 里的 `components/browser/` 只是主窗口 TopBar 的徽章条，**不是面板本体**。面板工具栏的可用 API 只有导航类（`window.browserToolbar`），它**拿不到 workspace、会话、绑定原型**。
 
@@ -2394,9 +2396,20 @@ overlay 的页面是别人的活地址，它不会、也不该变成我们的文
   - `snapshot` 的原型行、`currentPagePrototypeSlug` 读的都是"这个标签页"而不是"前台那个标签页"。
 - **锁与遮罩的语义不变，含义更准**：锁仍拴在一个 tabId 上，而那个标签页现在是**agent 的标签页**（多半在后台），所以人自己的标签页**没有遮罩、没有盾**，可以继续用——"agent 和用户同时操作"由此成为默认行为而不是妥协。
 - **`windows` 命令删掉**（用户定的："共窗 不需要 listWindows"）：一工作区一窗之后，"哪个窗口"不再是问题，agent 侧没有可列的窗口；标签级问题由 `tabs` 回答，窗口清单在顶栏。fns 的 `listWindows` **留着**但改性质——它不再是"给 agent 看的清单"，而是应用侧流程要读的**窗口状态**（`open` 等前台窗口变可见、`close`/`hide`/`focus` 报告前后差异），`windowIsAvailableTo` 随之删除。`focus`／`close`／`hide`／`release` 仍收可选的窗口 id（不给就是本工作区的窗口）。
-- **未做/待量**：`hidden-after-show` 仍未量；"agent 在后台干活时前台那个标签页仍显示 agent 外框+胶囊"是否合适，留待下一轮决定（可能应该只标"这个窗口在被用"，或干脆标到 agent 的标签页上）。
+- **未做/待量**：`hidden-after-show` 仍未量；"agent 在后台干活时前台那个标签页仍显示 agent 外框+胶囊"是否合适——**下一轮定了，见下**。
 
-**下一轮**：**面板按会话分组**：徽章那一列现在按窗口分组，但没有说"哪个会话在用这个窗口"。以及第十三轮记的待决（前台那个标签页的 agent 外框口径）。
+**第十三轮修正（遮罩跟着被持有的标签页走；页面成为一块面板）**：
+
+> 用户报告（用户原话："我切换到其他标签页，还在显示遮罩"）——上一轮记的那个待决项，答案取"干脆标到 agent 的标签页上"那一支。随后用户又提了两条外观要求（"网页区域改成4个圆角""底部、右边都留点边距……就是主聊天面板的圆角、边距风格。细线把网页框起来"），于是这一层多了一件事：它不再只是 agent 的标记，它是**页面这块面板的框**。
+
+- **判据只有一个：`activeTab(instance).heldBy !== null`**，而它现在只决定**agent 的那部分**：accent 外框 + 变暗 + `#shield` + 胶囊。此前这些是**窗口级指示**：只要这个窗口里有会话在跑，**前台那个标签页**就被画上外框、内发光和胶囊；于是人从 agent 的标签页切走之后，看到的是"我这一页正在被操作"，而胶囊报的还是**另一个标签页**正在做的事。
+- **面板常驻，锁不常驻**：页面是主聊天面板那样的面板（`shared/panel-geometry.ts` 的同一套数：6px 边距、内部角 10px、窗口自己那个角 8/14px、1px 的 6% 前景色细线），而 `BrowserView` 只能是矩形 —— 所以圆角与那圈细线由 overlay 画在页面上（`#mask` 用 `box-shadow: 0 0 0 9999px <surface>` 填掉面板矩形之外的一切，含四个角的缺口）。因此 overlay **对屏幕上的那个标签页常驻**，没人持有的标签页是"一块没有锁的面板"，而不是"什么都不画"。"这个窗口在被用"由窗口自己的 chrome 说：标签栏那把锁就在被持有的那一行上。
+- **菜单展开仍然只需要 `#shield`**：它盖住 tab 区域来吃"点页面 = 关菜单"那一下，而面板本身不吃输入（`pointer-events: none`，只有 shield 在被锁或菜单展开时打开），所以人随时能点进页面。
+- **截图不再为遮罩挂起**：截图取的是 `tabView.webContents` 自己的像素，overlay 从来不在画面里（`suspendOverlayForCapture` / `restoreOverlayAfterCapture` 已删）；何况现在把它挂起会让人眼前的面板闪一下。
+- **`window-resize` 的承诺跟着算上边距**：它承诺的是**页面**的视口，所以加窗口尺寸时把 6px 边距一起加进去，返回时再一起减掉（与 rail / bar 同一套算法）。
+- 验收：`browser-pane-manager.test.ts` 的「draws the panel without a lock while no tab is held」「arms the tab shield only while the tab on screen is the one being worked on」、两条 viewport 用例（488x446 那条同时钉住边距）；`shared/__tests__/browser-live-fx.test.ts` 钉住四个角的半径与细线的两个颜色。
+
+**下一轮**：**面板按会话分组**：徽章那一列现在按窗口分组，但没有说"哪个会话在用这个窗口"。
 
 
 

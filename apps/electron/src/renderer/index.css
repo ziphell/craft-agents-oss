@@ -4,6 +4,12 @@
 /* Tell Tailwind where to scan for utility classes */
 @source "../renderer/App.tsx";
 @source "../renderer/main.tsx";
+/* The renderer's other entry points, which sit beside `App.tsx` rather than under a
+   folder: `browser-toolbar.tsx` (the browser window's own chrome) and
+   `browser-empty-state.tsx`. They were missing, so the classes only they use —
+   `-mx-1.5`, `h-5 w-5`, `hover:bg-black/10` before that — were never generated and
+   the chrome drew itself with whatever happened to be shared with the rest of the app. */
+@source "../renderer/*.{ts,tsx}";
 @source "../renderer/components/**/*.{ts,tsx,jsx}";
 @source "../renderer/contexts/**/*.{ts,tsx,jsx}";
 @source "../renderer/hooks/**/*.{ts,tsx,jsx}";

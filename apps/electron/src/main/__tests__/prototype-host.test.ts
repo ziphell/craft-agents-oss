@@ -295,7 +295,7 @@ describe('prototype host', () => {
     expect(body).toContain('href="/cart.html"')
     expect(body).toContain('href="/orders.html"')
     expect(body).toContain('href="/base.html"')
-    expect(body).toContain('class="entry"')
+    expect(body).toContain('class="badge entry"')
   })
 
   // A history-API route is a real request on reload; the entry document owns the

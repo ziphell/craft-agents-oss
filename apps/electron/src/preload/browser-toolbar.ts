@@ -7,6 +7,7 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron'
+import type { TabBelongsTo } from '@craft-agent/shared/protocol'
 
 const CHANNELS = {
   NAVIGATE: 'browser-toolbar:navigate',
@@ -23,6 +24,7 @@ const CHANNELS = {
   CANCEL_PICK: 'browser-toolbar:cancel-pick',
   APPLY_PROTOTYPE: 'browser-toolbar:apply-prototype',
   TABS: 'browser-toolbar:tabs',
+  DEVTOOLS: 'browser-toolbar:devtools',
 } as const
 
 // Instance ID is passed via query parameter by BrowserPaneManager
@@ -55,9 +57,24 @@ contextBridge.exposeInMainWorld('browserToolbar', {
    * Manage this window's own tabs from the rail: switch to one, close one, add one,
    * or take a locked tab back (`release`). The host owns what a tab is, so nothing
    * about it travels back here except through `onStateUpdate`.
+   *
+   * `work` belongs to `new` alone, and only when the tab is being opened **for** a piece
+   * of work rather than as one more of the person's own: the `+` on a section header,
+   * which asks for a tab in that conversation's section (plan §22).
    */
-  tabAction: (action: 'activate' | 'close' | 'new' | 'release', tabId?: string) =>
-    ipcRenderer.invoke(CHANNELS.TABS, instanceId, action, tabId),
+  tabAction: (
+    action: 'activate' | 'close' | 'new' | 'release',
+    tabId?: string,
+    work?: TabBelongsTo | null,
+  ) => ipcRenderer.invoke(CHANNELS.TABS, instanceId, action, tabId, work),
+  /**
+   * Open the developer tools for the tab on screen, or close them if they are up.
+   *
+   * They belong to the tab rather than the window: switching or closing that tab puts
+   * them away, and whether they are up comes back through `onStateUpdate` — the tools
+   * can also be closed from their own window, which this side never sees otherwise.
+   */
+  toggleDevTools: () => ipcRenderer.invoke(CHANNELS.DEVTOOLS, instanceId),
   onStateUpdate: (callback: (state: unknown) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, state: unknown) => callback(state)
     ipcRenderer.on(CHANNELS.STATE_UPDATE, handler)

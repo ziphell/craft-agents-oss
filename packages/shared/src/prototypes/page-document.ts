@@ -189,6 +189,13 @@ function escapeHtml(value: string): string {
  *
  * A page whose document is gone is listed as text rather than a link: the report
  * says the same thing (`pageIssues`), and a dead link would hide it.
+ *
+ * The document stays self-contained on purpose — no external stylesheet, font or
+ * script — because it is served by the host **and** written verbatim into the
+ * package as the extension's options page, where MV3's CSP permits neither a
+ * remote resource nor an inline script. So the styling is one inline `<style>`,
+ * a system font stack, and a `prefers-color-scheme` variant so the page belongs
+ * to the window it was opened from.
  */
 export function buildPrototypeIndexDocument(input: {
   slug: string
@@ -201,48 +208,159 @@ export function buildPrototypeIndexDocument(input: {
   const rows = pages.map((page) => {
     const target = href(page)
     const where = page.url ?? page.file ?? '—'
-    const label = target
-      ? `<a href="${escapeHtml(target)}">${escapeHtml(page.name)}</a>`
-      : `<span class="missing">${escapeHtml(page.name)}</span>`
-    return [
-      '    <li>',
-      `      <span class="kind ${page.kind}">${page.kind}</span>`,
-      `      ${label}`,
-      page.entry ? '      <span class="entry">entry</span>' : '',
-      `      <code>${escapeHtml(where)}</code>`,
-      '    </li>',
-    ].filter(Boolean).join('\n')
+    const line = [
+      `<span class="name">${escapeHtml(page.name)}</span>`,
+      `<span class="badge ${page.kind}">${page.kind}</span>`,
+      page.entry ? '<span class="badge entry">entry</span>' : '',
+    ].filter(Boolean).join('')
+
+    const content = [
+      '      <span class="body">',
+      `        <span class="line">${line}</span>`,
+      `        <code>${escapeHtml(where)}</code>`,
+      '      </span>',
+    ]
+    // A page with nothing to open is text, not a link (see the note above).
+    const element = target
+      ? [
+          `    <a class="page" href="${escapeHtml(target)}">`,
+          ...content,
+          '      <span class="trail" aria-hidden="true">→</span>',
+          '    </a>',
+        ]
+      : ['    <div class="page missing">', ...content, '    </div>']
+
+    return ['  <li>', ...element, '  </li>'].join('\n')
   })
 
   const body = pages.length === 0
     ? '  <p class="empty">This prototype has no pages yet. Write one (a top-level ' +
       '<code>&lt;name&gt;.html</code>), or add an overlay page with ' +
       '<code>prototype-pages --add &lt;name&gt;=&lt;url&gt;</code>.</p>'
-    : ['  <ul>', ...rows, '  </ul>'].join('\n')
+    : ['  <ol class="pages">', ...rows, '  </ol>'].join('\n')
 
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>${escapeHtml(slug)} — pages</title>
 <style>
-  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 24px; color: #1f2328; }
-  h1 { font-size: 16px; margin: 0 0 4px; }
-  p.sub { color: #59636e; margin: 0 0 16px; }
-  ul { list-style: none; margin: 0; padding: 0; }
-  li { display: flex; align-items: baseline; gap: 8px; padding: 6px 0; border-bottom: 1px solid #e6e8eb; }
-  code { color: #59636e; font-size: 12px; }
-  .kind { font-size: 11px; padding: 1px 6px; border-radius: 999px; background: #eef1f4; }
-  .kind.overlay { background: #e7f0ff; }
-  .entry { font-size: 11px; color: #0a7a3d; }
-  .missing { text-decoration: line-through; color: #a40e26; }
-  .empty { color: #59636e; }
+  :root {
+    color-scheme: light dark;
+    --canvas: #f6f7f9;
+    --wash: rgba(37, 99, 235, 0.07);
+    --surface: #ffffff;
+    --text: #10131a;
+    --text-muted: #626c7a;
+    --text-faint: #6b7480;
+    --border: #e7e9ee;
+    --border-strong: #cfd5de;
+    --soft: rgba(17, 24, 39, 0.06);
+    --accent: #2563eb;
+    --accent-soft: rgba(37, 99, 235, 0.12);
+    --entry: #0f7a52;
+    --entry-soft: rgba(16, 163, 106, 0.14);
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --radius: 14px;
+    --shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.05);
+    --shadow-hover: 0 8px 20px rgba(16, 24, 40, 0.1);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --canvas: #0d0f13;
+      --wash: rgba(96, 165, 250, 0.1);
+      --surface: #161a20;
+      --text: #eceef2;
+      --text-muted: #98a1ad;
+      --text-faint: #7d8695;
+      --border: #262b33;
+      --border-strong: #39414d;
+      --soft: rgba(255, 255, 255, 0.08);
+      --accent: #7dabff;
+      --accent-soft: rgba(125, 171, 255, 0.18);
+      --entry: #4bd39c;
+      --entry-soft: rgba(75, 211, 156, 0.16);
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+      --shadow-hover: 0 8px 20px rgba(0, 0, 0, 0.45);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    padding: clamp(28px, 7vh, 76px) 20px;
+    background: radial-gradient(120% 320px at 50% 0%, var(--wash), transparent 70%) var(--canvas);
+    color: var(--text);
+    font: 15px/1.55 var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  .sheet { max-width: 780px; margin: 0 auto; }
+  .head { margin-bottom: 26px; }
+  .eyebrow {
+    margin: 0 0 8px; font-size: 11px; font-weight: 600;
+    letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-faint);
+  }
+  h1 { margin: 0 0 6px; font-size: clamp(22px, 3vw, 27px); font-weight: 600; letter-spacing: -0.02em; }
+  .sub { margin: 0; color: var(--text-muted); }
+  code { font-family: var(--mono); font-size: 12px; }
+  /* One row per page; the number is the flow order the list promises. */
+  .pages { counter-reset: page; list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+  .page {
+    display: grid; grid-template-columns: 2.5rem minmax(0, 1fr) 1rem;
+    align-items: center; gap: 12px;
+    padding: 13px 16px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface); box-shadow: var(--shadow);
+    color: inherit; text-decoration: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+  }
+  .page::before {
+    counter-increment: page; content: counter(page, decimal-leading-zero);
+    color: var(--text-faint); font-family: var(--mono); font-size: 11px;
+  }
+  .body { display: grid; gap: 3px; min-width: 0; }
+  .line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .name { font-weight: 600; letter-spacing: -0.01em; }
+  .page code { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
+  .badge {
+    padding: 2px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 600;
+    background: var(--soft); color: var(--text-muted);
+  }
+  .badge.overlay { background: var(--accent-soft); color: var(--accent); }
+  .badge.entry { background: var(--entry-soft); color: var(--entry); }
+  .trail { color: var(--text-faint); transition: color 0.15s ease, transform 0.15s ease; }
+  a.page:hover { border-color: var(--border-strong); box-shadow: var(--shadow-hover); transform: translateY(-1px); }
+  a.page:hover .trail { color: var(--accent); transform: translateX(2px); }
+  a.page:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  /* A page with nothing to open keeps its place in the flow, and says so. */
+  .page.missing { border-style: dashed; background: transparent; box-shadow: none; }
+  .page.missing .name { color: var(--text-muted); font-weight: 500; text-decoration: line-through; }
+  .empty {
+    margin: 0; padding: 18px 20px;
+    border: 1px dashed var(--border-strong); border-radius: var(--radius);
+    background: var(--surface); color: var(--text-muted);
+  }
+  /* The chips wrap at a narrow width; keep each half looking like a chip rather
+     than one pill sliced in two. */
+  .empty code {
+    padding: 2px 6px; border-radius: 6px; background: var(--soft); color: var(--text);
+    -webkit-box-decoration-break: clone; box-decoration-break: clone;
+  }
 </style>
 </head>
 <body>
-<h1>${escapeHtml(slug)}</h1>
-<p class="sub">Pages of this prototype, in flow order.</p>
+<main class="sheet">
+  <header class="head">
+    <p class="eyebrow">Prototype</p>
+    <h1>${escapeHtml(slug)}</h1>
+    <p class="sub">Pages of this prototype, in flow order.</p>
+  </header>
 ${body}
+</main>
 </body>
 </html>
 `
