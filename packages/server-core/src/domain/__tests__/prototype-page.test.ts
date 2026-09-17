@@ -37,7 +37,7 @@ function tab(overrides: Partial<BrowserTabSummary> = {}): BrowserTabSummary {
     prototype: null,
     prototypePage: null,
     disposition: null,
-    openedBySessionId: null,
+    belongsTo: null,
     driverSessionId: null,
     cursorOf: null,
     lockedBy: null,

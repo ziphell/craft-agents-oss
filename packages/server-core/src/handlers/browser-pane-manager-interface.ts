@@ -4,12 +4,12 @@
  * Covers all 46 methods SessionManager calls on BrowserPaneManager.
  * The concrete BrowserPaneManager in apps/electron implements this.
  *
- * Structurally compatible with BrowserOwnershipReleaser (domain layer)
- * so releaseBrowserOwnershipOnForcedStop() accepts IBrowserPaneManager.
+ * Structurally compatible with BrowserLeaseReleaser (domain layer)
+ * so releaseBrowserOnForcedStop() accepts IBrowserPaneManager.
  */
 
-import type { BrowserInstanceInfo, BrowserTabPrototype, BrowserTabSummary, PickedElement } from '@craft-agent/shared/protocol'
-import type { MockRoute } from '@craft-agent/shared/prototypes'
+import type { BrowserInstanceInfo, BrowserTabPrototype, BrowserTabSummary, PickedElement, TabBelongsTo } from '@craft-agent/shared/protocol'
+import type { MockProgram } from '@craft-agent/shared/prototypes'
 
 // ---------------------------------------------------------------------------
 // Supporting types — minimal subsets of BPM's internal types
@@ -37,13 +37,19 @@ export interface BrowserTabCreateOptions {
   /** The prototype this page is for, when it is one. */
   prototype?: BrowserTabPrototype | null
   /**
-   * Which session asked for this page, when one did — omitted means a person did.
+   * The work this page is opened *for*, when a conversation opened it — omitted means a
+   * person did.
    *
-   * The default has to be the one that is never wrong to assume: the whole point of
-   * the field is knowing which pages are not ours to close, and calling somebody
-   * else's page ours is the mistake that loses work.
+   * The default has to be the one that is never wrong to assume: the whole point of the
+   * field is knowing which pages are not ours to close, and calling somebody else's page
+   * ours is the mistake that loses work.
+   *
+   * The **work**, not the session (plan §22): a page outlives the session that opened it, so
+   * a DAG node's page says which task and node it is for, and the node's re-run inherits it
+   * instead of orphaning it. `belongsTo.sessionId` is who opened it — the conversation whose
+   * cursor and lease the new page also starts with.
    */
-  openedBySessionId?: string | null
+  belongsTo?: TabBelongsTo | null
   /**
    * Where it goes in the strip: right after this page instead of at the end.
    *
@@ -385,8 +391,8 @@ export interface IBrowserPaneManager {
   /**
    * Record that a conversation works **from** this page, without moving the window.
    *
-   * The page is the one that conversation's next unnamed command lands on, the one it
-   * holds while it works, and the one it is allowed to close. Written rather than
+   * The page is the one that conversation's next unnamed command lands on, and the one it
+   * holds while it works. Written rather than
    * inferred because the page on screen is the person's, and a command acting on it
    * because they happened to be looking at it is exactly the bug the cursor exists to
    * prevent (plan §22, 第十轮/第十二轮).
@@ -395,6 +401,14 @@ export interface IBrowserPaneManager {
 
   /** Close one page of a window. Closing a window's last page closes the window. */
   closeTab(instanceId: string, tabId: string): void
+
+  /**
+   * Hand one page to another conversation: it becomes **that conversation's work**, and the page
+   * it works from (plan §22, Conductor). Only a page that is the caller's own work or nobody's
+   * can be handed on; whether the receiver is a session worth handing to is the session layer's
+   * call, which is also where the receiver's work is resolved (`to` carries it).
+   */
+  assignTab(instanceId: string, tabId: string, to: TabBelongsTo, by: TabBelongsTo): void
 
   /** A window's pages, in the order they were opened, with the active one marked. */
   listTabs(instanceId: string): BrowserTabSummary[]
@@ -515,13 +529,17 @@ export interface IBrowserPaneManager {
   // -- Network-level mock ---------------------------------------------------
 
   /**
-   * Serve `routes` for matching requests at the browser's network layer
-   * (CDP Fetch interception), so `fetch`, XHR and every other resource type are
-   * covered without patching page globals.
+   * Serve the contract's mock for matching requests at the browser's network
+   * layer (CDP Fetch interception), so `fetch`, XHR and every other resource type
+   * are covered without patching page globals.
+   *
+   * The program carries the store as well as the routes: a prototype whose
+   * contract declares a collection answers from it, and each apply starts that
+   * state over.
    *
    * @returns the number of routes now being served
    */
-  setFetchMock(id: string, routes: MockRoute[], tabId?: string): Promise<number>
+  setFetchMock(id: string, program: MockProgram, tabId?: string): Promise<number>
 
   /** Stop intercepting; requests fall through to the real network again. */
   clearFetchMock(id: string, tabId?: string): Promise<void>

@@ -65,12 +65,27 @@ export function registerProjectsHandlers(server: RpcServer, deps: HandlerDeps): 
     _ctx,
     workspaceId: string,
     projectSlug: string,
-    patch: Partial<Omit<import('@craft-agent/shared/projects').ProjectConfig, 'id' | 'slug' | 'createdAt'>>,
+    patch: Partial<Omit<import('@craft-agent/shared/projects').ProjectConfig, 'id' | 'slug' | 'createdAt' | 'prototypeSlugs'>> & {
+      /** The whole new set of prototypes this project is worked on with (§15.1.3); the field is routed to its validated writer. */
+      prototypeSlugs?: string[];
+    },
   ) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     const { updateProject } = await import('@craft-agent/shared/projects')
-    const updated = updateProject(workspace.rootPath, projectSlug, patch)
+
+    // `prototypeSlugs` is the set of prototypes a project is worked on with (§15.1.3), and
+    // it is not a plain field: only one thing may write it and it drops the slugs that no
+    // longer resolve, so the field is routed to that writer instead of being merged like
+    // the rest. The caller sends the whole set — ticking the last prototype off sends an
+    // empty list, which is the clear, so nothing has to travel as `null`.
+    const { prototypeSlugs, ...rest } = patch
+    let updated = updateProject(workspace.rootPath, projectSlug, rest)
+    if (Object.prototype.hasOwnProperty.call(patch, 'prototypeSlugs')) {
+      const { setProjectPrototypes } = await import('@craft-agent/shared/prototypes')
+      updated = setProjectPrototypes(workspace.rootPath, projectSlug, prototypeSlugs ?? [])
+    }
+
     await broadcastChanged(workspaceId, workspace.rootPath)
     return updated
   })

@@ -14,7 +14,7 @@ import { watch } from 'fs'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import { ensureWorkspacePrototypesPath } from '@craft-agent/shared/workspaces'
-import { exportPrototype, commitPrototype, createPrototype, deletePrototype, duplicatePrototype, linkPrototypeReference, listPrototypeStatuses, resolvePrototypeEntry, setPrototypePageUrl, setPrototypeProject, unlinkPrototypeReference, updatePrototypePages } from '@craft-agent/shared/prototypes'
+import { exportPrototype, commitPrototype, createPrototype, deletePrototype, duplicatePrototype, linkPrototypeReference, listPrototypeStatuses, resolvePrototypeEntry, setPrototypePageUrl, unlinkPrototypeReference, updatePrototypePages } from '@craft-agent/shared/prototypes'
 import type { PrototypePagesChange } from '@craft-agent/shared/prototypes'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import {
@@ -39,7 +39,6 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.prototypes.UNLINK_REFERENCE,
   RPC_CHANNELS.prototypes.SET_PAGES,
   RPC_CHANNELS.prototypes.SET_TARGET,
-  RPC_CHANNELS.prototypes.SET_PROJECT,
   RPC_CHANNELS.prototypes.REPLAY,
   RPC_CHANNELS.prototypes.COMMIT,
 ] as const
@@ -276,21 +275,6 @@ export function registerPrototypesHandlers(server: RpcServer, deps: HandlerDeps)
       if (!workspace) throw new Error(`PROTOTYPES_UNLINK_REFERENCE: Workspace not found: ${workspaceId}`)
       const config = unlinkPrototypeReference(workspace.rootPath, slug, referenceSlug)
       log.info(`PROTOTYPES_UNLINK_REFERENCE: ${slug} ↛ reference ${referenceSlug}`)
-      return config
-    },
-  )
-
-  // Which project a prototype was made for (plan §15.1). The same edge the agent
-  // reaches through `prototype-project`, exposed so a detail page can set it
-  // without an agent turn — and the only write path for it, so the two directions
-  // (`projectSlug` here, "this project's prototype" derived from it) cannot drift.
-  server.handle(
-    RPC_CHANNELS.prototypes.SET_PROJECT,
-    async (_ctx, workspaceId: string, slug: string, projectSlug: string | null) => {
-      const workspace = getWorkspaceByNameOrId(workspaceId)
-      if (!workspace) throw new Error(`PROTOTYPES_SET_PROJECT: Workspace not found: ${workspaceId}`)
-      const config = setPrototypeProject(workspace.rootPath, slug, projectSlug)
-      log.info(`PROTOTYPES_SET_PROJECT: ${slug} → ${config.projectSlug ?? 'no project'}`)
       return config
     },
   )

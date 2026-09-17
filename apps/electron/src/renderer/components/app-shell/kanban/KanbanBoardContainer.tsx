@@ -277,6 +277,8 @@ export function KanbanBoardContainer() {
         // With merged spec rows the list already contains every node, so it IS the
         // denominator; the header count only backstops the not-yet-fetched window.
         subtaskTotal: specNodes?.length ? undefined : meta.taskNodeCount,
+        // A parked gate is the one run state the user must act on before anything else can happen.
+        awaitingApproval: meta.taskAwaitingApproval,
         isFlagged: meta.isFlagged,
         isProcessing: meta.isProcessing,
         createdAt: meta.createdAt,

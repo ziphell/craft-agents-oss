@@ -9,6 +9,7 @@ import {
   linkPrototypeReference,
   writePrototypeConfig,
   writePrototypePage,
+  PROTOTYPE_DEFAULT_WRITER,
   type PrototypePromptContext,
 } from '..'
 
@@ -16,14 +17,16 @@ import {
 function makeContext(overrides: Partial<PrototypePromptContext> = {}): PrototypePromptContext {
   return {
     slug: 'checkout-flow',
+    writer: PROTOTYPE_DEFAULT_WRITER,
     dir: '/tmp/prototypes/checkout-flow',
     pages: [],
     entryPage: null,
     layoutPath: null,
     references: [],
-    projectSlug: null,
     requirements: [],
     findings: [],
+    reviews: { total: 0, unresolved: [] },
+    acceptance: null,
     patches: [],
     services: [],
     distFiles: [],
@@ -33,6 +36,16 @@ function makeContext(overrides: Partial<PrototypePromptContext> = {}): Prototype
 }
 
 describe('formatPrototypeContextForPrompt', () => {
+  // The block's "you are bound to this" paragraph is what lets the agent rely on the
+  // command default, so it has to be stated (and only one thing can produce the block:
+  // this conversation's own binding — a project's note is background and is not a block).
+  it('states the session binding as the default the commands use', () => {
+    const text = formatPrototypeContextForPrompt(makeContext())
+
+    expect(text).toContain('This session is bound to the prototype above')
+    expect(text).toContain('target it by default')
+  })
+
   // A live page is an address on someone else's site, and a copy of it would run
   // none of that page's own JavaScript. So the block must not send the agent
   // looking for a document that is never going to exist.
@@ -85,15 +98,18 @@ describe('formatPrototypeContextForPrompt', () => {
         pages: [{ name: 'cart', kind: 'scratch', url: 'http://x/cart.html', file: 'cart.html', entry: true }],
         entryPage: 'cart',
         patches: [
-          { file: 'A-001-btn.css', lane: 'A', kind: 'css', page: null, targets: [] },
-          { file: 'cart/B-002-total.js', lane: 'B', kind: 'js', page: 'cart', targets: [] },
+          { file: 'A-001-btn.css', writer: 'A', kind: 'css', page: null, targets: [], fingerprint: 'a1b2c3d4' },
+          { file: 'cart/B-002-total.js', writer: 'B', kind: 'js', page: 'cart', targets: [], fingerprint: 'e5f6a7b8' },
         ],
       }),
     )
 
-    expect(text).toContain('- A-001-btn.css (lane A, css, every page)')
-    expect(text).toContain('- cart/B-002-total.js (lane B, js, page cart)')
+    expect(text).toContain('- A-001-btn.css [a1b2c3d4] (writer A, css, every page)')
+    expect(text).toContain('- cart/B-002-total.js [e5f6a7b8] (writer B, js, page cart)')
     expect(text).toContain('patches/<page>/… applies to that page only')
+    // The bracketed fingerprint is what a patch dispute records as `on:`, so the block has to say
+    // what it is for — otherwise it is eight characters of noise on every line.
+    expect(text).toContain("that is what a dispute's 'on:' records")
   })
 
   // Nothing is seeded at creation, so "no pages" is the state every new prototype
@@ -189,6 +205,15 @@ describe('formatPrototypeContextForPrompt', () => {
     const ruleOf = (text: string) => text.slice(text.indexOf('A reference is **evidence'))
     expect(ruleOf(ours)).toBe(ruleOf(theirs))
   })
+
+  // The one thing the workbench cannot check about a requirement is whether it was worth
+  // writing, so the block has to ask for that thinking before the entry is written.
+  it('asks for the value to be thought through before a requirement is written', () => {
+    const text = formatPrototypeContextForPrompt(makeContext())
+
+    expect(text).toContain('think from first principles about the value')
+    expect(text).toContain('never that it was worth writing')
+  })
 })
 
 describe('buildPrototypePromptContext', () => {
@@ -209,7 +234,7 @@ describe('buildPrototypePromptContext', () => {
       ],
     })
 
-    const context = buildPrototypePromptContext(workspaceRoot, 'checkout-flow')
+    const context = buildPrototypePromptContext(workspaceRoot, 'checkout-flow', PROTOTYPE_DEFAULT_WRITER)
 
     expect(context?.pages.map((page) => `${page.name}:${page.kind}:${page.entry}`)).toEqual([
       'cart:scratch:true',
@@ -227,15 +252,29 @@ describe('buildPrototypePromptContext', () => {
     })
     linkPrototypeReference(workspaceRoot, 'checkout-flow', 'rival-checkout')
 
-    const context = buildPrototypePromptContext(workspaceRoot, 'checkout-flow')
+    const context = buildPrototypePromptContext(workspaceRoot, 'checkout-flow', PROTOTYPE_DEFAULT_WRITER)
 
     expect(context?.references).toEqual([
       { slug: 'rival-checkout', summary: '1 page (1 on a live site)' },
     ])
   })
 
+  it('carries the writer identity into the block and its naming rule', () => {
+    workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-prototype-prompt-'))
+    createPrototype(workspaceRoot, { name: 'Checkout flow' })
+
+    const context = buildPrototypePromptContext(workspaceRoot, 'checkout-flow', 'checkout-ui')
+    const text = formatPrototypeContextForPrompt(context!)
+
+    expect(context?.writer).toBe('checkout-ui')
+    expect(text).toContain('writer="checkout-ui"')
+    // The rule is stated in terms of the identity — not as a list of codes to pick from.
+    expect(text).toContain("this conversation writes as 'checkout-ui'")
+    expect(text).toContain('checkout-ui-<nnn>-<name>.{css,js}')
+  })
+
   it('returns null for a prototype that does not exist', () => {
     workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-prototype-prompt-'))
-    expect(buildPrototypePromptContext(workspaceRoot, 'nope')).toBeNull()
+    expect(buildPrototypePromptContext(workspaceRoot, 'nope', PROTOTYPE_DEFAULT_WRITER)).toBeNull()
   })
 })

@@ -83,6 +83,10 @@ export interface EditorSubtask {
   // node (depends_on: [A, B]) keeps every edge visible and editable. uids that no longer resolve to
   // a row (upstream deleted) are dropped by buildSpec, never emitted as a dangling ref.
   dependsOn: string[]
+  // Declared structured outputs, preserved verbatim. The form has no control for them (they are
+  // authored in yaml), but dropping them would break every `${nodes.<id>.output.<field>}` in a
+  // sibling prompt — and the spec validator rejects a reference to an undeclared field.
+  outputs?: SpecNodeOutput[]
 }
 
 export interface SpecForm {
@@ -117,6 +121,15 @@ export interface SpecForm {
   fixedId?: string
 }
 
+/** A declared structured output. Mirrors `OutputDecl` in packages/shared/src/tasks/schema.ts — the
+ *  renderer can't import that barrel (it pulls `storage.ts`, which uses `fs`), so keep in sync. */
+export interface SpecNodeOutput {
+  name: string
+  kind?: string
+  type?: string
+  enum?: string[]
+}
+
 /** A spec node as authored by the generator / loaded from disk (loose, renderer-facing shape). */
 export interface SpecNode {
   id: string
@@ -126,6 +139,8 @@ export interface SpecNode {
   /** Connection serving `model`; read back into the row so an explicit connection round-trips. */
   llmConnection?: string
   depends_on?: string[]
+  /** Fields a downstream node reads as `${nodes.<id>.output.<field>}`. */
+  outputs?: SpecNodeOutput[]
 }
 
 export function buildSpec(form: SpecForm, modelToConnection: Map<string, string>): Record<string, unknown> {
@@ -169,6 +184,7 @@ export function buildSpec(form: SpecForm, modelToConnection: Map<string, string>
       // Pin the connection that serves the model so non-default (pi/*) models resolve a backend.
       ...(conn ? { llmConnection: conn } : {}),
       ...(depends_on.length ? { depends_on } : {}),
+      ...(st.outputs?.length ? { outputs: st.outputs } : {}),
       prompt: st.prompt,
     }
   })
@@ -217,6 +233,9 @@ export function specToSubtasks(nodes: SpecNode[], _fallbackModel?: string): Edit
     // computes an effective display model separately. `_fallbackModel` is kept for call-site compat.
     ...(n.model ? { model: n.model } : {}),
     ...(n.llmConnection ? { llmConnection: n.llmConnection } : {}),
+    // Declared structured outputs ride along untouched (no form control) so the sibling refs
+    // `${nodes.<id>.output.<field>}` keep resolving after an edit.
+    ...(n.outputs?.length ? { outputs: n.outputs } : {}),
     // Every edge mapped to a local uid. Edges pointing at ids absent from this spec are dangling
     // (the backend would reject them) so they're dropped rather than carried as raw ids.
     dependsOn: (n.depends_on ?? [])

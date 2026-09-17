@@ -79,17 +79,16 @@ export function useBrowserToolbarActions({
    * conversation exists, and an overlay's view sits on a third-party address, so
    * neither the URL nor the session is enough on its own.
    *
-   * The session is read the way `BrowserTabStrip` reads it, and for the same
-   * reason: the window is shared, so the lease answers "who is using it now" while
-   * the page's opener answers "whose work is on screen" — the window itself has no
-   * owner to fall back on (plan §22).
+   * The session is read off the **page on screen**, the way `BrowserTabStrip` reads
+   * it and for the same reason: the window is shared, so the page is what says whose
+   * work is in front — who is holding it, else who works from it, else who opened it
+   * (plan §22). There is no window-level answer to fall back on.
    */
   const resolveBinding = useCallback((instanceId: string): { slug: string | null; sessionId: string | null } => {
     const instance = instances.find((item) => item.id === instanceId)
     if (!instance) return { slug: null, sessionId: null }
-    const sessionId = instance.boundSessionId
-      ?? instance.tabs?.find((tab) => tab.active)?.openedBySessionId
-      ?? null
+    const page = instance.tabs?.find((tab) => tab.active)
+    const sessionId = page?.lockedBy ?? page?.cursorOf ?? page?.belongsTo?.sessionId ?? null
     const slug = instance.prototypeSlug ?? (sessionId ? sessionMetaMap.get(sessionId)?.prototypeSlug ?? null : null)
     return { slug, sessionId }
   }, [instances, sessionMetaMap])

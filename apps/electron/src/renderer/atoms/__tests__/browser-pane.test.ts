@@ -18,7 +18,6 @@ function makeInstance(id: string, overrides?: Partial<BrowserInstanceInfo>): Bro
     isLoading: false,
     canGoBack: false,
     canGoForward: false,
-    boundSessionId: null,
     isVisible: true,
     agentControlActive: false,
     themeColor: null,

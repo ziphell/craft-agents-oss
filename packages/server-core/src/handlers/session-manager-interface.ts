@@ -92,6 +92,8 @@ export interface ISessionManager {
   setSessionPrototypeSlug(sessionId: string, prototypeSlug: string | null): Promise<void>
   setKanbanColumn(sessionId: string, column: string | null): Promise<void>
   setTaskNodeCount(sessionId: string, count: number): Promise<void>
+  /** How many `kind: approval` gates of this session's active task run are waiting on a person. */
+  setTaskAwaitingApproval(sessionId: string, count: number): Promise<void>
   adoptGeneratedTaskOrchestrator(
     sessionId: string,
     taskSlug: string,

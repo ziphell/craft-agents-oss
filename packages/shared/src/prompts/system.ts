@@ -3,7 +3,7 @@ import { getBrowserToolEnabled } from '../config/storage.ts';
 import { debug } from '../utils/debug.ts';
 import { existsSync, readFileSync, readdirSync } from 'fs';
 import { join, relative, basename } from 'path';
-import { DOC_REFS, APP_ROOT } from '../docs/index.ts';
+import { DOC_REFS, APP_ROOT, getDocContent } from '../docs/index.ts';
 import { PERMISSION_MODE_CONFIG } from '../agent/mode-types.ts';
 import { FEATURE_FLAGS } from '../feature-flags.ts';
 import { APP_VERSION } from '../version/index.ts';
@@ -387,7 +387,7 @@ export function getSystemPrompt(
   // Note: Date/time context is now added to user messages instead of system prompt
   // to enable prompt caching. The system prompt stays static and cacheable.
   // Safe Mode context is also in user messages for the same reason.
-  const basePrompt = getCraftAssistantPrompt(workspaceRootPath, backendName, resolvedIncludeCoAuthoredBy);
+  const basePrompt = getCraftAssistantPrompt(workspaceRootPath, backendName, resolvedIncludeCoAuthoredBy, Boolean(prototypeContext));
   const fullPrompt = `${basePrompt}${preferences}${projectBlock}${prototypeBlock}${debugContext}${projectContextFiles}`;
 
   debug('[getSystemPrompt] full prompt length:', fullPrompt.length);
@@ -403,7 +403,7 @@ export function getSystemPrompt(
  * or the monorepo CLAUDE.md context.
  */
 /** Block tags whose closing form must not appear inside injected body content. */
-const PROJECT_BLOCK_TAGS = ['project_context', 'project_memory', 'project_assets'] as const;
+const PROJECT_BLOCK_TAGS = ['project_context', 'project_memory', 'project_assets', 'project_prototypes'] as const;
 
 /**
  * Neutralize a literal closing tag inside injected body content so user- or
@@ -464,6 +464,20 @@ export function formatProjectContextForPrompt(ctx: ProjectPromptContext): string
     lines.push('');
   }
 
+  // What a project says about prototypes: the ones its work touches (§15.1.3). Not a
+  // default — background, so a session is told a fact without anything being resolved on
+  // its behalf. A **set**, because a project works on several at once and nothing here
+  // says which is in front. A prototype belongs to no project (§15.1.4), so this is the
+  // only direction there is.
+  if (ctx.prototypes.length > 0) {
+    lines.push('<project_prototypes>');
+    for (const slug of ctx.prototypes) {
+      lines.push(`- ${sanitizeProjectFilename(slug)}`);
+    }
+    lines.push('</project_prototypes>');
+    lines.push('');
+  }
+
   lines.push(`<project_assets_path>${sanitizeProjectBodyText(ctx.assetsPath)}</project_assets_path>`);
   if (ctx.assets.length > 0) {
     lines.push('<project_assets>');
@@ -482,6 +496,12 @@ export function formatProjectContextForPrompt(ctx: ProjectPromptContext): string
   lines.push('');
 
   lines.push(`The user has bound this session to the project above.`);
+  if (ctx.prototypes.length > 0) {
+    lines.push(`<project_prototypes> are the prototypes this project is worked on with — **background,`);
+    lines.push(`like a connected source**: they are told, and nothing is targeted for you. This conversation`);
+    lines.push(`is not bound to any of them (plan §15.1.3, §15.1.2), so work on one by naming its slug on a`);
+    lines.push(`\`prototype-*\` command, or bind it here (\`prototype-bind <slug>\`).`);
+  }
   if (ctx.assets.length > 0) {
     lines.push(`<project_assets> lists reference files the user provided. Read a specific file on-demand by`);
     lines.push(`its absolute path (<project_assets_path> + filename) only when it's relevant — you do not need`);
@@ -557,6 +577,29 @@ function getCraftAgentEnvironmentMarker(): string {
 }
 
 /**
+ * The prototype guide, injected whole while a session works on a prototype.
+ *
+ * The doc is the content here rather than a reference: a session that works on a
+ * prototype is the case the guide is written for, so it is put in front of the agent
+ * instead of being a file it is asked to read first. Same text, one source — the
+ * bundled `prototypes.md`, which is also what `${DOC_REFS.prototypes}` holds.
+ *
+ * Returns null when the doc cannot be read in this runtime, so the caller can fall
+ * back to the pointer version (still true, only slower to use).
+ */
+function getPrototypeGuideSection(): string | null {
+  const guide = getDocContent('prototypes.md');
+  if (!guide) return null;
+
+  return `## Prototypes — the full guide
+
+This session works on a prototype, so the guide is here in full (the same text as \`${DOC_REFS.prototypes}\`): what a prototype is, how its files are laid out, who owns which artifact, and every \`prototype-*\` command.
+
+${guide.trim()}
+`;
+}
+
+/**
  * Get the Craft Assistant system prompt with workspace-specific paths.
  *
  * This prompt is intentionally concise - detailed documentation lives in
@@ -565,8 +608,11 @@ function getCraftAgentEnvironmentMarker(): string {
  * @param workspaceRootPath - Root path of the workspace
  * @param backendName - Backend name for "powered by X" text (default: 'Claude Code')
  * @param includeCoAuthoredBy - Whether to include the Co-Authored-By git trailer instruction (default: true)
+ * @param worksOnPrototype - Whether this session is bound to a prototype. True swaps the
+ *   prototype section for the whole guide. A project's own note about which prototype it
+ *   is on is background and does not make this true (§15.1.3).
  */
-function getCraftAssistantPrompt(workspaceRootPath?: string, backendName: string = 'Claude Code', includeCoAuthoredBy: boolean = true): string {
+function getCraftAssistantPrompt(workspaceRootPath?: string, backendName: string = 'Claude Code', includeCoAuthoredBy: boolean = true, worksOnPrototype: boolean = false): string {
   // Default to ${APP_ROOT}/workspaces/{id} if no path provided
   const workspacePath = workspaceRootPath || `${APP_ROOT}/workspaces/{id}`;
 
@@ -631,6 +677,37 @@ Use the browser as an **alternative/fallback** path when source setup is fragile
 - \`release\` — you're done but user may want to keep browsing the page
 - \`hide\` — temporarily done, may need browser again later in conversation
 ` : '';
+
+  // Prototype commands are `browser_tool` subcommands, so this section is subject to
+  // the same switch as the browser one above.
+  //
+  // A session that is bound to a prototype gets the guide itself rather than a pointer to
+  // it: that is what the binding is for, so the rules are in front of the agent instead of
+  // being a step it may skip. A project's note about which prototype *it* is on does not
+  // put the session in this case — that is background (§15.1.3), not a binding. The
+  // pointer version stays for every other session (they can still create one), and as the
+  // fallback when the doc cannot be read in this runtime.
+  const shortPrototypeSection = `## Prototypes
+
+A prototype is a proposal the user can look at: a **flow of pages** under \`{workspace}/prototypes/{slug}/\`. Each page is one of two kinds — a **page of ours** (\`scratch\`: an ordinary \`<name>.html\` in that directory, which we own and edit) or a **live page** (\`overlay\`: somebody else's address, patched in place, never copied) — and one flow may mix both. A prototype is **not a project**: projects are separate containers that group sessions and shared assets, and a prototype only records which project it was made for.
+
+Every prototype command is a \`prototype-*\` subcommand of \`browser_tool\`, and the slug is optional for almost all of them: the prototype is read from the page the command acts on, then from this session's binding. \`prototype-list\` shows what exists.
+
+**Read \`${DOC_REFS.prototypes}\` before your first prototype command** — it is the whole guide: the two page kinds, the directory layout, who owns which artifact, \`prd.md\` / \`research/\` / \`reviews/\`, the patch naming rule, verification, and export.
+
+**Recommended workflow:**
+1. \`prototype-create <name>\` — a container for pages. It starts empty; write the first requirement into \`prd.md\`
+2. Write \`<name>.html\` with the Write tool (that file *is* a page of ours), or \`prototype-pages --add <name>=<url>\` for a live page
+3. \`prototype-open\` — open it, then check the console (\`console 50 error\`) before calling anything done
+4. Change how an existing screen looks by writing a patch under \`patches/<page>/\` — never by rewriting the page document
+5. \`prototype-verify\` answers the PRD's \`check:\` lines, and \`prototype-status\` reports what is still owed
+6. \`prototype-export\` builds the deliverable — a loadable Chrome extension plus the change spec
+
+When this session is bound to a prototype, a \`<prototype_context>\` block is added to this prompt describing it: its pages, patches, requirements, findings, disputes and deliverables, as a snapshot taken when the session started. A project's own note about which prototype it is on is background and describes nothing for you.
+`;
+  const prototypeSection = getBrowserToolEnabled()
+    ? (worksOnPrototype ? getPrototypeGuideSection() : null) ?? shortPrototypeSection
+    : '';
 
   return `${environmentMarker}
 
@@ -701,6 +778,7 @@ Read relevant context files using the Read tool - they contain architecture info
 | Image Preview | \`${DOC_REFS.imagePreview}\` | When displaying local image files inline |
 | Markdown Preview | \`${DOC_REFS.markdownPreview}\` | When displaying rendered .md files inline |
 | Browser Tools | \`${DOC_REFS.browserTools}\` | When using in-app browser tools (\`browser_tool\`) |
+| Prototypes | \`${DOC_REFS.prototypes}\` | BEFORE the first \`prototype-*\` command |
 | LLM Tool | \`${DOC_REFS.llmTool}\` | When using \`call_llm\` for subtasks |${FEATURE_FLAGS.craftAgentsCli ? `
 | Craft CLI | \`${DOC_REFS.craftCli}\` | When managing labels/sources/skills/automations via \`craft-agent\` |` : ''}
 
@@ -962,6 +1040,7 @@ Use the \`call_llm\` tool to invoke a secondary LLM for focused subtasks. It run
 
 **Quick reference:** Read \`${DOC_REFS.llmTool}\` for full parameter docs, output formats, and examples.
 ${browserToolsSection}
+${prototypeSection}
 ## Session Self-Management
 
 You can manage your own session's metadata and query other sessions in the workspace.

@@ -2,7 +2,7 @@
  * Patch header markers — what a change says about itself.
  *
  * A patch file's **name** says where it applies (`patches/<page>/…`) and which
- * lane wrote it (`{lane}-{nnn}-…`), but a name cannot say what element it is
+ * writer wrote it (`{writer}-{nnn}-…`), but a name cannot say what element it is
  * aimed at or which requirement it serves. Both used to live only in the
  * conversation, which is the one place the next reader cannot look. So they are
  * written into the file as markers and parsed here:

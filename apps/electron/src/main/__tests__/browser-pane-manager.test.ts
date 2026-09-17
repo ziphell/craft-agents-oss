@@ -6,8 +6,8 @@
  */
 
 import { describe, it, expect, beforeEach, mock } from 'bun:test'
-import { pickCommandTarget, whyTabIsLocked } from '@craft-agent/server-core/domain'
-import type { BrowserTabSummary } from '@craft-agent/shared/protocol'
+import { pickCommandTarget, whyTabIsLocked, whyTabIsOutOfReach } from '@craft-agent/server-core/domain'
+import type { BrowserTabSummary, TabBelongsTo } from '@craft-agent/shared/protocol'
 
 const createdWindows: any[] = []
 let toolbarLoadFailuresRemaining = 0
@@ -289,12 +289,22 @@ function tabSummary(overrides: Partial<BrowserTabSummary> & { id: string }): Bro
     prototype: null,
     prototypePage: null,
     disposition: null,
-    openedBySessionId: null,
+    belongsTo: null,
     driverSessionId: null,
     cursorOf: null,
     lockedBy: null,
     ...overrides,
   }
+}
+
+/** A conversation's own work — what a page it opened says it belongs to (plan §22). */
+function work(sessionId: string): TabBelongsTo {
+  return { kind: 'session', sessionId }
+}
+
+/** A DAG node's work: the task, the run, and which node of it (plan §22). */
+function nodeWork(taskSlug: string, nodeId: string | null, sessionId: string): TabBelongsTo {
+  return { kind: 'task', taskSlug, runId: 'r1', nodeId, sessionId }
 }
 
 describe('BrowserPaneManager', () => {
@@ -310,17 +320,18 @@ describe('BrowserPaneManager', () => {
   })
 
   /**
-   * Give a window a driver.
+   * Put a session to work on a window's page.
    *
-   * The production way to take a lease is a command — `createForSession` resolves the
-   * workspace's window and renews it — but a test names the window it is about, so the
-   * lease is written directly. It is the same field a command writes, and the only
-   * kind of claim a window carries now: a lease, never an owner (plan §22).
+   * There is no window lease to write any more: which conversation is where is a fact about
+   * **pages** (plan §22, Conductor), so this writes the page's own facts — the page is the one
+   * that session works from, and is held by it while the window has its overlay up.
    */
   function drive(id: string, sessionId: string): void {
     const instance = (manager as any).instances.get(id)
     if (!instance) throw new Error(`no instance ${id}`)
-    instance.boundSessionId = sessionId
+    const page = instance.tabs.find((tab: any) => tab.id === instance.activeTabId) ?? instance.tabs[0]
+    page.cursorOf = sessionId
+    if (instance.controlBy?.has(sessionId)) page.heldBy = sessionId
   }
 
   /**
@@ -397,7 +408,7 @@ describe('BrowserPaneManager', () => {
     expect(manager.listTabs('window-open-link')[1]!.id).not.toBe(origin)
     // Nobody owned the page it came from, so nobody owns this one: no owner is invented
     // for a page that merely appeared (plan §22, 第十一轮).
-    expect(instance.tabs[1].openedBySessionId).toBeNull()
+    expect(instance.tabs[1].belongsTo).toBeNull()
     expect(instance.tabs[1].cursorOf).toBeNull()
     expect(instance.tabs[1].driverSessionId).toBeNull()
   })
@@ -412,7 +423,7 @@ describe('BrowserPaneManager', () => {
     const instance = (manager as any).instances.get('window-open-inherit')
     const parentId = manager.createTab('window-open-inherit', {
       url: 'https://app.example.com/',
-      openedBySessionId: 'session-a',
+      belongsTo: work('session-a'),
     })
     const parent = instance.tabs.find((tab: any) => tab.id === parentId)
     const openHandler = parent.pageView.webContents.setWindowOpenHandler.mock.calls[0][0]
@@ -420,7 +431,7 @@ describe('BrowserPaneManager', () => {
     openHandler({ url: 'https://docs.example.com/', disposition: 'foreground-tab', frameName: '' })
 
     const derived = instance.tabs.find((tab: any) => tab.id !== parentId)
-    expect(derived?.openedBySessionId).toBe('session-a')
+    expect(derived?.belongsTo).toEqual({ kind: 'session', sessionId: 'session-a' })
     expect(derived?.cursorOf).toBeNull()
     expect(derived?.driverSessionId).toBeNull()
     // The parent is still the page that conversation works from.
@@ -541,28 +552,33 @@ describe('BrowserPaneManager', () => {
     expect(states.length).toBe(countAfterDestroy)
   })
 
-  it('holds a lease on a window, and lets it go without touching the window', () => {
+  it('holds a page for a session, and lets go without touching the window or the cursor', () => {
     manager.createInstance('b1')
     drive('b1', 'session-abc')
-    expect(manager.listInstances()[0].boundSessionId).toBe('session-abc')
+    const page = (manager as any).instances.get('b1').tabs[0]
 
     manager.unbindAllForSession('session-abc')
-    expect(manager.listInstances()[0].boundSessionId).toBeNull()
-    // Releasing is not closing: the window is still there for the next turn.
+
+    expect(page.driverSessionId).toBeNull()
+    expect(page.heldBy).toBeNull()
+    // The cursor is not a lease: this conversation still works from the page it chose.
+    expect(page.cursorOf).toBe('session-abc')
+    // Letting go is not closing: the window is still there for the next turn.
     expect(manager.listInstances()).toHaveLength(1)
   })
 
-  it('createForSession resolves the same window, and the caller becomes its driver', () => {
+  it('createForSession resolves the same window, and writes nothing about who asked', () => {
     const id1 = manager.createForSession('sess-1')
     const id2 = manager.createForSession('sess-1')
     const info = manager.listInstances()[0]
 
     expect(id1).toBe(id2)
-    expect(info.boundSessionId).toBe('sess-1')
-    // The window is the workspace's (plan §22): `sess-1` holds a lease on it and
-    // nothing more, so it is not what says whether the window is a session's.
-    expect(info.isWorkspaceWindow).toBe(true)
     expect(manager.listInstances()).toHaveLength(1)
+    // The window is its workspace's (plan §22), and which conversation is working in it is a
+    // fact about its *pages* — so asking for the window leaves no mark on the window itself.
+    expect(info.workspaceId).toBeNull()
+    expect(info.agentControlActive).toBe(false)
+    expect(info.tabs?.[0].lockedBy).toBeNull()
   })
 
   it('getOrCreateForSession reuses existing instance', () => {
@@ -572,18 +588,28 @@ describe('BrowserPaneManager', () => {
     expect(manager.listInstances()).toHaveLength(1)
   })
 
-  it('createForSession does not adopt a manually opened window', () => {
-    // A window of one's own is not the workspace's, so a session opening a browser
-    // gets the workspace's window instead of taking the manual one over (plan §22).
-    manager.createInstance('manual-1')
+  it('hands back the window of that workspace rather than opening a second one', () => {
+    // One window per workspace (plan §22). A window already stamped with a workspace
+    // *is* that workspace's window — `workspaceId` is the whole of a window's
+    // identity — so a conversation joining the workspace lands in it, and the window
+    // keeps its id.
+    const made = manager.createInstance('named-window', { workspaceId: 'ws-a' })
 
-    const id = manager.createForSession('sess-reuse')
+    const id = manager.createForSession('sess-reuse', { workspaceId: 'ws-a' })
 
-    expect(id).not.toBe('manual-1')
+    expect(id).toBe(made)
+    expect(manager.listInstances()).toHaveLength(1)
+  })
+
+  it('keeps a window with no workspace context out of a workspace', () => {
+    // The null bucket is a workspace of its own: a window opened with no workspace
+    // context is not handed to a workspace that has one.
+    manager.createInstance('unscoped')
+
+    const id = manager.createForSession('sess-ws', { workspaceId: 'ws-a' })
+
+    expect(id).not.toBe('unscoped')
     expect(manager.listInstances()).toHaveLength(2)
-    const manual = manager.listInstances().find((i) => i.id === 'manual-1')
-    expect(manual?.isWorkspaceWindow).toBe(false)
-    expect(manual?.boundSessionId).toBeNull()
   })
 
   describe('workspaceId stamping', () => {
@@ -614,15 +640,16 @@ describe('BrowserPaneManager', () => {
       expect(info?.workspaceId).toBe('ws-toolbar')
     })
 
-    it('setAgentControl backfills workspaceId when previously null', () => {
-      // Legacy path: instance was created without a workspace, then the overlay
-      // path supplies it. Backfill should stamp it.
-      manager.createInstance('legacy-overlay')
-      drive('legacy-overlay', 'sess-legacy')
+    it('finds the window by workspace, so an overlay lands where the tool is working', () => {
+      // The overlay is put on the window of the workspace the session is working in — that is
+      // the only thing that picks it now (plan §22); a window of another workspace is not it.
+      manager.createInstance('overlay-scoped', { workspaceId: 'ws-delta' })
+      manager.createInstance('overlay-other', { workspaceId: 'ws-other' })
+
       manager.setAgentControl('sess-legacy', { displayName: 'browser_navigate' }, { workspaceId: 'ws-delta' })
 
-      const info = manager.listInstances().find((i) => i.id === 'legacy-overlay')
-      expect(info?.workspaceId).toBe('ws-delta')
+      expect((manager as any).instances.get('overlay-scoped').controlBy.size).toBe(1)
+      expect((manager as any).instances.get('overlay-other').controlBy.size).toBe(0)
     })
 
     it('toInfo emits workspaceId on the DTO', () => {
@@ -634,9 +661,9 @@ describe('BrowserPaneManager', () => {
 
     /**
      * One window per workspace, shared by every conversation in it and by the user
-     * (plan §22). What used to be "which session owns this window" is now the lease
-     * `boundSessionId` holds, and what used to be "reuse a window from the last
-     * turn" is simply "the workspace has one window".
+     * (plan §22). Nothing on the window says who is using it — that is a fact about its
+     * **pages**, which is what lets a parent and its children work in it at once
+     * (Conductor).
      */
     describe("the workspace's browser window", () => {
       const instanceInfo = (id: string) => manager.listInstances().find((item) => item.id === id)
@@ -648,21 +675,42 @@ describe('BrowserPaneManager', () => {
         expect(manager.listInstances()).toHaveLength(1)
       })
 
-      it('hands the lease to whoever asks last, and keeps the window between turns', () => {
+      /**
+       * The point of the whole page-level model (plan §22, Conductor): several conversations
+       * work in one window at the same time, each on its own page, and one starting or
+       * finishing does not touch another's page.
+       */
+      it('lets two conversations work in it at once, each on its own page', () => {
         const shared = manager.createForSession('sess-a1', { workspaceId: 'ws-a' })
-        expect(instanceInfo(shared)?.boundSessionId).toBe('sess-a1')
+        // The window has been used, so each `createTab` below adds a page rather than
+        // reusing the blank one it opened with.
+        ;(manager as any).instances.get(shared).tabs[0].currentUrl = 'https://start.example.com/'
 
-        // A second conversation takes its turn at the wheel: the window is shared,
-        // not owned.
-        manager.createForSession('sess-a2', { workspaceId: 'ws-a' })
-        expect(instanceInfo(shared)?.boundSessionId).toBe('sess-a2')
+        manager.setAgentControl('sess-a1', { displayName: 'A' }, { workspaceId: 'ws-a' })
+        manager.setAgentControl('sess-a2', { displayName: 'B' }, { workspaceId: 'ws-a' })
+        const pageA = manager.createTab(shared, { url: 'https://a.example.com/', belongsTo: work('sess-a1') })
+        const pageB = manager.createTab(shared, { url: 'https://b.example.com/', belongsTo: work('sess-a2') })
+        manager.setSessionPage(shared, pageA, 'sess-a1')
+        manager.setSessionPage(shared, pageB, 'sess-a2')
 
-        // A turn ending releases the lease, not the window.
-        manager.unbindAllForSession('sess-a2')
-        expect(instanceInfo(shared)?.boundSessionId).toBeNull()
+        const held = (tabId: string) => manager.listTabs(shared).find((tab) => tab.id === tabId)?.lockedBy
+        expect(held(pageA)).toBe('sess-a1')
+        // The second conversation claiming its own page does not drop the first one's hold.
+        expect(held(pageB)).toBe('sess-a2')
+
+        // One of them finishing lets go of *its* page, and only that one.
+        manager.clearVisualsForSession('sess-a2')
+        expect(held(pageA)).toBe('sess-a1')
+        expect(held(pageB)).toBeNull()
+      })
+
+      it('keeps the same window between turns, and takes it back up', () => {
+        const shared = manager.createForSession('sess-a1', { workspaceId: 'ws-a' })
+
+        manager.unbindAllForSession('sess-a1')
         expect(manager.listInstances()).toHaveLength(1)
         // Still the workspace's window — nothing about it was demoted or handed over.
-        expect(instanceInfo(shared)?.isWorkspaceWindow).toBe(true)
+        expect(instanceInfo(shared)?.workspaceId).toBe('ws-a')
 
         // And the next turn picks the same window back up.
         expect(manager.createForSession('sess-a2', { workspaceId: 'ws-a' })).toBe(shared)
@@ -676,35 +724,42 @@ describe('BrowserPaneManager', () => {
         expect(manager.listInstances()).toHaveLength(2)
         expect(instanceInfo(a)?.workspaceId).toBe('ws-a')
         expect(instanceInfo(b)?.workspaceId).toBe('ws-b')
-        expect(instanceInfo(a)?.boundSessionId).toBe('sess-a')
       })
 
-      it('opens a hand-opened page in the same window without taking the lease', () => {
+      it('opens a hand-opened page in the same window without disturbing anyone', () => {
         const shared = manager.createForSession('sess-a', { workspaceId: 'ws-a' })
+        drive(shared, 'sess-a')
+        const pages = () => manager.listTabs(shared).map((tab) => `${tab.id}:${tab.cursorOf ?? '-'}:${tab.lockedBy ?? '-'}`)
+        const before = pages()
 
-        // The user's own "+": nobody is at the wheel, and whoever was keeps it —
-        // the person clicking around did not stop a conversation.
+        // The user's own "+": the person clicking around did not stop a conversation, and
+        // nothing about the page it is working from moved.
         expect(manager.createForSession(null, { workspaceId: 'ws-a' })).toBe(shared)
-        expect(instanceInfo(shared)?.boundSessionId).toBe('sess-a')
+        expect(pages()).toEqual(before)
       })
 
       it('is never destroyed by a session being torn down', () => {
         const shared = manager.createForSession('sess-a', { workspaceId: 'ws-a' })
+        drive(shared, 'sess-a')
 
         manager.destroyForSession('sess-a')
 
         expect(manager.listInstances().map((item) => item.id)).toEqual([shared])
-        expect(instanceInfo(shared)?.boundSessionId).toBeNull()
+        const page = manager.listTabs(shared)[0]
+        expect(page.driverSessionId).toBeNull()
+        // The page is still the one this conversation works from: tearing a session down ends
+        // its lease, not the window, and not where it was working.
+        expect(page.cursorOf).toBe('sess-a')
       })
 
       it('belongs to its workspace rather than to whoever opened it', () => {
         const shared = manager.createForSession('sess-a', { workspaceId: 'ws-a' })
         manager.unbindAllForSession('sess-a')
 
-        // Nothing on the window remembers `sess-a`: it is the workspace's, and the
-        // conversation that opened it leaves no trace once its turn is over.
-        expect(instanceInfo(shared)?.isWorkspaceWindow).toBe(true)
-        expect(instanceInfo(shared)?.boundSessionId).toBeNull()
+        // Nothing on the window remembers `sess-a`: it is the workspace's, and the conversation
+        // that opened it leaves no trace once its turn is over.
+        expect(instanceInfo(shared)?.workspaceId).toBe('ws-a')
+        expect(instanceInfo(shared)?.agentControlActive).toBe(false)
       })
     })
     // Two facts live here and they are not the same one: the **cursor** (`cursorOf`) is the
@@ -881,7 +936,7 @@ describe('BrowserPaneManager', () => {
         command('sess-a')
         const second = manager.createTab(instanceId, {
           url: 'https://second.example.com/',
-          openedBySessionId: 'sess-a',
+          belongsTo: work('sess-a'),
         })
         expect(driverOf(instanceId, first)).toBe('sess-a')
         expect(driverOf(instanceId, second)).toBe('sess-a')
@@ -1315,14 +1370,16 @@ describe('BrowserPaneManager', () => {
       return spy
     }
 
-    /** A window bound to a session that works on `checkout-flow`. */
+    /** A window whose page is the one a session works on `checkout-flow` from. */
     function boundWindow(id: string): any {
       manager.setPrototypeWindowResolver((sessionId) =>
         sessionId === 'session-1' ? { slug: 'checkout-flow', origin: ORIGIN } : null,
       )
       manager.createInstance(id)
       const instance = (manager as any).instances.get(id)
-      instance.boundSessionId = 'session-1'
+      // What the page's prototype is borrowed from: the conversation that works from it (plan
+      // §22) — there is no window-level session to ask any more.
+      instance.tabs[0].cursorOf = 'session-1'
       return instance
     }
 
@@ -1482,7 +1539,8 @@ describe('BrowserPaneManager', () => {
 
       instance.window._emit('show')
 
-      expect(instance.boundSessionId).toBeNull()
+      expect(instance.tabs[0].belongsTo).toBeNull()
+      expect(instance.tabs[0].cursorOf).toBeNull()
       expect(lastToolbarState(instance)).toMatchObject({ url: ORIGIN, prototypeSlug: 'checkout-flow' })
     })
 
@@ -1503,13 +1561,14 @@ describe('BrowserPaneManager', () => {
       expect(lastToolbarState(instance)).toMatchObject({ url: ORIGIN, prototypeSlug: 'checkout-flow' })
     })
 
-    // A window opened for a prototype outranks what its session is working on:
-    // the window is the more specific fact, and it is the one the user is looking at.
-    it('prefers the window own binding over the session one', () => {
+    // A window opened for a prototype outranks what the page's conversation is working on:
+    // the page's own declaration is the more specific fact, and it is the one the user is
+    // looking at.
+    it('prefers the page own binding over the session one', () => {
       manager.setPrototypeWindowResolver(() => ({ slug: 'another-prototype', origin: 'http://another-1a2b3c4d.localhost' }))
       manager.createInstance('both-bindings')
       const instance = (manager as any).instances.get('both-bindings')
-      instance.boundSessionId = 'session-1'
+      instance.tabs[0].cursorOf = 'session-1'
       manager.createTab('both-bindings', { prototype: { slug: 'checkout-flow', origin: ORIGIN } })
       page(instance).currentUrl = 'https://app.example.com/checkout'
 
@@ -1765,7 +1824,7 @@ describe('BrowserPaneManager', () => {
       return active?.nativeOverlayView.webContents.executeJavaScript.mock.calls.at(-1)?.[0] ?? ''
     }
 
-    it('setAgentControl activates native overlay on bound instance', async () => {
+    it('setAgentControl notes the session and its label on the window', async () => {
       manager.createInstance('ac-1')
       drive('ac-1', 'sess-1')
 
@@ -1773,14 +1832,12 @@ describe('BrowserPaneManager', () => {
       await Promise.resolve()
 
       const instance = (manager as any).instances.get('ac-1')
-      expect(instance.agentControl).toEqual({
-        active: true,
-        sessionId: 'sess-1',
+      expect(instance.controlBy.get('sess-1')).toEqual({
         displayName: 'Navigate Page',
         intent: 'Loading example.com',
-        // No command has resolved a page yet, so the overlay holds nothing.
-        tabId: null,
       })
+      // No command has resolved a page yet, so the overlay holds nothing.
+      expect(page(instance).heldBy ?? null).toBeNull()
       expect(page(instance).nativeOverlayView.webContents.executeJavaScript).toHaveBeenCalled()
       expect(page(instance).nativeOverlayView.webContents.focus).not.toHaveBeenCalled()
       expect(manager.listInstances().find(i => i.id === 'ac-1')?.agentControlActive).toBe(true)
@@ -1803,7 +1860,7 @@ describe('BrowserPaneManager', () => {
       // page in front, which is what the lock follows.
       const heldId = manager.createTab('ac-lock', {
         url: 'https://held.example.com/',
-        openedBySessionId: 'sess-lock',
+        belongsTo: work('sess-lock'),
       })
       const otherId = manager.createTab('ac-lock', { url: 'https://other.example.com/' })
       manager.activateTab('ac-lock', heldId)
@@ -1936,7 +1993,7 @@ describe('BrowserPaneManager', () => {
       manager.clearAgentControl('sess-4')
 
       const instance = (manager as any).instances.get('ac-4')
-      expect(instance.agentControl).toBeNull()
+      expect(instance.controlBy.size).toBe(0)
       expect(page(instance).nativeOverlayView.setBounds).toHaveBeenCalledWith({ x: 0, y: 0, width: 0, height: 0 })
     })
 
@@ -1958,17 +2015,19 @@ describe('BrowserPaneManager', () => {
       await manager.clearVisualsForSession('sess-6')
 
       const instance = (manager as any).instances.get('ac-6')
-      expect(instance.agentControl).toBeNull()
+      expect(instance.controlBy.size).toBe(0)
       expect(page(instance).nativeOverlayView.setBounds).toHaveBeenCalledWith({ x: 0, y: 0, width: 0, height: 0 })
     })
 
-    it('setAgentControl ignores unbound sessions', () => {
-      manager.createInstance('ac-7')
+    it('setAgentControl is a no-op when the workspace has no window', () => {
+      manager.createInstance('ac-7', { workspaceId: 'ws-quiet' })
 
-      manager.setAgentControl('nonexistent-session', { displayName: 'Test' })
+      // No window in the workspace the tool is working in: there is nothing to put an overlay
+      // on, and the window of another workspace is not it (plan §22).
+      manager.setAgentControl('some-session', { displayName: 'Test' }, { workspaceId: 'ws-elsewhere' })
 
       const instance = (manager as any).instances.get('ac-7')
-      expect(instance.agentControl).toBeNull()
+      expect(instance.controlBy.size).toBe(0)
       expect(page(instance).nativeOverlayView.webContents.executeJavaScript).not.toHaveBeenCalled()
     })
 
@@ -1979,7 +2038,7 @@ describe('BrowserPaneManager', () => {
       await manager.navigate('ac-8', 'https://example.com')
 
       const instance = (manager as any).instances.get('ac-8')
-      expect(instance.agentControl).toBeNull()
+      expect(instance.controlBy.size).toBe(0)
       expect(page(instance).nativeOverlayView.webContents.executeJavaScript).not.toHaveBeenCalled()
     })
   })
@@ -2242,7 +2301,7 @@ describe('BrowserPaneManager', () => {
 
       manager.createTab('tabs-meta', {
         prototype: { slug: 'checkout-flow', origin: 'http://checkout-flow-ab12cd34.localhost' },
-        openedBySessionId: 'session-a',
+        belongsTo: work('session-a'),
       })
       const second = instance.tabs[1]
       second.title = 'Cart'
@@ -2258,7 +2317,7 @@ describe('BrowserPaneManager', () => {
           favicon: 'https://first.example.com/favicon.ico',
           active: true,
           prototype: { slug: 'checkout-flow', origin: 'http://checkout-flow-ab12cd34.localhost' },
-          openedBySessionId: 'session-a',
+          belongsTo: work('session-a'),
           // Whoever opened a page is working on it: the lease starts where the page
           // does.
           driverSessionId: 'session-a',
@@ -2274,9 +2333,10 @@ describe('BrowserPaneManager', () => {
       expect(manager.listInstances().find((item) => item.id === 'tabs-meta')?.tabs).toHaveLength(2)
     })
 
-    // The rail groups a window's pages by who opened them, and needs a name to write on
-    // each group: `openedBySessionId` is an id, and an id is not something a person can
-    // read. Names only — an opener with no name yet is left out, because the chrome has
+    // The rail groups a window's pages by whose work they are, and needs a name to write on
+    // each group: `belongsTo` names a conversation (a session id is not something a person
+    // can read; a task is named by its own slug, which needs nothing from here). Names only —
+    // an opener with no name yet is left out, because the chrome has
     // a generic label for that and printing an id is worse than saying nothing.
     it('names the conversations whose pages are in the window', () => {
       manager.setSessionLabelResolver((sessionId) => (sessionId === 'session-a' ? 'Checkout fix' : null))
@@ -2284,8 +2344,8 @@ describe('BrowserPaneManager', () => {
       const instance = (manager as any).instances.get('tabs-labels')
       instance.tabs[0].currentUrl = 'https://first.example.com/'
 
-      manager.createTab('tabs-labels', { openedBySessionId: 'session-a' })
-      manager.createTab('tabs-labels', { openedBySessionId: 'session-unnamed' })
+      manager.createTab('tabs-labels', { belongsTo: work('session-a') })
+      manager.createTab('tabs-labels', { belongsTo: work('session-unnamed') })
 
       expect(lastToolbarState(instance).sessionLabels).toEqual({ 'session-a': 'Checkout fix' })
     })
@@ -2300,9 +2360,9 @@ describe('BrowserPaneManager', () => {
       instance.tabs[0].currentUrl = 'https://first.example.com/'
       const heldId = manager.createTab('tabs-lock', {
         url: 'https://second.example.com/',
-        openedBySessionId: 'session-a',
+        belongsTo: work('session-a'),
       })
-      manager.createTab('tabs-lock', { url: 'https://third.example.com/', openedBySessionId: 'session-a' })
+      manager.createTab('tabs-lock', { url: 'https://third.example.com/', belongsTo: work('session-a') })
 
       // No overlay yet: pages are *driven*, which is not a lock.
       expect(manager.listTabs('tabs-lock').map((tab) => tab.lockedBy)).toEqual([null, null, null])
@@ -2330,16 +2390,14 @@ describe('BrowserPaneManager', () => {
       drive('tabs-lock-closed', 'session-a')
       const instance = (manager as any).instances.get('tabs-lock-closed')
       instance.tabs[0].currentUrl = 'https://first.example.com/'
-      const heldId = manager.createTab('tabs-lock-closed', { openedBySessionId: 'session-a' })
+      const heldId = manager.createTab('tabs-lock-closed', { belongsTo: work('session-a') })
       manager.setAgentControl('session-a', { displayName: 'Click', intent: 'Pressing Buy' })
       manager.setSessionPage('tabs-lock-closed', heldId, 'session-a')
 
       expect(manager.listTabs('tabs-lock-closed').map((tab) => tab.lockedBy)).toEqual([null, 'session-a'])
-      expect(instance.agentControl.tabId).toBe(heldId)
 
       manager.closeTab('tabs-lock-closed', heldId)
 
-      expect(instance.agentControl.tabId).toBeNull()
       expect(manager.listTabs('tabs-lock-closed').map((tab) => tab.lockedBy)).toEqual([null])
     })
 
@@ -2350,10 +2408,10 @@ describe('BrowserPaneManager', () => {
       const instance = (manager as any).instances.get('tabs-cursor')
       instance.tabs[0].currentUrl = 'https://first.example.com/'
 
-      const first = manager.createTab('tabs-cursor', { openedBySessionId: 'session-a' })
+      const first = manager.createTab('tabs-cursor', { belongsTo: work('session-a') })
       // A second page of the same conversation takes the cursor from the first: one page
       // per conversation is the whole point.
-      manager.createTab('tabs-cursor', { openedBySessionId: 'session-a' })
+      manager.createTab('tabs-cursor', { belongsTo: work('session-a') })
 
       expect(manager.listTabs('tabs-cursor').map((tab) => tab.cursorOf)).toEqual([null, null, 'session-a'])
 
@@ -2368,6 +2426,55 @@ describe('BrowserPaneManager', () => {
       expect(manager.listTabs('tabs-cursor').map((tab) => tab.cursorOf)).toEqual([null, 'session-a', null])
     })
 
+    /**
+     * Handing a page over: the orchestrator's half of "a DAG's nodes each get their own page"
+     * (plan §22, Conductor). Who may give a page away is decided here, because only the page
+     * knows whose task it is — and the receiver has to be able to start working without naming
+     * anything, or the handover would hand over a page it cannot reach.
+     */
+    it('hands a page to another conversation, and refuses to hand on somebody else\'s', () => {
+      manager.createInstance('tabs-assign')
+      const instance = (manager as any).instances.get('tabs-assign')
+      instance.tabs[0].currentUrl = 'https://first.example.com/'
+      const page = manager.createTab('tabs-assign', { belongsTo: work('parent') })
+
+      manager.assignTab('tabs-assign', page, work('child-1'), work('parent'))
+
+      const tab = () => manager.listTabs('tabs-assign').find((candidate) => candidate.id === page)!
+      expect(tab().belongsTo).toEqual({ kind: 'session', sessionId: 'child-1' })
+      // The page is the receiver's to work from: it can start without naming one.
+      expect(tab().cursorOf).toBe('child-1')
+      expect(whyTabIsOutOfReach(tab(), work('child-1'))).toBeNull()
+
+      // The giver is out of it: it can neither work there any more nor pass it on again.
+      expect(whyTabIsOutOfReach(tab(), work('parent'))).not.toBeNull()
+      expect(() => manager.assignTab('tabs-assign', page, work('child-2'), work('parent'))).toThrow(/child-1/)
+    })
+
+    // What a DAG needs of a page's owner (plan §22): a page handed to a node belongs to that
+    // *node*, so the session repair spawns to re-run the same node finds it again instead of
+    // opening a second one — while a sibling node, and the next run of the same task, do not.
+    it('stamps a node\'s work on the page, so a re-run of that node inherits it', () => {
+      manager.createInstance('tabs-node-work')
+      const instance = (manager as any).instances.get('tabs-node-work')
+      instance.tabs[0].currentUrl = 'https://first.example.com/'
+      const page = manager.createTab('tabs-node-work', { belongsTo: work('orchestrator') })
+
+      manager.assignTab('tabs-node-work', page, nodeWork('checkout-flow', 'pay', 'child-1'), work('orchestrator'))
+
+      const tab = () => manager.listTabs('tabs-node-work').find((candidate) => candidate.id === page)!
+      expect(tab().belongsTo).toEqual({
+        kind: 'task',
+        taskSlug: 'checkout-flow',
+        runId: 'r1',
+        nodeId: 'pay',
+        sessionId: 'child-1',
+      })
+      // The node that was re-run works in the page its predecessor left; a sibling node does not.
+      expect(whyTabIsOutOfReach(tab(), nodeWork('checkout-flow', 'pay', 'child-1-rerun'))).toBeNull()
+      expect(whyTabIsOutOfReach(tab(), nodeWork('checkout-flow', 'cart', 'child-2'))).not.toBeNull()
+    })
+
     // "Pretend this page is in front" is turned on per page, not for the whole window: the pages
     // somebody works from are the ones whose timers and rendering must not be throttled, and a
     // page nobody works from stays Chromium's business (plan §22, 第十二轮).
@@ -2376,7 +2483,7 @@ describe('BrowserPaneManager', () => {
       const instance = (manager as any).instances.get('tabs-throttle')
       instance.tabs[0].currentUrl = 'https://first.example.com/'
 
-      const mine = manager.createTab('tabs-throttle', { openedBySessionId: 'session-a' })
+      const mine = manager.createTab('tabs-throttle', { belongsTo: work('session-a') })
       const nobodys = manager.createTab('tabs-throttle')
 
       /** `true` = Chromium may throttle this page when it is not in front. */
@@ -2453,7 +2560,7 @@ describe('BrowserPaneManager', () => {
       // page" means here.
       await handle({}, 'tabs-ipc', 'new')
       expect(instance.tabs).toHaveLength(2)
-      expect(instance.tabs[1].openedBySessionId).toBeNull()
+      expect(instance.tabs[1].belongsTo).toBeNull()
     })
 
     it('ignores a strip action that names no page', async () => {
@@ -2484,7 +2591,7 @@ describe('BrowserPaneManager', () => {
       await tabsHandler()({}, 'tabs-ipc-fresh', 'new')
 
       expect(instance.tabs).toHaveLength(2)
-      expect(instance.tabs[1].openedBySessionId).toBeNull()
+      expect(instance.tabs[1].belongsTo).toBeNull()
       expect(instance.activeTabId).toBe(instance.tabs[1].id)
     })
   })

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'bun:test'
-import { releaseBrowserOwnershipOnForcedStop } from '@craft-agent/server-core/domain'
+import { releaseBrowserOnForcedStop } from '@craft-agent/server-core/domain'
 
-describe('releaseBrowserOwnershipOnForcedStop', () => {
-  it('clears visuals and unbinds session ownership', async () => {
+describe('releaseBrowserOnForcedStop', () => {
+  it('clears visuals and lets the lease go', async () => {
     const calls: string[] = []
 
     const browserPaneManager = {
@@ -14,13 +14,13 @@ describe('releaseBrowserOwnershipOnForcedStop', () => {
       },
     }
 
-    await releaseBrowserOwnershipOnForcedStop(browserPaneManager, 'session-1')
+    await releaseBrowserOnForcedStop(browserPaneManager, 'session-1')
 
     expect(calls).toEqual(['clear:session-1', 'unbind:session-1'])
   })
 
   it('is a safe no-op when browser manager is missing', async () => {
-    await expect(releaseBrowserOwnershipOnForcedStop(null, 'session-2')).resolves.toBeUndefined()
-    await expect(releaseBrowserOwnershipOnForcedStop(undefined, 'session-3')).resolves.toBeUndefined()
+    await expect(releaseBrowserOnForcedStop(null, 'session-2')).resolves.toBeUndefined()
+    await expect(releaseBrowserOnForcedStop(undefined, 'session-3')).resolves.toBeUndefined()
   })
 })

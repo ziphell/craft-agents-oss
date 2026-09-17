@@ -909,6 +909,16 @@ export default function App() {
             toast.error(effect.message, { duration: 5000 })
             break
           }
+          case 'task_awaiting_approval': {
+            // A Conductor gate parked (`kind: approval`). Every other notification here is about
+            // work *arriving*; this one is about work stopping until the person answers it, and
+            // the answer lives on the task tile's Results tab.
+            const gateSession = store.get(sessionAtomFamily(sessionId))
+            if (gateSession && !gateSession.hidden) {
+              showSessionNotification(gateSession, t('tasks.approvalNotification'))
+            }
+            break
+          }
         }
       }
 

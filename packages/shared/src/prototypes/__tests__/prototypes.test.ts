@@ -28,7 +28,7 @@ describe('prototype patch index', () => {
     rmSync(workspaceRoot, { recursive: true, force: true })
   })
 
-  it('orders patches deterministically by lane, then declared order, then name', () => {
+  it('orders patches deterministically by declared order, then name', () => {
     writeFileSync(join(patchesDir, 'B-002-second.js'), 'window.b = 2')
     writeFileSync(join(patchesDir, 'A-002-again.css'), '.again{}')
     writeFileSync(join(patchesDir, 'A-001-first.css'), '.first{}')
@@ -41,10 +41,10 @@ describe('prototype patch index', () => {
       'B-002-second.js',
     ])
     expect(patches[0]?.kind).toBe('css')
-    expect(patches[0]?.lane).toBe('A')
+    expect(patches[0]?.writer).toBe('A')
     expect(patches[0]?.order).toBe(1)
     expect(patches[2]?.kind).toBe('js')
-    expect(patches[2]?.lane).toBe('B')
+    expect(patches[2]?.writer).toBe('B')
     expect(patches[0]?.key).toBe(`prototype:${slug}:A-001-first.css`)
     expect(patches[0]?.source).toBe('.first{}')
     // A patch at the root of `patches/` belongs to every page (plan §19.4).
@@ -124,7 +124,7 @@ describe('buildPatchInitScript', () => {
   const cssPatch: PrototypePatch = {
     file: 'A-001-btn.css',
     kind: 'css',
-    lane: 'A',
+    writer: 'A',
     order: 1,
     source: '.btn { border-radius: 12px }',
     targets: [],

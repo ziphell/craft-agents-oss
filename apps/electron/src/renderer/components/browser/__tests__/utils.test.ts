@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test'
-import { getHostname } from '../utils'
+import { getHostname, openTargetOfActivePage } from '../utils'
+import type { TabBelongsTo } from '../../../../shared/types'
 
 describe('getHostname', () => {
   it('returns stripped hostname for https URLs', () => {
@@ -24,5 +25,114 @@ describe('getHostname', () => {
 
   it('falls back to original input for malformed URLs', () => {
     expect(getHostname('not a url')).toBe('not a url')
+  })
+})
+
+/** One page, with only the facts the menu's target rule reads. */
+function tab(fields: {
+  active?: boolean
+  lockedBy?: string | null
+  cursorOf?: string | null
+  belongsTo?: TabBelongsTo | null
+}) {
+  return { active: false, lockedBy: null, cursorOf: null, belongsTo: null, ...fields }
+}
+
+/** Sessions as the rule reads them: which task each carries, and whether something spawned it. */
+function sessions(map: Record<string, { taskSlug?: string; parentSessionId?: string; taskDraft?: boolean }>) {
+  return Object.entries(map)
+}
+
+const nodeWork = (taskSlug: string, nodeId: string, sessionId: string): TabBelongsTo => ({
+  kind: 'task',
+  taskSlug,
+  runId: 'r1',
+  nodeId,
+  sessionId,
+})
+
+describe('openTargetOfActivePage', () => {
+  const ORCHESTRATOR = { taskSlug: 'checkout-flow' }
+  const CHILD = { taskSlug: 'checkout-flow', parentSessionId: 'orch' }
+
+  // Who is working on the page on screen is the first answer, whoever the page belongs to: that is
+  // "what is this agent doing right now", which is what somebody clicking from the window wants.
+  it('opens the conversation working on the page on screen', () => {
+    const target = openTargetOfActivePage(
+      [tab({ active: true, lockedBy: 'child-1', belongsTo: nodeWork('checkout-flow', 'pay', 'child-1') })],
+      sessions({ orch: ORCHESTRATOR, 'child-1': CHILD }),
+    )
+
+    expect(target).toEqual({ kind: 'session', sessionId: 'child-1' })
+  })
+
+  it('falls back to the conversation that works from the page', () => {
+    const target = openTargetOfActivePage(
+      [tab({ active: true, cursorOf: 'session-a' })],
+      sessions({ 'session-a': {} }),
+    )
+
+    expect(target).toEqual({ kind: 'session', sessionId: 'session-a' })
+  })
+
+  it("opens the conversation a conversation's own page belongs to", () => {
+    const target = openTargetOfActivePage(
+      [tab({ active: true, belongsTo: { kind: 'session', sessionId: 'session-a' } })],
+      sessions({}),
+    )
+
+    expect(target).toEqual({ kind: 'session', sessionId: 'session-a' })
+  })
+
+  // A task's page opens the **task**, not the session that opened the page: that one is provenance,
+  // and once its node has been re-run it has stopped — opening it would land on a dead conversation.
+  it("opens the task for a task's page, not the session that opened it", () => {
+    const target = openTargetOfActivePage(
+      [tab({ active: true, belongsTo: nodeWork('checkout-flow', 'pay', 'child-1') })],
+      sessions({ orch: ORCHESTRATOR, 'child-1': CHILD }),
+    )
+
+    expect(target).toEqual({ kind: 'task', sessionId: 'orch' })
+  })
+
+  it('has nothing to open when only the spawned node sessions remain', () => {
+    // Not falling back to them is the point: the one that opened this page has stopped, and a dead
+    // conversation is worse than a greyed-out item.
+    const target = openTargetOfActivePage(
+      [tab({ active: true, belongsTo: nodeWork('checkout-flow', 'pay', 'child-1') })],
+      sessions({ 'child-1': CHILD }),
+    )
+
+    expect(target).toBeNull()
+  })
+
+  it('skips a generate-time draft orchestrator, which is off the board', () => {
+    const target = openTargetOfActivePage(
+      [tab({ active: true, belongsTo: nodeWork('checkout-flow', 'pay', 'child-1') })],
+      sessions({ draft: { taskSlug: 'checkout-flow', taskDraft: true }, 'child-1': CHILD }),
+    )
+
+    expect(target).toBeNull()
+  })
+
+  it("does not borrow another task's session", () => {
+    const target = openTargetOfActivePage(
+      [tab({ active: true, belongsTo: nodeWork('checkout-flow', 'pay', 'child-1') })],
+      sessions({ other: { taskSlug: 'other-task' } }),
+    )
+
+    expect(target).toBeNull()
+  })
+
+  it("has nothing to open for a person's page", () => {
+    expect(openTargetOfActivePage([tab({ active: true })], sessions({ orch: ORCHESTRATOR }))).toBeNull()
+  })
+
+  it('has nothing to open when no page is on screen', () => {
+    const behind = tab({ active: false, belongsTo: { kind: 'session', sessionId: 'session-a' } })
+
+    expect(openTargetOfActivePage([behind], sessions({}))).toBeNull()
+    expect(openTargetOfActivePage([], sessions({}))).toBeNull()
+    expect(openTargetOfActivePage(undefined, sessions({}))).toBeNull()
   })
 })

@@ -31,27 +31,23 @@ import {
 } from '@/atoms/browser-pane'
 import { useAppShellContext } from '@/context/AppShellContext'
 import { sessionMetaMapAtom } from '@/atoms/sessions'
-import { groupTabsByOpener, shouldShowGroupHeaders } from './page-groups'
+import { groupTabsByWork, shouldShowGroupHeaders, type PageGroup } from './page-groups'
 import { BrowserTabBadge } from './BrowserTabBadge'
 import type { BrowserInstanceInfo } from '../../../shared/types'
-import { getHostname } from './utils'
+import { getHostname, openTargetOfActivePage } from './utils'
 import { navigate, routes } from '@/lib/navigate'
 
 const DEFAULT_MAX_VISIBLE_BADGES = 3
 
-/**
- * The conversation this window is being used by, for the menu's "open the
- * conversation …" item.
- *
- * Read off the **page on screen** rather than off the window: one window per
- * workspace is shared, so a window-level answer could only ever name "whoever drove
- * it last" (plan §22). The lease is a moment, the page's opener is a fact — so the
- * driver is asked first, and the page answers when nobody is driving.
- */
-function sessionUsingWindow(instance: BrowserInstanceInfo): string | null {
-  return instance.boundSessionId
-    ?? instance.tabs?.find((tab) => tab.active)?.openedBySessionId
-    ?? null
+/** Whether any page of this window is the given conversation's — for ordering the badges. */
+function hasPageOf(instance: BrowserInstanceInfo, sessionId: string | null): boolean {
+  if (!sessionId) return false
+  return !!instance.tabs?.some(
+    (tab) =>
+      tab.belongsTo?.sessionId === sessionId
+      || tab.cursorOf === sessionId
+      || tab.lockedBy === sessionId,
+  )
 }
 
 interface BrowserTabStripProps {
@@ -98,11 +94,11 @@ export function BrowserTabStrip({
     const items = [...effectiveInstances]
 
     // Global list: keep all browser windows visible.
-    // Optional ordering preference: session-local windows first.
+    // Optional ordering preference: the window holding this conversation's pages comes first.
     if (activeSessionId) {
       items.sort((a, b) => {
-        const aInActiveSession = a.boundSessionId === activeSessionId ? 0 : 1
-        const bInActiveSession = b.boundSessionId === activeSessionId ? 0 : 1
+        const aInActiveSession = hasPageOf(a, activeSessionId) ? 0 : 1
+        const bInActiveSession = hasPageOf(b, activeSessionId) ? 0 : 1
         if (aInActiveSession !== bInActiveSession) return aInActiveSession - bInActiveSession
         return a.id.localeCompare(b.id)
       })
@@ -221,11 +217,11 @@ export function BrowserTabStrip({
     })
   }, [instancesOverride, setActiveInstanceId])
 
-  const openSessionUsingWindow = useCallback((instance: BrowserInstanceInfo) => {
-    const sessionId = sessionUsingWindow(instance)
-    if (!sessionId) return
-    navigate(routes.view.allSessions(sessionId))
-  }, [])
+  const openPageTarget = useCallback((instance: BrowserInstanceInfo) => {
+    const target = openTargetOfActivePage(instance.tabs, sessionMeta)
+    if (!target) return
+    navigate(routes.view.allSessions(target.sessionId))
+  }, [sessionMeta])
 
   /**
    * Show one of a window's pages.
@@ -260,14 +256,14 @@ export function BrowserTabStrip({
   }, [instancesOverride])
 
   /**
-   * The window's own pages, above its actions, sectioned by who opened them.
+   * The window's own pages, above its actions, sectioned by whose work they are.
    *
    * One entry per page, the one on screen marked. A single-page window shows
    * nothing here — that page is what the badge already says, and a group of one
    * is noise. Closing a page is deliberately *not* here: it lives on the rail in
    * the window, where the page being closed is the one in front of you.
    *
-   * The sections are the same rule the rail draws (`groupTabsByOpener`), so a person
+   * The sections are the same rule the rail draws (`groupTabsByWork`), so a person
    * reading the window and a person reading this menu see the same grouping. Headers
    * appear only when there is more than one group: with one group, the header would be
    * a row saying "all of these are yours" over all of them.
@@ -276,22 +272,28 @@ export function BrowserTabStrip({
     const tabs = instance.tabs ?? []
     if (tabs.length < 2) return null
 
-    const groups = groupTabsByOpener(tabs)
+    const groups = groupTabsByWork(tabs)
     const showHeaders = shouldShowGroupHeaders(groups)
-    /** A name, never an id — a conversation with no name yet says so generically. */
-    const groupLabel = (sessionId: string | null): string =>
-      sessionId === null
-        ? t('browser.openedByYou')
-        : sessionMeta.get(sessionId)?.name || t('browser.openedByConversation')
+    /**
+     * A name, never an id — a conversation with no name yet says so generically, and a task
+     * is named by its slug (which IS its name: the board, the folder and its sessions all
+     * use it).
+     */
+    const groupLabel = (group: PageGroup): string => {
+      const work = group.work
+      if (!work) return t('browser.openedByYou')
+      if (work.kind === 'task') return work.taskSlug
+      return sessionMeta.get(work.sessionId)?.name || t('browser.openedByConversation')
+    }
 
     return (
       <>
         {groups.map((group) => (
-          <Fragment key={group.sessionId ?? 'person'}>
+          <Fragment key={group.key}>
             {showHeaders && (
               <div className="flex items-center gap-1 px-2 pb-0.5 pt-1.5 text-[10px] font-medium text-foreground/40">
-                {group.sessionId !== null && <Icons.Bot className="h-3 w-3 shrink-0" />}
-                <span className="truncate">{groupLabel(group.sessionId)}</span>
+                {group.work !== null && <Icons.Bot className="h-3 w-3 shrink-0" />}
+                <span className="truncate">{groupLabel(group)}</span>
               </div>
             )}
 
@@ -308,7 +310,7 @@ export function BrowserTabStrip({
                   )}
                   <span className="truncate">{label}</span>
                   {/* The header says whose these are when there is one to say it. */}
-                  {!showHeaders && tab.openedBySessionId !== null && (
+                  {!showHeaders && tab.belongsTo !== null && (
                     <Icons.Bot className="h-3 w-3 shrink-0 opacity-50" />
                   )}
                 </StyledDropdownMenuItem>
@@ -349,11 +351,13 @@ export function BrowserTabStrip({
 
   const renderBrowserActions = useCallback((instance: BrowserInstanceInfo) => {
     const canUseLiveWindowActions = !instancesOverride
-    const targetSessionId = sessionUsingWindow(instance)
-    const canOpenSession = !!targetSessionId
-    const openSessionLabel = instance.agentControlActive
-      ? 'Open Session Using this Window'
-      : 'Open Session Which Used this Window'
+    const openTarget = openTargetOfActivePage(instance.tabs, sessionMeta)
+    const canOpenSession = !!openTarget
+    // Named after what it actually opens, and after the **page**: the item reads the page on
+    // screen, because the window is the whole workspace's (plan §22).
+    const openSessionLabel = openTarget?.kind === 'task'
+      ? t('browser.openPageTask')
+      : t('browser.openPageConversation')
 
     return (
       <>
@@ -364,12 +368,12 @@ export function BrowserTabStrip({
           onSelect={() => focusBrowserWindow(instance)}
         >
           <Icons.Monitor className="h-3.5 w-3.5" />
-          Show Browser Window
+          {t('browser.showWindow')}
         </StyledDropdownMenuItem>
 
         <StyledDropdownMenuItem
           disabled={!canOpenSession}
-          onSelect={() => openSessionUsingWindow(instance)}
+          onSelect={() => openPageTarget(instance)}
         >
           <Icons.PanelRightOpen className="h-3.5 w-3.5" />
           {openSessionLabel}
@@ -383,11 +387,11 @@ export function BrowserTabStrip({
           onSelect={() => terminateBrowserWindow(instance)}
         >
           <Icons.XCircle className="h-3.5 w-3.5" />
-          Terminate Browser
+          {t('browser.terminateBrowser')}
         </StyledDropdownMenuItem>
       </>
     )
-  }, [instancesOverride, focusBrowserWindow, openSessionUsingWindow, renderPageList, terminateBrowserWindow])
+  }, [instancesOverride, focusBrowserWindow, openPageTarget, renderPageList, sessionMeta, t, terminateBrowserWindow])
 
   if (orderedInstances.length === 0) return null
 

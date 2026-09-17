@@ -1,3 +1,6 @@
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { isAbsolute, resolve } from 'node:path';
 import type {
   BrowserConsoleArgs,
   BrowserDownloadsArgs,
@@ -9,6 +12,8 @@ import type {
 } from './browser-tools.ts';
 import type { PrototypeWindowDescriptor } from '../prototypes/types.ts';
 import type { PrototypePagesChange } from '../prototypes/pages.ts';
+import { whyPrototypeIsNotSettled } from '../prototypes/status.ts';
+import { describeWork } from '../protocol/dto.ts';
 
 export interface BrowserCommandImage {
   data: string;
@@ -72,7 +77,9 @@ export function getBrowserToolHelp(): string {
     '  scroll <up|down|left|right> [amount]',
     '  back',
     '  forward',
+    '  reload                                         reload this page (nothing waits for it to load)',
     '  evaluate <expression>',
+    '  evaluate --file <path>                         run a script from disk (the source stays in the file)',
     '  pick [--timeout <ms>]                          ask the user to click an element; returns a stable selector',
     '  prototype-list                                 prototypes in this workspace, their pages, and which is bound',
     '  prototype-create <name> [--no-bind]            create a prototype (a container: it starts with no pages)',
@@ -86,19 +93,23 @@ export function getBrowserToolHelp(): string {
     '                                                 patches were written against the old one)',
     '  prototype-reference <slug> [--remove]          study another prototype (reference, not a copy)',
     '  prototype-bind <slug|--clear>                  bind (or unbind) this session\'s prototype',
-    '  prototype-apply [slug]                         replay prototype patches (survives reload)',
+    '  prototype-apply [slug] [--file <path>]         replay its patches and register them (survives reload);',
+    '                                                 --file replays one file: the patch just written',
     '  prototype-commit [slug] [--page <name>]        fold the delta layer into what owns it (irreversible)',
     '  prototype-clear [slug]                         remove prototype patches',
     '  prototype-export [slug]                        write dist/extension + dev spec',
+    '  prototype-record start|stop|import <path>      frames of your page, kept as evidence (research/frames/)',
+    '  prototype-verify [slug]                        the PRD acceptance checks (selector / endpoint)',
     '  prototype-contract-compose [slug] [--service <svc>]   fragments → services/<svc>/openapi.yaml',
     '  prototype-contract-export [slug] [--service <svc>]    dist contract for the backend',
     '  prototype-mock-apply [slug] [--service <svc>]         serve x-mock responses (fetch + XHR)',
     '  prototype-mock-clear                                  stop serving the mock',
     '  prototype-status [slug]                               pages, patches, services, exports, ownership',
     '  prototype-open [slug] [--page <name>]                 open it in a page of its own (the page you are on, else entry, else index)',
-    '  tabs                                           this window\'s pages: what each one is, whose task it is in, who is driving it',
+    '  tabs                                           this window\'s pages: what each one is, whose task it is in, who is working on it',
     '  tab-new [url]                                  add a page to this window, behind the person\'s',
     '  tab-show <id>                                  bring a page up for the person to look at',
+    '  tab-assign <id> <session>                      hand a page of your task to another conversation (a child session you spawned)',
     '  tab-close <id>                                 close a page of your task (the last one closes the window)',
     '  focus [windowId]                               focus a browser window (no new window)',
     '  release [windowId|all]                         dismiss agent overlay, and unlock the page it held',
@@ -126,13 +137,17 @@ export function getBrowserToolHelp(): string {
     'need their eyes on it. "tab-show <id>" is the one command that brings a page up for them.',
     '"prototype-open" always opens a page of its own, which is what lets two prototypes be worked on at',
     'once instead of replacing each other.',
-    'A page is yours to work on when it is an ordinary page, when it is for the prototype you work on, or when',
-    'it belongs to your task — the pages you opened, plus the ones opened from them; another conversation\'s',
-    'prototype is refused, and the refusal says which one it is.',
-    'While you work on a page it is **locked** — the person cannot click or type there, and another',
+    'A page is yours to work on when it belongs to your task — the pages you opened, the ones assigned to you,',
+    'plus the ones opened from them — or when nobody has claimed it yet (a page the person opened, which you',
+    'may take over). Another conversation\'s page is refused, prototype or not: sessions running in parallel',
+    '(a parent and the children it spawned) each work in their own page, and "tab-assign <id> <session>" is how',
+    'a parent hands one over.',
+    'While you work on a page it is **held** — the person cannot click or type there, and another',
     'conversation\'s command that names it is refused until your turn ends (or the person clicks the lock in',
-    'the page rail to let go of it).',
-    'Full rules and examples: docs/browser-tools.md.',
+    'the page rail to let go of it). Other conversations hold their own pages at the same time.',
+    'A session spawned by another one does not take over the page on screen and does not move what the person',
+    'sees: it works in the page it was given ("tab-assign"), or opens one with "tab-new".',
+    'Full rules and examples: docs/browser-tools.md; every prototype-* command: docs/prototypes.md.',
     '',
     'Batching (string mode, semicolon-separated, stops after navigation commands):',
     '  fill @e1 user@example.com; fill @e2 password123; click @e3',
@@ -154,6 +169,7 @@ export function getBrowserToolHelp(): string {
     '  paste Name\\tAge\\nAlice\\t30',
     '  scroll down 800',
     '  evaluate document.title',
+    '  evaluate --file prototypes/cart/patches/ui-002-total.js',
     '  pick',
     '  prototype-list',
     '  prototype-create Landing page                  (a container for pages; write cart.html and that is the first)',
@@ -164,10 +180,12 @@ export function getBrowserToolHelp(): string {
     '  prototype-target https://staging.example.com/checkout --page cart   (one page, another environment)',
     '  prototype-reference rival-checkout            (study it from the bound prototype)',
     '  prototype-apply                                (targets the bound prototype)',
+    '  prototype-apply --file prototypes/cart/patches/ui-002-total.js   (just that patch)',
     '  prototype-open checkout-flow --page orders      (one page of a multi-page prototype)',
     '  tabs                                            (which pages the window has, and which is on screen)',
     '  snapshot --tab tab-3                            (act on a named page, wherever the window is)',
     '  tab-show tab-3                                  (bring a page up for the person to look at)',
+    '  tab-assign tab-3 260915-brave-fox               (hand a page to a child session you spawned)',
     '  tab-close tab-3                                 (close one page; the last one closes the window)',
     '  prototype-apply checkout-flow                  (explicit target)',
     '  prototype-commit                               (fold what is done; the patch files go away)',
@@ -319,28 +337,11 @@ function countActionableNodes(nodes: Array<{ role: string; disabled?: boolean }>
 
 function summarizeWindows(windows: Awaited<ReturnType<BrowserPaneFns['listWindows']>>): string {
   const visible = windows.filter((w) => w.isVisible).length;
-  // "Driving", not "locked": a window with a driver is one a conversation is using
-  // right now, and the workspace's window is used by everyone in turn (plan §22).
-  const driving = windows.filter((w) => !!w.boundSessionId).length;
-  const withOverlay = windows.filter((w) => !!w.agentControlActive).length;
-  return `total=${windows.length}, visible=${visible}, driving=${driving}, overlays=${withOverlay}`;
-}
-
-/**
- * Who is driving a window right now.
- *
- * One question, not two (plan §22): the workspace's window is every conversation's
- * in turn, and the lease says who has it at the moment. There is no second kind of
- * window and no owner to fall back on, so "nobody" is a real answer rather than a
- * euphemism. Printed wherever the old answer was "locked", which stopped being true
- * the moment the window became shared.
- */
-function describeWindowDriver(w: {
-  isWorkspaceWindow?: boolean;
-  boundSessionId: string | null;
-}): string {
-  const which = w.isWorkspaceWindow ? "the workspace's window" : 'the window';
-  return w.boundSessionId ? `${which}, driven by ${w.boundSessionId}` : `${which}, nobody driving`;
+  // "Working", not "locked": a window is one its workspace shares, and what this counts is
+  // conversations at work in it right now (plan §22). Which page each one holds is the
+  // page's own answer, printed by `tabs`.
+  const working = windows.filter((w) => w.agentControlActive).length;
+  return `total=${windows.length}, visible=${visible}, working=${working}`;
 }
 
 /** `checkout-flow — page "orders" (overlay), its own address http://…`: which prototype, which screen, where it lives. */
@@ -474,6 +475,9 @@ const NAVIGATION_COMMANDS = new Set([
   'click',
   'back',
   'forward',
+  // A reload rebuilds the document, so every ref collected before it is stale — the same
+  // reason the others are here.
+  'reload',
 ]);
 
 function decodeEscapes(input: string): string {
@@ -751,6 +755,8 @@ export async function executeBrowserToolCommand(args: {
   fns: BrowserPaneFns;
   sessionId: string;
   platform?: NodeJS.Platform;
+  /** Where a relative `--file` path is counted from (the workspace root). */
+  workspaceRootPath?: string;
 }): Promise<BrowserCommandResult> {
   // Array mode: no batch splitting, pass directly to single command execution
   if (Array.isArray(args.command)) {
@@ -779,6 +785,8 @@ async function executeBatchCommands(args: {
   fns: BrowserPaneFns;
   sessionId: string;
   platform?: NodeJS.Platform;
+  /** Where a relative `--file` path is counted from (the workspace root). */
+  workspaceRootPath?: string;
 }): Promise<BrowserCommandResult> {
   const outputs: string[] = [];
   let lastImage: BrowserCommandImage | undefined;
@@ -882,11 +890,85 @@ function extractTabTarget(parts: string[]): { parts: string[]; tabId: string | n
   return { parts: [...parts.slice(0, at), ...parts.slice(at + 2)], tabId };
 }
 
+/**
+ * How large a script `evaluate --file` will read.
+ *
+ * A file this big is a mistake rather than a page test, and evaluating it would put a
+ * megabyte of somebody's source through CDP to no purpose — so the ceiling is refused
+ * with the size named, instead of silently shipping it.
+ */
+const MAX_EVALUATE_FILE_BYTES = 256 * 1024;
+
+/**
+ * The absolute path a command's `--file` names.
+ *
+ * A relative path is counted from the **workspace root**, which is where the prototype
+ * documents and `patches/` live and what a path like `prototypes/<slug>/patches/cart/
+ * ui-002-total.js` is counted from. Deliberately not a second base: the same string
+ * meaning two different files is how the wrong script gets injected. `~/…` is expanded;
+ * an absolute path is used as it is.
+ */
+function resolveLocalPath(filePath: string, workspaceRootPath?: string): string {
+  const requested = filePath === '~' || filePath.startsWith('~/') || filePath.startsWith('~\\')
+    ? resolve(homedir(), filePath.slice(2))
+    : filePath;
+
+  if (isAbsolute(requested)) return requested;
+
+  if (!workspaceRootPath) {
+    throw new Error(
+      `--file: "${filePath}" is not absolute and there is no workspace to count a relative path from. ` +
+      'Pass an absolute path.',
+    );
+  }
+
+  return resolve(workspaceRootPath, requested);
+}
+
+/**
+ * Read the script `evaluate --file` names, and say which file it came from.
+ *
+ * The flag exists so the source never has to enter the command: the model writes the
+ * script once (with the Write tool, or it is the patch it just wrote) and injects it by
+ * path, instead of spelling the same code out a second time — which costs the
+ * conversation twice, and escapes the code through a command string on the way.
+ */
+function readEvaluateFile(filePath: string, workspaceRootPath?: string): { source: string; path: string } {
+  const absolute = resolveLocalPath(filePath, workspaceRootPath);
+
+  if (!existsSync(absolute)) {
+    throw new Error(`evaluate --file: no such file: ${absolute}`);
+  }
+
+  const stats = statSync(absolute);
+  if (stats.isDirectory()) {
+    throw new Error(`evaluate --file: ${absolute} is a directory, not a script`);
+  }
+  if (stats.size > MAX_EVALUATE_FILE_BYTES) {
+    throw new Error(
+      `evaluate --file: ${absolute} is ${Math.round(stats.size / 1024)} KB, over the ` +
+      `${MAX_EVALUATE_FILE_BYTES / 1024} KB ceiling. Split the script, or inject the part that is in question.`,
+    );
+  }
+
+  // A byte-order mark ahead of the first statement is a syntax error in a page, and an
+  // editor that writes one is not a reason for the script to fail there.
+  const raw = readFileSync(absolute, 'utf8');
+  const source = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw;
+  if (!source.trim()) {
+    throw new Error(`evaluate --file: ${absolute} is empty`);
+  }
+
+  return { source, path: absolute };
+}
+
 async function executeSingleCommand(args: {
   command: string | string[];
   fns: BrowserPaneFns;
   sessionId: string;
   platform?: NodeJS.Platform;
+  /** Where a relative `--file` path is counted from (the workspace root). */
+  workspaceRootPath?: string;
 }): Promise<BrowserCommandResult> {
   // Array mode: use parts directly, no parsing needed
   const raw = Array.isArray(args.command)
@@ -942,7 +1024,7 @@ async function executeSingleCommand(args: {
     }
     if (win) {
       lines.push(
-        `Visible: ${win.isVisible}, driver: ${win.boundSessionId ?? 'none'}`,
+        `Visible: ${win.isVisible}, working: ${win.agentControlActive ? 'yes' : 'no'}`,
       );
     }
 
@@ -1788,9 +1870,53 @@ async function executeSingleCommand(args: {
     return { output: lines.join('\n'), appendReleaseHint: true };
   }
 
+  if (cmd === 'reload') {
+    // Measured before rather than after, and deliberately: the browser's own reload is
+    // fire-and-forget (nothing waits for a document to load), so reading the page here
+    // would answer with the old one or with a half-loaded one, and reporting either as
+    // "the page now" would be wrong. What the caller does next is `wait`, which is said.
+    const before = await getPageMetrics(fns);
+    await fns.reload();
+
+    const lines = ['Reloading this page'];
+    if (before) lines.push(`URL: ${before.url}`);
+    lines.push(
+      'Nothing waits for it to load — before reading the page, "wait network-idle <ms>" or ' +
+      '"wait <selector|text|url> <value> <ms>". Every @eN ref from before is stale: re-"snapshot".',
+    );
+    return { output: lines.join('\n'), appendReleaseHint: true };
+  }
+
   if (cmd === 'evaluate') {
-    const expression = parts.slice(1).join(' ').trim();
-    if (!expression) throw new Error('evaluate requires an expression. Example: evaluate document.title');
+    // The script may be named instead of spelled out: a patch the model already wrote is
+    // injected by path, so the same source is not generated a second time inside the
+    // command (see readEvaluateFile).
+    const fileAt = parts.indexOf('--file');
+    let expression: string;
+    let from: string | null = null;
+
+    if (fileAt === -1) {
+      expression = parts.slice(1).join(' ').trim();
+      if (!expression) throw new Error('evaluate requires an expression. Example: evaluate document.title');
+    } else {
+      const filePath = parts[fileAt + 1]?.trim();
+      if (!filePath || filePath.startsWith('--')) {
+        throw new Error(
+          '--file needs a path. Example: evaluate --file prototypes/cart/patches/ui-002-total.js',
+        );
+      }
+      const rest = [...parts.slice(1, fileAt), ...parts.slice(fileAt + 2)];
+      if (rest.length > 0) {
+        throw new Error(
+          `evaluate takes either an expression or "--file <path>", not both ("${rest.join(' ')}" would be ignored). ` +
+          'Put the whole script in the file, or drop --file.',
+        );
+      }
+      const read = readEvaluateFile(filePath, args.workspaceRootPath);
+      expression = read.source;
+      from = read.path;
+    }
+
     const result = await fns.evaluate(expression);
     const type = Array.isArray(result) ? 'array' : (result === null ? 'null' : typeof result);
 
@@ -1811,7 +1937,11 @@ async function executeSingleCommand(args: {
     }
 
     return {
-      output: [`Evaluate result type: ${type}`, rendered].join('\n'),
+      output: [
+        ...(from ? [`Ran ${from} (${expression.length} chars, nothing registered — "reload" drops it)`] : []),
+        `Evaluate result type: ${type}`,
+        rendered,
+      ].join('\n'),
       appendReleaseHint: true,
     };
   }
@@ -2246,14 +2376,45 @@ async function executeSingleCommand(args: {
   if (cmd === 'prototype-apply') {
     const slug = resolvePrototypeSlug(fns, parts, 'prototype-apply');
 
-    const result = await fns.applyPrototype(slug);
+    // One file, when the command names one: the patch that was just written, put on the page
+    // without replaying (or un-registering) everything else the page carries.
+    const fileAt = parts.indexOf('--file');
+    let file: string | undefined;
+    if (fileAt !== -1) {
+      const named = parts[fileAt + 1]?.trim();
+      if (!named || named.startsWith('--')) {
+        throw new Error(
+          '--file needs a path. Example: prototype-apply --file prototypes/cart/patches/ui-002-total.js',
+        );
+      }
+      file = resolveLocalPath(named, args.workspaceRootPath);
+    }
+
+    const result = await fns.applyPrototype(slug, file ? { file } : undefined);
     const count = (n: number) => `${n} patch${n === 1 ? '' : 'es'}`;
     const lines: string[] = [];
 
     // Which page's patches these are is not decoration: a page-scoped patch
     // (`patches/<page>/…`) only ever lands on that page, so "the patch did nothing"
     // and "the patch belongs to another page" have to be distinguishable here.
-    if (result.applied > 0) {
+    if (result.applied > 0 && result.file) {
+      lines.push(
+        `Prototype "${result.slug}": applied patches/${result.file.name}` +
+          (result.file.page
+            ? ` — the page "${result.file.page}" brings it`
+            : ' — a shared patch, so every page brings it'),
+      );
+      lines.push('It is also registered for future documents, so it survives a page reload.');
+      // Naming one file does not change which page the DOM belongs to: a patch of another
+      // page is injected into a document that does not have its elements, and every target
+      // below would report "matched nothing" as though the selectors were wrong.
+      if (result.file.page && result.page && result.file.page !== result.page) {
+        lines.push(
+          `Note: this command acted on the page "${result.page}", which does not bring that patch — ` +
+          `anything below that matched nothing may just be the wrong page being open.`,
+        );
+      }
+    } else if (result.applied > 0) {
       lines.push(
         `Prototype "${result.slug}": applied ${count(result.applied)}` +
           `${result.page ? ` for page "${result.page}"` : ' (the shared patches only — no page of this flow is on screen)'}`,
@@ -2263,16 +2424,22 @@ async function executeSingleCommand(args: {
     } else if (result.skipped.length > 0) {
       // The rendered page is the normal case for this: it arrives with every
       // patch inlined, so there is genuinely nothing to do.
-      lines.push(`Prototype "${result.slug}": nothing to inject — this page already carries all ${count(result.skipped.length)}.`);
+      lines.push(
+        result.file
+          ? `Prototype "${result.slug}": nothing to inject — the page already carries patches/${result.file.name}.`
+          : `Prototype "${result.slug}": nothing to inject — this page already carries all ${count(result.skipped.length)}.`,
+      );
     } else {
-      lines.push(`Prototype "${result.slug}": nothing to inject — no patch files found (expected patches/{lane}-{nnn}-{name}.{css|js}).`);
+      // Not reachable with `--file` (a file that is not a patch is refused, with the reason,
+      // before anything is injected), so this is the whole-set case only.
+      lines.push(`Prototype "${result.slug}": nothing to inject — no patch files found (expected patches/{writer}-{nnn}-{name}.{css|js}).`);
     }
 
     if (result.applied > 0 && result.skipped.length > 0) {
       lines.push(`Left alone, already inlined here: ${result.skipped.join(', ')}.`);
     }
     if (result.skipped.length > 0) {
-      lines.push('Inlined means the host rendered it from disk — a patch whose contents changed since then still counts as inlined, so reload the page to pick the change up.');
+      lines.push('Inlined means the host rendered it from disk — a patch whose contents changed since then still counts as inlined, so run "reload" to pick the change up.');
     }
 
     // What the patches made of the page (plan §21.1). This is the difference
@@ -2451,7 +2618,7 @@ async function executeSingleCommand(args: {
     const result = await fns.verifyPrototype(slug);
 
     const lines = [
-      `Acceptance — ${result.passed} passed, ${result.failed} failed, ${result.skipped} skipped`,
+      `Acceptance — round ${result.round}: ${result.passed} passed, ${result.failed} failed, ${result.skipped} skipped`,
       result.page
         ? `Page checks ran against ${result.page}.`
         : 'No page was open, so page checks were skipped.',
@@ -2460,28 +2627,48 @@ async function executeSingleCommand(args: {
         (entry) => `${entry.status.toUpperCase().padEnd(4)} ${entry.requirementId} ${entry.target} — ${entry.detail}`,
       ),
       '',
-      `Written to ${result.reportPath}`,
     ];
 
+    // What moved against the round before. A count cannot be acted on — five red is an emergency if
+    // it was zero last time and a shrug if it was five — so the movement is the answer, and the
+    // round is what makes it sayable.
+    const movement = [
+      ...result.diff.newRed.map((key) => `NEWLY RED   ${key}`),
+      ...result.diff.stillRed.map((key) => `STILL RED   ${key}`),
+      ...result.diff.notRun.map((key) => `NOT LOOKED  ${key} — it was red and this run could not check it`),
+      ...result.diff.fixed.map((key) => `FIXED       ${key}`),
+      ...result.diff.gone.map((key) => `UNDECLARED  ${key} — prd.md no longer carries it`),
+    ];
+    if (result.previous) {
+      lines.push(
+        movement.length > 0
+          ? `Since round ${result.previous.round}:`
+          : `Nothing moved since round ${result.previous.round} — the same result.`,
+      );
+      lines.push(...movement.map((line) => `  ${line}`));
+    } else {
+      lines.push('First round — there is nothing to compare it against yet.');
+    }
+    lines.push('');
+
+    // Each failure is an objection nobody has written down. Handing over the line to write is the
+    // whole difference between a verdict that lives in the transcript and one the next reader finds.
+    if (result.failed > 0) {
+      lines.push('To argue with one of these, write a review under reviews/ (one dispute per file):');
+      for (const entry of result.results.filter((check) => check.status === 'fail')) {
+        lines.push(
+          entry.kind === 'endpoint'
+            ? `  about: endpoint ${entry.target} · status: open`
+            : `  about: requirement ${entry.requirementId}${result.pageName ? ` (or: about: page ${result.pageName})` : ''} · status: open`,
+        );
+      }
+      lines.push('A dispute about a patch needs "on:" too — the fingerprint prototype-status prints for it.');
+      lines.push('');
+    }
+
+    lines.push(`Written to ${result.reportPath} (round recorded in acceptance/state.json)`);
+
     return { output: lines.join('\n'), appendReleaseHint: true };
-  }
-
-  if (cmd === 'prototype-project') {
-    const slug = resolvePrototypeSlug(fns, parts, 'prototype-project');
-    const explicit = parts[1] && !parts[1].startsWith('--') ? parts[2] : parts[1];
-    // `--clear` and no argument both mean "no project": the edge is optional, and
-    // removing it is the same kind of edit as setting it.
-    const projectSlug =
-      parts.includes('--clear') || !explicit || explicit.startsWith('--') ? null : explicit;
-
-    const result = await fns.setPrototypeProject({ slug, projectSlug });
-
-    return {
-      output: result.projectSlug
-        ? `Prototype "${result.slug}" now belongs to project "${result.projectSlug}". It stays where it is — the edge is not a container.`
-        : `Prototype "${result.slug}" no longer belongs to a project.`,
-      appendReleaseHint: true,
-    };
   }
 
   if (cmd === 'prototype-clear') {
@@ -2502,8 +2689,26 @@ async function executeSingleCommand(args: {
   if (cmd === 'prototype-export') {
     const slug = resolvePrototypeSlug(fns, parts, 'prototype-export');
 
-    const result = await fns.exportPrototype(slug);
+    // The gate (plan §3.7). Without `--strict` the export still happens — the deliverable is a
+    // snapshot of the current state, and being able to look at an unfinished prototype is the whole
+    // point of building one — but what is outstanding is said out loud rather than left for the
+    // recipient to discover. With `--strict`, an unsettled prototype is not exported at all: that is
+    // the mode an unattended run uses, where nobody is reading the "by the way" lines.
+    const strict = parts.includes('--strict');
     const status = await fns.prototypeStatus(slug);
+    const outstanding = whyPrototypeIsNotSettled(status);
+    if (strict && outstanding.length > 0) {
+      throw new Error(
+        [
+          `Prototype "${slug}" is not settled, so nothing was exported (--strict). Still outstanding:`,
+          ...outstanding.map((reason) => `  • ${reason}`),
+          '',
+          'Export without --strict to hand over the current state anyway: what is outstanding is written into the deliverable either way.',
+        ].join('\n'),
+      );
+    }
+
+    const result = await fns.exportPrototype(slug);
     const livePages = status.pages.filter((page) => page.kind === 'overlay').length;
     const ourPages = status.pages.length - livePages;
 
@@ -2512,18 +2717,37 @@ async function executeSingleCommand(args: {
         `${result.applied === 1 ? '' : 'es'} (build ${result.version})`,
       `  Extension: ${result.extensionDir}`,
       `  Spec: ${result.specPath}`,
+      // The index of the rest: what each reader opens, in what order. It goes to the
+      // recipient, not to us — the lines below are what *we* say about the same files.
+      `  Handoff: ${result.handoffPath}`,
+      // Only when there is one: a flow made only of live pages has no static half,
+      // and printing an empty path would read as a broken export.
+      ...(result.staticDir ? [`  Static: ${result.staticDir}`] : []),
+      // And the live pages' half without an extension, for a browser that will not
+      // load one.
+      ...(result.bookmarkletPath ? [`  Bookmarklet: ${result.bookmarkletPath}`] : []),
       '',
     ];
     // The folder is one deliverable either way, but what it *does* differs by the
     // pages it covers, and so does what to tell the agent to verify: a live page
     // gets patched in a real browser, a page of ours is shipped inside the package.
-    lines.push('The folder is the deliverable: a loadable Chrome extension. Hand it over as it is; the README in it');
-    lines.push('says where it applies, which responses are faked, and which build it is.');
+    lines.push('The extension folder is the main deliverable: a loadable Chrome extension. Hand it over as it is; the');
+    lines.push('README in it says where it applies, which responses are faked, and which build it is.');
     if (livePages > 0) {
       lines.push(
         `Loading it (chrome://extensions → Developer mode → Load unpacked) puts its patches on the ${livePages} live`,
         'page(s) it covers — nothing to click, and they survive a reload. After a re-export the recipient presses',
         'Reload on the extension.',
+      );
+    }
+    // Gated on the file, not on there being live pages: a flow whose live pages have
+    // nothing to apply has no bookmarklet, and describing one would send the reader
+    // looking for a file that is not there.
+    if (result.bookmarkletPath) {
+      lines.push(
+        '`bookmarklet.html` carries those same changes as links to drag onto the bookmarks bar — one per live page. It',
+        'is the fallback and says so: a page can refuse a bookmark through its own policy, and it takes a click per',
+        'page, per reload.',
       );
     }
     if (ourPages > 0) {
@@ -2533,11 +2757,39 @@ async function executeSingleCommand(args: {
       );
     }
     if (result.pageUrl) lines.push(`  browser_tool navigate ${result.pageUrl}`);
+    // The other half of the same pages, for a reader who should load nothing at
+    // all: the extension is the carrier for what cannot travel in a file, and this
+    // is what the pages of ours look like without one.
+    if (result.staticPath) {
+      lines.push(
+        '`static/` beside it carries those same pages as single files — no host, no extension and nothing to load:',
+        `double-click ${result.staticPath}, or send the file on. Live pages are not in there; they exist only at`,
+        'their own addresses, through the extension.',
+      );
+    }
     if (result.warnings.length > 0) {
       lines.push(
         '',
         'The document had to be adapted for the extension (behaviour is unchanged):',
         ...result.warnings.map((warning) => `  - ${warning}`),
+      );
+    }
+    if (result.staticWarnings.length > 0) {
+      lines.push(
+        '',
+        'The static page(s) could not carry everything the document asks for:',
+        ...result.staticWarnings.map((warning) => `  - ${warning}`),
+      );
+    }
+
+    // Exported anyway, and said so: a package that quietly carries an unanswered objection is how a
+    // "finished" prototype stops meaning anything. `dist/dev-spec.md` carries the same list to the
+    // person who receives it.
+    if (outstanding.length > 0) {
+      lines.push(
+        '',
+        `Exported, but this prototype is not settled — ${outstanding.length} thing(s) still outstanding (in the spec too):`,
+        ...outstanding.map((reason) => `  • ${reason}`),
       );
     }
 
@@ -2593,6 +2845,24 @@ async function executeSingleCommand(args: {
       `Prototype "${slug}" service "${result.service}": serving ${result.routes} mock route${result.routes === 1 ? '' : 's'} at the network layer`,
       'Covers fetch and XHR alike — the app does not need to point anywhere else.',
     ];
+    // The stateful half, said in the terms the author wrote the contract in: the
+    // routes that remember, and the store they remember in. Applying again resets
+    // it, which is the one thing about state a reader has to know.
+    if (result.stateful > 0) {
+      lines.push(
+        `${result.stateful} of them remember state (a path declaring \`x-mock-collection\`): what one request does, the next one sees.`,
+        'The store starts from state.json on every apply, so re-running this command starts the flow over.',
+      );
+    }
+    if (result.stateProblem) {
+      lines.push(`State unusable: ${result.stateProblem}`);
+    }
+    if (result.stateIssues.length > 0) {
+      lines.push(
+        `Operations this mock cannot express, and did not build a route for (${result.stateIssues.length}):`,
+        ...result.stateIssues.map((issue) => `  • ${issue}`),
+      );
+    }
     if (result.unmocked.length > 0) {
       lines.push(`Unmocked endpoints (${result.unmocked.length}): ${result.unmocked.join(', ')}`);
     }
@@ -2621,8 +2891,8 @@ async function executeSingleCommand(args: {
     const all = await fns.listPrototypes();
     const bySlug = new Map(all.map((prototype) => [prototype.slug, prototype]));
 
-    const laneSummary = Object.entries(status.patches.byLane)
-      .map(([lane, count]) => `${lane}: ${count}`)
+    const writerSummary = Object.entries(status.patches.byWriter)
+      .map(([writer, count]) => `${writer}: ${count}`)
       .join(', ');
 
     const lines = [
@@ -2680,7 +2950,7 @@ async function executeSingleCommand(args: {
     }
 
     lines.push(
-      `  patches:    ${status.patches.total}${laneSummary ? ` (${laneSummary})` : ''}` +
+      `  patches:    ${status.patches.total}${writerSummary ? ` (${writerSummary})` : ''}` +
         `${status.patches.total > 0 ? ` — ${status.patches.scoped} page-scoped, ${status.patches.total - status.patches.scoped} shared` : ''}`,
     );
 
@@ -2690,7 +2960,10 @@ async function executeSingleCommand(args: {
       for (const service of status.services) {
         lines.push(
           `  service ${service.slug}: ${service.endpoints} endpoints, ${service.mockedEndpoints} mocked, ` +
-          `${service.fragments} fragments, ${service.fixtures} fixtures`,
+            `${service.fragments} fragments, ${service.fixtures} fixtures` +
+            // Said only when it is true: a service of fixed answers is the ordinary case, and
+            // "0 keep state" would read like a count of something missing (plan §5.3).
+            (service.statefulEndpoints > 0 ? `, ${service.statefulEndpoints} keep state` : ''),
         );
         if (service.missingFixtures.length > 0) {
           lines.push(`    missing fixtures: ${service.missingFixtures.join(', ')}`);
@@ -2706,6 +2979,30 @@ async function executeSingleCommand(args: {
       lines.push(`  ownership:  ${status.ownership.violations.length} violation(s)`);
       for (const violation of status.ownership.violations) {
         lines.push(`    • ${violation.path} — ${violation.reason}`);
+      }
+    }
+
+    lines.push(
+      `  reviews:    ${status.reviews.unresolved.length} standing of ${status.reviews.total} filed`,
+    );
+    lines.push(
+      `  acceptance: ${
+        status.acceptance
+          ? `round ${status.acceptance.round} — ${status.acceptance.passed} passed, ${status.acceptance.failed} failed, ${status.acceptance.skipped} skipped`
+          : 'never run here'
+      }`,
+    );
+
+    // What is still owed, last, because it is the thing to act on. One line per reason, each
+    // already a sentence — the gate and this output read the same function, so a run that would be
+    // refused by 'prototype-export --strict' cannot look finished here.
+    const outstanding = whyPrototypeIsNotSettled(status);
+    if (outstanding.length === 0) {
+      lines.push('  unresolved: nothing — every requirement is implemented, no dispute stands, no check is red');
+    } else {
+      lines.push(`  unresolved: ${outstanding.length}`);
+      for (const reason of outstanding) {
+        lines.push(`    • ${reason}`);
       }
     }
 
@@ -2845,7 +3142,9 @@ async function executeSingleCommand(args: {
       `Session windows: ${summarizeWindows(windows)}`,
     ];
     if (target) {
-      lines.push(`${describeWindowDriver(target)}, visible: ${target.isVisible}`);
+      // Who is working in it is per page, so the window-level answer is just whether it is
+      // visible — "tabs" says which page each conversation holds (plan §22).
+      lines.push(`Visible: ${target.isVisible}, working: ${target.agentControlActive ? 'yes' : 'no'}`);
     }
 
     return {
@@ -2897,7 +3196,11 @@ async function executeSingleCommand(args: {
         );
       }
       lines.push(
-        `      belongs to: ${tab.openedBySessionId ? `agent (${tab.openedBySessionId})` : 'a person'}`,
+        `      belongs to: ${tab.belongsTo
+          ? tab.belongsTo.kind === 'task'
+            ? `${describeWork(tab.belongsTo)} (opened by ${tab.belongsTo.sessionId})`
+            : `agent (${tab.belongsTo.sessionId})`
+          : 'a person'}`,
       );
       lines.push(
         `      driven by:  ${tab.driverSessionId
@@ -2924,11 +3227,12 @@ async function executeSingleCommand(args: {
     lines.push(
       '',
       'Everything above "belongs to" is what the page itself reports. "belongs to" and "driven by" are',
-      'not: one is the task the page is part of — the pages you opened, and the pages opened *from* them —',
-      'and those are the ones you may close; the other is who is working on it at this moment (a lease,',
-      'released when a turn ends). "locked" is the lease enforced: while it is up, that page takes no input',
-      'from anybody else. "your page" is where your own unnamed commands land — it survives the turn, and',
-      'the person switching pages does not move it.',
+      'not: one is the work the page is part of — your own pages, a task\'s node\'s page, or a person\'s.',
+      'Pages of *your* work (the same task, when you are part of one) are the ones you may close; a page',
+      'of a task you are not working on is not yours. The other is who is working on it at this moment (a',
+      'lease, released when a turn ends). "locked" is the lease enforced: while it is up, that page takes',
+      'no input from anybody else. "your page" is where your own unnamed commands land — it survives the',
+      'turn, and the person switching pages does not move it.',
     );
 
     return { output: lines.join('\n'), appendReleaseHint: false };
@@ -2949,9 +3253,31 @@ async function executeSingleCommand(args: {
     const id = parts[1]?.trim();
     if (!id) throw new Error('tab-show needs a page id. "tabs" lists them. Example: tab-show tab-3');
 
-    await fns.activateTab(id);
+    const { movedView } = await fns.activateTab(id);
     return {
-      output: `Page ${id} is now the page the window shows — and the one your unnamed commands act on from here.`,
+      output: movedView
+        ? `Page ${id} is now the page the window shows — and the one your unnamed commands act on from here.`
+        : `Page ${id} is now the page you work from, but the window still shows the person's page: a session spawned by another one does not move what they are looking at. The conversation that spawned you can bring a page up if they should see it.`,
+      appendReleaseHint: false,
+    };
+  }
+
+  if (cmd === 'tab-assign') {
+    const tabId = parts[1]?.trim();
+    const targetSessionId = parts[2]?.trim();
+    if (!tabId || !targetSessionId) {
+      throw new Error(
+        'tab-assign needs a page id and the conversation to hand it to. ' +
+        'Example: tab-assign tab-3 260915-brave-fox — "tabs" lists the pages, and the ids of the sessions you spawned are in their own reports.',
+      );
+    }
+
+    await fns.assignTab(tabId, targetSessionId);
+    return {
+      output:
+        `Page ${tabId} is now that conversation's task, and the page it works from — it can start working there ` +
+        'without naming a page. Hand over one page per session you want working in parallel: they share this window, ' +
+        'and each works in its own page.',
       appendReleaseHint: false,
     };
   }

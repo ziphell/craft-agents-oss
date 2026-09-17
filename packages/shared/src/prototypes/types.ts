@@ -103,6 +103,31 @@ export const PROTOTYPE_RESEARCH_DIRNAME = 'research'
 export const PROTOTYPE_ANCHORS_DIRNAME = 'anchors'
 
 /**
+ * The directory a prototype's **reviews** live in: one dispute per file — what is
+ * argued against, why, and what was decided (`reviews.ts`).
+ *
+ * The other half of `research/`, deliberately shaped like it. `research/` is the
+ * *for* (a claim, its source, its evidence) and this is the *against*, because a
+ * workbench that only records what was learned records half of the argument: an
+ * objection that lives only in the conversation is gone the moment the window is
+ * closed, and the person reading the prototype sees a piece of work nobody ever
+ * disagreed with.
+ */
+export const PROTOTYPE_REVIEWS_DIRNAME = 'reviews'
+
+/**
+ * The directory a prototype's **acceptance state** lives in: the record of every
+ * check, per round, so "is this newly red?" is answerable (`acceptance.ts`).
+ *
+ * Not in `dist/`: that directory is the deliverable and is rewritten on every
+ * export, while this is our memory of what was verified before. Not in
+ * `anchors/` either — anchors are about elements on a page, this is about
+ * requirements. Like `anchors/`, nothing here is rendered, replayed or packaged,
+ * and only the tool that runs the checks writes it.
+ */
+export const PROTOTYPE_ACCEPTANCE_DIRNAME = 'acceptance'
+
+/**
  * The slot as it was first written, read for compatibility only.
  *
  * A shell written before the standard spelling would otherwise look like "a shell
@@ -117,18 +142,97 @@ export const LEGACY_PROTOTYPE_LAYOUT_SLOT = '<!-- @page -->'
 export type PrototypePatchKind = 'css' | 'js'
 
 /**
- * The lane a `prototype-commit` fold lands in (`commit.ts`), and the reason it
- * is a lane rather than a new artifact kind: a consolidated file is still a
- * patch — same naming, same ownership, same replay — and the only thing that
- * makes it special is that it must replay **after** everything it folded.
+ * The writer id a `prototype-commit` fold is filed under (`commit.ts`), and why it
+ * is a writer id rather than a new artifact kind: a consolidated file is still a
+ * patch — same naming, same ownership, same replay — and the only thing that makes
+ * it special is that it must replay **after** everything it folded.
  *
- * `Z` sorts last by the alphabet, but the rule is stated rather than inherited
- * (`byReplayOrder` in `storage.ts`): a patch's semantics may not depend on which
- * lane letter another patch happens to use. It lives here, in the module that
- * imports nothing, because both `ownership.ts` (the lane table) and `storage.ts`
- * (the order) need it and neither may import the other.
+ * `Z` is reserved: only the control plane writes it, so any agent writer that puts
+ * `Z-…` in a patch name is overstepping. Reserved-ness is a **rule** (`byReplayOrder`
+ * in `storage.ts` checks it before sorting, and the write guard refuses it), never
+ * an inherited alphabet: a patch's meaning may not depend on which writer ids the
+ * other patches happen to use. It lives here, in the module that imports nothing,
+ * because `ownership.ts` (the rules) and `storage.ts` (the order) both need it and
+ * neither may import the other.
  */
-export const CONSOLIDATED_LANE = 'Z'
+export const CONSOLIDATED_WRITER = 'Z'
+
+/**
+ * The writer id a session works under when nothing declared one.
+ *
+ * A prototype usually has exactly one writer (the conversation), so the identity has to
+ * **always exist** — otherwise every file-writing turn would first have to declare one, and
+ * the common case would be the awkward one. Multi-writer work (a DAG's nodes) declares
+ * `writes:` per node instead.
+ */
+export const PROTOTYPE_DEFAULT_WRITER = 'main'
+
+/**
+ * The writer identity a session writes as: what the graph declared for it, else the single-writer
+ * default.
+ *
+ * One function because three callers must agree — the prompt (what the agent is told), the write
+ * guard (what it is checked against), and the status/report path. A declared id wins over the
+ * default; an empty/whitespace declaration is treated as none, so a blank yaml field cannot
+ * silently become a writer id of `''`.
+ */
+export function resolvePrototypeWriter(source?: { taskWrites?: string } | null): string {
+  const declared = source?.taskWrites?.trim()
+  return declared && declared.length > 0 ? declared : PROTOTYPE_DEFAULT_WRITER
+}
+
+/**
+ * The one grammar for a patch file's name: `{writer}-{nnn}-{name}.{css|js}`, optionally one
+ * directory deep (`patches/<page>/…`). Shared by `storage.ts` (parsing) and `ownership.ts`
+ * (ownership) so the two can never disagree about what a valid name is.
+ *
+ * The writer segment is lazy and the order segment is the anchor, which is what makes a
+ * multi-hyphen writer id parse unambiguously: `research-competitors-001-report.css` splits at
+ * the first `-<digits>-`, i.e. writer `research-competitors`, order `001`.
+ */
+export const PROTOTYPE_PATCH_NAME_RE = /^(.+?)-(\d+)-(.+?)\.(css|js)$/
+
+/**
+ * A writer id: a slug, and never something that would make a patch name ambiguous.
+ *
+ * The second half is what keeps the parse total: the name splits at the first `-<digits>-`, so an
+ * id that **ends** in `-<digits>` could never be recovered from the name it produced
+ * (`ui-2-001-x.css` reads as writer `ui`, order `2`) — the declared writer and the name would
+ * silently disagree, which is exactly the failure ownership exists to prevent.
+ */
+export function isValidWriterId(id: string): boolean {
+  return /^[a-z0-9][a-z0-9-]*$/i.test(id) && !/-\d+(-|$)/.test(id)
+}
+
+/** Whether a name's writer segment is the reserved consolidated one. */
+export function isConsolidatedWriter(id: string | null | undefined): boolean {
+  return (id ?? '').toUpperCase() === CONSOLIDATED_WRITER
+}
+
+/** The parts a patch file name encodes, or null when it is not a patch name at all. */
+export interface PrototypePatchName {
+  writer: string
+  order: number
+  /** The `{name}` segment, without the extension. */
+  name: string
+  kind: PrototypePatchKind
+}
+
+/**
+ * Parse a patch file name (not a path). Returns null when the shape is wrong **or** the writer
+ * id is unusable — both mean "this file is not a patch we wrote", which the injector ignores
+ * and `prototype-status` reports as misnamed.
+ */
+export function parsePrototypePatchName(file: string): PrototypePatchName | null {
+  const match = PROTOTYPE_PATCH_NAME_RE.exec(file)
+  if (!match) return null
+  const writer = match[1] ?? ''
+  const order = Number(match[2])
+  const name = match[3] ?? ''
+  const kind = (match[4] ?? '') as PrototypePatchKind
+  if (!isValidWriterId(writer) || !Number.isFinite(order) || name === '') return null
+  return { writer, order, name, kind }
+}
 
 /** One patch file plus the metadata derived from its name. */
 export interface PrototypePatch {
@@ -136,8 +240,12 @@ export interface PrototypePatch {
   file: string
   /** Kind inferred from the file extension. */
   kind: PrototypePatchKind
-  /** Lane prefix parsed from the name (`A-001-…` → `A`), or null. */
-  lane: string | null
+  /**
+   * The **writer identity** claimed by the name (`A-001-…` → `A`, `checkout-ui-002-…` →
+   * `checkout-ui`), or null when the name does not claim one. This is the token ownership is
+   * derived from — a name lease, not a work-kind label.
+   */
+  writer: string | null
   /** Replay order parsed from the name. */
   order: number
   /** File contents. */

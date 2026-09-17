@@ -71,6 +71,11 @@ export interface KanbanTask {
    * Undefined for non-Conductor tasks (fall back to `subtasks.length`).
    */
   subtaskTotal?: number
+  /**
+   * Gates of this task's active run waiting on a person (`kind: approval`). The run cannot move
+   * until they are answered, so the tile badges it — this is a state the user must act on.
+   */
+  awaitingApproval?: number
   /** Flagged for attention (drives the flag star). */
   isFlagged?: boolean
   /** A turn is in flight — drives the live-pulse treatment when enabled. */

@@ -41,6 +41,29 @@ describe('task-spec-form round-trip', () => {
     expect(dependent.depends_on).toEqual(['research-conductor'])
   })
 
+  it('carries declared structured outputs through the editor round-trip', () => {
+    // The form has no control for `outputs`; dropping them would break the sibling reference and
+    // the spec validator rejects a ref to an undeclared field.
+    const generated: SpecNode[] = [
+      {
+        id: 'review',
+        title: 'Review',
+        prompt: 'Review the draft.',
+        outputs: [{ name: 'verdict', type: 'string', enum: ['approved', 'rejected'] }],
+      },
+      { id: 'act', title: 'Act', prompt: 'Verdict: ${nodes.review.output.verdict}', depends_on: ['review'] },
+    ]
+
+    const subtasks = specToSubtasks(generated, 'm')
+    const spec = buildSpec({ title: 'T', goal: 'g', projectId: '', orchModel: '', subtasks }, noConn)
+
+    const nodes = spec.nodes as Array<{ id: string; outputs?: unknown }>
+    expect(nodes.find((n) => n.id === 'review')!.outputs).toEqual([
+      { name: 'verdict', type: 'string', enum: ['approved', 'rejected'] },
+    ])
+    expect(nodes.find((n) => n.id === 'act')!.outputs).toBeUndefined()
+  })
+
   it('emits task-level sources/skills when picked and omits them when empty', () => {
     const subtasks = specToSubtasks([{ id: 'a', title: 'A', prompt: 'p' }], 'm')
     const picked = buildSpec(

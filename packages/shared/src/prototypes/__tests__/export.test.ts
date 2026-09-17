@@ -6,14 +6,17 @@ import {
   buildDevSpec,
   buildInlinedPatchProbeScript,
   buildSelfContainedHtml,
+  buildStaticPage,
   exportPrototype,
   INLINED_PATCHES_ELEMENT_ID,
   resolvePrototypeEntry,
 } from '../export'
+import type { MockProgram } from '../mock-engine'
 import { setPrototypeBaseUrlResolver } from '../url'
 import {
   createPrototype,
   getPrototypeDirPath,
+  getPrototypeDistPath,
   getPrototypePatchesPath,
   writePrototypeConfig,
   writePrototypePage,
@@ -25,7 +28,7 @@ import {
 const cssPatch: PrototypePatch = {
   file: 'A-001-btn.css',
   kind: 'css',
-  lane: 'A',
+  writer: 'A',
   order: 1,
   source: '.btn { color: red }',
   targets: [],
@@ -36,7 +39,7 @@ const cssPatch: PrototypePatch = {
 const jsPatch: PrototypePatch = {
   file: 'A-002-guard.js',
   kind: 'js',
-  lane: 'A',
+  writer: 'A',
   order: 2,
   source: 'window.guard = true;',
   targets: [],
@@ -149,6 +152,59 @@ describe('buildSelfContainedHtml', () => {
   })
 })
 
+/**
+ * The static deliverable (plan §17.8): one page of ours, as a file that carries
+ * everything it needs. The transform is the preview's, so what it adds here is
+ * only what a preview gets from the host — the mock layer, and a directory to
+ * resolve a reference against.
+ */
+describe('buildStaticPage', () => {
+  const mocks: MockProgram = { routes: [{ method: 'GET', path: '/orders', status: 200, body: [{ id: 1 }] }], store: {} }
+  /** A page with no references of its own, so the tests are about what is added. */
+  const resolveNothing: () => { kind: 'sibling' } = () => ({ kind: 'sibling' })
+
+  it('carries this page’s patches, and never another page’s', () => {
+    const { html } = buildStaticPage({
+      page: 'cart',
+      document: BASE,
+      patches: [cssPatch, jsPatch, { ...jsPatch, file: 'other-page.js', page: 'pay' }],
+      resolveAsset: resolveNothing,
+    })
+
+    expect(html).toContain('<style id="__craft_prototype_patches__">')
+    expect(html).toContain('window.guard = true;')
+    // A patch under `patches/pay/` belongs to that page (plan §19.4).
+    expect(html).not.toContain('other-page.js')
+  })
+
+  it('installs the mock layer before the page’s own code runs', () => {
+    const { html } = buildStaticPage({
+      page: 'cart',
+      document: BASE,
+      patches: [jsPatch],
+      mocks,
+      resolveAsset: resolveNothing,
+    })
+
+    // The order is the point: a page whose code captured `fetch` before the mock
+    // layer installed would keep talking to the network.
+    expect(html).toContain('window.fetch = async')
+    expect(html.indexOf('window.fetch = async')).toBeLessThan(html.indexOf('window.guard = true;'))
+  })
+
+  it('leaves the document alone when there is nothing to add', () => {
+    const { html, warnings } = buildStaticPage({
+      page: 'cart',
+      document: BASE,
+      patches: [],
+      resolveAsset: resolveNothing,
+    })
+
+    expect(html).toBe(BASE)
+    expect(warnings).toEqual([])
+  })
+})
+
 describe('buildInlinedPatchProbeScript', () => {
   /** Run the probe against a stand-in for `document`. */
   function probeWith(payload: string | null): unknown {
@@ -189,15 +245,88 @@ describe('buildDevSpec', () => {
 
     expect(spec).toContain('### Shared (every page)')
     expect(spec).toContain('#### 1. `A-001-shared.css`')
-    expect(spec).toContain('CSS patch, lane A, order 1, every page.')
+    expect(spec).toContain('CSS patch, writer A, order 1, every page.')
 
     // One section per page, and a page only lists what it carries.
     expect(spec).toContain(`### \`cart\` — scratch (${cartPage.url})`)
     expect(spec).toContain('#### 1. `B-002-total.js`')
-    expect(spec).toContain('JavaScript patch, lane A, order 2, page `cart`.')
+    expect(spec).toContain('JavaScript patch, writer A, order 2, page `cart`.')
     expect(spec).toContain('window.guard = true;')
     expect(spec).toContain('### `pay` — overlay (https://app.example.com/pay)')
     expect(spec).toContain('_None of its own._')
+    // A change that declares nothing says so: nothing checked what it matched.
+    expect(spec).toContain('Declares no `@target`, so nothing checked what it matched.')
+  })
+
+  /**
+   * What each `@target` matched is knowable only from an apply — and it is the first thing
+   * the reader has to know, because a selector that stopped matching describes a page that is
+   * no longer there (plan §21.2). The three states are different problems, so they read
+   * differently.
+   */
+  it('reports each declared @target against the anchor record, including where it moved to', () => {
+    const anchors = [
+      {
+        page: null,
+        url: 'https://app.example.com/pay',
+        updatedAt: '2026-09-15T10:00:00.000Z',
+        anchors: [
+          {
+            target: '[data-pay]',
+            patches: ['patches/A-004-pay.css'],
+            fingerprint: { tag: 'button', text: 'Pay now', path: 'body > form > button', attrs: ['.pay-btn'] },
+            firstSeenAt: '2026-09-10T10:00:00.000Z',
+            lastMatchedAt: '2026-09-15T09:00:00.000Z',
+            matched: 2,
+          },
+        ],
+      },
+      {
+        page: 'cart',
+        url: null,
+        updatedAt: '2026-09-15T10:00:00.000Z',
+        anchors: [
+          {
+            target: '[data-total]',
+            patches: ['patches/cart/A-005-total.css'],
+            fingerprint: {
+              tag: 'span',
+              text: '¥128.00',
+              path: 'body > main > span',
+              attrs: ['#cart-total', '[data-role="total"]'],
+            },
+            firstSeenAt: '2026-09-10T10:00:00.000Z',
+            lastMatchedAt: '2026-09-12T09:00:00.000Z',
+            matched: 0,
+          },
+        ],
+      },
+    ]
+
+    const spec = buildDevSpec('checkout-flow', {
+      pages: [cartPage],
+      patches: [
+        { ...cssPatch, file: 'A-004-pay.css', source: '/* @target [data-pay] */\n.pay { color: red }' },
+        {
+          ...cssPatch,
+          file: 'A-005-total.css',
+          page: 'cart',
+          source: '/* @target [data-total] */\n.total { font-weight: 700 }',
+        },
+        // Declared, applied, and never matched: no record at all — which is not the same
+        // thing as a selector that used to work.
+        { ...cssPatch, file: 'A-006-idle.css', source: '/* @target .idle */\n.idle { opacity: 0 }' },
+      ],
+      anchors,
+    })
+
+    expect(spec).toContain('Aimed at `[data-pay]` — matched 2 element(s), last seen 2026-09-15.')
+    expect(spec).toContain(
+      'Aimed at `[data-total]` — recorded 2026-09-12 as span “¥128.00”, and matching nothing since: the page moved.',
+    )
+    // The fingerprint is what makes drift recoverable rather than only reportable.
+    expect(spec).toContain('It is now reachable as `#cart-total`, `[data-role="total"]`.')
+    expect(spec).toContain('Aimed at `.idle` — nothing has recorded it matching.')
   })
 
   it('says the index is the default when no page is marked as the entry', () => {
@@ -271,27 +400,32 @@ describe('exportPrototype', () => {
    * extension page such a path resolves to the *package* root — so unless the files
    * are in the package under their own names, a delivered page silently loses its
    * styles the moment it is handed over.
+   *
+   * Everything under `assets/` travels, and as bytes: which of those files a page
+   * addresses is not answerable from the markup (a script builds the URL), and a
+   * utf-8 round trip is what would corrupt an image.
    */
   it('ships the prototype’s own static files, under the paths the pages use', () => {
     writePrototypeConfig(workspaceRoot, slug, { pages: [{ name: 'cart', kind: 'scratch', entry: true }] })
     writePage(
       'cart',
-      '<!doctype html><html><head><link rel="stylesheet" href="/assets/app.css"></head><body>cart</body></html>',
+      '<!doctype html><html><head><link rel="stylesheet" href="/assets/app.css"></head>' +
+        '<body><img src="/assets/logo.png">cart</body></html>',
     )
 
     const assetsDir = join(getPrototypeDirPath(workspaceRoot, slug), 'assets')
     mkdirSync(join(assetsDir, 'lib'), { recursive: true })
     writeFileSync(join(assetsDir, 'app.css'), '.app{}', 'utf-8')
     writeFileSync(join(assetsDir, 'lib', 'format.js'), 'export const x = 1', 'utf-8')
-    // A binary asset has nowhere to go yet: reported, not silently dropped.
-    writeFileSync(join(assetsDir, 'logo.png'), 'PNG', 'utf-8')
+    // Bytes a utf-8 round trip would destroy: 0xff 0xfe is not valid utf-8.
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe])
+    writeFileSync(join(assetsDir, 'logo.png'), png)
 
     const result = exportPrototype(workspaceRoot, slug)
 
     expect(readFileSync(join(result.extensionDir, 'assets', 'app.css'), 'utf-8')).toBe('.app{}')
     expect(readFileSync(join(result.extensionDir, 'assets', 'lib', 'format.js'), 'utf-8')).toBe('export const x = 1')
-    expect(existsSync(join(result.extensionDir, 'assets', 'logo.png'))).toBe(false)
-    expect(result.warnings.join('\n')).toContain('assets/logo.png')
+    expect(readFileSync(join(result.extensionDir, 'assets', 'logo.png'))).toEqual(png)
 
     // …and the reference in the page resolves inside the package, which is what the
     // existing "every reference exists" check below asserts for the rest.
@@ -336,6 +470,39 @@ describe('exportPrototype', () => {
     }
 
     expect(readFileSync(result.specPath, 'utf-8')).toContain('A-001-btn.css')
+  })
+
+  /**
+   * The index a recipient opens first: which artifact is for whom. It is built from the `dist/`
+   * listing as it exists at write time, so it can only ever name what the run left behind — a
+   * handover that points at a file which is not in the box would send someone looking for it.
+   */
+  it('writes a handoff index of what the run produced, and of what is not settled', () => {
+    writePrototypeConfig(workspaceRoot, slug, { pages: [{ name: 'cart', kind: 'scratch', entry: true }] })
+    writePage('cart')
+    writePatch('A-001-btn.css', '.btn{}')
+    // A requirement nothing implements is a blocker, so the package has to say so.
+    writeFileSync(join(prototypeDir, 'prd.md'), '## R-001 A cart holds its line\n', 'utf-8')
+
+    const result = exportPrototype(workspaceRoot, slug)
+
+    expect(result.handoffPath.endsWith(join('dist', 'handoff.md'))).toBe(true)
+    const handoff = readFileSync(result.handoffPath, 'utf-8')
+
+    expect(handoff).toContain('# Handover — checkout-flow')
+    expect(handoff).toContain('The flow starts at `cart`.')
+    // What the run produced, and only that: this flow is a single page of ours with no
+    // contract, so there is no bookmarklet, no backend document and no acceptance report.
+    expect(handoff).toContain('| `dev-spec.md` |')
+    expect(handoff).toContain('| `extension/` |')
+    expect(handoff).toContain('| `static/` |')
+    expect(handoff).not.toContain('bookmarklet.html')
+    expect(handoff).not.toContain('contract.md')
+    expect(handoff).not.toContain('acceptance.md')
+
+    // The gate, on the package's own first page rather than only in the conversation.
+    expect(handoff).toContain('## What this delivery does not settle')
+    expect(handoff).toContain('R-001 is in prd.md but no page or patch refers to it')
   })
 
   /**
@@ -528,6 +695,157 @@ describe('exportPrototype', () => {
     writePrototypeConfig(workspaceRoot, slug, { pages: [{ name: 'base', kind: 'scratch', entry: true }] })
 
     expect(() => exportPrototype(workspaceRoot, slug)).toThrow(/documents are not in/)
+  })
+
+  /**
+   * The third carrier (plan §17.9): the live pages' changes as bookmarks, for the
+   * machine where an unpacked extension cannot be loaded. It carries the **same**
+   * bundle the extension ships, so the two cannot behave differently — only what
+   * gets the code into the page differs.
+   */
+  it('writes the live pages’ changes as bookmarklets', () => {
+    writePrototypeConfig(workspaceRoot, slug, {
+      pages: [
+        { name: 'cart', kind: 'overlay', url: 'https://app.example.com/cart', entry: true },
+        { name: 'pay', kind: 'overlay', url: 'https://app.example.com/pay' },
+      ],
+    })
+    writePatch('A-001-shared.css', '.shared{}')
+    writePatch('cart/B-001-total.js', 'window.total = 1;')
+    writePatch('pay/C-001-pay.js', 'window.pay = true;')
+
+    const result = exportPrototype(workspaceRoot, slug)
+    const html = readFileSync(result.bookmarkletPath!, 'utf-8')
+
+    expect(result.bookmarkletPath?.endsWith(join('dist', 'bookmarklet.html'))).toBe(true)
+
+    // One link per live page: a bookmark is not scoped to an address the way a
+    // content script is, so the link the reader picks is the screen they get.
+    const hrefs = [...html.matchAll(/href="(javascript:[^"]+)"/g)].map((match) => match[1]!)
+    expect(hrefs).toHaveLength(2)
+    const codes = hrefs.map((href) => decodeURIComponent(href.slice('javascript:'.length)))
+
+    // Each carries its own page's patches and the shared ones — never another
+    // page's (plan §19.4).
+    expect(codes[0]).toContain('.shared{}')
+    expect(codes[0]).toContain('window.total = 1;')
+    expect(codes[0]).not.toContain('window.pay = true;')
+    expect(codes[1]).toContain('.shared{}')
+    expect(codes[1]).toContain('window.pay = true;')
+    expect(codes[1]).not.toContain('window.total = 1;')
+
+    // Each is a program: a bookmark that does not parse is found here rather than
+    // when someone clicks it in front of the customer.
+    for (const code of codes) expect(() => new Function(code)).not.toThrow()
+
+    // The address each is for is printed beside it, since the file cannot enforce it.
+    expect(html).toContain('https://app.example.com/pay')
+  })
+
+  // A bookmark that does nothing is worse than no bookmark: it looks like it
+  // worked. A flow of ours has no live page to inject into, and one left over from
+  // an earlier export is removed rather than kept.
+  it('has no bookmarklet for a flow of ours, and removes one left over', () => {
+    writePrototypeConfig(workspaceRoot, slug, { pages: [{ name: 'cart', kind: 'scratch', entry: true }] })
+    writePage('cart')
+    const leftover = join(getPrototypeDistPath(workspaceRoot, slug), 'bookmarklet.html')
+    mkdirSync(dirname(leftover), { recursive: true })
+    writeFileSync(leftover, 'stale', 'utf-8')
+
+    const result = exportPrototype(workspaceRoot, slug)
+
+    expect(result.bookmarkletPath).toBeNull()
+    expect(existsSync(leftover)).toBe(false)
+  })
+
+  /**
+   * The static deliverable (plan §17.8): the pages of ours as files that need
+   * nothing to be looked at — no host, no extension, nothing to load. What the
+   * extension gets from Chrome (a package root to resolve a path against), and what
+   * the preview gets from the host, has to be in the file itself.
+   */
+  it('writes every page of ours as one self-contained file', () => {
+    writePrototypeConfig(workspaceRoot, slug, { pages: [{ name: 'cart', kind: 'scratch', entry: true }] })
+    writePage(
+      'cart',
+      '<!doctype html><html><head><link rel="stylesheet" href="/assets/app.css"></head>' +
+        '<body><img src="assets/logo.png"><a href="orders.html">Orders</a>' +
+        '<a href="/orders.html#top">Orders (absolute)</a></body></html>',
+    )
+    writePage('orders', '<!doctype html><html><body><h1>Orders</h1></body></html>')
+    writePatch('A-001-btn.css', '.btn{}')
+    writePatch('B-002-total.js', 'window.total = 1;')
+
+    const assetsDir = join(prototypeDir, 'assets')
+    mkdirSync(assetsDir, { recursive: true })
+    writeFileSync(join(assetsDir, 'app.css'), '.app{}', 'utf-8')
+    writeFileSync(join(assetsDir, 'logo.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+
+    const result = exportPrototype(workspaceRoot, slug)
+    const html = readFileSync(result.staticPath!, 'utf-8')
+
+    expect(result.staticDir?.endsWith(join('dist', 'static'))).toBe(true)
+    expect(result.staticPath?.endsWith(join('dist', 'static', 'cart.html'))).toBe(true)
+    expect(existsSync(join(result.staticDir!, 'orders.html'))).toBe(true)
+
+    // The patches are text in the page rather than files beside it…
+    expect(html).toContain('<style id="__craft_prototype_patches__">')
+    expect(html).toContain('window.total = 1;')
+    expect(html).not.toContain('patches/A-001-btn.css')
+
+    // …and so is everything the page references, except a page of ours, which
+    // travels beside it: a relative link is left exactly as the author wrote it, and
+    // a root-absolute one (which would resolve to the filesystem root here) is made
+    // relative, fragment and all.
+    expect(html).toContain('href="data:text/css;base64,')
+    expect(html).toContain('src="data:image/png;base64,')
+    expect(html).toContain('<a href="orders.html">Orders</a>')
+    expect(html).toContain('<a href="orders.html#top">Orders (absolute)</a>')
+    expect(html).not.toContain('/assets/app.css')
+    expect(html).not.toContain('/orders.html')
+  })
+
+  /**
+   * A live page cannot be frozen: it runs its own code and carries its own session,
+   * so a copy of it would only look like the page being worked on. A prototype made
+   * only of them has no static half — and a folder left over from an earlier export
+   * is removed rather than kept as a page of a state this prototype is no longer in.
+   */
+  it('has no static half for a flow of live pages, and removes one left over', () => {
+    writePrototypeConfig(workspaceRoot, slug, {
+      pages: [{ name: 'pay', kind: 'overlay', url: 'https://app.example.com/pay', entry: true }],
+    })
+    const staticDir = join(getPrototypeDistPath(workspaceRoot, slug), 'static')
+    mkdirSync(staticDir, { recursive: true })
+    writeFileSync(join(staticDir, 'cart.html'), 'stale', 'utf-8')
+
+    const result = exportPrototype(workspaceRoot, slug)
+
+    expect(result.staticDir).toBeNull()
+    expect(result.staticPath).toBeNull()
+    expect(existsSync(staticDir)).toBe(false)
+  })
+
+  /**
+   * A reference that names no file of this prototype is the one thing a single file
+   * cannot fix, and it would be a link that breaks the moment the page is opened on
+   * its own — reported, and left as written, because rewriting it to nothing would
+   * hide which reference is broken.
+   */
+  it('reports a reference the static page cannot carry', () => {
+    writePrototypeConfig(workspaceRoot, slug, { pages: [{ name: 'cart', kind: 'scratch', entry: true }] })
+    writePage(
+      'cart',
+      '<!doctype html><html><head><link rel="stylesheet" href="/missing/app.css"></head><body>cart</body></html>',
+    )
+
+    const result = exportPrototype(workspaceRoot, slug)
+
+    expect(result.staticWarnings.join('\n')).toContain('/missing/app.css')
+    // Not mixed into the extension's warnings: the two deliverables are adapted for
+    // different reasons, and one header cannot be true of both.
+    expect(result.warnings.join('\n')).not.toContain('/missing/app.css')
+    expect(readFileSync(result.staticPath!, 'utf-8')).toContain('href="/missing/app.css"')
   })
 })
 

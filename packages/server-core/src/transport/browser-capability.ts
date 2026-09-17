@@ -8,6 +8,8 @@
  * See docs/adr-transport-locality.md for the locality boundary definition.
  */
 
+import type { TabBelongsTo } from '@craft-agent/shared/protocol'
+
 export const BROWSER_CAPABILITY_VERSION = 1
 
 /**
@@ -28,6 +30,7 @@ export type BrowserCapabilityMethod =
   | 'activateTab'
   | 'setSessionPage'
   | 'closeTab'
+  | 'assignTab'
   | 'listTabs'
   | 'unbindAllForSession'
   | 'setAgentControl'
@@ -85,10 +88,21 @@ export interface BrowserCapabilityRequest {
   method: BrowserCapabilityMethod
   /** Positional args matching `IBrowserPaneManager[method]` signature. */
   args: unknown[]
-  /** Owning session — used for owner-key namespacing on the client dispatcher. */
+  /** Owning session — who is asking, and whose cursor and lease a page is written under. */
   sessionId: string
-  /** Owning workspace — combined with `sessionId` to form the owner-key prefix. */
+  /** Owning workspace — the boundary a call may act inside. */
   workspaceId: string
+  /**
+   * The **work** the asking session is part of (plan §22).
+   *
+   * Identity next to `sessionId` rather than in `args`, for the same reason `createTab`'s
+   * `by` is stamped by the dispatcher rather than read from the wire: a page's
+   * `belongsTo` has to be the caller's own work, and a request that named somebody else's
+   * would be writing a page's declaration on their behalf. A session that is part of no
+   * task is its own work — so this is `{ kind: 'session', sessionId }` for an ordinary
+   * conversation, and the task's node for a Conductor child.
+   */
+  work: TabBelongsTo
   /**
    * The page of the window this call acts on, when the caller resolved one.
    *

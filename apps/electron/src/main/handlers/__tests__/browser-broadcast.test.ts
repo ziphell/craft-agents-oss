@@ -57,7 +57,6 @@ function makeInstance(id: string, overrides?: Partial<BrowserInstanceInfo>): Bro
     isLoading: false,
     canGoBack: false,
     canGoForward: false,
-    boundSessionId: null,
     isVisible: true,
     agentControlActive: false,
     themeColor: null,
@@ -294,7 +293,7 @@ describe('browser handler — workspace filtering', () => {
         'activate:browser-1:tab-1',
         'close:browser-1:tab-2',
         // A page added from the main window is a person's, which is what "no session
-        // asked for it" means — stated by leaving `openedBySessionId` out.
+        // asked for it" means — stated by leaving `belongsTo` out.
         'new:browser-1:{"activate":true}',
       ])
     })

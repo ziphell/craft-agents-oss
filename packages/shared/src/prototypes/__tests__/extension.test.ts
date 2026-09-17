@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test'
+﻿import { describe, expect, it } from 'bun:test'
 import {
   buildExtensionPackage,
   buildMockScript,
@@ -13,7 +13,7 @@ import type { PrototypePatch } from '../types'
 const cssPatch: PrototypePatch = {
   file: 'A-001-btn.css',
   kind: 'css',
-  lane: 'A',
+  writer: 'A',
   order: 1,
   source: '.btn { color: red }',
   targets: [],
@@ -24,7 +24,7 @@ const cssPatch: PrototypePatch = {
 const jsPatch: PrototypePatch = {
   file: 'B-002-badge.js',
   kind: 'js',
-  lane: 'B',
+  writer: 'B',
   order: 2,
   source: "document.querySelector('.total')?.classList.add('is-big');",
   targets: [],
@@ -324,7 +324,7 @@ describe('buildMockScript', () => {
   }
 
   it('answers a declared route with its fixture and status', async () => {
-    const { fetch, passedThrough } = runMocks(buildMockScript([mockRoute]))
+    const { fetch, passedThrough } = runMocks(buildMockScript({ routes: [mockRoute], store: {} }))
 
     const response = await fetch('/api/orders')
 
@@ -339,7 +339,7 @@ describe('buildMockScript', () => {
    * the host it was written against.
    */
   it('matches on the path, whatever host the page calls', async () => {
-    const { fetch, passedThrough } = runMocks(buildMockScript([mockRoute]))
+    const { fetch, passedThrough } = runMocks(buildMockScript({ routes: [mockRoute], store: {} }))
 
     const response = await fetch('https://api.internal.example.com/api/orders?page=2')
 
@@ -348,7 +348,7 @@ describe('buildMockScript', () => {
   })
 
   it('leaves everything it was not asked to fake alone', async () => {
-    const { fetch, passedThrough } = runMocks(buildMockScript([mockRoute]))
+    const { fetch, passedThrough } = runMocks(buildMockScript({ routes: [mockRoute], store: {} }))
 
     const response = await fetch('/api/orders/ord-1/refund', { method: 'POST' })
 
@@ -357,7 +357,7 @@ describe('buildMockScript', () => {
   })
 
   it('answers a bodiless response with an empty body', async () => {
-    const { fetch } = runMocks(buildMockScript([{ ...mockRoute, method: 'DELETE', status: 204, body: null }]))
+    const { fetch } = runMocks(buildMockScript({ routes: [{ ...mockRoute, method: 'DELETE', status: 204, body: null }], store: {} }))
 
     const response = await fetch('/api/orders', { method: 'DELETE' })
 
@@ -366,7 +366,7 @@ describe('buildMockScript', () => {
   })
 
   it('is executable JavaScript in the page it is injected into', () => {
-    expect(() => new Function(buildMockScript([mockRoute]))).not.toThrow()
+    expect(() => new Function(buildMockScript({ routes: [mockRoute], store: {} }))).not.toThrow()
   })
 })
 
@@ -394,8 +394,11 @@ describe('buildExtensionPackage', () => {
     })
   }
 
-  function file(pkg: { files: Array<{ path: string; content: string }> }, path: string): string {
-    return pkg.files.find((entry) => entry.path === path)?.content ?? ''
+  function file(pkg: { files: Array<{ path: string; content: string | Uint8Array }> }, path: string): string {
+    const content = pkg.files.find((entry) => entry.path === path)?.content ?? ''
+    // Every file this module generates is text; the union is only there for the
+    // prototype's own assets, which `export.ts` copies as bytes.
+    return typeof content === 'string' ? content : new TextDecoder().decode(content)
   }
 
   /**
@@ -545,7 +548,7 @@ describe('buildExtensionPackage', () => {
    */
   it('builds one content script per live page, each carrying only its own files', () => {
     const cartJs: PrototypePatch = { ...jsPatch, file: 'cart/B-002-badge.js', page: 'cart' }
-    const payCss: PrototypePatch = { ...cssPatch, file: 'B-001-pay.css', lane: 'B', page: 'pay' }
+    const payCss: PrototypePatch = { ...cssPatch, file: 'B-001-pay.css', writer: 'B', page: 'pay' }
 
     const pkg = buildExtensionPackage({
       slug: 'checkout-flow',
@@ -594,7 +597,7 @@ describe('buildExtensionPackage', () => {
       entryPage: 'cart',
       indexDocument: INDEX_DOCUMENT,
       patches: [cssPatch],
-      mocks: [mockRoute],
+      mocks: { routes: [mockRoute], store: {} },
       builtAt: BUILT_AT,
     })
     const manifest = JSON.parse(file(pkg, 'manifest.json'))
@@ -645,7 +648,7 @@ describe('buildExtensionPackage', () => {
     // The flow's order, with the kind on each line: it decides what "open it" means.
     expect(readme).toContain('- `pay` (overlay) — <https://app.example.com/checkout>')
     // Which page each patch changes, or that it changes every page.
-    expect(readme).toContain('`A-001-btn.css` — css, lane A, every page')
+    expect(readme).toContain('`A-001-btn.css` — css, writer A, every page')
     expect(readme).toContain('Load unpacked')
     expect(readme).toContain('Reload')
   })

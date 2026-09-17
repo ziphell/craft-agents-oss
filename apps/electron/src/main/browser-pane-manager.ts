@@ -20,9 +20,9 @@ import {
   type BrowserInstanceInfo,
 } from '../shared/types'
 import { DEFAULT_THEME, loadAppTheme, getAllowRemoteEvaluate } from '@craft-agent/shared/config'
-import { CodedError, RPC_CHANNELS } from '@craft-agent/shared/protocol'
-import type { PickedElement, PickedElementOrigin, BrowserToolbarAction, BrowserTabSummary } from '@craft-agent/shared/protocol'
-import type { MockRoute } from '@craft-agent/shared/prototypes'
+import { CodedError, RPC_CHANNELS, describeWork, sameWork } from '@craft-agent/shared/protocol'
+import type { PickedElement, PickedElementOrigin, BrowserToolbarAction, BrowserTabSummary, TabBelongsTo } from '@craft-agent/shared/protocol'
+import type { MockProgram } from '@craft-agent/shared/prototypes'
 import { getBrowserLiveFxCornerRadii } from '../shared/browser-live-fx'
 import type {
   IBrowserPaneManager,
@@ -271,23 +271,16 @@ const PICKER_POLL_MS = 250
  */
 const PICKER_MAX_CONSECUTIVE_FAILURES = 4
 
-interface AgentControlState {
-  active: boolean
-  sessionId: string
+/**
+ * What one conversation at the browser is doing, for the overlay's chip.
+ *
+ * Per conversation rather than per window (plan §22, Conductor): several conversations
+ * work in one window at the same time, each on its own page, so "what is being done"
+ * has one answer per session — see {@link BrowserInstance.controlBy}.
+ */
+interface AgentControlLabel {
   displayName?: string
   intent?: string
-  /**
-   * The page this session **holds** while its overlay is up, or `null` when it holds none
-   * (no command has resolved a page yet, or the page it held is gone).
-   *
-   * The lock, stated rather than derived (plan §22, 第九轮修正): deriving it from "the
-   * session's lease on whatever page its command landed on" put the lock on the page the
-   * command *fell back* to — usually the one the person was looking at — and left them
-   * unable to use it for the rest of the turn. Kept as a tab id so "the page it holds" can
-   * be checked and cleared: closing that page, or the person releasing the overlay, unlocks
-   * it (see `closeTab` and the toolbar's `release`).
-   */
-  tabId: string | null
 }
 
 /**
@@ -331,19 +324,23 @@ interface BrowserTab {
    */
   boundPrototype: PrototypeWindowBinding | null
   /**
-   * Who asked for this page — which session, or nobody (a person).
+   * The **work this page is part of** — whose page it is, or `null` for a person's.
    *
-   * Its own producer is whoever created it (a person through the toolbar or the
-   * panel, or the agent through `tab-new`/`prototype-open`), and nothing writes it
-   * afterwards. It lives here rather than being inferred because an agent has to
-   * leave other people's pages alone, and no URL says which ones those are — and it
-   * is the *session* rather than a yes/no because with several conversations sharing
-   * a window, "an agent opened it" does not say whether it is mine (plan §22).
+   * Written by whoever created it (a person through the toolbar or the panel, or the agent
+   * through `tab-new`/`prototype-open`) and inherited by pages derived from it; nothing
+   * rewrites it afterwards (plan §22, 第十一轮). It lives here rather than being inferred
+   * because an agent has to leave other people's pages alone, and no URL says which ones
+   * those are.
    *
-   * `openedBy: 'user' | 'agent'` is a rendering of this, produced where words are
-   * needed (`toTabSummary`, the agent's `tabs` output) rather than stored as well.
+   * It is the **work** rather than the conversation (plan §22): a page outlives the session
+   * that opened it, so a DAG node's page says which task and which node it is for and a
+   * re-run of that node inherits it instead of orphaning it. Which conversation is on the
+   * page right now is the lease's answer ({@link driverSessionId}, {@link heldBy}).
+   *
+   * `openedBy: 'user' | 'agent'` is a rendering of this, produced where words are needed
+   * (`toTabSummary`, the agent's `tabs` output) rather than stored as well.
    */
-  openedBySessionId: string | null
+  belongsTo: TabBelongsTo | null
   /**
    * Which session is working on this page **now**, or `null` when nobody is.
    *
@@ -368,6 +365,21 @@ interface BrowserTab {
    * conversation's own commands — the person switching pages does not move it.
    */
   cursorOf: string | null
+  /**
+   * Which session is holding this page **right now**, or `null` when nobody is — the page
+   * lock (plan §22, 第九轮).
+   *
+   * Stated rather than derived: the page is claimed when a command says it is the one being
+   * worked on, and let go when that turn ends or the person takes it back. A held page takes
+   * no input from a person, and another conversation's commands that name it are refused —
+   * while the chrome, the other pages and the window itself stay usable.
+   *
+   * **Per page, because several conversations work in one window at once** (plan §22,
+   * Conductor): a DAG's child sessions run in parallel, each on its own page. One slot per
+   * window would mean the second conversation to start silently dropped the first one's
+   * lock — which is exactly what parallel children ran into.
+   */
+  heldBy: string | null
   /**
    * How this page came to exist, when the browser asked for it rather than a command
    * doing so.
@@ -431,43 +443,20 @@ interface BrowserInstance {
   readonly title: string
   readonly currentUrl: string
   /**
-   * Which session is driving this window **now**, or `null` when nobody is.
+   * The workspace whose browser window this is — the one every conversation in
+   * that workspace, and the user, work in (plan §22), or `null` for a window
+   * opened with no workspace context. Renderers in other workspaces filter such
+   * entries out of the tab strip / status badge.
    *
-   * A lease, not ownership: every command a session runs through this window
-   * renews it, and a turn ending releases it (`unbindAllForSession`). Two
-   * conversations using the same window take turns here rather than each having
-   * a window of their own (plan §22) — which is what makes "another
-   * conversation's page is in here" answerable instead of mysterious.
+   * Stamped at create-time and never rewritten, and it is the **whole** of the
+   * window's identity: there is one window per workspace, so this is what keeps
+   * two workspaces' windows apart and what every reach check is made against
+   * (`instanceBelongsToWorkspace`). No session owns a window, and none is named
+   * here: who is working in it is per page (`BrowserTab.cursorOf` / `heldBy`),
+   * because a parent and its children can be in it at once (Conductor).
    *
-   * The **session's own id**, never a key of this file's making: the window is
-   * only ever touched by sessions of its own workspace, and those come from one
-   * server, so they are already one id space. Isolation is `workspaceId`'s job
-   * (see `instanceBelongsToWorkspace`).
-   */
-  boundSessionId: string | null
-  /**
-   * Whether this window is its **workspace's browser window** — the one every
-   * conversation in that workspace, and the user, work in (plan §22).
-   *
-   * A window's scope rather than its purpose: the same window is where a general
+   * A window's scope rather than its purpose: the same one is where a general
    * task's browsing happens, and most of its pages have no prototype behind them.
-   *
-   * There is one per workspace, and it is found by this flag rather than by who
-   * is asking: no session owns it, so "which window is mine" stopped being a
-   * question with an owner-shaped answer. Its pages are the unit of work, and
-   * they carry what used to be the window's identity (which prototype, whose).
-   */
-  isWorkspaceWindow: boolean
-  /**
-   * Workspace this instance is associated with, or `null` for a window opened
-   * with no workspace context. Renderers in other workspaces filter such entries
-   * out of the tab strip / status badge. Stamped at create-time and never
-   * rewritten: it is the boundary every reach check is made against
-   * (`instanceBelongsToWorkspace`).
-   *
-   * For the workspace's window it is also the **discriminator**: that window is
-   * the one with this flag and matching id, which is what keeps two workspaces'
-   * windows apart without either being "owned" by a session.
    */
   workspaceId: string | null
   isVisible: boolean
@@ -481,7 +470,16 @@ interface BrowserInstance {
   pendingShowOnReady: boolean
   pendingShowToken: number
   lastAction: LastBrowserAction | null
-  agentControl: AgentControlState | null
+  /**
+   * Which conversations have their overlay up in this window right now, and what each said
+   * it is doing — keyed by session, in the order they started.
+   *
+   * A map rather than the single slot this used to be (plan §22, Conductor): one window is
+   * shared, and a parent's child sessions run in parallel, each holding its own page. The
+   * lock lives on the page (`BrowserTab.heldBy`); this is only "who is working here and
+   * what they are doing", which is what the overlay chip renders.
+   */
+  controlBy: Map<string, AgentControlLabel>
   lastLaunchToken: string | null
   /**
    * Whether the element picker is **armed on this window** (plan §12.7).
@@ -538,17 +536,6 @@ function tabById(instance: BrowserInstance, tabId: string | null | undefined): B
 interface CreateBrowserInstanceOptions {
   show?: boolean
   workspaceId?: string | null
-  /** Make this window its workspace's browser window (see `BrowserInstance.isWorkspaceWindow`). */
-  isWorkspaceWindow?: boolean
-  /**
-   * Which session is driving it from the moment it exists, or `null` when it is
-   * opened with nobody at the wheel.
-   *
-   * Part of the window's first state rather than a second call: the toolbar is
-   * pushed at create-time, and it must not say "no conversation here" for a
-   * window a session is already using (plan §22).
-   */
-  leaseSessionId?: string | null
 }
 
 export interface BrowserScreenshotOptions {
@@ -777,7 +764,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    *
    * A page says who opened it by **session id**, and an id is not something a person
    * can tell one conversation from another by. This is a *name for a group*, not a
-   * second owner: the grouping reads `openedBySessionId` and nothing here can change
+   * second owner: the grouping reads `belongsTo` and nothing here can change
    * it. `null` for a session that is gone or has no name yet, and the chrome falls
    * back to a generic label rather than showing an id.
    */
@@ -862,9 +849,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       boundPrototype: null,
       // A page nobody said they asked for is nobody's: only the opener writes this,
       // and a page the user opened has no session to name.
-      openedBySessionId: null,
+      belongsTo: null,
       driverSessionId: null,
       cursorOf: null,
+      heldBy: null,
       disposition: null,
       nativeOverlayReady: false,
       themeColor: null,
@@ -880,7 +868,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const instanceId = id || `browser-${++instanceCounter}`
     const shouldShow = options?.show ?? false
     const workspaceId = options?.workspaceId ?? null
-    const isWorkspaceWindow = options?.isWorkspaceWindow ?? false
 
     if (this.instances.has(instanceId)) {
       mainLog.warn(`[browser-pane] Instance already exists, reusing: ${instanceId}`)
@@ -959,8 +946,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       railView,
       tabs: [tab],
       activeTabId: tab.id,
-      boundSessionId: options?.leaseSessionId ?? null,
-      isWorkspaceWindow,
       workspaceId,
       isVisible: false,
       isHiding: false,
@@ -973,7 +958,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       pendingShowOnReady: false,
       pendingShowToken: 0,
       lastAction: null,
-      agentControl: null,
+      controlBy: new Map(),
       lastLaunchToken: null,
       picking: false,
       pickLabel: 'Add to conversation',
@@ -1005,7 +990,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.instances.set(instanceId, instance)
     this.emitStateChange(instance)
     mainLog.info(`[browser-pane] toolbar version: v4-react-chromeless`)
-    mainLog.info(`[browser-pane] Created instance: ${instanceId} (show=${shouldShow}, workspace=${workspaceId ?? 'none'}, driver=${options?.leaseSessionId ?? 'none'})`)
+    mainLog.info(`[browser-pane] Created instance: ${instanceId} (show=${shouldShow}, workspace=${workspaceId ?? 'none'})`)
 
     void this.loadChromePage(instance, 'bar')
       .finally(() => {
@@ -1074,13 +1059,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       activate?: boolean
       prototype?: PrototypeWindowBinding | null
       /**
-       * Which conversation this page **belongs to**, or `null` for a person's page — see
-       * {@link BrowserTab.openedBySessionId}.
+       * Whose page this is: the **work** of the conversation asking for it, or `null` for a
+       * person's page — see {@link BrowserTab.belongsTo}.
        *
-       * A page opened *for* a conversation also becomes the page it works from; a page merely
-       * derived from one of its pages (`afterTabId`) only joins its group.
+       * A page opened *for* a conversation also becomes the page it works from, and starts
+       * with that conversation's lease (the work's own `sessionId`); a page merely derived
+       * from one of its pages (`afterTabId`) only joins its group, which is why the browser's
+       * own window-open channel passes the page it was opened from's work here.
        */
-      openedBySessionId?: string | null
+      belongsTo?: TabBelongsTo | null
       /**
        * Open it **right after** this page instead of at the end of the strip.
        *
@@ -1116,14 +1103,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     if (unwritten) {
       if (options?.prototype !== undefined) unwritten.boundPrototype = options.prototype
-      if (options?.openedBySessionId !== undefined) {
-        unwritten.openedBySessionId = options.openedBySessionId ?? null
+      if (options?.belongsTo !== undefined) {
+        unwritten.belongsTo = options.belongsTo ?? null
         // Someone is about to work on it, so it is not left looking idle.
-        unwritten.driverSessionId = unwritten.openedBySessionId
+        unwritten.driverSessionId = options.belongsTo?.sessionId ?? null
         // …and it is where they work from: a page a conversation opened is the page its
         // next unnamed command means (plan §22, 第十轮).
-        if (unwritten.openedBySessionId) {
-          this.recordSessionPage(instance, unwritten.id, unwritten.openedBySessionId)
+        if (options.belongsTo) {
+          this.recordSessionPage(instance, unwritten.id, options.belongsTo.sessionId)
         }
       }
       if (options?.disposition !== undefined) unwritten.disposition = options.disposition
@@ -1137,8 +1124,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
 
     const tab = this.buildTab(session.fromPartition(SESSION_PARTITION))
-    if (options?.openedBySessionId !== undefined) {
-      tab.openedBySessionId = options.openedBySessionId ?? null
+    if (options?.belongsTo !== undefined) {
+      tab.belongsTo = options.belongsTo ?? null
     }
     if (options?.disposition !== undefined) tab.disposition = options.disposition
     // A page the browser derived from another one (`afterTabId`: it was a link or a popup on
@@ -1152,7 +1139,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // Whoever opened a page is working on it: the lease starts where the page does,
       // so a conversation that just opened something does not have to touch it twice
       // before the window says what is going on.
-      tab.driverSessionId = tab.openedBySessionId
+      tab.driverSessionId = tab.belongsTo?.sessionId ?? null
     }
 
     const afterIndex = options?.afterTabId
@@ -1164,8 +1151,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // …and it becomes the page they work from, for the same reason (plan §22, 第十轮).
     // After the page is in the window: the cursor is written on the page, so the page has
     // to be findable by id when this runs.
-    if (!derivedFromAnotherPage && tab.openedBySessionId) {
-      this.recordSessionPage(instance, tab.id, tab.openedBySessionId)
+    if (!derivedFromAnotherPage && tab.belongsTo) {
+      this.recordSessionPage(instance, tab.id, tab.belongsTo.sessionId)
     }
 
     this.attachTab(instance, tab)
@@ -1199,7 +1186,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       url?: string
       activate?: boolean
       prototype?: PrototypeWindowBinding | null
-      openedBySessionId?: string | null
+      belongsTo?: TabBelongsTo | null
       afterTabId?: string
       disposition?: 'link' | 'popup' | null
       reuseUntouchedWindow?: boolean
@@ -1426,7 +1413,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
             element,
             // The page it came from, read at the moment of the pick: the picker is
             // the window's, so the element alone does not say where it was picked.
-            origin: this.describePageLocation(instance, tab),
+            origin: this.describePageLocation(tab),
           })
         }
 
@@ -1482,6 +1469,53 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const instance = this.instances.get(instanceId)
     if (!instance) return []
     return instance.tabs.map((tab) => this.toTabSummary(instance, tab))
+  }
+
+  /**
+   * Hand one page to another conversation: from now on it is **that conversation's work**, and
+   * the page it works from (plan §22, Conductor).
+   *
+   * The orchestrator's verb — a parent's child sessions each need a page of their own, and
+   * "whose work is this page" is what decides who may work there. Giving a page away is
+   * therefore only possible for a page that is **the caller's own work or nobody's**: a
+   * conversation cannot hand on work it does not have, and it cannot take another's page and
+   * pass it along. Whether the receiver is a session worth handing to (same workspace, actually
+   * exists) is `SessionManager`'s call — it is the side that knows the conversations, and it is
+   * also the side that can resolve the receiver's **work**, which is why `to` is passed whole
+   * rather than as a session id the browser side could only guess a task from.
+   *
+   * The page also stops being the giver's in every other sense: its cursor and its hold move with
+   * the work, or the giver would keep working from a page it just gave away.
+   */
+  assignTab(instanceId: string, tabId: string, to: TabBelongsTo, by: TabBelongsTo): void {
+    const instance = this.requireAliveInstance(instanceId)
+    const tab = tabById(instance, tabId)
+    if (!tab) throw new Error(`Browser window "${instanceId}" has no page "${tabId}".`)
+    if (!to?.sessionId) {
+      throw new Error('Handing a page over needs the conversation to hand it to.')
+    }
+    if (tab.belongsTo && !sameWork(tab.belongsTo, by)) {
+      throw new Error(
+        `Page ${tabId} is ${describeWork(tab.belongsTo)}'s, so ${by.sessionId} cannot hand it on.`,
+      )
+    }
+
+    if (tab.cursorOf === by.sessionId) tab.cursorOf = null
+    if (tab.driverSessionId === by.sessionId) tab.driverSessionId = null
+    if (tab.heldBy === by.sessionId) tab.heldBy = null
+
+    tab.belongsTo = to
+    // It becomes the page the receiver works from: "here is your page" has to mean it can start
+    // working without naming one, or the handover would be a page it cannot reach.
+    for (const other of instance.tabs) {
+      if (other.cursorOf === to.sessionId && other.id !== tabId) other.cursorOf = null
+    }
+    tab.cursorOf = to.sessionId
+
+    this.updateNativeOverlayState(instance)
+    this.pushToolbarState(instance)
+    this.emitStateChange(instance)
+    mainLog.info(`[browser-pane] page handed over instance=${instance.id} tab=${tabId} from=${by.sessionId} to=${to.sessionId}`)
   }
 
   /**
@@ -2057,7 +2091,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    */
   private suspendOverlayForCapture(instance: BrowserInstance, tab: BrowserTab): boolean {
     if (tab.id !== instance.activeTabId) return false
-    const shouldSuspend = !!instance.agentControl?.active
+    const shouldSuspend = instance.controlBy.size > 0
       && tab.nativeOverlayReady
 
     if (!shouldSuspend) return false
@@ -2913,12 +2947,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Serve `routes` for matching requests at the browser's network layer.
+   * Serve the contract's mock for matching requests at the browser's network layer.
    * Covers fetch and XHR alike, with no page-level patching.
+   *
+   * The program carries the store as well as the routes, and each apply starts it
+   * over — "apply the mock" is how a demo of the flow is reset.
    */
-  async setFetchMock(id: string, routes: MockRoute[], tabId?: string): Promise<number> {
+  async setFetchMock(id: string, program: MockProgram, tabId?: string): Promise<number> {
     const instance = this.requireAliveInstance(id)
-    return this.pageOf(instance, tabId).cdp.setFetchMockRoutes(routes)
+    return this.pageOf(instance, tabId).cdp.setFetchMockRoutes(program)
   }
 
   /** Stop intercepting; requests fall through to the real network again. */
@@ -3009,79 +3046,68 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Release a session's lease on whatever it was driving.
+   * Let go of everything a session was holding in the browser.
    *
-   * Non-destructive: the window stays, because the workspace's window is almost
-   * never this session's alone — the next turn, the next conversation or the user
-   * picks it up from here. Only the lease goes.
+   * Non-destructive: the window stays, because the workspace's window is almost never
+   * this session's alone — the next turn, the next conversation or the user picks it up
+   * from here. What goes is what this session put there: its page leases (across every
+   * window, see `clearPageLeases`), its holds, and its overlay.
    */
   unbindAllForSession(sessionId: string): void {
-    // The pages first, and across every window: see `clearPageLeases` for why the
-    // window lease is the wrong place to decide what this session was driving.
     this.clearPageLeases(sessionId)
-    for (const instance of this.instances.values()) {
-      if (instance.boundSessionId !== sessionId) continue
-      this.releaseLease(instance)
-      mainLog.info(`[browser-pane] Released lease on ${instance.id} from session ${sessionId} (workspaceWindow=${instance.isWorkspaceWindow})`)
-    }
+    this.clearControl(sessionId)
   }
 
   /**
    * The window a session works in — its **workspace's browser window** (plan §22).
    *
-   * One window per workspace, shared by every conversation in it and by the user,
-   * whatever the work is: a prototype flow, or a general task that has nothing to do
-   * with one. Nothing here is per-session any more: the session that asks becomes the
-   * window's *driver* for now (`boundSessionId`), which is a lease rather than
-   * ownership, and a second conversation asking for the same window simply takes its
-   * turn as the driver. That is the whole point — several prototypes are worked on at
-   * once by being several pages of one window, and a page carries the identity a
-   * window used to.
+   * One window per workspace, shared by every conversation in it and by the user, whatever
+   * the work is: a prototype flow, or a general task that has nothing to do with one.
+   * Resolving it depends on the **workspace** alone; `sessionId` names who is asking, and
+   * nothing about the window is written from it — which conversations are working in it is
+   * per page (`BrowserTab.cursorOf` / `heldBy`), because a parent and its child sessions can
+   * be in it at once (Conductor).
    *
-   * `sessionId` may be null: opening a browser by hand is the same window with
-   * nobody driving it yet.
+   * `sessionId` may be null: opening a browser by hand is the same window.
    */
   createForSession(
     sessionId: string | null,
     options?: { show?: boolean; workspaceId?: string | null },
   ): string {
     const workspaceId = options?.workspaceId ?? null
-    const existing = this.findWorkspaceWindow(workspaceId)
+    const existing = this.findWindowForWorkspace(workspaceId)
 
     if (existing) {
-      // A hand-opened page does not renew the lease: the person clicking around did
-      // not stop whatever conversation was working here.
-      if (sessionId !== null) this.setWindowDriver(existing, sessionId)
       if (options?.show) {
         this.focus(existing.id)
       }
-      mainLog.info(`[browser-pane] Workspace window resolved instance=${existing.id} workspace=${workspaceId ?? 'none'} driver=${existing.boundSessionId ?? 'none'} pages=${existing.tabs.length}`)
+      mainLog.info(`[browser-pane] Workspace window resolved instance=${existing.id} workspace=${workspaceId ?? 'none'} askedBy=${sessionId ?? 'a person'} pages=${existing.tabs.length}`)
       return existing.id
     }
 
     const id = this.createInstance(undefined, {
       show: options?.show ?? false,
-      isWorkspaceWindow: true,
-      leaseSessionId: sessionId,
       workspaceId,
     })
-    mainLog.info(`[browser-pane] Workspace window created instance=${id} workspace=${workspaceId ?? 'none'} driver=${sessionId ?? 'none'}`)
+    mainLog.info(`[browser-pane] Workspace window created instance=${id} workspace=${workspaceId ?? 'none'} askedBy=${sessionId ?? 'a person'}`)
     return id
   }
 
   /**
    * This workspace's browser window, or null when none is open yet.
    *
-   * Found by what it is rather than by who is asking: `isWorkspaceWindow` plus the
-   * workspace it was stamped with. `workspaceId === null` is a bucket of its own
-   * (a caller with no workspace context), which keeps such a window from being
-   * handed to a workspace that has none of its own.
+   * Found by the workspace it was stamped with, which is the whole of a window's
+   * identity now that there is one window per workspace (plan §22): `workspaceId`
+   * is stamped at create-time and never rewritten, so two workspaces' windows cannot
+   * be confused for each other and neither needs an owner. `workspaceId === null` is
+   * a bucket of its own (a caller with no workspace context), which keeps such a
+   * window from being handed to a workspace that has none of its own.
    */
-  private findWorkspaceWindow(workspaceId: string | null): BrowserInstance | null {
+  private findWindowForWorkspace(workspaceId: string | null): BrowserInstance | null {
     for (const instance of this.instances.values()) {
-      if (!instance.isWorkspaceWindow || instance.workspaceId !== workspaceId) continue
+      if (instance.workspaceId !== workspaceId) continue
       if (instance.window.isDestroyed()) {
-        this.cleanupDestroyedInstance(instance, 'findWorkspaceWindow')
+        this.cleanupDestroyedInstance(instance, 'findWindowForWorkspace')
         continue
       }
       return instance
@@ -3090,39 +3116,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Note that a session is driving this window now.
-   *
-   * The **window's** half of the lease, and only that half: it is renewed on every command
-   * (`createForSession` is how every browser command resolves its window), so "who has this
-   * window" answers itself without any explicit handover — and a turn ending releases it,
-   * leaving the window to whoever uses it next (see `unbindAllForSession`).
-   *
-   * The page's half is written where the page is known — see `setSessionPage`.
-   */
-  private setWindowDriver(instance: BrowserInstance, sessionId: string): void {
-    // Only the window's half of the lease is written here. The page's half belongs to the
-    // page the command is *about*, and resolving a window no longer says which that is: the
-    // target is the conversation's own page, which may not be the one on screen (plan §22,
-    // 第十轮). `setSessionPage` is where that is known, and it writes both the page's lease
-    // and the cursor.
-    if (instance.boundSessionId === sessionId) {
-      return
-    }
-    instance.boundSessionId = sessionId
-    // What the toolbar offers depends on there being a conversation to hand a
-    // selection to, so it has to hear about a change of driver (plan §12.7).
-    this.pushToolbarState(instance)
-    this.emitStateChange(instance)
-  }
-
-  /**
    * Take one session's lease off every page it was driving.
    *
-   * Swept across every window rather than only the one it holds the window lease on:
-   * a conversation can drive a page and then have the window's lease taken over by
-   * another conversation, and its turn ending must still release *its* pages. A page
-   * that says "driven by X" for a conversation that has stopped is worse than one
-   * that says nobody is.
+   * Swept across every window: a conversation can hold a page in a window another one is
+   * working in too, and a turn ending must release *its* pages wherever they are. A page
+   * that says "driven by X" for a conversation that has stopped is worse than one that says
+   * nobody is.
    */
   private clearPageLeases(sessionId: string): void {
     for (const instance of this.instances.values()) {
@@ -3138,12 +3137,27 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
   }
 
-  /** Drop whatever lease a window holds, leaving it to whoever uses it next. */
-  private releaseLease(instance: BrowserInstance): void {
-    if (instance.boundSessionId === null) return
-    instance.boundSessionId = null
-    this.pushToolbarState(instance)
-    this.emitStateChange(instance)
+  /**
+   * Take one session's overlay and page holds off every window it has them in.
+   *
+   * The other half of letting go, and swept the same way: a parent and its child sessions
+   * share one window (Conductor), so "what this session was holding" is not a fact about a
+   * window — it is scattered across the pages that session claimed.
+   */
+  private clearControl(sessionId: string): void {
+    for (const instance of this.instances.values()) {
+      let changed = instance.controlBy.delete(sessionId)
+      for (const tab of instance.tabs) {
+        if (tab.heldBy !== sessionId) continue
+        tab.heldBy = null
+        changed = true
+      }
+      if (!changed) continue
+      this.updateNativeOverlayState(instance)
+      this.pushToolbarState(instance)
+      this.emitStateChange(instance)
+      mainLog.info(`[browser-pane] Released session ${sessionId}'s overlay and holds on ${instance.id}`)
+    }
   }
 
   focusBoundForSession(sessionId: string, options?: { workspaceId?: string | null }): string {
@@ -3157,41 +3171,34 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Destroy whatever a session owns — which is never the workspace's window.
+   * Let go of everything a session was holding. Nothing is destroyed.
    *
-   * That window is its workspace's, so a session being torn down releases its lease
-   * instead of taking the window with it: another conversation or the user may be
-   * holding pages in it right now (plan §22's third rule).
+   * The only window is its workspace's — every conversation in that workspace and the user
+   * work in it — so a session being torn down lets go instead of taking the window with it:
+   * another conversation or the user may be holding pages in it right now (plan §22's third
+   * rule). There is no second kind of window to destroy, so this is the same act as
+   * {@link unbindAllForSession}: a session is gone, and what it put in the browser is not.
    */
   destroyForSession(sessionId: string): void {
-    this.clearPageLeases(sessionId)
-    for (const [id, instance] of this.instances) {
-      if (instance.boundSessionId !== sessionId) continue
-      if (instance.isWorkspaceWindow) {
-        this.releaseLease(instance)
-        mainLog.info(`[browser-pane] Kept the workspace window ${id} while destroying session ${sessionId}'s windows`)
-        continue
-      }
-      this.destroyInstance(id)
-    }
+    this.unbindAllForSession(sessionId)
   }
 
+  /**
+   * Drop this session's overlay and native overlay state, wherever it had them.
+   *
+   * Called between turns: the session keeps its pages (`cursorOf` is sticky) and only the
+   * "working right now" marks come off.
+   */
   async clearVisualsForSession(sessionId: string): Promise<void> {
-    for (const instance of this.instances.values()) {
-      if (instance.boundSessionId === sessionId) {
-        instance.agentControl = null
-        this.updateNativeOverlayState(instance)
-        this.emitStateChange(instance)
-      }
-    }
+    this.clearControl(sessionId)
   }
 
-  private getAgentControlLabel(agentControl: Pick<AgentControlState, 'displayName' | 'intent'> | null | undefined): string {
-    if (agentControl?.intent) {
-      return `${agentControl.displayName ?? 'Agent'} — ${agentControl.intent}`
+  private getAgentControlLabel(label: AgentControlLabel | null | undefined): string {
+    if (label?.intent) {
+      return `${label.displayName ?? 'Agent'} — ${label.intent}`
     }
 
-    return agentControl?.displayName ?? 'Agent is working…'
+    return label?.displayName ?? 'Agent is working…'
   }
 
   /** Resolve the app's current accent color as a concrete CSS value (not a var reference). */
@@ -3402,37 +3409,20 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Which session has this page locked at the moment, or `null` when nobody has.
-   *
-   * The page the working session **stated** it holds (`agentControl.tabId`), and only
-   * that page — the lock is a page id, not a rule about leases (plan §22, 第九轮修正).
-   * Reading it off "the lease on whatever page the command landed on" locked the page a
-   * command *fell back* to, which is usually the one the person was looking at.
-   *
-   * What the lock buys, and what it deliberately does not: a person cannot click or type
-   * into this page, and another conversation's commands that name it are refused — while
-   * the chrome, the other pages and the window itself stay usable.
-   */
-  private pageLockerId(instance: BrowserInstance, tab: BrowserTab): string | null {
-    const control = instance.agentControl
-    if (!control?.active || !control.tabId) return null
-    return control.tabId === tab.id ? control.sessionId : null
-  }
-
-  /**
    * This conversation is now working **from** this page.
    *
-   * One call for one fact, read at two speeds (plan §22, 第九轮修正 / 第十轮):
+   * One call for one fact, read at three speeds (plan §22, 第九轮修正 / 第十轮):
    *
    * - the **cursor** (`tab.cursorOf`) is sticky — it answers "which page does this
    *   conversation's next unnamed command mean", and it survives the turn ending, because
    *   the person clicking around must not move somebody else's target;
-   * - the **lock** (`agentControl.tabId`) lasts as long as the overlay does — the page is
-   *   held while that session works, and let go when its turn ends or the person releases
-   *   it (`release`).
+   * - the **page lease** (`tab.driverSessionId`) is "last moved by", swept when the turn ends;
+   * - the **hold** (`tab.heldBy`) lasts as long as the overlay does — the page is held while
+   *   that session works, and let go when its turn ends or the person releases it (`release`).
    *
-   * A session without the overlay on this window gets only the cursor: another
-   * conversation's overlay never holds a page on its behalf.
+   * A session without the overlay on this window gets the first two and not the hold: an
+   * overlay is what says "somebody is at the wheel here right now", and a conversation that
+   * is not working is not holding anything.
    *
    * This is the write; {@link setSessionPage} is the public verb around it (a window id
    * instead of a live instance) and is what a command reaches for.
@@ -3452,11 +3442,37 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       target.driverSessionId = sessionId
     }
 
-    if (instance.agentControl?.active && instance.agentControl.sessionId === sessionId) {
-      instance.agentControl.tabId = tabId
+    if (target && instance.controlBy.has(sessionId)) {
+      this.holdPage(instance, target.id, sessionId)
     }
 
     this.syncPageThrottling(instance)
+  }
+
+  /**
+   * This session is holding this page now — and, being one session, only this one page.
+   *
+   * One hold per session (`agentControl.tabId` used to be that single slot, for the whole
+   * window): a conversation works from one page at a time, so claiming a new one lets the
+   * old go. Several conversations may each hold their own page of the same window at once
+   * (plan §22, Conductor) — that is what makes parallel children possible.
+   */
+  private holdPage(instance: BrowserInstance, tabId: string, sessionId: string): void {
+    let changed = false
+    for (const tab of instance.tabs) {
+      if (tab.id !== tabId && tab.heldBy === sessionId) {
+        tab.heldBy = null
+        changed = true
+      }
+    }
+    const target = tabById(instance, tabId)
+    if (target && target.heldBy !== sessionId) {
+      target.heldBy = sessionId
+      changed = true
+    }
+    if (!changed) return
+    this.updateNativeOverlayState(instance)
+    mainLog.info(`[browser-pane] Page held session=${sessionId} instance=${instance.id} tab=${tabId}`)
   }
 
   /**
@@ -3481,21 +3497,29 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Let go of a page this session was holding — used when the page is gone, so a lock can
-   * never outlive what it locks (plan §22, 第九轮修正).
+   * Let go of a page that is held — used when the page is gone, so a lock can never outlive
+   * what it locks (plan §22, 第九轮修正).
    */
   private releaseHeldPage(instance: BrowserInstance, tabId: string): void {
-    if (instance.agentControl?.tabId !== tabId) return
-    instance.agentControl.tabId = null
+    const held = tabById(instance, tabId)
+    if (!held?.heldBy) return
+    held.heldBy = null
     this.updateNativeOverlayState(instance)
     mainLog.info(`[browser-pane] page lock released with its page instance=${instance.id} tab=${tabId}`)
   }
 
   private updateNativeOverlayState(instance: BrowserInstance): void {
-    const control = instance.agentControl
-    const agentActive = !!control?.active
     const menuActive = !!instance.toolbarMenuOverlayActive
-    const shouldShow = agentActive || menuActive
+    /**
+     * Whether anybody is working in this window at all — the indicator, not the lock.
+     *
+     * Kept window-level on purpose: the person should be able to tell at a glance that this
+     * window is in use even while looking at a page nobody holds. What it no longer claims
+     * is *which* page is held: that is the page's own answer (`heldBy`), and with a parent
+     * and its children working in parallel there is no single page it could name.
+     */
+    const someoneWorking = instance.controlBy.size > 0
+    const shouldShow = someoneWorking || menuActive
 
     // Only the page on screen can be overlaid: an overlay on a page nobody is
     // looking at would swallow clicks nobody made. Auto-resize goes off with it —
@@ -3530,13 +3554,18 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.raiseChromeViews(instance)
 
     // Two independent things are drawn here, and only one of them takes input.
-    const activeLocker = this.pageLockerId(instance, activeTab(instance))
-    const label = agentActive ? this.getAgentControlLabel(control) : ''
-    const accent = agentActive ? this.getResolvedAccentColor() : 'transparent'
+    const heldBy = activeTab(instance).heldBy
+    // What is being done is named by whoever is at the wheel *here*: the holder of the page
+    // on screen when there is one, else whoever started working most recently — both true,
+    // and the page's own answer is the more specific of the two.
+    const label = this.getAgentControlLabel(
+      heldBy ? instance.controlBy.get(heldBy) : [...instance.controlBy.values()].at(-1),
+    )
+    const accent = someoneWorking ? this.getResolvedAccentColor() : 'transparent'
     // The page on screen is the only one a person can touch, so this is where the shield
-    // belongs — and only while that page is the locked one, or a menu of ours is open.
+    // belongs — and only while that page is the held one, or a menu of ours is open.
     // Switching to another page therefore hands the keyboard and mouse straight back.
-    const shieldActive = menuActive || activeLocker !== null
+    const shieldActive = menuActive || heldBy !== null
 
     void activeTab(instance).nativeOverlayView.webContents.executeJavaScript(`(() => {
       const overlay = document.getElementById('overlay');
@@ -3544,12 +3573,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       const shield = document.getElementById('shield');
       if (!overlay || !chip || !shield) return;
 
-      const agentActive = ${agentActive};
+      const agentActive = ${someoneWorking};
       const shieldActive = ${shieldActive};
-      const locked = ${activeLocker !== null};
+      const locked = ${heldBy !== null};
 
-      // The agent's outline and chip say which window is being worked on and what is
-      // being done — on every page of it, because the window is what carries the overlay.
+      // The agent's outline and chip say this window is being worked on and what is being
+      // done here — the lock itself is per page, so this is the "someone is in here"
+      // indicator rather than a claim about the page in front of you.
       if (agentActive) {
         overlay.style.borderColor = ${JSON.stringify(accent)};
         overlay.style.boxShadow = 'inset 0 0 0 1px color-mix(in oklab, ' + ${JSON.stringify(accent)} + ' 45%, transparent), inset 0 0 24px color-mix(in oklab, ' + ${JSON.stringify(accent)} + ' 28%, transparent)';
@@ -3879,38 +3909,43 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    *    opened for a prototype (one a session created and is driving).
    */
   private prototypeBindingFor(instance: BrowserInstance): PrototypeWindowBinding | null {
-    return this.tabPrototypeBinding(instance, activeTab(instance))
+    return this.tabPrototypeBinding(activeTab(instance))
   }
 
   /**
-   * The prototype **one page** is for: what it was opened for, else what its
-   * window's session is working on.
+   * The prototype **one page** is for: what it was opened for, else what the conversation
+   * working in it is working on.
    *
    * Split out of {@link prototypeBindingFor} so a page can be asked about without
    * being the page on screen — which is the whole point of a window with several
    * pages. Both halves are the same facts as before, only per page.
    */
-  private tabPrototypeBinding(instance: BrowserInstance, tab: BrowserTab): PrototypeWindowBinding | null {
+  private tabPrototypeBinding(tab: BrowserTab): PrototypeWindowBinding | null {
     if (tab.boundPrototype) return tab.boundPrototype
-    // Only the driver is asked, and only while it is driving: a window has no
-    // owner to fall back on, so "what its conversation is working on" is a
-    // question with an answer exactly as long as the lease lasts (plan §22).
-    const sessionId = instance.boundSessionId
+    // The fallback is asked of **the page's** conversation, not the window's: a page that
+    // cannot say what it is for borrows from whoever works from it (`cursorOf`, sticky) or
+    // from whoever opened it — the conversation is what a prototype binding is resolved
+    // against, so this reads the work's opener rather than the work itself (plan §22).
+    // There is no window-level answer to fall back to — one window holds several
+    // conversations' pages at once (Conductor).
+    const sessionId = tab.cursorOf ?? tab.belongsTo?.sessionId
     return sessionId ? this.prototypeWindowResolver?.(sessionId) ?? null : null
   }
 
   /**
    * Names for the conversations that opened some of this window's pages.
    *
-   * The rail groups the pages by opener and needs something to write on each group —
-   * `openedBySessionId` is an id, and a header reading `session-4f2a…` is not an
-   * answer to "whose pages are these". Only openers that have a name are included;
-   * the chrome has its own fallback, so a nameless (or deleted) session still groups.
+   * The rail groups the pages by work and names each section — a session's pages by the
+   * conversation, a task's by the task (that name comes from the page's own `belongsTo`, and
+   * needs nothing from here); this map answers the first kind. `sessionId` is an id, and a
+   * header reading `session-4f2a…` is not an answer to "whose pages are these". Only openers
+   * that have a name are included; the chrome has its own fallback, so a nameless (or
+   * deleted) session still groups.
    */
   private sessionLabelsFor(instance: BrowserInstance): Record<string, string> {
     const labels: Record<string, string> = {}
     for (const tab of instance.tabs) {
-      const sessionId = tab.openedBySessionId
+      const sessionId = tab.belongsTo?.sessionId
       if (!sessionId || sessionId in labels) continue
       const label = this.sessionLabelResolver?.(sessionId)
       if (label) labels[sessionId] = label
@@ -4267,6 +4302,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const workspaceId = req.workspaceId
     const sessionId = req.sessionId
     const args = req.args ?? []
+    // The **work** the asking session is part of — the task's node for a Conductor child, the
+    // session itself otherwise. Identity, like `sessionId`, and therefore never read from
+    // `args`: a request that named somebody else's work would be writing a page's declaration
+    // on their behalf, and "leave other people's pages alone" is decided from it (plan §22).
+    const work: TabBelongsTo = req.work ?? { kind: 'session', sessionId }
     // The page every page-scoped branch below acts on: named by the caller, which is the
     // side that resolved it (`pickCommandTarget` — the conversation's own page, or the one
     // on screen when it has none), and named *here* rather than looked up, so the page a
@@ -4371,10 +4411,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         const [instanceId, options] = args as [string, { url?: string; activate?: boolean; prototype?: PrototypeWindowBinding | null } | undefined]
         this.requireInstanceInWorkspace(instanceId, workspaceId)
         // The opener is the caller, stamped here rather than read off the wire: a
-        // request that named somebody else's session would be writing a page's
+        // request that named somebody else's work would be writing a page's
         // declaration on their behalf, and "leave other people's pages alone" is
         // decided from this field.
-        return this.createTab(instanceId, { ...options, openedBySessionId: sessionId })
+        return this.createTab(instanceId, { ...options, belongsTo: work })
       }
       case 'activateTab': {
         const [instanceId, tabId] = args as [string, string]
@@ -4395,6 +4435,16 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         const [instanceId, tabId] = args as [string, string]
         this.requireInstanceInWorkspace(instanceId, workspaceId)
         this.closeTab(instanceId, tabId)
+        return undefined
+      }
+      case 'assignTab': {
+        const [instanceId, tabId, to] = args as [string, string, TabBelongsTo]
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
+        // Who is handing it over is the caller, not an argument — the same rule the tab
+        // commands follow (see `createTab`), because the permission is "you may give away what
+        // is your work or nobody's", and only the request knows who is asking. Who it goes to
+        // is an argument, because the receiver's task is not something this side can resolve.
+        this.assignTab(instanceId, tabId, to, work)
         return undefined
       }
       case 'listTabs': {
@@ -4541,13 +4591,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         return this.extractVideoFrames(filePath, options)
       }
       case 'setFetchMock': {
-        const [instanceId, routes] = args as [string, MockRoute[]]
+        const [instanceId, program] = args as [string, MockProgram]
         this.requireInstanceInWorkspace(instanceId, workspaceId)
         if (!getAllowRemoteEvaluate()) {
           throw new CodedError('BROWSER_REMOTE_EVALUATE_BLOCKED',
             'Network mocking from remote agents is disabled in this client.')
         }
-        return this.setFetchMock(instanceId, routes, commandTabId)
+        return this.setFetchMock(instanceId, program, commandTabId)
       }
       case 'clearFetchMock': {
         const [instanceId] = args as [string]
@@ -4643,82 +4693,77 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   // ---------------------------------------------------------------------------
 
   /**
-   * Activate or update the agent control overlay on the browser instance
-   * bound to the given session. Called from sessions.ts on browser_* tool_start events.
+   * Note that a session is working in the browser window of `options.workspaceId`, and what
+   * it says it is doing. Called from sessions.ts on browser_* tool_start events.
+   *
+   * Per session rather than per window: a parent and its child sessions work in one window at
+   * the same time (Conductor), so this adds an entry instead of taking over the window's. The
+   * page a session holds is claimed later, by the command that says which page it is about
+   * (`recordSessionPage`) — a tool start does not know a page yet.
    */
   setAgentControl(
     sessionId: string,
     meta: { displayName?: string; intent?: string },
     options?: { workspaceId?: string | null },
   ): void {
-    for (const instance of this.instances.values()) {
-      if (instance.boundSessionId === sessionId) {
-        // The page it holds survives a re-activation by the same session: the overlay
-        // is refreshed on every actionable tool start, and dropping the lock there would
-        // hand the page back to the person between two tools of one action (plan §22).
-        // A different session taking the overlay takes the lock with it.
-        const heldTabId = instance.agentControl?.sessionId === sessionId ? instance.agentControl.tabId : null
-        instance.agentControl = {
-          active: true,
-          sessionId,
-          displayName: meta.displayName,
-          intent: meta.intent,
-          tabId: heldTabId,
-        }
+    const instance = this.findWindowForWorkspace(options?.workspaceId ?? null)
+    if (!instance) return
 
-        // Backfill workspaceId for instances that were created before the
-        // workspace was known (legacy callers / pre-workspaceId code paths).
-        if (options?.workspaceId !== undefined && instance.workspaceId === null) {
-          instance.workspaceId = options.workspaceId
-        }
+    // Re-inserted, so the last entry is the one that started working most recently — that is
+    // what the window's chip falls back to when the page on screen is nobody's.
+    instance.controlBy.delete(sessionId)
+    instance.controlBy.set(sessionId, { displayName: meta.displayName, intent: meta.intent })
 
-        const label = this.getAgentControlLabel(instance.agentControl)
+    const label = this.getAgentControlLabel({ displayName: meta.displayName, intent: meta.intent })
 
-        this.updateNativeOverlayState(instance)
-        this.emitStateChange(instance)
+    this.updateNativeOverlayState(instance)
+    this.emitStateChange(instance)
 
-        mainLog.info(`[browser-pane] agent control activated session=${sessionId} label=${label}`)
-        return
-      }
-    }
+    mainLog.info(`[browser-pane] agent control activated session=${sessionId} instance=${instance.id} label=${label} working=${instance.controlBy.size}`)
   }
 
   /**
-   * Clear the agent control overlay for the given session.
+   * Take a session's overlay off every window it has one in.
    * Called on explicit browser_tool release and session/window teardown.
    */
   clearAgentControl(sessionId: string): void {
-    for (const instance of this.instances.values()) {
-      if (instance.boundSessionId === sessionId && instance.agentControl?.active) {
-        instance.agentControl = null
-        this.updateNativeOverlayState(instance)
-        this.emitStateChange(instance)
-        mainLog.info(`[browser-pane] agent control released session=${sessionId}`)
-      }
-    }
+    this.clearControl(sessionId)
   }
 
+  /**
+   * Let go of what is being held here: a named session's overlay and holds, or — when nobody
+   * is named, which is the person pressing `release` — the hold on the page on screen.
+   *
+   * The person's half is deliberately narrower than it used to be: the shield they are
+   * looking at covers one page, so that is the one that comes back. Their other pages, and
+   * the other conversations sharing the window, are not what the button was about (plan §22,
+   * 第九轮修正).
+   */
   clearAgentControlForInstance(instanceId: string, sessionId?: string): { released: boolean; reason?: string } {
     const instance = this.instances.get(instanceId)
     if (!instance) {
       return { released: false, reason: `Browser window "${instanceId}" not found.` }
     }
 
-    // A named session may only let go of a window it is driving. There is no
-    // second answer to check against: a window has a lease, not an owner, so
-    // "nobody is driving it" is nobody's to refuse (plan §22).
-    if (sessionId && instance.boundSessionId && instance.boundSessionId !== sessionId) {
-      return { released: false, reason: `Browser window "${instanceId}" is locked to session ${instance.boundSessionId}.` }
+    if (sessionId) {
+      const held = instance.tabs.some((tab) => tab.heldBy === sessionId)
+      if (!held && !instance.controlBy.has(sessionId)) {
+        return { released: false, reason: `No active agent overlay for session ${sessionId} on this window.` }
+      }
+      this.clearControl(sessionId)
+      mainLog.info(`[browser-pane] agent control released instance=${instanceId} session=${sessionId}`)
+      return { released: true }
     }
 
-    if (!instance.agentControl?.active) {
+    const page = activeTab(instance)
+    if (!page.heldBy) {
       return { released: false, reason: 'No active agent overlay on the target window.' }
     }
 
-    instance.agentControl = null
+    page.heldBy = null
     this.updateNativeOverlayState(instance)
     this.emitStateChange(instance)
-    mainLog.info(`[browser-pane] agent control released instance=${instanceId}${sessionId ? ` session=${sessionId}` : ''}`)
+    mainLog.info(`[browser-pane] page lock released by hand instance=${instanceId} tab=${page.id}`)
 
     return { released: true }
   }
@@ -4921,11 +4966,16 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
   }
 
-  private resolveDownloadsDir(instance: BrowserInstance): string {
-    // The driver's session is where a download belongs, while it is driving. A
-    // window with nobody at the wheel has no session to file it under, so it goes
-    // to the OS downloads folder rather than to a conversation that has moved on.
-    const sessionId = instance.boundSessionId
+  /**
+   * Where a page's downloads are filed: the directory of the conversation that page belongs
+   * to, else the OS downloads folder.
+   *
+   * Asked of **the page** — whoever works from it (`cursorOf`, sticky) or opened it — because
+   * a download is the page's, not the window's: two conversations sharing one window file
+   * their downloads apart (plan §22, Conductor).
+   */
+  private resolveDownloadsDir(tab: BrowserTab): string {
+    const sessionId = tab.cursorOf ?? tab.belongsTo?.sessionId
     if (sessionId && this.sessionPathResolver) {
       const sessionPath = this.sessionPathResolver(sessionId)
       if (sessionPath) {
@@ -4934,7 +4984,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         return dir
       }
     }
-    // Fallback: OS downloads folder for manual/unbound windows
+    // Nobody's page — the person's own browsing — goes to the OS downloads folder.
     return app.getPath('downloads')
   }
 
@@ -5015,7 +5065,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       const tab = located.tab
 
       // Auto-save: set a deterministic path so Electron doesn't show a native dialog
-      const downloadsDir = this.resolveDownloadsDir(instance)
+      const downloadsDir = this.resolveDownloadsDir(tab)
       const filename = this.uniqueFilename(downloadsDir, item.getFilename())
       const savePath = join(downloadsDir, filename)
       item.setSavePath(savePath)
@@ -5275,7 +5325,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // follows the lease: the page stops refusing input when its turn ends or the overlay
     // goes, and a page the person switched to is never covered by a lock on another.
     pageWc.on('before-input-event', (event) => {
-      if (this.pageLockerId(instance, tab) !== null) {
+      if (tab.heldBy !== null) {
         event.preventDefault()
       }
     })
@@ -5456,7 +5506,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         activate: details.disposition !== 'background-tab',
         afterTabId: tab.id,
         disposition: details.disposition === 'new-window' ? 'popup' : 'link',
-        openedBySessionId: tab.openedBySessionId,
+        belongsTo: tab.belongsTo,
       })
 
       mainLog.info(`[browser-pane] window-open opened as a page id=${instance.id} tab=${openedTabId} after=${tab.id} url=${details.url}`)
@@ -5477,8 +5527,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * "which prototype, which page, which URL" is how a picked element and the tab
    * strip would come to disagree about where the user was standing.
    */
-  private describePageLocation(instance: BrowserInstance, tab: BrowserTab): PickedElementOrigin {
-    const binding = this.tabPrototypeBinding(instance, tab)
+  private describePageLocation(tab: BrowserTab): PickedElementOrigin {
+    const binding = this.tabPrototypeBinding(tab)
     return {
       // -- Observation: what the page itself reports --
       url: tab.currentUrl,
@@ -5504,17 +5554,17 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   private toTabSummary(instance: BrowserInstance, tab: BrowserTab): BrowserTabSummary {
     return {
       id: tab.id,
-      ...this.describePageLocation(instance, tab),
+      ...this.describePageLocation(tab),
       favicon: tab.favicon,
       isLoading: tab.isLoading,
       active: tab.id === instance.activeTabId,
-      // -- Declaration: who asked for it, and who is working on it now --
-      openedBySessionId: tab.openedBySessionId,
+      // -- Declaration: whose work it is --
+      belongsTo: tab.belongsTo,
       driverSessionId: tab.driverSessionId,
       // Which conversation works from this page, when one does (plan §22, 第十轮).
       cursorOf: tab.cursorOf,
-      // -- Lease, enforced: the same lease while the window's overlay backs it --
-      lockedBy: this.pageLockerId(instance, tab),
+      // -- The lock: who is working on this page right now, and only while they are --
+      lockedBy: tab.heldBy,
       // How the browser asked for it, when it did (plan §22).
       disposition: tab.disposition,
     }
@@ -5529,12 +5579,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       isLoading: activeTab(instance).isLoading,
       canGoBack: activeTab(instance).canGoBack,
       canGoForward: activeTab(instance).canGoForward,
-      boundSessionId: instance.boundSessionId,
-      isWorkspaceWindow: instance.isWorkspaceWindow,
       tabs: instance.tabs.map((tab) => this.toTabSummary(instance, tab)),
       prototypeSlug: this.prototypeBindingFor(instance)?.slug ?? null,
       isVisible: instance.isVisible,
-      agentControlActive: !!instance.agentControl?.active,
+      // Any conversation working in this window at all — the window-level indicator. Which
+      // page each one holds is the page's own answer (`lockedBy`, per tab).
+      agentControlActive: instance.controlBy.size > 0,
       themeColor: activeTab(instance).themeColor,
       workspaceId: instance.workspaceId,
     }

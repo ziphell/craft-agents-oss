@@ -30,7 +30,7 @@ function patch(file: string, targets: string[], page: string | null = null): Pro
   return {
     file,
     kind: 'css',
-    lane: file.slice(0, 1),
+    writer: file.slice(0, 1),
     order: 1,
     source: '/* @target ' + (targets[0] ?? '.x') + ' */',
     targets,

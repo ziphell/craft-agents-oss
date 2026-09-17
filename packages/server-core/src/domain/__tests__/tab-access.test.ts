@@ -1,12 +1,21 @@
 import { describe, expect, it } from 'bun:test'
+import type { TabBelongsTo } from '@craft-agent/shared/protocol'
 import { pickCommandTarget, whyTabIsLocked, whyTabIsNotMineToClose, whyTabIsOutOfReach } from '../tab-access'
-
-const prototype = { slug: 'checkout-flow', origin: 'http://checkout-flow-ab12cd34.localhost' }
 
 /** A page as the target rule sees it: what it is, who works from it, what is on screen. */
 function page(id: string, cursorOf: string | null, active = false) {
   return { id, cursorOf, active }
 }
+
+/** A conversation's own work, and a DAG node's — the two kinds `belongsTo` has. */
+const session = (sessionId: string): TabBelongsTo => ({ kind: 'session', sessionId })
+const node = (taskSlug: string, nodeId: string | null, sessionId: string): TabBelongsTo => ({
+  kind: 'task',
+  taskSlug,
+  runId: 'r1',
+  nodeId,
+  sessionId,
+})
 
 describe('pickCommandTarget', () => {
   // The conversation's own page wins, even though the person is looking at another one:
@@ -49,56 +58,94 @@ describe('pickCommandTarget', () => {
 })
 
 describe('whyTabIsOutOfReach', () => {
-  it('lets anyone work on a page that belongs to no prototype', () => {
+  it('lets anyone take over a page nobody has claimed', () => {
     // The case the shared window is for: a person opens a page, the agent takes over.
-    expect(whyTabIsOutOfReach({ id: 'tab-1', prototype: null, openedBySessionId: null }, 'session-a', undefined)).toBeNull()
-  })
-
-  it('lets a conversation work on the prototype it works on', () => {
-    expect(whyTabIsOutOfReach({ id: 'tab-1', prototype, openedBySessionId: null }, 'session-a', 'checkout-flow')).toBeNull()
-  })
-
-  it('refuses another prototype\'s page, and says what to do about it', () => {
-    const why = whyTabIsOutOfReach({ id: 'tab-2', prototype, openedBySessionId: null }, 'session-a', 'rival-checkout')
-
-    expect(why).toContain('Page tab-2 is "checkout-flow"\'s')
-    expect(why).toContain('works on "rival-checkout"')
-    expect(why).toContain('prototype-bind checkout-flow')
-  })
-
-  it('refuses a prototype\'s page to a conversation that works on none', () => {
-    const why = whyTabIsOutOfReach({ id: 'tab-2', prototype, openedBySessionId: null }, 'session-a', undefined)
-
-    expect(why).toContain('works on no prototype')
+    expect(whyTabIsOutOfReach({ id: 'tab-1', belongsTo: null, cursorOf: null }, session('session-a'))).toBeNull()
   })
 
   it('lets a conversation work on a page it opened itself, whatever it is bound to', () => {
     // Otherwise `prototype-open <slug>` from an unbound conversation would open a page
     // it could not then read.
-    expect(whyTabIsOutOfReach({ id: 'tab-2', prototype, openedBySessionId: 'session-a' }, 'session-a', undefined)).toBeNull()
+    expect(whyTabIsOutOfReach({ id: 'tab-2', belongsTo: session('session-a'), cursorOf: null }, session('session-a'))).toBeNull()
   })
 
-  it('does not exempt a page another conversation opened', () => {
-    expect(whyTabIsOutOfReach({ id: 'tab-2', prototype, openedBySessionId: 'session-b' }, 'session-a', undefined)).toContain('Page tab-2')
+  it("refuses a page another conversation's task owns, and says what to do about it", () => {
+    const why = whyTabIsOutOfReach({ id: 'tab-2', belongsTo: session('session-b'), cursorOf: null }, session('session-a'))
+
+    expect(why).toContain("Page tab-2 is session-b's task")
+    expect(why).toContain('tab-new')
+    expect(why).toContain('tab-assign')
+  })
+
+  it('refuses a page another conversation works from, even though nobody opened it', () => {
+    // The claim is what matters, not who opened it: a child session that took a free page
+    // keeps it while it works, and a sibling does not get to slide onto it (plan §22,
+    // Conductor).
+    const why = whyTabIsOutOfReach({ id: 'tab-3', belongsTo: null, cursorOf: 'session-b' }, session('session-a'))
+
+    expect(why).toContain("Page tab-3 is session-b's to work from")
+  })
+
+  it('does not let two conversations bound to one prototype share its pages', () => {
+    // The wall this rule replaced: same prototype used to mean "in reach", which made a
+    // parent and its children interfere page for page.
+    const why = whyTabIsOutOfReach({ id: 'tab-4', belongsTo: session('session-b'), cursorOf: null }, session('session-a'))
+
+    expect(why).not.toBeNull()
+  })
+
+  // The DAG's own case, and the reason the owner is a *work* and not a session (plan §22):
+  // a node that is re-run is a new session for the same node, and it has to inherit the page
+  // its predecessor was working in rather than leaving it orphaned.
+  it('lets a re-run of a node take over the page its predecessor left', () => {
+    const left = { id: 'tab-5', belongsTo: node('checkout-flow', 'pay', 'child-old'), cursorOf: null }
+
+    expect(whyTabIsOutOfReach(left, node('checkout-flow', 'pay', 'child-new'))).toBeNull()
+  })
+
+  it('does not let one node of a task work in another node of it', () => {
+    const why = whyTabIsOutOfReach({ id: 'tab-6', belongsTo: node('checkout-flow', 'pay', 'child-a'), cursorOf: null }, node('checkout-flow', 'cart', 'child-b'))
+
+    expect(why).toContain("the page task checkout-flow opened for its node pay")
+  })
+
+  it('does not let two runs of one task share its pages', () => {
+    const other = { kind: 'task', taskSlug: 'checkout-flow', runId: 'r2', nodeId: 'pay', sessionId: 'child-b' } as const
+
+    expect(whyTabIsOutOfReach({ id: 'tab-7', belongsTo: node('checkout-flow', 'pay', 'child-a'), cursorOf: null }, other)).not.toBeNull()
   })
 })
 
 describe('whyTabIsNotMineToClose', () => {
   it('lets a conversation close a page it opened', () => {
-    expect(whyTabIsNotMineToClose({ id: 'tab-1', openedBySessionId: 'session-a' }, 'session-a')).toBeNull()
+    expect(whyTabIsNotMineToClose({ id: 'tab-1', belongsTo: session('session-a') }, session('session-a'))).toBeNull()
   })
 
   it("refuses the user's page", () => {
-    const why = whyTabIsNotMineToClose({ id: 'tab-1', openedBySessionId: null }, 'session-a')
+    const why = whyTabIsNotMineToClose({ id: 'tab-1', belongsTo: null }, session('session-a'))
 
     expect(why).toContain("is the user's")
     expect(why).toContain('"tabs" lists the pages you opened')
   })
 
   it("refuses another conversation's page, naming it", () => {
-    const why = whyTabIsNotMineToClose({ id: 'tab-3', openedBySessionId: 'session-b' }, 'session-a')
+    const why = whyTabIsNotMineToClose({ id: 'tab-3', belongsTo: session('session-b') }, session('session-a'))
 
     expect(why).toContain("belongs to session-b's task")
+    expect(why).toContain('not yours to close')
+  })
+
+  // Housekeeping is the whole task's, which is what lets a finished run be tidied away: the
+  // orchestrator never opened its nodes' pages, and the nodes themselves have stopped (plan
+  // §22). Reach stays precise — see the two tests above it.
+  it('lets the orchestrator close its own task\'s pages, node pages included', () => {
+    expect(whyTabIsNotMineToClose({ id: 'tab-4', belongsTo: node('checkout-flow', 'pay', 'child-a') }, node('checkout-flow', null, 'orchestrator'))).toBeNull()
+  })
+
+  it('refuses another task\'s page', () => {
+    const why = whyTabIsNotMineToClose({ id: 'tab-5', belongsTo: node('other-task', 'pay', 'child-a') }, node('checkout-flow', null, 'orchestrator'))
+
+    expect(why).toContain('belongs to the task other-task')
     expect(why).toContain('not yours to close')
   })
 })

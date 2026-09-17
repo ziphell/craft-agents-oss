@@ -49,13 +49,15 @@ export function ToolbarStatusSlot({
     [allInstances, activeWorkspaceId, remoteWorkspaceId],
   )
 
-  // Find the visible browser instance bound to this session with active agent control.
-  // Hidden instances are intentionally excluded so the status slot mirrors actual visibility.
+  // Find the visible browser window this session is working in: one of its pages is held by
+  // the session — the page lock, per page, so a parent and its children each get their own
+  // banner while they work in parallel (plan §22, Conductor). Hidden instances are
+  // intentionally excluded so the status slot mirrors actual visibility.
   const browserInstance = React.useMemo(() => {
     if (!sessionId) return null
 
     const visibleCandidates = browserInstances.filter(
-      i => i.boundSessionId === sessionId && i.agentControlActive && i.isVisible
+      i => i.isVisible && !!i.tabs?.some(tab => tab.lockedBy === sessionId)
     )
     if (visibleCandidates.length === 0) return null
 

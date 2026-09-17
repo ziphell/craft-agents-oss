@@ -1,13 +1,14 @@
 import { describe, it, expect } from 'bun:test'
 import type { WebContents } from 'electron'
 import { BrowserCDP } from '../browser-cdp'
-import type { MockRoute } from '@craft-agent/shared/prototypes'
+import type { MockProgram, MockRoute } from '@craft-agent/shared/prototypes'
 
 /**
  * The mock answers requests in the browser's network stack via CDP Fetch
  * interception. These tests drive the `Fetch.requestPaused` event by hand and
  * assert the disposition — including the failure path, where leaving a request
- * paused would freeze the page.
+ * paused would freeze the page — and the stateful half, where what one request
+ * does is what the next one sees.
  */
 function createFakeDebugger(options?: { failFulfil?: boolean }) {
   const calls: Array<{ method: string; params: any }> = []
@@ -33,15 +34,25 @@ function createFakeDebugger(options?: { failFulfil?: boolean }) {
   return {
     webContents: fake as unknown as WebContents,
     calls,
-    emitPaused: (requestId: string, url: string, method: string) => {
+    emitPaused: (requestId: string, url: string, method: string, postData?: string) => {
       for (const callback of listeners.get('message') ?? []) {
-        callback({}, 'Fetch.requestPaused', { requestId, request: { url, method } })
+        callback({}, 'Fetch.requestPaused', { requestId, request: { url, method, postData } })
       }
+    },
+    /** The body of the fulfilment of `requestId`, as the page would read it. */
+    fulfilledBody: (requestId: string): string | null => {
+      const call = calls.find(
+        (candidate) =>
+          candidate.method === 'Fetch.fulfillRequest' && candidate.params?.requestId === requestId,
+      )
+      return call ? Buffer.from(call.params.body ?? '', 'base64').toString('utf-8') : null
     },
   }
 }
 
 const ROUTES: MockRoute[] = [{ method: 'GET', path: '/orders', status: 200, body: [{ id: 1 }] }]
+/** The same route table, in the program shape the caller actually applies. */
+const program = (routes: MockRoute[] = ROUTES, store: Record<string, unknown> = {}): MockProgram => ({ routes, store })
 
 /** One macrotask is enough to flush the handler's awaited CDP calls. */
 const flush = () => new Promise((resolve) => setTimeout(resolve, 10))
@@ -51,7 +62,7 @@ describe('BrowserCDP fetch mock', () => {
     const { webContents, calls } = createFakeDebugger()
     const cdp = new BrowserCDP(webContents)
 
-    const count = await cdp.setFetchMockRoutes([{ method: 'get', path: '/orders', status: 200, body: null }])
+    const count = await cdp.setFetchMockRoutes(program([{ method: 'get', path: '/orders', status: 200, body: null }]))
 
     expect(count).toBe(1)
     expect(cdp.listFetchMockRoutes()[0]?.method).toBe('GET')
@@ -61,17 +72,17 @@ describe('BrowserCDP fetch mock', () => {
   })
 
   it('fulfils a matching request with the fixture body, status and CORS header', async () => {
-    const { webContents, calls, emitPaused } = createFakeDebugger()
+    const { webContents, calls, emitPaused, fulfilledBody } = createFakeDebugger()
     const cdp = new BrowserCDP(webContents)
 
-    await cdp.setFetchMockRoutes([{ method: 'GET', path: '/orders', status: 201, body: [{ id: 1 }] }])
+    await cdp.setFetchMockRoutes(program([{ method: 'GET', path: '/orders', status: 201, body: [{ id: 1 }] }]))
     emitPaused('req-1', 'http://localhost:3000/api/orders?page=1', 'GET')
     await flush()
 
     const fulfill = calls.find((call) => call.method === 'Fetch.fulfillRequest')
     expect(fulfill?.params?.requestId).toBe('req-1')
     expect(fulfill?.params?.responseCode).toBe(201)
-    expect(Buffer.from(fulfill?.params?.body ?? '', 'base64').toString('utf-8')).toBe('[{"id":1}]')
+    expect(fulfilledBody('req-1')).toBe('[{"id":1}]')
     expect(fulfill?.params?.responseHeaders).toContainEqual({
       name: 'access-control-allow-origin',
       value: '*',
@@ -84,8 +95,9 @@ describe('BrowserCDP fetch mock', () => {
     const { webContents, calls, emitPaused } = createFakeDebugger()
     const cdp = new BrowserCDP(webContents)
 
-    await cdp.setFetchMockRoutes(ROUTES)
-    // Same-origin relative request — the common case for an in-development app.
+    await cdp.setFetchMockRoutes(program())
+    // Same-origin relative request — the common case for an in-development app —
+    // behind a version prefix the route's own length does not account for.
     emitPaused('req-rel', '/api/v2/orders', 'GET')
     await flush()
 
@@ -95,19 +107,19 @@ describe('BrowserCDP fetch mock', () => {
   })
 
   it('overlays a real backend: a route intercepts any host with the same path', async () => {
-    const { webContents, calls, emitPaused } = createFakeDebugger()
+    const { webContents, calls, emitPaused, fulfilledBody } = createFakeDebugger()
     const cdp = new BrowserCDP(webContents)
 
-    await cdp.setFetchMockRoutes([
+    await cdp.setFetchMockRoutes(program([
       { method: 'GET', path: '/api/orders', status: 200, body: { overridden: true } },
-    ])
+    ]))
     // Note the host: a production API, not a mock server.
     emitPaused('req-real', 'https://api.production.example.com/api/orders', 'GET')
     await flush()
 
     const fulfill = calls.find((call) => call.method === 'Fetch.fulfillRequest')
     expect(fulfill?.params?.requestId).toBe('req-real')
-    expect(Buffer.from(fulfill?.params?.body ?? '', 'base64').toString('utf-8')).toBe('{"overridden":true}')
+    expect(fulfilledBody('req-real')).toBe('{"overridden":true}')
     cdp.detach()
   })
 
@@ -115,7 +127,7 @@ describe('BrowserCDP fetch mock', () => {
     const { webContents, calls, emitPaused } = createFakeDebugger()
     const cdp = new BrowserCDP(webContents)
 
-    await cdp.setFetchMockRoutes(ROUTES)
+    await cdp.setFetchMockRoutes(program())
     emitPaused('req-post', 'http://localhost:3000/orders', 'POST')
     emitPaused('req-other', 'http://localhost:3000/invoices', 'GET')
     await flush()
@@ -130,7 +142,7 @@ describe('BrowserCDP fetch mock', () => {
     const { webContents, calls, emitPaused } = createFakeDebugger({ failFulfil: true })
     const cdp = new BrowserCDP(webContents)
 
-    await cdp.setFetchMockRoutes(ROUTES)
+    await cdp.setFetchMockRoutes(program())
     emitPaused('req-1', 'http://localhost:3000/orders', 'GET')
     await flush()
 
@@ -144,7 +156,7 @@ describe('BrowserCDP fetch mock', () => {
     const { webContents, calls } = createFakeDebugger()
     const cdp = new BrowserCDP(webContents)
 
-    await cdp.setFetchMockRoutes(ROUTES)
+    await cdp.setFetchMockRoutes(program())
     await cdp.clearFetchMock()
 
     expect(cdp.listFetchMockRoutes()).toEqual([])
@@ -156,10 +168,113 @@ describe('BrowserCDP fetch mock', () => {
     const { webContents } = createFakeDebugger()
     const cdp = new BrowserCDP(webContents)
 
-    await cdp.setFetchMockRoutes(ROUTES)
+    await cdp.setFetchMockRoutes(program())
     expect(cdp.listFetchMockRoutes()).toHaveLength(1)
 
     cdp.detach()
     expect(cdp.listFetchMockRoutes()).toEqual([])
+  })
+
+  /**
+   * The stateful half, at the layer that sees the request body: the page's own
+   * `POST` is what changes the store, and what the next `GET` answers with.
+   */
+  it('reads the request body, and the next request sees what the last one did', async () => {
+    const { webContents, emitPaused, fulfilledBody } = createFakeDebugger()
+    const cdp = new BrowserCDP(webContents)
+
+    await cdp.setFetchMockRoutes(
+      program(
+        [
+          {
+            method: 'GET',
+            path: '/api/cart',
+            status: 200,
+            body: null,
+            state: { collection: 'cart.items', select: null, op: 'read', fromState: true },
+          },
+          {
+            method: 'POST',
+            path: '/api/cart/items',
+            status: 201,
+            body: null,
+            state: { collection: 'cart.items', select: null, op: 'append', fromState: true },
+          },
+        ],
+        { cart: { items: [{ id: 'i-1' }] } },
+      ),
+    )
+
+    emitPaused('req-1', 'http://localhost/api/cart', 'GET')
+    await flush()
+    expect(fulfilledBody('req-1')).toBe('[{"id":"i-1"}]')
+
+    emitPaused('req-2', 'http://localhost/api/cart/items', 'POST', JSON.stringify({ id: 'i-2' }))
+    await flush()
+    expect(fulfilledBody('req-2')).toBe('[{"id":"i-1"},{"id":"i-2"}]')
+
+    emitPaused('req-3', 'http://localhost/api/cart', 'GET')
+    await flush()
+    expect(fulfilledBody('req-3')).toBe('[{"id":"i-1"},{"id":"i-2"}]')
+
+    cdp.detach()
+  })
+
+  it('starts the store over on every apply, so a demo can be replayed', async () => {
+    const { webContents, emitPaused, fulfilledBody } = createFakeDebugger()
+    const cdp = new BrowserCDP(webContents)
+    const routes: MockRoute[] = [
+      {
+        method: 'POST',
+        path: '/api/cart/items',
+        status: 201,
+        body: null,
+        state: { collection: 'cart.items', select: null, op: 'append', fromState: true },
+      },
+    ]
+    const store = { cart: { items: [] as unknown[] } }
+
+    await cdp.setFetchMockRoutes(program(routes, store))
+    emitPaused('req-1', 'http://localhost/api/cart/items', 'POST', JSON.stringify({ id: 'i-1' }))
+    await flush()
+
+    await cdp.setFetchMockRoutes(program(routes, store))
+    emitPaused('req-2', 'http://localhost/api/cart/items', 'POST', JSON.stringify({ id: 'i-2' }))
+    await flush()
+
+    // The second apply started from state.json again, not from what was clicked.
+    expect(fulfilledBody('req-2')).toBe('[{"id":"i-2"}]')
+    cdp.detach()
+  })
+
+  /**
+   * A mutating request whose body cannot be read changes nothing, and the mock says
+   * so: appending `null` would look like the app's own bug.
+   */
+  it('answers 500 when a mutating request has no readable body', async () => {
+    const { webContents, emitPaused, fulfilledBody } = createFakeDebugger()
+    const cdp = new BrowserCDP(webContents)
+
+    await cdp.setFetchMockRoutes(
+      program(
+        [
+          {
+            method: 'POST',
+            path: '/api/cart/items',
+            status: 201,
+            body: null,
+            state: { collection: 'cart.items', select: null, op: 'append', fromState: true },
+          },
+        ],
+        { cart: { items: [] } },
+      ),
+    )
+
+    emitPaused('req-1', 'http://localhost/api/cart/items', 'POST', 'not json at all {')
+    await flush()
+
+    expect(fulfilledBody('req-1')).toContain('mock could not read the request body')
+    expect(cdp.listFetchMockStore()).toEqual({ cart: { items: [] } })
+    cdp.detach()
   })
 })

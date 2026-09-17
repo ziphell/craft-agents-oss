@@ -51,7 +51,8 @@ interface CompactModelSelectorProps {
   onConnectionChange?: (connectionSlug: string) => void
   thinkingLevel?: ThinkingLevel
   onThinkingLevelChange?: (level: ThinkingLevel) => void
-  isEmptySession?: boolean
+  /** True while the session is generating — switching is only allowed between turns */
+  isProcessing?: boolean
   connectionUnavailable?: boolean
   contextStatus?: {
     isCompacting?: boolean
@@ -67,7 +68,7 @@ export function CompactModelSelector({
   onConnectionChange,
   thinkingLevel = 'medium',
   onThinkingLevelChange,
-  isEmptySession = false,
+  isProcessing = false,
   connectionUnavailable = false,
   contextStatus,
 }: CompactModelSelectorProps) {
@@ -103,7 +104,6 @@ export function CompactModelSelector({
   const pickerMode = derivePickerMode({
     connectionUnavailable,
     connectionDefaultModel,
-    isEmptySession,
     connectionCount: llmConnections.length,
   })
 
@@ -145,6 +145,12 @@ export function CompactModelSelector({
     if (!open) setExpandedConnection(null)
   }, [open])
 
+  // A turn can start while the drawer is open (e.g. a queued send lands); close it
+  // so the "switch only between turns" rule holds.
+  React.useEffect(() => {
+    if (isProcessing) setOpen(false)
+  }, [isProcessing])
+
   const handlePickFlatModel = React.useCallback(
     (modelId: string) => {
       onModelChange(modelId, effectiveConnection)
@@ -166,10 +172,19 @@ export function CompactModelSelector({
   )
 
   return (
-    <Drawer open={open} onOpenChange={setOpen}>
+    <Drawer
+      open={open}
+      onOpenChange={(next) => {
+        // Switching is only allowed between turns: while the session is
+        // generating the input shows the stop button and this drawer stays shut.
+        if (next && isProcessing) return
+        setOpen(next)
+      }}
+    >
       <DrawerTrigger asChild>
         <button
           type="button"
+          disabled={isProcessing}
           aria-label={connectionUnavailable
             ? t('common.unavailable')
             : `${t('common.model')}: ${currentModelDisplayName}`}
@@ -178,6 +193,7 @@ export function CompactModelSelector({
             connectionUnavailable
               ? 'bg-destructive/10 text-destructive'
               : 'bg-foreground/5 text-foreground/70',
+            isProcessing && 'opacity-50 cursor-not-allowed',
           )}
           style={{ '--shadow-color': 'var(--foreground-rgb)' } as React.CSSProperties}
         >

@@ -265,8 +265,11 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.prototypes.DUPLICATE,
   RPC_CHANNELS.prototypes.DELETE,
   RPC_CHANNELS.prototypes.APPLY,
+  RPC_CHANNELS.prototypes.REPLAY,
+  RPC_CHANNELS.prototypes.COMMIT,
   RPC_CHANNELS.prototypes.LINK_REFERENCE,
   RPC_CHANNELS.prototypes.UNLINK_REFERENCE,
+  RPC_CHANNELS.prototypes.SET_PAGES,
   RPC_CHANNELS.prototypes.SET_TARGET,
   RPC_CHANNELS.sessions.SEARCH_CONTENT,
   RPC_CHANNELS.sessions.EXPORT,
@@ -293,6 +296,7 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.tasks.GET,
   RPC_CHANNELS.tasks.LIST,
   RPC_CHANNELS.tasks.GET_RESULTS,
+  RPC_CHANNELS.tasks.RESOLVE_APPROVAL,
 
   // file — workspace files (not openDialog which is native)
   RPC_CHANNELS.file.READ,

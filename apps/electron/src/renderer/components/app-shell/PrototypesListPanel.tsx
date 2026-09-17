@@ -145,13 +145,20 @@ export function PrototypesListPanel({
 /**
  * The status dot a row carries.
  *
- * Three states, and only three things worth saying: this prototype has something
- * wrong with its pages (a row that cannot be read, a declared page whose document
- * is gone, a `patches/<page>/` that matches nothing), it has no pages yet, or it
- * is fine. The dot is the same fact the details page spells out in full.
+ * What the row says at a glance, in the order a person would act on it: something
+ * is wrong with its pages (a row that cannot be read, a declared page whose
+ * document is gone, a `patches/<page>/` that matches nothing), it has pages but
+ * still owes something (a requirement nothing implements, an objection nobody
+ * answered, a check that failed), it has no pages yet, or it is fine.
+ *
+ * The fourth state shares the amber of "no pages" and is told apart by the words
+ * beside it: the two call for different actions. What counts as owing something is
+ * `settleBlockers` — the gate's own list, so a row cannot look finished while the
+ * details page says otherwise.
  */
-function statusColor(hasPages: boolean, issues: number): string {
+function statusColor(hasPages: boolean, issues: number, blockers: number): string {
   if (issues > 0) return 'var(--destructive)'
+  if (blockers > 0) return 'var(--info)'
   if (!hasPages) return 'var(--info)'
   return 'var(--success)'
 }
@@ -246,13 +253,15 @@ function PrototypeRow({
       badges={
         <>
           <StatusDot
-            color={statusColor(hasPages, prototype.pageIssues.length)}
+            color={statusColor(hasPages, prototype.pageIssues.length, prototype.settleBlockers.length)}
             title={
               prototype.pageIssues.length > 0
                 ? t('prototypesList.hasIssues', { count: prototype.pageIssues.length })
-                : hasPages
-                  ? t('prototypesList.pagesOk')
-                  : t('prototypesList.noPages')
+                : prototype.settleBlockers.length > 0
+                  ? t('prototypesList.notSettled', { count: prototype.settleBlockers.length })
+                  : hasPages
+                    ? t('prototypesList.pagesOk')
+                    : t('prototypesList.noPages')
             }
           />
           <span className="shrink-0 text-xs text-foreground/60">
@@ -263,6 +272,11 @@ function PrototypeRow({
           {prototype.pageIssues.length > 0 && (
             <span className="shrink-0 text-xs text-destructive">
               {t('prototypesList.hasIssues', { count: prototype.pageIssues.length })}
+            </span>
+          )}
+          {prototype.pageIssues.length === 0 && prototype.settleBlockers.length > 0 && (
+            <span className="shrink-0 text-xs text-info">
+              {t('prototypesList.notSettled', { count: prototype.settleBlockers.length })}
             </span>
           )}
           <span className="shrink-0 text-xs text-foreground/60">

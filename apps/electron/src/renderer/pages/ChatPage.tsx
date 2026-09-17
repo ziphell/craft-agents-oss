@@ -290,12 +290,13 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     }
   }, [sessionId, activeWorkspaceId])
 
-  // Session connection change handler - can only change before first message
+  // Session connection change handler - explicit switch, allowed at any point in
+  // the session (the backend rebuilds its runtime for the new provider)
   const handleConnectionChange = React.useCallback(async (connectionSlug: string) => {
     try {
       await window.electronAPI.sessionCommand(sessionId, { type: 'setConnection', connectionSlug })
     } catch (error) {
-      // Connection change may fail if session already started or connection is invalid
+      // Connection change may fail if the connection is invalid or its credentials are gone
       console.error('Failed to change connection:', error)
     }
   }, [sessionId])
@@ -645,13 +646,13 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
   const headerActions = (
     <div className="flex items-center gap-1.5">
       {sessionMeta && (
-        // `projectId` travels too: a project with exactly one prototype provides it
-        // to this conversation, so the menu has to be able to show an inherited
-        // prototype rather than only the one bound here.
+        // Nothing else decides this session's prototype: a project can note which one
+        // it is on and tells its conversations what exists, but that is background
+        // (plan §15.1.3) and it binds none of them — so the menu only ever shows what
+        // was bound here.
         <PrototypeBindingMenu
           sessionId={sessionId}
           prototypeSlug={sessionMeta.prototypeSlug}
-          projectId={sessionMeta.projectId}
         />
       )}
       {editTaskButton}

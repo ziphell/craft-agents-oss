@@ -107,6 +107,8 @@ bun run server:start   # 不预构建，直接跑
 bun run server:prod    # 构建 servers + webui，模拟生产（CRAFT_WEBUI_DIR / CRAFT_BUNDLED_ASSETS_ROOT）
 ```
 
+跑 Web UI（浏览器客户端）、以及实例隔离与踩过的坑，见[第 6 节](#6-远程模式headless-server--web-ui)。
+
 ### 4.4 独立前端
 
 ```powershell
@@ -132,3 +134,42 @@ bun run validate:dev                     # 全量校验：typecheck + shared 测
 4. **`.env`**：electron-dev / electron-build-main 会自动读取根 `.env`（不存在则跳过）；OAuth ID/Secret 通过 esbuild `--define` 注入构建。
 5. **端口冲突**：5173/5174/5175 被占用时 dev 会失败，先停掉旧进程。
 6. **渲染层从共享包 barrel 取「值」**：会把 node-only 依赖（Claude Agent SDK 等）顺链条拖进浏览器包——`electron:dev` 照跑不误，`electron:build` 才炸在 `sdk.mjs` 上。规矩、链路与自查命令见[渲染层的导入边界](renderer-imports.md)。
+
+## 6. 远程模式（headless server + Web UI）
+
+**一个进程两个面**：`ws://<host>:<端口>` 上的 RPC（`CRAFT_RPC_PORT`，默认 9100），与**同一个端口**上的 Web UI（`/` 是应用、`/login` 是登录页、`/api/*` 是 HTTP 面；入口只读 `CRAFT_RPC_PORT`）。客户端（桌面端 / webui / CLI）共用同一份 `WsRpcClient` + `CHANNEL_MAP`：webui 的 `window.electronAPI.*` **全部走 WebSocket**，认证靠 `/api/auth` 下的会话 cookie 在 WS upgrade 时带上（不带 bearer token）。
+
+### 6.1 起一个可验证的实例
+
+```powershell
+bun run webui:build                                   # 改过 renderer 必须重建：server 直接发 dist
+$env:CRAFT_CONFIG_DIR   = "$env:TEMP\craft-remote-cfg"  # 隔离/并行实例，见 6.3
+$env:CRAFT_SERVER_TOKEN = 'e2e-remote-token'            # 必填
+$env:CRAFT_WEBUI_PASSWORD = 'craft-demo'                # 可选：登录页用短口令（缺省回落到 token）
+$env:CRAFT_WEBUI_DIR    = "$PWD\apps\webui\dist"
+$env:CRAFT_BUNDLED_ASSETS_ROOT = "$PWD\apps\electron"
+$env:CRAFT_DISABLE_MESSAGING = 'true'                   # 与正在跑的桌面端共用配置目录时必加，否则两边抢 Telegram/WhatsApp
+bun run packages/server/src/index.ts
+```
+
+- 现成脚本 `server:dev:webui` 会构建子进程 + webui 并设好 env；上面是手工等价路线（Windows/PowerShell 下我用的就是它）。注意那个脚本设的 `CRAFT_WEBUI_PORT=3100` **没人读**——Web UI 实际服务在 `CRAFT_RPC_PORT` 上（入口只认后者）。
+- **锁**：第二个实例会撞 `CONFIG_DIR/.server.lock`（`headless-start.ts`）并报出占用者 PID。不要删那个锁，改用 `CRAFT_CONFIG_DIR` 起并行实例（提示里也是这么写的）。
+- 启动横幅给出 `CRAFT_SERVER_URL` / `CRAFT_SERVER_TOKEN` / `CRAFT_WEBUI_URL`。
+
+### 6.2 验什么（不依赖 Electron）
+
+| 面 | 怎么验 | 期望 |
+| --- | --- | --- |
+| 未认证门禁 | `curl -i http://127.0.0.1:9100/`、`/api/config` | `/` → `302 /login`；无 cookie 的 `/api/*` → `{"error":"Unauthorized"}` |
+| 登录 | 浏览器开 `/`，先错口令再对口令 | 错：页面 `Invalid credentials`、日志 `[webui] Failed auth attempt`；对：跳 `/`、`[webui] Successful auth` |
+| 会话保持 | 重访 `/` | 不回登录页；`/api/config` → `{"wsUrl":"ws://…"}` |
+| WS RPC | `bun run apps/cli/src/index.ts --url ws://127.0.0.1:9100 --token <t> ping` | `Connected: clientId=… latency=…` |
+| 通道分类 | `cd packages/shared && bun test src/protocol` | 每个通道**恰好**被分类一次 |
+| **写路径** | 浏览器里建 workspace / 建会话，然后刷新 | 数据落在**服务端**（刷新后还在）、控制台无错 |
+
+### 6.3 踩过的坑（前两条已修，附机制与测试）
+
+1. **「稍后设置」在远程模式下不生效**：`onboarding:getAuthState` 由 **server-core** 的 handler 作答，而它调 `getSetupNeeds(authState)` **没带** `isSetupDeferred()`；桌面端的同名 handler（`apps/electron/src/main/onboarding.ts`）带了这个参数。标记被写进 `config.json` 却没有读者 → **没有配 provider 的服务器每次加载页面都回引导页**（cookie 与数据都在，只是门禁状态不生效）。测试：`packages/server-core/src/handlers/__tests__/onboarding-setup-deferred.test.ts`。
+   - 同一个坑的第二副面孔：这两个 handler 是**逐字重复的两份**（只差 import 路径与这个参数），改一处必须改两处。是否合并成一份是独立决定，目前没做。
+2. **「默认位置」建 workspace 绕过 `CRAFT_CONFIG_DIR`**：三处各算各的——`workspaces/storage.ts` 有自己的 `CONFIG_DIR = join(homedir(), '.craft-agent')`（无视 env）、server-core 的 `CHECK_SLUG` 手搓同一路径、**渲染层用 `getHomeDir()` 自己拼 `${homeDir}/.craft-agent/workspaces` 当创建参数**。于是设了 `CRAFT_CONFIG_DIR` 的实例仍把 workspace 数据写进真实 home——而 `checkSlug` 的返回值里本来就有服务端算好的路径（隔壁"连接远程服务器"那条流程一直在用它）。现在 CONFIG_DIR 统一取 `config/paths.ts` 那一份、`CHECK_SLUG` 用 `getDefaultWorkspacesDir()`（校验路径 = 创建路径）、UI 采用服务端返回的路径。测试：`packages/server-core/src/handlers/__tests__/workspace-default-location.test.ts`。
+3. **`CRAFT_CONFIG_DIR` 目前只是"部分隔离"**：以下位置仍硬编码 `homedir()/.craft-agent`，设了 env 也不会跟着走——日志（`apps/electron/src/main/logger.ts`）、窗口状态（`main/window-state.ts`）、文档与更新日志目录（`shared/src/docs`、`shared/src/release-notes`）、凭据目录（`shared/src/credentials/backends/secure-storage.ts`）、`shared/src/interceptor-common.ts` 的 config/log 路径、`shared/src/agent/core/prerequisite-manager.ts` 的 browser-tools 文档路径、两个入口里按 workspace 拼的 messaging 目录、`session-tools-core` 的 config 校验、`shared/src/utils/logo.ts`。**workspace 数据这一条已经归位**；"换个 config dir 就彻底干净"还差这些。

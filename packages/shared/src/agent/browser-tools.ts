@@ -21,6 +21,7 @@ import type { PrototypePagesChange, PrototypePagesResult } from '../prototypes/p
 import type { PrototypeCommitResult } from '../prototypes/commit.ts';
 import type { ContractExportResult } from '../prototypes/contract.ts';
 import type { PrototypeStatus } from '../prototypes/status.ts';
+import type { AcceptanceDiff, AcceptanceSummary } from '../prototypes/acceptance.ts';
 import { executeBrowserToolCommand } from './browser-tool-runtime.ts';
 
 // Tool result type - matches MCP CallToolResult content blocks
@@ -175,6 +176,15 @@ export interface BrowserPaneFns {
   scroll: (direction: 'up' | 'down' | 'left' | 'right', amount?: number) => Promise<void>;
   goBack: () => Promise<void>;
   goForward: () => Promise<void>;
+  /**
+   * Reload the page this conversation works from — `reload`.
+   *
+   * Fire-and-forget, like the browser's own reload button: nothing waits for the document
+   * to load. It is the other half of "that patch is already inlined here" — a page of ours
+   * is rendered from disk, so an edit to it or to a patch it carries shows up on the next
+   * render, and a render is what this asks for.
+   */
+  reload: () => Promise<void>;
   evaluate: (expression: string) => Promise<unknown>;
   /** Prompt the user to click an element; resolves null on cancel/timeout. */
   pick: (options?: { timeoutMs?: number }) => Promise<PickedElement | null>;
@@ -223,8 +233,12 @@ export interface BrowserPaneFns {
    * Patches the page already carries — a page opened from the workbench arrives
    * with them inlined — are left alone and reported in `skipped`, so a JS patch
    * cannot run a second time over a document that already has its effect.
+   *
+   * `options.file` (absolute) replays one patch instead of the whole set — the
+   * file just written. The other registrations are left alone in that case, so
+   * the page keeps the patches it was already given.
    */
-  applyPrototype: (slug: string) => Promise<{
+  applyPrototype: (slug: string, options?: { file?: string }) => Promise<{
     slug: string;
     applied: number;
     files: string[];
@@ -237,6 +251,13 @@ export interface BrowserPaneFns {
      * that belongs to another page.
      */
     page?: string | null;
+    /**
+     * The one file this apply was narrowed to (`--file`), with the page that brings it
+     * (null = every page); null when the whole set was replayed. The page here is the
+     * patch's own scope, which is what says whether naming it while another page is open
+     * explains targets that matched nothing.
+     */
+    file?: { name: string; page: string | null } | null;
     /**
      * What each declared `@target` matched (plan §21.1). Every patch that carries
      * a marker is checked, so "matched nothing" can no longer be confused with
@@ -268,17 +289,6 @@ export interface BrowserPaneFns {
   /** Remove a prototype's patches from this session's browser. */
   clearPrototype: (slug: string) => Promise<{ slug: string; removed: string[] }>;
   /**
-   * Say which workspace project a prototype was made for — one edge, not a move
-   * (plan §15.1). Pass null to clear it.
-   *
-   * Fails when either end does not exist, rather than recording a relationship
-   * that is not true.
-   */
-  setPrototypeProject: (args: {
-    slug: string;
-    projectSlug: string | null;
-  }) => Promise<{ slug: string; projectSlug: string | null }>;
-  /**
    * Run the acceptance checks the PRD puts under its requirements (plan §20.7):
    * `check: selector <css>` against the page this session's window is on, and
    * `check: endpoint <METHOD> <path>` against the contract.
@@ -289,11 +299,26 @@ export interface BrowserPaneFns {
   verifyPrototype: (slug: string) => Promise<{
     slug: string;
     page: string | null;
+    /** The page *name* the checks ran against, for `about: page <name>`. */
+    pageName: string | null;
     passed: number;
     failed: number;
     skipped: number;
+    /** Which run this is; the record lives under `acceptance/` (plan §3.7). */
+    round: number;
+    /** What changed against the round before. */
+    diff: AcceptanceDiff;
+    previous: AcceptanceSummary | null;
     reportPath: string;
-    results: Array<{ requirementId: string; target: string; status: string; detail: string }>;
+    statePath: string;
+    results: Array<{
+      requirementId: string;
+      requirementTitle: string;
+      kind: string;
+      target: string;
+      status: string;
+      detail: string;
+    }>;
   }>;
   /**
    * Start keeping frames of this session's browser window: the screen is compared
@@ -379,6 +404,12 @@ export interface BrowserPaneFns {
     routes: number;
     missingFixtures: string[];
     unmocked: string[];
+    /** How many of those routes read or change the contract's state. */
+    stateful: number;
+    /** Operations the stateful vocabulary cannot express (see `mock-engine.ts`). */
+    stateIssues: string[];
+    /** Why `state.json` could not be used, when it is there but broken. */
+    stateProblem: string | null;
   }>;
   /** Stop serving the mock; requests fall through to the real network. */
   clearMock: () => Promise<void>;
@@ -418,15 +449,20 @@ export interface BrowserPaneFns {
    */
   targetTab: (tabId: string) => Promise<void>;
   /**
-   * Bring one of this session's pages on screen — `tab-show`.
+   * Bring a page up for the person — `tab-show` — and make it the page this conversation works
+   * from, because a page brought up is one it is about to work on with them.
    *
-   * What the window shows from now on, and, because a page you bring up is one you are
-   * about to work on with the person, the page this session works from as well. An
-   * unknown id throws.
+   * `movedView` is false for a child session: it takes the page as its own but does not move what
+   * the person is looking at (plan §22, Conductor). An unknown id throws.
    */
-  activateTab: (tabId: string) => Promise<void>;
+  activateTab: (tabId: string) => Promise<{ movedView: boolean }>;
   /** Close one page. Closing a window's last page closes the window. */
   closeTab: (tabId: string) => Promise<{ remaining: number }>;
+  /**
+   * Hand one of this conversation's pages to another conversation — the orchestrator's verb
+   * (plan §22, Conductor): a parent gives each of its child sessions a page of its own.
+   */
+  assignTab: (tabId: string, targetSessionId: string) => Promise<void>;
   /** This session's window's pages, in the order they were opened. */
   listTabs: () => Promise<BrowserTabInfo[]>;
   /**
@@ -453,11 +489,10 @@ export interface BrowserPaneFns {
     prototype?: PrototypeWindowDescriptor | null;
     isVisible: boolean;
     /**
-     * Which conversation is driving this window right now, or `null` when nobody
-     * is — a lease, so the answer changes between turns. It is not an owner: one
-     * window per workspace is shared by every conversation in it and by the user.
+     * Which conversation is working in it right now, when one is — the window-level
+     * indicator. Which page each conversation holds is per page (`tabs`, `lockedBy`),
+     * because a parent and its child sessions work in one window in parallel.
      */
-    boundSessionId: string | null;
     agentControlActive?: boolean;
   }>>;
   detectChallenge: () => Promise<{ detected: boolean; provider: string; signals: string[] }>;
@@ -474,6 +509,12 @@ export interface BrowserToolsOptions {
    * Called at execution time to get the current callback from the session registry.
    */
   getBrowserPaneFns: () => BrowserPaneFns | undefined;
+  /**
+   * The workspace root, for the commands that name a file of the agent's own:
+   * `evaluate --file <path>` resolves a relative path against it. Absent means such a
+   * path has to be absolute — a file named relative to nothing is a file nobody can find.
+   */
+  workspaceRootPath?: string;
 }
 
 // ============================================================================
@@ -484,11 +525,17 @@ const BROWSER_TOOL_DESCRIPTION = `Run browser actions using a CLI-like command (
 
 All browser interactions use this single tool with strict validation and actionable feedback.
 String mode supports batching with semicolons: \`fill @e1 value; fill @e2 value; click @e3\`
-Batch stops after navigation commands (click, navigate, back, forward) since page state may change.
+Batch stops after navigation commands (click, navigate, back, forward, reload) since page state may change.
 
 Array mode bypasses string parsing and preserves raw arguments exactly (recommended for semicolons, tabs, and newlines):
 - \`["evaluate", "var x = 1; var y = 2; x + y"]\`
 - \`["paste", "Name\\tAge\\nAlice\\t30"]\`
+
+\`evaluate --file <path>\` runs a script that is kept in a file instead of in the command (a relative path
+counts from the workspace root): write it once — with the Write tool, or as the patch you already wrote —
+and name it here, so the same code is never spelled out a second time in a command. Use it for anything
+longer than a one-line probe. What it runs is **not registered**, so a reload drops it: a change that has to
+survive one is a patch file under \`patches/\`, applied by \`prototype-apply\`.
 
 Prototypes — one per requirement: a folder that holds the prototype's **pages** and its \`patches/\`, plus
 whatever the contract needs. A prototype is NOT a project: projects are separate containers that group
@@ -515,21 +562,28 @@ and lists every page in its options page) plus a spec a developer translates ont
 Prototypes are independent — each keeps its own patches, and one can *reference* another without merging
 them. Referencing is how you build one thing by studying another. \`prototype-list\` shows every prototype
 with its pages, and which ones reference which.
-Detailed rules and the full command reference: docs/browser-tools.md — read it before the first command.
+Detailed rules and the full command reference: docs/browser-tools.md for the browser, and
+docs/prototypes.md for every \`prototype-*\` command — read the one you are about to use first.
 
 The window is one and its pages are many: every command can name the page it acts on with \`--tab <id>\`
 (\`tabs\` lists them). Without one it acts on **your** page — the page you have been working from, which
 \`tabs\` marks as \`your page\` — and only on the page on screen when you have none yet; the person
-switching pages does not move your commands. \`prototype-open\` always opens a page of its own, which is
-what lets two prototypes be worked on at once rather than replacing each other.
+switching pages does not move your commands. A session spawned by another one is the exception: it works
+in the page it was given (\`tab-assign\`) or opens one with \`tab-new\`, and never takes over the page on
+screen. \`prototype-open\` always opens a page of its own, which is what lets two prototypes be worked on
+at once rather than replacing each other.
 
-There is **one browser window per workspace**, shared by every conversation in it and by the user — so
-\`open\` adds a page to it instead of making a window, and the window is not yours to close: use
-\`tab-close <id>\` for the pages in your task (the ones you opened, and the pages opened from them), or
-\`release\` to drop your overlay. \`tabs\` says what each page is, whose task it is in and who is driving
-it — there is no window list to read, because there is one window. Which
-prototype a command means is read from the page it acts on — your own page first, then the one in front
-of you — so several prototypes can be driven from one conversation without binding any of them.
+There is **one browser window per workspace**, shared by every conversation in it and by the user — so \`open\`
+adds a page to it instead of making a window, and the window is not yours to close: use \`tab-close <id>\` for
+the pages of your task (the ones you opened, the ones handed to you, and the pages opened from them — a Task's
+node pages included, so a finished DAG can be tidied up), or \`release\` to drop your overlay. \`tabs\` says
+what each page is, whose work it is in and who is working on it — another conversation's page is refused,
+prototype or not, and \`tab-assign <page-id> <session>\` is how a parent hands a page to a session it spawned,
+so that parallel sessions each work in their own page. A page's work outlives the session that opened it: a
+Task node's page belongs to that node, so a re-run of a node finds its predecessor's page in \`tabs\` — read it
+before opening one, because \`tab-new\` always adds a page. There is no window list to read, because there is
+one window. Which prototype a command means is read from the page it acts on — your own page first, then the
+one in front of you — so several prototypes can be driven from one conversation without binding any of them.
 
 Examples:
 - \`--help\`
@@ -549,7 +603,9 @@ Examples:
 - \`paste Name\\tAge\\nAlice\\t30\` — set clipboard and trigger Ctrl/Cmd+V
 - \`upload @e3 /path/to/file.pdf\` — attach local file(s) to a file input
 - \`scroll down 800\`
+- \`reload\` — reload this page. A page of ours is rendered from disk, so an edit to it or to a patch it carries shows up on the next render; nothing waits for the load, so \`wait network-idle\` before reading it, and re-\`snapshot\` (every ref is stale)
 - \`evaluate document.title\`
+- \`evaluate --file prototypes/cart/patches/ui-002-total.js\` — a script kept in a file
 - \`pick\` — ask the user to click an element; returns a stable selector + geometry
 - \`prototype-list\` — every prototype with its pages and references (both directions)
 - \`prototype-create Landing page\` — a container for pages. It starts with none: write \`cart.html\` (or add a live page) and that is the first page
@@ -559,9 +615,9 @@ Examples:
 - \`prototype-target https://staging.example.com/checkout --page cart\` — point one overlay page at the same page in another environment (no \`--page\` means the entry page). Say what goes stale with it: windows already open keep the old page, and the patches were written against the old DOM
 - \`prototype-reference rival-checkout\` — study another prototype from the bound one, whatever either is made of. Its patches were written against a different document: read them for intent, never copy them into the bound prototype's patches/ (they would ship silently inside its deliverable)
 - \`prototype-bind checkout-flow\` — bind this session (or \`prototype-bind --clear\` to unbind)
-- \`prototype-project acme-redesign\` — record which workspace project this prototype was made for (\`--clear\` removes the edge). It is an edge, not a container: the prototype stays where it is, and a session that has both in its context is told which side a new file belongs on
-- \`prototype-verify\` — run the acceptance checks the PRD puts under its requirements (\`check: selector [data-total]\`, \`check: endpoint GET /api/cart\`) and write \`dist/acceptance.md\`. Page checks need a page open; without one they are reported as skipped, not failed
+- \`prototype-verify\` — run the acceptance checks the PRD puts under its requirements (\`check: selector [data-total]\`, \`check: endpoint GET /api/cart\`) and write \`dist/acceptance.md\`. Page checks need a page open; without one they are reported as skipped, not failed. It says which round this is and what *moved* since the round before (newly red / still red / fixed), so "this change broke it" can be told from "it was already broken", and it hands over the \`about:\` line for each failure
 - \`prototype-apply\` — replay the bound prototype's patches (survives reload). Reports each declared \`@target\`: one that matched nothing is named, and one that used to match and does not means the page moved
+- \`prototype-apply --file prototypes/cart/patches/ui-002-total.js\` — put one patch on the page, the one just written. The patches already registered stay registered; a page of ours already carries it, so the answer is that the change shows on reload
 - \`prototype-apply checkout-flow\` — same, for an explicitly named prototype
 - \`prototype-commit\` — fold the delta layer into what owns it: a page of ours takes the changes into \`assets/<page>/committed.*\` (linked from the document), a live page into \`patches/<page>/Z-001-upper.css\` (replaying last). The folded patch files are deleted — irreversible, so commit when the work has stopped moving
 - \`prototype-commit --page cart\` — fold only that page's own patches
@@ -569,17 +625,18 @@ Examples:
 - \`prototype-record start\` — keep frames of this window: the screen is compared every 400 ms, and a frame is written when more than 0.5% of it changed (\`--interval <ms>\`, \`--threshold <ratio>\`, \`--max <n>\`)
 - \`prototype-record stop\` — write them to \`research/frames/<session>/\` as numbered JPEGs plus \`frames.json\` and \`index.md\`, and cite them from a finding's \`evidence:\` line
 - \`prototype-record import ~/Desktop/demo.mp4\` — copy a recording into \`research/videos/\` and sample frames from it every 2 s (\`--every 500ms\`, \`--changes\` for only what moved, \`--max 40\`). Chromium does the decoding, so a codec it cannot read fails loudly instead of quietly
-- \`prototype-export\` — build the deliverable (a loadable extension) + dist/dev-spec.md
+- \`prototype-export\` — build the deliverables (a loadable extension + dist/static/ pages of ours as single files) + dist/dev-spec.md. It names anything still outstanding (a requirement nothing implements, a dispute nobody answered, a check that failed) and \`prototype-export --strict\` refuses to build while there is any — use that when nobody is reading the output
 - \`prototype-contract-compose\` — fragments → services/<svc>/openapi.yaml
 - \`prototype-contract-export\` — dist/openapi.yaml + dist/contract.md + fixtures
 - \`prototype-mock-apply\` — serve the contract's x-mock responses
 - \`prototype-mock-clear\` — stop serving the mock
-- \`prototype-status\` — inspect pages, patches, services, exports, ownership
+- \`prototype-status\` — inspect pages, patches, services, exports, ownership, the disputes that still stand, and the last acceptance round
 - \`prototype-open\` — open the prototype (its entry page, or the generated index when there is none)
 - \`prototype-open --page cart\` — open one page of it
-- \`tabs\` — which pages this window has, each with what it is and who opened it
+- \`tabs\` — which pages this window has, each with what it is and whose work it is in
 - \`snapshot --tab tab-3\` — act on a named page (the window shows it while the command runs)
 - \`tab-new https://example.com\` — add a page to the window
+- \`tab-assign tab-3 260915-brave-fox\` — hand a page to a session you spawned
 - \`tab-close tab-2\` — close one page (closing the last one closes the window)
 - \`console 50 error\`
 - \`screenshot\` — raw screenshot
@@ -631,6 +688,7 @@ export function createBrowserTools(options: BrowserToolsOptions) {
             command: args.command,
             fns: getBrowserFns(),
             sessionId: options.sessionId,
+            workspaceRootPath: options.workspaceRootPath,
           });
 
           const text = result.appendReleaseHint

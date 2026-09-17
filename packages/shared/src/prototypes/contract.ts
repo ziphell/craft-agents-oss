@@ -7,7 +7,7 @@
  * are all *derived* from them.
  *
  * Why fragments instead of one `openapi.yaml`:
- *  - a single file is the one thing parallel lanes cannot share without
+ *  - a single file is the one thing parallel writers cannot share without
  *    contending on it (plan §3.3 constraint 2);
  *  - `$ref`s keep working because fragments are merged into one document, so
  *    they can reference each other's schemas.
@@ -18,13 +18,19 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
+import { describeMockOperation, type MockRoute } from './mock-engine.ts'
 import { getPrototypeDistPath, getPrototypeDirPath } from './storage.ts'
 
 const SERVICES_DIRNAME = 'services'
 const PATHS_DIRNAME = 'paths'
 const FIXTURES_DIRNAME = 'fixtures'
 const CONFIG_FILENAME = 'config.json'
+/** The mock's starting state, one document per service (see `mock-engine.ts`). */
+const STATE_FILENAME = 'state.json'
 export const COMPOSED_CONTRACT_FILENAME = 'openapi.yaml'
+
+/** The path-item key declaring which store collection a path is about. */
+const COLLECTION_KEY = 'x-mock-collection'
 
 /** HTTP verbs recognised inside an OpenAPI path item. */
 const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace'] as const
@@ -59,6 +65,13 @@ export interface ContractService {
   fixtures: Record<string, unknown>
   /** Names of fixture files that failed to parse. */
   brokenFixtures: string[]
+  /**
+   * The mock's starting state (`state.json`), or null when the service declares
+   * none — which is the honest state of a service with nothing stateful in it.
+   */
+  state: Record<string, unknown> | null
+  /** Why `state.json` could not be used, when it is there but unreadable. */
+  brokenState: string | null
   config: ContractConfig | null
 }
 
@@ -70,6 +83,12 @@ export interface ContractEndpoint {
   responses: Array<{ status: string; description: string }>
   /** `x-mock` declaration, when present. */
   mock: { status: number; fixture: string | null } | null
+  /**
+   * The store collection this path is about (`x-mock-collection` on the path
+   * item), or null. A path item declares it once for all its methods: the
+   * collection is what the path addresses, and the method says what is done to it.
+   */
+  collection: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -90,6 +109,11 @@ export function getContractPathsPath(workspaceRootPath: string, slug: string, se
 
 export function getContractFixturesPath(workspaceRootPath: string, slug: string, serviceSlug: string): string {
   return join(getContractServicePath(workspaceRootPath, slug, serviceSlug), FIXTURES_DIRNAME)
+}
+
+/** `services/{svc}/state.json` — the mock's starting state (see `mock-engine.ts`). */
+export function getContractStatePath(workspaceRootPath: string, slug: string, serviceSlug: string): string {
+  return join(getContractServicePath(workspaceRootPath, slug, serviceSlug), STATE_FILENAME)
 }
 
 export function getComposedContractPath(workspaceRootPath: string, slug: string, serviceSlug: string): string {
@@ -194,15 +218,43 @@ function readConfig(workspaceRootPath: string, slug: string, serviceSlug: string
   }
 }
 
-/** Load a service directory: fragments + fixtures + config. */
+/**
+ * The mock's starting state, by reading `state.json`.
+ *
+ * A file that is there but unusable is **reported**, not treated as absent: a
+ * stateful route reading an empty store looks exactly like a flow that does not
+ * work, and which of the two it is has to be answerable.
+ */
+function readState(
+  workspaceRootPath: string,
+  slug: string,
+  serviceSlug: string,
+): { state: Record<string, unknown> | null; broken: string | null } {
+  const statePath = getContractStatePath(workspaceRootPath, slug, serviceSlug)
+  if (!existsSync(statePath)) return { state: null, broken: null }
+  try {
+    const parsed = JSON.parse(readFileSync(statePath, 'utf-8')) as unknown
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { state: null, broken: `${STATE_FILENAME} has to be a JSON object (top-level), not ${Array.isArray(parsed) ? 'an array' : typeof parsed}.` }
+    }
+    return { state: parsed as Record<string, unknown>, broken: null }
+  } catch (err) {
+    return { state: null, broken: `${STATE_FILENAME} is not valid JSON: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+/** Load a service directory: fragments + fixtures + state + config. */
 export function loadContractService(workspaceRootPath: string, slug: string, serviceSlug: string): ContractService {
   const { fixtures, broken } = readFixtures(workspaceRootPath, slug, serviceSlug)
+  const { state, broken: brokenState } = readState(workspaceRootPath, slug, serviceSlug)
   return {
     slug: serviceSlug,
     dir: getContractServicePath(workspaceRootPath, slug, serviceSlug),
     fragments: readFragments(workspaceRootPath, slug, serviceSlug),
     fixtures,
     brokenFixtures: broken,
+    state,
+    brokenState,
     config: readConfig(workspaceRootPath, slug, serviceSlug),
   }
 }
@@ -264,6 +316,13 @@ export function listContractEndpoints(service: ContractService): ContractEndpoin
       const item = fragment.paths[path]
       if (!isPlainObject(item)) continue
 
+      // Declared once on the path item: the collection is what the path addresses,
+      // and each method says what is done to it.
+      const collectionRaw = item[COLLECTION_KEY]
+      const collection = typeof collectionRaw === 'string' && collectionRaw.trim().length > 0
+        ? collectionRaw.trim()
+        : null
+
       for (const method of HTTP_METHODS) {
         const operation = item[method]
         if (!isPlainObject(operation)) continue
@@ -290,6 +349,7 @@ export function listContractEndpoints(service: ContractService): ContractEndpoin
           status: endpointStatus(responses),
           responses,
           mock,
+          collection,
         })
       }
     }
@@ -527,20 +587,12 @@ export function exportContractDeliverable(
 /**
  * A response the mock serves, derived from a contract operation's `x-mock`.
  *
- * This is a *wire* shape: it crosses into the browser client, which fulfils the
- * matching request at the network layer via CDP. There is deliberately no
- * matching regex or state here — path matching stays in one place.
+ * The shape lives in `mock-engine.ts` with the semantics that read it: the state
+ * machine is the only thing that has to agree about what a route means, and the
+ * wire shape is its input. Re-exported here because a route is *derived from the
+ * contract*, and that is the door callers come through.
  */
-export interface MockRoute {
-  /** Upper-case HTTP method. */
-  method: string
-  /** URL path to match, e.g. `/orders`. */
-  path: string
-  /** Response status code. */
-  status: number
-  /** Response body, or null for bodiless responses (204/304). */
-  body: unknown
-}
+export type { MockRoute } from './mock-engine.ts'
 
 export interface MockRoutesResult {
   routes: MockRoute[]
@@ -548,6 +600,15 @@ export interface MockRoutesResult {
   missingFixtures: string[]
   /** Endpoints that declare no `x-mock`, as `"GET /orders"`. */
   unmocked: string[]
+  /**
+   * Operations whose declared collection this vocabulary cannot act on, as
+   * sentences (see `describeMockOperation`) — a stateful route that could not be
+   * built. Named here rather than dropped: a route that is not in the table looks
+   * like a request that reached the real backend.
+   */
+  stateIssues: string[]
+  /** Why `state.json` was unusable, when it is there but broken. */
+  stateProblem: string | null
 }
 
 /**
@@ -555,17 +616,32 @@ export interface MockRoutesResult {
  *
  * A declared `x-mock.fixture` that does not exist is **skipped rather than
  * served as an empty body** — a silently-empty response is far harder to debug
- * than the request reaching the real backend.
+ * than the request reaching the real backend. The same rule applies to a path
+ * whose collection this vocabulary cannot express: it is reported, not mocked.
  */
 export function buildMockRoutes(service: ContractService): MockRoutesResult {
   const routes: MockRoute[] = []
   const missingFixtures: string[] = []
   const unmocked: string[] = []
+  const stateIssues: string[] = []
 
   for (const endpoint of listContractEndpoints(service)) {
     if (!endpoint.mock) {
       unmocked.push(`${endpoint.method} ${endpoint.path}`)
       continue
+    }
+
+    // The stateful half: the path says which collection it is about, the method
+    // says what is done to it. An operation this vocabulary cannot express is
+    // named here, at read time, instead of being mocked into silence.
+    let state: MockRoute['state']
+    if (endpoint.collection !== null) {
+      const described = describeMockOperation(endpoint.method, endpoint.path, endpoint.collection)
+      if ('problem' in described) {
+        stateIssues.push(described.problem)
+        continue
+      }
+      state = { ...described, fromState: endpoint.mock.fixture === null }
     }
 
     const fixture = endpoint.mock.fixture
@@ -579,6 +655,7 @@ export function buildMockRoutes(service: ContractService): MockRoutesResult {
         path: endpoint.path,
         status: endpoint.mock.status,
         body: service.fixtures[fixture],
+        ...(state ? { state } : {}),
       })
       continue
     }
@@ -587,9 +664,18 @@ export function buildMockRoutes(service: ContractService): MockRoutesResult {
       method: endpoint.method,
       path: endpoint.path,
       status: endpoint.mock.status,
+      // Null for a stateful route that named no fixture: the answer is the
+      // collection itself (`state.fromState`), not a body carried here.
       body: null,
+      ...(state ? { state } : {}),
     })
   }
 
-  return { routes, missingFixtures: [...new Set(missingFixtures)].sort(), unmocked }
+  return {
+    routes,
+    missingFixtures: [...new Set(missingFixtures)].sort(),
+    unmocked,
+    stateIssues,
+    stateProblem: service.brokenState,
+  }
 }

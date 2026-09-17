@@ -181,7 +181,7 @@ export interface SessionStatusChangedEvent {
 export interface SessionMetadataChangedEvent {
   type: 'session_metadata_changed'
   sessionId: string
-  changes: Partial<Pick<Session, 'taskNodeCount' | 'kanbanColumn' | 'taskDraft' | 'taskSlug' | 'projectId' | 'prototypeSlug'>>
+  changes: Partial<Pick<Session, 'taskNodeCount' | 'taskAwaitingApproval' | 'kanbanColumn' | 'taskDraft' | 'taskSlug' | 'projectId' | 'prototypeSlug'>>
 }
 
 /**
@@ -580,6 +580,8 @@ export type Effect =
   | { type: 'permission_mode_changed'; sessionId: string; permissionMode: PermissionMode; previousPermissionMode?: PermissionMode; transitionDisplay?: string; modeVersion?: number; changedAt?: string; changedBy?: 'user' | 'system' | 'restore' | 'automation' | 'unknown' }
   | { type: 'restore_input'; text: string }
   | { type: 'toast_error'; message: string }
+  /** A Conductor run parked at a gate node (`kind: approval`) — work stopped until a person answers. */
+  | { type: 'task_awaiting_approval' }
 
 /**
  * Result of processing an event

@@ -75,7 +75,7 @@ describe('commitPrototype', () => {
     // The markers survive the fold, which is what keeps the anchors and the
     // requirement thread alive through it.
     expect(patches[0]?.targets).toEqual(['.pay-btn'])
-    expect(patches[0]?.lane).toBe('Z')
+    expect(patches[0]?.writer).toBe('Z')
     expect(patches[0]?.source).toContain('.pay-btn { color: red }')
     expect(patches[0]?.source).toContain('patches/pay/A-001-btn.css')
   })
@@ -222,7 +222,7 @@ describe('commitPrototype', () => {
 
   /**
    * The order rule, stated rather than inherited from the alphabet: a patch that
-   * declares a high order in another lane still replays before the fold, because
+   * declares a high order in another writer still replays before the fold, because
    * what was folded is what it was folded *from* (plan §21.3).
    */
   it('replays the consolidated layer after everything else', () => {

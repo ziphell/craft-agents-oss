@@ -117,6 +117,10 @@ export interface Session {
   taskNodeId?: string
   /** Tasks Conductor: total DAG node count (orchestrator only) — stable board progress denominator. */
   taskNodeCount?: number
+  /** Tasks Conductor: how many `kind: approval` gates of the active run are waiting on a person. */
+  taskAwaitingApproval?: number
+  /** The writer identity this session writes prototype artifacts as (task.yaml `writes:`, §3.6). */
+  taskWrites?: string
   /** Tasks Conductor: generate-time draft orchestrator, hidden from the board until adopted by createTask. */
   taskDraft?: boolean
 }
@@ -165,6 +169,8 @@ export interface CreateSessionOptions {
   taskRunId?: string
   /** Tasks Conductor: id of the DAG node this child session executes (child nodes only). */
   taskNodeId?: string
+  /** The writer identity this session writes prototype artifacts as (task.yaml `writes:`, §3.6). */
+  taskWrites?: string
   /** Tasks Conductor: mark the orchestrator as a generate-time draft (hidden until adopted by createTask). */
   taskDraft?: boolean
   /**
@@ -329,12 +335,18 @@ export interface TaskGetResult {
 export interface TaskResultNodeDto {
   id: string
   title: string
-  /** pending | running | done | failed | cancelled | skipped */
+  /** pending | running | awaiting-approval | done | failed | cancelled | skipped */
   state: string
   /** The child session that ran this node, recovered from the run log (drill-in link). */
   sessionId?: string
   /** The node's recorded final output text (from nodes/<id>.json), when present. */
   output?: string
+  /** The node's declared structured fields (its `outputs:`), as filed at completion. These are
+   *  what a downstream `${nodes.<id>.output.<field>}` — or a `when:` condition — reads. */
+  params?: Record<string, unknown>
+  /** For a gate node (`kind: approval`) when it is the question put to the person — i.e. what is
+   *  being approved. Present whenever `state` is `awaiting-approval`. */
+  approvalPrompt?: string
 }
 
 /**
@@ -413,7 +425,7 @@ export type SessionEvent =
   | { type: 'name_changed'; sessionId: string; name?: string }
   | { type: 'session_model_changed'; sessionId: string; model: string | null }
   | { type: 'session_status_changed'; sessionId: string; sessionStatus: SessionStatus }
-  | { type: 'session_metadata_changed'; sessionId: string; changes: Partial<Pick<Session, 'taskNodeCount' | 'kanbanColumn' | 'taskDraft' | 'taskSlug' | 'projectId' | 'prototypeSlug'>> }
+  | { type: 'session_metadata_changed'; sessionId: string; changes: Partial<Pick<Session, 'taskNodeCount' | 'taskAwaitingApproval' | 'kanbanColumn' | 'taskDraft' | 'taskSlug' | 'projectId' | 'prototypeSlug'>> }
   | { type: 'session_deleted'; sessionId: string }
   | { type: 'session_created'; sessionId: string }
   | { type: 'session_shared'; sessionId: string; sharedUrl: string }
@@ -915,6 +927,111 @@ export interface BrowserTabPrototype {
 }
 
 /**
+ * The **work a page is part of** — whose page it is (plan §22).
+ *
+ * The subject is the *work*, not the conversation doing it: a conversation is an
+ * executor, and executors change while the work stays the same. A DAG node re-run
+ * after a FAIL verdict (Conductor's repair loop) is a **new child session** for the
+ * **same node**, and it has to inherit the page its predecessor was working in — with
+ * a session id as the subject, that page would be an orphan the moment the first
+ * session stopped, unreachable to the one that replaced it.
+ *
+ * Two kinds, and the difference is what the page is a page *of*:
+ *
+ * - `session` — a conversation's own work. The page it opened, and the pages opened
+ *   from them (inheritance), are its task.
+ * - `task` — a piece of a Tasks DAG: the whole task (`nodeId: null`, the
+ *   orchestrator's own pages), or one node of it. `taskSlug` + `runId` + `nodeId` are
+ *   the node's identity and survive re-runs; `sessionId` is only **who opened it**,
+ *   recorded so a person can be told which conversation's page it was.
+ *
+ * Every variant carries `sessionId`, because a page is always opened *by* a
+ * conversation — that is the provenance, and the actor identity a command is checked
+ * against. It is not part of "the same work": two sessions on the same node are the
+ * same work, and two sessions on different nodes of one task are not.
+ */
+export type TabBelongsTo =
+  | { kind: 'session'; sessionId: string }
+  | {
+      kind: 'task'
+      /** The task's slug (`task.yaml`) — the same one every node of it carries. */
+      taskSlug: string
+      /** Which run of it, so two runs do not share pages. */
+      runId: string | null
+      /** Which node of the DAG, or `null` for the task itself (the orchestrator's pages). */
+      nodeId: string | null
+      /** Who opened this page — provenance for the person reading the rail. Not identity. */
+      sessionId: string
+    }
+
+/**
+ * Whether two pages are pages of the **same work** — the same conversation, or the
+ * same node of the same run of the same task (plan §22).
+ *
+ * The precise question, and the one `reach` is decided by: a page of another node of
+ * my task is not mine to work in. A re-run of a node *is* the same work, which is what
+ * lets the replacement session pick up the page its predecessor left.
+ */
+export function sameWork(a: TabBelongsTo | null, b: TabBelongsTo | null): boolean {
+  if (!a || !b) return false
+  if (a.kind === 'session' && b.kind === 'session') return a.sessionId === b.sessionId
+  if (a.kind === 'task' && b.kind === 'task') {
+    return a.taskSlug === b.taskSlug && a.runId === b.runId && a.nodeId === b.nodeId
+  }
+  return false
+}
+
+/**
+ * Whether two pages are pages of the same **task**, whatever node and whatever run —
+ * the looser question, used for housekeeping (plan §22).
+ *
+ * Closing is not working in: the orchestrator never opened its nodes' pages, so a rule
+ * that read the precise work would leave a finished run's pages in the window forever.
+ * Every conversation of a task may clean up after that task.
+ */
+export function sameTask(a: TabBelongsTo | null, b: TabBelongsTo | null): boolean {
+  if (!a || !b) return false
+  return a.kind === 'task' && b.kind === 'task' && a.taskSlug === b.taskSlug
+}
+
+/**
+ * The work a conversation is part of, told from the fields a session carries (plan §22).
+ *
+ * **The one place a session becomes a page's owner.** A Conductor child says which task, run
+ * and node it executes — so the session that runs a node and the one repair spawns to re-run
+ * the *same* node are the same work, and the second one inherits the page rather than opening
+ * another. The orchestrator, which carries the task but no node, is the task itself; a
+ * conversation that is part of no task is its own work.
+ */
+export function workOfSession(session: {
+  id: string
+  taskSlug?: string
+  taskRunId?: string
+  taskNodeId?: string
+}): TabBelongsTo {
+  if (!session.taskSlug) return { kind: 'session', sessionId: session.id }
+  return {
+    kind: 'task',
+    taskSlug: session.taskSlug,
+    runId: session.taskRunId ?? null,
+    nodeId: session.taskNodeId ?? null,
+    sessionId: session.id,
+  }
+}
+
+/**
+ * A work, in words — for a message that has to say whose page something is (plan §22).
+ *
+ * `"the task checkout-flow's node pay"`, `"session-4f2a…'s"`, or `"nobody's"` — never a bare
+ * session id for a task page, whose opener is provenance rather than the point.
+ */
+export function describeWork(work: TabBelongsTo | null): string {
+  if (!work) return "nobody's"
+  if (work.kind === 'session') return `${work.sessionId}'s`
+  return work.nodeId ? `the task ${work.taskSlug}'s node ${work.nodeId}` : `the task ${work.taskSlug}`
+}
+
+/**
  * One page of a browser window (plan §22).
  *
  * The fields are in three groups, because they are not equally trustworthy:
@@ -922,7 +1039,7 @@ export interface BrowserTabPrototype {
  * - **observation** — what the page itself reports (address, title, favicon,
  *   loading, which prototype and which of its pages it is on). One producer, so
  *   nothing here can disagree with the document it describes.
- * - **declaration** — who asked for it (`openedBySessionId`). Written once, when the
+ * - **declaration** — whose work it is (`belongsTo`). Written once, when the
  *   page is created, and never changed afterwards: a statement of intent.
  * - **lease** — who is working on it at the moment (`driverSessionId`). Written by
  *   whoever is using the page and released when their turn ends: it says nothing
@@ -932,8 +1049,9 @@ export interface BrowserTabPrototype {
  * measurement is reading somebody's intention as a fact, and one that reads a lease
  * as ownership will close work that is not theirs.
  *
- * `lockedBy` is none of the three: it is what the lease *adds up to* when the window
- * also has an overlay up, so it is derived here rather than stored (see the field).
+ * `lockedBy` is none of the three: it is the page's own **hold** — who is mid-work on it
+ * right now — which is written while that work lasts and let go when it ends (see the
+ * field).
  */
 export interface BrowserTabSummary {
   /** Stable across the page's life; what `--tab` and the toolbar name it by. */
@@ -972,7 +1090,7 @@ export interface BrowserTabSummary {
 
   // -- Declaration ---------------------------------------------------------
   /**
-   * Which conversation this page **belongs to**, or `null` for a person's page.
+   * Which work this page **belongs to**, or `null` for a person's page.
    *
    * Written when the page is created — by the conversation whose tool opened it, or by
    * **inheritance**: a page derived from another (a `target="_blank"`, a popup, a link on a
@@ -985,14 +1103,11 @@ export interface BrowserTabSummary {
    * pages alone (plan §22's third rule), and "which of these are mine" is not visible in a
    * URL. It is also the key the page rail groups by, so a window shows one section per task.
    *
-   * The session rather than a yes/no, because "an agent opened it" is not enough to act on
-   * once several conversations share a window: closing a page is housekeeping, and
-   * housekeeping is housekeeping only if *this* conversation's group is the one it falls in
-   * — a second conversation's page is as much somebody else's as the user's is. The words
-   * "opened by agent" are a rendering of this field, produced where they are needed (the
-   * agent's `tabs` output) rather than stored as well.
+   * The work rather than the conversation, because a page outlives the session that opened
+   * it — see {@link TabBelongsTo}. Which conversation is working here *now* is the lease's
+   * answer (`driverSessionId` / `lockedBy`), and those stay session ids.
    */
-  openedBySessionId: string | null
+  belongsTo: TabBelongsTo | null
 
   // -- Where a conversation works from ------------------------------------
   /**
@@ -1015,28 +1130,26 @@ export interface BrowserTabSummary {
   /**
    * Which session is working on this page **now**, or `null` when nobody is.
    *
-   * A lease, like the window's, but per page (plan §22): a conversation's command reaches
-   * the page it works from — its own cursor, which is written at the same moment — so that
-   * page records who is driving it, and the turn ending releases it. Two conversations
-   * sharing the window take turns *here*, and this is what makes "who is moving which page"
-   * answerable instead of guessed.
+   * A lease, per page (plan §22): a conversation's command reaches the page it works from —
+   * its own cursor, which is written at the same moment — so that page records who is driving
+   * it, and the turn ending releases it. Several conversations sharing the window take turns
+   * *here*, page by page, and this is what makes "who is moving which page" answerable
+   * instead of guessed.
    */
   driverSessionId: string | null
 
-  // -- Lease, enforced -----------------------------------------------------
+  // -- The lock ------------------------------------------------------------
   /**
-   * Which session has this page **locked at the moment**, or `null` when nobody has.
+   * Which session is **holding this page at the moment**, or `null` when nobody is.
    *
-   * A page is locked while a conversation is working on it: the window's overlay is up
-   * for that session *and* this page is the one its commands are landing on (the
-   * lease). While it is locked, a person cannot click or type into the page and
-   * another conversation's commands that name it are refused (plan §22, 第九轮) —
-   * narrower than the window-wide lock this replaces: the chrome, the other pages and
-   * the window itself stay usable.
+   * The page lock (plan §22, 第九轮): a page is held while the conversation working on it is
+   * mid-work, which is when a person cannot click or type into it and another conversation's
+   * commands that name it are refused — narrower than a window-wide lock: the chrome, the
+   * other pages and the window itself stay usable.
    *
-   * Derived, not stored, from the overlay plus the page's own lease — so it cannot
-   * drift from either: an overlay with no page behind it would be a lock on nothing,
-   * and a page with no overlay is being driven, not held.
+   * Per page, stored on the page: several conversations share one window (a parent and its
+   * child sessions run in parallel — Conductor), each holding its own page, so a single
+   * window-level slot could only ever mean "whoever started last".
    */
   lockedBy: string | null
 }
@@ -1049,34 +1162,6 @@ export interface BrowserInstanceInfo {
   isLoading: boolean
   canGoBack: boolean
   canGoForward: boolean
-  /**
-   * Which session is driving this window **now**, or `null` when nobody is.
-   *
-   * A lease rather than ownership (plan §22): every command a conversation runs
-   * through the window renews it, and the turn ending releases it. With one shared
-   * window per workspace, "whose window is this" stopped meaning anything — "who is
-   * using it at the moment" is the question that still has an answer.
-   */
-  boundSessionId: string | null
-  /**
-   * Whether this window is its **workspace's browser window** — the one every
-   * conversation in that workspace, and the user, work in (plan §22).
-   *
-   * There is one per workspace, and it is found by this flag plus `workspaceId`
-   * rather than by who is asking: no session owns it, so "which window is mine"
-   * stopped being a question with an owner-shaped answer. Its pages are the unit of
-   * work, and they carry what used to be the window's identity (which prototype,
-   * whose).
-   *
-   * Not a prototype thing: the same window is where a general task's browsing
-   * happens, and most of its pages have nothing to do with a prototype at all. The
-   * flag says *whose* the window is — the workspace's rather than a session's.
-   *
-   * Optional so a renderer that pre-dates the field keeps working — treat missing
-   * as `false`. A caller that needs to know whether a window may be closed should
-   * ask this: the workspace's window is never one conversation's to close.
-   */
-  isWorkspaceWindow?: boolean
   /**
    * The window's pages, in the order they were opened, with the active one marked.
    *
@@ -1098,10 +1183,12 @@ export interface BrowserInstanceInfo {
   agentControlActive: boolean
   themeColor: string | null
   /**
-   * The workspace this window belongs to, or `null` for a window opened with no
-   * workspace context. It is the **whole** of the boundary: one window per
-   * workspace, shared by every conversation in it, and no session owns it — a
-   * session drives it for a while (`boundSessionId`) and that is all. Renderers
+   * The workspace whose browser window this is, or `null` for a window opened
+   * with no workspace context. It is the **whole** of the boundary: one window per
+   * workspace, shared by every conversation in it, and no session owns it — which
+   * conversation is working where is a fact about its **pages** (`lockedBy`,
+   * `cursorOf`, `belongsTo`), because a parent and its child sessions can be
+   * in it at once (Conductor). Renderers
    * filter the tab strip / status badge by `activeWorkspaceId` so a conversation
    * in workspace A doesn't see windows of workspace B.
    *

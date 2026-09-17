@@ -723,20 +723,30 @@ export function handleSessionStatusChanged(
 
 /**
  * Handle session_metadata_changed - merge programmatic metadata changes (taskNodeCount,
- * kanbanColumn, and the taskDraft→taskSlug promotion on orchestrator adoption) that don't
- * propagate via the header-signature file watch.
+ * taskAwaitingApproval, kanbanColumn, and the taskDraft→taskSlug promotion on orchestrator
+ * adoption) that don't propagate via the header-signature file watch.
  */
 export function handleSessionMetadataChanged(
   state: SessionState,
   event: SessionMetadataChangedEvent
 ): ProcessResult {
   const { session, streaming } = state
+  const effects: Effect[] = []
+
+  // A gate parking is the one metadata change that is about work *stopping*: the run cannot move
+  // until a person answers. Notify on the rise (0→N, or one more gate parked) — never on a
+  // re-published count, or every scheduling pass would nag again.
+  const waiting = event.changes.taskAwaitingApproval
+  if (typeof waiting === 'number' && waiting > (session.taskAwaitingApproval ?? 0)) {
+    effects.push({ type: 'task_awaiting_approval' })
+  }
+
   return {
     state: {
       session: { ...session, ...event.changes },
       streaming,
     },
-    effects: [],
+    effects,
   }
 }
 

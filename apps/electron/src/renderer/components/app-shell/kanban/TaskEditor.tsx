@@ -659,6 +659,26 @@ export function TaskEditor({
       .finally(() => setResultsLoading(false))
   }, [workspaceId, editSlug])
 
+  /**
+   * Answer a gate node (`kind: approval`). The run carries on server-side — nothing to
+   * orchestrate here — so all this does is hand the decision over and re-read the results,
+   * which is what the panel renders (the gate flips to done and its branch proceeds).
+   */
+  const resolveApproval = React.useCallback(
+    async (nodeId: string, approved: boolean) => {
+      const runId = results?.runId
+      if (!editSlug || !runId) return
+      try {
+        await window.electronAPI.resolveTaskApproval(workspaceId, editSlug, runId, nodeId, approved)
+      } catch (err) {
+        // Usually a stale panel: the gate was answered elsewhere (or the run stopped).
+        toast.error(t('common.error'), { description: err instanceof Error ? err.message : String(err) })
+      }
+      loadResults()
+    },
+    [workspaceId, editSlug, results?.runId, loadResults, t],
+  )
+
   // Load results when the Results tab is first opened (and there's a slug to read).
   React.useEffect(() => {
     if (tab === 'results' && editSlug && !results && !resultsLoading) loadResults()
@@ -965,6 +985,7 @@ export function TaskEditor({
           results={results}
           loading={resultsLoading}
           onOpenChildSession={onOpenChildSession}
+          onResolveApproval={resolveApproval}
         />
       ) : (
       /* Body */
@@ -1221,12 +1242,21 @@ function ResultsPanel({
   results,
   loading,
   onOpenChildSession,
+  onResolveApproval,
 }: {
   results: TaskResults | null
   loading: boolean
   onOpenChildSession?: (sessionId: string) => void
+  /** Answer a gate node (`kind: approval`) — the one step of a run a person decides. */
+  onResolveApproval?: (nodeId: string, approved: boolean) => Promise<void> | void
 }) {
   const { t } = useTranslation()
+  // The gate being answered, so its buttons can't be double-clicked while the round trip runs.
+  const [resolving, setResolving] = React.useState<string | null>(null)
+  const resolve = (nodeId: string, approved: boolean) => {
+    setResolving(nodeId)
+    void Promise.resolve(onResolveApproval?.(nodeId, approved)).finally(() => setResolving(null))
+  }
 
   if (loading && !results) {
     return (
@@ -1335,12 +1365,54 @@ function ResultsPanel({
               </button>
             )}
           </div>
+          {node.state === 'awaiting-approval' && (
+            // A gate node: the run is parked here until the person answers, so the question and
+            // the two possible answers sit right where the node itself is listed.
+            <div className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/[0.06] px-3 py-2.5">
+              {node.approvalPrompt && (
+                <p className="whitespace-pre-wrap text-[12px] leading-relaxed text-foreground/75">{node.approvalPrompt}</p>
+              )}
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={resolving === node.id}
+                  onClick={() => resolve(node.id, true)}
+                  className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-2.5 py-1 text-[11.5px] font-semibold text-white hover:bg-emerald-500 disabled:opacity-50"
+                >
+                  <CheckCircle2 className="h-3.5 w-3.5" strokeWidth={2.5} /> {t('tasks.approve')}
+                </button>
+                <button
+                  type="button"
+                  disabled={resolving === node.id}
+                  onClick={() => resolve(node.id, false)}
+                  className="inline-flex items-center gap-1 rounded-md border border-red-500/40 px-2.5 py-1 text-[11.5px] font-semibold text-red-600 hover:bg-red-500/10 disabled:opacity-50 dark:text-red-300"
+                >
+                  <XCircle className="h-3.5 w-3.5" strokeWidth={2.5} /> {t('tasks.reject')}
+                </button>
+              </div>
+            </div>
+          )}
           {node.output ? (
             <div className="mt-2 max-h-72 overflow-y-auto rounded-md border border-border/50 bg-background px-3 py-2 text-[12px] leading-relaxed">
               <Markdown>{node.output}</Markdown>
             </div>
           ) : (
             <p className="mt-1.5 text-[11.5px] text-foreground/40">{t('tasks.noOutput')}</p>
+          )}
+          {node.params && Object.keys(node.params).length > 0 && (
+            // The node's declared fields — the machine-readable half of its answer, and what a
+            // downstream node (or a `when:` condition) actually reads. Shown as-is: the field
+            // names are the author's, so there is nothing to translate.
+            <dl className="mt-2 flex flex-col gap-0.5 rounded-md border border-border/50 bg-foreground/[0.02] px-3 py-2">
+              {Object.entries(node.params).map(([key, value]) => (
+                <div key={key} className="flex items-baseline gap-2 text-[11.5px]">
+                  <dt className="shrink-0 font-semibold text-foreground/50">{key}</dt>
+                  <dd className="min-w-0 flex-1 break-words font-mono text-foreground/75">
+                    {typeof value === 'string' ? value : JSON.stringify(value)}
+                  </dd>
+                </div>
+              ))}
+            </dl>
           )}
         </div>
         )

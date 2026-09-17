@@ -11,7 +11,15 @@
 
 import type { WebContents } from 'electron'
 import type { PickedElement } from '@craft-agent/shared/protocol'
-import type { MockRoute } from '@craft-agent/shared/prototypes'
+import {
+  applyMockRequest,
+  matchMockRoute,
+  parseMockRequestBody,
+  type MockMatch,
+  type MockProgram,
+  type MockRoute,
+  type MockStore,
+} from '@craft-agent/shared/prototypes'
 import { mainLog } from './logger'
 
 export interface AccessibilityNode {
@@ -95,7 +103,12 @@ const CDP_IDLE_DETACH_MS = 5_000
 /** Subset of the `Fetch.requestPaused` payload we act on. */
 interface CdpPausedRequest {
   requestId?: string
-  request?: { url?: string; method?: string }
+  request?: {
+    url?: string
+    method?: string
+    /** The request body, when CDP captured one — what a mutating mock acts on. */
+    postData?: string
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -358,9 +371,11 @@ export class BrowserCDP {
   // Caller-supplied init-script key → CDP identifier. Also gates idle detach:
   // CDP drops `addScriptToEvaluateOnNewDocument` registrations on detach.
   private initScriptIds: Map<string, string> = new Map()
-  // CDP `Fetch.enable` state plus the route table served while it is on.
+  // CDP `Fetch.enable` state plus the mock served while it is on: the routes, and
+  // the store they remember between requests (one apply = one run of the flow).
   private fetchMockEnabled = false
   private fetchMockRoutes: MockRoute[] = []
+  private fetchMockStore: MockStore = {}
   private debuggerMessageListenerRegistered = false
 
   /**
@@ -448,6 +463,7 @@ export class BrowserCDP {
     this.initScriptIds.clear()
     this.fetchMockEnabled = false
     this.fetchMockRoutes = []
+    this.fetchMockStore = {}
   }
 
   private async send(method: string, params?: Record<string, unknown>): Promise<any> {
@@ -1067,17 +1083,22 @@ export class BrowserCDP {
   // ---------------------------------------------------------------------------
 
   /**
-   * Serve `routes` for matching requests.
+   * Serve `program` for matching requests.
    *
    * Interception happens in the browser's network stack, so it covers `fetch`,
    * `XMLHttpRequest` (axios) and every other resource type, without patching any
    * page globals and without the app having to point at a mock server.
    *
+   * The store is **copied** here, which is what makes one apply one run of the
+   * flow: a second `prototype-mock-apply` starts the prototype's state over rather
+   * than continuing whatever the last round of clicking left behind.
+   *
    * Like init scripts this is CDP session state, so the debugger is held
    * attached while it is active.
    */
-  async setFetchMockRoutes(routes: MockRoute[]): Promise<number> {
-    this.fetchMockRoutes = routes.map((route) => ({ ...route, method: route.method.toUpperCase() }))
+  async setFetchMockRoutes(program: MockProgram): Promise<number> {
+    this.fetchMockRoutes = program.routes.map((route) => ({ ...route, method: route.method.toUpperCase() }))
+    this.fetchMockStore = JSON.parse(JSON.stringify(program.store ?? {}))
 
     if (!this.fetchMockEnabled) {
       await this.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] })
@@ -1091,6 +1112,7 @@ export class BrowserCDP {
   /** Stop intercepting. Requests fall through to the real network again. */
   async clearFetchMock(): Promise<void> {
     this.fetchMockRoutes = []
+    this.fetchMockStore = {}
 
     if (this.fetchMockEnabled) {
       this.fetchMockEnabled = false
@@ -1109,12 +1131,18 @@ export class BrowserCDP {
     return [...this.fetchMockRoutes]
   }
 
+  /** The store as it stands — for a caller that wants to see where the flow got to. */
+  listFetchMockStore(): MockStore {
+    return JSON.parse(JSON.stringify(this.fetchMockStore))
+  }
+
   /**
    * Match on pathname only, so it works whether the app calls the mock with an
-   * absolute URL, a baseUrl-prefixed URL, or a same-origin relative path.
-   * The leading `/` in the route path keeps `endsWith` boundary-safe.
+   * absolute URL, a baseUrl-prefixed URL, or a same-origin relative path. The
+   * matching rule itself lives in the shared engine, because the delivered
+   * carriers have to answer exactly as this layer does.
    */
-  private matchFetchMockRoute(method: string, url: string): MockRoute | null {
+  private matchFetchMockRoute(method: string, url: string): MockMatch | null {
     let pathname = url
     try {
       pathname = new URL(url).pathname
@@ -1122,12 +1150,7 @@ export class BrowserCDP {
       // Not an absolute URL — fall back to the raw value.
     }
 
-    for (const route of this.fetchMockRoutes) {
-      if (route.method !== method) continue
-      if (pathname === route.path || pathname.endsWith(route.path)) return route
-    }
-
-    return null
+    return matchMockRoute(this.fetchMockRoutes, method, pathname)
   }
 
   private async handlePausedRequest(params: CdpPausedRequest): Promise<void> {
@@ -1136,17 +1159,29 @@ export class BrowserCDP {
 
     const url = String(params.request?.url ?? '')
     const method = String(params.request?.method ?? 'GET').toUpperCase()
-    const route = this.matchFetchMockRoute(method, url)
+    const matched = this.matchFetchMockRoute(method, url)
 
     try {
-      if (!route) {
+      if (!matched) {
         await this.send('Fetch.continueRequest', { requestId })
         return
       }
 
+      const read = parseMockRequestBody(params.request?.postData)
+      // A mutating request whose body could not be read changes nothing, and saying
+      // so is the only alternative to appending `null` and calling it state.
+      const answer = !read.readable && matched.route.state
+        ? { status: 500, body: { error: 'mock could not read the request body' } }
+        : applyMockRequest({
+            store: this.fetchMockStore,
+            route: matched.route,
+            params: matched.params,
+            body: read.body,
+          })
+
       await this.send('Fetch.fulfillRequest', {
         requestId,
-        responseCode: route.status,
+        responseCode: answer.status,
         responseHeaders: [
           { name: 'content-type', value: 'application/json' },
           // Cross-origin API calls would otherwise be blocked by CORS even
@@ -1154,7 +1189,7 @@ export class BrowserCDP {
           { name: 'access-control-allow-origin', value: '*' },
           { name: 'x-craft-mock', value: '1' },
         ],
-        body: Buffer.from(JSON.stringify(route.body ?? null)).toString('base64'),
+        body: Buffer.from(JSON.stringify(answer.body ?? null)).toString('base64'),
       })
     } catch (err) {
       mainLog.debug(`[browser-cdp] fetch mock failed for ${method} ${url}: ${String(err)}`)

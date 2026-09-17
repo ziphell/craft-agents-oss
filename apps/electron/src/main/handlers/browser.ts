@@ -41,13 +41,13 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
 
     // Which window the caller gets:
     //
-    // - an **explicit id** is a window of its own, for callers that want one
-    //   (internal machinery, tests);
+    // - an **explicit id** pins the instance id (internal machinery and tests) —
+    //   the window it makes is the same kind as any other, carrying the caller's
+    //   workspace;
     // - everything else lands in the workspace's **browser window** — the one
     //   window every conversation and the user work in (plan §22). Opening
     //   "a new browser" adds a page to it rather than making a second window, and
-    //   `bindToSessionId` only says which conversation is driving, not whose window
-    //   it is.
+    //   `bindToSessionId` only says which conversation is driving.
     const instanceId = input?.id && !input?.bindToSessionId
       ? browserPaneManager.createInstance(input.id, { show: input?.show, workspaceId })
       : browserPaneManager.createForSession(input?.bindToSessionId ?? null, {
@@ -157,7 +157,7 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
       }
 
       // A page a person asked for through the strip is theirs, which is what the
-      // default already says (`openedBySessionId: null` — nobody's session asked for
+      // default already says (`belongsTo: null` — nobody's work asked for
       // it). Stated by leaving it out, so the two surfaces that add pages (this one
       // and the toolbar's own `+`) cannot drift apart.
       browserPaneManager.createTab(input.instanceId, { activate: true })

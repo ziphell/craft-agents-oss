@@ -16,6 +16,7 @@ import { tmpdir } from 'os'
 import {
   buildInlinedPatchProbeScript,
   createPrototype,
+  getPrototypeDirPath,
   getPrototypePagePatchesPath,
   getPrototypePatchesPath,
   readPrototypeAnchors,
@@ -195,6 +196,70 @@ describe('applyPrototypeToBrowser', () => {
     ])
   })
 
+  /**
+   * `--file`: one patch put on the page on its own — the loop a patch being iterated on
+   * runs in. The clearing step is what makes this a real difference rather than a narrower
+   * scan: a whole-set replay drops every registration and re-adds the pending ones, which
+   * for one file would un-apply everything else on the next load.
+   */
+  describe('one named file', () => {
+    it('injects that file alone, and touches no other registration', async () => {
+      writePatch('A-001-btn.css', '.btn { color: red }')
+      writePagePatch('cart', 'B-001-total.js', 'window.total = 1;')
+      const { bpm, page, evaluated, registered, cleared } = makeBpm([], 'https://app.example.com/checkout')
+
+      const result = await applyPrototypeToBrowser(bpm, 'browser-1', workspaceRoot, slug, page, {
+        file: join(getPrototypePatchesPath(workspaceRoot, slug), 'cart/B-001-total.js'),
+      })
+
+      expect(result.applied).toBe(1)
+      expect(result.files).toEqual(['cart/B-001-total.js'])
+      expect(result.file).toEqual({ name: 'cart/B-001-total.js', page: 'cart' })
+      expect(registered).toEqual([`prototype:${slug}:cart/B-001-total.js`])
+      expect(cleared).toEqual([])
+      expect(evaluated).toHaveLength(1)
+      expect(evaluated[0]).toContain('window.total = 1;')
+    })
+
+    // Two different questions, and only one of them can be read off the file: which page
+    // the command acted on, and which page the patch belongs to. With another page open,
+    // every target matching nothing has to be readable as the second answer.
+    it('reports the file\'s own page beside the page the command acted on', async () => {
+      writePage('cart')
+      writePage('orders')
+      writePagePatch('cart', 'B-001-total.js', 'window.total = 1;')
+      const { bpm, page } = makeBpm([], `${ORIGIN}/orders.html`)
+
+      const result = await applyPrototypeToBrowser(bpm, 'browser-1', workspaceRoot, slug, page, {
+        file: join(getPrototypePagePatchesPath(workspaceRoot, slug, 'cart'), 'B-001-total.js'),
+      })
+
+      expect(result.page).toBe('orders')
+      expect(result.file).toEqual({ name: 'cart/B-001-total.js', page: 'cart' })
+    })
+
+    // The injector ignores files that are not named as patches, so a file named on purpose
+    // and then not applied is exactly the outcome that has to be said out loud.
+    it('refuses a file that is not a patch, saying which way it went wrong', async () => {
+      const { bpm } = makeBpm([])
+      const outside = join(workspaceRoot, 'notes.js')
+      writeFileSync(outside, 'console.log(1)', 'utf-8')
+      // Inside the prototype, but not under its `patches/` — a document of ours, not a change.
+      const notUnderPatches = join(getPrototypeDirPath(workspaceRoot, slug), 'notes.md')
+      writeFileSync(notUnderPatches, 'thoughts', 'utf-8')
+      writePatch('README.md', 'not a patch, and never replayed')
+      const apply = (file: string) =>
+        applyPrototypeToBrowser(bpm, 'browser-1', workspaceRoot, slug, null, { file })
+
+      await expect(apply(join(workspaceRoot, 'missing.js'))).rejects.toThrow(/No such file/)
+      await expect(apply(outside)).rejects.toThrow(/not inside prototype/)
+      await expect(apply(notUnderPatches)).rejects.toThrow(/is not a patch/)
+      await expect(apply(join(getPrototypePatchesPath(workspaceRoot, slug), 'README.md'))).rejects.toThrow(
+        /is not a patch of prototype/,
+      )
+    })
+  })
+
   // The window is somewhere the table does not describe. A page of ours is still
   // the page the prototype's own address renders, so the entry is what a bare
   // "apply" means — said out loud, so "the patch did nothing" stays distinguishable
@@ -267,6 +332,7 @@ describe('applyPrototypeToBrowser', () => {
     expect(result).toEqual({
       slug,
       page: null,
+      file: null,
       applied: 0,
       files: [],
       skipped: [],

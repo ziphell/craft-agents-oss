@@ -34,7 +34,7 @@
  * of it. There is no crawler and no capture step, which is the only reason a
  * record like this stays true instead of decaying into a second thing to
  * maintain. The file is rebuildable from the patches plus one apply, so it is
- * not a shared index any lane has to coordinate on.
+ * not a shared index any writer has to coordinate on.
  *
  * @see docs/prototype-workbench-plan.md §21.2
  */

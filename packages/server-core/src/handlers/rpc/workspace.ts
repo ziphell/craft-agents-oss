@@ -1,8 +1,8 @@
 import { existsSync } from 'node:fs'
 import { join } from 'path'
-import { homedir } from 'os'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { getWorkspaceByNameOrId, addWorkspace, setActiveWorkspace, updateWorkspaceRemoteServer } from '@craft-agent/shared/config'
+import { getDefaultWorkspacesDir } from '@craft-agent/shared/workspaces'
 import { perf } from '@craft-agent/shared/utils'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
@@ -60,8 +60,9 @@ export function registerWorkspaceCoreHandlers(server: RpcServer, deps: HandlerDe
 
   // Check if a workspace slug already exists (for validation before creation)
   server.handle(RPC_CHANNELS.workspaces.CHECK_SLUG, async (_ctx, slug: string) => {
-    const defaultWorkspacesDir = join(homedir(), '.craft-agent', 'workspaces')
-    const workspacePath = join(defaultWorkspacesDir, slug)
+    // The same source the creation path uses, so the path this answers with is the path a
+    // "default location" workspace lands in — and the caller does not have to build one.
+    const workspacePath = join(getDefaultWorkspacesDir(), slug)
     const exists = existsSync(workspacePath)
     return { exists, path: workspacePath }
   })

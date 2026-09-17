@@ -4,6 +4,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import {
   buildPrototypeStatus,
+  commitPrototype,
   exportPrototype,
   extractRequirementIds,
   getPrototypeDirPath,
@@ -242,5 +243,45 @@ describe('the thread from a requirement to what implements it', () => {
 
     // The reader gets the requirements, not the author's notes (plan §20.2).
     expect(existsSync(join(result.extensionDir, 'research'))).toBe(false)
+  })
+
+  /**
+   * Convergence moves a page's own delta out of `patches/` and into files that page owns
+   * (`assets/<page>/committed.*`), and the fold carries the markers forward on purpose so the thread
+   * survives (plan §21.3). A reader that stopped at `patches/` would therefore report the requirement
+   * as implemented by **nothing** at exactly the moment the work converged — while the change is still
+   * on the page — and the delivered spec would say so to the person receiving it.
+   */
+  it('follows a requirement into the file a page folded its own delta into', () => {
+    const slug = makePrototype()
+    writePrd(slug, '## R-001 The total stays on screen\n')
+    const pagePatches = join(getPrototypePatchesPath(workspaceRoot, slug), 'cart')
+    mkdirSync(pagePatches, { recursive: true })
+    writeFileSync(join(pagePatches, 'A-001-sticky.css'), '/* @requirement R-001 */\n.total { position: sticky }', 'utf-8')
+
+    const before = buildPrototypeStatus(workspaceRoot, slug)
+    expect(before.requirements[0]?.patches).toEqual(['patches/cart/A-001-sticky.css'])
+    expect(before.unresolved.unmet).toEqual([])
+
+    commitPrototype(workspaceRoot, slug)
+
+    // The change is in the page's own stylesheet now, with its markers kept.
+    const folded = readFileSync(join(getPrototypeDirPath(workspaceRoot, slug), 'assets', 'cart', 'committed.css'), 'utf-8')
+    expect(folded).toContain('@requirement R-001')
+    expect(existsSync(join(pagePatches, 'A-001-sticky.css'))).toBe(false)
+
+    const after = buildPrototypeStatus(workspaceRoot, slug)
+    expect(after.requirements[0]?.patches).toEqual([])
+    expect(after.requirements[0]?.pages).toEqual(['cart'])
+    expect(after.unresolved.unmet).toEqual([])
+
+    exportPrototype(workspaceRoot, slug)
+    const spec = readFileSync(join(getPrototypeDistPath(workspaceRoot, slug), 'dev-spec.md'), 'utf-8')
+    expect(spec).toContain('| 1 | `R-001` | The total stays on screen | `cart` |')
+
+    // A page with no document declares nothing: the folded file does not outvote the page it belongs
+    // to, for the same reason a page that cannot be read is skipped.
+    rmSync(join(getPrototypeDirPath(workspaceRoot, slug), 'cart.html'))
+    expect(buildPrototypeStatus(workspaceRoot, slug).unresolved.unmet).toEqual(['R-001'])
   })
 })

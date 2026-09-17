@@ -43,10 +43,17 @@ describe('resolveNodeStatePill', () => {
   })
 
   it('maps every NodeRunState literal to an existing en.json label', () => {
-    for (const state of ['pending', 'running', 'done', 'failed', 'cancelled', 'skipped']) {
+    for (const state of ['pending', 'running', 'awaiting-approval', 'done', 'failed', 'cancelled', 'skipped']) {
       const { labelKey } = resolveNodeStatePill(state)
       expect(labelKey).not.toBeNull()
       expect(messages[labelKey!]).toBeTruthy()
     }
+  })
+
+  it('marks a parked gate as attention (amber), neither progress nor failure', () => {
+    const gate = resolveNodeStatePill('awaiting-approval')
+    expect(gate.labelKey).toBe('tasks.nodeStateAwaitingApproval')
+    expect(gate.className).toContain('amber')
+    expect(gate.className).not.toContain('red')
   })
 })

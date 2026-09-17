@@ -4,21 +4,25 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import {
   buildPrototypeStatus,
-  canLaneWrite,
+  canWriterWrite,
   classifyPrototypePath,
   createPrototype,
   getContractFixturesPath,
   getContractPathsPath,
+  getPrototypeAnchorsPath,
   getPrototypeConfigPath,
   getPrototypeDistPath,
   getPrototypePagePatchesPath,
   getPrototypePatchesPath,
   getPrototypeDirPath,
-  isPrototypeLane,
+  getPrototypeResearchPath,
+  isValidWriterId,
   listPrototypeStatuses,
+  resolvePrototypeArtifactPath,
   resolvePrototypeOwnership,
   resolvePrototypeEntry,
   setPrototypeBaseUrlResolver,
+  whyWriterMayNotWrite,
   writePrototypeConfig,
   writePrototypePage,
   type PrototypePageEntry,
@@ -30,7 +34,7 @@ const DOCUMENT = '<!doctype html><html><body><h1>Cart</h1></body></html>'
 describe('prototype path ownership', () => {
   it('assigns control-plane paths', () => {
     // Top-level documents and the page table are written by the control plane (the
-    // agent, on the human's behalf) and read by the lanes.
+    // agent, on the human's behalf) and read by the writers.
     expect(classifyPrototypePath('cart.html')).toEqual({ owner: { kind: 'control-plane' } })
     expect(classifyPrototypePath('_layout.html')).toEqual({ owner: { kind: 'control-plane' } })
     expect(classifyPrototypePath('config.json')).toEqual({ owner: { kind: 'control-plane' } })
@@ -40,47 +44,56 @@ describe('prototype path ownership', () => {
     })
   })
 
-  it('derives patch ownership from the lane in the file name', () => {
-    expect(classifyPrototypePath('patches/A-001-btn.css')).toEqual({ owner: { kind: 'lane', lane: 'A' } })
-    expect(classifyPrototypePath('patches/b-012-guard.js')).toEqual({ owner: { kind: 'lane', lane: 'B' } })
-    // One level deeper is a page's own patch: the lane still owns it, and the
+  it('derives patch ownership from the writer id in the file name', () => {
+    expect(classifyPrototypePath('patches/A-001-btn.css')).toEqual({ owner: { kind: 'writer', writer: 'A' } })
+    // A writer id is whatever the graph declares, so it may be a multi-hyphen slug: the name
+    // splits at the first `-<digits>-`, which is what makes that parse unambiguous.
+    expect(classifyPrototypePath('patches/research-competitors-001-report.css')).toEqual({
+      owner: { kind: 'writer', writer: 'research-competitors' },
+    })
+    // One level deeper is a page's own patch: the writer still owns it, and the
     // directory decides which page it changes (plan §19.4).
-    expect(classifyPrototypePath('patches/cart/A-002-total.css')).toEqual({ owner: { kind: 'lane', lane: 'A' } })
+    expect(classifyPrototypePath('patches/cart/A-002-total.css')).toEqual({
+      owner: { kind: 'writer', writer: 'A' },
+    })
   })
 
-  it('flags a patch whose lane prefix is not a declared lane', () => {
-    const result = classifyPrototypePath('patches/Y-001-btn.css')
-    expect(result).toHaveProperty('violation')
-    expect((result as { violation: string }).violation).toContain('unknown lane prefix "Y"')
+  it('flags a patch whose name does not parse', () => {
+    expect(classifyPrototypePath('patches/notes.txt')).toEqual({
+      violation:
+        'misnamed patch — expected {writer}-{nnn}-{name}.{css|js}, optionally under patches/<page>/',
+    })
+    // The name splits at the *first* `-<digits>-`, so a prefix that looks like a number belongs
+    // to the shortest writer. That is why such an id is refused up front (`isValidWriterId`)
+    // rather than left to disagree with the very files it would write.
+    expect(classifyPrototypePath('patches/ui-2-001-btn.css')).toEqual({
+      owner: { kind: 'writer', writer: 'ui' },
+    })
   })
 
   /**
-   * The consolidated lane is a lane (plan §21.3) — a folded patch is an ordinary
-   * patch written by the control plane, so it is classified like one rather than
-   * reported as an unknown prefix.
+   * The consolidated writer is reserved (plan §21.3, §3.4) — a folded patch is an ordinary
+   * patch written by the control plane, so it is classified like one; what makes it special is
+   * that it must replay last, and that no agent writer may claim the prefix.
    */
-  it('accepts the consolidated lane that a commit writes', () => {
+  it('accepts the consolidated writer that a commit writes', () => {
     expect(classifyPrototypePath('patches/Z-001-upper.css')).toEqual({
-      owner: { kind: 'lane', lane: 'Z' },
+      owner: { kind: 'writer', writer: 'Z' },
     })
     expect(classifyPrototypePath('patches/cart/Z-002-upper.js')).toEqual({
-      owner: { kind: 'lane', lane: 'Z' },
+      owner: { kind: 'writer', writer: 'Z' },
     })
   })
 
-  it('flags a misnamed patch rather than silently ignoring it', () => {
-    expect(classifyPrototypePath('patches/notes.txt')).toEqual({
-      violation: 'misnamed patch — expected {lane}-{nnn}-{name}.{css|js}, optionally under patches/<page>/',
-    })
-  })
-
-  it('assigns contract and data paths to lanes B and C', () => {
+  it('assigns contract and data paths to the writers their path rules declare', () => {
     expect(classifyPrototypePath('services/api/paths/list-orders.yaml')).toEqual({
-      owner: { kind: 'lane', lane: 'B' },
+      owner: { kind: 'writer', writer: 'contract' },
     })
-    expect(classifyPrototypePath('services/api/config.json')).toEqual({ owner: { kind: 'lane', lane: 'B' } })
+    expect(classifyPrototypePath('services/api/config.json')).toEqual({
+      owner: { kind: 'writer', writer: 'contract' },
+    })
     expect(classifyPrototypePath('services/api/fixtures/list-orders-200.json')).toEqual({
-      owner: { kind: 'lane', lane: 'C' },
+      owner: { kind: 'writer', writer: 'data' },
     })
   })
 
@@ -91,40 +104,157 @@ describe('prototype path ownership', () => {
     expect(classifyPrototypePath('README.md')).toEqual({ violation: 'unowned path' })
   })
 
-  it('knows which lane ids are declared', () => {
-    expect(isPrototypeLane('A')).toBe(true)
-    expect(isPrototypeLane('D')).toBe(true)
-    // Z is the consolidated lane a commit writes into (§21.3), so it is declared
-    // like any other — what makes it different is its replay order, not its id.
-    expect(isPrototypeLane('Z')).toBe(true)
-    expect(isPrototypeLane('Y')).toBe(false)
+  /**
+   * The workbench's own evidence and input files. They are not "unowned" — a prototype that has a
+   * PRD or findings used to report violations for them, which made the one report that says what is
+   * wrong with a prototype say something untrue about every prototype that had been worked on.
+   */
+  it('assigns the input and evidence files the agent writes', () => {
+    expect(classifyPrototypePath('prd.md')).toEqual({ owner: { kind: 'control-plane' } })
+    expect(classifyPrototypePath('assets/pages/cart.js')).toEqual({ owner: { kind: 'control-plane' } })
+    expect(classifyPrototypePath('assets/app.css')).toEqual({ owner: { kind: 'control-plane' } })
+    expect(classifyPrototypePath('research/competitors.md')).toEqual({ owner: { kind: 'control-plane' } })
+    expect(classifyPrototypePath('research/frames/session-1/001.jpg')).toEqual({
+      owner: { kind: 'control-plane' },
+    })
+    expect(classifyPrototypePath('research/videos/demo.mp4')).toEqual({ owner: { kind: 'control-plane' } })
+  })
+
+  /**
+   * `anchors/` is the one direction the agent may not write: a record of a match is only worth
+   * something if the tool that made the match wrote it (§3.5).
+   */
+  it('assigns the anchor records to the tool that makes them', () => {
+    expect(classifyPrototypePath('anchors/cart.json')).toEqual({
+      owner: { kind: 'tooling', by: 'prototype-apply' },
+    })
+  })
+
+  it('accepts writer ids that a name can carry, and no others', () => {
+    expect(isValidWriterId('main')).toBe(true)
+    expect(isValidWriterId('checkout-ui')).toBe(true)
+    expect(isValidWriterId('A')).toBe(true)
+    // `-<digits>-` inside the id would make `{writer}-{nnn}-{name}` ambiguous; the rest of the
+    // failures are the slug grammar.
+    expect(isValidWriterId('ui-2')).toBe(false)
+    expect(isValidWriterId('-leading')).toBe(false)
+    expect(isValidWriterId('has space')).toBe(false)
+    expect(isValidWriterId('')).toBe(false)
   })
 })
 
-describe('lane write guard', () => {
-  it('lets a lane write its own artifacts', () => {
-    expect(canLaneWrite('patches/A-001-btn.css', 'A').ok).toBe(true)
-    expect(canLaneWrite('patches/cart/A-002-total.css', 'A').ok).toBe(true)
-    expect(canLaneWrite('services/api/paths/x.yaml', 'B').ok).toBe(true)
-    expect(canLaneWrite('services/api/fixtures/x.json', 'C').ok).toBe(true)
+describe('writer write guard', () => {
+  it('lets a writer write its own artifacts', () => {
+    expect(canWriterWrite('patches/A-001-btn.css', 'A').ok).toBe(true)
+    expect(canWriterWrite('patches/cart/checkout-ui-002-total.css', 'checkout-ui').ok).toBe(true)
+    // The on-disk spelling is the author's; the comparison is case-insensitive.
+    expect(canWriterWrite('patches/A-001-btn.css', 'a').ok).toBe(true)
+    expect(canWriterWrite('services/api/paths/x.yaml', 'contract').ok).toBe(true)
+    expect(canWriterWrite('services/api/fixtures/x.json', 'data').ok).toBe(true)
   })
 
-  it('refuses writes to another lane, with the reason', () => {
-    const result = canLaneWrite('patches/B-001-btn.css', 'A')
+  it('refuses writes to another writer, with the reason', () => {
+    const result = canWriterWrite('patches/B-001-btn.css', 'A')
     expect(result.ok).toBe(false)
-    expect(result.reason).toBe('owned by lane B')
+    expect(result.reason).toBe('owned by writer "B", and this session writes as "A"')
+  })
+
+  it('refuses the reserved consolidated prefix, even for a writer named Z', () => {
+    const result = canWriterWrite('patches/Z-001-upper.css', 'Z')
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain('reserved for prototype-commit')
   })
 
   it('refuses writes to control-plane outputs', () => {
-    expect(canLaneWrite('dist/extension/cart.html', 'A').reason).toBe('owned by the control plane')
-    expect(canLaneWrite('cart.html', 'A').reason).toBe('owned by the control plane')
-    expect(canLaneWrite('config.json', 'A').reason).toBe('owned by the control plane')
-    expect(canLaneWrite('services/api/openapi.yaml', 'B').reason).toBe('owned by the control plane')
+    expect(canWriterWrite('dist/extension/cart.html', 'main').reason).toBe('owned by the control plane')
+    expect(canWriterWrite('cart.html', 'main').reason).toBe('owned by the control plane')
+    expect(canWriterWrite('config.json', 'main').reason).toBe('owned by the control plane')
+    expect(canWriterWrite('services/api/openapi.yaml', 'contract').reason).toBe('owned by the control plane')
   })
 
   it('refuses writes to paths nobody owns', () => {
-    expect(canLaneWrite('README.md', 'A').ok).toBe(false)
-    expect(canLaneWrite('patches/notes.txt', 'A').ok).toBe(false)
+    expect(canWriterWrite('README.md', 'main').ok).toBe(false)
+    expect(canWriterWrite('patches/notes.txt', 'main').ok).toBe(false)
+  })
+
+  it('refuses to let a writer author a record a tool made', () => {
+    expect(canWriterWrite('anchors/cart.json', 'main').reason).toBe(
+      'written by prototype-apply, from what actually happened',
+    )
+  })
+})
+
+/**
+ * The enforced rule is narrower than the primitive: the control plane *is* the agent, so its
+ * files are the session's own work, while another writer's artifact and an artifact no rule owns
+ * are both refusals the agent can act on (plan §3.6).
+ */
+describe('whyWriterMayNotWrite', () => {
+  it('says nothing when the write is the session’s own', () => {
+    expect(whyWriterMayNotWrite('patches/main-001-btn.css', 'main')).toBeNull()
+    expect(whyWriterMayNotWrite('services/api/paths/x.yaml', 'contract')).toBeNull()
+  })
+
+  it('lets the session write the control plane’s own files', () => {
+    expect(whyWriterMayNotWrite('cart.html', 'main')).toBeNull()
+    expect(whyWriterMayNotWrite('config.json', 'main')).toBeNull()
+    expect(whyWriterMayNotWrite('dist/dev-spec.md', 'main')).toBeNull()
+    // The input and the evidence the agent authors are its own work too — only the *record* a tool
+    // made is off limits.
+    expect(whyWriterMayNotWrite('prd.md', 'main')).toBeNull()
+    expect(whyWriterMayNotWrite('research/competitors.md', 'main')).toBeNull()
+    expect(whyWriterMayNotWrite('assets/pages/cart.js', 'main')).toBeNull()
+  })
+
+  it('refuses a hand-written record, and says what to re-run instead', () => {
+    const why = whyWriterMayNotWrite('anchors/cart.json', 'main')
+
+    expect(why).toContain('written by prototype-apply, from what actually happened')
+    expect(why).toContain('re-run prototype-apply')
+  })
+
+  it('refuses another writer’s artifact, naming whose it is and what to write instead', () => {
+    const why = whyWriterMayNotWrite('patches/B-001-btn.css', 'A')
+
+    expect(why).toContain('Writing patches/B-001-btn.css as "A" is refused')
+    expect(why).toContain('owned by writer "B", and this session writes as "A"')
+    expect(why).toContain('`A-<nnn>-<name>.{css,js}`')
+  })
+
+  it('refuses an artifact no rule owns, since nothing would ever replay it', () => {
+    const why = whyWriterMayNotWrite('patches/notes.txt', 'main')
+
+    expect(why).toContain('Writing patches/notes.txt as "main" is refused')
+    expect(why).toContain('misnamed patch')
+    expect(why).toContain('`main-<nnn>-<name>.{css,js}`')
+  })
+})
+
+describe('resolvePrototypeArtifactPath', () => {
+  const root = join('/workspace', 'prototypes')
+
+  it('names the prototype and the path inside it', () => {
+    expect(resolvePrototypeArtifactPath(root, join(root, 'checkout-flow', 'patches', 'A-001-btn.css'))).toEqual({
+      slug: 'checkout-flow',
+      relativePath: 'patches/A-001-btn.css',
+    })
+  })
+
+  it('has no opinion about paths outside a prototype', () => {
+    expect(resolvePrototypeArtifactPath(root, join('/workspace', 'src', 'index.ts'))).toBeNull()
+    // A sibling directory whose name merely starts the same way is not the prototypes root.
+    expect(resolvePrototypeArtifactPath(root, join('/workspace', 'prototypes-archive', 'x', 'y.css'))).toBeNull()
+    // The root itself, and a loose file in it, are not inside any prototype.
+    expect(resolvePrototypeArtifactPath(root, root)).toBeNull()
+    expect(resolvePrototypeArtifactPath(root, join(root, 'notes.md'))).toBeNull()
+  })
+
+  it('resolves away a climb out of the prototype rather than trusting the path', () => {
+    expect(resolvePrototypeArtifactPath(root, join(root, 'checkout-flow', '..', '..', 'secrets.md'))).toBeNull()
+    expect(resolvePrototypeArtifactPath(root, join(root, 'checkout-flow', '..', 'rival', 'config.json'))).toEqual({
+      slug: 'rival',
+      relativePath: 'config.json',
+    })
   })
 })
 
@@ -153,7 +283,10 @@ describe('resolvePrototypeOwnership', () => {
 
     expect(report.inspected).toBe(3)
     expect(report.violations).toEqual([
-      { path: 'patches/oops.css', reason: 'misnamed patch — expected {lane}-{nnn}-{name}.{css|js}, optionally under patches/<page>/' },
+      {
+        path: 'patches/oops.css',
+        reason: 'misnamed patch — expected {writer}-{nnn}-{name}.{css|js}, optionally under patches/<page>/',
+      },
     ])
     expect(report.entries.some((entry) => entry.path === '.DS_Store')).toBe(false)
   })
@@ -164,6 +297,28 @@ describe('resolvePrototypeOwnership', () => {
       violations: [],
       inspected: 0,
     })
+  })
+
+  /**
+   * The report is only worth reading if a prototype that is *fine* comes back clean. A prototype
+   * that has been worked on has a PRD, findings with their frames, its own page assets and anchor
+   * records — every one of those used to be listed as a violation, which is a report saying the
+   * wrong thing about the normal case.
+   */
+  it('finds nothing wrong with a prototype that has been worked on', () => {
+    const dir = getPrototypeDirPath(workspaceRoot, slug)
+    writeFileSync(join(dir, 'prd.md'), '## R-001 A cart holds its line\n', 'utf-8')
+    mkdirSync(getPrototypeResearchPath(workspaceRoot, slug), { recursive: true })
+    writeFileSync(join(getPrototypeResearchPath(workspaceRoot, slug), 'competitors.md'), '# F-001 x\n', 'utf-8')
+    mkdirSync(join(dir, 'assets', 'pages'), { recursive: true })
+    writeFileSync(join(dir, 'assets', 'pages', 'cart.js'), 'export const x = 1\n', 'utf-8')
+    mkdirSync(getPrototypeAnchorsPath(workspaceRoot, slug), { recursive: true })
+    writeFileSync(join(getPrototypeAnchorsPath(workspaceRoot, slug), 'cart.json'), '{}\n', 'utf-8')
+
+    const report = resolvePrototypeOwnership(workspaceRoot, slug)
+
+    // Everything but the misnamed patch it was set up with.
+    expect(report.violations.map((violation) => violation.path)).toEqual(['patches/oops.css'])
   })
 })
 
@@ -244,7 +399,7 @@ describe('buildPrototypeStatus', () => {
     rmSync(workspaceRoot, { recursive: true, force: true })
   })
 
-  it('summarises the pages, the patches by lane, service coverage, exports and violations', () => {
+  it('summarises the pages, the patches by writer, service coverage, exports and violations', () => {
     // A page of ours is rendered by the host, so "is there something to open"
     // depends on one being there — which it always is where the panel runs.
     setPrototypeBaseUrlResolver((_workspaceRootPath, prototypeSlug) => `http://${prototypeSlug}-hash.localhost`)
@@ -261,7 +416,7 @@ describe('buildPrototypeStatus', () => {
 
     // Only the well-named patch counts; the misnamed one surfaces as a violation.
     expect(status.patches.total).toBe(1)
-    expect(status.patches.byLane).toEqual({ A: 1 })
+    expect(status.patches.byWriter).toEqual({ A: 1 })
     // Nothing sits under `patches/<page>/`, so no patch is page-scoped.
     expect(status.patches.scoped).toBe(0)
     // The file list is the replayable set, so the panel can never open a file
@@ -276,7 +431,6 @@ describe('buildPrototypeStatus', () => {
 
     expect(status.distFiles).toEqual(['dev-spec.md'])
     expect(status.ownership.violations).toHaveLength(1)
-    expect(status.lanes.A).toContain('UI')
   })
 
   it('reports an empty prototype without throwing', () => {

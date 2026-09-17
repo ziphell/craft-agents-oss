@@ -26,8 +26,8 @@ import type {
   BrowserWaitArgs,
   BrowserWaitResult,
 } from '../handlers/browser-pane-manager-interface'
-import type { BrowserInstanceInfo, PickedElement } from '@craft-agent/shared/protocol'
-import type { MockRoute } from '@craft-agent/shared/prototypes'
+import type { BrowserInstanceInfo, PickedElement, TabBelongsTo } from '@craft-agent/shared/protocol'
+import type { MockProgram } from '@craft-agent/shared/prototypes'
 
 const NOT_AVAILABLE = 'Browser automation is not available in headless mode'
 
@@ -63,6 +63,7 @@ export class NullBrowserPaneManager implements IBrowserPaneManager {
   activateTab(_instanceId: string, _tabId: string): void { unavailable('activateTab') }
   setSessionPage(_instanceId: string, _tabId: string, _sessionId: string): void { unavailable('setSessionPage') }
   closeTab(_instanceId: string, _tabId: string): void { unavailable('closeTab') }
+  assignTab(_instanceId: string, _tabId: string, _to: TabBelongsTo, _by: TabBelongsTo): void { unavailable('assignTab') }
   /** No windows means no pages: an empty list is the true answer, not a failure. */
   listTabs(_instanceId: string): BrowserTabSummary[] { return [] }
   async listTabsAsync(_instanceId: string): Promise<BrowserTabSummary[]> { return [] }
@@ -119,7 +120,7 @@ export class NullBrowserPaneManager implements IBrowserPaneManager {
   }> {
     return unavailable('extractVideoFrames')
   }
-  async setFetchMock(_id: string, _routes: MockRoute[]): Promise<number> { return unavailable('setFetchMock') }
+  async setFetchMock(_id: string, _program: MockProgram): Promise<number> { return unavailable('setFetchMock') }
   async clearFetchMock(_id: string): Promise<void> { unavailable('clearFetchMock') }
 
   // -- Screenshot --

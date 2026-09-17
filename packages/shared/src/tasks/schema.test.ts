@@ -5,7 +5,7 @@ import { join } from 'path';
 
 import { parseTaskSpec, nodeDeps, nodeTitle, type TaskSpec } from './schema.ts';
 import { extractRefs, interpolateRefs } from './refs.ts';
-import { validateTaskSpec, validateTaskInput, TASK_CAPS } from './validate.ts';
+import { validateTaskSpec, validateTaskInput, materializeDeps, TASK_CAPS } from './validate.ts';
 import { buildGeneratorPrompt, buildRepairPrompt } from './generator-prompt.ts';
 import {
   parseTaskYaml,
@@ -181,6 +181,53 @@ describe('validate', () => {
     expect(res.warnings.some((w) => w.message.includes('does not list it in depends_on'))).toBe(true);
   });
 
+  /**
+   * A node's `writes:` is the prefix its patches will claim (plan §3.6), and the whole reason to
+   * declare it is that two nodes in one run must not claim the same one: "who owns this file" is
+   * what the write guard answers, and it cannot answer for an identity two nodes share.
+   */
+  it('accepts distinct writer identities, and refuses one that would make a patch name ambiguous', () => {
+    const distinct = validateTaskInput({
+      id: 'x', title: 'X', goal: 'g',
+      nodes: [
+        { id: 'ui', prompt: 'p', writes: 'checkout-ui' },
+        { id: 'api', prompt: 'p', writes: 'checkout-api' },
+      ],
+    });
+    expect(distinct.errors).toHaveLength(0);
+
+    // `ui-2` reads as writer `ui` plus a second patch with order 2: a name nobody can parse back.
+    const ambiguous = validateTaskInput({
+      id: 'x', title: 'X', goal: 'g',
+      nodes: [{ id: 'ui', prompt: 'p', writes: 'ui-2' }],
+    });
+    expect(ambiguous.valid).toBe(false);
+    expect(ambiguous.errors.some((e) => e.message.includes('not usable as a writer identity'))).toBe(true);
+  });
+
+  it('refuses the consolidator identity, which only prototype-commit writes', () => {
+    const res = validateTaskInput({
+      id: 'x', title: 'X', goal: 'g',
+      nodes: [{ id: 'ui', prompt: 'p', writes: 'z' }],
+    });
+    expect(res.valid).toBe(false);
+    expect(res.errors.some((e) => e.message.includes("reserved for prototype-commit's folds"))).toBe(true);
+  });
+
+  it('refuses two nodes claiming one identity, however it is spelled', () => {
+    const res = validateTaskInput({
+      id: 'x', title: 'X', goal: 'g',
+      nodes: [
+        { id: 'ui', prompt: 'p', writes: 'checkout-ui' },
+        { id: 'ui-again', prompt: 'p', writes: 'Checkout-UI' },
+      ],
+    });
+    expect(res.valid).toBe(false);
+    expect(
+      res.errors.some((e) => e.message.includes('declares the same writer identity as node "ui"')),
+    ).toBe(true);
+  });
+
   it('errors on an undeclared param reference but accepts a declared one', () => {
     const bad = validateTaskInput({
       id: 'x', title: 'X', goal: 'g',
@@ -196,7 +243,7 @@ describe('validate', () => {
     expect(ok.errors).toHaveLength(0);
   });
 
-  it('warns when a reference reads a structured output field (not populated in v1)', () => {
+  it('errors when a reference reads a field the upstream node does not declare', () => {
     const res = validateTaskInput({
       id: 'x', title: 'X', goal: 'g',
       nodes: [
@@ -204,8 +251,87 @@ describe('validate', () => {
         { id: 'b', depends_on: ['a'], prompt: 'uses ${nodes.a.output.score}' },
       ],
     });
-    expect(res.valid).toBe(true);
-    expect(res.warnings.some((w) => w.message.includes('structured output field'))).toBe(true);
+    expect(res.valid).toBe(false);
+    expect(res.errors.some((e) => e.message.includes('does not declare'))).toBe(true);
+  });
+
+  it('accepts a structured reference the upstream node declares (node-level and task-level)', () => {
+    const res = validateTaskInput({
+      id: 'x', title: 'X', goal: 'g',
+      nodes: [
+        { id: 'a', prompt: 'p', outputs: [{ name: 'score', type: 'number' }] },
+        { id: 'b', depends_on: ['a'], prompt: 'uses ${nodes.a.output.score}' },
+      ],
+      outputs: { final: '${nodes.a.output.score}' },
+    });
+    expect(res.errors).toHaveLength(0);
+  });
+
+  it('validates `when`: parses it, checks its references, and materializes them as edges', () => {
+    const ok = validateTaskInput({
+      id: 'x', title: 'X', goal: 'g',
+      nodes: [
+        { id: 'review', prompt: 'p', outputs: [{ name: 'verdict' }] },
+        { id: 'act', prompt: 'q', when: "review.verdict === 'approved'" }, // no depends_on on purpose
+      ],
+    });
+    expect(ok.errors).toHaveLength(0);
+    // Reading a node's field IS a dependency — the edge is materialized, not left to the author.
+    expect(materializeDeps(ok.spec!).get('act')).toEqual(new Set(['review']));
+
+    const unparsable = validateTaskInput({
+      id: 'x', title: 'X', goal: 'g',
+      nodes: [{ id: 'a', prompt: 'p', when: 'verdict approved' }],
+    });
+    expect(unparsable.errors.some((e) => e.message.includes('is not a condition'))).toBe(true);
+
+    const undeclared = validateTaskInput({
+      id: 'x', title: 'X', goal: 'g',
+      nodes: [
+        { id: 'review', prompt: 'p' },
+        { id: 'act', prompt: 'q', when: "review.verdict === 'approved'" },
+      ],
+    });
+    expect(undeclared.errors.some((e) => e.message.includes('does not declare that output'))).toBe(true);
+
+    const unknown = validateTaskInput({
+      id: 'x', title: 'X', goal: 'g',
+      nodes: [{ id: 'act', prompt: 'q', when: "ghost.verdict === 'approved'" }],
+    });
+    expect(unknown.errors.some((e) => e.message.includes('there is no node "ghost"'))).toBe(true);
+  });
+
+  it('requires a gate node to ask something, and to produce only the verdict', () => {
+    const ok = validateTaskInput({
+      id: 'x', title: 'X', goal: 'g',
+      nodes: [
+        { id: 'draft', prompt: 'p' },
+        { id: 'signoff', kind: 'approval', depends_on: ['draft'], prompt: 'Ship it?', outputs: [{ name: 'verdict' }] },
+      ],
+    });
+    expect(ok.errors).toHaveLength(0);
+
+    const noPrompt = validateTaskInput({
+      id: 'x', title: 'X', goal: 'g',
+      nodes: [{ id: 'signoff', kind: 'approval' }],
+    });
+    expect(noPrompt.errors.some((e) => e.message.includes('the question put to the person'))).toBe(true);
+
+    const foreignOutput = validateTaskInput({
+      id: 'x', title: 'X', goal: 'g',
+      nodes: [{ id: 'signoff', kind: 'approval', prompt: 'Ship it?', outputs: [{ name: 'summary' }] }],
+    });
+    expect(foreignOutput.errors.some((e) => e.message.includes('a gate only ever produces "verdict"'))).toBe(true);
+  });
+
+  it('refuses the `approval:` flag instead of ignoring it', () => {
+    // The flag used to parse and do nothing, which reads as a gate that never gates.
+    const res = validateTaskInput({
+      id: 'x', title: 'X', goal: 'g',
+      nodes: [{ id: 'a', prompt: 'p', approval: true }],
+    });
+    expect(res.valid).toBe(false);
+    expect(res.errors.some((e) => e.suggestion?.includes('kind: approval'))).toBe(true);
   });
 
   it('detects a dependency cycle', () => {
@@ -314,6 +440,21 @@ describe('generator-prompt', () => {
     expect(prompt).toContain('${nodes.<id>.output} reference MUST point to an `id` that you actually declare');
     expect(prompt).toContain('Goal: Decompose the goal');
     expect(prompt).toContain('Working title: My task');
+  });
+
+  it('tells the generator to give concurrent prototype writers distinct identities', () => {
+    const prompt = buildGeneratorPrompt('Build two prototypes at once');
+
+    expect(prompt).toContain('distinct `writes:` slug');
+    expect(prompt).toContain('writes: checkout-ui');
+  });
+
+  it('points the critic at the brief, not only at the prototype checks', () => {
+    const prompt = buildGeneratorPrompt('Produce the requirements for a checkout redesign');
+
+    expect(prompt).toContain('reads the brief for itself');
+    expect(prompt).toContain('about: requirement R-003');
+    expect(prompt).toContain('no objection to the brief is left standing');
   });
 
   it('repair prompt lists each validation error and re-asserts the YAML-only contract', () => {

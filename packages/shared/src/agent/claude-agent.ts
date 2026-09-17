@@ -25,6 +25,8 @@ import { proxyToolName } from '../mcp/proxy-tool-name.ts';
 import { loadPlanFromPath, type SessionConfig as Session } from '../sessions/storage.ts';
 import { loadProjectById, getProjectAssetsPath, listProjectAssets, getProjectMemoryPath, loadProjectMemory } from '../projects/storage.ts';
 import { buildPrototypePromptContext } from '../prototypes/prompt.ts';
+import { resolvePrototypeWriter } from '../prototypes/types.ts';
+import { getProjectPrototypes } from '../prototypes/project-link.ts';
 import { DEFAULT_MODEL, isClaudeModel, isAdaptiveThinkingAlwaysOnModel, getDefaultSummarizationModel, getModelContextWindow } from '../config/models.ts';
 import { getCredentialManager } from '../credentials/index.ts';
 import { loadPreferences, formatPreferencesForPrompt, getCoAuthorPreference } from '../config/preferences.ts';
@@ -720,6 +722,10 @@ export class ClaudeAgent extends BaseAgent {
         name: project.config.name,
         description: project.config.description,
         details: project.config.details,
+        // What a project says about prototypes: the ones its work touches (§15.1.3) — told
+        // as background, a set, with nothing targeted for the session. A prototype belongs
+        // to no project (§15.1.4), so this is the only direction there is.
+        prototypes: getProjectPrototypes(this.workspaceRootPath, slug),
         assetsPath: getProjectAssetsPath(this.workspaceRootPath, slug),
         assets: listProjectAssets(this.workspaceRootPath, slug).map((a) => ({
           filename: a.filename,
@@ -746,7 +752,9 @@ export class ClaudeAgent extends BaseAgent {
     if (!slug) return null;
 
     try {
-      return buildPrototypePromptContext(this.workspaceRootPath, slug);
+      // The writer identity travels with the prototype context: the naming rule the agent reads is
+      // written in terms of it, and the write guard checks the agent against the same value (§3.6).
+      return buildPrototypePromptContext(this.workspaceRootPath, slug, resolvePrototypeWriter(this.config.session));
     } catch (error) {
       debug(`[resolvePrototypeContext] Failed to load prototype ${slug}:`, error);
       return null;
@@ -1086,10 +1094,11 @@ export class ClaudeAgent extends BaseAgent {
         }
 
         // The prototype context is pinned like the rest, so a conversation that was
-        // moved to another prototype — or whose project now provides a different one
-        // — goes on describing the old one. Everything else about prototypes is live
-        // (the window, the commands' default slug), so silence here would leave the
-        // agent's own prose as the one place that is wrong. Say it instead.
+        // moved to another prototype goes on describing the old one. Everything else
+        // about prototypes is live (the window, the commands' default slug), so silence
+        // here would leave the agent's own prose as the one place that is wrong. Say it
+        // instead. Only this conversation's own binding counts: a project's note about
+        // which prototype it is on is background, and is not what the block describes.
         const currentPrototypeSlug = this.currentPrototypeSlug();
 
         if (currentPrototypeSlug !== this.pinnedPrototypeSlug && !this.prototypeDriftNotified) {
@@ -1413,6 +1422,7 @@ export class ClaudeAgent extends BaseAgent {
                 plansFolderPath: sessionId ? getSessionPlansPath(this.workspaceRootPath, sessionId) : undefined,
                 dataFolderPath: sessionId ? getSessionDataPath(this.workspaceRootPath, sessionId) : undefined,
                 prototypesFolderPath: getWorkspacePrototypesPath(this.workspaceRootPath),
+                prototypeWriter: resolvePrototypeWriter(this.config.session),
                 workingDirectory: this.config.session?.workingDirectory,
                 activeSourceSlugs: Array.from(this.sourceManager.getActiveSlugs()),
                 allSourceSlugs: this.sourceManager.getAllSources().map(s => s.config.slug),

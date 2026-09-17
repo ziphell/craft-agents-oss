@@ -3,7 +3,7 @@
  *
  * The patch index is *derived* — {@link scanPrototypePatches} rebuilds it from
  * the `patches/` directory on every call. There is intentionally no
- * `manifest.json` to hand-write, which is what lets parallel lanes write their
+ * `manifest.json` to hand-write, which is what lets parallel writers write their
  * own patch files without ever contending on a shared file.
  *
  * The directory is also the ownership rule (plan §19.4): a patch at the root is
@@ -16,20 +16,25 @@
  */
 
 import { existsSync, readdirSync, readFileSync } from 'fs'
+import { createHash } from 'crypto'
 import { join } from 'path'
 import { getWorkspacePrototypesPath } from '../workspaces/storage.ts'
-import { CONSOLIDATED_LANE, PROTOTYPE_ANCHORS_DIRNAME, PROTOTYPE_LAYOUT_FILENAME, PROTOTYPE_RESEARCH_DIRNAME, type PrototypeArtifacts, type PrototypePatch, type PrototypePatchKind } from './types.ts'
+import {
+  isConsolidatedWriter,
+  parsePrototypePatchName,
+  PROTOTYPE_ACCEPTANCE_DIRNAME,
+  PROTOTYPE_ANCHORS_DIRNAME,
+  PROTOTYPE_LAYOUT_FILENAME,
+  PROTOTYPE_RESEARCH_DIRNAME,
+  PROTOTYPE_REVIEWS_DIRNAME,
+  type PrototypeArtifacts,
+  type PrototypePatch,
+  type PrototypePatchKind,
+} from './types.ts'
 import { extractPatchTargets } from './patch-header.ts'
 
 const PATCHES_DIRNAME = 'patches'
 const DIST_DIRNAME = 'dist'
-
-/**
- * Patch files must be named `{lane}-{nnn}-{slug}.{css|js}`, either at the root of
- * `patches/` (shared) or one directory deep (`patches/<page>/…`). Anything else in
- * the directory (READMEs, editor backups, notes) is ignored rather than replayed.
- */
-const PATCH_NAME_RE = /^([A-Za-z])-(\d+)-.+\.(css|js)$/
 
 /**
  * Paths inside a prototype's own directory.
@@ -91,6 +96,28 @@ export function getPrototypeAnchorsPath(workspaceRootPath: string, slug: string)
   return join(getPrototypeDirPath(workspaceRootPath, slug), PROTOTYPE_ANCHORS_DIRNAME)
 }
 
+/** Absolute path to a prototype's reviews — the arguments against the work (plan §3.7). */
+export function getPrototypeReviewsPath(workspaceRootPath: string, slug: string): string {
+  return join(getPrototypeDirPath(workspaceRootPath, slug), PROTOTYPE_REVIEWS_DIRNAME)
+}
+
+/** Absolute path to a prototype's acceptance state — the per-round record of what passed. */
+export function getPrototypeAcceptancePath(workspaceRootPath: string, slug: string): string {
+  return join(getPrototypeDirPath(workspaceRootPath, slug), PROTOTYPE_ACCEPTANCE_DIRNAME)
+}
+
+/**
+ * A short content fingerprint of a patch, for the one thing a fingerprint is for here: telling
+ * "this file changed" from "this file is as it was" without keeping a copy of it.
+ *
+ * Used by `reviews/`: a dispute records the fingerprint of the patch it disputes when it is filed,
+ * and is reported as **stale** if that file no longer hashes to it — the same trick `anchors/` uses
+ * to tell "the page moved" from "the selector never matched" (plan §21.2).
+ */
+export function patchFingerprint(source: string): string {
+  return createHash('sha256').update(source, 'utf-8').digest('hex').slice(0, 8)
+}
+
 /** Init-script key for a patch — stable across re-scans so re-apply is idempotent. */
 export function getPrototypePatchKey(slug: string, file: string): string {
   return `prototype:${slug}:${file}`
@@ -103,8 +130,8 @@ function readPatch(
   file: string,
   page: string | null,
 ): PrototypePatch | null {
-  const match = PATCH_NAME_RE.exec(file)
-  if (!match) return null
+  const name = parsePrototypePatchName(file)
+  if (!name) return null
 
   let source: string
   try {
@@ -119,9 +146,9 @@ function readPatch(
   const relative = page ? `${page}/${file}` : file
   return {
     file: relative,
-    kind: match[3] as PrototypePatchKind,
-    lane: match[1] ?? null,
-    order: Number(match[2] ?? 0),
+    kind: name.kind,
+    writer: name.writer,
+    order: name.order,
     source,
     targets: extractPatchTargets(source),
     page,
@@ -130,21 +157,21 @@ function readPatch(
 }
 
 /**
- * Deterministic replay order: the consolidated layer, then lane → declared order
- * → path, so listing order never matters.
+ * Deterministic replay order: the consolidated layer, then declared order → path, so listing
+ * order never matters.
  *
- * The consolidated lane (`commit.ts`) is checked first **by rule**, not by the
- * alphabet: what a commit folded together has to replay after everything it
- * folded, and a patch's meaning may not depend on which letters the other lanes
- * happen to use.
+ * Two rules, both stated rather than inherited:
+ * - the consolidated layer (`commit.ts`) is checked **first**, and **by rule**: what a commit
+ *   folded together has to replay after everything it folded;
+ * - the writer id is **not** a sort key. It used to be, which meant a patch's position depended
+ *   on what the other writers happened to be called — and now that a writer id can be anything
+ *   the graph declares, that dependency would be a way to reorder history by renaming a writer.
  */
 function byReplayOrder(a: PrototypePatch, b: PrototypePatch): number {
-  const aConsolidated = a.lane?.toUpperCase() === CONSOLIDATED_LANE
-  const bConsolidated = b.lane?.toUpperCase() === CONSOLIDATED_LANE
+  const aConsolidated = isConsolidatedWriter(a.writer)
+  const bConsolidated = isConsolidatedWriter(b.writer)
   if (aConsolidated !== bConsolidated) return aConsolidated ? 1 : -1
 
-  const laneCompare = (a.lane ?? '').localeCompare(b.lane ?? '')
-  if (laneCompare !== 0) return laneCompare
   if (a.order !== b.order) return a.order - b.order
   return a.file.localeCompare(b.file)
 }

@@ -60,7 +60,7 @@ import { dropPrototypeAnchors } from './anchors.ts'
 import { extractRequirementIds } from './patch-header.ts'
 import { listPrototypePages, type PrototypePage } from './pages.ts'
 import { getPrototypeDirPath, scanPrototypePatches } from './storage.ts'
-import { CONSOLIDATED_LANE, type PageKind, type PrototypePatch } from './types.ts'
+import { CONSOLIDATED_WRITER, isConsolidatedWriter, type PageKind, type PrototypePatch } from './types.ts'
 
 /** What a commit did to one scope — the shared patches, or one page's own. */
 export interface PrototypeCommitScopeResult {
@@ -88,14 +88,22 @@ export interface PrototypeCommitResult {
   nothingToCommit: boolean
 }
 
-/** `prototypes/<slug>/assets/<page>/committed.css` — the stylesheet a page of ours owns. */
-const COMMITTED_CSS = 'committed.css'
+/**
+ * `prototypes/<slug>/assets/<page>/committed.css` — the stylesheet a page of ours owns.
+ *
+ * Exported because the fold is not the only reader: `coverage.ts` reads the requirement markers back
+ * out of these two files. The fold carries them forward on purpose (plan §21.3), and a reader that
+ * looked only in `patches/` would report the requirement a converged change served as implemented by
+ * nothing — at exactly the moment the work converged. One authority for the names, so the writer and
+ * the reader cannot disagree about where the fold landed.
+ */
+export const COMMITTED_CSS = 'committed.css'
 /** `prototypes/<slug>/assets/<page>/committed.js` — where a promoted js patch lands. */
-const COMMITTED_JS = 'committed.js'
+export const COMMITTED_JS = 'committed.js'
 
 /** The consolidated patch files, per kind. `Z` sorts last; the numbers are readable order. */
 function upperFileName(kind: 'css' | 'js'): string {
-  return kind === 'css' ? `${CONSOLIDATED_LANE}-001-upper.css` : `${CONSOLIDATED_LANE}-002-upper.js`
+  return kind === 'css' ? `${CONSOLIDATED_WRITER}-001-upper.css` : `${CONSOLIDATED_WRITER}-002-upper.js`
 }
 
 /** `insertBeforeClosingTag`, for the two tags a fold has to add. */
@@ -195,7 +203,7 @@ export function commitPrototype(
   // The consolidated files are the *target* of a commit, never its input: a
   // second commit folds into them rather than folding them into themselves.
   const patches = scanPrototypePatches(workspaceRootPath, slug).filter(
-    (patch) => patch.lane?.toUpperCase() !== CONSOLIDATED_LANE,
+    (patch) => !isConsolidatedWriter(patch.writer),
   )
 
   const scopes: Scope[] = []

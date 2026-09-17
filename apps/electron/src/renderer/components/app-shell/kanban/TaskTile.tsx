@@ -218,6 +218,15 @@ export function TaskTile({
           {task.title}
         </div>
 
+        {!!task.awaitingApproval && (
+          // The run is parked until a person answers, so this is the one badge on a tile that is
+          // about work stopping rather than arriving.
+          <span className="mt-1.5 inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10.5px] font-semibold text-amber-700 dark:text-amber-300">
+            <Clock className="h-3 w-3 shrink-0" strokeWidth={2.5} aria-hidden />
+            {t('kanban.awaitingApproval')}
+          </span>
+        )}
+
         <div className="mt-2">
           {status &&
             (onStatusChange && statuses && statuses.length > 0 ? (

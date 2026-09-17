@@ -293,6 +293,15 @@ export interface ElectronAPI {
   getTask(workspaceId: string, slug: string, runId?: string): Promise<TaskGetResult>
   listTasks(workspaceId: string): Promise<string[]>
   getTaskResults(workspaceId: string, slug: string, runId?: string): Promise<TaskResultsDto>
+  /** Answer a `kind: approval` gate node (a step a person decides, not a session). */
+  resolveTaskApproval(
+    workspaceId: string,
+    slug: string,
+    runId: string,
+    nodeId: string,
+    approved: boolean,
+    note?: string,
+  ): Promise<TaskRunSnapshotDto>
 
   respondToPermission(sessionId: string, requestId: string, allowed: boolean, alwaysAllow: boolean, options?: PermissionResponseOptions): Promise<boolean>
   respondToCredential(sessionId: string, requestId: string, response: CredentialResponse): Promise<boolean>
@@ -609,13 +618,6 @@ export interface ElectronAPI {
    * live one, otherwise the first live page.
    */
   setPrototypeTarget(workspaceId: string, slug: string, targetUrl: string, page?: string): Promise<unknown>
-  /**
-   * Which project a prototype was made for (plan §15.1), or `null` to clear it.
-   * The same edge the agent sets with `prototype-project`; both detail pages edit
-   * it here. Rejects a project that does not exist rather than recording a
-   * relationship that is not true.
-   */
-  setPrototypeProject(workspaceId: string, slug: string, projectSlug: string | null): Promise<unknown>
 
   // Sources
   getSources(workspaceId: string): Promise<LoadedSource[]>
@@ -811,7 +813,11 @@ export interface ElectronAPI {
   getProjects(workspaceId: string): Promise<unknown>
   getProject(workspaceId: string, projectIdOrSlug: string): Promise<unknown | null>
   createProject(workspaceId: string, input: import('@craft-agent/shared/projects/types').CreateProjectInput): Promise<import('@craft-agent/shared/projects/types').ProjectConfig>
-  updateProject(workspaceId: string, projectSlug: string, patch: Partial<Omit<import('@craft-agent/shared/projects/types').ProjectConfig, 'id' | 'slug' | 'createdAt'>>): Promise<import('@craft-agent/shared/projects/types').ProjectConfig>
+  /**
+   * Patch a project. `prototypeSlugs` is the set of prototypes the project is worked on
+   * with (§15.1.3) and is carried as a whole set: an empty list is the clear.
+   */
+  updateProject(workspaceId: string, projectSlug: string, patch: Partial<Omit<import('@craft-agent/shared/projects/types').ProjectConfig, 'id' | 'slug' | 'createdAt' | 'prototypeSlugs'>> & { prototypeSlugs?: string[] }): Promise<import('@craft-agent/shared/projects/types').ProjectConfig>
   deleteProject(workspaceId: string, projectSlug: string): Promise<void>
   listProjectAssets(workspaceId: string, projectSlug: string): Promise<unknown>
   uploadProjectAsset(workspaceId: string, projectSlug: string, input: { filename: string; base64?: string; text?: string; sourcePath?: string }): Promise<import('@craft-agent/shared/projects/types').ProjectAsset>

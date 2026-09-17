@@ -7,11 +7,13 @@
  * the TypeScript types inferred from them + thin parse helpers.
  *
  * v1 EXECUTES: `kind: 'session'` nodes wired by `depends_on` + `inputs`
- *   (with `${nodes.<id>.output[.field]}` / `${params.<name>}` references).
- * v1 PARSES BUT DEFERS: every other `kind` and the control-flow fields
- *   (`loop`, `when`, `route`, `for_each`, `aggregate`, `approval`, …). They are
- *   validated so hand-authored yaml round-trips, but the Conductor ignores them
- *   until P4. See sessions/.../tasks-architecture.md §5–§5a for the full design.
+ *   (with `${nodes.<id>.output[.field]}` / `${params.<name>}` references), the declared
+ *   `outputs:` that make `.field` references resolvable (see outputs.ts), and `when:`
+ *   branch tests (see conditions.ts).
+ * v1 PARSES BUT DEFERS: every other `kind` and the remaining control-flow fields
+ *   (`loop`, `route`, `for_each`, `aggregate`, `approval`, …). They are validated so
+ *   hand-authored yaml round-trips, but the Conductor ignores them until P4. See
+ *   sessions/.../tasks-architecture.md §5–§5a for the full design.
  *
  * Design note: the architecture draft used BOTH `type:` and `kind:` for a
  * node's role. We consolidate on a single `kind` discriminant (cleaner, avoids
@@ -46,6 +48,16 @@ export const PARAM_TYPES = ['string', 'number', 'boolean', 'enum', 'json', 'text
 export const OUTPUT_KINDS = ['param', 'artifact'] as const;
 export const RETRY_WHEN = ['error', 'empty', 'invalid'] as const;
 export const CACHE_MODES = ['pure', 'off'] as const;
+
+/**
+ * A gate node's decision, and the field it is filed under.
+ *
+ * Both are fixed rather than author-named: the whole point of a gate is that a downstream
+ * `when: "<gate>.verdict === 'approved'"` reads the same field wherever it is written, and
+ * a human's click is not a model's output that could be asked to honor a declared shape.
+ */
+export const APPROVAL_VERDICT_FIELD = 'verdict';
+export const APPROVAL_VERDICTS = ['approved', 'rejected'] as const;
 export const TASK_RUNNERS = ['conduct', 'orchestrate'] as const;
 
 // ---------------------------------------------------------------------------
@@ -136,7 +148,8 @@ const TaskNodeObject = z.object({
   id: slug('node id'),
   /** Board tile label; defaults to `id` when omitted. */
   title: z.string().min(1).optional(),
-  /** Instruction dispatched to the node session (may contain ${…} refs). Required for `session` nodes. */
+  /** Instruction dispatched to the node session (may contain ${…} refs). Required for `session`
+   *  nodes; for a gate (`kind: 'approval'`) it is the question put to the person. */
   prompt: z.string().optional(),
   kind: z.enum(NODE_KINDS).default('session'),
 
@@ -153,7 +166,15 @@ const TaskNodeObject = z.object({
   inputs: z.record(z.string(), InputRefSchema).optional(),
   outputs: z.array(OutputDeclSchema).optional(),
 
-  // Control-flow (parsed now, executed in P4).
+  /**
+   * The writer identity this node writes prototype artifacts as (plan §3.6): the prefix its
+   * patches are named with, and what the write guard checks it against. Declared only when a task
+   * has more than one writer of the same artifact tree — a task that omits it runs as the
+   * single-writer default, so the common case needs no declaration.
+   */
+  writes: z.string().min(1).optional(),
+
+  // Control-flow: `when` is executed (a false condition skips the node); the rest parse in P4.
   when: z.string().optional(),
   trigger: z.enum(TRIGGER_RULES).optional(),
   replicas: z.number().int().positive().optional(),
@@ -164,6 +185,8 @@ const TaskNodeObject = z.object({
   retry: RetrySchema.optional(),
   timeout: z.number().positive().optional(),
   cache: z.enum(CACHE_MODES).optional(),
+  /** Superseded by `kind: 'approval'` (one discriminant, not two spellings of a gate) — the
+   *  validator rejects this flag rather than let it look like it does something. */
   approval: z.boolean().optional(),
 });
 

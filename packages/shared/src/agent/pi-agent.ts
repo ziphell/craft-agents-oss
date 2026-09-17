@@ -49,6 +49,8 @@ import { getCoAuthorPreference } from '../config/preferences.ts';
 import { loadProjectById, getProjectAssetsPath, listProjectAssets, getProjectMemoryPath, loadProjectMemory } from '../projects/storage.ts';
 import type { ProjectPromptContext } from '../projects/types.ts';
 import { buildPrototypePromptContext } from '../prototypes/prompt.ts';
+import { resolvePrototypeWriter } from '../prototypes/types.ts';
+import { getProjectPrototypes } from '../prototypes/project-link.ts';
 import type { PrototypePromptContext } from '../prototypes/prompt.ts';
 
 // Credential manager for token storage
@@ -212,6 +214,10 @@ export class PiAgent extends BaseAgent {
         name: project.config.name,
         description: project.config.description,
         details: project.config.details,
+        // What a project says about prototypes: the ones its work touches (§15.1.3) — told
+        // as background, not given: a set, with nothing targeted for the session. A
+        // prototype belongs to no project (§15.1.4), so this is the only direction there is.
+        prototypes: getProjectPrototypes(root, slug),
         assetsPath: getProjectAssetsPath(root, slug),
         assets: listProjectAssets(root, slug).map((a) => ({
           filename: a.filename,
@@ -231,6 +237,11 @@ export class PiAgent extends BaseAgent {
    * Look up the prototype this conversation is on (if any) and return a snapshot
    * for system-prompt injection.
    *
+   * Only this conversation's own binding counts. A project's note about which
+   * prototype it is on is background — it reaches the session through
+   * `<project_prototype>` and nothing is targeted for the conversation because of it
+   * (plan §15.1.2, §15.1.3).
+   *
    * Resolved per turn (unlike ClaudeAgent, which pins on the first chat) because
    * this backend rebuilds its prompt each time anyway — and asked of the host
    * rather than read off `config.session`, which is a snapshot from agent creation
@@ -242,7 +253,12 @@ export class PiAgent extends BaseAgent {
     if (!slug) return null;
 
     try {
-      return buildPrototypePromptContext(this.config.workspace.rootPath, slug);
+      // Same identity the prompt states and the write guard enforces (§3.6).
+      return buildPrototypePromptContext(
+        this.config.workspace.rootPath,
+        slug,
+        resolvePrototypeWriter(this.config.session),
+      );
     } catch (error) {
       this.debug(`[resolvePrototypeContext] Failed to load prototype ${slug}: ${error instanceof Error ? error.message : error}`);
       return null;
@@ -1267,6 +1283,7 @@ export class PiAgent extends BaseAgent {
       plansFolderPath,
       dataFolderPath,
       prototypesFolderPath,
+      prototypeWriter: resolvePrototypeWriter(this.config.session),
       workingDirectory: this.config.session?.workingDirectory,
       activeSourceSlugs: Array.from(this.sourceManager.getActiveSlugs()),
       allSourceSlugs: this.sourceManager.getAllSources().map(s => s.config.slug),
@@ -1573,6 +1590,7 @@ export class PiAgent extends BaseAgent {
             command: (args.command as string | string[]) ?? '',
             fns: browserFns,
             sessionId: this._sessionId,
+            workspaceRootPath: this.config.workspace.rootPath,
           });
 
           let content = result.output;

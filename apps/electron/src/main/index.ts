@@ -832,11 +832,12 @@ app.whenReady().then(async () => {
         return matchPrototypePage(listPrototypePages(served.workspaceRootPath, served.slug), url)
       })
 
-      // What to write on the page rail's group headers. A page says which session
-      // opened it, and the window is one window for the whole workspace — so the rail
+      // What to write on the page rail's group headers. A page says whose work it is, and the
+      // window is one window for the whole workspace — so the rail
       // is where several conversations' pages sit side by side, and a session id is
       // not a name a person can read. Same late-bound shape as the resolvers above,
-      // and only a name: whose page it is stays `openedBySessionId`'s answer.
+      // and only a name: whose page it is stays `belongsTo`'s answer. (A task's section
+      // needs no resolver — it is named by its own slug.)
       browserPaneManager?.setSessionLabelResolver((sessionId) => sessionManager?.getSessionName(sessionId) ?? null)
 
       // -----------------------------------------------------------------------

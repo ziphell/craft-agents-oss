@@ -91,6 +91,8 @@ export interface SessionMeta {
   taskNodeId?: string
   /** Tasks Conductor: total DAG node count (orchestrator only) — stable board progress denominator while children spawn lazily */
   taskNodeCount?: number
+  /** Tasks Conductor: how many `kind: approval` gates of the active run are waiting on a person */
+  taskAwaitingApproval?: number
   /** Tasks Conductor: a generate-time draft orchestrator, hidden from the board until adopted by createTask. */
   taskDraft?: boolean
 }

@@ -17,7 +17,7 @@
  *
  * Stored in `config.json`, written **only** by the control plane. This does not
  * conflict with the "no shared index file" rule (see storage.ts): that rule
- * exists because `patches/` is written by many lanes, whereas this file has a
+ * exists because `patches/` is written by many writers, whereas this file has a
  * single writer and no derived data to drift.
  */
 
@@ -79,21 +79,6 @@ export interface PrototypeConfig {
    * page may come out of a reference.
    */
   references?: string[]
-  /**
-   * The workspace **project** this prototype was made for, when it was made for
-   * one (plan §15.1).
-   *
-   * An edge, not a nesting. The prototype still lives on its own under
-   * `prototypes/`, nothing of it moves into the project and nothing of the project
-   * moves into it — §15 rejected the nesting and still does. What the edge buys is
-   * the answer to a question two containers with no link between them cannot
-   * answer: which prototypes belong to this project. It is also what lets a
-   * session that has both contexts in front of it know which side a new file
-   * belongs on.
-   *
-   * Optional, because a prototype may genuinely precede the project it ends up in.
-   */
-  projectSlug?: string
 }
 
 export const PROTOTYPE_CONFIG_FILENAME = 'config.json'
@@ -106,19 +91,6 @@ export function getPrototypeConfigPath(workspaceRootPath: string, slug: string):
 /** Narrow an unknown value to a known page kind. */
 export function isPageKind(value: unknown): value is PageKind {
   return value === 'overlay' || value === 'scratch'
-}
-
-/**
- * Normalise a project slug read off disk or given by a caller.
- *
- * `undefined` rather than `''` for "nothing to store", so the key is omitted from
- * the file rather than written as an empty string — the same rule references and
- * pages follow.
- */
-export function normalizeProjectSlug(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined
-  const slug = value.trim()
-  return slug.length > 0 ? slug : undefined
 }
 
 /**
@@ -291,7 +263,6 @@ export function readPrototypeConfig(workspaceRootPath: string, slug: string): Pr
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>
     const references = normalizePrototypeReferences(parsed.references, slug)
-    const projectSlug = normalizeProjectSlug(parsed.projectSlug)
     // A `kind` at the top level is what a pre-page-table config looked like.
     const { pages, issues } = normalizePrototypePages(
       isPageKind(parsed.kind) ? legacyPageRows(parsed) : parsed.pages,
@@ -301,7 +272,6 @@ export function readPrototypeConfig(workspaceRootPath: string, slug: string): Pr
       ...(pages ? { pages } : {}),
       ...(issues.length > 0 ? { pageIssues: issues } : {}),
       ...(references ? { references } : {}),
-      ...(projectSlug ? { projectSlug } : {}),
     }
   } catch {
     return {}
@@ -321,13 +291,11 @@ export function writePrototypeConfig(
   config: PrototypeConfig,
 ): void {
   const references = normalizePrototypeReferences(config.references, slug)
-  const projectSlug = normalizeProjectSlug(config.projectSlug)
   const { pages } = normalizePrototypePages(config.pages)
 
   const payload: PrototypeConfig = {
     ...(pages ? { pages } : {}),
     ...(references ? { references } : {}),
-    ...(projectSlug ? { projectSlug } : {}),
   }
 
   writeFileSync(getPrototypeConfigPath(workspaceRootPath, slug), `${JSON.stringify(payload, null, 2)}\n`, 'utf-8')

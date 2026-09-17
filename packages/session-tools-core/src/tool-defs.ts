@@ -441,7 +441,6 @@ Examples:
 - \`key k meta\`
 - \`downloads wait 15000\`
 - \`focus [windowId]\` — focus existing browser window (no new window)
-- \`windows\` — list current browser windows and ownership state
 - \`release\` — dismiss the agent control overlay when done
 - \`close\` — close and destroy the browser window
 - \`hide\` — hide the window while preserving state`,

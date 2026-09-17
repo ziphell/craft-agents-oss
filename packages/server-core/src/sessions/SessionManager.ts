@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿import type { EventSink, RpcServer } from '@craft-agent/server-core/transport'
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿import type { EventSink, RpcServer } from '@craft-agent/server-core/transport'
 import { CLIENT_BROWSER_INVOKE } from '@craft-agent/server-core/transport'
 import type { ISessionManager, IBrowserPaneManager, ExecutePromptAutomationInput } from '@craft-agent/server-core/handlers'
 import { RemoteBrowserPaneManager } from './RemoteBrowserPaneManager'
@@ -9,7 +9,8 @@ import { existsSync } from 'fs'
 import { readFile, writeFile, mkdir } from 'fs/promises'
 import { randomUUID } from 'node:crypto'
 import { type AgentEvent, setPermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserPaneFns, generateConversationSummary, resolveKeepBackgroundTasksAlive } from '@craft-agent/shared/agent'
-import type { BrowserInstanceInfo, BrowserTabSummary } from '@craft-agent/shared/protocol'
+import type { BrowserInstanceInfo, BrowserTabSummary, TabBelongsTo } from '@craft-agent/shared/protocol'
+import { sameTask, sameWork, workOfSession } from '@craft-agent/shared/protocol'
 import {
   exportPrototype as exportPrototypeArtifacts,
   resolveContractServiceSlug,
@@ -25,8 +26,6 @@ import {
   updatePrototypePages,
   linkPrototypeReference as linkReference,
   unlinkPrototypeReference as unlinkReference,
-  setPrototypeProject as setPrototypeProjectArtifacts,
-  resolveProjectPrototype,
   commitPrototype as commitPrototypeArtifacts,
 } from '@craft-agent/shared/prototypes'
 import { applyPrototypeToBrowser, clearPrototypeFromBrowser } from '../domain/apply-prototype'
@@ -138,7 +137,7 @@ import { buildBackendRuntimeSignature, buildRestartRequiredSignature, filterAtta
 import { validateArchiveTarget } from './archive-guards'
 
 // Import from server-core domain utilities
-import { sanitizeForTitle, shouldActivateBrowserOverlay, normalizeBrowserToolName, rollbackFailedBranchCreation, releaseBrowserOwnershipOnForcedStop } from '@craft-agent/server-core/domain'
+import { sanitizeForTitle, shouldActivateBrowserOverlay, normalizeBrowserToolName, rollbackFailedBranchCreation, releaseBrowserOnForcedStop } from '@craft-agent/server-core/domain'
 import { resizeImageForAPI, resizeIconBuffer } from '@craft-agent/server-core/services'
 export { sanitizeForTitle }
 
@@ -910,6 +909,11 @@ interface ManagedSession {
   taskNodeId?: string
   // Tasks Conductor: total DAG node count (orchestrator only) — stable board progress denominator
   taskNodeCount?: number
+  // Tasks Conductor: gates of the active run waiting on a person (orchestrator only) — drives the
+  // board's "needs you" badge and the one notification about work *stopping* rather than arriving
+  taskAwaitingApproval?: number
+  // The writer identity this session writes prototype artifacts as (task.yaml `writes:`, plan §3.6)
+  taskWrites?: string
   // Tasks Conductor: hidden generate-time orchestrator awaiting validated adoption (off the board)
   taskDraft?: boolean
   // Working directory for this session (used by agent for bash commands)
@@ -923,9 +927,11 @@ interface ManagedSession {
   sharedId?: string
   // Model to use for this session (overrides global config if set)
   model?: string
-  // LLM connection slug for this session (locked after first message)
+  // LLM connection slug for this session (auto-pinned on first agent creation)
   llmConnection?: string
-  // Whether the connection is locked (cannot be changed after first agent creation)
+  // Whether the connection is pinned. Only guards *implicit* rewrites (model-change
+  // events carrying a connection, task reconcile) — explicit user switches go
+  // through setSessionConnection() and are honored at any point in the session.
   connectionLocked?: boolean
   // Thinking level for this session ('off', 'think', 'max')
   thinkingLevel?: ThinkingLevel
@@ -1404,6 +1410,12 @@ export class SessionManager implements ISessionManager {
       workspaceId: session.workspace.id,
       rpcServer: this.rpcServer,
       getHostClient: () => this.getBrowserHostClient(sid),
+      // Read per call rather than captured: a session can be bound to a task after it exists
+      // (`bindExistingSessionToTask`), and its pages follow it (plan §22).
+      getWork: () => {
+        const live = this.sessions.get(sid)
+        return live ? workOfSession(live) : null
+      },
     })
     this.remoteBpms.set(sid, bridge)
     return bridge
@@ -2949,6 +2961,7 @@ export class SessionManager implements ISessionManager {
       taskSlug: options?.taskSlug,
       taskRunId: options?.taskRunId,
       taskNodeId: options?.taskNodeId,
+      taskWrites: options?.taskWrites,
       taskDraft: options?.taskDraft,
       // Persist only an EXPLICIT selection (e.g. a task's spec.sources on its subtasks).
       // The workspace-default fallback stays dynamic — freezing it into the header would
@@ -3369,7 +3382,7 @@ export class SessionManager implements ISessionManager {
    * Creates the appropriate backend agent based on LLM connection.
    *
    * Provider resolution order:
-   * 1. session.llmConnection (locked after first message)
+   * 1. session.llmConnection (auto-pinned on first use; switchable by the user)
    * 2. workspace.defaults.defaultLlmConnection
    * 3. global defaultLlmConnection
    * 4. fallback: no connection configured
@@ -3399,8 +3412,10 @@ export class SessionManager implements ISessionManager {
     if (!managed.agent) {
       const end = perf.start('agent.create', { sessionId: managed.id })
 
-      // Lock the connection after first resolution
-      // This ensures the session always uses the same provider
+      // Pin the connection on first resolution so ambient config drift (workspace
+      // default edits, task reconcile, model-change events carrying a fallback
+      // connection) can't re-route a live session. An explicit user switch is
+      // still allowed afterwards — see setSessionConnection().
       if (connection && !managed.connectionLocked) {
         managed.llmConnection = connection.slug
         managed.connectionLocked = true
@@ -3491,9 +3506,9 @@ export class SessionManager implements ISessionManager {
         permissionMode: managed.permissionMode,
         previousPermissionMode: managed.previousPermissionMode,
         projectId: managed.projectId,
-        // Effective, not explicit: the prompt's prototype context follows the same
-        // resolution the window and the commands do, so a project's conversations
-        // describe the prototype they are actually working on.
+        // The same resolution the window and the commands use, so the prompt
+        // describes the prototype the conversation actually works on — which, now
+        // that a project contributes none (plan §15.1.2), is its own binding.
         prototypeSlug: this.effectivePrototypeSlug(managed),
       }
 
@@ -3740,28 +3755,53 @@ export class SessionManager implements ISessionManager {
           bpmKind: this.browserPaneManager === bpm ? 'local' : 'remote',
         })
 
+        /**
+         * Whether this conversation was spawned by another one — a DAG node, or a session an
+         * agent delegated to.
+         *
+         * Its browser side is deliberately narrower (plan §22, Conductor): a child works in the
+         * page it was given rather than in whatever the person has in front of them, and it does
+         * not move the person's view. A parent and its children share one window, so those are
+         * the two behaviours that would otherwise make them interfere.
+         */
+        const isChildSession = !!managed.parentSessionId
+
+        /**
+         * The **work** this conversation is part of — what its pages say they are for, and what
+         * its commands are judged against (plan §22).
+         *
+         * A Conductor child is a node of a task, and says so: its pages belong to that node, so a
+         * re-run of the node (repair — a *new* child session for the *same* node) inherits the
+         * page instead of leaving it orphaned. The orchestrator is the task itself; an ordinary
+         * conversation is its own work. Read live rather than captured, because a session can be
+         * bound to a task after it exists.
+         */
+        const work: TabBelongsTo = workOfSession(managed)
+
         const workspaceId = managed.workspace.id
 
         /**
          * The page a command is about, refused when it is not this conversation's to
-         * touch (plan §22) or is locked by another one at this moment (第九轮).
+         * touch (plan §22) or is held by another one at this moment (第九轮).
          *
-         * Two rules, in this order. `whyTabIsOutOfReach` is the standing one — reach is
-         * decided by the page's prototype against the one this conversation works on,
-         * with the two exceptions that make the shared window usable at all (an ordinary
-         * page is anybody's, and a page this conversation opened is its own).
+         * Two rules, in this order. `whyTabIsOutOfReach` is the standing one — a page is
+         * this conversation's work, or nobody's, and anything else is another conversation's or
+         * another node's (which is what keeps a parent's children out of each other's pages).
          * `whyTabIsLocked` is the clock: the page may be yours in principle and busy
          * right now, and its answer is "wait" rather than "never".
          */
         const assertTabUsable = (tab: BrowserTabSummary): void => {
-          const why =
-            whyTabIsOutOfReach(tab, sid, this.effectivePrototypeSlug(managed)) ?? whyTabIsLocked(tab, sid)
+          const why = whyTabIsOutOfReach(tab, work) ?? whyTabIsLocked(tab, sid)
           if (why) throw new Error(why)
         }
 
-        /** Closing is housekeeping, and housekeeping is only the pages this conversation opened. */
+        /**
+         * Closing is housekeeping, and housekeeping is the whole **task**'s (plan §22): a node
+         * opens its own pages and stops, so a rule that only let the opener close them would
+         * leave every finished run's pages in the window with nobody left to tidy them.
+         */
         const assertTabIsMineToClose = (tab: BrowserTabSummary): void => {
-          const why = whyTabIsNotMineToClose(tab, sid)
+          const why = whyTabIsNotMineToClose(tab, work)
           if (why) throw new Error(why)
         }
 
@@ -3788,6 +3828,23 @@ export class SessionManager implements ISessionManager {
         }
 
         /**
+         * The window this conversation works in — its workspace's, opened if it is not up yet.
+         *
+         * Split out from the page resolution below because one command needs a window and not a
+         * page: `tab-new` is how a conversation with no page gets one, so it cannot require a
+         * page first (plan §22, Conductor).
+         */
+        const resolveWorkspaceWindow = async (options?: { show?: boolean }): Promise<string> => {
+          const instanceId = await bpm.createForSessionAsync(sid, {
+            show: options?.show ?? false,
+            workspaceId,
+          })
+          const info = await bpm.getInstanceAsync(instanceId)
+          sessionLog.info(`[browser-pane] workspace window resolved: session=${sid} instance=${instanceId} visible=${info?.isVisible ?? false}`)
+          return instanceId
+        }
+
+        /**
          * Which window a command acts on, and which page of it.
          *
          * The page is settled here, once, and handed on to the command — the conversation's
@@ -3806,12 +3863,7 @@ export class SessionManager implements ISessionManager {
           toolName: string,
           options?: { show?: boolean },
         ): Promise<{ instanceId: string; tabId: string | undefined }> => {
-          const instanceId = await bpm.createForSessionAsync(sid, {
-            show: options?.show ?? false,
-            workspaceId,
-          })
-          const info = await bpm.getInstanceAsync(instanceId)
-          sessionLog.info(`[browser-pane] tool target resolved: ${toolName} session=${sid} instance=${instanceId} visible=${info?.isVisible ?? false}`)
+          const instanceId = await resolveWorkspaceWindow(options)
 
           const tabs = await bpm.listTabsAsync(instanceId).catch(() => [])
           const target = pickCommandTarget(tabs, sid)
@@ -3819,13 +3871,24 @@ export class SessionManager implements ISessionManager {
 
           assertTabUsable(target.tab)
           if (target.because === 'on-screen') {
-            // No page of its own yet: adopting the page in front of the person is the
-            // takeover case, and it is also where "you open it, the agent takes over"
-            // starts. Recording the cursor here is what makes it the conversation's page
-            // from now on, so the person's next click cannot pull the work away.
+            // No page of its own yet: adopting the page in front of the person is the takeover
+            // case, and it is also where "you open it, the agent takes over" starts. Recording
+            // the cursor here is what makes it the conversation's page from now on, so the
+            // person's next click cannot pull the work away.
+            //
+            // A **child session** does not get this move (plan §22, Conductor): it works in the
+            // page it was given, and a parent's and siblings' pages are lined up in this window —
+            // taking whatever is in front would walk into them, or take the person's page.
+            if (isChildSession) {
+              throw new Error(
+                `You have no page of your own in this workspace's window yet — page ${target.tab.id} is the one on screen, and taking it over is not yours to do. ` +
+                'Open one with "tab-new [url]", or ask the conversation that spawned you to hand you one with "tab-assign <page-id> <your-session>".',
+              )
+            }
             sessionLog.info(`[browser-pane] tool target adopted the page on screen: ${target.tab.id}`)
           }
           bpm.setSessionPage(instanceId, target.tab.id, sid)
+          sessionLog.info(`[browser-pane] tool target resolved: ${toolName} session=${sid} instance=${instanceId} tab=${target.tab.id} because=${target.because}`)
 
           return { instanceId, tabId: target.tab.id }
         }
@@ -3875,12 +3938,13 @@ export class SessionManager implements ISessionManager {
          * to report that would be the tool inventing the state it was asked about.
          *
          * Found by what it is rather than by who is asking (plan §22): it belongs to
-         * the workspace, so `boundSessionId` — which is only a lease now — is not
-         * what identifies it. The workspace is what keeps two of them apart.
+         * the workspace, and nothing on the window names a conversation — which
+         * conversation is where is a fact about its pages. The workspace is what keeps
+         * two of them apart.
          */
         const resolveWorkspaceWindowId = async (): Promise<string | null> => {
           const windows = await sessionWindows()
-          return windows.find((window) => window.isWorkspaceWindow)?.id ?? null
+          return windows[0]?.id ?? null
         }
 
         const resolveLifecycleWindowTarget = async (command: 'release' | 'close' | 'hide', requestedInstanceId?: string) => {
@@ -3912,7 +3976,7 @@ export class SessionManager implements ISessionManager {
           // only one there is (plan §22).
           const resolved = requestedInstanceId
             ? resolveTarget(windows.find((w) => w.id === requestedInstanceId))
-            : resolveTarget(windows.find((w) => w.isWorkspaceWindow) ?? windows[0])
+            : resolveTarget(windows[0])
 
           return resolved.ok ? { windows, target: resolved.target } : { windows, reason: resolved.reason }
         }
@@ -3921,11 +3985,15 @@ export class SessionManager implements ISessionManager {
         mergeSessionScopedToolCallbacks(sid, {
           browserPaneFns: {
             openPanel: async (options) => {
-              const instanceId = options?.background
-                ? await bpm.createForSessionAsync(sid, { show: false, workspaceId })
-                : await bpm.focusBoundForSessionAsync(sid, { workspaceId })
+              // A child session never brings the window up: the person may be working in it, and
+              // a DAG's nodes starting in parallel would take turns stealing their view (plan
+              // §22, Conductor). It still gets the window and its page.
+              const foreground = !isChildSession && !options?.background
+              const instanceId = foreground
+                ? await bpm.focusBoundForSessionAsync(sid, { workspaceId })
+                : await bpm.createForSessionAsync(sid, { show: false, workspaceId })
               const info = await bpm.getInstanceAsync(instanceId)
-              sessionLog.info(`[browser-pane] route decision: browser_open session=${sid} instance=${instanceId} background=${options?.background ?? false} visible=${info?.isVisible ?? false}`)
+              sessionLog.info(`[browser-pane] route decision: browser_open session=${sid} instance=${instanceId} background=${!foreground} child=${isChildSession} visible=${info?.isVisible ?? false}`)
               return { instanceId }
             },
             navigate: async (url) => {
@@ -4036,6 +4104,12 @@ export class SessionManager implements ISessionManager {
               const { instanceId, tabId } = await resolveCommandTarget('browser_forward')
               return bpm.goForward(instanceId, tabId)
             },
+            // Fire-and-forget on the browser side (the toolbar's own reload is the same
+            // call): the answer to "this patch is inlined, reload to pick the change up".
+            reload: async () => {
+              const { instanceId, tabId } = await resolveCommandTarget('browser_reload')
+              bpm.reload(instanceId, tabId)
+            },
             evaluate: async (expression) => {
               const { instanceId, tabId } = await resolveCommandTarget('browser_evaluate')
               return bpm.evaluate(instanceId, expression, tabId)
@@ -4075,12 +4149,12 @@ export class SessionManager implements ISessionManager {
               const config = unlinkReference(managed.workspace.rootPath, prototypeSlug, referenceSlug)
               return { references: config.references ?? [] }
             },
-            applyPrototype: async (prototypeSlug) => {
+            applyPrototype: async (prototypeSlug, options) => {
               const { instanceId, tabId } = await resolveCommandTarget('browser_prototype_apply')
               // The page is named, not looked up: the apply reads *which page of the prototype*
               // this is off the address, and the window's own answer is the page on screen —
               // the person's, who may be reading something else (plan §22, 第十二轮).
-              return applyPrototypeToBrowser(bpm, instanceId, managed.workspace.rootPath, prototypeSlug, await sessionPage(instanceId, tabId))
+              return applyPrototypeToBrowser(bpm, instanceId, managed.workspace.rootPath, prototypeSlug, await sessionPage(instanceId, tabId), options)
             },
             clearPrototype: async (prototypeSlug) => {
               const { instanceId, tabId } = await resolveCommandTarget('browser_prototype_clear')
@@ -4137,16 +4211,6 @@ export class SessionManager implements ISessionManager {
                 instanceId ? await sessionPage(instanceId, tabId) : null,
               )
             },
-            // File work only: recording which project a prototype was made for is
-            // one field in its config, and needs no browser (plan §15.1).
-            setPrototypeProject: async ({ slug: prototypeSlug, projectSlug }) => {
-              const config = setPrototypeProjectArtifacts(
-                managed.workspace.rootPath,
-                prototypeSlug,
-                projectSlug,
-              )
-              return { slug: prototypeSlug, projectSlug: config.projectSlug ?? null }
-            },
             // File work only, and deliberately no confirmation step: a page's
             // address is not a rule of its kind, it is a fact about where the page
             // is (the same page lives in a dev, a staging and a production
@@ -4185,11 +4249,20 @@ export class SessionManager implements ISessionManager {
             applyMock: async ({ slug: prototypeSlug, service }) => {
               const { instanceId, tabId } = await resolveCommandTarget('browser_mock_apply')
               const serviceSlug = resolveContractServiceSlug(managed.workspace.rootPath, prototypeSlug, service)
-              const { routes, missingFixtures, unmocked } = buildMockRoutes(
-                loadContractService(managed.workspace.rootPath, prototypeSlug, serviceSlug),
-              )
-              const applied = await bpm.setFetchMock(instanceId, routes, tabId)
-              return { service: serviceSlug, routes: applied, missingFixtures, unmocked }
+              const loaded = loadContractService(managed.workspace.rootPath, prototypeSlug, serviceSlug)
+              const { routes, missingFixtures, unmocked, stateIssues, stateProblem } = buildMockRoutes(loaded)
+              // The store travels with the routes, and applying again starts it over:
+              // one apply is one run of the flow, which is also how a demo is reset.
+              const applied = await bpm.setFetchMock(instanceId, { routes, store: loaded.state ?? {} }, tabId)
+              return {
+                service: serviceSlug,
+                routes: applied,
+                missingFixtures,
+                unmocked,
+                stateIssues,
+                stateProblem,
+                stateful: routes.filter((route) => route.state !== undefined).length,
+              }
             },
             clearMock: async () => {
               const { instanceId, tabId } = await resolveCommandTarget('browser_mock_clear')
@@ -4204,6 +4277,15 @@ export class SessionManager implements ISessionManager {
               return resolvePrototypeEntry(managed.workspace.rootPath, prototypeSlug)
             },
             focusWindow: async (targetInstanceId) => {
+              // Bringing the window up is about the person's view: a child session does not do it
+              // (plan §22, Conductor) — the window is theirs and it shows their page.
+              if (isChildSession) {
+                throw new Error(
+                  'Bringing the browser window to the front is not a child session\'s to do: the person may be working in it. ' +
+                  'Work in your own page ("tabs" lists them) — the window goes on showing theirs.',
+                )
+              }
+
               const windows = await sessionWindows()
               if (windows.length === 0) {
                 throw new Error('No browser window is open in this workspace to focus. Use "open" first.')
@@ -4281,54 +4363,57 @@ export class SessionManager implements ISessionManager {
                 }
               }
 
-              // The workspace's window is never closed on a conversation's say-so
-              // (plan §22's third rule) — but the pages it opened in it are its own to
-              // clean up, and with page-level occupation `close` can mean exactly that
-              // instead of refusing everything (plan §22, 第六轮).
-              if (resolution.target.isWorkspaceWindow) {
-                const tabs = await bpm.listTabsAsync(resolution.target.id).catch(() => [])
-                const mine = tabs.filter((tab) => tab.openedBySessionId === sid)
+              // The window is never closed on a conversation's say-so (plan §22's third
+              // rule) — but the pages it opened in it are its own to clean up, and with
+              // page-level occupation `close` means exactly that instead of refusing
+              // everything (plan §22, 第六轮). There is no window kind this could
+              // destroy instead: it is the workspace's, the only one there is.
+              const tabs = await bpm.listTabsAsync(resolution.target.id).catch(() => [])
+              // The task's pages, not just this session's (plan §22): a node opened its pages and
+              // has stopped by now, and the orchestrator that ran the whole DAG is the one that
+              // gets to tidy them away. Same task = same housekeeping.
+              const mine = tabs.filter((tab) => sameTask(tab.belongsTo, work) || sameWork(tab.belongsTo, work))
 
-                if (mine.length === 0) {
-                  sessionLog.info(`[browser-pane] lifecycle close session=${sid} resolved=${resolution.target.id} result=noop reason=no-own-pages`)
-                  return {
-                    action: 'noop',
-                    requestedInstanceId,
-                    resolvedInstanceId: resolution.target.id,
-                    affectedIds: [],
-                    reason: 'This browser window belongs to the whole workspace, so it is not yours to close, and none of its pages are ones you opened. "tabs" lists them; "release" drops your overlay.',
-                  }
-                }
-
-                // A window is never left with no pages, so when the pages being closed
-                // are all of them, a fresh one takes their place first: the window goes
-                // back to what a window is made of rather than to nothing.
-                if (mine.length === tabs.length) {
-                  await bpm.createTabAsync(resolution.target.id, { activate: false })
-                }
-
-                for (const tab of mine) bpm.closeTab(resolution.target.id, tab.id)
-
-                sessionLog.info(`[browser-pane] lifecycle close session=${sid} resolved=${resolution.target.id} result=pages-closed pages=${mine.map((tab) => tab.id).join(',')}`)
+              if (mine.length === 0) {
+                sessionLog.info(`[browser-pane] lifecycle close session=${sid} resolved=${resolution.target.id} result=noop reason=no-own-pages`)
                 return {
-                  action: 'pages-closed',
+                  action: 'noop',
                   requestedInstanceId,
                   resolvedInstanceId: resolution.target.id,
-                  affectedIds: mine.map((tab) => tab.id),
+                  affectedIds: [],
+                  reason: 'This browser window belongs to the whole workspace, so it is not yours to close, and none of its pages are ones you opened. "tabs" lists them; "release" drops your overlay.',
                 }
               }
 
-              bpm.destroyInstance(resolution.target.id)
-              sessionLog.info(`[browser-pane] lifecycle close session=${sid} requested=${requestedInstanceId ?? 'auto'} resolved=${resolution.target.id} result=closed`)
+              // A window is never left with no pages, so when the pages being closed
+              // are all of them, a fresh one takes their place first: the window goes
+              // back to what a window is made of rather than to nothing.
+              if (mine.length === tabs.length) {
+                await bpm.createTabAsync(resolution.target.id, { activate: false })
+              }
 
+              for (const tab of mine) bpm.closeTab(resolution.target.id, tab.id)
+
+              sessionLog.info(`[browser-pane] lifecycle close session=${sid} resolved=${resolution.target.id} result=pages-closed pages=${mine.map((tab) => tab.id).join(',')}`)
               return {
-                action: 'closed',
+                action: 'pages-closed',
                 requestedInstanceId,
                 resolvedInstanceId: resolution.target.id,
-                affectedIds: [resolution.target.id],
+                affectedIds: mine.map((tab) => tab.id),
               }
             },
             hideWindow: async (requestedInstanceId) => {
+              // Hiding it takes the person's view away, which a child session does not do
+              // (plan §22, Conductor).
+              if (isChildSession) {
+                return {
+                  action: 'noop',
+                  requestedInstanceId,
+                  affectedIds: [],
+                  reason: 'Hiding the browser window is not a child session\'s to do: the person may be working in it.',
+                }
+              }
+
               const resolution = await resolveLifecycleWindowTarget('hide', requestedInstanceId)
               if (!resolution.target) {
                 sessionLog.info(`[browser-pane] lifecycle hide session=${sid} requested=${requestedInstanceId ?? 'auto'} result=noop reason=${resolution.reason}`)
@@ -4357,13 +4442,42 @@ export class SessionManager implements ISessionManager {
             // through the same resolver every browser command uses.
             //
             // Everything reached through here was asked for by the agent, so the
-            // page says which conversation: `openedBySessionId` is stamped here
+            // page says whose work it is: `by` is stamped here
             // rather than at each call site, because a caller that forgot would
             // leave the agent's own page looking like the user's — and "leave other
             // people's pages alone" is decided from that field.
             createTab: async (options) => {
-              const { instanceId } = await resolveCommandTarget('browser_tab_new')
-              return await bpm.createTabAsync(instanceId, { ...options, openedBySessionId: sid })
+              // A window, not a page: this is the one command a conversation with no page of its
+              // own can still run (plan §22, Conductor).
+              const instanceId = await resolveWorkspaceWindow()
+              return await bpm.createTabAsync(instanceId, { ...options, belongsTo: work })
+            },
+            /**
+             * Hand a page to another conversation — the orchestrator's half of "a DAG's nodes each
+             * get their own page" (plan §22, Conductor).
+             *
+             * Checked here rather than in the browser because only this side knows the sessions:
+             * the page has to be one this conversation may give away (nobody's, or its own), and
+             * the receiver has to be a session of **this workspace** — a page is not a thing to
+             * hand across workspaces.
+             *
+             * The receiver's **work** is resolved here too, and passed whole: whether the new page
+             * belongs to a conversation or to a DAG node is a fact about the session being handed
+             * to, which the browser side has no way to look up (plan §22).
+             */
+            assignTab: async (tabId, targetSessionId) => {
+              const instanceId = await resolveWorkspaceWindowId()
+              if (!instanceId) {
+                throw new Error('No browser window is open for this workspace, so there is no page to hand over. Use "open" first.')
+              }
+              const target = this.sessions.get(targetSessionId)
+              if (!target || target.workspace.id !== workspaceId) {
+                throw new Error(
+                  `"${targetSessionId}" is not a conversation in this workspace, so it cannot be given a page of this window. ` +
+                  '"spawn-session" (or the task\'s own report) says which child sessions exist.',
+                )
+              }
+              bpm.assignTab(instanceId, tabId, workOfSession(target), work)
             },
             targetTab: async (tabId) => {
               const instanceId = await resolveWorkspaceWindowId()
@@ -4393,7 +4507,12 @@ export class SessionManager implements ISessionManager {
               // they are reading another one (第十二轮) — and a page brought up is a page about to
               // be worked on, so the cursor goes with it too.
               bpm.setSessionPage(instanceId, tabId, sid)
+              // …except for a child session, which takes the page as its own without moving what
+              // the person sees (plan §22, Conductor). Said out loud rather than done quietly:
+              // the answer to "show it to them" is about the person's view.
+              if (isChildSession) return { movedView: false }
               bpm.activateTab(instanceId, tabId)
+              return { movedView: true }
             },
             closeTab: async (tabId) => {
               const instanceId = await resolveWorkspaceWindowId()
@@ -4423,13 +4542,16 @@ export class SessionManager implements ISessionManager {
               // (our own rendered document), and a window no longer holds one
               // prototype's pages only (plan §22).
               //
-              // The conversation's own binding is offered as a fallback for the window
-              // **it is driving** — the same rule the browser side reads a page's
-              // prototype by, so the two cannot disagree. A window another conversation
-              // is driving right now is left to its pages to speak for themselves
-              // rather than being told what it is by a conversation that has nothing to
-              // do with it (plan §22).
-              const mine = (window: BrowserInstanceInfo) => window.boundSessionId === sid
+              // The conversation's own binding is offered as a fallback for **its own page**
+              // on screen — the same rule the browser side reads a page's prototype by, so the
+              // two cannot disagree. A page another conversation opened, works from or holds is
+              // left to speak for itself rather than being told what it is by a conversation
+              // that has nothing to do with it (plan §22, Conductor).
+              const mine = (window: BrowserInstanceInfo) => {
+                const page = window.tabs?.find((tab) => tab.active)
+                if (!page) return false
+                return sameWork(page.belongsTo, work) || page.cursorOf === sid || page.lockedBy === sid
+              }
 
               return windows.map((window) => ({
                 ...window,
@@ -4610,9 +4732,9 @@ export class SessionManager implements ISessionManager {
             managed.agent.interruptForHandoff(AbortReason.PlanSubmitted)
             this.setProcessing(managed, false)
 
-            // Release browser overlay + session binding because the agent is no longer running.
-            // Plan submission pauses execution until user review, so browser ownership should not remain locked.
-            await releaseBrowserOwnershipOnForcedStop(
+            // Release browser overlay + lease because the agent is no longer running.
+            // Plan submission pauses execution until user review, so the window should not be held.
+            await releaseBrowserOnForcedStop(
               (sid) => this.getBrowserPaneManagerForSession(sid),
               managed.id,
             )
@@ -4669,8 +4791,8 @@ export class SessionManager implements ISessionManager {
           managed.agent.interruptForHandoff(AbortReason.AuthRequest)
           this.setProcessing(managed, false)
 
-          // Release browser overlay + session binding because the agent is paused awaiting user auth.
-          void releaseBrowserOwnershipOnForcedStop(
+          // Release browser overlay + lease because the agent is paused awaiting user auth.
+          void releaseBrowserOnForcedStop(
             (sid) => this.getBrowserPaneManagerForSession(sid),
             managed.id,
           )
@@ -4710,7 +4832,7 @@ export class SessionManager implements ISessionManager {
           projectId: request.projectId ?? managed.projectId,
           // A subtask of a prototype-bound session works on the same prototype —
           // inheriting it is what keeps the child's prototype-* commands aimed at
-          // the right project without the parent having to pass it down.
+          // the right prototype without the parent having to pass it down.
           prototypeSlug: managed.prototypeSlug,
           // Spawned sessions become subtasks of the spawning session.
           parentSessionId: managed.id,
@@ -5209,20 +5331,25 @@ export class SessionManager implements ISessionManager {
 
   /**
    * Set the LLM connection for a session.
-   * Can only be changed before the first message is sent (connection is locked after).
-   * This determines which LLM provider/backend will be used for this session.
+   *
+   * This is the *explicit* switch path (user picked a model under another
+   * connection in the model picker) and is allowed at any point in a session's
+   * life, including after messages have been sent. The connection is still
+   * pinned on first use, but `connectionLocked` only guards *implicit* writes
+   * (`updateSessionModel`'s connection arg, task reconcile) — it must not trap
+   * a user in a provider for the rest of a conversation.
+   *
+   * Timing: provider/auth are restart-required runtime fields, so the backend is
+   * torn down for the new connection. That happens only once the session is idle —
+   * the model picker blocks switching while a turn is generating (the input shows
+   * the stop button instead of send), and this method enforces the same rule as a
+   * safety net for races: a mid-turn switch is recorded and applies on the next send.
    */
   async setSessionConnection(sessionId: string, connectionSlug: string): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (!managed) {
       sessionLog.warn(`setSessionConnection: session ${sessionId} not found`)
       throw new Error(`Session ${sessionId} not found`)
-    }
-
-    // Only allow changing connection before first message (session hasn't started)
-    if (managed.messages && managed.messages.length > 0) {
-      sessionLog.warn(`setSessionConnection: cannot change connection after session has started (${sessionId})`)
-      throw new Error('Cannot change connection after session has started')
     }
 
     // Validate connection exists
@@ -5233,11 +5360,15 @@ export class SessionManager implements ISessionManager {
       throw new Error(`LLM connection "${connectionSlug}" not found`)
     }
 
+    const previousSlug = managed.llmConnection
     managed.llmConnection = connectionSlug
+    // An explicit pick pins the session, so later ambient config drift can't
+    // silently re-route it.
+    managed.connectionLocked = true
     // Persist in-memory state directly to avoid race with pending queue writes
     this.persistSession(managed)
     await this.flushSession(managed.id)
-    sessionLog.info(`Set LLM connection for session ${sessionId} to ${connectionSlug}`)
+    sessionLog.info(`Set LLM connection for session ${sessionId} to ${connectionSlug} (was ${previousSlug ?? 'unset'})`)
 
     // Notify UI that connection changed (triggers capabilities refresh)
     this.sendEvent({
@@ -5246,6 +5377,34 @@ export class SessionManager implements ISessionManager {
       connectionSlug,
       supportsBranching: resolveSupportsBranching(managed),
     }, managed.workspace.id)
+
+    // Tear down the old provider's backend only when the session is idle — the
+    // switch itself is available at any time, but a turn that is still running
+    // must finish on the provider it started with, and the new connection takes
+    // effect on the next send. Nothing is rebuilt here: `getOrCreateAgent`
+    // recreates the backend from the new connection when the next turn arrives.
+    // A refresh failure must not fail the switch — the connection is persisted.
+    if (previousSlug !== connectionSlug) {
+      if (this.isSessionInTurn(managed)) {
+        sessionLog.info(`Connection switched mid-turn for ${sessionId}; new provider applies on the next send`)
+      } else {
+        try {
+          await this.tryRefreshAgentRuntime(managed, 'explicit connection switch')
+        } catch (error) {
+          sessionLog.warn(`Runtime refresh after connection switch failed for ${sessionId}: ${error instanceof Error ? error.message : error}`)
+        }
+      }
+    }
+  }
+
+  /**
+   * Whether a turn is currently running for this session — the session-level
+   * flag is checked alongside the agent's stream flag because the window between
+   * SDK messages (tool execution, permission waits) is still the same turn, and
+   * a turn must not have its backend torn down underneath it.
+   */
+  private isSessionInTurn(managed: ManagedSession): boolean {
+    return managed.isProcessing || Boolean(managed.agent?.isProcessing())
   }
 
   // ============================================
@@ -5923,14 +6082,20 @@ export class SessionManager implements ISessionManager {
   /**
    * Update the model for a session
    * Pass null to clear the session-specific model (will use global config)
-   * @param connection - Optional LLM connection slug (only applied if not already locked)
+   * @param connection - Optional LLM connection slug, applied only while the session
+   *   is not pinned. Callers that pass a connection resolved by fallback (the model
+   *   picker's effective connection) must not be able to re-route a pinned session —
+   *   an intentional switch goes through setSessionConnection() instead. A slug that
+   *   differs from the session's current connection also marks the model as belonging
+   *   to that other connection, so it is recorded but never pushed onto the current
+   *   provider's live agent.
    */
   async updateSessionModel(sessionId: string, workspaceId: string, model: string | null, connection?: string): Promise<void> {
     sessionLog.info(`[updateSessionModel] sessionId=${sessionId}, model=${model}, connection=${connection}`)
     const managed = this.sessions.get(sessionId)
     if (managed) {
       managed.model = model ?? undefined
-      // Also update connection if provided and not already locked
+      // Also update connection if provided and the session isn't pinned yet
       if (connection && !managed.connectionLocked) {
         managed.llmConnection = connection
       }
@@ -5940,14 +6105,23 @@ export class SessionManager implements ISessionManager {
         updates.llmConnection = connection
       }
       await updateSessionMetadata(managed.workspace.rootPath, sessionId, updates)
-      // Update agent model if it already exists (takes effect on next query)
+      // Update agent model if it already exists (takes effect on next query —
+      // the model for a turn is fixed when the turn is sent)
       if (managed.agent) {
-        // Fallback chain: session model > workspace default > connection default
-        const wsConfig = loadWorkspaceConfig(managed.workspace.rootPath)
-        const sessionConn = resolveSessionConnection(managed.llmConnection, wsConfig?.defaults?.defaultLlmConnection)
-        const effectiveModel = model ?? wsConfig?.defaults?.model ?? sessionConn?.defaultModel!
-        sessionLog.info(`[updateSessionModel] Calling agent.setModel(${effectiveModel}) [agent exists=${!!managed.agent}, connectionLocked=${managed.connectionLocked}]`)
-        managed.agent.setModel(effectiveModel)
+        // A model that belongs to another connection is applied by
+        // setSessionConnection() + the runtime rebuild on the next send. Pushing
+        // it here would hand a foreign model id to the wrong provider.
+        const belongsToCurrentConnection = !connection || connection === managed.llmConnection
+        if (!belongsToCurrentConnection) {
+          sessionLog.info(`[updateSessionModel] Model belongs to connection "${connection}"; applies once the session switches (next send)`)
+        } else {
+          // Fallback chain: session model > workspace default > connection default
+          const wsConfig = loadWorkspaceConfig(managed.workspace.rootPath)
+          const sessionConn = resolveSessionConnection(managed.llmConnection, wsConfig?.defaults?.defaultLlmConnection)
+          const effectiveModel = model ?? wsConfig?.defaults?.model ?? sessionConn?.defaultModel!
+          sessionLog.info(`[updateSessionModel] Calling agent.setModel(${effectiveModel}) [agent exists=${!!managed.agent}, connectionLocked=${managed.connectionLocked}]`)
+          managed.agent.setModel(effectiveModel)
+        }
       } else {
         sessionLog.info(`[updateSessionModel] No agent yet, model will apply on next agent creation`)
       }
@@ -7095,8 +7269,9 @@ export class SessionManager implements ISessionManager {
     const turnStartFinalMessageId = managed.turnStartFinalMessageId
     managed.turnStartFinalMessageId = undefined
 
-    // Clear agent control overlay between turns. The session keeps browser
-    // ownership (boundSessionId) — only the visual overlay is removed.
+    // Clear the agent overlay between turns. What the session keeps is its pages
+    // (`cursorOf` is sticky) — only the "working right now" marks come off, and its holds
+    // with them.
     // Full unbind happens below when the queue is empty (session truly done).
     const turnBpm = this.getBrowserPaneManagerForSession(sessionId)
     if (turnBpm) {
@@ -7153,9 +7328,9 @@ export class SessionManager implements ISessionManager {
       // Has queued messages - process next
       this.processNextQueuedMessage(sessionId)
     } else {
-      // Session is truly done — release browser ownership.
+      // Session is truly done — let go of the browser (the lease, not the window).
       // The window stays alive (hidden) and becomes reusable by future sessions.
-      // On the next turn, getOrCreateForSession() will re-bind it.
+      // On the next turn, getOrCreateForSession() will take the lease again.
       const doneBpm = this.getBrowserPaneManagerForSession(sessionId)
       if (doneBpm) {
         // Teardown must never block completion. On a headless/WebUI server the BPM is
@@ -7766,7 +7941,7 @@ export class SessionManager implements ISessionManager {
    * Read by the page rail's group headers, through the pane manager's injected
    * resolver (see main/index.ts): the rail lists several conversations' pages side by
    * side in one window, and the only thing a page knows about its opener is an id.
-   * Only the name — whose pages are whose stays the page's own `openedBySessionId`,
+   * Only the name — whose pages are whose stays the page's own `belongsTo`,
    * and nothing here is consulted for a permission. `null` for a conversation that is
    * gone or has not been named yet; the caller falls back to a generic label rather
    * than printing an id.
@@ -7779,29 +7954,20 @@ export class SessionManager implements ISessionManager {
    * The prototype a conversation is working on — the shape every prototype path
    * asks for, so they cannot disagree about which one it is.
    *
-   * Two sources, in this order (plan §15.1): the session's own binding, which is
-   * an explicit statement about this conversation, then the one its project
-   * provides, which is the whole point of binding a prototype to a project — the
-   * conversations inside it stop having to be bound one at a time. Resolution is
-   * live rather than copied at creation, so a session that existed before the
-   * project had a prototype benefits too, and changing the project's prototype
-   * moves its conversations with it.
+   * **Its own binding, and nothing else.** A project used to provide one: first the
+   * single prototype claiming it, then a stored "current" one. Both were withdrawn
+   * (plan §15.1.2) — a conversation that is *told* what exists can name one itself,
+   * while a project picking one for it was a guess that cost a config field, a
+   * validated writer and a story for the value going stale.
    *
-   * The project's prototype is derived, one scan away: `resolveProjectPrototype`
-   * reads the prototypes folder and answers only when exactly one of them claims
-   * the project (see there for why "several" is answered with nothing). Sessions
-   * carry the project's *id* while the edge records its *slug*, hence the lookup
-   * in between. Nothing is cached: an edge is a person's action, and the read is
-   * the same one `prototype-list` does — but it only happens for a session that
-   * has no binding of its own.
+   * A project may note which prototype it is on (§15.1.3) — and that is deliberately
+   * not here. It is background information for its conversations, told in
+   * `<project_prototype>`: it binds no conversation, injects no prototype context or
+   * guide, and never becomes a command's default target. So this stays one line, and
+   * nothing caches it.
    */
   private effectivePrototypeSlug(managed: ManagedSession): string | undefined {
-    if (managed.prototypeSlug) return managed.prototypeSlug
-    if (!managed.projectId) return undefined
-
-    const project = loadProjectById(managed.workspace.rootPath, managed.projectId)
-    if (!project) return undefined
-    return resolveProjectPrototype(managed.workspace.rootPath, project.config.slug) ?? undefined
+    return managed.prototypeSlug
   }
 
   /**
@@ -7816,9 +7982,9 @@ export class SessionManager implements ISessionManager {
    */
   private currentPagePrototypeSlug(managed: ManagedSession, bpm: IBrowserPaneManager): string | null {
     const windows = bpm.listInstances()
-    const window = windows.find(
-      (candidate) => candidate.isWorkspaceWindow && (candidate.workspaceId ?? null) === (managed.workspace.id ?? null),
-    ) ?? windows.find((candidate) => candidate.boundSessionId === managed.id)
+    // The workspace has one window, so anywhere with pages will do — but a workspace with no
+    // window at all is not something to invent here (plan §22).
+    const window = windows.find((candidate) => (candidate.workspaceId ?? null) === (managed.workspace.id ?? null))
 
     if (!window) return null
     const tabs = bpm.listTabs(window.id)
@@ -7903,6 +8069,27 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
+   * Record how many gate nodes (`kind: approval`) of the active run are waiting on a person.
+   *
+   * Same shape as {@link setTaskNodeCount}: self-writes don't re-emit through the file watcher
+   * (this field isn't in the header signature), so the change is pushed as a live metadata event.
+   * The renderer turns 0 → N into a tile badge + one notification.
+   */
+  async setTaskAwaitingApproval(sessionId: string, count: number): Promise<void> {
+    const managed = this.sessions.get(sessionId)
+    if (managed) {
+      managed.taskAwaitingApproval = count
+      this.setMetadataWriteGuard(managed)
+
+      this.persistSession(managed)
+      await this.flushSession(managed.id)
+      this.sendEvent({ type: 'session_metadata_changed', sessionId, changes: { taskAwaitingApproval: count } }, managed.workspace.id)
+      const watcher = this.configWatchers.get(managed.workspace.rootPath)
+      watcher?.notifyFileChange(`sessions/${sessionId}/session.jsonl`)
+    }
+  }
+
+  /**
    * Promote a hidden generate-time orchestrator (`taskDraft`) into the real, board-visible
    * orchestrator for `taskSlug`. This is the single narrow path that lets "Generate → Create & Run"
    * reuse the draft session instead of minting a second top-level tile (#bug1).
@@ -7950,8 +8137,9 @@ export class SessionManager implements ISessionManager {
     const modeChanged = Boolean(reconcile?.permissionMode && reconcile.permissionMode !== managed.permissionMode)
 
     // Promote task metadata (no canonical mutator for these). Connection is set directly because
-    // setSessionConnection() refuses a session that has already sent messages (a generate draft has);
-    // the connection_changed event below keeps the renderer in sync.
+    // this is an *implicit* reconcile (gated on `connectionLocked` above and fired by the task
+    // system, not by a user pick — the explicit path is setSessionConnection, which also emits
+    // its own event); the connection_changed event below keeps the renderer in sync.
     managed.taskSlug = taskSlug
     managed.taskDraft = false
     if (reconcile?.projectId !== undefined) managed.projectId = reconcile.projectId
@@ -8037,8 +8225,9 @@ export class SessionManager implements ISessionManager {
     const modeChanged = Boolean(reconcile?.permissionMode && reconcile.permissionMode !== managed.permissionMode)
 
     // Promote task metadata (no canonical mutator for these). Connection is set directly because
-    // setSessionConnection() refuses a session that has already sent messages (a quick-add tile has);
-    // the connection_changed event below keeps the renderer in sync.
+    // this is an *implicit* reconcile (gated on `connectionLocked` above and fired by the task
+    // system, not by a user pick — the explicit path is setSessionConnection, which also emits
+    // its own event); the connection_changed event below keeps the renderer in sync.
     managed.taskSlug = taskSlug
     managed.taskDraft = false
     if (reconcile?.projectId !== undefined) managed.projectId = reconcile.projectId

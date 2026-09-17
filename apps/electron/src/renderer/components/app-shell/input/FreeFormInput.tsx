@@ -233,9 +233,9 @@ export interface FreeFormInputProps {
    */
   enableCompactModelPicker?: boolean
   // Connection selection (hierarchical connection → model selector)
-  /** Current LLM connection slug (locked after first message) */
+  /** Current LLM connection slug (auto-pinned on first message) */
   currentConnection?: string
-  /** Callback when connection changes (only works when session is empty) */
+  /** Callback when the user explicitly picks a model/connection (works mid-session) */
   onConnectionChange?: (connectionSlug: string) => void
   /** When true, the session's locked connection has been removed */
   connectionUnavailable?: boolean
@@ -341,13 +341,15 @@ export function FreeFormInput({
     return conn.defaultModel ?? null
   }, [currentConnection, workspaceDefaultConnection, llmConnections])
 
-  // Decide which of the four picker UIs to render. The `switcher` branch
-  // wins over `locked-single` so users with a single-model pi_compat default
-  // can still reach the connection list on a fresh session (#727).
+  // Decide which of the four picker UIs to render. `switcher` wins whenever more
+  // than one connection exists — including mid-session, since a conversation can
+  // move to another connection's models (the session pin only blocks implicit
+  // rewrites, see SessionManager.setSessionConnection). The `switcher` over
+  // `locked-single` precedence also keeps a single-model pi_compat connection
+  // from being a dead end (#727).
   const pickerMode = derivePickerMode({
     connectionUnavailable,
     connectionDefaultModel,
-    isEmptySession,
     connectionCount: llmConnections.length,
   })
 
@@ -400,18 +402,12 @@ export function FreeFormInput({
     [llmConnections],
   )
 
-  // Find current connection details for display
-  const currentConnectionDetails = React.useMemo(() => {
-    if (!currentConnection) return null
-    return llmConnections.find(c => c.slug === currentConnection) ?? null
-  }, [llmConnections, currentConnection])
-
   // Effective connection: canonical fallback chain (session → workspace default → global default → first)
   const effectiveConnection = resolveEffectiveConnectionSlug(currentConnection, workspaceDefaultConnection, llmConnections)
 
-  // Effective connection details (with fallbacks) for model list
-  // Unlike currentConnectionDetails which is null when no explicit connection is set,
-  // this resolves to the actual connection being used (including workspace default)
+  // Effective connection details (with fallbacks) for model list — resolves to the
+  // actual connection being used, including the workspace default when the session
+  // has no explicit pin.
   const effectiveConnectionDetails = React.useMemo(() => {
     if (!effectiveConnection) return null
     return llmConnections.find(c => c.slug === effectiveConnection) ?? null
@@ -567,6 +563,12 @@ export function FreeFormInput({
   const [isFocused, setIsFocused] = React.useState(false)
   const [inputMaxHeight, setInputMaxHeight] = React.useState(540)
   const [modelDropdownOpen, setModelDropdownOpen] = React.useState(false)
+
+  // A turn can start while the picker is open (e.g. a queued send lands); close it
+  // so the "switch only between turns" rule holds.
+  React.useEffect(() => {
+    if (isProcessing) setModelDropdownOpen(false)
+  }, [isProcessing])
 
   // Input settings (loaded from config)
   const [autoCapitalisation, setAutoCapitalisation] = React.useState(true)
@@ -1839,7 +1841,7 @@ export function FreeFormInput({
               onConnectionChange={onConnectionChange}
               thinkingLevel={thinkingLevel}
               onThinkingLevelChange={onThinkingLevelChange}
-              isEmptySession={isEmptySession}
+              isProcessing={isProcessing}
               connectionUnavailable={connectionUnavailable}
               contextStatus={contextStatus}
             />
@@ -2069,14 +2071,25 @@ export function FreeFormInput({
           <div className="flex items-center shrink-0">
           {/* 5. Model/Connection Selector - Hidden in compact mode (EditPopover embedding) */}
           {!compactMode && (
-          <DropdownMenu open={modelDropdownOpen} onOpenChange={setModelDropdownOpen}>
+          <DropdownMenu
+            open={modelDropdownOpen}
+            onOpenChange={(open) => {
+              // Switching is only allowed between turns: while the session is
+              // generating the input shows the stop button and this picker stays
+              // shut (the model for a turn is fixed when the turn is sent).
+              if (open && isProcessing) return
+              setModelDropdownOpen(open)
+            }}
+          >
             <Tooltip>
               <TooltipTrigger asChild>
                 <DropdownMenuTrigger asChild>
                   <button
                     type="button"
+                    disabled={isProcessing}
                     className={cn(
-                      "input-toolbar-btn inline-flex items-center h-7 px-1.5 gap-0.5 text-[13px] shrink-0 rounded-[6px] hover:bg-foreground/5 transition-colors select-none",
+                      "input-toolbar-btn inline-flex items-center h-7 px-1.5 gap-0.5 text-[13px] shrink-0 rounded-[6px] transition-colors select-none",
+                      isProcessing ? "opacity-50 cursor-not-allowed" : "hover:bg-foreground/5",
                       modelDropdownOpen && "bg-foreground/5",
                       connectionUnavailable && "text-destructive",
                     )}
@@ -2112,10 +2125,9 @@ export function FreeFormInput({
                 </div>
               ) : pickerMode === 'locked-single' && connectionDefaultModel ? (
                 (() => {
-                  // Single-model pi_compat connection on a non-empty session (or
-                  // when there's only one connection, so no switcher to show).
-                  // Model row is disabled (locked to this session); vision toggle
-                  // remains interactive.
+                  // Single-model pi_compat connection with only one connection
+                  // configured, so there is nothing else to pick. Model row is
+                  // disabled; vision toggle remains interactive.
                   const showVisionToggle =
                     !!effectiveConnectionDetails && isCompatProvider(effectiveConnectionDetails.providerType)
                   const visionOn = showVisionToggle && modelSupportsImages(effectiveConnectionDetails!, connectionDefaultModel)
@@ -2171,7 +2183,9 @@ export function FreeFormInput({
                   )
                 })()
               ) : pickerMode === 'switcher' ? (
-                /* Hierarchical view: Provider → Connection → Models (empty session with multiple connections — lets the user switch BEFORE the first message locks the connection) */
+                /* Hierarchical view: Provider → Connection → Models. Shown whenever
+                   more than one connection is configured, including mid-session —
+                   picking a model under another connection switches it explicitly. */
                 connectionsByProvider.map(([providerName, connections], index) => (
                   <React.Fragment key={providerName}>
                     {/* Provider group label */}
@@ -2281,17 +2295,9 @@ export function FreeFormInput({
                   </React.Fragment>
                 ))
               ) : (
-                /* Flat model list (single connection or session started) */
+                /* Flat model list — only reachable with a single configured
+                   connection, so there is no connection to disambiguate */
                 <>
-                  {/* Indicator showing which connection is being used */}
-                  {!isEmptySession && currentConnectionDetails && llmConnections.length > 1 && (
-                    <>
-                      <div className="flex items-center gap-2 px-2 py-1.5 text-xs select-none text-muted-foreground">
-                        <span>{t('chat.usingConnection', { name: currentConnectionDetails.name })}</span>
-                      </div>
-                      <StyledDropdownMenuSeparator className="my-1" />
-                    </>
-                  )}
                   {/* Model options based on effective connection's provider type */}
                   {availableModels.map((model) => {
                     const modelId = typeof model === 'string' ? model : model.id

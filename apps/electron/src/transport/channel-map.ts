@@ -40,6 +40,7 @@ export const CHANNEL_MAP = {
   getTask: invoke(RPC_CHANNELS.tasks.GET),
   listTasks: invoke(RPC_CHANNELS.tasks.LIST),
   getTaskResults: invoke(RPC_CHANNELS.tasks.GET_RESULTS),
+  resolveTaskApproval: invoke(RPC_CHANNELS.tasks.RESOLVE_APPROVAL),
   onTaskGenerated: listener(RPC_CHANNELS.tasks.GENERATED),
   respondToPermission: invoke(RPC_CHANNELS.sessions.RESPOND_TO_PERMISSION),
   respondToCredential: invoke(RPC_CHANNELS.sessions.RESPOND_TO_CREDENTIAL),
@@ -234,7 +235,6 @@ export const CHANNEL_MAP = {
   linkPrototypeReference: invoke(RPC_CHANNELS.prototypes.LINK_REFERENCE),
   unlinkPrototypeReference: invoke(RPC_CHANNELS.prototypes.UNLINK_REFERENCE),
   setPrototypeTarget: invoke(RPC_CHANNELS.prototypes.SET_TARGET),
-  setPrototypeProject: invoke(RPC_CHANNELS.prototypes.SET_PROJECT),
   setPrototypePages: invoke(RPC_CHANNELS.prototypes.SET_PAGES),
   onPrototypesChanged: listener(RPC_CHANNELS.prototypes.CHANGED),
 

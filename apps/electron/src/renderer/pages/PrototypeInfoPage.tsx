@@ -3,7 +3,7 @@
  *
  * Workspace-prototype detail page: the workbench control plane for a single
  * prototype. Shows what the derived status report already knows (its **pages in
- * flow order**, patches by lane, per-service contract coverage, dist/,
+ * flow order**, patches by writer, per-service contract coverage, dist/,
  * ownership) and exposes the actions that mutate or re-read it: Open, Export,
  * and the page-table edits (entry, address, rename, remove).
  *
@@ -21,21 +21,14 @@
 import { useTranslation } from 'react-i18next'
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
-import { Check, Download, ExternalLink, Flag, FlagOff, FlaskConical, FolderKanban, FolderOpen, Globe, Layers, Link2, MessageSquare, Pencil, Trash2, TriangleAlert, Unlink } from 'lucide-react'
+import { Download, ExternalLink, Flag, FlagOff, FlaskConical, FolderOpen, Globe, Layers, Link2, MessageSquare, Pencil, Trash2, TriangleAlert, Unlink } from 'lucide-react'
 import { useActiveWorkspace, useAppShellContext } from '@/context/AppShellContext'
 import { navigate, routes } from '@/lib/navigate'
 import { sessionMetaMapAtom } from '@/atoms/sessions'
-import { projectsAtom } from '@/atoms/projects'
 import { prototypeAutoReplayAtom, setPrototypeAutoReplayAtom } from '@/atoms/prototypes'
 import { Info_Page, Info_Section, Info_Table, Info_Badge, Info_Alert } from '@/components/info'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { DropdownMenu, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
-import {
-  StyledDropdownMenuContent,
-  StyledDropdownMenuItem,
-  StyledDropdownMenuSeparator,
-} from '@/components/ui/styled-dropdown'
 import { RenameDialog } from '@/components/ui/rename-dialog'
 import { EditTargetPageDialog } from '@/components/prototypes/EditTargetPageDialog'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@craft-agent/ui'
@@ -84,8 +77,6 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
   const [actionError, setActionError] = useState<string | null>(null)
   /** A recording is being sampled — the import shells out to a decoder, so it takes a moment. */
   const [importingVideo, setImportingVideo] = useState(false)
-  /** The project edge is being written — one write, so the two entries cannot race. */
-  const [linkingProject, setLinkingProject] = useState(false)
   /** The delta layer is being folded — a write per scope, so it takes a moment. */
   const [committing, setCommitting] = useState(false)
   /** What the last commit did (or why it did nothing), in one line. */
@@ -93,7 +84,6 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
   /** Whether an edit under `patches/` is replayed into the open windows (§21.4). */
   const autoReplay = useAtomValue(prototypeAutoReplayAtom)
   const setAutoReplay = useSetAtom(setPrototypeAutoReplayAtom)
-  const projects = useAtomValue(projectsAtom)
 
   // Load the status report for this prototype. `listPrototypes` is the only
   // read path for a single prototype's status, so pick our slug out of it.
@@ -481,9 +471,9 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
     }
   }, [workspaceId, prototypeSlug, loadStatus])
 
-  // Link a prototype that already exists. Any shape qualifies: the relation is
-  // about two projects being independent, not about what either of them is — so
-  // studying another flow of ours is the same thing as studying someone's page.
+  // Link a prototype that already exists. Any shape qualifies: a reference is
+  // only something to look at, not about what either prototype is — so studying
+  // another flow of ours is the same thing as studying someone's page.
   const handleLinkExistingReference = useCallback(async (referenceSlug: string) => {
     if (!workspaceId) return
     setLinkingReference(true)
@@ -515,28 +505,7 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
     }
   }, [status])
 
-  /**
-   * Which project this prototype was made for (plan §15.1), or `null` to clear it.
-   *
-   * The edge is stored *here*, on the prototype, which is why this page can set it
-   * and the project's page reads it — one record, so the two can never disagree.
-   * It also means a project with exactly one prototype hands it to every
-   * conversation inside, and that is what the hint next to the row is about.
-   */
-  const handleSetPrototypeProject = useCallback(async (targetProjectSlug: string | null) => {
-    if (!workspaceId) return
-    setLinkingProject(true)
-    try {
-      await window.electronAPI.setPrototypeProject(workspaceId, prototypeSlug, targetProjectSlug)
-    } catch (err) {
-      console.error('[PrototypeInfoPage] Failed to set the prototype\'s project:', err)
-      setActionError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setLinkingProject(false)
-    }
-  }, [workspaceId, prototypeSlug])
-
-  const laneEntries = status ? Object.entries(status.patches.byLane) : []
+  const writerEntries = status ? Object.entries(status.patches.byWriter) : []
 
   /** The page the address root opens, as the table resolves it. */
   const entryPage = status?.pages.find((page) => page.name === status.entryPage) ?? null
@@ -628,6 +597,23 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
             )}
           </div>
 
+          {/* The gate, and it belongs above the files rather than only in the
+              conversation: what still stands between this work and its handover is
+              one verdict, and it is the same list the strict export refuses on and
+              the status output prints. `settleBlockers` is the gate in its own
+              words, carried as data so this screen cannot answer "is it done?"
+              differently from the agent. */}
+          {status.settleBlockers.length > 0 && (
+            <Info_Alert variant="warning" icon={<TriangleAlert className="h-4 w-4" />}>
+              <Info_Alert.Title>{t('prototypeInfo.notSettled')}</Info_Alert.Title>
+              <Info_Alert.Description>
+                {status.settleBlockers.map((reason) => (
+                  <div key={reason} className="font-mono text-xs break-words">{reason}</div>
+                ))}
+              </Info_Alert.Description>
+            </Info_Alert>
+          )}
+
           {/* And that is the whole screen: look at it, change it, hand it over.
               Opening a browser window, studying the target page, importing
               another prototype, applying patches — every one of those is how the
@@ -657,13 +643,33 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
                 {t('prototypeInfo.exportSuccess', { applied: exportResult.applied })}
               </Info_Alert.Title>
               <Info_Alert.Description>
-                {/* The deliverable is one folder (a loadable extension); the spec
-                    sits next to it and is what a developer reads. */}
-                {[exportResult.extensionDir, exportResult.specPath]
+                {/* The deliverables and the spec: the extension is the carrier for
+                    the live pages and the pages of ours alike, `static/` is the pages
+                    of ours as files that need nothing to be looked at, the
+                    bookmarklet is the live pages without an extension at all, and
+                    the spec sits next to them for whoever implements the change. */}
+                {/* The handoff first: it is the index of the rest, and the file a recipient
+                    should open before any of them (plan §17 / §20.8). */}
+                {[exportResult.handoffPath, exportResult.specPath, exportResult.extensionDir, exportResult.staticPath, exportResult.bookmarkletPath]
                   .filter((file): file is string => Boolean(file))
                   .map((file) => (
                     <div key={file} className="font-mono text-xs break-all">{file}</div>
                   ))}
+              </Info_Alert.Description>
+            </Info_Alert>
+          )}
+
+          {/* What the package could not carry. Named rather than counted, because
+              each line is a decision about the deliverable — a document the
+              extension had to rewrite, a reference a single static file has no way
+              to resolve — and silence here reads as "the deliverable is complete". */}
+          {exportResult && [...exportResult.warnings, ...exportResult.staticWarnings].length > 0 && (
+            <Info_Alert variant="warning" icon={<TriangleAlert className="h-4 w-4" />}>
+              <Info_Alert.Title>{t('prototypeInfo.exportWarnings')}</Info_Alert.Title>
+              <Info_Alert.Description>
+                {[...exportResult.warnings, ...exportResult.staticWarnings].map((warning) => (
+                  <div key={warning} className="font-mono text-xs break-words">{warning}</div>
+                ))}
               </Info_Alert.Description>
             </Info_Alert>
           )}
@@ -716,6 +722,90 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
                   )
                 })}
               </ul>
+            )}
+          </Info_Section>
+
+          {/* The argument against the work (plan §3.7), right after what the work
+              is for. `unresolved` is every dispute that still stands — open, or a
+              record that disagrees with the patches it names — so a stale argument
+              is visible as stale rather than as settled. */}
+          <Info_Section
+            title={t('prototypeInfo.reviews')}
+            description={t('prototypeInfo.reviewsHint')}
+          >
+            {status.reviews.unresolved.length === 0 ? (
+              <div className="px-4 py-6 text-sm text-muted-foreground">
+                {status.reviews.total === 0
+                  ? t('prototypeInfo.reviewsEmpty')
+                  : t('prototypeInfo.reviewsSettled', { count: status.reviews.total })}
+              </div>
+            ) : (
+              <ul className="divide-y divide-border/30">
+                {status.reviews.unresolved.map((dispute) => (
+                  <li key={dispute.id} className="flex items-start gap-3 px-4 py-2">
+                    <span className="shrink-0 pt-0.5 font-mono text-xs text-foreground/70">
+                      {dispute.id}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm">{dispute.claim ?? t('prototypeInfo.reviewNoClaim')}</div>
+                      <div className="mt-0.5 font-mono text-xs break-words text-foreground/60">
+                        {[dispute.file, dispute.about, dispute.status, dispute.stale ? t('prototypeInfo.reviewStale') : null]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </div>
+                      {dispute.stale && dispute.staleReason && (
+                        <div className="mt-0.5 text-xs text-foreground/60">{dispute.staleReason}</div>
+                      )}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Info_Section>
+
+          {/* What the checks in the PRD answered last time (plan §20.7). A fact
+              about a run, not about the prototype: nothing here changes a page, and
+              what a red check means for the delivery is the reader's call. */}
+          <Info_Section
+            title={t('prototypeInfo.acceptance')}
+            description={t('prototypeInfo.acceptanceHint')}
+          >
+            {status.acceptance === null ? (
+              <div className="px-4 py-6 text-sm text-muted-foreground">
+                {t('prototypeInfo.acceptanceNeverRun')}
+              </div>
+            ) : (
+              <>
+                <Info_Table>
+                  <Info_Table.Row
+                    label={t('prototypeInfo.acceptanceRound')}
+                    value={String(status.acceptance.round)}
+                  />
+                  <Info_Table.Row
+                    label={t('prototypeInfo.acceptancePassed')}
+                    value={String(status.acceptance.passed)}
+                  />
+                  <Info_Table.Row
+                    label={t('prototypeInfo.acceptanceFailed')}
+                    value={String(status.acceptance.failed)}
+                  />
+                  <Info_Table.Row
+                    label={t('prototypeInfo.acceptanceSkipped')}
+                    value={String(status.acceptance.skipped)}
+                  />
+                </Info_Table>
+                {/* The red ones by name: a count nobody can act on is the shape of
+                    report this page exists to avoid. */}
+                {status.acceptance.red.length > 0 && (
+                  <ul className="divide-y divide-border/30 border-t border-border/40">
+                    {status.acceptance.red.map((check) => (
+                      <li key={check} className="px-4 py-2 font-mono text-xs break-all text-destructive">
+                        {check}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
             )}
           </Info_Section>
 
@@ -949,7 +1039,7 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
           )}
 
           {/* References — the prototypes this one is studied from. Each stays a
-              separate project, which is what keeps its patches out of this
+              separate prototype, which is what keeps its patches out of this
               prototype's deliverable (plan §14). */}
           <Info_Section
             title={t('prototypeInfo.references')}
@@ -1073,18 +1163,11 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
           <Info_Section title={t('prototypeInfo.patches')}>
             <Info_Table>
               <Info_Table.Row label={t('prototypeInfo.patchTotal')} value={String(status.patches.total)} />
-              {laneEntries.map(([lane, count]) => (
+              {writerEntries.map(([writer, count]) => (
                 <Info_Table.Row
-                  key={lane}
-                  label={lane}
-                  value={
-                    <span>
-                      {count}
-                      {status.lanes[lane] && (
-                        <span className="ml-2 text-xs text-muted-foreground">{status.lanes[lane]}</span>
-                      )}
-                    </span>
-                  }
+                  key={writer}
+                  label={writer}
+                  value={String(count)}
                 />
               ))}
             </Info_Table>
@@ -1207,6 +1290,14 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
                       <span>
                         {t('prototypeInfo.mockedEndpoints')}: {service.mockedEndpoints}
                       </span>
+                      {/* Only when there is something to say: "keeps state: 0" would read like a
+                          count of something missing, while the fact worth having is that a screen
+                          depends on what the last request did (plan §5.3). */}
+                      {service.statefulEndpoints > 0 && (
+                        <span className="text-foreground/80">
+                          {t('prototypeInfo.statefulEndpoints')}: {service.statefulEndpoints}
+                        </span>
+                      )}
                       <span>
                         {t('prototypeInfo.fragments')}: {service.fragments}
                       </span>
@@ -1251,7 +1342,7 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
             )}
           </Info_Section>
 
-          {/* Ownership — lane violations are the loud part; silence means clean */}
+          {/* Ownership — write violations are the loud part; silence means clean */}
           <Info_Section
             title={t('prototypeInfo.ownership')}
             description={
@@ -1282,66 +1373,6 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
           <Info_Section title={t('prototypeInfo.metadata')}>
             <Info_Table>
               <Info_Table.Row label={t('common.slug')} value={status.slug} />
-              {/* Which project this was made for. The only place the edge is
-                  written from the prototype's side, and the reason a project's
-                  conversations can reach this prototype without being bound. */}
-              <Info_Table.Row label={t('prototypeInfo.project')}>
-                <div className="flex items-center gap-2 min-w-0">
-                  {status.projectSlug ? (
-                    <button
-                      type="button"
-                      className="flex-1 min-w-0 truncate text-left text-xs hover:underline"
-                      onClick={() => navigate(routes.view.projects(status.projectSlug!))}
-                    >
-                      {projects.find((item) => item.config.slug === status.projectSlug)?.config.name ??
-                        status.projectSlug}
-                    </button>
-                  ) : (
-                    <span className="flex-1 text-xs text-muted-foreground">
-                      {t('prototypeInfo.projectNone')}
-                    </span>
-                  )}
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <button
-                        type="button"
-                        disabled={linkingProject}
-                        className="shrink-0 inline-flex h-6 w-6 items-center justify-center rounded text-foreground/50 hover:text-foreground hover:bg-foreground/5 transition-colors disabled:opacity-50"
-                        aria-label={t('prototypeInfo.projectPick')}
-                      >
-                        <FolderKanban className="h-3.5 w-3.5" />
-                      </button>
-                    </DropdownMenuTrigger>
-                    <StyledDropdownMenuContent align="end">
-                      {projects.length === 0 ? (
-                        <div className="px-2 py-1.5 text-xs text-muted-foreground">
-                          {t('prototypeInfo.projectEmpty')}
-                        </div>
-                      ) : (
-                        projects.map((item) => (
-                          <StyledDropdownMenuItem
-                            key={item.config.slug}
-                            onClick={() => void handleSetPrototypeProject(item.config.slug)}
-                          >
-                            {item.config.slug === status.projectSlug
-                              ? <Check className="h-3.5 w-3.5" />
-                              : <FolderKanban className="h-3.5 w-3.5" />}
-                            <span className="flex-1 text-xs">{item.config.name}</span>
-                          </StyledDropdownMenuItem>
-                        ))
-                      )}
-                      {status.projectSlug && (
-                        <>
-                          <StyledDropdownMenuSeparator />
-                          <StyledDropdownMenuItem onClick={() => void handleSetPrototypeProject(null)}>
-                            <span className="flex-1">{t('prototypeInfo.projectClear')}</span>
-                          </StyledDropdownMenuItem>
-                        </>
-                      )}
-                    </StyledDropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-              </Info_Table.Row>
               <Info_Table.Row label={t('common.location')}>
                 <div className="flex items-center gap-2 min-w-0">
                   <span className="flex-1 min-w-0 truncate font-mono text-xs">{status.dir}</span>

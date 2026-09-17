@@ -71,6 +71,8 @@ export const RPC_CHANNELS = {
     LIST: 'tasks:list',
     // Storage-backed read of a run's outcome (verdict + per-node output). Survives restart.
     GET_RESULTS: 'tasks:getResults',
+    // Answer a `kind: approval` gate node — the one step of a run a person, not a session, decides.
+    RESOLVE_APPROVAL: 'tasks:resolveApproval',
   },
   workspaces: {
     GET: 'workspaces:get',
@@ -170,12 +172,6 @@ export const RPC_CHANNELS = {
      * page moves; without it the entry page moves when it is a live one.
      */
     SET_TARGET: 'prototypes:setTarget',
-    /**
-     * Which project a prototype was made for (plan §15.1) — the edge both detail
-     * pages edit, and what a project's conversations inherit their prototype from
-     * when exactly one prototype claims it. `null` clears it.
-     */
-    SET_PROJECT: 'prototypes:setProject',
   },
   debug: {
     LOG: 'debug:log',

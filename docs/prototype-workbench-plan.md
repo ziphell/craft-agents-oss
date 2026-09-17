@@ -1,18 +1,18 @@
 # 产品经理需求生产工作台 — 实施方案
 
-> 状态：**核心闭环已交付**——创建（侧边栏「原型」+ 面板「+」+ 空态按钮）→ 详情页三个动作（预览 / 在对话里改 / 导出给开发）→ 面板工具栏「选中元素 / 应用补丁」→ 交付物 `dist/extension/`。**两种原型类型（§13）**：`overlay` / `scratch`，创建时确定、不可改，落在 `config.json` 并被详情页、system prompt、agent 命令共读；overlay 的地址创建时必填、之后可改（§13.2.1）。**会话 ↔ 原型绑定（§11）**：system prompt 带 `<prototype_context>`，`prototype-*` 的 slug 可选。**编辑只走对话（§12.4）**：选中元素只回答"哪一个元素"，补丁只有一个来源（agent 写）。**参考关系（§14）**：参考是独立原型 + 一条 `references`，规矩是"翻译不要搬运"；起点靠列表的「复制」另起一个新原型（§13.1.1）。**scratch 的载体（§16）**：Electron 直接应答 `http`（`protocol.handle`，不是监听一个端口），一个原型一个 host、目录即 origin 根，根路径是该原型的**首页**。**交付物（§17）**：一个原型一个可加载的 Chrome 扩展（Load unpacked，不进商店），mock 默认一起交付；agent 的契约不变，内联脚本与 `onclick` 由生成器吸收。**多页（§18 → §19）**：页是原型的一部分，导出时**每个真实 URL 各一个 match pattern**、scratch 的每一页也都在包里。**页层模型（§19，已实现）**：`kind` 从原型**下沉到页**——一个原型是一张有顺序的页表，每页各自是 scratch 或 overlay；补丁按 `patches/<页名>/` 分页（根 = 共享）；`/` 打开入口页，没标入口时是宿主生成的**页索引**（`/_index` 恒可达）；导出覆盖整条流程，options 页 = 页索引。旧原型零迁移（旧 config 按页表读）。落点见 [开发文档](prototype-workbench-dev.md) §1／§2。阶段 6.4（Tasks DAG 并线）与阶段 7 的放开面按各自结论**不做/推迟**，响应头就地改写未做。
+> 状态：**核心闭环已交付**——创建（侧边栏「原型」+ 面板「+」+ 空态按钮）→ 详情页三个动作（预览 / 在对话里改 / 导出给开发）→ 面板工具栏「选中元素 / 应用补丁」→ 交付物 `dist/extension/`。**两种页类型（§13 → §19）**：`overlay` / `scratch`，**类型在页上**、新建页时确定、不可改，落在 `config.json` 的页表里并被详情页、system prompt、agent 命令共读；overlay 页的地址新建时必填、之后可改（§13.2.1）。**会话 ↔ 原型绑定（§11）**：system prompt 带 `<prototype_context>`，`prototype-*` 的 slug 可选。**编辑只走对话（§12.4）**：选中元素只回答"哪一个元素"，补丁只有一个来源（agent 写）。**参考关系（§14）**：参考是独立原型 + 一条 `references`，规矩是"翻译不要搬运"；起点靠列表的「复制」另起一个新原型（§13.1.1）。**scratch 的载体（§16）**：Electron 直接应答 `http`（`protocol.handle`，不是监听一个端口），一个原型一个 host、目录即 origin 根，根路径是该原型的**首页**。**交付物（§17）**：一个原型一个可加载的 Chrome 扩展（Load unpacked，不进商店），mock 默认一起交付；另有两份各覆盖自己能覆盖的那一半——`dist/static/` 每页一份自包含 HTML（§17.8）、`dist/bookmarklet.html` 把 live 页的改动做成书签（§17.9）。agent 的契约不变，内联脚本与 `onclick` 由生成器吸收。**多页（§18 → §19）**：页是原型的一部分，导出时**每个真实 URL 各一个 match pattern**、scratch 的每一页也都在包里。**页层模型（§19，已实现）**：`kind` 从原型**下沉到页**——一个原型是一张有顺序的页表，每页各自是 scratch 或 overlay；补丁按 `patches/<页名>/` 分页（根 = 共享）；`/` 打开入口页，没标入口时是宿主生成的**页索引**（`/_index` 恒可达）；导出覆盖整条流程，options 页 = 页索引。旧原型零迁移（旧 config 按页表读）。落点见 [开发文档](prototype-workbench-dev.md) §1／§2。**状态化 mock（§5.3，D9 的后置部分）**：路径项声明它属于哪个集合（`x-mock-collection`）、起始状态写在 `services/{svc}/state.json`，**语义由 HTTP 方法推导**（GET 读 / POST 追加 / PATCH 并入 / PUT 替换 / DELETE 删元素），所以"演多步流程"不需要作者学一门迁移语言；store 只在内存里、从不回写，再 apply 一次就是重放。阶段 6.4（Tasks DAG 并线）**已落地**，阶段 7 的放开面**决定不做**，响应头就地改写未做。
 >
 > **读旧章节时的一个约定**：本文 §1–§18 是逐阶段写下的，其中"`base.html` 是入口页/裸底稿""`kind` 与 `targetUrl` 属于原型"这两类说法在 §19 之后不再成立（各自章节开头已标注）。**冲突时以 §19 为准**；与 §19 无关的部分照旧有效。
 >
 > 实现细节、踩过的坑、以及已经删掉的机制见 [开发文档](prototype-workbench-dev.md)；本文只写设计与决策。
 > 范围：MVP（个人使用，先增量模式）
-> 前置结论：本方案基于对现有代码的实测核对，所有引用均带文件路径与行号。
+> 前置结论：本方案基于对现有代码的实测核对，所有引用均带文件路径与符号名。
 
 ---
 
 ## 1. 定位与范围
 
-**一句话定位**：一个真实浏览器引擎 + 一层 UI patch + **一层服务契约** + 一组导出器，由**现有 Tasks DAG 作为控制面**编排多 lane 并线，两个入口（真实网页 / 生成的空页）。
+**一句话定位**：一个真实浏览器引擎 + 一层 UI patch + **一层服务契约** + 一组导出器，由**现有 Tasks DAG 作为控制面**编排多写者并线，两个入口（真实网页 / 生成的空页）。
 
 **与 Pencil 的关系**：不是"替代画布"，而是补上 Pencil 覆盖不到的生态位——Pencil 在空白画布上"无中生有"并生成代码；本工作台在**真实产品**上做增量，并把增量变成开发能用的东西。核心差异是**渲染载体**：Pencil 用矢量画布（矢量 → 代码，有翻译损耗），本方案用真实浏览器引擎（只有一种表示，所见即代码）。
 
@@ -25,9 +25,9 @@
 | | 源页面 | 我们改的是 | 产物 | 能回流源码吗 |
 |---|---|---|---|---|
 | **外部页（overlay）** | 别人的（产品 dev server / 测试环境 / 线上，**都算这一类**） | 我们注入的 patch 覆盖层，打在**那个在线页面本身**上 | patch + `dev-spec.md`（含 `Applies to: <地址>`） | **不能**。它是给开发的**可执行规格**，由人翻译进源码 |
-| **自建页（scratch）** | 我们的 `base.html` | 我们自己的 HTML | 完整页面（自包含 HTML + spec） | 不适用，它本来就是源码 |
+| **自建页（scratch）** | 我们自己的文档（`<页名>.html`） | 我们自己的 HTML | 完整页面（自包含 HTML + spec） | 不适用，它本来就是源码 |
 
-两者之间**没有桥**：overlay 的补丁打在活页面上，不需要一份 `base.html`；`base.html` 只属于 scratch。于是"三态"（纯覆盖 → 快照 → 纯自有）收敛成两态。（曾经设计过"把在线页冻成 `base.html`"这条路，删掉的理由见 [开发文档](prototype-workbench-dev.md) §4。）
+两者之间**没有桥**：live 页的补丁打在活页面上，不需要一份我们自己的文档；文档只属于 scratch 页。于是"三态"（纯覆盖 → 快照 → 纯自有）收敛成两态。（曾经设计过"把在线页冻成一份文档"这条路，删掉的理由见 [开发文档](prototype-workbench-dev.md) §4。）
 
 由此得出两条推论：
 
@@ -43,17 +43,17 @@
 | 阶段 1 | 接线层：产物目录 + 文件读写通路 + 目录监听 |
 | 阶段 2 | P0 拾取器：选中 DOM → 高亮 → 稳定 selector |
 | 阶段 3 | 持久注入：patch 落盘、reload 后按顺序重放 |
-| 阶段 4 | 导出器：base + patch → 自包含 HTML + 变更说明 |
+| 阶段 4 | 导出器：页 + patch → 扩展包 / 静态单文件 / 书签 + 变更说明 |
 | 阶段 5 | 服务契约层：契约真源 → mock 物化 → 后端交付 |
 | 阶段 6 | 平面分离与并线接线：所有权矩阵 → 派生索引 → 挂接 Tasks DAG |
+| 阶段 7 | 无中生有入口 + 改写真实后端返回（放开面：决定不做） |
 
 ### 明确不做的（非目标）
 
 - 多租户、协作、权限、账号体系（个人使用）
 - 矢量画布 / 拖拽设计器（Pencil 的护城河，不抢）
 - 云端存储（产物就是本地文件）
-- 阶段 7 之前不碰 `webSecurity` 放开、跨域、无中生有
-- MVP 不做状态化 mock（见 D9）
+- 放开面（`webSecurity:false`）与"跨域由页面脚本自己做"：**已决定不做**（阶段 7），能力改走 CDP
 - MVP 不实现 Tasks 的非 `session` 节点种类（`parallel`/`map`/`verify`/`aggregate` 用 `session` 节点模拟）
 
 ---
@@ -65,16 +65,16 @@
 | D1 | 渲染载体 | 真实浏览器引擎（BrowserView + CDP） | 所见即代码，零翻译损耗 |
 | D2 | 持久化模型 | Hybrid：编辑时 live overlay，交付时 snapshot | 线上页面改版不毁产物 |
 | D3 | 产物位置 | `{workspaceRootPath}/prototypes/{slug}/` | 跨会话长期存活，契合"同一项目多交付" |
-| D4 | 写通道 | 混合：确定性改动走新增 `file:write` 直写；语义改动走 agent `Write`/`Edit` | 实时性与可审计性兼顾，最终同一真源 |
+| D4 | 写通道 | 混合：确定性改动走新增 `file:write` 直写；语义改动走 agent `Write`/`Edit` | 实时性与可审计性兼顾，最终同一真源。**实际只用了后半条**：`file:write` 通道在（控制面自己用它），但"编辑只走对话"（§12.4）定下之后，界面上没有任何入口去直写产物，补丁的唯一来源是 agent |
 | D5 | 权限模型 | 所有浏览器窗口同一个 lock-down 姿态：`sandbox:true` / `contextIsolation:true` / `nodeIntegration:false` / `webSecurity` 默认开 | 注入与跨域都由 CDP 提供，不需要页面脚本自己跨域（放开面已决定不做，见阶段 7） |
 | D7 | 服务契约格式 | **OpenAPI 3.1** | REST 生态最成熟，后端与工具链都能直接吃 |
 | D8 | mock 运行时 | **CDP `Fetch` 拦截**（网络层 `fulfillRequest`） | fetch / XHR / 任意资源全覆盖，**应用一行不改**，零新依赖，复用已有 CDP 基建 |
-| D9 | mock 状态 | **MVP 无状态 fixtures**（状态化后置） | 覆盖"跑假数据"；需要演多步流程时再说 |
+| D9 | mock 状态 | **状态化**（`x-mock-collection` + `state.json`，见 §5.3） | "演多步流程"需要 mock 记住上一屏做了什么；语义由 HTTP 方法推导，因此不必为此造一门迁移语言 |
 | D10 | mock 与服务的关系 | **补充手段**：需要 agent 也能调 mock 时，把 mock 做成 `baseUrl` 指向本地的 Source | mock ↔ 真服务切换只改 `baseUrl`；MVP 的 mock 走 CDP 拦截，不依赖它 |
 | D11 | 并线的控制面 | **复用 Tasks DAG + TaskRunner** | 已并行（`max_parallel` 默认 4）、已持久化、已支持依赖图 |
 | D12 | 单文件争用 | **不落盘索引，按需派生** | 彻底消除最大争用点：索引由控制面从磁盘扫描得出 |
-| D13 | lane 划分 | **按平面切**（UI / 契约 / 数据 / 验证） | 每个 lane 写不同文件类型，所有权最干净 |
-| D14 | lane 通信 | **只读通信**，lane 间不共享写 | 共享写是并线的唯一致命伤 |
+| D13 | 工作切分 | **按平面切**（UI / 契约 / 数据 / 验证） | 每个平面写不同文件类型，所有权最干净。**注意：平面字母不是调度键、也不是 DAG 的绑定键**（§3.4 校正、§3.6）；代码里这个实体叫**写入身份**（`writer`） |
+| D14 | 写者之间 | **只读通信**，互相不共享写 | 共享写是并线的唯一致命伤 |
 | D15 | 渲染面角色 | **只读**；拾取器是**传感器**不是写者 | 渲染一旦写文件就破坏所有权模型（修正 D4 的执行者） |
 | D16 | 会话与原型的关系 | **绑定**（session.prototypeSlug），复用 session↔project 的既有范式 | 让 agent 不必每轮被告知操作对象；`prototype-*` 的 slug 因此可选（见 §11） |
 
@@ -86,56 +86,146 @@
 
 | 平面 | 职责 | 写入者 |
 |---|---|---|
-| **数据面** | `base.html` / `patches/` / `services/` / fixtures | 各 lane 独占其文件；控制面负责合成派生索引 |
+| **数据面** | 各页文档 / `patches/` / `services/` / fixtures | 各写者独占其文件；控制面负责合成派生索引 |
 | **控制面** | 编排、依赖、并发、权限、**单文件资源仲裁** | **唯一写者：控制面自身** |
-| **业务逻辑** | `patches/*.js`、`services/*/paths/*.yaml` | lane A / lane B 独占；**强制不与 fixtures 混写** |
+| **业务逻辑** | `patches/*.js`、`services/*/paths/*.yaml` | `contract` / `data` 独占（路径规则，见 `ownership.ts` 的 `PROTOTYPE_PATH_WRITERS`）；**强制不与 fixtures 混写** |
 | **渲染** | BrowserView、预览面 | **只读**。拾取器只发事件 |
 
 ### 3.2 并线的瓶颈是写冲突，不是调度
 
 实测结论（重要）：
 
-- **调度已解决**：`ActiveRun.scheduleReady()` 已并行派发，`max_parallel` 默认 4（`TaskRunner.ts:315-328`、`:110`）；依赖图物化与就绪判定见 `validate.ts:204-222`、`TaskRunner.ts:330-336`。
+- **调度已解决**：`ActiveRun.scheduleReady()` 已并行派发，`max_parallel` 默认 4（`TaskRunner.ts`）；依赖图物化与就绪判定见 `validate.ts`、`TaskRunner.ts`。
 - **全仓没有任何锁**：不存在进程级/跨进程文件锁、互斥锁、信号量或租约（全文检索无实现）。
-- **原子写本身也会争用**：`atomicWriteFileSync` 使用固定 `<path>.tmp`（`packages/shared/src/utils/files.ts:36-46`），两个 lane 并发写同一路径时**连临时文件都在争用**。
-- 现有保护只覆盖会话 header 的元数据（自写识别 + 5s 写保护窗口，`SessionManager.ts:181`、`:2028-2032`），**不覆盖任意产物文件**。
+- **原子写本身也会争用**：`atomicWriteFileSync` 使用固定 `<path>.tmp`（`packages/shared/src/utils/files.ts`），两个写者并发写同一路径时**连临时文件都在争用**。
+- 现有保护只覆盖会话 header 的元数据（自写识别 + 5s 写保护窗口，`SessionManager.ts`），**不覆盖任意产物文件**。
 
 **因此：并发安全只能靠"所有权"，不能靠"锁"。** 这就是平面分离的真实收益。
 
 ### 3.3 五条硬约束
 
-1. **lane 之间只读通信**。上游 lane 产出 → 下游 lane 只读消费，不共享写。
+1. **写者之间只读通信**。上游产出 → 下游只读消费，不共享写。
 2. **单文件是敌人**。`manifest.json` → 派生索引（D12）；`openapi.yaml` → 按端点拆 fragment + 控制面合成（OpenAPI `$ref` 天然支持）。
-3. **patch append-only + 唯一命名**。`{laneId}-{nnn}-*.css|js`，各 lane 写自己的文件，零争用。这正是此前"每个 patch 独立文件"决策在并线场景下的额外回报。
+3. **patch append-only + 唯一命名**。`{writer}-{nnn}-*.css|js`，各写者写自己的文件，零争用。这正是此前"每个 patch 独立文件"决策在并线场景下的额外回报。
 4. **渲染面只读**。拾取器是传感器：只发事件，由控制面决定写哪个文件。这条**修正 D4 的执行者**——"直写"仍保留，但执行者是控制面，不是 renderer。
-5. **结构化输出必需**。v1 的 `NodeOutput` 只有自由文本 `text`，`param`/`artifact` 仅解析未实现（`refs.ts:40-43`、`schema.ts:90-96`）。下游 lane 要可靠消费上游产物，必须让结构化输出落地。
+5. **结构化输出必需**。v1 的 `NodeOutput` 只有自由文本 `text` —— 下游写者要可靠消费上游产物，必须让结构化输出落地。**已落地**：节点在 `outputs:` 里声明字段，派发时带上契约，完成时归档为 `params`（`outputs.ts`）；`when:` 分支即建立在此之上（`conditions.ts`）。
 
-### 3.4 lane 划分与 DAG 映射（D13）
+### 3.4 工作切分与 DAG 映射（D13，已按第一性原理校正）
 
 ```
-lane A  UI/交互    → patches/A-*.css, patches/A-*.js
-lane B  服务契约   → services/{svc}/paths/*.yaml
-lane C  数据       → services/{svc}/fixtures/*.json
-lane D  验证       → 只读全部产物 → 产出 verdict（不写）
+前缀   平面        产物                                        归属怎么定
+A      UI/交互     patches/A-*.css, patches/A-*.js             前缀 = 写入身份
+B      服务契约     services/{svc}/paths/*.yaml                 路径规则 → contract
+C      数据        services/{svc}/fixtures/*.json              路径规则 → data
+D      验证        只读全部产物 → 产出 verdict（不写）           没有产物，所以不是 owner
 ```
 
-映射方式：**一个工作台任务 = 一个 Task；一个 lane = 一个 node**；用 `depends_on` 表达依赖（如 lane D 依赖 A/B/C）；`max_parallel` 控并发。
+**这条切分（产物里体现为写入身份）不是调度单位，那个前缀也不是"平面标签"。** 逐条校正：
 
-注意：v1 **只执行 `kind: 'session'` 节点**，`parallel`/`verify`/`aggregate` 等只解析不执行（`schema.ts:9-14`）。阶段 6 先用 `kind: 'session'` 模拟，不依赖 P4。
+- **调度单元是 node，不是这条切分。** 并行由 `depends_on` 扇出 + `max_parallel` 提供；把"某个平面"与 node 做恒等的话，node id 活在**一次运行的 spec 快照**里、patch 活在**产物**里——图重排一次，历史补丁的 owner 就成了不存在的节点名。DAG 要绑的键因此是**写入身份**（§3.6），不是字母。
+- **前缀的作用是"命名空间租约"，不是"平面标签"。** `patches/` 是唯一一个多个平面写进同一目录的地方，所以它需要一个写者前缀；而 `services/{svc}/paths/` 与 `fixtures/` 的归属**本来就由目录决定**（`ownership.ts` 只对补丁从文件名推 owner）——B/C 的字母不参与任何判断，它们只是给已有路径规则起的别名。
+- **`D` 不是 owner。** `classifyPrototypePath` 只回三种 owner——`{kind:'writer'}` / `{kind:'control-plane'}` / `{kind:'tooling'}`：只读意味着它不拥有任何路径。它是**角色**，不在 owner 词表里。
+- **排序不该读前缀。** `byReplayOrder` 今天以前缀为主键，但代码注释自己写着字母序无语义（"by rule, not by the alphabet"、"a patch's meaning may not depend on which writers the others happen to use"）。改成 `折叠层最后（按规则）→ 序号 → 路径`，前缀从此只表示归属；语义上唯一必需的顺序约束是"折入的补丁最后重放"（`Z`，`commit.ts` 写的是固定名 `Z-00n-upper.css` / `Z-00n-upper.js`）。
+- **词表 → 规则。** 闭合词表退休，只留一个保留 token（折叠层）。`{writer}-{nnn}` 的定界不再依赖"恰好一个字母"，而是锚在序号上（`PROTOTYPE_PATCH_NAME_RE = /^(.+?)-(\d+)-(.+?)\.(css|js)$/`，见 `types.ts`），既有文件零迁移。**代价要认**：以前"前缀不在词表里"这类违规在构造上消失，只有配上"声明的写入身份集合"才补得回来（§3.6 第 3、5 条）。
 
-### 3.5 所有权矩阵（文件 → lane）
+**根因**：文件名里只有一个 token 的位置，而它放的是 **kind**（工作的种类），不是 **writer**（写者身份）。单用户 + 单 agent 顺序执行时 kind ≡ writer，所以这个混淆不可见；一旦真并发，它就变成静默失效。**唯一在跑的消费点盘点**（`PrototypePatch.writer` 的全部读者）：`commit.ts` 按折叠层过滤（幂等）、`ownership.ts`（谁拥有哪个路径）、`storage.ts`（排序：折叠层最后 → 序号 → 路径），以及四处**展示字符串**（dev-spec / 扩展包说明 / agent 的补丁清单 / status 计数）。写前守卫是 `whyWriterMayNotWrite`（§3.6 已接上），`resolvePrototypeOwnership` 供 `prototype-status` 做事后报告——两者一个在写前拦、一个在事后点名。
 
-| 路径 | Owner | 其他 lane |
+注意：v1 **执行的节点类型是 `session`（子会话干活）与 `approval`（停下等人点同意）**；节点 `outputs:` 的声明式结构化输出（`outputs.ts`）与 `when:` 分支（假则跳过，跳过会传染下游，`conditions.ts`）均已落地。`parallel`/`verify`/`aggregate`/`loop` 等其余 kind 仍只解析不执行（`schema.ts`）——并且**非 session/approval 的 kind 现在会被当成普通 session 派发**。阶段 6 先用 `kind: 'session'` 模拟，不依赖 P4。
+
+### 3.5 所有权矩阵（文件 → owner）
+
+| 路径 | Owner | 其他 writer |
 |---|---|---|
-| `base.html` | 控制面（首次生成后冻结） | 只读 |
-| `patches/A-*.{css,js}` | lane A | 只读 |
-| `services/{svc}/paths/*.yaml` | lane B | 只读 |
-| `services/{svc}/fixtures/*.json` | lane C | 只读 |
-| `services/{svc}/openapi.yaml` | 控制面合成 | 只读 |
-| `manifest.json` | 控制面派生 | 只读 |
-| `dist/**` | 控制面（导出时） | 只读 |
+| `config.json` / `*.html`（含 `_layout.html`） | 控制面 | 可写 |
+| `prd.md` | 控制面（需求集是**输入**） | 可写 |
+| `assets/**` | 控制面（我们自己的页的源码，以及 commit 折进去的东西） | 可写 |
+| `research/**` | 控制面（findings / frames / videos：finding 是**引用**它们，不是据它们做判定） | 可写 |
+| `patches/{writer}-{nnn}-{name}.{css,js}` | 文件名里的 writer | 拒写 |
+| `patches/<页名>/…` | 同上（目录只决定**改哪一页**） | 拒写 |
+| `services/{svc}/paths/*.yaml`、`config.json` | `contract`（路径规则声明） | 拒写 |
+| `services/{svc}/fixtures/*.json` | `data`（路径规则声明） | 拒写 |
+| `services/{svc}/openapi.yaml` | 控制面合成 | 拒写 |
+| `anchors/**` | **工具**（`prototype-apply` 按实际命中写） | 拒写 |
+| `dist/**` | 控制面（导出/合成/验收时） | 可写 |
 
-这张表是**并线正确性的契约**：控制面据此检测越界写（lane 写了不属于它的文件 → 告警）。
+这张表是**并线正确性的契约**：控制面据此检测越界写。§3.4 校正之后它的语义是：**Owner 列 = 写入身份**（`patches/` 从文件名推、`services/` 从目录推），字母只是这个身份今天用的名字；它先是报告（`prototype-status`），并已同时是**写前守卫**（`whyWriterMayNotWrite`，接在 PreToolUse 上，§3.6）。
+
+**三类 owner，只对第三类"拒写"**（§3.6 落地时定的边界）：writer 拥有的路径，跨 writer 写 = 撞车 → 拒；控制面 = **agent 自己**，它盖原型时正当要写 → 放行；**工具**拥有的路径 = 记录（`anchors/**`）→ 拒，理由是"你自己写的记录不是任何东西的记录"。
+
+> **修正（2026-09-16）**：这张表过去没有列 `prd.md` / `research/` / `anchors/` / `assets/`，而 `classifyPrototypePath` 对未列出的路径一律回 `unowned path`——于是**任何真写过 PRD 或 findings 的原型，`prototype-status` 都在报违例**。报告说的唯一一件事就是"这个原型哪里不对"，而它对正常情况说了假话。已按上表补齐，并加了 `tooling` 这第三类 owner；回归测试见 `ownership.test.ts` 的 "finds nothing wrong with a prototype that has been worked on"。
+
+> **`dist/**` 暂留控制面**：它和 `anchors/` 一样是派生物，但写它的是一族工具（export / compose / verify），`tooling.by` 这个名字放不进去；另一条独立问题——derive 物该不该允许 agent 手写——留给验收跨轮那一步一起定（`acceptance/**` 会走同一条规则）。
+
+### 3.6 写入身份与 agent 的接口契约（已落地）
+
+**为什么需要它**：所有权要能被判定，写者就得先知道自己以谁的身份写——而落地前它不知道。三条接口里没有一条带身份（下表是落地前的样子）：
+
+| 接口 | 载体 | 带身份吗 |
+|---|---|---|
+| **读**（它知道什么） | `<prototype_context>`，`buildPrototypePromptContext(workspaceRootPath, slug)` | **不带**：入参只有根路径与 slug，内容全是原型状态（页 / 补丁含 `writer` / 服务 / 需求 / findings / 违例） |
+| **做**（它被允许什么） | 命令面 + Write 工具 | 不带授权：命名规矩只活在 `prompt.ts` 的一段文字里 |
+| **交**（它产出什么） | 任务节点侧的 `outputs` 契约（runner 追加进 prompt） | 只对任务侧有效，**与原型侧不接头** |
+
+**三处不对齐**（都有证据）：
+
+- **同一份词表教两遍**：`prompt.ts` 与 `apps/electron/resources/docs/browser-tools.md` 各印一份"前缀 = 哪个平面"的词表。改一处必忘另一处。
+- **有词表、没身份**：prompt 说"不要改写别人拥有的补丁文件"，而 agent 无从知道"我"是谁；判定函数需要的那个身份在生产代码里**没有来源**（零调用）——§3.4 说的"还不是守卫"，在 agent 侧就是这个样子。
+- **节点侧与原型侧脱节**：一个正在做原型工作的 DAG 节点**同时**收到原型上下文（补丁怎么命名）与任务契约（`outputs` 怎么交），两边互不知情。
+
+**目标形态：一个字段，穿一条已经存在的路。** 盖章机制今天就在跑——Conductor 已把 `taskSlug` / `taskRunId` / `taskNodeId` 盖到子会话（`SessionManager` 的会话元数据），而 agent 手里就有 `config.session`：
+
+```
+node 声明 writes: checkout-ui      ← spec，与 outputs 同层的声明式字段（同一 run 内唯一）
+  → child session.taskWrites       ← 派发时盖章（复用 taskNodeId 那条路，无新机制）
+  → <prototype_context writer="checkout-ui">   ← agent 读到的第一行就是"我以谁的身份写"
+  → whyWriterMayNotWrite(path, writer)  ← 写前守卫（PreToolUse 第 5d 步）：拒绝时**返回原因**（照 tab-access 的 whyTabIsOutOfReach：agent 读得到为什么，才改得动）
+```
+
+**对齐清单**（第 1–4 条是"agent 知道自己是"；第 5 条是"越界真的被拦"；第 6 条是"不再教两遍"）：
+
+1. ✅ `PrototypePromptContext.writer`，渲染进 `<prototype_context slug="…" writer="…">` 的开放标签。
+2. ✅ `buildPrototypePromptContext(rootPath, slug, writer)` 三参；两个调用点（`claude-agent.ts`、`pi-agent.ts`）同改，身份取自 `resolvePrototypeWriter(config.session)`。
+3. ✅ spec 增加节点声明 `writes:`，校验同一 run 内唯一（重复、保留 token `Z`、以及会与文件名解析歧义的 `-<digits>` 结尾一律拒绝）。
+4. ✅ 派发时盖章到子会话（`taskWrites` 走 `SESSION_PERSISTENT_FIELDS`，与 `taskNodeId` 同一条路）。
+5. ✅ `runPreToolUseChecks` 第 5d 步接 `whyWriterMayNotWrite`：写工具指向 `prototypes/<slug>/…` 时拒绝并说明理由。
+6. ✅ `prompt.ts` 与 `browser-tools.md` 的**词表 → 规则**（前缀 = 你被授予的写入身份）；`D` 随词表一起退休；生成器 prompt 补了 `writes` 一行。
+
+**验收（"对齐了"的样子）**：节点在 `<prototype_context>` 里读到自己的写入身份（`prompt.test.ts` 有断言）；写 `patches/<自己的身份>-002-….css` 通过，写别人的前缀被拒绝且**拿得到理由**（`ownership.test.ts` 的 `whyWriterMayNotWrite` 与 `pre-tool-use-checks.isolated.ts` 的流水线用例）；两份文档关于命名的说法**逐字一致**（同一句话只写一处，`browser-tools.md` 从规则出发）。
+
+**已定（记录时发现的洞）**：`writes:` 是**节点**声明的，而绝大多数原型工作发生在**非 DAG 的手工会话**里（人在对话里让 agent 改页）——那里没有节点、没有声明。取**选项 ①**：缺声明时身份**由会话派生**，`resolvePrototypeWriter()` 返回 `main`，读作"这个原型只有一个写者"。身份因此**总是存在**，声明只在多写者时才需要写出来，手工会话不必多一步。
+
+**落地时定下的两条边界**（不在原清单里，但不定就会做错）：
+
+- **守卫拦的是"撞车"，不是"控制面"。** `canWriterWrite` 是严格原语（控制面路径对任何写者也返回 false），但**控制面就是 agent 自己**：页文档、`config.json`、`dist/` 是它盖原型时正当要写的文件，照严格语义拦会把最常见的情况拦掉。所以执行的是 `whyWriterMayNotWrite`：别人的产物、以及**无主路径**（拼错的补丁——注入器静默忽略它）→ 拒；控制面路径 → 放行。
+- **排序不再读写入者名。** 前缀是身份，不是顺序键：重放顺序 = 折叠层垫底 → 序号 → 路径（`storage.ts:byReplayOrder`）。代价认了：`A-002-x.css` 不再因为前缀字母而排在 `B-001-y.css` 前面。
+
+**状态**：六条全部落地，`tsc` 与 `src/prototypes`、`src/tasks`、`core/__tests__` 全绿。
+
+### 3.7 争论与验收：DAG 与详情页之间那条线（已落地）
+
+3.6 让 agent 知道"我以谁的身份写"。这一节补的是另外三样——**它写得对不对，别人认不认，以及上一轮是什么情况**。三者都不是新能力，是把盘上已有的东西接成一条线：
+
+| 产物 | 形状 | 谁写 | 派生在哪 |
+|---|---|---|---|
+| `reviews/*.md` | 一条异议一个文件，头标记与 findings 同构：`# D-001 …` + `about:` / `on:` / `status:` / `claim:` / `evidence:` | **agent**（控制面）——critic 节点直接写它，人也能写 | `resolveRequirementCoverage`（唯一一处）→ `status.reviews` / 每条需求行的 `disputes` |
+| `acceptance/state.json` | 每轮每 check 的答案 + 轮次 | **只有 `prototype-verify`**（`tooling`，手写被守卫拒） | `summarizeAcceptance` / `compareAcceptance` |
+| `dist/acceptance.md` | 这一轮 + **与上一轮的差** | 同上 | 交付物快照 |
+
+**三条设计判断，都是"派生优先于声明"的同一件事**：
+
+1. **异议的状态要与盘对账。** `status: open` 而它争的那个补丁已经变过 → 报 `stale`；`status: fixed` 而那个补丁**没**变 → 同样报 `stale`。判据是记录里的 `on:`（补丁内容指纹，8 位）——照 `anchors/` 的做法，"这条异议还在说当前这个文件"与"它在说一个已经不存在的版本"必须分得开。`on:` 只对补丁要求，因为只有补丁是"一文件一对象"；页/端点/需求跨多个文件，没有单一指纹，硬要就是造一个新的会漂移的来源。
+2. **异议挂在需求那一行，但需求不重述。** `about: patch X` 的异议通过 X 的 `@requirement` 标记落到需求行上；`about: requirement R-003` 直接落。review 文件里**没有**"我这条是关于哪条需求"的字段——那会是这条线的第二份拷贝。
+3. **轮次是"真的跑过一次"，不是版本号。** 每跑一次 `prototype-verify` 就 +1，`newRed / stillRed / fixed / notRun / gone` 五类差是它买来的东西。手维护的版本号没人能对上任何一次改动。
+
+**闸门**（`whyPrototypeIsNotSettled`，一处规则、三个读者）：`prototype-status` 打印它、`prototype-export` 默认点名它、`prototype-export --strict` 用它拒绝、生成器 prompt 让 critic 节点照它产出 verdict。三类各自是不同动作，因此**不合成一个数字**：需求没人实现 / 异议没人回应 / 上一轮 check 红。另加一条：PRD 声明了 check 却从没跑过，也算未决——"没红"与"没看过"必须分得开。
+
+**DAG 侧**：`producer → critic → when: verdict === 'fail'` 回到 producer。用到的全是 3.4/3.6 已落地的机制（`outputs:` 契约、`when:` 分支、`writes:` 身份、repair 回路），**没有新机制**——这一节只是给那条回路补上它要读的产物。
+
+**没做的、以及为什么**：`frames` 里的图仍不进包（刻意的，不是欠账）；盘上没有"谁写了哪个补丁"的运行记录（第 6 条）——写前守卫本来就看得到每一次写，顺手记账即可，等前面这几样稳了再说；`dist/**` 仍是控制面（写它的是一族工具，`tooling.by` 放不下这个名字）。
+
+**已知边界（本节发现、未修）**：`coverage` 的"实现了哪条需求"只认 pages / patches / findings 三个来源，**契约 fragment 不是来源**——一条只由契约满足的需求（`check: endpoint …` 全绿、但没有页也没有补丁指向它）会被读成"没人实现"，从而挡住 `--strict`。要修就得让 `services/*/paths/*` 也能带 `@requirement` 标记；这属于 coverage 的来源扩展，不在本节范围内。
+
+**状态**：全部落地（`reviews.ts` / `acceptance.ts` / coverage 归并 / prompt 读接口 / verify 跨轮 / 状态与导出的闸门 / 生成器 prompt）。
 
 ---
 
@@ -152,11 +242,13 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
   ├─ services/              服务契约（mock 的真源，阶段 5）
   │    └─ {serviceSlug}/
   │         ├─ config.json          baseUrl / authType / title
-  │         ├─ paths/               按端点拆的契约 fragment（lane B 独占）
+  │         ├─ paths/               按端点拆的契约 fragment（`contract` 写）
   │         ├─ openapi.yaml         【合成】控制面由 paths/ 生成，勿手改
-  │         └─ fixtures/            lane C 独占
+  │         └─ fixtures/            `data` 写
   └─ dist/                  交付物（按角色分化）
        ├─ extension/           【§17】一个可加载的扩展：manifest / README / 补丁产物 / 脚本；scratch 另含每一页与它被提取出来的产物
+       ├─ static/              【§17.8】每页一份自包含 HTML（只有 scratch 页有；打开即看，什么都不用装）
+       ├─ bookmarklet.html     【§17.9】live 页的改动做成可拖拽书签（只有 overlay 页有；不能装扩展时的那条路）
        ├─ dev-spec.md          给实现的人——改了什么
        ├─ openapi.yaml         后端——契约
        ├─ contract.md          后端——交接文档（含"未声明项"清单）
@@ -166,15 +258,15 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 **没有落盘的索引**：索引是**内存中按需派生**的，不落盘。`scanPrototypePatches()` 每次扫描 `patches/` 目录，返回：
 
 ```ts
-{ file: 'A-001-btn-radius.css', kind: 'css', lane: 'A', order: 1, source: '…', key: 'prototype:checkout-flow:A-001-btn-radius.css' }
+{ file: 'A-001-btn-radius.css', kind: 'css', writer: 'A', order: 1, page: null, source: '…', targets: ['.pay-btn'], key: 'prototype:checkout-flow:A-001-btn-radius.css' }
 ```
 
-派生规则：kind 由扩展名决定，lane/order 由文件名 `{lane}-{nnn}-…` 解析，排序 = lane → order → 文件名。不符合命名的文件直接忽略。
+派生规则：kind 由扩展名决定，writer / order 由文件名 `{writer}-{nnn}-…` 解析，`page` 由目录决定（`patches/cart/…` → `cart`，根 → `null` 即共享），排序 = 折叠层最后 → 序号 → 路径。不符合命名的文件直接忽略。
 
 设计要点：
 
 - **patch 与契约 fragment 都是普通文件**，可 git diff、可被 agent 的 `Read`/`Edit` 直接改、可被外部工具处理。这是"最大化本地文件系统优势"的落点。
-- **派生索引消除争用**：没有任何共享索引文件需要手写或合并，因此没有 lane 会争它（D12）。这也是阶段 6.2 已被提前满足的原因。
+- **派生索引消除争用**：没有任何共享索引文件需要手写或合并，因此没有写者会争它（D12）。这也是阶段 6.2 已被提前满足的原因。
 - **契约是唯一真源**（阶段 5），`openapi.yaml` 是从 fragment 合成的产物；mock 只是契约的运行时物化。
 
 ---
@@ -187,40 +279,40 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 |---|---|---|
 | 浏览器面板（BrowserView + CDP） | `apps/electron/src/main/browser-pane-manager.ts` | 已有 |
 | CDP 封装 `BrowserCDP` | `apps/electron/src/main/browser-cdp.ts` | 已有 |
-| 任意 JS 执行 `evaluate` | `browser-pane-manager.ts:1643-1646` | 已有，可直接注入 |
-| 元素高亮 overlay 注入 | `browser-cdp.ts:475-562`（`renderTemporaryOverlay`） | 已有，但临时，用完即清 |
-| 元素标识 `@eN` ref | `browser-cdp.ts:167`（`allocateRef`） | 已有 |
-| selector 定位 | `browser-cdp.ts:393`（`getElementGeometryBySelector`） | 已有 |
-| 浏览器工具入口 | `packages/shared/src/agent/browser-tools.ts:233-280` | 已有，加命令即可 |
-| 产物目录读白名单 | `packages/server-core/src/handlers/utils.ts:55-66` | **已覆盖**（返回 `workspace.rootPath`） |
-| UI 读文件 | `PlatformContext.onReadFile`（`packages/ui/src/context/PlatformContext.tsx:83`） | 已有 |
+| 任意 JS 执行 `evaluate` | `browser-pane-manager.ts` 的 `evaluate` | 已有，可直接注入 |
+| 元素高亮 overlay 注入 | `browser-cdp.ts` 的 `renderTemporaryOverlay` | 已有，但临时，用完即清 |
+| 元素标识 `@eN` ref | `browser-cdp.ts` 的 `allocateRef` | 已有 |
+| selector 定位 | `browser-cdp.ts` 的 `getElementGeometryBySelector` | 已有 |
+| 浏览器工具入口 | `packages/shared/src/agent/browser-tools.ts` | 已有，加命令即可 |
+| 产物目录读白名单 | `packages/server-core/src/handlers/utils.ts` 的 `getWorkspaceAllowedDirs` | **已覆盖**（返回 `workspace.rootPath`） |
+| UI 读文件 | `PlatformContext.onReadFile`（`packages/ui/src/context/PlatformContext.tsx`） | 已有 |
 | 文件 RPC | `packages/server-core/src/handlers/rpc/files.ts` | 阶段 1 起有 `file:write`（另见阶段 1.3） |
-| 目录监听 | `packages/server-core/src/handlers/rpc/sessions.ts:470-494` | 已有，但只盯 session 目录 |
+| 目录监听 | `packages/server-core/src/handlers/rpc/sessions.ts` 的 `sessions:watchFiles` | 已有，但只盯 session 目录 |
 
 ### 服务契约层
 
 | 能力 | 位置 | 为什么能直接复用 |
 |---|---|---|
-| `Source` 抽象 | `packages/shared/src/sources/types.ts:16`（`'mcp' \| 'api' \| 'local'`） | **一个 API 服务 = baseUrl + auth + headers**，正是 mock 服务的形状 |
-| API Source 配置 | `types.ts:370-399`（`ApiSourceConfig`） | `baseUrl` / `authType` / `defaultHeaders` / `testEndpoint` 开箱即用 |
-| Source 落盘约定 | `types.ts:7-11`（`sources/{slug}/config.json` + `guide.md`） | mock 服务直接就是一个 source 目录 |
-| 动态 API 工具 | `packages/shared/src/sources/api-tools.ts` + `types.ts:548-566`（`ApiConfig`） | agent 能用**同一套工具**调 mock 与调真服务 |
+| `Source` 抽象 | `packages/shared/src/sources/types.ts` 的 `SourceType`（`'mcp' \| 'api' \| 'local'`） | **一个 API 服务 = baseUrl + auth + headers**，正是 mock 服务的形状 |
+| API Source 配置 | `sources/types.ts` 的 `ApiSourceConfig` | `baseUrl` / `authType` / `defaultHeaders` / `testEndpoint` 开箱即用 |
+| Source 落盘约定 | `sources/types.ts`（`sources/{slug}/config.json` + `guide.md`） | mock 服务直接就是一个 source 目录 |
+| 动态 API 工具 | `packages/shared/src/sources/api-tools.ts` + `sources/types.ts` 的 `ApiConfig` | agent 能用**同一套工具**调 mock 与调真服务 |
 | MCP server 构建 | `packages/shared/src/sources/server-builder.ts` | 从 source config 起服务，mock 同构 |
-| OpenAPI 已是认可载体 | `README.md:45` | 契约格式无需新发明 |
+| OpenAPI 已是认可载体 | `README.md`（已经在讲"贴一份 OpenAPI spec 进来"） | 契约格式无需新发明 |
 | 已有依赖 | mock **不需要新依赖** | 拦截由既有 CDP 封装提供（阶段 5） |
 
 ### 并线控制面（现成）
 
 | 能力 | 位置 | 说明 |
 |---|---|---|
-| DAG 规格 | `packages/shared/src/tasks/schema.ts:135-168` | `nodes` / `depends_on` / `inputs` / `outputs` / `prompt` / `model` / `permissionMode` |
-| **并行调度** | `packages/server-core/src/tasks/TaskRunner.ts:315-328` | 已是并行，非串行；`max_parallel` 默认 4（`:110`） |
-| 依赖图与就绪判定 | `validate.ts:204-222`、`TaskRunner.ts:330-336` | 无依赖或依赖已完成的节点并发派发 |
-| 节点输出落盘 | `tasks/storage.ts:190-214` | `tasks/{slug}/runs/{runId}/nodes/{id}.json`，`atomicWriteFileSync` |
-| 输出插值 | `refs.ts:86-107` | `${nodes.<id>.output[.<field>]}` / `${params.<name>}` |
-| 派生会话 | `SessionManager.ts:4224-4279` | `spawn_session`，`parentSessionId` 级联，fire-and-forget |
-| 多实例并发 | `factory.ts:132-146` | 每次 `new`，无单例 → 多会话 = 多 backend 实例 |
-| 结构化输出 | `schema.ts:46`、`:90-96`；`refs.ts:40-43` | **仅解析未实现**（`param`/`artifact`） → 阶段 6 需落地 |
+| DAG 规格 | `packages/shared/src/tasks/schema.ts` | `nodes` / `depends_on` / `inputs` / `outputs` / `prompt` / `model` / `permissionMode` |
+| **并行调度** | `packages/server-core/src/tasks/TaskRunner.ts` | 已是并行，非串行；`max_parallel` 默认 4 |
+| 依赖图与就绪判定 | `validate.ts`、`TaskRunner.ts` | 无依赖或依赖已完成的节点并发派发 |
+| 节点输出落盘 | `tasks/storage.ts` | `tasks/{slug}/runs/{runId}/nodes/{id}.json`，`atomicWriteFileSync` |
+| 输出插值 | `refs.ts` | `${nodes.<id>.output[.<field>]}` / `${params.<name>}` |
+| 派生会话 | `SessionManager.ts` 的 `spawn_session` | `parentSessionId` 级联，fire-and-forget |
+| 多实例并发 | `factory.ts` | 每次 `new`，无单例 → 多会话 = 多 backend 实例 |
+| 结构化输出 | `outputs.ts`（生产者）、`schema.ts`（`outputs:` 声明）、`refs.ts`（消费） | **已落地**：节点声明 `outputs:` → 派发时带契约 → 完成时归档 `params`；`.field` 引用必须有对应声明（校验层拦） |
 
 ---
 
@@ -231,25 +323,25 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 目标：把"产物目录"变成 agent 与 App 都能读写的普通目录。
 
 #### 1.1 产物路径工具
-- 在 `packages/shared/src/workspaces/storage.ts` 新增 `getWorkspacePrototypesPath(rootPath)`、`getPrototypePath(rootPath, slug)`，与现有 `getWorkspaceSessionsPath`（`:79-89`）并列。
-- **无需改读白名单**：`getWorkspaceAllowedDirs` 已返回 `workspace.rootPath`（`utils.ts:55-66`），`prototypes/` 天然在允许范围内。
+- 在 `packages/shared/src/workspaces/storage.ts` 新增 `getWorkspacePrototypesPath(rootPath)`、`getPrototypePath(rootPath, slug)`，与现有 `getWorkspaceSessionsPath` 并列。
+- **无需改读白名单**：`getWorkspaceAllowedDirs` 已返回 `workspace.rootPath`（`utils.ts`），`prototypes/` 天然在允许范围内。
 
 #### 1.2 agent 写放行（必须改）
-- 现状：Explore 模式下 `Write`/`Edit` 仅放行 `plansFolderPath`、`dataFolderPath` 和 `allowedWritePaths`（`packages/shared/src/agent/mode-manager.ts:1934-1961`）。
+- 现状：Explore 模式下 `Write`/`Edit` 仅放行 `plansFolderPath`、`dataFolderPath`、`prototypesFolderPath` 和 `allowedWritePaths`（`packages/shared/src/agent/mode-manager.ts`；其中 `prototypesFolderPath` 就是这一步加的那条例外）。
 - 做法：照 `dataFolderPath` 的模式新增 `options.prototypesFolderPath` 例外；在注入 `dataFolderPath` 的同处一并注入（实施时定位注入点：`packages/server-core/src/sessions/SessionManager.ts` 与 session context `packages/session-tools-core/src/context.ts`）。
 - 验证：Explore 模式下 agent 能 `Write` 到 `prototypes/{slug}/patches/x.css` 与 `services/.../paths/*.yaml`，且仍无法写到目录外。
 
 #### 1.3 新增 `file:write` RPC
-- `packages/shared/src/protocol/channels.ts`：新增 `file.WRITE = 'file:write'`（与 `:96-108` 的 file/fs 系列并列）。
-- `packages/server-core/src/handlers/rpc/files.ts`：新增 handler，沿用 `validateFilePath(path, getWorkspaceAllowedDirs(workspaceId))`（同 `:34-37` 的写法），**并额外约束在 prototypes 目录内**。
+- `packages/shared/src/protocol/channels.ts`：新增 `file.WRITE = 'file:write'`（与既有 file/fs 系列并列）。
+- `packages/server-core/src/handlers/rpc/files.ts`：新增 handler，沿用 `validateFilePath(path, getWorkspaceAllowedDirs(workspaceId))` 的既有写法，**并额外约束在 prototypes 目录内**。
 - `apps/electron/src/transport/channel-map.ts`：新增 `writeFile: invoke(RPC_CHANNELS.file.WRITE)`（`buildClientApi` 会据此自动暴露到 `window.electronAPI`）。
-- `packages/ui/src/context/PlatformContext.tsx`：新增 `onWriteFile?: (path: string, content: string) => Promise<void>`（紧邻 `:83` 的 `onReadFile`）。
+- `packages/ui/src/context/PlatformContext.tsx`：新增 `onWriteFile?: (path: string, content: string) => Promise<void>`（与 `onReadFile` 并列）。
 - 验证：renderer 能落盘；写 `prototypes/` 之外被拒。
 
 #### 1.4 产物目录监听
-- 现状：`sessions:watchFiles` 只 watch session 目录，`fs.watch({recursive:true})` + 100ms 防抖 → 推送 `sessions:filesChanged`（`sessions.ts:470-494`；channel 定义 `channels.ts:42-44`）。
+- 现状：`sessions:watchFiles` 只 watch session 目录，`fs.watch({recursive:true})` + 100ms 防抖 → 推送 `sessions:filesChanged`（`sessions.ts`；通道定义在全仓协议 `protocol/channels.ts`）。
 - 做法：把监听目标泛化为"白名单内任意目录"，或新增 `prototypes:watch` / `prototypes:changed` 通道，复用同一套防抖与推送逻辑。
-- 注意：现有实现会忽略隐藏文件与 `session.jsonl`（`sessions.ts:480`），产物目录需保留该过滤或调整。
+- 注意：现有实现会忽略隐藏文件与 `session.jsonl`（`sessions.ts`），产物目录需保留该过滤或调整。
 - 验证：外部改动 `patches/*.css` 或 `paths/*.yaml` 都能收到变更事件。
 
 **阶段 1 完成标志**：能用 `file:read` / `file:write` 读写产物目录，且改动会推送变更事件。全程不涉及 UI 与浏览器。
@@ -263,6 +355,7 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 #### 2.1 `BrowserCDP` 新增拾取能力
 - `apps/electron/src/main/browser-cdp.ts`：`pickElement(options?)` + `cancelPicker()`。
   - **实现形态**：单一 `pickElement()`（注入 → 短轮询 → 清理），不做一对 start/stop 方法——一次 `Runtime.evaluate` 不能长时间挂起，否则会被 CDP 的空闲 detach 打断。
+  - **后来加的常驻模式**（§12.7 第五轮）：工具栏要的是"开着就一直在"，于是拆成 `armPicker()`（注入并留在那里）＋ `drainPicker()`（读走并清空），`pickElement()` 退化成两者之上的循环；agent 的 `browser_tool pick` 仍然一次一个。
   - 注入脚本把结果写进 `window.__craft_agent_picker_state__`（`pending` / `picked` / `cancelled`），轮询读取；`Escape`、超时、`cancelPicker()` 三条取消路径统一走 `cancelled`。
   - 高亮复用 `renderTemporaryOverlay` 已跑通的"注入 fixed 覆盖层"模式（`pointer-events:none`），改成可交互版本。
   - `buildStableSelector(el)`：`data-testid` → `id` → 否则 `:nth-of-type` 路径（最多 6 层），与现有 `@eN` ref 体系互补。
@@ -292,7 +385,7 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 
 #### 3.2 patch 索引与重放
 - **不落盘索引**：`packages/shared/src/prototypes/storage.ts` 的 `scanPrototypePatches()` 每次从 `patches/` 目录重算索引（派生索引 D12 从第一天生效，阶段 6.2 因此已提前满足）。
-- 命名约定 `{lane}-{nnn}-{slug}.{css|js}`；**不符合命名的文件被忽略**（README、编辑器备份、`.DS_Store`），不会误当 patch 执行。排序 = lane → order → 文件名，完全确定，不依赖目录列举顺序。
+- 命名约定 `{writer}-{nnn}-{name}.{css|js}`，可位于 `patches/` 根（共享）或 `patches/<页名>/`（只那一页，§19.4）；**不符合命名的文件被忽略**（README、编辑器备份、`.DS_Store`），不会误当 patch 执行。排序 = 折叠层最后 → 序号 → 路径，完全确定，不依赖目录列举顺序。
 - `packages/shared/src/prototypes/patch-script.ts` 的 `buildPatchInitScript()` 做 patch → init script 的纯变换：css 生成"创建/更新 `<style>`"的脚本（document-start 时 `head` 可能不存在，回退到 `DOMContentLoaded`）；js 包进 IIFE + `try/catch`，一个坏 patch 不会中断其余。
 - 重放流程（`SessionManager` 的 `applyPrototype`）：扫描 → 先按前缀清掉磁盘上已删除的 patch 的 key → 逐个 `addInitScript`（面向未来文档）+ `evaluate`（立即作用于当前文档，**复用同一份变换**，所以 live 与 reload 行为一致）。不需要新的 reload 能力。
 
@@ -300,7 +393,7 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 - **确定性改动**：renderer → `onWriteFile` → `file:write`（阶段 1 已通）直写 `patches/`。实时、无需 LLM。
 - **语义改动**：交给 agent 的 `Write`/`Edit`（依赖 1.2 放行）写出新 patch。
 - 两条路径产出同构文件，均由 3.2 重放。**两者都不由 renderer 直接写**（D15）。
-- 说明：本阶段只交付了机制与通道；**尚无 UI 触发 `file:write`**，直写路径待阶段 4/6 的交互层接上。
+- 说明：本阶段只交付了机制与通道。**至今没有任何 UI 触发 `file:write`**——第五轮起"编辑只走对话"（§12.4）成了明确约束，补丁只有一个来源（agent 写），所以直写路径不是"待接上"，而是**有意不用**；通道留着给控制面自己的确定性写入。
 
 **阶段 3 完成标志**：手动改一个 patch 文件 → 重放即生效；reload 后改动仍在。
 
@@ -316,12 +409,12 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
   - **css** 直接内联成 `<head>` 里的一段 `<style>`。纯文本 patch 没有可"执行"的东西，内联文本与 live 注入器做的事完全等价，而且 JS 关掉也照样生效。
   - **js** 走 `buildPatchInitScript()`——**和 live 重放同一份变换**，所以"工作台内"与"导出文件"行为不会分叉。
 - 注入位置：css 插在最后一个 `</head>` 前（无则退 `</body>`，再无则追加）；js 插在最后一个 `</body>` 前。顺序沿用派生索引顺序。
-- `dist/dev-spec.md`：列出每个 patch 的序号/lane/kind/字符数表格 + 逐条完整内容（代码围栏长度按内容里的反引号最长连续串计算，避免被内容撑破）。
-- **未做**：dev-spec 只列**真实已知**的信息（每条 patch 的序号 / lane / kind / 字符数 / 全文），不编造"target selector + 前后差异"那类需要 patch 元数据的东西。要补得先定 patch 元数据格式。
-- `exportPrototype()` 在缺少 `base.html` 时**明确报错**而不是导出一个无意义的文件。
+- `dist/dev-spec.md`：列出每个 patch 的序号/writer/kind/字符数表格 + 逐条完整内容（代码围栏长度按内容里的反引号最长连续串计算，避免被内容撑破）。
+- **未做**：dev-spec 只列**真实已知**的信息（每条 patch 的序号 / writer / kind / 字符数 / 全文），不编造"target selector + 前后差异"那类需要 patch 元数据的东西。要补得先定 patch 元数据格式。
+- `exportPrototype()` 在**没有任何可导出的一页**（页文档不在、也没法渲染）时**明确报错**，而不是导出一个无意义的文件。
 
 #### 4.2 预览通道：复用浏览器面板
-- 现有 HTML 预览 iframe 禁脚本（`MarkdownHtmlBlock.tsx:218-219`、`HTMLPreviewOverlay.tsx:204-205`），所以原型不能走它。
+- 现有 HTML 预览 iframe 禁脚本（`MarkdownHtmlBlock.tsx`、`HTMLPreviewOverlay.tsx`），所以原型不能走它。
 - 但**浏览器面板本身就是真实引擎、能跑 JS、已沙箱隔离**，直接打开产物即可，不必新搭一条渲染通道：零新增 UI、渲染环境与工作台一致，且不改动现有预览块的安全策略。
 - `prototype-export` 因此返回可直接使用的 URL；那个地址的 origin 由 Electron 应答的 `http` 提供（§16）。
 
@@ -347,13 +440,41 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 用 CDP `Fetch` 在**网络层**兑现响应（D8）：`Fetch.enable` + `Fetch.fulfillRequest`——fetch / XHR / 任意资源类型全都覆盖，**应用一行不改**，也不往页面里塞 monkey-patch。（另外两条路——页面级 monkey-patch、独立 Node mock server——及其否决理由见 [开发文档](prototype-workbench-dev.md) §4。）
 
 实现要点：
-- `BrowserCDP.setFetchMockRoutes(routes)` / `clearFetchMock()`：开启 `Fetch.enable`（`requestStage: 'Request'`），在 `Fetch.requestPaused` 事件里决定 `fulfillRequest` 还是 `continueRequest`。
-- **匹配只按 pathname**（`pathname === route.path`，或 `endsWith(route.path)`），所以绝对 URL、带 `baseUrl` 前缀的 URL、同源相对路径三种写法都能命中；路径前的 `/` 让 `endsWith` 天然有边界（`/reorders` 不会命中 `/orders`）。
+- `BrowserCDP.setFetchMockRoutes(program)` / `clearFetchMock()`：开启 `Fetch.enable`（`requestStage: 'Request'`），在 `Fetch.requestPaused` 事件里决定 `fulfillRequest` 还是 `continueRequest`。传的是 **program**（路由 + store），不是一张路由表——状态化那半见 §5.3。
+- **匹配只按 pathname**，而且规则只有一处（`mock-engine.ts` 的 `matchMockRoute`）：整段匹配，不中再按路由自身的段数匹配尾部——绝对 URL、带 `baseUrl` 前缀的 URL、同源相对路径三种写法都能命中，而段数是上界（`/reorders` 不会命中 `/orders`，`/api/cart/items/{id}` 也不会吞掉更长的路径）。见 §5.3。
 - 兑现的响应**带 `access-control-allow-origin: *`**：否则跨域接口即使由我们应答，仍会被浏览器按 CORS 拦掉。
 - **异常兜底再 `continueRequest`**：一个永远挂着未决断的请求会让页面直接卡死，这条比"mock 失败"严重得多。
 - `Fetch.enable` 同样是 CDP 会话状态 → 纳入阶段 3 那个 `holdsSessionState()` 判据（有 init script 或开着 mock 就持有连接，避免空闲 detach 把它悄悄关掉）。
 - `buildMockRoutes(service)`（纯函数）：`x-mock.fixture` 指向不存在的 fixture 时**跳过该路由并上报**，而不是返回空 body——静默的空响应比"请求打到真后端"难查得多。
 - 命令：`prototype-mock-apply <slug> [--service <svc>]`、`prototype-mock-clear`。
+
+#### 5.3 mock 状态化（已完成 — D9 的后置部分）
+
+目标：演**多步流程**（加购 → 结算 → 下单），而不是每一屏都从同一份 fixture 重新开始。
+
+**格式决定：语义由 HTTP 方法推导，不造迁移语言。** 路径项声明它属于哪个集合（`x-mock-collection: cart.items`），起始状态写在 `services/{svc}/state.json`。于是"加购"不需要作者学任何新语法：
+
+| 方法 | 作用 |
+|---|---|
+| `GET` | 读 —— 路径是集合就是集合，带尾部 `{param}` 就是那个元素 |
+| `POST` | 把请求体追加进集合 |
+| `PATCH` | 把请求体并入集合或元素 |
+| `PUT` | 用请求体替换 |
+| `DELETE` | 按尾部 `{param}` 删掉那个元素（只有元素路径有） |
+
+五条规则（写给人看的那份在 `apps/electron/resources/docs/prototypes.md` § Faking a flow，它是 agent 读的指南）：
+
+1. **表达不了的操作用读契约时就报错**（集合上的 `DELETE`、元素上的 `POST`、中间带 `{param}` 的路径）——与"不支持的 check kind 在解析期报错"同一条规矩，**不给它造一条看起来合理的路由**。
+2. **读答所寻址者，改答集合的当前值**：刚加购 / 删掉的那个屏幕，下一步要画的是列表。
+3. **元素不在 = 404**；**操作与 store 形状矛盾 = 500 并说明**——那是 mock 自己的 bug，不能长得像应用的 bug。
+4. **`x-mock.fixture` 仍然优先**：要答别的东西（回执、错误形状）照旧写 fixture。
+5. **store 只在内存里，`state.json` 从不回写**：一次 apply 一次运行，再 apply 就是重放；这也是让演示可复现的那条。
+
+**代价要认（一份规则两处实现）**：工作台在网络层用 TypeScript 兑现（`mock-engine.ts`），交付载体只能在页面里兑现（`extension.ts` 的 `buildMockEngineScript()`，扩展的 `mocks.js`、静态单文件与书签共用同一份）。防漂移的办法不是"小心一点"，而是 `__tests__/mock-engine.test.ts` 把**同一张流程表跑过两边**再逐条比对答案。
+
+**匹配规则顺手统一了**：此前工作台是 `endsWith(path)`、页面里是 `=== path`——同一份契约两种行为。现在两边都走共享引擎：整段匹配，不中则按路由自身的段数匹配尾部（`baseUrl` 前缀照旧命中），而且段数是上界，`/api/cart/items/{id}` 不会吞掉 `/api/cart/items/i-1/extra`。
+
+**踩到并修掉的一个陷阱**：状态化路由的响应体**必须是快照**。第一版把 store 里的对象直接交出去，于是"已经发出的响应"会被紧接着的请求改写——测试里表现为第一次 GET 的答案在断言时已经变成第三次 GET 的答案。
 
 #### 5.4 后端交付导出（已完成）
 - `exportContractDeliverable()` 写 `dist/openapi.yaml`（合成结果）+ `dist/contract.md` + `dist/fixtures/*.json`。
@@ -364,38 +485,57 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 
 ---
 
-### 阶段 6：平面分离与并线接线 — 6.1 已完成，6.4 明确推迟
+### 阶段 6：平面分离与并线接线 — 6.1 与 6.4 均已落地，6.2/6.3 由前序阶段提前完成
 
-目标：让多个 lane 能安全并行写产物，用**所有权**而非锁保证正确性。
+目标：让多个写者能安全并行写产物，用**所有权**而非锁保证正确性。
 
 #### 6.1 所有权矩阵落地（已完成）
 - `packages/shared/src/prototypes/ownership.ts`：把 §3.5 的矩阵写成**可执行判据**，而不是文档里的一张表。
-  - `classifyPrototypePath(rel)` → `{ owner: {kind:'lane'|'control-plane'} }` 或 `{ violation }`。
-  - **patch 的 owner 由文件名里的 lane 决定**（不是固定规则）——这正是"任何 lane 都能追加自己的 patch、零争用"的前提。
-  - `canLaneWrite(rel, lane)` → 越界写返回 `{ ok:false, reason }`（"owned by lane B" / "owned by the control plane"）。
+  - `classifyPrototypePath(rel)` → `{ owner: { kind: 'writer' | 'control-plane' | 'tooling' } }` 或 `{ violation }`。
+  - **patch 的 owner 由文件名里的 writer 决定**（不是固定规则）——这正是"任何 writer 都能追加自己的 patch、零争用"的前提。
+  - `canWriterWrite(rel, writer)` → 严格原语；**执行的那条是 `whyWriterMayNotWrite(rel, writer)`**（拒绝时给出理由，控制面路径放行）。
   - `resolvePrototypeOwnership()` 遍历项目，跳过隐藏文件，产出违例清单。
-- **取证到的真实价值**：它会抓出三类此前静默存在的问题——lane 前缀未声明的 patch（`patches/Z-…`）、命名不合规的 patch（`patches/oops.css`）、以及没人拥有的路径（`README.md`、`services/*/random.txt`）。这类文件以前会被 patch 扫描**静默忽略**，现在会被点名。
-- `prototype-status <slug>`：控制面视角的只读报告 —— `base.html` 是否存在、patch 总数与按 lane 分布、每个服务的端点/mock 覆盖/fragment/fixture 数、`dist/` 内容、以及所有权违例。纯文件检查，不解析浏览器实例。
+- **取证到的真实价值**：它会抓出三类此前静默存在的问题——writer 前缀未声明的 patch（`patches/Z-…`）、命名不合规的 patch（`patches/oops.css`）、以及没人拥有的路径（`README.md`、`services/*/random.txt`）。这类文件以前会被 patch 扫描**静默忽略**，现在会被点名。
+- `prototype-status <slug>`：控制面视角的只读报告 —— 页表与 `pageIssues`、每条补丁的页 / `@target` / 指纹、每个服务的端点/mock 覆盖/fragment/fixture 数、需求线与 `briefIssues`、`dist/` 三份交付物、以及所有权违例。纯文件检查，不解析浏览器实例。
 
 #### 6.2 派生索引（阶段 3 已提前完成）
 - 结论是**比原方案更进一步**：不落盘 manifest，索引每次从 `patches/` 重算（`scanPrototypePatches`），所以不存在"索引与磁盘不一致"这个状态，也就没有重建时机的问题。
 
 #### 6.3 契约 fragment 化 + 合成（阶段 5 已提前完成）
-- `services/{svc}/paths/*.yaml`（lane B 独占写）+ 控制面合成 `openapi.yaml`（`writeComposedContract`）。合成是控制面的独占写，无需锁。
+- `services/{svc}/paths/*.yaml`（`contract` 独占写）+ 控制面合成 `openapi.yaml`（`writeComposedContract`）。合成是控制面的独占写，无需锁。
 
-#### 6.4 挂接 Tasks DAG（明确推迟，非遗漏）
-原计划把"工作台任务 = 一个 TaskSpec、lane = 一个 node"接起来。**现在不做，理由是它当前不产生价值、只增加表面积**：
-- 并线要解决的是**写冲突**，而写冲突的解法已经落地了——派生索引（无共享文件）、按 lane 命名的 append-only patch、fragment 化契约、所有权矩阵。真正会互相覆盖的路径已经不存在了。
-- `TaskRunner` 的并行调度解决的是**多个 agent 同时干活**。当前是单用户 + 单 agent 的工作台，接上 DAG 只会多一层生命周期（Conductor、父子 session、verdict 回路）而没有并发的收益。
-- 而且 v1 的结构化输出（`param`/`artifact`）尚未实现 —— 原计划里 lane 之间靠 `${nodes.X.output.field}` 传产物路径，缺少这一环的话接上去也只能传自由文本，等于白接。
+#### 6.4 挂接 Tasks DAG（已落地：身份是绑定键，写前守卫按身份判）
 
-→ **触发条件**：当确实要同时跑多个 agent（例如 lane A 改 UI、lane B 同时补契约），再按 §3.4 的映射接 DAG，并把 `NodeOutput.params` 落地。届时 `canLaneWrite()` 就是每个 node 的写前守卫。
+原计划把"工作台任务 = 一个 TaskSpec、一个平面 = 一个 node"接起来，随后**按触发条件推迟**（写冲突已由派生索引 / append-only 补丁 / fragment 化契约 / 所有权矩阵消掉；单用户单 agent 时接 DAG 只多一层生命周期）。触发条件到齐之后（结构化输出已落地、Conductor 已上线、浏览器侧页级归属已对齐），这一节**已按它当初写的形状落地**：
+
+```
+node 声明 writes: checkout-ui      ← spec 字段，与 outputs 同层；校验同一 run 内唯一
+  → child session.taskWrites       ← 派发时盖章（TaskRunner.dispatch，复用 taskNodeId 那条路）
+  → <prototype_context writer="checkout-ui">   ← agent 读到的第一行就是"我以谁的身份写"
+  → whyWriterMayNotWrite(path, writer)         ← 写前守卫（PreToolUse 第 5d 步），拒绝时给出理由
+```
+
+**为什么绑定键是写入身份、而不是平面字母**（§3.4 的校正）：node id 活在**一次运行的 spec 快照**里，而补丁活在**产物**里——把两者做恒等，图重排一次，历史补丁的 owner 就成了一个不存在的节点名。前缀因此只是**命名空间租约**（"这正是我写的"），不是顺序键。
+
+**这一轮补的是它缺的那点东西——证据**（机制早就在跑，但没有任何测试证明它跑得对）：
+
+- `schema.test.ts`：`writes:` 的三条拒绝——不可用的 id（`ui-2` 会让补丁名解析回歧义）、保留 token `Z`（只有 `prototype-commit` 折入时写）、**同一 run 内重复**（大小写不敏感）；以及两个不同身份被接受。
+- `TaskRunner.test.ts`：**盖章那一步**（节点声明 `writes:` → 子会话 `taskWrites`；不声明就什么都不盖——"缺省即单写者"是 `resolvePrototypeWriter` 的判断，不该在这里替它写 `main`）。
+- `TaskRunner.test.ts`：**两个写者同时在飞，各自带自己的身份**——两个节点都在对方完成之前派发（那是并发，不是排队），两个子会话拿到的 `taskWrites` 互不相同，运行在两个都完成时才结束。补丁文件的隔离由这一对保证：**每个写者一个前缀**（撞车在 validate 就被拒）+ **写前守卫拒绝声称别人前缀的名字**（§3.6）。
+
+**边界要说清（并发安全的范围就是这么大）**：守卫拦的是**产物撞车**——别人的补丁、别人的契约 fragment / fixture / state，以及无人拥有的路径（拼错的补丁，注入器会静默忽略它）。**控制面文件是放行的**（页文档、`config.json`、`prd.md`、`dist/`），因为控制面就是 agent 自己，拦掉它会把"盖一个原型"这个最常见的情况一起拦掉。于是并行运行有一条必须遵守的规矩：**共享文件只由一条线写**——要么把页文档 / 配置 / PRD / dist 收给一个节点，要么每节点各有自己的页。两个节点同时改同一页是**没有任何守卫的**竞态，这一点写进了生成器 prompt（它现在会据此避免生成这种图），也写在这里。
+
+**仍然不做**：`parallel` / `map` / `verify` / `aggregate` 等非 `session` 节点种类只解析不执行（用 `session` 节点模拟，§3.4）；Conductor 不替节点开页、也不替它分页（理由见上一轮与本文件 §22 末尾——最硬的一条是预开页会把每次 DAG 运行绑在"这台机器有浏览器"上）。
+
+> **（触发它到齐的那一轮，记录在此）**：DAG 落地之后，并行 agent 有了**共享同一个工作区浏览器窗口**的实际需求——而这套窗口模型是**顺序驾驶**长出来的（窗口级租约 + 单槽 overlay），并发下会互相顶掉。浏览器侧的对齐见 §22 的「页是并行的工作单位」一轮：页级占用（`heldBy`）、`tab-assign`、子会话不动人的视线。文件侧的并发（写冲突）仍按上面三条，不受影响。
+
+> **页由谁给节点开？——不做自动分页**（用户定："先放着"，2026-09-16）：Conductor **不**替节点开页、也**不**替它分配页；节点要浏览器就自己 `tab-new`，隔离由 §22 的归属保证（一页一主，重跑可达同节点那页）。三条理由，按严重度：① **最硬的一条**——预开页会把每一次 DAG 运行绑在"有浏览器"上：无头服务端或桌面客户端未连接时 `createTab` 抛 `BROWSER_NO_CAPABLE_CLIENT`，而 `TaskRunner.dispatch` 的 catch 会把它变成 `failNode('dispatch failed: …')`，于是一个只改文件的节点会因为**这台机器上没有浏览器**而失败；要兜住就得吞掉异常，而"试了但没关系"是坏信号。② `ConductorSessionHost` 今天**没有任何 browser 面**（只有 session / message / kanban / cancel），自动分页要在这个有意的抽象上开洞。③ 预开 `about:blank` 没有价值，预开真实地址要么让 runner 解析节点 prompt（脆），要么在 spec 里给节点加字段——那是新设计，不是"顺手接线"。`run` 结束时**自动关页同样不做**：那些页可能正是人跑完要看的产物。触发条件见 §22 那一轮末尾。
 
 #### 6.5 拾取器是传感器（D15，设计上已满足）
 - 拾取器只回传事件（`pick` 返回 selector/矩形，不写文件）；写盘一律由控制面（`file:write` RPC）或 agent 的 `Write`/`Edit` 执行。
 - 因此 renderer 侧不存在写文件调用 —— 这是 D15 要求的实际形态。
 
-**阶段 6 完成标志（已达成部分）**：所有权矩阵可执行且能抓出越界/命名/无主路径；`prototype-status` 能给出项目全貌；patch 与契约的写入天然无争用（派生索引 + append-only + fragment 化）。**"两个 lane 并发跑"未做**，理由与触发条件见 6.4。
+**阶段 6 完成标志（已达成）**：所有权矩阵可执行且能抓出越界/命名/无主路径；`prototype-status` 能给出项目全貌；patch 与契约的写入天然无争用（派生索引 + append-only + fragment 化）；**两个写者并发跑**——节点以它声明的写入身份写产物（§3.6），派发时盖章（`TaskRunner.test.ts`），两个身份撞车在 validate 就被拒、写别人的前缀在写前被拒（`schema.test.ts` / `ownership.test.ts`）。守卫的范围（产物撞车，不含控制面共享文件）见 6.4。
 
 ---
 
@@ -409,10 +549,10 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 | (b) | 改写**已存在**的真实后端返回 | CDP Fetch 拦截 | ✅ **阶段 7，靠阶段 5 的机制自然获得** |
 
 #### 已完成：无中生有入口（`prototype-open <slug>`）
-- "无中生有"**不需要新机制**：agent 从阶段 1.2 起就能写 `prototypes/{slug}/base.html`，浏览器面板一直能打开它。缺的是入口体验——`resolvePrototypeEntry()` 决定"这个原型的页面在哪"，**答案只有一个：它的 origin**（服务器把 `base.html` + `patches/` 渲染出来；overlay 则是它自己的在线地址）。没有页面时**明确报错并点名该怎么拿到一页**，绝不拿交付物顶替（§16.3）。
-- 命令 `prototype-open <slug>` 复用既有的 `navigate`，没有新增导航能力。**「能不能打开」由 `PrototypeStatus.pageAvailable` 驱动**（overlay 看 `targetUrl`、scratch 看 `base.html`），详情页据此禁用「预览」，并有测试逐组合断言它与 `resolvePrototypeEntry` 不漂移。
+- "无中生有"**不需要新机制**：agent 从阶段 1.2 起就能写 `prototypes/{slug}/cart.html`，浏览器面板一直能打开它。缺的是入口体验——`resolvePrototypeEntry()` 决定"这个原型的页面在哪"，**答案只有一个：它的 origin**（宿主把我们自己的页 + 该页生效的 `patches/` 渲染出来；overlay 页则是它自己的在线地址）。没有页面时**明确报错并点名该怎么拿到一页**，绝不拿交付物顶替（§16.3）。
+- 命令 `prototype-open <slug>` 复用既有的 `navigate`，没有新增导航能力。**「能不能打开」由 `PrototypeStatus.pageAvailable` 驱动**（入口页是 overlay → 它自己有地址；是我们自己的页 → 有宿主且那份文档在，§19.3），详情页据此禁用「预览」，并有测试逐组合断言它与 `resolvePrototypeEntry` 不漂移。
 - 这些 RPC 的错误文案是**写给 agent 的**（点名缺什么、附绝对路径）；页面下方那条 kind-aware 的告警才是给人的引导。
-- **详情页只有三个动作**：看（预览）、改（在对话里改）、交（导出给开发）。唯一的例外长在数据上——overlay 的「目标页面」那一行可编辑（§13.2.1），因为那是**数据本身可编辑**，不是又一个动作入口。
+- **详情页只有三个动作**：看（预览）、改（在对话里改）、交（导出给开发）。唯一的例外长在数据上——**Pages 区块**里 overlay 页的地址可就地改（页行右侧的 Globe 按钮，§13.2.1），因为那是**数据本身可编辑**，不是又一个动作入口。
 - 这条收敛的理由值得记住：**被删掉的入口回答的都是"机器需要什么"，不是"用户想要什么"**；登录、看 DOM、开一个窗口这类准备与排错交给 agent 的 browser 工具（它与原型窗口共用 `persist:browser-pane`，所以准备阶段登录一次即可）。
 - 打开动作曾报过一次 `about:blank` 加载失败（错报在回退上，不是那次导航）——踩坑记录见 [开发文档](prototype-workbench-dev.md) §3.3。
 - **空状态不再指向按钮名**：没有页面时，告警卡说的是"说一句你要做什么"，而不是"按某个按钮"。这条告警**只会出现在 scratch 上**：overlay 的地址在创建时就是必填（§13.2），所以它不会缺页面
@@ -426,7 +566,7 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 | | 页面是什么 | 补丁打在哪 | 交付什么 |
 |---|---|---|---|
 | **overlay** | **那个在线 URL 本身**（有 JS、有登录、有真数据） | 活页面，`apply` 注入进去 | patches + dev-spec（写明改的是哪个地址） |
-| **scratch** | 我们自己写的 `base.html` | 我们自己的文档，服务器渲染时内联 | 扩展自带这一页 + dev-spec |
+| **scratch** | 我们自己写的那份文档（`<页名>.html`） | 我们自己的文档，宿主渲染时内联 | 扩展自带这一页 + dev-spec |
 
 于是在线 URL 的用途收敛成两件事：**竞品调研**，以及**分析要 patch 哪个 DOM**（browser 工具的 `snapshot` / `evaluate` 就够）——它**不必变成文件**。"准备好之后进原型窗口还是登录着的"靠的是所有 browser 窗口共用同一个 partition（`persist:browser-pane`）：准备阶段在那个窗口里登录一次，原型窗口打开同一地址就带着。
 
@@ -460,8 +600,8 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 | PM 不写 YAML | 契约无人维护 | 契约由 agent 生成维护（D4 语义写通道） |
 | **Fetch 拦截拖慢页面** | 所有请求都过主进程一轮 | 未在真实环境量过；若明显变慢，把 `Fetch.enable` 的 pattern 收窄到目标接口域（目前是 `*`） |
 | **无锁导致静默丢数据** | 并发写同文件 last-writer-wins | 用所有权代替锁（§3.3）；单文件资源只由控制面写。真要做并发写之前先看开发文档 §3.8 |
-| **lane 边界被越写** | 所有权模型失效 | `canLaneWrite` 写前校验 owner，越界拒绝并告警（阶段 6.1） |
-| **Tasks 结构化输出未实现** | 下游 lane 无法可靠消费上游产物 | 接 DAG 之前先落地 `NodeOutput.params`（阶段 6.4） |
+| **写者边界被越写** | 所有权模型失效 | `whyWriterMayNotWrite` 写前校验 owner，越界拒绝并给出理由（阶段 6.1 / §3.6） |
+| ~~Tasks 结构化输出未实现~~ **已落地** | 下游节点无法可靠消费上游产物 | `NodeOutput.params` 已实现：节点在 `outputs:` 里声明字段，派发时带上契约，完成时归档为 `params`；`when:` 分支条件即建立在此之上。原"接 DAG 之前先落地"的前置条件解除 |
 | **patch 不回流源码** | 用户可能误以为改完就能应用回源码 | 这是**设计事实**而非缺陷：patch 是给开发的可执行规格，由人翻译；导出物承担"说清楚要改什么"的职责 |
 
 实现层面的坑（CDP detach、渲染层导入边界、缺上游脚本、既有测试失败基线等）见 [开发文档](prototype-workbench-dev.md)。
@@ -487,11 +627,11 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 
 ### 平面分离与并线
 
-10. 两个 lane 并发写各自的产物文件，**互不覆盖**（人工构造并发写验证；靠 append-only 与所有权，不靠锁）。
+10. 两个写者并发写各自的产物文件，**互不覆盖**（人工构造并发写验证；靠 append-only 与所有权，不靠锁）。
 11. **索引不落盘**：任何本地缓存被删都不改变"有哪些补丁"，它每次从磁盘重算。
-12. lane 试图写不属于它的文件时被拒绝并有告警。
+12. 写者试图写不属于它的文件时被拒绝并有告警。**（已落地：§3.6 第 5 条把 `whyWriterMayNotWrite` 接进写路径，拒绝时给出理由——`pre-tool-use-checks.isolated.ts` 覆盖流水线；`prototype-status` 另有一条事后报告。拦的是产物撞车，控制面共享文件按 §6.4 的边界放行）**
 13. 拾取器路径上不存在任何直接文件写（renderer 只发事件）。
-14. 一个工作台任务能被表达为一个 Task（lane = node），且 `depends_on` 生效。**（推迟，触发条件见 §6.4）**
+14. 一个工作台任务能被表达为一个 Task，且 `depends_on` 生效；**节点以它声明的写入身份写产物**（§3.6 的六条），两个写者可以同时在跑而各自只写自己的前缀（§6.4，测试见 `TaskRunner.test.ts` 与 `schema.test.ts`）。
 
 ### 安全底线
 
@@ -515,14 +655,14 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
                               ↓
                      阶段5 服务契约层（5.1 依赖 1.2）
                               ↓
-                     阶段6 平面分离与并线（6.2/6.3 已由阶段 3/5 提前完成；6.4 按触发条件推迟）
+                     阶段6 平面分离与并线（6.1 已落地；6.2/6.3 由阶段 3/5 提前完成；6.4 触发条件到齐后已落地）
                               ↓
                      阶段7 无中生有入口 + 改写真实后端（放开面：决定不做）
 ```
 
 - **硬阻塞**：阶段 1.2（Explore 放行）同时卡住阶段 3、5、6。已完成。
 - **可并行**：阶段 2 不依赖阶段 1。
-- **并线不新增调度器**：写冲突已由"派生索引 + append-only patch + fragment 化契约 + 所有权矩阵"消除；多 agent 调度按 §6.4 的触发条件再接 TaskRunner。
+- **并线不新增调度器**：写冲突已由"派生索引 + append-only patch + fragment 化契约 + 所有权矩阵"消除；多 agent 调度复用 TaskRunner，身份与写前守卫见 §6.4。
 
 ---
 
@@ -538,7 +678,7 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 
 ### A. 在真实页面上改（核心闭环）
 
-> **前置**：先建一个 **overlay** 原型：创建对话框选「在已有页面上改」并填目标页，或 `browser_tool prototype-create Checkout flow --url <你的产品页面 URL>`。目标页就是**要打开的页面本身**（详情页「预览」直接开它、并把补丁注入进去），不改变 patch 的行为——patch 对任何源页面都是覆盖层。
+> **前置**：先建一个原型，再给它加一个 **overlay 页**：`browser_tool prototype-create Checkout flow`，然后 `browser_tool prototype-pages --add checkout=<你的产品页面 URL>`（界面上是「新建页」→ 选「在已有页面上改」并填地址）。目标页就是**要打开的页面本身**（详情页「预览」直接开它、并把补丁注入进去），不改变 patch 的行为——patch 对任何源页面都是覆盖层。
 
 1. `browser_tool navigate <你的产品页面 URL>`（示例 `http://localhost:3000/checkout`；线上地址同样成立）
 2. `browser_tool pick` → 光标高亮跟随，点一个元素 → 拿到稳定 selector
@@ -552,9 +692,9 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 
 ### B. 从零做一个原型（scratch 类型）
 
-6. 创建时选 **scratch**（两个入口都行）：UI 里它就是**默认选中**的那个；对话里 `browser_tool prototype-create Quotes flow`（不带 flag 就是它）
-7. 让 agent 直接写 `prototypes/quotes-flow/base.html`（scratch 的 `base.html` 就是我们自己的文档，不需要任何特殊命令）
-8. `browser_tool prototype-open quotes-flow` → 在浏览器面板里打开；再按 A 的 3–5 加 patch
+6. 建容器：对话里 `browser_tool prototype-create Quotes flow`（或界面上新建一个原型）——它建出来的原型**没有页**，这是"还没有页"这句真话
+7. 让 agent 直接写 `prototypes/quotes-flow/quote.html`：**顶层每个 `*.html` 就是这个原型的一页**（scratch，文件名即页名），不需要任何特殊命令
+8. 想让根地址落在这一页上就 `browser_tool prototype-entry quote`（不配的话根地址给的是生成的页索引），再 `browser_tool prototype-open quotes-flow` 在浏览器面板里打开；之后按 A 的 3–5 加 patch
 
 ### C. mock 就是服务（契约 → 前端 → 后端）
 
@@ -569,14 +709,13 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 
 ### D. 交付与验收
 
-13. `browser_tool prototype-export checkout-flow` → 交付物落在 `dist/extension/`（§17），命令会打印它的路径与 **`http://checkout-flow-<hash>.localhost/dist/extension/base.html`** 地址（不再是 `file://`，见 §16）
-14. `browser_tool prototype-open checkout-flow` → 打开的是它的 **origin 根**：`base.html` + 全部 patch 现算出来的页面（与交付物里那一页同一份补丁、同一顺序，只差扩展要求的改写），而不是某个文件
+13. `browser_tool prototype-export checkout-flow` → 交付物落在 `dist/extension/`（§17），命令会打印它的路径与 **`http://checkout-flow-<hash>.localhost/dist/extension/<入口页>.html`** 地址（不再是 `file://`，见 §16）；有我们自己写的页时还会另写 `dist/static/`（§17.8），有 live 页时另写 `dist/bookmarklet.html`（§17.9）
+14. `browser_tool prototype-open checkout-flow` → 打开的是它的 **origin 根**：入口页（没配入口时是生成的页索引）加上这一页生效的补丁现算出来的页面，而不是某个文件
 15. `browser_tool prototype-status checkout-flow` → 全貌 + 所有权检查
 
 ### E. 故意制造一个所有权违例
 
-16. 写一个 `prototypes/checkout-flow/patches/oops.css`（不符合 `{lane}-{nnn}-{name}.css`）
-17. `browser_tool prototype-status checkout-flow` → 应该点名它"misnamed patch"
+16. 写一个 `prototypes/checkout-flow/patches/oops.css`（不符合 `{writer}-{nnn}-{name}.css`），再跑 `browser_tool prototype-status checkout-flow` → 应该点名它"misnamed patch"
 
 这条验证的是：**以前会被静默忽略的文件，现在会被抓出来**。
 
@@ -608,14 +747,14 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 
 > 第 24 步是本轮改动的验收点：**"选中"只回答"哪一个元素"，"改成什么"一律在对话里说**（§12.4）。
 
-### H. 两种原型类型（§13 的验收）
+### H. 两种页类型（§13 → §19 的验收）
 
-29. 在创建对话框里看两个类型卡片：**默认选中「从零开始」**；选「在已有页面上改」→ 出现目标页输入框，**标着「必填」**，为空时「创建」是灰的；选回「从零开始」→ 输入框消失（切回再切一次，确认不会残留上一个类型的输入）
-30. 建一个 overlay 并填目标页 → 详情页标题下是 overlay 的引导语，元数据里有「目标页面」行（但**没有**"打开它"的按钮——想看就在对话里说一句，agent 自己导航）
-31. 建一个 scratch → 详情页**没有**「目标页面」行、**没有**「打开目标页面」按钮，引导语说的是「这是你自己的文档」
-32. `base.html` 缺席的告警**只会出现在 scratch 上**（说要做啥、或指一个可参考的页面，**不指向按钮**）：overlay 的地址在创建时就是必填，所以它不会缺页面；对话框里不填地址时被挡下的是**创建按钮**，不是创建后的预览
-33. 目录里 `prototypes/<slug>/config.json` 是 `{ "kind": "overlay", "targetUrl": "…" }` / `{ "kind": "scratch" }` 两种形态——scratch **不存** targetUrl，overlay **一定有** targetUrl
-34. `browser_tool prototype-status <slug>` 与 agent 的 system prompt 里都能看到类型；对话里 `prototype-create Landing page`（不带 flag，默认就是 scratch）同一条链路建出 scratch 并自动绑定；`prototype-create Rival --url https://…` 建出 overlay，而 `--url` 缺值或同时给 `--scratch` 都会被拒
+29. 「新建页」对话框里看两个类型卡片：**默认选中「我们自己的一页」（scratch）**；选「一个真实页面」（overlay）→ 出现地址输入框，**标着「必填」**，为空时「新建」是灰的；切回另一个类型 → 输入框消失（切回再切一次，确认不会残留上一个类型的输入）
+30. 加一个 overlay 页并填地址 → 详情页 **Pages 区块**里那一行显示它记录的地址（右侧一个 Globe 按钮可就地改，§13.2.1）；「预览」打开的是**那个在线地址本身**，补丁注入进去
+31. 加一个 scratch 页 → 先让 agent 写 `<页名>.html`；Pages 区块里那一行显示的是它自己的**文档路径**（没有地址，也没有 Globe 按钮）
+32. 「没有可打开的页」的告警说清下一步（写一份文档、或加一个 live 页），**不指向任何按钮**；overlay 页在新建时地址就是必填，所以它不可能缺地址
+33. 目录里 `prototypes/<slug>/config.json` 是一张页表：`{ "pages": [ { "name": "cart", "kind": "scratch", "entry": true }, { "name": "pay", "kind": "overlay", "url": "https://…" } ] }`——scratch 页**不写** `file`（名字即文件名）、overlay 页**一定**有 `url`（§19.1）
+34. `browser_tool prototype-status <slug>` 与 agent 的 system prompt 里都能看到**每一页的**类型；`prototype-pages --add pay=https://…` 加一个 live 页、`--add cart`（文档已存在）把一页放进流程顺序；`prototype-entry <name|none>` 决定根地址开哪一页
 
 > 第 33 步验证的是「数据层分离」这个选择本身：类型不是 UI 状态、不是标签，而是**落盘的一个字段**，所以详情页、prompt、agent 命令、导出三条路读的是同一个真源。
 
@@ -623,20 +762,20 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 
 **B 参考面**
 
-35. 建一个 scratch 原型 → 详情页「参考资料」区点**「添加参考」**。表单里上半部分是**已有原型**（点一下就关联，不新建）；下半部分填名称 + URL 会**新建**一个 overlay 原型再关联（表单下方有字说明这个副作用；两个字段都必填——新建的是 overlay，那个地址就是它的页面）
+35. 建一个原型并写一页（scratch）→ 详情页「参考资料」区点**「添加参考」**。表单里上半部分是**已有原型**（点一下就关联，不新建）；下半部分填名称 + URL 会**新建**一个原型——它带一个 overlay 页，那个地址就是它的页面（表单下方有字说明这个副作用；两个字段都必填）
 36. **关联已有原型**：先另建一个 scratch，然后回到第一个原型，点候选里的它 → 应立即关联。**这就验证了「关系与类型无关」**：引用者是 scratch，被引用者也是 scratch
-37. 参考行点**「打开」**：overlay 参考落在它记录的真实地址（活页面，带它自己的登录态）；scratch 参考打开它自己渲染出来的页面（origin，不是导出物），且第二行显示「它自己的页面」而不是「未记录目标页面」
-38. 点参考行的 slug → 跳到那个参考原型自己的详情页。在那里打 patch —— overlay 的直接打在活页面上，scratch 的写在它自己的 `base.html` 里；这些 patch 属于**它自己**
+37. 参考行点**「打开」**：overlay 参考落在它记录的真实地址（活页面，带它自己的登录态）；scratch 参考打开它自己渲染出来的页面（origin，不是导出物）。第二行说的是"打开它会落到它的哪一页"（`entry: <页名>`，没有页则是 `no pages yet`）——参考是什么由它的**流程**决定，所以这里报页，而不是报一个缺失的地址
+38. 点参考行的 slug → 跳到那个参考原型自己的详情页。在那里打 patch —— live 页的直接打在活页面上，我们自己页的写进它自己的文档；这些 patch 属于**它自己**
 39. 回到交付原型 → `browser_tool prototype-apply` → 注入的是**交付原型**的 patch，参考的 patch 一条都不在里面（第 42 步会再确认一次）
 
 **A 起点**
 
-40. 在交付原型（scratch）上：让 agent 用 Write 工具写 `base.html` 当底稿 → 手改几处
-41. **护栏**：`base.html` 是**无条件覆盖**的写入口，agent 要覆盖一份已有内容的 scratch 文档时，必须先问一句；overlay 上没有可覆盖的文档——它的页面永远是那个地址本身
+40. 在交付原型（scratch）上：让 agent 用 Write 工具写 `cart.html` 当底稿 → 手改几处
+41. **护栏**：页文档是**无条件覆盖**的写入口，agent 要覆盖一份已有内容的 scratch 文档时，必须先问一句；overlay 页上没有可覆盖的文档——它的页面永远是那个地址本身
 
 **护栏**
 
-42. 导出交付原型（`prototype-export`）→ 检查 `dist/extension/base.html`：里面**不应**出现任何参考原型的 patch 内容。这是第 38 步那批 patch 最危险的去处
+42. 导出交付原型（`prototype-export`）→ 检查 `dist/extension/<入口页>.html`：里面**不应**出现任何参考原型的 patch 内容。这是第 38 步那批 patch 最危险的去处
 43. 目录里 `prototypes/<交付原型>/config.json` 应有 `"references": ["rival-checkout"]`，而 `prototypes/rival-checkout/config.json` **不应**有 `references`（关系是单向的）
 44. 对话里（会话已绑定交付原型）说「把另一个也加进来参考」→ agent 应执行 `prototype-reference <slug>`；若它需要先建一个，应当带 `--no-bind`，**且绑定不能被换掉**（`prototype-list` 里 BOUND 仍是交付原型）
 45. 参考行点解除（↔ 图标）→ 该行消失，`config.json` 里的 `references` 一并消失
@@ -652,53 +791,53 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 
 ### J. 交付物的 origin（§16 的验收）
 
-48. 打开 `http://<slug>-<hash>.localhost/`（**不带路径**）→ 应看到 base 页**加上全部 patch**；对照 `/base.html`（裸底稿，无 patch）与 `/dist/extension/base.html`（导出时冻结的那一页）。**在没导出过的情况下也要能看到 patch 生效**——这是这一节的核心
-49. 让 agent 建一个 scratch 原型，`base.html` 里放 `<script type="module">` + `fetch('/api/anything')`，写一条对应 path 的契约 fragment 与 fixture，然后 `prototype-mock-apply` → **相对 fetch 应被 mock 答上**。这是 §16 的收益点：`file://` 时代这个请求根本发不出去，mock 再对也没用
+48. 打开 `http://<slug>-<hash>.localhost/`（**不带路径**）→ 应看到**入口页**（没配入口时是生成的**页索引**）加上这一页生效的补丁；对照 `/_index` 与 `/dist/extension/…`（导出时冻结的那一份）。**在没导出过的情况下也要能看到补丁生效**——这是这一节的核心（§19 起 `base.html` 不再特殊，"裸底稿"那个调试地址已取消，§19.3）
+49. 让 agent 建一个原型、写一页（我们自己的一页），文档里放 `<script type="module">` + `fetch('/api/anything')`，写一条对应 path 的契约 fragment 与 fixture，然后 `prototype-mock-apply` → **相对 fetch 应被 mock 答上**。这是 §16 的收益点：`file://` 时代这个请求根本发不出去，mock 再对也没用
 50. 在页面里 `document.cookie = 'a=1'` 再读回 → 有值；`localStorage` 同理。两者在 `file://` 下都是空/不可用
 51. 重启应用后重开同一原型 → cookie 与 localStorage **还在**（origin 不再随端口变）
-52. **SPA**：让 `base.html` 里放一个 `history.pushState(null,'','/orders/42')` 的按钮 + `<link href="/assets/app.css">`，并在原型目录里放 `assets/app.css` → 点按钮后**刷新**，页面应仍然起来（回退到原型页面），且样式表命中（根绝对路径）
+52. **SPA**：在某一页的文档里放一个 `history.pushState(null,'','/orders/42')` 的按钮 + `<link href="/assets/app.css">`，并在原型目录里放 `assets/app.css` → 点按钮后**刷新**，页面应仍然起来（回退到原型页面），且样式表命中（根绝对路径）
 
 ### K. 页面从哪来，两种类型各走各的（§13.1 / §13.1.1 的验收）
 
 前提：这些**都没有界面入口了**——是对着对话说，不是找按钮。
 
-53. 新建一个 scratch → `prototypes/<slug>/` 里**没有** `base.html`（只有 `config.json` 与空的 `patches/`），详情页的「预览 / 导出」是灰的，告警卡写的是"在对话里说一声"，**不指向任何按钮**
-54. 在对话里说「写一个登录页首稿」→ agent 用 Write 工具写 `base.html` → 「预览」变可用。**全程界面上没有出现过"写底稿"这类按钮**
-55. 新建一个 overlay 并在创建时填了目标页 → 「预览」直接打开**那个在线地址**并注入补丁：地址栏是真实站点，页面带自己的 JS、自己的登录态、自己的数据。`prototypes/<slug>/` 里**没有、也不需要** `base.html`——这是 overlay 的核心判据
-56. **地址在创建时就必填**：对话框里只填名字、选「在已有页面上改」而不填地址 → 「创建」是灰的；对话里 `prototype-create Rival --url`（缺值）或 `--scratch --url …`（两个都给了）→ 明确报错。所以 overlay 建出来**一定**有地址，「预览」对它永远可用——这也是 §13.5 那条"最粗糙的一处"消失的原因
+53. 新建一个原型（容器）→ `prototypes/<slug>/` 里**没有**任何 `.html`（连 `config.json` 都不写：没有东西可声明），详情页的「预览 / 导出」是灰的，告警卡写的是"在对话里说一声"，**不指向任何按钮**
+54. 在对话里说「写一个登录页首稿」→ agent 用 Write 工具写 `login.html`，那一页就此存在 → 「预览」变可用。**全程界面上没有出现过"写底稿"这类按钮**
+55. 给原型加一个 live 页并填了地址 → 「预览」直接打开**那个在线地址**并注入补丁：地址栏是真实站点，页面带自己的 JS、自己的登录态、自己的数据。`prototypes/<slug>/` 里**没有、也不需要**那个页的文档——这是 overlay 页的核心判据
+56. **地址在新建那一页时就必填**：对话框里只填页名、选「一个真实页面」而不填地址 → 「新建」是灰的；对话里 `prototype-pages --add pay=`（缺 url）→ 明确报错。所以 live 页建出来**一定**有地址，「预览」对它永远可用——这也是 §13.5 那条"最粗糙的一处"消失的原因
 57. 详情页上确认动作区**只有**「预览 / 在对话里改 / 导出」三个，没有别的入口
-58. 对另一个 scratch 说「以 <另一个原型> 为起点」→ agent 会告诉你做不到，改用**列表右键 →「复制」**：新原型的 slug 是 `<源 slug>-copy`，页面与补丁**成对**过来，kind / targetUrl / references 也跟过来（是同一件事的另一份），从那一刻起两边互不影响；再复制一次得到 `-copy-2`（这一步见 O 组）
+58. 对另一个 scratch 说「以 <另一个原型> 为起点」→ agent 会告诉你做不到，改用**列表右键 →「复制」**：新原型的 slug 是 `<源 slug>-copy`，页面与补丁**成对**过来，页表 / references 也跟过来（是同一件事的另一份），从那一刻起两边互不影响；再复制一次得到 `-copy-2`（这一步见 O 组）
 
 ### L. 打开 = 打开当前的页面（§16.3 / §16.4.1 的验收）
 
-59. 打开一个有补丁的 scratch 原型 → 地址是 `http://<slug>-<hash>.localhost/`，**不是** `/dist/extension/base.html`；页面已经带全部补丁效果。**在交付物存在的情况下也必须如此**（这条就是本节的判据）。overlay 则打开它记录的在线地址，地址栏不变——两者的区别本身就是本节要确认的东西
+59. 打开一个有补丁的原型 → 地址是 `http://<slug>-<hash>.localhost/`，**不是** `/dist/extension/<入口页>.html`；页面已经带该页生效的补丁效果。**在交付物存在的情况下也必须如此**（这条就是本节的判据）。live 页则打开它记录的在线地址，地址栏不变——两者的区别本身就是本节要确认的东西
 60. 在那个页面上继续改：面板工具栏选元素 → 跳回会话、补完那句话发送 → agent 写补丁并重放 → 新效果**原地出现**，页面不重载、不闪。用一个会 `appendChild` 的 JS 补丁试：在**面板工具栏**重复点「应用补丁」应当**只出现一次**（跑两遍就是这里要防的那个静默错误）
 61. 只改某个已有补丁的**内容**（不改文件名）→ 面板工具栏的「应用补丁」不会重复注入它（按文件名算"已内联"）→ **刷新**页面后看到新内容
-62. 把某 scratch 原型的 `base.html` 删掉 → 详情页「预览」变灰、告警说"说一句你要做什么"；直接导航到它的 origin 得到 404；`/dist/extension/base.html`（上次导出的那一页）仍可按名字访问（交付物没被藏起来，只是不再是入口）。同一个原型导出时**应当报错**（没有文档可交）；overlay 导出写 `dist/extension/` + `dev-spec.md`
+62. 把某个我们自己页的文档删掉 → 详情页「预览」变灰、告警说"说一句你要做什么"；直接导航到它的 origin 得到 404；`/dist/extension/<那一页>.html`（上次导出的那一份）仍可按名字访问（交付物没被藏起来，只是不再是入口）。同一个原型导出时**应当报错**（那一页没有文档可交）
 
 ### M. 交付物：一个原型一个扩展（§17 的验收）
 
-63. 在一个 overlay 原型上 `prototype-export` → `dist/extension/` 里出现 `manifest.json` / `README.md` / `patches/*.css` / JS 脚本，`dist/dev-spec.md` 照旧；按 README 的三步在 `chrome://extensions` 里 **Load unpacked**，然后打开目标页 → **补丁已经在**，没有任何要点的东西
+63. 在一个只有 live 页的原型上 `prototype-export` → `dist/extension/` 里出现 `manifest.json` / `README.md` / `patches/*.css` / JS 脚本，`dist/dev-spec.md` 照旧；按 README 的三步在 `chrome://extensions` 里 **Load unpacked**，然后打开目标页 → **补丁已经在**，没有任何要点的东西
 64. **刷新页面** → 补丁仍在（是浏览器注入，不是一次性动作）；在同一站点内点一个站内链接换页 → 补丁也在（每条 content script 按 `matches` 生效）。
 65. 让 agent 加一条会 `appendChild` 的 JS 补丁（比如插一个徽章）→ 重新导出 → 在 `chrome://extensions` 点 **Reload** 并刷新页面 → 徽章**只有一个**（§17.3 的"可重跑"规矩）；在同一页里切换 SPA 视图 → 补丁自动重放到新视图
 66. 打开扩展的 README：写明**装法**、**作用范围**（`matches` 列表）、**改了哪些补丁**、**构建时间与版本**、以及"改一条补丁要重新导出 + Reload"；`chrome://extensions` 上显示的版本号与 README 一致——这条是"我看到的和你说的不一样"的唯一答案
 67. 找一个下发严格 CSP 的站点（GitHub 之类）→ 补丁**照旧生效**（内容脚本由浏览器注入，页面策略管不到它）
-68. scratch 原型导出 → `dist/extension/base.html` 是入口页（**每一页都在包里、文件名不变**，所以页间链接照旧）；Load unpacked 后点扩展的 **options**（或工具栏图标）→ 打开的就是它，带全部补丁
-69. 在 scratch 的 `base.html` 里写一段内联 `<script>` 和一处 `onclick="…"` → 导出后打开 options 页：内联脚本被提取成文件后**照旧运行**，`onclick` 也照旧生效（agent 不需要知道扩展存在，§17.1）；再把 `onclick` 换成运行期拼出来的字符串试一次 → 仍然生效
+68. 有我们自己页的原型导出 → 包里每一页都在（**文件名不变**，所以页间链接照旧）、每页各自一份构建产物；Load unpacked 后打开扩展的 **options** → 是生成的**页索引**（点一页就过去），工具栏图标打开**入口页**（没配入口则开索引），打开的那一页带着该页生效的补丁
+69. 在某一页的文档里写一段内联 `<script>` 和一处 `onclick="…"` → 导出后打开那一页：内联脚本被提取成文件后**照旧运行**，`onclick` 也照旧生效（agent 不需要知道扩展存在，§17.1）；再把 `onclick` 换成运行期拼出来的字符串试一次 → 仍然生效
 70. 给某个原型加一条契约 fragment + fixture 并 `prototype-mock-apply` → 导出后的扩展里那条请求**被包里伪造的数据答上**，README 列出了这条路由是假的；换成"真实产品是 PWA"的情形（请求由它自己的 service worker 发出）→ 那条 mock 不生效（README 已写明这条边界）。
     另外确认一个曾经静默失败的点（两条以上 js 补丁只有第一条执行，见 [开发文档](prototype-workbench-dev.md) §3.4）：在一个**只有一条 js 补丁**和**有两条以上 js 补丁**的原型上分别导出，每条补丁都生效
 
 ### N. 换环境：地址可以改（§13.2.1 的验收）
 
-71. 在一个绑定好的 overlay 上说「这个我们测试环境也有一份」→ agent 跑 `prototype-target https://staging.example.com/checkout` → 输出是 `from:` / `to:` 两行，加上四条后果（新地址生效、旧窗口要重开、选择器可能不再匹配、类型仍不可改）；`config.json` 里**只有 `targetUrl` 变了**（kind 与 references 不动）；详情页的「目标页面」行跟着变，而「预览」一直可用
-72. 同一件事在界面上做一遍：详情页元数据里「目标页面」那一行**完整显示地址**，地址右边一支铅笔 → 点开是一个输入框 + 一段风险说明（正是第 71 步那两条静默失效），地址与当前值相同时「保存」是灰的 → 改成第三个环境、保存 → 对话框关闭、行上立刻是新地址
-73. 三种拒绝路径都要试：对 **scratch** 说「把它指到某个地址」→ 拒绝（"its page is its own base.html"）；地址写成 `app.example.com/x`（缺 scheme）→ 拒绝并提示补上 scheme（**对话框里也走同一条规则**，错误就地显示在弹窗里）；在**没绑定**的会话里跑命令 → 拒绝并提示 `prototype-bind`（这条命令唯一的位参数是地址，所以它不认位置上的 slug）
+71. 在一个绑定好的、有 live 页的原型上说「这个我们测试环境也有一份」→ agent 跑 `prototype-target https://staging.example.com/checkout --page <页名>` → 输出是 `from:` / `to:` 两行，加上四条后果（新地址生效、旧窗口要重开、选择器可能不再匹配、类型仍不可改）；`config.json` 里**只有那一页的 `url` 变了**（页表其余行与 references 不动）；Pages 区块里那一行的地址跟着变，而「预览」一直可用
+72. 同一件事在界面上做一遍：**Pages 区块**里那一页的地址**完整显示**，右边一个 **Globe 图标**（tooltip：改这一页的地址）→ 点开是一个输入框 + 一段风险说明（正是第 71 步那两条静默失效），地址与当前值相同时「保存」是灰的 → 改成第三个环境、保存 → 对话框关闭、行上立刻是新地址
+73. 三种拒绝路径都要试：对**我们自己那一页**说「把它指到某个地址」→ 拒绝（"它的页面就是它自己的文档"）；地址写成 `app.example.com/x`（缺 scheme）→ 拒绝并提示补上 scheme（**对话框里也走同一条规则**，错误就地显示在弹窗里）；在**没绑定**的会话里跑命令 → 拒绝并提示 `prototype-bind`（这条命令唯一的位参数是地址，所以它不认位置上的 slug）
 74. 改完再 `prototype-export` → `dev-spec.md` 第一行与扩展 README 里的地址都换成新的（`matches` 也跟着换）；**旧窗口里的页面不会自己变**——`prototype-open` 一下才挪过去（这条正是命令里那句话的验收）
 
 ### O. 列表的复制与删除（§13.1.1 的验收）
 
 75. 在原型列表的一行上**右键**（或悬停看那个 `…`）→ 菜单两项：「复制」「删除」。先确认菜单里**没有**别的条目
-76. 点「复制」→ toast 报出新 slug（`<源 slug>-copy`），面板**直接跳到那份副本**；进 `prototypes/<slug>-copy/` 看：`base.html` 与 `patches/` 都在，`config.json` 是新的（kind / targetUrl / references 跟过来），**没有 `dist/`**；再复制一次 → `-copy-2`
+76. 点「复制」→ toast 报出新 slug（`<源 slug>-copy`），面板**直接跳到那份副本**；进 `prototypes/<slug>-copy/` 看：各页文档与 `patches/` 都在，`config.json` 是新的（页表 / references 跟过来），**没有 `dist/`**；再复制一次 → `-copy-2`
 77. 改副本里的一个补丁 → **源原型不受影响**；反过来也成立。这是"复制的是原型，不是材料"的验收
 78. 对一个被别的原型（`references` 指向它）的原型点「删除」→ 先弹确认（写明删的是什么）→ 确认后行消失、目录也没了，toast 里点出**还有哪个原型在引用它**；打开那个引用方 → 它的 `config.json` 里的 references **原样保留**（悬空），`prototype-status` 会告诉读者这个参考已经不在
 79. 删掉当前正打开着的原型 → 详情页回到原型列表，而不是停在一个已经不存在的 slug 上
@@ -709,8 +848,8 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 81. 在一个**已经有对话**的原型上点「预览」→ 窗口的地址栏写的是 `http://<slug>-<hash>.localhost/`，而不是它正在显示的第三方站点地址（overlay 尤其明显）；工具栏的「选中元素 / 应用补丁」是亮的，在 overlay 上点「应用补丁」→ 补丁落在那个真实页面上
 82. 在一个**还没有对话**的原型上点「预览」→ 窗口照常打开，但地址栏是它实际所在的地址、两个按钮是灰的（点了不会有任何提示，因为点不动）；回详情页点「在对话里改」建出对话，再让 agent `prototype-open` → **同一个窗口**被复用并绑定，地址栏变成原型域名、按钮变亮
 83. 在 scratch 原型的窗口里访问 `/dist/extension/base.html` → 地址栏显示这个带路径的地址（原型内部的路径不做替换），两个按钮仍然可用
-84. 在地址栏里敲**这个原型的根地址** → 它不去取那个 URL，而是按类型打开这个原型：scratch 落在渲染页上，overlay 落在目标页面并重放补丁（**不是 404**）；敲 `/dist/extension/base.html` 这类**原型内部的路径**则是普通导航
-85. 让 agent 在原型窗口里跑 `snapshot` 与 `windows` → 输出里同时有**真实页面 URL**（overlay 就是站点自己的地址）与 `Prototype: <slug> (<kind>) — its own address …`；overlay 还多一句"这是站点自己的页面，只能打补丁、不能就地编辑"。把同一个窗口换成普通浏览器窗口（非原型）→ 这些原型行**一行都不出现**
+84. 在地址栏里敲**这个原型的根地址** → 它不去取那个 URL，而是按页打这个原型：我们自己那一页落在渲染页上，live 页落在它自己的地址并重放补丁（**不是 404**）；敲 `/dist/extension/<那一页>.html` 这类**原型内部的路径**则是普通导航
+85. 让 agent 在原型窗口里跑 `snapshot` 与 `tabs` → 输出里同时有**真实页面 URL**（live 页就是站点自己的地址）与 `<slug> — page "<页名>" (<kind>), its own address …`；live 页还多一句"这是站点自己的页面，只能打补丁、不能就地编辑"。把同一个窗口换成普通网页 → 这些原型行**一行都不出现**
 
 ### Q. 多页面原型（§18 的验收）
 
@@ -725,8 +864,8 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 89. 给一个 overlay 加第二、三页（`prototype-pages --add payment=https://app.example.com/checkout/payment`）→ `prototype-status` 的 `pages:` 按**入口 + 声明序**列出三页及各自地址（不是字母序）；`prototype-open checkout-flow --page payment` 打开那一页并重放补丁
 90. `prototype-export` → `manifest.json` 的 `content_scripts[0].matches` 里**每一页各一个 pattern**；README 的 "Where it applies" 逐页一行。少一页都算失败
 91. 在第二页的窗口里 `snapshot` → `Prototype:` 行带 `page "payment"`——页表让这个反推对**整条流程**成立，而不只是入口页
-92. 往 `pages` 里写一个 `ftp://` 或空地址、写一个重复 `name`、写一个与 `targetUrl` 相同的条目 → 导出报错并**点名那一页**；重复项被丢弃并报告，其余照常工作（不静默、也不整份拒绝）
-93. `prototype-pages` 无参数 → 列出入口与其余页；`--remove` 掉一页 → 状态与导出立刻不再包含它，`targetUrl` 的入口不受影响
+92. 往 `pages` 里写一个 `ftp://` 或空地址、写一个重复 `name`、写一个与入口那一行地址相同的条目 → 导出报错并**点名那一页**；重复项被丢弃并报告，其余照常工作（不静默、也不整份拒绝）
+93. `prototype-pages` 无参数 → 列出入口与其余页；`--remove` 掉一页 → 状态与导出立刻不再包含它，入口那一行不受影响
 
 ### S. 补丁的标记、锚点与收敛（§21 的验收）
 
@@ -760,11 +899,11 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 
 | 层 | 位置 | 说明 |
 |---|---|---|
-| L1 字段 | `SESSION_PERSISTENT_FIELDS` + `SessionConfig.prototypeSlug` | 加入白名单数组即自动获得 JSONL 读写（`pickSessionFields` 驱动） |
+| L1 字段 | `SESSION_PERSISTENT_FIELDS` 里的 `prototypeSlug`——**只有它** | 加入白名单数组即自动获得 JSONL 读写（`pickSessionFields` 驱动）。**页不入库**：页表之外没有任何持久字段，agent 侧的 `prototypePage` 是每次从窗口真实 URL 反推的（§19.6） |
 | L2 设置 | `SessionManager.setSessionPrototypeSlug()` | 镜像 `setSessionProjectId`：写字段 → 推事件 → 持久化 → 通知 watcher |
 | L3 通道 | `sessionCommand { type: 'setPrototypeSlug' }` + `prototype_slug_changed` 事件 | 渲染层 → 主进程；事件回流刷新 badge |
 | L4 注入 | `buildPrototypePromptContext()` → `<prototype_context>` | 与 `<project_context>` 并列注入 system prompt |
-| L5 工具 | `resolvePrototypeSlug()`：显式 slug → 会话绑定 → 报错 | 缺省取绑定，这才是"不用报名"的兑现点 |
+| L5 工具 | `resolvePrototypeSlug()`：显式 slug → **当前页的原型** → 会话绑定 → 报错 | 缺省先取"你正在工作的那一页属于哪个原型"，取不到才退到会话绑定（页优先是 §22 的有意设计），两者都没有才要求点名。这才是"不用报名"的兑现点 |
 
 ### 11.2 三个设计判断
 
@@ -796,7 +935,7 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 |---|---|---|
 | 创建时绑定 | 继承项目 `workingDirectory` | 继承父会话绑定（子任务同属一个原型） |
 | prompt 块 | 名称 / 描述 / assets / MEMORY.md | slug / base 状态 / patch 清单 / 契约覆盖 / 所有权违规 |
-| 命令回退 | 无（project 不驱动工具） | **有**：9 个 `prototype-*` 命令缺省取绑定 |
+| 命令回退 | 无（project 不驱动工具） | **有**：`prototype-*` 命令缺省取绑定（唯一的位参数不是 slug 的几条除外，见 §13.2.1 / §14.4） |
 | 缺失处理 | 项目被删 → 解析为 null，退化为未绑定 | 同左（`existsSync` 判目录，因为 `buildPrototypeStatus` 对不存在的项目返回"空项目"而非报错） |
 
 ---
@@ -807,12 +946,13 @@ lane D  验证       → 只读全部产物 → 产出 verdict（不写）
 
 ### 12.1 先纠正一个认知：预览面板不是 React 面板
 
-它是一个**独立的无边框原生窗口**，内部叠了 3 个 `BrowserView`（`browser-pane-manager.ts:496-499`）：
+它是一个**独立的无边框原生窗口**，内部叠着（§22 第四～六轮改过形态：页栏是左侧一整列、页可以有多个）：
 
 ```
-toolbarView   48px   独立渲染进程（browser-toolbar.html）
-pageView      整块    产品页面
-nativeOverlayView     仅 agent 操作时的遮罩（纯视觉，无按钮）
+railView     左侧 200px  独立渲染进程（页栏：每一页一条，`+` 在这里）
+toolbarView  48px        独立渲染进程（地址栏；整列在页栏右边）
+pageView     余下整块     产品页面（一页一个 view，只有活动页占位）
+nativeOverlayView        仅 agent 操作时的遮罩（纯视觉，无按钮）
 ```
 
 含义：renderer 里的 `components/browser/` 只是主窗口 TopBar 的徽章条，**不是面板本体**。面板工具栏的可用 API 只有导航类（`window.browserToolbar`），它**拿不到 workspace、会话、绑定原型**。
@@ -842,7 +982,7 @@ BrowserPaneManager（主进程，只有 instanceId）
 
 用户原话：「要先点击可视化编辑按钮再进入编辑态，否则会被 html 本身的点击行为干扰」。
 
-现有 picker 已满足这个约束（`browser-cdp.ts:120-227`）：
+现有 picker 已满足这个约束（`browser-cdp.ts`）：
 
 - 它在 `click` 的 **capture 阶段**注册（`addEventListener('click', onClick, true)`）
 - 处理函数里 `e.preventDefault()` + `e.stopPropagation()` —— 页面自身的行为被拦住
@@ -862,7 +1002,7 @@ BrowserPaneManager（主进程，只有 instanceId）
 
 面板的编辑态只负责回答"哪一个元素"，那正是人比模型快的地方；而"改成什么"回到对话里说。
 
-> 同一条规矩也适用于**详情页的源码编辑器**：产物区只**列出**原型由哪些文件组成，不提供"点开就能改"的入口——直接编辑产物文件是工程侧的界面，不是这里的。
+> 同一条规矩当初也适用于那个**详情页的源码编辑器**（已删除，见 [开发文档](prototype-workbench-dev.md) §4）：产物区只**列出**原型由哪些文件组成，不提供"点开就能改"的入口——直接编辑产物文件是工程侧的界面，不是这里的。
 
 ### 12.5 未做的（明确记录）
 
@@ -879,7 +1019,7 @@ BrowserPaneManager（主进程，只有 instanceId）
 - **overlay 也如此**，尽管它的 `pageView` 仍在真实地址上（这正是 overlay：页面带着自己的 JS、登录态与自己的源，patch 注入进去）。地址栏是**显示层**的事实，不是导航层的事实——真去用本地服务器代请求第三方页面，会丢掉登录态、CORS 与源，等于把 overlay 毁掉。
 - **scratch 不用改**：它本来就在原型域名上；而且当地址已经落在原型 host 上时保留真实 URL，所以 `/dist/extension/base.html`、SPA 路由这些**原型内部的路径**照样看得见。
 
-**"看地址栏就知道绑没绑"之所以成立**，是因为地址栏那个值本身就来自这条查表：`instance.boundPrototype ?? (boundSessionId ?? ownerSessionId → 会话 → prototypeSlug)` → `prototypeOriginUrl`。同一个值顺带决定那两个动作是否可用——**没有原型就没有那两个按钮**（置灰），而不是点完再弹一句"未绑定"：这是「入口的失败在点之前说，不在点之后答」（§6 阶段 7）在工具栏上的兑现。
+**"看地址栏就知道绑没绑"之所以成立**，是因为地址栏那个值本身就来自这条查表：页自己的 `boundPrototype`（开这一页时定的身份）→ `prototypeOriginUrl`；而窗口级的 owner / `boundSessionId` 那一整套"谁拥有这个窗口"的词汇在收口时**整体删掉了**（§22）——一个窗口不再属于哪个会话，页上那个身份才是真的。同一个值顺带决定那两个动作是否可用——**没有原型就没有那两个按钮**（置灰），而不是点完再弹一句"未绑定"：这是「入口的失败在点之前说，不在点之后答」（§6 阶段 7）在工具栏上的兑现。
 
 **为什么必须有"窗口被打开时声明的那个原型"这一条**：overlay 的视图落在第三方地址上，一旦加载完，URL 里**没有任何东西**记得这是在给哪个原型打补丁——所以身份只能在打开的那一刻说定（`PrototypeEntry.origin` → `browserPane.create` 的 `prototype`）。只留会话链时，"刚创建、还没有对话"这个最常见的首次体验恰好不成立：地址栏写着真实地址、两个按钮灰着，窗口不认为自己是这个原型的窗口。
 
@@ -900,7 +1040,7 @@ BrowserPaneManager（主进程，只有 instanceId）
 
 **agent 侧拿到的是同一份身份，而且更全。** `snapshot` 与 `windows` 的输出里，每个原型窗口多一行 `Prototype: <slug> (<kind>) — its own address <origin>`，而 `URL:` 仍是这个窗口**当前真实页面**的地址（overlay 就是站点自己的地址）。两行并列是刻意的：它们是两个不同的事实，而且 **kind 决定下一步**——scratch 的文档是我们的，改法是编辑文件；overlay 的页面是真实站点的，只能打补丁。只给 URL，等于让 agent 对着一个地址猜自己能不能改它。
 
-取值在 server 层（`SessionManager.describeWindowPrototype`）：窗口所属会话 → `prototypeSlug` → `readPrototypeConfig().kind` + `prototypeOriginUrl()`，只挂在 `snapshot`／`windows` 两次调用上，不进任何热路径；不是原型窗口时**一行都不出现**（普通浏览器窗口保持安静）。
+取值在 server 层（`packages/server-core/src/domain/prototype-page.ts` 的 `describePrototypeAtPage`）：**页上的身份优先**（开这一页时记下的），会话绑定只在页说不出话时兜底，再配上页表里的类型与 `prototypeOriginUrl()`；只挂在 `snapshot` / `listWindows` 两次调用上，不进任何热路径；不是原型页时**一行都不出现**（普通网页保持安静）。
 
 ---
 
@@ -957,35 +1097,35 @@ BrowserPaneManager（主进程，只有 instanceId）
 
 | 决定 | overlay | scratch |
 |---|---|---|
-| **页面是什么** | **那个在线 URL 本身**（自带 JS、登录态与真实数据） | 我们自己写的 `base.html` |
-| **补丁打在哪** | 活页面，`apply` 注入进去 | 我们自己的文档，服务器渲染时内联 |
-| **有没有外部页** | 有，而且是它的**全部**（`targetUrl` **必需**） | 没有（存 URL 是撒谎） |
-| **交付物** | patches + dev-spec（写明改的是哪个地址）+ **可加载的扩展**（§17） | patches + dev-spec + **可加载的扩展**（自带这一页，§17） |
+| **页面是什么** | **那个在线 URL 本身**（自带 JS、登录态与真实数据） | 我们自己写的那份文档 |
+| **补丁打在哪** | 活页面，`apply` 注入进去 | 我们自己的文档，宿主渲染时内联 |
+| **有没有外部页** | 有，而且是它的**全部**（行上的 `url` **必需**） | 没有（存 URL 是撒谎） |
+| **交付物** | patches + dev-spec（写明改的是哪个地址）+ **可加载的扩展**（§17）+ **书签**（§17.9） | patches + dev-spec + **可加载的扩展**（自带这一页，§17）+ **静态单文件**（§17.8） |
 
 第一行是这条改动最实际的收益：**"打开"的含义不再含糊**。以前两者都只能说"还没有 base 页面"；现在 overlay 打开的是它的活页面（并被注入补丁），scratch 打开的是服务器渲染出来的、它自己的文档。最后一行在 §17 展开：交付物面向两种人——dev-spec 给**实现的人**，扩展给**看的人**（他没有、也不该有工作台）；两种类型的差别只在于扩展是"注入别人的页面"还是"自带我们的页面"。
 
-**创建时不写 `base.html`**：对 scratch 来说，缺席是一句**真话**（"这个原型还没有页"）；对 overlay 来说，它本来就不需要那个文件——它的页面是一个地址。预置一份空白会断言一个不存在的状态：`baseHtmlPresent` 变成 true，于是"怎么拿到第一页"的引导被自己藏起来，导出还会照着空文档写一份空的交付物。
+**创建时不预置任何页**：容器建出来**没有页**（连 `config.json` 都不写——没有东西可声明），缺席是一句**真话**（"这个原型还没有页"）；而 live 页本来就不需要一份文档——它的页面是一个地址。预置一份空白会断言一个不存在的状态：页表里凭空多出一行，"怎么拿到第一页"的引导被自己藏起来，导出还会照着一份空文档写一份空的交付物。
 
 > 一句值得记住的判断：**"一开局所有动作都是灰的"该由入口解决，不该由假文件解决**——空文档只是把死胡同伪装成了一条路。首稿"写一份"与"复制一份"两条来路都在创建之后，这就是入口。（历史上有过别的解法，见 [开发文档](prototype-workbench-dev.md) §4。）
 
-**scratch 的首稿从哪来**（创建只负责建容器）：
+**我们自己那一页的首稿从哪来**（创建只负责建容器）：
 
 | 来路 | 谁做 | 产物归谁 |
 |---|---|---|
-| **写** | agent 用文件工具写 `base.html` | 我们 |
+| **写** | agent 用文件工具写 `<页名>.html`（顶层每个 `*.html` 就是一页） | 我们 |
 | **复制** | 列表右键「复制」：把一个原型整份拷成**新原型** | 那个新原型（见下） |
 
-> overlay 没有这一步：它的页面是一个地址，不需要被"准备"出来。"写"曾是界面按钮，现在不是了（§6 阶段 7）——界面上能看到的只有「预览 / 在对话里改 / 导出」。而"复制"相反，它是**列表上的动作**：复制走的是**一个原型**，不是一份材料。
+> live 页没有这一步：它的页面是一个地址，不需要被"准备"出来。"写"曾是界面按钮，现在不是了（§6 阶段 7）——界面上能看到的只有「预览 / 在对话里改 / 导出」。而"复制"相反，它是**列表上的动作**：复制走的是**一个原型**，不是一份材料。
 
 ### 13.1.1 复制与删除：原型列表的右键菜单
 
-**问题**：搬材料式的做法有两个毛病。一是它回答的是"我要材料"，而人真正想干的是"我想要一份能接着改的副本"；二是它把**材料**与**身份**混在一个动作里——搬完之后目标原型的 kind / targetUrl / references 原封不动，只有页面和补丁换了，这在界面上完全看不出来。
+**问题**：搬材料式的做法有两个毛病。一是它回答的是"我要材料"，而人真正想干的是"我想要一份能接着改的副本"；二是它把**材料**与**身份**混在一个动作里——搬完之后目标原型的页表 / references 原封不动，只有页面和补丁换了，这在界面上完全看不出来。
 
 **结论**：这件事是"另起一个"，并交回给人——**原型列表每行一个菜单（右键，或悬停出现的 `…`），两项：复制、删除**，实现是 `duplicatePrototype` / `deletePrototype` 两个只由控制面调用的能力。
 
 三条边界，每条都有理由：
 
-- **复制的是原型，不是材料。** 新原型有自己的 slug（默认 `<slug>-copy`，再复制一次就是 `-copy-2`）、自己的目录、自己的 `config.json`；kind 与目标页跟着过来（它们是"同一件事的另一份"这个事实），从此两者**再无关系**：改任意一边都到不了另一边。这正是它与**参考**的分野（§14.2）——参考是"读它"，复制是"拿走它"。
+- **复制的是原型，不是材料。** 新原型有自己的 slug（默认 `<slug>-copy`，再复制一次就是 `-copy-2`）、自己的目录、自己的 `config.json`；页表跟着过来（每一页连类型与地址，它们是"同一件事的另一份"这个事实），从此两者**再无关系**：改任意一边都到不了另一边。这正是它与**参考**的分野（§14.2）——参考是"读它"，复制是"拿走它"。
 - **不搬 `dist/`。** 交付物是派生的（`exportPrototype` 会照页面与补丁重建），搬过来只是第二份会过期的事实。`services/`（契约 fragment 与 fixture）属于原型本身，跟着走。
 - **页面与补丁作为一对走。** 补丁的选择器绑在它被写时的那份文档上；整目录复制天然保持这一对，只搬一半必然留下对不上的东西。
 
@@ -998,15 +1138,15 @@ BrowserPaneManager（主进程，只有 instanceId）
 
 切换类型不是改个字段：overlay 的页面是别人的活地址，scratch 的是我们自己的文档——把前者改成后者，那些 patch 仍然指向一个不再被重放的页面，而画面上看不出来。**让一个能悄悄产生废物的开关存在，比不让它存在更糟。** 要换类型就新建一个，这是诚实的代价。
 
-**"类型定死"顺带决定了地址必须必填。** overlay 的页面就是这个地址；类型换不回来，所以一个**没有任何页面**的 overlay 连"这是什么"都答不上来——没有能打开的东西（`pageAvailable` 为 false）、没有可写的导出物、`dev-spec.md` 里也没有地址可写。创建是唯一"用户手里就正对着那个页面"的时刻，所以 `createPrototype` 在 `kind === 'overlay' && !targetUrl` 时直接拒绝，对话框在同一条件下禁用「创建」按钮。两处是同一个不变式，不是两份规则：入口不同（UI / 命令 / agent），规矩一条。
+**"类型定死"顺带决定了地址必须必填。** overlay 页的页面就是这个地址；类型换不回来，所以一个**没有地址**的 overlay 页连"它是什么"都答不上来——没有能打开的东西（`pageAvailable` 为 false）、没有可写的导出物、`dev-spec.md` 里也没有地址可写。新建那一页是唯一"用户手里就正对着那个页面"的时刻，所以 `prototype-pages --add <name>=<url>` 缺 url 就拒绝，对话框在同一条件下禁用「新建」按钮。两处是同一个不变式，不是两份规则：入口不同（UI / 命令 / agent），规矩一条。
 
-> 顺带把**默认类型**倒过来：默认是 `scratch`。理由不是"从零更常见"，而是**只有它不可能残废**——它拥有自己的文档，所以任何状态下都有下一步（写 `base.html`，或导入一个）；overlay 缺地址则一步都没有。没有任何出路的东西必须被**要求**，不能被**假设**。`DEFAULT_PROTOTYPE_KIND` 同时是"读不到 `config.json` 时的假设"，于是坏配置的原型也落在同一条有出路的路上（§13.3）。
+> 顺带把**默认类型**倒过来：默认是 `scratch`。理由不是"从零更常见"，而是**只有它不可能残废**——它拥有自己的文档，所以任何状态下都有下一步（写一份，或复制一份）；overlay 缺地址则一步都没有。没有任何出路的东西必须被**要求**，不能被**假设**。`DEFAULT_PAGE_KIND` 同时是"读不到页表里的 `kind` 时的假设"，于是坏配置的原型也落在同一条有出路的路上（§13.3）。
 
 ### 13.2.1 但地址**可以改**：环境切换
 
 上面那句"创建时定"管的是**类型**，不管**地址**。地址不是一条规则，而是"那个页面在哪"这个事实——同一个页面存在好几套环境（本地 dev server、测试、线上），而同一批 patch 就是要在每一套里被看见。地址不可变会把"在测试环境看一眼"变成"再建一个原型、把东西全复制过去"，这是把一条事实当成了规则。
 
-所以：`prototype-target <url>` 把**当前会话绑定的**那个 overlay 指到另一个地址，详情页的「目标页面」那一行也可以就地改（地址旁边一支铅笔）。它只强制类型自身的规矩（scratch 拒绝、地址必须是浏览器能打开的 http/https），其余一概不拦。
+所以：`prototype-target <url>` 把**当前会话绑定的**那个 overlay（`--page` 可指名某一页）指到另一个地址，详情页的 **Pages 区块**里那一页也可以就地改（页行右侧的 Globe 按钮）。它只强制类型自身的规矩（scratch 拒绝、地址必须是浏览器能打开的 http/https），其余一概不拦。
 
 > 两处入口共用同一层实现（`setPrototypeTargetUrl`）与同一句代价说明：命令把它打进输出，对话框把它写在输入框下面
 
@@ -1019,24 +1159,24 @@ BrowserPaneManager（主进程，只有 instanceId）
 | 已经打开的窗口 | 注入按 document 生效（§16.4），窗口停在旧地址上，直到它自己导航；`prototype-open` 一下才挪过去 |
 | 选择器 | 它们是对着**当时那份 DOM** 写的。换环境可能换构建，同一个环境上线一次也会变；匹配不到的 patch 和"没生效的 patch"长得一模一样 |
 
-这两条也正是"地址不动、站点自己变了"时会发生的事——所以它们是**提醒**，不是拒绝的理由。真正被拒的只有一种：往 scratch 上写地址（它的页面是自己的 `base.html`，存下来的地址是一句没人兑现的声明，§13.4）。
+这两条也正是"地址不动、站点自己变了"时会发生的事——所以它们是**提醒**，不是拒绝的理由。真正被拒的只有一种：往我们自己那一页上写地址（它的页面是自己的文档，存下来的地址是一句没人兑现的声明，§13.4）。
 
 ### 13.3 为什么落在数据层（而不是 UI 状态）
 
-类型写在 `prototypes/{slug}/config.json`，因为它有**四个读者**：详情页（引导文案/元数据/按钮）、agent 的 system prompt（<prototype_context>）、agent 命令（`prototype-create`，地址给不给决定类型）、以及导出器的分叉。放在 React 状态里这些读者就拿不到。
+类型写在 `prototypes/{slug}/config.json` 的**页表**里，因为它有**四个读者**：详情页（引导文案/元数据/按钮）、agent 的 system prompt（`<prototype_context>`）、agent 命令（`prototype-pages --add <name>=<url>` 决定这一页是 overlay），以及导出器的分叉。放在 React 状态里这些读者就拿不到。
 
-> 这与「索引不落盘、一切按需派生」不冲突：那条约束针对 `patches/`（多 lane 并发写，共享索引必然争用），而 `config.json` 是**控制面独占、单一写者、无派生数据**，正是控制面文件该有的样子。所有权矩阵里它已登记为 `control-plane`（§3.5），所以误改会被 `prototype-status` 点名。
+> 这与「索引不落盘、一切按需派生」不冲突：那条约束针对 `patches/`（多写者并发写，共享索引必然争用），而 `config.json` 是**控制面独占、单一写者、无派生数据**，正是控制面文件该有的样子。所有权矩阵里它已登记为 `control-plane`（§3.5），所以误改会被 `prototype-status` 点名。
 
-读取**永不抛错**：缺文件、坏 JSON、未知 `kind` 一律回退 `DEFAULT_PROTOTYPE_KIND`。理由有二——配置不可读不该让原型不可用；该文件可被手工或外部工具编辑，畸形是**预期**而非异常。默认值是 `scratch`：坏配置的原型于是落在"自己有文档"的那一支，下一步永远存在（写一份，或从别的原型复制一份）；若回退到 `overlay`，它会缺一个换不回来的地址，直接把不可读变成不可用（见 §13.2）。
+读取**永不抛错**：缺文件、坏 JSON、未知 `kind` 一律回退 `DEFAULT_PAGE_KIND`。理由有二——配置不可读不该让原型不可用；该文件可被手工或外部工具编辑，畸形是**预期**而非异常。默认值是 `scratch`：坏配置的页于是落在"自己有文档"的那一支，下一步永远存在（写一份，或复制一份）；若回退到 `overlay`，它会缺一个换不回来的地址，直接把不可读变成不可用（见 §13.2）。
 
 ### 13.4 一处刻意的收窄
 
-`writePrototypeConfig` 会**丢掉** scratch 的 `targetUrl`。不是校验，而是不愿意落一条无法兑现的声明：scratch 没有外部页面，存下那个地址只会让后来人以为某个地方会用到它。
+`normalizePrototypePages` 会**丢掉** scratch 页上的 `url`（那一行还在，被丢的是那句无法兑现的声明）。不是校验，而是不愿意落一条无法兑现的声明：scratch 页没有外部页面，存下那个地址只会让后来人以为某个地方会用到它。
 
 ### 13.5 未做的（明确记录）
 
 - **类型不可改**（同上，有意）—— 无「转换类型」UI
-- **overlay 的 `targetUrl`：创建时必填，之后可改** —— 两件事不矛盾，管的是不同的东西：**必填**是因为创建时你正对着那个页面，不填则这个原型连"它是什么"都答不上来（§13.2）；**可改**是因为同一个页面存在于多套环境，那是事实不是规则（§13.2.1）。两条入口：**详情页元数据行的「目标页面」直接显示地址，旁边一个铅笔按钮**（对话框里当场写清代价），以及 agent 侧的 `prototype-target <url>`。这不是新加的第 4 个动作——它长在**那一行数据上**，而不是长在动作区（§6 阶段 7）
+- **overlay 页的地址：新建时必填，之后可改** —— 两件事不矛盾，管的是不同的东西：**必填**是因为新建那一页时你正对着那个页面，不填则这一页连"它是什么"都答不上来（§13.2）；**可改**是因为同一个页面存在于多套环境，那是事实不是规则（§13.2.1）。两条入口：**详情页 Pages 区块里那一行直接显示地址，旁边一个 Globe 按钮**（对话框里当场写清代价），以及 agent 侧的 `prototype-target <url>`。这不是新加的第 4 个动作——它长在**那份数据上**，而不是长在动作区（§6 阶段 7）
 - **页的归属** —— 曾被列为未做（补丁不对应某一页，每一页重放**全部**补丁）；§19.4 给出了答案：`patches/<页名>/` 是页域、`patches/*` 是共享，根目录的语义不变
 - **引导文案的图示** —— 两个类型卡片目前是图标 + 一句描述，没有"页面上叠一层 vs 白纸"的示意图
 - **复制没有"合并"语义** —— 它是整个目录的拷贝，两个原型从此各走各的；要在复制上做取舍（合并补丁、挑着搬）不是能顺手决定的事，现在也不做
@@ -1051,7 +1191,7 @@ BrowserPaneManager（主进程，只有 instanceId）
 
 | | 那个第三方页最后变成什么 | 读法 |
 |---|---|---|
-| **A 起点** | 被吸收：写一份自己的 `base.html`（或从别的原型导入），此后归我 | 「抄完就变成我的」 |
+| **A 起点** | 被吸收：写一份我们自己的文档（或用列表的「复制」另起一个），此后归我 | 「抄完就变成我的」 |
 | **B 参考面** | 一直是旁证：躺在旁边，我另起一份自己的 | 「照着做，但不是它」 |
 
 两者都做，且**都不需要第三种原型类型**。
@@ -1060,16 +1200,16 @@ BrowserPaneManager（主进程，只有 instanceId）
 
 A 的路径天然跨类型：开始时在别人的页上打 patch（overlay），结束时拥有一份自己的文档（scratch）。而 §13.2 规定类型创建时定、不可改。
 
-**正确的解法是让 scratch 的首稿有来路**，而不是允许改类型：
+**正确的解法是让 scratch 页的首稿有来路**，而不是允许改类型：
 
-- 创建时就声明「这会是我自己的页」，然后由 agent 写它，或把它**复制**成一个新原型（§13.1.1）。`writePrototypeBase` 本来就只依赖"项目存在"，A 在机制上早已可用；要注意的只是措辞不能反过来禁止掉主流程。
+- 新建一页时就选「我们自己的一页」，然后由 agent 写它，或把整个原型**复制**成一个新原型（§13.1.1）。`writePrototypePage` 本来就只依赖"目录在"，A 在机制上早已可用；要注意的只是措辞不能反过来禁止掉主流程。
 - 探索竞品的过程发生在**另一个**原型里（就是 B 的参考）。于是 A 与 B 收敛到同一套结构，规则不用松。
 
-`scratch` 的记录随之精确为：**`base.html` 归我们**——手写的、或是从别的原型复制出来的都算；关键在于从那刻起它没有"要同步的对端"。
+`scratch` 的记录随之精确为：**那一页的文档归我们**——手写的、或是整份复制出来的都算；关键在于从那刻起它没有"要同步的对端"。
 
 > **这一条走过一次弯路（已回正）**：曾经有过"把在线页冻成 `base.html`"这条来路。它回应的是一个**不存在的需求**——overlay 的页面就是那个地址本身，补丁打在上面，不需要一份 `base.html`；而冻出来的副本跑不了自己的 JS、也带不来会话。删掉的理由见 [开发文档](prototype-workbench-dev.md) §4。
 
-**无条件覆盖的风险只剩一个入口**：`writePrototypeBase` 无条件覆盖 `base.html`，而真正会丢东西的情形只有一种——agent 手写覆盖一份**已有内容**的 scratch 文档。所以这件事是**对话约定**而不是命令层护栏：写之前先问一句；prompt 里相应的话是"do not overwrite a base.html whose edits you would lose without warning"的等价措辞。
+**无条件覆盖的风险只剩一个入口**：页文档的写入（`writePrototypePage`）是无条件覆盖的，而真正会丢东西的情形只有一种——agent 手写覆盖一份**已有内容**的 scratch 文档。所以这件事是**对话约定**而不是命令层护栏：写之前先问一句；prompt 里相应的话是"do not overwrite a page of ours whose edits you would lose without warning"的等价措辞。
 
 ### 14.2 读法 B 不是第三种类型
 
@@ -1077,10 +1217,10 @@ A 的路径天然跨类型：开始时在别人的页上打 patch（overlay）�
 
 | 类型决定的事 | 混合场景里的实际取值 | 和谁一样 |
 |---|---|---|
-| `base.html` 从哪来 | 我们自己写的 | **scratch** |
+| 页的文档从哪来 | 我们自己写的 | **scratch** |
 | 交付物是什么 | 完整页面（本来就是源码） | **scratch** |
-| `base.html` 缺席意味着 | 还没写 | **scratch** |
-| 有没有外部页 | 有，但是**旁证**而非交付对象 | 与 overlay 的 `targetUrl` 语义不同 |
+| 页的文档缺席意味着 | 还没写 | **scratch** |
+| 有没有外部页 | 有，但是**旁证**而非交付对象 | 与 live 页的 `url` 语义不同 |
 
 四行里三行与 scratch 相同。**加第三种类型等于把 scratch 的语义复制一份**，然后在对话框、prompt、status、ownership、导出里各加一个分支，只换来一个多出来的字段。
 
@@ -1089,16 +1229,16 @@ A 的路径天然跨类型：开始时在别人的页上打 patch（overlay）�
 1. **一条关系**（`references`）。而且**角色在边上，不在节点上**——同一个竞品页可以是 A 原型的参考，同时是 B 原型的交付对象。放进类型里就表达不了这个。关系是**单向**的：参考不知道自己在被参考，因为"两边看它"的人理由可以完全相反，而理由不是那个页面的属性。
 2. **一条护栏**（见下）。
 
-**这条关系与类型无关。** scratch 引用另一个 scratch，和引用一个 overlay，是**同构**的：引用者与被引用者各自独立、各持自己的 `patches/`，就够了；两边各是什么类型，不参与判断。所以：
+**这条关系与类型无关。** 我们自己页的引用另一个我们自己页的，和引用一个 live 页，是**同构**的：引用者与被引用者各自独立、各持自己的 `patches/`，就够了；两边各是什么类型，不参与判断。所以：
 
 - 数据层不按 kind 分叉：`references` 对两种类型都读、都写
 - 校验层只看存在性，不看 kind
-- prompt 里的规则**只写一遍**——patch 不能搬运，与两边类型无关（`overlay` 的 base 是别人页面的快照，`scratch` 的 base 是我们自己另一份文档，但"选择器绑在另一份 document 上"这件事是一样的）
-- UI 的参考列表对两种类型显示同一套动作，只是 scratch 参考没有目标页——那不是缺陷，是有意为之，所以显示「它自己的页面」而不是「未记录目标页面」
+- prompt 里的规则**只写一遍**——patch 不能搬运，与两边类型无关（live 页的页面是别人的活地址，我们自己页的页面是另一份我们的文档，但"选择器绑在另一份 document 上"这件事是一样的）
+- UI 的参考列表对两种类型显示同一套动作，第二行说的是"打开它会落到它的哪一页"（`entry: <页名>`，没有页则是 `no pages yet`）——参考是什么由它的流程决定，报页比报一个缺失的地址有用
 
-### 14.3 护栏：为什么参考必须独立成项目
+### 14.3 护栏：为什么参考必须独立成一个原型
 
-`packages/shared/src/prototypes/export.ts` 的 `exportPrototype` 内联的是该原型 `patches/` 下**全部**文件（`scanPrototypePatches(workspaceRootPath, slug)`）。所以只要参考的 patch 和我的 patch 共用一个 `patches/`，导出时它们会被**打进我的交付 HTML**：选择器指向竞品的 DOM，在我自己的页面上一条都不生效，而且**不报任何错**。
+`packages/shared/src/prototypes/export.ts` 的 `exportPrototype` 内联的是该原型 `patches/` 下**属于这一页**的文件（`patchesForPage` / `scanPrototypePatchesForPage`）。所以只要参考的 patch 和我的 patch 共用一个 `patches/`，导出时它们会被**打进我的交付物**：选择器指向竞品的 DOM，在我自己的页面上一条都不生效，而且**不报任何错**。
 
 这正是这个项目一路在防的那类静默失效。于是：
 
@@ -1109,7 +1249,7 @@ A 的路径天然跨类型：开始时在别人的页上打 patch（overlay）�
 
 ### 14.4 为什么落在数据层，以及命令面
 
-`references` 写在 `prototypes/{slug}/config.json`，与 §13.3 同一个理由——它有多个读者：详情页（参考列表/打开/解除）、agent 的 system prompt（解析出每个参考的 kind 与 targetUrl，agent 无需去读对方的 config）、以及 agent 命令。
+`references` 写在 `prototypes/{slug}/config.json`，与 §13.3 同一个理由——它有多个读者：详情页（参考列表/打开/解除）、agent 的 system prompt（解析出每个参考的页表，agent 无需去读对方的 config）、以及 agent 命令。
 
 只做 UI 是不够的：agent 才是这个工作台的主要操作者，用户会在对话里说「把这个也加进来参考」。没有命令，agent 就会去手改 `control-plane` 独占的 `config.json`——正是上面那类损坏。所以补了两条：
 
@@ -1136,13 +1276,13 @@ A 的路径天然跨类型：开始时在别人的页上打 patch（overlay）�
 
 | 读取面 | 作用域 | 回答什么 |
 |---|---|---|
-| system prompt · `<prototype_context>` | 绑定的那个 | **我绑定的这个是哪种、它在参考谁**（每个参考都带 kind 与 targetUrl，agent 不必去读对方的 config） |
-| `prototype-list` | 全工作区 | **这片工作区里有什么**：每个的 kind、target 页、`references:` 与 `referenced by:` |
-| `prototype-status [slug]` | 单个（可显式传 slug） | **这一个的全貌**：kind（带一句它意味着什么）、target、解析后的 references（含对方是什么）、以及 `referenced by:` |
+| system prompt · `<prototype_context>` | 绑定的那个 | **我绑定的这个有哪些页、它在参考谁**（每个参考都带类型与地址，agent 不必去读对方的 config） |
+| `prototype-list` | 全工作区 | **这片工作区里有什么**：每个原型的页与类型、`references:` 与 `referenced by:` |
+| `prototype-status [slug]` | 单个（可显式传 slug） | **这一个的全貌**：页表（每页的名字 / 类型 / 地址或文件 / 是否入口）、解析后的 references（含对方是什么）、以及 `referenced by:` |
 
 三点设计判断：
 
-1. **kind 出现在每一层，而且不是脚注。** 之前 `prototype-list` 只列 slug 和 patch 数——一个 overlay 和一个 scratch 在列表里**长得一模一样**，而它们的行为毫无相似之处（活页面 vs 我们自己的文档、地址 vs 文件）。这属于「状态撒谎」，不是缺个字段。列表里"缺什么"也按类型说：overlay 说 `no target page`，scratch 才说 `no base.html`——对 overlay 而言"没有 base.html"是常态，写出来只会训练读者忽略它。
+1. **页的类型出现在每一层，而且不是脚注。** 之前 `prototype-list` 只列 slug 和 patch 数——一个 live 页和一个我们自己页在列表里**长得一模一样**，而它们的行为毫无相似之处（活地址 vs 我们的文档、地址 vs 文件）。这属于「状态撒谎」，不是缺个字段。列表里"缺什么"也按页说：一页都没有时说 `no pages yet`；某页缺地址还是缺文档，由 `prototype-status` 的 `pages:` 逐行说——对 live 页而言"没有一份文档"是常态，写出来只会训练读者忽略它。
 2. **反向关系是派生的，不入库。** `referenced by` 由列表现算，不写进 `config.json`：写进去就有两个真源，而它们一定会漂移。代价是 `prototype-status` 要多读一次列表——值得，因为 `references: rival-checkout` 在你知道对方是什么之前**不可行动**。
 3. **prompt 里不铺开整个工作区。** 工作区可以有十个原型，全列进 prompt 对多数会话是噪音；它还是会话开始时的快照，中途新建就过期。工作区级查询是**命令**的职责（工具描述里已写明 `prototype-list` 给出 kind 与双向关系），prompt 只负责绑定原型自己的事实。
 
@@ -1157,15 +1297,15 @@ A 的路径天然跨类型：开始时在别人的页上打 patch（overlay）�
 | | 项目（Project） | 原型（Prototype） |
 |---|---|---|
 | 在磁盘上 | `{workspace}/projects/{slug}/` | `{workspace}/prototypes/{slug}/` |
-| 里面有什么 | `config.json` · `assets/` · `MEMORY.md` | `config.json` · `base.html` · `patches/` · `services/` · `dist/` |
+| 里面有什么 | `config.json` · `assets/` · `MEMORY.md` | `config.json`（页表）· 各页的 `*.html` · `_layout.html` · `patches/` · `services/` · `dist/` |
 | 是什么 | **组织过程**：归组会话、任务（`TaskSpec.project`）、工作目录、共享资产、看板列 | **就是产物**：交付物本身 |
 | 生命周期 | 可归档、**可删除**（删除时解绑会话） | 交付物，应当活过单个会话 |
 
-**它们今天没有任何关系**，这不是疏漏：[workspaces/storage.ts](file:///c:/Users/Ryan/code/craft-agents-oss/packages/shared/src/workspaces/storage.ts) 的注释写明了原型放在工作区级是为了「让交付物活过单个会话」。`PrototypeConfig` 里没有 `projectId`，`handlers/rpc/prototypes.ts` 与 `handlers/rpc/projects.ts` 互不调用，没有任何 join。
+**它们今天没有任何关系**，这不是疏漏：[workspaces/storage.ts](file:///c:/Users/Ryan/code/craft-agents-oss/packages/shared/src/workspaces/storage.ts) 的注释写明了原型放在工作区级是为了「让交付物活过单个会话」。原型侧的 `PrototypeConfig` 里没有 `projectSlug`（§15.1.4 撤回了那条边），`handlers/rpc/prototypes.ts` 与 `handlers/rpc/projects.ts` 互不调用，没有任何 join。
 
-**唯一的实际交汇在会话上**：一个会话可以同时持有 `projectId` 与 `prototypeSlug`，于是两个 context 被并列注入 system prompt（`claude-agent.ts` 的 `pinnedProjectContext` 与 `pinnedPrototypeContext`）。所以 agent 确实知道「我在项目 P 下做原型 X」——但**这个关系没有被记录在任何地方**：原型不知道它属于哪个项目。它是会话上的两个点，不是一个连接。
+**唯一的实际交汇在会话上**：一个会话可以同时持有 `projectId` 与 `prototypeSlug`，于是两个 context 被并列注入 system prompt（`claude-agent.ts` 的 `pinnedProjectContext` 与 `pinnedPrototypeContext`）。所以 agent 确实知道「我在项目 P 下做原型 X」——但**这个关系不被任何一侧当作归属记录**：原型不记自己属于谁。它是会话上的两个点，不是一个连接。
 
-> 上面这段是当时的实况，保留下来做对照。那条连接后来按 §15.1 的形态建立了（`PrototypeConfig.projectSlug?`），并且反过来用——项目的会话因此不用逐个绑定。
+> 上面这段是当时的实况，保留下来做对照。那条"原型属于项目"的连接后来建过（§15.1 的 `PrototypeConfig.projectSlug?`），又在 §15.1.4 撤回；留下的是项目侧那条**背景记录**（`ProjectConfig.prototypeSlugs`，§15.1.3）——项目可以说自己的工作在哪些原型上（一个集合），但不替会话绑定。
 
 ### 15.1 归属关系：先判死后又建立（本节记录这次反转）
 
@@ -1179,7 +1319,9 @@ A 的路径天然跨类型：开始时在别人的页上打 patch（overlay）�
 
 **实际发生的是第 2 条，而且第 3 条等到的读者也来了**：项目详情页要回答"这个项目有哪些原型"，`projectSlug` 于是有了消费者，关系就按当时写在纸上的那个形态落地——一条边，不是嵌套。第 1 条仍然成立，一个字都没改：原型不在项目目录里，项目删了只是让边悬空，而悬空会被点名（`status.ts` 的 `briefIssues`）。
 
-#### 15.1.1 这条边还能反着读：项目里的对话不用逐个绑定
+> **这条边后来被 §15.1.4 撤回了**：原型会被多个对话绑定，而那些对话可以属于不同项目，所以"这个原型属于项目 A"不是事实，"这个项目有哪些原型"也不是该问的问题。第 1 条仍然成立。
+
+#### 15.1.1 这条边还能反着读：项目里的对话不用逐个绑定（"恰好一个"后来被 §15.1.2 整条撤回）
 
 用户真正会问的第二个问题是"**这个项目里的对话该用哪个原型**"。答案**不另记一份**——项目配置里再存一个 `prototypeSlug` 就会和原型侧的 `projectSlug` 记同一件事，两边能互相打脸（原型说属于 A，A 说自己是 B）。这个仓库对这种事的态度是固定的：一个事实只留一个写入者（patch 索引不留 manifest 也是同一理由）。所以它是**派生**的：
 
@@ -1212,7 +1354,83 @@ resolveProjectPrototype(root, projectSlug)
 
 `getPrototypeSlug` 只此一个用途，所以两边都不会在提示词里说谎：宿主只说当前值是多少，要不要重建由 agent 按自己的约定决定。
 
-**写入路径**：原型详情页与项目详情页都通过 `prototypes:setProject`（与 agent 的 `prototype-project` 是同一个 `setPrototypeProject`）。一个原型只能属于一个项目，所以"把 X 归到本项目"如果 X 已有归属，是**移动**——菜单在点击前就这么写。
+**写入路径**：原型详情页与项目详情页都通过 `prototypes:setProject`（与 agent 的 `prototype-project` 是同一个 `setPrototypeProject`）。一个原型只能属于一个项目，所以"把 X 归到本项目"如果 X 已有归属，是**移动**——菜单在点击前就这么写。**（§15.1.4 把这条写入路径与它的两个界面入口一并删掉了。）**
+
+> **后来整条撤了**（§15.1.2）："恰好一个才作答"与它的继任者"项目声明一个"都被删掉。上面这段保留原文，正是要留下"当时为什么只能这么做"——那时想把"项目有哪些原型"告诉会话，只有替它挑一条路；现在有了第二句可说（**有哪些**），就不必挑了。
+
+#### 15.1.2 项目不替会话挑原型：把"有哪些"作为背景告诉它（本节记录 15.1.1 的撤回）
+
+> **本节的前提已被 §15.1.4 撤回**：它建立在"原型侧记一条边、据此反查这个项目有哪些原型"之上，而那条边没有了——原型不属于任何项目。下面的原文保留做对照。
+
+**问题**：§15.1.1 把"项目里的对话该用哪个原型"做成一条派生规则（**恰好一个**才作答）。它假设一个项目同一时间只推进一个原型；而一个产品线同时跑几个需求是常态，于是多原型项目得到的答案是**"什么都没有"**——提示词里没有、`prototype-list` 不标。边本身从来没禁止多个原型指向同一个项目，卡住的只是"哪一个"。
+
+**试过一版"项目声明一个"，撤了**：项目配置里存 `defaultPrototypeSlug`，项目页"设为当前"、对话侧菜单再加一组、agent 侧配一条 `prototype-default`。它能工作，但回答的是"**项目替会话挑一个**"——而挑就是猜，为这一个答案要多付：一个配置字段、一个受校验的写入者、一条 RPC 通道、一条 agent 命令，外加"声明的那个后来被移走了"的悬空故事。同一个理由也适用于 §15.1.1 的"恰好一个"：它同样是项目替会话挑，只是依据从"人说"换成"只有一个"。
+
+**现在：项目只提供信息，不提供选择。**
+
+| 谁 | 说什么 |
+|---|---|
+| 原型 | `config.projectSlug` —— 我属于哪个项目（§15.1 的边，唯一事实） |
+| 项目 | **不存任何"哪一个"**；成员由那条边反查（`listPrototypesForProject`） |
+| 会话 | 自己绑，或按名调用（`prototype-bind <slug>`，以及每条命令的点名 slug） |
+
+列表随 `<project_context>` 进系统提示词（`ProjectPromptContext.prototypes` → `<project_prototypes>`），并带上那句必须说的话：**这里一个都没绑定给你**——要用哪个就点名，`prototype-list` 看当前有什么。多原型项目因此不再"什么都不给"，同时没有任何一处替会话做决定。
+
+**会话只有两种状态：绑了某个，或没绑。** "恰好一个就自动继承"随声明版一起退掉：它会造成更糟的状态——一个原型时自动生效、三个时完全不生效，而"没有依据可挑"这件事恰恰被"告诉它会有什么"解决了。
+
+**代价（明写）**：单原型项目里的对话不再开箱即用某原型，`prototype-apply` 不带 slug 会要求点名或绑定。换来的是没有任何一处静默选了原型，而 agent 知道它存在（提示词里就写着），一句话就能用上。
+
+**也没做的**：把会话可达的原型扩成 `会话绑定 ∪ 项目成员`（并集）。页层面的可达性规则已经覆盖了大部分（不属于任何原型的页谁都能用、自己开的页归自己，§22 的"多绑收口"早已说过这不需要新字段），而 ∪ 会把"我在几个原型上工作"变成会话层的第二个隐性状态。要在对话里动另一个成员的原型页面：**从菜单切过去**（一步、显式）。
+
+**边界**：注入的是**列表**，不是每个原型的详情（§22 的"集合只需被点名，细节现查"）；块是会话开始时的快照，所以那句话里写明 `prototype-list` 看当前有什么。
+
+**随之删掉的**（代码里已不存在）：`ProjectConfig.defaultPrototypeSlug`、`setProjectDefaultPrototype`、`resolveProjectPrototype`、`projects:setDefaultPrototype`、agent 的 `prototype-default`、渲染层的第二份规则（`pickDefaultPrototype` 及其子路径导出）、对话侧菜单的项目组与"设为当前"的全部界面。开发文档的墓园里有这一条。
+
+#### 15.1.3 项目可以说自己"在哪个原型上"：背景信息，不是替对话点名（本节记录 15.1.2 的一条放松）
+
+> **本节的一半已被 §15.1.4 撤回**：项目侧那条记录保留，但"成员资格"——原型侧的 `projectSlug`、成员列表、"原型必须属于该项目"的校验——随那条边一起删掉了。下面保留原文做对照。
+>
+> **记录本身的形状后来又改了一次**：不是一个"当前原型"，而是一个**集合**（`ProjectConfig.prototypeSlugs: string[]`，提示词里是 `<project_prototypes>` 的一列）。项目同时在几个原型上工作是常态，没有哪一个在前；界面是复选框多选，全不勾就是清空。下面正文里的 `prototypeSlug` / "在哪个原型上" / `<project_prototype>` 都按这个读。
+
+**问题**：§15.1.2 把"项目不说哪一个"立成规矩，代价当场写明——单原型项目里的对话不再开箱即用，`prototype-apply` 不带 slug 就要求点名或绑定。实际用起来，这一步落在用户身上：一个项目正在推进哪个原型，是**项目的事实**，不是每个新对话各自要重新声明的东西。
+
+**因此加回一个项目级记录，但它不是 15.1.1 那条派生规则，也不是一个"当前原型"的指定。** `ProjectConfig.prototypeSlug`：项目记下自己在哪个原型上。成员资格仍然是另一条边，仍然只回答"有哪些"。
+
+| 谁 | 说什么 |
+|---|---|
+| 原型 | `config.projectSlug` —— 我属于哪个项目（§15.1 的边，从没变过） |
+| 项目 | `config.prototypeSlug` —— 我在哪个原型上（§15.1.3 新增，显式写） |
+| 会话 | 自己绑，或按名调用 —— **没有变** |
+
+**它是背景信息，像接了一个数据源**：会话从 `<project_context>` 里的 `<project_prototype>` 读到"这个项目在哪个原型上"，仅此而已。**由它产生的自动行为是零**：不注入那个原型的 `<prototype_context>`、不注入指南、不进 `prototype-*` 的默认 slug（`effectivePrototypeSlug` 仍是一行，只认会话自己的绑定）。指南全文只在**会话自己绑定**时注入（`prompt.ts` 的块与 `system.ts` 的 `worksOnPrototype` 都只认绑定）。一句话：项目可以**说**它在哪，不能**替对话点名**。
+
+**也仍然没做的**：把会话可达的原型扩成"会话绑定 ∪ 项目成员"。记录不是可达性：它只进提示词里的一段背景，不进任何默认值，也不会让一个原型变成"这个会话正在做的"。
+
+**写入校验两端**（`setProjectPrototypes`，`prototypes/project-link.ts`）：项目要存在；不在的原型**过滤掉而不是报错**——背景信息不值得一个失败提示，读取端（`getProjectPrototypes`）对同一种情况也回答"没有"，两端一致。入口：项目页 Prototypes 标签的复选框（写的是一整个集合，全部取消就是清空）。**（§15.1.4 后：成员校验随边一起消失，只校验原型存在；入口只剩项目页的勾选，命令删掉了。）**
+
+**代价（明写）**：它不能替任何人省掉第一次点名——新对话仍然要自己绑或按名调用。换来的是"项目在做什么"这件事有了一个可读的地方，而没有引入第二个"默认原型"。
+
+#### 15.1.4 原型不属于任何项目：那条边与"成员资格"一并撤回（本节记录 §15.1.1–§15.1.3 里关于边的部分的撤回）
+
+**问题**：§15.1 建立的那条边（`PrototypeConfig.projectSlug`：这个原型是为哪个项目做的）隐含一个判断——**归属**。它不成立：一个原型会被**多个对话**绑定，而那些对话**可以属于不同项目**。同一个原型同时服务两条产品线是常态，所以"它属于项目 A"既不是事实、也不需要；真正的事实是"某个对话此刻在哪个原型上"，那已经由会话自己的绑定回答了。
+
+**原型不记自己属于谁。** 于是删掉的是一整条链：
+
+| 删掉 | 原来在哪 |
+|---|---|
+| `PrototypeConfig.projectSlug`（原型 → 项目的那条边） | `prototypes/config.ts`（读写与 normalize）、`project-link.ts` |
+| `getPrototypeProject` / `setPrototypeProject` / `listPrototypesForProject` | `prototypes/project-link.ts` + barrel |
+| `PrototypeStatus.projectSlug` 与"项目已删除"的悬空点名 | `prototypes/status.ts` |
+| `<project_prototypes>`（"这个项目有哪些原型"）与 `ProjectPromptContext.prototypes` | `prompts/system.ts` 的 `<project_context>` |
+| `<prototype_context>` 里"这个原型属于项目 X"那段（连同"哪边放新文件"） | `prototypes/prompt.ts` |
+| `prototypes:setProject` 通道、`setPrototypeProject` 预加载 API、原型详情页那一行、项目页的成员列表（加入 / 移出 / "当前在 X 项目"） | 协议 + 渲染层 |
+| agent 的 `prototype-project` 命令与它的三个 `BrowserPaneFns` 回调 | `browser-tool-runtime.ts` / `browser-tools.ts` / `SessionManager` |
+
+**留下的是 §15.1.3 的那条记录，而且它变简单了**：`ProjectConfig.prototypeSlug`——项目在哪个原型上，由用户在项目页手动勾选，只作为**背景信息**告诉它自己的对话（`<project_prototype>`）。不绑定任何对话、不注入任何原型的上下文或指南、不进任何默认值；也不需要再校验"原型属于该项目"（那个概念没有了）。**不存在的原型一律过滤，不报错**：写入时记不进（等价于清掉），读取与注入时按"没有"回答——两端一致，所以勾到一个刚被删掉的原型只会什么都没记下，不会报错。
+
+**代价（明写）**：项目页不再能列出"这个项目的原型"——那个列表本来就在回答一个不成立的问题；要找原型用 `prototype-list` 或搜索。`<prototype_context>` 里"哪边放新文件"那段也随边消失，两段上下文各自说清自己的目录。项目侧那条记录仍是钉住的（与 details / memory 一样），所以会话中途改它不会进这一轮提示词。
+
+**一句话**：项目可以**记**自己在哪个原型上（背景），原型**不记**自己属于谁。
 
 ### 15.2 同时：把命名分开
 
@@ -1230,8 +1448,8 @@ resolveProjectPrototype(root, projectSlug)
 
 ### 15.3 未做的（明确记录）
 
-- ~~**原型按项目分组/过滤**~~ —— 已做：项目详情页的"原型"标签页（§15.1.1），会话按项目继承原型
-- **`apps/electron/resources/docs/browser-tools.md` 还缺原型基础命令的章节** —— `prototype-list` / `create` / `bind` / `reference` / `target` 这几条随应用发布的文档里没有（`apply` / `export` / `mock` / `status` / `open` / `pages` 有）。独立的文档同步，未做
+- ~~**原型按项目分组/过滤**~~ —— 已做，但形态变了：项目详情页的"原型"标签页现在只回答"**这个项目的工作在哪些原型上**"（勾选出来的一个集合，`ProjectConfig.prototypeSlugs`，§15.1.3／§15.1.4）。会话**不继承**任何原型（§15.1.1 建立过继承，§15.1.2 撤回，§15.1.4 把"成员资格"也删了）
+- ~~**`browser-tools.md` 缺原型基础命令的章节**~~ —— 已做：原型有一份自己的指南 `apps/electron/resources/docs/prototypes.md`（`prototype-list` / `create` / `bind` / `reference` / `target` / `pages` / `entry` / `apply` / `commit` / `verify` / `record` / `mock` / `export` / `status` 全在里面），`browser-tools.md` 的 `prototype-*` 一节指向它
 
 ---
 
@@ -1381,7 +1599,7 @@ host 里两半各答一个问题：**目录 hash** 保证唯一（两个 workspa
 
 **落盘形状**：`dist/extension/` 里有 `manifest.json`、`README.md`（装法 / 作用范围 / 每一页 / 改了哪些补丁 / 版本与构建时间 / 已知边界）、补丁与 mock 产物（共享，在包根各一份），scratch 另有**每一页**（文件名不变，页间链接零改写）与每页自己的提取产物（`assets/<页名>/`）；`dist/dev-spec.md` 留在原型层，不进扩展包——它是给实现的人的，不是给运行载体用的。
 
-**交付物是"载体"而不是"页面"**：overlay 的页面是别人的活页面，我们永远交不出那个页面，只能交出叠加在上面的改动。载体用**内容脚本**而不是注入进页面的脚本，于是三条一起成立：页面 CSP 管不到它、一次注入对该文档持续有效（刷新与翻页都不必再点）、内容不必塞进一个 URL（体积预算因此不存在）。其它载体的账见 [开发文档](prototype-workbench-dev.md) §4。
+**交付物是"载体"而不是"页面"**：overlay 的页面是别人的活页面，我们永远交不出那个页面，只能交出叠加在上面的改动。载体用**内容脚本**而不是注入进页面的脚本，于是三条一起成立：页面 CSP 管不到它、一次注入对该文档持续有效（刷新与翻页都不必再点）、内容不必塞进一个 URL（体积预算因此不存在）。删掉的那些载体的账见 [开发文档](prototype-workbench-dev.md) §4；扩展与书签这两条**现役**路的对比见 §17.9。
 
 **为什么不是别的**（都算过账）：
 
@@ -1433,7 +1651,7 @@ host 里两半各答一个问题：**目录 hash** 保证唯一（两个 workspa
 
 **否决了「让 agent 永远只编辑一个 js」**，代价是具体的：
 
-- **一个文件 = 一个写者**，直接杀掉 lane 所有权（文件名里的 lane 前缀就是为它存在的）；两个 agent 同时改一个文件就是静默丢更新。
+- **一个文件 = 一个写者**，直接杀掉写入身份的所有权（文件名里的 writer 前缀就是为它存在的）；两个 agent 同时改一个文件就是静默丢更新。
 - **丢掉「删文件 = 撤销一条改动」**，这是现在最便宜的 revert。
 - **交付物变差**：dev-spec 按 patch 列全文，一个不断膨胀的 js 会让"这个流程到底改了什么"不可读。
 
@@ -1442,7 +1660,7 @@ host 里两半各答一个问题：**目录 hash** 保证唯一（两个 workspa
 ### 17.6 不引入 git
 
 - **变体**已有更便宜的答案：再建一个原型 + `references`（§14）。每个变体可独立打开、独立导出，不需要 checkout。
-- **合并**在模型里是违规而不是工作流：`canLaneWrite` 直接拒绝并报出来。
+- **合并**在模型里是违规而不是工作流：`whyWriterMayNotWrite` 直接拒绝并报出来。
 - **历史**：dev-spec 每次导出就是一份可 diff 的全量记录；原型是纯文件，workspace 若在用户自己的 git 仓库里，天然被版本化——**不需要我们写一行代码**。
 - 值得偷的 git 思想已经有了：append-only 文件 + 派生索引 ⇒ 删文件即撤销；复制原型即分支。
 - 真正的缺口不是 git，而是**两个人同时改一个原型**——那才需要合并，等遇到再说。
@@ -1450,12 +1668,58 @@ host 里两半各答一个问题：**目录 hash** 保证唯一（两个 workspa
 ### 17.7 未做 / 已知限制
 
 - **扩展的签名与分发**：没有图标资源、没有 zip 打包、没有企业策略分发。`Load unpacked` 对内部评审够用；要发给外部的人，得手动传目录或压缩包。**不做商店上架**（这是产品决定，不是待办）。
-- **patch 之间没有冲突检查**：两条补丁改同一个元素时，谁赢由文件名顺序决定（`lane → 序号 → 名字`），没有检测也没有提示。这与 §3 的所有权模型一致（同一路径只有一个写者），但**不同文件改同一处**仍可能互相覆盖。
+- **patch 之间没有冲突检查**：两条补丁改同一个元素时，谁赢由重放顺序决定（折叠层最后 → 序号 → 路径），没有检测也没有提示。这与 §3 的所有权模型一致（同一路径只有一个写者），但**不同文件改同一处**仍可能互相覆盖。
 - **内容指纹**：交付物里的补丁不参与"是否已应用"的判断（靠的是 `window` 上的安装标记，不是内容）。改了一条补丁的内容，评审的人要重新导出并 Reload——这是必然的，交付物是**快照**，与 §16.4.1 的"按文件名算已内联"是同一类妥协。
 - **生成器吸收不了就会说**：内联事件的处理、模块脚本的提取都是文本变换，遇到它没把握的写法时**报出来**给用户看，而不是猜。这是这条路上唯一会让人"手动改一改"的地方。
 - **桌面限定**：Chrome / Edge 这类 Chromium 系可加载 unpacked；Safari / Firefox 不做。
 
 （落点——改了哪些文件、每处改什么——见 [开发文档](prototype-workbench-dev.md) §1／§2；验收见 §10 的 M 组（63–70）与 Q 组。）
+
+### 17.8 第二种交付物：静态单文件（`dist/static/`）
+
+**问题**：§17 的扩展是**载体**，它承载的是**交不出去的那一半**——overlay 的页面是别人的活页面，只能在它自己的地址上改，除此之外没有第二条路。可 scratch 那一半本来就是**我们自己的文档**：为看它一眼要求对方 `chrome://extensions` → 开发者模式 → 加载已解压的扩展程序，是一个对面没有收益的成本；而"打开就看"这件事在 §4.1 被 §17 取代之后就没有出口了（那条路上写的 `dist/prototype.html` 已无人再写）。
+
+**结论**：交付物是**两份**，各覆盖自己能覆盖的那一半。
+
+| | `dist/extension/` | `dist/static/` |
+|---|---|---|
+| 是什么 | 可加载的扩展（载体） | 每页一份自包含 HTML |
+| 覆盖谁 | **全部页**：overlay 靠注入，scratch 靠自带文档 | **只有 scratch 页** |
+| 怎么用 | 装扩展 → 选项页（页索引）或工具栏图标 | 双击那一份文件，或直接发给别人 |
+| 依赖 | Chrome，且装着这个扩展 | 无：无宿主、无服务、无扩展 |
+| 没有的情况 | —— | 全是 overlay 页时**没有这一半**（`staticPath` 为 null），不写空目录 |
+
+**为什么 overlay 没有**：把在线页面冻成一份 HTML，跑不了它自己的 JS、也没有它的会话，只会"看着像"——§16.3 的 `resolvePrototypeEntry` 已经因为同一个理由拒绝过它。所以这条边界不是省略，是事实。
+
+**两份产物都带得动图片，差别只在"怎么带"**：扩展包把原型自己的 `assets/` **整份按字节原样拷进去**（`/assets/logo.png` 在扩展页里解析到包根，文件在那儿就显示得出来）；静态那一份把它 base64 内联进 HTML（单文件没有可解析的目录）。整份拷而不是按扩展名筛，是因为"哪些文件被页面用到"从标记里答不出来——脚本会拼 URL、样式表会引字体——而按 utf-8 往返一次正是把 png 弄坏的写法。
+
+**变换用的是预览的那一个**：`buildSelfContainedHtml()`（§4.1／§19.2）——同一份补丁（按页取）、同一份顺序、同一份内联方式，所以"打开的那份文件"与"作者预览到的页"不可能分叉。预览由宿主提供的两样东西，在这一份文件里必须自带：
+
+- **mock 层**：`buildMockScript()` 内联成 `<head>` 开头的一段脚本——要早于页面自己的代码抓到 `fetch`；扩展里这条是 `document_start` + `world: "MAIN"`，同一个理由。
+- **一个能解析的目录**：页面写的 `/assets/app.css` 在扩展页里解析到**包根**，在 `file://` 下解析到**磁盘根**——所以引用要内联。规则是"**解析到本原型目录内的文件就内联**"：文本与二进制一律 base64 data URL（`#fragment` 保留，`?query` 丢弃）；**页面文档除外**——那是同目录的兄弟文件（`<a href="orders.html">`），内联它等于把一次导航换成一份副本；写成根绝对的 `/orders.html` 则改成相对名（同一个理由：`file://` 下它指向磁盘根）。页面文件名不变，所以页间链接零改写，与扩展包同一条规矩。
+
+**说不了谎**：解析不到的本地引用**点名报出来**（`staticWarnings`，与扩展侧的 `warnings` 分开——两份交付物的改写理由不同，一个标题盖不住两者），而不是留一条打开即断的链接。已知代价写在模块注释里：内联脚本的调用栈里是 data URL，且文件比各部分之和大约三分之一。
+
+（落点见 [开发文档](prototype-workbench-dev.md) §1；`dist/static/` 出现在 `prototype-status` 的 `dist:` 列表里，`prototype-export` 的输出会打印它的路径与先打开哪一份文件。）
+
+### 17.9 第三种载体：书签（bookmarklet）
+
+**问题**：扩展是 §17 定的载体，也是更好的那个，但它有一个前提——**这台机器允许加载未打包扩展**。真实场景里不总是：托管的企业浏览器、对方锁死的笔记本、只是想看一眼的人。而 overlay 那一半要做的事是**把代码送进别人的活页面**，而送进去的路不止一条。
+
+**结论**：多给一条路，但不假装它等价。原型有 live 页、且该页有东西可打时，`prototype-export` 额外写 `dist/bookmarklet.html`：**一页一条可拖拽链接**，外加同一份代码供控制台粘贴。代码与扩展是**同一份**（`buildPatchBundle()` + `buildMockScript()`），所以两者不可能行为分叉——不同的只是"代码怎么进页面"。
+
+| | 扩展 | 书签 |
+|---|---|---|
+| 页面的 CSP | 管不到（浏览器注入） | **管得到**——书签是页面里的内联脚本，`script-src 'self'`（GitHub、Gmail、多数银行）直接拒绝，什么都不会发生 |
+| 每个文档 | 自动，刷新也在 | **每次都要点**，而且每页都要点 |
+| 体积 | 文件，没有预算 | **URL 预算** |
+| 前提 | 能加载未打包扩展 | 无（能往书签栏拖一条链接即可） |
+
+**一页一条链接，而不是一条通吃**：content script 由 Chrome 按地址划作用域，书签没有这个能力——它作用于你点它的那一页。要做"一条通吃"，就得把每一页的补丁都塞进去、在点击时按地址挑一份，而挑错的形态正是这套东西一直拒绝的那种：**静默地把另一屏的改动打上去**。所以链接按页命名、地址印在旁边，把"作用域"变成读者的选择，而且看得见。
+
+**它自己说明它做不到什么**：页面里写清三件事——页面策略可能拒绝（那就粘控制台，同一份代码）、每次刷新都要重点、mock 层在点击时才装（之前发出的请求不会被伪造）。不写清楚，这三件都会变成"这个原型坏了"。
+
+**没有 live 页就没有这一份**：书签的作用就是把改动打进别人的活页面，全是自己的页时它无事可做；而一个点了什么也不发生的书签比没有书签更糟——它看起来像成功了。所以那时不写文件，并把上一次导出留下的删掉。
 
 ---
 
@@ -1475,24 +1739,24 @@ host 里两半各答一个问题：**目录 hash** 保证唯一（两个 workspa
 
 **① 页的判定规则**（`pages.ts`，服务端与状态报告读同一条规则、同一份事实）：
 
-- **scratch**：目录里**顶层**的每个 `*.html` 都是这个原型的一页；`base.html` 是**入口页**（地址根渲染的那一份）。页就是文件，加一页 = 写一个文件 + 从别处链过去，不需要声明、也不会漂移。
+- **scratch**：目录里**顶层**的每个 `*.html` 都是这个原型的一页；本节当时把 `base.html` 当**入口页**（§19.3 改成"入口是行上的 `entry` 标记，没标时给生成的页索引"）。页就是文件，加一页 = 写一个文件 + 从别处链过去，不需要声明、也不会漂移。
 - **overlay**：页是真实站点上的 URL。站点不是我们能遍历的，所以页来自配置 —— `config.json` 的 `pages`（见 ⑤）。
-- **两个文档不是页**：`base.html`（作者编辑的裸底稿——它按名字可达，正是为了看到未渲染的样子）与 `dist/**`（导出时冻结的交付物；把今天的补丁灌进昨天的快照是对两者的双重谎报）。子目录里的文档也不是页：页住在原型的根，子目录放的是资源。
+- **不是页的两种文件**：下划线开头的（`_layout.html` 与宿主保留地址 `/_index`）与子目录里的文档（资源，§19.2）。本节当时还额外把 `base.html` 排除在页外（"作者编辑的裸底稿"），那个特例随 §19 一起取消了；`dist/**` 同样不是页（导出时冻结的交付物——把今天的补丁灌进昨天的快照是对两者的双重谎报）。
 
-**② 注入泛化到每一页**（`filePayload` → `buildPrototypePage`）：任何一页都按根路径同样的方式服务——该文档 + **全部**补丁，按请求现算。这是多页 scratch 能用的**前提**：否则第二页没有补丁，而"没有补丁"和"补丁没匹配上"长得一模一样。
+**② 注入泛化到每一页**（`filePayload` → `buildPrototypePage`）：任何一页都按根路径同样的方式服务——该文档 + **该页生效的**补丁（共享 + 该页自己的，§19.4），按请求现算。这是多页 scratch 能用的**前提**：否则第二页没有补丁，而"没有补丁"和"补丁没匹配上"长得一模一样。
 
-**③ `PrototypeStatus.pages`**：入口在前，其余按**流程顺序**（overlay 是声明序；scratch 没有声明，按名字序），每页带 `name / file / url / entry`。命令和输出共用这一份列表：`prototype-status` 列出 `pages:`，`prototype-open --page <name>` 打开其中一页，名字不存在时**把可选项列出来**（而不是只说不行）。读不干净的 `pages` 条目会被丢弃并进 `pageIssues`，由同一份报告点名。
+**③ `PrototypeStatus.pages`**：入口在前，其余按**流程顺序**（表里的声明序；没人声明的文档按名字接在后面），每页带 `name / kind / file / url / entry`。命令和输出共用这一份列表：`prototype-status` 列出 `pages:`，`prototype-open --page <name>` 打开其中一页，名字不存在时**把可选项列出来**（而不是只说不行）。读不干净的 `pages` 条目会被丢弃并进 `pageIssues`，由同一份报告点名。
 
-**④ agent 知道"现在是哪一页"**：`snapshot`／`windows` 的 `Prototype` 行带上 `page "<name>"`，由 `matchPrototypePage` 从窗口的**真实 URL** 反推。scratch 上未列出的路径算入口页（服务端正是用入口文档服务 history 路由）；**overlay 不这样兜底**——`/login?next=…` 不是原型描述的那一屏，说它是，就把那个值得注意的重定向藏起来了。
+**④ agent 知道"现在是哪一页"**：`snapshot` 的 `Prototype` 行带上 `page "<name>"`，由 `matchPrototypePage` 从窗口的**真实 URL** 反推。我们自己页上未列出的路径算入口页（宿主正是用入口文档服务 history 路由）；**live 页不这样兜底**——`/login?next=…` 不是原型描述的那一屏，说它是，就把那个值得注意的重定向藏起来了。
 
-**⑤ overlay 的页表（`config.pages`，已实现）**
+**⑤ 页表（`config.pages`，本节当时是 overlay 专有；§19.1 起两个类型共用）**
 
-页来自配置，因为真实站点不能遍历。形状与不变式：
+> 形状以 §19.1 为准：每行带自己的 `kind`，入口是行上的 `entry` 标记，没有顶层 `kind` / `targetUrl` 了。下面是本节当时的形状，保留作对照：
 
 ```jsonc
 {
   "kind": "overlay",
-  "targetUrl": "https://app.example.com/cart",   // 入口页：默认打开，唯一表示
+  "targetUrl": "https://app.example.com/cart",   // 当时：入口页，唯一表示
   "pages": [                                      // 其余页，按流程顺序
     { "name": "address", "url": "https://app.example.com/checkout/address" },
     { "name": "payment", "url": "https://app.example.com/checkout/payment" }
@@ -1500,26 +1764,26 @@ host 里两半各答一个问题：**目录 hash** 保证唯一（两个 workspa
 }
 ```
 
-- **入口只在 `targetUrl` 里写一次**，`pages` 里不许重复它（写了就丢弃并报告）。流程顺序 = 入口 + 声明序。少了这条，入口就有两份表示，必然漂移。
+- **入口只写一次**，表里不许重复它（写了就丢弃并报告）。流程顺序 = 声明序。少了这条，入口就有两份表示，必然漂移。
 - `name` 是命令与输出用的短名（`prototype-open --page address`），必须唯一且非空；空/重复的条目丢弃并报告，而不是替调用方猜一个。
 - 每个地址都要过得了 `matchPatternForUrl`（http/https）；过不了的那一页在**导出与状态报告里点名**，绝不静默少注入一页。
-- 它同时是三个既有出口的数据源，而不是新机制：`prototype-status` 的 `pages:`、`prototype-open --page <name>`、`snapshot`／`windows` 的 `page "<name>"`（`matchPrototypePage` 本来就是通用比较，此前只认得一页纯粹是因为页表只有入口）。
-- 命令：`prototype-pages`（无参数列出；`--add name=url`、`--remove name`、`--rename old=new`）；改入口仍是 `prototype-target <url>`。
+- 它同时是三个既有出口的数据源，而不是新机制：`prototype-status` 的 `pages:`、`prototype-open --page <name>`、`snapshot` 的 `page "<name>"`（`matchPrototypePage` 本来就是通用比较，此前只认得一页纯粹是因为页表只有入口）。
+- 命令：`prototype-pages`（无参数列出；`--add name=url`、`--remove name`、`--rename old=new`）；改入口是 `prototype-entry <name|none>`（`prototype-target` 只改某一页的地址）。
 
 **⑥ 载体投影**
 
-- **overlay**：页表摊平成 match pattern 集合交给扩展——每个真实页都在注入范围内，而"哪一页"由 Chrome 按 `matches` 强制。今天合成**一段** content script：补丁全量重放、无匹配即无害，所以"每页一段"与"合成一段"行为相同；等补丁按页归属落地时再拆开。
-- **scratch**：不做页表（见"未做"），页集合继续由派生规则给出（顶层 `*.html`）。交付物按**同一个派生集合**打包：每个有效页一份（文件名不变，所以页间相对链接零改写）、入口沿用 `base.html` 位置上的那份**构建产物**、`options_ui.page` 指向它、工具栏图标也开它，README 的 `Pages` 按同一份列表列出。每页自己的产物（提出来的内联脚本、事件处理运行时）落在 `assets/<页名>/` 下——否则两个页的 `inline-1.js` 会互相覆盖；补丁与 mock 是**共享产物**，在包根放一份（同一批补丁要在每一页重放，mock 是原型的属性而不是某一页的属性）。
+- **live 页**：页表摊平成 match pattern 集合交给扩展——每个真实页都在注入范围内，而"哪一页"由 Chrome 按 `matches` 强制。§19.4 落地后补丁也按页取了，所以每页带的就是它自己那批。
+- **我们自己页**：页集合由"顶层 `*.html`"（加页表里的声明）给出，交付物按**同一个集合**打包：每个有效页一份（文件名不变，所以页间相对链接零改写）、入口那一份就是"地址根打开的东西"（`entry` 那一页，否则 `options_ui.page` = 页索引）、工具栏图标开入口页，README 的 `Pages` 按同一份列表列出。每页自己的产物（提出来的内联脚本、事件处理运行时）落在 `assets/<页名>/` 下——否则两个页的 `inline-1.js` 会互相覆盖；补丁与 mock 是**共享产物**，在包根放一份（mock 是原型的属性而不是某一页的属性）。
 
 **落点**（改了哪些文件、每处改什么）见 [开发文档](prototype-workbench-dev.md) §1／§2；验收见 §10 的 Q 组（86–93）。
 
-**页与补丁的归属（下一步）**：不引入共享清单（那会推翻 append-only / 无共享文件这条根基），注入仍然**全量重放**——补丁本来就必须防御式书写，不匹配即静默无害。所以归属不是为了注入正确性，而是为了**dev-spec 能说清"这一页改了什么"**：写在补丁自己身上（文件头注释，或名字里的可选段），由控制面读出来生成文档。
+**页与补丁的归属（当时是"下一步"，§19.4 已给出答案）**：不引入共享清单（那会推翻 append-only / 无共享文件这条根基）。当时的结论是"注入仍然全量重放，归属只为了 dev-spec 能说清这一页改了什么"，并且以为它需要**补丁元数据**；§19.4 的做法更省——**目录即归属**（`patches/<页名>/` 管这一页，根管共享），既不用清单也不用元数据，而且顺带让注入也按页取。
 
-**未做**：
+**未做（当时）→ 后来各自有了结论**：
 
-- **scratch 的页表：决定不做。** 它现在的性质是"写个文件就生效，没有清单要维护"，而页表的两个收益（排除杂物、自定义顺序）目前没有消费者——面板还没有页列表，README 按名字排序也读得懂。等真出现"这张 html 不该算页"的需求再加；那时它也只是 `config.pages` 的第二个使用者，不是新机制。
-- **补丁的页归属 / 按页切分**：需要补丁元数据（文件头 `@pages` 或名字里的可选段），见上一条。收益不是注入正确性（全量重放已经安全），而是 dev-spec／README 能逐页说清改了什么。
-- **面板的页列表**：详情页还没有"页面"这一块（点一页预览那一页）。
+- **scratch 的页表**：当时决定不做，§19 起两个类型**共用一张页表**（`config.pages`），因为顺序与入口这两个收益确实有了消费者。
+- **补丁的页归属 / 按页切分**：§19.4 用目录做归属，不再需要元数据。
+- **面板的页列表**：已完成——详情页的 Pages 区块与侧边栏的两级下钻（§19.9）。
 
 ---
 
@@ -1591,7 +1855,7 @@ prototypes/<slug>/
 ### 19.4 补丁的页域：目录即归属
 
 - `patches/<页名>/*` 只在该页重放；`patches/*`（根）在**每一页**重放。**根 = 共享**，所以旧数据**零迁移**：今天所有补丁都在根，语义一模一样。
-- 归属只影响 dev-spec 与状态报告的**分组**，不影响注入正确性（补丁本来就必须防御式书写，不匹配即静默无害，§18）。所以它是一条**组织约定**而不是新机制：没有清单、没有索引、没有争用——`patches/cart/` 与 `patches/orders/` 是不同目录，§3.5 的 lane 所有权照旧一行生效。
+- 归属只影响 dev-spec 与状态报告的**分组**，不影响注入正确性（补丁本来就必须防御式书写，不匹配即静默无害，§18）。所以它是一条**组织约定**而不是新机制：没有清单、没有索引、没有争用——`patches/cart/` 与 `patches/orders/` 是不同目录，§3.5 的写入身份所有权照旧一行生效。
 - **`patches/<页名>/` 里的页名必须对得上一个页**；对不上（`patches/nope/`）就报出来：补丁落在没人看的页上，是这个模型最贵的那种静默失败。判据只有一条——目录名与页名同名。
 
 ### 19.5 交付物与扩展（对 §17 的修订）
@@ -1607,7 +1871,7 @@ prototypes/<slug>/
 
 ### 19.6 对话绑"原型 + 当前页"
 
-- §11 的绑定多一维：`prototypeSlug` 之外记 `prototypePage`（可空）。**写入路径一行不改**——它仍是**原型域**的事实，页只是它的一个属性；取值用同一个 `matchPrototypePage` 从窗口真实 URL 反推（§18 ④）。
+- §11 的绑定**只在页这一层**多一维：会话仍然只存 `prototypeSlug`（`SESSION_PERSISTENT_FIELDS` 里**没有**页字段），而"这是哪一页"是**读的时候**由 `matchPrototypePage` 从窗口真实 URL 反推的（§18 ④）——不落盘、不占会话字段。**写入路径一行不改**。
 - **命令的默认落点**：`prototype-open` 不带 `--page` 时打开**当前页**，没有当前页就落到入口、再落到索引。多页之后"打开这个原型"不再有唯一指代，而"接着我刚才在看的那一页"才是人和 agent 都想要的那一个。
 - `prototype-status` 把当前页标出来（`current`），agent 因此不必自己比对地址。
 
@@ -1709,9 +1973,9 @@ prototypes/<slug>/
 
 ### 20.4 渲染层
 
-详情页新增三个区块 —— **Requirements**（id / 标题 / 被谁引用，"还没有任何引用"直接标出）、**Research**（finding 的 claim、来源，以及它论证哪条需求）、**Frames**（采集会话、帧数、是否抽样、来自哪个录制），外加一条 `briefIssues` 告警，把三个静默失败摆到人眼前：需求无人实现、标记指向 prd.md 未定义的 id、finding 缺少 claim 或证据不在盘上。
+详情页在 Pages 与补丁之后新增几个区块 —— **Requirements**（id / 标题 / 被谁引用，"还没有任何引用"直接标出）、**Reviews**（每条异议的 claim / `about:` / 状态，与盘对不上的标 stale）、**Acceptance**（上一轮：跑过几次、通过/失败/跳过，以及"从没跑过"）、**Research**（finding 的 claim、来源，以及它论证哪条需求）、**Frames**（采集会话、帧数、是否抽样、来自哪个录制），外加一条 `briefIssues` 告警，把三个静默失败摆到人眼前：需求无人实现、标记指向 prd.md 未定义的 id、finding 缺少 claim 或证据不在盘上。
 
-三块排在 Pages **之前**：先说要做什么，再说怎么做的。告警用与「Page issues」**同样的形状**——它们是同一类事实（静默失败），不该长得不一样。
+这几块排在 Pages **之前**：先说要做什么，再说怎么做的。告警用与「Page issues」**同样的形状**——它们是同一类事实（静默失败），不该长得不一样。
 
 Frames 的数据来自 `listFrameCaptures`，它**从盘上读回** `research/frames/*/frames.json`：图片旁边那份索引就是记录，所以面板列出的与 finding 能引用的不可能漂移（与补丁扫描同一个理由）。
 
@@ -1747,14 +2011,14 @@ Frames 的数据来自 `listFrameCaptures`，它**从盘上读回** `research/fr
 
 与 S4 的分工：**验收挂钩管"行为对不对"（读 PRD 的断言），S4 管"选择器还命中吗"（读补丁的存活）**。两者互补，都需要。
 
-**未做**：`text` / `expression` 两类断言（后者等于让 PRD 跑任意 JS，权限边界要单独想清楚）；详情页还没有验收一栏；执行器没有单测（页面类断言需要真窗口，目前只由类型与命令路径覆盖）。
+**未做**：`text` / `expression` 两类断言（后者等于让 PRD 跑任意 JS，权限边界要单独想清楚）。**已补**：详情页有「上一轮验收」一栏；执行器有单测（`packages/server-core/src/domain/__tests__/verify-prototype.test.ts`）——`endpoint` 断言（方法大小写折叠、路径不折叠）、轮次记录与"与上一轮的差"（新红 / 仍红 / 不再被看 / 已修 / 不再声明）、`skip` 不算红、页面名回填与"没看成"的三种来路都在里面；只有 `selector` 的真页面那一半仍需要真窗口（测试用桩 `evaluate` 走遍它的分支）。顺带修掉一处：PRD 把最后一条 `check:` 删掉时，报告过去退回"No checks yet"，把"不再声明"这件事一起吞了。
 
 ### 20.8 未做（S4–S5）
 
 | 段 | 目标 | 状态 |
 | --- | --- | --- |
 | S4 回归可见 | patch 命中报告（css 按选择器统计命中、js 关键断言、DOM 稳定后读回） | **已完成**（§21.1／§21.2）：css 按 `@target` 统计命中、DOM 稳定后读回、命中与否都点名；js 侧只报"是否抛错"，**关键断言不做**（`prototype-verify` 才是断言的地方，§20.7） |
-| S5 交付索引 | `dist/handoff.md`（谁看哪个产物）+ 二进制资产进包（图片） | 未做 |
+| S5 交付索引 | `dist/handoff.md`（谁看哪个产物） | 未做。**二进制资产进包已完成**：`assets/` 整份按字节原样进扩展包（§17.8），另一份交付物 `dist/static/` 把它 base64 内联（§17.8） |
 
 S4 是迭代类需求的保险：线上改版后补丁**静默失配**，是这套东西最贵的失败模式。
 
@@ -1776,7 +2040,7 @@ S4 是迭代类需求的保险：线上改版后补丁**静默失配**，是这�
 
 ### 21.1 补丁头：两个标记
 
-补丁的**文件名**说得清它在哪一页、属于哪条 lane，说不清它**对着什么**、**为谁而做**。这两件事过去只活在对话里，而对话正是下一个读者看不到的地方。所以它们写进文件，作为标记解析：
+补丁的**文件名**说得清它在哪一页、属于哪个写入身份，说不清它**对着什么**、**为谁而做**。这两件事过去只活在对话里，而对话正是下一个读者看不到的地方。所以它们写进文件，作为标记解析：
 
 ```css
 /* @requirement R-001
@@ -1830,7 +2094,7 @@ overlay 的页面是别人的活地址，它不会、也不该变成我们的文
 | **overlay 页** | 别人的活地址（不可重写） | CSS 与 JS → `patches/<页名>/Z-001-upper.css` / `Z-002-upper.js` |
 
 - **JS 不是"折入"，是"升格"**：它是运行时行为，硬折进静态文档等于"执行后序列化 DOM"——就是 §14.1 删掉的那个方案。移进我们自己的资源文件是同一种收敛（它不再是一条差量，而是源码），而且文档仍然可读。
-- **`Z` 是一条保留 lane**，`byReplayOrder` 里**按规则**排最后（并明确写出来，不靠字母序的巧合）：折进去的东西必须重放于它所折的一切之后，一条补丁的语义不该取决于别的 lane 恰好选了什么字母。
+- **`Z` 是一个保留的写入身份**，`byReplayOrder` 里**按规则**排最后（并明确写出来，不靠字母序的巧合）：折进去的东西必须重放于它所折的一切之后，一条补丁的语义不该取决于别的写入身份恰好被叫什么名字。
 - **标记跟着走**：provenance 注释里带 `@requirement` 与每个 `@target`（每个标记各占一行，因为解析器把标记之后到行尾都当作它的值）。锚点与需求线因此穿过一次折入仍然成立。
 - **共享补丁折进共享层**（`patches/Z-001-upper.css`），页级补丁折进页层——折入**不改变作用域**，`--page` 只折那一页自己的补丁。
 - **折入之后删掉原补丁文件**：删除本就是最便宜的撤销（§17.5），现在它同时是最便宜的收敛。
@@ -1867,7 +2131,7 @@ overlay 的页面是别人的活地址，它不会、也不该变成我们的文
 
 ## 22. 窗口、标签与"谁在驱动"
 
-> **状态**：模型、标签 API、**打开与目标**、**元信息两分**、**UI（工具栏标签条 + 面板按窗口分组）**、**一个工作区一个浏览器窗口（+ 多标签，含窗口级租约）**、**元素选择器常驻（窗口级模式，跨页可用）**、**页级占用与接管**、**开窗通道收敛（一切开窗都成页）**已落地。**面板按会话分组**未做。这一节记的是方向与规则——它们必须先定，因为它们决定状态放哪。
+> **状态**：模型、标签 API、**打开与目标**、**元信息两分**、**UI（页栏 + 面板按窗口分组）**、**一个工作区一个浏览器窗口（+ 多标签）**、**元素选择器常驻（窗口级模式，跨页可用）**、**页级占用与接管**、**开窗通道收敛（一切开窗都成页）**、**页锁回到页上**、**游标归驱动者（人在看哪一页不决定命令打哪一页）**、**归属是一份"活"（`TabBelongsTo` + `tab-assign`）**、**几何永远真实 + 按需前台**、**后台执行（命令作用于自己的页，窗口不动；`windows` 命令已删）**都已落地。**面板按会话分组**仍留待下一轮（页栏与徽章已经按"谁的活"分段）。这一节记的是方向与规则——它们必须先定，因为它们决定状态放哪。
 
 **问题**：一个窗口 = 一个页面 = 一个原型，于是"同时经营几个原型"这件事没有任何落点；而窗口又**挂在会话上**（`boundSessionId` / `ownerType` / `ownerSessionId`，轮次结束才解绑），于是
 
@@ -1941,17 +2205,51 @@ overlay 的页面是别人的活地址，它不会、也不该变成我们的文
 >
 > **别叫它"画布"**（这一条是用户纠正的）：这是**工作区的浏览器窗口**，不是原型工作台的画布。同一个工作区里还有跟原型毫无关系的通用任务（查资料、填表、看后台），它们用的是同一个窗口。窗口的身份是**作用域**（工作区 vs 会话），不是用途。
 
-- **窗口的身份是 `isWorkspaceWindow` + `workspaceId`，不是"谁的窗口"**。`createForSession(sessionId, {workspaceId})` 的语义从"建我的窗口"变成"取这个工作区的窗口，并且**我现在是它的驱动者**"；`sessionId` 可以为 `null`（手动开窗：同一个窗口，没人开车）。所以：
+- **窗口的身份是 `workspaceId`，不是"谁的窗口"**（原先还配了一个 `isWorkspaceWindow` 旗标，收口时删掉了：窗口只有一种，旗标没有第二个值可区分）。`createForSession(sessionId, {workspaceId})` 的语义从"建我的窗口"变成"取这个工作区的窗口，并且**我现在是它的驱动者**"；`sessionId` 可以为 `null`（手动开窗：同一个窗口，没人开车）。所以：
   - 同一工作区的**所有会话**拿到**同一个** instanceId；
   - **用户手动开的页也在同一个窗口里**（`browser-pane:create` 无 `id` 时走它；TopBar 的「New Browser Window」因此变成「New page」，菜单项改文案、`browser.newWindow` 键删除，与标签条的 `+` 共用 `browser.newPage`）；
-  - 显式传 `id` 的调用方仍然拿到独立窗口（内部机制、测试用）。
+  - 显式传 `id` 仍能拿到一个具名窗口，但那只剩**内部机制与测试**在用，它与其他窗口没有种类差别（收口后 `createInstance` 的 `isWorkspaceWindow` 选项消失）。
 - **`boundSessionId` 从"归属"改成"租约"**（字段名没改，含义与文档改了，改名留待后续）：每条命令都经 `createForSession` 解析窗口，所以"谁在驱动"自己就刷新了；`unbindAllForSession` 只放租约、不放窗口；**手动开页不刷新租约**（人点几下 ≠ 某个对话停了）。
-- **生命周期**：`destroyForSession` **不销毁这个窗口**（只放租约）——它还可能装着别人和用户的页；`unbindAllForSession` 对它不降级为 `manual`（它不是谁的）。
-- **远程路径**：`listInstancesForOwner` / `requireOwnedInstance` 增加一条"这个窗口属于该工作区"——ownerKey 里已经带了 workspaceId，所以两边能对上。原来"远程 agent 一律给新窗口，免得碰用户窗口"的理由随之消失（agent 和用户看的就是同一个），**但工作区边界没松**。
-- **手动开窗不再是"第二个窗口"**：`sessionWindows()` 成为"这个会话能动哪些窗口"的唯一定义（按工作区过滤），`resolveLifecycleWindowTarget` / `focusWindow` / `listWindows` / `verifyPrototype` 全部改用它。这个窗口对所有会话可见可用；会话自己的旧窗口仍然只属于它。
-- **`close` 的语义跟着规则 3 收紧**：工作区的窗口**不可被某个对话关掉**，拒绝时说明替代方案（`tab-close <id>` 关自己开的页、`release` 撤遮罩）；独立窗口仍可被关。`windows` 输出里 `lockState` 换成 `driver:`（`the workspace's window, driven by X` / `driven by X` / `idle`），`summarizeWindows` 的 `locked=` 改成 `driving=`——"锁"这个词在共享窗口上已经不成立。
+- **生命周期**：`destroyForSession` **不销毁这个窗口**（只放租约）——它还可能装着别人和用户的页；收口后没有第二种窗口可销毁，所以它一律只放租约；`unbindAllForSession` 也不会把它降级成别的什么（它不是谁的）。
+- **远程路径**：边界就是**工作区**——`requireInstanceInWorkspace` / `listInstancesForWorkspace` 与 `sessionWindows()` 是同一个判断。原先在远程桥上给会话身份加的命名空间（owner-key `remote:<ws>:<sid>`）收口时整体删掉了：一个窗口只被**它自己工作区**的会话碰，而这些会话来自同一台服务器，本来就是同一个 id 空间；会话身份因此不再需要在实例字段与 wire 之间来回翻译。原来"远程 agent 一律给新窗口，免得碰用户窗口"的理由随之消失（agent 和用户看的就是同一个），**但工作区边界没松**。
+- **手动开窗不再是"第二个窗口"**：`sessionWindows()` 成为"这个会话能动哪些窗口"的唯一定义（按工作区过滤），`resolveLifecycleWindowTarget` / `focusWindow` / `listWindows` / `verifyPrototype` 全部改用它。
+- **`close` 的语义跟着规则 3 收紧**：窗口**不可被某个对话关掉**，它关的是**这次任务开的那些页**（一条也没有时说明替代方案：`tab-close <id>`、`release` 撤遮罩）——收口后没有"独立窗口仍可被关"这一档。`windows` 输出里 `lockState` 换成 `driver:`（`the workspace's window, driven by X` / `driven by X` / `nobody driving`），`summarizeWindows` 的 `locked=` 改成 `driving=`——"锁"这个词在共享窗口上已经不成立。
 - **多绑收口**：`describeWindowPrototype(sessionId, url)` 删除，换成 [`describePrototypeAtPage`](domain/prototype-page.ts)——**页决定优先**（`tab.prototype`，开页时记的，overlay 载入第三方地址后唯一还成立的答案），会话绑定只在页说不出话时兜底。`snapshot` 与 `listWindows` 都改用它；`getBoundPrototypeSlug` 同样先问活动页（同步读本地面板；远程桥答不了就回落会话绑定，正是它原来的答案）。**这一条就是"一个对话同时经营多个原型"的全部**——不需要新字段，因为页上早就有身份了。
 - 顺带修掉两个多标签留下的洞：`findInstanceByPageWebContentsId` 原来只看活动页（后台页发起 empty-state launch 会找不到窗口）；`browserHostBySession` 这个字段名（按 sessionId 存）保持不动，只是把"canvas 式的命名"从这一层彻底清掉。
+
+> **收口（单窗口落地之后）**：窗口只有一种，于是"谁拥有这个窗口"这一整套词汇一起删掉——`ownerType` / `ownerSessionId`、`bindSession` / `unbindSession`、`isWorkspaceWindow`，以及远程桥用来给会话身份加命名空间的 owner-key（`remote:<ws>:<sid>`）。留下的三件事，每件只有一个答案：
+> - **窗口的身份** = `workspaceId`（`findWindowForWorkspace` 按它找）；
+> - **谁在驱动** = 租约：页上是 `cursorOf` / `driverSessionId`，页锁 `lockedBy` 就是**驱动它那个会话自己的 id**，而它只由 `setSessionPage` 写下——所以 agent 读回来的串与它自己的 id 必定相等（原先远程桥上这两处是两个不同的串，页锁因此静默失效）；窗口上不再有任何会话字段（`boundSessionId` 在下一轮删掉）；
+> - **边界** = 工作区：`requireInstanceInWorkspace` / `listInstancesForWorkspace` 与 `sessionWindows()` 是同一个判断，`close` / `focus` / 生命周期不再有"锁定到会话 X"这一档，`windows` 里也不再有 `ownerType` / `ownerSessionId`。
+>
+> 会话身份**不再翻译**：远程桥上 `setSessionPage` / `createTab` 的会话身份由请求身份派生，不读调用方在参数里拼的那个。
+
+**一轮（页是并行的工作单位；Conductor 落地之后）**：
+
+> 起因是**共享了但用不了**：Conductor 的并行子会话技术上共用同一个工作区窗口，但这套模型是**顺序驾驶**长出来的——窗口级租约 + 单槽 overlay——两个子会话一开工就互相顶掉（第二个会话的 `tool_start` 把第一个的页锁**静默抹掉**；`boundSessionId` 每命令一抢；`clearVisualsForSession` 还要求"我先得是驱动者"）。解法不是给窗口加锁，而是把**窗口级单槽全部拆到页上**，并把"谁在这一页上"变成可写的资源。
+
+- **页锁是每页一个**（`BrowserTab.heldBy`，对外 `lockedBy`）：原先 `agentControl` 是窗口级单值（`sessionId` + `tabId`），第二个会话开工即整对象覆盖、`heldBy` 变 `null`；现在每个会话各持自己的页，互不干扰。窗口级只留"这里有人在干活"的指示（DTO 的 `agentControlActive` = `controlBy.size > 0`），chip 的文字取**持有屏幕那页**的会话，它没持有时取最近开始的那个。
+- **窗口级租约 `boundSessionId` 删除**：并发下它必然抖动（每条命令都 `createForSession` 抢一次），而它剩下的用途各自有更精确的归属——遮罩的定位/撤销按 `heldBy` 与 `controlBy`、渲染层读当前页的 `lockedBy`/`cursorOf`/`openedBySessionId`、下载目录与原型兜底按**页**的会话来问。删掉之后"谁在这扇窗里"只剩页的回答。
+- **reach 改"一页一主"**：`whyTabIsOutOfReach` 去掉 prototype 分支——同原型不再放行。一页要么是本会话的任务（自己开的、被分配的、从自己页派生的），要么**还没人认领**（`openedBySessionId === null && cursorOf === null`：人开的页、新页——这才是"你先开、agent 接着用"）。兄弟会话不再互相踩页。
+- **`tab-assign <page-id> <session-id>`**：分配是显式动词，不是 `createTab` 的副作用。父会话把页交给子会话——页的任务改为接收方，并**成为它 work from 的页**（否则"给你一页"给到的是一页它够不着的页）；只允许交出**自己的页或无人认领的页**，接收方必须是**同工作区的会话**（这条在 SessionManager 判，因为只有它知道会话）。
+- **子会话不动人的视线**（`parentSessionId` 非空）：不允许"接屏"（没有自己的页时拒绝并指路 `tab-new` / `tab-assign`，而不是接管屏幕上那页）；`tab-show` 只改自己的游标、不移动可见页，并在输出里如实说明；`open --foreground` / `focus` / `hide` 一律拒绝。它的活儿在背后干，要给人看由父会话来 bring up。
+- 验收：`browser-pane-manager.test.ts` 的「lets two conversations work in it at once, each on its own page」（两个会话各自的页与锁同时成立，一个收尾只放自己的那页）与 `tab-assign` 用例（交出去之后谁够得着、谁够不着）。
+
+**一轮（归属：页属于一份"活"；Conductor 之后）**：
+
+> 起因是用户点名的**"归属要搞清楚"**。上一轮把并行做成了"每页一个会话的锁"，但页的**归属**仍写着会话 id（`openedBySessionId`）——而会话是**执行者**，不是活。DAG 一眼就撞上：一个节点跑 FAIL 之后 `repairForVerdict` 重跑它，走的是同一个 `dispatch`，于是**新建一个子会话**；旧页挂着一个已经停止的会话，新会话够不着（reach 拒绝）、编排者也收不掉（`close` 只关自己开的页）——**修一轮多一批孤儿页，谁也不认**。
+
+- **归属的主体是"活"（`TabBelongsTo`），两档**：`{ kind: 'session', sessionId }`（一份对话的活）与 `{ kind: 'task', taskSlug, runId, nodeId, sessionId }`（Tasks 的一份活：`nodeId: null` = 任务本身，即编排者的页；否则 = 一个节点）。字段 `openedBySessionId` → `belongsTo`；任务档里的 `sessionId` 只是**谁开的**（给页栏念名字），**不参与身份**。生产点唯一：`workOfSession(managed)`（`dto.ts`），所以"会话变成谁的页"只有一处答案。
+- **两个判据，宽窄不同**（`sameWork` / `sameTask`，纯函数、在 `dto.ts` 与类型同处）：reach 用 `sameWork`（同会话，或同任务 + 同 run + 同节点）——**同一任务的不同节点不放行**，第十一轮的"一页一主"原地保持；close 用 `sameTask`（同 `taskSlug`，不看 run 也不看节点）——**整个任务都能收自己的页**，编排者因此第一次有了回收权（它从没"开"过节点的页，而开页的节点早已停止）。可达要精确、清扫要宽松，这一条是这次把两件事分开的收益。**注意 reach 给的是"可达"，不是"自动接管"**：重跑的那个会话可以接着用旧页，但它得先看一眼 `tabs`（见末尾那条推迟项）。
+- **`createTab` 的盖章从"会话"换成"活"**：`openedBySessionId?: string` → `belongsTo?: TabBelongsTo | null`（整块 work），派生页**继承整块 work**（第十一轮的规则不变，只是继承的东西从 id 变成活）；`assignTab(instanceId, tabId, to, by)` 的 `to` 是**接收方的活**，只有 `SessionManager` 解析得出来（browser 侧查不到会话的任务身份），`by` 是交出者的活。
+- **远端桥把"活"当身份**：`BrowserCapabilityRequest` 新增 `work`，与 `sessionId` / `workspaceId` 并列（都是"谁在问"，不是"做什么"），dispatcher 用它盖章 `belongsTo`，**绝不从 `args` 读**——与当年 `openedBySessionId` 同一条理由：不能替别人写声明。`RemoteBrowserPaneManagerDeps.getWork` **每次调用现问**，因为会话可以在创建之后才被绑上任务（`bindExistingSessionToTask`）。
+- **不动的东西**：`cursorOf` / `driverSessionId` / `heldBy` 仍是会话级。"**这是谁的活**"与"**现在谁在干**"是两件事，这次的全部意义就是把它们分开——租约的换手、页锁的排他、游标的粘性一个字没改。
+- **视图**：`page-groups` 由 `groupTabsByOpener` → `groupTabsByWork`，**一个任务一段**（同一 DAG 的节点页不拆段，段头写任务 slug——slug 就是它的名字，所以任务这一档不需要新的 label 通道；会话段仍读 `sessionLabels`）。
+- **徽章菜单里那句 "Open Session Which Used this Window" 删掉**（用户点出）：窗口是工作区的、多会话共用，"用过这扇窗的会话"不是一个存在的事实——代码本来就偷偷读的是**页**。按钮留着（"从浏览器跳回对话/任务"是有用的动线），但目标**按屏幕那一页**解析：谁在动这页（`lockedBy`）/谁从这页干活（`cursorOf`）→ 那个会话；否则看归属——会话的页 → 那个会话，**任务的页 → 任务本身（编排者会话）**，不再回落到 `belongsTo.sessionId`（那是**开页那个会话**，provenance；节点重跑之后它已停止，点进去是一条死对话）。文案随目标走（`browser.openPageConversation` / `browser.openPageTask`，7 个 locale 同批加）。
+- 验收：`tab-access.test.ts`（重跑节点接管旧页 / 兄弟节点不放行 / 跨 run 不放行 / 编排者可关本任务页）、`browser-pane-manager.test.ts` 的「stamps a node's work on the page, so a re-run of that node inherits it」、`page-groups.test.ts` 的「keeps a task's nodes in one section, under the task」、`utils.test.ts` 的 `openTargetOfActivePage`（任务页 → 任务的会话，只有被 spawn 的节点会话时**不退回**；草稿编排者不算；人开的页与没在屏幕上的页都没有目标）。
+- **不做自动分页**（用户定："先放着"）：Conductor 不替节点**开**页，也不替它**收**页。节点要浏览器就自己 `tab-new`（归属保证它拿到的是自己节点的页，兄弟节点够不着），任务页由编排者用 `close` 收——族判据已经放行。三条理由与"run 结束不自动关页"写在 §6.4。
+- **一个已知且无害的残留（推迟）**：重跑时节点若**再次** `tab-new`，会多留一页。它归**同一个节点**（重跑者可达）、归在页栏的**任务那一段**、任务可 `close` 收掉——所以它不是孤儿，只是多一行。最小修法不是自动分配，而是让 `tab-new` 对"任务节点的活"**幂等**（已有同节点页就复用并设为游标）；**推迟**，等真实 repair 出现堆积现象再做。在那之前，节点侧的正确习惯是**先 `tabs`**：`belongs to:` 写着你这个任务和节点的页就是你的，用 `--tab <id>` 接着干，比再开一页好。
+- **如果将来真要做，形状是按节点 opt-in**：spec 里给节点 `browser`（可选带 URL），runner 只对声明了的节点预开，且预开失败只降级（"你自己 `tab-new`"）**绝不判节点失败**。触发条件：出现实测证据——节点因为拿不到页而失败、或节点之间互相踩页。
 
 **第五轮（元素选择器常驻：模式属于窗口，元信息属于页）**：
 
@@ -2048,6 +2346,7 @@ overlay 的页面是别人的活地址，它不会、也不该变成我们的文
 - **三样各就各位**：`openedBySessionId`（**谁的**：写一次或继承）、`cursorOf`（**从哪页干活**：粘性，只由该会话自己的动作移动）、`driverSessionId` + `lockedBy`（**此刻谁在动 / 谁攥着**）。视图分组读第一个，命令路由读第二个，排他读第三个。
 - **可见性**：`tabs` 的标签由 `opened by:` 改成 **`belongs to:`**（派生页说"opened by"是假话）；拒绝文案、help、browser-tools.md 同口径。页栏的段本来就按这个字段分，所以分组立刻变成"任务组"（这正是用户要的"视图的逻辑分组"）。
 - **不动 `boundSessionId`**（那是窗口租约，另一个东西）：见答复——它仍承载 overlay 定位、生命周期定位、下载目录、`windows` 的 `driver:`、渲染层的"打开使用它的会话"。要删是**单独一步**，且删掉后那几处访问控制会简化（"锁定到会话 X"的拒绝本来就和"租约不是锁"矛盾）。
+  - > **后来真的删了**（见 §22「页是并行的工作单位」一轮）：Conductor 的并行子会话把这一步从"整洁性"变成"必须"——窗口级租约在并发下必然抖动，而它列出的那几处用途各自都有页级的答案（overlay 定位按 `heldBy`/`controlBy`，下载目录与原型兜底按页的会话，渲染层读当前页）。
 
 **第十二轮（A：几何永远真实，前台性按需模拟）**：
 

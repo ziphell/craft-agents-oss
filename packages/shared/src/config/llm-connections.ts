@@ -2,7 +2,8 @@
  * LLM Connections
  *
  * Named provider configurations that users can add, configure, and switch between.
- * Each session locks to a specific connection after the first message.
+ * Each session is pinned to a connection on its first agent creation (so ambient
+ * config drift can't re-route it), but the user can explicitly switch it later.
  * Workspaces can set a default connection.
  */
 
@@ -673,7 +674,7 @@ export function getDefaultModelForConnection(providerType: LlmProviderType, piAu
  * Resolve the effective LLM connection slug from available fallbacks.
  *
  * Single source of truth for the fallback chain used everywhere in the UI:
- *   1. Explicit session connection (locked after first message)
+ *   1. Explicit session connection (pinned on first agent creation)
  *   2. Workspace-level default override
  *   3. Global default (isDefault flag on a connection)
  *   4. First available connection

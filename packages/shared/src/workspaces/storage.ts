@@ -3,7 +3,9 @@
  *
  * CRUD operations for workspaces.
  * Workspaces can be stored anywhere on disk via rootPath.
- * Default location: ~/.craft-agent/workspaces/
+ * Default location: CONFIG_DIR/workspaces — which is `~/.craft-agent/workspaces` unless
+ * `CRAFT_CONFIG_DIR` moved the config directory, and it must move this with it: otherwise an
+ * instance started with its own config dir still writes workspaces into the shared one.
  */
 
 import {
@@ -16,8 +18,8 @@ import {
   statSync,
 } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
 import { randomUUID } from 'crypto';
+import { CONFIG_DIR } from '../config/paths.ts';
 import { expandPath, toPortablePath } from '../utils/paths.ts';
 import { atomicWriteFileSync, readJsonFileSync } from '../utils/files.ts';
 import { getDefaultStatusConfig, saveStatusConfig, ensureDefaultIconFiles } from '../statuses/storage.ts';
@@ -32,7 +34,6 @@ import type {
   WorkspaceSummary,
 } from './types.ts';
 
-const CONFIG_DIR = join(homedir(), '.craft-agent');
 const DEFAULT_WORKSPACES_DIR = join(CONFIG_DIR, 'workspaces');
 
 // ============================================================

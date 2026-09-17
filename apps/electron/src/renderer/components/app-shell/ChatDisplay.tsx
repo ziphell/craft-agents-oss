@@ -137,8 +137,8 @@ interface ChatDisplayProps {
   // Model selection
   currentModel: string
   onModelChange: (model: string, connection?: string) => void
-  // Connection selection (locked after first message)
-  /** Callback when LLM connection changes (only works when session is empty) */
+  // Connection selection (auto-pinned on first message, explicitly switchable afterwards)
+  /** Callback when the user explicitly picks a model/connection (works mid-session) */
   onConnectionChange?: (connectionSlug: string) => void
   /** Ref for the input, used for external focus control */
   textareaRef?: React.RefObject<RichTextInputHandle>

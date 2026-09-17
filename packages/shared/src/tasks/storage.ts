@@ -28,14 +28,28 @@ const NODES_DIR = 'nodes';
 // Run-state types
 // ---------------------------------------------------------------------------
 
-/** Per-node lifecycle state recorded in the run log. Richer than the board's SubtaskRunState. */
-export type NodeRunState = 'pending' | 'running' | 'done' | 'failed' | 'cancelled' | 'skipped';
+/**
+ * Per-node lifecycle state recorded in the run log. Richer than the board's SubtaskRunState.
+ *
+ * `awaiting-approval` is a gate node: nobody is running it, and nobody can until a person
+ * answers — so it is neither pending (the scheduler already decided it runs) nor running.
+ */
+export type NodeRunState =
+  | 'pending'
+  | 'running'
+  | 'awaiting-approval'
+  | 'done'
+  | 'failed'
+  | 'cancelled'
+  | 'skipped';
 
 /** Append-only run-log event. `t` is an ISO-8601 timestamp. */
 export type RunLogEntry =
   | { t: string; kind: 'run-started'; taskId: string; runId: string; orchestratorSessionId?: string }
   | { t: string; kind: 'node-scheduled'; nodeId: string }
   | { t: string; kind: 'node-spawned'; nodeId: string; sessionId: string }
+  /** A gate node reached the front of the queue and is now waiting on a person. */
+  | { t: string; kind: 'node-awaiting-approval'; nodeId: string }
   | { t: string; kind: 'node-finished'; nodeId: string; sessionId: string; state: NodeRunState; reason?: string }
   | { t: string; kind: 'node-retry'; nodeId: string; attempt: number; reason: string }
   | { t: string; kind: 'run-paused' | 'run-resumed' | 'run-stopped' | 'run-completed' | 'run-failed' | 'run-verifying' }

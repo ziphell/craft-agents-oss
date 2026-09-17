@@ -4,51 +4,79 @@
  * Two rules, and they are different rules — which is why they are two functions
  * rather than one "can I use this" predicate:
  *
- * - **In reach**: may this conversation work here at all? A page carries the
- *   prototype it is for, and a conversation works on one prototype, so together
- *   they answer it. Acting on another conversation's prototype is refused.
- * - **Mine to close**: closing is housekeeping, and housekeeping is only the pages
- *   *this* conversation opened. The user's pages, and another conversation's, are
- *   not ours to close.
+ * - **In reach**: may this conversation work here at all? A page says which **work** it
+ *   is part of (`belongsTo`), and the same work is the only thing that may work in it.
+ *   Another conversation's page is a wall, not a queue.
+ * - **Mine to close**: closing is housekeeping, and housekeeping is the whole **task**'s —
+ *   a node's page, a node that was re-run and left one behind, and the orchestrator's own
+ *   are all the same task's to clean up, while the user's pages and another task's are not.
+ *
+ * The difference is deliberate: reach is precise (the same node of the same run) and close
+ * is loose (the same task, whatever node). A conversation that is allowed to *work* in a
+ * page must not be the only one allowed to tidy it away, or a finished DAG's pages stay in
+ * the window forever — nobody who opened them is still running.
  *
  * Both are here rather than inline in the pane manager because the manager knows
- * windows and pages but not conversations (plan §22), and here rather than inline in
- * `SessionManager` because these are the rules the tool layer is judged on and they
- * deserve to be readable and tested on their own. They return the *reason* rather
+ * windows and pages but not conversations' task identity (plan §22), and here rather than
+ * inline in `SessionManager` because these are the rules the tool layer is judged on and
+ * they deserve to be readable and tested on their own. They return the *reason* rather
  * than a boolean: the answer is always "no, because …", and the agent reads it.
  */
 
-import type { BrowserTabSummary } from '@craft-agent/shared/protocol'
+import { sameTask, sameWork, type BrowserTabSummary, type TabBelongsTo } from '@craft-agent/shared/protocol'
 
 /** The part of a page the reach rule reads. */
-type ReachableTab = Pick<BrowserTabSummary, 'id' | 'prototype' | 'openedBySessionId'>
+type ReachableTab = Pick<BrowserTabSummary, 'id' | 'belongsTo' | 'cursorOf'>
+
+/**
+ * A page's work in words, for a refusal that has to say whose page it is.
+ *
+ * Never a bare session id for a task page: a DAG's pages are named by their task and node,
+ * and the session that opened one is provenance — often a session that has already stopped.
+ */
+function whosePage(tab: ReachableTab): string {
+  const work = tab.belongsTo
+  if (work?.kind === 'task') {
+    return work.nodeId
+      ? `the page task ${work.taskSlug} opened for its node ${work.nodeId}`
+      : `the page task ${work.taskSlug} opened for itself`
+  }
+  if (work) return `${work.sessionId}'s task`
+  return `${tab.cursorOf}'s to work from`
+}
 
 /**
  * Why this conversation may not act on this page, or `null` when it may.
  *
- * Three ways a page is in reach:
+ * Two ways a page is in reach (plan §22):
  *
- * - it belongs to no prototype — an ordinary page, anybody's to use, which is what
- *   makes "you open it, the agent takes over" work for a page that has nothing to do
- *   with prototypes;
- * - it belongs to the prototype this conversation works on;
- * - it belongs to this conversation's **task** — it opened the page, or the page was opened
- *   from one of its pages (plan §22, 第十一轮), so an explicit `prototype-open <slug>` from
- *   an unbound conversation still gets to work on what it opened.
+ * - it is **this conversation's work** — the same conversation, or the same node of the same
+ *   run of the same task. It opened the page, the page was assigned to it (`tab-assign`), or
+ *   the page was opened from one of its pages;
+ * - it is **nobody's yet**: no work, and no conversation working from it. A page the person
+ *   opened is one of these, and taking it over is how "you open it, the agent carries on"
+ *   works — for ordinary pages and for a prototype's alike.
+ *
+ * Anything else belongs to another conversation or to another node of my own task, and that
+ * is a wall: nodes of one DAG do not share pages, because each of them working in its own is
+ * what makes them parallel instead of interfering. A node that is **re-run** is the same work
+ * as its predecessor (same node, same run), so it takes over the page that was left rather
+ * than opening a second one — and the page stops being an orphan.
+ *
+ * The clock is separate: a page nobody's yet can still be **held** for the moment
+ * ({@link whyTabIsLocked}) — own it, or take it while it is free.
  */
 export function whyTabIsOutOfReach(
   tab: ReachableTab,
-  sessionId: string,
-  ownPrototypeSlug: string | undefined,
+  me: TabBelongsTo,
 ): string | null {
-  if (!tab.prototype) return null
-  if (tab.openedBySessionId === sessionId) return null
-  if (ownPrototypeSlug && ownPrototypeSlug === tab.prototype.slug) return null
+  if (sameWork(tab.belongsTo, me)) return null
+  if (tab.belongsTo === null && tab.cursorOf === null) return null
 
   return (
-    `Page ${tab.id} is "${tab.prototype.slug}"'s, and this conversation works on ` +
-    `${ownPrototypeSlug ? `"${ownPrototypeSlug}"` : 'no prototype'}. Name a page of your own with ` +
-    `"--tab <id>" ("tabs" lists them), or work on this one with "prototype-bind ${tab.prototype.slug}".`
+    `Page ${tab.id} is ${whosePage(tab)}, not yours. Work on a page of your own — "tab-new" opens one, ` +
+    `and a parent conversation can hand you one with "tab-assign <id> <session>" — then name it with ` +
+    `"--tab <id>" ("tabs" lists them).`
   )
 }
 
@@ -92,7 +120,9 @@ export function pickCommandTarget<T extends Pick<BrowserTabSummary, 'id' | 'curs
  * now*". So the answer here is "wait", not "never", and that is what it says.
  *
  * The conversation holding the lock is never locked out of its own page: `lockedBy === sid`
- * is the one case that returns `null` immediately.
+ * is the one case that returns `null` immediately. A re-run of a node is a different session,
+ * so a page its predecessor is still holding says "wait" — which is right: that turn has to
+ * end before the replacement takes the page over.
  */
 export function whyTabIsLocked(
   tab: Pick<BrowserTabSummary, 'id' | 'lockedBy'>,
@@ -110,17 +140,28 @@ export function whyTabIsLocked(
 /**
  * Why this page is not this conversation's to close, or `null` when it is.
  *
- * Nothing about reach helps here: a page of *my* prototype that another conversation's task
- * holds — one it opened, or one opened from one of its pages — is still that task's page, and
- * closing it would take away work somebody else was doing.
+ * The task, not the node (see the note at the top): the orchestrator never opened its nodes'
+ * pages, so it is not told it has no business closing them — a finished run has to be
+ * cleanable by the conversation that ran it. The user's pages stay the user's, and another
+ * task's pages stay that task's.
  */
 export function whyTabIsNotMineToClose(
-  tab: Pick<BrowserTabSummary, 'id' | 'openedBySessionId'>,
-  sessionId: string,
+  tab: Pick<BrowserTabSummary, 'id' | 'belongsTo'>,
+  me: TabBelongsTo,
 ): string | null {
-  if (tab.openedBySessionId === sessionId) return null
+  if (sameWork(tab.belongsTo, me) || sameTask(tab.belongsTo, me)) return null
 
-  return tab.openedBySessionId
-    ? `Page ${tab.id} belongs to ${tab.openedBySessionId}'s task, not to this conversation's, so it is not yours to close. "tabs" lists the pages you opened.`
-    : `Page ${tab.id} is the user's, so it is not yours to close. "tabs" lists the pages you opened.`
+  if (!tab.belongsTo) {
+    return `Page ${tab.id} is the user's, so it is not yours to close. "tabs" lists the pages you opened.`
+  }
+  if (tab.belongsTo.kind === 'task') {
+    return (
+      `Page ${tab.id} belongs to the task ${tab.belongsTo.taskSlug}, which is not the task this ` +
+      `conversation is working on, so it is not yours to close. "tabs" lists the pages you opened.`
+    )
+  }
+  return (
+    `Page ${tab.id} belongs to ${tab.belongsTo.sessionId}'s task, not to this conversation's, ` +
+    `so it is not yours to close. "tabs" lists the pages you opened.`
+  )
 }

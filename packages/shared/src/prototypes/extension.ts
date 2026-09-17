@@ -67,7 +67,7 @@
  */
 
 import { buildPatchInitScript } from './patch-script.ts'
-import type { MockRoute } from './contract.ts'
+import { noMockProgram, type MockProgram } from './mock-engine.ts'
 import type { PageKind, PrototypePatch } from './types.ts'
 
 const PATCH_SCRIPT_FILENAME = '__prototype_patches.js'
@@ -171,7 +171,12 @@ export function matchPatternForUrl(url: string): string | null {
 export interface ExtensionFile {
   /** Path inside `dist/extension/`. */
   path: string
-  content: string
+  /**
+   * The file's bytes: text (everything this module generates) as a string, and
+   * anything that cannot survive a utf-8 round trip — an image, a font, a video the
+   * prototype's own page addresses — as a buffer, copied verbatim.
+   */
+  content: string | Uint8Array
 }
 
 export interface ExtensionPage {
@@ -213,6 +218,18 @@ function patchBundlePath(page: string): string {
 }
 
 /**
+ * The patches one page carries: the shared `patches/*` plus its own
+ * `patches/<page>/*`, and never another page's (plan §19.4).
+ *
+ * One function because three carriers ask the same question — the extension's
+ * css links, the extension's js bundle, and the bookmarklet — and a rule stated
+ * three times is a rule that drifts.
+ */
+export function patchesForPage(patches: PrototypePatch[], page: string): PrototypePatch[] {
+  return patches.filter((patch) => patch.page === null || patch.page === page)
+}
+
+/**
  * The javascript patches that apply to one page, as a single runnable file.
  *
  * One bundle per page rather than one per package: a patch under `patches/<page>/`
@@ -225,9 +242,7 @@ export function buildPagePatchBundle(
   page: string,
   patches: PrototypePatch[],
 ): ExtensionFile | null {
-  const applicable = patches.filter(
-    (patch) => patch.kind === 'js' && (patch.page === null || patch.page === page),
-  )
+  const applicable = patchesForPage(patches, page).filter((patch) => patch.kind === 'js')
   if (applicable.length === 0) return null
   return { path: patchBundlePath(page), content: `${buildPatchBundle(slug, applicable)}\n` }
 }
@@ -243,14 +258,14 @@ export function buildPagePatchBundle(
  */
 export function buildSharedExtensionFiles(input: {
   patches: PrototypePatch[]
-  mocks?: MockRoute[]
+  mocks?: MockProgram
 }): ExtensionFile[] {
-  const mocks = input.mocks ?? []
+  const mocks = input.mocks ?? noMockProgram()
   const files: ExtensionFile[] = input.patches
     .filter((patch) => patch.kind === 'css')
     .map((patch) => ({ path: `patches/${patch.file}`, content: `${patch.source}\n` }))
 
-  if (mocks.length > 0) {
+  if (mocks.routes.length > 0) {
     files.push({ path: MOCK_SCRIPT_FILENAME, content: buildMockScript(mocks) })
   }
 
@@ -277,9 +292,9 @@ export function buildExtensionPage(input: {
   document: string
   patches: PrototypePatch[]
   slug: string
-  mocks?: MockRoute[]
+  mocks?: MockProgram
 }): ExtensionPage {
-  const mocks = input.mocks ?? []
+  const mocks = input.mocks ?? noMockProgram()
   const files: ExtensionFile[] = []
   const warnings: string[] = []
   /** Where this page's own generated files go, e.g. `assets/orders/`. */
@@ -287,9 +302,7 @@ export function buildExtensionPage(input: {
   // Only what this page carries: a patch under `patches/<other>/` belongs to
   // another page, and linking it here is the silent over-application the
   // directory rule prevents (plan §19.4).
-  const patches = input.patches.filter(
-    (patch) => patch.page === null || patch.page === input.page,
-  )
+  const patches = patchesForPage(input.patches, input.page)
 
   let index = 0
   let html = input.document.replace(
@@ -331,7 +344,7 @@ export function buildExtensionPage(input: {
   // Order matters only in that these run before the patches (`defer` keeps them in
   // document order): a mock the patches' own code fetches, and a handler a patch
   // might click.
-  if (mocks.length > 0) {
+  if (mocks.routes.length > 0) {
     const tag = `<script defer src="${MOCK_SCRIPT_FILENAME}"></script>`
     html = insertBeforeClosingTag(html, tag, '</body>') ?? insertBeforeClosingTag(html, tag, '</head>') ?? `${html}\n${tag}`
   }
@@ -359,6 +372,153 @@ function insertBeforeClosingTag(html: string, block: string, closingTag: string)
 }
 
 /**
+ * JSON a page can read, with `<` escaped so nothing inside it can end a
+ * `<script>` block — the state a contract's author writes is arbitrary text.
+ */
+function jsonLiteral(value: unknown): string {
+  return JSON.stringify(value, null, 2).replace(/</g, '\\u003c').replace(/\n/g, '\n  ')
+}
+
+/**
+ * The mock's state machine, as javascript the page can run.
+ *
+ * This is the second implementation of `mock-engine.ts` — the same rules written
+ * for the one place a delivered carrier can intercept anything: the page itself.
+ * The workbench fulfils from the network layer, a page cannot, so the semantics
+ * exist twice and a test (`__tests__/mock-engine.test.ts`) runs one case table
+ * through both. Keeping the two readable side by side is deliberate: names here
+ * match the TypeScript ones, in the same order, so a change to one can be made to
+ * the other by eye.
+ *
+ * Pure on purpose: nothing here touches `window`, `document` or `location`, which
+ * is what lets the test run it without a page.
+ */
+export function buildMockEngineScript(program: MockProgram): string {
+  return [
+    'const __craft_mock = (() => {',
+    `  const ROUTES = ${jsonLiteral(program.routes)};`,
+    `  const STORE = ${jsonLiteral(program.store)};`,
+    '',
+    '  const segments = (path) => String(path).split("/").filter((s) => s.length > 0);',
+    '  const isParam = (s) => /^\\{[^}]+\\}$/.test(s);',
+    '  const escapeLiteral = (s) => s.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&");',
+    '  const patternFor = (path) => new RegExp("^/" + segments(path).map((s) => (isParam(s) ? "([^/]+)" : escapeLiteral(s))).join("/") + "/?$");',
+    '',
+    '  const paramsOf = (path, match) => {',
+    '    const params = {};',
+    '    segments(path).filter(isParam).map((s) => s.slice(1, -1)).forEach((name, i) => {',
+    '      const value = match[i + 1];',
+    '      if (value !== undefined) params[name] = decodeURIComponent(value);',
+    '    });',
+    '    return params;',
+    '  };',
+    '',
+    '  const matchRoute = (method, pathname) => {',
+    '    const verb = String(method || "GET").toUpperCase();',
+    '    const path = String(pathname);',
+    '    for (const route of ROUTES) {',
+    '      if (String(route.method).toUpperCase() !== verb) continue;',
+    '      const parts = segments(route.path);',
+    '      const pattern = patternFor(route.path);',
+    '      let match = pattern.exec(path);',
+    '      // Behind a baseUrl prefix the page may call a longer path, so the route is',
+    '      // tried again against its own number of trailing segments.',
+    '      if (!match && segments(path).length > parts.length) {',
+    '        match = pattern.exec("/" + segments(path).slice(-parts.length).join("/"));',
+    '      }',
+    '      if (match) return { route: route, params: paramsOf(route.path, match) };',
+    '    }',
+    '    return null;',
+    '  };',
+    '',
+    '  const readPath = (dotPath) => {',
+    '    let current = STORE;',
+    '    for (const key of String(dotPath).split(".")) {',
+    '      if (current === null || typeof current !== "object") return undefined;',
+    '      current = current[key];',
+    '    }',
+    '    return current;',
+    '  };',
+    '',
+    '  const writePath = (dotPath, value) => {',
+    '    const keys = String(dotPath).split(".");',
+    '    const last = keys.pop();',
+    '    let current = STORE;',
+    '    for (const key of keys) {',
+    '      const next = current[key];',
+    '      if (next === null || typeof next !== "object") current[key] = {};',
+    '      current = current[key];',
+    '    }',
+    '    current[last] = value;',
+    '  };',
+    '',
+    '  const answer = (matched, body) => {',
+    '    const route = matched.route;',
+    '    const state = route.state;',
+    '    if (!state) return { status: route.status, body: route.body === undefined ? null : route.body, stateful: false };',
+    '',
+    '    const current = readPath(state.collection);',
+    '    const element = () => {',
+    '      if (state.select === null) return { found: current !== undefined, index: -1, value: current };',
+    '      if (!Array.isArray(current)) return { found: false, index: -1, value: undefined };',
+    '      const wanted = matched.params[state.select];',
+    '      const index = current.findIndex((item) => item !== null && typeof item === "object" && item[state.select] === wanted);',
+    '      return index === -1 ? { found: false, index: -1, value: undefined } : { found: true, index: index, value: current[index] };',
+    '    };',
+    '    const failure = (note) => ({ status: 500, body: { error: note }, stateful: true });',
+    '    // A copy of a live value: an answer is a snapshot, never a window into the',
+    '    // store — handing back the store\'s own object would let the next request',
+    '    // rewrite a response that has already been sent.',
+    '    const snapshot = (value) => (value === undefined ? undefined : JSON.parse(JSON.stringify(value)));',
+    '    const fromStore = () => snapshot(readPath(state.collection));',
+    '    // A read answers what the path addresses; a change answers the collection as',
+    '    // it now stands, which is what the screen that made the request has to draw.',
+    '    const answerRead = () => ({ status: route.status, body: state.fromState ? (state.select === null ? fromStore() : snapshot(element().value)) : route.body, stateful: true });',
+    '    const answerWrite = () => ({ status: route.status, body: state.fromState ? fromStore() : route.body, stateful: true });',
+    '',
+    '    if (state.op === "read") {',
+    '      if (!element().found) return { status: 404, body: null, stateful: true };',
+    '      return answerRead();',
+    '    }',
+    '',
+    '    if (state.op === "append") {',
+    '      if (current === undefined) writePath(state.collection, []);',
+    '      const list = readPath(state.collection);',
+    '      if (!Array.isArray(list)) return failure(\'mock state: "\' + state.collection + \'" is not a list, so nothing can be appended to it.\');',
+    '      list.push(body);',
+    '      return answerWrite();',
+    '    }',
+    '',
+    '    if (state.op === "merge") {',
+    '      const target = element();',
+    '      if (!target.found) return { status: 404, body: null, stateful: true };',
+    '      if (body === null || typeof body !== "object") return failure("mock state: " + route.method + " " + route.path + " has no JSON object body to merge.");',
+    '      const merged = Object.assign({}, typeof target.value === "object" && target.value !== null ? target.value : {}, body);',
+    '      if (state.select === null) writePath(state.collection, merged);',
+    '      else current[target.index] = merged;',
+    '      return answerWrite();',
+    '    }',
+    '',
+    '    if (state.op === "replace") {',
+    '      const target = element();',
+    '      if (!target.found) return { status: 404, body: null, stateful: true };',
+    '      if (state.select === null) writePath(state.collection, body);',
+    '      else current[target.index] = body;',
+    '      return answerWrite();',
+    '    }',
+    '',
+    '    const target = element();',
+    '    if (!target.found) return { status: 404, body: null, stateful: true };',
+    '    current.splice(target.index, 1);',
+    '    return answerWrite();',
+    '  };',
+    '',
+    '  return { matchRoute: matchRoute, answer: answer };',
+    '})();',
+  ].join('\n')
+}
+
+/**
  * The mock layer as a script the page itself runs.
  *
  * Matching is **by pathname only**, exactly like the workbench's own layer (see
@@ -371,50 +531,90 @@ function insertBeforeClosingTag(html: string, block: string, closingTag: string)
  * has: `declarativeNetRequest` cannot synthesize a response body, and the blocking
  * `webRequest` API is gone for ordinary extensions in MV3. The cost is stated in
  * the README — requests a page's own service worker makes never pass through here.
+ *
+ * The state machine is {@link buildMockEngineScript}, and the body of a mutating
+ * request is read here: a `POST` that changes the store is the one case the fetch
+ * carrier has to look at `init.body` (or a `Request`'s own body) for.
  */
-export function buildMockScript(routes: MockRoute[]): string {
+export function buildMockScript(program: MockProgram): string {
   return [
-    '// Mock responses from this prototype\'s contract.',
-    '// Matched by pathname, like the workbench does — one route answers that path on any host.',
-    '(() => {',
-    `  const ROUTES = ${JSON.stringify(routes, null, 2).replace(/\n/g, '\n  ')};`,
+    buildMockEngineScript(program),
     '',
-    '  const findRoute = (method, url) => {',
-    '    let path;',
-    '    try { path = new URL(String(url), location.href).pathname; } catch { return null; }',
-    '    const verb = String(method || "GET").toUpperCase();',
-    '    return ROUTES.find((route) => route.method === verb && route.path === path) ?? null;',
+    '(() => {',
+    '  // A second injection (a route change, an extension reload) reuses the layer',
+    '  // that is already there rather than wrapping `fetch` a second time — and',
+    '  // rather than throwing on the engine\'s own `const`, which would take the',
+    '  // mock down with it.',
+    '  if (window.__craft_mock_layer__) return;',
+    '  window.__craft_mock_layer__ = __craft_mock;',
+    '',
+    '  const pathnameOf = (url) => {',
+    '    try { return new URL(String(url), location.href).pathname; } catch { return String(url); }',
     '  };',
     '',
-    '  const payload = (route) => (route.body === null ? null : JSON.stringify(route.body));',
+    '  const payload = (answer) => (answer.body === null || answer.body === undefined ? null : JSON.stringify(answer.body));',
+    '',
+    '  // What the request carries, as a value the store can hold: a JSON string is',
+    '  // parsed, form encodings become an object, and anything else (a blob, a',
+    '  // stream) is reported as unreadable rather than silently stored as null.',
+    '  const readBody = async (input, init) => {',
+    '    let raw = init && init.body !== undefined ? init.body : null;',
+    '    if (raw === null && typeof Request !== "undefined" && input instanceof Request) {',
+    '      try { raw = await input.clone().text(); } catch { raw = null; }',
+    '    }',
+    '    if (raw === null || raw === undefined) return { body: null, readable: true };',
+    '    if (typeof raw === "string") {',
+    '      if (raw.length === 0) return { body: null, readable: true };',
+    '      try { return { body: JSON.parse(raw), readable: true }; } catch { return { body: null, readable: false }; }',
+    '    }',
+    '    if (typeof URLSearchParams !== "undefined" && raw instanceof URLSearchParams) return { body: Object.fromEntries(raw), readable: true };',
+    '    if (typeof FormData !== "undefined" && raw instanceof FormData) return { body: Object.fromEntries(raw), readable: true };',
+    '    return { body: null, readable: false };',
+    '  };',
     '',
     '  const originalFetch = window.fetch;',
     '  window.fetch = async (input, init) => {',
     '    const method = (init && init.method) || (input instanceof Request ? input.method : "GET");',
     '    const url = input instanceof Request ? input.url : input;',
-    '    const route = findRoute(method, url);',
-    '    if (!route) return originalFetch(input, init);',
-    '    return new Response(payload(route), {',
-    '      status: route.status,',
+    '    const matched = __craft_mock.matchRoute(method, pathnameOf(url));',
+    '    if (!matched) return originalFetch(input, init);',
+    '    const read = await readBody(input, init);',
+    '    if (!read.readable && matched.route.state) {',
+    '      return new Response(JSON.stringify({ error: "mock could not read the request body" }), {',
+    '        status: 500,',
+    '        headers: { "content-type": "application/json" },',
+    '      });',
+    '    }',
+    '    const answer = __craft_mock.answer(matched, read.body);',
+    '    return new Response(payload(answer), {',
+    '      status: answer.status,',
     '      headers: { "content-type": "application/json" },',
     '    });',
     '  };',
     '',
     '  const { open, send } = XMLHttpRequest.prototype;',
     '  XMLHttpRequest.prototype.open = function (method, url, ...rest) {',
-    '    this.__craftMockRoute = findRoute(method, url);',
+    '    this.__craftMockMatched = __craft_mock.matchRoute(method, pathnameOf(url));',
     '    return open.call(this, method, url, ...rest);',
     '  };',
     '  XMLHttpRequest.prototype.send = function (...args) {',
-    '    const route = this.__craftMockRoute;',
-    '    if (!route) return send.apply(this, args);',
+    '    const matched = this.__craftMockMatched;',
+    '    if (!matched) return send.apply(this, args);',
     '    const xhr = this;',
-    '    const body = payload(route);',
+    '    const raw = args[0];',
+    '    let body = null;',
+    '    if (typeof raw === "string" && raw.length > 0) {',
+    '      try { body = JSON.parse(raw); } catch { body = null; }',
+    '    } else if (raw !== undefined && raw !== null && typeof raw === "object") {',
+    '      body = raw;',
+    '    }',
+    '    const answer = __craft_mock.answer(matched, body);',
+    '    const text = payload(answer);',
     '    setTimeout(() => {',
     '      Object.defineProperty(xhr, "readyState", { value: 4, configurable: true });',
-    '      Object.defineProperty(xhr, "status", { value: route.status, configurable: true });',
-    '      Object.defineProperty(xhr, "responseText", { value: body ?? "", configurable: true });',
-    '      Object.defineProperty(xhr, "response", { value: body, configurable: true });',
+    '      Object.defineProperty(xhr, "status", { value: answer.status, configurable: true });',
+    '      Object.defineProperty(xhr, "responseText", { value: text ?? "", configurable: true });',
+    '      Object.defineProperty(xhr, "response", { value: text, configurable: true });',
     '      xhr.getResponseHeader = (name) =>',
     '        String(name).toLowerCase() === "content-type" ? "application/json" : null;',
     '      xhr.dispatchEvent(new Event("readystatechange"));',
@@ -525,7 +725,7 @@ export interface ExtensionPackageInput {
   indexDocument: string
   patches: PrototypePatch[]
   /** The contract's `x-mock` routes, compiled into the package (see {@link buildMockScript}). */
-  mocks?: MockRoute[]
+  mocks?: MockProgram
   /** When the package was generated — the version and the README are derived from it. */
   builtAt: Date
 }
@@ -553,7 +753,7 @@ export interface ExtensionPackage {
  */
 export function buildExtensionPackage(input: ExtensionPackageInput): ExtensionPackage {
   const { slug, patches, builtAt } = input
-  const mocks = input.mocks ?? []
+  const mocks = input.mocks ?? noMockProgram()
   const version = extensionVersion(builtAt)
   const documents = input.documents ?? []
   const overlayPages = input.targets ?? []
@@ -617,7 +817,7 @@ export function buildExtensionPackage(input: ExtensionPackageInput): ExtensionPa
       version,
       builtAt,
       targets,
-      mockFile: mocks.length > 0 && targets.length > 0 ? MOCK_SCRIPT_FILENAME : null,
+      mockFile: mocks.routes.length > 0 && targets.length > 0 ? MOCK_SCRIPT_FILENAME : null,
       pages: documents.length + overlayPages.length,
       patches,
     })}\n`,
@@ -740,7 +940,7 @@ function buildReadme(input: {
   builtAt: Date
   matches: string[]
   patches: PrototypePatch[]
-  mocks?: MockRoute[]
+  mocks?: MockProgram
   /** The prototype's pages, in flow order. */
   pages?: Array<{ name: string; kind: PageKind; where: string; entry: boolean }>
 }): string {
@@ -748,7 +948,7 @@ function buildReadme(input: {
     ? input.patches
         .map(
           (patch) =>
-            `- \`${patch.file}\` — ${patch.kind}, lane ${patch.lane ?? '—'}` +
+            `- \`${patch.file}\` — ${patch.kind}, writer ${patch.writer ?? '—'}` +
             `${patch.page ? `, page \`${patch.page}\`` : ', every page'}`,
         )
         .join('\n')
@@ -786,14 +986,19 @@ already there.`
 
   // Faked responses are the one thing a reviewer can be misled by without being
   // told, so the list is not optional: it says *which* data is not real, and what
-  // the layer cannot reach.
-  const mocks = (input.mocks ?? []).length > 0
+  // the layer cannot reach. A stateful route is marked as such, because "this one
+  // remembers what the previous screen did" is the difference between a flow that
+  // holds together and a set of unrelated screens.
+  const mockRoutes = input.mocks?.routes ?? []
+  const mocks = mockRoutes.length > 0
     ? `\n## Faked responses
 
 These requests are answered by this extension, not by the product's backend — the
 data you see for them is written in the prototype's contract:
 
-${(input.mocks ?? []).map((route) => `- \`${route.method} ${route.path}\``).join('\n')}
+${mockRoutes
+  .map((route) => `- \`${route.method} ${route.path}\`${route.state ? ' — remembers what earlier requests did' : ''}`)
+  .join('\n')}
 
 Requests made by a page's own service worker (a PWA) never pass through the page
 and are **not** faked.\n`

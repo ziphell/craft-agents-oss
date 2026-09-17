@@ -22,6 +22,8 @@
  * @see docs/prototype-workbench-plan.md §3 (阶段 3 持久注入), §19.4 (按页归属), §21
  */
 
+import { existsSync } from 'node:fs'
+import { isAbsolute, relative, sep } from 'node:path'
 import {
   buildAnchorCandidateScript,
   buildAnchorProbeScript,
@@ -29,6 +31,7 @@ import {
   buildPatchInitScript,
   buildPatchStateProbeScript,
   findEntryPage,
+  getPrototypeDirPath,
   listPrototypePages,
   matchPrototypePage,
   readPrototypeAnchors,
@@ -39,6 +42,7 @@ import {
   type PrototypeAnchorFingerprint,
   type PrototypeAnchorObservation,
   type PrototypePage,
+  type PrototypePatch,
 } from '@craft-agent/shared/prototypes'
 import type { BrowserTabSummary } from '@craft-agent/shared/protocol'
 import type { IBrowserPaneManager } from '../handlers/browser-pane-manager-interface'
@@ -56,6 +60,21 @@ import type { IBrowserPaneManager } from '../handlers/browser-pane-manager-inter
  * question of the same page.
  */
 export type PrototypeTargetPage = Pick<BrowserTabSummary, 'id' | 'url'>
+
+/**
+ * What an apply was narrowed to, when the caller asked for less than everything the page brings.
+ */
+export interface PrototypeApplyOptions {
+  /**
+   * One patch file, by absolute path, applied on its own.
+   *
+   * The path is resolved by the caller (the browser tool resolves `--file` against the
+   * workspace root, so every command has one base for it) and has to name a file inside this
+   * prototype's `patches/`. The command exists so a patch that was just written can be put on
+   * the page without replaying — and without un-registering — every other patch it is built on.
+   */
+  file?: string
+}
 
 /** What one declared target matched, and whether it had matched before. */
 export interface PrototypeApplyTargetReport {
@@ -89,6 +108,18 @@ export interface PrototypeApplyResult {
    * patch you wrote belongs to another page" read identically from `files`.
    */
   page: string | null
+  /**
+   * The one file this apply was narrowed to, when the command named it (`--file`),
+   * with the page that brings it (`null` = every page). Null means the whole set the
+   * page carries was replayed.
+   *
+   * The page here is the patch's own scope, which is not the same question as `page`
+   * above: that one answers "which page did this command act on", this one "where does
+   * the file belong". They disagree only when a patch for one page is named while
+   * another is open — where every declared target matching nothing would otherwise read
+   * as a wrong selector rather than as a file that belongs somewhere else.
+   */
+  file: { name: string; page: string | null } | null
   /** Patches injected by this call. */
   applied: number
   /** The files injected by this call, in replay order. */
@@ -203,6 +234,12 @@ function readSuggestions(raw: unknown): Record<string, string[]> {
  * {@link resolveReplayPage} for what happens when the window is on no page of ours;
  * the answer is named in {@link PrototypeApplyResult.page} so a patch that did
  * nothing can be told from a patch belonging to a page that is not on screen.
+ *
+ * `options.file` narrows that set to one file the caller named — the patch that was
+ * just written, applied without replaying everything else the page carries. Nothing
+ * here is cleared in that case: the other registrations are not this command's to
+ * touch, and re-registering this one under its own key is how an edited patch is
+ * re-applied idempotently.
  */
 export async function applyPrototypeToBrowser(
   bpm: IBrowserPaneManager,
@@ -211,11 +248,32 @@ export async function applyPrototypeToBrowser(
   slug: string,
   /** The page this apply is about — the conversation's page, not the one on screen. */
   page?: PrototypeTargetPage | null,
+  options?: PrototypeApplyOptions,
 ): Promise<PrototypeApplyResult> {
   const replayPage = resolveReplayPage(listPrototypePages(workspaceRootPath, slug), page?.url ?? null)
-  const patches = replayPage
-    ? scanPrototypePatchesForPage(workspaceRootPath, slug, replayPage)
-    : scanPrototypePatches(workspaceRootPath, slug).filter((patch) => patch.page === null)
+
+  // One named file, or everything the page brings. `named` is what the command asked
+  // for, resolved against the prototype's own directory so a file of another prototype
+  // (or of no prototype) is refused by name rather than silently applying nothing.
+  let patches: PrototypePatch[]
+  let named: PrototypeApplyResult['file'] = null
+  if (options?.file) {
+    const relativePath = namedPatchPath(workspaceRootPath, slug, options.file)
+    const patch = scanPrototypePatches(workspaceRootPath, slug).find((entry) => entry.file === relativePath)
+    if (!patch) {
+      throw new Error(
+        `"${relativePath}" is not a patch of prototype "${slug}": the injector reads a file named ` +
+        `{writer}-{nnn}-{name}.{css|js} (optionally under patches/<page>/), and it ignores anything else — ` +
+        `so this file is not replayed under any name.`,
+      )
+    }
+    patches = [patch]
+    named = { name: patch.file, page: patch.page }
+  } else {
+    patches = replayPage
+      ? scanPrototypePatchesForPage(workspaceRootPath, slug, replayPage)
+      : scanPrototypePatches(workspaceRootPath, slug).filter((patch) => patch.page === null)
+  }
 
   const inlined = await bpm.evaluate(instanceId, buildInlinedPatchProbeScript(), page?.id)
   const alreadyInlined = new Set(
@@ -229,7 +287,10 @@ export async function applyPrototypeToBrowser(
   // (including any left from patches deleted on disk) and re-register only the
   // pending ones. Leaving an inlined patch registered would double it on the next
   // load of the rendered page.
-  await bpm.clearInitScripts(instanceId, `prototype:${slug}:`, page?.id)
+  //
+  // Only when the whole set is being replayed: a single named file says nothing about
+  // the others, and dropping their registrations would un-apply them on the next load.
+  if (!named) await bpm.clearInitScripts(instanceId, `prototype:${slug}:`, page?.id)
 
   for (const patch of pending) {
     const script = buildPatchInitScript(patch)
@@ -251,11 +312,49 @@ export async function applyPrototypeToBrowser(
   return {
     slug,
     page: replayPage,
+    file: named,
     applied: pending.length,
     files: pending.map((patch) => patch.file),
     skipped: patches.filter((patch) => alreadyInlined.has(patch.file)).map((patch) => patch.file),
     ...inspection,
   }
+}
+
+/**
+ * The `patches/`-relative name of the file a caller named, or a refusal that says which
+ * of the three things went wrong.
+ *
+ * The scanner ignores files that are not named `{writer}-{nnn}-{name}.{css|js}` — right for
+ * a replay of the whole set, wrong for a file named on purpose: "there is no such file",
+ * "that is not a patch of this prototype" and "this prototype does not exist" all end the
+ * same way here (nothing applied), and the caller has to be able to tell them apart.
+ *
+ * The path is taken as absolute (the tool resolves it, so a relative one has one base
+ * everywhere), and it has to land inside the prototype's own directory.
+ */
+function namedPatchPath(workspaceRootPath: string, slug: string, absolutePath: string): string {
+  if (!existsSync(absolutePath)) {
+    throw new Error(`No such file: ${absolutePath}`)
+  }
+
+  const dir = getPrototypeDirPath(workspaceRootPath, slug)
+  const inside = relative(dir, absolutePath).split(sep).join('/')
+  if (inside === '' || inside.startsWith('..') || isAbsolute(inside)) {
+    throw new Error(
+      `${absolutePath} is not inside prototype "${slug}" (${dir}). A patch of this prototype is what ` +
+      `"prototype-apply --file" can apply; name one of its own files.`,
+    )
+  }
+
+  const prefix = 'patches/'
+  if (!inside.startsWith(prefix)) {
+    throw new Error(
+      `${absolutePath} is not a patch: this prototype's patches live under ${dir}/patches/ ` +
+      `(patches/{writer}-{nnn}-{name}.{css|js}, or patches/<page>/… for one page's own).`,
+    )
+  }
+
+  return inside.slice(prefix.length)
 }
 
 /**

@@ -296,6 +296,7 @@ export function getSessionScopedTools(
       tools.push(
         ...createBrowserTools({
           sessionId,
+          workspaceRootPath,
           getBrowserPaneFns: () => {
             const callbacks = getSessionScopedToolCallbacks(sessionId);
             return callbacks?.browserPaneFns;

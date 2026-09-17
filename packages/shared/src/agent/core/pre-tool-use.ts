@@ -13,7 +13,7 @@
  * 2. Source blocking: Block tools from inactive MCP sources
  * 3. Prerequisite check: Block source tools until guide.md is read
  * 4. call_llm detection: Intercept mcp__session__call_llm
- * 5. Input transforms: Path expansion, config validation, skill qualification, metadata stripping
+ * 5. Input transforms: Path expansion, prototype write guard, config validation, skill qualification, metadata stripping
  * 6. Ask-mode prompt decision: Determine if user approval is needed
  */
 
@@ -46,6 +46,7 @@ import {
   type PermissionMode,
 } from '../mode-manager.ts';
 import { permissionsConfigCache, type PermissionsContext } from '../permissions-config.ts';
+import { resolvePrototypeArtifactPath, whyWriterMayNotWrite } from '../../prototypes/ownership.ts';
 import type { PrerequisiteCheckResult } from './prerequisite-manager.ts';
 import { rewriteBashWithRtk } from './rtk-rewrite.ts';
 
@@ -624,6 +625,11 @@ export interface PreToolUseInput {
   dataFolderPath?: string;
   /** Prototypes folder path (writes allowed in explore mode for prototype-workbench artifacts) */
   prototypesFolderPath?: string;
+  /**
+   * The writer identity this session writes prototype artifacts as (plan §3.6): declared per task
+   * node, or the single-writer default. Absent means the guard is not applied at all.
+   */
+  prototypeWriter?: string;
   /** Working directory override (for skill resolution) */
   workingDirectory?: string;
   /** Currently active source slugs */
@@ -710,6 +716,7 @@ export function runPreToolUseChecks(ctx: PreToolUseInput): PreToolUseCheckResult
     plansFolderPath,
     dataFolderPath,
     prototypesFolderPath,
+    prototypeWriter,
     workingDirectory,
     activeSourceSlugs,
     allSourceSlugs,
@@ -826,7 +833,23 @@ export function runPreToolUseChecks(ctx: PreToolUseInput): PreToolUseCheckResult
     return { type: 'block', reason: configResult.error! };
   }
 
-  // 5d. Config file CLI redirect (labels + automations)
+  // 5d. Prototype write guard (plan §3.6): a session writes prototype artifacts as one writer
+  // identity, and another writer's files are the one loss a parallel run cannot notice after the
+  // fact — the loser's work is simply gone. Refused before the write, with the reason, so the
+  // agent can name its own patches instead of silently clobbering someone else's.
+  if (prototypeWriter && prototypesFolderPath && FILE_WRITE_TOOLS.has(toolName)) {
+    const filePath = currentInput.file_path;
+    if (typeof filePath === 'string') {
+      const artifact = resolvePrototypeArtifactPath(prototypesFolderPath, filePath);
+      const refusal = artifact ? whyWriterMayNotWrite(artifact.relativePath, prototypeWriter) : null;
+      if (refusal) {
+        onDebug?.(`Prototype write guard: blocking ${toolName} to ${filePath}`);
+        return { type: 'block', reason: refusal };
+      }
+    }
+  }
+
+  // 5e. Config file CLI redirect (labels + automations)
   if (FEATURE_FLAGS.craftAgentsCli) {
     const cliRedirect = getConfigCliRedirect(toolName, currentInput, workspaceRootPath, workingDirectory);
     if (cliRedirect) {
@@ -834,7 +857,7 @@ export function runPreToolUseChecks(ctx: PreToolUseInput): PreToolUseCheckResult
     }
   }
 
-  // 5e. Skill qualification
+  // 5f. Skill qualification
   if (toolName === 'Skill') {
     const skillResult = qualifySkillName(
       currentInput,
@@ -849,14 +872,14 @@ export function runPreToolUseChecks(ctx: PreToolUseInput): PreToolUseCheckResult
     }
   }
 
-  // 5f. Metadata stripping
+  // 5g. Metadata stripping
   const metadataResult = stripToolMetadata(toolName, currentInput, onDebug);
   if (metadataResult.modified) {
     currentInput = metadataResult.input;
     wasModified = true;
   }
 
-  // 5g. RTK Bash rewrite (last input transform — flows into both 'modify' and 'prompt' results).
+  // 5h. RTK Bash rewrite (last input transform — flows into both 'modify' and 'prompt' results).
   // Permission decisions above and the ask-mode prompt below operate on the
   // ORIGINAL `input` parameter, so the LLM still believes it ran the original
   // command and our permission system gates the original command — only the

@@ -49,7 +49,12 @@ class MockHost implements ConductorSessionHost {
     this.columns.push({ sessionId, column });
   }
   async setTaskNodeCount(sessionId: string, count: number): Promise<void> {
-    this.nodeCounts.push({ sessionId, count });
+    this.nodeCounts.push({ sessionId, count })
+  }
+  /** Gate counts pushed to the orchestrator session (board badge + notification source). */
+  readonly awaitingCounts: { sessionId: string; count: number }[] = []
+  async setTaskAwaitingApproval(sessionId: string, count: number): Promise<void> {
+    this.awaitingCounts.push({ sessionId, count })
   }
   async cancelProcessing(sessionId: string): Promise<void> {
     this.cancelled.push(sessionId);
@@ -238,6 +243,82 @@ describe('TaskRunner (Conductor)', () => {
     expect(optsA?.taskRunId).toBe('r1')
     expect(optsA?.taskNodeId).toBe('a')
   })
+
+  /**
+   * The one hop of §3.6 that had no test: a node's `writes:` becomes the child session's
+   * `taskWrites`, which is where the write guard and `<prototype_context writer>` read it from. A
+   * node that declares nothing stamps nothing — "absent means the single-writer default" is a
+   * decision `resolvePrototypeWriter` makes, not one to write `main` in here.
+   */
+  it("stamps the node's writer identity on its child, and leaves it off when the node declares none", async () => {
+    saveTaskSpec(
+      root,
+      specOf({
+        id: 'lanes',
+        title: 'Lanes',
+        goal: 'g',
+        nodes: [
+          { id: 'ui', prompt: 'ui', writes: 'checkout-ui' },
+          { id: 'notes', prompt: 'notes' },
+        ],
+      }),
+    );
+    const runner = makeRunner();
+    runner.run('lanes', { runId: 'r1' });
+    await tick();
+
+    const optionsFor = (node: string) => host.created.find((c) => c.options.taskNodeId === node)?.options;
+
+    expect(optionsFor('ui')?.taskWrites).toBe('checkout-ui');
+    expect(optionsFor('notes')?.taskWrites).toBeUndefined();
+  });
+
+  /**
+   * What §6.4 was waiting for, at the runner's level: two lanes in flight at the same time, each
+   * writing as its own identity. The files are protected by the pair — a distinct prefix per lane
+   * (refused at validation when they collide) and the write guard refusing a name that claims
+   * another's — so the runner's job is to get one stamp per node right, and to let both go.
+   */
+  it('keeps two writer lanes in flight at once, each stamped with its own identity', async () => {
+    saveTaskSpec(
+      root,
+      specOf({
+        id: 'parallel',
+        title: 'Parallel',
+        goal: 'g',
+        nodes: [
+          { id: 'ui', prompt: 'ui', writes: 'checkout-ui' },
+          { id: 'api', prompt: 'api', writes: 'checkout-api' },
+        ],
+      }),
+    );
+    const runner = makeRunner();
+    runner.run('parallel', { runId: 'r1' });
+    await tick();
+
+    // Both dispatched before either finished: that is the concurrency, not a queue.
+    expect(host.dispatchedNames().sort()).toEqual(['api', 'ui']);
+
+    const writers = host.created
+      .map((c) => ({ node: c.options.taskNodeId, writes: c.options.taskWrites }))
+      .sort((a, b) => String(a.node).localeCompare(String(b.node)));
+    expect(writers).toEqual([
+      { node: 'api', writes: 'checkout-api' },
+      { node: 'ui', writes: 'checkout-ui' },
+    ]);
+
+    // Two children, so no lane's guard can be reading the other's identity.
+    expect(new Set(host.created.map((c) => c.id)).size).toBe(2);
+
+    // …and the run settles only when both are done, like any fan-out.
+    host.complete('ui', { finalText: 'A' });
+    await tick();
+    expect(runner.getRunState('parallel', 'r1')!.status).toBe('running');
+
+    host.complete('api', { finalText: 'B' });
+    await tick();
+    expect(runner.getRunState('parallel', 'r1')!.status).toBe('completed');
+  });
 
   it('creates a child session per node (createSession announces each to the renderer by default)', async () => {
     // Renderer visibility depends on createSession emitting session_created; the runner's job is
@@ -818,6 +899,271 @@ describe('TaskRunner (Conductor)', () => {
     await tick();
 
     expect(runner.getRunState('lenient', 'r1')!.nodes.find((n) => n.id === 'a')!.state).toBe('done');
+  });
+
+  it('feeds a declared structured field into the dependent node, not the whole prose', async () => {
+    // Structured outputs (the producer side of `${nodes.<id>.output.<field>}`): a node that
+    // declares `outputs` is told the block shape, and what it hands back is filed as params.
+    saveTaskSpec(
+      root,
+      specOf({
+        id: 'gate',
+        title: 'Gate',
+        goal: 'review then act',
+        nodes: [
+          {
+            id: 'review',
+            prompt: 'Review the draft',
+            outputs: [{ name: 'verdict', type: 'string', enum: ['approved', 'rejected'] }],
+          },
+          { id: 'act', depends_on: ['review'], prompt: 'Verdict was ${nodes.review.output.verdict}' },
+        ],
+      }),
+    );
+    const runner = makeRunner();
+    runner.run('gate', { runId: 'r1' });
+    await tick();
+
+    expect(host.promptFor('review')).toContain('```params');
+    expect(host.promptFor('review')).toContain('one of: approved, rejected');
+
+    host.complete('review', { finalText: 'The draft is sound.\n\n```params\n{"verdict": "approved"}\n```' });
+    await tick();
+
+    expect(host.promptFor('act')).toBe('Verdict was approved');
+    expect(readNodeOutput(root, 'gate', 'r1', 'review')).toEqual({
+      text: 'The draft is sound.',
+      params: { verdict: 'approved' },
+    });
+  });
+
+  it('fails a node whose declared field is missing instead of passing an unresolved token downstream', async () => {
+    saveTaskSpec(
+      root,
+      specOf({
+        id: 'gate-fail',
+        title: 'Gate fail',
+        goal: 'g',
+        nodes: [
+          { id: 'review', prompt: 'Review', outputs: [{ name: 'verdict' }] },
+          { id: 'act', depends_on: ['review'], prompt: 'Verdict was ${nodes.review.output.verdict}' },
+        ],
+      }),
+    );
+    const runner = makeRunner();
+    runner.run('gate-fail', { runId: 'r1' });
+    await tick();
+
+    host.complete('review', { finalText: 'I forgot the block.' });
+    await tick();
+
+    expect(runner.getRunState('gate-fail', 'r1')!.nodes.find((n) => n.id === 'review')!.state).toBe('failed');
+    expect(host.statuses.some((s) => s.sessionId === 'sess-review' && s.status === 'needs-review')).toBe(true);
+    expect(host.promptFor('act')).toBeUndefined();
+  });
+
+  it('runs only the branch a `when` selects, and skips the other side', async () => {
+    saveTaskSpec(
+      root,
+      specOf({
+        id: 'branch',
+        title: 'Branch',
+        goal: 'review then act on the verdict',
+        nodes: [
+          { id: 'review', prompt: 'Review it', outputs: [{ name: 'verdict', enum: ['approved', 'rejected'] }] },
+          { id: 'finalize', prompt: 'Publish', when: "review.verdict === 'approved'" },
+          { id: 'notify', prompt: 'Tell the requester', when: "review.verdict === 'rejected'" },
+        ],
+      }),
+    );
+    const runner = makeRunner();
+    runner.run('branch', { runId: 'r1' });
+    await tick();
+
+    // Nothing downstream of the verdict is dispatched before it exists.
+    expect(host.dispatchedNames()).toEqual(['review']);
+
+    host.complete('review', { finalText: 'Looks wrong.\n\n```params\n{"verdict": "rejected"}\n```' });
+    await tick();
+
+    expect(host.dispatchedNames()).toEqual(['review', 'notify']);
+    expect(host.promptFor('finalize')).toBeUndefined();
+
+    host.complete('notify', { finalText: 'Sent.' });
+    await tick();
+
+    const snap = runner.getRunState('branch', 'r1')!;
+    expect(snap.status).toBe('completed');
+    expect(snap.nodes.find((n) => n.id === 'finalize')!.state).toBe('skipped');
+    expect(snap.nodes.find((n) => n.id === 'notify')!.state).toBe('done');
+    const skipped = readRunLog(root, 'branch', 'r1').find(
+      (e) => e.kind === 'node-finished' && e.nodeId === 'finalize',
+    );
+    expect(skipped).toMatchObject({ state: 'skipped' });
+    expect((skipped as { reason?: string }).reason).toContain('when:');
+  });
+
+  it('skips a node whose dependency was skipped (and still finishes the run)', async () => {
+    // Without propagation the dependent stays `pending` forever — the run would hang instead of
+    // settling, since a skipped node never reports `done`.
+    saveTaskSpec(
+      root,
+      specOf({
+        id: 'cascade',
+        title: 'Cascade',
+        goal: 'g',
+        nodes: [
+          { id: 'a', prompt: 'a', outputs: [{ name: 'verdict' }] },
+          { id: 'gate', prompt: 'b', when: "a.verdict === 'never'" },
+          { id: 'after', prompt: 'c', depends_on: ['gate'] },
+        ],
+      }),
+    );
+    const runner = makeRunner();
+    runner.run('cascade', { runId: 'r1' });
+    await tick();
+
+    host.complete('a', { finalText: 'Fine.\n\n```params\n{"verdict": "approved"}\n```' });
+    await tick();
+
+    const snap = runner.getRunState('cascade', 'r1')!;
+    expect(snap.status).toBe('completed');
+    expect(snap.nodes.find((n) => n.id === 'gate')!.state).toBe('skipped');
+    expect(snap.nodes.find((n) => n.id === 'after')!.state).toBe('skipped');
+    expect(host.dispatchedNames()).toEqual(['a']);
+  });
+
+  it('matches retry.when against the failure class (invalid vs the default error)', async () => {
+    saveTaskSpec(
+      root,
+      specOf({
+        id: 'retry-class',
+        title: 'Retry class',
+        goal: 'g',
+        nodes: [
+          {
+            id: 'report',
+            prompt: 'Report',
+            outputs: [{ name: 'score' }],
+            retry: { limit: 1, when: 'invalid' },
+          },
+        ],
+      }),
+    );
+    const runner = makeRunner();
+    runner.run('retry-class', { runId: 'r1' });
+    await tick();
+
+    // First attempt: no block → `invalid` → the policy asked for exactly this, so it re-dispatches.
+    host.complete('report', { finalText: 'I forgot the block.' });
+    await tick();
+    expect(host.dispatchedNames()).toEqual(['report', 'report']);
+    expect(runner.getRunState('retry-class', 'r1')!.nodes[0]!.state).toBe('running');
+    const retried = host.sent.filter((s) => s.sessionId === host.sessionIdFor('report')).at(-1)!.message;
+    expect(retried).toContain('Previous attempt failed');
+
+    host.complete('report', { finalText: 'Done.\n\n```params\n{"score": 1}\n```' });
+    await tick();
+    expect(runner.getRunState('retry-class', 'r1')!.status).toBe('completed');
+  });
+
+  it('parks at an approval gate and takes the branch the person chooses', async () => {
+    saveTaskSpec(
+      root,
+      specOf({
+        id: 'gate-run',
+        title: 'Gate run',
+        goal: 'draft, sign off, then either ship or rework',
+        nodes: [
+          { id: 'draft', prompt: 'Draft it' },
+          {
+            id: 'signoff',
+            kind: 'approval',
+            depends_on: ['draft'],
+            prompt: 'Ship the draft?',
+            // Declared like any other field the graph reads — the runtime is what fills it in.
+            outputs: [{ name: 'verdict' }],
+          },
+          { id: 'ship', prompt: 'Ship it', when: "signoff.verdict === 'approved'" },
+          { id: 'rework', prompt: 'Rework it', when: "signoff.verdict === 'rejected'" },
+        ],
+      }),
+    );
+    const runner = makeRunner();
+    // verifyOnComplete off: this test is about the gate, not the terminal verdict handshake.
+    runner.run('gate-run', { runId: 'r1', orchestratorSessionId: 'orch', verifyOnComplete: false });
+    await tick();
+
+    host.complete('draft', { finalText: 'DRAFT' });
+    await tick();
+
+    // The gate is not a session: nothing is dispatched for it, and the run waits rather than
+    // finishing (an unanswered gate is neither success nor failure).
+    expect(host.dispatchedNames()).toEqual(['draft']);
+    expect(runner.getRunState('gate-run', 'r1')!.status).toBe('running');
+    expect(runner.getRunState('gate-run', 'r1')!.nodes.find((n) => n.id === 'signoff')!.state).toBe(
+      'awaiting-approval',
+    );
+    expect(readRunLog(root, 'gate-run', 'r1').some((e) => e.kind === 'node-awaiting-approval')).toBe(true);
+    // The board tiles + the notification read this off the orchestrator session.
+    expect(host.awaitingCounts).toContainEqual({ sessionId: 'orch', count: 1 });
+
+    runner.resolveApproval('gate-run', 'r1', 'signoff', false);
+    await tick();
+
+    // The decision is the node's output, so it survives a restart and shows up in Results.
+    expect(readNodeOutput(root, 'gate-run', 'r1', 'signoff')).toEqual({
+      text: 'Rejected',
+      params: { verdict: 'rejected' },
+    });
+    expect(host.dispatchedNames()).toEqual(['draft', 'rework']);
+    expect(runner.getRunState('gate-run', 'r1')!.nodes.find((n) => n.id === 'ship')!.state).toBe('skipped');
+    // Nothing is waiting any more: the badge has to drop with the decision, not later.
+    expect(host.awaitingCounts.at(-1)).toEqual({ sessionId: 'orch', count: 0 });
+
+    host.complete('rework', { finalText: 'REWORKED' });
+    await tick();
+    const snap = runner.getRunState('gate-run', 'r1')!;
+    expect(snap.status).toBe('completed');
+    expect(snap.nodes.find((n) => n.id === 'signoff')!.state).toBe('done');
+  });
+
+  it('stops a parked gate with the run, and refuses to answer it afterwards', async () => {
+    // A gate at the head of the graph parks immediately — nothing to wait for but a person.
+    saveTaskSpec(
+      root,
+      specOf({
+        id: 'stopped-gate',
+        title: 'Stopped gate',
+        goal: 'g',
+        nodes: [{ id: 'signoff', kind: 'approval', prompt: 'Ship it?' }],
+      }),
+    );
+    const runner = makeRunner();
+    runner.run('stopped-gate', { runId: 'r1', orchestratorSessionId: 'orch', verifyOnComplete: false });
+    await tick();
+    expect(runner.getRunState('stopped-gate', 'r1')!.nodes[0]!.state).toBe('awaiting-approval');
+    expect(host.awaitingCounts).toContainEqual({ sessionId: 'orch', count: 1 });
+
+    await runner.stop('stopped-gate', 'r1');
+
+    // Stopping cancels the gate rather than leaving it parked: nobody can answer a run that is
+    // over, and the tile must stop saying "needs you". Then answering it is refused.
+    expect(runner.getRunState('stopped-gate', 'r1')!.nodes[0]!.state).toBe('cancelled');
+    expect(host.awaitingCounts.at(-1)).toEqual({ sessionId: 'orch', count: 0 });
+    expect(() => runner.resolveApproval('stopped-gate', 'r1', 'signoff', true)).toThrow(/not waiting for approval/);
+  });
+
+  it('refuses to answer a node that is not waiting for approval', async () => {
+    saveTaskSpec(root, specOf({ id: 'no-gate', title: 'No gate', goal: 'g', nodes: [{ id: 'a', prompt: 'a' }] }));
+    const runner = makeRunner();
+    runner.run('no-gate', { runId: 'r1' });
+    await tick();
+    host.complete('a', { finalText: 'done' });
+    await tick();
+
+    expect(() => runner.resolveApproval('no-gate', 'r1', 'a', true)).toThrow(/not waiting for approval/);
+    expect(() => runner.resolveApproval('no-gate', 'r1', 'ghost', true)).toThrow(/not part of this run/);
   });
 
   it('publishes the total node count to the orchestrator at run start (stable board denominator)', async () => {

@@ -34,19 +34,17 @@ export function AddWorkspaceStep_CreateNew({
   const [name, setName] = useState('')
   const [locationOption, setLocationOption] = useState<LocationOption>('default')
   const [customPath, setCustomPath] = useState<string | null>(null)
-  const [homeDir, setHomeDir] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [isValidating, setIsValidating] = useState(false)
-
-  // Get home directory on mount
-  useEffect(() => {
-    window.electronAPI.getHomeDir().then(setHomeDir)
-  }, [])
+  // Where a "default location" workspace goes is the **server's** answer, not this window's guess:
+  // the server owns the config directory (which `CRAFT_CONFIG_DIR` can move), and for a remote or
+  // web client the browser has no home directory to speak of. `checkWorkspaceSlug` is already
+  // asked for validation, and it answers with the path — so that answer is what gets created.
+  const [defaultPath, setDefaultPath] = useState<string | null>(null)
 
   const slug = slugify(name)
-  const defaultBasePath = homeDir ? `${homeDir}/.craft-agent/workspaces` : null
   const finalPath = locationOption === 'default'
-    ? (defaultBasePath && slug ? `${defaultBasePath}/${slug}` : null)
+    ? defaultPath
     : customPath && slug
       ? `${customPath}/${slug}`
       : null
@@ -55,6 +53,7 @@ export function AddWorkspaceStep_CreateNew({
   useEffect(() => {
     if (!slug) {
       setError(null)
+      setDefaultPath(null)
       return
     }
 
@@ -62,6 +61,7 @@ export function AddWorkspaceStep_CreateNew({
       setIsValidating(true)
       try {
         const result = await window.electronAPI.checkWorkspaceSlug(slug)
+        setDefaultPath(result.path)
         if (result.exists) {
           setError(`A workspace named "${slug}" already exists`)
         } else {

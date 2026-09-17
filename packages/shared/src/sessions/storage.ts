@@ -194,6 +194,8 @@ export async function createSession(
     taskSlug?: string;
     taskRunId?: string;
     taskNodeId?: string;
+    /** The writer identity this session writes prototype artifacts as (plan §3.6). */
+    taskWrites?: string;
     taskDraft?: boolean;
   }
 ): Promise<SessionConfig> {
@@ -232,6 +234,7 @@ export async function createSession(
     taskSlug: options?.taskSlug,
     taskRunId: options?.taskRunId,
     taskNodeId: options?.taskNodeId,
+    taskWrites: options?.taskWrites,
     taskDraft: options?.taskDraft,
   };
 

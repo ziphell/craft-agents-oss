@@ -7,14 +7,21 @@
 
 export type { PrototypeArtifacts, PrototypePatch, PrototypePatchKind, PrototypeWindowDescriptor, PageKind } from './types.ts'
 export {
-  CONSOLIDATED_LANE,
+  CONSOLIDATED_WRITER,
   DEFAULT_PAGE_KIND,
   LEGACY_BASE_PAGE_NAME,
   LEGACY_ENTRY_PAGE_NAME,
   PROTOTYPE_ANCHORS_DIRNAME,
+  PROTOTYPE_DEFAULT_WRITER,
   PROTOTYPE_LAYOUT_FILENAME,
   PROTOTYPE_LAYOUT_SLOT,
+  PROTOTYPE_PATCH_NAME_RE,
+  isConsolidatedWriter,
+  isValidWriterId,
+  parsePrototypePatchName,
+  resolvePrototypeWriter,
 } from './types.ts'
+export type { PrototypePatchName } from './types.ts'
 
 // The marker parser, which the other modules reach for rather than re-implement
 // (`patch-header.ts`).
@@ -34,6 +41,7 @@ export {
   getPrototypeLayoutPath,
   getPrototypeDistPath,
   getPrototypePatchKey,
+  patchFingerprint,
   listPrototypePatchPages,
   scanPrototypePatches,
   scanPrototypePatchesForPage,
@@ -56,6 +64,7 @@ export {
   getContractServicePath,
   getContractPathsPath,
   getContractFixturesPath,
+  getContractStatePath,
   getComposedContractPath,
   listContractServices,
   resolveContractServiceSlug,
@@ -68,6 +77,21 @@ export {
   exportContractDeliverable,
   buildMockRoutes,
 } from './contract.ts'
+
+// The mock's state machine (plan §阶段 5, D9's postponed half). Exported because
+// the two carriers — the workbench's network interception and the generated
+// in-page script — have to agree about it, and a test runs both over one table.
+export {
+  applyMockRequest,
+  describeMockOperation,
+  matchMockRoute,
+  mergeMockStores,
+  noMockProgram,
+  parseMockRequestBody,
+  readMockPath,
+  writeMockPath,
+} from './mock-engine.ts'
+export type { MockAnswer, MockMatch, MockOp, MockProgram, MockState, MockStore } from './mock-engine.ts'
 
 export {
   buildPatchInitScript,
@@ -103,22 +127,23 @@ export { commitPrototype } from './commit.ts'
 export type { PrototypeCommitResult, PrototypeCommitScopeResult } from './commit.ts'
 
 export type {
-  LaneWriteCheck,
-  PrototypeLaneId,
+  PrototypeArtifactPath,
   PrototypeOwner,
   PrototypeOwnershipReport,
   PrototypePathClassification,
+  WriterWriteCheck,
 } from './ownership.ts'
 export {
-  PROTOTYPE_LANES,
-  isPrototypeLane,
+  PROTOTYPE_PATH_WRITERS,
   classifyPrototypePath,
-  canLaneWrite,
+  canWriterWrite,
+  whyWriterMayNotWrite,
+  resolvePrototypeArtifactPath,
   resolvePrototypeOwnership,
 } from './ownership.ts'
 
 export type { PrototypeStatus, PrototypeStatusFinding, PrototypeStatusFrameCapture, PrototypeStatusRequirement, PrototypeStatusService } from './status.ts'
-export { buildPrototypeStatus, listPrototypeStatuses } from './status.ts'
+export { buildPrototypeStatus, listPrototypeStatuses, whyPrototypeIsNotSettled } from './status.ts'
 
 export { PROTOTYPE_PRD_FILENAME, getPrototypePrdPath, parsePrototypePrd, readPrototypeRequirements } from './requirements.ts'
 export type { PrototypeCheck, PrototypeCheckKind, PrototypeRequirement, PrototypeRequirements } from './requirements.ts'
@@ -126,11 +151,48 @@ export type { PrototypeCheck, PrototypeCheckKind, PrototypeRequirement, Prototyp
 export { PROTOTYPE_RESEARCH_DIRNAME, getPrototypeResearchPath, parsePrototypeFinding, readPrototypeFindings } from './research.ts'
 export type { PrototypeFinding, PrototypeFindings } from './research.ts'
 
+export {
+  PROTOTYPE_REVIEWS_DIRNAME,
+  PROTOTYPE_REVIEW_STATUSES,
+  formatReviewTarget,
+  getPrototypeReviewsPath,
+  isUnresolved,
+  parsePrototypeReview,
+  parseReviewTarget,
+  readPrototypeReviews,
+} from './reviews.ts'
+export type {
+  PrototypeReview,
+  PrototypeReviewStatus,
+  PrototypeReviewTarget,
+  PrototypeReviewTargetKind,
+  PrototypeReviews,
+} from './reviews.ts'
+
+export {
+  ACCEPTANCE_STATE_FILENAME,
+  acceptanceCheckKey,
+  compareAcceptance,
+  getPrototypeAcceptancePath,
+  readAcceptanceState,
+  summarizeAcceptance,
+  writeAcceptanceState,
+} from './acceptance.ts'
+export type {
+  AcceptanceCheckRecord,
+  AcceptanceCheckStatus,
+  AcceptanceComparison,
+  AcceptanceDiff,
+  AcceptanceObservation,
+  AcceptanceState,
+  AcceptanceSummary,
+} from './acceptance.ts'
+
 export { PROTOTYPE_FRAMES_DIRNAME, PROTOTYPE_VIDEOS_DIRNAME, buildFramesIndexDoc, copyPrototypeVideo, formatOffset, frameFileName, getPrototypeFramesPath, getPrototypeVideosPath, listFrameCaptures, sessionDirName, writeFrameCapture } from './frames.ts'
 export type { PrototypeFrame, PrototypeFrameCapture, PrototypeFrameCaptureSummary, PrototypeFrameReason, WrittenFrameCapture } from './frames.ts'
 
 export { resolveRequirementCoverage } from './coverage.ts'
-export type { RequirementCoverage, RequirementCoverageReport } from './coverage.ts'
+export type { RequirementCoverage, RequirementCoverageReport, RequirementDispute } from './coverage.ts'
 
 // The page kind and its default live in `types.ts` (which imports nothing) — see
 // the note there for why a renderer must not reach a barrel for a *value*.
@@ -153,10 +215,8 @@ export {
 } from './references.ts'
 
 export {
-  getPrototypeProject,
-  listPrototypesForProject,
-  resolveProjectPrototype,
-  setPrototypeProject,
+  getProjectPrototypes,
+  setProjectPrototypes,
 } from './project-link.ts'
 
 export type { WrittenPage, CreatedPrototype, CreatePrototypeInput } from './create.ts'

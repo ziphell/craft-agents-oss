@@ -61,7 +61,9 @@ browser_tool({ command: "set-clipboard Name\tAge\nAlice\t30" })
 browser_tool({ command: "get-clipboard" })
 browser_tool({ command: "paste Name\tAge\nAlice\t30" })
 browser_tool({ command: "scroll down 800" })
+browser_tool({ command: "reload" })
 browser_tool({ command: "evaluate document.title" })
+browser_tool({ command: "evaluate --file prototypes/cart/patches/ui-002-total.js" })
 browser_tool({ command: "console 50 warn" })
 browser_tool({ command: "screenshot" })
 browser_tool({ command: "screenshot --annotated" })
@@ -83,7 +85,7 @@ browser_tool({ command: "close" })
 
 The wrapper validates commands and returns actionable errors when arguments are missing or invalid.
 
-It also returns rich execution feedback for most commands, including before/after state where available (scroll positions, active element, URL/title transitions, resize clamping, request/error summaries, and window ownership/visibility details).
+It also returns rich execution feedback for most commands, including before/after state where available (scroll positions, active element, URL/title transitions, resize clamping, request/error summaries, and window state/visibility details).
 
 You can batch commands with semicolons, for example:
 `fill @e1 user@example.com; fill @e2 password123; click @e3`
@@ -188,404 +190,66 @@ Returns a **stable selector** resolved as `data-testid` → `id` → `:nth-of-ty
 
 Use this instead of guessing a CSS selector when the target is easier to point at than to describe (browser-based design/prototyping work).
 
-### `prototype-create <name> [--no-bind]`
-Create a prototype: a **container for pages**, and nothing else. Creation asks for a name and nothing more — no kind and no address, because both of those are facts about a *page* — and it creates no page at all: "this prototype has no pages yet" is a true statement, not a broken state. `--no-bind` leaves the session's current binding alone, which is what studying another prototype needs.
+### `evaluate <expression>` / `evaluate --file <path>`
+Run JavaScript in the page and return what it evaluated to: `evaluate document.title`.
 
-Pages arrive afterwards, one of two ways: write `<name>.html` for a page of ours (the agent's `Write` tool is allowed to), or add a live page with `prototype-pages --add <name>=<url>`.
+- **`--file <path>` runs a script kept in a file instead of one spelled out in the command.** A relative path is counted from the workspace root (`evaluate --file prototypes/cart/patches/ui-002-total.js`), `~/…` is expanded, and an absolute path is used as it is. Prefer it for anything longer than a one-line probe: the script is written once — with the Write tool, or as the patch that already exists — and the source never has to be produced a second time inside the command, nor re-escaped through the command string. The command says which file it ran and how many characters that was.
+- **A probe, not persistence.** What `evaluate` runs is not registered for any future document, so a reload restores the page and the change is gone. A change that has to survive a reload — **any overlay's real change** — is a patch file (`patches/<page>/<writer>-{nnn}-{name}.js`), which `prototype-apply` injects *and* registers (see `prototype-apply` in `~/.craft-agent/docs/prototypes.md`). Use `evaluate --file` to answer a question about the page, not to leave something behind.
+- Quotes and newlines survive in array mode (`["evaluate", "a(); b()"]`) and inside quotes; the result is rendered as JSON and truncated at 6000 characters, so return a summary rather than a whole document.
 
-### Writing a page of ours (the shape to copy)
+### `reload`
+Reload the page this command acts on — your page, or the one `--tab` names. The browser's own reload button, and the answer to *"that patch is already inlined here"*: a page of ours is rendered from the prototype's directory, so an edit to its document or to a patch it carries appears on the next render.
 
-A page of ours is an ordinary HTML document — no build step, no template language — and the prototype's
-directory *is* the origin root. Every new prototype starts with a shell (`_layout.html`) that wraps each of
-its pages, so a page carries only its own screen and reuses the shell's tokens:
+- **Nothing waits for the document to load.** The command returns as soon as the reload is asked for, so reading the page immediately after can answer with the old one. `wait network-idle 8000` (or `wait <selector|text|url> <value> <ms>`) before reading it, and `snapshot` again — every `@eN` ref from before is stale, which is also why a batch stops here.
+- What it does to what was injected is the point of the two carriers: a live page keeps the patches `prototype-apply` registered (init scripts, which is what registering them buys) and drops anything `evaluate` ran, which was never registered.
 
-```html
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>Cart</title>
-</head>
-<body>
-  <div class="app">
-    <h1>Cart</h1>
-    <section class="card stack">
-      <div class="row"><span>Delivery</span><span class="muted">Free</span></div>
-      <button class="row">Checkout</button>
-    </section>
-  </div>
-</body>
-</html>
-```
+### Prototypes — the `prototype-*` commands
 
-`var(--accent)`, `.card`, `.row`, `.stack` and `.muted` come from the shell, as do the scale tokens behind
-them (`--size-2`, `--gray-8`, `--radius-2`). Prefer the meaning, reach for the scale when there is no word
-for what you need. **Do not copy the frame** (header, nav, tokens) into a page — that is what `_layout.html`
-is for, and two copies drift.
+Everything about prototypes has its own guide, because a prototype is a whole workflow rather than one command — what a prototype is (a flow of pages, each `scratch` or `overlay`), its files and directory layout, who owns which artifact, `prd.md` / `research/` / `reviews/`, the `patches/` layer, `prototype-commit`, verification, contracts and mocks, the deliverables, and the complete `prototype-*` command reference:
 
-What bites later, in order of how often it does:
+**`~/.craft-agent/docs/prototypes.md`** — read it before your first `prototype-*` command.
 
-- **Reach for standard HTML before writing any JS**: `<details>` for disclosure, `<dialog>` for modals,
-  `:has()` / `:checked` for state-driven styling, `required` / `pattern` / `minlength` on inputs for
-  validation, `<template>` + `<slot>` for reuse. Most prototype interaction needs no script at all — and
-  the standard version behaves identically in the preview and in the delivered package.
-- **Assets use root-absolute paths** (`/assets/app.css`). No CDN and no external host: the prototype is
-  opened offline and only its own directory answers. Files under `assets/` travel with the package (text
-  files as they are; a binary such as an image is reported as not delivered yet, rather than arriving broken).
-- **Check the page after writing it**: `prototype-open`, then `console 50 error`. Nothing else in the
-  workbench validates a page, so a thrown error is invisible until someone looks.
-- **No `eval` and no `new Function`** — the delivered extension forbids them and the export would fail.
-  **No bundler**: plain `<script>`, `<style>`, and `<script type="module">` with relative imports are fine.
-- **Reuse has two places, not a third**: shared structure goes in the shell, shared helpers go in
-  `assets/lib/` (the JS shape below). There is no template engine, by design.
-- **Data**: `fetch('/api/…')` (relative), answered by the contract's fixtures when mocked. State belongs in
-  `localStorage` — the prototype's origin is stable, so it survives.
-- **Add a screen by writing a page; change how an existing screen looks by writing a patch** under
-  `patches/<page>/`. Rewriting a page document to restyle it is the one thing that is always wrong.
-
-#### Vanilla JS that survives (the shape to copy)
-
-One module per page, loaded by that page alone:
-`<script type="module" defer src="/assets/pages/cart.js"></script>`. Relative imports stay inside the
-package, so the same file runs in the preview and in the delivered extension.
-
-```js
-// assets/pages/cart.js
-import { formatMoney } from '../lib/format.js'
-
-const HOOK = { list: '[data-cart-list]', row: '[data-cart-row]', total: '[data-cart-total]' }
-
-function init(root = document) {
-  const list = root.querySelector(HOOK.list)
-  if (!list || list.dataset.cartReady) return // idempotent: this may run again
-  list.dataset.cartReady = 'true'
-
-  // Delegation: rows added later are covered without rebinding.
-  list.addEventListener('click', (event) => {
-    const row = event.target.closest(HOOK.row)
-    if (!row || !list.contains(row)) return
-    render(root)
-  })
-
-  render(root)
-}
-
-async function render(root) {
-  const total = root.querySelector(HOOK.total)
-  if (!total) return
-  try {
-    const res = await fetch('/api/cart') // relative: the contract's mock answers this
-    if (!res.ok) throw new Error(String(res.status))
-    total.textContent = formatMoney((await res.json()).total)
-  } catch {
-    total.textContent = '—' // a missing fixture has to be visible, not a blank screen
-  }
-}
-
-init()
-```
-
-| Do | Don't |
-| --- | --- |
-| `[data-…]` as JS hooks | classes as hooks — classes are the patches' territory |
-| Idempotent `init` (a `dataset.xReady` guard) | assuming it runs once |
-| Delegate to a container, then `closest(...)` | binding every row |
-| `textContent` / `classList` / a `<template>` clone | building markup with `innerHTML` |
-| URL and `localStorage` as the truth (the origin is stable) | state in memory only |
-| `fetch('/api/…')` relative, with its error branch | absolute hosts and no mock behind them |
-| One module per page, shared helpers in `assets/lib/` | a pile of globals per page |
-| Making failure visible | a silent `catch {}` |
-
-Four boundaries, and keeping them apart is what stops a prototype from rotting: **structure changes go in a
-patch, behaviour goes in a page's module, shared structure goes in the shell, shared helpers go in
-`assets/lib/`.**
-
-### Where a requirement, a finding and a change go
-
-Three kinds of file, three jobs, and **all of them are yours to write** — nothing
-in the workbench generates them:
-
-- **`prd.md`** — the requirements. One entry each, headed by a stable id:
-  `## R-001 A cart holds its line until stock runs out`, then the prose under it
-  (who it is for, what happens today, what has to be true). The id is what every
-  other file refers to, so keep it stable when you rewrite the prose around it.
-- **`research/`** — what you learned about other products, one finding per file:
-  `# F-001 <what you found>`, then labelled lines `claim:`, `source:`, `captured:`,
-  `evidence:`, `requirements:`. Evidence names files you keep in `research/`
-  (screenshots go there). Deliberately **not** packaged: the reader receives the
-  requirements, not your notes.
-- **`patches/` and the page documents** — what changed, each one declaring what it
-  serves: `@requirement R-001` in a patch header, or in a comment in the page
-  document it changes. `prototype-status` turns those markers into the two answers
-  nobody can get by reading files one at a time: a requirement nothing implements,
-  and a marker naming an id the PRD does not define. `dist/dev-spec.md` carries the
-  same table to whoever receives the delivery.
-
-Both `prd.md` and `research/` are ordinary files — write them with the Write tool
-like any other, and read them before re-studying something. They also appear in the
-bound prototype's context block, so a session starts knowing what was already found.
-
-### `prototype-record start` / `prototype-record stop [slug]`
-
-Keep frames of this window, then write them under the bound prototype's `research/`.
-
-A screen changes for two different reasons, and the capture keeps both:
-
-- **it moved on its own** — the screen is compared every `--interval` ms (default 400) and a frame is kept
-  when more than `--threshold` of it changed (default `0.005`). This is what catches a page that streams:
-  a chat answering, a list filling in, an animation.
-- **somebody did something** — every action taken on the page (a click, typing, a key, a navigation) is
-  kept whatever the screen did, plus a second frame a moment later to catch what it produced. A click that
-  changed nothing is still a click somebody made, and `index.md` says so.
-
-`stop` writes them to `prototypes/<slug>/research/frames/<session>/` as `frame-0001.jpg` upward, with
-`frames.json` (machine-readable) and `index.md` (the same table, for a person) beside them. Each frame
-carries its address, the page it was on and why it is there — a wall of images with no coordinates is a
-wall of images, nothing in it can be cited.
-
-`--max <n>` caps a capture (default 60); a capture that hits the ceiling says so rather than quietly
-dropping the difference. Frames are deliberately **not** in the delivered package: they are how the
-requirements were reached, not part of what the reader receives.
-
-Cite them from a finding's `evidence:` line — `evidence: frames/20260915-183012/frame-0004.jpg`.
-
-**Importing a recording.** `prototype-record import <path>` samples a video you recorded elsewhere (a phone,
-Loom, QuickTime). `--every 2s` sets the interval, `--changes` keeps only the moments that moved, `--max 40`
-caps the frames. The recording is copied into `research/videos/` first — a capture whose source has been
-cleaned up cannot be re-sampled, and re-sampling is most of what a source is for. Decoding is Chromium's, so
-nothing needs ffmpeg: a codec it cannot read (HEVC/H.265, ProRes, some `.mov`) fails with a message saying so,
-rather than producing a capture of one frame. Imported frames carry their position in the recording
-(`imported [0:12.4]` in `index.md`), which is the coordinate a reader of a video can actually use.
-
-The panel's Frames section has the same thing behind a button — the picker runs in the main process, so no
-path ever passes through the page.
-
-### `prototype-verify [slug]`
-
-Run the acceptance checks the PRD puts under its requirements. Two kinds, both mechanical — an acceptance
-criterion only a person can judge is one nobody runs:
-
-- `check: selector [data-cart-total]` — asserted against the page this session's window is on
-- `check: endpoint GET /api/cart` — asserted against the contract
-
-An unsupported kind is refused when the PRD is parsed rather than silently skipped: `check: expression …`
-would otherwise look like a criterion that is being verified when nothing is looking at it. With no page
-open, page checks come back **skipped**, not failed — "could not look" is not "not there", and collapsing
-the two would make a verification worth running only once.
-
-The run writes `dist/acceptance.md`, a deliverable beside the change spec for the person who has to accept
-the work. It changes nothing else: a failing check leaves the prototype exactly as it was.
-
-### `prototype-apply <slug>` / `prototype-clear <slug>`
-Replay (or remove) a prototype's patches in the current browser.
-
-A prototype lives under `{workspace}/prototypes/{slug}/` and its patches are ordinary files named `{lane}-{nnn}-{slug}.{css|js}`:
-
-```
-prototypes/checkout-flow/patches/A-001-btn-radius.css          ← every page
-prototypes/checkout-flow/patches/cart/A-002-flow-guard.js      ← the page `cart` only
-```
-
-- Files that do not follow the naming convention are ignored (READMEs, editor backups, dotfiles), so nothing unexpected gets executed.
-- Replay order is `lane` → numeric order → file name.
-- **Where a patch sits is which page it changes**: `patches/*` applies to every page of the flow, `patches/<page>/*` to that page alone. A directory that matches no page is reported by `prototype-status` rather than silently replayed.
-- Which patches this command replays follows the **page the command acts on** (your page, or the one `--tab` names — not whatever the person is reading): that page brings the shared patches plus its own, and a page on no part of the prototype gets the shared ones only — the command says which page it used, so "the patch did nothing" and "the patch belongs to another page" read differently.
-- Patches are applied to the current page **and** registered for every future document, so they survive a reload. The index is recomputed from disk on every `prototype-apply`, so editing a patch file and re-running the command is all that is needed — deleting a patch file also un-applies it.
-- A page the host rendered (a page of ours, served from the prototype's own address) arrives with its patches already inlined, so there is nothing to inject into it; that is reported as *nothing to inject*, not as a failure. Patches written since that render still land on it.
-- **A patch may declare what it is aimed at**, with `@target <css selector>` in its header (next to `@requirement R-001`, which says what it is for). The command then **counts** what each declared selector matched and says so:
-  - a selector that matched nothing and has never matched is named — the selector is wrong, or the page is not the one it was written against;
-  - a selector that matched before and does not now means the page moved, and the command offers selectors that resolve to exactly one element on the page today (a **re-anchor**, not a rewrite);
-  - a patch with no `@target` is named as unchecked rather than treated as a clean run.
-  Every successful match is recorded under `prototypes/{slug}/anchors/` — that record (selector, what the element looked like, when it last matched) is what makes "it stopped matching" distinguishable from "it never worked". Nothing in `anchors/` is rendered, replayed or packaged: it is evidence *about* the page.
-- `prototype-clear` unregisters a prototype's patches; the current document keeps their effects until you reload.
-- Saving a file under `patches/` or `assets/`, or a page document, replays the prototype into every window that is showing it (a page of ours reloads, a live page is re-patched) — no apply needed. The switch for that is on the prototype's page in the app.
-
-### `prototype-commit <slug> [--page <name>]`
-**Fold the change layer into what owns it.** A prototype is a working set of patches on top of a page that is not ours; this is the operation that collapses that layer when the work has stopped moving, so the prototype converges instead of accumulating deltas forever.
-
-Where the fold lands is decided by whose the page is:
-
-| page | folded into |
-|---|---|
-| **ours** (`scratch`) | CSS → `assets/<page>/committed.css`, JS **promoted** → `assets/<page>/committed.js`; the page document gets a `<link>` and a `<script src>` (each added once) |
-| **a live address** (`overlay`) | `patches/<page>/Z-001-upper.css` and `Z-002-upper.js` — a consolidated patch, which replays **after** every other patch by rule |
-
-- **JS is promoted, not folded**: a script is behaviour, and folding behaviour into a static document would mean rendering the page and serializing the result — which loses the readable document (and is why "freeze the live page" was never a thing here). Moving it into a file of ours is the same collapse: it stops being a delta and becomes source.
-- Each folded change leaves a **provenance header** naming the patch it came from, the date, and the markers it carried (`@requirement`, one `@target` per line) — so the anchors recorded for it and the requirement it serves survive the fold.
-- **The folded patch files are deleted.** That is what makes this the one prototype action with no undo: use your own git if you need the before and after, and commit when you mean it rather than after every change.
-- What it cannot do, it says: a page of ours whose document is missing is **refused** (nothing is deleted), and a folded CSS patch with no `@target` is listed as not checked. Running it twice reports "nothing to fold" instead of writing an empty file.
-- `--page <name>` folds that page's own patches only; the shared ones (`patches/*`) and other pages are left alone. Without it, the shared patches fold into `patches/Z-001-upper.css` and every page's own fold into its own place.
-- Folding a page of ours also drops that page's anchor records: the elements now live in a file we own, so there is nothing to drift against. A live page's records are kept — its address is still someone else's.
-
-### `prototype-export <slug>`
-Build the prototype's deliverable into `prototypes/{slug}/dist/`:
-
-- `extension/` — **a loadable Chrome extension covering the whole flow**, and the only thing to hand over. Nothing is published to a store: the recipient opens `chrome://extensions`, turns on **Developer mode**, and clicks **Load unpacked** on this folder. One package, whatever the flow is made of:
-  - **pages of ours ship in it** — each document under the name it has on disk (`cart.html`), so the links an author wrote between pages keep working; each carries only the patches that apply to it (the shared ones plus its own), and the layout shell is applied exactly as the host applies it.
-  - **live pages are injected into** — one content script per live page, which Chrome itself scopes to that page's address. The patches are simply there when the page loads: nothing to click, and they survive a reload. `README.md` says where it applies. Nothing is copied or frozen, so the page keeps its own JavaScript, session and data.
-  - The extension's **options** page is the generated **page index** (every page with a way into each: our documents are package files, live pages are their addresses), and the toolbar icon opens the entry page — the index when no page is marked as the entry.
-  - The package carries the contract's `x-mock` routes when there are any: a script in the page's own world (`world: "MAIN"`, `document_start`) answers them by wrapping the page's `fetch`/`XHR`, and `README.md` lists exactly which requests are faked — and what that cannot cover (requests a PWA's own service worker makes never pass through the page).
-  - The package carries a `version` and a build time, so "which build am I looking at?" has an answer. The package is a **snapshot**: after a re-export, press **Reload** on the extension in `chrome://extensions` (and refresh the page) to pick the change up.
-  - An extension page cannot run inline script (MV3's CSP, and `eval` is out), so an inline `<script>` block is hoisted into a file and an inline `on<event>="…"` becomes a generated function a small runtime binds. Behaviour is unchanged, and every such change is reported back in the command's output, named per page.
-  - It fails with a clear error when there is nothing to hand over: no pages at all, a page in the table whose document is gone (named), or a live page whose address cannot become a match pattern (also named).
-- `dev-spec.md` — the change list, **grouped by page**: every patch in replay order with its lane, kind and full content. The shared patches (`patches/*`) are listed once, and each page says how many of them it also carries.
-
-Keep the patch set small and delete patches that no longer change anything: all of them ship in the package, and everything in it is something a reviewer has to read. Patches are shipped unminified on purpose — the recipient runs this on their own page, and being able to read it is what makes that reasonable.
-
-The command prints the package's path and, when there is a page of ours to open, a URL for it inside the package. Each prototype is served from its own origin — `http://<slug>-<hash>.localhost/…`, answered by Electron itself (no port, so the address is the same on every run), with the prototype's directory as that origin's root — rather than `file://`, which has an opaque origin: no cookie jar, no relative `fetch`/XHR (so the mock layer would never see a request) and no ES modules. Root-absolute paths (`/assets/app.css`) and SPA history routes therefore work. To look at the packaged page before handing it over:
-
-```
-navigate http://checkout-flow-9f3a2b1c.localhost/dist/extension/cart.html
-```
-
-### `prototype-contract-compose <slug> [--service <svc>]`
-Compose the API contract fragments into one spec.
-
-A service lives under `prototypes/{slug}/services/{svc}/`:
-
-```
-services/checkout-api/config.json          baseUrl / authType / title
-services/checkout-api/paths/list-orders.yaml   OpenAPI path items (a `paths:` block or bare `/…` keys)
-services/checkout-api/fixtures/list-orders-200.json
-```
-
-`paths/*.yaml` are the source of truth; `openapi.yaml` is generated from them and should not be edited by hand. Each operation may declare what to serve while the backend does not exist yet:
-
-```yaml
-paths:
-  /orders:
-    get:
-      summary: List orders
-      x-mock:
-        status: 200
-        fixture: list-orders-200   # → fixtures/list-orders-200.json
-      responses:
-        '200': { description: OK }
-        '500': { description: Boom }
-```
-
-The command reports duplicate paths (last fragment in file-name order wins) and `x-mock` fixture references that have no file. With more than one service present, pass `--service`.
-
-### `prototype-contract-export <slug> [--service <svc>]`
-Write the backend-facing deliverables into `dist/`:
-
-- `openapi.yaml` — the composed contract.
-- `contract.md` — endpoints table, declared error responses, auth, and any `x-contract` notes.
-- `fixtures/*.json` — the response samples.
-
-`contract.md` deliberately calls out what is **not** declared (no error responses, no `authType`, no `x-contract` notes covering pagination/idempotency/concurrency) so an incomplete handoff is visible rather than silent.
-
-### `prototype-mock-apply <slug> [--service <svc>]` / `prototype-mock-clear`
-Serve the contract's `x-mock` responses so the prototype runs before the backend exists.
-
-Interception happens in the browser's **network layer** (CDP `Fetch`), which means:
-
-- `fetch` **and** `XMLHttpRequest` (axios et al.) are both covered, along with every other resource type — nothing is monkey-patched into the page.
-- The app does **not** need to point at a mock server: requests are matched by pathname, so absolute URLs, `baseUrl`-prefixed URLs and same-origin relative paths all hit.
-- Fulfilled responses carry `access-control-allow-origin: *`, since cross-origin calls would otherwise be blocked by CORS even though we are the one answering.
-
-The command reports endpoints that declare no `x-mock` (they pass through to the real backend) and `x-mock` fixtures that have no file — those routes are **skipped rather than served empty**, because a silently-empty response is far harder to debug than a 404.
-
-`prototype-mock-clear` stops intercepting; requests fall through to the real network again.
-
-While the mock is active the debugger stays attached — CDP drops interception on detach, so the client deliberately holds it.
-
-### `prototype-status <slug>`
-Read-only report on a prototype:
-
-```
-Prototype "checkout-flow"
-  dir:        /…/prototypes/checkout-flow
-  openable:   yes
-  pages:      cart (scratch) [entry] — cart.html
-              orders (scratch) — orders.html
-              pay (overlay) — https://app.example.com/pay
-  root:       opens "cart"
-  page issues: 1
-    • patches/nope/ belongs to no page of this prototype, so nothing there is replayed. Pages: cart, orders, pay
-  patches:    3 (A: 2, B: 1) — 1 page-scoped, 2 shared
-  service checkout-api: 4 endpoints, 3 mocked, 2 fragments, 2 fixtures
-  dist:       extension/, dev-spec.md, openapi.yaml, contract.md
-  ownership:  1 violation(s)
-    • patches/oops.css — misnamed patch — expected {lane}-{nnn}-{name}.{css|js}, optionally under patches/<page>/
-```
-
-A prototype with no pages yet prints `pages: none yet` and `openable: no` — that is a starting state, not an error. `root:` says what the address root opens: a page name, or the generated page index. Entries of `pages` that could not be read, a declared page whose document is gone, and a `patches/<name>/` that matches no page are all listed as `page issues:` — a dropped page is a screen the flow no longer has, and a patch directory nothing reaches is a change that never lands, so neither is silent.
-
-**Ownership** is how parallel work stays safe here: every artifact path belongs to exactly one writer, and lanes never write each other's files. The check flags three things that are otherwise silent:
-
-- a patch whose lane prefix is not a declared lane (`patches/Z-…`) — it would never be replayed;
-- a misnamed patch (`patches/oops.css`) — the patch scanner ignores it;
-- a path no lane or the control plane owns (`README.md`, `services/*/random.txt`).
-
-Declared lanes: `A` UI/interaction (patches), `B` service contract (`paths/`, `config.json`), `C` data (`fixtures/`), `D` verification (read-only). The page documents (any top-level `.html`, `_layout.html` included), `config.json`, `services/*/openapi.yaml` and everything under `dist/` are control-plane outputs. Which lane owns a patch is still the prefix in its file name — a `patches/<page>/` directory only says *which page* it changes.
-
-### `prototype-open <slug>`
-Open a prototype in the browser, and replay its patches into what opens.
-
-A prototype is a **flow of pages**, and each page is one of two kinds — which is what decides where opening it goes:
-
-- **a live page** (`overlay`) — the real address it records, with the patches injected into it. That page brings its own JavaScript, its own session and its own data; nothing is copied or frozen, because a copy could not run any of that and would only *look* like the page. Opening it and stopping there would show the target page rather than the prototype, so the replay is part of this command.
-- **a page of ours** (`scratch`) — the prototype's **own address**, where the workbench renders it: `/` renders the entry page and `/<name>.html` renders that page, and either way the document is rendered with the patches it carries (the shared ones plus its own), computed per request, so it always shows the patches that exist now. A top-level `.html` is therefore never served raw, and the copy inside a previously exported package (`/dist/extension/cart.html`, a file in a subdirectory) is a document frozen at export time rather than the page.
-
-With no `--page`, "open the prototype" means the page the bound browser window is already on, then the entry page, then the generated page index — so a flow with no entry page opens its index (a list of every page) rather than pretending one page is the first.
-
-Opening **adds a page to the window** rather than replacing what it was showing, which is what lets two prototypes be worked on at once (see "Pages in a window" below). A window that has just been created is opened *into* instead: its own blank page is what a window is made of, so a freshly opened prototype is one page, not one page and a blank one.
-
-Nothing stands in for a page that does not exist: a live page with no address, or a page of ours whose document is gone, fails with the remedy named rather than letting the browser show a confusing load error.
-
-Starting from nothing needs no special command: write `prototypes/{slug}/cart.html` (the agent's `Write` tool is allowed to) — that alone makes it a page — or duplicate another prototype from the panel, then run `prototype-open`.
-
-`--page <name>` opens that page instead; a name that does not exist is refused with the list of names that do.
-
-### `prototype-pages [slug]`
-The flow's pages, in order — which screens this prototype covers. One change at a time:
-
-- `--add payment=https://app.example.com/pay` adds a **live page**: that address *is* the page, and it is patched in place.
-- `--add orders` places an existing document (`orders.html`) in the flow order. It does not create a page: a page of ours **is** a file, so the file has to be there first — write it and it is already a page, declared or not.
-- `--rename cart=basket` · `--remove payment`. Renaming a page of ours takes its document and its own patches along; removing one deletes its document (and those patches), while a live page is only taken out of the flow.
-
-**The filesystem says what exists; the table says the order and the entry.** Every top-level `.html` in the prototype directory is a page of it (`cart.html` → page `cart`) and needs no declaration at all; declaring one only puts it in the flow order, and `prototype-entry` is what hands it the address root. Two things are deliberately not pages: `_`-prefixed files (`_layout.html`, the shared shell, and the generated `/_index`) and documents in subdirectories (assets).
-
-A name has to be free and usable (a leading `_` belongs to the host's own files, and no two pages may share an address), and a live page needs an address a browser can open — a scheme-less value is refused here rather than becoming a page nothing covers. The same list feeds `prototype-status`, `prototype-open --page`, the `page` name in `snapshot`, and the extension's content scripts (one per live page), so re-export after a change: the delivered package is a snapshot and does not see it until then.
-
-### `prototype-entry <name|none>`
-Which page the address root (`/`) opens. `<name>` marks one page as the entry — that page is what `/` renders or redirects to; `none` clears it, and `/` shows the generated **page index** again, which is the default because no page of a flow is naturally the first one. The index stays reachable at `/_index` either way: configuring an entry changes what `/` opens, and never takes the list away. A configured entry whose document is gone is an error naming the page, not a quiet fall back to the index.
-
-Re-export after changing it: the extension's toolbar icon opens the entry page (the index when there is none).
-
-### `prototype-target <url> [--page <name>]`
-Point one **live page** at the same page in another environment — a local dev server, staging, production. The address is a fact about where the page is, not part of its identity, so this is an ordinary edit. Without `--page` it moves the entry page when that one is live, otherwise the first live page. Two things go stale silently, and are said out loud when it changes: windows already open keep the old page until they navigate again, and the selectors were written against the old DOM (a patch that matches nothing looks exactly like a patch that did nothing). A page of ours is refused — it is our own document, so there is no external page for an address to mean.
+The short version: all prototype commands are subcommands of `browser_tool`, and a prototype is a folder under `{workspace}/prototypes/{slug}/`. `prototype-list` shows what exists, `prototype-create <name>` makes one (with no pages — write `cart.html` and that *is* the first page), `prototype-open` opens it, `prototype-apply` replays its patches, `prototype-status` reports what is there, and `prototype-export` builds the deliverable.
 
 ### The window is shared: one per workspace
 There is exactly **one browser window per workspace**, and every conversation in that workspace — and you — work in it, whatever the task is: a prototype flow, or ordinary browsing with no prototype behind it. What used to be "my window" is now a **page** in that window, which is why `tabs` exists and why nothing here is scoped to one conversation any more.
 
-- **A window belongs to its workspace, not to a conversation.** Who is *driving* it at the moment is a **lease** (`driven by` on each page in `tabs`): every command a conversation runs through the window renews it, and a turn ending releases it. A lease is not a lock — another conversation taking its turn is normal, and nothing about the window is closed to it.
+- **A window belongs to its workspace, not to a conversation.** Nothing on the window names a conversation: who is working where is a fact about its **pages** — `driven by:` (the lease: the page your command reached, released when your turn ends) and `locked:` (who holds it right now). That is what lets a parent and the child sessions it spawned work in one window at the same time, each in a page of its own (see "Sessions that share a window" below).
 - **Workspaces stay apart.** Each has its own window; a session in one never sees or touches another's. That is the only boundary left, and it is the one that has to be.
-- **Pages opened by other conversations are in here, and `tabs` says whose.** That is the point of sharing, and it is also the boundary: each page prints `belongs to: agent (<session>)` or `belongs to: a person`, and `driven by:` says who is working on it at the moment. Closing is limited to the pages in **your task** — the ones you opened, and the ones opened from them (see below) — and acting on another conversation's prototype is refused, so `--tab <id>` is a name, not a claim on somebody else's work.
-- **A page's task is inherited.** A page a link or popup opened belongs to whatever the page it came from belongs to — not to whoever clicked (an agent's click and a person's look the same from here, so that question has no answer). A link on your task's page therefore lands *in your task*: it is listed under you, and closing your pages closes it too. A page opened from a page nobody owns stays nobody's.
-- **The window itself is nobody's to close.** `close` on the workspace's window closes **the pages in your task** (and leaves a fresh page if they were all of them) rather than refusing everything — the window stays, because it is the whole workspace's. A window that is one session's own — an internal one — is still destroyed outright.
+- **Pages opened by other conversations are in here, and `tabs` says whose.** That is the point of sharing, and it is also the boundary: each page prints `belongs to: agent (<session>)`, `belongs to: the task <slug>'s node <node>` or `belongs to: a person`, and `driven by:` says who is working on it at the moment. Closing is limited to the pages of **your task** — the ones you opened, the ones handed to you, and the ones opened from them (see below) — and working on another conversation's page is refused, prototype or not, so `--tab <id>` is a name, not a claim on somebody else's work.
+- **A page's task is inherited.** A page a link or popup opened belongs to whatever the page it came from belongs to — not to whoever clicked (an agent's click and a person's look the same from here, so that question has no answer). A link on your task's page therefore lands *in your task*: it is listed under the same section, and cleaning up your pages closes it too. A page opened from a page nobody owns stays nobody's.
+- **A page belongs to a piece of work, not to a conversation.** When you are part of a Task (a Conductor DAG node), your pages say which task and which **node** they are for, not which session opened them — a page has to outlive the session that made it. The reward is that a node **re-run** after a FAIL verdict (repair spawns a *new* child session for the *same* node) finds its predecessor's page still in reach: `tabs` lists it (`belongs to:` names your task and your node), and `--tab <id>` carries on in it — nothing hands it to you automatically, so **read `tabs` before opening a page**: `tab-new` always adds one. A sibling node, and the next run of the same task, are still refused: one page, one node.
+- **The window itself is nobody's to close.** `close` closes **the pages of your task** — a DAG's node pages included, because the orchestrator that ran the task is who tidies it up — and leaves a fresh page if they were all of them, rather than refusing everything: the window stays, because it is the whole workspace's. There is no second kind of window for it to destroy instead.
 
-### Pages in a window: `tabs`, `tab-new`, `tab-show`, `tab-close`, `--tab <id>`
+### Pages in a window: `tabs`, `tab-new`, `tab-show`, `tab-assign`, `tab-close`, `--tab <id>`
 A browser **window** is a container and a **page** is the thing in it, so several prototypes are looked at at once by being several pages of one window rather than by being several windows. A page carries its own address, title, console, theme colour and — for an overlay, whose document is a third-party address — **the prototype it is for**: that is the only place the identity can live, since nothing in the URL would say it after the view loads.
 
-- `tabs` — this window's pages in the order they were opened, each with what it is, whose task it is in and who is driving it. This is also how page ids are discovered.
+- `tabs` — this window's pages in the order they were opened, each with what it is, whose task it is in and who is working on it. This is also how page ids are discovered.
 - `tab-new [url]` — add a page to the window, **behind whatever the person is reading**. Opens into the window's own untouched page when the window has never been used.
 - `tab-show <id>` — bring a page up for the person to look at. This is the **only** command that changes which page the window shows.
+- `tab-assign <id> <session>` — hand one of **your** pages to another conversation: it becomes that conversation's task and the page it works from. This is how a parent gives each child session a page of its own to work in (see "Sessions that share a window").
 - `tab-close <id>` — close one page **of your task**. Closing the last page closes the window, and the output says which of the two happened.
 - `--tab <id>` on **any** command — name the page it acts on, without moving the window. Without one a command acts on the page you have been working from (see "Where a command lands" below).
 
 **What `tabs` prints is in three kinds, and the difference matters:**
 
 - **what the page reports** — its real address (for an overlay, the live site's own, never the prototype's), its title, whether it is loading, which prototype it is for and which page of that prototype it is on. One producer: the page. Nothing here can disagree with the document it describes.
-- **whose task it is in** — `belongs to: agent (session-…)` or `belongs to: a person`. Written when the page is created, or **inherited** from the page it was opened from. This is the only way to tell your own pages from everybody else's, and the reason it is printed separately: it is a statement about the work, not something measured.
-- **who is driving it** — `driven by: <session>` or `nobody right now`. A **lease**: the conversation whose command reaches a page is driving it, the turn ending releases it. It says nothing about who the page belongs to.
+- **whose task it is in** — `belongs to: agent (session-…)` for a conversation's own page, `belongs to: the task <slug>'s node <node> (opened by <session>)` for a Task's DAG page, or `belongs to: a person`. Written when the page is created, or **inherited** from the page it was opened from. This is the only way to tell your own pages from everybody else's, and the reason it is printed separately: it is a statement about the work, not something measured.
+- **who is working on it** — `driven by: <session>` or `nobody right now`. A **lease**: the conversation whose command reaches a page is driving it, the turn ending releases it. It says nothing about who the page belongs to. `locked:` is the stronger state: the page is held right now, so nobody else may touch it until that turn ends.
 
-**Two questions, two rules.** *May I work here?* A page is yours to work on when it belongs to no prototype (an ordinary page — anybody's to use, which is what "you open it, the agent takes over" means), when it is for the prototype this conversation works on, or when it is in **your task** (you opened it, or it was opened from one of your pages, so `prototype-open` on a prototype you are not bound to still works). Another conversation's prototype is refused, and the refusal names it. *May I close it?* Only pages **in your task**: the user's pages, and another conversation's, are not yours to close however convenient it would be.
+**Two questions, two rules.** *May I work here?* A page is yours to work on when it is **the same piece of work** — your own conversation, or the same node of the same run of the same task (you opened it, it was handed to you with `tab-assign`, or it was opened from one of your pages — so `prototype-open` on a prototype you are not bound to still works) — or when **nobody has claimed it yet**: a page the person opened, or a fresh one, which you may take over. Everything else is another conversation's page, or another node's, and is refused, prototype or not — two conversations working on the same prototype do not share its pages, which is what keeps parallel sessions out of each other's way. *May I close it?* Anything **of your task**, whichever node of it opened it: the user's pages, and another task's, are not yours to close however convenient it would be. The two answers are deliberately different widths — working in a page is the precise question, and tidying up after a finished task is the loose one, because the nodes that opened those pages have stopped by then.
 
-**A page can be locked; the window cannot.** While a conversation is working on a page — its overlay is up for that turn and that page is the one it holds — **that page is locked**: a person cannot click or type into it, and another conversation's command that names it is refused with "it is locked while session-… works on it, until that turn ends". Everything around it stays free, for the user and for other conversations alike: the page rail, the address bar, the window's size, and every other page. The lock names **one page id** rather than being derived from wherever a command landed, which is what keeps it off the page the person happens to be looking at; it is dropped when that page is closed, and the person can drop it themselves — the lock mark in the rail is a button, and clicking it releases the overlay that holds the page. So `release` is not the only way out, and a lock can end earlier than your turn: do not assume the page is still yours between two commands.
+**A page can be held; the window cannot.** While a conversation is working on a page — its overlay is up for that turn and that page is the one it holds — **that page is held**: a person cannot click or type into it, and another conversation's command that names it is refused with "it is held while session-… works on it, until that turn ends". Everything around it stays free, for the user and for other conversations alike: the page rail, the address bar, the window's size, and every other page — and **several conversations can hold their own pages at the same time**, which is what makes parallel work possible. The hold names **one page id** rather than being derived from wherever a command landed, which is what keeps it off the page the person happens to be looking at; it is dropped when that page is closed, and the person can drop it themselves — the lock mark in the rail is a button, and clicking it releases the overlay that holds the page. So `release` is not the only way out, and a hold can end earlier than your turn: do not assume the page is still yours between two commands.
 
 That is deliberately narrower than locking the window, which is what this used to do: one window is shared by the whole workspace, so holding *the window* held the user's own browsing and everybody else's pages with it. Holding the page you are actually working on costs nobody anything but a wait — and a command that would rather not wait can name another page with `--tab <id>`.
+
+### Sessions that share a window: parents, children, and `tab-assign`
+A session spawned by another one (a Task's DAG node, or a session an agent delegated to with `spawn-session`) shares its parent's browser window — there is one per workspace — and works in **a page of its own**. Two rules make that work instead of interfering:
+
+- **It does not take over the page on screen.** A conversation with no page of its own normally adopts the page in front of the person; a child session is refused instead, and told how to get one: `tab-new` opens a page, or the conversation that spawned it hands one over with `tab-assign <page-id> <child-session>`. That is what a parent does before starting several nodes at once — one page each, handed over before the node runs.
+- **It does not move what the person sees.** `tab-show` on a child session makes the page its own but leaves the window showing the person's page, and the output says so. The window-level ways to take over someone's view — `open` in the foreground, `focus`, `hide` — are refused for a child as well. A child's work happens behind them; if the person should look at something, the parent brings it up.
+
+`tab-assign` is a plain handover: the page's **work** becomes the receiver's — its node, when the receiver is a DAG node's session — it becomes the page the receiver works from, and the giver loses it — its cursor and its hold go with it, or the giver would keep working from a page it just gave away. Only a page that is **yours or nobody's** can be handed on: you cannot pass along another conversation's work, and a page you already gave away is not yours to give again. Because the page records the node rather than the session it was handed to, a node that gets re-run picks its page back up (see "The window is shared").
 
 **Which prototype a command means** is read off the page it acts on: your own page first (see below), and when you have none yet, the page in front of you — and only then does it fall back to this conversation's binding for a page that belongs to none. That is what lets one conversation work on several prototypes without binding any of them: `--tab` picks the page, and the page says whose it is.
 
@@ -595,21 +259,21 @@ A page whose address the prototype's own page table does not describe says so (`
 
 `--tab` is read off the command before the command parses its own arguments, so it never becomes part of an argument: `evaluate document.title --tab tab-2` evaluates `document.title`. A `--tab` with no id is refused rather than falling back to the page on screen — running somewhere else is the one outcome a named target exists to prevent.
 
-**Where a command lands is your page, not the page on screen.** A command that names no page acts on the page this conversation has been working from — its **cursor**, marked in `tabs` as `your page: …`, and named in the summary as `cursorOf`. You get one by naming a page (`--tab <id>`, which also makes it yours) or by opening one (`tab-new`, `prototype-open`); with none yet, a command adopts the page the person is looking at, and that page becomes yours from then on. The point of the order is that **the person switching pages cannot retarget your work**: what they look at is theirs to move. The cursor survives your turn ending, so the next turn continues where this one worked; if the page it points at is closed, the next command falls back to the page on screen again.
+**Where a command lands is your page, not the page on screen.** A command that names no page acts on the page this conversation has been working from — its **cursor**, marked in `tabs` as `your page: …`, and named in the summary as `cursorOf`. You get one by naming a page (`--tab <id>`, which also makes it yours), by opening one (`tab-new`, `prototype-open`), or by being handed one (`tab-assign`); with none yet, a command adopts the page the person is looking at, and that page becomes yours from then on — except for a session spawned by another one, which is refused rather than adopting (see "Sessions that share a window"). The point of the order is that **the person switching pages cannot retarget your work**: what they look at is theirs to move. The cursor survives your turn ending, so the next turn continues where this one worked; if the page it points at is closed, the next command falls back to the page on screen again.
 
-**Your work happens in the background, and the person's view is not yours to move.** Naming a page with `--tab`, opening one with `tab-new` or `prototype-open`, and every command that follows all leave the window showing whatever page the person was on: a click, a screenshot, a patch and a console read land on *your* page whether or not anybody is looking at it. The window is shared, so this is what makes it usable by both of you at once — the person reading another page of it is not interrupted, and their page-switching still cannot retarget you. The one exception is `tab-show <id>`, which is exactly the request to move their view: use it when the point of the command is that somebody looks at the page.
+**Your work happens in the background, and the person's view is not yours to move.** Naming a page with `--tab`, opening one with `tab-new` or `prototype-open`, and every command that follows all leave the window showing whatever page the person was on: a click, a screenshot, a patch and a console read land on *your* page whether or not anybody is looking at it. The window is shared, so this is what makes it usable by both of you at once — the person reading another page of it is not interrupted, and their page-switching still cannot retarget you. The one exception is `tab-show <id>`, which is exactly the request to move their view: use it when the point of the command is that somebody looks at the page — and note that for a child session even that does not move it (see "Sessions that share a window").
 
 Reading, switching and closing pages do **not** open a window — a page lives in a window, so a workspace with none has no pages, and `tabs` says so instead of opening an empty one.
 
 **In the app**, every window has a **page rail** down its left edge: one row per page (the one on screen is raised, a page the agent opened is marked, a page being worked on carries a **lock** — which is also the button that takes it back), a close button on each, and a `+` for a new page. It is always there, including with a single page — the `+` is how a person opens something themselves, and a window with one page is exactly when they want a second one. The same pages appear in the window's badge in the app's top bar, grouped under that window, for when the window itself is not in front.
 
 ### `focus [windowId]`
-Bring the browser window to the front without making a new one. There is **one window per workspace**, so there is nothing to list and no window to choose between: with no id this focuses the workspace's window, and the output says what it is showing. What each *page* of it is, whose task it is in and who is driving it is `tabs`.
+Bring the browser window to the front without making a new one. There is **one window per workspace**, so there is nothing to list and no window to choose between: with no id this focuses the workspace's window, and the output says what it is showing. What each *page* of it is, whose task it is in and who is working on it is `tabs`. A session spawned by another one is refused here: the window is the person's view (see "Sessions that share a window").
 
 ### Lifecycle commands
-- `release` — dismiss the agent overlay, which also releases the page lock it held. The lock is **on the page**, not the window: the rail, the address bar, the window's size and every other page were never blocked by it.
-- `hide` — hide window but preserve session state
-- `close` — close and destroy a window of your own. On the workspace's window it closes **the pages in your task** instead (a fresh page takes their place if they were all of them), and says so; the window itself belongs to the workspace and is never closed by a conversation.
+- `release` — dismiss the agent overlay, which also releases the page hold it had. The hold is **on the page**, not the window: the rail, the address bar, the window's size and every other page were never blocked by it. Other conversations' holds are theirs, and are not touched.
+- `hide` — hide window but preserve session state (refused for a child session: it is the person's view)
+- `close` — close **the pages in your task** (a fresh page takes their place if they were all of them), and say so; the window itself belongs to the workspace and is never closed by a conversation.
 
 ---
 

@@ -65,6 +65,8 @@ export const SESSION_PERSISTENT_FIELDS = [
   'taskRunId',
   'taskNodeId',
   'taskNodeCount',
+  'taskAwaitingApproval',
+  'taskWrites',
   'taskDraft',
 ] as const;
 
@@ -152,9 +154,9 @@ export interface SessionConfig {
   sharedId?: string;
   /** Model to use for this session (overrides global config if set) */
   model?: string;
-  /** LLM connection slug for this session (locked after first message) */
+  /** LLM connection slug for this session (auto-pinned on first agent creation) */
   llmConnection?: string;
-  /** Whether the connection is locked (cannot be changed after first agent creation) */
+  /** Whether the connection is pinned against *implicit* rewrites; explicit user switches are still allowed */
   connectionLocked?: boolean;
   /** Thinking level for this session ('off', 'think', 'max') */
   thinkingLevel?: ThinkingLevel;
@@ -217,10 +219,10 @@ export interface SessionConfig {
    * `prototypes/` folder; undefined = none). Binding is what lets the agent
    * resolve `prototype-*` commands without being told a slug every turn.
    *
-   * This is the *effective* prototype, not necessarily the session's own: a
-   * conversation inside a project whose prototype is unambiguous works on that
-   * one without being bound (see `resolveProjectPrototype`). The persisted
-   * header keeps what was explicitly set.
+   * It is the session's own binding and nothing else writes one here: a project tells
+   * its conversations what prototypes exist, and what it is on (plan §15.1.3) — as
+   * background, like a connected source — but names none of them *for* a conversation,
+   * so the persisted header and what a conversation works on are the same thing.
    */
   prototypeSlug?: string;
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */
@@ -235,6 +237,16 @@ export interface SessionConfig {
   taskNodeId?: string;
   /** Tasks Conductor: total DAG node count (orchestrator only) — board progress denominator that stays stable while children spawn lazily. */
   taskNodeCount?: number;
+  /** Tasks Conductor: how many `kind: approval` gates of the active run are waiting on a person. */
+  taskAwaitingApproval?: number;
+  /**
+   * The writer identity this session writes prototype artifacts as (plan §3.6).
+   *
+   * Declared per node (`writes:` in task.yaml) and stamped onto the child at dispatch; absent
+   * means "the single-writer default" (`PROTOTYPE_DEFAULT_WRITER`), never "no identity" — the
+   * agent is told which prefix is its own, and the write guard checks it against the same value.
+   */
+  taskWrites?: string;
   /** Tasks Conductor: generate-time draft orchestrator. Hidden from the board until adopted (promoted) by createTask. */
   taskDraft?: boolean;
 }
@@ -295,9 +307,9 @@ export interface SessionHeader {
   sharedId?: string;
   /** Model to use for this session (overrides global config if set) */
   model?: string;
-  /** LLM connection slug for this session (locked after first message) */
+  /** LLM connection slug for this session (auto-pinned on first agent creation) */
   llmConnection?: string;
-  /** Whether the connection is locked (cannot be changed after first agent creation) */
+  /** Whether the connection is pinned against *implicit* rewrites; explicit user switches are still allowed */
   connectionLocked?: boolean;
   /** Thinking level for this session ('off', 'think', 'max') */
   thinkingLevel?: ThinkingLevel;
@@ -348,6 +360,16 @@ export interface SessionHeader {
   taskNodeId?: string;
   /** Tasks Conductor: total DAG node count (orchestrator only) — board progress denominator that stays stable while children spawn lazily. */
   taskNodeCount?: number;
+  /** Tasks Conductor: how many `kind: approval` gates of the active run are waiting on a person. */
+  taskAwaitingApproval?: number;
+  /**
+   * The writer identity this session writes prototype artifacts as (plan §3.6).
+   *
+   * Declared per node (`writes:` in task.yaml) and stamped onto the child at dispatch; absent
+   * means "the single-writer default" (`PROTOTYPE_DEFAULT_WRITER`), never "no identity" — the
+   * agent is told which prefix is its own, and the write guard checks it against the same value.
+   */
+  taskWrites?: string;
   /** Tasks Conductor: generate-time draft orchestrator. Hidden from the board until adopted (promoted) by createTask. */
   taskDraft?: boolean;
   // Pre-computed fields for fast list loading
@@ -404,9 +426,9 @@ export interface SessionMetadata {
   lastMessageRole?: 'user' | 'assistant' | 'plan' | 'tool' | 'error';
   /** Model to use for this session (overrides global config if set) */
   model?: string;
-  /** LLM connection slug for this session (locked after first message) */
+  /** LLM connection slug for this session (auto-pinned on first agent creation) */
   llmConnection?: string;
-  /** Whether the connection is locked (cannot be changed after first agent creation) */
+  /** Whether the connection is pinned against *implicit* rewrites; explicit user switches are still allowed */
   connectionLocked?: boolean;
   /** Thinking level for this session ('off', 'think', 'max') */
   thinkingLevel?: ThinkingLevel;
@@ -450,6 +472,16 @@ export interface SessionMetadata {
   taskNodeId?: string;
   /** Tasks Conductor: total DAG node count (orchestrator only) — board progress denominator that stays stable while children spawn lazily. */
   taskNodeCount?: number;
+  /** Tasks Conductor: how many `kind: approval` gates of the active run are waiting on a person. */
+  taskAwaitingApproval?: number;
+  /**
+   * The writer identity this session writes prototype artifacts as (plan §3.6).
+   *
+   * Declared per node (`writes:` in task.yaml) and stamped onto the child at dispatch; absent
+   * means "the single-writer default" (`PROTOTYPE_DEFAULT_WRITER`), never "no identity" — the
+   * agent is told which prefix is its own, and the write guard checks it against the same value.
+   */
+  taskWrites?: string;
   /** Tasks Conductor: generate-time draft orchestrator. Hidden from the board until adopted (promoted) by createTask. */
   taskDraft?: boolean;
 }

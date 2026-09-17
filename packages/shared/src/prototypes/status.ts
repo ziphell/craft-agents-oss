@@ -11,21 +11,24 @@
 import { existsSync, readdirSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { getWorkspacePrototypesPath } from '../workspaces/storage.ts'
-import { projectExists } from '../projects/storage.ts'
 import { readPrototypeConfig } from './config.ts'
 import { buildMockRoutes, composeContract, listContractServices, loadContractService } from './contract.ts'
 import { describePrototypePages, findEntryPage, type PrototypePage } from './pages.ts'
-import { PROTOTYPE_LANES, resolvePrototypeOwnership } from './ownership.ts'
-import { resolveRequirementCoverage } from './coverage.ts'
+import { resolvePrototypeOwnership } from './ownership.ts'
+import { resolveRequirementCoverage, type RequirementDispute } from './coverage.ts'
 import { listFrameCaptures } from './frames.ts'
 import { readAllPrototypeAnchors, resolveAnchorOrphans, SHARED_ANCHOR_SCOPE, type PrototypeAnchor } from './anchors.ts'
 import { readPrototypeFindings } from './research.ts'
+import type { PrototypeCheck } from './requirements.ts'
+import { readAcceptanceState, summarizeAcceptance, type AcceptanceSummary } from './acceptance.ts'
+import type { PrototypeReviewStatus } from './reviews.ts'
 import { prototypeOriginUrl } from './url.ts'
 import {
   getPrototypeDistPath,
   getPrototypePatchesPath,
   getPrototypeDirPath,
   listPrototypePatchPages,
+  patchFingerprint,
   scanPrototypePatches,
 } from './storage.ts'
 
@@ -35,6 +38,14 @@ export interface PrototypeStatusService {
   fixtures: number
   endpoints: number
   mockedEndpoints: number
+  /**
+   * How many mocked routes remember state (a path declaring `x-mock-collection`, plan §5.3).
+   *
+   * Apart from {@link mockedEndpoints} because it answers a different question: a service with
+   * stateful routes is not a set of fixed answers — the screens of the flow depend on each other,
+   * and what the last request did is what the next one shows.
+   */
+  statefulEndpoints: number
   /** `x-mock` fixtures referenced by the contract but not present on disk. */
   missingFixtures: string[]
 }
@@ -55,6 +66,10 @@ export interface PrototypeStatusRequirement {
   patches: string[]
   /** Findings in `research/` that argue for it. */
   findings: string[]
+  /** Arguments against it — filed against it, or against something that serves it. */
+  disputes: RequirementDispute[]
+  /** The acceptance checks the PRD puts under it (`check:` lines). */
+  checks: PrototypeCheck[]
 }
 
 /** A finding from `research/` — what was learned, and about whose product (plan §20.2). */
@@ -94,14 +109,6 @@ export interface PrototypeStatus {
    */
   references: string[]
   /**
-   * The workspace project this prototype was made for, or null (plan §15.1).
-   *
-   * An edge, not a nesting: nothing of the prototype lives in the project. The
-   * status carries it so the panel can show which project a prototype belongs to,
-   * and so a dangling edge — a project since deleted — can be reported.
-   */
-  projectSlug: string | null
-  /**
    * The pages of this prototype, in flow order (plan §19): declared rows first,
    * then the documents nobody declared, by name.
    */
@@ -128,6 +135,49 @@ export interface PrototypeStatus {
   /** Findings under `research/` — what was learned about other products (plan §20.2). */
   findings: PrototypeStatusFinding[]
   /**
+   * The argument against the work (`reviews/`, plan §3.7).
+   *
+   * Read from the files, like every other fact here — and derived *once*: the per-requirement
+   * disputes in `requirements[].disputes` and this list are the same `RequirementDispute` objects,
+   * so the panel cannot show a requirement as settled while the summary says otherwise.
+   */
+  reviews: {
+    total: number
+    byStatus: Record<PrototypeReviewStatus, number>
+    /** Every dispute that still stands, in id order. */
+    unresolved: RequirementDispute[]
+  }
+  /**
+   * What the last verification answered, or null when the checks have never run here
+   * (`acceptance/state.json` — our memory, never part of the deliverable).
+   */
+  acceptance: AcceptanceSummary | null
+  /**
+   * What this prototype still owes, in one place, because "is it done?" is one question: a
+   * requirement nothing implements, an objection nobody answered, a check the last round failed.
+   *
+   * The three are deliberately *not* folded into one number — each is a different action — but they
+   * share a field because a gate has to see them together (`whyPrototypeIsNotSettled`).
+   */
+  unresolved: {
+    /** Requirement ids nothing implements — the proposal claims what the delivery does not do. */
+    unmet: string[]
+    /** Disputes that still stand: open, or a record that disagrees with the files. */
+    disputes: RequirementDispute[]
+    /** Checks the last round answered `fail`, as `kind: target`. */
+    redChecks: string[]
+  }
+  /**
+   * {@link whyPrototypeIsNotSettled} of this very report — the gate in its own words, carried as
+   * data so the panel can say what stands between the work and its handover.
+   *
+   * It is computed here rather than by each reader for the reason the gate exists at all: two
+   * statements of "is it done?" would drift. The renderer is a reader now, and it cannot call a
+   * runtime function from the shared barrel (dev doc §3.6), so the verdict travels with the facts
+   * it was reached from. Empty when there is nothing outstanding.
+   */
+  settleBlockers: string[]
+  /**
    * Everything worth saying about the PRD and the research: an entry that could
    * not be read, a requirement nothing implements, a reference to an id the PRD
    * does not define, a finding with no claim or with evidence that is not on
@@ -152,7 +202,7 @@ export interface PrototypeStatus {
   pageAvailable: boolean
   patches: {
     total: number
-    byLane: Record<string, number>
+    byWriter: Record<string, number>
     /** How many patches are page-scoped (`patches/<page>/…`) rather than shared. */
     scoped: number
     /**
@@ -175,9 +225,14 @@ export interface PrototypeStatus {
       /** Path relative to `patches/`, e.g. `cart/A-001-btn.css`. */
       file: string
       kind: string
-      lane: string | null
+      writer: string | null
       page: string | null
       targets: string[]
+      /**
+       * The patch's content fingerprint. Printed so a dispute can record `on:` without writing a
+       * hash by hand (`reviews.ts`), which is what makes a stale argument detectable at all.
+       */
+      fingerprint: string
     }>
   }
   /**
@@ -212,8 +267,6 @@ export interface PrototypeStatus {
    */
   distFiles: string[]
   ownership: { inspected: number; violations: Array<{ path: string; reason: string }> }
-  /** Lane id → description, so callers can render names without a second import. */
-  lanes: Record<string, string>
 }
 
 function listFileNames(dir: string): string[] {
@@ -257,10 +310,12 @@ export function buildPrototypeStatus(workspaceRootPath: string, slug: string): P
 
   const patches = scanPrototypePatches(workspaceRootPath, slug)
   const patchesDir = getPrototypePatchesPath(workspaceRootPath, slug)
-  const byLane: Record<string, number> = {}
+  const byWriter: Record<string, number> = {}
   for (const patch of patches) {
-    const lane = patch.lane?.toUpperCase() ?? '?'
-    byLane[lane] = (byLane[lane] ?? 0) + 1
+    // Keyed by the writer id as written in the name (case preserved): the report groups by who
+    // wrote what, and an agent-chosen id has no canonical spelling to normalize to.
+    const writer = patch.writer ?? '?'
+    byWriter[writer] = (byWriter[writer] ?? 0) + 1
   }
 
   const services: PrototypeStatusService[] = listContractServices(workspaceRootPath, slug).map((serviceSlug) => {
@@ -273,6 +328,7 @@ export function buildPrototypeStatus(workspaceRootPath: string, slug: string): P
       fixtures: Object.keys(service.fixtures).length,
       endpoints: composed.endpoints.length,
       mockedEndpoints: mock.routes.length,
+      statefulEndpoints: mock.routes.filter((route) => route.state !== undefined).length,
       missingFixtures: mock.missingFixtures,
     }
   })
@@ -302,6 +358,9 @@ export function buildPrototypeStatus(workspaceRootPath: string, slug: string): P
   const coverage = resolveRequirementCoverage(workspaceRootPath, slug)
   const findings = readPrototypeFindings(workspaceRootPath, slug)
   const frameCaptures = listFrameCaptures(workspaceRootPath, slug)
+  // What the checks answered last time: a fact about a run, so it is read from the record
+  // `prototype-verify` wrote rather than remembered here.
+  const acceptance = summarizeAcceptance(readAcceptanceState(workspaceRootPath, slug))
 
   // Anchors: what each declared `@target` matched, and which records nothing
   // declares any more. The second is the disk-derivable half of drift — the
@@ -316,23 +375,24 @@ export function buildPrototypeStatus(workspaceRootPath: string, slug: string): P
   )
 
   const briefIssues = [...coverage.issues]
-  // An edge naming a project that is gone: nothing else in the workspace would
-  // notice, and the panel would go on showing the name as if it still resolved.
-  if (config.projectSlug && !projectExists(workspaceRootPath, config.projectSlug)) {
-    briefIssues.push(
-      `This prototype belongs to project "${config.projectSlug}", which no longer exists.`,
-    )
-  }
 
-  return {
+  const report: Omit<PrototypeStatus, 'settleBlockers'> = {
     slug,
     dir,
     references: config.references ?? [],
-    projectSlug: config.projectSlug ?? null,
     pages,
     entryPage: entry?.name ?? null,
     pageIssues: issues,
     requirements: coverage.requirements,
+    reviews: coverage.reviews,
+    acceptance,
+    unresolved: {
+      unmet: coverage.requirements
+        .filter((requirement) => requirement.pages.length === 0 && requirement.patches.length === 0)
+        .map((requirement) => requirement.id),
+      disputes: coverage.reviews.unresolved,
+      redChecks: acceptance?.red ?? [],
+    },
     findings: findings.findings.map((finding) => ({
       id: finding.id,
       claim: finding.claim,
@@ -353,15 +413,16 @@ export function buildPrototypeStatus(workspaceRootPath: string, slug: string): P
       (entry?.kind === 'overlay' ? entry.url !== null : origin !== null && (!entry || entry.file !== null)),
     patches: {
       total: patches.length,
-      byLane,
+      byWriter,
       scoped: patches.filter((patch) => patch.page !== null).length,
       files: patches.map((patch) => join(patchesDir, patch.file)),
       entries: patches.map((patch) => ({
         file: patch.file,
         kind: patch.kind,
-        lane: patch.lane,
+        writer: patch.writer,
         page: patch.page,
         targets: patch.targets,
+        fingerprint: patchFingerprint(patch.source),
       })),
     },
     anchors: {
@@ -377,6 +438,50 @@ export function buildPrototypeStatus(workspaceRootPath: string, slug: string): P
     services,
     distFiles: listFileNames(getPrototypeDistPath(workspaceRootPath, slug)),
     ownership: { inspected: ownership.inspected, violations: ownership.violations },
-    lanes: { ...PROTOTYPE_LANES },
   }
+
+  // The gate's verdict travels with the facts it was reached from, so every reader — the strict
+  // export, the status output, the panel — answers "is it done?" the same way. Computed after the
+  // literal because it reads the report it belongs to.
+  return { ...report, settleBlockers: whyPrototypeIsNotSettled({ ...report, settleBlockers: [] }) }
+}
+
+/**
+ * What this prototype still owes, as sentences — empty when there is nothing outstanding.
+ *
+ * This is the **gate**, expressed once: `prototype-export --strict` refuses on a non-empty list, the
+ * status output prints it, and a task graph branches on it. Reason-first, like the write guard and
+ * for the same reader — an agent that has to decide whether to keep working, or whether what it has
+ * is finished.
+ *
+ * Three things count, and they are deliberately not summed into one number: a requirement nothing
+ * implements, an objection nobody answered, a check that failed. Each is a different action.
+ */
+export function whyPrototypeIsNotSettled(status: PrototypeStatus): string[] {
+  const reasons: string[] = []
+
+  for (const id of status.unresolved.unmet) {
+    reasons.push(`${id} is in prd.md but no page or patch refers to it, so nothing implements it.`)
+  }
+
+  for (const dispute of status.unresolved.disputes) {
+    const about = dispute.stale && dispute.staleReason ? `${dispute.about} — ${dispute.staleReason}` : dispute.about
+    reasons.push(`${dispute.file} disputes ${about}, and it still stands (${dispute.status}).`)
+  }
+
+  for (const check of status.unresolved.redChecks) {
+    reasons.push(`\`${check}\` failed in the last verification round.`)
+  }
+
+  // A PRD that carries checks nobody has ever run is the one state the record cannot show: the
+  // file exists, so "no failures" and "never looked" look identical from here.
+  const declaresChecks = status.requirements.some((requirement) => requirement.checks.length > 0)
+  if (declaresChecks && status.acceptance === null) {
+    reasons.push(
+      'prd.md declares acceptance checks and they have never been run here — `prototype-verify` is ' +
+        'what turns them into an answer.',
+    )
+  }
+
+  return reasons
 }

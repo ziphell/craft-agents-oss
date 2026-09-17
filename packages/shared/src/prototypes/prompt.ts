@@ -19,8 +19,8 @@ import { existsSync } from 'fs'
 import { getPrototypeDirPath, getPrototypeLayoutPath } from './storage.ts'
 import { listPrototypePages } from './pages.ts'
 import { buildPrototypeStatus } from './status.ts'
-import { PROTOTYPE_LANES } from './ownership.ts'
-import { PROTOTYPE_LAYOUT_SLOT, type PageKind } from './types.ts'
+import { CONSOLIDATED_WRITER, PROTOTYPE_LAYOUT_SLOT, type PageKind } from './types.ts'
+import type { AcceptanceSummary } from './acceptance.ts'
 
 export interface PrototypePromptContext {
   slug: string
@@ -48,13 +48,6 @@ export interface PrototypePromptContext {
    */
   references: Array<{ slug: string; summary: string }>
   /**
-   * The workspace project this prototype belongs to, or null (plan §15.1).
-   *
-   * Carried because a session can have **both** containers in front of it, and
-   * nothing else in the prompt says which side a new file belongs on.
-   */
-  projectSlug: string | null
-  /**
    * The PRD's requirements with what refers to each one (plan §20.1). Empty when
    * there is no `prd.md` — a state the prompt has to name out loud, because the
    * agent is the only writer of that file.
@@ -65,8 +58,49 @@ export interface PrototypePromptContext {
    * reads what it learned last time instead of studying the same product again.
    */
   findings: Array<{ id: string; claim: string | null; source: string | null; file: string }>
+  /**
+   * The argument against the work (`reviews/`, plan §3.7): what still stands, and how many were
+   * settled. Carried for the same reason the findings are — an agent that cannot see the objection
+   * will keep building the thing somebody already argued about.
+   */
+  reviews: {
+    total: number
+    unresolved: Array<{
+      id: string
+      file: string
+      about: string
+      status: string | null
+      stale: boolean
+      staleReason: string | null
+      claim: string | null
+    }>
+  }
+  /**
+   * What the acceptance checks answered last time (`acceptance/state.json`), or null when they have
+   * never run here. A count is not enough: "newly red" is the thing a change under review has to be
+   * judged by, and only a comparison against the round before can say it.
+   */
+  acceptance: AcceptanceSummary | null
   /** Replayable patches, in replay order, each with the page it belongs to (null = every page). */
-  patches: Array<{ file: string; lane: string | null; kind: string; page: string | null; targets: string[] }>
+  patches: Array<{
+    file: string
+    writer: string | null
+    kind: string
+    page: string | null
+    targets: string[]
+    /** The fingerprint a dispute about this patch records as `on:`. */
+    fingerprint: string
+  }>
+  /**
+   * The **writer identity this conversation writes as** (plan §3.6).
+   *
+   * It is the token the naming rule is written in terms of, so the agent has to be told it here
+   * rather than pick one: a patch's name is an ownership claim, and the claim has to match the
+   * writer the guard sees. Always present — a prototype with nothing declared writes as
+   * `PROTOTYPE_DEFAULT_WRITER`, because "one writer" is the normal case and it should not need
+   * a declaration to exist.
+   */
+  writer: string
   /** Per-service contract coverage. */
   services: Array<{
     slug: string
@@ -105,6 +139,7 @@ function describeReference(workspaceRootPath: string, slug: string): { slug: str
 export function buildPrototypePromptContext(
   workspaceRootPath: string,
   slug: string,
+  writer: string,
 ): PrototypePromptContext | null {
   // Checked before the status read rather than after: `buildPrototypeStatus`
   // reports a missing prototype as an empty one, so existence is not inferable
@@ -115,6 +150,7 @@ export function buildPrototypePromptContext(
 
   return {
     slug: status.slug,
+    writer,
     dir: status.dir,
     pages: status.pages.map((page) => ({
       name: page.name,
@@ -128,13 +164,13 @@ export function buildPrototypePromptContext(
       ? getPrototypeLayoutPath(workspaceRootPath, slug)
       : null,
     references: status.references.map((referenceSlug) => describeReference(workspaceRootPath, referenceSlug)),
-    projectSlug: status.projectSlug,
     patches: status.patches.entries.map((entry) => ({
       file: entry.file,
-      lane: entry.lane,
+      writer: entry.writer,
       kind: entry.kind,
       page: entry.page,
       targets: entry.targets,
+      fingerprint: entry.fingerprint,
     })),
     services: status.services.map((service) => ({
       slug: service.slug,
@@ -155,6 +191,19 @@ export function buildPrototypePromptContext(
       source: finding.source,
       file: finding.file,
     })),
+    reviews: {
+      total: status.reviews.total,
+      unresolved: status.reviews.unresolved.map((dispute) => ({
+        id: dispute.id,
+        file: dispute.file,
+        about: dispute.about,
+        status: dispute.status,
+        stale: dispute.stale,
+        staleReason: dispute.staleReason,
+        claim: dispute.claim,
+      })),
+    },
+    acceptance: status.acceptance,
     distFiles: status.distFiles,
     violations: status.ownership.violations,
   }
@@ -188,7 +237,7 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
   const scratchPages = ctx.pages.filter((page) => page.kind === 'scratch')
 
   lines.push('')
-  lines.push(`<prototype_context slug="${escapeAttr(ctx.slug)}">`)
+  lines.push(`<prototype_context slug="${escapeAttr(ctx.slug)}" writer="${escapeAttr(ctx.writer)}">`)
   lines.push(sanitize(ctx.dir))
   lines.push('')
 
@@ -262,26 +311,21 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
     lines.push('')
   }
 
-  // The project edge, and with it the answer to "which directory does this go in".
-  // A session can have both containers in its context at once — the project from
-  // the session's binding, the prototype from this one — and until this was said
-  // out loud, nothing told the agent which side a new file belonged on (§15.1).
-  if (ctx.projectSlug) {
-    lines.push(`This prototype belongs to the workspace project '${sanitize(ctx.projectSlug)}' — an **edge, not a`)
-    lines.push(`container**: nothing of the prototype lives inside the project, and nothing of the project lives`)
-    lines.push(`inside the prototype. Keep the two apart when you write:`)
-    lines.push(`- everything about *this prototype* — pages, patches/<page>/…, prd.md, config.json, research/ and`)
-    lines.push(`  dist/ — goes to the prototype directory above.`)
-    lines.push(`- the project holds its own concerns (its MEMORY.md, its tasks, its shared assets). Do not copy a`)
-    lines.push(`  prototype artifact into it, and do not put project notes into the prototype.`)
-    lines.push('')
-  }
+  // Nothing here says which *project* this prototype is for, because it is not for one:
+  // a prototype belongs to no project (§15.1.4). A session that also has a project in
+  // front of it is told about the two containers separately, and this block goes on
+  // answering the half only it can: where *this prototype's* files go.
 
   // Requirements and research come next because they are what the work is *for*,
   // and because the agent is their only writer: nothing in the workbench produces
   // `prd.md` or a finding, so a block that does not ask for them leaves them not
   // existing at all (plan §20).
   lines.push(`Requirements and research — both are files you write; nothing else here produces them:`)
+  lines.push(`- Before writing a requirement, think from first principles about the value: what the person cannot`)
+  lines.push(`  do today, and what actually changes for them if this exists. Start from that problem rather than`)
+  lines.push(`  from a screen, a competitor's feature or the user's own phrasing — a requirement that only`)
+  lines.push(`  restates one of those has not been thought about, and nothing here can check that for you: the`)
+  lines.push(`  workbench can show a requirement is unimplemented, never that it was worth writing.`)
   lines.push(`- ${sanitize(ctx.dir)}/prd.md holds the requirements. One entry each, headed by a stable id:`)
   lines.push(`  '## R-001 <what it is>', then the prose — who it is for, what happens today, what has to be true.`)
   if (ctx.requirements.length > 0) {
@@ -322,6 +366,49 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
     }
   }
   lines.push(`- research/ is **not** packaged (assets/ is): the reader receives the requirements, not your notes.`)
+  lines.push('')
+  lines.push(`The argument *against* the work lives in ${sanitize(ctx.dir)}/reviews/ — one dispute per file. It is`)
+  lines.push(`how you disagree with something without the disagreement dying with this conversation, and it is`)
+  lines.push(`the point a task's critic writes to instead of a paragraph nobody can find later:`)
+  lines.push(`- '# D-001 <what is disputed>', then labelled lines: 'about:', 'status:', 'claim:', 'evidence:'`)
+  lines.push(`  (and 'on:' for a patch dispute).`)
+  lines.push(`- 'about:' names one thing: 'patch <file>', 'page <name>', 'endpoint <GET /path>' or 'requirement R-001'.`)
+  lines.push(`  Work out which by asking what actually failed — a failed 'check:' is usually the requirement or`)
+  lines.push(`  the page it looked at, and 'prototype-verify' prints both for you.`)
+  lines.push(`- A dispute about a **patch** also needs 'on:' — the fingerprint printed beside that patch below.`)
+  lines.push(`  It is what lets a later reader tell an argument about the current file from one about a version`)
+  lines.push(`  that no longer exists; without it the objection cannot be checked, and the report says so.`)
+  lines.push(`- 'status:' is one of open (it stands), fixed (the thing was changed), rebutted (you judged it`)
+  lines.push(`  unfounded, reason in the body) or accepted (valid, and the cost was taken deliberately). 'fixed'`)
+  lines.push(`  on a patch that has not changed is reported as a record that disagrees with the files.`)
+  if (ctx.reviews.unresolved.length > 0) {
+    lines.push(`  Still standing (${ctx.reviews.total} filed so far) — reading these is part of the work, not a`)
+    lines.push(`  formality: an objection nobody answered is the one thing a "finished" prototype must not hide.`)
+    for (const dispute of ctx.reviews.unresolved) {
+      const stale = dispute.stale ? `, **stale**: ${sanitize(dispute.staleReason ?? '')}` : ''
+      lines.push(
+        `  - ${sanitize(dispute.id)} (${sanitize(dispute.status ?? 'no status')}${stale}) about ${sanitize(dispute.about)} — ${sanitize(dispute.claim ?? '(no claim)')} (${sanitize(dispute.file)})`,
+      )
+    }
+  } else if (ctx.reviews.total > 0) {
+    lines.push(`  Nothing is standing: all ${ctx.reviews.total} filed so far were answered.`)
+  }
+  lines.push('')
+  lines.push(`Acceptance: the 'check:' lines in prd.md are answered by 'prototype-verify', which records each`)
+  lines.push(`round under acceptance/ (and writes dist/acceptance.md). Only the tool writes that record — a`)
+  lines.push(`hand-written one would be a report of a run that never happened — but it is there to be read:`)
+  if (ctx.acceptance) {
+    lines.push(
+      `- Last round (${sanitize(String(ctx.acceptance.round))}): ${ctx.acceptance.passed} passed, ` +
+        `${ctx.acceptance.failed} failed, ${ctx.acceptance.skipped} skipped.`,
+    )
+    for (const check of ctx.acceptance.red) lines.push(`  - failing: \`${sanitize(check)}\``)
+    lines.push(`- Re-run it after changing something: the report says what *moved* since the round before, which`)
+    lines.push(`  is the only way to tell "this change broke it" from "it was already broken and nobody said".`)
+  } else {
+    lines.push(`- Nothing has been run here yet. If prd.md declares checks, run 'prototype-verify' before calling`)
+    lines.push(`  anything done: a check that was never run is not a check that passed.`)
+  }
   lines.push('')
 
   lines.push(`This session is bound to the prototype above. Commands below target it by default —`)
@@ -378,14 +465,17 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
     lines.push('')
   }
 
-  lines.push(`Patches are plain files under patches/, named {lane}-{nnn}-{name}.{css|js}. **Where the file`)
-  lines.push(`sits is which page it changes**: patches/<page>/… applies to that page only, patches/… applies to`)
-  lines.push(`every page. The name is the ownership contract, not a convention — a file that does not match it`)
-  lines.push(`is ignored by the injector. Lanes: ${Object.entries(PROTOTYPE_LANES).map(([id, desc]) => `${id} = ${desc}`).join('; ')}.`)
-  lines.push(`To add a UI change, write a new file (e.g. patches/A-002-highlight.css for the whole flow, or`)
-  lines.push(`patches/cart/B-002-total.js for one page) with the Write tool — do not edit a page's document for`)
-  lines.push(`presentation work, and do not rewrite an existing patch file owned by another lane. Every patch is`)
-  lines.push(`replayed on reload, so the page state is reproducible.`)
+  lines.push(`Patches are plain files under patches/, named {writer}-{nnn}-{name}.{css|js}. **The {writer}`)
+  lines.push(`segment is your identity**: this conversation writes as '${sanitize(ctx.writer)}', so its patches are`)
+  lines.push(`named ${sanitize(ctx.writer)}-<nnn>-<name>.{css,js} — write that prefix yourself, it is not a code you pick`)
+  lines.push(`from a list, and a name that claims someone else's prefix is refused (and reported by`)
+  lines.push(`'prototype-status'). The reserved token '${CONSOLIDATED_WRITER}' belongs to 'prototype-commit' folds alone.`)
+  lines.push(`**Where the file sits is which page it changes**: patches/<page>/… applies to that page only,`)
+  lines.push(`patches/… applies to every page. A file that does not match the name pattern is ignored by the`)
+  lines.push(`injector. To add a UI change, write a new file (e.g. patches/${sanitize(ctx.writer)}-002-highlight.css for`)
+  lines.push(`the whole flow, or patches/cart/${sanitize(ctx.writer)}-002-total.js for one page) with the Write tool — do`)
+  lines.push(`not edit a page's document for presentation work, and do not rewrite an existing patch file whose`)
+  lines.push(`prefix is not yours. Every patch is replayed on reload, so the page state is reproducible.`)
   lines.push(`Say what each patch is aimed at: a header line '@target <css selector>' (and '@requirement R-001').`)
   lines.push(`That is what makes the patch checkable — 'prototype-apply' reports which targets matched nothing, and`)
   lines.push(`a target that used to match and does not any more means the page moved, not that the patch was`)
@@ -408,11 +498,14 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
   lines.push('')
 
   if (ctx.patches.length > 0) {
-    lines.push(`Replayed patches, in order:`)
+    lines.push(`Replayed patches, in order (the 8 characters in brackets are the patch's fingerprint —`)
+    lines.push(`that is what a dispute's 'on:' records, so copy the one belonging to the patch):`)
     for (const patch of ctx.patches) {
       const scope = patch.page ? `page ${sanitize(patch.page)}` : 'every page'
       const targets = patch.targets.length > 0 ? `, targets ${patch.targets.map(sanitize).join(', ')}` : ''
-      lines.push(`- ${sanitize(patch.file)} (lane ${patch.lane ?? '?'}, ${patch.kind}, ${scope}${targets})`)
+      lines.push(
+        `- ${sanitize(patch.file)} [${sanitize(patch.fingerprint)}] (writer ${sanitize(patch.writer ?? '?')}, ${patch.kind}, ${scope}${targets})`,
+      )
     }
   } else {
     lines.push(`Replayed patches: none yet.`)

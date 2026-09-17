@@ -77,7 +77,10 @@ describe('duplicatePrototype', () => {
 
     const copied = duplicatePrototype(workspaceRoot, 'orders')
 
-    expect(copied.copiedPatches).toEqual(['A-001-heading.css', 'orders/A-002-page.css', 'B-002-total.js'])
+    // Replay order is declared order, then path — the writer prefix is an identity, not a
+    // sort key, so a page's patch no longer sorts next to the patches of the writer that
+    // happens to share its first character.
+    expect(copied.copiedPatches).toEqual(['A-001-heading.css', 'B-002-total.js', 'orders/A-002-page.css'])
   })
 
   // The page table is a fact about the flow, not about which prototype owns it, so

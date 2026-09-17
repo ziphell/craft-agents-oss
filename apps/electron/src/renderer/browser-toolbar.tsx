@@ -16,7 +16,7 @@ import { BrowserControls, Spinner } from '@craft-agent/ui'
 import { HeaderIconButton } from '@/components/ui/HeaderIconButton'
 import { cn } from '@/lib/utils'
 import { getHostname } from '@/components/browser/utils'
-import { groupTabsByOpener, shouldShowGroupHeaders } from '@/components/browser/page-groups'
+import { groupTabsByWork, shouldShowGroupHeaders, type PageGroup } from '@/components/browser/page-groups'
 import type { BrowserTabSummary } from '../shared/types'
 import {
   DropdownMenu,
@@ -159,22 +159,30 @@ function PageRail({
   }
 
   /**
-   * The pages, sectioned by who opened them — a person, or one of the conversations
-   * this window is shared with (plan §22, 第八轮).
+   * The pages, sectioned by whose work they are — a person's, one of the conversations this
+   * window is shared with, or a task of the Tasks DAG (plan §22, 第八轮).
    *
-   * The rule lives in `groupTabsByOpener` because the badge's page list in the top bar
+   * The rule lives in `groupTabsByWork` because the badge's page list in the top bar
    * draws the same list and the two must not disagree about it. Headers only appear
    * when there is more than one group: with a single group they would be a row saying
    * "all of these are yours" over all of them.
    */
-  const groups = groupTabsByOpener(tabs)
+  const groups = groupTabsByWork(tabs)
   const showHeaders = shouldShowGroupHeaders(groups)
 
-  /** What to write on a group's header: a name, never an id. */
-  const groupLabel = (sessionId: string | null): string =>
-    sessionId === null
-      ? t('browser.openedByYou')
-      : sessionLabels[sessionId] ?? t('browser.openedByConversation')
+  /**
+   * What to write on a group's header: a name, never an id.
+   *
+   * A task is named by its own slug — that is the name the board, the task's folder and every
+   * one of its sessions use — so nothing has to be pushed alongside the tabs for it, the way a
+   * conversation's name has to be (`sessionLabels`: the rail is a separate document).
+   */
+  const groupLabel = (group: PageGroup): string => {
+    const work = group.work
+    if (!work) return t('browser.openedByYou')
+    if (work.kind === 'task') return work.taskSlug
+    return sessionLabels[work.sessionId] ?? t('browser.openedByConversation')
+  }
 
   return (
     // `h-screen`, not `h-full`: the rail's document has no height of its own to
@@ -205,11 +213,11 @@ function PageRail({
 
       <div className="titlebar-drag-region scrollbar-hide flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-1.5 pb-1.5">
         {groups.map((group) => (
-          <div key={group.sessionId ?? 'person'} className="flex flex-col gap-0.5">
+          <div key={group.key} className="flex flex-col gap-0.5">
             {showHeaders && (
               <div className={cn('flex items-center gap-1 px-2 pb-0.5 pt-1.5 text-[10px] font-medium', tone.text)}>
-                {group.sessionId !== null && <Bot className="h-3 w-3 shrink-0 opacity-60" />}
-                <span className="truncate">{groupLabel(group.sessionId)}</span>
+                {group.work !== null && <Bot className="h-3 w-3 shrink-0 opacity-60" />}
+                <span className="truncate">{groupLabel(group)}</span>
               </div>
             )}
 
@@ -253,7 +261,7 @@ function PageRail({
                           is not already saying it — a group of one conversation's pages
                           does not need a bot on every row.
                         */}
-                        {!showHeaders && tab.openedBySessionId !== null && (
+                        {!showHeaders && tab.belongsTo !== null && (
                           <Bot className="h-3 w-3 shrink-0 opacity-50" />
                         )}
                         {/*

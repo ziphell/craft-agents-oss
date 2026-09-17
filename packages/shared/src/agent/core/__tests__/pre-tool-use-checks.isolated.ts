@@ -467,6 +467,60 @@ describe('runPreToolUseChecks', () => {
       }
     });
 
+    describe('prototype write guard', () => {
+      const prototypesFolderPath = '/test/workspace/prototypes';
+
+      it('blocks a write onto another writer’s artifact, and says whose it is', () => {
+        const result = runPreToolUseChecks(createInput({
+          toolName: 'Write',
+          input: { file_path: `${prototypesFolderPath}/checkout-flow/patches/B-001-btn.css`, content: '.btn{}' },
+          prototypesFolderPath,
+          prototypeWriter: 'A',
+        }));
+
+        expect(result.type).toBe('block');
+        if (result.type === 'block') {
+          expect(result.reason).toContain('owned by writer "B"');
+          expect(result.reason).toContain('A-<nnn>-<name>.{css,js}');
+        }
+      });
+
+      it('lets the session write its own patches, and the control plane’s own files', () => {
+        const own = runPreToolUseChecks(createInput({
+          toolName: 'Write',
+          input: { file_path: `${prototypesFolderPath}/checkout-flow/patches/A-001-btn.css`, content: '.btn{}' },
+          prototypesFolderPath,
+          prototypeWriter: 'A',
+        }));
+        const page = runPreToolUseChecks(createInput({
+          toolName: 'Edit',
+          input: { file_path: `${prototypesFolderPath}/checkout-flow/cart.html` },
+          prototypesFolderPath,
+          prototypeWriter: 'A',
+        }));
+
+        expect(own.type).toBe('allow');
+        expect(page.type).toBe('allow');
+      });
+
+      it('stands down when the session has no writer identity, or the path is not a prototype', () => {
+        const noWriter = runPreToolUseChecks(createInput({
+          toolName: 'Write',
+          input: { file_path: `${prototypesFolderPath}/checkout-flow/patches/B-001-btn.css`, content: '.btn{}' },
+          prototypesFolderPath,
+        }));
+        const elsewhere = runPreToolUseChecks(createInput({
+          toolName: 'Write',
+          input: { file_path: '/test/workspace/src/B-001-btn.css', content: '.btn{}' },
+          prototypesFolderPath,
+          prototypeWriter: 'A',
+        }));
+
+        expect(noWriter.type).toBe('allow');
+        expect(elsewhere.type).toBe('allow');
+      });
+    });
+
     it('blocks direct label folder reads and suggests craft-agent label help when feature is enabled', () => {
       mockCraftAgentsCliFlag = true;
 

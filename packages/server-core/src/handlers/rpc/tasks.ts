@@ -6,7 +6,9 @@
  *   tasks:create   — write task.yaml + create the orchestrator parent session
  *   tasks:run      — start a run (returns the run snapshot)
  *   tasks:pause | resume | stop — run control
+ *   tasks:resolveApproval — answer a `kind: approval` gate node
  *   tasks:get      — spec + (optional) active run-state
+ *   tasks:getResults — storage-backed run outcome (verdict + per-node output/params)
  *   tasks:list     — task slugs with a task.yaml
  *
  * The legacy `tasks:getOutput` (background-task remnant) is handled in sessions.ts
@@ -24,6 +26,7 @@ import type {
   TaskGetResult,
   TaskResultsDto,
   TaskResultNodeDto,
+  TaskRunSnapshotDto,
 } from '@craft-agent/shared/protocol'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import {
@@ -59,6 +62,7 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.tasks.GET,
   RPC_CHANNELS.tasks.LIST,
   RPC_CHANNELS.tasks.GET_RESULTS,
+  RPC_CHANNELS.tasks.RESOLVE_APPROVAL,
 ] as const
 
 /** Map a shared ValidationResult (+ parsed spec) onto the wire DTO. */
@@ -330,6 +334,23 @@ export function registerTasksHandlers(server: RpcServer, deps: HandlerDeps): voi
     await runnerFor(workspaceId).stop(slug, runId)
   })
 
+  // tasks:resolveApproval — answer a `kind: approval` gate node. Returns the run's new state so
+  // the caller can re-render without a second round trip.
+  server.handle(
+    RPC_CHANNELS.tasks.RESOLVE_APPROVAL,
+    async (
+      _ctx,
+      workspaceId: string,
+      slug: string,
+      runId: string,
+      nodeId: string,
+      approved: boolean,
+      note?: string,
+    ): Promise<TaskRunSnapshotDto> => {
+      return runnerFor(workspaceId).resolveApproval(slug, runId, nodeId, approved, note)
+    },
+  )
+
   // tasks:get — spec + (optional) active run-state.
   server.handle(RPC_CHANNELS.tasks.GET, async (_ctx, workspaceId: string, slug: string, runId?: string): Promise<TaskGetResult> => {
     const ws = workspaceOrThrow(workspaceId)
@@ -382,6 +403,8 @@ export function registerTasksHandlers(server: RpcServer, deps: HandlerDeps): voi
       if (entry.kind === 'node-scheduled' || entry.kind === 'node-spawned') {
         const e = ensure(entry.nodeId)
         if (entry.kind === 'node-spawned') e.sessionId = entry.sessionId
+      } else if (entry.kind === 'node-awaiting-approval') {
+        ensure(entry.nodeId).state = 'awaiting-approval'
       } else if (entry.kind === 'node-finished') {
         const e = ensure(entry.nodeId)
         e.state = entry.state
@@ -405,12 +428,20 @@ export function registerTasksHandlers(server: RpcServer, deps: HandlerDeps): voi
 
     const nodes: TaskResultNodeDto[] = [...byId.values()].map((e) => {
       const out = readNodeOutput(root, slug, chosen, e.id)
+      const params = out?.params && Object.keys(out.params).length > 0 ? out.params : undefined
+      // A parked gate shows what is being approved, so the person can decide without hunting
+      // for the node in the task definition.
+      const gate = snapshot?.nodes.find((n) => n.id === e.id)
+      const approvalPrompt =
+        e.state === 'awaiting-approval' && gate?.kind === 'approval' ? gate.prompt : undefined
       return {
         id: e.id,
         title: titleById.get(e.id) ?? e.id,
         state: e.state,
         ...(e.sessionId ? { sessionId: e.sessionId } : {}),
         ...(out?.text ? { output: out.text } : {}),
+        ...(approvalPrompt ? { approvalPrompt } : {}),
+        ...(params ? { params } : {}),
       }
     })
 
