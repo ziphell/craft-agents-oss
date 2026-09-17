@@ -125,7 +125,7 @@ export interface BrowserDownloadsArgs {
 export interface BrowserLifecycleActionResult {
   /**
    * What happened. `pages-closed` is the workspace's-window case: a conversation may
-   * not close that window, but it may close the pages it opened in it (plan §22).
+   * not close that window, but it may close the tabs it opened in it (plan §22).
    */
   action: 'closed' | 'pages-closed' | 'hidden' | 'released' | 'noop'
   requestedInstanceId?: string
@@ -134,20 +134,20 @@ export interface BrowserLifecycleActionResult {
   reason?: string
 }
 
-/** One page of this session's window, as `tabs` reports it (plan §22). */
+/** One tab of this session's window, as `tabs` reports it (plan §22). */
 export type BrowserTabInfo = BrowserTabSummary
 
 export interface BrowserTabOpenOptions {
-  /** Where the page starts. Omitted → blank, for a caller that navigates itself. */
+  /** Where the tab starts. Omitted → blank, for a caller that navigates itself. */
   url?: string
-  /** Whether the page comes to the front. Default true. */
+  /** Whether the tab comes to the front. Default true. */
   activate?: boolean
   /**
-   * The prototype this page is for, when it is one.
+   * The prototype this tab is for, when it is one.
    *
-   * The prototype's **own** origin, not the page's address: an overlay page's
+   * The prototype's **own** origin, not the tab's address: an overlay page's
    * document is someone else's, so once it loads there is nothing left in the URL
-   * to say which prototype the page is working on.
+   * to say which prototype the tab is working on.
    */
   prototype?: { slug: string; origin: string } | null
 }
@@ -430,40 +430,40 @@ export interface BrowserPaneFns {
   closeWindow: (instanceId?: string) => Promise<BrowserLifecycleActionResult>;
   hideWindow: (instanceId?: string) => Promise<BrowserLifecycleActionResult>;
   /**
-   * Add a page to this session's window — what makes several prototypes workable
-   * at once, since the window is one and its pages are many (plan §22). Returns
-   * the new page's id.
+   * Add a tab to this session's window — what makes several prototypes workable
+   * at once, since the window is one and its tabs are many (plan §22). Returns
+   * the new tab's id.
    *
-   * Opening something into a window that has no page of its own yet opens *into*
-   * that page rather than beside it, so a fresh window ends up with one page.
+   * Opening something into a window that has no tab of its own yet opens *into*
+   * that tab rather than beside it, so a fresh window ends up with one tab.
    */
   createTab: (options?: BrowserTabOpenOptions) => Promise<string>;
   /**
-   * Make one of this session's pages the page it **works from** — without showing it.
+   * Make one of this session's tabs the tab it **works from** — without showing it.
    *
-   * This is what `--tab` names. The page becomes the one the rest of the command, the
+   * This is what `--tab` names. The tab becomes the one the rest of the command, the
    * next command, and the command after the person clicks around all land on, and the
-   * window does not move: it is shared with the person, and the page they are reading is
+   * window does not move: it is shared with the person, and the tab they are reading is
    * theirs to keep (plan §22, 第十轮/第十二轮). An unknown id throws — running somewhere
    * else is the one outcome a named target exists to prevent.
    */
   targetTab: (tabId: string) => Promise<void>;
   /**
-   * Bring a page up for the person — `tab-show` — and make it the page this conversation works
-   * from, because a page brought up is one it is about to work on with them.
+   * Bring a tab up for the person — `tab-show` — and make it the tab this conversation works
+   * from, because a tab brought up is one it is about to work on with them.
    *
-   * `movedView` is false for a child session: it takes the page as its own but does not move what
+   * `movedView` is false for a child session: it takes the tab as its own but does not move what
    * the person is looking at (plan §22, Conductor). An unknown id throws.
    */
   activateTab: (tabId: string) => Promise<{ movedView: boolean }>;
-  /** Close one page. Closing a window's last page closes the window. */
+  /** Close one tab. Closing a window's last tab closes the window. */
   closeTab: (tabId: string) => Promise<{ remaining: number }>;
   /**
-   * Hand one of this conversation's pages to another conversation — the orchestrator's verb
-   * (plan §22, Conductor): a parent gives each of its child sessions a page of its own.
+   * Hand one of this conversation's tabs to another conversation — the orchestrator's verb
+   * (plan §22, Conductor): a parent gives each of its child sessions a tab of its own.
    */
   assignTab: (tabId: string, targetSessionId: string) => Promise<void>;
-  /** This session's window's pages, in the order they were opened. */
+  /** This session's window's tabs, in the order they were opened. */
   listTabs: () => Promise<BrowserTabInfo[]>;
   /**
    * The windows this session can reach, with whether each is visible and who is driving it.
@@ -472,13 +472,13 @@ export interface BrowserPaneFns {
    * conversation in it and by the person, so "which window" is not a question (plan §22).
    * The app-side flows use it as a *read of the window's state*: `open` waits for a
    * foregrounded window to become visible, `close`/`hide`/`focus` report what changed, and
-   * a page-level question ("which pages does this window have") is `listTabs`.
+   * a tab-level question ("which tabs does this window have") is `listTabs`.
    */
   listWindows: () => Promise<Array<{
     id: string;
     title: string;
     /**
-     * The page this window is actually showing. For an overlay that is the live
+     * The tab this window is actually showing. For an overlay that is the live
      * site's own address, never the prototype's.
      */
     url: string;
@@ -490,7 +490,7 @@ export interface BrowserPaneFns {
     isVisible: boolean;
     /**
      * Which conversation is working in it right now, when one is — the window-level
-     * indicator. Which page each conversation holds is per page (`tabs`, `lockedBy`),
+     * indicator. Which tab each conversation holds is per tab (`tabs`, `lockedBy`),
      * because a parent and its child sessions work in one window in parallel.
      */
     agentControlActive?: boolean;
@@ -565,24 +565,24 @@ with its pages, and which ones reference which.
 Detailed rules and the full command reference: docs/browser-tools.md for the browser, and
 docs/prototypes.md for every \`prototype-*\` command — read the one you are about to use first.
 
-The window is one and its pages are many: every command can name the page it acts on with \`--tab <id>\`
-(\`tabs\` lists them). Without one it acts on **your** page — the page you have been working from, which
-\`tabs\` marks as \`your page\` — and only on the page on screen when you have none yet; the person
-switching pages does not move your commands. A session spawned by another one is the exception: it works
-in the page it was given (\`tab-assign\`) or opens one with \`tab-new\`, and never takes over the page on
-screen. \`prototype-open\` always opens a page of its own, which is what lets two prototypes be worked on
+The window is one and its tabs are many: every command can name the tab it acts on with \`--tab <id>\`
+(\`tabs\` lists them). Without one it acts on **your** tab — the tab you have been working from, which
+\`tabs\` marks as \`your tab\` — and only on the tab on screen when you have none yet; the person
+switching tabs does not move your commands. A session spawned by another one is the exception: it works
+in the tab it was given (\`tab-assign\`) or opens one with \`tab-new\`, and never takes over the tab on
+screen. \`prototype-open\` always opens a tab of its own, which is what lets two prototypes be worked on
 at once rather than replacing each other.
 
 There is **one browser window per workspace**, shared by every conversation in it and by the user — so \`open\`
-adds a page to it instead of making a window, and the window is not yours to close: use \`tab-close <id>\` for
-the pages of your task (the ones you opened, the ones handed to you, and the pages opened from them — a Task's
-node pages included, so a finished DAG can be tidied up), or \`release\` to drop your overlay. \`tabs\` says
-what each page is, whose work it is in and who is working on it — another conversation's page is refused,
-prototype or not, and \`tab-assign <page-id> <session>\` is how a parent hands a page to a session it spawned,
-so that parallel sessions each work in their own page. A page's work outlives the session that opened it: a
-Task node's page belongs to that node, so a re-run of a node finds its predecessor's page in \`tabs\` — read it
-before opening one, because \`tab-new\` always adds a page. There is no window list to read, because there is
-one window. Which prototype a command means is read from the page it acts on — your own page first, then the
+adds a tab to it instead of making a window, and the window is not yours to close: use \`tab-close <id>\` for
+the tabs of your task (the ones you opened, the ones handed to you, and the tabs opened from them — a Task's
+node tabs included, so a finished DAG can be tidied up), or \`release\` to drop your overlay. \`tabs\` says
+what each tab is, whose work it is in and who is working on it — another conversation's tab is refused,
+prototype or not, and \`tab-assign <tab-id> <session>\` is how a parent hands a tab to a session it spawned,
+so that parallel sessions each work in their own tab. A tab's work outlives the session that opened it: a
+Task node's tab belongs to that node, so a re-run of a node finds its predecessor's tab in \`tabs\` — read it
+before opening one, because \`tab-new\` always adds a tab. There is no window list to read, because there is
+one window. Which prototype a command means is read from the tab it acts on — your own tab first, then the
 one in front of you — so several prototypes can be driven from one conversation without binding any of them.
 
 Examples:
@@ -633,11 +633,11 @@ Examples:
 - \`prototype-status\` — inspect pages, patches, services, exports, ownership, the disputes that still stand, and the last acceptance round
 - \`prototype-open\` — open the prototype (its entry page, or the generated index when there is none)
 - \`prototype-open --page cart\` — open one page of it
-- \`tabs\` — which pages this window has, each with what it is and whose work it is in
-- \`snapshot --tab tab-3\` — act on a named page (the window shows it while the command runs)
-- \`tab-new https://example.com\` — add a page to the window
-- \`tab-assign tab-3 260915-brave-fox\` — hand a page to a session you spawned
-- \`tab-close tab-2\` — close one page (closing the last one closes the window)
+- \`tabs\` — which tabs this window has, each with what it is and whose work it is in
+- \`snapshot --tab tab-3\` — act on a named tab (the window shows it while the command runs)
+- \`tab-new https://example.com\` — add a tab to the window
+- \`tab-assign tab-3 260915-brave-fox\` — hand a tab to a session you spawned
+- \`tab-close tab-2\` — close one tab (closing the last one closes the window)
 - \`console 50 error\`
 - \`screenshot\` — raw screenshot
 - \`screenshot --annotated\` — screenshot with @eN labels overlaid on interactive elements

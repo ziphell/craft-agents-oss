@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { useAtomValue } from 'jotai'
 import { useTranslation } from "react-i18next"
 import { AnimatePresence, motion } from 'motion/react'
 import {
@@ -34,6 +35,9 @@ import {
 import type { LabelConfig } from '@craft-agent/shared/labels'
 import { parseMentions } from '@/lib/mentions'
 import { expandElementMentions, elementOriginText, type ElementRef } from '@/lib/element-mention'
+import { expandTabMentions, tabLabel, tabOriginText, type TabRef } from '@/lib/tab-mention'
+import { browserInstancesAtom, filterInstancesForWorkspace } from '@/atoms/browser-pane'
+import { tabRefOf } from '@/components/browser/utils'
 import { RichTextInput, type RichTextInputHandle } from '@/components/ui/rich-text-input'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@craft-agent/ui'
 import {
@@ -434,6 +438,23 @@ export function FreeFormInput({
   const appShellContext = useOptionalAppShellContext()
   const isFocusedPanel = appShellContext?.isFocusedPanel ?? true
 
+  /**
+   * This workspace's browser tabs, for the `@` menu.
+   *
+   * Read straight from the atoms, the way the input's browser status bar does, rather
+   * than threaded down through the composer's parents: the composer is inside the
+   * shell, and which tabs exist is the shell's own state. A tab mentioned this way
+   * becomes a chip naming that tab (see tab-mention) — the tabs are the workspace
+   * window's, so this is one window's list, not every window's.
+   */
+  const allBrowserInstances = useAtomValue(browserInstancesAtom)
+  const browserTabs = React.useMemo((): TabRef[] => {
+    const remoteWorkspaceId = appShellCtx?.workspaces.find(w => w.id === workspaceId)?.remoteServer?.remoteWorkspaceId ?? null
+    return filterInstancesForWorkspace(allBrowserInstances, workspaceId ?? null, remoteWorkspaceId)
+      .flatMap(instance => instance.tabs ?? [])
+      .map(tabRefOf)
+  }, [appShellCtx, allBrowserInstances, workspaceId])
+
   // Shuffle placeholder order once per mount so each session feels fresh.
   // In compact mode, suppress desktop-keyboard guidance that is noisy or misleading
   // on narrow/mobile-like layouts.
@@ -662,7 +683,7 @@ export function FreeFormInput({
    * plan-approval snapshot).
    *
    * The page it was picked on is part of the sentence: the picker stays on across
-   * the window's pages, so the same element can be picked from two of them, and
+   * the window's tabs, so the same element can be picked from two of them, and
    * "which page" is the one thing the agent cannot work out from the element.
    */
   const formatElementReference = React.useCallback((ref: ElementRef) => {
@@ -671,11 +692,30 @@ export function FreeFormInput({
     return t('browserEdit.elementReferenceFrom', { selector: ref.selector, text: ref.text, where })
   }, [t])
 
+  /**
+   * The same, for a whole tab added from the window's tab list.
+   *
+   * The address is always in the sentence — a title alone does not say which tab it
+   * is — and the prototype, with the page of it, is named when the tab is one's.
+   */
+  const formatTabReference = React.useCallback((ref: TabRef) => {
+    const title = tabLabel(ref)
+    const where = tabOriginText(ref)
+    if (!where) return t('browserEdit.tabReference', { title, url: ref.url })
+    return t('browserEdit.tabReferenceFrom', { title, url: ref.url, where })
+  }, [t])
+
+  /** Outgoing text: every reference the composer holds, written out as prose. */
+  const expandComposerMentions = React.useCallback(
+    (text: string) => expandTabMentions(expandElementMentions(text, formatElementReference), formatTabReference),
+    [formatElementReference, formatTabReference],
+  )
+
   const consumeInputDraftSnapshot = React.useCallback((): string => {
-    const snapshot = expandElementMentions(input.trim(), formatElementReference)
+    const snapshot = expandComposerMentions(input.trim())
     clearInputDraft()
     return snapshot
-  }, [input, clearInputDraft, formatElementReference])
+  }, [input, clearInputDraft, expandComposerMentions])
 
   type PlanApprovalEventDetail = {
     sessionId?: string
@@ -986,7 +1026,7 @@ export function FreeFormInput({
     homeDir,
   })
 
-  // Handle mention selection (sources, skills, files)
+  // Handle mention selection (sources, skills, files, tabs)
   const handleMentionSelect = React.useCallback((item: MentionItem) => {
     // For sources: enable the source immediately
     if (item.type === 'source' && item.source && onSourcesChange) {
@@ -1002,12 +1042,13 @@ export function FreeFormInput({
     // Skills also don't need special handling beyond text insertion.
   }, [optimisticSourceSlugs, onSourcesChange])
 
-  // Inline mention hook (for skills, sources, and files)
+  // Inline mention hook (for skills, sources, files and the window's tabs)
   const inlineMention = useInlineMention({
     inputRef: richInputRef,
     skills,
     sources,
     basePath: workingDirectory,
+    tabs: browserTabs,
     onSelect: handleMentionSelect,
     // Use workspace slug (not UUID) for SDK skill qualification
     workspaceId: workspaceSlug,
@@ -1292,7 +1333,7 @@ export function FreeFormInput({
     const attachmentSnapshot = attachments
 
     onSubmit(
-      expandElementMentions(input.trim(), formatElementReference),
+      expandComposerMentions(input.trim()),
       attachmentSnapshot.length > 0 ? attachmentSnapshot : undefined,
       mentions.skills.length > 0 ? mentions.skills : undefined
     )
@@ -1310,7 +1351,7 @@ export function FreeFormInput({
     })
 
     return true
-  }, [input, attachments, followUpItems, disabled, disableSend, onInputChange, onAttachmentsChange, onSubmit, skills, sources, optimisticSourceSlugs, onSourcesChange, onWorkingDirectoryChange, homeDir, formatElementReference])
+  }, [input, attachments, followUpItems, disabled, disableSend, onInputChange, onAttachmentsChange, onSubmit, skills, sources, optimisticSourceSlugs, onSourcesChange, onWorkingDirectoryChange, homeDir, expandComposerMentions])
 
   // Listen for craft:submit-input events (simulate pressing the Send button)
   React.useEffect(() => {
@@ -1619,7 +1660,7 @@ export function FreeFormInput({
           position={inlineSlash.position}
         />
 
-        {/* Inline Mention Autocomplete (skills, sources, files) */}
+        {/* Inline Mention Autocomplete (skills, sources, files, the window's tabs) */}
         <InlineMentionMenu
           open={inlineMention.isOpen}
           onOpenChange={(open) => !open && inlineMention.close()}

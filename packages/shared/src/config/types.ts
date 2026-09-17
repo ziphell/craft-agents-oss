@@ -13,9 +13,15 @@ export type {
   OAuthCredentials,
 } from '@craft-agent/core/types';
 
+/**
+ * Where the app's proxy comes from: nowhere (`direct`), the operating system's
+ * own settings (`system`), or the ones below (`custom`).
+ */
+export type NetworkProxyMode = 'direct' | 'system' | 'custom';
+
 /** App-level network proxy configuration. */
 export interface NetworkProxySettings {
-  enabled: boolean;
+  mode: NetworkProxyMode;
   httpProxy?: string;
   httpsProxy?: string;
   noProxy?: string;

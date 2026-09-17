@@ -42,22 +42,22 @@ const TOOLBAR_LOAD_RETRY_DELAY_MS = 500
  * The toolbar's own height: the row with the address bar and the window's buttons.
  *
  * That row is a `BrowserView` at the top of the window, and every layout in this
- * file has to agree with it — the page starts below it, the overlay is inset by
+ * file has to agree with it — the tab starts below it, the overlay is inset by
  * it, `window-resize` adds it back. Which is why its height is one constant
  * rather than a number written out where it is needed.
  */
 const TOOLBAR_HEIGHT = 48
 /**
- * The page rail's width: the strip of pages down the window's left edge.
+ * The tab rail's width: the strip of tabs down the window's left edge.
  *
- * The pages are a **column, not a row**, so the chrome takes its room from the
- * window's width instead of its height: a page keeps every pixel of height it had
+ * The tabs are a **column, not a row**, so the chrome takes its room from the
+ * window's width instead of its height: a tab keeps every pixel of height it had
  * (which is what a prototype's layout, a screenshot and the agent's viewport all
- * care about), and the rail is where a person's `+`, the page chips and their close
- * buttons live. A row across the top ate the page's height and its own content
+ * care about), and the rail is where a person's `+`, the tab chips and their close
+ * buttons live. A row across the top ate the tab's height and its own content
  * scrolled sideways, which is how it ended up unusable (plan §22).
  */
-const PAGE_RAIL_WIDTH = 200
+const TAB_RAIL_WIDTH = 200
 const MAX_CONSOLE_LOG_ENTRIES = 500
 const MAX_NETWORK_LOG_ENTRIES = 500
 const MAX_DOWNLOAD_LOG_ENTRIES = 200
@@ -105,7 +105,7 @@ function changedRatio(previous: Buffer, current: Buffer): number {
 /** One capture session, held in memory until it is stopped. */
 interface FrameCaptureState {
   startedAt: string
-  /** The page whose frames are kept: a recording follows the page it was started on. */
+  /** The tab whose frames are kept: a recording follows the tab it was started on. */
   tabId: string
   intervalMs: number
   threshold: number
@@ -136,7 +136,7 @@ const THEME_COLOR_SIGNAL_PREFIX = '__craft_theme_color__:'
 const THEME_COLOR_NULL_SENTINEL = '__NULL__'
 const THEME_OBSERVER_MIN_INTERVAL_MS = 120
 const EARLY_THEME_EXTRACTION_DELAY_MS = 100
-const BROWSER_EMPTY_STATE_PAGE = 'browser-empty-state.html'
+const BROWSER_EMPTY_STATE_FILE = 'browser-empty-state.html'
 const CRAFT_DEEPLINK_SCHEME_PREFIX = `${process.env.CRAFT_DEEPLINK_SCHEME || 'craftagents'}://`
 
 /**
@@ -144,12 +144,12 @@ const CRAFT_DEEPLINK_SCHEME_PREFIX = `${process.env.CRAFT_DEEPLINK_SCHEME || 'cr
  *
  * `ERR_ABORTED` (`errno: -3`) is what Chromium reports when something else took
  * the WebContents over — creating a window and pointing it somewhere in the same
- * breath does exactly that to the empty-state page.
+ * breath does exactly that to the empty-state document.
  *
  * Electron delivers that abort to whichever `loadURL` promise is *current*, not
  * to the one that was superseded, so a navigation that succeeded rejects with the
  * **previous** document's abort. Read as a failure it says "navigate failed"
- * about a page that is on screen — and the two fields that would identify it are
+ * about a tab that is on screen — and the two fields that would identify it are
  * empty in practice (`{"errno":-3,"code":"","url":"file:///…/browser-empty-state.html"}`),
  * so `errno` is the one to match on. See dev notes §3.3.
  *
@@ -275,7 +275,7 @@ const PICKER_MAX_CONSECUTIVE_FAILURES = 4
  * What one conversation at the browser is doing, for the overlay's chip.
  *
  * Per conversation rather than per window (plan §22, Conductor): several conversations
- * work in one window at the same time, each on its own page, so "what is being done"
+ * work in one window at the same time, each on its own tab, so "what is being done"
  * has one answer per session — see {@link BrowserInstance.controlBy}.
  */
 interface AgentControlLabel {
@@ -284,21 +284,21 @@ interface AgentControlLabel {
 }
 
 /**
- * One page of a window.
+ * One tab of a window.
  *
  * A window shows exactly one tab at a time, and everything that is a fact about
  * *what is being shown* lives here rather than on the window: the view, its CDP
  * session, the address, the title, the console, and — the reason this type exists
- * — **which prototype the page is**. A window used to carry that identity, which
- * is what made "one window, one prototype, one page" structural; moving it here is
- * what lets one window hold several pages at once (plan §22).
+ * — **which prototype the tab is**. A window used to carry that identity, which
+ * is what made "one window, one prototype, one tab" structural; moving it here is
+ * what lets one window hold several tabs at once (plan §22).
  *
  * Deliberately not a "browser tab" in the chrome sense: nothing here is about
  * ordering, pinning or persistence. It is the unit the agent addresses.
  */
 interface BrowserTab {
   id: string
-  pageView: BrowserView
+  tabView: BrowserView
   nativeOverlayView: BrowserView
   cdp: BrowserCDP
   currentUrl: string
@@ -308,89 +308,89 @@ interface BrowserTab {
   canGoBack: boolean
   canGoForward: boolean
   /**
-   * The prototype this page belongs to, if it was opened for one.
+   * The prototype this tab belongs to, if it was opened for one.
    *
-   * Stated at open time rather than read off the page: an overlay's view sits on a
+   * Stated at open time rather than read off the tab: an overlay's view sits on a
    * third-party address, so once it loads, nothing in the URL says which prototype
    * is being worked on. The session chain (see {@link prototypeBindingFor}) covers
-   * pages a session happened to open; this covers the case that matters most — a
+   * tabs a session happened to open; this covers the case that matters most — a
    * prototype opened from its own page, which may have no conversation at all yet.
    *
-   * Written once, when the page is created: opening a prototype gives it a page of
+   * Written once, when the tab is created: opening a prototype gives it a tab of
    * its own rather than re-pointing the one on screen (plan §22), so there is no
    * rebinding to be had. Wandering off with a normal navigation does not unbind it
-   * either — the page is still the prototype's, and "apply it to whatever is here"
+   * either — the tab is still the prototype's, and "apply it to whatever is here"
    * is a legitimate thing to want.
    */
   boundPrototype: PrototypeWindowBinding | null
   /**
-   * The **work this page is part of** — whose page it is, or `null` for a person's.
+   * The **work this tab is part of** — whose tab it is, or `null` for a person's.
    *
    * Written by whoever created it (a person through the toolbar or the panel, or the agent
-   * through `tab-new`/`prototype-open`) and inherited by pages derived from it; nothing
+   * through `tab-new`/`prototype-open`) and inherited by tabs derived from it; nothing
    * rewrites it afterwards (plan §22, 第十一轮). It lives here rather than being inferred
-   * because an agent has to leave other people's pages alone, and no URL says which ones
+   * because an agent has to leave other people's tabs alone, and no URL says which ones
    * those are.
    *
-   * It is the **work** rather than the conversation (plan §22): a page outlives the session
-   * that opened it, so a DAG node's page says which task and which node it is for and a
+   * It is the **work** rather than the conversation (plan §22): a tab outlives the session
+   * that opened it, so a DAG node's tab says which task and which node it is for and a
    * re-run of that node inherits it instead of orphaning it. Which conversation is on the
-   * page right now is the lease's answer ({@link driverSessionId}, {@link heldBy}).
+   * tab right now is the lease's answer ({@link driverSessionId}, {@link heldBy}).
    *
    * `openedBy: 'user' | 'agent'` is a rendering of this, produced where words are needed
    * (`toTabSummary`, the agent's `tabs` output) rather than stored as well.
    */
   belongsTo: TabBelongsTo | null
   /**
-   * Which session is working on this page **now**, or `null` when nobody is.
+   * Which session is working on this tab **now**, or `null` when nobody is.
    *
    * A lease of its own, refreshed by the same event that renews the window's: a
-   * command resolves the window, which brings the page it will act on to the front,
-   * and that page records the driver. One page at a time — the window showing a page
-   * is what makes it the page a command is about.
+   * command resolves the window, which brings the tab it will act on to the front,
+   * and that tab records the driver. One tab at a time — the window showing a tab
+   * is what makes it the tab a command is about.
    */
   driverSessionId: string | null
   /**
-   * The page a conversation **works from** — its cursor, or `null` when this page is
+   * The tab a conversation **works from** — its cursor, or `null` when this tab is
    * no conversation's.
    *
-   * One page per conversation, which is why it lives on the page: "where does my next
-   * command go when I name no page" has to have exactly one answer, and the answer must
+   * One tab per conversation, which is why it lives on the tab: "where does my next
+   * command go when I name no tab" has to have exactly one answer, and the answer must
    * not be "wherever the window happens to be showing" — that is the person's cursor, and
    * it moves whenever they click (plan §22, 第十轮).
    *
    * Sticky across turns, unlike {@link driverSessionId} (a lease the turn releases): a
-   * conversation that comes back after its turn ended still works from the same page.
-   * Moved only by a command that names a page or resolves to one, and only by that
-   * conversation's own commands — the person switching pages does not move it.
+   * conversation that comes back after its turn ended still works from the same tab.
+   * Moved only by a command that names a tab or resolves to one, and only by that
+   * conversation's own commands — the person switching tabs does not move it.
    */
   cursorOf: string | null
   /**
-   * Which session is holding this page **right now**, or `null` when nobody is — the page
+   * Which session is holding this tab **right now**, or `null` when nobody is — the tab
    * lock (plan §22, 第九轮).
    *
-   * Stated rather than derived: the page is claimed when a command says it is the one being
-   * worked on, and let go when that turn ends or the person takes it back. A held page takes
+   * Stated rather than derived: the tab is claimed when a command says it is the one being
+   * worked on, and let go when that turn ends or the person takes it back. A held tab takes
    * no input from a person, and another conversation's commands that name it are refused —
-   * while the chrome, the other pages and the window itself stay usable.
+   * while the chrome, the other tabs and the window itself stay usable.
    *
-   * **Per page, because several conversations work in one window at once** (plan §22,
-   * Conductor): a DAG's child sessions run in parallel, each on its own page. One slot per
+   * **Per tab, because several conversations work in one window at once** (plan §22,
+   * Conductor): a DAG's child sessions run in parallel, each on its own tab. One slot per
    * window would mean the second conversation to start silently dropped the first one's
    * lock — which is exactly what parallel children ran into.
    */
   heldBy: string | null
   /**
-   * How this page came to exist, when the browser asked for it rather than a command
+   * How this tab came to exist, when the browser asked for it rather than a command
    * doing so.
    *
    * `'link'` for a `target="_blank"` (or any click that wants a window of its own),
    * `'popup'` for a scripted `window.open` with features — the OAuth-window shape.
-   * `null` for every other way a page is opened (the address bar, `tab-new`,
+   * `null` for every other way a tab is opened (the address bar, `tab-new`,
    * `prototype-open`, the panel).
    *
    * Recorded because both are now played in the same window, which has one cost worth
-   * being able to name: a page opened this way has no `window.opener`, so a popup that
+   * being able to name: a tab opened this way has no `window.opener`, so a popup that
    * expects to `postMessage` back at the page that opened it (Google's sign-in is the
    * usual example) cannot. Reading the page's own report is not enough — the browser
    * said how it was requested, and only here is that kept (plan §22).
@@ -411,33 +411,33 @@ interface BrowserInstance {
   /** The address bar, across the top of the window. */
   toolbarView: BrowserView
   /**
-   * The page rail, down the left edge — the pages, vertically (plan §22).
+   * The tab rail, down the left edge — the tabs, vertically (plan §22).
    *
    * Its own view rather than part of the address bar's: one `BrowserView` is one
    * rectangle, and the chrome is an L (a column and a row). Both are chrome and both
-   * stay above the page, so neither can be covered by it.
+   * stay above the tab, so neither can be covered by it.
    */
   railView: BrowserView
   /**
-   * The window's pages, in the order they were opened.
+   * The window's tabs, in the order they were opened.
    *
-   * Always at least one: a window with no pages is closed rather than left empty
+   * Always at least one: a window with no tabs is closed rather than left empty
    * (see `closeTab`). `activeTabId` names the one on screen; everything the rest
    * of this file calls "the window's address/title/console/prototype" is read
    * through {@link activeTab}, so a reader that says `activeTab(i).currentUrl` is
-   * asking about the page the user is looking at.
+   * asking about the tab the user is looking at.
    */
   tabs: BrowserTab[]
   activeTabId: string
   /**
-   * The address and title of the page on screen — read-only window-level views of
+   * The address and title of the tab on screen — read-only window-level views of
    * the active tab.
    *
    * They exist because the rest of the app asks about *windows* (the toolbar's
    * state, and `BrowserInstanceSnapshot` in the server-side interface), and those
    * questions deserve the same answer this file uses internally rather than a
    * second copy that could drift. Read-only so the only way to change either is to
-   * change the page: a writer that tries `instance.currentUrl = …` gets a compile
+   * change the tab: a writer that tries `instance.currentUrl = …` gets a compile
    * error pointing at the tab instead of an assignment that goes nowhere.
    */
   readonly title: string
@@ -452,11 +452,11 @@ interface BrowserInstance {
    * window's identity: there is one window per workspace, so this is what keeps
    * two workspaces' windows apart and what every reach check is made against
    * (`instanceBelongsToWorkspace`). No session owns a window, and none is named
-   * here: who is working in it is per page (`BrowserTab.cursorOf` / `heldBy`),
+   * here: who is working in it is per tab (`BrowserTab.cursorOf` / `heldBy`),
    * because a parent and its children can be in it at once (Conductor).
    *
    * A window's scope rather than its purpose: the same one is where a general
-   * task's browsing happens, and most of its pages have no prototype behind them.
+   * task's browsing happens, and most of its tabs have no prototype behind them.
    */
   workspaceId: string | null
   isVisible: boolean
@@ -475,8 +475,8 @@ interface BrowserInstance {
    * it is doing — keyed by session, in the order they started.
    *
    * A map rather than the single slot this used to be (plan §22, Conductor): one window is
-   * shared, and a parent's child sessions run in parallel, each holding its own page. The
-   * lock lives on the page (`BrowserTab.heldBy`); this is only "who is working here and
+   * shared, and a parent's child sessions run in parallel, each holding its own tab. The
+   * lock lives on the tab (`BrowserTab.heldBy`); this is only "who is working here and
    * what they are doing", which is what the overlay chip renders.
    */
   controlBy: Map<string, AgentControlLabel>
@@ -484,9 +484,9 @@ interface BrowserInstance {
   /**
    * Whether the element picker is **armed on this window** (plan §12.7).
    *
-   * A window's mode rather than a page's, because the mode is what the user turned
-   * on: they keep picking while they move between pages, so the picker is re-armed
-   * on whatever page comes to the front, and each pick carries the page it came
+   * A window's mode rather than a tab's, because the mode is what the user turned
+   * on: they keep picking while they move between tabs, so the picker is re-armed
+   * on whatever tab comes to the front, and each pick carries the tab it came
    * from. One pick does not end it — that is what "resident" means here — so it
    * ends when the user says so (Escape in the page, or the toolbar button).
    */
@@ -494,17 +494,17 @@ interface BrowserInstance {
   /** The label the injected bar shows — the toolbar's language, kept for re-arming. */
   pickLabel: string
   /**
-   * Which page the picker is armed on, or `null` while the mode is off.
+   * Which tab the picker is armed on, or `null` while the mode is off.
    *
-   * Kept because the page that has to be disarmed is the one the overlay is on,
-   * and by the time a loop is torn down the page on screen may be a different one
-   * — the page left behind would otherwise keep swallowing the user's clicks.
+   * Kept because the tab that has to be disarmed is the one the overlay is on,
+   * and by the time a loop is torn down the tab on screen may be a different one
+   * — the tab left behind would otherwise keep swallowing the user's clicks.
    */
   pickTabId: string | null
   /**
    * Which arming the running pick loop belongs to.
    *
-   * Bumped whenever the loop is superseded (a different page came forward, the mode
+   * Bumped whenever the loop is superseded (a different tab came forward, the mode
    * was turned off), so a loop that comes back after being torn down can tell that
    * it is no longer the one holding the window — and report nothing instead of
    * mistaking its own teardown for the user giving up.
@@ -513,7 +513,7 @@ interface BrowserInstance {
 }
 
 /**
- * The page on screen — the one everything window-level means.
+ * The tab on screen — the one everything window-level means.
  *
  * Throwing rather than returning a fallback: a window always has at least one tab
  * (they are created together, and closing the last one closes the window), so a
@@ -700,7 +700,7 @@ interface LastBrowserAction {
 let instanceCounter = 0
 /**
  * Tab ids are unique across the app rather than per window, because a tab is what
- * the agent addresses: one name for one page, with no "of which window" to carry
+ * the agent addresses: one name for one tab, with no "of which window" to carry
  * alongside it (the window is already implied by the tab).
  */
 let tabCounter = 0
@@ -759,10 +759,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    */
   private prototypePageResolver: ((slug: string, origin: string, url: string) => string | null) | null = null
   /**
-   * What to call a conversation, for the page rail's group headers. Also injected
+   * What to call a conversation, for the tab rail's group headers. Also injected
    * (see main/index.ts).
    *
-   * A page says who opened it by **session id**, and an id is not something a person
+   * A tab says who opened it by **session id**, and an id is not something a person
    * can tell one conversation from another by. This is a *name for a group*, not a
    * second owner: the grouping reads `belongsTo` and nothing here can change
    * it. `null` for a session that is gone or has no name yet, and the chrome falls
@@ -807,21 +807,21 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Build one page: its two views, its CDP session, and the state that starts
+   * Build one tab: its two views, its CDP session, and the state that starts
    * empty. Nothing is wired and nothing is laid out — `attachTab` does that, and
-   * every tab goes through both, so a page cannot be half-created.
+   * every tab goes through both, so a tab cannot be half-created.
    */
   private buildTab(ses: ElectronSession): BrowserTab {
-    const pageView = new BrowserView({
+    const tabView = new BrowserView({
       webPreferences: {
         partition: SESSION_PARTITION,
         session: ses,
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
-        // Throttling stays Chromium's business here; "pretend this page is in front" is turned
-        // on per page, where it is known which page a conversation is working from. See
-        // `syncPageThrottling`.
+        // Throttling stays Chromium's business here; "pretend this tab is in front" is turned
+        // on per tab, where it is known which tab a conversation is working from. See
+        // `syncTabThrottling`.
       },
     })
 
@@ -837,9 +837,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     return {
       id: `tab-${++tabCounter}`,
-      pageView,
+      tabView,
       nativeOverlayView,
-      cdp: new BrowserCDP(pageView.webContents),
+      cdp: new BrowserCDP(tabView.webContents),
       currentUrl: 'about:blank',
       title: 'New Tab',
       favicon: null,
@@ -847,8 +847,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       canGoBack: false,
       canGoForward: false,
       boundPrototype: null,
-      // A page nobody said they asked for is nobody's: only the opener writes this,
-      // and a page the user opened has no session to name.
+      // A tab nobody said they asked for is nobody's: only the opener writes this,
+      // and a tab the user opened has no session to name.
       belongsTo: null,
       driverSessionId: null,
       cursorOf: null,
@@ -916,11 +916,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
 
     // The toolbar's own background, so its transparent chrome does not flash white.
-    // A page's background is set by `attachTab` — it belongs to the page.
+    // A tab's background is set by `attachTab` — it belongs to the tab.
     const toolbarWcWithBg = toolbarView.webContents as typeof toolbarView.webContents & { setBackgroundColor?: (color: string) => void }
     toolbarWcWithBg.setBackgroundColor?.('#00000000')
 
-    // The same document, told to render the page rail instead of the bar: one entry
+    // The same document, told to render the tab rail instead of the bar: one entry
     // point, one preload, one state channel, two surfaces (plan §22).
     const railView = new BrowserView({
       webPreferences: {
@@ -935,7 +935,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const railWcWithBg = railView.webContents as typeof railView.webContents & { setBackgroundColor?: (color: string) => void }
     railWcWithBg.setBackgroundColor?.('#00000000')
 
-    // A window is *opened on* something, so it starts with one page; the tabs a
+    // A window is *opened on* something, so it starts with one tab; the tabs a
     // user adds afterwards go through `createTab`.
     const tab = this.buildTab(ses)
 
@@ -967,8 +967,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // What the window *is showing*, as one value, because `BrowserInstanceSnapshot`
       // (what the server side reads, and what the toolbar's state reports) is phrased
       // in terms of the window: "the window's address" has to mean "the address of the
-      // page on screen" without every caller learning about tabs. Read-only on purpose
-      // — the way to change either is to change the page, and a compile error pointing
+      // tab on screen" without every caller learning about tabs. Read-only on purpose
+      // — the way to change either is to change the tab, and a compile error pointing
       // at the tab is a better answer than an assignment that goes nowhere.
       get title(): string {
         return activeTab(instance).title
@@ -999,11 +999,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
           this.markToolbarReady(instance, 'toolbar-load-finalized')
         }
       })
-    // The rail is chrome too, and it is the only way a person adds or closes a page
+    // The rail is chrome too, and it is the only way a person adds or closes a tab
     // from inside the window — so it gets the same load-and-retry the bar has. It does
     // not gate showing the window: a window whose rail failed is still a window.
     void this.loadChromePage(instance, 'rail')
-    void this.loadEmptyStatePage(instance).catch((error) => {
+    void this.loadEmptyStateDocument(instance).catch((error) => {
       mainLog.warn(`[browser-pane] empty-state load failed id=${instance.id}: ${error instanceof Error ? error.message : String(error)}`)
 
       // `ERR_ABORTED` means something else navigated first — in practice the
@@ -1017,7 +1017,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         return
       }
 
-      void tab.pageView.webContents.loadURL('about:blank').catch((fallbackError) => {
+      void tab.tabView.webContents.loadURL('about:blank').catch((fallbackError) => {
         mainLog.warn(`[browser-pane] about:blank fallback failed id=${instance.id}: ${String(fallbackError)}`)
       })
     })
@@ -1026,31 +1026,31 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Add a page to a window.
+   * Add a tab to a window.
    *
    * The new tab becomes the active one: a tab is added in order to be looked at,
    * and a caller that wants it in the background (the agent opening something to
-   * read later) says so with `activate: false`. `prototype` is the page's identity
-   * — what the address bar and the prototype actions will say this page is.
+   * read later) says so with `activate: false`. `prototype` is the tab's identity
+   * — what the address bar and the prototype actions will say this tab is.
    *
    * A window with tabs of its own is what makes several prototypes visible at once;
    * the window itself stays one window (plan §22).
    *
    * **A window that is still untouched is opened into rather than beside.** A
-   * window comes back from `createForSession` holding one blank page — what a
+   * window comes back from `createForSession` holding one blank tab — what a
    * window is made of before it is used — and adding next to it would leave that
-   * blank page behind, so opening a prototype into a fresh window would be two
-   * pages instead of one. "Untouched" is the whole window, not just the page on
-   * screen: a window with real pages in it gets a real new page.
+   * blank tab behind, so opening a prototype into a fresh window would be two
+   * tabs instead of one. "Untouched" is the whole window, not just the tab on
+   * screen: a window with real tabs in it gets a real new tab.
    *
-   * That reuse needs the request to be for **a** page rather than **another** page:
+   * That reuse needs the request to be for **a** tab rather than **another** tab:
    * something to put in the window (`url`, `prototype`), or a caller that says so
    * outright ({@link BrowserTabCreateOptions.reuseUntouchedWindow} — the menu's "New
-   * page", which opens the window if it is not up yet). A bare "add a page" — the
-   * rail's `+`, `tab-new` with no address — is somebody asking for one more page, and
+   * tab", which opens the window if it is not up yet). A bare "add a tab" — the
+   * rail's `+`, `tab-new` with no address — is somebody asking for one more tab, and
    * reusing the blank one would swallow the request: the window would keep its single
-   * page and nothing would appear to happen, which is exactly how a person reads "new
-   * page is broken".
+   * tab and nothing would appear to happen, which is exactly how a person reads "new
+   * tab is broken".
    */
   createTab(
     instanceId: string,
@@ -1059,45 +1059,45 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       activate?: boolean
       prototype?: PrototypeWindowBinding | null
       /**
-       * Whose page this is: the **work** of the conversation asking for it, or `null` for a
-       * person's page — see {@link BrowserTab.belongsTo}.
+       * Whose tab this is: the **work** of the conversation asking for it, or `null` for a
+       * person's tab — see {@link BrowserTab.belongsTo}.
        *
-       * A page opened *for* a conversation also becomes the page it works from, and starts
-       * with that conversation's lease (the work's own `sessionId`); a page merely derived
-       * from one of its pages (`afterTabId`) only joins its group, which is why the browser's
-       * own window-open channel passes the page it was opened from's work here.
+       * A tab opened *for* a conversation also becomes the tab it works from, and starts
+       * with that conversation's lease (the work's own `sessionId`); a tab merely derived
+       * from one of its tabs (`afterTabId`) only joins its group, which is why the browser's
+       * own window-open channel passes the tab it was opened from's work here.
        */
       belongsTo?: TabBelongsTo | null
       /**
-       * Open it **right after** this page instead of at the end of the strip.
+       * Open it **right after** this tab instead of at the end of the strip.
        *
-       * A page the browser asked for belongs next to the page that asked: a link
-       * opened from a screen is about that screen, and a page at the far end of the
+       * A tab the browser asked for belongs next to the tab that asked: a link
+       * opened from a screen is about that screen, and a tab at the far end of the
        * strip reads as unrelated to what was on screen (plan §22).
        */
       afterTabId?: string
       /** How the browser asked for it, when it was the browser — see {@link BrowserTab.disposition}. */
       disposition?: 'link' | 'popup' | null
       /**
-       * The caller wants *a* page to use, not *another* page — see the note above.
+       * The caller wants *a* tab to use, not *another* tab — see the note above.
        *
-       * It has nothing to put in the window and no identity to give the page, so this
+       * It has nothing to put in the window and no identity to give the tab, so this
        * is the only way it can say what it means; a window that has never been used
-       * already holds the blank page it is asking for.
+       * already holds the blank tab it is asking for.
        */
       reuseUntouchedWindow?: boolean
     },
   ): string {
     const instance = this.requireAliveInstance(instanceId)
 
-    // "Untouched" only counts when the request is for a page rather than for one more
-    // page. A page the browser asked for belongs *beside* the one that asked for it, and
-    // that page is in use by definition — reusing it would take away the page the link
+    // "Untouched" only counts when the request is for a tab rather than for one more
+    // tab. A tab the browser asked for belongs *beside* the one that asked for it, and
+    // that tab is in use by definition — reusing it would take away the tab the link
     // was clicked on.
-    const wantsAPage =
+    const wantsATab =
       Boolean(options?.url) || options?.prototype !== undefined || options?.reuseUntouchedWindow === true
     const unwritten =
-      wantsAPage && !options?.afterTabId && instance.tabs.length === 1 && instance.tabs[0].currentUrl === 'about:blank'
+      wantsATab && !options?.afterTabId && instance.tabs.length === 1 && instance.tabs[0].currentUrl === 'about:blank'
         ? instance.tabs[0]
         : null
 
@@ -1107,10 +1107,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         unwritten.belongsTo = options.belongsTo ?? null
         // Someone is about to work on it, so it is not left looking idle.
         unwritten.driverSessionId = options.belongsTo?.sessionId ?? null
-        // …and it is where they work from: a page a conversation opened is the page its
+        // …and it is where they work from: a tab a conversation opened is the tab its
         // next unnamed command means (plan §22, 第十轮).
         if (options.belongsTo) {
-          this.recordSessionPage(instance, unwritten.id, options.belongsTo.sessionId)
+          this.recordSessionTab(instance, unwritten.id, options.belongsTo.sessionId)
         }
       }
       if (options?.disposition !== undefined) unwritten.disposition = options.disposition
@@ -1128,15 +1128,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       tab.belongsTo = options.belongsTo ?? null
     }
     if (options?.disposition !== undefined) tab.disposition = options.disposition
-    // A page the browser derived from another one (`afterTabId`: it was a link or a popup on
-    // the page that asked) **joins that page's group and nothing else**: no lease, no cursor,
+    // A tab the browser derived from another one (`afterTabId`: it was a link or a popup on
+    // the tab that asked) **joins that tab's group and nothing else**: no lease, no cursor,
     // no lock. Group membership is inherited; the fact that somebody is *working* here is not
-    // — a person following a link inside a task's page must not retarget that task, and must
-    // not make the window say the task's conversation is driving the new page either
+    // — a person following a link inside a task's tab must not retarget that task, and must
+    // not make the window say the task's conversation is driving the new tab either
     // (plan §22, 第十一轮).
-    const derivedFromAnotherPage = Boolean(options?.afterTabId)
-    if (!derivedFromAnotherPage) {
-      // Whoever opened a page is working on it: the lease starts where the page does,
+    const derivedFromAnotherTab = Boolean(options?.afterTabId)
+    if (!derivedFromAnotherTab) {
+      // Whoever opened a tab is working on it: the lease starts where the tab does,
       // so a conversation that just opened something does not have to touch it twice
       // before the window says what is going on.
       tab.driverSessionId = tab.belongsTo?.sessionId ?? null
@@ -1148,11 +1148,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     if (afterIndex >= 0) instance.tabs.splice(afterIndex + 1, 0, tab)
     else instance.tabs.push(tab)
 
-    // …and it becomes the page they work from, for the same reason (plan §22, 第十轮).
-    // After the page is in the window: the cursor is written on the page, so the page has
+    // …and it becomes the tab they work from, for the same reason (plan §22, 第十轮).
+    // After the tab is in the window: the cursor is written on the tab, so the tab has
     // to be findable by id when this runs.
-    if (!derivedFromAnotherPage && tab.belongsTo) {
-      this.recordSessionPage(instance, tab.id, tab.belongsTo.sessionId)
+    if (!derivedFromAnotherTab && tab.belongsTo) {
+      this.recordSessionTab(instance, tab.id, tab.belongsTo.sessionId)
     }
 
     this.attachTab(instance, tab)
@@ -1161,7 +1161,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     if (options?.activate ?? true) {
       this.activateTab(instanceId, tab.id)
     } else {
-      // A page added behind the one on screen still changes the window's chrome:
+      // A tab added behind the one on screen still changes the window's chrome:
       // the strip has to appear, and the room for it was made above.
       this.layoutAllViews(instance)
       this.emitStateChange(instance)
@@ -1170,6 +1170,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     if (options?.url) {
       this.loadTab(instance, tab, options.url)
+    } else {
+      // A tab nobody gave an address to still has to show something: see
+      // `startEmptyStateLoad` for why "nothing" is not one of the things it can show.
+      this.startEmptyStateLoad(instance, tab)
     }
 
     mainLog.info(`[browser-pane] Tab opened instance=${instance.id} tab=${tab.id} total=${instance.tabs.length} active=${instance.activeTabId}`)
@@ -1195,15 +1199,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     return this.createTab(instanceId, options)
   }
 
-  /** Send a page somewhere without waiting: a page is opened before it is read. */
+  /** Send a tab somewhere without waiting: a tab is opened before it is read. */
   private loadTab(instance: BrowserInstance, tab: BrowserTab, url: string): void {
-    void tab.pageView.webContents.loadURL(url).catch((error) => {
+    void tab.tabView.webContents.loadURL(url).catch((error) => {
       mainLog.warn(`[browser-pane] new tab failed to load id=${instance.id} tab=${tab.id}: ${String(error)}`)
     })
   }
 
   /**
-   * Put one page on screen.
+   * Put one tab on screen.
    *
    * Everything the window reports — address, title, prototype, console, what the
    * toolbar's actions would act on — follows from here, because all of it is read
@@ -1211,10 +1215,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * a delta: it is a snapshot by construction, and a delta would be a second
    * description of the same thing.
    *
-   * This is the *display's* verb: the person switching pages, and the agent's one
+   * This is the *display's* verb: the person switching tabs, and the agent's one
    * explicit "bring it forward" (`browser_tab_activate`). A command no longer comes
-   * through here — it records the page it works from and leaves the window where it is
-   * ({@link setSessionPage}), because moving the person's view is not a command's to do
+   * through here — it records the tab it works from and leaves the window where it is
+   * ({@link setSessionTab}), because moving the person's view is not a command's to do
    * (plan §22, 第十二轮).
    */
   activateTab(instanceId: string, tabId: string): void {
@@ -1230,35 +1234,35 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.updateNativeOverlayState(instance)
     this.emitStateChange(instance)
     this.pushToolbarState(instance)
-    // The picker is the window's mode, so it follows the page that just came
-    // forward (plan §12.7): the user keeps picking across pages, and this is where
-    // "any page's elements can be picked" is made true.
+    // The picker is the window's mode, so it follows the tab that just came
+    // forward (plan §12.7): the user keeps picking across tabs, and this is where
+    // "any tab's elements can be picked" is made true.
     if (instance.picking) this.armPickerOn(instance, tab)
     mainLog.info(`[browser-pane] Tab activated instance=${instance.id} tab=${tab.id} url=${tab.currentUrl}`)
   }
 
   /**
-   * "This conversation works from this page" — recorded without moving the window.
+   * "This conversation works from this tab" — recorded without moving the window.
    *
-   * The whole of a command's routing: this page becomes the one the conversation's next
+   * The whole of a command's routing: this tab becomes the one the conversation's next
    * unnamed command lands on, the one its lock is on while it works, and the one Chromium
    * is asked to treat as in front so the site behaves the same as it would on screen
    * (plan §22, 第十轮/第十二轮).
    *
    * Nothing about the display changes, and that is the point: the person may be looking at
-   * another page of the same window — they opened it, or they went back — and an agent
+   * another tab of the same window — they opened it, or they went back — and an agent
    * working in the background must not take them off it. It is also why this exists next to
    * `activateTab` rather than inside it: the two facts used to always happen together, and
    * now they do not.
    */
-  setSessionPage(instanceId: string, tabId: string, sessionId: string): void {
+  setSessionTab(instanceId: string, tabId: string, sessionId: string): void {
     const instance = this.requireAliveInstance(instanceId)
     const tab = tabById(instance, tabId)
     if (!tab) throw new Error(`Browser window "${instanceId}" has no tab "${tabId}".`)
 
-    this.recordSessionPage(instance, tab.id, sessionId)
-    // The shield depends on which page is held, so the overlay hears about it — and it has
-    // to, even when the page was already the one on screen (the cursor moves without the
+    this.recordSessionTab(instance, tab.id, sessionId)
+    // The shield depends on which tab is held, so the overlay hears about it — and it has
+    // to, even when the tab was already the one on screen (the cursor moves without the
     // display moving).
     this.updateNativeOverlayState(instance)
     this.emitStateChange(instance)
@@ -1266,10 +1270,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Close one page.
+   * Close one tab.
    *
-   * Closing the last one closes the window: a window with no pages is not a state
-   * the rest of this file would know how to be in, and "no pages" is what closing
+   * Closing the last one closes the window: a window with no tabs is not a state
+   * the rest of this file would know how to be in, and "no tabs" is what closing
    * the last tab means to a person anyway. The neighbour that takes over is the one
    * before it when there is one (browsers do the same), otherwise the one after.
    */
@@ -1286,21 +1290,24 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     const [tab] = instance.tabs.splice(index, 1)
     this.clearInPageThemeTimer(tab)
-    const wcId = tab.pageView.webContents.id
+    const wcId = tab.tabView.webContents.id
     this.inFlightRequestsByWebContentsId.delete(wcId)
     this.lastNetworkActivityByWebContentsId.delete(wcId)
 
-    // A lock never outlives what it locks: closing the page a session was holding lets go
-    // of it here, rather than leaving the window claiming a page that is gone (plan §22,
-    // 第九轮修正). The cursor needs no such care — it lived on the page and went with it.
-    this.releaseHeldPage(instance, tab.id)
+    // A lock never outlives what it locks: closing the tab a session was holding lets go
+    // of it here, rather than leaving the window claiming a tab that is gone (plan §22,
+    // 第九轮修正). The cursor needs no such care — it lived on the tab and went with it.
+    this.releaseHeldTab(instance, tab.id)
 
-    // A page that is going away takes its overlay with it: leaving the picker
-    // armed on a page nobody can see would be a mode with nothing to click.
+    // A tab that is going away takes its overlay with it: leaving the picker
+    // armed on a tab nobody can see would be a mode with nothing to click.
     if (instance.pickTabId === tab.id) {
       instance.pickTabId = null
       void tab.cdp.cancelPicker()
     }
+
+    // Out of the window and gone — `instance.tabs` is not the window's view list.
+    this.detachTab(instance, tab)
 
     if (instance.activeTabId === tab.id) {
       // `splice` already removed it, so the neighbour is at the same index unless
@@ -1313,19 +1320,51 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         this.updateNativeOverlayState(instance)
         this.emitStateChange(instance)
         this.pushToolbarState(instance)
-        // Whatever page the window shows next is where an armed picker belongs.
+        // Whatever tab the window shows next is where an armed picker belongs.
         if (instance.picking) this.armPickerOn(instance, next)
       }
     } else {
-      // Closing a page the window was not showing still shrinks the chrome when it
+      // Closing a tab the window was not showing still shrinks the chrome when it
       // was the second-to-last one, so the layout and the toolbar both have to
-      // hear about it even though the page on screen did not change.
+      // hear about it even though the tab on screen did not change.
       this.layoutAllViews(instance)
       this.emitStateChange(instance)
       this.pushToolbarState(instance)
     }
 
     mainLog.info(`[browser-pane] Tab closed instance=${instance.id} tab=${tab.id} remaining=${instance.tabs.length}`)
+  }
+
+  /**
+   * Take a tab out of the window and let go of it.
+   *
+   * `instance.tabs` is not the window's view list. A tab removed from the array alone
+   * would keep its two views as children of the window: still painting at the tab area,
+   * still in the stack (so it is a tab nobody can name showing through every tab opened
+   * after it, and one more renderer to pay for), and its overlay would keep whatever size
+   * it had — `updateNativeOverlayState` only zeroes the overlays of tabs that are still
+   * in `tabs`. So a tab that is closed leaves the window the same way it would leave a
+   * display: `removeBrowserView` for both views, then the contents are closed.
+   */
+  private detachTab(instance: BrowserInstance, tab: BrowserTab): void {
+    tab.cdp.detach()
+
+    for (const view of [tab.tabView, tab.nativeOverlayView]) {
+      if (!instance.window.isDestroyed()) {
+        try {
+          instance.window.removeBrowserView(view)
+        } catch (error) {
+          mainLog.debug(`[browser-pane] removeBrowserView ignored tab=${tab.id}: ${String(error)}`)
+        }
+      }
+
+      const contents = view.webContents
+      try {
+        if (!contents.isDestroyed()) contents.close()
+      } catch (error) {
+        mainLog.debug(`[browser-pane] tab close ignored tab=${tab.id}: ${String(error)}`)
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1336,8 +1375,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * Turn the element picker on for this window — and leave it on.
    *
    * The mode belongs to the window, so it is remembered here and applied to
-   * whatever page is on screen: now, and each time the user moves to another one.
-   * That is the whole of "any page's elements can be picked".
+   * whatever tab is on screen: now, and each time the user moves to another one.
+   * That is the whole of "any tab's elements can be picked".
    */
   private armPicker(instance: BrowserInstance, label?: string): void {
     if (label) instance.pickLabel = label
@@ -1363,10 +1402,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Arm the picker on one page, taking it off whichever page had it before.
+   * Arm the picker on one tab, taking it off whichever tab had it before.
    *
-   * One page at a time: the overlay follows what the user is looking at, and a
-   * page nobody is looking at that kept its overlay would be swallowing clicks
+   * One tab at a time: the overlay follows what the user is looking at, and a
+   * tab nobody is looking at that kept its overlay would be swallowing clicks
    * the user never aimed at picking.
    */
   private armPickerOn(instance: BrowserInstance, tab: BrowserTab): void {
@@ -1379,7 +1418,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Read what the armed page reports, for as long as this arming is the current
+   * Read what the armed tab reports, for as long as this arming is the current
    * one.
    *
    * The loop ends three ways. Escape in the page: the page says `cancelled`, and
@@ -1390,7 +1429,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    */
   private async runPickLoop(instance: BrowserInstance, tab: BrowserTab, generation: number): Promise<void> {
     const isCurrent = () => instance.pickerGeneration === generation
-    const arm = { addToConversation: true, addLabel: instance.pickLabel, resident: true } as const
+    // The accent is resolved here, once per arming: the page cannot see the app's
+    // variables, and a theme change mid-mode is not worth re-injecting for.
+    const arm = {
+      addToConversation: true,
+      addLabel: instance.pickLabel,
+      accent: this.getResolvedAccentColor(),
+      resident: true,
+    } as const
 
     let armed = false
     let unusable = 0
@@ -1407,13 +1453,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         if (!isCurrent()) return
 
         for (const element of report.picks) {
+          // Every pick that arrives here is the bar's "add to conversation":
+          // clicking an element while the mode is on only selects it (plan §12.7).
           this.emitToolbarAction({
             kind: 'add-to-conversation',
             instanceId: instance.id,
             element,
-            // The page it came from, read at the moment of the pick: the picker is
+            // The tab it came from, read at the moment of the pick: the picker is
             // the window's, so the element alone does not say where it was picked.
-            origin: this.describePageLocation(tab),
+            origin: this.describeTabLocation(tab),
           })
         }
 
@@ -1425,15 +1473,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
         // `missing` = this document has no picker: the page navigated out from
         // under it, or the injection did not take. The mode is the window's, so the
-        // page is armed again rather than the mode quietly ending.
+        // tab is armed again rather than the mode quietly ending.
         armed = report.status !== 'missing'
         unusable = armed ? 0 : unusable + 1
       } catch (error) {
         if (!isCurrent()) return
 
-        // A page that is gone is not a failure to report: the window it belonged to
+        // A tab that is gone is not a failure to report: the window it belonged to
         // is closed, and the picker went with it.
-        if (instance.window.isDestroyed() || tab.pageView.webContents.isDestroyed()) {
+        if (instance.window.isDestroyed() || tab.tabView.webContents.isDestroyed()) {
           instance.picking = false
           instance.pickTabId = null
           return
@@ -1464,7 +1512,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
   }
 
-  /** The window's pages, in the order they were opened, with the active one marked. */
+  /** The window's tabs, in the order they were opened, with the active one marked. */
   listTabs(instanceId: string): BrowserTabSummary[] {
     const instance = this.instances.get(instanceId)
     if (!instance) return []
@@ -1472,31 +1520,31 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Hand one page to another conversation: from now on it is **that conversation's work**, and
-   * the page it works from (plan §22, Conductor).
+   * Hand one tab to another conversation: from now on it is **that conversation's work**, and
+   * the tab it works from (plan §22, Conductor).
    *
-   * The orchestrator's verb — a parent's child sessions each need a page of their own, and
-   * "whose work is this page" is what decides who may work there. Giving a page away is
-   * therefore only possible for a page that is **the caller's own work or nobody's**: a
-   * conversation cannot hand on work it does not have, and it cannot take another's page and
+   * The orchestrator's verb — a parent's child sessions each need a tab of their own, and
+   * "whose work is this tab" is what decides who may work there. Giving a tab away is
+   * therefore only possible for a tab that is **the caller's own work or nobody's**: a
+   * conversation cannot hand on work it does not have, and it cannot take another's tab and
    * pass it along. Whether the receiver is a session worth handing to (same workspace, actually
    * exists) is `SessionManager`'s call — it is the side that knows the conversations, and it is
    * also the side that can resolve the receiver's **work**, which is why `to` is passed whole
    * rather than as a session id the browser side could only guess a task from.
    *
-   * The page also stops being the giver's in every other sense: its cursor and its hold move with
-   * the work, or the giver would keep working from a page it just gave away.
+   * The tab also stops being the giver's in every other sense: its cursor and its hold move with
+   * the work, or the giver would keep working from a tab it just gave away.
    */
   assignTab(instanceId: string, tabId: string, to: TabBelongsTo, by: TabBelongsTo): void {
     const instance = this.requireAliveInstance(instanceId)
     const tab = tabById(instance, tabId)
-    if (!tab) throw new Error(`Browser window "${instanceId}" has no page "${tabId}".`)
+    if (!tab) throw new Error(`Browser window "${instanceId}" has no tab "${tabId}".`)
     if (!to?.sessionId) {
-      throw new Error('Handing a page over needs the conversation to hand it to.')
+      throw new Error('Handing a tab over needs the conversation to hand it to.')
     }
     if (tab.belongsTo && !sameWork(tab.belongsTo, by)) {
       throw new Error(
-        `Page ${tabId} is ${describeWork(tab.belongsTo)}'s, so ${by.sessionId} cannot hand it on.`,
+        `Tab ${tabId} is ${describeWork(tab.belongsTo)}'s, so ${by.sessionId} cannot hand it on.`,
       )
     }
 
@@ -1505,8 +1553,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     if (tab.heldBy === by.sessionId) tab.heldBy = null
 
     tab.belongsTo = to
-    // It becomes the page the receiver works from: "here is your page" has to mean it can start
-    // working without naming one, or the handover would be a page it cannot reach.
+    // It becomes the tab the receiver works from: "here is your tab" has to mean it can start
+    // working without naming one, or the handover would be a tab it cannot reach.
     for (const other of instance.tabs) {
       if (other.cursorOf === to.sessionId && other.id !== tabId) other.cursorOf = null
     }
@@ -1515,7 +1563,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.updateNativeOverlayState(instance)
     this.pushToolbarState(instance)
     this.emitStateChange(instance)
-    mainLog.info(`[browser-pane] page handed over instance=${instance.id} tab=${tabId} from=${by.sessionId} to=${to.sessionId}`)
+    mainLog.info(`[browser-pane] tab handed over instance=${instance.id} tab=${tabId} from=${by.sessionId} to=${to.sessionId}`)
   }
 
   /**
@@ -1536,12 +1584,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const destroyedBefore = instance.window.isDestroyed()
     mainLog.info(`[browser-pane] destroy requested id=${id} destroyedBefore=${destroyedBefore} keepAlive=${instance.keepAliveOnWindowClose}`)
 
-    // Clear pending timers and in-flight tracking for *every* page: a window being
+    // Clear pending timers and in-flight tracking for *every* tab: a window being
     // destroyed takes all of them with it, not just the one on screen.
     for (const tab of instance.tabs) {
       this.clearInPageThemeTimer(tab)
       tab.themeObserverToken = null
-      const wcId = tab.pageView.webContents.id
+      const wcId = tab.tabView.webContents.id
       this.inFlightRequestsByWebContentsId.delete(wcId)
       this.lastNetworkActivityByWebContentsId.delete(wcId)
     }
@@ -1597,24 +1645,24 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * The page a command acts on.
+   * The tab a command acts on.
    *
-   * `tabId` is the page the caller named. For a capability call that is the page the
+   * `tabId` is the tab the caller named. For a capability call that is the tab the
    * requesting conversation works from (`commandTabIdFor`), and a command that names
-   * none means the page on screen — which is what the person's own calls mean, and what
+   * none means the tab on screen — which is what the person's own calls mean, and what
    * a window with nobody's cursor set falls back to.
    *
-   * A named page that is gone **throws** rather than sliding onto the page on screen:
-   * the named page was the whole point of the command, and a click that lands somewhere
-   * else because the page was closed under it is worse than a failed call. Being on
+   * A named tab that is gone **throws** rather than sliding onto the tab on screen:
+   * the named tab was the whole point of the command, and a click that lands somewhere
+   * else because the tab was closed under it is worse than a failed call. Being on
    * screen is not a reason to be the target — that decoupling is the reason this exists
    * (plan §22, 第十轮/第十二轮).
    */
-  private pageOf(instance: BrowserInstance, tabId?: string | null): BrowserTab {
+  private tabOf(instance: BrowserInstance, tabId?: string | null): BrowserTab {
     if (!tabId) return activeTab(instance)
     const tab = tabById(instance, tabId)
     if (!tab) {
-      throw new Error(`Browser window "${instance.id}" has no page "${tabId}" — it may have been closed.`)
+      throw new Error(`Browser window "${instance.id}" has no tab "${tabId}" — it may have been closed.`)
     }
     return tab
   }
@@ -1623,7 +1671,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     senderWebContentsId: number,
     payload: BrowserEmptyStateLaunchPayload,
   ): Promise<BrowserEmptyStateLaunchResult> {
-    const instance = this.findInstanceByPageWebContentsId(senderWebContentsId)
+    const instance = this.findInstanceByTabWebContentsId(senderWebContentsId)
     if (!instance) {
       mainLog.warn(`[browser-pane] empty-state launch ignored: sender not mapped senderWebContentsId=${senderWebContentsId}`)
       return { ok: false, handled: false, reason: 'instance_not_found' }
@@ -1645,16 +1693,16 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Which window a page belongs to, by the page itself.
+   * Which window a tab belongs to, by the tab itself.
    *
-   * Every page, not just the one on screen: an empty-state page that asks to
+   * Every tab, not just the one on screen: an empty-state document that asks to
    * launch something is asking from *its* tab, and with a window holding several
-   * pages the page in front may be a different one entirely.
+   * tabs the tab in front may be a different one entirely.
    */
-  private findInstanceByPageWebContentsId(senderWebContentsId: number): BrowserInstance | undefined {
+  private findInstanceByTabWebContentsId(senderWebContentsId: number): BrowserInstance | undefined {
     for (const instance of this.instances.values()) {
       for (const tab of instance.tabs) {
-        if (tab.pageView.webContents.id === senderWebContentsId) return instance
+        if (tab.tabView.webContents.id === senderWebContentsId) return instance
       }
     }
     return undefined
@@ -1762,7 +1810,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   async navigate(id: string, url: string, tabId?: string): Promise<{ url: string; title: string }> {
     const instance = this.requireAliveInstance(id)
-    const tab = this.pageOf(instance, tabId)
+    const tab = this.tabOf(instance, tabId)
 
     let normalizedUrl = url.trim()
     const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(normalizedUrl)
@@ -1780,7 +1828,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     let timeoutHandle: ReturnType<typeof setTimeout> | null = null
 
     try {
-      const loaded = tab.pageView.webContents.loadURL(normalizedUrl)
+      const loaded = tab.tabView.webContents.loadURL(normalizedUrl)
       const timeout = new Promise<never>((_, reject) => {
         timeoutHandle = setTimeout(() => reject(new Error(`Navigation to "${normalizedUrl}" timed out after ${timeoutMs / 1000}s`)), timeoutMs)
       })
@@ -1805,30 +1853,30 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   async goBack(id: string, tabId?: string): Promise<void> {
     const instance = this.requireAliveInstance(id)
-    const tab = this.pageOf(instance, tabId)
-    if (tab.pageView.webContents.canGoBack()) {
-      tab.pageView.webContents.goBack()
+    const tab = this.tabOf(instance, tabId)
+    if (tab.tabView.webContents.canGoBack()) {
+      tab.tabView.webContents.goBack()
     }
   }
 
   async goForward(id: string, tabId?: string): Promise<void> {
     const instance = this.requireAliveInstance(id)
-    const tab = this.pageOf(instance, tabId)
-    if (tab.pageView.webContents.canGoForward()) {
-      tab.pageView.webContents.goForward()
+    const tab = this.tabOf(instance, tabId)
+    if (tab.tabView.webContents.canGoForward()) {
+      tab.tabView.webContents.goForward()
     }
   }
 
   reload(id: string, tabId?: string): void {
     const instance = this.instances.get(id)
     if (!instance || instance.window.isDestroyed()) return
-    this.pageOf(instance, tabId).pageView.webContents.reload()
+    this.tabOf(instance, tabId).tabView.webContents.reload()
   }
 
   stop(id: string): void {
     const instance = this.instances.get(id)
     if (!instance || instance.window.isDestroyed()) return
-    activeTab(instance).pageView.webContents.stop()
+    activeTab(instance).tabView.webContents.stop()
   }
 
   focus(id: string): void {
@@ -1883,8 +1931,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // and kill the main process.
     if (activeTab(instance).isLoading) {
       try {
-        const pageWc = activeTab(instance).pageView.webContents
-        if (!pageWc.isDestroyed()) pageWc.stop()
+        const tabWc = activeTab(instance).tabView.webContents
+        if (!tabWc.isDestroyed()) tabWc.stop()
       } catch (error) {
         mainLog.warn(`[browser-pane] failed to stop page load before hide id=${id}: ${(error as Error)?.message ?? error}`)
       }
@@ -1904,14 +1952,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   async getAccessibilitySnapshot(id: string, tabId?: string): Promise<AccessibilitySnapshot> {
     const instance = this.requireAliveInstance(id)
-    return this.pageOf(instance, tabId).cdp.getAccessibilitySnapshot()
+    return this.tabOf(instance, tabId).cdp.getAccessibilitySnapshot()
   }
 
   async clickAtCoordinates(id: string, x: number, y: number, tabId?: string): Promise<void> {
     const instance = this.requireAliveInstance(id)
 
     try {
-      await this.pageOf(instance, tabId).cdp.clickAtCoordinates(x, y)
+      await this.tabOf(instance, tabId).cdp.clickAtCoordinates(x, y)
       instance.lastAction = {
         tool: 'browser_click_at',
         status: 'succeeded',
@@ -1931,7 +1979,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const instance = this.requireAliveInstance(id)
 
     try {
-      await this.pageOf(instance, tabId).cdp.drag(x1, y1, x2, y2)
+      await this.tabOf(instance, tabId).cdp.drag(x1, y1, x2, y2)
       instance.lastAction = {
         tool: 'browser_drag',
         status: 'succeeded',
@@ -1951,7 +1999,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const instance = this.requireAliveInstance(id)
 
     try {
-      await this.pageOf(instance, tabId).cdp.typeText(text)
+      await this.tabOf(instance, tabId).cdp.typeText(text)
       instance.lastAction = {
         tool: 'browser_type',
         status: 'succeeded',
@@ -1969,12 +2017,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   async setClipboard(id: string, text: string, tabId?: string): Promise<void> {
     const instance = this.requireAliveInstance(id)
-    await this.pageOf(instance, tabId).cdp.setClipboard(text)
+    await this.tabOf(instance, tabId).cdp.setClipboard(text)
   }
 
   async getClipboard(id: string, tabId?: string): Promise<string> {
     const instance = this.requireAliveInstance(id)
-    return this.pageOf(instance, tabId).cdp.getClipboard()
+    return this.tabOf(instance, tabId).cdp.getClipboard()
   }
 
   async clickElement(
@@ -1984,7 +2032,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     tabId?: string,
   ): Promise<void> {
     const instance = this.requireAliveInstance(id)
-    const tab = this.pageOf(instance, tabId)
+    const tab = this.tabOf(instance, tabId)
 
     try {
       const geometry = await tab.cdp.clickElement(ref)
@@ -2015,12 +2063,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
           const cleanup = () => {
             clearTimeout(timer)
-            tab.pageView.webContents.removeListener('did-navigate', onNav)
-            tab.pageView.webContents.removeListener('did-navigate-in-page', onNav)
+            tab.tabView.webContents.removeListener('did-navigate', onNav)
+            tab.tabView.webContents.removeListener('did-navigate-in-page', onNav)
           }
 
-          tab.pageView.webContents.once('did-navigate', onNav)
-          tab.pageView.webContents.once('did-navigate-in-page', onNav)
+          tab.tabView.webContents.once('did-navigate', onNav)
+          tab.tabView.webContents.once('did-navigate-in-page', onNav)
         })
       } else if (waitFor === 'network-idle') {
         await this.waitFor(id, { kind: 'network-idle', timeoutMs: options?.timeoutMs }, tabId)
@@ -2040,7 +2088,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const instance = this.requireAliveInstance(id)
 
     try {
-      const geometry = await this.pageOf(instance, tabId).cdp.fillElement(ref, value)
+      const geometry = await this.tabOf(instance, tabId).cdp.fillElement(ref, value)
       instance.lastAction = {
         tool: 'browser_fill',
         ref,
@@ -2063,7 +2111,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const instance = this.requireAliveInstance(id)
 
     try {
-      const geometry = await this.pageOf(instance, tabId).cdp.selectOption(ref, value)
+      const geometry = await this.tabOf(instance, tabId).cdp.selectOption(ref, value)
       instance.lastAction = {
         tool: 'browser_select',
         ref,
@@ -2085,8 +2133,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   /**
    * Take the agent's overlay out of the picture, when it is in it.
    *
-   * The overlay view only ever sits over the page on screen (`updateNativeOverlayState`), so
-   * a capture of a page behind that one has nothing to hide — and hiding it anyway would
+   * The overlay view only ever sits over the tab on screen (`updateNativeOverlayState`), so
+   * a capture of a tab behind that one has nothing to hide — and hiding it anyway would
    * blink the outline and the shield in front of the person for a shot they are not in.
    */
   private suspendOverlayForCapture(instance: BrowserInstance, tab: BrowserTab): boolean {
@@ -2107,7 +2155,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   async screenshot(id: string, options?: BrowserScreenshotOptions, tabId?: string): Promise<BrowserScreenshotResult> {
     const instance = this.requireAliveInstance(id)
-    const tab = this.pageOf(instance, tabId)
+    const tab = this.tabOf(instance, tabId)
 
     // Hide native agent overlay so it doesn't appear in captures
     const suspendedOverlay = this.suspendOverlayForCapture(instance, tab)
@@ -2256,7 +2304,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   ): Promise<BrowserScreenshotResult> {
     const instance = this.instances.get(id)
     if (!instance) throw new Error(`Browser instance not found: ${id}`)
-    const tab = this.pageOf(instance, tabId)
+    const tab = this.tabOf(instance, tabId)
 
     const hasCoords = [target.x, target.y, target.width, target.height].every((v) => typeof v === 'number')
     const hasRef = typeof target.ref === 'string' && target.ref.length > 0
@@ -2350,8 +2398,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   private async capturePageWithRecovery(
     instance: BrowserInstance,
     options: {
-      /** The page being captured — named rather than assumed, so a shot of a page
-       * nobody is looking at is a shot of *that* page (plan §22, 第十二轮). */
+      /** The tab being captured — named rather than assumed, so a shot of a tab
+       * nobody is looking at is a shot of *that* tab (plan §22, 第十二轮). */
       tab: BrowserTab
       mode: 'raw' | 'agent' | 'region'
       errorPrefix: 'screenshot' | 'region screenshot'
@@ -2487,10 +2535,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       ? { stayHidden: true, stayAwake: true }
       : undefined
 
-    const pageView = options.tab.pageView
+    const tabView = options.tab.tabView
     let image = options.rect
-      ? await pageView.webContents.capturePage(options.rect, captureOpts)
-      : await pageView.webContents.capturePage(undefined, captureOpts)
+      ? await tabView.webContents.capturePage(options.rect, captureOpts)
+      : await tabView.webContents.capturePage(undefined, captureOpts)
 
     if (image.isEmpty()) {
       return null
@@ -2536,7 +2584,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   getConsoleLogs(id: string, options?: BrowserConsoleOptions, tabId?: string): BrowserConsoleEntry[] {
     const instance = this.requireAliveInstance(id)
-    const tab = this.pageOf(instance, tabId)
+    const tab = this.tabOf(instance, tabId)
 
     const level = options?.level ?? 'all'
     const limit = Math.max(1, Math.min(500, Number(options?.limit ?? 50)))
@@ -2550,7 +2598,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   getNetworkLogs(id: string, options?: BrowserNetworkOptions, tabId?: string): BrowserNetworkEntry[] {
     const instance = this.requireAliveInstance(id)
-    const logs = this.pageOf(instance, tabId).networkLogs
+    const logs = this.tabOf(instance, tabId).networkLogs
 
     const statusFilter = options?.status ?? 'all'
     const limit = Math.max(1, Math.min(500, Number(options?.limit ?? 50)))
@@ -2575,7 +2623,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   async waitFor(id: string, args: BrowserWaitArgs, tabId?: string): Promise<BrowserWaitResult> {
     const instance = this.requireAliveInstance(id)
-    const tab = this.pageOf(instance, tabId)
+    const tab = this.tabOf(instance, tabId)
 
     const timeoutMs = Math.max(100, args.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS)
     const pollMs = Math.max(25, args.pollMs ?? DEFAULT_WAIT_POLL_MS)
@@ -2601,7 +2649,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       const selector = args.value?.trim()
       if (!selector) throw new Error('browser_wait selector requires value')
       return until(async () => {
-        const exists = await tab.pageView.webContents.executeJavaScript(
+        const exists = await tab.tabView.webContents.executeJavaScript(
           `Boolean(document.querySelector(${JSON.stringify(selector)}))`
         )
         return Boolean(exists)
@@ -2612,7 +2660,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       const text = args.value?.trim()
       if (!text) throw new Error('browser_wait text requires value')
       return until(async () => {
-        const found = await tab.pageView.webContents.executeJavaScript(
+        const found = await tab.tabView.webContents.executeJavaScript(
           `document.body && document.body.innerText && document.body.innerText.includes(${JSON.stringify(text)})`
         )
         return Boolean(found)
@@ -2628,7 +2676,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
 
     if (args.kind === 'network-idle') {
-      const wcId = tab.pageView.webContents.id
+      const wcId = tab.tabView.webContents.id
       return until(async () => {
         const inflight = this.inFlightRequestsByWebContentsId.get(wcId) ?? 0
         const last = this.lastNetworkActivityByWebContentsId.get(wcId) ?? started
@@ -2641,19 +2689,19 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   async sendKey(id: string, args: BrowserKeyArgs, tabId?: string): Promise<void> {
     const instance = this.requireAliveInstance(id)
-    const pageWebContents = this.pageOf(instance, tabId).pageView.webContents
+    const tabWebContents = this.tabOf(instance, tabId).tabView.webContents
 
     const key = args.key?.trim()
     if (!key) throw new Error('browser_key requires key')
 
     const modifiers = (args.modifiers ?? []) as Array<'shift' | 'control' | 'alt' | 'meta'>
 
-    pageWebContents.sendInputEvent({
+    tabWebContents.sendInputEvent({
       type: 'keyDown',
       keyCode: key,
       modifiers,
     } as any)
-    pageWebContents.sendInputEvent({
+    tabWebContents.sendInputEvent({
       type: 'keyUp',
       keyCode: key,
       modifiers,
@@ -2662,7 +2710,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   async getDownloads(id: string, options?: BrowserDownloadOptions, tabId?: string): Promise<BrowserDownloadEntry[]> {
     const instance = this.requireAliveInstance(id)
-    const downloads = this.pageOf(instance, tabId).downloads
+    const downloads = this.tabOf(instance, tabId).downloads
 
     const action = options?.action ?? 'list'
     const limit = Math.max(1, Math.min(200, Number(options?.limit ?? 20)))
@@ -2693,7 +2741,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       safePaths.push(safePath)
     }
 
-    return this.pageOf(instance, tabId).cdp.setFileInputFiles(ref, safePaths)
+    return this.tabOf(instance, tabId).cdp.setFileInputFiles(ref, safePaths)
   }
 
   windowResize(id: string, width: number, height: number): { width: number; height: number } {
@@ -2701,9 +2749,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     const requestedViewportWidth = Math.max(320, Math.floor(width))
     const requestedViewportHeight = Math.max(240, Math.floor(height))
-    // The promise is the *page's* viewport, so the window grows by whatever the chrome
+    // The promise is the *tab's* viewport, so the window grows by whatever the chrome
     // takes: the bar from the top, the rail from the side.
-    instance.window.setContentSize(requestedViewportWidth + PAGE_RAIL_WIDTH, requestedViewportHeight + TOOLBAR_HEIGHT)
+    instance.window.setContentSize(requestedViewportWidth + TAB_RAIL_WIDTH, requestedViewportHeight + TOOLBAR_HEIGHT)
 
     this.layoutAllViews(instance)
 
@@ -2711,14 +2759,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // Both chrome surfaces come back off again — the same two numbers that were added.
     const [appliedContentWidth, appliedContentHeight] = instance.window.getContentSize()
     return {
-      width: Math.max(0, Math.floor(appliedContentWidth - PAGE_RAIL_WIDTH)),
+      width: Math.max(0, Math.floor(appliedContentWidth - TAB_RAIL_WIDTH)),
       height: Math.max(0, Math.floor(appliedContentHeight - TOOLBAR_HEIGHT)),
     }
   }
 
   async evaluate(id: string, expression: string, tabId?: string): Promise<unknown> {
     const instance = this.requireAliveInstance(id)
-    return this.pageOf(instance, tabId).pageView.webContents.executeJavaScript(expression)
+    return this.tabOf(instance, tabId).tabView.webContents.executeJavaScript(expression)
   }
 
   /**
@@ -2731,7 +2779,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     tabId?: string,
   ): Promise<PickedElement | null> {
     const instance = this.requireAliveInstance(id)
-    return this.pageOf(instance, tabId).cdp.pickElement(options)
+    // The overlay is drawn in the app's colour, which only this side can resolve.
+    return this.tabOf(instance, tabId).cdp.pickElement({
+      ...options,
+      accent: this.getResolvedAccentColor(),
+    })
   }
 
   // -- Frame capture --------------------------------------------------------
@@ -2759,7 +2811,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     tabId?: string,
   ) {
     const instance = this.requireAliveInstance(id)
-    const tab = this.pageOf(instance, tabId)
+    const tab = this.tabOf(instance, tabId)
     // One capture per window: starting a second replaces the first rather than
     // running two timers over the same screen.
     const previous = this.frameCaptures.get(id)
@@ -2856,8 +2908,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       return
     }
 
-    // A recording follows one page. When that page is gone there is nothing left to
-    // record — and following the page on screen instead would quietly tape something
+    // A recording follows one tab. When that tab is gone there is nothing left to
+    // record — and following the tab on screen instead would quietly tape something
     // else, which is worse than an ended recording.
     const tab = tabById(instance, state.tabId)
     if (!tab) {
@@ -2868,7 +2920,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     state.capturing = true
     try {
-      const image = await tab.pageView.webContents.capturePage(undefined, {
+      const image = await tab.tabView.webContents.capturePage(undefined, {
         stayHidden: true,
         stayAwake: true,
       })
@@ -2932,13 +2984,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    */
   async addInitScript(id: string, key: string, source: string, tabId?: string): Promise<string> {
     const instance = this.requireAliveInstance(id)
-    return this.pageOf(instance, tabId).cdp.addInitScript(key, source)
+    return this.tabOf(instance, tabId).cdp.addInitScript(key, source)
   }
 
   /** Remove every init script whose key starts with `keyPrefix`. */
   async clearInitScripts(id: string, keyPrefix: string, tabId?: string): Promise<string[]> {
     const instance = this.requireAliveInstance(id)
-    const tab = this.pageOf(instance, tabId)
+    const tab = this.tabOf(instance, tabId)
     const keys = tab.cdp.listInitScriptKeys().filter((key) => key.startsWith(keyPrefix))
     for (const key of keys) {
       await tab.cdp.removeInitScript(key)
@@ -2955,19 +3007,19 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    */
   async setFetchMock(id: string, program: MockProgram, tabId?: string): Promise<number> {
     const instance = this.requireAliveInstance(id)
-    return this.pageOf(instance, tabId).cdp.setFetchMockRoutes(program)
+    return this.tabOf(instance, tabId).cdp.setFetchMockRoutes(program)
   }
 
   /** Stop intercepting; requests fall through to the real network again. */
   async clearFetchMock(id: string, tabId?: string): Promise<void> {
     const instance = this.requireAliveInstance(id)
-    await this.pageOf(instance, tabId).cdp.clearFetchMock()
+    await this.tabOf(instance, tabId).cdp.clearFetchMock()
   }
 
   async detectSecurityChallenge(id: string, tabId?: string): Promise<{ detected: boolean; provider: string; signals: string[] }> {
     const instance = this.instances.get(id)
     if (!instance || instance.window.isDestroyed()) return { detected: false, provider: 'none', signals: [] }
-    const tab = this.pageOf(instance, tabId)
+    const tab = this.tabOf(instance, tabId)
 
     const signals: string[] = []
     const title = tab.title || ''
@@ -2985,7 +3037,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     // DOM-based detection via JS evaluation
     try {
-      const domSignals = await tab.pageView.webContents.executeJavaScript(`(() => {
+      const domSignals = await tab.tabView.webContents.executeJavaScript(`(() => {
         const signals = [];
         const bodyText = (document.body?.innerText || '').slice(0, 2000);
         if (/Verify you are human/i.test(bodyText)) signals.push('text:verify-human');
@@ -3042,7 +3094,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const deltaX = direction === 'left' ? -amount : direction === 'right' ? amount : 0
     const deltaY = direction === 'up' ? -amount : direction === 'down' ? amount : 0
 
-    await this.pageOf(instance, tabId).pageView.webContents.executeJavaScript(`window.scrollBy(${deltaX}, ${deltaY})`)
+    await this.tabOf(instance, tabId).tabView.webContents.executeJavaScript(`window.scrollBy(${deltaX}, ${deltaY})`)
   }
 
   /**
@@ -3050,11 +3102,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    *
    * Non-destructive: the window stays, because the workspace's window is almost never
    * this session's alone — the next turn, the next conversation or the user picks it up
-   * from here. What goes is what this session put there: its page leases (across every
-   * window, see `clearPageLeases`), its holds, and its overlay.
+   * from here. What goes is what this session put there: its tab leases (across every
+   * window, see `clearTabLeases`), its holds, and its overlay.
    */
   unbindAllForSession(sessionId: string): void {
-    this.clearPageLeases(sessionId)
+    this.clearTabLeases(sessionId)
     this.clearControl(sessionId)
   }
 
@@ -3065,7 +3117,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * the work is: a prototype flow, or a general task that has nothing to do with one.
    * Resolving it depends on the **workspace** alone; `sessionId` names who is asking, and
    * nothing about the window is written from it — which conversations are working in it is
-   * per page (`BrowserTab.cursorOf` / `heldBy`), because a parent and its child sessions can
+   * per tab (`BrowserTab.cursorOf` / `heldBy`), because a parent and its child sessions can
    * be in it at once (Conductor).
    *
    * `sessionId` may be null: opening a browser by hand is the same window.
@@ -3081,7 +3133,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       if (options?.show) {
         this.focus(existing.id)
       }
-      mainLog.info(`[browser-pane] Workspace window resolved instance=${existing.id} workspace=${workspaceId ?? 'none'} askedBy=${sessionId ?? 'a person'} pages=${existing.tabs.length}`)
+      mainLog.info(`[browser-pane] Workspace window resolved instance=${existing.id} workspace=${workspaceId ?? 'none'} askedBy=${sessionId ?? 'a person'} tabs=${existing.tabs.length}`)
       return existing.id
     }
 
@@ -3116,14 +3168,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Take one session's lease off every page it was driving.
+   * Take one session's lease off every tab it was driving.
    *
-   * Swept across every window: a conversation can hold a page in a window another one is
-   * working in too, and a turn ending must release *its* pages wherever they are. A page
+   * Swept across every window: a conversation can hold a tab in a window another one is
+   * working in too, and a turn ending must release *its* tabs wherever they are. A tab
    * that says "driven by X" for a conversation that has stopped is worse than one that says
    * nobody is.
    */
-  private clearPageLeases(sessionId: string): void {
+  private clearTabLeases(sessionId: string): void {
     for (const instance of this.instances.values()) {
       let changed = false
       for (const tab of instance.tabs) {
@@ -3138,11 +3190,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Take one session's overlay and page holds off every window it has them in.
+   * Take one session's overlay and tab holds off every window it has them in.
    *
    * The other half of letting go, and swept the same way: a parent and its child sessions
    * share one window (Conductor), so "what this session was holding" is not a fact about a
-   * window — it is scattered across the pages that session claimed.
+   * window — it is scattered across the tabs that session claimed.
    */
   private clearControl(sessionId: string): void {
     for (const instance of this.instances.values()) {
@@ -3175,7 +3227,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    *
    * The only window is its workspace's — every conversation in that workspace and the user
    * work in it — so a session being torn down lets go instead of taking the window with it:
-   * another conversation or the user may be holding pages in it right now (plan §22's third
+   * another conversation or the user may be holding tabs in it right now (plan §22's third
    * rule). There is no second kind of window to destroy, so this is the same act as
    * {@link unbindAllForSession}: a session is gone, and what it put in the browser is not.
    */
@@ -3186,7 +3238,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   /**
    * Drop this session's overlay and native overlay state, wherever it had them.
    *
-   * Called between turns: the session keeps its pages (`cursorOf` is sticky) and only the
+   * Called between turns: the session keeps its tabs (`cursorOf` is sticky) and only the
    * "working right now" marks come off.
    */
   async clearVisualsForSession(sessionId: string): Promise<void> {
@@ -3287,11 +3339,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Drop the in-page theme check a page has pending, if any.
+   * Drop the in-page theme check a tab has pending, if any.
    *
-   * Per page rather than per window, like everything else a page owns: the timer
+   * Per tab rather than per window, like everything else a tab owns: the timer
    * belongs to the view that scheduled it, and leaving it on the window would mean
-   * a tab switch could cancel a check the *other* page was waiting on.
+   * a tab switch could cancel a check the *other* tab was waiting on.
    */
   private clearInPageThemeTimer(tab: BrowserTab): void {
     if (tab.inPageThemeTimer) {
@@ -3303,8 +3355,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   /**
    * How much of a window the chrome takes off the top, in px: the address bar.
    *
-   * The rail takes its room off the *side* (`PAGE_RAIL_WIDTH`), so this is only the
-   * row — and every layout asks `pageAreaBounds` rather than doing the sums, so a page
+   * The rail takes its room off the *side* (`TAB_RAIL_WIDTH`), so this is only the
+   * row — and every layout asks `tabAreaBounds` rather than doing the sums, so a tab
    * is never laid out over its own chrome.
    */
   private toolbarChromeHeight(): number {
@@ -3312,29 +3364,29 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Where the page is: right of the rail, below the bar.
+   * Where the tab is: right of the rail, below the bar.
    *
-   * One answer for every reader — the page's bounds, the agent overlay's bounds and
+   * One answer for every reader — the tab's bounds, the agent overlay's bounds and
    * the viewport `window-resize` promises — so the three cannot disagree about how much
-   * window a page actually gets.
+   * window a tab actually gets.
    */
-  private pageAreaBounds(instance: BrowserInstance): { x: number; y: number; width: number; height: number } {
+  private tabAreaBounds(instance: BrowserInstance): { x: number; y: number; width: number; height: number } {
     const [width, height] = instance.window.getContentSize()
     return {
-      x: PAGE_RAIL_WIDTH,
+      x: TAB_RAIL_WIDTH,
       y: TOOLBAR_HEIGHT,
-      width: Math.max(200, width - PAGE_RAIL_WIDTH),
+      width: Math.max(200, width - TAB_RAIL_WIDTH),
       height: Math.max(100, height - TOOLBAR_HEIGHT),
     }
   }
 
   /**
-   * Both chrome surfaces above the page, the rail on top.
+   * Both chrome surfaces above the tab, the rail on top.
    *
    * The rail goes last so it is the topmost view in the window: it is the one surface
-   * a person must always be able to reach, so nothing — page, agent overlay, or the
-   * bar while its menu is expanded over the page — gets to sit over it. The page's own
-   * geometry already stops where the rail starts (`pageAreaBounds`); this is the belt
+   * a person must always be able to reach, so nothing — tab, agent overlay, or the
+   * bar while its menu is expanded over the tab — gets to sit over it. The tab's own
+   * geometry already stops where the rail starts (`tabAreaBounds`); this is the belt
    * to that pair of braces.
    */
   private raiseChromeViews(instance: BrowserInstance): void {
@@ -3347,7 +3399,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * Tell the window's chrome something — the bar and the rail together.
    *
    * They are one surface split in two by the shape of a `BrowserView`, so a message
-   * that reached only one of them would leave the other showing yesterday's pages,
+   * that reached only one of them would leave the other showing yesterday's tabs,
    * theme or menu state.
    */
   private sendToChrome(instance: BrowserInstance, channel: string, payload?: unknown): void {
@@ -3371,13 +3423,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    *
    * Back button, address and actions all start where the rail ends, so the rail is one
    * unbroken column from the window's top edge down and nothing of the bar sits over
-   * it. The bar still expands downwards over the page while its menu is open; the rail
+   * it. The bar still expands downwards over the tab while its menu is open; the rail
    * is not part of that, and stays both visible and clickable.
    */
   private layoutToolbarView(instance: BrowserInstance): void {
     const [width] = instance.window.getContentSize()
     const toolbarHeight = this.getToolbarEffectiveHeight(instance)
-    const railWidth = Math.min(PAGE_RAIL_WIDTH, width)
+    const railWidth = Math.min(TAB_RAIL_WIDTH, width)
 
     instance.toolbarView.setBounds({
       x: railWidth,
@@ -3402,62 +3454,62 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     instance.railView.setBounds({
       x: 0,
       y: 0,
-      width: Math.min(PAGE_RAIL_WIDTH, width),
+      width: Math.min(TAB_RAIL_WIDTH, width),
       height: Math.max(120, height),
     })
     instance.railView.setAutoResize({ width: false, height: true })
   }
 
   /**
-   * This conversation is now working **from** this page.
+   * This conversation is now working **from** this tab.
    *
    * One call for one fact, read at three speeds (plan §22, 第九轮修正 / 第十轮):
    *
-   * - the **cursor** (`tab.cursorOf`) is sticky — it answers "which page does this
+   * - the **cursor** (`tab.cursorOf`) is sticky — it answers "which tab does this
    *   conversation's next unnamed command mean", and it survives the turn ending, because
    *   the person clicking around must not move somebody else's target;
-   * - the **page lease** (`tab.driverSessionId`) is "last moved by", swept when the turn ends;
-   * - the **hold** (`tab.heldBy`) lasts as long as the overlay does — the page is held while
+   * - the **tab lease** (`tab.driverSessionId`) is "last moved by", swept when the turn ends;
+   * - the **hold** (`tab.heldBy`) lasts as long as the overlay does — the tab is held while
    *   that session works, and let go when its turn ends or the person releases it (`release`).
    *
    * A session without the overlay on this window gets the first two and not the hold: an
    * overlay is what says "somebody is at the wheel here right now", and a conversation that
    * is not working is not holding anything.
    *
-   * This is the write; {@link setSessionPage} is the public verb around it (a window id
+   * This is the write; {@link setSessionTab} is the public verb around it (a window id
    * instead of a live instance) and is what a command reaches for.
    */
-  private recordSessionPage(instance: BrowserInstance, tabId: string, sessionId: string): void {
+  private recordSessionTab(instance: BrowserInstance, tabId: string, sessionId: string): void {
     for (const tab of instance.tabs) {
       if (tab.cursorOf === sessionId && tab.id !== tabId) tab.cursorOf = null
     }
     const target = tabById(instance, tabId)
     if (target) {
       target.cursorOf = sessionId
-      // The page a conversation works from is the page it is driving: this is the page the
+      // The tab a conversation works from is the tab it is driving: this is the tab the
       // command is about, so the lease is written here rather than where the window was
       // resolved (plan §22, 第十轮). It says "last moved by", not "owned by" — the turn
-      // ending sweeps it, and moving the cursor to another page leaves this one as a page
+      // ending sweeps it, and moving the cursor to another tab leaves this one as a tab
       // that conversation did work on.
       target.driverSessionId = sessionId
     }
 
     if (target && instance.controlBy.has(sessionId)) {
-      this.holdPage(instance, target.id, sessionId)
+      this.holdTab(instance, target.id, sessionId)
     }
 
-    this.syncPageThrottling(instance)
+    this.syncTabThrottling(instance)
   }
 
   /**
-   * This session is holding this page now — and, being one session, only this one page.
+   * This session is holding this tab now — and, being one session, only this one tab.
    *
    * One hold per session (`agentControl.tabId` used to be that single slot, for the whole
-   * window): a conversation works from one page at a time, so claiming a new one lets the
-   * old go. Several conversations may each hold their own page of the same window at once
+   * window): a conversation works from one tab at a time, so claiming a new one lets the
+   * old go. Several conversations may each hold their own tab of the same window at once
    * (plan §22, Conductor) — that is what makes parallel children possible.
    */
-  private holdPage(instance: BrowserInstance, tabId: string, sessionId: string): void {
+  private holdTab(instance: BrowserInstance, tabId: string, sessionId: string): void {
     let changed = false
     for (const tab of instance.tabs) {
       if (tab.id !== tabId && tab.heldBy === sessionId) {
@@ -3472,24 +3524,24 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
     if (!changed) return
     this.updateNativeOverlayState(instance)
-    mainLog.info(`[browser-pane] Page held session=${sessionId} instance=${instance.id} tab=${tabId}`)
+    mainLog.info(`[browser-pane] Tab held session=${sessionId} instance=${instance.id} tab=${tabId}`)
   }
 
   /**
-   * Pretend the pages a conversation works from are in front — and only those.
+   * Pretend the tabs a conversation works from are in front — and only those.
    *
-   * A page Chromium counts as hidden stops animating *and tells the site it is hidden*, so the
-   * same page would behave differently depending on which tab happens to be on screen. Turning
-   * throttling off for every page would fix that at the cost of keeping every background
+   * A tab Chromium counts as hidden stops animating *and tells the site it is hidden*, so the
+   * same tab would behave differently depending on which tab happens to be on screen. Turning
+   * throttling off for every tab would fix that at the cost of keeping every background
    * animation running (memory is not the issue — the spike measured 613MB parked vs 614MB
-   * unthrottled for four pages); this follows the **cursors** instead, so exactly the pages
+   * unthrottled for four tabs); this follows the **cursors** instead, so exactly the tabs
    * somebody is working from are treated as in front and the rest stay Chromium's business.
-   * The geometry never depends on it: a covered page keeps its viewport and its captures are
+   * The geometry never depends on it: a covered tab keeps its viewport and its captures are
    * correct either way (measured in `apps/electron/spike`).
    */
-  private syncPageThrottling(instance: BrowserInstance): void {
+  private syncTabThrottling(instance: BrowserInstance): void {
     for (const tab of instance.tabs) {
-      const webContents = tab.pageView.webContents
+      const webContents = tab.tabView.webContents
       if (webContents.isDestroyed()) continue
       if (typeof webContents.setBackgroundThrottling !== 'function') continue
       webContents.setBackgroundThrottling(tab.cursorOf === null)
@@ -3497,15 +3549,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Let go of a page that is held — used when the page is gone, so a lock can never outlive
+   * Let go of a tab that is held — used when the tab is gone, so a lock can never outlive
    * what it locks (plan §22, 第九轮修正).
    */
-  private releaseHeldPage(instance: BrowserInstance, tabId: string): void {
+  private releaseHeldTab(instance: BrowserInstance, tabId: string): void {
     const held = tabById(instance, tabId)
     if (!held?.heldBy) return
     held.heldBy = null
     this.updateNativeOverlayState(instance)
-    mainLog.info(`[browser-pane] page lock released with its page instance=${instance.id} tab=${tabId}`)
+    mainLog.info(`[browser-pane] tab lock released with its tab instance=${instance.id} tab=${tabId}`)
   }
 
   private updateNativeOverlayState(instance: BrowserInstance): void {
@@ -3514,18 +3566,18 @@ export class BrowserPaneManager implements IBrowserPaneManager {
      * Whether anybody is working in this window at all — the indicator, not the lock.
      *
      * Kept window-level on purpose: the person should be able to tell at a glance that this
-     * window is in use even while looking at a page nobody holds. What it no longer claims
-     * is *which* page is held: that is the page's own answer (`heldBy`), and with a parent
-     * and its children working in parallel there is no single page it could name.
+     * window is in use even while looking at a tab nobody holds. What it no longer claims
+     * is *which* tab is held: that is the tab's own answer (`heldBy`), and with a parent
+     * and its children working in parallel there is no single tab it could name.
      */
     const someoneWorking = instance.controlBy.size > 0
     const shouldShow = someoneWorking || menuActive
 
-    // Only the page on screen can be overlaid: an overlay on a page nobody is
+    // Only the tab on screen can be overlaid: an overlay on a tab nobody is
     // looking at would swallow clicks nobody made. Auto-resize goes off with it —
     // a zero-sized view that still resizes with the window would grow back into a
     // strip of click-swallowing overlay at the window's top-left corner, which is
-    // where the page rail is.
+    // where the tab rail is.
     for (const tab of instance.tabs) {
       if (tab.id !== instance.activeTabId) {
         tab.nativeOverlayView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
@@ -3542,29 +3594,29 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       return
     }
 
-    // The overlay covers the page and only the page: the chrome is not the agent's to
-    // block, and a person has to be able to switch pages while it is up.
-    const page = this.pageAreaBounds(instance)
-    activeTab(instance).nativeOverlayView.setBounds(page)
+    // The overlay covers the tab and only the tab: the chrome is not the agent's to
+    // block, and a person has to be able to switch tabs while it is up.
+    const area = this.tabAreaBounds(instance)
+    activeTab(instance).nativeOverlayView.setBounds(area)
     activeTab(instance).nativeOverlayView.setAutoResize({ width: true, height: true })
-    // Above its page, under the chrome — and raised here rather than once at layout time,
-    // because every page is laid out (and the active one raised) before the overlay document
+    // Above its tab, under the chrome — and raised here rather than once at layout time,
+    // because every tab is laid out (and the active one raised) before the overlay document
     // may have loaded at all.
     instance.window.setTopBrowserView(activeTab(instance).nativeOverlayView)
     this.raiseChromeViews(instance)
 
     // Two independent things are drawn here, and only one of them takes input.
     const heldBy = activeTab(instance).heldBy
-    // What is being done is named by whoever is at the wheel *here*: the holder of the page
+    // What is being done is named by whoever is at the wheel *here*: the holder of the tab
     // on screen when there is one, else whoever started working most recently — both true,
-    // and the page's own answer is the more specific of the two.
+    // and the tab's own answer is the more specific of the two.
     const label = this.getAgentControlLabel(
       heldBy ? instance.controlBy.get(heldBy) : [...instance.controlBy.values()].at(-1),
     )
     const accent = someoneWorking ? this.getResolvedAccentColor() : 'transparent'
-    // The page on screen is the only one a person can touch, so this is where the shield
-    // belongs — and only while that page is the held one, or a menu of ours is open.
-    // Switching to another page therefore hands the keyboard and mouse straight back.
+    // The tab on screen is the only one a person can touch, so this is where the shield
+    // belongs — and only while that tab is the held one, or a menu of ours is open.
+    // Switching to another tab therefore hands the keyboard and mouse straight back.
     const shieldActive = menuActive || heldBy !== null
 
     void activeTab(instance).nativeOverlayView.webContents.executeJavaScript(`(() => {
@@ -3578,8 +3630,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       const locked = ${heldBy !== null};
 
       // The agent's outline and chip say this window is being worked on and what is being
-      // done here — the lock itself is per page, so this is the "someone is in here"
-      // indicator rather than a claim about the page in front of you.
+      // done here — the lock itself is per tab, so this is the "someone is in here"
+      // indicator rather than a claim about the tab in front of you.
       if (agentActive) {
         overlay.style.borderColor = ${JSON.stringify(accent)};
         overlay.style.boxShadow = 'inset 0 0 0 1px color-mix(in oklab, ' + ${JSON.stringify(accent)} + ' 45%, transparent), inset 0 0 24px color-mix(in oklab, ' + ${JSON.stringify(accent)} + ' 28%, transparent)';
@@ -3591,10 +3643,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         chip.style.display = 'none';
       }
 
-      // The shield takes input for two reasons and no more: this page is locked by the
-      // conversation working on it (plan §22, 第九轮 — the lock is on the page, so the
+      // The shield takes input for two reasons and no more: this tab is locked by the
+      // conversation working on it (plan §22, 第九轮 — the lock is on the tab, so the
       // rail, the address bar and the window's own size stay the person's), or a menu of
-      // ours is open above the page and a click on the page is how it is dismissed.
+      // ours is open above the tab and a click on the tab is how it is dismissed.
       shield.style.pointerEvents = shieldActive ? 'auto' : 'none';
       shield.style.cursor = locked ? 'not-allowed' : 'default';
       shield.style.background = locked
@@ -3623,50 +3675,50 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Lay every page out at the page area and stack the one on screen on top.
+   * Lay every tab out at the tab area and stack the one on screen on top.
    *
    * The others are **not** parked at zero size: a zero-sized view has no viewport (so
    * coordinates, rects and scrolling in it mean nothing) and paints nothing (so capturing it
-   * returns an empty image) — which is what used to make a background page unusable. Stacked
-   * under the active page instead, a background page is a real page that happens not to be
-   * visible: it keeps its viewport, and with `backgroundThrottling: false` on the page views
+   * returns an empty image) — which is what used to make a background tab unusable. Stacked
+   * under the active tab instead, a background tab is a real tab that happens not to be
+   * visible: it keeps its viewport, and with `backgroundThrottling: false` on the tab views
    * (`buildTab`) Chromium keeps counting it visible. Measured in `apps/electron/spike`.
    *
-   * Being laid out at the same bounds is also the whole of "switching pages": raising the
+   * Being laid out at the same bounds is also the whole of "switching tabs": raising the
    * other view is a stack change, not a resize, so nothing has to be re-attached and the
-   * pages that are not on screen never learned they were anywhere else.
+   * tabs that are not on screen never learned they were anywhere else.
    */
-  private layoutPageView(instance: BrowserInstance): void {
-    const area = this.pageAreaBounds(instance)
+  private layoutTabView(instance: BrowserInstance): void {
+    const area = this.tabAreaBounds(instance)
 
     for (const tab of instance.tabs) {
-      // Anchored at the chrome's inside corner, so a page resizes with the window but never
+      // Anchored at the chrome's inside corner, so a tab resizes with the window but never
       // moves over the chrome.
-      tab.pageView.setBounds(area)
-      tab.pageView.setAutoResize({ width: true, height: true })
+      tab.tabView.setBounds(area)
+      tab.tabView.setAutoResize({ width: true, height: true })
     }
 
-    this.raiseActivePage(instance)
+    this.raiseActiveTab(instance)
     this.updateNativeOverlayState(instance)
   }
 
   /**
-   * Put the page on screen above the other pages, and the chrome above everything.
+   * Put the tab on screen above the other tabs, and the chrome above everything.
    *
-   * Between the two goes the page's own overlay — the shield the agent's control draws there —
+   * Between the two goes the tab's own overlay — the shield the agent's control draws there —
    * and that is raised where it is positioned (`updateNativeOverlayState`), because it may not
-   * even be loaded yet when the page is raised.
+   * even be loaded yet when the tab is raised.
    */
-  private raiseActivePage(instance: BrowserInstance): void {
+  private raiseActiveTab(instance: BrowserInstance): void {
     if (instance.window.isDestroyed()) return
-    instance.window.setTopBrowserView(activeTab(instance).pageView)
+    instance.window.setTopBrowserView(activeTab(instance).tabView)
     this.raiseChromeViews(instance)
   }
 
   private layoutAllViews(instance: BrowserInstance): void {
     this.layoutToolbarView(instance)
     this.layoutRailView(instance)
-    this.layoutPageView(instance)
+    this.layoutTabView(instance)
     this.raiseChromeViews(instance)
   }
 
@@ -3685,23 +3737,47 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   private isBrowserEmptyStateUrl(url: string): boolean {
     if (!url) return false
-    return url.includes(`/${BROWSER_EMPTY_STATE_PAGE}`) || url.includes(`\\${BROWSER_EMPTY_STATE_PAGE}`)
+    return url.includes(`/${BROWSER_EMPTY_STATE_FILE}`) || url.includes(`\\${BROWSER_EMPTY_STATE_FILE}`)
   }
 
-  private normalizePageState(url: string, title: string): { url: string; title: string } {
+  private normalizeTabState(url: string, title: string): { url: string; title: string } {
     if (this.isBrowserEmptyStateUrl(url)) {
       return { url: 'about:blank', title: 'New Tab' }
     }
     return { url, title }
   }
 
-  private async loadEmptyStatePage(instance: BrowserInstance, tab: BrowserTab = activeTab(instance)): Promise<void> {
+  private async loadEmptyStateDocument(instance: BrowserInstance, tab: BrowserTab = activeTab(instance)): Promise<void> {
     if (VITE_DEV_SERVER_URL) {
-      await tab.pageView.webContents.loadURL(`${VITE_DEV_SERVER_URL}/${BROWSER_EMPTY_STATE_PAGE}`)
+      await tab.tabView.webContents.loadURL(`${VITE_DEV_SERVER_URL}/${BROWSER_EMPTY_STATE_FILE}`)
       return
     }
 
-    await tab.pageView.webContents.loadFile(join(__dirname, `renderer/${BROWSER_EMPTY_STATE_PAGE}`))
+    await tab.tabView.webContents.loadFile(join(__dirname, `renderer/${BROWSER_EMPTY_STATE_FILE}`))
+  }
+
+  /**
+   * Put a document in a tab the moment it is created.
+   *
+   * A view that has never painted contributes no pixels of its own, and a window's tabs
+   * all sit at the same bounds — so a tab created and left empty does not read as "empty",
+   * it reads as the tab stacked underneath it: switching to a new tab showed the tab
+   * that was there before (plan §22, 用户报告). Every path that makes a tab therefore
+   * leaves one of these behind, and this is the one place it happens.
+   *
+   * Superseded is the normal outcome, not a failure: a tab created *at* an address
+   * (a prototype, a link) is told where to go in the same breath, and that navigation is
+   * the document the tab was really made for.
+   */
+  private startEmptyStateLoad(instance: BrowserInstance, tab: BrowserTab): void {
+    void this.loadEmptyStateDocument(instance, tab).catch((error) => {
+      const superseded = abortedLoad(error)
+      if (superseded) {
+        mainLog.info(`[browser-pane] empty-state load superseded id=${instance.id} tab=${tab.id} aborted=${superseded.url ?? 'unknown'}`)
+        return
+      }
+      mainLog.warn(`[browser-pane] empty-state load failed id=${instance.id} tab=${tab.id}: ${error instanceof Error ? error.message : String(error)}`)
+    })
   }
 
   private async handleDeepLinkUrl(url: string): Promise<void> {
@@ -3755,7 +3831,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const handled = await this.triggerEmptyStateRouteLaunch(instance, route, token, 'hash')
 
     try {
-      await activeTab(instance).pageView.webContents.executeJavaScript(
+      await activeTab(instance).tabView.webContents.executeJavaScript(
         "if (window.location.hash.includes('launch=')) history.replaceState(null, '', window.location.pathname + window.location.search);",
       )
     } catch {
@@ -3819,10 +3895,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     reason: string,
   ): Promise<void> {
     const safeReason = reason.replace(/[<>&]/g, (ch) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[ch] || ch))
-    const title = surface === 'rail' ? 'Browser page rail failed to load' : 'Browser toolbar failed to load'
+    const title = surface === 'rail' ? 'Browser tab rail failed to load' : 'Browser toolbar failed to load'
     const body = surface === 'rail'
-      ? 'The page area still works, but the page rail is unavailable. Pages can still be switched and added from the app, or by the agent.'
-      : 'The page area still works, but toolbar UI is unavailable. Try reopening the browser window.'
+      ? 'The tab area still works, but the tab rail is unavailable. Tabs can still be switched and added from the app, or by the agent.'
+      : 'The tab area still works, but toolbar UI is unavailable. Try reopening the browser window.'
     const html = `<!doctype html>
 <html>
   <head>
@@ -3913,32 +3989,32 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * The prototype **one page** is for: what it was opened for, else what the conversation
+   * The prototype **one tab** is for: what it was opened for, else what the conversation
    * working in it is working on.
    *
-   * Split out of {@link prototypeBindingFor} so a page can be asked about without
-   * being the page on screen — which is the whole point of a window with several
-   * pages. Both halves are the same facts as before, only per page.
+   * Split out of {@link prototypeBindingFor} so a tab can be asked about without
+   * being the tab on screen — which is the whole point of a window with several
+   * tabs. Both halves are the same facts as before, only per tab.
    */
   private tabPrototypeBinding(tab: BrowserTab): PrototypeWindowBinding | null {
     if (tab.boundPrototype) return tab.boundPrototype
-    // The fallback is asked of **the page's** conversation, not the window's: a page that
+    // The fallback is asked of **the tab's** conversation, not the window's: a tab that
     // cannot say what it is for borrows from whoever works from it (`cursorOf`, sticky) or
     // from whoever opened it — the conversation is what a prototype binding is resolved
     // against, so this reads the work's opener rather than the work itself (plan §22).
     // There is no window-level answer to fall back to — one window holds several
-    // conversations' pages at once (Conductor).
+    // conversations' tabs at once (Conductor).
     const sessionId = tab.cursorOf ?? tab.belongsTo?.sessionId
     return sessionId ? this.prototypeWindowResolver?.(sessionId) ?? null : null
   }
 
   /**
-   * Names for the conversations that opened some of this window's pages.
+   * Names for the conversations that opened some of this window's tabs.
    *
-   * The rail groups the pages by work and names each section — a session's pages by the
-   * conversation, a task's by the task (that name comes from the page's own `belongsTo`, and
+   * The rail groups the tabs by work and names each section — a session's tabs by the
+   * conversation, a task's by the task (that name comes from the tab's own `belongsTo`, and
    * needs nothing from here); this map answers the first kind. `sessionId` is an id, and a
-   * header reading `session-4f2a…` is not an answer to "whose pages are these". Only openers
+   * header reading `session-4f2a…` is not an answer to "whose tabs are these". Only openers
    * that have a name are included; the chrome has its own fallback, so a nameless (or
    * deleted) session still groups.
    */
@@ -3980,17 +4056,17 @@ export class BrowserPaneManager implements IBrowserPaneManager {
        */
       picking: instance.picking,
       /**
-       * The window's pages.
+       * The window's tabs.
        *
        * `tabs` comes from the window itself rather than from the renderer's own
-       * count: the rail is not told "show the pages", it is told which pages there
+       * count: the rail is not told "show the tabs", it is told which tabs there
        * are. Whether the rail exists is not a fact to agree about — it is the
-       * window's left column, laid out with `PAGE_RAIL_WIDTH` before any of this was
+       * window's left column, laid out with `TAB_RAIL_WIDTH` before any of this was
        * pushed, so there is no second answer to disagree with.
        */
       tabs: instance.tabs.map((tab) => this.toTabSummary(instance, tab)),
       /**
-       * How to name the conversations those pages came from, for the rail's group
+       * How to name the conversations those tabs came from, for the rail's group
        * headers. Keyed by session id; a missing id is a session with no name yet, and
        * the rail says so generically rather than printing an id.
        */
@@ -4018,8 +4094,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // involved — an overlay page is loaded, not bounced through the prototype.
       const named = this.prototypeAddressResolver?.(url)
       if (named) {
-        // Naming a prototype asks for *it*, so it gets a page of its own rather
-        // than the one on screen being re-pointed at it (plan §22). The page
+        // Naming a prototype asks for *it*, so it gets a tab of its own rather
+        // than the one on screen being re-pointed at it (plan §22). The tab
         // carries the prototype as its identity, because an overlay's view loads a
         // third-party address and nothing in the URL would say so afterwards —
         // which is why the bar has to be told rather than read it back.
@@ -4093,10 +4169,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     })
 
     /**
-     * The window's own pages, managed from the strip it draws.
+     * The window's own tabs, managed from the strip it draws.
      *
      * One channel for all four actions rather than four channels: they are one
-     * sentence — "do this to this window's pages" — sent by a renderer that holds
+     * sentence — "do this to this window's tabs" — sent by a renderer that holds
      * the buttons side by side, and an action that names its target cannot mean
      * anything else.
      */
@@ -4117,28 +4193,22 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         }
 
         if (action === 'release') {
-          // The person taking a locked page back. The overlay is what holds the page, so
+          // The person taking a locked tab back. The overlay is what holds the tab, so
           // dropping the overlay *is* the unlock (plan §22, 第九轮修正) — and it is the
           // same act as the agent's own `release`, only sent from the other side. No
           // session is named: whoever is working here lets go.
           const result = this.clearAgentControlForInstance(inst.id)
           mainLog.info(
-            `[browser-pane] page lock released by hand instance=${inst.id} tab=${tabId ?? 'unstated'} released=${result.released}${result.reason ? ` reason=${result.reason}` : ''}`,
+            `[browser-pane] tab lock released by hand instance=${inst.id} tab=${tabId ?? 'unstated'} released=${result.released}${result.reason ? ` reason=${result.reason}` : ''}`,
           )
           return
         }
 
-        // A new page starts on the empty state — the same page a brand-new window
+        // A new tab starts on the empty state — the same document a brand-new window
         // opens with, rather than a white void that says nothing about what this
-        // window can do.
-        const openedId = this.createTab(inst.id, { activate: true })
-        const opened = tabById(inst, openedId)
-
-        if (opened) {
-          void this.loadEmptyStatePage(inst, opened).catch((error) => {
-            mainLog.warn(`[browser-pane] new tab empty-state load failed id=${inst.id} tab=${openedId}: ${String(error)}`)
-          })
-        }
+        // window can do. That is `createTab`'s job rather than this handler's, so
+        // every entry point that adds a tab gets it (see `startEmptyStateLoad`).
+        this.createTab(inst.id, { activate: true })
       },
     )
 
@@ -4269,7 +4339,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * Extract a plain {@link BrowserInstanceSnapshot} from a live `BrowserInstance`.
    *
    * `this.getInstance(id)` returns the full instance, which has non-cloneable
-   * Electron native references (`window: BrowserWindow`, `pageView: BrowserView`,
+   * Electron native references (`window: BrowserWindow`, `tabView: BrowserView`,
    * `toolbarView`, ...). When we ship the result back over the `__browser:invoke`
    * IPC channel, Electron's structured-clone serializer throws
    * "An object could not be cloned" — see the user-reported bug on the remote
@@ -4304,14 +4374,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const args = req.args ?? []
     // The **work** the asking session is part of — the task's node for a Conductor child, the
     // session itself otherwise. Identity, like `sessionId`, and therefore never read from
-    // `args`: a request that named somebody else's work would be writing a page's declaration
-    // on their behalf, and "leave other people's pages alone" is decided from it (plan §22).
+    // `args`: a request that named somebody else's work would be writing a tab's declaration
+    // on their behalf, and "leave other people's tabs alone" is decided from it (plan §22).
     const work: TabBelongsTo = req.work ?? { kind: 'session', sessionId }
-    // The page every page-scoped branch below acts on: named by the caller, which is the
-    // side that resolved it (`pickCommandTarget` — the conversation's own page, or the one
-    // on screen when it has none), and named *here* rather than looked up, so the page a
+    // The tab every tab-scoped branch below acts on: named by the caller, which is the
+    // side that resolved it (`pickCommandTarget` — the conversation's own tab, or the one
+    // on screen when it has none), and named *here* rather than looked up, so the tab a
     // command lands on is decided once and in one place. A caller that names none means the
-    // page on screen — the person's own actions, and a window nobody has routed to yet
+    // tab on screen — the person's own actions, and a window nobody has routed to yet
     // (plan §22, 第十轮/第十二轮).
     const commandTabId = req.tabId
 
@@ -4411,8 +4481,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         const [instanceId, options] = args as [string, { url?: string; activate?: boolean; prototype?: PrototypeWindowBinding | null } | undefined]
         this.requireInstanceInWorkspace(instanceId, workspaceId)
         // The opener is the caller, stamped here rather than read off the wire: a
-        // request that named somebody else's work would be writing a page's
-        // declaration on their behalf, and "leave other people's pages alone" is
+        // request that named somebody else's work would be writing a tab's
+        // declaration on their behalf, and "leave other people's tabs alone" is
         // decided from this field.
         return this.createTab(instanceId, { ...options, belongsTo: work })
       }
@@ -4422,13 +4492,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         this.activateTab(instanceId, tabId)
         return undefined
       }
-      case 'setSessionPage': {
+      case 'setSessionTab': {
         const [instanceId, tabId] = args as [string, string, string]
         this.requireInstanceInWorkspace(instanceId, workspaceId)
-        // Same rule as `createTab`: the page is recorded as the *caller's* cursor
+        // Same rule as `createTab`: the tab is recorded as the *caller's* cursor
         // and lease, so the id comes from the request's identity rather than from a
         // third argument that could say anything.
-        this.setSessionPage(instanceId, tabId, sessionId)
+        this.setSessionTab(instanceId, tabId, sessionId)
         return undefined
       }
       case 'closeTab': {
@@ -4698,8 +4768,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    *
    * Per session rather than per window: a parent and its child sessions work in one window at
    * the same time (Conductor), so this adds an entry instead of taking over the window's. The
-   * page a session holds is claimed later, by the command that says which page it is about
-   * (`recordSessionPage`) — a tool start does not know a page yet.
+   * tab a session holds is claimed later, by the command that says which tab it is about
+   * (`recordSessionTab`) — a tool start does not know a tab yet.
    */
   setAgentControl(
     sessionId: string,
@@ -4710,7 +4780,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     if (!instance) return
 
     // Re-inserted, so the last entry is the one that started working most recently — that is
-    // what the window's chip falls back to when the page on screen is nobody's.
+    // what the window's chip falls back to when the tab on screen is nobody's.
     instance.controlBy.delete(sessionId)
     instance.controlBy.set(sessionId, { displayName: meta.displayName, intent: meta.intent })
 
@@ -4732,10 +4802,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   /**
    * Let go of what is being held here: a named session's overlay and holds, or — when nobody
-   * is named, which is the person pressing `release` — the hold on the page on screen.
+   * is named, which is the person pressing `release` — the hold on the tab on screen.
    *
    * The person's half is deliberately narrower than it used to be: the shield they are
-   * looking at covers one page, so that is the one that comes back. Their other pages, and
+   * looking at covers one tab, so that is the one that comes back. Their other tabs, and
    * the other conversations sharing the window, are not what the button was about (plan §22,
    * 第九轮修正).
    */
@@ -4755,15 +4825,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       return { released: true }
     }
 
-    const page = activeTab(instance)
-    if (!page.heldBy) {
+    const tab = activeTab(instance)
+    if (!tab.heldBy) {
       return { released: false, reason: 'No active agent overlay on the target window.' }
     }
 
-    page.heldBy = null
+    tab.heldBy = null
     this.updateNativeOverlayState(instance)
     this.emitStateChange(instance)
-    mainLog.info(`[browser-pane] page lock released by hand instance=${instanceId} tab=${page.id}`)
+    mainLog.info(`[browser-pane] tab lock released by hand instance=${instanceId} tab=${tab.id}`)
 
     return { released: true }
   }
@@ -4774,32 +4844,32 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * All colors pass through (including white/black) — contrast is handled by the renderer.
    * Guards against stale extraction (URL change during async executeJavaScript).
    *
-   * Takes the page it is about: a background tab finishing its load must measure
+   * Takes the tab it is about: a background tab finishing its load must measure
    * *itself*, not whatever happens to be on screen.
    */
   private async extractThemeColor(instance: BrowserInstance, tab: BrowserTab): Promise<void> {
     if (tab.themeColor) return // already set by did-change-theme-color or observer
     const urlAtStart = tab.currentUrl
     try {
-      const color = await tab.pageView.webContents.executeJavaScript(`(${THEME_COLOR_EXTRACTOR_FN})()`)
+      const color = await tab.tabView.webContents.executeJavaScript(`(${THEME_COLOR_EXTRACTOR_FN})()`)
       // Guard: if user navigated away during extraction, discard stale result
       if (tab.currentUrl !== urlAtStart) return
       if (typeof color === 'string' && color.length > 0) {
         this.applyThemeColor(instance, tab, color)
       }
     } catch {
-      // page destroyed or JS error — ignore
+      // tab destroyed or JS error — ignore
     }
   }
 
   private applyThemeColor(instance: BrowserInstance, tab: BrowserTab, color: string | null): void {
     if (tab.themeColor === color) return
     tab.themeColor = color
-    // Recorded on the page it belongs to, and read back off the page **on screen** when
+    // Recorded on the tab it belongs to, and read back off the tab **on screen** when
     // the window is described — the top bar's chip for this window is tinted with it.
     // The window's own chrome is deliberately not part of that: chrome is the app's
     // surface, so a page painting its background dark does not get to repaint the
-    // address bar or the page rail next to it.
+    // address bar or the tab rail next to it.
     this.emitStateChange(instance)
   }
 
@@ -4808,7 +4878,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const urlAtInstall = tab.currentUrl
     tab.themeObserverToken = token
 
-    void tab.pageView.webContents.executeJavaScript(`
+    void tab.tabView.webContents.executeJavaScript(`
       (() => {
         const token = ${JSON.stringify(token)};
         const prefix = ${JSON.stringify(THEME_COLOR_SIGNAL_PREFIX)} + token + ':';
@@ -4935,18 +5005,18 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Which page of which window this is, by the page itself.
+   * Which tab of which window this is, by the tab itself.
    *
-   * Every page, not just the one on screen — the same reason `findInstanceByPageWebContentsId`
-   * looks at all of them. A command now runs on the page its conversation works from, which is
-   * usually a page behind the one the person is looking at, and a request or a download a page
-   * makes belongs to *that* page's log: reading it through the page on screen would file it
+   * Every tab, not just the one on screen — the same reason `findInstanceByTabWebContentsId`
+   * looks at all of them. A command now runs on the tab its conversation works from, which is
+   * usually a tab behind the one the person is looking at, and a request or a download a tab
+   * makes belongs to *that* tab's log: reading it through the tab on screen would file it
    * under somebody else's (plan §22, 第十二轮).
    */
   private findTabByWebContentsId(webContentsId: number): { instance: BrowserInstance; tab: BrowserTab } | undefined {
     for (const instance of this.instances.values()) {
       for (const tab of instance.tabs) {
-        if (tab.pageView.webContents.id === webContentsId) return { instance, tab }
+        if (tab.tabView.webContents.id === webContentsId) return { instance, tab }
       }
     }
     return undefined
@@ -4967,11 +5037,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Where a page's downloads are filed: the directory of the conversation that page belongs
+   * Where a tab's downloads are filed: the directory of the conversation that tab belongs
    * to, else the OS downloads folder.
    *
-   * Asked of **the page** — whoever works from it (`cursorOf`, sticky) or opened it — because
-   * a download is the page's, not the window's: two conversations sharing one window file
+   * Asked of **the tab** — whoever works from it (`cursorOf`, sticky) or opened it — because
+   * a download is the tab's, not the window's: two conversations sharing one window file
    * their downloads apart (plan §22, Conductor).
    */
   private resolveDownloadsDir(tab: BrowserTab): string {
@@ -4984,7 +5054,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         return dir
       }
     }
-    // Nobody's page — the person's own browsing — goes to the OS downloads folder.
+    // Nobody's tab — the person's own browsing — goes to the OS downloads folder.
     return app.getPath('downloads')
   }
 
@@ -5060,7 +5130,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       const located = this.findTabByWebContentsId(wcId)
       if (!located) return
       const instance = located.instance
-      // The page that started it: a download keeps reporting to the page it came from,
+      // The tab that started it: a download keeps reporting to the tab it came from,
       // even after the person has moved to another one.
       const tab = located.tab
 
@@ -5169,7 +5239,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Wire the parts of a window that outlive any single page: the window itself and
+   * Wire the parts of a window that outlive any single tab: the window itself and
    * the toolbar. Called once per window — the toolbar is shared by every tab, so
    * its listeners must not be installed again when a tab is added.
    */
@@ -5215,7 +5285,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     // The rail is the window's other chrome surface: same pushes, and its own document
     // — a push sent before it finished loading would be lost, so its own
-    // `did-finish-load` is where it catches up on the pages it has to draw.
+    // `did-finish-load` is where it catches up on the tabs it has to draw.
     const railWc = instance.railView.webContents
 
     railWc.on('did-finish-load', () => {
@@ -5248,83 +5318,83 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Wire one page.
+   * Wire one tab.
    *
    * Everything in here belongs to `tab` and writes to `tab` — *not* to whatever is
    * on screen. The events below fire for the view they were installed on, so a
    * background tab loading a page must record its address on itself even while the
    * user is looking at another one; reading through the active tab would quietly
-   * write this page's facts onto that one. Window-level work that these events
+   * write this tab's facts onto that one. Window-level work that these events
    * trigger (state pushes, the toolbar, frame capture) still goes through
    * `instance`, because that is what it is about.
    */
   private attachTab(instance: BrowserInstance, tab: BrowserTab): void {
-    const pageWc = tab.pageView.webContents
+    const tabWc = tab.tabView.webContents
     const overlayWc = tab.nativeOverlayView.webContents
 
-    // Everything a page needs to be a page: a user agent that does not announce
+    // Everything a tab needs to be a tab: a user agent that does not announce
     // Electron (the site's own scripts should not see the frame we put it in), its
     // own background so about:blank does not flash, its views in the window, and the
     // overlay document the agent's control chip is drawn in. Both entry points —
-    // `createInstance` and `createTab` — come through here, so a second page cannot
+    // `createInstance` and `createTab` — come through here, so a second tab cannot
     // be missing one of these.
-    const defaultUa = pageWc.userAgent || ''
+    const defaultUa = tabWc.userAgent || ''
     const sanitizedUa = defaultUa.replace(/\sElectron\/[^\s]+/g, '')
     if (sanitizedUa && sanitizedUa !== defaultUa) {
-      pageWc.setUserAgent(sanitizedUa)
+      tabWc.setUserAgent(sanitizedUa)
     }
 
     const bgColor = nativeTheme.shouldUseDarkColors ? '#2b292e' : '#fafafb'
-    const pageWcWithBg = pageWc as typeof pageWc & { setBackgroundColor?: (color: string) => void }
-    pageWcWithBg.setBackgroundColor?.(bgColor)
+    const tabWcWithBg = tabWc as typeof tabWc & { setBackgroundColor?: (color: string) => void }
+    tabWcWithBg.setBackgroundColor?.(bgColor)
     const overlayWcWithBg = overlayWc as typeof overlayWc & { setBackgroundColor?: (color: string) => void }
     overlayWcWithBg.setBackgroundColor?.('#00000000')
 
-    instance.window.addBrowserView(tab.pageView)
+    instance.window.addBrowserView(tab.tabView)
     instance.window.addBrowserView(tab.nativeOverlayView)
-    // The chrome stays on top of whatever page is showing — both surfaces of it.
+    // The chrome stays on top of whatever tab is showing — both surfaces of it.
     this.raiseChromeViews(instance)
     void this.loadNativeOverlayPage(instance, tab)
 
-    // Every action taken on this page is a frame, whatever the screen did with it:
+    // Every action taken on this tab is a frame, whatever the screen did with it:
     // a click is a *cause*, and a reader who cannot tell "somebody did this" from
     // "it moved on its own" has a pile of pictures rather than a record (plan §20.3).
     tab.cdp.onAction = (action) => this.noteFrameAction(instance, action)
 
-    pageWc.on('did-start-loading', () => {
+    tabWc.on('did-start-loading', () => {
       tab.isLoading = true
       this.emitStateChange(instance)
       void this.pushToolbarState(instance)
     })
 
-    pageWc.on('did-stop-loading', () => {
+    tabWc.on('did-stop-loading', () => {
       tab.isLoading = false
-      tab.canGoBack = pageWc.canGoBack()
-      tab.canGoForward = pageWc.canGoForward()
+      tab.canGoBack = tabWc.canGoBack()
+      tab.canGoForward = tabWc.canGoForward()
       // Drain in-flight count — all pending requests are settled once loading stops
-      this.inFlightRequestsByWebContentsId.set(pageWc.id, 0)
-      this.lastNetworkActivityByWebContentsId.set(pageWc.id, Date.now())
+      this.inFlightRequestsByWebContentsId.set(tabWc.id, 0)
+      this.lastNetworkActivityByWebContentsId.set(tabWc.id, Date.now())
       this.emitStateChange(instance)
       void this.pushToolbarState(instance)
       void this.extractThemeColor(instance, tab)
       this.updateNativeOverlayState(instance)
     })
 
-    pageWc.on('dom-ready', () => {
+    tabWc.on('dom-ready', () => {
       this.installThemeObserver(instance, tab)
       void this.extractThemeColor(instance, tab)
     })
 
-    // Every page's answer to "may Chromium throttle this?" is stated once it exists, so a page
-    // is never left on an inherited default it did not mean (`syncPageThrottling`).
-    this.syncPageThrottling(instance)
+    // Every tab's answer to "may Chromium throttle this?" is stated once it exists, so a tab
+    // is never left on an inherited default it did not mean (`syncTabThrottling`).
+    this.syncTabThrottling(instance)
 
-    // A locked page takes no input from a person. The shield already swallows the mouse;
-    // this is the keyboard half — typing into a page a conversation is driving is the
+    // A locked tab takes no input from a person. The shield already swallows the mouse;
+    // this is the keyboard half — typing into a tab a conversation is driving is the
     // same interruption by another route. Read live rather than captured, so the lock
-    // follows the lease: the page stops refusing input when its turn ends or the overlay
-    // goes, and a page the person switched to is never covered by a lock on another.
-    pageWc.on('before-input-event', (event) => {
+    // follows the lease: the tab stops refusing input when its turn ends or the overlay
+    // goes, and a tab the person switched to is never covered by a lock on another.
+    tabWc.on('before-input-event', (event) => {
       if (tab.heldBy !== null) {
         event.preventDefault()
       }
@@ -5343,39 +5413,39 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       }
     })
 
-    pageWc.on('did-navigate', (_event, urlFromEvent) => {
-      const url = typeof pageWc.getURL === 'function' ? pageWc.getURL() : (urlFromEvent || tab.currentUrl)
+    tabWc.on('did-navigate', (_event, urlFromEvent) => {
+      const url = typeof tabWc.getURL === 'function' ? tabWc.getURL() : (urlFromEvent || tab.currentUrl)
       const previousUrl = tab.currentUrl
       this.clearInPageThemeTimer(tab)
       tab.themeObserverToken = null
       tab.themeColor = null // reset for new page (batched with state push below)
-      const normalized = this.normalizePageState(url, pageWc.getTitle())
+      const normalized = this.normalizeTabState(url, tabWc.getTitle())
       tab.currentUrl = normalized.url
       tab.title = normalized.title
       mainLog.info(`[browser-pane] did-navigate id=${instance.id} from=${previousUrl} to=${tab.currentUrl}`)
-      tab.canGoBack = pageWc.canGoBack()
-      tab.canGoForward = pageWc.canGoForward()
+      tab.canGoBack = tabWc.canGoBack()
+      tab.canGoForward = tabWc.canGoForward()
       // Drain in-flight count — prior page's requests are cancelled on navigation
-      this.inFlightRequestsByWebContentsId.set(pageWc.id, 0)
-      this.lastNetworkActivityByWebContentsId.set(pageWc.id, Date.now())
+      this.inFlightRequestsByWebContentsId.set(tabWc.id, 0)
+      this.lastNetworkActivityByWebContentsId.set(tabWc.id, Date.now())
       this.emitStateChange(instance)
       void this.pushToolbarState(instance)
       this.scheduleEarlyThemeExtraction(instance, tab, url)
       this.updateNativeOverlayState(instance)
     })
 
-    pageWc.on('did-redirect-navigation', (_event, url, isInPlace, isMainFrame) => {
+    tabWc.on('did-redirect-navigation', (_event, url, isInPlace, isMainFrame) => {
       if (!isMainFrame) return
       mainLog.info(`[browser-pane] did-redirect-navigation id=${instance.id} url=${url} inPlace=${isInPlace}`)
     })
 
-    pageWc.on('did-navigate-in-page', (_event, urlFromEvent) => {
-      const url = typeof pageWc.getURL === 'function' ? pageWc.getURL() : (urlFromEvent || tab.currentUrl)
-      const normalized = this.normalizePageState(url, tab.title)
+    tabWc.on('did-navigate-in-page', (_event, urlFromEvent) => {
+      const url = typeof tabWc.getURL === 'function' ? tabWc.getURL() : (urlFromEvent || tab.currentUrl)
+      const normalized = this.normalizeTabState(url, tab.title)
       tab.currentUrl = normalized.url
       tab.title = normalized.title
-      tab.canGoBack = pageWc.canGoBack()
-      tab.canGoForward = pageWc.canGoForward()
+      tab.canGoBack = tabWc.canGoBack()
+      tab.canGoForward = tabWc.canGoForward()
 
       void this.maybeHandleEmptyStateLaunch(instance, url).then((handled) => {
         if (handled) {
@@ -5398,27 +5468,27 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       })
     })
 
-    pageWc.on('page-title-updated', (_event, title) => {
-      const normalized = this.normalizePageState(pageWc.getURL(), title)
+    tabWc.on('page-title-updated', (_event, title) => {
+      const normalized = this.normalizeTabState(tabWc.getURL(), title)
       tab.title = normalized.title
       this.emitStateChange(instance)
       void this.pushToolbarState(instance)
     })
 
-    pageWc.on('page-favicon-updated', (_event, favicons) => {
+    tabWc.on('page-favicon-updated', (_event, favicons) => {
       tab.favicon = favicons[0] || null
       this.emitStateChange(instance)
     })
 
-    pageWc.on('did-change-theme-color', (_event, color) => {
+    tabWc.on('did-change-theme-color', (_event, color) => {
       this.applyThemeColor(instance, tab, color ?? null)
     })
 
-    pageWc.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    tabWc.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
       mainLog.warn(`[browser-pane] did-fail-load id=${instance.id} code=${errorCode} url=${validatedURL} error=${errorDescription}`)
     })
 
-    pageWc.on('console-message', (_event, level, message) => {
+    tabWc.on('console-message', (_event, level, message) => {
       if (message.startsWith(THEME_COLOR_SIGNAL_PREFIX)) {
         const payload = message.slice(THEME_COLOR_SIGNAL_PREFIX.length)
         const delimiterIdx = payload.indexOf(':')
@@ -5451,14 +5521,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       }
     })
 
-    pageWc.on('will-navigate', (event, url) => {
+    tabWc.on('will-navigate', (event, url) => {
       if (url.startsWith(CRAFT_DEEPLINK_SCHEME_PREFIX)) {
         event.preventDefault()
         void this.handleDeepLinkUrl(url)
       }
     })
 
-    pageWc.setWindowOpenHandler((details) => {
+    tabWc.setWindowOpenHandler((details) => {
       mainLog.info(
         `[browser-pane] window-open requested id=${instance.id} tab=${tab.id} url=${details.url} disposition=${details.disposition ?? 'unknown'} frameName=${details.frameName || 'none'}`,
       )
@@ -5481,27 +5551,27 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         return { action: 'deny' }
       }
 
-      // A page that wants a window of its own gets a **page beside the one that asked
+      // A tab that wants a window of its own gets a **tab beside the one that asked
       // for it** (plan §22). Every one of them: `target="_blank"`, `window.open`, a
       // popup, a link on a prototype's own document. A real second window used to be
       // how popups were played, and it is the one thing the window model does not have
       // room for — a bare Electron window with no toolbar, no prototype, no patches,
       // which is a page of ours dressed up as somebody else's site.
       //
-      // The cost is stated and real: a page opened this way has no `window.opener`, so
+      // The cost is stated and real: a tab opened this way has no `window.opener`, so
       // a popup that waits for a `postMessage` from the page that opened it (Google's
       // sign-in is the usual one) will wait forever. `tab.disposition` is where that is
       // recorded, so it is diagnosable rather than mysterious.
-      // Whose page this is: **the page it was opened from**. No attribution is needed —
+      // Whose tab this is: **the tab it was opened from**. No attribution is needed —
       // who clicked is not asked, and could not be told anyway (an agent's click and a
-      // person's look the same from here) — because a page derived from a task's page
-      // belongs to that task (plan §22, 第十一轮). That is what makes a conversation's pages
-      // a group rather than a list of pages it happened to open: the link it could not
+      // person's look the same from here) — because a tab derived from a task's tab
+      // belongs to that task (plan §22, 第十一轮). That is what makes a conversation's tabs
+      // a group rather than a list of tabs it happened to open: the link it could not
       // follow itself still lands in its group, and `close` cleans up the whole task.
-      // A page opened from a page nobody owns stays nobody's: no owner is invented.
+      // A tab opened from a tab nobody owns stays nobody's: no owner is invented.
       const openedTabId = this.createTab(instance.id, {
         url: details.url,
-        // A link is clicked in order to be looked at; a page the site opened in the
+        // A link is clicked in order to be looked at; a tab the site opened in the
         // background asked not to be brought forward.
         activate: details.disposition !== 'background-tab',
         afterTabId: tab.id,
@@ -5509,28 +5579,28 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         belongsTo: tab.belongsTo,
       })
 
-      mainLog.info(`[browser-pane] window-open opened as a page id=${instance.id} tab=${openedTabId} after=${tab.id} url=${details.url}`)
+      mainLog.info(`[browser-pane] window-open opened as a tab id=${instance.id} tab=${openedTabId} after=${tab.id} url=${details.url}`)
       return { action: 'deny' }
     })
 
-    pageWc.on('focus', () => {
+    tabWc.on('focus', () => {
       this.interactedCallback?.(instance.id)
     })
   }
 
   /**
-   * Where one page is: the part of a page that outlives the moment it is read
+   * Where one tab is: the part of a tab that outlives the moment it is read
    * (plan §22).
    *
    * Split out of {@link toTabSummary} because a pick needs exactly these answers
-   * about the page it happened on — and nothing else — and a second producer of
+   * about the tab it happened on — and nothing else — and a second producer of
    * "which prototype, which page, which URL" is how a picked element and the tab
    * strip would come to disagree about where the user was standing.
    */
-  private describePageLocation(tab: BrowserTab): PickedElementOrigin {
+  private describeTabLocation(tab: BrowserTab): PickedElementOrigin {
     const binding = this.tabPrototypeBinding(tab)
     return {
-      // -- Observation: what the page itself reports --
+      // -- Observation: what the tab itself reports --
       url: tab.currentUrl,
       title: tab.title,
       prototype: binding ? { slug: binding.slug, origin: binding.origin } : null,
@@ -5544,26 +5614,26 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * One page, as everything outside this file reads it (plan §22).
+   * One tab, as everything outside this file reads it (plan §22).
    *
-   * **The single place a page becomes a wire shape**, so the toolbar's strip, the
-   * panel's list and the agent's `tabs` command cannot describe the same page
+   * **The single place a tab becomes a wire shape**, so the toolbar's strip, the
+   * panel's list and the agent's `tabs` command cannot describe the same tab
    * differently. The two halves are kept in the order the type declares them: what
-   * the page reports, then what its opener said about it.
+   * the tab reports, then what its opener said about it.
    */
   private toTabSummary(instance: BrowserInstance, tab: BrowserTab): BrowserTabSummary {
     return {
       id: tab.id,
-      ...this.describePageLocation(tab),
+      ...this.describeTabLocation(tab),
       favicon: tab.favicon,
       isLoading: tab.isLoading,
       active: tab.id === instance.activeTabId,
       // -- Declaration: whose work it is --
       belongsTo: tab.belongsTo,
       driverSessionId: tab.driverSessionId,
-      // Which conversation works from this page, when one does (plan §22, 第十轮).
+      // Which conversation works from this tab, when one does (plan §22, 第十轮).
       cursorOf: tab.cursorOf,
-      // -- The lock: who is working on this page right now, and only while they are --
+      // -- The lock: who is working on this tab right now, and only while they are --
       lockedBy: tab.heldBy,
       // How the browser asked for it, when it did (plan §22).
       disposition: tab.disposition,
@@ -5583,7 +5653,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       prototypeSlug: this.prototypeBindingFor(instance)?.slug ?? null,
       isVisible: instance.isVisible,
       // Any conversation working in this window at all — the window-level indicator. Which
-      // page each one holds is the page's own answer (`lockedBy`, per tab).
+      // tab each one holds is the tab's own answer (`lockedBy`, per tab).
       agentControlActive: instance.controlBy.size > 0,
       themeColor: activeTab(instance).themeColor,
       workspaceId: instance.workspaceId,

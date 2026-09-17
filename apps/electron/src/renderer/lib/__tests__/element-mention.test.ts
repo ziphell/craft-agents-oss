@@ -42,7 +42,7 @@ describe('buildElementMention / parseElementMention', () => {
   })
 
   it('round-trips the page the element was picked on', () => {
-    // The picker is the window's and stays on across its pages, so this is what
+    // The picker is the window's and stays on across its tabs, so this is what
     // tells two picks of the same element apart.
     const marker = buildElementMention({
       selector: '[data-testid="pay"]',

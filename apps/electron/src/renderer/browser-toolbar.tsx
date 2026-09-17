@@ -16,7 +16,7 @@ import { BrowserControls, Spinner } from '@craft-agent/ui'
 import { HeaderIconButton } from '@/components/ui/HeaderIconButton'
 import { cn } from '@/lib/utils'
 import { getHostname } from '@/components/browser/utils'
-import { groupTabsByWork, shouldShowGroupHeaders, type PageGroup } from '@/components/browser/page-groups'
+import { groupTabsByWork, shouldShowGroupHeaders, type TabGroup } from '@/components/browser/tab-groups'
 import type { BrowserTabSummary } from '../shared/types'
 import {
   DropdownMenu,
@@ -64,17 +64,17 @@ interface ToolbarState {
    */
   picking?: boolean
   /**
-   * The window's pages, in the order they were opened (plan §22).
+   * The window's tabs, in the order they were opened (plan §22).
    *
    * `undefined` for a window that has not pushed state yet — the rail draws no
-   * pages until it is told which ones exist, because an empty list would be chrome
+   * tabs until it is told which ones exist, because an empty list would be chrome
    * with no content.
    */
   tabs?: BrowserTabSummary[]
   /**
-   * What to call each conversation whose pages are in `tabs`, by opener id.
+   * What to call each conversation whose tabs are in `tabs`, by opener id.
    *
-   * The rail groups pages by who opened them (plan §22, 第八轮), and a session id is
+   * The rail groups tabs by who opened them (plan §22, 第八轮), and a session id is
    * not a name. A missing entry is a conversation with no name yet — the rail says
    * something generic rather than printing an id.
    */
@@ -97,7 +97,7 @@ declare global {
       pickElement: (addLabel?: string) => Promise<void>
       cancelPick: () => Promise<void>
       applyPrototype: () => Promise<void>
-      /** Switch to one of this window's pages, close one, add one, or unlock one. */
+      /** Switch to one of this window's tabs, close one, add one, or unlock one. */
       tabAction: (action: 'activate' | 'close' | 'new' | 'release', tabId?: string) => Promise<void>
       onStateUpdate: (callback: (state: ToolbarState) => void) => () => void
       onForceCloseMenu: (callback: (payload: { reason?: string }) => void) => () => void
@@ -110,7 +110,7 @@ declare global {
 /* ------------------------------------------------------------------ */
 
 /**
- * Whether this document is the page rail rather than the address bar.
+ * Whether this document is the tab rail rather than the address bar.
  *
  * The window's chrome is an L — a row and a column — and one `BrowserView` is one
  * rectangle, so the host loads this same bundle twice and says which surface each
@@ -119,24 +119,24 @@ declare global {
 const IS_RAIL = new URLSearchParams(window.location.search).get('view') === 'rail'
 
 /* ------------------------------------------------------------------ */
-/*  Page rail                                                          */
+/*  Tab rail                                                          */
 /* ------------------------------------------------------------------ */
 
 /**
- * The window's pages, down the window's left edge (plan §22).
+ * The window's tabs, down the window's left edge (plan §22).
  *
- * Pages are a list that grows with use, and a window has height to spare rather
+ * Tabs are a list that grows with use, and a window has height to spare rather
  * than width: as a row across the top the list had to share its room with the
- * address bar, so a second page pushed the bar aside and every chip after it
+ * address bar, so a second tab pushed the bar aside and every chip after it
  * scrolled out of sight — which is what made it unusable. A column gives every
- * page the same width, and the bar keeps the geometry it always had.
+ * tab the same width, and the bar keeps the geometry it always had.
  *
- * It reads as chrome, so it drags the window like the bar does — except the pages
+ * It reads as chrome, so it drags the window like the bar does — except the tabs
  * themselves and the `+`, which are things to click. Its colours are the app's,
  * not the page's: chrome is not part of the page (the page's own colour still tints
  * the window's chip in the top bar, which is about *which* window, not this surface).
  */
-function PageRail({
+function TabRail({
   tabs,
   sessionLabels,
   onSelect,
@@ -159,10 +159,10 @@ function PageRail({
   }
 
   /**
-   * The pages, sectioned by whose work they are — a person's, one of the conversations this
+   * The tabs, sectioned by whose work they are — a person's, one of the conversations this
    * window is shared with, or a task of the Tasks DAG (plan §22, 第八轮).
    *
-   * The rule lives in `groupTabsByWork` because the badge's page list in the top bar
+   * The rule lives in `groupTabsByWork` because the badge's tab list in the top bar
    * draws the same list and the two must not disagree about it. Headers only appear
    * when there is more than one group: with a single group they would be a row saying
    * "all of these are yours" over all of them.
@@ -177,7 +177,7 @@ function PageRail({
    * one of its sessions use — so nothing has to be pushed alongside the tabs for it, the way a
    * conversation's name has to be (`sessionLabels`: the rail is a separate document).
    */
-  const groupLabel = (group: PageGroup): string => {
+  const groupLabel = (group: TabGroup): string => {
     const work = group.work
     if (!work) return t('browser.openedByYou')
     if (work.kind === 'task') return work.taskSlug
@@ -191,15 +191,15 @@ function PageRail({
     <div className="flex h-screen flex-col bg-background">
       {/*
         The rail's own header row: what the column is, and the way to add to it. `+`
-        lives here rather than beside the pages because it must stay reachable however
+        lives here rather than beside the tabs because it must stay reachable however
         long the list gets. Same height as the address bar next to it, so the two read
         as one band across the window's top.
       */}
       <div className="titlebar-drag-region flex h-[48px] shrink-0 items-center justify-between pl-3 pr-2">
-        <span className={cn('select-none text-[11px] font-medium', tone.text)}>{t('browser.pages')}</span>
+        <span className={cn('select-none text-[11px] font-medium', tone.text)}>{t('browser.tabs')}</span>
         <button
           type="button"
-          aria-label={t('browser.newPage')}
+          aria-label={t('browser.newTab')}
           className={cn(
             'titlebar-no-drag flex h-[24px] w-[24px] shrink-0 items-center justify-center rounded-[6px] transition-colors',
             tone.text,
@@ -222,9 +222,9 @@ function PageRail({
             )}
 
             {group.tabs.map((tab) => {
-              const label = tab.title.trim() || getHostname(tab.url) || t('browser.untitledPage')
+              const label = tab.title.trim() || getHostname(tab.url) || t('browser.untitledTab')
               // Which prototype, and which of its pages — the two facts the address bar
-              // names for the page on screen, here for every page, since a column of
+              // names for the tab on screen, here for every tab, since a column of
               // titles cannot tell one prototype's page from another's.
               const where = tab.prototype
                 ? `${tab.prototype.slug}${tab.prototypePage ? ` / ${tab.prototypePage}` : ''}`
@@ -258,7 +258,7 @@ function PageRail({
                         {/*
                           Who opened it, and what is happening to it. The opener is worth
                           marking when it was not the person, and only when the group header
-                          is not already saying it — a group of one conversation's pages
+                          is not already saying it — a group of one conversation's tabs
                           does not need a bot on every row.
                         */}
                         {!showHeaders && tab.belongsTo !== null && (
@@ -266,17 +266,17 @@ function PageRail({
                         )}
                         {/*
                           Two strengths, one mark, and the lock is a **button**: a click
-                          there does nothing, so taking the page back has to be possible from
-                          outside it — the agent's overlay is what holds the page, and letting
+                          there does nothing, so taking the tab back has to be possible from
+                          outside it — the agent's overlay is what holds the tab, and letting
                           go of the overlay is the unlock (plan §22, 第九轮修正). It is an
                           escape hatch rather than a setting: the agent's next action may
-                          take the page again. The plain dot is the weaker fact, a page
+                          take the tab again. The plain dot is the weaker fact, a tab
                           somebody has driven but is not holding.
                         */}
                         {tab.lockedBy === null && tab.driverSessionId !== null && (
                           <span
-                            aria-label={t('browser.pageInUse')}
-                            title={t('browser.pageInUse')}
+                            aria-label={t('browser.tabInUse')}
+                            title={t('browser.tabInUse')}
                             className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
                           />
                         )}
@@ -286,8 +286,8 @@ function PageRail({
                   </button>
 
                   {/*
-                    The unlock sits outside the row's own button: the row switches pages, and
-                    "take this page back" is a different act on the same row. Shown only while
+                    The unlock sits outside the row's own button: the row switches tabs, and
+                    "take this tab back" is a different act on the same row. Shown only while
                     a conversation is holding it (plan §22, 第九轮修正).
                   */}
                   {tab.lockedBy !== null && (
@@ -304,7 +304,7 @@ function PageRail({
 
                   <button
                     type="button"
-                    aria-label={t('browser.closePage')}
+                    aria-label={t('browser.closeTab')}
                     className={cn(
                       'titlebar-no-drag mr-1 shrink-0 rounded-[4px] p-0.5 transition-opacity hover:bg-black/10 hover:opacity-100',
                       tab.active ? 'opacity-60' : 'opacity-0 group-hover:opacity-60',
@@ -455,22 +455,22 @@ function BrowserToolbarApp() {
     void api?.applyPrototype()
   }, [api])
 
-  const handleSelectPage = useCallback((tabId: string) => {
+  const handleSelectTab = useCallback((tabId: string) => {
     void api?.tabAction('activate', tabId)
   }, [api])
 
-  const handleClosePage = useCallback((tabId: string) => {
+  const handleCloseTab = useCallback((tabId: string) => {
     void api?.tabAction('close', tabId)
   }, [api])
 
-  const handleNewPage = useCallback(() => {
+  const handleNewTab = useCallback(() => {
     void api?.tabAction('new')
   }, [api])
 
   /**
-   * Take a locked page back.
+   * Take a locked tab back.
    *
-   * The agent's overlay is what holds the page, so this drops the overlay for whoever is
+   * The agent's overlay is what holds the tab, so this drops the overlay for whoever is
    * working there (plan §22, 第九轮修正) — the escape hatch for "I am stuck behind
    * somebody's running turn". Not awaited for its outcome: whether it released anything
    * comes back as state, and this renderer drawing its own idea of that is the thing the
@@ -481,7 +481,7 @@ function BrowserToolbarApp() {
   }, [api])
 
   /**
-   * The rail draws the pages; the bar draws the address.
+   * The rail draws the tabs; the bar draws the address.
    *
    * Both surfaces exist in every window and both are told everything, so the two
    * cannot drift apart — but each draws only what it is. Placed after the hooks so
@@ -489,12 +489,12 @@ function BrowserToolbarApp() {
    */
   if (IS_RAIL) {
     return (
-      <PageRail
+      <TabRail
         tabs={state.tabs ?? []}
         sessionLabels={state.sessionLabels ?? {}}
-        onSelect={handleSelectPage}
-        onClose={handleClosePage}
-        onNew={handleNewPage}
+        onSelect={handleSelectTab}
+        onClose={handleCloseTab}
+        onNew={handleNewTab}
         onRelease={handleReleaseLock}
       />
     )

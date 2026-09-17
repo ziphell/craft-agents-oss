@@ -136,49 +136,73 @@ export interface PickerReport {
 }
 
 /**
- * Injected picker: highlights the element under the cursor and turns the user's
- * click into a stable selector. It reports into `PICKER_STATE_KEY` rather than
- * resolving a long-lived promise, so the caller can poll with short CDP calls
- * and the idle-detach timer never fires mid-pick.
+ * Injected picker: previews the element under the cursor, and turns the user's
+ * click into a *selection* — a stable selector plus a box that stays on screen,
+ * which is what the bar under it acts on. It reports into `PICKER_STATE_KEY`
+ * rather than resolving a long-lived promise, so the caller can poll with short
+ * CDP calls and the idle-detach timer never fires mid-pick.
  *
  * Injected through CDP, so it is unaffected by the page's CSP and needs no
  * `webPreferences` changes (stays sandboxed).
  */
 function buildPickerInjectScript(options: {
-  /** Show the "add to conversation" bar under the highlight. */
+  /** Show the "add to conversation" bar under the selection. */
   addToConversation: boolean
   /** Its label, in the caller's language — the toolbar owns the i18n, not this. */
   addLabel: string
   /**
+   * The app's accent, as a concrete CSS colour.
+   *
+   * Resolved by the caller: a page cannot see the app's variables, and this class
+   * knows nothing about themes. It is the same value the agent-control overlay is
+   * drawn with, so the window's own chrome and everything drawn on a page agree.
+   */
+  accent: string
+  /**
    * Stay armed after a pick.
    *
    * One pick is what the agent asks for (`browser_tool pick`), but a person who
-   * turned the mode on is picking *elements*, plural, and moving between pages
-   * while they do it: the overlay stays, every click is reported, and the mode
-   * ends when they say so (Escape here, or the toolbar button) — plan §12.7.
+   * turned the mode on is picking *elements*, plural, and moving between tabs
+   * while they do it: the overlay stays, a click selects, and the mode ends when
+   * they say so (Escape here, or the toolbar button) — plan §12.7.
    */
   resident: boolean
 }): string {
+  const accent = options.accent
+
+  // Everything the overlay draws is one of these. The two frames carry the state
+  // (dashed + tinted = what a click would take, solid = what it took), so the
+  // selection is readable without covering the element up.
+  const hoverBoxStyle = `position:fixed;display:none;border:1px dashed ${accent};background:color-mix(in oklab, ${accent} 15%, transparent);border-radius:4px;pointer-events:none;`
+  const selectedBoxStyle = `position:fixed;display:none;border:2px solid ${accent};border-radius:4px;pointer-events:none;`
+  const labelStyle = `position:fixed;display:none;padding:2px 6px;border-radius:6px;font:12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;background:${accent};color:#fff;pointer-events:none;max-width:70vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;`
+  const buttonStyle = `all:unset;cursor:pointer;padding:3px 10px;border-radius:6px;background:${accent};color:#fff;font:12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;white-space:nowrap;`
+
   // The bar is only built when there is a conversation to add to: a button that
   // cannot do anything is worse than no button at all.
   const barMarkup = options.addToConversation
     ? `
+  // A positioning holder and nothing else: the button is the whole of what the
+  // user sees — no panel behind it.
   const bar = document.createElement('div');
-  bar.setAttribute('style', 'position:fixed;display:none;align-items:center;padding:4px 6px;border-radius:8px;background:rgba(15,23,42,0.95);box-shadow:0 2px 10px rgba(0,0,0,0.35);pointer-events:auto;');
+  bar.setAttribute('style', 'position:fixed;display:none;pointer-events:auto;');
   const addButton = document.createElement('button');
   addButton.type = 'button';
   addButton.textContent = ${JSON.stringify(options.addLabel)};
-  addButton.setAttribute('style', 'all:unset;cursor:pointer;padding:3px 10px;border-radius:6px;background:rgb(59,130,246);color:#fff;font:12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;white-space:nowrap;');
+  addButton.setAttribute('style', ${JSON.stringify(buttonStyle)});
   bar.appendChild(addButton);
   root.appendChild(bar);
 `
     : ''
 
+  // The bar hangs off the *selection*, not the cursor: adding is the second half
+  // of a two-step gesture — click the element, then add it — so the bar exists
+  // only while something is selected (plan §12.7, 第六轮).
   const barPosition = options.addToConversation
     ? `
     bar.style.display = 'flex';
-    bar.style.left = Math.max(4, Math.min(r.left, window.innerWidth - 190)) + 'px';
-    bar.style.top = Math.max(4, Math.min(r.bottom + 6, window.innerHeight - 34)) + 'px';
+    bar.style.left = Math.max(4, Math.min(r.left, window.innerWidth - bar.offsetWidth - 6)) + 'px';
+    bar.style.top = Math.max(4, Math.min(r.bottom + 6, window.innerHeight - bar.offsetHeight - 4)) + 'px';
 `
     : ''
 
@@ -193,16 +217,11 @@ function buildPickerInjectScript(options: {
   addButton.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    const el = current;
-    if (!el) { finish('cancelled'); return; }
-    const r = el.getBoundingClientRect();
-    report({
-      selector: buildStableSelector(el),
-      tag: el.tagName ? el.tagName.toLowerCase() : '',
-      text: (el.textContent || '').trim().slice(0, 200),
-      rect: { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) },
-      intent: 'add-to-conversation',
-    });
+    // It adds what is selected. This is the only place that asks for an add: a
+    // click on the page selects (plan §12.7, 第六轮).
+    const el = selected;
+    if (!el) return;
+    report(elementPayload(el, 'add-to-conversation'));
   });
 `
     : ''
@@ -214,13 +233,29 @@ function buildPickerInjectScript(options: {
   root.id = '${PICKER_OVERLAY_ID}';
   root.setAttribute('style', 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;');
 
+  // The two frames carry the state — dashed and tinted for "what a click would
+  // take", solid for "what it took" — and both labels are the same accent chip
+  // with the element's own name on it.
+
+  // What the cursor is over.
   const box = document.createElement('div');
-  box.setAttribute('style', 'position:fixed;display:none;border:2px solid rgba(59,130,246,0.95);background:rgba(59,130,246,0.12);border-radius:4px;pointer-events:none;');
+  box.setAttribute('style', ${JSON.stringify(hoverBoxStyle)});
   root.appendChild(box);
 
   const label = document.createElement('div');
-  label.setAttribute('style', 'position:fixed;display:none;padding:2px 6px;border-radius:6px;font:12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;background:rgba(15,23,42,0.92);color:#fff;pointer-events:none;max-width:70vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;');
-  root.appendChild(label);${barMarkup}
+  label.setAttribute('style', ${JSON.stringify(labelStyle)});
+  root.appendChild(label);
+
+  // What the user clicked: it stays until another element is clicked. This is the
+  // picker's selected state — the thing the bar acts on, and the answer to "which
+  // element am I about to add" (plan §12.7, 第六轮).
+  const selBox = document.createElement('div');
+  selBox.setAttribute('style', ${JSON.stringify(selectedBoxStyle)});
+  root.appendChild(selBox);
+
+  const selLabel = document.createElement('div');
+  selLabel.setAttribute('style', ${JSON.stringify(labelStyle)});
+  root.appendChild(selLabel);${barMarkup}
 
   document.documentElement.appendChild(root);
 
@@ -247,7 +282,8 @@ function buildPickerInjectScript(options: {
     return parts.join(' > ');
   };
 
-  let current = null;
+  let current = null;   // what the cursor is over — what a click would take
+  let selected = null;  // what the user clicked — what the bar adds
 
   // The picker's whole outward state: what it has picked, and whether it is still
   // armed. Written into the window key at the end of this script, where the caller
@@ -255,8 +291,23 @@ function buildPickerInjectScript(options: {
   // after the overlay is gone.
   const state = { status: 'pending', picks: [] };
 
-  const paint = (el) => {
-    if (!el) { box.style.display = 'none'; label.style.display = 'none'; ${barHide} return; }
+  /** What both exits report: the element, and what the gesture asked for. */
+  const elementPayload = (el, intent) => {
+    const r = el.getBoundingClientRect();
+    const payload = {
+      selector: buildStableSelector(el),
+      tag: el.tagName ? el.tagName.toLowerCase() : '',
+      text: (el.textContent || '').trim().slice(0, 200),
+      rect: { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) },
+    };
+    if (intent) payload.intent = intent;
+    return payload;
+  };
+
+  const paintHover = (el) => {
+    // Nothing to preview while the cursor is on the selection: it has a marker of
+    // its own, and a second box there would only say the same thing twice.
+    if (!el || el === selected) { box.style.display = 'none'; label.style.display = 'none'; return; }
     const r = el.getBoundingClientRect();
     box.style.display = 'block';
     box.style.left = r.left + 'px';
@@ -266,12 +317,42 @@ function buildPickerInjectScript(options: {
     label.style.display = 'block';
     label.style.left = r.left + 'px';
     label.style.top = Math.max(4, r.top - 22) + 'px';
-    label.textContent = buildStableSelector(el);${barPosition}
+    label.textContent = buildStableSelector(el);
+  };
+
+  /** Draw the selection: its box, its name, and the bar that adds it. */
+  const paintSelected = () => {
+    // An element the page re-rendered away is not a selection any more.
+    if (selected && !selected.isConnected) selected = null;
+    if (!selected) {
+      selBox.style.display = 'none';
+      selLabel.style.display = 'none';
+      ${barHide}
+      return;
+    }
+    const r = selected.getBoundingClientRect();
+    selBox.style.display = 'block';
+    selBox.style.left = r.left + 'px';
+    selBox.style.top = r.top + 'px';
+    selBox.style.width = r.width + 'px';
+    selBox.style.height = r.height + 'px';
+    selLabel.style.display = 'block';
+    selLabel.style.left = r.left + 'px';
+    selLabel.style.top = Math.max(4, r.top - 22) + 'px';
+    selLabel.textContent = buildStableSelector(selected);${barPosition}
   };
 
   const onMove = (e) => {
     const el = document.elementFromPoint(e.clientX, e.clientY);
-    if (el && el !== current) { current = el; paint(el); }
+    // The overlay's own chrome (the bar) is not something to pick, so it never
+    // becomes the element under the cursor.
+    const target = el && root.contains(el) ? null : el;
+    if (target === current) return;
+    current = target;
+    paintHover(target);
+    // A page can move under the selection — a hover animation, a list that grew —
+    // and redrawing on the cursor's own steps keeps the marker on what it names.
+    paintSelected();
   };
 
   function cleanup() {
@@ -303,20 +384,22 @@ function buildPickerInjectScript(options: {
     e.stopPropagation();
     const el = current || document.elementFromPoint(e.clientX, e.clientY);
     if (!el) { finish('cancelled'); return; }
-    const r = el.getBoundingClientRect();
-    report({
-      selector: buildStableSelector(el),
-      tag: el.tagName ? el.tagName.toLowerCase() : '',
-      text: (el.textContent || '').trim().slice(0, 200),
-      rect: { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) },
-    });
+    // The click is the selection, and the bar under it is the only thing that
+    // turns an element into a conversation draft (plan §12.7, 第六轮).
+    selected = el;
+    paintHover(el);
+    paintSelected();
+    // One-shot picking (the agent's browser_tool pick) has no second step: the
+    // click is the answer, and the picker is torn down with it.
+    if (${options.resident}) return;
+    report(elementPayload(el));
   };
 
   const onKey = (e) => {
     if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish('cancelled'); }
   };
 
-  const onViewportChange = () => { if (current) paint(current); };
+  const onViewportChange = () => { paintHover(current); paintSelected(); };
 
 ${barHandler}
   window.${PICKER_CANCEL_KEY} = () => finish('cancelled');
@@ -933,7 +1016,7 @@ export class BrowserCDP {
    */
   async armPicker(options: {
     /**
-     * Show the "add to conversation" bar under the highlight.
+     * Show the "add to conversation" bar under the selection.
      *
      * Decided by the caller, not here: whether there is a conversation to add to
      * is a fact about the window, and this class only knows about the page.
@@ -941,6 +1024,8 @@ export class BrowserCDP {
     addToConversation?: boolean
     /** The bar's label, in the caller's language. */
     addLabel?: string
+    /** The app's accent, as a concrete CSS colour — see `buildPickerInjectScript`. */
+    accent: string
     /** Keep picking after a pick — see `buildPickerInjectScript`. */
     resident?: boolean
   }): Promise<void> {
@@ -949,6 +1034,7 @@ export class BrowserCDP {
     const script = buildPickerInjectScript({
       addToConversation: options.addToConversation === true,
       addLabel: options.addLabel ?? 'Add to conversation',
+      accent: options.accent,
       resident: options.resident === true,
     })
     await this.send('Runtime.evaluate', { expression: script })
@@ -991,18 +1077,21 @@ export class BrowserCDP {
    * Polls instead of awaiting one long-lived CDP promise: each poll is a short
    * call, so the idle-detach timer keeps being reset and cannot fire mid-pick.
    */
-  async pickElement(options?: {
+  async pickElement(options: {
     timeoutMs?: number
     pollMs?: number
     addToConversation?: boolean
     addLabel?: string
+    /** The app's accent, as a concrete CSS colour — see `buildPickerInjectScript`. */
+    accent: string
   }): Promise<PickedElement | null> {
-    const timeoutMs = Math.max(1_000, options?.timeoutMs ?? 120_000)
-    const pollMs = Math.max(50, options?.pollMs ?? 200)
+    const timeoutMs = Math.max(1_000, options.timeoutMs ?? 120_000)
+    const pollMs = Math.max(50, options.pollMs ?? 200)
 
     await this.armPicker({
-      addToConversation: options?.addToConversation === true,
-      ...(options?.addLabel ? { addLabel: options.addLabel } : {}),
+      addToConversation: options.addToConversation === true,
+      ...(options.addLabel ? { addLabel: options.addLabel } : {}),
+      accent: options.accent,
       resident: false,
     })
 

@@ -88,7 +88,7 @@ export const BrowserTabBadge = forwardRef<HTMLButtonElement, BrowserTabBadgeProp
       <span className="truncate ml-0.5 leading-[12px]">{displayLabel}</span>
 
       {/*
-        How many pages this window holds. Only when there is more than one: a
+        How many tabs this window holds. Only when there is more than one: a
         window is one thing in the strip, and "1" beside every badge would be
         noise stating the default.
       */}

@@ -63,7 +63,7 @@ export interface RemoteBrowserPaneManagerDeps {
    * itself otherwise (plan §22).
    *
    * Asked per call rather than captured once, because it can change: a session can be bound
-   * to a task after it exists (`bindExistingSessionToTask`), and a page opened before that is
+   * to a task after it exists (`bindExistingSessionToTask`), and a tab opened before that is
    * still the same conversation's. Omitted → the session is its own work, which is what an
    * ordinary conversation is.
    */
@@ -116,11 +116,11 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
       sessionId: this.sessionId,
       workspaceId: this.workspaceId,
       // The caller's work travels as identity, not in `args`: the far side stamps a new
-      // page's `belongsTo` from it rather than from a value the caller could name
+      // tab's `belongsTo` from it rather than from a value the caller could name
       // (plan §22). Asked per call — a session can be bound to a task later.
       work: this.work(),
       // Carried beside the session and workspace rather than inside `args`: it is routing,
-      // and the page a command acts on is the caller's decision to state
+      // and the tab a command acts on is the caller's decision to state
       // (plan §22, 第十二轮).
       tabId,
     })
@@ -261,7 +261,7 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
   createTab(instanceId: string, _options?: BrowserTabCreateOptions): string {
     // Synchronous IBPM return over a WS round-trip: the real id exists only on
     // the far side. Callers that need it use `createTabAsync`, which is every
-    // caller that does anything with the new page.
+    // caller that does anything with the new tab.
     this.invokeSync('createTab', [instanceId, _options])
     return ''
   }
@@ -274,8 +274,8 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
     this.invokeSync('activateTab', [instanceId, tabId])
   }
 
-  setSessionPage(instanceId: string, tabId: string, sessionId: string): void {
-    this.invokeSync('setSessionPage', [instanceId, tabId, sessionId])
+  setSessionTab(instanceId: string, tabId: string, sessionId: string): void {
+    this.invokeSync('setSessionTab', [instanceId, tabId, sessionId])
   }
 
   closeTab(instanceId: string, tabId: string): void {
@@ -300,9 +300,9 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
   // ---------------------------------------------------------------------------
   // Async methods — these are the ones that actually matter to the agent.
   //
-  // Each page-scoped one takes the page it acts on (`tabId`) and ships it as routing
+  // Each tab-scoped one takes the tab it acts on (`tabId`) and ships it as routing
   // context on the request: the local manager is shared by every conversation, so "which
-  // page" has to travel with the call (plan §22, 第十二轮).
+  // tab" has to travel with the call (plan §22, 第十二轮).
   // ---------------------------------------------------------------------------
 
   async navigate(id: string, url: string, tabId?: string): Promise<{ url: string; title: string }> {

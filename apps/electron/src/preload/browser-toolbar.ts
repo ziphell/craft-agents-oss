@@ -42,7 +42,7 @@ contextBridge.exposeInMainWorld('browserToolbar', {
    * Turn the window's element picker on — and leave it on.
    *
    * Resolves as soon as the mode is on, not when a pick happens: the user keeps
-   * picking (and keeps moving between the window's pages while they do), and each
+   * picking (and keeps moving between the window's tabs while they do), and each
    * pick arrives on the host side as an `add-to-conversation` action. Page clicks
    * are suppressed for as long as the mode is on; `cancelPick`, or Escape in the
    * page, ends it.
@@ -52,8 +52,8 @@ contextBridge.exposeInMainWorld('browserToolbar', {
   /** Ask the host to replay this session's prototype patches into this window. */
   applyPrototype: () => ipcRenderer.invoke(CHANNELS.APPLY_PROTOTYPE, instanceId),
   /**
-   * Manage this window's own pages from the rail: switch to one, close one, add one,
-   * or take a locked page back (`release`). The host owns what a page is, so nothing
+   * Manage this window's own tabs from the rail: switch to one, close one, add one,
+   * or take a locked tab back (`release`). The host owns what a tab is, so nothing
    * about it travels back here except through `onStateUpdate`.
    */
   tabAction: (action: 'activate' | 'close' | 'new' | 'release', tabId?: string) =>

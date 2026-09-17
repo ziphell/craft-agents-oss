@@ -2967,18 +2967,32 @@ export function touchLlmConnection(slug: string): void {
 // Network Proxy Settings
 // ============================================
 
-import type { NetworkProxySettings } from './types.ts';
+import type { NetworkProxyMode, NetworkProxySettings } from './types.ts';
 
 function normalizeProxyString(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed || undefined;
 }
 
+/**
+ * Normalize stored settings.
+ *
+ * `enabled` is what configs written before `mode` existed carry, and
+ * `enabled: true` is the only thing that ever meant "custom" — so it is read as
+ * such rather than dropping a proxy somebody already configured. Everything
+ * else that predates `mode` was a direct connection.
+ */
 function normalizeNetworkProxySettings(
-  settings: NetworkProxySettings,
+  settings: NetworkProxySettings & { enabled?: boolean },
 ): NetworkProxySettings {
+  const mode: NetworkProxyMode = settings.mode === 'custom' || settings.enabled === true
+    ? 'custom'
+    : settings.mode === 'system'
+      ? 'system'
+      : 'direct';
+
   return {
-    enabled: Boolean(settings.enabled),
+    mode,
     httpProxy: normalizeProxyString(settings.httpProxy),
     httpsProxy: normalizeProxyString(settings.httpsProxy),
     noProxy: normalizeProxyString(settings.noProxy),
@@ -2986,17 +3000,18 @@ function normalizeNetworkProxySettings(
 }
 
 /**
- * Get the current network proxy settings.
+ * Get the current network proxy settings, normalized.
  * Returns undefined if not configured.
  */
 export function getNetworkProxySettings(): NetworkProxySettings | undefined {
   const config = loadStoredConfig();
-  return config?.networkProxy;
+  const stored = config?.networkProxy;
+  return stored ? normalizeNetworkProxySettings(stored) : undefined;
 }
 
 /**
  * Persist network proxy settings.
- * Deletes the key when disabled and all proxy fields are empty.
+ * Deletes the key when connecting directly and all proxy fields are empty.
  */
 export function setNetworkProxySettings(settings: NetworkProxySettings): void {
   const config = loadStoredConfig();
@@ -3004,8 +3019,8 @@ export function setNetworkProxySettings(settings: NetworkProxySettings): void {
 
   const normalized = normalizeNetworkProxySettings(settings);
 
-  // Remove the key entirely when proxy is disabled and all fields are blank
-  if (!normalized.enabled && !normalized.httpProxy && !normalized.httpsProxy && !normalized.noProxy) {
+  // Remove the key entirely when connecting directly and all fields are blank
+  if (normalized.mode === 'direct' && !normalized.httpProxy && !normalized.httpsProxy && !normalized.noProxy) {
     delete config.networkProxy;
   } else {
     config.networkProxy = normalized;

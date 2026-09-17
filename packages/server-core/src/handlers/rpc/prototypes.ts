@@ -195,8 +195,8 @@ export function registerPrototypesHandlers(server: RpcServer, deps: HandlerDeps)
 
       // A window with no workspace recorded passes the filter, exactly as the
       // renderer's own tab strip does: a window we cannot place must not be
-      // silently skipped. Which *pages* of it show the prototype is asked per window, because
-      // that is a page-level fact: `prototypeSlug` on the window is the page on screen's, and
+      // silently skipped. Which *tabs* of it show the prototype is asked per window, because
+      // that is a tab-level fact: `prototypeSlug` on the window is the tab on screen's, and
       // with the agent working in the background that is not where the prototype is.
       const wanted = new Set([workspaceId, workspace.id])
       const instances = (await deps.browserPaneManager.listInstancesAsync()).filter(

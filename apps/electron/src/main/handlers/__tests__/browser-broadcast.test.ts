@@ -176,13 +176,13 @@ describe('browser handler — workspace filtering', () => {
 
     /**
      * The panel's Open and the prototype page's Open both come through here. They
-     * used to re-point whatever page the session's window was showing; now they
-     * add a page, so opening a second prototype does not replace the first
-     * (plan §22). Which page it lands in — a fresh window's own blank page, or a
+     * used to re-point whatever tab the session's window was showing; now they
+     * add a tab, so opening a second prototype does not replace the first
+     * (plan §22). Which tab it lands in — a fresh window's own blank tab, or a
      * new one — is the manager's rule, not this handler's, which is what
      * `reuseUntouchedWindow` says out loud.
      */
-    it('adds a page for the prototype instead of re-pointing the page on screen', async () => {
+    it('adds a tab for the prototype instead of re-pointing the tab on screen', async () => {
       const calls: string[] = []
       const { registerBrowserHandlers } = await import('../browser')
       const deps = makeDeps({ instances: [] })
@@ -192,7 +192,7 @@ describe('browser handler — workspace filtering', () => {
         return 'browser-1'
       }
       manager.createTab = (id: string, options: unknown) => {
-        calls.push(`page:${id}:${JSON.stringify(options)}`)
+        calls.push(`tab:${id}:${JSON.stringify(options)}`)
         return 'tab-1'
       }
       registerBrowserHandlers(recorder.server, deps)
@@ -206,16 +206,16 @@ describe('browser handler — workspace filtering', () => {
       expect(returned).toBe('browser-1')
       expect(calls).toEqual([
         'window:session-1',
-        'page:browser-1:{"prototype":{"slug":"checkout-flow","origin":"http://checkout-flow-1a2b.localhost"},"activate":true,"reuseUntouchedWindow":true}',
+        'tab:browser-1:{"prototype":{"slug":"checkout-flow","origin":"http://checkout-flow-1a2b.localhost"},"activate":true,"reuseUntouchedWindow":true}',
       ])
     })
 
-    // "New page" from the app's menu: no url and no identity to give a page, so it has
-    // nothing to say except that it wants one — and it is *a* page, not one more page,
+    // "New tab" from the app's menu: no url and no identity to give a tab, so it has
+    // nothing to say except that it wants one — and it is *a* tab, not one more tab,
     // because the window may not be up yet and a window that was not up already holds
-    // the blank page being asked for. Asking in two steps (create the window, then add
-    // a page to it) is what opened two blank pages.
-    it('asks for a page to use, not for one more page, when it has no url', async () => {
+    // the blank tab being asked for. Asking in two steps (create the window, then add
+    // a tab to it) is what opened two blank tabs.
+    it('asks for a tab to use, not for one more tab, when it has no url', async () => {
       const calls: string[] = []
       const { registerBrowserHandlers } = await import('../browser')
       const deps = makeDeps({ instances: [] })
@@ -225,14 +225,38 @@ describe('browser handler — workspace filtering', () => {
         return 'browser-1'
       }
       manager.createTab = (id: string, options: unknown) => {
-        calls.push(`page:${id}:${JSON.stringify(options)}`)
+        calls.push(`tab:${id}:${JSON.stringify(options)}`)
         return 'tab-1'
       }
       registerBrowserHandlers(recorder.server, deps)
 
-      callCreate({ show: true, newPage: true })
+      callCreate({ show: true, newTab: true })
 
-      expect(calls).toEqual(['window', 'page:browser-1:{"activate":true,"reuseUntouchedWindow":true}'])
+      expect(calls).toEqual(['window', 'tab:browser-1:{"activate":true,"reuseUntouchedWindow":true}'])
+    })
+
+    // The other half of the same rule, and the bug a person found: a window that is already
+    // up is one somebody has, so "New tab" there means one **more** tab. Reading its single
+    // untouched blank tab as "untouched" reused it, and since there was nothing to load, the
+    // click did nothing at all (plan §22, 用户报告).
+    it('asks for one more tab when the window is already up', async () => {
+      const calls: string[] = []
+      const { registerBrowserHandlers } = await import('../browser')
+      const deps = makeDeps({ instances: [makeInstance('browser-1', { workspaceId: null })] })
+      const manager = deps.browserPaneManager as unknown as Record<string, unknown>
+      manager.createForSession = () => {
+        calls.push('window')
+        return 'browser-1'
+      }
+      manager.createTab = (id: string, options: unknown) => {
+        calls.push(`tab:${id}:${JSON.stringify(options)}`)
+        return 'tab-1'
+      }
+      registerBrowserHandlers(recorder.server, deps)
+
+      callCreate({ show: true, newTab: true })
+
+      expect(calls).toEqual(['window', 'tab:browser-1:{"activate":true}'])
     })
 
     // An ordinary browser window is not a prototype's, so nothing is said about it.
@@ -246,7 +270,7 @@ describe('browser handler — workspace filtering', () => {
         return id
       }
       manager.createTab = () => {
-        calls.push('page')
+        calls.push('tab')
         return 'tab-1'
       }
       registerBrowserHandlers(recorder.server, deps)
@@ -292,14 +316,14 @@ describe('browser handler — workspace filtering', () => {
       expect(calls).toEqual([
         'activate:browser-1:tab-1',
         'close:browser-1:tab-2',
-        // A page added from the main window is a person's, which is what "no session
+        // A tab added from the main window is a person's, which is what "no session
         // asked for it" means — stated by leaving `belongsTo` out.
         'new:browser-1:{"activate":true}',
       ])
     })
 
-    // The target is the whole point: an action with no window, or a page action
-    // with no page, would otherwise land on whatever happened to be in front.
+    // The target is the whole point: an action with no window, or a tab action
+    // with no tab, would otherwise land on whatever happened to be in front.
     it('does nothing when the target is not named', async () => {
       const calls: string[] = []
       const { registerBrowserHandlers } = await import('../browser')

@@ -4,6 +4,7 @@ import { coerceInputText } from '@/lib/input-text'
 import { cn } from '@/lib/utils'
 import { findMentionMatches, parseMentions, type ComposerMentionType, type MentionMatch } from '@/lib/mentions'
 import { elementLabel, elementOriginText, parseElementMention } from '@/lib/element-mention'
+import { parseTabMention, tabLabel, tabOriginText } from '@/lib/tab-mention'
 import {
   loadSourceIcon,
   loadSkillIcon,
@@ -105,6 +106,9 @@ const FOLDER_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="12" heig
 // Picked page element (cursor) - matches UserMessageBubble style (12x12, text-muted-foreground)
 const ELEMENT_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-muted-foreground"><path d="M4.037 4.688a.495.495 0 0 1 .651-.651l16 6.5a.5.5 0 0 1-.063.947l-6.124 1.58a2 2 0 0 0-1.438 1.435l-1.579 6.126a.5.5 0 0 1-.947.063z"/></svg>`
 
+// A whole tab of the browser window (globe) - matches UserMessageBubble style (12x12, text-muted-foreground)
+const TAB_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-muted-foreground"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>`
+
 /** Known code file extensions - used to pick code file icon vs generic file icon */
 const CODE_EXTENSIONS = new Set([
   'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs',
@@ -162,6 +166,8 @@ function renderBadgeHTML(
       iconHtml = FOLDER_ICON_SVG
     } else if (type === 'element') {
       iconHtml = ELEMENT_ICON_SVG
+    } else if (type === 'tab') {
+      iconHtml = TAB_ICON_SVG
     }
   }
 
@@ -428,6 +434,15 @@ export function textToHTML(
       if (ref) {
         label = elementLabel(ref)
         tooltip = [ref.selector, elementOriginText(ref)].filter(Boolean).join('\n')
+      }
+    } else if (match.type === 'tab') {
+      // The same encoded payload, for a whole tab (see tab-mention): the title is the
+      // label, and on hover the address — which is what tells two tabs with the same
+      // title apart — plus the prototype it belongs to, when it is one's.
+      const ref = parseTabMention(match.id)
+      if (ref) {
+        label = tabLabel(ref)
+        tooltip = [ref.url, tabOriginText(ref)].filter(Boolean).join('\n')
       }
     }
 

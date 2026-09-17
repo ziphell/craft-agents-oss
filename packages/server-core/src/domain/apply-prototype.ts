@@ -48,16 +48,16 @@ import type { BrowserTabSummary } from '@craft-agent/shared/protocol'
 import type { IBrowserPaneManager } from '../handlers/browser-pane-manager-interface'
 
 /**
- * The page a prototype command is about, as the browser side describes it.
+ * The tab a prototype command is about, as the browser side describes it.
  *
  * Both halves are needed and only the caller can say them: `id` is what every browser call is
  * addressed to, and `url` is what decides *which page of the prototype* this is
- * (`matchPrototypePage`). Read off the window they would be the page **on screen** — the
+ * (`matchPrototypePage`). Read off the window they would be the tab **on screen** — the
  * person's, who is free to be reading something else while this runs (plan §22, 第十二轮) —
  * and an apply that lands its patches on the strength of that is patching the wrong page.
  *
  * Shared by the apply, the replay and the verification, because all three ask the same
- * question of the same page.
+ * question of the same tab.
  */
 export type PrototypeTargetPage = Pick<BrowserTabSummary, 'id' | 'url'>
 
@@ -246,7 +246,7 @@ export async function applyPrototypeToBrowser(
   instanceId: string,
   workspaceRootPath: string,
   slug: string,
-  /** The page this apply is about — the conversation's page, not the one on screen. */
+  /** The tab this apply is about — the conversation's, not the one on screen. */
   page?: PrototypeTargetPage | null,
   options?: PrototypeApplyOptions,
 ): Promise<PrototypeApplyResult> {
@@ -372,7 +372,7 @@ async function inspectTargets(
   slug: string,
   page: string | null,
   patches: Array<{ file: string; targets: string[] }>,
-  /** The page these observations were made on — the conversation's, not the one on screen. */
+  /** The tab these observations were made on — the conversation's, not the one on screen. */
   tabId: string | undefined,
   /** …and where it is, which is what the record keeps as "the page that was patched". */
   pageUrl: string | null,
@@ -464,7 +464,7 @@ async function inspectTargets(
 }
 
 /**
- * Replay a prototype into one page of a window after its files changed (plan §21.4).
+ * Replay a prototype into one tab of a window after its files changed (plan §21.4).
  *
  * Two cases, and which one applies is read off the document rather than assumed:
  *
@@ -483,7 +483,7 @@ export async function replayPrototypeInBrowser(
   instanceId: string,
   workspaceRootPath: string,
   slug: string,
-  /** The page showing this prototype — a window may hold more than one. */
+  /** The tab showing this prototype — a window may hold more than one. */
   page?: PrototypeTargetPage | null,
 ): Promise<PrototypeReplayResult> {
   const inlined = await bpm.evaluate(instanceId, buildInlinedPatchProbeScript(), page?.id)
@@ -505,8 +505,8 @@ export async function replayPrototypeInBrowser(
  * The caller's page URL answers it, and the caller is the one that read it off that page: the
  * page table is read against it (`matchPrototypePage`), so "/cart.html matches cart" needs no
  * second registry and stays true for a page reached by its own link. Reading it off the window
- * instead would answer with the page **on screen**, which is the person's — and the person
- * reading another page of the window must not decide which patches this one gets
+ * instead would answer with the tab **on screen**, which is the person's — and the person
+ * reading another tab of the window must not decide which patches this one gets
  * (plan §22, 第十二轮).
  *
  * Two fallbacks, and both say what they are rather than guessing:
@@ -528,12 +528,12 @@ function resolveReplayPage(pages: PrototypePage[], url: string | null): string |
   return entry && entry.kind === 'scratch' && entry.file ? entry.name : null
 }
 
-/** Remove a prototype's patches from one page of a live browser instance. */
+/** Remove a prototype's patches from one tab of a live browser instance. */
 export async function clearPrototypeFromBrowser(
   bpm: IBrowserPaneManager,
   instanceId: string,
   slug: string,
-  /** The page to clear — the conversation's, not the one on screen. */
+  /** The tab to clear — the conversation's, not the one on screen. */
   tabId?: string,
 ): Promise<PrototypeClearResult> {
   const removed = await bpm.clearInitScripts(instanceId, `prototype:${slug}:`, tabId)

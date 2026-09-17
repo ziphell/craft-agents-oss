@@ -70,8 +70,8 @@ import type { ExportResourcesOptions, ExportResult, ResourceImportMode, Resource
 export type { ExportResourcesOptions, ExportResult, ResourceImportMode, ResourceBundle, ResourceImportResult };
 
 // LLM connection types
-import type { LlmConnection, LlmConnectionWithStatus, LlmAuthType, LlmProviderType, NetworkProxySettings } from '@craft-agent/shared/config';
-export type { LlmConnection, LlmConnectionWithStatus, LlmAuthType, LlmProviderType, NetworkProxySettings };
+import type { LlmConnection, LlmConnectionWithStatus, LlmAuthType, LlmProviderType, NetworkProxyMode, NetworkProxySettings } from '@craft-agent/shared/config';
+export type { LlmConnection, LlmConnectionWithStatus, LlmAuthType, LlmProviderType, NetworkProxyMode, NetworkProxySettings };
 
 // =============================================================================
 // GUI-only types (not used by server/handler code)
@@ -92,7 +92,7 @@ export const BROWSER_TOOLBAR_CHANNELS = {
   DESTROY: 'browser-toolbar:destroy',
   STATE_UPDATE: 'browser-toolbar:state-update',
   THEME_COLOR: 'browser-toolbar:theme-color',
-  /** Manage this window's own pages from the strip it draws: switch, close, add. */
+  /** Manage this window's own tabs from the strip it draws: switch, close, add. */
   TABS: 'browser-toolbar:tabs',
 } as const
 
@@ -122,32 +122,32 @@ export interface BrowserPaneCreateOptions {
    */
   prototype?: { slug: string; origin: string }
   /**
-   * Give me a page to use, opening the window if it is not up yet.
+   * Give me a tab to use, opening the window if it is not up yet.
    *
-   * *A* page, not *another* page: a window that has never been used already holds the
-   * blank page this is asking for, so its own page is the answer and nothing is added
-   * beside it — otherwise "New page" on a browser that was not open yet would come up
-   * with two identical blank pages (plan §22). A window that is in use gets a real new
-   * page. The rail's own `+` is the other intent and does not come through here: there
-   * a person is looking at the window and asking for one more page.
+   * *A* tab, not *another* tab: a window that has never been used already holds the
+   * blank tab this is asking for, so its own tab is the answer and nothing is added
+   * beside it — otherwise "New tab" on a browser that was not open yet would come up
+   * with two identical blank tabs (plan §22). A window that is in use gets a real new
+   * tab. The rail's own `+` is the other intent and does not come through here: there
+   * a person is looking at the window and asking for one more tab.
    */
-  newPage?: boolean
+  newTab?: boolean
 }
 
 /**
- * Manage one browser window's own pages from the main window.
+ * Manage one browser window's own tabs from the main window.
  *
- * The window is named because a page only means something inside one; the action is one
+ * The window is named because a tab only means something inside one; the action is one
  * of four because the four buttons that send it sit together, and `tabId` is absent only
  * for `new`, which has no target yet.
  */
 export interface BrowserPaneTabAction {
   instanceId: string
   /**
-   * `activate` / `close` / `new` manage the pages. `release` is the person taking a locked
-   * page back: it drops the agent overlay that is holding it, so they are not stuck behind
+   * `activate` / `close` / `new` manage the tabs. `release` is the person taking a locked
+   * tab back: it drops the agent overlay that is holding it, so they are not stuck behind
    * somebody else's running turn (plan §22, 第九轮修正) — the agent's next action may take
-   * the page again, which is why the button is an escape hatch and not a setting.
+   * the tab again, which is why the button is an escape hatch and not a setting.
    */
   action: 'activate' | 'close' | 'new' | 'release'
   tabId?: string
@@ -786,7 +786,7 @@ export interface ElectronAPI {
     reload(id: string): Promise<void>
     stop(id: string): Promise<void>
     focus(id: string): Promise<void>
-    /** Manage this window's pages: switch, close, add (see `BrowserPaneTabAction`). */
+    /** Manage this window's tabs: switch, close, add (see `BrowserPaneTabAction`). */
     tabAction(input: BrowserPaneTabAction): Promise<void>
     emptyStateLaunch(payload: BrowserEmptyStateLaunchPayload): Promise<BrowserEmptyStateLaunchResult>
     onStateChanged(callback: (info: BrowserInstanceInfo) => void): () => void

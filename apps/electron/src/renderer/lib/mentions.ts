@@ -14,6 +14,7 @@ import type { LoadedSkill, LoadedSource } from '../../shared/types'
 import { AGENTS_PLUGIN_NAME } from '@craft-agent/shared/skills/types'
 import { getSourceIconSync, getSkillIconSync } from './icon-cache'
 import { findElementMentions, parseElementMention } from './element-mention'
+import { findTabMentions } from './tab-mention'
 
 // Import and re-export parsing functions from shared (pure string operations, no renderer deps)
 import { parseMentions, stripAllMentions, resolveSkillMentions, resolveSourceMentions, type ParsedMentions } from '@craft-agent/shared/mentions'
@@ -36,7 +37,8 @@ const WS_ID_CHARS = '[\\w .-]'
  *
  * `element` is the odd one out: the `@` menu never yields it (the browser panel
  * inserts it when a page element is picked), so it is deliberately not part of
- * `MentionItemType`.
+ * `MentionItemType`. The rest — including `tab`, a whole tab of the browser window —
+ * are things the `@` menu offers.
  */
 export type ComposerMentionType = MentionItemType | 'element'
 
@@ -129,6 +131,17 @@ export function findMentionMatches(
       id: element.payload,
       fullMatch: element.fullMatch,
       startIndex: element.startIndex,
+    })
+  }
+
+  // Match tab mentions: [tab:<url>|<title>] — the same encoded-payload shape, for a
+  // whole tab of the browser window rather than one element of it (see tab-mention).
+  for (const tab of findTabMentions(text)) {
+    matches.push({
+      type: 'tab',
+      id: tab.payload,
+      fullMatch: tab.fullMatch,
+      startIndex: tab.startIndex,
     })
   }
 
@@ -236,10 +249,10 @@ export function extractBadges(
   const sourcesBySlug = new Map(sources.map(s => [s.config.slug, s]))
 
   return matches.flatMap(match => {
-    // Element references never reach a stored message: the composer expands them
-    // into readable text at send time (see element-mention), so there is nothing
-    // here to badge.
-    if (match.type === 'element') return []
+    // Element and tab references never reach a stored message: the composer expands
+    // them into readable text at send time (see element-mention / tab-mention), so
+    // there is nothing here to badge.
+    if (match.type === 'element' || match.type === 'tab') return []
 
     let label = match.id
     let iconDataUrl: string | undefined

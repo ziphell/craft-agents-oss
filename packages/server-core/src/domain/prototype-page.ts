@@ -36,7 +36,7 @@ import {
 } from '@craft-agent/shared/prototypes'
 
 export function describePrototypeAtPage(
-  /** The page on screen, as the browser side reports it. */
+  /** The tab on screen, as the browser side reports it. */
   tab: BrowserTabSummary | undefined,
   /** The conversation's own prototype, for a page that belongs to none. */
   fallbackSlug: string | null | undefined,

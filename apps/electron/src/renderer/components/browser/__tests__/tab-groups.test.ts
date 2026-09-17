@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { groupTabsByWork, shouldShowGroupHeaders } from '../page-groups'
+import { groupTabsByWork, shouldShowGroupHeaders } from '../tab-groups'
 import type { BrowserTabSummary, TabBelongsTo } from '../../../../shared/types'
 
 function tab(id: string, belongsTo: TabBelongsTo | null): BrowserTabSummary {
@@ -31,10 +31,10 @@ const node = (taskSlug: string, nodeId: string, sessionId: string): TabBelongsTo
 })
 
 describe('groupTabsByWork', () => {
-  // A section appears where its first page is, and pages keep their order inside it:
-  // the list still reads in the order the pages were opened, which is what `tabs`
+  // A section appears where its first tab is, and tabs keep their order inside it:
+  // the list still reads in the order the tabs were opened, which is what `tabs`
   // reports and what the rail showed before it grouped anything.
-  it('sections in first-appearance order, pages in their own order', () => {
+  it('sections in first-appearance order, tabs in their own order', () => {
     const groups = groupTabsByWork([tab('a', null), tab('b', session('session-1')), tab('c', null)])
 
     expect(groups.map((group) => group.work)).toEqual([null, session('session-1')])
@@ -42,9 +42,9 @@ describe('groupTabsByWork', () => {
     expect(groups[1].tabs.map((t) => t.id)).toEqual(['b'])
   })
 
-  // A page nobody's conversation asked for is a person's page, and that is a group like
+  // A tab nobody's conversation asked for is a person's tab, and that is a group like
   // any other — it is not the "default" the others are escaped from.
-  it('puts pages a person opened in their own group, wherever they sit', () => {
+  it('puts tabs a person opened in their own group, wherever they sit', () => {
     const groups = groupTabsByWork([tab('a', session('session-1')), tab('b', null)])
 
     expect(groups.map((group) => group.work)).toEqual([session('session-1'), null])
@@ -65,7 +65,7 @@ describe('groupTabsByWork', () => {
     expect(groups[0].tabs.map((t) => t.id)).toEqual(['a', 'b'])
   })
 
-  it('does not invent a section for a work no page names', () => {
+  it('does not invent a section for a work no tab names', () => {
     expect(groupTabsByWork([])).toEqual([])
     expect(groupTabsByWork([tab('a', session('session-2'))])).toEqual([
       { key: 'session:session-2', work: session('session-2'), tabs: [expect.objectContaining({ id: 'a' })] },
@@ -75,7 +75,7 @@ describe('groupTabsByWork', () => {
 
 describe('shouldShowGroupHeaders', () => {
   // One group is the whole list: "you opened these" over all of it is a row that says
-  // nothing. Two is the answer worth having — whose pages are whose.
+  // nothing. Two is the answer worth having — whose tabs are whose.
   it('is true only when there is more than one group', () => {
     expect(shouldShowGroupHeaders(groupTabsByWork([tab('a', null), tab('b', null)]))).toBe(false)
     expect(shouldShowGroupHeaders(groupTabsByWork([tab('a', null), tab('b', session('session-1'))]))).toBe(true)

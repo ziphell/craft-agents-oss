@@ -46,9 +46,9 @@ function makeBpm(
   const reloaded: string[] = []
 
   /**
-   * The page the command is about — the conversation's page, which the *caller* names
-   * (`pickCommandTarget` on the server side). Null is "no page to judge by": a window with no
-   * pages, which is the same answer a caller with no instance gets.
+   * The tab the command is about — the conversation's tab, which the *caller* names
+   * (`pickCommandTarget` on the server side). Null is "no tab to judge by": a window with no
+   * tabs, which is the same answer a caller with no instance gets.
    */
   const page = pageUrl === null ? null : { id: 'tab-1', url: pageUrl }
 

@@ -1,8 +1,9 @@
 /**
- * Tests for network proxy bypass rules (NO_PROXY parsing and matching).
+ * Tests for network proxy bypass rules (NO_PROXY parsing and matching) and for
+ * reading Chromium's resolveProxy() answers.
  */
 import { describe, it, expect } from 'bun:test';
-import { parseNoProxyRules, shouldBypassProxy } from '../network-proxy-utils';
+import { parseNoProxyRules, parseResolvedProxy, shouldBypassProxy } from '../network-proxy-utils';
 
 describe('parseNoProxyRules', () => {
   it('returns empty array for undefined/empty input', () => {
@@ -88,5 +89,37 @@ describe('shouldBypassProxy', () => {
     const rules = parseNoProxyRules('192.168.1.1');
     expect(shouldBypassProxy('http://192.168.1.1/', rules)).toBe(true);
     expect(shouldBypassProxy('http://10.0.0.1/', rules)).toBe(false);
+  });
+});
+
+describe('parseResolvedProxy', () => {
+  it('turns a PROXY answer into an address Node can dial', () => {
+    expect(parseResolvedProxy('PROXY 127.0.0.1:7890')).toEqual({
+      kind: 'proxy',
+      url: 'http://127.0.0.1:7890',
+    });
+  });
+
+  it('reads DIRECT', () => {
+    expect(parseResolvedProxy('DIRECT')).toEqual({ kind: 'direct' });
+  });
+
+  it('takes the first entry of a preference list', () => {
+    expect(parseResolvedProxy('PROXY a:1; PROXY b:2; DIRECT')).toEqual({
+      kind: 'proxy',
+      url: 'http://a:1',
+    });
+  });
+
+  it('flags a SOCKS answer instead of handing Node an address it cannot dial', () => {
+    expect(parseResolvedProxy('SOCKS5 127.0.0.1:1080')).toEqual({
+      kind: 'unsupported',
+      scheme: 'SOCKS5',
+    });
+  });
+
+  it('returns null for answers it does not understand', () => {
+    expect(parseResolvedProxy('')).toBeNull();
+    expect(parseResolvedProxy('WAT something')).toBeNull();
   });
 });

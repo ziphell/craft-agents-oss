@@ -164,6 +164,7 @@ import { clearSourceIconCaches } from "@/lib/icon-cache"
 import { dispatchFocusInputEvent } from "./input/focus-input-events"
 import { appendRestoredInput } from "@/lib/input-text"
 import { buildElementMention } from "@/lib/element-mention"
+import { buildTabMention, type TabRef } from "@/lib/tab-mention"
 
 /**
  * AppShellProps - Minimal props interface for AppShell component
@@ -991,41 +992,26 @@ function AppShellContent({
   }, [getDraft, onInputChange, t])
 
   /**
-   * Hand an element to a conversation (plan §12.7).
+   * Put a chip in a conversation's draft, and bring the composer up on it.
    *
-   * The element is inserted as a chip — a marker in the composer's text that the
-   * input renders as an inline badge and that `FreeFormInput` expands into a
-   * readable reference on send (see element-mention). It carries the page it was
-   * picked on, because the picker stays on across the window's pages and the agent
-   * needs to know which one. It is *appended*: picking an element adds a reference
-   * to the question being written, so the question has to survive the pick.
+   * The two-step write both reference flows share — the draft for when the session is
+   * mounted later, the event for when it is already open — because neither step alone
+   * lands in every case, and both carry the whole text so the second cannot drop what
+   * the first wrote.
    *
-   * With no conversation to put it in — nothing selected, or a window of its own —
-   * one is opened for it, rather than the pick being dropped: picking an element is
-   * how a user starts talking about it. The chip is written only once the session
-   * exists, so a failed create leaves no half-written draft behind.
-   *
-   * The same two-step write the prototype flow uses — the draft for when the session
-   * is mounted later, the event for when it is already open — because neither step
-   * alone lands in every case.
+   * With no conversation to put it in — nothing selected, or a window of its own — one
+   * is opened rather than the reference being dropped: adding something to a
+   * conversation is how a user starts talking about it. The chip is written only once
+   * the session exists, so a failed create leaves no half-written draft behind.
    */
-  const handleAddElementToConversation = useCallback(async (request: AddElementRequest) => {
-    const { origin } = request
-    const chip = `${buildElementMention({
-      selector: request.element.selector,
-      text: request.element.text,
-      ...(origin.url ? { url: origin.url } : {}),
-      ...(origin.prototype ? { prototypeSlug: origin.prototype.slug } : {}),
-      ...(origin.prototypePage ? { prototypePage: origin.prototypePage } : {}),
-    })} `
-
-    let targetSessionId = request.sessionId
+  const appendChipToConversation = useCallback(async (chip: string, sessionId: string | null) => {
+    let targetSessionId = sessionId
     if (!targetSessionId) {
       if (!activeWorkspaceId) return
       try {
         targetSessionId = (await contextValue.onCreateSession(activeWorkspaceId)).id
       } catch (err) {
-        console.error('[AppShell] Failed to open a conversation for a picked element:', err)
+        console.error('[AppShell] Failed to open a conversation for a browser reference:', err)
         toast.error(t('browserEdit.newSessionFailed'))
         return
       }
@@ -1038,11 +1024,48 @@ function AppShellContent({
         detail: { sessionId: targetSessionId, text: next },
       }),
     )
-    // The pick came from another window, so the caret is elsewhere; put it back in
-    // the composer, where the user now has a chip to write after.
+    // The reference was added from elsewhere (another window, a menu), so the caret is
+    // not in the composer; put it there, where the user now has a chip to write after.
     dispatchFocusInputEvent({ sessionId: targetSessionId })
     navigate(routes.view.allSessions(targetSessionId))
   }, [activeWorkspaceId, contextValue.onCreateSession, getDraft, onInputChange, navigate, t])
+
+  /**
+   * Hand an element to a conversation (plan §12.7).
+   *
+   * The element is inserted as a chip — a marker in the composer's text that the
+   * input renders as an inline badge and that `FreeFormInput` expands into a
+   * readable reference on send (see element-mention). It carries the page it was
+   * picked on, because the picker stays on across the window's tabs and the agent
+   * needs to know which one. It is *appended*: picking an element adds a reference
+   * to the question being written, so the question has to survive the pick.
+   */
+  const handleAddElementToConversation = useCallback((request: AddElementRequest) => {
+    const { origin } = request
+    const chip = `${buildElementMention({
+      selector: request.element.selector,
+      text: request.element.text,
+      ...(origin.url ? { url: origin.url } : {}),
+      ...(origin.prototype ? { prototypeSlug: origin.prototype.slug } : {}),
+      ...(origin.prototypePage ? { prototypePage: origin.prototypePage } : {}),
+    })} `
+
+    void appendChipToConversation(chip, request.sessionId)
+  }, [appendChipToConversation])
+
+  /**
+   * Hand a whole tab to a conversation (plan §12.7).
+   *
+   * The same chip machinery, for a tab instead of an element: "look at this screen"
+   * is a thing to say about a window somebody else may be driving, and the reference
+   * is what saves describing it in words. It goes where an element pick goes — the
+   * conversation the user is looking at — because that is who is asking, and it leaves
+   * the window where it is: nothing here switches tabs (that is the window's own rail,
+   * or the tab list in the top bar).
+   */
+  const handleAddTabToConversation = useCallback((tab: TabRef) => {
+    void appendChipToConversation(`${buildTabMention(tab)} `, focusedSessionId ?? session.selected ?? null)
+  }, [appendChipToConversation, focusedSessionId, session.selected])
 
   useBrowserToolbarActions({
     workspaceId: activeWorkspaceId,
@@ -2411,25 +2434,25 @@ function AppShellContent({
     setTimeout(() => focusZone('chat', { intent: 'programmatic' }), 50)
   }, [activeWorkspace, focusZone, navigate, resolveInheritedNewSessionParams])
 
-  // Open a page in the browser.
+  // Open a tab in the browser.
   //
   // This used to make a window of its own. There is one browser window now — the
   // workspace's, used by every conversation and by the user (plan §22) — so "a new
-  // browser" means a page in it, and the window comes up if it was not open yet.
+  // browser" means a tab in it, and the window comes up if it was not open yet.
   //
-  // `newPage` is one request rather than "create the window, then add a page to it":
-  // a window that was not up yet already holds the blank page being asked for, so
+  // `newTab` is one request rather than "create the window, then add a tab to it":
+  // a window that was not up yet already holds the blank tab being asked for, so
   // adding beside it would open two of them (plan §22). The host decides, because it
   // is the only side that knows whether the window it just handed back is new.
   const handleNewBrowserWindow = useCallback(async () => {
     try {
       const instanceId = await window.electronAPI.browserPane.create({
         show: true,
-        newPage: true,
+        newTab: true,
       })
       await window.electronAPI.browserPane.focus(instanceId)
     } catch (error) {
-      console.error('[Chat] Failed to open a browser page:', error)
+      console.error('[Chat] Failed to open a browser tab:', error)
       toast.error(t('toast.failedToCreateBrowser'))
     }
   }, [])
@@ -2750,6 +2773,7 @@ function AppShellContent({
           onToggleFocusMode={() => setIsSidebarAndNavigatorHidden(prev => !prev)}
           onAddSessionPanel={() => handleNewChat(true)}
           onAddBrowserPanel={() => { void handleNewBrowserWindow() }}
+          onAddTabToConversation={handleAddTabToConversation}
           isCompact={isAutoCompact}
         />
 

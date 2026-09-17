@@ -21,13 +21,14 @@ import { HeaderMenu } from '@/components/ui/HeaderMenu'
 import { routes } from '@/lib/navigate'
 import { Spinner } from '@craft-agent/ui'
 import type { DetailsPageMeta } from '@/lib/navigation-registry'
-import type { NetworkProxySettings } from '../../../shared/types'
+import type { NetworkProxyMode, NetworkProxySettings } from '../../../shared/types'
 
 import {
   SettingsSection,
   SettingsCard,
   SettingsCardFooter,
   SettingsRow,
+  SettingsSegmentedControl,
   SettingsToggle,
   SettingsInput,
 } from '@/components/settings'
@@ -43,14 +44,16 @@ export const meta: DetailsPageMeta = {
 // ============================================
 
 interface ProxyFormState {
-  enabled: boolean
+  mode: NetworkProxyMode
   httpProxy: string
   httpsProxy: string
   noProxy: string
 }
 
+const DEFAULT_PROXY_MODE: NetworkProxyMode = 'direct'
+
 const EMPTY_PROXY_FORM: ProxyFormState = {
-  enabled: false,
+  mode: DEFAULT_PROXY_MODE,
   httpProxy: '',
   httpsProxy: '',
   noProxy: '',
@@ -59,7 +62,7 @@ const EMPTY_PROXY_FORM: ProxyFormState = {
 function toProxyFormState(settings?: NetworkProxySettings): ProxyFormState {
   if (!settings) return EMPTY_PROXY_FORM
   return {
-    enabled: settings.enabled,
+    mode: settings.mode,
     httpProxy: settings.httpProxy ?? '',
     httpsProxy: settings.httpsProxy ?? '',
     noProxy: settings.noProxy ?? '',
@@ -68,7 +71,7 @@ function toProxyFormState(settings?: NetworkProxySettings): ProxyFormState {
 
 function toNetworkProxySettings(form: ProxyFormState): NetworkProxySettings {
   return {
-    enabled: form.enabled,
+    mode: form.mode,
     httpProxy: form.httpProxy.trim() || undefined,
     httpsProxy: form.httpsProxy.trim() || undefined,
     noProxy: form.noProxy.trim() || undefined,
@@ -170,12 +173,15 @@ export default function AppSettingsPage() {
   }, [proxyForm, savedProxyForm])
 
   const handleSaveProxy = useCallback(async () => {
-    // Validate URLs
-    const httpErr = validateProxyUrl(proxyForm.httpProxy)
-    const httpsErr = validateProxyUrl(proxyForm.httpsProxy)
-    if (httpErr || httpsErr) {
-      setProxyError(httpErr || httpsErr)
-      return
+    // Validate URLs — only what is in use: the fields are hidden under the
+    // system proxy, and a stale one must not block switching away from it.
+    if (proxyForm.mode === 'custom') {
+      const httpErr = validateProxyUrl(proxyForm.httpProxy)
+      const httpsErr = validateProxyUrl(proxyForm.httpsProxy)
+      if (httpErr || httpsErr) {
+        setProxyError(httpErr || httpsErr)
+        return
+      }
     }
     setProxyError(undefined)
     setIsSavingProxy(true)
@@ -245,13 +251,23 @@ export default function AppSettingsPage() {
               {/* Network */}
               <SettingsSection title={t("settings.network.title")}>
                 <SettingsCard>
-                  <SettingsToggle
-                    label={t("settings.network.httpProxy")}
-                    description={t("settings.network.httpProxyDesc")}
-                    checked={proxyForm.enabled}
-                    onCheckedChange={(enabled) => setProxyForm(prev => ({ ...prev, enabled }))}
-                  />
-                  {proxyForm.enabled && (
+                  <SettingsRow label={t("settings.network.proxyMode")}>
+                    <SettingsSegmentedControl
+                      value={proxyForm.mode}
+                      onValueChange={(mode) => {
+                        // An error about a proxy we just stopped using is not
+                        // about anything on screen any more.
+                        setProxyError(undefined)
+                        setProxyForm(prev => ({ ...prev, mode }))
+                      }}
+                      options={[
+                        { value: 'direct', label: t("settings.network.proxyModeDirect") },
+                        { value: 'system', label: t("settings.network.proxyModeSystem") },
+                        { value: 'custom', label: t("settings.network.proxyModeCustom") },
+                      ]}
+                    />
+                  </SettingsRow>
+                  {proxyForm.mode === 'custom' && (
                     <>
                       <SettingsInput
                         label={t("settings.network.httpProxyLabel")}

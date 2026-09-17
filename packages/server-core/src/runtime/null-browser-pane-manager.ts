@@ -61,10 +61,10 @@ export class NullBrowserPaneManager implements IBrowserPaneManager {
   createTab(_instanceId: string, _options?: BrowserTabCreateOptions): string { return unavailable('createTab') }
   async createTabAsync(_instanceId: string, _options?: BrowserTabCreateOptions): Promise<string> { return unavailable('createTab') }
   activateTab(_instanceId: string, _tabId: string): void { unavailable('activateTab') }
-  setSessionPage(_instanceId: string, _tabId: string, _sessionId: string): void { unavailable('setSessionPage') }
+  setSessionTab(_instanceId: string, _tabId: string, _sessionId: string): void { unavailable('setSessionTab') }
   closeTab(_instanceId: string, _tabId: string): void { unavailable('closeTab') }
   assignTab(_instanceId: string, _tabId: string, _to: TabBelongsTo, _by: TabBelongsTo): void { unavailable('assignTab') }
-  /** No windows means no pages: an empty list is the true answer, not a failure. */
+  /** No windows means no tabs: an empty list is the true answer, not a failure. */
   listTabs(_instanceId: string): BrowserTabSummary[] { return [] }
   async listTabsAsync(_instanceId: string): Promise<BrowserTabSummary[]> { return [] }
   focusBoundForSession(_sessionId: string, _options?: { workspaceId?: string | null }): string { return unavailable('focusBoundForSession') }
@@ -81,7 +81,7 @@ export class NullBrowserPaneManager implements IBrowserPaneManager {
   async navigate(_id: string, _url: string): Promise<{ url: string; title: string }> { unavailable('navigate') }
   async goBack(_id: string): Promise<void> { unavailable('goBack') }
   async goForward(_id: string): Promise<void> { unavailable('goForward') }
-  /** A no-op rather than a failure: with no browser panes there is no page to reload. */
+  /** A no-op rather than a failure: with no browser panes there is no tab to reload. */
   reload(_id: string): void {}
 
   // -- Interaction --

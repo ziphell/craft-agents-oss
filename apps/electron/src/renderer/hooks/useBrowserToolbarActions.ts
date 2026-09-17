@@ -34,7 +34,7 @@ export interface EditElementRequest {
  * An element handed to a conversation rather than to a prototype (plan §12.7).
  *
  * No slug, and that is the point: picking an element to talk about needs a
- * conversation and nothing else, so a plain page someone opened in a bound window
+ * conversation and nothing else, so a plain tab someone opened in a bound window
  * works exactly like a prototype's.
  */
 export interface AddElementRequest {
@@ -56,7 +56,7 @@ export interface UseBrowserToolbarActionsOptions {
   activeSessionId?: string | null
   /** Called when the user picked an element in a bound panel. */
   onEditElement: (request: EditElementRequest) => void
-  /** Called when the user used the bar under the highlight. */
+  /** Called when the user used the bar under the selection. */
   onAddElementToConversation: (request: AddElementRequest) => void
 }
 
@@ -79,16 +79,16 @@ export function useBrowserToolbarActions({
    * conversation exists, and an overlay's view sits on a third-party address, so
    * neither the URL nor the session is enough on its own.
    *
-   * The session is read off the **page on screen**, the way `BrowserTabStrip` reads
-   * it and for the same reason: the window is shared, so the page is what says whose
+   * The session is read off the **tab on screen**, the way `BrowserTabStrip` reads
+   * it and for the same reason: the window is shared, so the tab is what says whose
    * work is in front — who is holding it, else who works from it, else who opened it
    * (plan §22). There is no window-level answer to fall back on.
    */
   const resolveBinding = useCallback((instanceId: string): { slug: string | null; sessionId: string | null } => {
     const instance = instances.find((item) => item.id === instanceId)
     if (!instance) return { slug: null, sessionId: null }
-    const page = instance.tabs?.find((tab) => tab.active)
-    const sessionId = page?.lockedBy ?? page?.cursorOf ?? page?.belongsTo?.sessionId ?? null
+    const activeTab = instance.tabs?.find((tab) => tab.active)
+    const sessionId = activeTab?.lockedBy ?? activeTab?.cursorOf ?? activeTab?.belongsTo?.sessionId ?? null
     const slug = instance.prototypeSlug ?? (sessionId ? sessionMetaMap.get(sessionId)?.prototypeSlug ?? null : null)
     return { slug, sessionId }
   }, [instances, sessionMetaMap])
@@ -140,7 +140,7 @@ export function useBrowserToolbarActions({
         return
       }
 
-      // The bar under the highlight needs no prototype — a page nobody owns is
+      // The bar under the selection needs no prototype — a page nobody owns is
       // the case it exists for — so it is answered before the prototype check
       // rather than gated behind it (plan §12.7).
       if (action.kind === 'add-to-conversation') {

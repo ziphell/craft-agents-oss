@@ -5,7 +5,7 @@
  * is the entire reason for writing them as checks rather than as prose (plan
  * §20.7): an acceptance criterion only a person can judge is a criterion nobody
  * runs. This is what answers them — `selector` against the page the work is on
- * (which is not the page on screen once a window has several: plan §22, 第十二轮),
+ * (which is not the tab on screen once a window has several: plan §22, 第十二轮),
  * `endpoint` against the contract.
  *
  * Three things it deliberately does **not** do:
@@ -94,9 +94,9 @@ export async function verifyPrototype(
   workspaceRootPath: string,
   slug: string,
   /**
-   * The page to check — the conversation's page, not the one on screen: the answer "is this
+   * The tab to check — the conversation's tab, not the one on screen: the answer "is this
    * requirement on the page" is about the page the work is on, and the person reading another
-   * one of the window's pages must not change it (plan §22, 第十二轮).
+   * tab of the window must not change it (plan §22, 第十二轮).
    */
   target?: PrototypeTargetPage | null,
 ): Promise<PrototypeVerification> {

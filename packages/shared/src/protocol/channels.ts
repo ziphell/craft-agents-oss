@@ -433,7 +433,7 @@ export const RPC_CHANNELS = {
     STOP: 'browser-pane:stop',
     FOCUS: 'browser-pane:focus',
     /**
-     * Manage one window's own pages — switch, close, add.
+     * Manage one window's own tabs — switch, close, add.
      *
      * One channel with an action rather than three, for the same reason the
      * toolbar's own strip uses one: the three buttons sit together and address the

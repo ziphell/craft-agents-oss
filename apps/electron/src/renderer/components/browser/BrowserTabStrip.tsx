@@ -3,7 +3,14 @@
  *
  * Rendered in the TopBar, shows compact badges for all active browser instances.
  * Each badge opens a shared action menu, whose first group is that window's own
- * pages (plan §22): one window is one badge, and its pages are listed inside it.
+ * tabs (plan §22): one window is one badge, and its tabs are listed inside it.
+ *
+ * A tab row answers two different questions, and they are kept apart. **Clicking**
+ * it shows that tab — the switch is the window's own state, and the window comes up
+ * with it, so a window behind something else is reached from here (用户报告).
+ * **Right-clicking** it hands the tab to a conversation as a chip (plan §12.7),
+ * which is about the tab as a thing to look at and leaves the window exactly where
+ * it is.
  */
 
 import { Fragment, useCallback, useEffect, useMemo, useRef } from 'react'
@@ -29,18 +36,25 @@ import {
   updateBrowserInstanceAtom,
   removeBrowserInstanceAtom,
 } from '@/atoms/browser-pane'
+import {
+  ContextMenu,
+  ContextMenuTrigger,
+  StyledContextMenuContent,
+  StyledContextMenuItem,
+} from '@/components/ui/styled-context-menu'
 import { useAppShellContext } from '@/context/AppShellContext'
 import { sessionMetaMapAtom } from '@/atoms/sessions'
-import { groupTabsByWork, shouldShowGroupHeaders, type PageGroup } from './page-groups'
+import { groupTabsByWork, shouldShowGroupHeaders, type TabGroup } from './tab-groups'
 import { BrowserTabBadge } from './BrowserTabBadge'
 import type { BrowserInstanceInfo } from '../../../shared/types'
-import { getHostname, openTargetOfActivePage } from './utils'
+import { getHostname, openTargetOfActiveTab, tabRefOf } from './utils'
 import { navigate, routes } from '@/lib/navigate'
+import type { TabRef } from '@/lib/tab-mention'
 
 const DEFAULT_MAX_VISIBLE_BADGES = 3
 
-/** Whether any page of this window is the given conversation's — for ordering the badges. */
-function hasPageOf(instance: BrowserInstanceInfo, sessionId: string | null): boolean {
+/** Whether any tab of this window is the given conversation's — for ordering the badges. */
+function hasTabOf(instance: BrowserInstanceInfo, sessionId: string | null): boolean {
   if (!sessionId) return false
   return !!instance.tabs?.some(
     (tab) =>
@@ -54,12 +68,21 @@ interface BrowserTabStripProps {
   activeSessionId?: string | null
   instancesOverride?: BrowserInstanceInfo[]
   maxVisibleBadges?: number
+  /**
+   * Hand one of a window's tabs to a conversation, as a reference in its composer.
+   *
+   * Left out where there is no conversation to put it in (the component playground),
+   * which is also what leaves the row without a context menu rather than with one
+   * whose only item would do nothing.
+   */
+  onAddTabToConversation?: (tab: TabRef) => void
 }
 
 export function BrowserTabStrip({
   activeSessionId,
   instancesOverride,
   maxVisibleBadges = DEFAULT_MAX_VISIBLE_BADGES,
+  onAddTabToConversation,
 }: BrowserTabStripProps) {
   // Filter the badge strip to the workspace currently in focus. Remote-connected
   // workspaces have a different `remoteWorkspaceId` (what the remote agent
@@ -71,7 +94,7 @@ export function BrowserTabStrip({
   const remoteWorkspaceId = activeWorkspace?.remoteServer?.remoteWorkspaceId ?? null
   const allInstances = useAtomValue(browserInstancesAtom)
   /**
-   * Conversation names for the page list's group headers.
+   * Conversation names for the tab list's group headers.
    *
    * The badge sits in the app shell, which already holds every conversation's
    * metadata — the rail, a separate document with its own preload, gets the same
@@ -94,11 +117,11 @@ export function BrowserTabStrip({
     const items = [...effectiveInstances]
 
     // Global list: keep all browser windows visible.
-    // Optional ordering preference: the window holding this conversation's pages comes first.
+    // Optional ordering preference: the window holding this conversation's tabs comes first.
     if (activeSessionId) {
       items.sort((a, b) => {
-        const aInActiveSession = hasPageOf(a, activeSessionId) ? 0 : 1
-        const bInActiveSession = hasPageOf(b, activeSessionId) ? 0 : 1
+        const aInActiveSession = hasTabOf(a, activeSessionId) ? 0 : 1
+        const bInActiveSession = hasTabOf(b, activeSessionId) ? 0 : 1
         if (aInActiveSession !== bInActiveSession) return aInActiveSession - bInActiveSession
         return a.id.localeCompare(b.id)
       })
@@ -217,60 +240,87 @@ export function BrowserTabStrip({
     })
   }, [instancesOverride, setActiveInstanceId])
 
-  const openPageTarget = useCallback((instance: BrowserInstanceInfo) => {
-    const target = openTargetOfActivePage(instance.tabs, sessionMeta)
+  const openTabTarget = useCallback((instance: BrowserInstanceInfo) => {
+    const target = openTargetOfActiveTab(instance.tabs, sessionMeta)
     if (!target) return
     navigate(routes.view.allSessions(target.sessionId))
   }, [sessionMeta])
 
   /**
-   * Show one of a window's pages.
+   * Show one of a window's tabs: that tab comes forward **and the window comes up**.
    *
-   * Switching is done through the window (which page is on screen is the
-   * window's own state), so the badge's list is a list of pages *of one window*
-   * rather than a flat list of everything open — which is what "grouped by
-   * window" means here.
+   * Both halves are the same act — switching a tab in a window nobody is looking at
+   * is a change the person cannot see — which is also why this is where the strip's
+   * own idea of "the window the app is on" is set. Which tab a window shows is the
+   * window's state, so the switch is asked of the window rather than assumed here.
    */
-  const selectPage = useCallback((instance: BrowserInstanceInfo, tabId: string) => {
+  const openTab = useCallback((instance: BrowserInstanceInfo, tabId: string) => {
     if (instancesOverride) return
     const browserPaneApi = window.electronAPI?.browserPane
     if (!browserPaneApi) {
-      console.warn('[BrowserTabStrip] browserPane API unavailable for page switch')
+      console.warn('[BrowserTabStrip] browserPane API unavailable for tab switch')
       return
     }
 
-    void browserPaneApi.tabAction({ instanceId: instance.id, action: 'activate', tabId }).catch((error) => {
-      console.warn(`[BrowserTabStrip] Failed to switch page ${tabId} of ${instance.id}:`, error)
-    })
-    // Switching a page in a window nobody can see is half an action.
-    void browserPaneApi.focus(instance.id).catch(() => {})
-  }, [instancesOverride])
-
-  const addPage = useCallback((instance: BrowserInstanceInfo) => {
-    if (instancesOverride) return
-    void window.electronAPI?.browserPane
-      .tabAction({ instanceId: instance.id, action: 'new' })
+    void browserPaneApi
+      .tabAction({ instanceId: instance.id, action: 'activate', tabId })
       .catch((error) => {
-        console.warn(`[BrowserTabStrip] Failed to add a page to ${instance.id}:`, error)
+        console.warn(`[BrowserTabStrip] Failed to switch tab ${tabId} of ${instance.id}:`, error)
+      })
+    focusBrowserWindow(instance)
+  }, [focusBrowserWindow, instancesOverride])
+
+  /**
+   * Give the window one more tab.
+   *
+   * A tab is added in order to be looked at, so this also brings the window up: a
+   * new tab in a window nobody can see is half an action, the same half that
+   * switching a tab used to make whole (plan §22). Which tab ends up in front is
+   * the window's own answer — the host activates the tab it just added.
+   */
+  const addTab = useCallback((instance: BrowserInstanceInfo) => {
+    if (instancesOverride) return
+    const browserPaneApi = window.electronAPI?.browserPane
+    if (!browserPaneApi) {
+      console.warn('[BrowserTabStrip] browserPane API unavailable for adding a tab')
+      return
+    }
+
+    void browserPaneApi
+      .tabAction({ instanceId: instance.id, action: 'new' })
+      .then(() => browserPaneApi.focus(instance.id))
+      .catch((error) => {
+        console.warn(`[BrowserTabStrip] Failed to add a tab to ${instance.id}:`, error)
       })
   }, [instancesOverride])
 
   /**
-   * The window's own pages, above its actions, sectioned by whose work they are.
+   * The window's own tabs: what it holds, which one is on screen, and what can be
+   * done with each.
    *
-   * One entry per page, the one on screen marked. A single-page window shows
-   * nothing here — that page is what the badge already says, and a group of one
-   * is noise. Closing a page is deliberately *not* here: it lives on the rail in
-   * the window, where the page being closed is the one in front of you.
+   * Every entry can be **shown** and can be **given away**, and the two are kept
+   * apart because they answer different questions (用户报告):
    *
-   * The sections are the same rule the rail draws (`groupTabsByWork`), so a person
-   * reading the window and a person reading this menu see the same grouping. Headers
-   * appear only when there is more than one group: with one group, the header would be
-   * a row saying "all of these are yours" over all of them.
+   * - **the row** shows that tab: the switch is the window's, and the window comes
+   *   up with it — a tab switched in a window nobody can see is half an action — so
+   *   this is how a window behind something else is reached. The entry that is marked
+   *   is where the window is, and that mark follows the window's own state.
+   * - **the row's context menu** hands the tab to a conversation as a chip (plan
+   *   §12.7) — about the tab as a thing to look at, so it leaves the window alone.
+   *
+   * It lists the window even when that is one tab (用户报告): this is where you
+   * look to see what is open, and leaving it out for a single tab answers the
+   * question with a menu that looks like it has nothing to say. The sections are
+   * the same rule the rail draws (`groupTabsByWork`), so a person reading the
+   * window and a person reading this menu see the same grouping. Headers appear
+   * only when there is more than one group — with everything in one group there is
+   * nothing to tell apart.
    */
-  const renderPageList = useCallback((instance: BrowserInstanceInfo) => {
+  const renderTabList = useCallback((instance: BrowserInstanceInfo) => {
     const tabs = instance.tabs ?? []
-    if (tabs.length < 2) return null
+    // No state pushed yet is not "no tabs": the window has not said what it holds,
+    // and an empty list would claim it holds nothing.
+    if (tabs.length === 0) return null
 
     const groups = groupTabsByWork(tabs)
     const showHeaders = shouldShowGroupHeaders(groups)
@@ -279,13 +329,15 @@ export function BrowserTabStrip({
      * is named by its slug (which IS its name: the board, the folder and its sessions all
      * use it).
      */
-    const groupLabel = (group: PageGroup): string => {
+    const groupLabel = (group: TabGroup): string => {
       const work = group.work
       if (!work) return t('browser.openedByYou')
       if (work.kind === 'task') return work.taskSlug
       return sessionMeta.get(work.sessionId)?.name || t('browser.openedByConversation')
     }
 
+    // No rule between the tabs and "New tab": adding one is the next thing to do with
+    // the list, not another kind of thing.
     return (
       <>
         {groups.map((group) => (
@@ -298,9 +350,19 @@ export function BrowserTabStrip({
             )}
 
             {group.tabs.map((tab) => {
-              const label = tab.title.trim() || getHostname(tab.url) || t('browser.untitledPage')
-              return (
-                <StyledDropdownMenuItem key={tab.id} onSelect={() => selectPage(instance, tab.id)}>
+              const label = tab.title.trim() || getHostname(tab.url) || t('browser.untitledTab')
+              /**
+               * One tab, and the two things it can do.
+               *
+               * **Click shows it**: the tab comes forward and the window comes up, which
+               * is the window's own verb — its rail means the same thing from inside, and
+               * this is the way to it from a window that is behind something. **Right-click
+               * hands it to a conversation** (plan §12.7), which is about the tab as a
+               * thing to look at rather than about what the window is showing, so it leaves
+               * the window alone.
+               */
+              const row = (
+                <StyledDropdownMenuItem onSelect={() => openTab(instance, tab.id)}>
                   {tab.active ? (
                     <Icons.Check className="h-3.5 w-3.5 text-accent" />
                   ) : tab.isLoading ? (
@@ -308,26 +370,33 @@ export function BrowserTabStrip({
                   ) : (
                     <Icons.Globe className="h-3.5 w-3.5 opacity-70" />
                   )}
-                  <span className="truncate">{label}</span>
+                  <span className="min-w-0 truncate">{label}</span>
                   {/* The header says whose these are when there is one to say it. */}
                   {!showHeaders && tab.belongsTo !== null && (
                     <Icons.Bot className="h-3 w-3 shrink-0 opacity-50" />
                   )}
                 </StyledDropdownMenuItem>
               )
+
+              if (!onAddTabToConversation) return <Fragment key={tab.id}>{row}</Fragment>
+
+              return (
+                <ContextMenu key={tab.id}>
+                  <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
+                  <StyledContextMenuContent>
+                    <StyledContextMenuItem onSelect={() => onAddTabToConversation(tabRefOf(tab))}>
+                      <Icons.MessageSquarePlus className="h-3.5 w-3.5" />
+                      {t('browser.addToConversation')}
+                    </StyledContextMenuItem>
+                  </StyledContextMenuContent>
+                </ContextMenu>
+              )
             })}
           </Fragment>
         ))}
-
-        <StyledDropdownMenuItem disabled={!!instancesOverride} onSelect={() => addPage(instance)}>
-          <Icons.Plus className="h-3.5 w-3.5" />
-          {t('browser.newPage')}
-        </StyledDropdownMenuItem>
-
-        <StyledDropdownMenuSeparator />
       </>
     )
-  }, [addPage, instancesOverride, selectPage, sessionMeta, t])
+  }, [onAddTabToConversation, openTab, sessionMeta, t])
 
   const terminateBrowserWindow = useCallback((instance: BrowserInstanceInfo) => {
     if (!instancesOverride) {
@@ -351,17 +420,31 @@ export function BrowserTabStrip({
 
   const renderBrowserActions = useCallback((instance: BrowserInstanceInfo) => {
     const canUseLiveWindowActions = !instancesOverride
-    const openTarget = openTargetOfActivePage(instance.tabs, sessionMeta)
+    const openTarget = openTargetOfActiveTab(instance.tabs, sessionMeta)
     const canOpenSession = !!openTarget
-    // Named after what it actually opens, and after the **page**: the item reads the page on
+    // Named after what it actually opens, and after the **tab**: the item reads the tab on
     // screen, because the window is the whole workspace's (plan §22).
     const openSessionLabel = openTarget?.kind === 'task'
-      ? t('browser.openPageTask')
-      : t('browser.openPageConversation')
+      ? t('browser.openTabTask')
+      : t('browser.openTabConversation')
 
     return (
       <>
-        {renderPageList(instance)}
+        {renderTabList(instance)}
+
+        {/*
+          One group with the list above, and no rule between them (用户报告): both are
+          about this window's tabs — what is open, and the way to open one more — so a
+          divider would only split one subject in two. It is an act rather than a
+          report, and it is here whatever the window holds: a window with one tab is
+          exactly the one somebody wants a second tab in (plan §22, 用户报告).
+        */}
+        <StyledDropdownMenuItem disabled={!!instancesOverride} onSelect={() => addTab(instance)}>
+          <Icons.Plus className="h-3.5 w-3.5" />
+          {t('browser.newTab')}
+        </StyledDropdownMenuItem>
+
+        <StyledDropdownMenuSeparator />
 
         <StyledDropdownMenuItem
           disabled={!canUseLiveWindowActions}
@@ -373,7 +456,7 @@ export function BrowserTabStrip({
 
         <StyledDropdownMenuItem
           disabled={!canOpenSession}
-          onSelect={() => openPageTarget(instance)}
+          onSelect={() => openTabTarget(instance)}
         >
           <Icons.PanelRightOpen className="h-3.5 w-3.5" />
           {openSessionLabel}
@@ -391,7 +474,7 @@ export function BrowserTabStrip({
         </StyledDropdownMenuItem>
       </>
     )
-  }, [instancesOverride, focusBrowserWindow, openPageTarget, renderPageList, sessionMeta, t, terminateBrowserWindow])
+  }, [addTab, instancesOverride, focusBrowserWindow, openTabTarget, renderTabList, sessionMeta, t, terminateBrowserWindow])
 
   if (orderedInstances.length === 0) return null
 

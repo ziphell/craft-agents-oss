@@ -10,7 +10,7 @@
  *
  * The trailing three are where it was picked, and they are the reason the marker
  * grew: the picker belongs to the window and stays on while the user moves between
- * its pages, so the element alone no longer says which page it came from — and that
+ * its tabs, so the element alone no longer says which page it came from — and that
  * is what the agent needs to change the right one. They are left off entirely when
  * a pick carries no origin (the agent's own `browser_tool pick`), which is also why
  * the two-part form is still read back.

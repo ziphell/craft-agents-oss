@@ -31,6 +31,14 @@ const PICKED = {
   rect: { x: 10, y: 20, width: 120, height: 40 },
 }
 
+/**
+ * The app's accent, as the pane manager resolves it for the picker.
+ *
+ * A page cannot see the app's variables, so the colour travels down as a concrete
+ * value — which is why every arming in these tests has to pass one.
+ */
+const ACCENT = '#8b5cf6'
+
 describe('BrowserCDP picker', () => {
   it('injects a syntactically valid picker script', async () => {
     const { webContents, expressions } = createFakeWebContents((params) => {
@@ -41,7 +49,7 @@ describe('BrowserCDP picker', () => {
     })
 
     const cdp = new BrowserCDP(webContents)
-    expect(await cdp.pickElement({ timeoutMs: 1_000 })).toBe(null)
+    expect(await cdp.pickElement({ timeoutMs: 1_000, accent: ACCENT })).toBe(null)
 
     const injectExpression = expressions[0]
     expect(injectExpression).toContain('__craft_agent_picker_overlay__')
@@ -61,7 +69,7 @@ describe('BrowserCDP picker', () => {
     })
 
     const cdp = new BrowserCDP(webContents)
-    const picked = await cdp.pickElement({ timeoutMs: 1_000 })
+    const picked = await cdp.pickElement({ timeoutMs: 1_000, accent: ACCENT })
 
     expect(picked).toEqual(PICKED)
     expect(expressions.every((expr) => typeof expr === 'string' && expr.length > 0)).toBe(true)
@@ -79,7 +87,7 @@ describe('BrowserCDP picker', () => {
     })
 
     const cdp = new BrowserCDP(webContents)
-    const picked = await cdp.pickElement({ timeoutMs: 1_000, pollMs: 50 })
+    const picked = await cdp.pickElement({ timeoutMs: 1_000, pollMs: 50, accent: ACCENT })
 
     expect(picked).toBe(null)
     expect(polls).toBeGreaterThan(1)
@@ -95,7 +103,7 @@ describe('BrowserCDP picker', () => {
     })
 
     const cdp = new BrowserCDP(webContents)
-    expect(await cdp.pickElement({ timeoutMs: 1_000 })).toBe(null)
+    expect(await cdp.pickElement({ timeoutMs: 1_000, accent: ACCENT })).toBe(null)
     cdp.detach()
   })
 
@@ -116,12 +124,15 @@ describe('BrowserCDP picker', () => {
     })
 
     const cdp = new BrowserCDP(webContents)
-    await cdp.armPicker({ addToConversation: true, addLabel: 'Add', resident: true })
+    await cdp.armPicker({ addToConversation: true, addLabel: 'Add', accent: ACCENT, resident: true })
 
     // The injected script must carry the resident flag through, or the page would
     // tear its own overlay down after the first pick.
     const injectExpression = expressions[0]!
     expect(injectExpression).toContain('if (true) return;')
+    // And the app's own colour with it: a page cannot see the app's variables, so
+    // this is the only way the overlay can be drawn in the window's colour.
+    expect(injectExpression).toContain(ACCENT)
     expect(() => new Function(injectExpression)).not.toThrow()
 
     expect((await cdp.drainPicker()).picks).toEqual([PICKED])
@@ -131,6 +142,25 @@ describe('BrowserCDP picker', () => {
     // Arming is not a pick: one injection, then one call per read, and nothing
     // tearing the page's overlay down in between.
     expect(expressions.length).toBe(4)
+    cdp.detach()
+  })
+
+  it('makes a click select, with adding left to the bar', async () => {
+    const { webContents, expressions } = createFakeWebContents(() => ({}))
+    const cdp = new BrowserCDP(webContents)
+    await cdp.armPicker({ addToConversation: true, addLabel: 'Add to conversation', accent: ACCENT, resident: true })
+
+    // The shape of the interaction, guarded as source text: the script only runs
+    // inside a real page, and this package has no DOM harness to drive it with
+    // (the same reason the resident flag above is checked this way).
+    const injectExpression = expressions[0]!
+    // The click is the selection...
+    expect(injectExpression).toContain('selected = el;')
+    // ...and a resident picker stops there: the click's own report sits behind the
+    // resident early-return, so clicking an element cannot add it on its own.
+    expect(injectExpression).toContain('if (true) return;\n    report(elementPayload(el));')
+    // The add is the bar's own click, and it acts on what was selected.
+    expect(injectExpression).toContain("const el = selected;")
     cdp.detach()
   })
 })

@@ -31,6 +31,7 @@ import { WorkspaceSwitcher } from "./WorkspaceSwitcher"
 import { CompactWorkspaceSwitcher } from "./CompactWorkspaceSwitcher"
 import { getDocUrl } from "@craft-agent/shared/docs/doc-links"
 import { AppMenu } from "../AppMenu"
+import type { TabRef } from "@/lib/tab-mention"
 
 const RIGHT_SLOT_FULL_BADGES_THRESHOLD = 420
 const RIGHT_SLOT_TWO_BADGES_THRESHOLD = 300
@@ -57,6 +58,8 @@ interface TopBarProps {
   onToggleFocusMode: () => void
   onAddSessionPanel: () => void
   onAddBrowserPanel: () => void
+  /** Hand one of a browser window's tabs to a conversation, as a composer chip. */
+  onAddTabToConversation?: (tab: TabRef) => void
   /** When true, hides controls that don't apply in compact/mobile layout */
   isCompact?: boolean
 }
@@ -83,6 +86,7 @@ export function TopBar({
   onToggleFocusMode,
   onAddSessionPanel,
   onAddBrowserPanel,
+  onAddTabToConversation,
   isCompact,
 }: TopBarProps) {
   const { t } = useTranslation()
@@ -225,7 +229,11 @@ export function TopBar({
       {!isCompact && (
       <div ref={rightSlotRef} className="flex min-w-0 shrink-0 items-center justify-end gap-1" style={{ paddingRight: 12 }}>
         <div className="min-w-0">
-          <BrowserTabStrip activeSessionId={activeSessionId} maxVisibleBadges={maxVisibleBrowserBadges} />
+          <BrowserTabStrip
+            activeSessionId={activeSessionId}
+            maxVisibleBadges={maxVisibleBrowserBadges}
+            onAddTabToConversation={onAddTabToConversation}
+          />
         </div>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -240,7 +248,7 @@ export function TopBar({
             </StyledDropdownMenuItem>
             <StyledDropdownMenuItem onClick={onAddBrowserPanel}>
               <Icons.Globe className="h-3.5 w-3.5" />
-              {t("browser.newPage")}
+              {t("browser.newTab")}
             </StyledDropdownMenuItem>
           </StyledDropdownMenuContent>
         </DropdownMenu>

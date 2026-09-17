@@ -6,12 +6,13 @@ import { SkillAvatar } from '@/components/ui/skill-avatar'
 import { SourceAvatar } from '@/components/ui/source-avatar'
 import type { LoadedSkill, LoadedSource, FileSearchResult } from '../../../shared/types'
 import { AGENTS_PLUGIN_NAME } from '@craft-agent/shared/skills/types'
+import { buildTabMention, tabLabel, tabOriginText, type TabRef } from '@/lib/tab-mention'
 
 // ============================================================================
 // Types
 // ============================================================================
 
-export type MentionItemType = 'skill' | 'source' | 'file' | 'folder'
+export type MentionItemType = 'skill' | 'source' | 'file' | 'folder' | 'tab'
 
 export interface MentionItem {
   id: string
@@ -22,6 +23,7 @@ export interface MentionItem {
   skill?: LoadedSkill
   source?: LoadedSource
   file?: { path: string; type: 'file' | 'directory'; relativePath: string }
+  tab?: TabRef
 }
 
 export interface MentionSection {
@@ -340,18 +342,34 @@ export function InlineMentionMenu({
                 {item.type === 'file' && (
                   <FileMenuIcon name={item.label} />
                 )}
+                {item.type === 'tab' && (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground">
+                    <circle cx="12" cy="12" r="10" />
+                    <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" />
+                    <path d="M2 12h20" />
+                  </svg>
+                )}
               </div>
 
               {/* Label and optional path/badge */}
-              {(item.type === 'file' || item.type === 'folder') ? (
+              {(item.type === 'file' || item.type === 'folder' || item.type === 'tab') ? (
                 <>
                   {/* File/folder: filename then parent path fading out on overflow */}
                   <span className="shrink-0">{item.label}</span>
-                  {item.file?.relativePath && getParentDir(item.file.relativePath) && (
-                    <FadingText className="text-[11px] text-muted-foreground min-w-0 opacity-50" fadeWidth={20}>
-                      {getParentDir(item.file.relativePath)}
-                    </FadingText>
-                  )}
+                  {item.type === 'tab'
+                    ? item.tab && (
+                        // A tab: what it is a page *of* when it belongs to a prototype,
+                        // else its address — either way, what tells two similar tabs
+                        // apart (two blank ones can only be told apart this way).
+                        <FadingText className="text-[11px] text-muted-foreground min-w-0 opacity-50" fadeWidth={20}>
+                          {tabOriginText(item.tab) || item.tab.url}
+                        </FadingText>
+                      )
+                    : item.file?.relativePath && getParentDir(item.file.relativePath) && (
+                        <FadingText className="text-[11px] text-muted-foreground min-w-0 opacity-50" fadeWidth={20}>
+                          {getParentDir(item.file.relativePath)}
+                        </FadingText>
+                      )}
                 </>
               ) : (
                 <>
@@ -452,6 +470,13 @@ export interface UseInlineMentionOptions {
   sources: LoadedSource[]
   /** Base path for file search (working directory) */
   basePath?: string
+  /**
+   * The workspace's browser tabs, so one can be mentioned as a thing to look at.
+   *
+   * Passed in rather than fetched here: this hook knows about the menu, not about
+   * where any of its items come from (skills, sources and files arrive the same way).
+   */
+  tabs?: TabRef[]
   onSelect: (item: MentionItem) => void
   /** Workspace ID for fully-qualified skill names */
   workspaceId?: string
@@ -474,6 +499,7 @@ export function useInlineMention({
   skills,
   sources,
   basePath,
+  tabs = [],
   onSelect,
   workspaceId,
 }: UseInlineMentionOptions): UseInlineMentionReturn {
@@ -548,8 +574,28 @@ export function useInlineMention({
       })
     }
 
+    // Tabs section — the workspace's browser tabs, last because they are not the
+    // workspace's own material: a tab is somewhere to look, and mentioning one says
+    // which screen is meant without describing it.
+    if (tabs.length > 0) {
+      result.push({
+        id: 'tabs',
+        label: 'Tabs',
+        items: tabs.map((tab, index) => ({
+          // An item needs an id of its own, and a browser tab has none here: the marker
+          // carries what the agent needs, not the window's tab id. Index-prefixed so two
+          // blank tabs of one window are two items rather than one id twice.
+          id: `${index}:${tab.url}`,
+          type: 'tab' as const,
+          label: tabLabel(tab),
+          description: tabOriginText(tab) || tab.url,
+          tab,
+        })),
+      })
+    }
+
     return result
-  }, [skills, sources, fileResults])
+  }, [skills, sources, fileResults, tabs])
 
   const handleInputChange = React.useCallback((value: string, cursorPosition: number) => {
     // Store current state for handleSelect
@@ -704,6 +750,11 @@ export function useInlineMention({
         mentionText = buildMentionText('file', item.file?.relativePath || item.id)
       } else if (item.type === 'folder') {
         mentionText = buildMentionText('folder', item.file?.relativePath || item.id)
+      } else if (item.type === 'tab' && item.tab) {
+        // A tab is not an id the reader can look up: the marker carries its own
+        // fields, encoded, which is why it is built rather than spelled out here
+        // (see tab-mention).
+        mentionText = `${buildTabMention(item.tab)} `
       } else {
         mentionText = buildMentionText('skill', item.id)
       }

@@ -312,7 +312,7 @@ prototypes/checkout-flow/patches/cart/ui-002-flow-guard.js      ← the page `ca
 - Files that do not follow the naming convention are ignored (READMEs, editor backups, dotfiles), so nothing unexpected gets executed.
 - Replay order is the declared numeric order → file name, with `prototype-commit`'s consolidated patches (`Z-…`) last by rule. The writer prefix is an identity, so it decides nothing about order.
 - **Where a patch sits is which page it changes**: `patches/*` applies to every page of the flow, `patches/<page>/*` to that page alone. A directory that matches no page is reported by `prototype-status` rather than silently replayed.
-- Which patches this command replays follows the **page the command acts on** (your page, or the one `--tab` names — not whatever the person is reading): that page brings the shared patches plus its own, and a page on no part of the prototype gets the shared ones only — the command says which page it used, so "the patch did nothing" and "the patch belongs to another page" read differently.
+- Which patches this command replays follows the **page the command acts on** (your tab, or the one `--tab` names — not whatever the person is reading): that page brings the shared patches plus its own, and a page on no part of the prototype gets the shared ones only — the command says which page it used, so "the patch did nothing" and "the patch belongs to another page" read differently.
 - Patches are applied to the current page **and** registered for every future document, so they survive a reload. The index is recomputed from disk on every `prototype-apply`, so editing a patch file and re-running the command is all that is needed — deleting a patch file also un-applies it.
 - **`--file <path>` applies one named patch instead of the whole set** — the file just written. A relative path counts from the workspace root, like every other `--file`. Nothing is un-registered in that case: the patches the page was already given stay given, and the one file is registered again under its own key, so re-running it after an edit is idempotent. This is the loop for a patch being iterated on — write it, `prototype-apply --file <path>`, read the target report — and it is what keeps a patch from having to be spelled out inside a command (`evaluate --file` runs one without registering it; this is the one that leaves it behind). The file has to be a patch of *this* prototype, under its `patches/`: a file that is not (a README, a misnamed patch, another prototype's file) is refused **by name**, because the injector ignores such files silently on a whole-set replay and "named explicitly and quietly ignored" is the one outcome nobody can debug. Its own page scope still decides where it belongs — naming a `patches/cart/…` file while the `orders` page is open injects it into the wrong DOM, and the command says so rather than leaving every target's "matched nothing" to be misread.
 - A page the host rendered (a page of ours, served from the prototype's own address) arrives with its patches already inlined, so there is nothing to inject into it; that is reported as *nothing to inject*, not as a failure. Patches written since that render still land on it — and a patch whose **contents** changed since then shows up on a `reload`, which is what a render is.
@@ -599,14 +599,14 @@ navigate http://checkout-flow-9f3a2b1c.localhost/dist/extension/cart.html
 
 ## Prototype pages in the browser window
 
-Prototype pages are **pages of the workspace's single browser window**, the same window every other task browses in. That has a few consequences worth knowing when driving `prototype-*` commands:
+Prototype pages are **tabs of the workspace's single browser window**, the same window every other task browses in. That has a few consequences worth knowing when driving `prototype-*` commands:
 
-- `prototype-open` **adds a page** to the window rather than replacing what it was showing, which is what lets two prototypes be worked on side by side.
-- Commands act on **your** page — the page this conversation has been working from, marked `your page` in `tabs` — or on the page `--tab <id>` names, not on whatever the person happens to be reading.
-- Which prototype a command means is read off the page it acts on: your own page first, then the one in front of you, and only then this conversation's binding. A page whose address the prototype's own page table does not describe says so (`none of the prototype's pages`) rather than being given the nearest page name.
+- `prototype-open` **adds a tab** to the window rather than replacing what it was showing, which is what lets two prototypes be worked on side by side.
+- Commands act on **your** tab — the tab this conversation has been working from, marked `your tab` in `tabs` — or on the tab `--tab <id>` names, not on whatever the person happens to be reading.
+- Which prototype a command means is read off the tab it acts on: your own tab first, then the one in front of you, and only then this conversation's binding. A page whose address the prototype's own page table does not describe says so (`none of the prototype's pages`) rather than being given the nearest page name.
 - A page of ours is rendered from disk, so an edit to its document or to a patch it carries appears on the next render — `reload` is the browser's own reload button for that page, and `wait network-idle` before reading it, since nothing waits for the load.
 
-The window and page model itself — `tabs`, `tab-new`, `tab-show`, `tab-assign`, `tab-close`, `--tab`, holds, and how several conversations share one window — is documented in `~/.craft-agent/docs/browser-tools.md`.
+The window and tab model itself — `tabs`, `tab-new`, `tab-show`, `tab-assign`, `tab-close`, `--tab`, holds, and how several conversations share one window — is documented in `~/.craft-agent/docs/browser-tools.md`.
 
 ---
 
@@ -621,4 +621,4 @@ The window and page model itself — `tabs`, `tab-new`, `tab-show`, `tab-assign`
 - `prototype-reference needs the slug of the prototype to study.`
 - `prototype-bind needs a slug.` → `prototype-bind checkout-flow` (or `prototype-bind --clear`)
 - `prototype-commit --page needs a page name.` → `prototype-commit --page cart`
-- `--tab needs a page id.` → `tabs` lists them: `snapshot --tab tab-3`
+- `--tab needs a tab id.` → `tabs` lists them: `snapshot --tab tab-3`

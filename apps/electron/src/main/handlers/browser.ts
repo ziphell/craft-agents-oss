@@ -46,27 +46,49 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
     //   workspace;
     // - everything else lands in the workspace's **browser window** — the one
     //   window every conversation and the user work in (plan §22). Opening
-    //   "a new browser" adds a page to it rather than making a second window, and
+    //   "a new browser" adds a tab to it rather than making a second window, and
     //   `bindToSessionId` only says which conversation is driving.
-    const instanceId = input?.id && !input?.bindToSessionId
-      ? browserPaneManager.createInstance(input.id, { show: input?.show, workspaceId })
+    // A window the caller pinned by id, as opposed to the workspace's own window.
+    const pinnedWindowId = input?.id && !input?.bindToSessionId ? input.id : null
+
+    // Was the window already up? Asked **before** it is resolved, because afterwards the
+    // answer is always "yes" — including for the window this very call brings up.
+    const windowWasOpen = input?.newTab
+      && browserPaneManager.listInstances().some((info) =>
+        pinnedWindowId ? info.id === pinnedWindowId : info.workspaceId === workspaceId,
+      )
+
+    const instanceId = pinnedWindowId
+      ? browserPaneManager.createInstance(pinnedWindowId, { show: input?.show, workspaceId })
       : browserPaneManager.createForSession(input?.bindToSessionId ?? null, {
           show: input?.show ?? false,
           workspaceId,
         })
 
-    // A page is wanted, and the opener may know which prototype it is for: an overlay's
+    // A tab is wanted, and the opener may know which prototype it is for: an overlay's
     // page is somebody else's address, so once the view loads it no URL says whose it
-    // is, and only the caller can. Either way the request is for **a** page rather than
-    // **another** page (`reuseUntouchedWindow`): a window that has never been used
-    // already holds the blank page being asked for, and adding beside it would leave
-    // that blank page behind — "New page" on a browser that was not open yet would come
-    // up with two of them (plan §22).
-    if (input?.prototype || input?.newPage) {
+    // is, and only the caller can.
+    //
+    // Which tab the request is answered by depends on the intent:
+    //
+    // - **a prototype** lands *in* the window's own blank tab when this request is what
+    //   brings the window up, so opening a prototype into a fresh window does not leave a
+    //   tab behind that nobody asked for (第六轮修正);
+    // - **"New tab"** means **another** tab as soon as the window is already up. A window
+    //   somebody has is not the blank one it was constructed with, however empty its one
+    //   tab still looks — reading it as untouched swallowed the request and nothing at all
+    //   happened (plan §22, 用户报告). A request that *is* what opens the window still lands
+    //   in that tab, which is what keeps a fresh window from coming up with two blank ones.
+    if (input?.prototype) {
       browserPaneManager.createTab(instanceId, {
         prototype: input.prototype,
         activate: true,
         reuseUntouchedWindow: true,
+      })
+    } else if (input?.newTab) {
+      browserPaneManager.createTab(instanceId, {
+        activate: true,
+        ...(windowWasOpen ? {} : { reuseUntouchedWindow: true }),
       })
     }
 
@@ -126,10 +148,10 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
   })
 
   /**
-   * Manage one window's pages from the main window's badge strip: switch, close,
-   * add, or take a locked page back.
+   * Manage one window's tabs from the main window's badge strip: switch, close,
+   * add, or take a locked tab back.
    *
-   * The renderer states which page and which window; what a page *is* (its
+   * The renderer states which tab and which window; what a tab *is* (its
    * identity, its opener, the strip's geometry) is the manager's to decide, so
    * nothing about it is passed back the other way.
    */
@@ -149,16 +171,16 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
       }
 
       if (input.action === 'release') {
-        // Taking a locked page back: the overlay is what holds it, so dropping the
+        // Taking a locked tab back: the overlay is what holds it, so dropping the
         // overlay is the unlock (plan §22, 第九轮修正). No session named — whoever is
         // working there lets go.
         browserPaneManager.clearAgentControlForInstance(input.instanceId)
         return
       }
 
-      // A page a person asked for through the strip is theirs, which is what the
+      // A tab a person asked for through the strip is theirs, which is what the
       // default already says (`belongsTo: null` — nobody's work asked for
-      // it). Stated by leaving it out, so the two surfaces that add pages (this one
+      // it). Stated by leaving it out, so the two surfaces that add tabs (this one
       // and the toolbar's own `+`) cannot drift apart.
       browserPaneManager.createTab(input.instanceId, { activate: true })
     },

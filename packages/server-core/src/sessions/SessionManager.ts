@@ -1411,7 +1411,7 @@ export class SessionManager implements ISessionManager {
       rpcServer: this.rpcServer,
       getHostClient: () => this.getBrowserHostClient(sid),
       // Read per call rather than captured: a session can be bound to a task after it exists
-      // (`bindExistingSessionToTask`), and its pages follow it (plan §22).
+      // (`bindExistingSessionToTask`), and its tabs follow it (plan §22).
       getWork: () => {
         const live = this.sessions.get(sid)
         return live ? workOfSession(live) : null
@@ -3760,19 +3760,19 @@ export class SessionManager implements ISessionManager {
          * agent delegated to.
          *
          * Its browser side is deliberately narrower (plan §22, Conductor): a child works in the
-         * page it was given rather than in whatever the person has in front of them, and it does
+         * tab it was given rather than in whatever the person has in front of them, and it does
          * not move the person's view. A parent and its children share one window, so those are
          * the two behaviours that would otherwise make them interfere.
          */
         const isChildSession = !!managed.parentSessionId
 
         /**
-         * The **work** this conversation is part of — what its pages say they are for, and what
+         * The **work** this conversation is part of — what its tabs say they are for, and what
          * its commands are judged against (plan §22).
          *
-         * A Conductor child is a node of a task, and says so: its pages belong to that node, so a
+         * A Conductor child is a node of a task, and says so: its tabs belong to that node, so a
          * re-run of the node (repair — a *new* child session for the *same* node) inherits the
-         * page instead of leaving it orphaned. The orchestrator is the task itself; an ordinary
+         * tab instead of leaving it orphaned. The orchestrator is the task itself; an ordinary
          * conversation is its own work. Read live rather than captured, because a session can be
          * bound to a task after it exists.
          */
@@ -3781,13 +3781,13 @@ export class SessionManager implements ISessionManager {
         const workspaceId = managed.workspace.id
 
         /**
-         * The page a command is about, refused when it is not this conversation's to
+         * The tab a command is about, refused when it is not this conversation's to
          * touch (plan §22) or is held by another one at this moment (第九轮).
          *
-         * Two rules, in this order. `whyTabIsOutOfReach` is the standing one — a page is
+         * Two rules, in this order. `whyTabIsOutOfReach` is the standing one — a tab is
          * this conversation's work, or nobody's, and anything else is another conversation's or
-         * another node's (which is what keeps a parent's children out of each other's pages).
-         * `whyTabIsLocked` is the clock: the page may be yours in principle and busy
+         * another node's (which is what keeps a parent's children out of each other's tabs).
+         * `whyTabIsLocked` is the clock: the tab may be yours in principle and busy
          * right now, and its answer is "wait" rather than "never".
          */
         const assertTabUsable = (tab: BrowserTabSummary): void => {
@@ -3797,8 +3797,8 @@ export class SessionManager implements ISessionManager {
 
         /**
          * Closing is housekeeping, and housekeeping is the whole **task**'s (plan §22): a node
-         * opens its own pages and stops, so a rule that only let the opener close them would
-         * leave every finished run's pages in the window with nobody left to tidy them.
+         * opens its own tabs and stops, so a rule that only let the opener close them would
+         * leave every finished run's tabs in the window with nobody left to tidy them.
          */
         const assertTabIsMineToClose = (tab: BrowserTabSummary): void => {
           const why = whyTabIsNotMineToClose(tab, work)
@@ -3808,8 +3808,8 @@ export class SessionManager implements ISessionManager {
         /**
          * …and not while somebody else is in the middle of working on it.
          *
-         * A page this conversation opened can still be locked by another one that took it
-         * over (a shared page is shared), and closing it under that conversation's feet is
+         * A tab this conversation opened can still be locked by another one that took it
+         * over (a shared tab is shared), and closing it under that conversation's feet is
          * exactly what the lock is for.
          */
         const assertTabUnlocked = (tab: BrowserTabSummary): void => {
@@ -3817,12 +3817,12 @@ export class SessionManager implements ISessionManager {
           if (why) throw new Error(why)
         }
 
-        /** One named page of the workspace's window, or an error saying it is not there. */
+        /** One named tab of the workspace's window, or an error saying it is not there. */
         const requireTab = async (instanceId: string, tabId: string): Promise<BrowserTabSummary> => {
           const tabs = await bpm.listTabsAsync(instanceId).catch(() => [])
           const tab = tabs.find((candidate) => candidate.id === tabId)
           if (!tab) {
-            throw new Error(`This browser window has no page "${tabId}". "tabs" lists them.`)
+            throw new Error(`This browser window has no tab "${tabId}". "tabs" lists them.`)
           }
           return tab
         }
@@ -3830,9 +3830,9 @@ export class SessionManager implements ISessionManager {
         /**
          * The window this conversation works in — its workspace's, opened if it is not up yet.
          *
-         * Split out from the page resolution below because one command needs a window and not a
-         * page: `tab-new` is how a conversation with no page gets one, so it cannot require a
-         * page first (plan §22, Conductor).
+         * Split out from the tab resolution below because one command needs a window and not a
+         * tab: `tab-new` is how a conversation with no tab gets one, so it cannot require a
+         * tab first (plan §22, Conductor).
          */
         const resolveWorkspaceWindow = async (options?: { show?: boolean }): Promise<string> => {
           const instanceId = await bpm.createForSessionAsync(sid, {
@@ -3845,16 +3845,16 @@ export class SessionManager implements ISessionManager {
         }
 
         /**
-         * Which window a command acts on, and which page of it.
+         * Which window a command acts on, and which tab of it.
          *
-         * The page is settled here, once, and handed on to the command — the conversation's
-         * own page when it has one, and the page on screen only when it has none, which is
+         * The tab is settled here, once, and handed on to the command — the conversation's
+         * own tab when it has one, and the tab on screen only when it has none, which is
          * the takeover (plan §22, 第十轮). Naming it once and passing it is what keeps the
-         * decision in one place: every browser method below takes the page it acts on, and
+         * decision in one place: every browser method below takes the tab it acts on, and
          * none of them has to read `activeTabId` and hope it is the right one.
          *
-         * Recording it is a cursor write (`setSessionPage`) rather than a window switch
-         * (第十二轮): the window is shared with the person, and taking them off the page they
+         * Recording it is a cursor write (`setSessionTab`) rather than a window switch
+         * (第十二轮): the window is shared with the person, and taking them off the tab they
          * are reading because the agent reached for another one is exactly what "the command
          * acts where it was told" is meant to stop. Every command works behind them;
          * `tab-show` is the one that moves what they see, because that is what it says.
@@ -3871,36 +3871,36 @@ export class SessionManager implements ISessionManager {
 
           assertTabUsable(target.tab)
           if (target.because === 'on-screen') {
-            // No page of its own yet: adopting the page in front of the person is the takeover
+            // No tab of its own yet: adopting the tab in front of the person is the takeover
             // case, and it is also where "you open it, the agent takes over" starts. Recording
-            // the cursor here is what makes it the conversation's page from now on, so the
+            // the cursor here is what makes it the conversation's tab from now on, so the
             // person's next click cannot pull the work away.
             //
             // A **child session** does not get this move (plan §22, Conductor): it works in the
-            // page it was given, and a parent's and siblings' pages are lined up in this window —
-            // taking whatever is in front would walk into them, or take the person's page.
+            // tab it was given, and a parent's and siblings' tabs are lined up in this window —
+            // taking whatever is in front would walk into them, or take the person's tab.
             if (isChildSession) {
               throw new Error(
-                `You have no page of your own in this workspace's window yet — page ${target.tab.id} is the one on screen, and taking it over is not yours to do. ` +
-                'Open one with "tab-new [url]", or ask the conversation that spawned you to hand you one with "tab-assign <page-id> <your-session>".',
+                `You have no tab of your own in this workspace's window yet — tab ${target.tab.id} is the one on screen, and taking it over is not yours to do. ` +
+                'Open one with "tab-new [url]", or ask the conversation that spawned you to hand you one with "tab-assign <tab-id> <your-session>".',
               )
             }
-            sessionLog.info(`[browser-pane] tool target adopted the page on screen: ${target.tab.id}`)
+            sessionLog.info(`[browser-pane] tool target adopted the tab on screen: ${target.tab.id}`)
           }
-          bpm.setSessionPage(instanceId, target.tab.id, sid)
+          bpm.setSessionTab(instanceId, target.tab.id, sid)
           sessionLog.info(`[browser-pane] tool target resolved: ${toolName} session=${sid} instance=${instanceId} tab=${target.tab.id} because=${target.because}`)
 
           return { instanceId, tabId: target.tab.id }
         }
 
         /**
-         * One page of the window as the browser side describes it — its id and its address.
+         * One tab of the window as the browser side describes it — its id and its address.
          *
          * What the prototype apply and the verification need, because both decide *which page
          * of the prototype* they are about by reading the address (`matchPrototypePage`), and
-         * both must decide it about **their** page: the window's own address is the page on
-         * screen, which is the person's (plan §22, 第十二轮). `null` when the page is gone —
-         * "no page to judge by", which the callers already know how to handle, rather than a
+         * both must decide it about **their** tab: the window's own address is the tab on
+         * screen, which is the person's (plan §22, 第十二轮). `null` when the tab is gone —
+         * "no tab to judge by", which the callers already know how to handle, rather than a
          * fallback that would silently judge the wrong one.
          */
         const sessionPage = async (
@@ -3933,13 +3933,13 @@ export class SessionManager implements ISessionManager {
          * This workspace's browser window, if it is open — without making one.
          *
          * Every other command opens a browser when there is none, because reading a
-         * page requires one to read. Naming a page does not: pages live in that
+         * tab requires one to read. Naming a tab does not: tabs live in that
          * window, so a workspace with no window has none, and creating an empty one
          * to report that would be the tool inventing the state it was asked about.
          *
          * Found by what it is rather than by who is asking (plan §22): it belongs to
          * the workspace, and nothing on the window names a conversation — which
-         * conversation is where is a fact about its pages. The workspace is what keeps
+         * conversation is where is a fact about its tabs. The workspace is what keeps
          * two of them apart.
          */
         const resolveWorkspaceWindowId = async (): Promise<string | null> => {
@@ -3987,7 +3987,7 @@ export class SessionManager implements ISessionManager {
             openPanel: async (options) => {
               // A child session never brings the window up: the person may be working in it, and
               // a DAG's nodes starting in parallel would take turns stealing their view (plan
-              // §22, Conductor). It still gets the window and its page.
+              // §22, Conductor). It still gets the window and its tab.
               const foreground = !isChildSession && !options?.background
               const instanceId = foreground
                 ? await bpm.focusBoundForSessionAsync(sid, { workspaceId })
@@ -4003,10 +4003,10 @@ export class SessionManager implements ISessionManager {
             snapshot: async () => {
               const { instanceId, tabId } = await resolveCommandTarget('browser_snapshot')
               const snapshot = await bpm.getAccessibilitySnapshot(instanceId, tabId)
-              // Which prototype this is, told from *the page* rather than from the
-              // conversation (plan §22): a window holds pages of several prototypes
+              // Which prototype this is, told from *the tab* rather than from the
+              // conversation (plan §22): a window holds tabs of several prototypes
               // now, so the conversation's binding is only what to fall back to when
-              // the page belongs to none. And "the page" is the one the snapshot is of —
+              // the tab belongs to none. And "the tab" is the one the snapshot is of —
               // the conversation's, not the one the person happens to be reading
               // (第十二轮). The kind comes from the prototype's own page table, which the
               // browser side cannot read.
@@ -4066,8 +4066,8 @@ export class SessionManager implements ISessionManager {
               const { instanceId, tabId } = await resolveCommandTarget('browser_console')
               return bpm.getConsoleLogs(instanceId, options, tabId)
             },
-            // A window's viewport is the window's, not a page's: resizing it is felt by every
-            // page in it, which is why this one command names no page.
+            // A window's viewport is the window's, not a tab's: resizing it is felt by every
+            // tab in it, which is why this one command names no tab.
             windowResize: async (options) => {
               const { instanceId } = await resolveCommandTarget('browser_window_resize')
               return bpm.windowResize(instanceId, options.width, options.height)
@@ -4118,10 +4118,10 @@ export class SessionManager implements ISessionManager {
               const { instanceId, tabId } = await resolveCommandTarget('browser_pick')
               return bpm.pickElement(instanceId, options, tabId)
             },
-            // The page on screen decides before the conversation does (plan §22): a
-            // window holds pages of several prototypes now, so a command that names
-            // no prototype means the one the page in front is for. The conversation's
-            // binding stays as the fallback — for a page that belongs to no
+            // The tab on screen decides before the conversation does (plan §22): a
+            // window holds tabs of several prototypes now, so a command that names
+            // no prototype means the one the tab in front is for. The conversation's
+            // binding stays as the fallback — for a tab that belongs to no
             // prototype, and for the remote bridge, whose sync accessors answer
             // nothing (which is what made the binding the answer in the first place).
             getBoundPrototypeSlug: () =>
@@ -4151,8 +4151,8 @@ export class SessionManager implements ISessionManager {
             },
             applyPrototype: async (prototypeSlug, options) => {
               const { instanceId, tabId } = await resolveCommandTarget('browser_prototype_apply')
-              // The page is named, not looked up: the apply reads *which page of the prototype*
-              // this is off the address, and the window's own answer is the page on screen —
+              // The tab is named, not looked up: the apply reads *which page of the prototype*
+              // this is off the address, and the window's own answer is the tab on screen —
               // the person's, who may be reading something else (plan §22, 第十二轮).
               return applyPrototypeToBrowser(bpm, instanceId, managed.workspace.rootPath, prototypeSlug, await sessionPage(instanceId, tabId), options)
             },
@@ -4171,7 +4171,7 @@ export class SessionManager implements ISessionManager {
             // prototype's `research/` and ship with nothing (plan §20.3). The
             // window is resolved like every other browser command's, so a capture
             // runs against the window this session already has — and against the
-            // page it works from, which is where the evidence is.
+            // tab it works from, which is where the evidence is.
             startPrototypeFrames: async (options) => {
               const { instanceId, tabId } = await resolveCommandTarget('browser_prototype_record')
               return startPrototypeFrameCapture(bpm, instanceId, options, tabId)
@@ -4182,7 +4182,7 @@ export class SessionManager implements ISessionManager {
             },
             // No browser instance: a recording is decoded by a hidden window, not
             // by the one the session is driving, so this works in a session that
-            // has never opened a page (plan §20.5).
+            // has never opened a tab (plan §20.5).
             importPrototypeVideo: async ({ slug: prototypeSlug, path, mode, everyMs, maxFrames }) => {
               return importPrototypeVideoArtifacts(bpm, managed.workspace.rootPath, prototypeSlug, {
                 path,
@@ -4195,9 +4195,9 @@ export class SessionManager implements ISessionManager {
             // open a browser, and with none the page checks come back as skipped —
             // a true answer, not a failure (plan §20.7).
             verifyPrototype: async (prototypeSlug) => {
-              // That window, not "this session's" (plan §22) — but the page it checks is
+              // That window, not "this session's" (plan §22) — but the tab it checks is
               // this conversation's, resolved the way every command's is: the person may be
-              // reading another page of the window, and which requirements are on *our* page
+              // reading another tab of the window, and which requirements are on *our* tab
               // is not something their next click gets to change (第十二轮).
               const instanceId = await resolveWorkspaceWindowId()
               const tabId = instanceId
@@ -4278,11 +4278,11 @@ export class SessionManager implements ISessionManager {
             },
             focusWindow: async (targetInstanceId) => {
               // Bringing the window up is about the person's view: a child session does not do it
-              // (plan §22, Conductor) — the window is theirs and it shows their page.
+              // (plan §22, Conductor) — the window is theirs and it shows their tab.
               if (isChildSession) {
                 throw new Error(
                   'Bringing the browser window to the front is not a child session\'s to do: the person may be working in it. ' +
-                  'Work in your own page ("tabs" lists them) — the window goes on showing theirs.',
+                  'Work in your own tab ("tabs" lists them) — the window goes on showing theirs.',
                 )
               }
 
@@ -4364,28 +4364,28 @@ export class SessionManager implements ISessionManager {
               }
 
               // The window is never closed on a conversation's say-so (plan §22's third
-              // rule) — but the pages it opened in it are its own to clean up, and with
-              // page-level occupation `close` means exactly that instead of refusing
+              // rule) — but the tabs it opened in it are its own to clean up, and with
+              // tab-level occupation `close` means exactly that instead of refusing
               // everything (plan §22, 第六轮). There is no window kind this could
               // destroy instead: it is the workspace's, the only one there is.
               const tabs = await bpm.listTabsAsync(resolution.target.id).catch(() => [])
-              // The task's pages, not just this session's (plan §22): a node opened its pages and
+              // The task's tabs, not just this session's (plan §22): a node opened its tabs and
               // has stopped by now, and the orchestrator that ran the whole DAG is the one that
               // gets to tidy them away. Same task = same housekeeping.
               const mine = tabs.filter((tab) => sameTask(tab.belongsTo, work) || sameWork(tab.belongsTo, work))
 
               if (mine.length === 0) {
-                sessionLog.info(`[browser-pane] lifecycle close session=${sid} resolved=${resolution.target.id} result=noop reason=no-own-pages`)
+                sessionLog.info(`[browser-pane] lifecycle close session=${sid} resolved=${resolution.target.id} result=noop reason=no-own-tabs`)
                 return {
                   action: 'noop',
                   requestedInstanceId,
                   resolvedInstanceId: resolution.target.id,
                   affectedIds: [],
-                  reason: 'This browser window belongs to the whole workspace, so it is not yours to close, and none of its pages are ones you opened. "tabs" lists them; "release" drops your overlay.',
+                  reason: 'This browser window belongs to the whole workspace, so it is not yours to close, and none of its tabs are ones you opened. "tabs" lists them; "release" drops your overlay.',
                 }
               }
 
-              // A window is never left with no pages, so when the pages being closed
+              // A window is never left with no tabs, so when the tabs being closed
               // are all of them, a fresh one takes their place first: the window goes
               // back to what a window is made of rather than to nothing.
               if (mine.length === tabs.length) {
@@ -4394,7 +4394,7 @@ export class SessionManager implements ISessionManager {
 
               for (const tab of mine) bpm.closeTab(resolution.target.id, tab.id)
 
-              sessionLog.info(`[browser-pane] lifecycle close session=${sid} resolved=${resolution.target.id} result=pages-closed pages=${mine.map((tab) => tab.id).join(',')}`)
+              sessionLog.info(`[browser-pane] lifecycle close session=${sid} resolved=${resolution.target.id} result=pages-closed tabs=${mine.map((tab) => tab.id).join(',')}`)
               return {
                 action: 'pages-closed',
                 requestedInstanceId,
@@ -4435,45 +4435,45 @@ export class SessionManager implements ISessionManager {
                 affectedIds: [resolution.target.id],
               }
             },
-            // Pages, not windows: this session's window holds them, and a command
-            // acts on the page that is on screen unless it names one with `--tab`
-            // (plan §22). Creating a page is the one tab operation that may open a
-            // window — there is nothing to add a page to otherwise — so it goes
+            // Tabs, not windows: this session's window holds them, and a command
+            // acts on the tab that is on screen unless it names one with `--tab`
+            // (plan §22). Creating a tab is the one tab operation that may open a
+            // window — there is nothing to add a tab to otherwise — so it goes
             // through the same resolver every browser command uses.
             //
             // Everything reached through here was asked for by the agent, so the
-            // page says whose work it is: `by` is stamped here
+            // tab says whose work it is: `by` is stamped here
             // rather than at each call site, because a caller that forgot would
-            // leave the agent's own page looking like the user's — and "leave other
-            // people's pages alone" is decided from that field.
+            // leave the agent's own tab looking like the user's — and "leave other
+            // people's tabs alone" is decided from that field.
             createTab: async (options) => {
-              // A window, not a page: this is the one command a conversation with no page of its
+              // A window, not a tab: this is the one command a conversation with no tab of its
               // own can still run (plan §22, Conductor).
               const instanceId = await resolveWorkspaceWindow()
               return await bpm.createTabAsync(instanceId, { ...options, belongsTo: work })
             },
             /**
-             * Hand a page to another conversation — the orchestrator's half of "a DAG's nodes each
-             * get their own page" (plan §22, Conductor).
+             * Hand a tab to another conversation — the orchestrator's half of "a DAG's nodes each
+             * get their own tab" (plan §22, Conductor).
              *
              * Checked here rather than in the browser because only this side knows the sessions:
-             * the page has to be one this conversation may give away (nobody's, or its own), and
-             * the receiver has to be a session of **this workspace** — a page is not a thing to
+             * the tab has to be one this conversation may give away (nobody's, or its own), and
+             * the receiver has to be a session of **this workspace** — a tab is not a thing to
              * hand across workspaces.
              *
-             * The receiver's **work** is resolved here too, and passed whole: whether the new page
+             * The receiver's **work** is resolved here too, and passed whole: whether the new tab
              * belongs to a conversation or to a DAG node is a fact about the session being handed
              * to, which the browser side has no way to look up (plan §22).
              */
             assignTab: async (tabId, targetSessionId) => {
               const instanceId = await resolveWorkspaceWindowId()
               if (!instanceId) {
-                throw new Error('No browser window is open for this workspace, so there is no page to hand over. Use "open" first.')
+                throw new Error('No browser window is open for this workspace, so there is no tab to hand over. Use "open" first.')
               }
               const target = this.sessions.get(targetSessionId)
               if (!target || target.workspace.id !== workspaceId) {
                 throw new Error(
-                  `"${targetSessionId}" is not a conversation in this workspace, so it cannot be given a page of this window. ` +
+                  `"${targetSessionId}" is not a conversation in this workspace, so it cannot be given a tab of this window. ` +
                   '"spawn-session" (or the task\'s own report) says which child sessions exist.',
                 )
               }
@@ -4482,32 +4482,32 @@ export class SessionManager implements ISessionManager {
             targetTab: async (tabId) => {
               const instanceId = await resolveWorkspaceWindowId()
               if (!instanceId) {
-                throw new Error('No browser window is open for this workspace, so there is no page to name. Use "open" first.')
+                throw new Error('No browser window is open for this workspace, so there is no tab to name. Use "open" first.')
               }
-              // Checked on the *named* page, before anything is written: naming somebody else's
+              // Checked on the *named* tab, before anything is written: naming somebody else's
               // work is refused here rather than after the window has been repointed at it.
               assertTabUsable(await requireTab(instanceId, tabId))
-              // Naming a page is how a conversation says "this is where I work from" — the cursor
+              // Naming a tab is how a conversation says "this is where I work from" — the cursor
               // moves with it, so the rest of the command (and the next one, and the one after the
-              // person clicks around) stays on this page (plan §22, 第十轮). Nothing is shown:
-              // the window is shared, and the person reading another of its pages is not the
+              // person clicks around) stays on this tab (plan §22, 第十轮). Nothing is shown:
+              // the window is shared, and the person reading another of its tabs is not the
               // command's to move (第十二轮).
-              bpm.setSessionPage(instanceId, tabId, sid)
+              bpm.setSessionTab(instanceId, tabId, sid)
             },
             activateTab: async (tabId) => {
               const instanceId = await resolveWorkspaceWindowId()
               if (!instanceId) {
-                throw new Error('No browser window is open for this workspace, so there is no page to show. Use "open" first.')
+                throw new Error('No browser window is open for this workspace, so there is no tab to show. Use "open" first.')
               }
-              // Checked on the *named* page, before the window is moved to it: showing somebody
+              // Checked on the *named* tab, before the window is moved to it: showing somebody
               // else's work is refused here rather than after the switch.
               assertTabUsable(await requireTab(instanceId, tabId))
-              // The one command that moves the window's page, because that is what it is called
-              // (`tab-show`): every other command works where its page is, behind the person's if
-              // they are reading another one (第十二轮) — and a page brought up is a page about to
+              // The one command that moves the window's tab, because that is what it is called
+              // (`tab-show`): every other command works where its tab is, behind the person's if
+              // they are reading another one (第十二轮) — and a tab brought up is a tab about to
               // be worked on, so the cursor goes with it too.
-              bpm.setSessionPage(instanceId, tabId, sid)
-              // …except for a child session, which takes the page as its own without moving what
+              bpm.setSessionTab(instanceId, tabId, sid)
+              // …except for a child session, which takes the tab as its own without moving what
               // the person sees (plan §22, Conductor). Said out loud rather than done quietly:
               // the answer to "show it to them" is about the person's view.
               if (isChildSession) return { movedView: false }
@@ -4517,13 +4517,13 @@ export class SessionManager implements ISessionManager {
             closeTab: async (tabId) => {
               const instanceId = await resolveWorkspaceWindowId()
               if (!instanceId) {
-                throw new Error('No browser window is open for this workspace, so there is no page to close.')
+                throw new Error('No browser window is open for this workspace, so there is no tab to close.')
               }
               const target = await requireTab(instanceId, tabId)
               assertTabIsMineToClose(target)
               assertTabUnlocked(target)
               bpm.closeTab(instanceId, tabId)
-              // Read back rather than assume: closing the last page takes the
+              // Read back rather than assume: closing the last tab takes the
               // window with it, and that is worth saying rather than leaving the
               // caller to find out on its next command.
               const remaining = await bpm.listTabsAsync(instanceId).catch(() => [])
@@ -4536,15 +4536,15 @@ export class SessionManager implements ISessionManager {
             },
             listWindows: async () => {
               const windows = await sessionWindows()
-              // Each window carries the prototype of the page **on screen** in it —
+              // Each window carries the prototype of the tab **on screen** in it —
               // which page of which flow, and of which kind — because the URL alone
               // cannot tell an overlay page (a live site's page) from a scratch one
               // (our own rendered document), and a window no longer holds one
-              // prototype's pages only (plan §22).
+              // prototype's tabs only (plan §22).
               //
-              // The conversation's own binding is offered as a fallback for **its own page**
-              // on screen — the same rule the browser side reads a page's prototype by, so the
-              // two cannot disagree. A page another conversation opened, works from or holds is
+              // The conversation's own binding is offered as a fallback for **its own tab**
+              // on screen — the same rule the browser side reads a tab's prototype by, so the
+              // two cannot disagree. A tab another conversation opened, works from or holds is
               // left to speak for itself rather than being told what it is by a conversation
               // that has nothing to do with it (plan §22, Conductor).
               const mine = (window: BrowserInstanceInfo) => {
@@ -7269,7 +7269,7 @@ export class SessionManager implements ISessionManager {
     const turnStartFinalMessageId = managed.turnStartFinalMessageId
     managed.turnStartFinalMessageId = undefined
 
-    // Clear the agent overlay between turns. What the session keeps is its pages
+    // Clear the agent overlay between turns. What the session keeps is its tabs
     // (`cursorOf` is sticky) — only the "working right now" marks come off, and its holds
     // with them.
     // Full unbind happens below when the queue is empty (session truly done).
@@ -7922,7 +7922,7 @@ export class SessionManager implements ISessionManager {
    * Read by the browser toolbar (through the pane manager's injected resolver),
    * which needs both: the workspace to build the prototype's own address, and the
    * slug to say which prototype the window is. A window whose conversation has no
-   * prototype shows the page it is actually on and offers no prototype actions —
+   * prototype shows the tab it is actually on and offers no prototype actions —
    * see plan §7: an entry point's precondition is shown before the click, not
    * answered after it.
    */
@@ -7936,12 +7936,12 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
-   * What a conversation is called, for a window that is showing its pages.
+   * What a conversation is called, for a window that is showing its tabs.
    *
-   * Read by the page rail's group headers, through the pane manager's injected
-   * resolver (see main/index.ts): the rail lists several conversations' pages side by
-   * side in one window, and the only thing a page knows about its opener is an id.
-   * Only the name — whose pages are whose stays the page's own `belongsTo`,
+   * Read by the tab rail's group headers, through the pane manager's injected
+   * resolver (see main/index.ts): the rail lists several conversations' tabs side by
+   * side in one window, and the only thing a tab knows about its opener is an id.
+   * Only the name — whose tabs are whose stays the tab's own `belongsTo`,
    * and nothing here is consulted for a permission. `null` for a conversation that is
    * gone or has not been named yet; the caller falls back to a generic label rather
    * than printing an id.
@@ -7971,26 +7971,26 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
-   * The prototype the page this conversation works from is for, from the browser side's own
-   * answer — falling back to the page on screen, which is all there is before it has one.
+   * The prototype the tab this conversation works from is for, from the browser side's own
+   * answer — falling back to the tab on screen, which is all there is before it has one.
    *
    * Read **synchronously**, which is why it deliberately reaches for the sync
    * accessors: `listInstances`/`listTabs` answer for real only on a local browser
    * pane manager, and a remote bridge returns nothing here. That is not a hole —
    * the caller falls back to the conversation's binding, which is what answered
-   * before a window could hold several prototypes' pages at once (plan §22).
+   * before a window could hold several prototypes' tabs at once (plan §22).
    */
   private currentPagePrototypeSlug(managed: ManagedSession, bpm: IBrowserPaneManager): string | null {
     const windows = bpm.listInstances()
-    // The workspace has one window, so anywhere with pages will do — but a workspace with no
+    // The workspace has one window, so anywhere with tabs will do — but a workspace with no
     // window at all is not something to invent here (plan §22).
     const window = windows.find((candidate) => (candidate.workspaceId ?? null) === (managed.workspace.id ?? null))
 
     if (!window) return null
     const tabs = bpm.listTabs(window.id)
-    // The page this conversation works from, and only then the one on screen: they stopped
-    // being the same page when a window got several of them, and a command that names no
-    // prototype means the prototype of *our* page (plan §22, 第十二轮).
+    // The tab this conversation works from, and only then the one on screen: they stopped
+    // being the same tab when a window got several of them, and a command that names no
+    // prototype means the prototype of *our* tab (plan §22, 第十二轮).
     return (
       tabs.find((tab) => tab.cursorOf === managed.id)
       ?? tabs.find((tab) => tab.active)

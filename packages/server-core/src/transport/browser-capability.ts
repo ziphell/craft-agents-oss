@@ -28,7 +28,7 @@ export type BrowserCapabilityMethod =
   // Tabs
   | 'createTab'
   | 'activateTab'
-  | 'setSessionPage'
+  | 'setSessionTab'
   | 'closeTab'
   | 'assignTab'
   | 'listTabs'
@@ -88,7 +88,7 @@ export interface BrowserCapabilityRequest {
   method: BrowserCapabilityMethod
   /** Positional args matching `IBrowserPaneManager[method]` signature. */
   args: unknown[]
-  /** Owning session — who is asking, and whose cursor and lease a page is written under. */
+  /** Owning session — who is asking, and whose cursor and lease a tab is written under. */
   sessionId: string
   /** Owning workspace — the boundary a call may act inside. */
   workspaceId: string
@@ -96,23 +96,23 @@ export interface BrowserCapabilityRequest {
    * The **work** the asking session is part of (plan §22).
    *
    * Identity next to `sessionId` rather than in `args`, for the same reason `createTab`'s
-   * `by` is stamped by the dispatcher rather than read from the wire: a page's
+   * `by` is stamped by the dispatcher rather than read from the wire: a tab's
    * `belongsTo` has to be the caller's own work, and a request that named somebody else's
-   * would be writing a page's declaration on their behalf. A session that is part of no
+   * would be writing a tab's declaration on their behalf. A session that is part of no
    * task is its own work — so this is `{ kind: 'session', sessionId }` for an ordinary
    * conversation, and the task's node for a Conductor child.
    */
   work: TabBelongsTo
   /**
-   * The page of the window this call acts on, when the caller resolved one.
+   * The tab of the window this call acts on, when the caller resolved one.
    *
    * Routing context, next to `sessionId` and `workspaceId` rather than in `args`, because
    * it says the same kind of thing: not *what* to do but *where*. The caller resolves it
-   * with `pickCommandTarget` — the conversation's own page, and only the page on screen
+   * with `pickCommandTarget` — the conversation's own tab, and only the tab on screen
    * when it has none — and passes it here, so the dispatcher never has to guess from what
-   * the person happens to be looking at (plan §22, 第十轮/第十二轮). Absent means the page
+   * the person happens to be looking at (plan §22, 第十轮/第十二轮). Absent means the tab
    * on screen: a caller with no routing (the person's own toolbar calls never come through
-   * here at all) and the commands that are about a window rather than a page.
+   * here at all) and the commands that are about a window rather than a tab.
    */
   tabId?: string
 }

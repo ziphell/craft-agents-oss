@@ -2167,10 +2167,10 @@ describe('createBrowserTools', () => {
       expect(opened).toEqual([
         { activate: false, prototype: { slug: 'checkout-flow', origin: 'http://checkout-flow.localhost:41234' } },
       ])
-      // Which page it is, and that there is another one — the only place a reader
+      // Which tab it is, and that there is another one — the only place a reader
       // can learn it until the window has a tab strip.
-      expect(result.content[0].text).toContain('Page: tab-7')
-      expect(result.content[0].text).toContain('1 other page')
+      expect(result.content[0].text).toContain('Tab: tab-7')
+      expect(result.content[0].text).toContain('1 other tab')
     })
 
     it('routes prototype-open to the entry page', async () => {
@@ -2761,9 +2761,9 @@ describe('createBrowserTools', () => {
       expect(bound).toEqual([null])
     })
 
-    // A window is one and its pages are many, so a page is the unit of work and a
+    // A window is one and its tabs are many, so a tab is the unit of work and a
     // command can name one (plan §22). The list is what makes naming possible.
-    it('lists this window\'s pages with the one on screen marked', async () => {
+    it('lists this window\'s tabs with the one on screen marked', async () => {
       mockFns.listTabs = async () => ([
         tabRow({
           id: 'tab-1',
@@ -2780,7 +2780,7 @@ describe('createBrowserTools', () => {
 
       const text = (await executeTool(tools, 'browser_tool', { command: 'tabs' })).content[0].text
 
-      expect(text).toContain('has 2 pages')
+      expect(text).toContain('has 2 tabs')
       expect(text).toContain('* tab-1  Checkout')
       expect(text).toContain('prototype:  checkout-flow')
       expect(text).toContain('page:       cart')
@@ -2821,9 +2821,9 @@ describe('createBrowserTools', () => {
       expect(text).toContain('"locked" is the lease')
     })
 
-    // Where an unnamed command lands is stated, because it is *not* "the page on screen":
+    // Where an unnamed command lands is stated, because it is *not* "the tab on screen":
     // the person clicking around moves their own view, and this must not move with it
-    // (plan §22, 第十轮). Only the reader's own page is marked — another conversation's is
+    // (plan §22, 第十轮). Only the reader's own tab is marked — another conversation's is
     // not this reader's business.
     it('marks the page this conversation works from, and only its own', async () => {
       mockFns.listTabs = async () => ([
@@ -2834,12 +2834,12 @@ describe('createBrowserTools', () => {
 
       const text = (await executeTool(tools, 'browser_tool', { command: 'tabs' })).content[0].text
 
-      expect(text).toContain('your page:  yes — a command that names no page acts here')
-      expect(text.match(/your page: {2}/g)).toHaveLength(1)
-      // The page on screen is not it, which is the whole point: `tab-1` stays unmarked even
+      expect(text).toContain('your tab:  yes — a command that names no tab acts here')
+      expect(text.match(/your tab: {2}/g)).toHaveLength(1)
+      // The tab on screen is not it, which is the whole point: `tab-1` stays unmarked even
       // though it is the one showing.
       expect(text).toContain('* tab-1  Checkout')
-      expect(text).toContain('the person switching pages does not move it')
+      expect(text).toContain('the person switching tabs does not move it')
     })
 
     // A page the prototype's own table does not describe is said so, rather than
@@ -2896,9 +2896,9 @@ describe('createBrowserTools', () => {
       expect(result.content[0].text).toContain('tab-2')
     })
 
-    it('refuses --tab without a page id rather than acting on the page on screen', async () => {
+    it('refuses --tab without a tab id rather than acting on the tab on screen', async () => {
       const result = await executeTool(tools, 'browser_tool', { command: 'snapshot --tab' })
-      expect(result.content[0].text).toContain('--tab needs a page id')
+      expect(result.content[0].text).toContain('--tab needs a tab id')
     })
 
     it('opens a page of its own with tab-new', async () => {
@@ -2913,9 +2913,9 @@ describe('createBrowserTools', () => {
       expect(result.content[0].text).toContain('tab-3')
     })
 
-    it('requires a page id for tab-close', async () => {
+    it('requires a tab id for tab-close', async () => {
       const result = await executeTool(tools, 'browser_tool', { command: 'tab-close' })
-      expect(result.content[0].text).toContain('tab-close needs a page id')
+      expect(result.content[0].text).toContain('tab-close needs a tab id')
     })
 
     it('closes a page and says whether the window went with it', async () => {

@@ -9,7 +9,7 @@
  *
  * Seven ways a page can be parked, measured side by side:
  *
- *   active-view             the page on screen (the control: must be foreground)
+ *   active-view             the tab on screen (the control: must be foreground)
  *   covered-view            full bounds, under the active view, in the same window
  *   covered-unthrottled     the same, with `backgroundThrottling: false`
  *   zero-view               bounds 0x0, what the app does today for a background page
