@@ -949,13 +949,17 @@ node 声明 writes: checkout-ui      ← spec 字段，与 outputs 同层；校�
 它是一个**独立的无边框原生窗口**，内部叠着（§22 第四～六轮改过形态：标签栏是左侧一整列、标签页可以有多个）：
 
 ```
-railView     左侧 200px  独立渲染进程（标签栏：每个标签页一条，`+` 在这里）
-toolbarView  48px        独立渲染进程（地址栏；整列在标签栏右边）
-tabView     页面面板      产品页面（一个标签页一个 view，只有活动标签页占位）
-nativeOverlayView        页面面板的框与遮罩（纯视觉，无按钮）+ agent 操作时的标记
+railView          左侧 200px  独立渲染进程（标签栏：每个标签页一条，`+` 在这里）
+toolbarView       48px        独立渲染进程（地址栏；整列在标签栏右边）
+tabView（网页）    页面面板      产品页面：`WebContentsView`，一个标签页一个；**角由它自己的 view 切**
+nativeOverlayView 页面周围与下方  同一标签页的遮罩层：留白表面 + 细线（被持有时是 accent 外框 + 光晕 + 胶囊 + `#shield`）
 ```
 
-**页面是主聊天面板那样的面板**（与 `components/app-shell/panel-constants.ts` 同一套数：圆角、边距、细线，见 `shared/panel-geometry.ts`）：它从标签栏起留 6px（`PANEL_GAP`）、离窗口右边和下边各 6px（`PANEL_EDGE_INSET`）、紧贴地址栏下沿，四角圆角（内部角 10px，右下那个窗口自己的角 8/14px），一圈 1px 细线（`shadow-middle` 的 6% 前景色环）。`tabView` 与它的四周**不是一个矩形**：`BrowserView` 只能是矩形，所以圆角与那圈细线由 `nativeOverlayView` 画在它上面 —— 遮罩层用 `box-shadow: 0 0 0 9999px <surface>` 把面板矩形之外（含四个角的缺口）填成窗口表面色，因此这层遮罩**常驻**（按屏幕上的那个标签页），只有 accent 外框、变暗与 `#shield` 跟着"这个标签页被持有"走。
+**页面是主聊天面板那样的面板**（与 `components/app-shell/panel-constants.ts` 同一套数：圆角、边距、细线，见 `shared/panel-geometry.ts`）：它从标签栏起留 6px（`PANEL_GAP`）、离窗口右边和下边各 6px（`PANEL_EDGE_INSET`）、紧贴地址栏下沿，四角圆角 10px，外面一圈 1px 细线（`shadow-middle` 的 6% 前景色环）。**圆角由网页自己的 view 切出来**（`WebContentsView.setBorderRadius`，`applyPageCornerRadius`），因此对任何网页都成立；四角切掉后透出来的是它**下面**那层 overlay（`#mask` 用 `box-shadow: 0 0 0 9999px <surface>` 把页面矩形之外——含四个角的缺口——填成窗口表面色），所以页面上**不盖任何东西**。
+
+**这层 overlay 的上下位置就是"这个标签页有没有被锁"**：平时它在页面**下面**（只看得见页面外那圈细线），人照常点页面、打字；agent 持有这个标签页时它被抬到页面**上面**（那一轮才是 accent 外框 + 光晕 + 胶囊，`#shield` 也才吃输入）。这一条不是审美取舍而是必需：视图**永远按矩形吃输入**（Electron 给 `setBorderRadius` 的注解就是这么写的：切掉的区域照样吃点击），所以任何盖住页面的墨都会把页面的点击一起吃掉 —— 也就是那个"网页不能点"的 bug。
+
+> **为什么页面是 `WebContentsView` 而别的还是 `BrowserView`**：只有前者能 `setBorderRadius`（Electron 39 的 `BrowserView` 上根本没有这个方法），而两种 API 共用**同一棵** view 树（`setTopBrowserView` 与 `contentView.addChildView` 能互相排序），所以只换页面这一层，chrome 与 overlay 不动。代价是页面那一层没有 `setAutoResize`（`layoutAllViews` 本来就在每次 resize 时重排，不依赖它）。
 
 含义：renderer 里的 `components/browser/` 只是主窗口 TopBar 的徽章条，**不是面板本体**。面板工具栏的可用 API 只有导航类（`window.browserToolbar`），它**拿不到 workspace、会话、绑定原型**。
 
@@ -1034,7 +1038,9 @@ BrowserPaneManager（主进程，只有 instanceId）
 
 **地址栏显示与视图加载是两件事**（与 §12.1 的分工同源）：bar 写的是"哪个原型的哪一页"——根之外再带页名（`http://<slug>-<hash>.localhost/pay`），而视图加载的始终是那一页**自己**的地址。所以窗口停在 overlay 页上时 bar 不跟着变成第三方地址，敲它回去的是**同一页**，而不是入口页；推不出当前页时只写原型域名。
 
-**敲别的地址**就是普通导航：视图去那里，而地址栏照旧写着原型 + 当前页（推不出当前页时只写原型域名）——这个窗口始终是这个原型的窗口，两个动作仍然可用（它们作用于**当前文档**）。
+**敲别的地址是"对这个标签页说的话"，所以它改的是身份，不只是地址。** 视图去那里，标签页也就不再是这个原型的了：地址栏如实写目标地址，标签栏那一行不再标原型与页名，那两个动作随绑定一起消失（`tab.prototypeReleased`）。粘性：Back 回来也不算它的了，要回去就再敲一次原型地址（§22，为它新开一页）。
+
+这一条必须与"点链接 / 登录跳转 / 站点自己的路由"分开：那些是**发生**在标签页上的事，不是谁的表态，而 overlay 本来就长在别人的地址上——若按"地址不再属于原型就解绑"来判，overlay 在真实站点里点两下就会把身份和动作弄丢。判据因此是"敲的这个地址还在不在原型的地界上"：原型自己域名上的路径（文件、SPA 路由，§16.3）与某一页的真实地址都还算它的，敲它们只是普通导航，标签页照旧。**只有手敲地址栏**才走这条（面板与 agent 的导航不算表态：打开预览时加载的就是 live 页的真实地址）。
 
 链路全在已有的 `STATE_UPDATE` 上，**没有新通道**：`BrowserPaneManager.pushToolbarState` 每次推送时算一次地址与 `prototypeSlug`（`prototypeBindingFor`：窗口被打开时声明的原型优先，否则走会话链），其中窗口那条来自打开时（`PrototypeEntry.origin` 一起带过来；页的身份改为"创建时定"之后由 `createTab({ prototype })` 给，见 §22），会话那条的 (slug, workspaceRootPath) 由 `SessionManager.getSessionPrototypeBinding` 给出，origin 由 `prototypeOriginUrl` 现算（`main/index.ts` 注入，晚绑定——窗口可能先于它存在）。地址→原型这条反方向的查表（`setPrototypeAddressResolver`）也由那里注入，用于用户敲进地址栏的地址；认出是某个原型的地址时（根或某一页）**为它新开一页、并把那一页绑到该原型**（§22：打开一律开新页，不再改绑当前页），并把页名一起交给主窗口（否则视图加载真实页面后，地址栏又会退回真实地址/丢掉当前页）。工具栏那侧只做两件事：显示 `url`，按 `prototypeSlug` 决定两个按钮是否可用。
 
@@ -2402,12 +2408,15 @@ overlay 的页面是别人的活地址，它不会、也不该变成我们的文
 
 > 用户报告（用户原话："我切换到其他标签页，还在显示遮罩"）——上一轮记的那个待决项，答案取"干脆标到 agent 的标签页上"那一支。随后用户又提了两条外观要求（"网页区域改成4个圆角""底部、右边都留点边距……就是主聊天面板的圆角、边距风格。细线把网页框起来"），于是这一层多了一件事：它不再只是 agent 的标记，它是**页面这块面板的框**。
 
-- **判据只有一个：`activeTab(instance).heldBy !== null`**，而它现在只决定**agent 的那部分**：accent 外框 + 变暗 + `#shield` + 胶囊。此前这些是**窗口级指示**：只要这个窗口里有会话在跑，**前台那个标签页**就被画上外框、内发光和胶囊；于是人从 agent 的标签页切走之后，看到的是"我这一页正在被操作"，而胶囊报的还是**另一个标签页**正在做的事。
-- **面板常驻，锁不常驻**：页面是主聊天面板那样的面板（`shared/panel-geometry.ts` 的同一套数：6px 边距、内部角 10px、窗口自己那个角 8/14px、1px 的 6% 前景色细线），而 `BrowserView` 只能是矩形 —— 所以圆角与那圈细线由 overlay 画在页面上（`#mask` 用 `box-shadow: 0 0 0 9999px <surface>` 填掉面板矩形之外的一切，含四个角的缺口）。因此 overlay **对屏幕上的那个标签页常驻**，没人持有的标签页是"一块没有锁的面板"，而不是"什么都不画"。"这个窗口在被用"由窗口自己的 chrome 说：标签栏那把锁就在被持有的那一行上。
-- **菜单展开仍然只需要 `#shield`**：它盖住 tab 区域来吃"点页面 = 关菜单"那一下，而面板本身不吃输入（`pointer-events: none`，只有 shield 在被锁或菜单展开时打开），所以人随时能点进页面。
+- **判据只有一个：`activeTab(instance).heldBy !== null`**，而它现在只决定**agent 的那部分**：accent 外框 + 光晕 + 胶囊 + `#shield`。此前这些是**窗口级指示**：只要这个窗口里有会话在跑，**前台那个标签页**就被画上外框、内发光和胶囊；于是人从 agent 的标签页切走之后，看到的是"我这一页正在被操作"，而胶囊报的还是**另一个标签页**正在做的事。
+- **面板由页面自己画，锁由 overlay 画**（用户报告过一次回归："怎么网页内容都不能点击了？"）：第一版把 overlay 常驻在页面上方，于是页面**整块**被盖住 —— 视图按矩形吃输入（Electron 给 `setBorderRadius` 的注解：切掉的区域照样吃点击），盖住 = 点击与键盘都进不去。第二版按要求把页面换成 `WebContentsView` 并让它**自己切角**（`applyPageCornerRadius`），overlay 则常驻在页面**下面**：它只负责页面**周围**那一圈（留白表面 + 细线），页面上一分墨都没有，人照常点、照常打字。
+- **overlay 的上下位置 = 锁**：`locked || menuActive` 时抬到页面**上面**（那时才有 accent 外框、光晕、胶囊和吃输入的 `#shield`），其余时候在页面**下面**（页面把它的内部盖住，只露出那圈细线）。"这个窗口在被用"由窗口自己的 chrome 说：标签栏那把锁就在被持有的那一行上。
+- **四角一律 10px**：`WebContentsView.setBorderRadius` 只有一个数，所以页面四角同半径，细线（`PAGE_PANEL_RING`）与遮罩的缺口都跟着它；应用自己的面板让最靠窗口的那个角紧一点（8/14px），而这块面板离每条窗口边都还有 6px，没有"窗口自己的角"可言。
+- **页面那一层换成 `WebContentsView`，其余不动**：理由见 §12.1；`window-resize` 的承诺、`#shield`/菜单、截图都不受影响（截图取的是 `tabView.webContents` 自己的像素）。
 - **截图不再为遮罩挂起**：截图取的是 `tabView.webContents` 自己的像素，overlay 从来不在画面里（`suspendOverlayForCapture` / `restoreOverlayAfterCapture` 已删）；何况现在把它挂起会让人眼前的面板闪一下。
 - **`window-resize` 的承诺跟着算上边距**：它承诺的是**页面**的视口，所以加窗口尺寸时把 6px 边距一起加进去，返回时再一起减掉（与 rail / bar 同一套算法）。
-- 验收：`browser-pane-manager.test.ts` 的「draws the panel without a lock while no tab is held」「arms the tab shield only while the tab on screen is the one being worked on」、两条 viewport 用例（488x446 那条同时钉住边距）；`shared/__tests__/browser-live-fx.test.ts` 钉住四个角的半径与细线的两个颜色。
+- **表面色只有一个来源**（用户报告："圆角外部边缘漏出了灰色底色，和垂直标签页、地址栏颜色不一致"）：遮罩填的那块表面 = 窗口/标签页底色 = `BACKGROUND_HEX`，而它现在**就是 renderer `index.css` 的 `--background`**（`:root` `#f7f8fa` / `.dark` `#080a10`，即 `DEFAULT_THEME` 的 oklch）。此前那两个 hex（`#faf9fb` / `#302f33`）来自 `themes/default.json` 一带的旧值，比窗口自己的 chrome 亮得多 —— 于是面板圆角外沿与留白在标签栏旁边显出一圈灰。同一组旧灰还抄在空状态文档与 chrome 加载失败的兜底页里，一并改到同一来源；细线的两个颜色（`PAGE_PANEL_RING`）也改成 renderer 的 `--foreground-rgb`（暗色是 237,236,240，不是 UI 包默认的 227,226,229）。
+- 验收：`browser-pane-manager.test.ts` 的「rounds the page itself, so any page is a rounded panel the person can click」（页面自己的角 + overlay 在它下面）、「draws the panel without a lock while no tab is held」「arms the tab shield only while the tab on screen is the one being worked on」、两条 viewport 用例（488x446 那条同时钉住边距）、关标签页那两条（页面走 `contentView`、overlay 走 `removeBrowserView`）；`shared/__tests__/browser-live-fx.test.ts` 钉住四个角的半径与细线的两个颜色。
 
 **下一轮**：**面板按会话分组**：徽章那一列现在按窗口分组，但没有说"哪个会话在用这个窗口"。
 

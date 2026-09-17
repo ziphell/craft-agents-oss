@@ -9,7 +9,7 @@
 import { join, parse as parsePath } from 'path'
 import { existsSync, mkdirSync } from 'fs'
 import { validateFilePath, getWorkspaceAllowedDirs } from '@craft-agent/server-core/handlers'
-import { BrowserView, BrowserWindow, app, ipcMain, nativeTheme, session, shell, type Session as ElectronSession } from 'electron'
+import { BrowserView, BrowserWindow, WebContentsView, app, ipcMain, nativeTheme, session, shell, type Session as ElectronSession } from 'electron'
 import { mainLog } from './logger'
 import type { WindowManager } from './window-manager'
 import { BrowserCDP, type AccessibilitySnapshot, type ElementGeometry } from './browser-cdp'
@@ -19,12 +19,12 @@ import {
   type BrowserEmptyStateLaunchResult,
   type BrowserInstanceInfo,
 } from '../shared/types'
-import { DEFAULT_THEME, getBackgroundColor, loadAppTheme, getAllowRemoteEvaluate } from '@craft-agent/shared/config'
+import { BACKGROUND_HEX, DEFAULT_THEME, getBackgroundColor, loadAppTheme, getAllowRemoteEvaluate } from '@craft-agent/shared/config'
 import { CodedError, RPC_CHANNELS, describeWork, sameWork } from '@craft-agent/shared/protocol'
 import type { PickedElement, PickedElementOrigin, BrowserToolbarAction, BrowserTabSummary, TabBelongsTo } from '@craft-agent/shared/protocol'
 import type { MockProgram } from '@craft-agent/shared/prototypes'
 import { getBrowserLiveFxCornerRadii, PAGE_PANEL_RING, resolvePagePanelRing } from '../shared/browser-live-fx'
-import { PANEL_EDGE_INSET, PANEL_GAP } from '../shared/panel-geometry'
+import { PANEL_EDGE_INSET, PANEL_GAP, PANEL_RADIUS_INNER } from '../shared/panel-geometry'
 import type {
   IBrowserPaneManager,
   BrowserInstanceSnapshot,
@@ -300,7 +300,13 @@ interface AgentControlLabel {
  */
 interface BrowserTab {
   id: string
-  tabView: BrowserView
+  /**
+   * The page: a `WebContentsView`, because the page's own corners are rounded by the view
+   * itself and only that class can do it (`applyPageCornerRadius`). Everything else in the
+   * window is still a `BrowserView`; the two share one view tree, so they stack against each
+   * other normally (one is added through `contentView`, the other through `addBrowserView`).
+   */
+  tabView: WebContentsView
   nativeOverlayView: BrowserView
   cdp: BrowserCDP
   currentUrl: string
@@ -320,11 +326,30 @@ interface BrowserTab {
    *
    * Written once, when the tab is created: opening a prototype gives it a tab of
    * its own rather than re-pointing the one on screen (plan §22), so there is no
-   * rebinding to be had. Wandering off with a normal navigation does not unbind it
-   * either — the tab is still the prototype's, and "apply it to whatever is here"
-   * is a legitimate thing to want.
+   * rebinding to be had — a *navigation* is not a statement about the tab, so a
+   * link, a redirect or the site's own route leaves this alone ("apply it to
+   * whatever is here" is a legitimate thing to want). The one thing that does give
+   * it up is the person saying so: {@link prototypeReleased}.
    */
   boundPrototype: PrototypeWindowBinding | null
+  /**
+   * The person typed an address of their own into this tab's bar: the tab is an
+   * ordinary one from here on (plan §12.6).
+   *
+   * The bar is the one place a tab's address is **said** rather than merely reported,
+   * so an address that is not the prototype's is the person speaking for the tab —
+   * while a link, a login redirect or a site's own route is just something that
+   * *happened* to it, and must leave the identity alone (an overlay is always on
+   * someone else's address; losing the binding mid-work would take the prototype
+   * actions with it).
+   *
+   * Recorded rather than derived from where the view ended up, because the session
+   * chain would otherwise hand the binding straight back and the bar would go on
+   * saying the prototype. Sticky, because an address is a statement: going Back does
+   * not undo it — naming the prototype again does (its address opens a tab for it,
+   * plan §22).
+   */
+  prototypeReleased: boolean
   /**
    * The **work this tab is part of** — whose tab it is, or `null` for a person's.
    *
@@ -814,7 +839,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * every tab goes through both, so a tab cannot be half-created.
    */
   private buildTab(ses: ElectronSession): BrowserTab {
-    const tabView = new BrowserView({
+    /**
+     * The page is a `WebContentsView` rather than the deprecated `BrowserView` for one reason:
+     * only the former can round its own corners (`setBorderRadius`). The page's panel look —
+     * rounded corners with the surface showing outside them — is otherwise impossible without
+     * drawing over the page, and anything drawn over the page swallows the person's clicks,
+     * because a view covers a rectangle whatever it paints. See `applyPageCornerRadius`.
+     */
+    const tabView = new WebContentsView({
       webPreferences: {
         partition: SESSION_PARTITION,
         session: ses,
@@ -849,6 +881,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       canGoBack: false,
       canGoForward: false,
       boundPrototype: null,
+      prototypeReleased: false,
       // A tab nobody said they asked for is nobody's: only the opener writes this,
       // and a tab the user opened has no session to name.
       belongsTo: null,
@@ -1369,7 +1402,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * after it, and one more renderer to pay for), and its overlay would keep whatever size
    * it had — `updateNativeOverlayState` only zeroes the overlays of tabs that are still
    * in `tabs`. So a tab that is closed leaves the window the same way it would leave a
-   * display: `removeBrowserView` for both views, then the contents are closed.
+   * display: its two views come off the window, then the contents are closed.
+   *
+   * The two views come off through the two APIs they were added with — the page is a
+   * `WebContentsView` (`contentView.removeChildView`), the overlay still a `BrowserView`
+   * (`removeBrowserView`) — because each API only knows its own kind, and both are the same
+   * tree underneath.
    */
   private detachTab(instance: BrowserInstance, tab: BrowserTab): void {
     tab.cdp.detach()
@@ -1379,9 +1417,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     for (const view of [tab.tabView, tab.nativeOverlayView]) {
       if (!instance.window.isDestroyed()) {
         try {
-          instance.window.removeBrowserView(view)
+          // Named per kind rather than through the loop's variable: each API only accepts its
+          // own kind of view, and the union of the two has neither method.
+          if (view === tab.tabView) instance.window.contentView.removeChildView(tab.tabView)
+          else instance.window.removeBrowserView(tab.nativeOverlayView)
         } catch (error) {
-          mainLog.debug(`[browser-pane] removeBrowserView ignored tab=${tab.id}: ${String(error)}`)
+          mainLog.debug(`[browser-pane] detaching tab=${tab.id} view ignored: ${String(error)}`)
         }
       }
 
@@ -3287,30 +3328,27 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * The document that draws the page's panel around it — and the agent's markings when it has
-   * this tab.
+   * The document that draws everything the page's own view cannot: the surface and the panel's
+   * hairline *around* the page, and the agent's markings when it holds this tab.
    *
    * Three layers, in this order:
    *
-   * - `#mask` paints the **surface** in everything outside the panel's rounded rectangle, which
-   *   is what rounds a `BrowserView`'s corners: a view is a rectangle, so the only way to round
-   *   the page is to paint over its corners — and over the gutter, in the colour the chrome
-   *   beside it is drawn in.
-   * - `#frame` is the page's own rectangle: the app's hairline ring around the panel
-   *   (`PAGE_PANEL_RING`), the accent while this tab is the one being worked on, and the slight
-   *   dim that says a lock is on this page.
-   * - `#shield` takes input, and only ever while the tab is locked or a menu of ours is open
-   *   over it (see `updateNativeOverlayState`).
+   * - `#mask` fills the page's rectangle (same rounded rect) with the **surface**. It sits
+   *   under the page, so what it is really there for is the page's rounded corners: the corner
+   *   is cut out of the page's view, and this is what shows through it. It is also what paints
+   *   the gutter when the overlay is raised, which is why it fills the whole tab area.
+   * - `#frame` is the page's rectangle with a hairline ring just outside it
+   *   (`PAGE_PANEL_RING`) — the app's own panel ring — which turns accent, with a glow, while
+   *   this tab is the one being worked on. Under the page the ring is all that is visible of it.
+   * - `#chip` and `#shield` are the agent's: what it is doing here, and the lock that stops the
+   *   person's input reaching this tab. Both only mean anything with the overlay *over* the
+   *   page, which is exactly when the tab is held (`updateNativeOverlayState`).
    *
    * Geometry is baked here because it does not change with the theme or with who is working —
    * only the colours do, and those are pushed on every update so a theme switch reaches them.
    */
   private async loadNativeOverlayPage(instance: BrowserInstance, tab: BrowserTab): Promise<void> {
-    const liveFxPlatform: Parameters<typeof getBrowserLiveFxCornerRadii>[0] =
-      process.platform === 'darwin' || process.platform === 'win32' || process.platform === 'linux'
-        ? process.platform
-        : 'other'
-    const cornerRadii = getBrowserLiveFxCornerRadii(liveFxPlatform)
+    const cornerRadii = getBrowserLiveFxCornerRadii()
     const inset = this.pagePanelInsets()
 
     const html = `<!doctype html>
@@ -3379,7 +3417,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     try {
       await tab.nativeOverlayView.webContents.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(html)}`)
       tab.nativeOverlayReady = true
-      mainLog.info(`[browser-pane] native overlay ready id=${instance.id} platform=${liveFxPlatform} corners=${cornerRadii.topLeft}/${cornerRadii.bottomRight} gutter=${inset.left}/${inset.right}/${inset.bottom}`)
+      mainLog.info(`[browser-pane] native overlay ready id=${instance.id} corners=${cornerRadii.topLeft} gutter=${inset.left}/${inset.right}/${inset.bottom}`)
       this.updateNativeOverlayState(instance)
     } catch (error) {
       tab.nativeOverlayReady = false
@@ -3673,6 +3711,17 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   private updateNativeOverlayState(instance: BrowserInstance): void {
     const heldBy = activeTab(instance).heldBy
     const menuActive = !!instance.toolbarMenuOverlayActive
+    // The lock is the tab's, so the accent, the dim and the shield all answer to this one
+    // question, and all three belong to the tab on screen alone (plan §22, 第九轮修正 /
+    // 第十三轮修正).
+    const locked = heldBy !== null
+    // What is being done is named by whoever is at the wheel on *this* tab — the overlay is
+    // this tab's, so there is no other conversation it could be reporting.
+    const label = this.getAgentControlLabel(heldBy ? instance.controlBy.get(heldBy) : null)
+    // The tab on screen is the only one a person can touch, and it takes input back only while
+    // that tab is the held one, or a menu of ours is open above it. Switching to another tab
+    // therefore hands the keyboard and mouse straight back.
+    const shieldActive = locked || menuActive
 
     // Only the tab on screen can be overlaid: an overlay on a tab nobody is
     // looking at would swallow clicks nobody made. Auto-resize goes off with it —
@@ -3696,29 +3745,25 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
 
     // The overlay covers the whole tab area — the page *and* the gutter the panel is inset by:
-    // it is what paints the surface in that gutter, so it has to reach the rail and the bar.
-    // The chrome is still not covered by it: the rail and the bar stay the person's, and a
-    // person has to be able to switch tabs while it is up.
+    // it is what paints the surface in that gutter and the panel's hairline. The chrome is
+    // still not covered by it: the rail and the bar stay the person's, and a person has to be
+    // able to switch tabs while it is up.
     const area = this.tabAreaBounds(instance)
     activeTab(instance).nativeOverlayView.setBounds(area)
     activeTab(instance).nativeOverlayView.setAutoResize({ width: true, height: true })
-    // Above its tab, under the chrome — and raised here rather than once at layout time,
-    // because every tab is laid out (and the active one raised) before the overlay document
-    // may have loaded at all.
-    instance.window.setTopBrowserView(activeTab(instance).nativeOverlayView)
-    this.raiseChromeViews(instance)
 
-    // The lock is the tab's, so the accent, the dim and the shield all answer to this one
-    // question, and all three belong to the tab on screen alone (plan §22, 第九轮修正 /
-    // 第十三轮修正).
-    const locked = heldBy !== null
-    // What is being done is named by whoever is at the wheel on *this* tab — the overlay is
-    // this tab's, so there is no other conversation it could be reporting.
-    const label = this.getAgentControlLabel(heldBy ? instance.controlBy.get(heldBy) : null)
-    // The tab on screen is the only one a person can touch, and it takes input back only while
-    // that tab is the held one, or a menu of ours is open above it. Switching to another tab
-    // therefore hands the keyboard and mouse straight back.
-    const shieldActive = locked || menuActive
+    // Which of the two is on top is the whole of "is this tab locked or not", and the page is
+    // on top whenever it can be: a view covers a rectangle whatever it paints, so an overlay
+    // left over the page takes the page's clicks with it — every click, not just the ones near
+    // the panel's ink. Everything the overlay draws is *around* the page (the gutter's surface,
+    // the panel's hairline) or belongs to a lock, so under the page it is invisible where it
+    // would matter and harmless where it is not.
+    if (shieldActive) {
+      instance.window.setTopBrowserView(activeTab(instance).nativeOverlayView)
+    } else {
+      instance.window.contentView.addChildView(activeTab(instance).tabView)
+    }
+    this.raiseChromeViews(instance)
 
     // Resolved on every update rather than baked into the document, because both follow the
     // OS/app theme and the window outlives a theme switch.
@@ -3802,15 +3847,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    */
   private layoutTabView(instance: BrowserInstance): void {
     // The page panel, not the whole tab area: the gutter around it is the overlay's to paint
-    // (`pageAreaBounds`), and a tab laid out at the tab area's full size would show its square
-    // corners in it.
+    // (`pageAreaBounds`), and the page's own corners are cut out of its view
+    // (`applyPageCornerRadius`) so the surface behind them shows through.
     const area = this.pageAreaBounds(instance)
 
     for (const tab of instance.tabs) {
       // Anchored at the chrome's inside corner, so a tab resizes with the window but never
-      // moves over the chrome.
+      // moves over the chrome. No `setAutoResize`: the page is a `WebContentsView`, which has
+      // no such call — every layout comes through here anyway (`layoutAllViews` on resize).
       tab.tabView.setBounds(area)
-      tab.tabView.setAutoResize({ width: true, height: true })
     }
 
     this.raiseActiveTab(instance)
@@ -3818,15 +3863,30 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Put the tab on screen above the other tabs, and the chrome above everything.
+   * The page's own corners — the one thing the panel look needs from the page's view itself.
    *
-   * Between the two goes the tab's own overlay — the shield the agent's control draws there —
-   * and that is raised where it is positioned (`updateNativeOverlayState`), because it may not
-   * even be loaded yet when the tab is raised.
+   * Every page is rounded, ours and a stranger's alike, and the corner is *cut out of the view*
+   * rather than painted over: what shows through it is the overlay underneath (which fills that
+   * area with the surface), so nothing sits over the page and the person's clicks reach it. A
+   * view's radius is one number, so all four corners take `PANEL_RADIUS_INNER`; the app's own
+   * panels draw the corner nearest the window a couple of pixels tighter, which is not worth a
+   * second mechanism here.
+   */
+  private applyPageCornerRadius(tab: BrowserTab): void {
+    tab.tabView.setBorderRadius(PANEL_RADIUS_INNER)
+  }
+
+  /**
+   * Put the page of the tab on screen above the other tabs, and the chrome above everything.
+   *
+   * The page is raised through `contentView` (it is a `WebContentsView`) while the chrome is
+   * raised through `setTopBrowserView` (still a `BrowserView`) — the two share one tree, so the
+   * order they are given here holds. The tab's own overlay is not part of this: where it sits
+   * depends on whether the tab is locked, which is `updateNativeOverlayState`'s business.
    */
   private raiseActiveTab(instance: BrowserInstance): void {
     if (instance.window.isDestroyed()) return
-    instance.window.setTopBrowserView(activeTab(instance).tabView)
+    instance.window.contentView.addChildView(activeTab(instance).tabView)
     this.raiseChromeViews(instance)
   }
 
@@ -4021,8 +4081,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Browser Toolbar Error</title>
     <style>
-      html, body { margin: 0; padding: 0; height: 100%; font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #fafafb; color: #1f2937; }
-      @media (prefers-color-scheme: dark) { html, body { background: #2b292e; color: #e5e7eb; } }
+      html, body { margin: 0; padding: 0; height: 100%; font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: ${BACKGROUND_HEX.light}; color: #1f2937; }
+      @media (prefers-color-scheme: dark) { html, body { background: ${BACKGROUND_HEX.dark}; color: #e5e7eb; } }
       .wrap { height: 100%; display: flex; align-items: center; justify-content: center; }
       .card { max-width: 640px; margin: 0 20px; padding: 14px 16px; border-radius: 10px; background: rgba(127,127,127,0.12); font-size: 12px; line-height: 1.45; }
       .title { font-weight: 600; margin-bottom: 6px; }
@@ -4112,6 +4172,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * tabs. Both halves are the same facts as before, only per tab.
    */
   private tabPrototypeBinding(tab: BrowserTab): PrototypeWindowBinding | null {
+    // A tab the person steered away by typing an address is nobody's prototype tab
+    // any more — not the fallback's either: the address was a statement about *this*
+    // tab, and the conversation it borrows from cannot outvote it (plan §12.6).
+    if (tab.prototypeReleased) return null
     if (tab.boundPrototype) return tab.boundPrototype
     // The fallback is asked of **the tab's** conversation, not the window's: a tab that
     // cannot say what it is for borrows from whoever works from it (`cursorOf`, sticky) or
@@ -4231,6 +4295,28 @@ export class BrowserPaneManager implements IBrowserPaneManager {
           page: named.page,
         })
         return
+      }
+
+      // Anything else is an ordinary address, and an ordinary address typed here is
+      // the person speaking for the tab: one that is not this prototype's gives it up,
+      // so the tab becomes an ordinary one and the bar goes back to mirroring where the
+      // view actually is (plan §12.6). "Not this prototype's" is deliberate — the
+      // prototype's own host (a file, an SPA route, §16.3) and a page of it are still
+      // its business, and typing them must not cost the tab its prototype.
+      // Only *typing* does this: a link, a redirect or the site's own route is not a
+      // statement, and an overlay is on someone else's address by construction.
+      const steered = activeTab(inst)
+      const binding = this.tabPrototypeBinding(steered)
+      if (
+        binding &&
+        !sameHost(url, binding.origin) &&
+        !this.prototypePageResolver?.(binding.slug, binding.origin, url)
+      ) {
+        steered.boundPrototype = null
+        steered.prototypeReleased = true
+        // Pushed before the load so the bar answers the keystroke now rather than when
+        // the page arrives — which is also what it does if the load never does.
+        this.pushToolbarState(inst)
       }
 
       await this.navigate(inst.id, url)
@@ -5503,9 +5589,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // transparent tab would show whichever tab is stacked under it.
     tab.tabView.setBackgroundColor(getBackgroundColor(nativeTheme.shouldUseDarkColors))
     tab.nativeOverlayView.setBackgroundColor('#00000000')
+    this.applyPageCornerRadius(tab)
 
-    instance.window.addBrowserView(tab.tabView)
+    // The overlay goes in first, so the page starts out **above** it. Everything the overlay
+    // draws is *around* the page (the gutter's surface, the panel's hairline), and a view left
+    // on top of the page takes its clicks — a view covers a rectangle whatever it paints. From
+    // here on `updateNativeOverlayState` is what decides which of the two is on top, because
+    // that is also what "this tab is locked" means.
     instance.window.addBrowserView(tab.nativeOverlayView)
+    instance.window.contentView.addChildView(tab.tabView)
     // The chrome stays on top of whatever tab is showing — both surfaces of it.
     this.raiseChromeViews(instance)
     void this.loadNativeOverlayPage(instance, tab)

@@ -357,6 +357,7 @@ cd apps/electron && bun run build:renderer
 | 原型页在无端口地址上打开 | 打开一个页是我们自己的原型 → 地址栏是 `http://<label>.localhost/`，页面带着**这一页**的补丁 | 主进程日志里有没有 `[prototype-host] answering prototypes at …`；handler 是不是装在了 `persist:browser-pane` 上 |
 | 页名与入口在真窗口里对得上 | 开根地址 → 落在入口页；没配入口时落在**页索引**，点一页进得去；`snapshot` 的 `Prototype:` 行带 `page "<名字>"` | `prototype-status` 的 `pages:` / `root:` 两行；`matchPrototypePage` 认不认得出窗口的真实 URL（overlay 的跳转、SPA 路由都算） |
 | 地址栏写着"哪一页"，而且敲得回去 | 在一个 overlay 页上（视图停在真实站点）→ 地址栏是 `http://<label>.localhost/<页名>`；把它敲一遍回车 → 回到**同一页**（不是入口页），地址栏照旧 | `main/index.ts` 注入的 `pageOfPrototypeUrl`（认地址）与 `pageResolver`（认窗口在哪一页）；页名对不上时只写原型域名 |
+| 敲普通网址 = 交出这个标签页 | 从原型打开的窗口里敲 `https://example.com` 回车 → 地址栏写目标地址，标签栏那一行不再标原型/页名，「应用补丁」变灰；按 Back 回来仍然如此（粘性）。敲自己域名上的 `/dist/…` 或某一页的真实地址 → 标签页还是它的 | `browser-toolbar:navigate` 处理器里那一段（`prototypeReleased`）；`__tests__/browser-pane-manager.test.ts` 的「gives the tab up…」「keeps the tab…」 |
 | **真实站点的 pass-through 无损** | 在同一个窗口打开一个真实站点：上传一张图（分块）、播一段视频（流式）、下载一个文件、来回导航看缓存 | `net.fetch` 那一行；必要时把 handler 临时换成只打日志的版本做二分（见 §3.11） |
 | 我们的 host 上 cookie 能回写 | 在原型页里 `document.cookie='a=1'`，刷新后读回 | 同上；回环时代这条是通的 |
 | 真实浏览没变慢 | 同一个站点，装/不装 handler 各开一次，比首屏与资源加载 | 那一跳 `net.fetch` |

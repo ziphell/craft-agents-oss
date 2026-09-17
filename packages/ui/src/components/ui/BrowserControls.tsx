@@ -308,7 +308,7 @@ export function BrowserControls({
     <div
       className={cn(
         'relative flex items-center gap-1',
-        compact ? 'h-[40px] px-2' : 'h-[48px] border-b border-foreground/6 px-3',
+        compact ? 'h-[40px] px-2' : 'h-[48px] px-3',
         className,
       )}
       data-themed={safeThemeColor ? '' : undefined}

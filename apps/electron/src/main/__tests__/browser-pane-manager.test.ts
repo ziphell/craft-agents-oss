@@ -107,6 +107,11 @@ function createMockWebContents() {
   }
 }
 
+/**
+ * A `BrowserView`: the chrome's and the overlay's kind. It carries `setAutoResize` (the page's
+ * kind does not — it is a `WebContentsView`), which is what keeps the two mocks honest about
+ * which class each surface is.
+ */
 function createMockBrowserView() {
   const webContents = createMockWebContents()
   return {
@@ -114,6 +119,21 @@ function createMockBrowserView() {
     setBounds: mock(() => {}),
     setAutoResize: mock(() => {}),
     setBackgroundColor: mock((_color: string) => {}),
+  }
+}
+
+/**
+ * A `WebContentsView`: the page's kind. The whole reason the page is one is `setBorderRadius`
+ * — the page's corners are cut out of its own view, so nothing is drawn over the page and the
+ * person keeps their clicks — so that is what this mock exists to expose.
+ */
+function createMockWebContentsView() {
+  const webContents = createMockWebContents()
+  return {
+    webContents,
+    setBounds: mock(() => {}),
+    setBackgroundColor: mock((_color: string) => {}),
+    setBorderRadius: mock((_radius: number) => {}),
   }
 }
 
@@ -156,9 +176,39 @@ function createMockWindow(opts?: { width?: number; height?: number; minWidth?: n
       win._emit('closed')
     }),
     setBrowserView: mock((_view: any) => {}),
-    addBrowserView: mock((_view: any) => {}),
-    removeBrowserView: mock((_view: any) => {}),
-    setTopBrowserView: mock((_view: any) => {}),
+    /**
+     * The window's view tree, and the two APIs that put views in it.
+     *
+     * One tree, like the real thing: a `BrowserView` is added through `addBrowserView` and a
+     * `WebContentsView` — the page — through `contentView.addChildView`, and either can be
+     * raised above the other. Re-adding a view that is already a child raises it, which is the
+     * rule the manager stacks the page and the overlay by, so this mock has to be the tree
+     * rather than a pile of call records.
+     */
+    contentView: {
+      children: [] as any[],
+      addChildView: mock((view: any) => {
+        const index = win.contentView.children.indexOf(view)
+        if (index >= 0) win.contentView.children.splice(index, 1)
+        win.contentView.children.push(view)
+      }),
+      removeChildView: mock((view: any) => {
+        const index = win.contentView.children.indexOf(view)
+        if (index >= 0) win.contentView.children.splice(index, 1)
+      }),
+    },
+    addBrowserView: mock((view: any) => {
+      win.contentView.children.push(view)
+    }),
+    removeBrowserView: mock((view: any) => {
+      const index = win.contentView.children.indexOf(view)
+      if (index >= 0) win.contentView.children.splice(index, 1)
+    }),
+    setTopBrowserView: mock((view: any) => {
+      const index = win.contentView.children.indexOf(view)
+      if (index >= 0) win.contentView.children.splice(index, 1)
+      win.contentView.children.push(view)
+    }),
     getContentSize: mock(() => [contentWidth, contentHeight]),
     setContentSize: mock((width: number, height: number) => {
       contentWidth = Math.max(minWidth, Math.floor(width))
@@ -186,6 +236,14 @@ mock.module('electron', () => ({
     webContents: any
     constructor(_opts?: any) {
       const view = createMockBrowserView()
+      this.webContents = view.webContents
+      Object.assign(this, view)
+    }
+  },
+  WebContentsView: class MockWebContentsView {
+    webContents: any
+    constructor(_opts?: any) {
+      const view = createMockWebContentsView()
       this.webContents = view.webContents
       Object.assign(this, view)
     }
@@ -1581,6 +1639,81 @@ describe('BrowserPaneManager', () => {
       expect(lastToolbarState(instance)).toMatchObject({ url: ORIGIN, prototypeSlug: 'checkout-flow' })
     })
 
+    /**
+     * Typing an address is the person speaking for the tab, and this is what saying
+     * "somewhere else" does: the tab stops being the prototype's — the bar mirrors
+     * where the view actually is, the rail's second line stops naming it, and the two
+     * prototype actions go with the binding (plan §12.6).
+     *
+     * It has to outrank the session chain, which still knows this conversation works
+     * on `checkout-flow`: the address was about *this tab*, not about the work.
+     */
+    it('gives the tab up when the person types an address of their own', async () => {
+      manager.setPrototypeAddressResolver(addressResolverFor(['pay']))
+      const instance = boundWindow('steered-window')
+      tab(instance).currentUrl = 'https://app.example.com/checkout'
+      const navigate = spyOnNavigate()
+      manager.registerToolbarIpc()
+
+      await navigateHandler()({}, 'steered-window', 'https://example.com/')
+
+      expect(navigate).toHaveBeenCalledWith('steered-window', 'https://example.com/')
+      expect(tab(instance).boundPrototype).toBeNull()
+      expect(tab(instance).prototypeReleased).toBe(true)
+      // Still true on the next push, not just the one made while answering the keystroke.
+      instance.window._emit('show')
+      expect(lastToolbarState(instance)).toMatchObject({
+        url: 'https://app.example.com/checkout',
+        prototypeSlug: null,
+      })
+    })
+
+    // What the window was *opened* for is given up the same way — the address speaks
+    // for the tab on screen, and a tab is what carries the identity (plan §22).
+    it('gives up the prototype it was opened for when the person types elsewhere', async () => {
+      manager.setPrototypeAddressResolver(addressResolverFor())
+      manager.createInstance('opened-then-steered')
+      const instance = (manager as any).instances.get('opened-then-steered')
+      manager.createTab('opened-then-steered', { prototype: { slug: 'checkout-flow', origin: ORIGIN } })
+      spyOnNavigate()
+      manager.registerToolbarIpc()
+
+      await navigateHandler()({}, 'opened-then-steered', 'https://example.com/')
+
+      expect(tab(instance).boundPrototype).toBeNull()
+      instance.window._emit('show')
+      expect(lastToolbarState(instance)).toMatchObject({ prototypeSlug: null })
+    })
+
+    /**
+     * Not every typed address is somewhere else. The prototype's own host serves files
+     * and its own routes (§16.3), and a page of the flow has a live address of its own:
+     * typing either is still this prototype's business, and giving the tab up there
+     * would take the two actions off a document they belong on.
+     */
+    it('keeps the tab when the address typed is still the prototype\'s', async () => {
+      manager.setPrototypeAddressResolver(addressResolverFor(['pay']))
+      manager.setPrototypePageResolver((slug, _origin, url) =>
+        slug === 'checkout-flow' && url === 'https://app.example.com/checkout/pay' ? 'pay' : null,
+      )
+      const instance = boundWindow('kept-window')
+      spyOnNavigate()
+      manager.registerToolbarIpc()
+
+      // A file on the prototype's own host.
+      tab(instance).currentUrl = `${ORIGIN}/dist/prototype.html`
+      await navigateHandler()({}, 'kept-window', `${ORIGIN}/dist/other.html`)
+      expect(tab(instance).prototypeReleased).toBe(false)
+
+      // The live address of one of its pages.
+      tab(instance).currentUrl = 'https://app.example.com/checkout/pay'
+      await navigateHandler()({}, 'kept-window', 'https://app.example.com/checkout/pay')
+      expect(tab(instance).prototypeReleased).toBe(false)
+
+      instance.window._emit('show')
+      expect(lastToolbarState(instance)).toMatchObject({ url: `${ORIGIN}/pay`, prototypeSlug: 'checkout-flow' })
+    })
+
     // A window opened for a prototype outranks what the tab's conversation is working on:
     // the tab's own declaration is the more specific fact, and it is the one the user is
     // looking at.
@@ -2297,10 +2430,27 @@ describe('BrowserPaneManager', () => {
       expect(instance.currentUrl).toBe('https://first.example.com/')
       // Switching is a stack change, not a resize: every tab is laid out the same way, and
       // the one that came forward is the one raised above the others (plan §22, 第十二轮).
-      const raised = instance.window.setTopBrowserView.mock.calls.map((call: unknown[]) => call[0])
-      const tabsRaised = raised.filter((view: unknown) => view === first.tabView || view === second.tabView)
+      // The page is raised through `contentView` — it is a `WebContentsView` — while the
+      // overlays and the chrome are still raised through `setTopBrowserView`.
+      const pageRaises = instance.window.contentView.addChildView.mock.calls.map((call: unknown[]) => call[0])
+      const tabsRaised = pageRaises.filter((view: unknown) => view === first.tabView || view === second.tabView)
       expect(tabsRaised[tabsRaised.length - 1]).toBe(first.tabView)
-      expect(first.tabView.setAutoResize).toHaveBeenCalledWith({ width: true, height: true })
+    })
+
+    it('rounds the page itself, so any page is a rounded panel the person can click', () => {
+      manager.createInstance('tabs-radius')
+      const instance = (manager as any).instances.get('tabs-radius')
+      const first = instance.tabs[0]
+
+      // Rounded by the page's own view rather than by ink over it: a view covers a rectangle
+      // whatever it paints, so anything drawn over the page takes the page's clicks with it.
+      expect(first.tabView.setBorderRadius).toHaveBeenCalledWith(10)
+      // …and it is in the window's view tree through that same view's API.
+      expect(instance.window.contentView.children).toContain(first.tabView)
+      expect(instance.window.contentView.children).toContain(first.nativeOverlayView)
+      // The overlay sits under the page: what it draws is around the page.
+      expect(instance.window.contentView.children.indexOf(first.tabView))
+        .toBeGreaterThan(instance.window.contentView.children.indexOf(first.nativeOverlayView))
     })
 
     it('closes a tab, and closes the window when the last one goes', () => {
@@ -2317,9 +2467,14 @@ describe('BrowserPaneManager', () => {
 
       // A closed tab leaves the window, both halves of it: `tabs` is not the view list,
       // and a view left behind keeps painting at the tab area — a tab nobody can name
-      // showing through every tab opened after it, and one more renderer to pay for.
-      const removed = instance.window.removeBrowserView.mock.calls.map((call: unknown[]) => call[0])
-      expect(removed).toEqual([first.tabView, first.nativeOverlayView])
+      // showing through every tab opened after it, and one more renderer to pay for. Each
+      // half leaves through the API it arrived by: the page is a `WebContentsView`.
+      expect(instance.window.contentView.removeChildView.mock.calls.map((call: unknown[]) => call[0]))
+        .toEqual([first.tabView])
+      expect(instance.window.removeBrowserView.mock.calls.map((call: unknown[]) => call[0]))
+        .toEqual([first.nativeOverlayView])
+      expect(instance.window.contentView.children).not.toContain(first.tabView)
+      expect(instance.window.contentView.children).not.toContain(first.nativeOverlayView)
       expect(first.tabView.webContents.close).toHaveBeenCalled()
       expect(first.nativeOverlayView.webContents.close).toHaveBeenCalled()
       // …and the tab that is still open is not touched by somebody else's tab going away.

@@ -1,6 +1,4 @@
-import { PANEL_RADIUS_EDGE, PANEL_RADIUS_INNER } from './panel-geometry'
-
-export type BrowserLiveFxPlatform = 'darwin' | 'win32' | 'linux' | 'other'
+import { PANEL_RADIUS_INNER } from './panel-geometry'
 
 export interface BrowserLiveFxCornerRadii {
   topLeft: string
@@ -29,10 +27,15 @@ export const BROWSER_LIVE_FX_BORDER = {
 export const PAGE_PANEL_RING = {
   width: '1px',
   alpha: 0.06,
-  /** `--foreground-rgb` per mode, matching `renderer/index.css`. */
+  /**
+   * `--foreground-rgb` per mode, from the renderer's stylesheet — the one the browser window's
+   * chrome is drawn with (`apps/electron/src/renderer/index.css`), not the UI package's
+   * defaults: the chrome overrides both, and a ring mixed from the wrong foreground shows up
+   * as a line that is too bright or too dim beside it.
+   */
   foregroundRgb: {
     light: '38, 36, 42',
-    dark: '227, 226, 229',
+    dark: '237, 236, 240',
   },
 } as const
 
@@ -53,20 +56,20 @@ export function resolveBrowserLiveFxBorder(accentColor: string): { color: string
   }
 }
 
-export function getBrowserLiveFxCornerRadii(platform: BrowserLiveFxPlatform): BrowserLiveFxCornerRadii {
+export function getBrowserLiveFxCornerRadii(): BrowserLiveFxCornerRadii {
   /**
-   * The page area is a **panel** like the app's own (plan §22), so its corners follow the app's
-   * panel radii: interior corners get `PANEL_RADIUS_INNER`, and the one corner that is also the
-   * window's — the bottom-right, with the rail on the left, the bar above and the window's own
-   * inset on the right and below — gets the platform's window radius (`PANEL_RADIUS_EDGE`).
+   * The page is a panel like the app's own (plan §22), and all four of its corners are the same
+   * corner: the page's view rounds them itself (`applyPageCornerRadius`) and a view takes one
+   * radius, so the hairline and the mask behind it follow that one number. The app's own panels
+   * draw the corner nearest the window a couple of pixels tighter — that corner is the window's
+   * only when a panel reaches it, and this panel is inset from every window edge.
    */
-  const edgeRadius = platform === 'darwin' ? PANEL_RADIUS_EDGE.darwin : PANEL_RADIUS_EDGE.other
   const inner = `${PANEL_RADIUS_INNER}px`
 
   return {
     topLeft: inner,
     topRight: inner,
     bottomLeft: inner,
-    bottomRight: `${edgeRadius}px`,
+    bottomRight: inner,
   }
 }

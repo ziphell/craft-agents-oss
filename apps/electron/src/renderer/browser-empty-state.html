@@ -15,9 +15,12 @@
   </script>
   <style>
     html, body, #root { margin: 0; padding: 0; height: 100%; width: 100%; overflow: hidden; }
-    html, body { background: #fafafb; }
+    /* The surface the app paints (`--background` in index.css, hex for the main process in
+       `theme.ts`'s BACKGROUND_HEX): this document fills the page panel, and a different grey
+       here would sit inside the panel's rounded corners as a band against the gutter. */
+    html, body { background: #f7f8fa; }
     @media (prefers-color-scheme: dark) {
-      html, body { background: #2b292e; }
+      html, body { background: #080a10; }
     }
   </style>
 </head>
