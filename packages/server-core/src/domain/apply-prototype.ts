@@ -40,7 +40,22 @@ import {
   type PrototypeAnchorObservation,
   type PrototypePage,
 } from '@craft-agent/shared/prototypes'
+import type { BrowserTabSummary } from '@craft-agent/shared/protocol'
 import type { IBrowserPaneManager } from '../handlers/browser-pane-manager-interface'
+
+/**
+ * The page a prototype command is about, as the browser side describes it.
+ *
+ * Both halves are needed and only the caller can say them: `id` is what every browser call is
+ * addressed to, and `url` is what decides *which page of the prototype* this is
+ * (`matchPrototypePage`). Read off the window they would be the page **on screen** — the
+ * person's, who is free to be reading something else while this runs (plan §22, 第十二轮) —
+ * and an apply that lands its patches on the strength of that is patching the wrong page.
+ *
+ * Shared by the apply, the replay and the verification, because all three ask the same
+ * question of the same page.
+ */
+export type PrototypeTargetPage = Pick<BrowserTabSummary, 'id' | 'url'>
 
 /** What one declared target matched, and whether it had matched before. */
 export interface PrototypeApplyTargetReport {
@@ -194,13 +209,15 @@ export async function applyPrototypeToBrowser(
   instanceId: string,
   workspaceRootPath: string,
   slug: string,
+  /** The page this apply is about — the conversation's page, not the one on screen. */
+  page?: PrototypeTargetPage | null,
 ): Promise<PrototypeApplyResult> {
-  const page = await resolveReplayPage(bpm, instanceId, listPrototypePages(workspaceRootPath, slug))
-  const patches = page
-    ? scanPrototypePatchesForPage(workspaceRootPath, slug, page)
+  const replayPage = resolveReplayPage(listPrototypePages(workspaceRootPath, slug), page?.url ?? null)
+  const patches = replayPage
+    ? scanPrototypePatchesForPage(workspaceRootPath, slug, replayPage)
     : scanPrototypePatches(workspaceRootPath, slug).filter((patch) => patch.page === null)
 
-  const inlined = await bpm.evaluate(instanceId, buildInlinedPatchProbeScript())
+  const inlined = await bpm.evaluate(instanceId, buildInlinedPatchProbeScript(), page?.id)
   const alreadyInlined = new Set(
     Array.isArray(inlined) ? inlined.filter((name): name is string => typeof name === 'string') : [],
   )
@@ -212,19 +229,28 @@ export async function applyPrototypeToBrowser(
   // (including any left from patches deleted on disk) and re-register only the
   // pending ones. Leaving an inlined patch registered would double it on the next
   // load of the rendered page.
-  await bpm.clearInitScripts(instanceId, `prototype:${slug}:`)
+  await bpm.clearInitScripts(instanceId, `prototype:${slug}:`, page?.id)
 
   for (const patch of pending) {
     const script = buildPatchInitScript(patch)
-    await bpm.addInitScript(instanceId, patch.key, script)
-    await bpm.evaluate(instanceId, script)
+    await bpm.addInitScript(instanceId, patch.key, script, page?.id)
+    await bpm.evaluate(instanceId, script, page?.id)
   }
 
-  const inspection = await inspectTargets(bpm, instanceId, workspaceRootPath, slug, page, patches)
+  const inspection = await inspectTargets(
+    bpm,
+    instanceId,
+    workspaceRootPath,
+    slug,
+    replayPage,
+    patches,
+    page?.id,
+    page?.url ?? null,
+  )
 
   return {
     slug,
-    page,
+    page: replayPage,
     applied: pending.length,
     files: pending.map((patch) => patch.file),
     skipped: patches.filter((patch) => alreadyInlined.has(patch.file)).map((patch) => patch.file),
@@ -247,13 +273,17 @@ async function inspectTargets(
   slug: string,
   page: string | null,
   patches: Array<{ file: string; targets: string[] }>,
+  /** The page these observations were made on — the conversation's, not the one on screen. */
+  tabId: string | undefined,
+  /** …and where it is, which is what the record keeps as "the page that was patched". */
+  pageUrl: string | null,
 ): Promise<Pick<PrototypeApplyResult, 'targets' | 'unmatched' | 'drifted' | 'untargeted'>> {
   const untargeted = patches.filter((patch) => patch.targets.length === 0).map((patch) => patch.file)
   const declared = patches.flatMap((patch) => patch.targets.map((target) => ({ file: patch.file, target })))
 
   if (declared.length === 0) return { targets: [], unmatched: [], drifted: [], untargeted }
 
-  const state = readPatchState(await bpm.evaluate(instanceId, buildPatchStateProbeScript()))
+  const state = readPatchState(await bpm.evaluate(instanceId, buildPatchStateProbeScript(), tabId))
 
   // Only what the page actually measured counts. A js patch may declare a
   // selector without there being a count for it, and "nothing measured this" must
@@ -290,9 +320,8 @@ async function inspectTargets(
   // patched rather than the one that was expected.
   const toFingerprint = [...new Set(measured.filter((entry) => (entry.matched ?? 0) > 0).map((entry) => entry.target))]
   const fingerprints =
-    toFingerprint.length > 0 ? readFingerprints(await bpm.evaluate(instanceId, buildAnchorProbeScript(toFingerprint))) : {}
+    toFingerprint.length > 0 ? readFingerprints(await bpm.evaluate(instanceId, buildAnchorProbeScript(toFingerprint), tabId)) : {}
 
-  const url = (await bpm.getInstanceAsync(instanceId))?.currentUrl ?? null
   // Only what is worth remembering is written: a target that just matched (so the
   // fingerprint is real), and one that already had a record (so "it stopped
   // matching" stays visible). A target nobody has ever seen match is reported as
@@ -300,7 +329,7 @@ async function inspectTargets(
   // would read as evidence of something, and there is none.
   const known = new Set(existing?.anchors.map((anchor) => anchor.target) ?? [])
   recordPrototypeAnchors(workspaceRootPath, slug, page, {
-    url,
+    url: pageUrl,
     observed: observations
       .filter((observation) => fingerprints[observation.target] != null || known.has(observation.target))
       .map((observation) => ({
@@ -317,7 +346,7 @@ async function inspectTargets(
     .map((anchor) => ({ target: anchor.target, fingerprint: anchor.fingerprint }))
   const suggestions =
     suggestionEntries.length > 0
-      ? readSuggestions(await bpm.evaluate(instanceId, buildAnchorCandidateScript(suggestionEntries)))
+      ? readSuggestions(await bpm.evaluate(instanceId, buildAnchorCandidateScript(suggestionEntries), tabId))
       : {}
 
   return {
@@ -336,7 +365,7 @@ async function inspectTargets(
 }
 
 /**
- * Replay a prototype into a window after its files changed (plan §21.4).
+ * Replay a prototype into one page of a window after its files changed (plan §21.4).
  *
  * Two cases, and which one applies is read off the document rather than assumed:
  *
@@ -355,31 +384,35 @@ export async function replayPrototypeInBrowser(
   instanceId: string,
   workspaceRootPath: string,
   slug: string,
+  /** The page showing this prototype — a window may hold more than one. */
+  page?: PrototypeTargetPage | null,
 ): Promise<PrototypeReplayResult> {
-  const inlined = await bpm.evaluate(instanceId, buildInlinedPatchProbeScript())
+  const inlined = await bpm.evaluate(instanceId, buildInlinedPatchProbeScript(), page?.id)
   const carriesPatches = Array.isArray(inlined) && inlined.length > 0
 
   if (carriesPatches) {
-    const url = (await bpm.getInstanceAsync(instanceId))?.currentUrl ?? null
-    const page = matchPrototypePage(listPrototypePages(workspaceRootPath, slug), url)
-    bpm.reload(instanceId)
-    return { slug, page, action: 'reloaded', applied: 0 }
+    const matched = matchPrototypePage(listPrototypePages(workspaceRootPath, slug), page?.url ?? null)
+    bpm.reload(instanceId, page?.id)
+    return { slug, page: matched, action: 'reloaded', applied: 0 }
   }
 
-  const result = await applyPrototypeToBrowser(bpm, instanceId, workspaceRootPath, slug)
+  const result = await applyPrototypeToBrowser(bpm, instanceId, workspaceRootPath, slug, page)
   return { slug, page: result.page, action: 'applied', applied: result.applied }
 }
 
 /**
- * Which page's patches this window should be given — or null for the shared ones.
+ * Which page's patches this page should be given — or null for the shared ones.
  *
- * The window's own URL answers it, because that is what is on screen: the page
- * table is read against it (`matchPrototypePage`), so "/cart.html matches cart"
- * needs no second registry and stays true for a page reached by its own link.
+ * The caller's page URL answers it, and the caller is the one that read it off that page: the
+ * page table is read against it (`matchPrototypePage`), so "/cart.html matches cart" needs no
+ * second registry and stays true for a page reached by its own link. Reading it off the window
+ * instead would answer with the page **on screen**, which is the person's — and the person
+ * reading another page of the window must not decide which patches this one gets
+ * (plan §22, 第十二轮).
  *
  * Two fallbacks, and both say what they are rather than guessing:
  *
- * - the window is on no described page **and the entry page is one of ours** — the
+ * - the page is on no described page **and the entry page is one of ours** — the
  *   host renders that document for the prototype's address, so it is the page a
  *   bare "apply" means. A caller that cannot say (no instance, no URL) lands here
  *   too.
@@ -388,12 +421,7 @@ export async function replayPrototypeInBrowser(
  *   against a DOM that is not on screen, and the result (a patch matching nothing)
  *   would look exactly like a patch that did nothing.
  */
-async function resolveReplayPage(
-  bpm: IBrowserPaneManager,
-  instanceId: string,
-  pages: PrototypePage[],
-): Promise<string | null> {
-  const url = (await bpm.getInstanceAsync(instanceId))?.currentUrl ?? null
+function resolveReplayPage(pages: PrototypePage[], url: string | null): string | null {
   const matched = matchPrototypePage(pages, url)
   if (matched) return matched
 
@@ -401,12 +429,14 @@ async function resolveReplayPage(
   return entry && entry.kind === 'scratch' && entry.file ? entry.name : null
 }
 
-/** Remove a prototype's patches from a live browser instance. */
+/** Remove a prototype's patches from one page of a live browser instance. */
 export async function clearPrototypeFromBrowser(
   bpm: IBrowserPaneManager,
   instanceId: string,
   slug: string,
+  /** The page to clear — the conversation's, not the one on screen. */
+  tabId?: string,
 ): Promise<PrototypeClearResult> {
-  const removed = await bpm.clearInitScripts(instanceId, `prototype:${slug}:`)
+  const removed = await bpm.clearInitScripts(instanceId, `prototype:${slug}:`, tabId)
   return { slug, removed }
 }

@@ -139,6 +139,7 @@ describe('session-scoped tool callback merge', () => {
       unlinkPrototypeReference: async () => ({ references: [] }),
       focusWindow: async () => ({ instanceId: 'browser-1', title: 'Example', url: 'https://example.com' }),
       createTab: async () => 'tab-1',
+      targetTab: async () => {},
       activateTab: async () => {},
       closeTab: async () => ({ remaining: 1 }),
       listTabs: async () => [],

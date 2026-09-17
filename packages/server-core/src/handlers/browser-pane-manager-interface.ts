@@ -17,8 +17,6 @@ import type { MockRoute } from '@craft-agent/shared/prototypes'
 
 /** Subset of BrowserInstance fields accessed by SessionManager */
 export interface BrowserInstanceSnapshot {
-  ownerType: 'session' | 'manual'
-  ownerSessionId: string | null
   isVisible: boolean
   title: string
   currentUrl: string
@@ -330,9 +328,6 @@ export interface IBrowserPaneManager {
   /** Async equivalent of {@link focusBoundForSession}. */
   focusBoundForSessionAsync(sessionId: string, options?: { workspaceId?: string | null }): Promise<string>
 
-  /** Bind a browser instance to a session */
-  bindSession(id: string, sessionId: string, options?: { workspaceId?: string | null }): void
-
   /** Focus a browser instance window */
   focus(id: string): void
 
@@ -378,10 +373,25 @@ export interface IBrowserPaneManager {
    *
    * Everything a window reports — address, title, prototype, console, what its
    * toolbar actions would act on — is read through the page that is on screen, so
-   * this is what "target that page" means. An unknown tab id throws: the target
-   * was named, so a silent no-op would run the caller's command somewhere else.
+   * this is what "show that page" means. An unknown tab id throws: the page was
+   * named, so a silent no-op would leave the person looking somewhere else.
+   *
+   * This is the person's verb (and the agent's explicit `tab-activate`). A command
+   * does not go through here: it records where it works from with
+   * {@link setSessionPage} and leaves the display alone.
    */
   activateTab(instanceId: string, tabId: string): void
+
+  /**
+   * Record that a conversation works **from** this page, without moving the window.
+   *
+   * The page is the one that conversation's next unnamed command lands on, the one it
+   * holds while it works, and the one it is allowed to close. Written rather than
+   * inferred because the page on screen is the person's, and a command acting on it
+   * because they happened to be looking at it is exactly the bug the cursor exists to
+   * prevent (plan §22, 第十轮/第十二轮).
+   */
+  setSessionPage(instanceId: string, tabId: string, sessionId: string): void
 
   /** Close one page of a window. Closing a window's last page closes the window. */
   closeTab(instanceId: string, tabId: string): void
@@ -393,10 +403,20 @@ export interface IBrowserPaneManager {
   listTabsAsync(instanceId: string): Promise<BrowserTabSummary[]>
 
   // -- Navigation ----------------------------------------------------------
+  //
+  // Every method below that acts on a page takes a trailing `tabId` — **the page it acts
+  // on** — and every one of them means the page on screen when it is left out.
+  //
+  // Named rather than looked up, because the two are no longer the same thing: a window
+  // holds several pages and the person is free to read one while a conversation works on
+  // another (plan §22, 第十轮/第十二轮). The caller resolves it once, with
+  // `pickCommandTarget` — the conversation's own page, and only the page on screen when it
+  // has none — and passes it, so there is one decision and one place it is made. The
+  // person's own calls (the toolbar) name nothing and get the page they are looking at.
 
-  navigate(id: string, url: string): Promise<{ url: string; title: string }>
-  goBack(id: string): Promise<void>
-  goForward(id: string): Promise<void>
+  navigate(id: string, url: string, tabId?: string): Promise<{ url: string; title: string }>
+  goBack(id: string, tabId?: string): Promise<void>
+  goForward(id: string, tabId?: string): Promise<void>
   /**
    * Reload the page in an instance.
    *
@@ -405,29 +425,29 @@ export interface IBrowserPaneManager {
    * reads it afterwards (which is what the auto-replay after a file change does —
    * plan §21.4).
    */
-  reload(id: string): void
+  reload(id: string, tabId?: string): void
 
   // -- Interaction ---------------------------------------------------------
 
-  getAccessibilitySnapshot(id: string): Promise<AccessibilitySnapshot>
-  clickElement(id: string, ref: string, options?: { waitFor?: 'none' | 'navigation' | 'network-idle'; timeoutMs?: number }): Promise<void>
-  clickAtCoordinates(id: string, x: number, y: number): Promise<void>
-  drag(id: string, x1: number, y1: number, x2: number, y2: number): Promise<void>
-  fillElement(id: string, ref: string, value: string): Promise<void>
-  typeText(id: string, text: string): Promise<void>
-  selectOption(id: string, ref: string, value: string): Promise<void>
-  setClipboard(id: string, text: string): Promise<void>
-  getClipboard(id: string): Promise<string>
-  scroll(id: string, direction: 'up' | 'down' | 'left' | 'right', amount?: number): Promise<void>
-  sendKey(id: string, args: BrowserKeyArgs): Promise<void>
-  uploadFile(id: string, ref: string, filePaths: string[]): Promise<unknown>
-  evaluate(id: string, expression: string): Promise<unknown>
+  getAccessibilitySnapshot(id: string, tabId?: string): Promise<AccessibilitySnapshot>
+  clickElement(id: string, ref: string, options?: { waitFor?: 'none' | 'navigation' | 'network-idle'; timeoutMs?: number }, tabId?: string): Promise<void>
+  clickAtCoordinates(id: string, x: number, y: number, tabId?: string): Promise<void>
+  drag(id: string, x1: number, y1: number, x2: number, y2: number, tabId?: string): Promise<void>
+  fillElement(id: string, ref: string, value: string, tabId?: string): Promise<void>
+  typeText(id: string, text: string, tabId?: string): Promise<void>
+  selectOption(id: string, ref: string, value: string, tabId?: string): Promise<void>
+  setClipboard(id: string, text: string, tabId?: string): Promise<void>
+  getClipboard(id: string, tabId?: string): Promise<string>
+  scroll(id: string, direction: 'up' | 'down' | 'left' | 'right', amount?: number, tabId?: string): Promise<void>
+  sendKey(id: string, args: BrowserKeyArgs, tabId?: string): Promise<void>
+  uploadFile(id: string, ref: string, filePaths: string[], tabId?: string): Promise<unknown>
+  evaluate(id: string, expression: string, tabId?: string): Promise<unknown>
 
   /**
    * Prompt the user to click an element on the page. Resolves with the picked
    * element's stable selector + geometry, or `null` on cancel/timeout.
    */
-  pickElement(id: string, options?: { timeoutMs?: number; pollMs?: number }): Promise<PickedElement | null>
+  pickElement(id: string, options?: { timeoutMs?: number; pollMs?: number }, tabId?: string): Promise<PickedElement | null>
 
   // -- Persistent injection -------------------------------------------------
 
@@ -440,18 +460,18 @@ export interface IBrowserPaneManager {
    *
    * @returns the underlying CDP identifier
    */
-  addInitScript(id: string, key: string, source: string): Promise<string>
+  addInitScript(id: string, key: string, source: string, tabId?: string): Promise<string>
 
   /**
    * Remove every init script whose key starts with `keyPrefix`.
    * @returns the keys that were removed
    */
-  clearInitScripts(id: string, keyPrefix: string): Promise<string[]>
+  clearInitScripts(id: string, keyPrefix: string, tabId?: string): Promise<string[]>
 
   // -- Frame capture --------------------------------------------------------
 
   /**
-   * Start keeping frames of this window.
+   * Start keeping frames of one page of this window.
    *
    * Two things put a frame in the capture, because a screen changes for two
    * different reasons: the screen is compared every `intervalMs` and kept when
@@ -464,7 +484,7 @@ export interface IBrowserPaneManager {
    * Frames stay in memory until {@link stopFrameCapture} — a capture is one
    * session, and writing half of it would be a record of nothing.
    */
-  startFrameCapture(id: string, options?: FrameCaptureOptions): Promise<FrameCaptureStarted>
+  startFrameCapture(id: string, options?: FrameCaptureOptions, tabId?: string): Promise<FrameCaptureStarted>
 
   /** Stop the capture and hand back what it kept, or null when none was running. */
   stopFrameCapture(id: string): Promise<FrameCaptureResult | null>
@@ -501,22 +521,22 @@ export interface IBrowserPaneManager {
    *
    * @returns the number of routes now being served
    */
-  setFetchMock(id: string, routes: MockRoute[]): Promise<number>
+  setFetchMock(id: string, routes: MockRoute[], tabId?: string): Promise<number>
 
   /** Stop intercepting; requests fall through to the real network again. */
-  clearFetchMock(id: string): Promise<void>
+  clearFetchMock(id: string, tabId?: string): Promise<void>
 
   // -- Screenshot ----------------------------------------------------------
 
-  screenshot(id: string, options?: BrowserScreenshotOptions): Promise<BrowserScreenshotResult>
-  screenshotRegion(id: string, target: BrowserScreenshotRegionTarget): Promise<BrowserScreenshotResult>
+  screenshot(id: string, options?: BrowserScreenshotOptions, tabId?: string): Promise<BrowserScreenshotResult>
+  screenshotRegion(id: string, target: BrowserScreenshotRegionTarget, tabId?: string): Promise<BrowserScreenshotResult>
 
   // -- Monitoring ----------------------------------------------------------
 
-  getConsoleLogs(id: string, options?: BrowserConsoleOptions): BrowserConsoleEntry[]
+  getConsoleLogs(id: string, options?: BrowserConsoleOptions, tabId?: string): BrowserConsoleEntry[]
   windowResize(id: string, width: number, height: number): { width: number; height: number }
-  getNetworkLogs(id: string, options?: BrowserNetworkOptions): BrowserNetworkEntry[]
-  waitFor(id: string, args: BrowserWaitArgs): Promise<BrowserWaitResult>
-  getDownloads(id: string, options?: BrowserDownloadOptions): Promise<BrowserDownloadEntry[]>
-  detectSecurityChallenge(id: string): Promise<{ detected: boolean; provider: string; signals: string[] }>
+  getNetworkLogs(id: string, options?: BrowserNetworkOptions, tabId?: string): BrowserNetworkEntry[]
+  waitFor(id: string, args: BrowserWaitArgs, tabId?: string): Promise<BrowserWaitResult>
+  getDownloads(id: string, options?: BrowserDownloadOptions, tabId?: string): Promise<BrowserDownloadEntry[]>
+  detectSecurityChallenge(id: string, tabId?: string): Promise<{ detected: boolean; provider: string; signals: string[] }>
 }

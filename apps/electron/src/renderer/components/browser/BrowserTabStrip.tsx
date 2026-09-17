@@ -39,6 +39,21 @@ import { navigate, routes } from '@/lib/navigate'
 
 const DEFAULT_MAX_VISIBLE_BADGES = 3
 
+/**
+ * The conversation this window is being used by, for the menu's "open the
+ * conversation …" item.
+ *
+ * Read off the **page on screen** rather than off the window: one window per
+ * workspace is shared, so a window-level answer could only ever name "whoever drove
+ * it last" (plan §22). The lease is a moment, the page's opener is a fact — so the
+ * driver is asked first, and the page answers when nobody is driving.
+ */
+function sessionUsingWindow(instance: BrowserInstanceInfo): string | null {
+  return instance.boundSessionId
+    ?? instance.tabs?.find((tab) => tab.active)?.openedBySessionId
+    ?? null
+}
+
 interface BrowserTabStripProps {
   activeSessionId?: string | null
   instancesOverride?: BrowserInstanceInfo[]
@@ -207,7 +222,7 @@ export function BrowserTabStrip({
   }, [instancesOverride, setActiveInstanceId])
 
   const openSessionUsingWindow = useCallback((instance: BrowserInstanceInfo) => {
-    const sessionId = instance.boundSessionId ?? instance.ownerSessionId
+    const sessionId = sessionUsingWindow(instance)
     if (!sessionId) return
     navigate(routes.view.allSessions(sessionId))
   }, [])
@@ -334,7 +349,7 @@ export function BrowserTabStrip({
 
   const renderBrowserActions = useCallback((instance: BrowserInstanceInfo) => {
     const canUseLiveWindowActions = !instancesOverride
-    const targetSessionId = instance.boundSessionId ?? instance.ownerSessionId
+    const targetSessionId = sessionUsingWindow(instance)
     const canOpenSession = !!targetSessionId
     const openSessionLabel = instance.agentControlActive
       ? 'Open Session Using this Window'

@@ -39,12 +39,12 @@
 
 ### 服务端 / 主进程
 
-- `packages/server-core/src/sessions/SessionManager.ts`：把 `BrowserPaneFns` 装配到真实实现；`describeWindowPrototype` 给 `snapshot`／`windows` 补原型行（slug、页的类型与页名、原型自己的地址）。
-- `packages/server-core/src/domain/apply-prototype.ts`：把补丁注入浏览器——只注入**窗口所在页**的补丁（`matchPrototypePage` → 入口页 → 只有共享补丁，并把这个页名报回去）；先读"已内联"标记再决定注册什么；注入后读回每个补丁的自我报告，算出**命中 / 未命中 / 漂移**并写锚点记录。`replayPrototypeInBrowser()` 是文件变更后的那条路：我们自己的页 → 刷新，别人的页 → 重新 apply（**故意不是"apply 再刷新"**，见 §3.12）。
-- `packages/server-core/src/handlers/rpc/prototypes.ts`：给渲染层用的 RPC（列表 / 导出 / 页表 `SET_PAGES` / 改某一页地址 / 入口解析 / **`prototypes:replay`**（按 slug 找所有在显示它的窗口并重放）/ **`prototypes:commit`**（纯文件，不碰浏览器）等）。
+- `packages/server-core/src/sessions/SessionManager.ts`：把 `BrowserPaneFns` 装配到真实实现；`describePrototypeAtPage` 给 `snapshot` 补原型行（slug、页的类型与页名、原型自己的地址）。
+- `packages/server-core/src/domain/apply-prototype.ts`：把补丁注入浏览器——只注入**调用方指名的那一页**的补丁（`matchPrototypePage` → 入口页 → 只有共享补丁，并把这个页名报回去；页由 `PrototypeTargetPage` 传进来，**不读窗口的当前 URL**，那读的是屏幕上前台那页）；先读"已内联"标记再决定注册什么；注入后读回每个补丁的自我报告，算出**命中 / 未命中 / 漂移**并写锚点记录。`replayPrototypeInBrowser()` 是文件变更后的那条路：我们自己的页 → 刷新，别人的页 → 重新 apply（**故意不是"apply 再刷新"**，见 §3.12）。
+- `packages/server-core/src/handlers/rpc/prototypes.ts`：给渲染层用的 RPC（列表 / 导出 / 页表 `SET_PAGES` / 改某一页地址 / 入口解析 / **`prototypes:replay`**（按 slug 找所有在显示它的**页**——逐窗口读页表，不再看窗口级 `prototypeSlug`）/**`prototypes:commit`**（纯文件，不碰浏览器）等）。
 - `apps/electron/src/main/prototype-host.ts`：原型文档的应答——`/` = 入口页（是 overlay 就 302）或生成的页索引、`/_index` 恒可达、`/<页名>` 对 overlay 是 302、**文件优先**、SPA 路由回退到入口文档（`handlePrototypeRequest` 路由、`registerPrototypeProtocolHandler` 在浏览器 session 上拦 `http`、`installPrototypeBaseUrlResolver` 发地址）。
 - `apps/electron/src/main/browser-cdp.ts`：`pickElement`、init script 注册、`setFetchMockRoutes`。
-- `apps/electron/src/main/browser-pane-manager.ts`：无边框窗口 / 3 个 BrowserView / 工具栏状态推送 / 地址→原型的反查；`reload(id)` 现在也在 `IBrowserPaneManager` 上（自动重放要用，远程桥照旧 fire-and-forget）。
+- `apps/electron/src/main/browser-pane-manager.ts`：无边框窗口 / 3 个 BrowserView / 工具栏状态推送 / 地址→原型的反查；`reload(id, tabId?)` 现在也在 `IBrowserPaneManager` 上（自动重放要用，远程桥照旧 fire-and-forget）；**每个页面级方法收尾参数 `tabId`**（"命令作用于哪一页"由调用方指名，`pageOf` 是唯一的读法），`activateTab`（只换前台）与 `setSessionPage`（只写游标）是两件事。
 
 ### 渲染层
 

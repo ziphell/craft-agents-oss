@@ -130,7 +130,7 @@
   "browser.pickHint": "Kliknij element na stronie",
   "browser.readyDescription": "Poproś dowolną sesję, aby użyła tej przeglądarki do zadań takich jak badania, wypełnianie formularzy, sprawdzanie QA czy ekstrakcja danych. Znak + na liście stron po lewej otwiera kolejną stronę.",
   "browser.readyTitle": "Ta przeglądarka jest gotowa dla Craft Agents – i dla ciebie ;)",
-  "browser.safetyHint": "Craft Agents kontroluje okna przeglądarki tylko gdy o to poprosisz.",
+  "browser.releaseLock": "Zwolnij tę stronę",
   "browser.stopLoading": "Zatrzymaj ładowanie",
   "browser.untitledPage": "Strona bez tytułu",
   "browser.urlPlaceholder": "Wpisz URL lub wyszukaj…",

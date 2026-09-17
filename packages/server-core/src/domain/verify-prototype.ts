@@ -4,7 +4,8 @@
  * A requirement that carries `check:` lines can be answered mechanically, and that
  * is the entire reason for writing them as checks rather than as prose (plan
  * §20.7): an acceptance criterion only a person can judge is a criterion nobody
- * runs. This is what answers them — `selector` against the page on screen,
+ * runs. This is what answers them — `selector` against the page the work is on
+ * (which is not the page on screen once a window has several: plan §22, 第十二轮),
  * `endpoint` against the contract.
  *
  * Three things it deliberately does **not** do:
@@ -33,6 +34,7 @@ import {
   type PrototypeCheck,
 } from '@craft-agent/shared/prototypes'
 import type { IBrowserPaneManager } from '../handlers/browser-pane-manager-interface'
+import type { PrototypeTargetPage } from './apply-prototype'
 
 export type PrototypeCheckStatus = 'pass' | 'fail' | 'skip'
 
@@ -72,25 +74,24 @@ export async function verifyPrototype(
   instanceId: string | null,
   workspaceRootPath: string,
   slug: string,
+  /**
+   * The page to check — the conversation's page, not the one on screen: the answer "is this
+   * requirement on the page" is about the page the work is on, and the person reading another
+   * one of the window's pages must not change it (plan §22, 第十二轮).
+   */
+  target?: PrototypeTargetPage | null,
 ): Promise<PrototypeVerification> {
   const coverage = resolveRequirementCoverage(workspaceRootPath, slug)
   const endpoints = contractEndpoints(workspaceRootPath, slug)
 
   // Read once, so every page check is answered about the same document.
-  let page: string | null = null
-  if (bpm && instanceId) {
-    try {
-      page = (await bpm.getInstanceAsync(instanceId))?.currentUrl ?? null
-    } catch {
-      page = null
-    }
-  }
+  const page = target?.url ?? null
 
   const results: PrototypeCheckResult[] = []
   for (const requirement of coverage.requirements) {
     for (const check of requirement.checks) {
       results.push(
-        await runCheck(bpm, instanceId, page, requirement.id, requirement.title, check, endpoints),
+        await runCheck(bpm, instanceId, page, target?.id, requirement.id, requirement.title, check, endpoints),
       )
     }
   }
@@ -136,6 +137,7 @@ async function runCheck(
   bpm: IBrowserPaneManager | null,
   instanceId: string | null,
   page: string | null,
+  tabId: string | undefined,
   requirementId: string,
   requirementTitle: string,
   check: PrototypeCheck,
@@ -157,7 +159,7 @@ async function runCheck(
   }
 
   try {
-    const found = await bpm.evaluate(instanceId, `!!document.querySelector(${JSON.stringify(check.target)})`)
+    const found = await bpm.evaluate(instanceId, `!!document.querySelector(${JSON.stringify(check.target)})`, tabId)
     return found === true
       ? { ...base, status: 'pass', detail: `found on ${page}` }
       : { ...base, status: 'fail', detail: `not on ${page}` }

@@ -30,6 +30,7 @@ function tabRow(overrides: Partial<BrowserTabSummary> & { id: string }): Browser
     disposition: null,
     openedBySessionId: null,
     driverSessionId: null,
+    cursorOf: null,
     lockedBy: null,
     ...overrides,
   }
@@ -201,6 +202,7 @@ function createMockFns(): BrowserPaneFns {
     unlinkPrototypeReference: async () => ({ references: [] }),
     focusWindow: async (instanceId?: string) => ({ instanceId: instanceId ?? 'browser-1', title: 'Example Domain', url: 'https://example.com' }),
     createTab: async () => 'tab-1',
+    targetTab: async (_tabId: string) => {},
     activateTab: async (_tabId: string) => {},
     closeTab: async (_tabId: string) => ({ remaining: 1 }),
     listTabs: async () => ([
@@ -215,8 +217,6 @@ function createMockFns(): BrowserPaneFns {
         title: 'Example Domain',
         url: 'https://example.com',
         isVisible: true,
-        ownerType: 'session',
-        ownerSessionId: 'test-session',
         boundSessionId: 'test-session',
         agentControlActive: true,
       },
@@ -357,7 +357,7 @@ describe('createBrowserTools', () => {
       expect(result.content[0].text).toContain('paste <text>')
       expect(result.content[0].text).toContain('screenshot [--annotated|-a]')
       expect(result.content[0].text).toContain('focus [windowId]')
-      expect(result.content[0].text).toContain('windows')
+      expect(result.content[0].text).toContain('tab-show <id>')
       expect(result.content[0].text).toContain('Array mode (JSON array input, no batch splitting/tokenization):')
       expect(result.content[0].text).not.toContain('When you are done using the browser')
     })
@@ -414,8 +414,6 @@ describe('createBrowserTools', () => {
           title: 'Example Domain',
           url: 'https://example.com',
           isVisible,
-          ownerType: 'session',
-          ownerSessionId: 'test-session',
           boundSessionId: 'test-session',
           agentControlActive: true,
         }]
@@ -445,8 +443,6 @@ describe('createBrowserTools', () => {
             title: 'Example Domain',
             url: 'https://example.com',
             isVisible,
-            ownerType: 'session',
-            ownerSessionId: 'test-session',
             boundSessionId: 'test-session',
             agentControlActive: true,
           }]
@@ -1726,7 +1722,7 @@ describe('createBrowserTools', () => {
       const result = await executeTool(tools, 'browser_tool', { command: 'prototype-open checkout-flow' })
 
       expect(opened).toEqual([
-        { activate: true, prototype: { slug: 'checkout-flow', origin: 'http://checkout-flow.localhost:41234' } },
+        { activate: false, prototype: { slug: 'checkout-flow', origin: 'http://checkout-flow.localhost:41234' } },
       ])
       // Which page it is, and that there is another one — the only place a reader
       // can learn it until the window has a tab strip.
@@ -2322,57 +2318,6 @@ describe('createBrowserTools', () => {
       expect(bound).toEqual([null])
     })
 
-    it('lists browser windows via windows command without release hint', async () => {
-      const result = await executeTool(tools, 'browser_tool', { command: 'windows' })
-      expect(result.content[0].text).toContain('Browser windows (1)')
-      expect(result.content[0].text).toContain('browser-1')
-      expect(result.content[0].text).toContain('ownerType: session')
-      expect(result.content[0].text).toContain('driver: driven by test-session')
-      expect(result.content[0].text).toContain('availableToSession: true')
-      expect(result.content[0].text).toContain('agentControlActive: true')
-      expect(result.content[0].text).not.toContain('When you are done using the browser')
-    })
-
-    // Which window is a prototype's — on which page, of which kind — is what
-    // decides how to work with it; the URL alone says nothing (an overlay's URL is
-    // the site's own page).
-    it('marks which window is a prototype, on which page', async () => {
-      mockFns.listWindows = async () => [
-        {
-          id: 'browser-1',
-          title: 'Checkout',
-          url: 'https://app.example.com/checkout',
-          prototype: {
-            slug: 'checkout-flow',
-            kind: 'overlay' as const,
-            origin: 'http://checkout-flow-abc123ab.localhost:41234',
-            page: 'entry',
-          },
-          isVisible: true,
-          ownerType: 'session' as const,
-          ownerSessionId: 'test-session',
-          boundSessionId: 'test-session',
-        },
-        {
-          id: 'browser-2',
-          title: 'Docs',
-          url: 'https://docs.example.com',
-          isVisible: false,
-          ownerType: 'manual' as const,
-          ownerSessionId: null,
-          boundSessionId: null,
-        },
-      ]
-
-      const text = (await executeTool(tools, 'browser_tool', { command: 'windows' })).content[0].text
-
-      expect(text).toContain(
-        'prototype: checkout-flow — page "entry" (overlay), its own address http://checkout-flow-abc123ab.localhost:41234',
-      )
-      // The plain window gets no prototype line at all.
-      expect(text.match(/prototype:/g)).toHaveLength(1)
-    })
-
     // A window is one and its pages are many, so a page is the unit of work and a
     // command can name one (plan §22). The list is what makes naming possible.
     it('lists this window\'s pages with the one on screen marked', async () => {
@@ -2398,15 +2343,15 @@ describe('createBrowserTools', () => {
       expect(text).toContain('page:       cart')
       // Whose page it is, and who is on it: the first decides what may be closed,
       // the second is who is mid-work (plan §22).
-      expect(text).toContain('opened by:  agent (session-a)')
+      expect(text).toContain('belongs to: agent (session-a)')
       expect(text).toContain('driven by:  session-b')
       expect(text).toContain('tab-2  Docs')
       expect(text).toContain('url:        https://docs.example.com  (loading)')
-      expect(text).toContain('opened by:  a person')
+      expect(text).toContain('belongs to: a person')
       expect(text).toContain('driven by:  nobody right now')
       // The two halves are named, because a reader that takes a declaration for a
       // measurement is the failure this split exists to prevent.
-      expect(text).toContain('"opened by" and "driven by" are')
+      expect(text).toContain('"belongs to" and "driven by" are')
     })
 
     // A page that is held right now says so — and says it about *that page*, since with a
@@ -2431,6 +2376,27 @@ describe('createBrowserTools', () => {
       // The page nobody is holding says nothing about being held.
       expect(text.match(/locked: {5}/g)).toHaveLength(1)
       expect(text).toContain('"locked" is the lease')
+    })
+
+    // Where an unnamed command lands is stated, because it is *not* "the page on screen":
+    // the person clicking around moves their own view, and this must not move with it
+    // (plan §22, 第十轮). Only the reader's own page is marked — another conversation's is
+    // not this reader's business.
+    it('marks the page this conversation works from, and only its own', async () => {
+      mockFns.listTabs = async () => ([
+        tabRow({ id: 'tab-1', url: 'https://app.example.com/checkout', title: 'Checkout', active: true }),
+        tabRow({ id: 'tab-2', url: 'https://docs.example.com', title: 'Docs', cursorOf: 'test-session' }),
+        tabRow({ id: 'tab-3', url: 'https://other.example.com', title: 'Other', cursorOf: 'session-b' }),
+      ])
+
+      const text = (await executeTool(tools, 'browser_tool', { command: 'tabs' })).content[0].text
+
+      expect(text).toContain('your page:  yes — a command that names no page acts here')
+      expect(text.match(/your page: {2}/g)).toHaveLength(1)
+      // The page on screen is not it, which is the whole point: `tab-1` stays unmarked even
+      // though it is the one showing.
+      expect(text).toContain('* tab-1  Checkout')
+      expect(text).toContain('the person switching pages does not move it')
     })
 
     // A page the prototype's own table does not describe is said so, rather than
@@ -2460,19 +2426,31 @@ describe('createBrowserTools', () => {
       expect(text).toContain('No browser window is open')
     })
 
-    // Naming a page is what makes it the target: the window shows it and the
-    // command runs against the window, so which prototype is being worked on is
-    // never implied.
+    // Naming a page targets it: the command runs against that page — and the window is not
+    // moved, because the person may be reading another one of its pages (plan §22, 第十二轮).
     it('targets a named page, and keeps it out of the command itself', async () => {
+      const targeted: string[] = []
       const activated: string[] = []
+      mockFns.targetTab = async (tabId) => { targeted.push(tabId) }
       mockFns.activateTab = async (tabId) => { activated.push(tabId) }
       let evaluated = ''
       mockFns.evaluate = async (expression) => { evaluated = expression; return 'Checkout' }
 
       await executeTool(tools, 'browser_tool', { command: 'evaluate document.title --tab tab-2' })
 
-      expect(activated).toEqual(['tab-2'])
+      expect(targeted).toEqual(['tab-2'])
+      expect(activated).toEqual([])
       expect(evaluated).toBe('document.title')
+    })
+
+    it('brings a page up for the person only when asked to', async () => {
+      const activated: string[] = []
+      mockFns.activateTab = async (tabId) => { activated.push(tabId) }
+
+      const result = await executeTool(tools, 'browser_tool', { command: 'tab-show tab-2' })
+
+      expect(activated).toEqual(['tab-2'])
+      expect(result.content[0].text).toContain('tab-2')
     })
 
     it('refuses --tab without a page id rather than acting on the page on screen', async () => {
@@ -2486,7 +2464,9 @@ describe('createBrowserTools', () => {
 
       const result = await executeTool(tools, 'browser_tool', { command: 'tab-new https://docs.example.com' })
 
-      expect(opened).toEqual([{ url: 'https://docs.example.com', activate: true }])
+      // Behind whatever the person is reading: opening a page for the agent is not a reason to
+      // take their page away (plan §22, 第十二轮), and "tab-show" is how one is brought up.
+      expect(opened).toEqual([{ url: 'https://docs.example.com', activate: false }])
       expect(result.content[0].text).toContain('tab-3')
     })
 
@@ -2503,32 +2483,6 @@ describe('createBrowserTools', () => {
 
       expect(closed).toEqual(['tab-2'])
       expect(result.content[0].text).toContain('the window went with it')
-    })
-
-    // The workspace's window is available to every conversation in it, and says who
-    // is at the wheel at the moment — a lease, not a lock (plan §22).
-    it("reports the workspace's window as available, and says who is driving it", async () => {
-      mockFns.listWindows = async () => [
-        {
-          id: 'browser-1',
-          title: 'Checkout',
-          url: 'https://app.example.com/checkout',
-          isVisible: true,
-          ownerType: 'session' as const,
-          ownerSessionId: null,
-          boundSessionId: 'someone-else',
-          isWorkspaceWindow: true,
-        },
-      ]
-
-      const text = (await executeTool(tools, 'browser_tool', { command: 'windows' })).content[0].text
-
-      expect(text).toContain("driver: the workspace's window, driven by someone-else")
-      // Another conversation holds the lease; this one may still work here — the
-      // window is the workspace's.
-      expect(text).toContain('availableToSession: true')
-      expect(text).toContain('availableToSession=1')
-      expect(text).toContain('driving=1')
     })
 
     it('routes focus command and calls focusWindow', async () => {

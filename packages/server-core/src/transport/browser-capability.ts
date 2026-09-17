@@ -26,9 +26,9 @@ export type BrowserCapabilityMethod =
   // Tabs
   | 'createTab'
   | 'activateTab'
+  | 'setSessionPage'
   | 'closeTab'
   | 'listTabs'
-  | 'bindSession'
   | 'unbindAllForSession'
   | 'setAgentControl'
   | 'clearAgentControl'
@@ -89,6 +89,18 @@ export interface BrowserCapabilityRequest {
   sessionId: string
   /** Owning workspace — combined with `sessionId` to form the owner-key prefix. */
   workspaceId: string
+  /**
+   * The page of the window this call acts on, when the caller resolved one.
+   *
+   * Routing context, next to `sessionId` and `workspaceId` rather than in `args`, because
+   * it says the same kind of thing: not *what* to do but *where*. The caller resolves it
+   * with `pickCommandTarget` — the conversation's own page, and only the page on screen
+   * when it has none — and passes it here, so the dispatcher never has to guess from what
+   * the person happens to be looking at (plan §22, 第十轮/第十二轮). Absent means the page
+   * on screen: a caller with no routing (the person's own toolbar calls never come through
+   * here at all) and the commands that are about a window rather than a page.
+   */
+  tabId?: string
 }
 
 /**

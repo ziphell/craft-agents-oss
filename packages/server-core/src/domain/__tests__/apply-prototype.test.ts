@@ -36,7 +36,7 @@ const PAGE = '<!doctype html><html><body><h1>Checkout</h1></body></html>'
 /** A stand-in browser pane that records what was done to the page. */
 function makeBpm(
   inlined: unknown,
-  currentUrl: string | null = null,
+  pageUrl: string | null = null,
   answers: { state?: unknown; fingerprints?: unknown; candidates?: unknown } = {},
 ) {
   const evaluated: string[] = []
@@ -44,14 +44,14 @@ function makeBpm(
   const cleared: string[] = []
   const reloaded: string[] = []
 
+  /**
+   * The page the command is about — the conversation's page, which the *caller* names
+   * (`pickCommandTarget` on the server side). Null is "no page to judge by": a window with no
+   * pages, which is the same answer a caller with no instance gets.
+   */
+  const page = pageUrl === null ? null : { id: 'tab-1', url: pageUrl }
+
   const bpm = {
-    // The window's own URL is what decides which page's patches apply; null is
-    // "no instance", i.e. a caller that cannot say where it is.
-    getInstanceAsync: mock(async () =>
-      currentUrl === null
-        ? undefined
-        : { ownerType: 'session', ownerSessionId: null, isVisible: true, title: '', currentUrl },
-    ),
     evaluate: mock(async (_id: string, expression: string) => {
       // The probes are the only expressions whose answer matters to the caller.
       // Told apart by a distinctive line rather than by identity, because two are
@@ -77,7 +77,7 @@ function makeBpm(
     }),
   }
 
-  return { bpm: bpm as unknown as IBrowserPaneManager, evaluated, registered, cleared, reloaded }
+  return { bpm: bpm as unknown as IBrowserPaneManager, page, evaluated, registered, cleared, reloaded }
 }
 
 describe('applyPrototypeToBrowser', () => {
@@ -115,9 +115,9 @@ describe('applyPrototypeToBrowser', () => {
   it('injects every patch into a document that carries none', async () => {
     writePatch('A-001-btn.css', '.btn { color: red }')
     writePatch('A-002-guard.js', 'window.guard = true;')
-    const { bpm, evaluated, registered, cleared } = makeBpm([], 'https://app.example.com/checkout')
+    const { bpm, page, evaluated, registered, cleared } = makeBpm([], 'https://app.example.com/checkout')
 
-    const result = await applyPrototypeToBrowser(bpm, 'browser-1', workspaceRoot, slug)
+    const result = await applyPrototypeToBrowser(bpm, 'browser-1', workspaceRoot, slug, page)
 
     expect(result.applied).toBe(2)
     expect(result.files).toEqual(['A-001-btn.css', 'A-002-guard.js'])
@@ -142,9 +142,9 @@ describe('applyPrototypeToBrowser', () => {
   it('leaves alone what the rendered page already carries', async () => {
     writePage('cart')
     writePatch('A-001-btn.css', '.btn { color: red }')
-    const { bpm, evaluated, registered } = makeBpm(['A-001-btn.css'], `${ORIGIN}/cart.html`)
+    const { bpm, page, evaluated, registered } = makeBpm(['A-001-btn.css'], `${ORIGIN}/cart.html`)
 
-    const result = await applyPrototypeToBrowser(bpm, 'browser-1', workspaceRoot, slug)
+    const result = await applyPrototypeToBrowser(bpm, 'browser-1', workspaceRoot, slug, page)
 
     expect(result.page).toBe('cart')
     expect(result.applied).toBe(0)
@@ -182,9 +182,9 @@ describe('applyPrototypeToBrowser', () => {
     writePatch('A-001-btn.css', '.btn { color: red }')
     writePagePatch('cart', 'A-002-cart.js', 'window.cart = true;')
     writePagePatch('orders', 'A-003-orders.js', 'window.orders = true;')
-    const { bpm, registered } = makeBpm([], `${ORIGIN}/cart.html`)
+    const { bpm, page, registered } = makeBpm([], `${ORIGIN}/cart.html`)
 
-    const result = await applyPrototypeToBrowser(bpm, 'browser-1', workspaceRoot, slug)
+    const result = await applyPrototypeToBrowser(bpm, 'browser-1', workspaceRoot, slug, page)
 
     expect(result.page).toBe('cart')
     expect(result.files).toEqual(['A-001-btn.css', 'cart/A-002-cart.js'])
@@ -208,9 +208,9 @@ describe('applyPrototypeToBrowser', () => {
     writePatch('A-001-btn.css', '.btn { color: red }')
     writePagePatch('cart', 'A-002-cart.js', 'window.cart = true;')
     writePagePatch('orders', 'A-003-orders.js', 'window.orders = true;')
-    const { bpm } = makeBpm([], 'https://app.example.com/elsewhere')
+    const { bpm, page } = makeBpm([], 'https://app.example.com/elsewhere')
 
-    const result = await applyPrototypeToBrowser(bpm, 'browser-1', workspaceRoot, slug)
+    const result = await applyPrototypeToBrowser(bpm, 'browser-1', workspaceRoot, slug, page)
 
     expect(result.page).toBe('cart')
     expect(result.files).toEqual(['A-001-btn.css', 'cart/A-002-cart.js'])
@@ -225,9 +225,9 @@ describe('applyPrototypeToBrowser', () => {
     })
     writePatch('A-001-btn.css', '.btn { color: red }')
     writePagePatch('checkout', 'A-002-checkout.js', 'window.checkout = true;')
-    const { bpm, evaluated } = makeBpm([], 'https://app.example.com/something-else')
+    const { bpm, page, evaluated } = makeBpm([], 'https://app.example.com/something-else')
 
-    const result = await applyPrototypeToBrowser(bpm, 'browser-1', workspaceRoot, slug)
+    const result = await applyPrototypeToBrowser(bpm, 'browser-1', workspaceRoot, slug, page)
 
     expect(result.page).toBeNull()
     expect(result.files).toEqual(['A-001-btn.css'])
@@ -242,9 +242,9 @@ describe('applyPrototypeToBrowser', () => {
     })
     writePatch('A-001-btn.css', '.btn { color: red }')
     writePagePatch('checkout', 'A-002-checkout.js', 'window.checkout = true;')
-    const { bpm } = makeBpm([], 'https://app.example.com/checkout')
+    const { bpm, page } = makeBpm([], 'https://app.example.com/checkout')
 
-    const result = await applyPrototypeToBrowser(bpm, 'browser-1', workspaceRoot, slug)
+    const result = await applyPrototypeToBrowser(bpm, 'browser-1', workspaceRoot, slug, page)
 
     expect(result.page).toBe('checkout')
     expect(result.files).toEqual(['A-001-btn.css', 'checkout/A-002-checkout.js'])
@@ -335,7 +335,7 @@ describe('applyPrototypeToBrowser', () => {
       state: { 'A-001-btn.css': { matches: { '.btn': 1 }, error: null } },
       fingerprints: { '.btn': fingerprint },
     })
-    await applyPrototypeToBrowser(first.bpm, 'browser-1', workspaceRoot, slug)
+    await applyPrototypeToBrowser(first.bpm, 'browser-1', workspaceRoot, slug, first.page)
     expect(readPrototypeAnchors(workspaceRoot, slug, null)?.anchors[0]?.fingerprint).toEqual(fingerprint)
 
     // The site was redeployed: the selector the patch was written against is gone.
@@ -343,7 +343,7 @@ describe('applyPrototypeToBrowser', () => {
       state: { 'A-001-btn.css': { matches: { '.btn': 0 }, error: null } },
       candidates: { '.btn': ['#pay'] },
     })
-    const result = await applyPrototypeToBrowser(second.bpm, 'browser-1', workspaceRoot, slug)
+    const result = await applyPrototypeToBrowser(second.bpm, 'browser-1', workspaceRoot, slug, second.page)
 
     // Not "unmatched": it has a record of matching, so this is the page moving.
     expect(result.unmatched).toEqual([])
@@ -361,9 +361,9 @@ describe('applyPrototypeToBrowser', () => {
   it('reloads a page of ours rather than injecting into it again', async () => {
     writePage('cart')
     writePatch('A-001-btn.css', '.btn { color: red }')
-    const { bpm, evaluated, registered, reloaded } = makeBpm(['A-001-btn.css'], `${ORIGIN}/cart.html`)
+    const { bpm, page, evaluated, registered, reloaded } = makeBpm(['A-001-btn.css'], `${ORIGIN}/cart.html`)
 
-    const result = await replayPrototypeInBrowser(bpm, 'browser-1', workspaceRoot, slug)
+    const result = await replayPrototypeInBrowser(bpm, 'browser-1', workspaceRoot, slug, page)
 
     expect(result.action).toBe('reloaded')
     expect(result.page).toBe('cart')
@@ -374,9 +374,9 @@ describe('applyPrototypeToBrowser', () => {
 
   it('applies the patches to a page that carries none', async () => {
     writePatch('A-001-btn.css', '.btn { color: red }')
-    const { bpm, evaluated, reloaded } = makeBpm([], 'https://app.example.com/checkout')
+    const { bpm, page, evaluated, reloaded } = makeBpm([], 'https://app.example.com/checkout')
 
-    const result = await replayPrototypeInBrowser(bpm, 'browser-1', workspaceRoot, slug)
+    const result = await replayPrototypeInBrowser(bpm, 'browser-1', workspaceRoot, slug, page)
 
     expect(result.action).toBe('applied')
     expect(result.applied).toBe(1)

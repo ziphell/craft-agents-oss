@@ -139,8 +139,8 @@ function mapBrowserToolErrorCode(code: string): string | null {
     case 'CLIENT_REQUEST_TIMEOUT':
       return 'Browser operation timed out (>30s). The desktop client may be unresponsive.';
     case 'BROWSER_INSTANCE_NOT_OWNED':
-      return 'That browser instance ID doesn\'t belong to this session. ' +
-        'Use `windows` to list owned instances, or `open` to create a new one.';
+      return 'That browser instance ID is not in this workspace. ' +
+        'Use `windows` to list the windows here, or `open` to open one.';
     case 'BROWSER_REMOTE_UPLOAD_NOT_SUPPORTED':
       return 'File upload from a remote agent is not supported. ' +
         'Ask the user to attach the file to the session.';

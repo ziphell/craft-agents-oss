@@ -972,29 +972,54 @@ export interface BrowserTabSummary {
 
   // -- Declaration ---------------------------------------------------------
   /**
-   * Which session asked for this page, or `null` when a person did.
+   * Which conversation this page **belongs to**, or `null` for a person's page.
    *
-   * The reason it is here rather than derived: an agent must be able to leave the
-   * user's pages alone (plan §22's third rule), and "which of these did I open"
-   * is not visible in a URL.
+   * Written when the page is created — by the conversation whose tool opened it, or by
+   * **inheritance**: a page derived from another (a `target="_blank"`, a popup, a link on a
+   * page of ours) belongs to whatever the page it came from belongs to (plan §22, 第十一轮).
+   * Inheritance is what makes a conversation's pages a *group* — the link it could not
+   * follow itself still lands in its task — without asking who clicked, which could not be
+   * answered anyway (an agent's click and a person's look the same from here).
    *
-   * The session rather than a yes/no, because "an agent opened it" is not enough to
-   * act on once several conversations share a window: closing a page is housekeeping
-   * only if *this* conversation opened it, and a second conversation's page is as
-   * much somebody else's as the user's is. The words "opened by agent" are a rendering
-   * of this field, produced where they are needed (the agent's `tabs` output) rather
-   * than stored as well.
+   * The reason it is here rather than derived: an agent must be able to leave other people's
+   * pages alone (plan §22's third rule), and "which of these are mine" is not visible in a
+   * URL. It is also the key the page rail groups by, so a window shows one section per task.
+   *
+   * The session rather than a yes/no, because "an agent opened it" is not enough to act on
+   * once several conversations share a window: closing a page is housekeeping, and
+   * housekeeping is housekeeping only if *this* conversation's group is the one it falls in
+   * — a second conversation's page is as much somebody else's as the user's is. The words
+   * "opened by agent" are a rendering of this field, produced where they are needed (the
+   * agent's `tabs` output) rather than stored as well.
    */
   openedBySessionId: string | null
+
+  // -- Where a conversation works from ------------------------------------
+  /**
+   * Which conversation **works from this page**, or `null` when it is no conversation's
+   * page — its cursor (plan §22, 第十轮).
+   *
+   * One page per conversation, and it answers the question that otherwise has no answer:
+   * *where does my next command go when I name no page?* Not "wherever the window is
+   * showing" — that page belongs to the person, and it moves the moment they click, which
+   * is how a user switching pages used to silently retarget somebody's work.
+   *
+   * Sticky across turns, unlike the lease next to it: a conversation that comes back after
+   * its turn ended still works from the same page. It moves only when that conversation
+   * names another page (or opens one), and it is what the page lock hangs off while its
+   * overlay is up.
+   */
+  cursorOf: string | null
 
   // -- Lease ---------------------------------------------------------------
   /**
    * Which session is working on this page **now**, or `null` when nobody is.
    *
-   * A lease, like the window's, but per page (plan §22): a conversation's command
-   * reaches the page on screen, so that page records who is driving it, and the turn
-   * ending releases it. Two conversations sharing the window take turns *here*, and
-   * this is what makes "who is moving which page" answerable instead of guessed.
+   * A lease, like the window's, but per page (plan §22): a conversation's command reaches
+   * the page it works from — its own cursor, which is written at the same moment — so that
+   * page records who is driving it, and the turn ending releases it. Two conversations
+   * sharing the window take turns *here*, and this is what makes "who is moving which page"
+   * answerable instead of guessed.
    */
   driverSessionId: string | null
 
@@ -1069,15 +1094,17 @@ export interface BrowserInstanceInfo {
    * missing as `null`.
    */
   prototypeSlug?: string | null
-  ownerType: 'session' | 'manual'
-  ownerSessionId: string | null
   isVisible: boolean
   agentControlActive: boolean
   themeColor: string | null
   /**
-   * Workspace that owns this browser instance, or `null` for unbound manual
-   * windows. Renderers filter the tab strip / status badge by `activeWorkspaceId`
-   * so a session in workspace A doesn't see windows opened by workspace B.
+   * The workspace this window belongs to, or `null` for a window opened with no
+   * workspace context. It is the **whole** of the boundary: one window per
+   * workspace, shared by every conversation in it, and no session owns it — a
+   * session drives it for a while (`boundSessionId`) and that is all. Renderers
+   * filter the tab strip / status badge by `activeWorkspaceId` so a conversation
+   * in workspace A doesn't see windows of workspace B.
+   *
    * Missing/null entries always pass the filter — this keeps older renderers
    * and main processes that pre-date the field working unchanged.
    */

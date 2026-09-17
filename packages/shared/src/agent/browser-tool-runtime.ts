@@ -96,18 +96,18 @@ export function getBrowserToolHelp(): string {
     '  prototype-mock-clear                                  stop serving the mock',
     '  prototype-status [slug]                               pages, patches, services, exports, ownership',
     '  prototype-open [slug] [--page <name>]                 open it in a page of its own (the page you are on, else entry, else index)',
-    '  tabs                                           this window\'s pages: what each one is, who opened it, who is driving it',
-    '  tab-new [url]                                  add a page to this window',
-    '  tab-close <id>                                 close a page you opened (the last one closes the window)',
+    '  tabs                                           this window\'s pages: what each one is, whose task it is in, who is driving it',
+    '  tab-new [url]                                  add a page to this window, behind the person\'s',
+    '  tab-show <id>                                  bring a page up for the person to look at',
+    '  tab-close <id>                                 close a page of your task (the last one closes the window)',
     '  focus [windowId]                               focus a browser window (no new window)',
-    '  windows                                        the workspace\'s windows, who is driving them, what each shows',
     '  release [windowId|all]                         dismiss agent overlay, and unlock the page it held',
     '  close [windowId]                               close a window of your own; on the workspace\'s, close your own pages',
     '  hide [windowId]                                hide the window (keeps state, "open" re-shows)',
     '',
     'There is one browser window per workspace, used by every conversation in it and by the user, for any',
     'task: "open" and "prototype-open" add a page to it rather than making a second window. The window',
-    'itself is nobody\'s to close; the pages you opened are — "close" and "tab-close <id>" do that, and',
+    'itself is nobody\'s to close; the pages in your task are — "close" and "tab-close <id>" do that, and',
     '"release" drops your overlay and unlocks the page it was holding — the window, the other',
     'pages and the person\'s chrome were never held by it.',
     '',
@@ -119,11 +119,19 @@ export function getBrowserToolHelp(): string {
     '"prototype-entry <name|none>" decides what the address root opens; "/_index" always lists the pages.',
     '',
     'The window is one and its pages are many, so every command can name the page it acts on:',
-    '"--tab <id>" ("tabs" lists them). Without one it acts on the page on screen. Naming a page brings it',
-    'forward, so the window shows what is being worked on. "prototype-open" always opens a page of its own,',
-    'which is what lets two prototypes be worked on at once instead of replacing each other. A page is yours',
-    'to work on when it is an ordinary page, when it is for the prototype you work on, or when you opened it',
-    'yourself; another conversation\'s prototype is refused, and the refusal says which one it is.',
+    '"--tab <id>" ("tabs" lists them). Without one it acts on **your** page — the page you have been',
+    'working from ("tabs" marks it "your page"), and only the page on screen when you have none yet.',
+    'That is deliberate: the person switching pages does not move your commands. Naming a page makes it',
+    'yours and stays behind whatever the person is reading — they share the window, and your work does not',
+    'need their eyes on it. "tab-show <id>" is the one command that brings a page up for them.',
+    '"prototype-open" always opens a page of its own, which is what lets two prototypes be worked on at',
+    'once instead of replacing each other.',
+    'A page is yours to work on when it is an ordinary page, when it is for the prototype you work on, or when',
+    'it belongs to your task — the pages you opened, plus the ones opened from them; another conversation\'s',
+    'prototype is refused, and the refusal says which one it is.',
+    'While you work on a page it is **locked** — the person cannot click or type there, and another',
+    'conversation\'s command that names it is refused until your turn ends (or the person clicks the lock in',
+    'the page rail to let go of it).',
     'Full rules and examples: docs/browser-tools.md.',
     '',
     'Batching (string mode, semicolon-separated, stops after navigation commands):',
@@ -158,7 +166,8 @@ export function getBrowserToolHelp(): string {
     '  prototype-apply                                (targets the bound prototype)',
     '  prototype-open checkout-flow --page orders      (one page of a multi-page prototype)',
     '  tabs                                            (which pages the window has, and which is on screen)',
-    '  snapshot --tab tab-3                            (act on a named page; the window shows it)',
+    '  snapshot --tab tab-3                            (act on a named page, wherever the window is)',
+    '  tab-show tab-3                                  (bring a page up for the person to look at)',
     '  tab-close tab-3                                 (close one page; the last one closes the window)',
     '  prototype-apply checkout-flow                  (explicit target)',
     '  prototype-commit                               (fold what is done; the patch files go away)',
@@ -176,7 +185,6 @@ export function getBrowserToolHelp(): string {
     '  downloads wait 15000',
     '  focus',
     '  focus browser-1',
-    '  windows',
   ].join('\n');
 }
 
@@ -319,35 +327,20 @@ function summarizeWindows(windows: Awaited<ReturnType<BrowserPaneFns['listWindow
 }
 
 /**
- * Who is driving a window, and whether it is one conversation's at all.
+ * Who is driving a window right now.
  *
- * Two different questions now (plan §22): the workspace's window is every
- * conversation's in turn — the lease says who has it at the moment — while a window
- * opened by one session is only that session's. Printed wherever the old answer was
- * "locked", which stopped being true the moment a window could be shared.
+ * One question, not two (plan §22): the workspace's window is every conversation's
+ * in turn, and the lease says who has it at the moment. There is no second kind of
+ * window and no owner to fall back on, so "nobody" is a real answer rather than a
+ * euphemism. Printed wherever the old answer was "locked", which stopped being true
+ * the moment the window became shared.
  */
 function describeWindowDriver(w: {
   isWorkspaceWindow?: boolean;
   boundSessionId: string | null;
-  ownerSessionId: string | null;
 }): string {
-  if (w.isWorkspaceWindow) {
-    return w.boundSessionId
-      ? `the workspace's window, driven by ${w.boundSessionId}`
-      : "the workspace's window, nobody driving";
-  }
-  if (w.boundSessionId) return `driven by ${w.boundSessionId}`;
-  if (w.ownerSessionId) return `idle (opened by ${w.ownerSessionId})`;
-  return 'idle';
-}
-
-/** Whether a session may act on a window: the workspace's is everyone's, a window of one's own is not. */
-function windowIsAvailableTo(w: {
-  isWorkspaceWindow?: boolean;
-  boundSessionId: string | null;
-  ownerSessionId: string | null;
-}, sessionId: string): boolean {
-  return !!w.isWorkspaceWindow || !w.boundSessionId || w.boundSessionId === sessionId;
+  const which = w.isWorkspaceWindow ? "the workspace's window" : 'the window';
+  return w.boundSessionId ? `${which}, driven by ${w.boundSessionId}` : `${which}, nobody driving`;
 }
 
 /** `checkout-flow — page "orders" (overlay), its own address http://…`: which prototype, which screen, where it lives. */
@@ -908,11 +901,12 @@ async function executeSingleCommand(args: {
 
   const { fns } = args;
 
-  // Naming a page is what makes it the target: the window shows it, and the
-  // command then runs against the window. A page that does not exist is an error
-  // rather than a fall back to whatever was on screen — running somewhere else is
-  // the one outcome a named target exists to prevent (plan §22).
-  if (tabId) await fns.activateTab(tabId);
+  // Naming a page targets it: it becomes the page this conversation works from — so the rest
+  // of the command, and the next one, and the one after the person clicks around, all stay
+  // here (plan §22, 第十轮). It does *not* bring the page forward (第十二轮): the window is
+  // shared with the person, who may be reading another one of its pages, and a target is not
+  // a request to move them. "tab-show <id>" is how a page is deliberately brought up.
+  if (tabId) await fns.targetTab(tabId);
 
   if (cmd === 'open') {
     const foreground = parts.includes('--foreground') || parts.includes('-f');
@@ -948,7 +942,7 @@ async function executeSingleCommand(args: {
     }
     if (win) {
       lines.push(
-        `Visible: ${win.isVisible}, ownerType: ${win.ownerType}, boundSessionId: ${win.boundSessionId ?? 'none'}`,
+        `Visible: ${win.isVisible}, driver: ${win.boundSessionId ?? 'none'}`,
       );
     }
 
@@ -2772,8 +2766,14 @@ async function executeSingleCommand(args: {
     // replaced the first. The page carries the prototype as its identity, because
     // an overlay's document is a third-party address and nothing in the URL will
     // say which prototype it is for.
+    //
+    // It opens behind the page the person is on, like every other page a command opens
+    // (第十二轮): the window is shared, and the patches, the screenshots and the reads that
+    // follow all land on this page because it is the one this session works from — nobody
+    // has to be looking at it for the work to happen. "tab-show <id>" is how it is brought
+    // up for them, and the rail lists it either way.
     const openedTabId = await fns.createTab({
-      activate: true,
+      activate: false,
       ...(entry.origin ? { prototype: { slug, origin: entry.origin } } : {}),
     });
 
@@ -2815,15 +2815,15 @@ async function executeSingleCommand(args: {
     // Which page of the window this is, and how many it now has: opening is what
     // creates pages, so a reader that opens twice has two — said here because the
     // window's own page list is the only place that shows it until the tab strip
-    // exists. `--tab` names one; without a name a command acts on the page on
-    // screen, which is this one.
+    // exists. `--tab` names one; without a name a command acts on the page you work
+    // from, which this page just became.
     const tabs = await fns.listTabs().catch(() => []);
     if (tabs.length > 0) {
       const others = tabs.length - 1;
       lines.push(
         others === 0
           ? `  Page: ${openedTabId} (the window's only page)`
-          : `  Page: ${openedTabId} — ${others} other page${others === 1 ? '' : 's'} in this window. "tabs" lists them, "--tab <id>" targets one.`,
+          : `  Page: ${openedTabId} — ${others} other page${others === 1 ? '' : 's'} in this window. "tabs" lists them, "--tab <id>" targets one, "tab-show <id>" puts one on screen.`,
       );
     }
 
@@ -2854,33 +2854,6 @@ async function executeSingleCommand(args: {
     };
   }
 
-  if (cmd === 'windows') {
-    const windows = await fns.listWindows();
-    const available = windows.filter((w) => windowIsAvailableTo(w, args.sessionId)).length;
-    const lines: string[] = [`Browser windows (${windows.length}) — ${summarizeWindows(windows)}, availableToSession=${available}`];
-
-    for (const w of windows) {
-      lines.push(
-        '',
-        `- ${w.id}`,
-        `  title: ${w.title || 'New Tab'}`,
-        `  url: ${w.url || 'about:blank'}`,
-        ...(w.prototype
-          ? [`  prototype: ${describePrototypeAt(w.prototype)}`]
-          : []),
-        `  visible: ${w.isVisible}`,
-        `  ownerType: ${w.ownerType}`,
-        `  ownerSessionId: ${w.ownerSessionId ?? 'none'}`,
-        `  boundSessionId: ${w.boundSessionId ?? 'none'}`,
-        `  driver: ${describeWindowDriver(w)}`,
-        `  availableToSession: ${windowIsAvailableTo(w, args.sessionId)}`,
-        `  agentControlActive: ${!!w.agentControlActive}`,
-      );
-    }
-
-    return { output: lines.join('\n'), appendReleaseHint: false };
-  }
-
   if (cmd === 'tabs') {
     const tabs = await fns.listTabs();
     if (tabs.length === 0) {
@@ -2892,7 +2865,8 @@ async function executeSingleCommand(args: {
 
     const lines = [
       `This window has ${tabs.length} page${tabs.length === 1 ? '' : 's'}. "*" marks the one on screen;`,
-      '"--tab <id>" names one for any command.',
+      '"--tab <id>" names one for any command — which targets it without moving the window, since the',
+      'person reading another page is not in your way. "tab-show <id>" shows one to them.',
     ];
 
     for (const tab of tabs) {
@@ -2923,7 +2897,7 @@ async function executeSingleCommand(args: {
         );
       }
       lines.push(
-        `      opened by:  ${tab.openedBySessionId ? `agent (${tab.openedBySessionId})` : 'a person'}`,
+        `      belongs to: ${tab.openedBySessionId ? `agent (${tab.openedBySessionId})` : 'a person'}`,
       );
       lines.push(
         `      driven by:  ${tab.driverSessionId
@@ -2939,14 +2913,22 @@ async function executeSingleCommand(args: {
           `      locked:     ${tab.lockedBy}${tab.lockedBy === args.sessionId ? ' (you)' : ''} is working on it, so it is held until that turn ends`,
         );
       }
+      // Where this conversation's unnamed commands go. Worth stating because it is *not*
+      // "the page on screen": the person clicking around moves their own view, and this
+      // page stays where it is (plan §22, 第十轮).
+      if (tab.cursorOf === args.sessionId) {
+        lines.push('      your page:  yes — a command that names no page acts here');
+      }
     }
 
     lines.push(
       '',
-      'Everything above "opened by" is what the page itself reports. "opened by" and "driven by" are',
-      'not: one is who asked for the page (your own pages are the ones you may close), the other is who',
-      'is working on it at this moment (a lease, released when a turn ends). "locked" is the lease',
-      'enforced: while it is up, that page takes no input from anybody else.',
+      'Everything above "belongs to" is what the page itself reports. "belongs to" and "driven by" are',
+      'not: one is the task the page is part of — the pages you opened, and the pages opened *from* them —',
+      'and those are the ones you may close; the other is who is working on it at this moment (a lease,',
+      'released when a turn ends). "locked" is the lease enforced: while it is up, that page takes no input',
+      'from anybody else. "your page" is where your own unnamed commands land — it survives the turn, and',
+      'the person switching pages does not move it.',
     );
 
     return { output: lines.join('\n'), appendReleaseHint: false };
@@ -2954,11 +2936,22 @@ async function executeSingleCommand(args: {
 
   if (cmd === 'tab-new') {
     const url = parts.slice(1).join(' ').trim();
-    const tabId = await fns.createTab({ ...(url ? { url } : {}), activate: true });
+    const tabId = await fns.createTab({ ...(url ? { url } : {}), activate: false });
     return {
       output: url
-        ? `Opened a new page ${tabId} in the workspace's browser window, on ${url}. Use "tabs" to see the others, "--tab ${tabId}" to come back to it.`
-        : `Opened a blank page ${tabId} in the workspace's browser window. "navigate <url>" fills it.`,
+        ? `Opened a new page ${tabId} in the workspace's browser window, on ${url} — behind whatever the person is reading, since the window is shared. "tab-show ${tabId}" brings it up for them; "tabs" lists the others.`
+        : `Opened a blank page ${tabId} in the workspace's browser window, behind whatever the person is reading. "navigate <url>" fills it; "tab-show ${tabId}" brings it up for them.`,
+      appendReleaseHint: false,
+    };
+  }
+
+  if (cmd === 'tab-show') {
+    const id = parts[1]?.trim();
+    if (!id) throw new Error('tab-show needs a page id. "tabs" lists them. Example: tab-show tab-3');
+
+    await fns.activateTab(id);
+    return {
+      output: `Page ${id} is now the page the window shows — and the one your unnamed commands act on from here.`,
       appendReleaseHint: false,
     };
   }

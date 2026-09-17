@@ -130,7 +130,7 @@
   "browser.pickHint": "ページ上の要素をクリック",
   "browser.readyDescription": "任意のセッションにこのブラウザを使わせて、リサーチ、フォーム入力、QA チェック、データ抽出などのタスクを実行できます。左側のページ一覧にある + で新しいページを開けます。",
   "browser.readyTitle": "このブラウザはエージェントにも、あなたにも準備万端です ;)",
-  "browser.safetyHint": "Craft Agentsはあなたが依頼した時のみブラウザウィンドウを操作します。",
+  "browser.releaseLock": "このページを解放",
   "browser.stopLoading": "読み込み停止",
   "browser.untitledPage": "無題のページ",
   "browser.urlPlaceholder": "URL を入力または検索...",

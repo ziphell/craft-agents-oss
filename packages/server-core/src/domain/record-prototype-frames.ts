@@ -32,13 +32,21 @@ export interface PrototypeFrameCaptureOptions {
   maxFrames?: number
 }
 
-/** Start keeping frames of a window (plan §20.3). */
+/**
+ * Start keeping frames of one page of a window (plan §20.3).
+ *
+ * The page, not the window: a recording is evidence about what was done somewhere, and with
+ * the person free to read another page of the same window (plan §22, 第十二轮) the page is
+ * the only thing the frames can be about.
+ */
 export async function startPrototypeFrameCapture(
   bpm: IBrowserPaneManager,
   instanceId: string,
   options: PrototypeFrameCaptureOptions,
+  /** The page to record — the conversation's, not the one on screen. */
+  tabId?: string,
 ): Promise<{ startedAt: string; intervalMs: number; threshold: number; maxFrames: number }> {
-  return bpm.startFrameCapture(instanceId, options)
+  return bpm.startFrameCapture(instanceId, options, tabId)
 }
 
 /**

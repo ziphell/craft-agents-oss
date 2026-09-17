@@ -15,6 +15,7 @@ function tab(id: string, openedBySessionId: string | null): BrowserTabSummary {
     disposition: null,
     openedBySessionId,
     driverSessionId: openedBySessionId,
+    cursorOf: null,
     lockedBy: null,
   }
 }

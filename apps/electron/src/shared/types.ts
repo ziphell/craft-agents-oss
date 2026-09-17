@@ -137,13 +137,19 @@ export interface BrowserPaneCreateOptions {
 /**
  * Manage one browser window's own pages from the main window.
  *
- * The window is named because a page only means something inside one; the action
- * is one of three because the three buttons that send it sit together, and
- * `tabId` is absent only for `new`, which has no target yet.
+ * The window is named because a page only means something inside one; the action is one
+ * of four because the four buttons that send it sit together, and `tabId` is absent only
+ * for `new`, which has no target yet.
  */
 export interface BrowserPaneTabAction {
   instanceId: string
-  action: 'activate' | 'close' | 'new'
+  /**
+   * `activate` / `close` / `new` manage the pages. `release` is the person taking a locked
+   * page back: it drops the agent overlay that is holding it, so they are not stuck behind
+   * somebody else's running turn (plan §22, 第九轮修正) — the agent's next action may take
+   * the page again, which is why the button is an escape hatch and not a setting.
+   */
+  action: 'activate' | 'close' | 'new' | 'release'
   tabId?: string
 }
 

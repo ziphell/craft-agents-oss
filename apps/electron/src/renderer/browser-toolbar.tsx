@@ -97,8 +97,8 @@ declare global {
       pickElement: (addLabel?: string) => Promise<void>
       cancelPick: () => Promise<void>
       applyPrototype: () => Promise<void>
-      /** Switch to one of this window's pages, close one, or add one. */
-      tabAction: (action: 'activate' | 'close' | 'new', tabId?: string) => Promise<void>
+      /** Switch to one of this window's pages, close one, add one, or unlock one. */
+      tabAction: (action: 'activate' | 'close' | 'new' | 'release', tabId?: string) => Promise<void>
       onStateUpdate: (callback: (state: ToolbarState) => void) => () => void
       onForceCloseMenu: (callback: (payload: { reason?: string }) => void) => () => void
     }
@@ -142,12 +142,14 @@ function PageRail({
   onSelect,
   onClose,
   onNew,
+  onRelease,
 }: {
   tabs: BrowserTabSummary[]
   sessionLabels: Record<string, string>
   onSelect: (tabId: string) => void
   onClose: (tabId: string) => void
   onNew: () => void
+  onRelease: (tabId: string) => void
 }) {
   const { t } = useTranslation()
   const tone = {
@@ -255,31 +257,42 @@ function PageRail({
                           <Bot className="h-3 w-3 shrink-0 opacity-50" />
                         )}
                         {/*
-                          Two strengths, one mark. A **lock** is a page a conversation is
-                          working on *right now*: a click there does nothing and the agent
-                          owns it until its turn ends (plan §22, 第九轮 — the lock is on the
-                          page, not the window). A plain dot is the weaker fact, a page
+                          Two strengths, one mark, and the lock is a **button**: a click
+                          there does nothing, so taking the page back has to be possible from
+                          outside it — the agent's overlay is what holds the page, and letting
+                          go of the overlay is the unlock (plan §22, 第九轮修正). It is an
+                          escape hatch rather than a setting: the agent's next action may
+                          take the page again. The plain dot is the weaker fact, a page
                           somebody has driven but is not holding.
                         */}
-                        {tab.lockedBy !== null ? (
-                          <span
-                            aria-label={t('browser.pageInUse')}
-                            title={t('browser.pageInUse')}
-                            className="flex shrink-0 items-center"
-                          >
-                            <Lock className="h-3 w-3 text-accent" />
-                          </span>
-                        ) : tab.driverSessionId !== null ? (
+                        {tab.lockedBy === null && tab.driverSessionId !== null && (
                           <span
                             aria-label={t('browser.pageInUse')}
                             title={t('browser.pageInUse')}
                             className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
                           />
-                        ) : null}
+                        )}
                       </span>
                       {where && <span className="truncate text-[10px] opacity-60">{where}</span>}
                     </span>
                   </button>
+
+                  {/*
+                    The unlock sits outside the row's own button: the row switches pages, and
+                    "take this page back" is a different act on the same row. Shown only while
+                    a conversation is holding it (plan §22, 第九轮修正).
+                  */}
+                  {tab.lockedBy !== null && (
+                    <button
+                      type="button"
+                      aria-label={t('browser.releaseLock')}
+                      title={t('browser.releaseLock')}
+                      className="titlebar-no-drag mr-0.5 shrink-0 rounded-[4px] p-0.5 transition-colors hover:bg-black/10"
+                      onClick={() => onRelease(tab.id)}
+                    >
+                      <Lock className="h-3 w-3 text-accent" />
+                    </button>
+                  )}
 
                   <button
                     type="button"
@@ -447,6 +460,19 @@ function BrowserToolbarApp() {
   }, [api])
 
   /**
+   * Take a locked page back.
+   *
+   * The agent's overlay is what holds the page, so this drops the overlay for whoever is
+   * working there (plan §22, 第九轮修正) — the escape hatch for "I am stuck behind
+   * somebody's running turn". Not awaited for its outcome: whether it released anything
+   * comes back as state, and this renderer drawing its own idea of that is the thing the
+   * state push exists to prevent.
+   */
+  const handleReleaseLock = useCallback((tabId: string) => {
+    void api?.tabAction('release', tabId)
+  }, [api])
+
+  /**
    * The rail draws the pages; the bar draws the address.
    *
    * Both surfaces exist in every window and both are told everything, so the two
@@ -461,6 +487,7 @@ function BrowserToolbarApp() {
         onSelect={handleSelectPage}
         onClose={handleClosePage}
         onNew={handleNewPage}
+        onRelease={handleReleaseLock}
       />
     )
   }

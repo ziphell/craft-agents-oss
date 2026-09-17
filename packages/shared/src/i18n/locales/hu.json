@@ -130,7 +130,7 @@
   "browser.pickHint": "Kattints egy elemre az oldalon",
   "browser.readyDescription": "Kérj meg bármely munkamenetet, hogy használja ezt a böngészőt feladatokhoz, például kutatáshoz, űrlapkitöltéshez, minőségellenőrzéshez vagy adatkinyeréshez. A bal oldali laplistán a + új lapot nyit.",
   "browser.readyTitle": "Ez a böngésző készen áll az agentjeidre – és rád is ;)",
-  "browser.safetyHint": "A Craft Agents csak akkor irányítja a böngészőablakokat, ha te kéred.",
+  "browser.releaseLock": "Oldal elengedése",
   "browser.stopLoading": "Betöltés leállítása",
   "browser.untitledPage": "Névtelen oldal",
   "browser.urlPlaceholder": "Írj be egy URL-t vagy keress…",

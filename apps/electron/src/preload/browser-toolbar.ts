@@ -52,11 +52,11 @@ contextBridge.exposeInMainWorld('browserToolbar', {
   /** Ask the host to replay this session's prototype patches into this window. */
   applyPrototype: () => ipcRenderer.invoke(CHANNELS.APPLY_PROTOTYPE, instanceId),
   /**
-   * Manage this window's own pages from the strip: switch to one, close one, add
-   * one. The host owns what a page is, so nothing about it travels back here
-   * except through `onStateUpdate`.
+   * Manage this window's own pages from the rail: switch to one, close one, add one,
+   * or take a locked page back (`release`). The host owns what a page is, so nothing
+   * about it travels back here except through `onStateUpdate`.
    */
-  tabAction: (action: 'activate' | 'close' | 'new', tabId?: string) =>
+  tabAction: (action: 'activate' | 'close' | 'new' | 'release', tabId?: string) =>
     ipcRenderer.invoke(CHANNELS.TABS, instanceId, action, tabId),
   onStateUpdate: (callback: (state: unknown) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, state: unknown) => callback(state)

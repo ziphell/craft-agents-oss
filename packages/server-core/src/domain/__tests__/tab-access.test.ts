@@ -1,7 +1,52 @@
 import { describe, expect, it } from 'bun:test'
-import { whyTabIsLocked, whyTabIsNotMineToClose, whyTabIsOutOfReach } from '../tab-access'
+import { pickCommandTarget, whyTabIsLocked, whyTabIsNotMineToClose, whyTabIsOutOfReach } from '../tab-access'
 
 const prototype = { slug: 'checkout-flow', origin: 'http://checkout-flow-ab12cd34.localhost' }
+
+/** A page as the target rule sees it: what it is, who works from it, what is on screen. */
+function page(id: string, cursorOf: string | null, active = false) {
+  return { id, cursorOf, active }
+}
+
+describe('pickCommandTarget', () => {
+  // The conversation's own page wins, even though the person is looking at another one:
+  // what they are looking at is theirs to change at any moment, and it must not move
+  // somebody else's command (plan §22, 第十轮).
+  it("prefers the conversation's own page over the one on screen", () => {
+    const target = pickCommandTarget([page('tab-1', null, true), page('tab-2', 'session-a')], 'session-a')
+
+    expect(target?.tab.id).toBe('tab-2')
+    expect(target?.because).toBe('cursor')
+  })
+
+  it('does not answer with a page that merely happens to be on screen', () => {
+    // The person clicking through the window does not change the answer.
+    const before = pickCommandTarget([page('tab-1', null, true), page('tab-2', 'session-a')], 'session-a')
+    const after = pickCommandTarget([page('tab-1', null), page('tab-2', 'session-a', true)], 'session-a')
+
+    expect(before?.tab.id).toBe('tab-2')
+    expect(after?.tab.id).toBe('tab-2')
+  })
+
+  // …and with no page of its own, the page in front is the takeover case: a person opens
+  // something, the conversation starts there.
+  it('falls back to the page on screen when the conversation has none', () => {
+    const target = pickCommandTarget([page('tab-1', null), page('tab-2', null, true)], 'session-a')
+
+    expect(target?.tab.id).toBe('tab-2')
+    expect(target?.because).toBe('on-screen')
+  })
+
+  it("does not read another conversation's page as its own", () => {
+    // Whose page it is, is not this rule's question: another session's page is simply not
+    // *mine*, and with nothing on screen there is no target at all.
+    expect(pickCommandTarget([page('tab-1', 'session-b')], 'session-a')).toBeNull()
+  })
+
+  it('has no answer for a window with no pages', () => {
+    expect(pickCommandTarget([], 'session-a')).toBeNull()
+  })
+})
 
 describe('whyTabIsOutOfReach', () => {
   it('lets anyone work on a page that belongs to no prototype', () => {
@@ -53,7 +98,7 @@ describe('whyTabIsNotMineToClose', () => {
   it("refuses another conversation's page, naming it", () => {
     const why = whyTabIsNotMineToClose({ id: 'tab-3', openedBySessionId: 'session-b' }, 'session-a')
 
-    expect(why).toContain('was opened by session-b')
+    expect(why).toContain("belongs to session-b's task")
     expect(why).toContain('not yours to close')
   })
 })

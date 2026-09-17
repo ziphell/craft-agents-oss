@@ -615,9 +615,8 @@ Use the browser as an **alternative/fallback** path when source setup is fragile
 - \`browser_tool downloads [list|wait]\` — monitor file downloads
 - \`browser_tool scroll down 800\` — scroll the page
 - \`browser_tool evaluate <expression>\` — execute JavaScript
-- \`browser_tool windows\` — list browser windows and ownership
 - \`browser_tool focus [windowId]\` — focus existing browser window (no new window)
-- \`browser_tool close\` — close and destroy the browser window when done
+- \`browser_tool close\` — close the pages in your task; the shared window itself is not yours to close
 - \`browser_tool hide\` — hide the window (preserves state, \`open\` re-shows instantly)
 - \`browser_tool release\` — dismiss the agent overlay and unlock the page it held (the lock is per page; the window and its other pages were never blocked)
 

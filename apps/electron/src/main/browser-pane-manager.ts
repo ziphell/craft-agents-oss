@@ -105,6 +105,8 @@ function changedRatio(previous: Buffer, current: Buffer): number {
 /** One capture session, held in memory until it is stopped. */
 interface FrameCaptureState {
   startedAt: string
+  /** The page whose frames are kept: a recording follows the page it was started on. */
+  tabId: string
   intervalMs: number
   threshold: number
   maxFrames: number
@@ -274,6 +276,18 @@ interface AgentControlState {
   sessionId: string
   displayName?: string
   intent?: string
+  /**
+   * The page this session **holds** while its overlay is up, or `null` when it holds none
+   * (no command has resolved a page yet, or the page it held is gone).
+   *
+   * The lock, stated rather than derived (plan §22, 第九轮修正): deriving it from "the
+   * session's lease on whatever page its command landed on" put the lock on the page the
+   * command *fell back* to — usually the one the person was looking at — and left them
+   * unable to use it for the rest of the turn. Kept as a tab id so "the page it holds" can
+   * be checked and cleared: closing that page, or the person releasing the overlay, unlocks
+   * it (see `closeTab` and the toolbar's `release`).
+   */
+  tabId: string | null
 }
 
 /**
@@ -339,6 +353,21 @@ interface BrowserTab {
    * is what makes it the page a command is about.
    */
   driverSessionId: string | null
+  /**
+   * The page a conversation **works from** — its cursor, or `null` when this page is
+   * no conversation's.
+   *
+   * One page per conversation, which is why it lives on the page: "where does my next
+   * command go when I name no page" has to have exactly one answer, and the answer must
+   * not be "wherever the window happens to be showing" — that is the person's cursor, and
+   * it moves whenever they click (plan §22, 第十轮).
+   *
+   * Sticky across turns, unlike {@link driverSessionId} (a lease the turn releases): a
+   * conversation that comes back after its turn ended still works from the same page.
+   * Moved only by a command that names a page or resolves to one, and only by that
+   * conversation's own commands — the person switching pages does not move it.
+   */
+  cursorOf: string | null
   /**
    * How this page came to exist, when the browser asked for it rather than a command
    * doing so.
@@ -409,15 +438,13 @@ interface BrowserInstance {
    * conversations using the same window take turns here rather than each having
    * a window of their own (plan §22) — which is what makes "another
    * conversation's page is in here" answerable instead of mysterious.
+   *
+   * The **session's own id**, never a key of this file's making: the window is
+   * only ever touched by sessions of its own workspace, and those come from one
+   * server, so they are already one id space. Isolation is `workspaceId`'s job
+   * (see `instanceBelongsToWorkspace`).
    */
   boundSessionId: string | null
-  ownerType: 'session' | 'manual'
-  /**
-   * The session that opened this window, kept for windows that are one session's
-   * alone. Always `null` for the workspace's window: it belongs to its workspace,
-   * not to whoever happened to open it first.
-   */
-  ownerSessionId: string | null
   /**
    * Whether this window is its **workspace's browser window** — the one every
    * conversation in that workspace, and the user, work in (plan §22).
@@ -432,10 +459,11 @@ interface BrowserInstance {
    */
   isWorkspaceWindow: boolean
   /**
-   * Workspace this instance is associated with, or `null` for unbound manual
-   * windows. Renderers in other workspaces filter such entries out of the tab
-   * strip / status badge. Stamped at create-time (or first bind) — once non-null,
-   * subsequent rebinds may overwrite it with the new binder's workspace.
+   * Workspace this instance is associated with, or `null` for a window opened
+   * with no workspace context. Renderers in other workspaces filter such entries
+   * out of the tab strip / status badge. Stamped at create-time and never
+   * rewritten: it is the boundary every reach check is made against
+   * (`instanceBelongsToWorkspace`).
    *
    * For the workspace's window it is also the **discriminator**: that window is
    * the one with this flag and matching id, which is what keeps two workspaces'
@@ -509,17 +537,16 @@ function tabById(instance: BrowserInstance, tabId: string | null | undefined): B
 
 interface CreateBrowserInstanceOptions {
   show?: boolean
-  ownerType?: 'session' | 'manual'
-  ownerSessionId?: string
   workspaceId?: string | null
   /** Make this window its workspace's browser window (see `BrowserInstance.isWorkspaceWindow`). */
   isWorkspaceWindow?: boolean
   /**
-   * Which session is driving it from the moment it exists.
+   * Which session is driving it from the moment it exists, or `null` when it is
+   * opened with nobody at the wheel.
    *
-   * Separate from `ownerSessionId` because the two are different facts for the
-   * workspace's window: nobody owns it, but a session is already using it — and
-   * the first state the toolbar is pushed must not say "no conversation here".
+   * Part of the window's first state rather than a second call: the toolbar is
+   * pushed at create-time, and it must not say "no conversation here" for a
+   * window a session is already using (plan §22).
    */
   leaseSessionId?: string | null
 }
@@ -805,6 +832,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
+        // Throttling stays Chromium's business here; "pretend this page is in front" is turned
+        // on per page, where it is known which page a conversation is working from. See
+        // `syncPageThrottling`.
       },
     })
 
@@ -834,6 +864,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // and a page the user opened has no session to name.
       openedBySessionId: null,
       driverSessionId: null,
+      cursorOf: null,
       disposition: null,
       nativeOverlayReady: false,
       themeColor: null,
@@ -848,8 +879,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   createInstance(id?: string, options?: CreateBrowserInstanceOptions): string {
     const instanceId = id || `browser-${++instanceCounter}`
     const shouldShow = options?.show ?? false
-    const ownerType = options?.ownerType ?? 'manual'
-    const ownerSessionId = ownerType === 'session' ? (options?.ownerSessionId ?? null) : null
     const workspaceId = options?.workspaceId ?? null
     const isWorkspaceWindow = options?.isWorkspaceWindow ?? false
 
@@ -930,11 +959,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       railView,
       tabs: [tab],
       activeTabId: tab.id,
-      boundSessionId: options?.leaseSessionId ?? ownerSessionId,
-      ownerType,
-      // The workspace's window belongs to its workspace, not to whoever opened it
-      // first, so it carries no owner session even when a session asked for it.
-      ownerSessionId: isWorkspaceWindow ? null : ownerSessionId,
+      boundSessionId: options?.leaseSessionId ?? null,
       isWorkspaceWindow,
       workspaceId,
       isVisible: false,
@@ -980,7 +1005,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.instances.set(instanceId, instance)
     this.emitStateChange(instance)
     mainLog.info(`[browser-pane] toolbar version: v4-react-chromeless`)
-    mainLog.info(`[browser-pane] Created instance: ${instanceId} (show=${shouldShow}, ownerType=${ownerType}, ownerSessionId=${ownerSessionId ?? 'none'})`)
+    mainLog.info(`[browser-pane] Created instance: ${instanceId} (show=${shouldShow}, workspace=${workspaceId ?? 'none'}, driver=${options?.leaseSessionId ?? 'none'})`)
 
     void this.loadChromePage(instance, 'bar')
       .finally(() => {
@@ -1048,7 +1073,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       url?: string
       activate?: boolean
       prototype?: PrototypeWindowBinding | null
-      /** Which session asked for this page, or nobody (`undefined`/`null`) — see {@link BrowserTab.openedBySessionId}. */
+      /**
+       * Which conversation this page **belongs to**, or `null` for a person's page — see
+       * {@link BrowserTab.openedBySessionId}.
+       *
+       * A page opened *for* a conversation also becomes the page it works from; a page merely
+       * derived from one of its pages (`afterTabId`) only joins its group.
+       */
       openedBySessionId?: string | null
       /**
        * Open it **right after** this page instead of at the end of the strip.
@@ -1089,6 +1120,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         unwritten.openedBySessionId = options.openedBySessionId ?? null
         // Someone is about to work on it, so it is not left looking idle.
         unwritten.driverSessionId = unwritten.openedBySessionId
+        // …and it is where they work from: a page a conversation opened is the page its
+        // next unnamed command means (plan §22, 第十轮).
+        if (unwritten.openedBySessionId) {
+          this.recordSessionPage(instance, unwritten.id, unwritten.openedBySessionId)
+        }
       }
       if (options?.disposition !== undefined) unwritten.disposition = options.disposition
       if (options?.url) this.loadTab(instance, unwritten, options.url)
@@ -1105,16 +1141,32 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       tab.openedBySessionId = options.openedBySessionId ?? null
     }
     if (options?.disposition !== undefined) tab.disposition = options.disposition
-    // Whoever opened a page is working on it: the lease starts where the page does,
-    // so a conversation that just opened something does not have to touch it twice
-    // before the window says what is going on.
-    tab.driverSessionId = tab.openedBySessionId
+    // A page the browser derived from another one (`afterTabId`: it was a link or a popup on
+    // the page that asked) **joins that page's group and nothing else**: no lease, no cursor,
+    // no lock. Group membership is inherited; the fact that somebody is *working* here is not
+    // — a person following a link inside a task's page must not retarget that task, and must
+    // not make the window say the task's conversation is driving the new page either
+    // (plan §22, 第十一轮).
+    const derivedFromAnotherPage = Boolean(options?.afterTabId)
+    if (!derivedFromAnotherPage) {
+      // Whoever opened a page is working on it: the lease starts where the page does,
+      // so a conversation that just opened something does not have to touch it twice
+      // before the window says what is going on.
+      tab.driverSessionId = tab.openedBySessionId
+    }
 
     const afterIndex = options?.afterTabId
       ? instance.tabs.findIndex((candidate) => candidate.id === options.afterTabId)
       : -1
     if (afterIndex >= 0) instance.tabs.splice(afterIndex + 1, 0, tab)
     else instance.tabs.push(tab)
+
+    // …and it becomes the page they work from, for the same reason (plan §22, 第十轮).
+    // After the page is in the window: the cursor is written on the page, so the page has
+    // to be findable by id when this runs.
+    if (!derivedFromAnotherPage && tab.openedBySessionId) {
+      this.recordSessionPage(instance, tab.id, tab.openedBySessionId)
+    }
 
     this.attachTab(instance, tab)
     if (options?.prototype !== undefined) tab.boundPrototype = options.prototype
@@ -1171,11 +1223,18 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * through the active tab. The toolbar is told the whole state again rather than
    * a delta: it is a snapshot by construction, and a delta would be a second
    * description of the same thing.
+   *
+   * This is the *display's* verb: the person switching pages, and the agent's one
+   * explicit "bring it forward" (`browser_tab_activate`). A command no longer comes
+   * through here — it records the page it works from and leaves the window where it is
+   * ({@link setSessionPage}), because moving the person's view is not a command's to do
+   * (plan §22, 第十二轮).
    */
   activateTab(instanceId: string, tabId: string): void {
     const instance = this.requireAliveInstance(instanceId)
     const tab = tabById(instance, tabId)
     if (!tab) throw new Error(`Browser window "${instanceId}" has no tab "${tabId}".`)
+
     if (instance.activeTabId === tab.id) return
 
     instance.activeTabId = tab.id
@@ -1189,6 +1248,34 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // "any page's elements can be picked" is made true.
     if (instance.picking) this.armPickerOn(instance, tab)
     mainLog.info(`[browser-pane] Tab activated instance=${instance.id} tab=${tab.id} url=${tab.currentUrl}`)
+  }
+
+  /**
+   * "This conversation works from this page" — recorded without moving the window.
+   *
+   * The whole of a command's routing: this page becomes the one the conversation's next
+   * unnamed command lands on, the one its lock is on while it works, and the one Chromium
+   * is asked to treat as in front so the site behaves the same as it would on screen
+   * (plan §22, 第十轮/第十二轮).
+   *
+   * Nothing about the display changes, and that is the point: the person may be looking at
+   * another page of the same window — they opened it, or they went back — and an agent
+   * working in the background must not take them off it. It is also why this exists next to
+   * `activateTab` rather than inside it: the two facts used to always happen together, and
+   * now they do not.
+   */
+  setSessionPage(instanceId: string, tabId: string, sessionId: string): void {
+    const instance = this.requireAliveInstance(instanceId)
+    const tab = tabById(instance, tabId)
+    if (!tab) throw new Error(`Browser window "${instanceId}" has no tab "${tabId}".`)
+
+    this.recordSessionPage(instance, tab.id, sessionId)
+    // The shield depends on which page is held, so the overlay hears about it — and it has
+    // to, even when the page was already the one on screen (the cursor moves without the
+    // display moving).
+    this.updateNativeOverlayState(instance)
+    this.emitStateChange(instance)
+    this.pushToolbarState(instance)
   }
 
   /**
@@ -1215,6 +1302,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const wcId = tab.pageView.webContents.id
     this.inFlightRequestsByWebContentsId.delete(wcId)
     this.lastNetworkActivityByWebContentsId.delete(wcId)
+
+    // A lock never outlives what it locks: closing the page a session was holding lets go
+    // of it here, rather than leaving the window claiming a page that is gone (plan §22,
+    // 第九轮修正). The cursor needs no such care — it lived on the page and went with it.
+    this.releaseHeldPage(instance, tab.id)
 
     // A page that is going away takes its overlay with it: leaving the picker
     // armed on a page nobody can see would be a mode with nothing to click.
@@ -1470,6 +1562,29 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     return instance
   }
 
+  /**
+   * The page a command acts on.
+   *
+   * `tabId` is the page the caller named. For a capability call that is the page the
+   * requesting conversation works from (`commandTabIdFor`), and a command that names
+   * none means the page on screen — which is what the person's own calls mean, and what
+   * a window with nobody's cursor set falls back to.
+   *
+   * A named page that is gone **throws** rather than sliding onto the page on screen:
+   * the named page was the whole point of the command, and a click that lands somewhere
+   * else because the page was closed under it is worse than a failed call. Being on
+   * screen is not a reason to be the target — that decoupling is the reason this exists
+   * (plan §22, 第十轮/第十二轮).
+   */
+  private pageOf(instance: BrowserInstance, tabId?: string | null): BrowserTab {
+    if (!tabId) return activeTab(instance)
+    const tab = tabById(instance, tabId)
+    if (!tab) {
+      throw new Error(`Browser window "${instance.id}" has no page "${tabId}" — it may have been closed.`)
+    }
+    return tab
+  }
+
   async handleEmptyStateLaunchFromRenderer(
     senderWebContentsId: number,
     payload: BrowserEmptyStateLaunchPayload,
@@ -1611,8 +1726,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       .filter((win) => !win.isDestroyed())
   }
 
-  async navigate(id: string, url: string): Promise<{ url: string; title: string }> {
+  async navigate(id: string, url: string, tabId?: string): Promise<{ url: string; title: string }> {
     const instance = this.requireAliveInstance(id)
+    const tab = this.pageOf(instance, tabId)
 
     let normalizedUrl = url.trim()
     const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(normalizedUrl)
@@ -1630,7 +1746,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     let timeoutHandle: ReturnType<typeof setTimeout> | null = null
 
     try {
-      const loaded = activeTab(instance).pageView.webContents.loadURL(normalizedUrl)
+      const loaded = tab.pageView.webContents.loadURL(normalizedUrl)
       const timeout = new Promise<never>((_, reject) => {
         timeoutHandle = setTimeout(() => reject(new Error(`Navigation to "${normalizedUrl}" timed out after ${timeoutMs / 1000}s`)), timeoutMs)
       })
@@ -1650,27 +1766,29 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
 
     this.pushToolbarState(instance)
-    return { url: activeTab(instance).currentUrl, title: activeTab(instance).title }
+    return { url: tab.currentUrl, title: tab.title }
   }
 
-  async goBack(id: string): Promise<void> {
+  async goBack(id: string, tabId?: string): Promise<void> {
     const instance = this.requireAliveInstance(id)
-    if (activeTab(instance).pageView.webContents.canGoBack()) {
-      activeTab(instance).pageView.webContents.goBack()
+    const tab = this.pageOf(instance, tabId)
+    if (tab.pageView.webContents.canGoBack()) {
+      tab.pageView.webContents.goBack()
     }
   }
 
-  async goForward(id: string): Promise<void> {
+  async goForward(id: string, tabId?: string): Promise<void> {
     const instance = this.requireAliveInstance(id)
-    if (activeTab(instance).pageView.webContents.canGoForward()) {
-      activeTab(instance).pageView.webContents.goForward()
+    const tab = this.pageOf(instance, tabId)
+    if (tab.pageView.webContents.canGoForward()) {
+      tab.pageView.webContents.goForward()
     }
   }
 
-  reload(id: string): void {
+  reload(id: string, tabId?: string): void {
     const instance = this.instances.get(id)
     if (!instance || instance.window.isDestroyed()) return
-    activeTab(instance).pageView.webContents.reload()
+    this.pageOf(instance, tabId).pageView.webContents.reload()
   }
 
   stop(id: string): void {
@@ -1750,16 +1868,16 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     })
   }
 
-  async getAccessibilitySnapshot(id: string): Promise<AccessibilitySnapshot> {
+  async getAccessibilitySnapshot(id: string, tabId?: string): Promise<AccessibilitySnapshot> {
     const instance = this.requireAliveInstance(id)
-    return activeTab(instance).cdp.getAccessibilitySnapshot()
+    return this.pageOf(instance, tabId).cdp.getAccessibilitySnapshot()
   }
 
-  async clickAtCoordinates(id: string, x: number, y: number): Promise<void> {
+  async clickAtCoordinates(id: string, x: number, y: number, tabId?: string): Promise<void> {
     const instance = this.requireAliveInstance(id)
 
     try {
-      await activeTab(instance).cdp.clickAtCoordinates(x, y)
+      await this.pageOf(instance, tabId).cdp.clickAtCoordinates(x, y)
       instance.lastAction = {
         tool: 'browser_click_at',
         status: 'succeeded',
@@ -1775,11 +1893,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
   }
 
-  async drag(id: string, x1: number, y1: number, x2: number, y2: number): Promise<void> {
+  async drag(id: string, x1: number, y1: number, x2: number, y2: number, tabId?: string): Promise<void> {
     const instance = this.requireAliveInstance(id)
 
     try {
-      await activeTab(instance).cdp.drag(x1, y1, x2, y2)
+      await this.pageOf(instance, tabId).cdp.drag(x1, y1, x2, y2)
       instance.lastAction = {
         tool: 'browser_drag',
         status: 'succeeded',
@@ -1795,11 +1913,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
   }
 
-  async typeText(id: string, text: string): Promise<void> {
+  async typeText(id: string, text: string, tabId?: string): Promise<void> {
     const instance = this.requireAliveInstance(id)
 
     try {
-      await activeTab(instance).cdp.typeText(text)
+      await this.pageOf(instance, tabId).cdp.typeText(text)
       instance.lastAction = {
         tool: 'browser_type',
         status: 'succeeded',
@@ -1815,25 +1933,27 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
   }
 
-  async setClipboard(id: string, text: string): Promise<void> {
+  async setClipboard(id: string, text: string, tabId?: string): Promise<void> {
     const instance = this.requireAliveInstance(id)
-    await activeTab(instance).cdp.setClipboard(text)
+    await this.pageOf(instance, tabId).cdp.setClipboard(text)
   }
 
-  async getClipboard(id: string): Promise<string> {
+  async getClipboard(id: string, tabId?: string): Promise<string> {
     const instance = this.requireAliveInstance(id)
-    return activeTab(instance).cdp.getClipboard()
+    return this.pageOf(instance, tabId).cdp.getClipboard()
   }
 
   async clickElement(
     id: string,
     ref: string,
-    options?: { waitFor?: 'none' | 'navigation' | 'network-idle'; timeoutMs?: number }
+    options?: { waitFor?: 'none' | 'navigation' | 'network-idle'; timeoutMs?: number },
+    tabId?: string,
   ): Promise<void> {
     const instance = this.requireAliveInstance(id)
+    const tab = this.pageOf(instance, tabId)
 
     try {
-      const geometry = await activeTab(instance).cdp.clickElement(ref)
+      const geometry = await tab.cdp.clickElement(ref)
       instance.lastAction = {
         tool: 'browser_click',
         ref,
@@ -1861,15 +1981,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
           const cleanup = () => {
             clearTimeout(timer)
-            activeTab(instance).pageView.webContents.removeListener('did-navigate', onNav)
-            activeTab(instance).pageView.webContents.removeListener('did-navigate-in-page', onNav)
+            tab.pageView.webContents.removeListener('did-navigate', onNav)
+            tab.pageView.webContents.removeListener('did-navigate-in-page', onNav)
           }
 
-          activeTab(instance).pageView.webContents.once('did-navigate', onNav)
-          activeTab(instance).pageView.webContents.once('did-navigate-in-page', onNav)
+          tab.pageView.webContents.once('did-navigate', onNav)
+          tab.pageView.webContents.once('did-navigate-in-page', onNav)
         })
       } else if (waitFor === 'network-idle') {
-        await this.waitFor(id, { kind: 'network-idle', timeoutMs: options?.timeoutMs })
+        await this.waitFor(id, { kind: 'network-idle', timeoutMs: options?.timeoutMs }, tabId)
       }
     } catch (error) {
       instance.lastAction = {
@@ -1882,11 +2002,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
   }
 
-  async fillElement(id: string, ref: string, value: string): Promise<void> {
+  async fillElement(id: string, ref: string, value: string, tabId?: string): Promise<void> {
     const instance = this.requireAliveInstance(id)
 
     try {
-      const geometry = await activeTab(instance).cdp.fillElement(ref, value)
+      const geometry = await this.pageOf(instance, tabId).cdp.fillElement(ref, value)
       instance.lastAction = {
         tool: 'browser_fill',
         ref,
@@ -1905,11 +2025,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
   }
 
-  async selectOption(id: string, ref: string, value: string): Promise<void> {
+  async selectOption(id: string, ref: string, value: string, tabId?: string): Promise<void> {
     const instance = this.requireAliveInstance(id)
 
     try {
-      const geometry = await activeTab(instance).cdp.selectOption(ref, value)
+      const geometry = await this.pageOf(instance, tabId).cdp.selectOption(ref, value)
       instance.lastAction = {
         tool: 'browser_select',
         ref,
@@ -1928,13 +2048,21 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
   }
 
-  private suspendOverlayForCapture(instance: BrowserInstance): boolean {
+  /**
+   * Take the agent's overlay out of the picture, when it is in it.
+   *
+   * The overlay view only ever sits over the page on screen (`updateNativeOverlayState`), so
+   * a capture of a page behind that one has nothing to hide — and hiding it anyway would
+   * blink the outline and the shield in front of the person for a shot they are not in.
+   */
+  private suspendOverlayForCapture(instance: BrowserInstance, tab: BrowserTab): boolean {
+    if (tab.id !== instance.activeTabId) return false
     const shouldSuspend = !!instance.agentControl?.active
-      && activeTab(instance).nativeOverlayReady
+      && tab.nativeOverlayReady
 
     if (!shouldSuspend) return false
 
-    activeTab(instance).nativeOverlayView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+    tab.nativeOverlayView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
     return true
   }
 
@@ -1943,11 +2071,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.updateNativeOverlayState(instance)
   }
 
-  async screenshot(id: string, options?: BrowserScreenshotOptions): Promise<BrowserScreenshotResult> {
+  async screenshot(id: string, options?: BrowserScreenshotOptions, tabId?: string): Promise<BrowserScreenshotResult> {
     const instance = this.requireAliveInstance(id)
+    const tab = this.pageOf(instance, tabId)
 
     // Hide native agent overlay so it doesn't appear in captures
-    const suspendedOverlay = this.suspendOverlayForCapture(instance)
+    const suspendedOverlay = this.suspendOverlayForCapture(instance, tab)
 
     try {
       // When annotating, force agent mode and gather refs from accessibility tree
@@ -1955,8 +2084,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       const mode = (annotate || options?.mode === 'agent') ? 'agent' : 'raw'
 
       if (mode === 'raw') {
-        const viewport = await activeTab(instance).cdp.getViewportMetrics()
+        const viewport = await tab.cdp.getViewportMetrics()
         const captured = await this.capturePageWithRecovery(instance, {
+          tab,
           mode,
           errorPrefix: 'screenshot',
           dpr: viewport.dpr,
@@ -1984,7 +2114,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
       if (annotate) {
         try {
-          const snapshot = await activeTab(instance).cdp.getAccessibilitySnapshot()
+          const snapshot = await tab.cdp.getAccessibilitySnapshot()
           refs = snapshot.nodes.map((node) => node.ref).slice(0, MAX_ANNOTATED_REFS)
           if (snapshot.nodes.length > MAX_ANNOTATED_REFS) {
             warnings.push(`Annotation capped at ${MAX_ANNOTATED_REFS} of ${snapshot.nodes.length} elements`)
@@ -1996,7 +2126,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       }
 
       const settled = await Promise.allSettled(
-        refs.map((ref) => activeTab(instance).cdp.getElementGeometry(ref)),
+        refs.map((ref) => tab.cdp.getElementGeometry(ref)),
       )
 
       for (let i = 0; i < settled.length; i++) {
@@ -2021,7 +2151,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
       try {
         if (geometries.length > 0 || options?.includeMetadata) {
-          await activeTab(instance).cdp.renderTemporaryOverlay({
+          await tab.cdp.renderTemporaryOverlay({
             geometries,
             includeMetadata: !!options?.includeMetadata,
             metadataText,
@@ -2034,8 +2164,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       }
 
       try {
-        const viewport = await activeTab(instance).cdp.getViewportMetrics()
+        const viewport = await tab.cdp.getViewportMetrics()
         const captured = await this.capturePageWithRecovery(instance, {
+          tab,
           mode,
           errorPrefix: 'screenshot',
           dpr: viewport.dpr,
@@ -2074,7 +2205,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         }
       } finally {
         try {
-          await activeTab(instance).cdp.clearTemporaryOverlay()
+          await tab.cdp.clearTemporaryOverlay()
         } catch {
           // ignore cleanup errors
         }
@@ -2084,9 +2215,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
   }
 
-  async screenshotRegion(id: string, target: BrowserScreenshotRegionTarget): Promise<BrowserScreenshotResult> {
+  async screenshotRegion(
+    id: string,
+    target: BrowserScreenshotRegionTarget,
+    tabId?: string,
+  ): Promise<BrowserScreenshotResult> {
     const instance = this.instances.get(id)
     if (!instance) throw new Error(`Browser instance not found: ${id}`)
+    const tab = this.pageOf(instance, tabId)
 
     const hasCoords = [target.x, target.y, target.width, target.height].every((v) => typeof v === 'number')
     const hasRef = typeof target.ref === 'string' && target.ref.length > 0
@@ -2100,16 +2236,16 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       throw new Error('Region screenshot target is ambiguous. Provide only one of coordinates, ref, or selector')
     }
 
-    const suspendedOverlay = this.suspendOverlayForCapture(instance)
+    const suspendedOverlay = this.suspendOverlayForCapture(instance, tab)
 
     try {
       let box: { x: number; y: number; width: number; height: number }
 
       if (hasRef) {
-        const geometry = await activeTab(instance).cdp.getElementGeometry(String(target.ref))
+        const geometry = await tab.cdp.getElementGeometry(String(target.ref))
         box = { ...geometry.box }
       } else if (hasSelector) {
-        const geometry = await activeTab(instance).cdp.getElementGeometryBySelector(String(target.selector))
+        const geometry = await tab.cdp.getElementGeometryBySelector(String(target.selector))
         box = { ...geometry.box }
       } else {
         box = {
@@ -2128,7 +2264,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         height: box.height + padding * 2,
       }
 
-      const viewport = await activeTab(instance).cdp.getViewportMetrics()
+      const viewport = await tab.cdp.getViewportMetrics()
 
       const clippedX = Math.max(0, Math.floor(box.x))
       const clippedY = Math.max(0, Math.floor(box.y))
@@ -2142,6 +2278,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       }
 
       const captured = await this.capturePageWithRecovery(instance, {
+        tab,
         mode: 'region',
         errorPrefix: 'region screenshot',
         rect: {
@@ -2179,6 +2316,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   private async capturePageWithRecovery(
     instance: BrowserInstance,
     options: {
+      /** The page being captured — named rather than assumed, so a shot of a page
+       * nobody is looking at is a shot of *that* page (plan §22, 第十二轮). */
+      tab: BrowserTab
       mode: 'raw' | 'agent' | 'region'
       errorPrefix: 'screenshot' | 'region screenshot'
       rect?: { x: number; y: number; width: number; height: number }
@@ -2187,6 +2327,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       jpegQuality?: number
     },
   ): Promise<{ imageBuffer: Buffer; imageFormat: 'png' | 'jpeg'; warnings: string[] }> {
+    const tab = options.tab
     let rescueUsed = false
     let sawDisplaySurfaceUnavailable = false
     const warnings: string[] = []
@@ -2195,7 +2336,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     for (let attempt = 1; attempt <= SCREENSHOT_HIDDEN_CAPTURE_ATTEMPTS; attempt += 1) {
       let result: { buffer: Buffer; format: 'png' | 'jpeg' } | null = null
       try {
-        result = await this.capturePageImage(instance, {
+        result = await this.capturePageImage({
+          tab,
           rect: options.rect,
           useHiddenCaptureOptions: true,
           ...imageOpts,
@@ -2204,7 +2346,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         if (this.isDisplaySurfaceUnavailableError(error)) {
           sawDisplaySurfaceUnavailable = true
           mainLog.warn(
-            `[browser-pane] ${options.errorPrefix} display surface unavailable instance=${instance.id} mode=${options.mode} attempt=${attempt}/${SCREENSHOT_HIDDEN_CAPTURE_ATTEMPTS} visible=${instance.isVisible} url=${activeTab(instance).currentUrl}`,
+            `[browser-pane] ${options.errorPrefix} display surface unavailable instance=${instance.id} mode=${options.mode} attempt=${attempt}/${SCREENSHOT_HIDDEN_CAPTURE_ATTEMPTS} visible=${instance.isVisible} tab=${tab.id} url=${tab.currentUrl}`,
           )
         } else {
           throw error
@@ -2219,7 +2361,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       }
 
       mainLog.warn(
-        `[browser-pane] ${options.errorPrefix} empty capture attempt instance=${instance.id} mode=${options.mode} attempt=${attempt}/${SCREENSHOT_HIDDEN_CAPTURE_ATTEMPTS} visible=${instance.isVisible} isLoading=${activeTab(instance).isLoading} url=${activeTab(instance).currentUrl}`,
+        `[browser-pane] ${options.errorPrefix} empty capture attempt instance=${instance.id} mode=${options.mode} attempt=${attempt}/${SCREENSHOT_HIDDEN_CAPTURE_ATTEMPTS} visible=${instance.isVisible} isLoading=${tab.isLoading} tab=${tab.id} url=${tab.currentUrl}`,
       )
 
       if (attempt < SCREENSHOT_HIDDEN_CAPTURE_ATTEMPTS) {
@@ -2246,7 +2388,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
         let rescueResult: { buffer: Buffer; format: 'png' | 'jpeg' } | null = null
         try {
-          rescueResult = await this.capturePageImage(instance, {
+          rescueResult = await this.capturePageImage({
+            tab,
             rect: options.rect,
             useHiddenCaptureOptions: false,
             ...imageOpts,
@@ -2255,7 +2398,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
           if (this.isDisplaySurfaceUnavailableError(error)) {
             sawDisplaySurfaceUnavailable = true
             mainLog.warn(
-              `[browser-pane] ${options.errorPrefix} display surface unavailable during rescue instance=${instance.id} mode=${options.mode} visible=${instance.isVisible} url=${activeTab(instance).currentUrl}`,
+              `[browser-pane] ${options.errorPrefix} display surface unavailable during rescue instance=${instance.id} mode=${options.mode} visible=${instance.isVisible} tab=${tab.id} url=${tab.currentUrl}`,
             )
           } else {
             throw error
@@ -2278,7 +2421,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
 
     mainLog.warn(
-      `[browser-pane] ${options.errorPrefix} capture failed after recovery instance=${instance.id} mode=${options.mode} visible=${instance.isVisible} isLoading=${activeTab(instance).isLoading} url=${activeTab(instance).currentUrl} rescueUsed=${rescueUsed}`,
+      `[browser-pane] ${options.errorPrefix} capture failed after recovery instance=${instance.id} mode=${options.mode} visible=${instance.isVisible} isLoading=${tab.isLoading} tab=${tab.id} url=${tab.currentUrl} rescueUsed=${rescueUsed}`,
     )
 
     if (sawDisplaySurfaceUnavailable) {
@@ -2297,8 +2440,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   private async capturePageImage(
-    instance: BrowserInstance,
     options: {
+      tab: BrowserTab
       rect?: { x: number; y: number; width: number; height: number }
       useHiddenCaptureOptions: boolean
       dpr?: number
@@ -2310,9 +2453,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       ? { stayHidden: true, stayAwake: true }
       : undefined
 
+    const pageView = options.tab.pageView
     let image = options.rect
-      ? await activeTab(instance).pageView.webContents.capturePage(options.rect, captureOpts)
-      : await activeTab(instance).pageView.webContents.capturePage(undefined, captureOpts)
+      ? await pageView.webContents.capturePage(options.rect, captureOpts)
+      : await pageView.webContents.capturePage(undefined, captureOpts)
 
     if (image.isEmpty()) {
       return null
@@ -2356,28 +2500,30 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     await this.sleep(SCREENSHOT_RETRY_DELAY_MS)
   }
 
-  getConsoleLogs(id: string, options?: BrowserConsoleOptions): BrowserConsoleEntry[] {
+  getConsoleLogs(id: string, options?: BrowserConsoleOptions, tabId?: string): BrowserConsoleEntry[] {
     const instance = this.requireAliveInstance(id)
+    const tab = this.pageOf(instance, tabId)
 
     const level = options?.level ?? 'all'
     const limit = Math.max(1, Math.min(500, Number(options?.limit ?? 50)))
 
     const filtered = level === 'all'
-      ? activeTab(instance).consoleLogs
-      : activeTab(instance).consoleLogs.filter((entry) => entry.level === level)
+      ? tab.consoleLogs
+      : tab.consoleLogs.filter((entry) => entry.level === level)
 
     return filtered.slice(-limit)
   }
 
-  getNetworkLogs(id: string, options?: BrowserNetworkOptions): BrowserNetworkEntry[] {
+  getNetworkLogs(id: string, options?: BrowserNetworkOptions, tabId?: string): BrowserNetworkEntry[] {
     const instance = this.requireAliveInstance(id)
+    const logs = this.pageOf(instance, tabId).networkLogs
 
     const statusFilter = options?.status ?? 'all'
     const limit = Math.max(1, Math.min(500, Number(options?.limit ?? 50)))
     const method = options?.method?.toUpperCase()
     const resourceType = options?.resourceType?.toLowerCase()
 
-    const filtered = activeTab(instance).networkLogs.filter((entry) => {
+    const filtered = logs.filter((entry) => {
       if (method && entry.method !== method) return false
       if (resourceType && entry.resourceType.toLowerCase() !== resourceType) return false
 
@@ -2393,8 +2539,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     return filtered.slice(-limit)
   }
 
-  async waitFor(id: string, args: BrowserWaitArgs): Promise<BrowserWaitResult> {
+  async waitFor(id: string, args: BrowserWaitArgs, tabId?: string): Promise<BrowserWaitResult> {
     const instance = this.requireAliveInstance(id)
+    const tab = this.pageOf(instance, tabId)
 
     const timeoutMs = Math.max(100, args.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS)
     const pollMs = Math.max(25, args.pollMs ?? DEFAULT_WAIT_POLL_MS)
@@ -2420,7 +2567,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       const selector = args.value?.trim()
       if (!selector) throw new Error('browser_wait selector requires value')
       return until(async () => {
-        const exists = await activeTab(instance).pageView.webContents.executeJavaScript(
+        const exists = await tab.pageView.webContents.executeJavaScript(
           `Boolean(document.querySelector(${JSON.stringify(selector)}))`
         )
         return Boolean(exists)
@@ -2431,7 +2578,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       const text = args.value?.trim()
       if (!text) throw new Error('browser_wait text requires value')
       return until(async () => {
-        const found = await activeTab(instance).pageView.webContents.executeJavaScript(
+        const found = await tab.pageView.webContents.executeJavaScript(
           `document.body && document.body.innerText && document.body.innerText.includes(${JSON.stringify(text)})`
         )
         return Boolean(found)
@@ -2442,12 +2589,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       const needle = args.value?.trim()
       if (!needle) throw new Error('browser_wait url requires value')
       return until(async () => {
-        return activeTab(instance).currentUrl.includes(needle)
+        return tab.currentUrl.includes(needle)
       }, `url matched: ${needle}`)
     }
 
     if (args.kind === 'network-idle') {
-      const wcId = activeTab(instance).pageView.webContents.id
+      const wcId = tab.pageView.webContents.id
       return until(async () => {
         const inflight = this.inFlightRequestsByWebContentsId.get(wcId) ?? 0
         const last = this.lastNetworkActivityByWebContentsId.get(wcId) ?? started
@@ -2458,28 +2605,30 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     throw new Error(`Unknown wait kind: ${args.kind}`)
   }
 
-  async sendKey(id: string, args: BrowserKeyArgs): Promise<void> {
+  async sendKey(id: string, args: BrowserKeyArgs, tabId?: string): Promise<void> {
     const instance = this.requireAliveInstance(id)
+    const pageWebContents = this.pageOf(instance, tabId).pageView.webContents
 
     const key = args.key?.trim()
     if (!key) throw new Error('browser_key requires key')
 
     const modifiers = (args.modifiers ?? []) as Array<'shift' | 'control' | 'alt' | 'meta'>
 
-    activeTab(instance).pageView.webContents.sendInputEvent({
+    pageWebContents.sendInputEvent({
       type: 'keyDown',
       keyCode: key,
       modifiers,
     } as any)
-    activeTab(instance).pageView.webContents.sendInputEvent({
+    pageWebContents.sendInputEvent({
       type: 'keyUp',
       keyCode: key,
       modifiers,
     } as any)
   }
 
-  async getDownloads(id: string, options?: BrowserDownloadOptions): Promise<BrowserDownloadEntry[]> {
+  async getDownloads(id: string, options?: BrowserDownloadOptions, tabId?: string): Promise<BrowserDownloadEntry[]> {
     const instance = this.requireAliveInstance(id)
+    const downloads = this.pageOf(instance, tabId).downloads
 
     const action = options?.action ?? 'list'
     const limit = Math.max(1, Math.min(200, Number(options?.limit ?? 20)))
@@ -2488,18 +2637,18 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       const timeoutMs = Math.max(100, Number(options?.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS))
       const started = Date.now()
       while (Date.now() - started <= timeoutMs) {
-        const hasTerminal = activeTab(instance).downloads.some((d) => d.state === 'completed' || d.state === 'interrupted' || d.state === 'cancelled')
+        const hasTerminal = downloads.some((d) => d.state === 'completed' || d.state === 'interrupted' || d.state === 'cancelled')
         if (hasTerminal) break
         await this.sleep(100)
       }
     }
 
-    return activeTab(instance).downloads.slice(-limit)
+    return downloads.slice(-limit)
   }
 
   // validateUploadFilePath removed — uses shared validateFilePath from @craft-agent/server-core/handlers
 
-  async uploadFile(id: string, ref: string, filePaths: string[]): Promise<ElementGeometry> {
+  async uploadFile(id: string, ref: string, filePaths: string[], tabId?: string): Promise<ElementGeometry> {
     const instance = this.requireAliveInstance(id)
 
     const safePaths: string[] = []
@@ -2510,7 +2659,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       safePaths.push(safePath)
     }
 
-    return activeTab(instance).cdp.setFileInputFiles(ref, safePaths)
+    return this.pageOf(instance, tabId).cdp.setFileInputFiles(ref, safePaths)
   }
 
   windowResize(id: string, width: number, height: number): { width: number; height: number } {
@@ -2533,18 +2682,22 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
   }
 
-  async evaluate(id: string, expression: string): Promise<unknown> {
+  async evaluate(id: string, expression: string, tabId?: string): Promise<unknown> {
     const instance = this.requireAliveInstance(id)
-    return activeTab(instance).pageView.webContents.executeJavaScript(expression)
+    return this.pageOf(instance, tabId).pageView.webContents.executeJavaScript(expression)
   }
 
   /**
    * Prompt the user to click an element on the page.
    * Resolves null when the user cancels (Escape) or the pick times out.
    */
-  async pickElement(id: string, options?: { timeoutMs?: number; pollMs?: number }): Promise<PickedElement | null> {
+  async pickElement(
+    id: string,
+    options?: { timeoutMs?: number; pollMs?: number },
+    tabId?: string,
+  ): Promise<PickedElement | null> {
     const instance = this.requireAliveInstance(id)
-    return activeTab(instance).cdp.pickElement(options)
+    return this.pageOf(instance, tabId).cdp.pickElement(options)
   }
 
   // -- Frame capture --------------------------------------------------------
@@ -2569,8 +2722,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   async startFrameCapture(
     id: string,
     options?: { intervalMs?: number; threshold?: number; maxFrames?: number },
+    tabId?: string,
   ) {
     const instance = this.requireAliveInstance(id)
+    const tab = this.pageOf(instance, tabId)
     // One capture per window: starting a second replaces the first rather than
     // running two timers over the same screen.
     const previous = this.frameCaptures.get(id)
@@ -2578,6 +2733,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     const state: FrameCaptureState = {
       startedAt: new Date().toISOString(),
+      tabId: tab.id,
       intervalMs: Math.max(FRAME_CAPTURE_MIN_INTERVAL_MS, options?.intervalMs ?? FRAME_CAPTURE_INTERVAL_MS),
       threshold: Math.min(1, Math.max(0.0001, options?.threshold ?? FRAME_CAPTURE_THRESHOLD)),
       maxFrames: Math.max(1, Math.min(600, options?.maxFrames ?? FRAME_CAPTURE_MAX_FRAMES)),
@@ -2666,9 +2822,19 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       return
     }
 
+    // A recording follows one page. When that page is gone there is nothing left to
+    // record — and following the page on screen instead would quietly tape something
+    // else, which is worse than an ended recording.
+    const tab = tabById(instance, state.tabId)
+    if (!tab) {
+      this.frameCaptures.delete(instance.id)
+      if (state.timer) clearInterval(state.timer)
+      return
+    }
+
     state.capturing = true
     try {
-      const image = await activeTab(instance).pageView.webContents.capturePage(undefined, {
+      const image = await tab.pageView.webContents.capturePage(undefined, {
         stayHidden: true,
         stayAwake: true,
       })
@@ -2691,7 +2857,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       state.frames.push({
         index: state.frames.length + 1,
         at: new Date().toISOString(),
-        url: activeTab(instance).currentUrl,
+        url: tab.currentUrl,
         reason: frame.reason,
         ...(frame.action ? { action: frame.action } : {}),
         bytes: image.toJPEG(FRAME_CAPTURE_JPEG_QUALITY),
@@ -2730,17 +2896,18 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * Register `source` to run in every new document (survives reload/navigation).
    * Re-registering the same key replaces the previous script.
    */
-  async addInitScript(id: string, key: string, source: string): Promise<string> {
+  async addInitScript(id: string, key: string, source: string, tabId?: string): Promise<string> {
     const instance = this.requireAliveInstance(id)
-    return activeTab(instance).cdp.addInitScript(key, source)
+    return this.pageOf(instance, tabId).cdp.addInitScript(key, source)
   }
 
   /** Remove every init script whose key starts with `keyPrefix`. */
-  async clearInitScripts(id: string, keyPrefix: string): Promise<string[]> {
+  async clearInitScripts(id: string, keyPrefix: string, tabId?: string): Promise<string[]> {
     const instance = this.requireAliveInstance(id)
-    const keys = activeTab(instance).cdp.listInitScriptKeys().filter((key) => key.startsWith(keyPrefix))
+    const tab = this.pageOf(instance, tabId)
+    const keys = tab.cdp.listInitScriptKeys().filter((key) => key.startsWith(keyPrefix))
     for (const key of keys) {
-      await activeTab(instance).cdp.removeInitScript(key)
+      await tab.cdp.removeInitScript(key)
     }
     return keys
   }
@@ -2749,24 +2916,25 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * Serve `routes` for matching requests at the browser's network layer.
    * Covers fetch and XHR alike, with no page-level patching.
    */
-  async setFetchMock(id: string, routes: MockRoute[]): Promise<number> {
+  async setFetchMock(id: string, routes: MockRoute[], tabId?: string): Promise<number> {
     const instance = this.requireAliveInstance(id)
-    return activeTab(instance).cdp.setFetchMockRoutes(routes)
+    return this.pageOf(instance, tabId).cdp.setFetchMockRoutes(routes)
   }
 
   /** Stop intercepting; requests fall through to the real network again. */
-  async clearFetchMock(id: string): Promise<void> {
+  async clearFetchMock(id: string, tabId?: string): Promise<void> {
     const instance = this.requireAliveInstance(id)
-    await activeTab(instance).cdp.clearFetchMock()
+    await this.pageOf(instance, tabId).cdp.clearFetchMock()
   }
 
-  async detectSecurityChallenge(id: string): Promise<{ detected: boolean; provider: string; signals: string[] }> {
+  async detectSecurityChallenge(id: string, tabId?: string): Promise<{ detected: boolean; provider: string; signals: string[] }> {
     const instance = this.instances.get(id)
     if (!instance || instance.window.isDestroyed()) return { detected: false, provider: 'none', signals: [] }
+    const tab = this.pageOf(instance, tabId)
 
     const signals: string[] = []
-    const title = activeTab(instance).title || ''
-    const url = activeTab(instance).currentUrl || ''
+    const title = tab.title || ''
+    const url = tab.currentUrl || ''
 
     // Title-based detection
     if (/^Just a moment/i.test(title)) {
@@ -2780,7 +2948,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     // DOM-based detection via JS evaluation
     try {
-      const domSignals = await activeTab(instance).pageView.webContents.executeJavaScript(`(() => {
+      const domSignals = await tab.pageView.webContents.executeJavaScript(`(() => {
         const signals = [];
         const bodyText = (document.body?.innerText || '').slice(0, 2000);
         if (/Verify you are human/i.test(bodyText)) signals.push('text:verify-human');
@@ -2801,7 +2969,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
 
     try {
-      const snapshot = await activeTab(instance).cdp.getAccessibilitySnapshot()
+      const snapshot = await tab.cdp.getAccessibilitySnapshot()
       const actionableRoles = new Set([
         'button', 'link', 'textbox', 'searchbox', 'combobox', 'checkbox', 'radio', 'switch',
         'menuitem', 'menuitemcheckbox', 'menuitemradio', 'tab', 'option', 'slider', 'spinbutton', 'listbox',
@@ -2831,46 +2999,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     return { detected, provider, signals }
   }
 
-  async scroll(id: string, direction: 'up' | 'down' | 'left' | 'right', amount = 500): Promise<void> {
+  async scroll(id: string, direction: 'up' | 'down' | 'left' | 'right', amount = 500, tabId?: string): Promise<void> {
     const instance = this.requireAliveInstance(id)
 
     const deltaX = direction === 'left' ? -amount : direction === 'right' ? amount : 0
     const deltaY = direction === 'up' ? -amount : direction === 'down' ? amount : 0
 
-    await activeTab(instance).pageView.webContents.executeJavaScript(`window.scrollBy(${deltaX}, ${deltaY})`)
-  }
-
-  bindSession(id: string, sessionId: string, options?: { workspaceId?: string | null }): void {
-    const instance = this.instances.get(id)
-    if (instance) {
-      instance.boundSessionId = sessionId
-      instance.ownerType = 'session'
-      instance.ownerSessionId = sessionId
-      // Adopt the new binder's workspace. Manual windows being reused for a
-      // session start carrying that session's workspace so the receiving
-      // workspace's UI sees them and others don't.
-      if (options?.workspaceId !== undefined) {
-        instance.workspaceId = options.workspaceId
-      }
-      // Binding decides what the toolbar offers (a window with no prototype has
-      // no prototype actions), so the toolbar has to hear about it.
-      this.pushToolbarState(instance)
-      this.emitStateChange(instance)
-    }
-  }
-
-  unbindSession(id: string): void {
-    const instance = this.instances.get(id)
-    if (instance) {
-      instance.boundSessionId = null
-      instance.ownerType = 'manual'
-      // Preserve ownerSessionId as last-known owner for lifecycle targeting.
-      this.emitStateChange(instance)
-      // The owner chain is unchanged, but one thing the toolbar offers is not:
-      // whether a picked element can be handed to a conversation (plan §12.7), so
-      // this push stopped being optional.
-      this.pushToolbarState(instance)
-    }
+    await this.pageOf(instance, tabId).pageView.webContents.executeJavaScript(`window.scrollBy(${deltaX}, ${deltaY})`)
   }
 
   /**
@@ -2886,13 +3021,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.clearPageLeases(sessionId)
     for (const instance of this.instances.values()) {
       if (instance.boundSessionId !== sessionId) continue
-      if (!instance.isWorkspaceWindow) {
-        instance.ownerType = 'manual'
-        // A window of one session's own keeps its owner: post-turn lifecycle
-        // commands (`close`, `hide`) still need to find it. The workspace's window
-        // has no owner to keep.
-        instance.ownerSessionId = instance.ownerSessionId ?? sessionId
-      }
       this.releaseLease(instance)
       mainLog.info(`[browser-pane] Released lease on ${instance.id} from session ${sessionId} (workspaceWindow=${instance.isWorkspaceWindow})`)
     }
@@ -2933,7 +3061,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     const id = this.createInstance(undefined, {
       show: options?.show ?? false,
-      ownerType: 'session',
       isWorkspaceWindow: true,
       leaseSessionId: sessionId,
       workspaceId,
@@ -2965,27 +3092,20 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   /**
    * Note that a session is driving this window now.
    *
-   * The lease is renewed on every command (`createForSession` is how every browser
-   * command resolves its window), so "who is driving" answers itself without any
-   * explicit handover — and a turn ending releases it, leaving the window to
-   * whoever uses it next (see `unbindAllForSession`).
+   * The **window's** half of the lease, and only that half: it is renewed on every command
+   * (`createForSession` is how every browser command resolves its window), so "who has this
+   * window" answers itself without any explicit handover — and a turn ending releases it,
+   * leaving the window to whoever uses it next (see `unbindAllForSession`).
+   *
+   * The page's half is written where the page is known — see `setSessionPage`.
    */
   private setWindowDriver(instance: BrowserInstance, sessionId: string): void {
-    // The page on screen is the one this command is about — `--tab` brought it to the
-    // front before the command body ran — so the lease is recorded on it as well: the
-    // window's lease says who has the window, the page's says what they are moving
-    // (plan §22).
-    const tab = activeTab(instance)
-    const pageDriverChanged = tab.driverSessionId !== sessionId
-    if (pageDriverChanged) tab.driverSessionId = sessionId
-
+    // Only the window's half of the lease is written here. The page's half belongs to the
+    // page the command is *about*, and resolving a window no longer says which that is: the
+    // target is the conversation's own page, which may not be the one on screen (plan §22,
+    // 第十轮). `setSessionPage` is where that is known, and it writes both the page's lease
+    // and the cursor.
     if (instance.boundSessionId === sessionId) {
-      if (pageDriverChanged) {
-        // The strip marks the page being worked on, so a page-level change is a
-        // toolbar-visible one even when the window's driver did not move.
-        this.pushToolbarState(instance)
-        this.emitStateChange(instance)
-      }
       return
     }
     instance.boundSessionId = sessionId
@@ -3284,22 +3404,91 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   /**
    * Which session has this page locked at the moment, or `null` when nobody has.
    *
-   * Two facts multiplied, and neither alone holds a page: the window has an overlay up
-   * for a session (that session's turn is running commands), and this page is the one
-   * those commands are landing on (its lease). An overlay with no lease behind it is a
-   * label, and a lease with no overlay is a page somebody *did* something to rather than
-   * one they are in the middle of.
+   * The page the working session **stated** it holds (`agentControl.tabId`), and only
+   * that page — the lock is a page id, not a rule about leases (plan §22, 第九轮修正).
+   * Reading it off "the lease on whatever page the command landed on" locked the page a
+   * command *fell back* to, which is usually the one the person was looking at.
    *
    * What the lock buys, and what it deliberately does not: a person cannot click or type
    * into this page, and another conversation's commands that name it are refused — while
-   * the chrome, the other pages and the window itself stay usable (plan §22, 第九轮).
-   * The window-wide lock this replaces held all of that, which is why it could not
-   * survive the window becoming everyone's.
+   * the chrome, the other pages and the window itself stay usable.
    */
   private pageLockerId(instance: BrowserInstance, tab: BrowserTab): string | null {
     const control = instance.agentControl
-    if (!control?.active) return null
-    return tab.driverSessionId === control.sessionId ? control.sessionId : null
+    if (!control?.active || !control.tabId) return null
+    return control.tabId === tab.id ? control.sessionId : null
+  }
+
+  /**
+   * This conversation is now working **from** this page.
+   *
+   * One call for one fact, read at two speeds (plan §22, 第九轮修正 / 第十轮):
+   *
+   * - the **cursor** (`tab.cursorOf`) is sticky — it answers "which page does this
+   *   conversation's next unnamed command mean", and it survives the turn ending, because
+   *   the person clicking around must not move somebody else's target;
+   * - the **lock** (`agentControl.tabId`) lasts as long as the overlay does — the page is
+   *   held while that session works, and let go when its turn ends or the person releases
+   *   it (`release`).
+   *
+   * A session without the overlay on this window gets only the cursor: another
+   * conversation's overlay never holds a page on its behalf.
+   *
+   * This is the write; {@link setSessionPage} is the public verb around it (a window id
+   * instead of a live instance) and is what a command reaches for.
+   */
+  private recordSessionPage(instance: BrowserInstance, tabId: string, sessionId: string): void {
+    for (const tab of instance.tabs) {
+      if (tab.cursorOf === sessionId && tab.id !== tabId) tab.cursorOf = null
+    }
+    const target = tabById(instance, tabId)
+    if (target) {
+      target.cursorOf = sessionId
+      // The page a conversation works from is the page it is driving: this is the page the
+      // command is about, so the lease is written here rather than where the window was
+      // resolved (plan §22, 第十轮). It says "last moved by", not "owned by" — the turn
+      // ending sweeps it, and moving the cursor to another page leaves this one as a page
+      // that conversation did work on.
+      target.driverSessionId = sessionId
+    }
+
+    if (instance.agentControl?.active && instance.agentControl.sessionId === sessionId) {
+      instance.agentControl.tabId = tabId
+    }
+
+    this.syncPageThrottling(instance)
+  }
+
+  /**
+   * Pretend the pages a conversation works from are in front — and only those.
+   *
+   * A page Chromium counts as hidden stops animating *and tells the site it is hidden*, so the
+   * same page would behave differently depending on which tab happens to be on screen. Turning
+   * throttling off for every page would fix that at the cost of keeping every background
+   * animation running (memory is not the issue — the spike measured 613MB parked vs 614MB
+   * unthrottled for four pages); this follows the **cursors** instead, so exactly the pages
+   * somebody is working from are treated as in front and the rest stay Chromium's business.
+   * The geometry never depends on it: a covered page keeps its viewport and its captures are
+   * correct either way (measured in `apps/electron/spike`).
+   */
+  private syncPageThrottling(instance: BrowserInstance): void {
+    for (const tab of instance.tabs) {
+      const webContents = tab.pageView.webContents
+      if (webContents.isDestroyed()) continue
+      if (typeof webContents.setBackgroundThrottling !== 'function') continue
+      webContents.setBackgroundThrottling(tab.cursorOf === null)
+    }
+  }
+
+  /**
+   * Let go of a page this session was holding — used when the page is gone, so a lock can
+   * never outlive what it locks (plan §22, 第九轮修正).
+   */
+  private releaseHeldPage(instance: BrowserInstance, tabId: string): void {
+    if (instance.agentControl?.tabId !== tabId) return
+    instance.agentControl.tabId = null
+    this.updateNativeOverlayState(instance)
+    mainLog.info(`[browser-pane] page lock released with its page instance=${instance.id} tab=${tabId}`)
   }
 
   private updateNativeOverlayState(instance: BrowserInstance): void {
@@ -3334,6 +3523,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const page = this.pageAreaBounds(instance)
     activeTab(instance).nativeOverlayView.setBounds(page)
     activeTab(instance).nativeOverlayView.setAutoResize({ width: true, height: true })
+    // Above its page, under the chrome — and raised here rather than once at layout time,
+    // because every page is laid out (and the active one raised) before the overlay document
+    // may have loaded at all.
+    instance.window.setTopBrowserView(activeTab(instance).nativeOverlayView)
     this.raiseChromeViews(instance)
 
     // Two independent things are drawn here, and only one of them takes input.
@@ -3399,21 +3592,45 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     mainLog.info(`[browser-pane] Destroyed instance: ${instance.id} (${source})`)
   }
 
+  /**
+   * Lay every page out at the page area and stack the one on screen on top.
+   *
+   * The others are **not** parked at zero size: a zero-sized view has no viewport (so
+   * coordinates, rects and scrolling in it mean nothing) and paints nothing (so capturing it
+   * returns an empty image) — which is what used to make a background page unusable. Stacked
+   * under the active page instead, a background page is a real page that happens not to be
+   * visible: it keeps its viewport, and with `backgroundThrottling: false` on the page views
+   * (`buildTab`) Chromium keeps counting it visible. Measured in `apps/electron/spike`.
+   *
+   * Being laid out at the same bounds is also the whole of "switching pages": raising the
+   * other view is a stack change, not a resize, so nothing has to be re-attached and the
+   * pages that are not on screen never learned they were anywhere else.
+   */
   private layoutPageView(instance: BrowserInstance): void {
     const area = this.pageAreaBounds(instance)
 
-    // One page is on screen; the rest are parked at zero size rather than removed
-    // from the window, so switching is a bounds change and nothing has to be
-    // re-attached (their webContents keep running, which is what a tab is for).
     for (const tab of instance.tabs) {
-      const showing = tab.id === instance.activeTabId
-      tab.pageView.setBounds(showing ? area : { x: 0, y: 0, width: 0, height: 0 })
-      // The page is anchored at the chrome's inside corner, so it resizes with the
-      // window but never moves over the chrome.
-      tab.pageView.setAutoResize({ width: showing, height: showing })
+      // Anchored at the chrome's inside corner, so a page resizes with the window but never
+      // moves over the chrome.
+      tab.pageView.setBounds(area)
+      tab.pageView.setAutoResize({ width: true, height: true })
     }
 
+    this.raiseActivePage(instance)
     this.updateNativeOverlayState(instance)
+  }
+
+  /**
+   * Put the page on screen above the other pages, and the chrome above everything.
+   *
+   * Between the two goes the page's own overlay — the shield the agent's control draws there —
+   * and that is raised where it is positioned (`updateNativeOverlayState`), because it may not
+   * even be loaded yet when the page is raised.
+   */
+  private raiseActivePage(instance: BrowserInstance): void {
+    if (instance.window.isDestroyed()) return
+    instance.window.setTopBrowserView(activeTab(instance).pageView)
+    this.raiseChromeViews(instance)
   }
 
   private layoutAllViews(instance: BrowserInstance): void {
@@ -3675,7 +3892,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    */
   private tabPrototypeBinding(instance: BrowserInstance, tab: BrowserTab): PrototypeWindowBinding | null {
     if (tab.boundPrototype) return tab.boundPrototype
-    const sessionId = instance.boundSessionId ?? instance.ownerSessionId
+    // Only the driver is asked, and only while it is driving: a window has no
+    // owner to fall back on, so "what its conversation is working on" is a
+    // question with an answer exactly as long as the lease lasts (plan §22).
+    const sessionId = instance.boundSessionId
     return sessionId ? this.prototypeWindowResolver?.(sessionId) ?? null : null
   }
 
@@ -3840,14 +4060,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     /**
      * The window's own pages, managed from the strip it draws.
      *
-     * One channel for all three actions rather than three channels: they are one
+     * One channel for all four actions rather than four channels: they are one
      * sentence — "do this to this window's pages" — sent by a renderer that holds
-     * the three buttons side by side, and an action that names its target cannot
-     * mean anything else.
+     * the buttons side by side, and an action that names its target cannot mean
+     * anything else.
      */
     ipcMain.handle(
       TOOLBAR_CHANNELS.TABS,
-      async (_event, instanceId: string, action: 'activate' | 'close' | 'new', tabId?: string) => {
+      async (_event, instanceId: string, action: 'activate' | 'close' | 'new' | 'release', tabId?: string) => {
         const inst = findInstance(instanceId)
         if (!inst) return
 
@@ -3858,6 +4078,18 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
         if (action === 'close') {
           if (tabId) this.closeTab(inst.id, tabId)
+          return
+        }
+
+        if (action === 'release') {
+          // The person taking a locked page back. The overlay is what holds the page, so
+          // dropping the overlay *is* the unlock (plan §22, 第九轮修正) — and it is the
+          // same act as the agent's own `release`, only sent from the other side. No
+          // session is named: whoever is working here lets go.
+          const result = this.clearAgentControlForInstance(inst.id)
+          mainLog.info(
+            `[browser-pane] page lock released by hand instance=${inst.id} tab=${tabId ?? 'unstated'} released=${result.released}${result.reason ? ` reason=${result.reason}` : ''}`,
+          )
           return
         }
 
@@ -3941,10 +4173,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   // Capability IPC — dispatcher for the `client:browser:invoke` WS capability.
   //
   // Sits between the preload bridge (which receives the WS request from the
-  // remote server) and the real BrowserPaneManager. It rewrites session IDs to
-  // an owner-key namespace, refuses any instance ID not owned by the calling
-  // (workspaceId, sessionId), and blocks unsafe methods like `uploadFile` or
-  // (optionally) `evaluate`.
+  // remote server) and the real BrowserPaneManager. It refuses any instance ID
+  // outside the caller's **workspace**, and blocks unsafe methods like
+  // `uploadFile` or (optionally) `evaluate`.
+  //
+  // The caller's session id is used as-is: one window is only ever touched by
+  // sessions of its own workspace, and those come from one server, so there is
+  // one id space to be in. Keeping the session out of the reach check is what
+  // makes `workspaceId` the only boundary — the same one the server side draws
+  // (`SessionManager`'s `sessionWindows`).
   // ---------------------------------------------------------------------------
 
   /** Register the `__browser:invoke` IPC handler. Call once at app startup. */
@@ -3955,73 +4192,40 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     mainLog.info('[browser-pane] Capability IPC handler registered')
   }
 
-  /** Owner-key namespacing: remote sessions can't collide with local sessions. */
-  private toOwnerKey(workspaceId: string, sessionId: string): string {
-    return `remote:${workspaceId}:${sessionId}`
-  }
-
-  private isRemoteOwnerKey(value: string | null | undefined): value is string {
-    return typeof value === 'string' && value.startsWith('remote:')
-  }
-
-  private parseOwnerKey(value: string): { workspaceId: string; sessionId: string } | null {
-    if (!this.isRemoteOwnerKey(value)) return null
-    const rest = value.slice('remote:'.length)
-    const colon = rest.indexOf(':')
-    if (colon === -1) return null
-    return { workspaceId: rest.slice(0, colon), sessionId: rest.slice(colon + 1) }
-  }
-
-  /** Replace `remote:${ws}:${sid}` owner-keys with raw `sid` on outbound payloads. */
-  private stripOwnerKeysInPlace<T extends Partial<BrowserInstanceInfo>>(info: T): T {
-    if (this.isRemoteOwnerKey(info.boundSessionId)) {
-      info.boundSessionId = this.parseOwnerKey(info.boundSessionId)!.sessionId
-    }
-    if (this.isRemoteOwnerKey(info.ownerSessionId)) {
-      info.ownerSessionId = this.parseOwnerKey(info.ownerSessionId)!.sessionId
-    }
-    return info
-  }
-
   /**
-   * Throws `BROWSER_INSTANCE_NOT_OWNED` unless the instance belongs to `ownerKey`.
+   * Throws `BROWSER_INSTANCE_NOT_OWNED` unless the instance is in `workspaceId`.
    * Called by every dispatcher branch that accepts an instanceId — including read-only ones.
    */
-  private requireOwnedInstance(instanceId: string, ownerKey: string): void {
+  private requireInstanceInWorkspace(instanceId: string, workspaceId: string | null): void {
     const instance = this.instances.get(instanceId)
     if (!instance || instance.window.isDestroyed()) {
       throw new CodedError('BROWSER_INSTANCE_NOT_OWNED', `Browser instance "${instanceId}" not found.`)
     }
-    if (this.instanceBelongsToOwner(instance, ownerKey)) return
+    if (this.instanceBelongsToWorkspace(instance, workspaceId)) return
     throw new CodedError('BROWSER_INSTANCE_NOT_OWNED',
-      `Browser instance "${instanceId}" is not owned by this session.`)
+      `Browser instance "${instanceId}" is not in this workspace.`)
   }
 
   /**
-   * Whether an instance is within an owner-key's reach.
-   *
-   * Three ways, and the third is what the workspace's window is: it is not owned by a
-   * session but by the **workspace** every session in it shares (plan §22). The
-   * key names the workspace, so the two sides can still be matched up without the
-   * window having an owner.
+   * Whether an instance is within a workspace's reach — the **workspace's window**
+   * is the workspace's, shared by every session in it (plan §22), so the workspace
+   * is what says who may act on it. A session is not part of this question: it
+   * drives a window for a while (the lease) rather than owning one.
    */
-  private instanceBelongsToOwner(instance: BrowserInstance, ownerKey: string): boolean {
-    if (instance.boundSessionId === ownerKey || instance.ownerSessionId === ownerKey) return true
-    if (!instance.isWorkspaceWindow) return false
-    const owner = this.parseOwnerKey(ownerKey)
-    return owner !== null && owner.workspaceId === instance.workspaceId
+  private instanceBelongsToWorkspace(instance: BrowserInstance, workspaceId: string | null): boolean {
+    return instance.workspaceId === workspaceId
   }
 
-  /** Session-scoped listInstances — never returns workspace-wide windows to a remote agent. */
-  private listInstancesForOwner(ownerKey: string): BrowserInstanceInfo[] {
+  /** The windows a caller in `workspaceId` may act on — its workspace's. */
+  private listInstancesForWorkspace(workspaceId: string | null): BrowserInstanceInfo[] {
     const infos: BrowserInstanceInfo[] = []
     for (const instance of this.instances.values()) {
       if (instance.window.isDestroyed()) {
-        this.cleanupDestroyedInstance(instance, 'listInstancesForOwner')
+        this.cleanupDestroyedInstance(instance, 'listInstancesForWorkspace')
         continue
       }
-      if (!this.instanceBelongsToOwner(instance, ownerKey)) continue
-      infos.push(this.stripOwnerKeysInPlace(this.toInfo(instance)))
+      if (!this.instanceBelongsToWorkspace(instance, workspaceId)) continue
+      infos.push(this.toInfo(instance))
     }
     return infos
   }
@@ -4039,8 +4243,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    */
   private toSnapshot(instance: BrowserInstance): BrowserInstanceSnapshot {
     return {
-      ownerType: instance.ownerType,
-      ownerSessionId: instance.ownerSessionId,
       isVisible: instance.isVisible,
       title: activeTab(instance).title,
       currentUrl: activeTab(instance).currentUrl,
@@ -4062,101 +4264,104 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       throw new CodedError('HANDLER_ERROR',
         `Unsupported browser capability request shape (v=${(req as { v?: unknown })?.v}).`)
     }
-    const ownerKey = this.toOwnerKey(req.workspaceId, req.sessionId)
+    const workspaceId = req.workspaceId
+    const sessionId = req.sessionId
     const args = req.args ?? []
+    // The page every page-scoped branch below acts on: named by the caller, which is the
+    // side that resolved it (`pickCommandTarget` — the conversation's own page, or the one
+    // on screen when it has none), and named *here* rather than looked up, so the page a
+    // command lands on is decided once and in one place. A caller that names none means the
+    // page on screen — the person's own actions, and a window nobody has routed to yet
+    // (plan §22, 第十轮/第十二轮).
+    const commandTabId = req.tabId
 
     switch (req.method) {
       // -- Session-scoped (no instanceId arg, takes a sessionId) ----------------
       //
-      // All three resolve the same thing: the workspace's browser window. A remote
+      // All of these resolve the same thing: the workspace's browser window. A remote
       // agent used to be given a window of its own so it could never touch a window
       // the user had opened; with one window per workspace that distinction is gone
       // by construction — the agent and the user are looking at the same window,
       // which is what "shared" means (plan §22). What is *not* gone is the workspace
       // boundary: `workspaceId` is what picks the window, so an agent in another
-      // workspace gets its own and can reach no further.
+      // workspace gets its own and can reach no further. The session named on the
+      // wire is the caller's own id, used as-is: it is the window's lease, not a key.
       case 'createForSession': {
         const [, options] = args as [string, { show?: boolean } | undefined]
-        return this.createForSession(ownerKey, {
+        return this.createForSession(sessionId, {
           show: options?.show ?? false,
-          workspaceId: req.workspaceId,
+          workspaceId,
         })
       }
       case 'getOrCreateForSession':
-        return this.createForSession(ownerKey, {
+        return this.createForSession(sessionId, {
           show: false,
-          workspaceId: req.workspaceId,
+          workspaceId,
         })
       case 'focusBoundForSession': {
-        const id = this.createForSession(ownerKey, {
+        const id = this.createForSession(sessionId, {
           show: true,
-          workspaceId: req.workspaceId,
+          workspaceId,
         })
         this.focus(id)
         return id
       }
       case 'destroyForSession':
-        this.destroyForSession(ownerKey)
+        this.destroyForSession(sessionId)
         return undefined
       case 'clearVisualsForSession':
-        await this.clearVisualsForSession(ownerKey)
+        await this.clearVisualsForSession(sessionId)
         return undefined
       case 'unbindAllForSession':
-        this.unbindAllForSession(ownerKey)
+        this.unbindAllForSession(sessionId)
         return undefined
       case 'setAgentControl': {
         const [, meta] = args as [string, { displayName?: string; intent?: string }]
-        this.setAgentControl(ownerKey, meta, { workspaceId: req.workspaceId })
+        this.setAgentControl(sessionId, meta, { workspaceId })
         return undefined
       }
       case 'clearAgentControl':
-        this.clearAgentControl(ownerKey)
+        this.clearAgentControl(sessionId)
         return undefined
 
       // -- Mixed (instanceId + optional sessionId) ----------------------------
       case 'clearAgentControlForInstance': {
-        const [instanceId, sessionId] = args as [string, string | undefined]
-        this.requireOwnedInstance(instanceId, ownerKey)
+        const [instanceId, namedSessionId] = args as [string, string | undefined]
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
         return this.clearAgentControlForInstance(
           instanceId,
-          sessionId !== undefined ? ownerKey : undefined,
+          namedSessionId !== undefined ? sessionId : undefined,
         )
       }
 
       // -- Instance-id only ----------------------------------------------------
       case 'getInstance': {
         const [instanceId] = args as [string]
-        this.requireOwnedInstance(instanceId, ownerKey)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
         const live = this.getInstance(instanceId)
         if (!live) return undefined
         // `getInstance` returns the live BrowserInstance (which embeds non-
         // cloneable Electron native objects). Project to a plain snapshot
         // before crossing the IPC boundary.
-        return this.stripOwnerKeysInPlace(this.toSnapshot(live))
+        return this.toSnapshot(live)
       }
       case 'listInstances':
-        return this.listInstancesForOwner(ownerKey)
-      case 'bindSession': {
-        const [instanceId] = args as [string, string]
-        this.requireOwnedInstance(instanceId, ownerKey)
-        this.bindSession(instanceId, ownerKey, { workspaceId: req.workspaceId })
-        return undefined
-      }
+        return this.listInstancesForWorkspace(workspaceId)
       case 'focus': {
         const [instanceId] = args as [string]
-        this.requireOwnedInstance(instanceId, ownerKey)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
         this.focus(instanceId)
         return undefined
       }
       case 'hide': {
         const [instanceId] = args as [string]
-        this.requireOwnedInstance(instanceId, ownerKey)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
         this.hide(instanceId)
         return undefined
       }
       case 'destroyInstance': {
         const [instanceId] = args as [string]
-        this.requireOwnedInstance(instanceId, ownerKey)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
         this.destroyInstance(instanceId)
         return undefined
       }
@@ -4164,143 +4369,164 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // -- Tabs ----------------------------------------------------------------
       case 'createTab': {
         const [instanceId, options] = args as [string, { url?: string; activate?: boolean; prototype?: PrototypeWindowBinding | null } | undefined]
-        this.requireOwnedInstance(instanceId, ownerKey)
-        return this.createTab(instanceId, options)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
+        // The opener is the caller, stamped here rather than read off the wire: a
+        // request that named somebody else's session would be writing a page's
+        // declaration on their behalf, and "leave other people's pages alone" is
+        // decided from this field.
+        return this.createTab(instanceId, { ...options, openedBySessionId: sessionId })
       }
       case 'activateTab': {
         const [instanceId, tabId] = args as [string, string]
-        this.requireOwnedInstance(instanceId, ownerKey)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
         this.activateTab(instanceId, tabId)
+        return undefined
+      }
+      case 'setSessionPage': {
+        const [instanceId, tabId] = args as [string, string, string]
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
+        // Same rule as `createTab`: the page is recorded as the *caller's* cursor
+        // and lease, so the id comes from the request's identity rather than from a
+        // third argument that could say anything.
+        this.setSessionPage(instanceId, tabId, sessionId)
         return undefined
       }
       case 'closeTab': {
         const [instanceId, tabId] = args as [string, string]
-        this.requireOwnedInstance(instanceId, ownerKey)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
         this.closeTab(instanceId, tabId)
         return undefined
       }
       case 'listTabs': {
         const [instanceId] = args as [string]
-        this.requireOwnedInstance(instanceId, ownerKey)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
         return this.listTabs(instanceId)
       }
 
       // -- Navigation ----------------------------------------------------------
       case 'navigate': {
         const [instanceId, url] = args as [string, string]
-        this.requireOwnedInstance(instanceId, ownerKey)
-        return this.navigate(instanceId, url)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
+        return this.navigate(instanceId, url, commandTabId)
       }
       case 'goBack': {
         const [instanceId] = args as [string]
-        this.requireOwnedInstance(instanceId, ownerKey)
-        return this.goBack(instanceId)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
+        return this.goBack(instanceId, commandTabId)
       }
       case 'goForward': {
         const [instanceId] = args as [string]
-        this.requireOwnedInstance(instanceId, ownerKey)
-        return this.goForward(instanceId)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
+        return this.goForward(instanceId, commandTabId)
+      }
+      case 'reload': {
+        // Declared in the protocol since the beginning and dispatched here all along it was
+        // missing: a remote replay asked for a reload and got "unknown method" instead.
+        const [instanceId] = args as [string]
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
+        this.reload(instanceId, commandTabId)
+        return undefined
       }
 
       // -- Interaction ---------------------------------------------------------
       case 'getAccessibilitySnapshot': {
         const [instanceId] = args as [string]
-        this.requireOwnedInstance(instanceId, ownerKey)
-        return this.getAccessibilitySnapshot(instanceId)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
+        return this.getAccessibilitySnapshot(instanceId, commandTabId)
       }
       case 'clickElement': {
         const [instanceId, ref, options] = args as [
           string, string,
           { waitFor?: 'none' | 'navigation' | 'network-idle'; timeoutMs?: number } | undefined,
         ]
-        this.requireOwnedInstance(instanceId, ownerKey)
-        return this.clickElement(instanceId, ref, options)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
+        return this.clickElement(instanceId, ref, options, commandTabId)
       }
       case 'clickAtCoordinates': {
         const [instanceId, x, y] = args as [string, number, number]
-        this.requireOwnedInstance(instanceId, ownerKey)
-        return this.clickAtCoordinates(instanceId, x, y)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
+        return this.clickAtCoordinates(instanceId, x, y, commandTabId)
       }
       case 'drag': {
         const [instanceId, x1, y1, x2, y2] = args as [string, number, number, number, number]
-        this.requireOwnedInstance(instanceId, ownerKey)
-        return this.drag(instanceId, x1, y1, x2, y2)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
+        return this.drag(instanceId, x1, y1, x2, y2, commandTabId)
       }
       case 'fillElement': {
         const [instanceId, ref, value] = args as [string, string, string]
-        this.requireOwnedInstance(instanceId, ownerKey)
-        return this.fillElement(instanceId, ref, value)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
+        return this.fillElement(instanceId, ref, value, commandTabId)
       }
       case 'typeText': {
         const [instanceId, text] = args as [string, string]
-        this.requireOwnedInstance(instanceId, ownerKey)
-        return this.typeText(instanceId, text)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
+        return this.typeText(instanceId, text, commandTabId)
       }
       case 'selectOption': {
         const [instanceId, ref, value] = args as [string, string, string]
-        this.requireOwnedInstance(instanceId, ownerKey)
-        return this.selectOption(instanceId, ref, value)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
+        return this.selectOption(instanceId, ref, value, commandTabId)
       }
       case 'sendKey': {
         const [instanceId, keyArgs] = args as [string, BrowserKeyArgs]
-        this.requireOwnedInstance(instanceId, ownerKey)
-        return this.sendKey(instanceId, keyArgs)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
+        return this.sendKey(instanceId, keyArgs, commandTabId)
       }
       case 'scroll': {
         const [instanceId, direction, amount] = args as [
           string, 'up' | 'down' | 'left' | 'right', number | undefined,
         ]
-        this.requireOwnedInstance(instanceId, ownerKey)
-        return this.scroll(instanceId, direction, amount)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
+        return this.scroll(instanceId, direction, amount, commandTabId)
       }
       case 'waitFor': {
         const [instanceId, waitArgs] = args as [string, BrowserWaitArgs]
-        this.requireOwnedInstance(instanceId, ownerKey)
-        return this.waitFor(instanceId, waitArgs)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
+        return this.waitFor(instanceId, waitArgs, commandTabId)
       }
       case 'evaluate': {
         const [instanceId, expression] = args as [string, string]
-        this.requireOwnedInstance(instanceId, ownerKey)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
         if (!getAllowRemoteEvaluate()) {
           throw new CodedError('BROWSER_REMOTE_EVALUATE_BLOCKED',
             'JavaScript evaluation from remote agents is disabled in this client.')
         }
-        return this.evaluate(instanceId, expression)
+        return this.evaluate(instanceId, expression, commandTabId)
       }
       case 'pickElement': {
         const [instanceId, pickOptions] = args as [string, { timeoutMs?: number; pollMs?: number } | undefined]
-        this.requireOwnedInstance(instanceId, ownerKey)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
         if (!getAllowRemoteEvaluate()) {
           throw new CodedError('BROWSER_REMOTE_PICK_BLOCKED',
             'Element picking from remote agents is disabled in this client.')
         }
-        return this.pickElement(instanceId, pickOptions)
+        return this.pickElement(instanceId, pickOptions, commandTabId)
       }
       case 'addInitScript': {
         const [instanceId, key, source] = args as [string, string, string]
-        this.requireOwnedInstance(instanceId, ownerKey)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
         if (!getAllowRemoteEvaluate()) {
           throw new CodedError('BROWSER_REMOTE_EVALUATE_BLOCKED',
             'Persistent script injection from remote agents is disabled in this client.')
         }
-        return this.addInitScript(instanceId, key, source)
+        return this.addInitScript(instanceId, key, source, commandTabId)
       }
       case 'clearInitScripts': {
         const [instanceId, keyPrefix] = args as [string, string]
-        this.requireOwnedInstance(instanceId, ownerKey)
-        return this.clearInitScripts(instanceId, keyPrefix)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
+        return this.clearInitScripts(instanceId, keyPrefix, commandTabId)
       }
       case 'startFrameCapture': {
         const [instanceId, options] = args as [
           string,
           { intervalMs?: number; threshold?: number; maxFrames?: number } | undefined,
         ]
-        this.requireOwnedInstance(instanceId, ownerKey)
-        return this.startFrameCapture(instanceId, options)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
+        return this.startFrameCapture(instanceId, options, commandTabId)
       }
       case 'stopFrameCapture': {
         const [instanceId] = args as [string]
-        this.requireOwnedInstance(instanceId, ownerKey)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
         return this.stopFrameCapture(instanceId)
       }
       case 'pickVideoFile':
@@ -4316,71 +4542,71 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       }
       case 'setFetchMock': {
         const [instanceId, routes] = args as [string, MockRoute[]]
-        this.requireOwnedInstance(instanceId, ownerKey)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
         if (!getAllowRemoteEvaluate()) {
           throw new CodedError('BROWSER_REMOTE_EVALUATE_BLOCKED',
             'Network mocking from remote agents is disabled in this client.')
         }
-        return this.setFetchMock(instanceId, routes)
+        return this.setFetchMock(instanceId, routes, commandTabId)
       }
       case 'clearFetchMock': {
         const [instanceId] = args as [string]
-        this.requireOwnedInstance(instanceId, ownerKey)
-        return this.clearFetchMock(instanceId)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
+        return this.clearFetchMock(instanceId, commandTabId)
       }
 
       // -- Clipboard -----------------------------------------------------------
       case 'setClipboard': {
         const [instanceId, text] = args as [string, string]
-        this.requireOwnedInstance(instanceId, ownerKey)
-        return this.setClipboard(instanceId, text)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
+        return this.setClipboard(instanceId, text, commandTabId)
       }
       case 'getClipboard': {
         const [instanceId] = args as [string]
-        this.requireOwnedInstance(instanceId, ownerKey)
-        return this.getClipboard(instanceId)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
+        return this.getClipboard(instanceId, commandTabId)
       }
 
       // -- Capture / introspection --------------------------------------------
       case 'screenshot': {
         const [instanceId, options] = args as [string, BrowserScreenshotOptions | undefined]
-        this.requireOwnedInstance(instanceId, ownerKey)
-        const result = await this.screenshot(instanceId, options)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
+        const result = await this.screenshot(instanceId, options, commandTabId)
         return this.toScreenshotWire(result)
       }
       case 'screenshotRegion': {
         const [instanceId, target] = args as [string, BrowserScreenshotRegionTarget]
-        this.requireOwnedInstance(instanceId, ownerKey)
-        const result = await this.screenshotRegion(instanceId, target)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
+        const result = await this.screenshotRegion(instanceId, target, commandTabId)
         return this.toScreenshotWire(result)
       }
       case 'getConsoleLogs': {
         const [instanceId, options] = args as [string, BrowserConsoleOptions | undefined]
-        this.requireOwnedInstance(instanceId, ownerKey)
-        return this.getConsoleLogs(instanceId, options)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
+        return this.getConsoleLogs(instanceId, options, commandTabId)
       }
       case 'getNetworkLogs': {
         const [instanceId, options] = args as [string, BrowserNetworkOptions | undefined]
-        this.requireOwnedInstance(instanceId, ownerKey)
-        return this.getNetworkLogs(instanceId, options)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
+        return this.getNetworkLogs(instanceId, options, commandTabId)
       }
       case 'windowResize': {
         const [instanceId, width, height] = args as [string, number, number]
-        this.requireOwnedInstance(instanceId, ownerKey)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
         return this.windowResize(instanceId, width, height)
       }
       case 'getDownloads': {
         const [instanceId, options] = args as [string, BrowserDownloadOptions | undefined]
-        this.requireOwnedInstance(instanceId, ownerKey)
-        return this.getDownloads(instanceId, options)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
+        return this.getDownloads(instanceId, options, commandTabId)
       }
       case 'uploadFile':
         throw new CodedError('BROWSER_REMOTE_UPLOAD_NOT_SUPPORTED',
           'File upload from a remote agent is not supported yet. Ask the user to attach the file to the session.')
       case 'detectSecurityChallenge': {
         const [instanceId] = args as [string]
-        this.requireOwnedInstance(instanceId, ownerKey)
-        return this.detectSecurityChallenge(instanceId)
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
+        return this.detectSecurityChallenge(instanceId, commandTabId)
       }
 
       default: {
@@ -4427,11 +4653,17 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   ): void {
     for (const instance of this.instances.values()) {
       if (instance.boundSessionId === sessionId) {
+        // The page it holds survives a re-activation by the same session: the overlay
+        // is refreshed on every actionable tool start, and dropping the lock there would
+        // hand the page back to the person between two tools of one action (plan §22).
+        // A different session taking the overlay takes the lock with it.
+        const heldTabId = instance.agentControl?.sessionId === sessionId ? instance.agentControl.tabId : null
         instance.agentControl = {
           active: true,
           sessionId,
           displayName: meta.displayName,
           intent: meta.intent,
+          tabId: heldTabId,
         }
 
         // Backfill workspaceId for instances that were created before the
@@ -4472,14 +4704,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       return { released: false, reason: `Browser window "${instanceId}" not found.` }
     }
 
-    if (sessionId) {
-      if (instance.boundSessionId && instance.boundSessionId !== sessionId) {
-        return { released: false, reason: `Browser window "${instanceId}" is locked to session ${instance.boundSessionId}.` }
-      }
-
-      if (!instance.boundSessionId && instance.ownerSessionId && instance.ownerSessionId !== sessionId) {
-        return { released: false, reason: `Browser window "${instanceId}" is currently owned by session ${instance.ownerSessionId}.` }
-      }
+    // A named session may only let go of a window it is driving. There is no
+    // second answer to check against: a window has a lease, not an owner, so
+    // "nobody is driving it" is nobody's to refuse (plan §22).
+    if (sessionId && instance.boundSessionId && instance.boundSessionId !== sessionId) {
+      return { released: false, reason: `Browser window "${instanceId}" is locked to session ${instance.boundSessionId}.` }
     }
 
     if (!instance.agentControl?.active) {
@@ -4660,29 +4889,43 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }, EARLY_THEME_EXTRACTION_DELAY_MS)
   }
 
-  private getInstanceByWebContentsId(webContentsId: number): BrowserInstance | undefined {
+  /**
+   * Which page of which window this is, by the page itself.
+   *
+   * Every page, not just the one on screen — the same reason `findInstanceByPageWebContentsId`
+   * looks at all of them. A command now runs on the page its conversation works from, which is
+   * usually a page behind the one the person is looking at, and a request or a download a page
+   * makes belongs to *that* page's log: reading it through the page on screen would file it
+   * under somebody else's (plan §22, 第十二轮).
+   */
+  private findTabByWebContentsId(webContentsId: number): { instance: BrowserInstance; tab: BrowserTab } | undefined {
     for (const instance of this.instances.values()) {
-      if (activeTab(instance).pageView.webContents.id === webContentsId) return instance
+      for (const tab of instance.tabs) {
+        if (tab.pageView.webContents.id === webContentsId) return { instance, tab }
+      }
     }
     return undefined
   }
 
-  private pushNetworkLog(instance: BrowserInstance, entry: BrowserNetworkEntry): void {
-    activeTab(instance).networkLogs.push(entry)
-    if (activeTab(instance).networkLogs.length > MAX_NETWORK_LOG_ENTRIES) {
-      activeTab(instance).networkLogs.splice(0, activeTab(instance).networkLogs.length - MAX_NETWORK_LOG_ENTRIES)
+  private pushNetworkLog(tab: BrowserTab, entry: BrowserNetworkEntry): void {
+    tab.networkLogs.push(entry)
+    if (tab.networkLogs.length > MAX_NETWORK_LOG_ENTRIES) {
+      tab.networkLogs.splice(0, tab.networkLogs.length - MAX_NETWORK_LOG_ENTRIES)
     }
   }
 
-  private pushDownloadLog(instance: BrowserInstance, entry: BrowserDownloadEntry): void {
-    activeTab(instance).downloads.push(entry)
-    if (activeTab(instance).downloads.length > MAX_DOWNLOAD_LOG_ENTRIES) {
-      activeTab(instance).downloads.splice(0, activeTab(instance).downloads.length - MAX_DOWNLOAD_LOG_ENTRIES)
+  private pushDownloadLog(tab: BrowserTab, entry: BrowserDownloadEntry): void {
+    tab.downloads.push(entry)
+    if (tab.downloads.length > MAX_DOWNLOAD_LOG_ENTRIES) {
+      tab.downloads.splice(0, tab.downloads.length - MAX_DOWNLOAD_LOG_ENTRIES)
     }
   }
 
   private resolveDownloadsDir(instance: BrowserInstance): string {
-    const sessionId = instance.boundSessionId ?? instance.ownerSessionId
+    // The driver's session is where a download belongs, while it is driving. A
+    // window with nobody at the wheel has no session to file it under, so it goes
+    // to the OS downloads folder rather than to a conversation that has moved on.
+    const sessionId = instance.boundSessionId
     if (sessionId && this.sessionPathResolver) {
       const sessionPath = this.sessionPathResolver(sessionId)
       if (sessionPath) {
@@ -4727,10 +4970,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       this.inFlightRequestsByWebContentsId.set(wcId, Math.max(0, current - 1))
       this.lastNetworkActivityByWebContentsId.set(wcId, Date.now())
 
-      const instance = this.getInstanceByWebContentsId(wcId)
-      if (!instance) return
+      const located = this.findTabByWebContentsId(wcId)
+      if (!located) return
 
-      this.pushNetworkLog(instance, {
+      this.pushNetworkLog(located.tab, {
         timestamp: Date.now(),
         method: details.method ?? 'GET',
         url: details.url ?? '',
@@ -4748,10 +4991,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       this.inFlightRequestsByWebContentsId.set(wcId, Math.max(0, current - 1))
       this.lastNetworkActivityByWebContentsId.set(wcId, Date.now())
 
-      const instance = this.getInstanceByWebContentsId(wcId)
-      if (!instance) return
+      const located = this.findTabByWebContentsId(wcId)
+      if (!located) return
 
-      this.pushNetworkLog(instance, {
+      this.pushNetworkLog(located.tab, {
         timestamp: Date.now(),
         method: details.method ?? 'GET',
         url: details.url ?? '',
@@ -4764,8 +5007,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     ses.on('will-download', (_event, item, webContents) => {
       const wcId = webContents?.id
       if (typeof wcId !== 'number') return
-      const instance = this.getInstanceByWebContentsId(wcId)
-      if (!instance) return
+      const located = this.findTabByWebContentsId(wcId)
+      if (!located) return
+      const instance = located.instance
+      // The page that started it: a download keeps reporting to the page it came from,
+      // even after the person has moved to another one.
+      const tab = located.tab
 
       // Auto-save: set a deterministic path so Electron doesn't show a native dialog
       const downloadsDir = this.resolveDownloadsDir(instance)
@@ -4785,10 +5032,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         mimeType: item.getMimeType() || 'application/octet-stream',
         savePath,
       }
-      this.pushDownloadLog(instance, started)
+      this.pushDownloadLog(tab, started)
 
       const onUpdated = (_e: Electron.Event, state: string) => {
-        const latest = activeTab(instance).downloads.find((d) => d.id === downloadId)
+        const latest = tab.downloads.find((d) => d.id === downloadId)
         if (!latest) return
         latest.bytesReceived = item.getReceivedBytes()
         latest.totalBytes = item.getTotalBytes()
@@ -4799,7 +5046,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
       item.once('done', (_e, state) => {
         item.removeListener('updated', onUpdated)
-        const latest = activeTab(instance).downloads.find((d) => d.id === downloadId)
+        const latest = tab.downloads.find((d) => d.id === downloadId)
         if (!latest) return
         latest.bytesReceived = item.getReceivedBytes()
         latest.totalBytes = item.getTotalBytes()
@@ -5018,6 +5265,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       void this.extractThemeColor(instance, tab)
     })
 
+    // Every page's answer to "may Chromium throttle this?" is stated once it exists, so a page
+    // is never left on an inherited default it did not mean (`syncPageThrottling`).
+    this.syncPageThrottling(instance)
+
     // A locked page takes no input from a person. The shield already swallows the mouse;
     // this is the keyboard half — typing into a page a conversation is driving is the
     // same interruption by another route. Read live rather than captured, so the lock
@@ -5136,13 +5387,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       }
 
       const mappedLevel: BrowserConsoleEntry['level'] = level >= 3 ? 'error' : level === 2 ? 'warn' : level === 1 ? 'info' : 'log'
-      activeTab(instance).consoleLogs.push({
+      tab.consoleLogs.push({
         timestamp: Date.now(),
         level: mappedLevel,
         message,
       })
-      if (activeTab(instance).consoleLogs.length > MAX_CONSOLE_LOG_ENTRIES) {
-        activeTab(instance).consoleLogs.splice(0, activeTab(instance).consoleLogs.length - MAX_CONSOLE_LOG_ENTRIES)
+      if (tab.consoleLogs.length > MAX_CONSOLE_LOG_ENTRIES) {
+        tab.consoleLogs.splice(0, tab.consoleLogs.length - MAX_CONSOLE_LOG_ENTRIES)
       }
 
       if (level >= 2) {
@@ -5191,6 +5442,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // a popup that waits for a `postMessage` from the page that opened it (Google's
       // sign-in is the usual one) will wait forever. `tab.disposition` is where that is
       // recorded, so it is diagnosable rather than mysterious.
+      // Whose page this is: **the page it was opened from**. No attribution is needed —
+      // who clicked is not asked, and could not be told anyway (an agent's click and a
+      // person's look the same from here) — because a page derived from a task's page
+      // belongs to that task (plan §22, 第十一轮). That is what makes a conversation's pages
+      // a group rather than a list of pages it happened to open: the link it could not
+      // follow itself still lands in its group, and `close` cleans up the whole task.
+      // A page opened from a page nobody owns stays nobody's: no owner is invented.
       const openedTabId = this.createTab(instance.id, {
         url: details.url,
         // A link is clicked in order to be looked at; a page the site opened in the
@@ -5198,10 +5456,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         activate: details.disposition !== 'background-tab',
         afterTabId: tab.id,
         disposition: details.disposition === 'new-window' ? 'popup' : 'link',
-        // Nobody's session asked for this page. A click inside a page cannot be
-        // attributed to a conversation — the agent clicking and the user clicking look
-        // the same from here — so it stays a person's, which is the direction that
-        // cannot hand somebody's page to an agent that would close it.
+        openedBySessionId: tab.openedBySessionId,
       })
 
       mainLog.info(`[browser-pane] window-open opened as a page id=${instance.id} tab=${openedTabId} after=${tab.id} url=${details.url}`)
@@ -5256,6 +5511,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // -- Declaration: who asked for it, and who is working on it now --
       openedBySessionId: tab.openedBySessionId,
       driverSessionId: tab.driverSessionId,
+      // Which conversation works from this page, when one does (plan §22, 第十轮).
+      cursorOf: tab.cursorOf,
       // -- Lease, enforced: the same lease while the window's overlay backs it --
       lockedBy: this.pageLockerId(instance, tab),
       // How the browser asked for it, when it did (plan §22).
@@ -5276,8 +5533,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       isWorkspaceWindow: instance.isWorkspaceWindow,
       tabs: instance.tabs.map((tab) => this.toTabSummary(instance, tab)),
       prototypeSlug: this.prototypeBindingFor(instance)?.slug ?? null,
-      ownerType: instance.ownerType,
-      ownerSessionId: instance.ownerSessionId,
       isVisible: instance.isVisible,
       agentControlActive: !!instance.agentControl?.active,
       themeColor: activeTab(instance).themeColor,

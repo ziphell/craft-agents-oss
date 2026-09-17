@@ -71,18 +71,25 @@ export function useBrowserToolbarActions({
   const sessionMetaMap = useAtomValue(sessionMetaMapAtom)
 
   /**
-   * Which prototype the panel's window belongs to, and which session owns it.
+   * Which prototype the panel's window belongs to, and which conversation it is
+   * being used by.
    *
    * The prototype comes from the main process (`prototypeSlug`), which is the only
    * side that knows: a window opened for a prototype says so even before any
    * conversation exists, and an overlay's view sits on a third-party address, so
-   * neither the URL nor the session is enough on its own. The session is only
-   * about *who may drive the window*.
+   * neither the URL nor the session is enough on its own.
+   *
+   * The session is read the way `BrowserTabStrip` reads it, and for the same
+   * reason: the window is shared, so the lease answers "who is using it now" while
+   * the page's opener answers "whose work is on screen" — the window itself has no
+   * owner to fall back on (plan §22).
    */
   const resolveBinding = useCallback((instanceId: string): { slug: string | null; sessionId: string | null } => {
     const instance = instances.find((item) => item.id === instanceId)
     if (!instance) return { slug: null, sessionId: null }
-    const sessionId = instance.boundSessionId ?? instance.ownerSessionId
+    const sessionId = instance.boundSessionId
+      ?? instance.tabs?.find((tab) => tab.active)?.openedBySessionId
+      ?? null
     const slug = instance.prototypeSlug ?? (sessionId ? sessionMetaMap.get(sessionId)?.prototypeSlug ?? null : null)
     return { slug, sessionId }
   }, [instances, sessionMetaMap])

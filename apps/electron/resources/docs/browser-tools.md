@@ -28,11 +28,7 @@ Use browser workflows when creating a source would add unnecessary overhead for 
 
 ## Core workflow
 
-If you're unsure which window to use, run:
-
-```text
-browser_tool({ command: "windows" })
-```
+There is one browser window per workspace, so there is no window to choose: `open` resolves it.
 
 Recommended flow:
 1. `open` — ensure browser window exists (background by default)
@@ -76,7 +72,6 @@ browser_tool({ command: "wait network-idle 8000" })
 browser_tool({ command: "key Enter" })
 browser_tool({ command: "downloads wait 15000" })
 browser_tool({ command: "focus" })
-browser_tool({ command: "windows" })
 browser_tool({ command: "tabs" })
 browser_tool({ command: "snapshot --tab tab-2" })
 browser_tool({ command: "tab-new https://example.com" })
@@ -394,7 +389,7 @@ prototypes/checkout-flow/patches/cart/A-002-flow-guard.js      ← the page `car
 - Files that do not follow the naming convention are ignored (READMEs, editor backups, dotfiles), so nothing unexpected gets executed.
 - Replay order is `lane` → numeric order → file name.
 - **Where a patch sits is which page it changes**: `patches/*` applies to every page of the flow, `patches/<page>/*` to that page alone. A directory that matches no page is reported by `prototype-status` rather than silently replayed.
-- Which patches this command replays follows the **window**: the page it is on brings the shared patches plus its own, and a window on no page of the prototype gets the shared ones only — the command says which page it used, so "the patch did nothing" and "the patch belongs to another page" read differently.
+- Which patches this command replays follows the **page the command acts on** (your page, or the one `--tab` names — not whatever the person is reading): that page brings the shared patches plus its own, and a page on no part of the prototype gets the shared ones only — the command says which page it used, so "the patch did nothing" and "the patch belongs to another page" read differently.
 - Patches are applied to the current page **and** registered for every future document, so they survive a reload. The index is recomputed from disk on every `prototype-apply`, so editing a patch file and re-running the command is all that is needed — deleting a patch file also un-applies it.
 - A page the host rendered (a page of ours, served from the prototype's own address) arrives with its patches already inlined, so there is nothing to inject into it; that is reported as *nothing to inject*, not as a failure. Patches written since that render still land on it.
 - **A patch may declare what it is aimed at**, with `@target <css selector>` in its header (next to `@requirement R-001`, which says what it is for). The command then **counts** what each declared selector matched and says so:
@@ -565,32 +560,34 @@ Point one **live page** at the same page in another environment — a local dev 
 ### The window is shared: one per workspace
 There is exactly **one browser window per workspace**, and every conversation in that workspace — and you — work in it, whatever the task is: a prototype flow, or ordinary browsing with no prototype behind it. What used to be "my window" is now a **page** in that window, which is why `tabs` exists and why nothing here is scoped to one conversation any more.
 
-- **A window belongs to its workspace, not to a conversation.** `windows` reports who is *driving* a window at the moment (`driver: the workspace's window, driven by <session>`), which is a **lease**: every command a conversation runs through the window renews it, and a turn ending releases it. A lease is not a lock — another conversation taking its turn is normal, and nothing about the window is closed to it.
+- **A window belongs to its workspace, not to a conversation.** Who is *driving* it at the moment is a **lease** (`driven by` on each page in `tabs`): every command a conversation runs through the window renews it, and a turn ending releases it. A lease is not a lock — another conversation taking its turn is normal, and nothing about the window is closed to it.
 - **Workspaces stay apart.** Each has its own window; a session in one never sees or touches another's. That is the only boundary left, and it is the one that has to be.
-- **Pages opened by other conversations are in here, and `tabs` says whose.** That is the point of sharing, and it is also the boundary: each page prints `opened by: agent (<session>)` or `opened by: a person`, and `driven by:` says who is working on it at the moment. Closing is limited to the pages you opened, and acting on another conversation's prototype is refused — so `--tab <id>` is a name, not a claim on somebody else's work.
-- **The window itself is nobody's to close.** `close` on the workspace's window closes **the pages you opened** in it (and leaves a fresh page if they were all of them) rather than refusing everything — the window stays, because it is the whole workspace's. A window that is one session's own — an internal one — is still destroyed outright.
+- **Pages opened by other conversations are in here, and `tabs` says whose.** That is the point of sharing, and it is also the boundary: each page prints `belongs to: agent (<session>)` or `belongs to: a person`, and `driven by:` says who is working on it at the moment. Closing is limited to the pages in **your task** — the ones you opened, and the ones opened from them (see below) — and acting on another conversation's prototype is refused, so `--tab <id>` is a name, not a claim on somebody else's work.
+- **A page's task is inherited.** A page a link or popup opened belongs to whatever the page it came from belongs to — not to whoever clicked (an agent's click and a person's look the same from here, so that question has no answer). A link on your task's page therefore lands *in your task*: it is listed under you, and closing your pages closes it too. A page opened from a page nobody owns stays nobody's.
+- **The window itself is nobody's to close.** `close` on the workspace's window closes **the pages in your task** (and leaves a fresh page if they were all of them) rather than refusing everything — the window stays, because it is the whole workspace's. A window that is one session's own — an internal one — is still destroyed outright.
 
-### Pages in a window: `tabs`, `tab-new`, `tab-close`, `--tab <id>`
+### Pages in a window: `tabs`, `tab-new`, `tab-show`, `tab-close`, `--tab <id>`
 A browser **window** is a container and a **page** is the thing in it, so several prototypes are looked at at once by being several pages of one window rather than by being several windows. A page carries its own address, title, console, theme colour and — for an overlay, whose document is a third-party address — **the prototype it is for**: that is the only place the identity can live, since nothing in the URL would say it after the view loads.
 
-- `tabs` — this window's pages in the order they were opened, each with what it is, who opened it and who is driving it. This is also how page ids are discovered.
-- `tab-new [url]` — add a page to the window. Opens into the window's own untouched page when the window has never been used.
-- `tab-close <id>` — close one page **you opened**. Closing the last page closes the window, and the output says which of the two happened.
-- `--tab <id>` on **any** command — name the page it acts on. Without one a command acts on the page on screen.
+- `tabs` — this window's pages in the order they were opened, each with what it is, whose task it is in and who is driving it. This is also how page ids are discovered.
+- `tab-new [url]` — add a page to the window, **behind whatever the person is reading**. Opens into the window's own untouched page when the window has never been used.
+- `tab-show <id>` — bring a page up for the person to look at. This is the **only** command that changes which page the window shows.
+- `tab-close <id>` — close one page **of your task**. Closing the last page closes the window, and the output says which of the two happened.
+- `--tab <id>` on **any** command — name the page it acts on, without moving the window. Without one a command acts on the page you have been working from (see "Where a command lands" below).
 
 **What `tabs` prints is in three kinds, and the difference matters:**
 
 - **what the page reports** — its real address (for an overlay, the live site's own, never the prototype's), its title, whether it is loading, which prototype it is for and which page of that prototype it is on. One producer: the page. Nothing here can disagree with the document it describes.
-- **who asked for it** — `opened by: agent (session-…)` or `opened by: a person`. Written once, when the page was created. This is the only way to tell your own pages from everybody else's, and the reason it is printed separately: it is a statement of intent, not something measured.
+- **whose task it is in** — `belongs to: agent (session-…)` or `belongs to: a person`. Written when the page is created, or **inherited** from the page it was opened from. This is the only way to tell your own pages from everybody else's, and the reason it is printed separately: it is a statement about the work, not something measured.
 - **who is driving it** — `driven by: <session>` or `nobody right now`. A **lease**: the conversation whose command reaches a page is driving it, the turn ending releases it. It says nothing about who the page belongs to.
 
-**Two questions, two rules.** *May I work here?* A page is yours to work on when it belongs to no prototype (an ordinary page — anybody's to use, which is what "you open it, the agent takes over" means), when it is for the prototype this conversation works on, or when this conversation opened it (so `prototype-open` on a prototype you are not bound to still works). Another conversation's prototype is refused, and the refusal names it. *May I close it?* Only pages **this conversation opened**: the user's pages, and another conversation's, are not yours to close however convenient it would be.
+**Two questions, two rules.** *May I work here?* A page is yours to work on when it belongs to no prototype (an ordinary page — anybody's to use, which is what "you open it, the agent takes over" means), when it is for the prototype this conversation works on, or when it is in **your task** (you opened it, or it was opened from one of your pages, so `prototype-open` on a prototype you are not bound to still works). Another conversation's prototype is refused, and the refusal names it. *May I close it?* Only pages **in your task**: the user's pages, and another conversation's, are not yours to close however convenient it would be.
 
-**A page can be locked; the window cannot.** While a conversation is working on a page — its overlay is up for that turn and its commands are landing there — **that page is locked**: a person cannot click or type into it, and another conversation's command that names it is refused with "it is locked while session-… works on it, until that turn ends". Everything around it stays free, for the user and for other conversations alike: the page rail, the address bar, the window's size, and every other page. The lock is *derived* — that page's lease plus the overlay being up — so it cannot be claimed, inherited or forgotten, and it ends with the turn (`release` drops it early). `tabs` prints `locked: <session> is working on it` while it holds.
+**A page can be locked; the window cannot.** While a conversation is working on a page — its overlay is up for that turn and that page is the one it holds — **that page is locked**: a person cannot click or type into it, and another conversation's command that names it is refused with "it is locked while session-… works on it, until that turn ends". Everything around it stays free, for the user and for other conversations alike: the page rail, the address bar, the window's size, and every other page. The lock names **one page id** rather than being derived from wherever a command landed, which is what keeps it off the page the person happens to be looking at; it is dropped when that page is closed, and the person can drop it themselves — the lock mark in the rail is a button, and clicking it releases the overlay that holds the page. So `release` is not the only way out, and a lock can end earlier than your turn: do not assume the page is still yours between two commands.
 
 That is deliberately narrower than locking the window, which is what this used to do: one window is shared by the whole workspace, so holding *the window* held the user's own browsing and everybody else's pages with it. Holding the page you are actually working on costs nobody anything but a wait — and a command that would rather not wait can name another page with `--tab <id>`.
 
-**Which prototype a command means** is read off the page in front of you first (`page: <name>`, and the prototype the page is for), and only falls back to this conversation's binding when the page belongs to none. That is what lets one conversation work on several prototypes without binding any of them: `--tab` picks the page, and the page says whose it is.
+**Which prototype a command means** is read off the page it acts on: your own page first (see below), and when you have none yet, the page in front of you — and only then does it fall back to this conversation's binding for a page that belongs to none. That is what lets one conversation work on several prototypes without binding any of them: `--tab` picks the page, and the page says whose it is.
 
 A page whose address the prototype's own page table does not describe says so (`none of the prototype's pages`) rather than being given the nearest page name — a file, an SPA route, or a page that belongs to another flow entirely.
 
@@ -598,17 +595,21 @@ A page whose address the prototype's own page table does not describe says so (`
 
 `--tab` is read off the command before the command parses its own arguments, so it never becomes part of an argument: `evaluate document.title --tab tab-2` evaluates `document.title`. A `--tab` with no id is refused rather than falling back to the page on screen — running somewhere else is the one outcome a named target exists to prevent.
 
-Naming a page brings it to the front and the command then runs against the window, which is the same thing the user sees: the window shows what is being worked on, so which prototype is in play is never implied. Reading, switching and closing pages do **not** open a window — a page lives in a window, so a workspace with none has no pages, and `tabs` says so instead of opening an empty one.
+**Where a command lands is your page, not the page on screen.** A command that names no page acts on the page this conversation has been working from — its **cursor**, marked in `tabs` as `your page: …`, and named in the summary as `cursorOf`. You get one by naming a page (`--tab <id>`, which also makes it yours) or by opening one (`tab-new`, `prototype-open`); with none yet, a command adopts the page the person is looking at, and that page becomes yours from then on. The point of the order is that **the person switching pages cannot retarget your work**: what they look at is theirs to move. The cursor survives your turn ending, so the next turn continues where this one worked; if the page it points at is closed, the next command falls back to the page on screen again.
 
-**In the app**, every window has a strip under its address bar: one chip per page (the one on screen is raised, a page the agent opened is marked, a page being worked on carries a dot), a close button on each, and a `+` for a new page. It is always there, including with a single page — the `+` is how a person opens something themselves, and a window with one page is exactly when they want a second one. The same pages appear in the window's badge in the app's top bar, grouped under that window, for when the window itself is not in front.
+**Your work happens in the background, and the person's view is not yours to move.** Naming a page with `--tab`, opening one with `tab-new` or `prototype-open`, and every command that follows all leave the window showing whatever page the person was on: a click, a screenshot, a patch and a console read land on *your* page whether or not anybody is looking at it. The window is shared, so this is what makes it usable by both of you at once — the person reading another page of it is not interrupted, and their page-switching still cannot retarget you. The one exception is `tab-show <id>`, which is exactly the request to move their view: use it when the point of the command is that somebody looks at the page.
 
-### `focus [windowId]` / `windows`
-Manage and inspect browser windows and who is driving them. `windows` lists every window the workspace has, with `driver:` (who is using it right now — see "The window is shared" above), `availableToSession:`, and the prototype of the page each one is showing.
+Reading, switching and closing pages do **not** open a window — a page lives in a window, so a workspace with none has no pages, and `tabs` says so instead of opening an empty one.
+
+**In the app**, every window has a **page rail** down its left edge: one row per page (the one on screen is raised, a page the agent opened is marked, a page being worked on carries a **lock** — which is also the button that takes it back), a close button on each, and a `+` for a new page. It is always there, including with a single page — the `+` is how a person opens something themselves, and a window with one page is exactly when they want a second one. The same pages appear in the window's badge in the app's top bar, grouped under that window, for when the window itself is not in front.
+
+### `focus [windowId]`
+Bring the browser window to the front without making a new one. There is **one window per workspace**, so there is nothing to list and no window to choose between: with no id this focuses the workspace's window, and the output says what it is showing. What each *page* of it is, whose task it is in and who is driving it is `tabs`.
 
 ### Lifecycle commands
 - `release` — dismiss the agent overlay, which also releases the page lock it held. The lock is **on the page**, not the window: the rail, the address bar, the window's size and every other page were never blocked by it.
 - `hide` — hide window but preserve session state
-- `close` — close and destroy a window of your own. On the workspace's window it closes **the pages you opened** instead (a fresh page takes their place if they were all of them), and says so; the window itself belongs to the workspace and is never closed by a conversation.
+- `close` — close and destroy a window of your own. On the workspace's window it closes **the pages in your task** instead (a fresh page takes their place if they were all of them), and says so; the window itself belongs to the workspace and is never closed by a conversation.
 
 ---
 

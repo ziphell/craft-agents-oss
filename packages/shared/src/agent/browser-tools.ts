@@ -408,17 +408,36 @@ export interface BrowserPaneFns {
    */
   createTab: (options?: BrowserTabOpenOptions) => Promise<string>;
   /**
-   * Put one of this session's pages on screen.
+   * Make one of this session's pages the page it **works from** — without showing it.
    *
-   * Everything the window reports is read through the page on screen, so this is
-   * what "act on that page" means — and it is what makes the target visible while
-   * the command runs. An unknown id throws.
+   * This is what `--tab` names. The page becomes the one the rest of the command, the
+   * next command, and the command after the person clicks around all land on, and the
+   * window does not move: it is shared with the person, and the page they are reading is
+   * theirs to keep (plan §22, 第十轮/第十二轮). An unknown id throws — running somewhere
+   * else is the one outcome a named target exists to prevent.
+   */
+  targetTab: (tabId: string) => Promise<void>;
+  /**
+   * Bring one of this session's pages on screen — `tab-show`.
+   *
+   * What the window shows from now on, and, because a page you bring up is one you are
+   * about to work on with the person, the page this session works from as well. An
+   * unknown id throws.
    */
   activateTab: (tabId: string) => Promise<void>;
   /** Close one page. Closing a window's last page closes the window. */
   closeTab: (tabId: string) => Promise<{ remaining: number }>;
   /** This session's window's pages, in the order they were opened. */
   listTabs: () => Promise<BrowserTabInfo[]>;
+  /**
+   * The windows this session can reach, with whether each is visible and who is driving it.
+   *
+   * Not a listing an agent reads — there is **one window per workspace**, shared by every
+   * conversation in it and by the person, so "which window" is not a question (plan §22).
+   * The app-side flows use it as a *read of the window's state*: `open` waits for a
+   * foregrounded window to become visible, `close`/`hide`/`focus` report what changed, and
+   * a page-level question ("which pages does this window have") is `listTabs`.
+   */
   listWindows: () => Promise<Array<{
     id: string;
     title: string;
@@ -433,8 +452,11 @@ export interface BrowserPaneFns {
      */
     prototype?: PrototypeWindowDescriptor | null;
     isVisible: boolean;
-    ownerType: 'session' | 'manual';
-    ownerSessionId: string | null;
+    /**
+     * Which conversation is driving this window right now, or `null` when nobody
+     * is — a lease, so the answer changes between turns. It is not an owner: one
+     * window per workspace is shared by every conversation in it and by the user.
+     */
     boundSessionId: string | null;
     agentControlActive?: boolean;
   }>>;
@@ -496,14 +518,18 @@ with its pages, and which ones reference which.
 Detailed rules and the full command reference: docs/browser-tools.md — read it before the first command.
 
 The window is one and its pages are many: every command can name the page it acts on with \`--tab <id>\`
-(\`tabs\` lists them), and without one it acts on the page on screen. \`prototype-open\` always opens a page
-of its own, which is what lets two prototypes be worked on at once rather than replacing each other.
+(\`tabs\` lists them). Without one it acts on **your** page — the page you have been working from, which
+\`tabs\` marks as \`your page\` — and only on the page on screen when you have none yet; the person
+switching pages does not move your commands. \`prototype-open\` always opens a page of its own, which is
+what lets two prototypes be worked on at once rather than replacing each other.
 
 There is **one browser window per workspace**, shared by every conversation in it and by the user — so
 \`open\` adds a page to it instead of making a window, and the window is not yours to close: use
-\`tab-close <id>\` for the pages you opened, or \`release\` to drop your overlay. \`windows\` says who is
-driving each one and what it is showing. Which prototype a command means is read from the page in front
-of you first, so several prototypes can be driven from one conversation without binding any of them.
+\`tab-close <id>\` for the pages in your task (the ones you opened, and the pages opened from them), or
+\`release\` to drop your overlay. \`tabs\` says what each page is, whose task it is in and who is driving
+it — there is no window list to read, because there is one window. Which
+prototype a command means is read from the page it acts on — your own page first, then the one in front
+of you — so several prototypes can be driven from one conversation without binding any of them.
 
 Examples:
 - \`--help\`
@@ -568,7 +594,6 @@ Examples:
 - \`key k meta\`
 - \`downloads wait 15000\`
 - \`focus [windowId]\` — focus a browser window (no new window)
-- \`windows\` — the workspace's windows, who is driving each, and what it is showing
 - \`release [windowId|all]\` — dismiss the agent control overlay when done
 - \`close [windowId]\` — close a window of your own; the shared window is refused
 - \`hide [windowId]\` — hide the window while preserving state

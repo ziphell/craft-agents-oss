@@ -77,7 +77,7 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
   // Internal: package and ship one IBrowserPaneManager call.
   // ---------------------------------------------------------------------------
 
-  private async invoke<T>(method: BrowserCapabilityMethod, args: unknown[]): Promise<T> {
+  private async invoke<T>(method: BrowserCapabilityMethod, args: unknown[], tabId?: string): Promise<T> {
     const clientId = this.getHostClient()
     if (!clientId) {
       throw new CodedError(
@@ -98,13 +98,17 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
       args,
       sessionId: this.sessionId,
       workspaceId: this.workspaceId,
+      // Carried beside the session and workspace rather than inside `args`: it is routing,
+      // and the page a command acts on is the caller's decision to state
+      // (plan §22, 第十二轮).
+      tabId,
     })
   }
 
   /** Synchronous methods on IBPM are emulated by awaiting in callers; here we
    * preserve a `void` return for fire-and-forget paths used by SessionManager. */
-  private invokeSync(method: BrowserCapabilityMethod, args: unknown[]): void {
-    this.invoke<unknown>(method, args).catch(() => {
+  private invokeSync(method: BrowserCapabilityMethod, args: unknown[], tabId?: string): void {
+    this.invoke<unknown>(method, args, tabId).catch(() => {
       // Swallow — callers like setAgentControl / unbindAllForSession don't await.
       // The remote agent will surface the error on the next awaited call if
       // something is genuinely broken.
@@ -203,10 +207,6 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
     return await this.invoke('focusBoundForSession', [sessionId])
   }
 
-  bindSession(id: string, sessionId: string, _options?: { workspaceId?: string | null }): void {
-    this.invokeSync('bindSession', [id, sessionId])
-  }
-
   focus(id: string): void {
     this.invokeSync('focus', [id])
   }
@@ -253,6 +253,10 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
     this.invokeSync('activateTab', [instanceId, tabId])
   }
 
+  setSessionPage(instanceId: string, tabId: string, sessionId: string): void {
+    this.invokeSync('setSessionPage', [instanceId, tabId, sessionId])
+  }
+
   closeTab(instanceId: string, tabId: string): void {
     this.invokeSync('closeTab', [instanceId, tabId])
   }
@@ -268,85 +272,94 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
 
   // ---------------------------------------------------------------------------
   // Async methods — these are the ones that actually matter to the agent.
+  //
+  // Each page-scoped one takes the page it acts on (`tabId`) and ships it as routing
+  // context on the request: the local manager is shared by every conversation, so "which
+  // page" has to travel with the call (plan §22, 第十二轮).
   // ---------------------------------------------------------------------------
 
-  async navigate(id: string, url: string): Promise<{ url: string; title: string }> {
-    return await this.invoke('navigate', [id, url])
+  async navigate(id: string, url: string, tabId?: string): Promise<{ url: string; title: string }> {
+    return await this.invoke('navigate', [id, url], tabId)
   }
-  async goBack(id: string): Promise<void> {
-    await this.invoke('goBack', [id])
+  async goBack(id: string, tabId?: string): Promise<void> {
+    await this.invoke('goBack', [id], tabId)
   }
-  async goForward(id: string): Promise<void> {
-    await this.invoke('goForward', [id])
+  async goForward(id: string, tabId?: string): Promise<void> {
+    await this.invoke('goForward', [id], tabId)
   }
-  reload(id: string): void {
+  reload(id: string, tabId?: string): void {
     // Not awaited, for the same reason the toolbar's reload is not: nothing waits
     // for a document to load. A round-trip that fails means the page did not
     // reload, which the next state push makes visible.
-    void this.invoke('reload', [id]).catch(() => {})
+    void this.invoke('reload', [id], tabId).catch(() => {})
   }
 
-  async getAccessibilitySnapshot(id: string): Promise<AccessibilitySnapshot> {
-    return await this.invoke('getAccessibilitySnapshot', [id])
+  async getAccessibilitySnapshot(id: string, tabId?: string): Promise<AccessibilitySnapshot> {
+    return await this.invoke('getAccessibilitySnapshot', [id], tabId)
   }
   async clickElement(
     id: string, ref: string,
     options?: { waitFor?: 'none' | 'navigation' | 'network-idle'; timeoutMs?: number },
+    tabId?: string,
   ): Promise<void> {
-    await this.invoke('clickElement', [id, ref, options])
+    await this.invoke('clickElement', [id, ref, options], tabId)
   }
-  async clickAtCoordinates(id: string, x: number, y: number): Promise<void> {
-    await this.invoke('clickAtCoordinates', [id, x, y])
+  async clickAtCoordinates(id: string, x: number, y: number, tabId?: string): Promise<void> {
+    await this.invoke('clickAtCoordinates', [id, x, y], tabId)
   }
-  async drag(id: string, x1: number, y1: number, x2: number, y2: number): Promise<void> {
-    await this.invoke('drag', [id, x1, y1, x2, y2])
+  async drag(id: string, x1: number, y1: number, x2: number, y2: number, tabId?: string): Promise<void> {
+    await this.invoke('drag', [id, x1, y1, x2, y2], tabId)
   }
-  async fillElement(id: string, ref: string, value: string): Promise<void> {
-    await this.invoke('fillElement', [id, ref, value])
+  async fillElement(id: string, ref: string, value: string, tabId?: string): Promise<void> {
+    await this.invoke('fillElement', [id, ref, value], tabId)
   }
-  async typeText(id: string, text: string): Promise<void> {
-    await this.invoke('typeText', [id, text])
+  async typeText(id: string, text: string, tabId?: string): Promise<void> {
+    await this.invoke('typeText', [id, text], tabId)
   }
-  async selectOption(id: string, ref: string, value: string): Promise<void> {
-    await this.invoke('selectOption', [id, ref, value])
+  async selectOption(id: string, ref: string, value: string, tabId?: string): Promise<void> {
+    await this.invoke('selectOption', [id, ref, value], tabId)
   }
-  async setClipboard(id: string, text: string): Promise<void> {
-    await this.invoke('setClipboard', [id, text])
+  async setClipboard(id: string, text: string, tabId?: string): Promise<void> {
+    await this.invoke('setClipboard', [id, text], tabId)
   }
-  async getClipboard(id: string): Promise<string> {
-    return await this.invoke('getClipboard', [id])
+  async getClipboard(id: string, tabId?: string): Promise<string> {
+    return await this.invoke('getClipboard', [id], tabId)
   }
-  async scroll(id: string, direction: 'up' | 'down' | 'left' | 'right', amount?: number): Promise<void> {
-    await this.invoke('scroll', [id, direction, amount])
+  async scroll(id: string, direction: 'up' | 'down' | 'left' | 'right', amount?: number, tabId?: string): Promise<void> {
+    await this.invoke('scroll', [id, direction, amount], tabId)
   }
-  async sendKey(id: string, args: BrowserKeyArgs): Promise<void> {
-    await this.invoke('sendKey', [id, args])
+  async sendKey(id: string, args: BrowserKeyArgs, tabId?: string): Promise<void> {
+    await this.invoke('sendKey', [id, args], tabId)
   }
-  async uploadFile(_id: string, _ref: string, _filePaths: string[]): Promise<unknown> {
+  async uploadFile(_id: string, _ref: string, _filePaths: string[], _tabId?: string): Promise<unknown> {
     throw new CodedError(
       'BROWSER_REMOTE_UPLOAD_NOT_SUPPORTED',
       'File upload from a remote agent is not supported. ' +
       'Ask the user to attach the file to the session instead.',
     )
   }
-  async evaluate(id: string, expression: string): Promise<unknown> {
-    return await this.invoke('evaluate', [id, expression])
+  async evaluate(id: string, expression: string, tabId?: string): Promise<unknown> {
+    return await this.invoke('evaluate', [id, expression], tabId)
   }
 
-  async pickElement(id: string, options?: { timeoutMs?: number; pollMs?: number }): Promise<PickedElement | null> {
-    return await this.invoke<PickedElement | null>('pickElement', [id, options])
+  async pickElement(
+    id: string,
+    options?: { timeoutMs?: number; pollMs?: number },
+    tabId?: string,
+  ): Promise<PickedElement | null> {
+    return await this.invoke<PickedElement | null>('pickElement', [id, options], tabId)
   }
 
-  async addInitScript(id: string, key: string, source: string): Promise<string> {
-    return await this.invoke<string>('addInitScript', [id, key, source])
+  async addInitScript(id: string, key: string, source: string, tabId?: string): Promise<string> {
+    return await this.invoke<string>('addInitScript', [id, key, source], tabId)
   }
 
-  async clearInitScripts(id: string, keyPrefix: string): Promise<string[]> {
-    return await this.invoke<string[]>('clearInitScripts', [id, keyPrefix])
+  async clearInitScripts(id: string, keyPrefix: string, tabId?: string): Promise<string[]> {
+    return await this.invoke<string[]>('clearInitScripts', [id, keyPrefix], tabId)
   }
 
-  async startFrameCapture(id: string, options?: FrameCaptureOptions): Promise<FrameCaptureStarted> {
-    return await this.invoke<FrameCaptureStarted>('startFrameCapture', [id, options])
+  async startFrameCapture(id: string, options?: FrameCaptureOptions, tabId?: string): Promise<FrameCaptureStarted> {
+    return await this.invoke<FrameCaptureStarted>('startFrameCapture', [id, options], tabId)
   }
 
   async stopFrameCapture(id: string): Promise<FrameCaptureResult | null> {
@@ -364,45 +377,45 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
     return await this.invoke<VideoFrameExtractionResult>('extractVideoFrames', [filePath, options])
   }
 
-  async setFetchMock(id: string, routes: MockRoute[]): Promise<number> {
-    return await this.invoke<number>('setFetchMock', [id, routes])
+  async setFetchMock(id: string, routes: MockRoute[], tabId?: string): Promise<number> {
+    return await this.invoke<number>('setFetchMock', [id, routes], tabId)
   }
 
-  async clearFetchMock(id: string): Promise<void> {
-    await this.invoke<void>('clearFetchMock', [id])
+  async clearFetchMock(id: string, tabId?: string): Promise<void> {
+    await this.invoke<void>('clearFetchMock', [id], tabId)
   }
 
-  async screenshot(id: string, options?: BrowserScreenshotOptions): Promise<BrowserScreenshotResult> {
-    const wire = await this.invoke<ScreenshotResultWire>('screenshot', [id, options])
+  async screenshot(id: string, options?: BrowserScreenshotOptions, tabId?: string): Promise<BrowserScreenshotResult> {
+    const wire = await this.invoke<ScreenshotResultWire>('screenshot', [id, options], tabId)
     return this.fromScreenshotWire(wire)
   }
-  async screenshotRegion(id: string, target: BrowserScreenshotRegionTarget): Promise<BrowserScreenshotResult> {
-    const wire = await this.invoke<ScreenshotResultWire>('screenshotRegion', [id, target])
+  async screenshotRegion(id: string, target: BrowserScreenshotRegionTarget, tabId?: string): Promise<BrowserScreenshotResult> {
+    const wire = await this.invoke<ScreenshotResultWire>('screenshotRegion', [id, target], tabId)
     return this.fromScreenshotWire(wire)
   }
 
-  getConsoleLogs(id: string, options?: BrowserConsoleOptions): BrowserConsoleEntry[] {
+  getConsoleLogs(id: string, options?: BrowserConsoleOptions, tabId?: string): BrowserConsoleEntry[] {
     // IBPM declares sync. The async result is awaited inside the runtime layer
     // that consumes consoleLogs; returning [] here keeps the sync surface intact.
-    void this.invoke<BrowserConsoleEntry[]>('getConsoleLogs', [id, options]).catch(() => {})
+    void this.invoke<BrowserConsoleEntry[]>('getConsoleLogs', [id, options], tabId).catch(() => {})
     return []
   }
   windowResize(id: string, width: number, height: number): { width: number; height: number } {
     void this.invoke<{ width: number; height: number }>('windowResize', [id, width, height]).catch(() => {})
     return { width, height }
   }
-  getNetworkLogs(id: string, options?: BrowserNetworkOptions): BrowserNetworkEntry[] {
-    void this.invoke<BrowserNetworkEntry[]>('getNetworkLogs', [id, options]).catch(() => {})
+  getNetworkLogs(id: string, options?: BrowserNetworkOptions, tabId?: string): BrowserNetworkEntry[] {
+    void this.invoke<BrowserNetworkEntry[]>('getNetworkLogs', [id, options], tabId).catch(() => {})
     return []
   }
-  async waitFor(id: string, args: BrowserWaitArgs): Promise<BrowserWaitResult> {
-    return await this.invoke('waitFor', [id, args])
+  async waitFor(id: string, args: BrowserWaitArgs, tabId?: string): Promise<BrowserWaitResult> {
+    return await this.invoke('waitFor', [id, args], tabId)
   }
-  async getDownloads(id: string, options?: BrowserDownloadOptions): Promise<BrowserDownloadEntry[]> {
-    return await this.invoke('getDownloads', [id, options])
+  async getDownloads(id: string, options?: BrowserDownloadOptions, tabId?: string): Promise<BrowserDownloadEntry[]> {
+    return await this.invoke('getDownloads', [id, options], tabId)
   }
-  async detectSecurityChallenge(id: string): Promise<{ detected: boolean; provider: string; signals: string[] }> {
-    return await this.invoke('detectSecurityChallenge', [id])
+  async detectSecurityChallenge(id: string, tabId?: string): Promise<{ detected: boolean; provider: string; signals: string[] }> {
+    return await this.invoke('detectSecurityChallenge', [id], tabId)
   }
 
   // ---------------------------------------------------------------------------

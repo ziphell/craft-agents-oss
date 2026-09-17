@@ -32,8 +32,9 @@ type ReachableTab = Pick<BrowserTabSummary, 'id' | 'prototype' | 'openedBySessio
  *   makes "you open it, the agent takes over" work for a page that has nothing to do
  *   with prototypes;
  * - it belongs to the prototype this conversation works on;
- * - this conversation opened it — an explicit `prototype-open <slug>` from a
- *   conversation that is not bound to it still gets to work on what it opened.
+ * - it belongs to this conversation's **task** — it opened the page, or the page was opened
+ *   from one of its pages (plan §22, 第十一轮), so an explicit `prototype-open <slug>` from
+ *   an unbound conversation still gets to work on what it opened.
  */
 export function whyTabIsOutOfReach(
   tab: ReachableTab,
@@ -49,6 +50,36 @@ export function whyTabIsOutOfReach(
     `${ownPrototypeSlug ? `"${ownPrototypeSlug}"` : 'no prototype'}. Name a page of your own with ` +
     `"--tab <id>" ("tabs" lists them), or work on this one with "prototype-bind ${tab.prototype.slug}".`
   )
+}
+
+/**
+ * Which page a command from this conversation means, when it names none.
+ *
+ * The conversation's **own page first** — the one it has been working from, its cursor
+ * (`cursorOf`) — and only then the page on screen. The order is the whole point of the
+ * cursor (plan §22, 第十轮): what the person is looking at is theirs to change at any
+ * moment, and it must not move somebody else's command. The other way round is what made
+ * "the user switched pages" silently retarget a conversation's work — and it is why the
+ * window model (one window or one per conversation) does not matter here: any window
+ * with several pages has this problem.
+ *
+ * Falling back to the page on screen is not a compromise, it is the takeover case: a
+ * conversation with no page of its own acting on what the person has in front of them
+ * (plan §22's opening move, "you open it, the agent takes over").
+ *
+ * The cursor is sticky across turns, unlike the lease: a conversation that comes back
+ * after its turn ended is still working from the same page. `null` only when the window
+ * has no pages at all.
+ */
+export function pickCommandTarget<T extends Pick<BrowserTabSummary, 'id' | 'cursorOf' | 'active'>>(
+  tabs: T[],
+  sessionId: string,
+): { tab: T; because: 'cursor' | 'on-screen' } | null {
+  const ownPage = tabs.find((tab) => tab.cursorOf === sessionId)
+  if (ownPage) return { tab: ownPage, because: 'cursor' }
+
+  const onScreen = tabs.find((tab) => tab.active)
+  return onScreen ? { tab: onScreen, because: 'on-screen' } : null
 }
 
 /**
@@ -79,9 +110,9 @@ export function whyTabIsLocked(
 /**
  * Why this page is not this conversation's to close, or `null` when it is.
  *
- * Nothing about reach helps here: a page of *my* prototype that another
- * conversation opened is still that conversation's page, and closing it would take
- * away work somebody else was doing.
+ * Nothing about reach helps here: a page of *my* prototype that another conversation's task
+ * holds — one it opened, or one opened from one of its pages — is still that task's page, and
+ * closing it would take away work somebody else was doing.
  */
 export function whyTabIsNotMineToClose(
   tab: Pick<BrowserTabSummary, 'id' | 'openedBySessionId'>,
@@ -90,6 +121,6 @@ export function whyTabIsNotMineToClose(
   if (tab.openedBySessionId === sessionId) return null
 
   return tab.openedBySessionId
-    ? `Page ${tab.id} was opened by ${tab.openedBySessionId}, not by this conversation, so it is not yours to close. "tabs" lists the pages you opened.`
+    ? `Page ${tab.id} belongs to ${tab.openedBySessionId}'s task, not to this conversation's, so it is not yours to close. "tabs" lists the pages you opened.`
     : `Page ${tab.id} is the user's, so it is not yours to close. "tabs" lists the pages you opened.`
 }

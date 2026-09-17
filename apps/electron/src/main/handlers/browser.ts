@@ -127,7 +127,7 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
 
   /**
    * Manage one window's pages from the main window's badge strip: switch, close,
-   * add.
+   * add, or take a locked page back.
    *
    * The renderer states which page and which window; what a page *is* (its
    * identity, its opener, the strip's geometry) is the manager's to decide, so
@@ -145,6 +145,14 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
 
       if (input.action === 'close') {
         if (input.tabId) browserPaneManager.closeTab(input.instanceId, input.tabId)
+        return
+      }
+
+      if (input.action === 'release') {
+        // Taking a locked page back: the overlay is what holds it, so dropping the
+        // overlay is the unlock (plan §22, 第九轮修正). No session named — whoever is
+        // working there lets go.
+        browserPaneManager.clearAgentControlForInstance(input.instanceId)
         return
       }
 

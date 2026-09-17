@@ -158,22 +158,33 @@ export function registerPrototypesHandlers(server: RpcServer, deps: HandlerDeps)
       if (!deps.browserPaneManager) {
         throw new Error('PROTOTYPES_APPLY: this host has no browser pane manager.')
       }
+      // The page this apply is about: the one on screen, which is the page the caller is
+      // looking at — this endpoint has no conversation to route by, it has a window (第十二轮).
+      const page = (await deps.browserPaneManager.listTabsAsync(instanceId).catch(() => []))
+        .find((tab) => tab.active) ?? null
       const result = await applyPrototypeToBrowser(
         deps.browserPaneManager,
         instanceId,
         workspace.rootPath,
         slug,
+        page,
       )
       log.info(`PROTOTYPES_APPLY: ${slug} → ${result.applied} patch(es) into ${instanceId}`)
       return result
     },
   )
 
-  // Replay one prototype into every window showing it, after its files changed
+  // Replay one prototype into every **page** showing it, after its files changed
   // (plan §21.4). No instance id: the caller knows *what* changed (the watcher
-  // named the file), the main process knows *which windows* are on it — and the
-  // decision of what a replay means (reload, or inject) is made per window, from
+  // named the file), the main process knows *which pages* are on it — and the
+  // decision of what a replay means (reload, or inject) is made per page, from
   // the document itself, in `replayPrototypeInBrowser`.
+  //
+  // Per page rather than per window, which is what "a window showing it" means once
+  // a window holds several pages (第十二轮): the page of the prototype is usually *behind* the
+  // one the person is reading, so asking the window would answer about the wrong page — and
+  // an auto-replay that reloads the person's page instead of the prototype's is worse than no
+  // replay at all.
   server.handle(
     RPC_CHANNELS.prototypes.REPLAY,
     async (_ctx, workspaceId: string, slug: string) => {
@@ -185,25 +196,46 @@ export function registerPrototypesHandlers(server: RpcServer, deps: HandlerDeps)
 
       // A window with no workspace recorded passes the filter, exactly as the
       // renderer's own tab strip does: a window we cannot place must not be
-      // silently skipped.
+      // silently skipped. Which *pages* of it show the prototype is asked per window, because
+      // that is a page-level fact: `prototypeSlug` on the window is the page on screen's, and
+      // with the agent working in the background that is not where the prototype is.
       const wanted = new Set([workspaceId, workspace.id])
       const instances = (await deps.browserPaneManager.listInstancesAsync()).filter(
-        (instance) => instance.prototypeSlug === slug && (!instance.workspaceId || wanted.has(instance.workspaceId)),
+        (instance) => !instance.workspaceId || wanted.has(instance.workspaceId),
       )
 
       const results = []
       for (const instance of instances) {
+        let pages
         try {
-          results.push(await replayPrototypeInBrowser(deps.browserPaneManager, instance.id, workspace.rootPath, slug))
+          pages = (await deps.browserPaneManager.listTabsAsync(instance.id))
+            .filter((tab) => tab.prototype?.slug === slug)
         } catch (error) {
-          // One window failing to reload must not stop the others: the remaining
-          // windows are still showing a prototype whose files changed.
-          log.warn(`PROTOTYPES_REPLAY: ${slug} failed in ${instance.id}: ${String(error)}`)
+          log.warn(`PROTOTYPES_REPLAY: could not list the pages of ${instance.id}: ${String(error)}`)
+          continue
+        }
+
+        for (const page of pages) {
+          try {
+            results.push(
+              await replayPrototypeInBrowser(
+                deps.browserPaneManager,
+                instance.id,
+                workspace.rootPath,
+                slug,
+                page,
+              ),
+            )
+          } catch (error) {
+            // One page failing to reload must not stop the others: the remaining
+            // pages are still showing a prototype whose files changed.
+            log.warn(`PROTOTYPES_REPLAY: ${slug} failed in ${instance.id}/${page.id}: ${String(error)}`)
+          }
         }
       }
 
-      log.info(`PROTOTYPES_REPLAY: ${slug} → ${results.length} window(s)`)
-      return { slug, windows: results.length, results }
+      log.info(`PROTOTYPES_REPLAY: ${slug} → ${results.length} page(s)`)
+      return { slug, pages: results.length, results }
     },
   )
 

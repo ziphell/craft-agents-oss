@@ -130,7 +130,7 @@
   "browser.pickHint": "Ein Element auf der Seite anklicken",
   "browser.readyDescription": "Jede Sitzung kann diesen Browser nutzen, um Aufgaben wie Recherche, Formularausfüllung, QA-Prüfungen oder Datenextraktion durchzuführen. Das + in der Leiste links öffnet eine weitere Seite.",
   "browser.readyTitle": "Dieser Browser ist bereit für Ihre Agents – und für Sie ;)",
-  "browser.safetyHint": "Craft Agents steuert Browserfenster nur, wenn du es verlangst.",
+  "browser.releaseLock": "Diese Seite freigeben",
   "browser.stopLoading": "Laden stoppen",
   "browser.untitledPage": "Unbenannte Seite",
   "browser.urlPlaceholder": "URL eingeben oder suchen…",
