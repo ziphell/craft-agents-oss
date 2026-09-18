@@ -276,6 +276,15 @@ storage: true        moduleRan: true               ← localStorage 与 <script 
 - **同时统一的行为**：尾部回退匹配（见实施方案 §5.3）——此前页面载体连 `baseUrl` 前缀都命中不了。
 - **教训**：这个仓库里"两份实现"是有先例的（`onboarding.ts` 的两份 handler），所以规则不是"永不重复"，而是**重复必须有对照测试**。没有对照的那一份，等于没有实现。
 
+### 3.22 地址栏里一个渲染错误能把整条 chrome 抹白（而且没人兜）
+
+- **症状**：按准星上的 `✗`（有未保存改动时提问的那一下）之后，**整个地址栏空白**，窗口点不动。
+- **根因**：那一版给准星左边新加的 `✓` 用了 `HeaderIconButton` 的 `tooltip`，它渲染的是应用那套 radix Tooltip——而 **radix 在没有 `TooltipProvider` 时直接 throw**。provider 挂在 `App.tsx` 的根上，**窗口这条地址栏的文档没有**（这也是为什么这条 bar 上其它按钮都只用 `aria-label`）。异常发生在 React 渲染里，整棵树被卸掉，于是这个文档什么都不画；地址栏和标签栏共用同一份 bundle，两块一起白。
+- **修法**：两层兜，各管一半。
+  - **文档这侧**：`browser-toolbar.tsx` 的挂载点套一个 `ChromeErrorBoundary`——渲染错误停在那一个 surface 里，画"这里出了点问题，页面不受影响" + 「重新加载」，而不是让树消失。**不自动重载**：确定的错误会变成无限重载。
+  - **主进程那侧**：真正的进程死掉（React 兜不住的）走 `render-process-gone`，bar / rail / overlay **各挂一个**，把**那一个** surface 的文档重新载入（走既有的重试与兜底页），窗口、标签页、别人的会话一概不动；`reason: 'clean-exit'`（窗口自己关时的连带退出）不算崩溃，不重载。
+- **判据**：窗口的每一块 chrome 都是自己的文档、自己的 view，每个标签页也是——所以"某一块的渲染器死了"从来不是"窗口死了"。要做的是把那一块拿回来，而不是动窗口。
+
 ---
 
 ## 4. 已删除的机制（墓园）
@@ -336,7 +345,7 @@ cd apps/electron && bun run build:renderer
 - **`routing.test.ts` 那两条已经绿了**（实测 `cd packages/shared && bun test src/protocol` 全过）：`prototypes:replay` / `setPages` 已经补进分类（§3.7；`prototypes:commit` 随折叠改到复制上整条删掉，`setProject` 随 §15.1.4 删掉了）。但**加通道时仍然要同时改注册表与 routing**，否则这两条会立刻红。
 - **typecheck 这条线已经干净**：页的归属改名（`BrowserTabSummary.belongsTo: TabBelongsTo`、`BrowserCapabilityRequest.work`、`assignTab(instanceId, tabId, to, by)`）早已完成，`packages/shared/src/tasks/outputs.ts` 那处 `ParsedOutputs.problems` 也已修，实测 `bun run typecheck:shared` 无报错。（`outputs.ts` 仍是**未跟踪**文件——判断自己有没有引入类型错误时，按包单独跑 `bun run tsc --noEmit` 比 `typecheck:all` 更快定位。）
 - **"哪一段"只有一处定义**：`tabSectionOf`（`packages/shared/src/protocol/dto.ts`——`person` / `session:<id>` / `task:<slug>`）。rail 与徽章画段读它，主进程决定"关掉一个标签页之后谁接替"也读它。**别在 rail 之外再写一遍"按会话/任务分段"**：画出来的段与交接用的段一旦不一致，表现是"接替跳到了别的分组"，从现象看不出是哪一边错。它是 `sameWork` 的粗版（任务的不同节点算同一段），所以**不能当权限判据用**，reach 只认 `sameWork`。
-- `apps/electron` 的 `browser-pane-manager.test.ts`：源码树里 **6 个**窗口生命周期用例失败（`destroys child popups…`、`focus brings the instance window to front`、`dedupes repeated focus calls before ready-to-show`、`still destroys instance when cleanup throws`、`retries toolbar load and recovers`、`loads toolbar fallback page after retry exhaustion`）。都是 `window.show()` 一类 mock 断言，与原型逻辑无关。
+- `apps/electron` 的 `browser-pane-manager.test.ts`：源码树里 **5 个**窗口生命周期用例失败（`focus brings the instance window to front`、`dedupes repeated focus calls before ready-to-show`、`still destroys instance when cleanup throws`、`retries toolbar load and recovers`、`loads toolbar fallback page after retry exhaustion`）。都是 `window.show()` / 工具栏加载一类 mock 断言，与原型逻辑无关。（`destroys child popups…` 曾在这份名单里：它是 CDP mock 缺 overlay 方法导致的 `teardownOverlay is not a function`，补上 mock 后已绿；element picker 那批用例的失败来自旧桩名 `armPicker`/`cancelPicker`，同期改成 `armOverlay`/`teardownOverlay` 后也绿了。）
 - **测试路径会连带跑 `release/win-unpacked/resources/app/...` 下的旧副本**：`bun test <路径>` 会把打包目录里那份同名测试也收进来，于是失败数与通过数**翻倍**；而且那份旧拷贝会多出 2 个**源码树里已经通过**的失败（`replays toolbar state with theme color when window is shown`、`replays full toolbar state when toolbar renderer finishes loading`）。判断"是不是我引入的"时先排除这些重复项。
 
 ### 5.3 测试落点

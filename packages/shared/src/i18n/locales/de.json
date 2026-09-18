@@ -145,6 +145,8 @@
   "browser.untitledTab": "Unbenannter Tab",
   "browser.urlPlaceholder": "URL eingeben oder suchen…",
   "browser.windowOptions": "Browserfenster-Optionen",
+  "browserChrome.failed": "Hier ist etwas schiefgelaufen – die Seiten sind nicht betroffen.",
+  "browserChrome.reload": "Neu laden",
   "browserEdit.editFailed": "Die Änderung konnte nicht gespeichert werden",
   "browserEdit.edited": "Gespeichert als {{file}}",
   "browserEdit.editorBold": "Fett",

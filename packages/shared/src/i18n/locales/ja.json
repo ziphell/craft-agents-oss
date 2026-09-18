@@ -145,6 +145,8 @@
   "browser.untitledTab": "無題のタブ",
   "browser.urlPlaceholder": "URL を入力または検索...",
   "browser.windowOptions": "ブラウザウィンドウのオプション",
+  "browserChrome.failed": "ここで問題が発生しました。ページには影響ありません。",
+  "browserChrome.reload": "再読み込み",
   "browserEdit.editFailed": "変更を保存できませんでした",
   "browserEdit.edited": "{{file}} として保存しました",
   "browserEdit.editorBold": "太字",

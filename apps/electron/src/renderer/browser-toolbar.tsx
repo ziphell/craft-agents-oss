@@ -910,12 +910,15 @@ function BrowserToolbarApp() {
               leave. Beside the crosshair because that is where the question is asked —
               the page's own ✓ does the same thing, but a page cannot be sure its bar is
               visible, and this is one press either way.
+
+              Named by `aria-label` alone, like every other button on this bar: this
+              document has no `TooltipProvider` (the app shell mounts one), and radix
+              throws without it — which takes the whole chrome down with it.
             */}
             {picking && state.leavingWithEdits && (
               <HeaderIconButton
                 icon={<Check className="h-3.5 w-3.5" />}
                 aria-label={t('browserEdit.editorSaveAndLeave')}
-                tooltip={t('browserEdit.editorSaveAndLeave')}
                 onClick={handleSaveEdits}
               />
             )}
@@ -1018,11 +1021,61 @@ function BrowserToolbarApp() {
 }
 
 /* ------------------------------------------------------------------ */
+/*  A failure in here stays in here                                     */
+/* ------------------------------------------------------------------ */
+
+/** What a surface says when its own rendering failed: what happened, and the one fix. */
+function ChromeFailed() {
+  const { t } = useTranslation()
+  return (
+    <div className="flex h-full w-full items-center justify-center gap-2 px-2 text-[11px] text-foreground/70">
+      <span className="truncate">{t('browserChrome.failed')}</span>
+      <button
+        type="button"
+        className="shrink-0 rounded-[4px] px-2 py-1 text-[11px] text-accent hover:bg-foreground/5"
+        onClick={() => window.location.reload()}
+      >
+        {t('browserChrome.reload')}
+      </button>
+    </div>
+  )
+}
+
+/**
+ * The window's chrome is its own surface, and the pages it shows are somewhere else.
+ *
+ * The bar and the rail are documents of their own, in views of their own, and every tab
+ * is a third one — so a render error in here cannot reach the window, the tabs, or
+ * anything the person is working on. What it *can* do is leave a surface that draws
+ * nothing and takes no clicks, which is exactly what an unmounted tree is; so the error
+ * stops at this boundary instead, and the surface names what happened and offers the one
+ * thing that fixes it. The main process reloads a surface whose *process* died
+ * (`render-process-gone`); this is the half that never gets that far.
+ */
+class ChromeErrorBoundary extends React.Component<{ children: React.ReactNode }, { failed: boolean }> {
+  state = { failed: false }
+
+  static getDerivedStateFromError() {
+    return { failed: true }
+  }
+
+  componentDidCatch(error: unknown) {
+    console.error('[browser-toolbar] chrome failed to render', error)
+  }
+
+  render() {
+    return this.state.failed ? <ChromeFailed /> : this.props.children
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /*  Mount                                                              */
 /* ------------------------------------------------------------------ */
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <BrowserToolbarApp />
+    <ChromeErrorBoundary>
+      <BrowserToolbarApp />
+    </ChromeErrorBoundary>
   </React.StrictMode>,
 )

@@ -145,6 +145,8 @@
   "browser.untitledTab": "Karta bez tytułu",
   "browser.urlPlaceholder": "Wpisz URL lub wyszukaj…",
   "browser.windowOptions": "Opcje okna przeglądarki",
+  "browserChrome.failed": "Coś tu poszło nie tak — strony nie są tym dotknięte.",
+  "browserChrome.reload": "Odśwież",
   "browserEdit.editFailed": "Nie udało się zapisać zmiany",
   "browserEdit.edited": "Zapisano jako {{file}}",
   "browserEdit.editorBold": "Pogrubienie",

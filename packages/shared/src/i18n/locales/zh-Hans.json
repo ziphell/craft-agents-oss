@@ -145,6 +145,8 @@
   "browser.untitledTab": "未命名标签页",
   "browser.urlPlaceholder": "输入网址或搜索…",
   "browser.windowOptions": "浏览器窗口选项",
+  "browserChrome.failed": "这里出了点问题，页面不受影响。",
+  "browserChrome.reload": "重新加载",
   "browserEdit.editFailed": "无法保存这次改动",
   "browserEdit.edited": "已存为 {{file}}",
   "browserEdit.editorBold": "加粗",

@@ -145,6 +145,8 @@
   "browser.untitledTab": "Untitled tab",
   "browser.urlPlaceholder": "Enter URL or search…",
   "browser.windowOptions": "Browser window options",
+  "browserChrome.failed": "Something went wrong here — your pages are unaffected.",
+  "browserChrome.reload": "Reload",
   "browserEdit.editFailed": "Could not save the change",
   "browserEdit.edited": "Saved as {{file}}",
   "browserEdit.editorBold": "Bold",

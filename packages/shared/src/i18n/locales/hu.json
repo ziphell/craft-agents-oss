@@ -145,6 +145,8 @@
   "browser.untitledTab": "Névtelen lap",
   "browser.urlPlaceholder": "Írj be egy URL-t vagy keress…",
   "browser.windowOptions": "Böngészőablak beállításai",
+  "browserChrome.failed": "Valami hiba történt itt — az oldalakat ez nem érinti.",
+  "browserChrome.reload": "Újratöltés",
   "browserEdit.editFailed": "A módosítást nem sikerült menteni",
   "browserEdit.edited": "Mentve mint {{file}}",
   "browserEdit.editorBold": "Félkövér",

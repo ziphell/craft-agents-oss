@@ -89,6 +89,8 @@ This file accumulates release notes for the next unreleased version. PRs that ad
 
 - **A service that keeps state says so where its contract is read** — `status` prints `N keep state` for a service whose contract declares collections. A service of fixed answers and one whose screens depend on each other are different things to build against, and until now the two read identically.
 
+- **A crash in the window's own chrome stays there** — the address bar, the tab rail and the frame drawn around the page are documents of their own, exactly like every tab is, so nothing that goes wrong in one of them reaches the window or the pages you have open. A render error now says so and offers a **Reload** instead of leaving a blank strip, and a chrome renderer that dies is loaded again by itself. Either way your tabs keep their place and their state.
+
 - **A generated plan no longer puts two nodes on one page** — the task generator now knows the range of a node's `writes:` identity: it guards the files a writer owns (their patches, their service fragments, fixtures and state), while the shared control-plane files — page documents, `config.json`, `PRD.md`, `dist/` — are writable by whoever is writing, by design. So it keeps those to a single node, or gives each node its own page, instead of emitting a race that nothing guards. Two writers on one prototype is the case this makes safe: their patches cannot collide (a duplicate identity is refused when the task is validated, and a name claiming someone else's prefix is refused before the write).
 
 ## Bug Fixes

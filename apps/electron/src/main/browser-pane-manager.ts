@@ -5672,6 +5672,30 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       mainLog.warn(`[browser-pane] toolbar did-fail-load id=${instance.id} code=${errorCode} url=${validatedURL} error=${errorDescription}`)
     })
 
+    /**
+     * A chrome renderer that died is that surface's problem, not the window's.
+     *
+     * Every piece of the chrome — the bar, the rail, the surface drawn around the page —
+     * is a document of its own in a view of its own, and every tab the window shows is
+     * another one. So a crash in one of them leaves the pages, and the window, exactly
+     * where they were: nothing here closes it, hides it or stops it working. What it does
+     * cost is that surface, and only that surface — with no document there is nothing to
+     * draw or click — so it is loaded again, and whatever it needs to catch up on arrives
+     * the way it always does (the state push each document gets once it finishes loading).
+     */
+    const reloadChromeAfterGone = (surface: string, reload: () => void) =>
+      (_event: Electron.Event, details: Electron.RenderProcessGoneDetails) => {
+        // A window being closed takes its own chrome with it, which is not a failure.
+        if (details.reason === 'clean-exit' || instance.window.isDestroyed()) return
+        mainLog.warn(`[browser-pane] ${surface} renderer gone id=${instance.id} reason=${details.reason} exitCode=${details.exitCode}`)
+        reload()
+      }
+
+    toolbarWc.on('render-process-gone', reloadChromeAfterGone('bar', () => { void this.loadChromePage(instance, 'bar') }))
+    instance.nativeOverlayView.webContents.on('render-process-gone', reloadChromeAfterGone('overlay', () => {
+      void this.loadNativeOverlayDocument(instance)
+    }))
+
     // The rail is the window's other chrome surface: same pushes, and its own document
     // — a push sent before it finished loading would be lost, so its own
     // `did-finish-load` is where it catches up on the tabs it has to draw.
@@ -5680,6 +5704,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     railWc.on('did-finish-load', () => {
       this.pushToolbarState(instance)
     })
+
+    // The rail is chrome like the bar, and its crash is answered the same way: its own
+    // document comes back, and the window is never the thing that pays for it.
+    railWc.on('render-process-gone', reloadChromeAfterGone('rail', () => { void this.loadChromePage(instance, 'rail') }))
 
     instance.window.on('focus', () => {
       this.interactedCallback?.(instance.id)

@@ -1282,6 +1282,37 @@ describe('BrowserPaneManager', () => {
     expect(toolbarWindow.webContents.loadURL).toHaveBeenCalledWith(expect.stringContaining('data:text/html'))
   })
 
+  /**
+   * A chrome surface is a document of its own, in a view of its own, and every tab is
+   * another one — so a renderer that dies is answered where it died. The window is never
+   * the thing that pays for it, and neither is anything in it.
+   */
+  it('brings a chrome surface back when its renderer dies, and leaves the window alone', async () => {
+    manager.createInstance('chrome-gone')
+    const instance = (manager as any).instances.get('chrome-gone')
+    const loadsBefore = instance.toolbarView.webContents.loadFile.mock.calls.length
+
+    instance.toolbarView.webContents._emit('render-process-gone', { reason: 'crashed', exitCode: 133 })
+    await Bun.sleep(20)
+
+    expect(instance.toolbarView.webContents.loadFile.mock.calls.length).toBeGreaterThan(loadsBefore)
+    // Nothing about the window or its tabs changed: only the surface that died reloaded.
+    expect(instance.window.destroy).not.toHaveBeenCalled()
+    expect(instance.window.hide).not.toHaveBeenCalled()
+    expect(instance.tabs).toHaveLength(1)
+  })
+
+  it('leaves a chrome surface alone when its renderer exited with the window', async () => {
+    manager.createInstance('chrome-clean-exit')
+    const instance = (manager as any).instances.get('chrome-clean-exit')
+    const loadsBefore = instance.toolbarView.webContents.loadFile.mock.calls.length
+
+    instance.toolbarView.webContents._emit('render-process-gone', { reason: 'clean-exit', exitCode: 0 })
+    await Bun.sleep(20)
+
+    expect(instance.toolbarView.webContents.loadFile.mock.calls.length).toBe(loadsBefore)
+  })
+
   it('captures and filters console entries', () => {
     manager.createInstance('console-1')
     const instance = (manager as any).instances.get('console-1')

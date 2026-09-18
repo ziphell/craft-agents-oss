@@ -145,6 +145,8 @@
   "browser.untitledTab": "Pestaña sin título",
   "browser.urlPlaceholder": "Ingresa URL o busca…",
   "browser.windowOptions": "Opciones de la ventana del navegador",
+  "browserChrome.failed": "Algo ha fallado aquí: las páginas no se ven afectadas.",
+  "browserChrome.reload": "Recargar",
   "browserEdit.editFailed": "No se pudo guardar el cambio",
   "browserEdit.edited": "Guardado como {{file}}",
   "browserEdit.editorBold": "Negrita",
