@@ -54,16 +54,16 @@ export function buildCustomEndpointModelDef(
   defaults?: CustomEndpointModelDefaults,
   overrides?: CustomEndpointModelOverrides,
 ) {
-  const supportsImages = overrides?.supportsImages ?? defaults?.supportsImages ?? false
+  const supportsImages = overrides?.supportsImages ?? defaults?.supportsImages ?? true
   const input: CustomEndpointInput[] = supportsImages ? ['text', 'image'] : ['text']
 
   return {
     id,
     name: id,
-    reasoning: false,
+    reasoning: true,
     input,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: overrides?.contextWindow ?? 131_072,
-    maxTokens: 8_192,
+    contextWindow: overrides?.contextWindow ?? 1_000_000,
+    maxTokens: 393_216,
   }
 }
