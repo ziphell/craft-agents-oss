@@ -13,10 +13,9 @@
  * is debounced because saving several files is one intention.
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { useAtomValue, useSetAtom } from 'jotai'
-import { prototypeAutoReplayAtom, prototypesAtom } from '@/atoms/prototypes'
-import { loadPrototypeAutoReplayPreference } from '@/lib/prototypeAutoReplayPreference'
+import { useState, useEffect, useCallback } from 'react'
+import { useSetAtom } from 'jotai'
+import { prototypesAtom } from '@/atoms/prototypes'
 import type { PrototypeStatus } from '@craft-agent/shared/prototypes'
 
 /** One save is one replay: a multi-file save must not reload a window three times. */
@@ -60,29 +59,6 @@ export interface UsePrototypesResult {
 export function usePrototypes(activeWorkspaceId: string | null | undefined): UsePrototypesResult {
   const [prototypes, setPrototypes] = useState<PrototypeStatus[]>([])
   const setPrototypesAtom = useSetAtom(prototypesAtom)
-  const autoReplay = useAtomValue(prototypeAutoReplayAtom)
-  const setAutoReplay = useSetAtom(prototypeAutoReplayAtom)
-
-  // The stored preference, once. Until it arrives the atom holds the default
-  // (on), which is the right thing to do in the meantime: a replay that happens
-  // a moment early is visible and reversible, one that does not happen at all
-  // looks like the feature being broken.
-  useEffect(() => {
-    let cancelled = false
-    void loadPrototypeAutoReplayPreference().then((stored) => {
-      if (!cancelled && stored !== null) setAutoReplay(stored)
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [setAutoReplay])
-
-  // Read through a ref inside the watcher: re-subscribing the watcher every time
-  // the switch is toggled would drop and re-add the same listener for no reason.
-  const autoReplayRef = useRef(autoReplay)
-  useEffect(() => {
-    autoReplayRef.current = autoReplay
-  }, [autoReplay])
 
   const refresh = useCallback(async () => {
     if (!activeWorkspaceId) {
@@ -122,7 +98,7 @@ export function usePrototypes(activeWorkspaceId: string | null | undefined): Use
       refresh()
 
       const slug = prototypeSlugForChangedFile(file)
-      if (!autoReplayRef.current || !slug) return
+      if (!slug) return
 
       if (replayTimer) clearTimeout(replayTimer)
       replayTimer = setTimeout(() => {

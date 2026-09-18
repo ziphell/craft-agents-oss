@@ -24,7 +24,7 @@ import { BACKGROUND_HEX, DEFAULT_THEME, getBackgroundColor, loadAppTheme, getAll
 import { CodedError, RPC_CHANNELS, describeWork, sameWork, tabSectionOf } from '@craft-agent/shared/protocol'
 import type { PickedElement, PickedElementOrigin, BrowserToolbarAction, BrowserTabSummary, TabBelongsTo } from '@craft-agent/shared/protocol'
 import type { MockProgram } from '@craft-agent/shared/prototypes'
-import { getBrowserLiveFxCornerRadii, PAGE_PANEL_RING, resolvePagePanelRing } from '../shared/browser-live-fx'
+import { PAGE_PANEL_RING, resolvePagePanelRing } from '../shared/browser-live-fx'
 import { PANEL_EDGE_INSET, PANEL_RADIUS_INNER } from '../shared/panel-geometry'
 import type {
   IBrowserPaneManager,
@@ -185,7 +185,6 @@ const TOOLBAR_CHANNELS = {
   STATE_UPDATE: 'browser-toolbar:state-update',
   PICK_ELEMENT: 'browser-toolbar:pick-element',
   CANCEL_PICK: 'browser-toolbar:cancel-pick',
-  APPLY_PROTOTYPE: 'browser-toolbar:apply-prototype',
   TABS: 'browser-toolbar:tabs',
   DEVTOOLS: 'browser-toolbar:devtools',
   RECORD: 'browser-toolbar:record',
@@ -3150,15 +3149,16 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * The document that draws everything the page's own view cannot: the surface and the panel's
-   * line *around* the page, and the agent's own frame when it holds this tab.
+   * The document that draws everything the page's own view cannot: the surface *around* the page,
+   * the panel's line there, and the agent's own frame when it holds this tab.
    *
    * Five layers, in this order:
    *
-   * - `#mask` fills the page's rectangle (same rounded rect) with the **surface**. It sits
-   *   under the page, so what it is really there for is the page's rounded corners: the corner
-   *   is cut out of the page's view, and this is what shows through it. It is also what paints
-   *   the gutter when the overlay is raised, which is why it fills the whole tab area.
+   * - `#mask` fills the **surface** outside the page's rectangle, and nothing inside it. It sits
+   *   under the page, so it is the gutter it paints, and where the page's own cut corners are it
+   *   is whatever lies behind the page — here, or the window's own background, which is the same
+   *   colour. It is deliberately square: the corner's *shape* is the page's cut and only the
+   *   page's cut (`#mask` in the stylesheet has why that matters).
    * - `#frame` is the panel's own line — one pixel just outside the page (`PAGE_PANEL_RING`,
    *   the same line the address bar's input wears), visible only through that pixel band while
    *   the overlay is under the page.
@@ -3175,7 +3175,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * theme switch reaches them.
    */
   private async loadNativeOverlayPage(instance: BrowserInstance, tab: BrowserTab): Promise<void> {
-    const cornerRadii = getBrowserLiveFxCornerRadii()
     const inset = this.pagePanelInsets()
 
     const html = `<!doctype html>
@@ -3193,15 +3192,24 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       }
       /* The page's rectangle inside the tab area: the same gutter the tab is laid out with
-         (see pagePanelInsets in the main process). This is what fills the gutter and what shows
-         through the page's rounded corners. */
+         (see pagePanelInsets in the main process). The surface behind the page is everything
+         *outside* this rectangle, filled by the spread shadow, and nothing inside it (the page
+         covers that, and where it does not — the notches its own corners are cut out of — the
+         window's own background is the same colour).
+
+         Square on purpose, and the one place in this document that does not round anything: the
+         page's corner is cut by the page's own view (see applyPageCornerRadius in the main
+         process), and a second arc drawn here would be a second copy of that shape computed
+         differently (CSS pixels here, the display's metrics there). Where the two disagree the
+         page's own paint is what shows through — the page is above this document, so nothing here
+         can cover it — and a page that paints white shows a white edge along the corner in dark
+         mode, and eats the line's arcs at the four corners. */
       #mask {
         position: fixed;
         left: ${inset.left}px;
         top: ${inset.top}px;
         right: ${inset.right}px;
         bottom: ${inset.bottom}px;
-        border-radius: ${cornerRadii.topLeft};
         box-sizing: border-box;
         pointer-events: none;
         box-shadow: 0 0 0 9999px transparent;
@@ -3283,7 +3291,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     try {
       await tab.nativeOverlayView.webContents.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(html)}`)
       tab.nativeOverlayReady = true
-      mainLog.info(`[browser-pane] native overlay ready id=${instance.id} corners=${cornerRadii.topLeft} gutter=${inset.left}/${inset.right}/${inset.bottom}`)
+      mainLog.info(`[browser-pane] native overlay ready id=${instance.id} pageCorner=${PANEL_RADIUS_INNER} gutter=${inset.left}/${inset.right}/${inset.bottom}`)
       this.updateNativeOverlayState(instance)
     } catch (error) {
       tab.nativeOverlayReady = false
@@ -3652,9 +3660,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       const locked = ${locked};
       const shieldActive = ${shieldActive};
 
-      // The surface the panel sits on: everything outside the page's rounded rectangle, corner
-      // notches included. It is the colour the rail and the bar beside it are drawn in, so the
-      // panel reads as a panel on this window's surface rather than on a second one.
+      // The surface the panel sits on, outside the page's rectangle — the colour the rail and the
+      // bar beside it are drawn in, so the panel reads as a panel on this window's surface rather
+      // than on a second one. Nothing here decides the corner's shape: that is the page's own cut,
+      // and the stylesheet's #mask comment has why it is left to the page.
       mask.style.boxShadow = '0 0 0 9999px ' + ${JSON.stringify(surface)};
 
       // Which of the two frames is drawn: the resting line outside the page while nothing is
@@ -3769,6 +3778,27 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.layoutRailView(instance)
     this.layoutTabView(instance)
     this.raiseChromeViews(instance)
+    this.reassertPageCornerRadii(instance)
+  }
+
+  /**
+   * Say the page's corner radius again, for every tab.
+   *
+   * Setting it once at tab creation is not enough: the radius is a native property of the view
+   * whose cut is built against the window's current display metrics, and that cut does not
+   * survive the window arriving on a different display (moved between monitors, or a display
+   * whose scale factor changed) — the corner comes back square. A square corner is not just a
+   * cosmetic difference: it lets the page's own paint reach the shape the panel's line follows,
+   * so the line's arcs are covered at the four corners, and a page that paints white shows
+   * there — which is exactly what is seen in dark mode.
+   *
+   * Saying it again costs a call and rebuilds the cut, so this is re-asserted from `moved` and
+   * from every relayout (which the window's `resize` goes through) rather than tracked.
+   */
+  private reassertPageCornerRadii(instance: BrowserInstance): void {
+    for (const tab of instance.tabs) {
+      this.applyPageCornerRadius(tab)
+    }
   }
 
   private forceCloseToolbarMenu(instance: BrowserInstance, reason: string): void {
@@ -4325,10 +4355,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // -------------------------------------------------------------------------
     // Prototype workbench actions from the panel's own toolbar.
     //
-    // The panel cannot resolve any of this itself: "apply" needs the bound
-    // prototype, and "pick" needs a decision about what the selection is for.
-    // Both live in the main window, so the panel reports the action and we
-    // forward it there.
+    // The panel cannot resolve this itself: "pick" needs a decision about what
+    // the selection is for, which lives in the main window — so the panel reports
+    // the action and we forward it there.
+    //
+    // Patches are not one of these any more: a page arrives with its own inlined,
+    // a file change is replayed by the watcher, and a reload re-renders — so a
+    // button asking for it by hand was a second way to say what already happens.
     // -------------------------------------------------------------------------
 
     /**
@@ -4355,15 +4388,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // The toolbar button, as opposed to Escape in the page — both mean the same
       // thing, and both end the mode.
       this.disarmPicker(inst)
-    })
-
-    ipcMain.handle(TOOLBAR_CHANNELS.APPLY_PROTOTYPE, async (_event, instanceId: string) => {
-      const inst = findInstance(instanceId)
-      if (!inst) return
-      // No injection happens here — the main window resolves the prototype and
-      // calls the same RPC the prototype panel's Apply button uses, so the two
-      // entry points cannot drift.
-      this.emitToolbarAction({ kind: 'apply-requested', instanceId: inst.id })
     })
 
     /**
@@ -4414,10 +4438,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         }
 
         const tab = activeTab(inst)
-        const sessionId = tab.cursorOf ?? tab.belongsTo?.sessionId ?? null
         const state = this.tabRecorder.start({
-          dir: this.resolveRecordsDir(sessionId),
-          sessionName: sessionId ? this.sessionLabelResolver?.(sessionId) ?? null : null,
+          // The same place a download from this window goes, and for the same reason: it is
+          // the person's file, not a conversation's. Filing it under whichever conversation
+          // happened to own the tab on screen would be reading a fact that is not there —
+          // a demo recorded in a tab a conversation opened is very often not *for* that
+          // conversation — so it lands in the downloads folder, where they can see it and
+          // hand it on (or tell an agent to sample it).
+          dir: app.getPath('downloads'),
           source: tab.tabView.webContents,
         })
         this.pushToolbarState(inst)
@@ -5214,25 +5242,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     return app.getPath('downloads')
   }
 
-  /**
-   * Where a tab's recordings are filed: the conversation that tab belongs to, else the OS
-   * downloads folder.
-   *
-   * The same rule as its downloads ({@link resolveDownloadsDir}) and for the same reason —
-   * a recording is the tab's, and "whose page is this" is the tab's own answer
-   * (`cursorOf ?? belongsTo`). That is also what "the current session" means for the record
-   * button: the person must not have to say which conversation they are recording for, and
-   * the tab in front of them already says it. A tab nobody owns is the person's own
-   * browsing, and its recording lands with their other downloads.
-   */
-  private resolveRecordsDir(sessionId: string | null): string {
-    if (sessionId && this.sessionPathResolver) {
-      const sessionPath = this.sessionPathResolver(sessionId)
-      if (sessionPath) return join(sessionPath, 'records')
-    }
-    return app.getPath('downloads')
-  }
-
   private uniqueFilename(dir: string, filename: string): string {
     if (!existsSync(join(dir, filename))) return filename
     const { name, ext } = parsePath(filename)
@@ -5478,6 +5487,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     instance.window.on('resize', () => {
       this.layoutAllViews(instance)
+    })
+
+    // Arriving on another display: the page's cut corner does not come with it, so it is said
+    // again here (`reassertPageCornerRadii`). Only `moved` — `move` fires throughout a drag and
+    // the radius only needs rebuilding once the window has landed.
+    instance.window.on('moved', () => {
+      this.reassertPageCornerRadii(instance)
     })
 
     toolbarWc.on('did-finish-load', () => {

@@ -5,21 +5,25 @@
  * This is the human half of what the agent could never do on its own (plan §20.3's
  * revision): a recording is only worth anything if somebody can say "now" from outside
  * the thing being recorded, and the person is the one who can. So the act is a button on
- * the window's chrome, and the file lands in the **session's own `records/`** — not in a
- * prototype's `research/`, because whose evidence it is is a later question (`sample-video`
- * answers it if the agent wants frames out of it).
+ * the window's chrome, and the file lands in their **downloads folder** — not in a
+ * session's, not in the workspace's, and not in a prototype's `research/`. Whose it is is
+ * a later question: a tab's owner says who opened it, not who a recording of it is for, so
+ * the file is simply the person's own, and a conversation gets it the way it gets any file
+ * (`sample-video` is what turns one into frames under a prototype).
  *
  * The picture comes from the window's own session: the toolbar asks for display media, and
  * the display-media handler hands back the tab this was armed with (see
  * `BrowserPaneManager`). What arrives here is the encoded bytes, in order.
  *
  * Bytes rather than a stream held open by the caller: the chunks come from a renderer, so
- * the only thing that has to be true is that they are appended in the order they were
- * produced and that a half-written recording is still a playable one. A `WriteStream` gives
- * both — the file is a valid webm up to whatever was flushed when the recording ended.
+ * the only things that have to be true are that they are appended in the order they were
+ * produced and that a half-written recording is still a playable one. Appending each one as
+ * it arrives gives both — the file is a valid webm up to the last chunk, and "stop" has
+ * nothing left to flush (a stream would return before its buffer reached the disk, which is
+ * a recording that is still short by a second the moment it says it is done).
  */
 
-import { createWriteStream, existsSync, mkdirSync, type WriteStream } from 'node:fs'
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { WebContents, WebFrameMain } from 'electron'
 
@@ -27,13 +31,6 @@ import type { WebContents, WebFrameMain } from 'electron'
 export interface TabRecordingState {
   /** Absolute path the file is being written to. */
   file: string
-  /**
-   * Whose conversation it is being filed under, for the button's label.
-   *
-   * `null` for a tab that belongs to nobody — the person's own browsing, which is filed
-   * with the rest of their downloads (see `resolveRecordsDir`).
-   */
-  sessionName: string | null
   /** Epoch ms, so the chrome can count up from it without a timer from here. */
   startedAt: number
   bytes: number
@@ -49,8 +46,6 @@ export interface FinishedRecording {
 export interface StartRecordingOptions {
   /** The directory the file goes in. Created if it is not there. */
   dir: string
-  /** The conversation's name, when the recording is being filed under one. */
-  sessionName?: string | null
   /** The tab's contents — the picture. */
   source: WebContents
   /** Extension of the file, without the dot. */
@@ -60,7 +55,6 @@ export interface StartRecordingOptions {
 export class TabRecorder {
   private recording: {
     state: TabRecordingState
-    stream: WriteStream
     /** The tab being recorded — kept for its identity and for the picture itself. */
     source: WebContents
   } | null = null
@@ -101,13 +95,11 @@ export class TabRecorder {
 
     const state: TabRecordingState = {
       file,
-      sessionName: options.sessionName ?? null,
       startedAt: Date.now(),
       bytes: 0,
     }
     this.recording = {
       state,
-      stream: createWriteStream(file),
       source: options.source,
     }
     return state
@@ -118,21 +110,20 @@ export class TabRecorder {
     if (!this.recording) return
     const buffer = Buffer.from(chunk)
     this.recording.state.bytes += buffer.length
-    this.recording.stream.write(buffer)
+    appendFileSync(this.recording.state.file, buffer)
   }
 
   /**
    * Stop and hand back what was written, or `null` when nothing was running.
    *
-   * The stream is ended rather than destroyed, so everything accepted before this point
-   * is on disk: a recording that ends because the tab was closed must still be a file.
+   * Nothing is closed or flushed here: every chunk was on disk when it was accepted, so a
+   * recording that ends because the tab was closed is already a file.
    */
   stop(): FinishedRecording | null {
     const current = this.recording
     if (!current) return null
     this.recording = null
 
-    current.stream.end()
     return {
       file: current.state.file,
       bytes: current.state.bytes,
@@ -158,6 +149,10 @@ export class TabRecorder {
  * looking at a directory of recordings can actually use to find one. A name already taken
  * gets a suffix rather than being overwritten: two recordings of the same demo are two
  * recordings.
+ *
+ * Picking the name **is** claiming it: the file is created here with `wx`, so two recordings
+ * in the same second cannot choose the same one and no earlier recording is ever truncated.
+ * (Asking "is it there?" and creating it afterwards leaves exactly that gap.)
  */
 function nextRecordingPath(dir: string, at: Date, extension: string): string {
   const pad = (value: number) => String(value).padStart(2, '0')
@@ -165,9 +160,15 @@ function nextRecordingPath(dir: string, at: Date, extension: string): string {
     `${at.getFullYear()}${pad(at.getMonth() + 1)}${pad(at.getDate())}` +
     `-${pad(at.getHours())}${pad(at.getMinutes())}${pad(at.getSeconds())}`
 
-  let candidate = join(dir, `${stem}.${extension}`)
-  for (let suffix = 2; existsSync(candidate); suffix += 1) {
-    candidate = join(dir, `${stem}-${suffix}.${extension}`)
+  for (let suffix = 1; ; suffix += 1) {
+    const name = suffix === 1 ? `${stem}.${extension}` : `${stem}-${suffix}.${extension}`
+    const candidate = join(dir, name)
+    try {
+      writeFileSync(candidate, '', { flag: 'wx' })
+      return candidate
+    } catch {
+      // Taken — try the next suffix. (`existsSync` is not the check: what it would ask
+      // about is a file this very loop just made.)
+    }
   }
-  return candidate
 }

@@ -324,7 +324,7 @@ prototypes/checkout-flow/patches/cart/ui-002-flow-guard.js      ← the page `ca
   - a patch with no `@target` is named as unchecked rather than treated as a clean run.
   Every successful match is recorded under `prototypes/{slug}/anchors/` — that record (selector, what the element looked like, when it last matched) is what makes "it stopped matching" distinguishable from "it never worked". Nothing in `anchors/` is rendered, replayed or packaged: it is evidence *about* the page.
 - `clear` unregisters a prototype's patches; the current document keeps their effects until you reload.
-- Saving a file under `patches/` or `assets/`, or a page document, replays the prototype into every window that is showing it (a page of ours reloads, a live page is re-patched) — no apply needed. The switch for that is on the prototype's page in the app.
+- Saving a file under `patches/` or `assets/`, or a page document, replays the prototype into every window that is showing it (a page of ours reloads, a live page is re-patched). There is nothing to click and nothing to switch on: opening a page brings it up to date, an edit is followed by a replay, and a reload re-renders from disk.
 
 ### Folding the change layer — an option of copying
 
@@ -454,12 +454,17 @@ in the delivered package: they are how the requirements were reached, not part o
 The command is the whole entry: nothing in the app offers this behind a button, because sampling is only the
 first half — what a recording is for is the finding that cites the frames it produced.
 
-**There is no live capture.** `record <for>` — watching the window for a while and keeping the frames where
-it changed — was built and then removed: recording *the two of you at once* is the one thing it was for
-(somebody drives the page while it watches), and neither a person nor an agent can be told "now do the
-thing" at the right moment from inside a tool call. A screen worth arguing about is a recording somebody
-made, which is what `sample-video` is for; a change worth looking at is `browser_tool screenshot` right
-after the action that caused it.
+**There is no live capture from here.** `record <for>` — watching the window for a while and keeping the
+frames where it changed — was built and then removed: its one irreplaceable use was recording *the two of you
+at once* (somebody drives the page while it watches), and neither a person nor an agent can be told "now do
+the thing" from inside a tool call. That use has a better home now: **the window's own record button**
+records the tab on screen to a webm while the person drives it, and files it in their **downloads folder** —
+where a download from that window already goes, because the file is theirs and not a conversation's (whose tab
+it was says who opened it, not who the recording is for). Tell them so if a demo is what you need — their
+recording is the one
+thing you cannot take yourself — and then `sample-video <path-to-it>` turns it into frames here. A screen
+worth arguing about is a recording somebody made, which is what `sample-video` is for; a change worth looking
+at is `browser_tool screenshot` right after the action that caused it.
 
 ---
 

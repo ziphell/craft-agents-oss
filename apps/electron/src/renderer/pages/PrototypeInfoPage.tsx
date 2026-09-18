@@ -46,14 +46,13 @@
 
 import { useTranslation } from 'react-i18next'
 import { useEffect, useState, useCallback, useMemo } from 'react'
-import { useAtomValue, useSetAtom } from 'jotai'
-import { Check, ChevronRight, Download, ExternalLink, File, Flag, FlagOff, FlaskConical, FolderOpen, Globe, MessageSquare, MoreHorizontal, PackageCheck, Pencil, Plus, Trash2, TriangleAlert } from 'lucide-react'
+import { useAtomValue } from 'jotai'
+import { ChevronRight, Download, ExternalLink, File, Flag, FlagOff, FlaskConical, FolderOpen, Globe, MessageSquare, MoreHorizontal, PackageCheck, Pencil, Plus, Trash2, TriangleAlert } from 'lucide-react'
 import { useActiveWorkspace, useAppShellContext } from '@/context/AppShellContext'
 import { navigate, routes } from '@/lib/navigate'
 import { cn } from '@/lib/utils'
 import { usePrototypeAskAgent } from '@/hooks/usePrototypeAskAgent'
 import { sessionMetaMapAtom } from '@/atoms/sessions'
-import { prototypeAutoReplayAtom, setPrototypeAutoReplayAtom } from '@/atoms/prototypes'
 import { Info_Page, Info_Section, Info_Badge, Info_Alert, Info_Markdown } from '@/components/info'
 import { DropdownMenu, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import {
@@ -150,9 +149,6 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
   const [prdContent, setPrdContent] = useState<string | null>(null)
   /** The entry exists but could not be read: said out loud rather than shown as blank. */
   const [prdUnreadable, setPrdUnreadable] = useState(false)
-  /** Whether an edit under `patches/` is replayed into the open windows (§21.4). */
-  const autoReplay = useAtomValue(prototypeAutoReplayAtom)
-  const setAutoReplay = useSetAtom(setPrototypeAutoReplayAtom)
 
   // Load the status report for this prototype. `listPrototypes` is the only
   // read path for a single prototype's status, so pick our slug out of it.
@@ -747,9 +743,8 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
                 <MessageSquare className="h-3.5 w-3.5" />
                 {prototypeSessions.length > 0 ? t('prototypeInfo.openChat') : t('prototypeInfo.startChat')}
               </Button>
-              {/* Where it lives on disk, and the one preference that changes what a window
-                  does while you work. Both are the person's occasional business rather than
-                  the page's — the machinery those two used to sit next to is not shown at all
+              {/* Where it lives on disk — the person's occasional business rather than
+                  the page's. The machinery this used to sit next to is not shown at all
                   (see the note at the end of this content block). */}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -767,17 +762,6 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
                   <StyledDropdownMenuItem onSelect={() => void handleRevealFolder()}>
                     <FolderOpen className="h-3.5 w-3.5" />
                     {t('prototypeInfo.openLocation')}
-                  </StyledDropdownMenuItem>
-                  <StyledDropdownMenuItem
-                    onSelect={(event) => {
-                      // The menu is where this lives, not a section of its own; keeping it
-                      // open on toggle is what lets the check mark read as the state.
-                      event.preventDefault()
-                      setAutoReplay(!autoReplay)
-                    }}
-                  >
-                    {autoReplay ? <Check className="h-3.5 w-3.5" /> : <span className="h-3.5 w-3.5" />}
-                    {t('prototypeInfo.autoReplay')}
                   </StyledDropdownMenuItem>
                 </StyledDropdownMenuContent>
               </DropdownMenu>

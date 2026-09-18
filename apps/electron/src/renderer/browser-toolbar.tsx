@@ -11,7 +11,7 @@ import ReactDOM from 'react-dom/client'
 import { useTranslation, initReactI18next } from 'react-i18next'
 import LanguageDetector from 'i18next-browser-languagedetector'
 import { setupI18n } from '@craft-agent/shared/i18n'
-import { Circle, Code, EyeOff, Globe, Lock, MessageSquare, MousePointerClick, Plus, Square, X, XCircle, Zap } from 'lucide-react'
+import { Circle, Code, EyeOff, Globe, Lock, MessageSquare, MousePointerClick, Plus, Square, X, XCircle } from 'lucide-react'
 import { BrowserControls, Spinner } from '@craft-agent/ui'
 import { HeaderIconButton } from '@/components/ui/HeaderIconButton'
 import { cn } from '@/lib/utils'
@@ -45,16 +45,6 @@ interface ToolbarState {
   isLoading: boolean
   canGoBack: boolean
   canGoForward: boolean
-  /**
-   * The prototype the URL above names, or `null` for a window that is not one
-   * (no conversation, a conversation without a prototype, or a window the user
-   * steered away by typing an address).
-   *
-   * `undefined` = no state has arrived yet, which is treated as "unknown" rather
-   * than "none" so the buttons do not flash disabled while the first push is in
-   * flight.
-   */
-  prototypeSlug?: string | null
   /**
    * Whether the window's element picker is on (plan §12.7).
    *
@@ -98,8 +88,6 @@ interface ToolbarState {
   recording?: {
     /** Where the file is being written. */
     file: string
-    /** Whose conversation it is filed under; `null` for the person's own browsing. */
-    sessionName: string | null
     /** Epoch ms, so the elapsed time is counted from the recording rather than from a click. */
     startedAt: number
     bytes: number
@@ -121,7 +109,6 @@ declare global {
       /** The label is the caller's: the bar is drawn in the page, which has no i18n. */
       pickElement: (addLabel?: string) => Promise<void>
       cancelPick: () => Promise<void>
-      applyPrototype: () => Promise<void>
       /** Switch to one of this window's tabs, close one, add one, or unlock one. */
       tabAction: (
         action: 'activate' | 'close' | 'new' | 'release',
@@ -527,15 +514,6 @@ function BrowserToolbarApp() {
   const menuContentRef = useRef<HTMLDivElement | null>(null)
 
   /**
-   * Whether the two prototype actions have anything to act on.
-   *
-   * Both resolve through the prototype this window is showing, which is what the
-   * URL bar already states, so the answer comes straight from that: a window
-   * that is not a prototype's never accepts a click it would have to explain
-   * away afterwards.
-   */
-  const hasPrototype = state.prototypeSlug === undefined || state.prototypeSlug !== null
-  /**
    * Edit mode, as the window reports it.
    *
    * Not this renderer's own state: the mode outlives a single pick and can also
@@ -682,10 +660,6 @@ function BrowserToolbarApp() {
     }
     void api.pickElement(t('browser.addToConversation'))
   }, [api, picking, t])
-
-  const handleApplyPrototype = useCallback(() => {
-    void api?.applyPrototype()
-  }, [api])
 
   const handleToggleDevTools = useCallback(() => {
     void api?.toggleDevTools()
@@ -846,18 +820,10 @@ function BrowserToolbarApp() {
                 : <MousePointerClick className="h-3.5 w-3.5" />}
               aria-label={picking ? t('browser.cancelPick') : t('browser.pickElement')}
               className={picking ? 'bg-accent/15 text-accent' : undefined}
-              // Always available: picking is not about a prototype (a prototype
-              // decides what a selection can be turned *into*, and only the
-              // action below needs one), and a pick with no conversation to go
-              // to opens one (plan §12.7).
+              // Always available: picking is not about a prototype — what a
+              // selection gets turned *into* is decided after it is picked, and a
+              // pick with no conversation to go to opens one (plan §12.7).
               onClick={handleTogglePick}
-            />
-
-            <HeaderIconButton
-              icon={<Zap className="h-3.5 w-3.5" />}
-              aria-label={t('browser.applyPrototype')}
-              disabled={!hasPrototype}
-              onClick={handleApplyPrototype}
             />
 
             {/*
@@ -874,8 +840,8 @@ function BrowserToolbarApp() {
             {/*
               The record button: the person's own recording of the tab they are on, which
               is the one thing a recording needs that no agent can supply — "now". The
-              file goes to the conversation this tab belongs to (see the host's
-              `resolveRecordsDir`), and nothing is sent to that conversation about it.
+              file goes to their downloads folder (see the host's `record` handler) and
+              nothing is sent to any conversation about it.
             */}
             <HeaderIconButton
               icon={recording

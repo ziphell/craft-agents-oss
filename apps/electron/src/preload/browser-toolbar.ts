@@ -22,7 +22,6 @@ const CHANNELS = {
   STATE_UPDATE: 'browser-toolbar:state-update',
   PICK_ELEMENT: 'browser-toolbar:pick-element',
   CANCEL_PICK: 'browser-toolbar:cancel-pick',
-  APPLY_PROTOTYPE: 'browser-toolbar:apply-prototype',
   TABS: 'browser-toolbar:tabs',
   DEVTOOLS: 'browser-toolbar:devtools',
   RECORD: 'browser-toolbar:record',
@@ -53,8 +52,6 @@ contextBridge.exposeInMainWorld('browserToolbar', {
    */
   pickElement: (addLabel?: string) => ipcRenderer.invoke(CHANNELS.PICK_ELEMENT, instanceId, addLabel),
   cancelPick: () => ipcRenderer.invoke(CHANNELS.CANCEL_PICK, instanceId),
-  /** Ask the host to replay this session's prototype patches into this window. */
-  applyPrototype: () => ipcRenderer.invoke(CHANNELS.APPLY_PROTOTYPE, instanceId),
   /**
    * Manage this window's own tabs from the rail: switch to one, close one, add one,
    * or take a locked tab back (`release`). The host owns what a tab is, so nothing

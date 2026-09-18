@@ -5,7 +5,10 @@
  * session binding, and navigation behavior.
  */
 
-import { describe, it, expect, beforeEach, mock } from 'bun:test'
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { pickCommandTarget, whyTabIsLocked, whyTabIsOutOfReach } from '@craft-agent/server-core/domain'
 import { BACKGROUND_HEX } from '@craft-agent/shared/config'
 import type { BrowserTabSummary, TabBelongsTo } from '@craft-agent/shared/protocol'
@@ -19,6 +22,14 @@ let toolbarLoadFailuresRemaining = 0
 let emptyStateLoadError: Error | null = null
 const mockShellOpenExternal = mock(async () => {})
 const mockIpcMainHandle = mock(() => {})
+
+/**
+ * The downloads folder, as `app.getPath` reports it.
+ *
+ * A real directory rather than a made-up path: the recorder writes here, and a path that
+ * cannot be created would only ever prove that `mkdir` failed.
+ */
+const downloadsDir = mkdtempSync(join(tmpdir(), 'craft-downloads-'))
 
 function maybeFailEmptyStateLoad(target: string): void {
   if (emptyStateLoadError && target.includes('browser-empty-state.html')) {
@@ -222,7 +233,7 @@ function createMockWindow(opts?: { width?: number; height?: number; minWidth?: n
 
 mock.module('electron', () => ({
   app: {
-    getPath: mock((name: string) => name === 'downloads' ? '/tmp/mock-downloads' : `/tmp/mock-${name}`),
+    getPath: mock((name: string) => name === 'downloads' ? downloadsDir : `/tmp/mock-${name}`),
   },
   BrowserWindow: class MockBrowserWindow {
     webContents: any
@@ -250,6 +261,9 @@ mock.module('electron', () => ({
   },
   ipcMain: {
     handle: mockIpcMainHandle,
+    // The one-way channel: the record button's chunks arrive this way, with no answer to
+    // give (see `TOOLBAR_CHANNELS.RECORD_CHUNK`).
+    on: mockIpcMainHandle,
   },
   // The pane manager reaches `video-frames` (importing a recording), which asks
   // the user for a file. Without this export the whole file fails to load, so the
@@ -1351,6 +1365,8 @@ describe('BrowserPaneManager', () => {
         // Nothing opened these tabs through a conversation, so there is no group to
         // name — the rail draws no headers for a window that is all one person's.
         sessionLabels: {},
+        // Nobody pressed the record button, so there is no recording to draw either.
+        recording: null,
       },
     ])
   })
@@ -1387,6 +1403,7 @@ describe('BrowserPaneManager', () => {
           tabSummary({ id: instance.tabs[0].id, url: 'https://craft.do', title: 'Craft', isLoading: true, active: true }),
         ],
         sessionLabels: {},
+        recording: null,
       },
     ])
   })
@@ -2006,8 +2023,8 @@ describe('BrowserPaneManager', () => {
         intent: 'Loading example.com',
       })
       // No command has resolved a tab yet, so the overlay holds nothing — and a hold is what
-      // the agent's markings are drawn for. The panel around the page is up either way: it is
-      // what rounds the page's corners and rings it.
+      // the agent's markings are drawn for. The panel's own line is up either way (the page's
+      // corner comes from the page's view, not from this document).
       expect(tab(instance).heldBy ?? null).toBeNull()
       expect(tab(instance).nativeOverlayView.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 48, width: 1000, height: 852 })
       expect(overlayScript(instance)).toContain('const locked = false;')
@@ -2092,7 +2109,7 @@ describe('BrowserPaneManager', () => {
       await Promise.resolve()
 
       const instance = (manager as any).instances.get('ac-idle')
-      // The panel around the page is up — that is what rounds its corners — and it says no lock.
+      // The panel's line around the page is up, and it says no lock.
       expect(tab(instance).nativeOverlayView.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 48, width: 1000, height: 852 })
       expect(overlayScript(instance)).toContain('const locked = false;')
       expect(overlayScript(instance)).toContain('const shieldActive = false;')
@@ -2453,6 +2470,38 @@ describe('BrowserPaneManager', () => {
       // The overlay sits under the page: what it draws is around the page.
       expect(instance.window.contentView.children.indexOf(first.tabView))
         .toBeGreaterThan(instance.window.contentView.children.indexOf(first.nativeOverlayView))
+    })
+
+    it('says the page corner radius again when the window lands on another display', () => {
+      manager.createInstance('tabs-moved')
+      const instance = (manager as any).instances.get('tabs-moved')
+      const view = instance.tabs[0].tabView
+      const before = view.setBorderRadius.mock.calls.length
+
+      // The cut is built against the display the window is on, and it does not survive arriving
+      // on a different one: the corner comes back square, which lets the page's own paint (white,
+      // on many sites) show where the panel's rounded surface and its line are.
+      instance.window._emit('moved')
+
+      expect(view.setBorderRadius.mock.calls.length).toBeGreaterThan(before)
+      expect(view.setBorderRadius.mock.calls.at(-1)).toEqual([10])
+    })
+
+    it('draws no corner of its own, leaving the shape to the page', () => {
+      manager.createInstance('tabs-mask-square')
+      const instance = (manager as any).instances.get('tabs-mask-square')
+      const loaded = String(tab(instance).nativeOverlayView.webContents.loadURL.mock.calls[0]?.[0] ?? '')
+      const html = decodeURIComponent(loaded.slice(loaded.indexOf(',') + 1))
+
+      // What is behind the page is square, so the corner's shape is the page's own cut and only
+      // that. A rounded hole here would be a second copy of the shape — CSS pixels here, the
+      // display's metrics for the cut — and where the two disagree the page's own paint (white,
+      // on many sites) is what shows through in the difference, which nothing in this document
+      // can cover: the page sits above it.
+      expect(html).not.toMatch(/#mask\s*\{[^}]*border-radius/)
+      // The line outside the page keeps its arc: it sits outside the page, so its arcs are the
+      // line's own shape rather than a second copy of the page's corner.
+      expect(html).toMatch(/#frame\s*\{[^}]*border-radius:\s*11px/)
     })
 
     it('draws the agent frame over the page edge and into the gutter', () => {
@@ -3191,6 +3240,72 @@ describe('BrowserPaneManager', () => {
       expect(first.cancelPicker).toHaveBeenCalled()
 
       await toolbarHandler('browser-toolbar:cancel-pick')({}, 'pick-switch')
+    })
+  })
+
+  /**
+   * The person's recording of the tab on screen (plan §20.3's revision).
+   *
+   * What is pinned here is where the file goes: the **downloads folder**, the same place a
+   * download from this window goes, whatever the tab belongs to — the window is one per
+   * workspace and a tab's owner says who opened it, not who the recording is for. The
+   * picture itself comes from Electron's display-media handler, which no test here can
+   * supply, so nothing is ever recorded; what that costs is checked too (a recording that
+   * never got a picture leaves no file behind).
+   */
+  describe('the record button', () => {
+    function toolbarHandler(channel: string): (...args: any[]) => Promise<any> {
+      const registration = (
+        mockIpcMainHandle.mock.calls as unknown as Array<[string, (...args: any[]) => Promise<any>]>
+      ).find(([name]) => name === channel)
+      if (!registration) throw new Error(`Expected ${channel} IPC registration`)
+      return registration[1]
+    }
+
+    let root: string
+
+    beforeEach(() => {
+      root = mkdtempSync(join(tmpdir(), 'craft-recording-'))
+    })
+
+    afterEach(() => {
+      rmSync(root, { recursive: true, force: true })
+    })
+
+    it('files the recording in the downloads folder, whoever\'s tab it was', async () => {
+      // A conversation's tab, with a session path resolver installed: the recording still
+      // goes to the person's downloads — whose tab it is is not what the file is about.
+      manager.setSessionPathResolver(() => join(root, 'sessions', 'session-a'))
+
+      const instanceId = manager.createInstance('record-downloads', { workspaceId: 'workspace-a' })
+      manager.createTab(instanceId, { belongsTo: work('session-a') })
+      manager.registerToolbarIpc()
+
+      const started = await toolbarHandler('browser-toolbar:record')({}, instanceId, 'start')
+      expect(started.file.startsWith(join(downloadsDir, ''))).toBe(true)
+
+      // Nothing was ever captured — no display media, so no chunk — and a recording with
+      // nothing in it is not left behind as a webm that shows nothing.
+      expect(await toolbarHandler('browser-toolbar:record')({}, instanceId, 'stop')).toBeNull()
+      expect(existsSync(started.file)).toBe(false)
+    })
+
+    it('reports the recording to the toolbar, and stops reporting it once it is done', async () => {
+      const instanceId = manager.createInstance('record-shown')
+      const instance = (manager as any).instances.get('record-shown')
+      manager.registerToolbarIpc()
+
+      const sent = () =>
+        instance.toolbarView.webContents.send.mock.calls
+          .filter((call: unknown[]) => call[0] === 'browser-toolbar:state-update')
+          .map((call: unknown[]) => (call[1] as { recording: unknown }).recording)
+
+      expect(sent().at(-1)).toBeUndefined()
+      const started = await toolbarHandler('browser-toolbar:record')({}, instanceId, 'start')
+      expect(sent().at(-1)).toMatchObject({ file: started.file, startedAt: started.startedAt })
+
+      await toolbarHandler('browser-toolbar:record')({}, instanceId, 'stop')
+      expect(sent().at(-1)).toBeNull()
     })
   })
 })

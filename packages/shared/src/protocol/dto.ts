@@ -885,7 +885,6 @@ export type BrowserToolbarAction =
       /** Null when the user pressed Escape or the pick timed out. */
       element: PickedElement | null
     }
-  | { kind: 'apply-requested'; instanceId: string }
   /**
    * The person used the bar under the highlight: the element goes into a
    * conversation rather than into a prototype patch (plan §12.7).

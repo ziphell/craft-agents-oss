@@ -166,43 +166,6 @@ export function useBrowserToolbarActions({
         return
       }
 
-      if (action.kind === 'apply-requested') {
-        if (!workspaceId) return
-        void window.electronAPI
-          .applyPrototype(workspaceId, action.instanceId, slug)
-          .then((result) => {
-            const report = result as {
-              applied: number
-              unmatched?: string[]
-              drifted?: Array<{ target: string }>
-              untargeted?: string[]
-            }
-            // What the patches made of the page (plan §21.1). A count alone hides
-            // the one thing worth knowing: that a patch matched nothing, which is
-            // otherwise indistinguishable from one that changed nothing.
-            const notes: string[] = []
-            if (report.unmatched && report.unmatched.length > 0) {
-              notes.push(t('browserEdit.unmatched', { targets: report.unmatched.join(', ') }))
-            }
-            if (report.drifted && report.drifted.length > 0) {
-              notes.push(t('browserEdit.drifted', { targets: report.drifted.map((d) => d.target).join(', ') }))
-            }
-            if (report.untargeted && report.untargeted.length > 0) {
-              notes.push(t('browserEdit.untargeted', { count: report.untargeted.length }))
-            }
-            toast.success(t('browserEdit.applied', { applied: report.applied }), {
-              description: notes.length > 0 ? notes.join(' · ') : undefined,
-            })
-          })
-          .catch((err: unknown) => {
-            console.error('[useBrowserToolbarActions] Failed to apply prototype:', err)
-            toast.error(t('browserEdit.applyFailed'), {
-              description: err instanceof Error ? err.message : String(err),
-            })
-          })
-        return
-      }
-
       // kind === 'picked'. A null element means the user cancelled or it timed out.
       if (!action.element) return
       onEditElement({ element: action.element, instanceId: action.instanceId, slug, sessionId })
