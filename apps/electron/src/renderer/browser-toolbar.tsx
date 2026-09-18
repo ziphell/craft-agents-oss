@@ -11,7 +11,7 @@ import ReactDOM from 'react-dom/client'
 import { useTranslation, initReactI18next } from 'react-i18next'
 import LanguageDetector from 'i18next-browser-languagedetector'
 import { setupI18n } from '@craft-agent/shared/i18n'
-import { Circle, Code, EyeOff, Globe, Lock, MessageSquare, MousePointerClick, Pencil, Plus, Square, X, XCircle } from 'lucide-react'
+import { Circle, Code, EyeOff, Globe, Lock, MessageSquare, MousePointerClick, Plus, Square, X, XCircle } from 'lucide-react'
 import { BrowserControls, Spinner } from '@craft-agent/ui'
 import { HeaderIconButton } from '@/components/ui/HeaderIconButton'
 import { cn } from '@/lib/utils'
@@ -53,15 +53,6 @@ interface ToolbarState {
    * state yet, which reads as "off" — the picker is not something to flash on.
    */
   picking?: boolean
-  /**
-   * Whether the window's element **editor** is on.
-   *
-   * Reported rather than remembered, for the picker's reason (it also ends from
-   * inside the page, and arming one mode takes the other off) — and one thing more:
-   * what the person does in it is written into a patch, so this button's state is
-   * the only place the window says "changes you make here are being saved".
-   */
-  editing?: boolean
   /**
    * Whether the tab on screen has its developer tools up.
    *
@@ -115,12 +106,12 @@ declare global {
       setMenuGeometry: (open: boolean, height?: number) => Promise<void>
       hideWindow: () => Promise<void>
       closeWindowEntirely: () => Promise<void>
-      /** The label is the caller's: the bar is drawn in the page, which has no i18n. */
-      pickElement: (addLabel?: string) => Promise<void>
+      /**
+       * The label is the caller's: the bar is drawn in the page, which has no i18n.
+       * All four words travel together because they are one bar.
+       */
+      pickElement: (labels?: { add: string; undo: string; save: string; discard: string }) => Promise<void>
       cancelPick: () => Promise<void>
-      /** Turn the window's element editor on, or take it off. */
-      startEditing: (labels?: { undo: string; save: string; discard: string }) => Promise<void>
-      cancelEdit: () => Promise<void>
       /** Switch to one of this window's tabs, close one, add one, or unlock one. */
       tabAction: (
         action: 'activate' | 'close' | 'new' | 'release',
@@ -566,16 +557,6 @@ function BrowserToolbarApp() {
    */
   const picking = state.picking === true
   /**
-   * Edit mode, as the window reports it.
-   *
-   * The mode where a change made here is *saved*: boxing elements and pressing B,
-   * or double-clicking a line and retyping it, writes a patch of the prototype this
-   * page belongs to. Which is also why the bar says so while it is on — a page that
-   * looks one way until a reload and another way after it is worse than one that was
-   * never touched.
-   */
-  const editing = state.editing === true
-  /**
    * Whether the current tab's developer tools are up, as the window reports it.
    *
    * Not this renderer's state for the same reason as `picking`: the tools can be closed
@@ -700,11 +681,11 @@ function BrowserToolbarApp() {
   }, [api])
 
   /**
-   * Turn the window's picker on or off.
+   * Turn the window's overlay on or off.
    *
-   * Neither call is awaited for its outcome: the mode is the window's, and it
-   * arrives back as state. Awaiting would mean this renderer had its own idea of
-   * whether picking is on, which is exactly what the state push exists to avoid.
+   * Neither call is awaited for its outcome: the mode is the window's, and it arrives
+   * back as state. The bar's words go with the call — it is drawn inside the page,
+   * which has no i18n, and this is the side that does.
    */
   const handleTogglePick = useCallback(() => {
     if (!api) return
@@ -712,28 +693,13 @@ function BrowserToolbarApp() {
       void api.cancelPick()
       return
     }
-    void api.pickElement(t('browser.addToConversation'))
-  }, [api, picking, t])
-
-  /**
-   * Turn the window's editor on or off.
-   *
-   * Neither call is awaited for its outcome, for the picker's reason: the mode is
-   * the window's and arrives back as state. The bar's words go with the call — it is
-   * drawn inside the page, which has no i18n, and this is the side that does.
-   */
-  const handleToggleEdit = useCallback(() => {
-    if (!api) return
-    if (editing) {
-      void api.cancelEdit()
-      return
-    }
-    void api.startEditing({
+    void api.pickElement({
+      add: t('browser.addToConversation'),
       undo: t('browserEdit.editorUndo'),
       save: t('browserEdit.editorSave'),
       discard: t('browserEdit.editorDiscard'),
     })
-  }, [api, editing, t])
+  }, [api, picking, t])
 
   const handleToggleDevTools = useCallback(() => {
     void api?.toggleDevTools()
@@ -775,20 +741,40 @@ function BrowserToolbarApp() {
       await api.startRecording(format.extension)
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false })
       const media = new MediaRecorder(stream, { mimeType: format.mimeType })
+
+      /**
+       * Every chunk handed to the host so far, as one promise.
+       *
+       * `arrayBuffer()` is asynchronous, so at `stop` the last chunk is normally still
+       * being read — and the last chunk is not optional. Measured (see the recorder spike):
+       * an mp4 hands out its header early and everything else here, so a file closed
+       * without this chunk still loads and has nothing to show. So `stop` waits on the
+       * chain, and chaining is also what makes the chunks reach the host in the order they
+       * were produced.
+       */
+      let sent: Promise<void> = Promise.resolve()
       media.ondataavailable = (event) => {
         if (event.data.size === 0) return
-        void event.data.arrayBuffer().then((chunk) => api.sendRecordingChunk(chunk))
+        const data = event.data
+        sent = sent
+          .then(() => data.arrayBuffer())
+          .then((chunk) => api.sendRecordingChunk(chunk))
+          // A chunk that could not be sent is a second lost, not a reason for the stop
+          // below never to run: the file still has to be closed.
+          .catch(() => undefined)
       }
       media.onstop = () => {
         stream.getTracks().forEach((track) => track.stop())
         setRecorder(null)
-        void api.stopRecording().then((finished) => {
+        void sent.then(() => api.stopRecording()).then((finished) => {
           // `null` is "nothing reached the file", which the host has already removed.
           if (finished) setSavedFile(finished.file)
         })
       }
-      // A chunk a second: the file is playable up to the last one, so a crash or a killed
-      // window costs a second rather than the whole recording.
+      // A chunk a second: a window that dies mid-recording loses a second rather than the
+      // whole thing, for the containers that stream. What can never be lost is the chunk
+      // `stop` produces (see `sent`) — measured for an mp4, that chunk carries very nearly
+      // the whole recording.
       media.start(1000)
       setRecorder(media)
     } catch {
@@ -903,29 +889,10 @@ function BrowserToolbarApp() {
                 : <MousePointerClick className="h-3.5 w-3.5" />}
               aria-label={picking ? t('browser.cancelPick') : t('browser.pickElement')}
               className={picking ? 'bg-accent/15 text-accent' : undefined}
-              // Always available: picking is not about a prototype — what a
-              // selection gets turned *into* is decided after it is picked, and a
-              // pick with no conversation to go to opens one (plan §12.7).
+              // One door for everything done *with* the page: click an element, or box
+              // several, and the bar over the selection is where the work is — styling,
+              // saving, discarding, or handing it to the conversation (plan §12.7).
               onClick={handleTogglePick}
-            />
-
-            {/*
-              The editor: the mode where the person's own change is written down.
-              Always available whatever the page is — which prototype (and which page)
-              an edit belongs to is the window's own fact, and a page that belongs to
-              none says so when the edit is made rather than never offering the mode.
-            */}
-            {editing && (
-              <span className="inline-flex select-none items-center whitespace-nowrap rounded-[6px] bg-accent/15 px-2 py-1 text-[11px] text-accent">
-                {t('browser.editHint')}
-              </span>
-            )}
-
-            <HeaderIconButton
-              icon={editing ? <X className="h-3.5 w-3.5" /> : <Pencil className="h-3.5 w-3.5" />}
-              aria-label={t('browser.editMode')}
-              className={editing ? 'bg-accent/15 text-accent' : undefined}
-              onClick={handleToggleEdit}
             />
 
             {/*

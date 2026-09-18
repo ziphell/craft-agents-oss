@@ -22,8 +22,6 @@ const CHANNELS = {
   STATE_UPDATE: 'browser-toolbar:state-update',
   PICK_ELEMENT: 'browser-toolbar:pick-element',
   CANCEL_PICK: 'browser-toolbar:cancel-pick',
-  EDIT: 'browser-toolbar:edit',
-  CANCEL_EDIT: 'browser-toolbar:cancel-edit',
   TABS: 'browser-toolbar:tabs',
   DEVTOOLS: 'browser-toolbar:devtools',
   RECORD: 'browser-toolbar:record',
@@ -44,31 +42,21 @@ contextBridge.exposeInMainWorld('browserToolbar', {
   hideWindow: () => ipcRenderer.invoke(CHANNELS.HIDE, instanceId),
   closeWindowEntirely: () => ipcRenderer.invoke(CHANNELS.DESTROY, instanceId),
   /**
-   * Turn the window's element picker on — and leave it on.
+   * Turn the window's element overlay on — and leave it on.
    *
-   * Resolves as soon as the mode is on, not when a pick happens: the user keeps
-   * picking (and keeps moving between the window's tabs while they do), and each
-   * pick arrives on the host side as an `add-to-conversation` action. Page clicks
-   * are suppressed for as long as the mode is on; `cancelPick`, or Escape in the
-   * page, ends it.
-   */
-  pickElement: (addLabel?: string) => ipcRenderer.invoke(CHANNELS.PICK_ELEMENT, instanceId, addLabel),
-  cancelPick: () => ipcRenderer.invoke(CHANNELS.CANCEL_PICK, instanceId),
-  /**
-   * Turn the window's element editor on — and leave it on.
-   *
-   * Resolves as soon as the mode is on, not when an edit happens: the person keeps
-   * boxing elements and retyping text, and each save travels back as an
-   * `edit-requested` action, which the main window writes as one patch. Nothing is
-   * written before that, so leaving the mode (`cancelEdit`, or Escape in the page)
-   * takes the unsaved edits back. Arming this takes the picker off, and the other way
-   * round: one overlay per window.
+   * Resolves as soon as the mode is on, not when something happens: the person keeps
+   * clicking and boxing (and keeps moving between the window's tabs while they do).
+   * A selection shows the bar over it, whose buttons are the work: style, undo, save,
+   * discard, and hand it to the conversation. Each pick arrives on the host side as
+   * an `add-to-conversation` action, each save as an `edit-requested` one; nothing is
+   * written before a save. Page clicks are suppressed for as long as the mode is on;
+   * `cancelPick` asks it to leave, and Escape in the page does the same.
    *
    * `labels` are the bar's own words — the page has no i18n, and this renderer does.
    */
-  startEditing: (labels?: { undo: string; save: string; discard: string }) =>
-    ipcRenderer.invoke(CHANNELS.EDIT, instanceId, labels),
-  cancelEdit: () => ipcRenderer.invoke(CHANNELS.CANCEL_EDIT, instanceId),
+  pickElement: (labels?: { add: string; undo: string; save: string; discard: string }) =>
+    ipcRenderer.invoke(CHANNELS.PICK_ELEMENT, instanceId, labels),
+  cancelPick: () => ipcRenderer.invoke(CHANNELS.CANCEL_PICK, instanceId),
   /**
    * Manage this window's own tabs from the rail: switch to one, close one, add one,
    * or take a locked tab back (`release`). The host owns what a tab is, so nothing

@@ -19,6 +19,11 @@
  *
  * Run: node_modules\electron\dist\electron.exe apps\electron\spike\recorder-formats.cjs
  * Log: apps\electron\spike\recorder-formats.log (NDJSON)
+ *
+ * A second question was added after a recording came out unplayable: **does the last
+ * chunk matter?** The shipping recorder streams chunks to the main process as each one is
+ * read and then says "stop", so the final chunk could be dropped; `tails` measures that by
+ * inspecting the same recording with and without it.
  */
 const { app, BrowserWindow } = require('electron')
 const fs = require('fs')
@@ -44,10 +49,22 @@ const CANDIDATES = [
 
 const PLAYABLE = ['video/webm', 'video/mp4', 'video/x-matroska', 'video/quicktime', 'video/ogg']
 
+/**
+ * The formats the last-chunk question is asked of.
+ *
+ * A recording is streamed to disk chunk by chunk with a one-second timeslice, so the
+ * **final** chunk is the one at risk: it is produced by `stop`, and it is the chunk that
+ * carries whatever a container puts at the end (an index, a size that has to be patched
+ * once the length is known). Both of the formats we would actually record, so the answer
+ * is about the ones in use rather than a third one nobody picks.
+ */
+const TAIL_TYPES = ['video/mp4;codecs=avc1.42E01E', 'video/webm']
+
 /** Everything the probe answers, run inside the renderer that would do the recording. */
 const PROBE = `(async () => {
   const CANDIDATES = ${JSON.stringify(CANDIDATES)}
   const PLAYABLE = ${JSON.stringify(PLAYABLE)}
+  const TAIL_TYPES = ${JSON.stringify(TAIL_TYPES)}
 
   const supported = {}
   for (const type of CANDIDATES) supported[type] = MediaRecorder.isTypeSupported(type)
@@ -55,7 +72,22 @@ const PROBE = `(async () => {
   const canPlay = {}
   for (const type of PLAYABLE) canPlay[type] = document.createElement('video').canPlayType(type) || ''
 
-  const record = async (mimeType) => {
+  /** A blob's size, and the first bytes — the container's own signature. */
+  const describe = async (blob) => {
+    const bytes = new Uint8Array(await blob.arrayBuffer())
+    return {
+      bytes: bytes.length,
+      head: Array.from(bytes.slice(0, 16)).map((b) => b.toString(16).padStart(2, '0')).join(' '),
+    }
+  }
+
+  /**
+   * Record an animated canvas, keeping every chunk the recorder hands out.
+   *
+   * Chunks rather than one blob, because the question below is about leaving the last
+   * one off. The timeslice matches the shipping recorder's.
+   */
+  const capture = async (mimeType) => {
     const canvas = document.createElement('canvas')
     canvas.width = 320
     canvas.height = 240
@@ -83,11 +115,12 @@ const PROBE = `(async () => {
     recorder.stop()
     await stopped
     clearInterval(timer)
+    stream.getTracks().forEach((track) => track.stop())
+    return chunks
+  }
 
-    const blob = new Blob(chunks, { type: mimeType })
-    const bytes = new Uint8Array(await blob.arrayBuffer())
-    const head = Array.from(bytes.slice(0, 16)).map((b) => b.toString(16).padStart(2, '0')).join(' ')
-
+  /** Whatever a player can make of one container. */
+  const inspect = async (blob, mimeType) => {
     const url = URL.createObjectURL(blob)
     const video = document.createElement('video')
     video.muted = true
@@ -100,7 +133,7 @@ const PROBE = `(async () => {
 
     if (loaded.read !== 'metadata') {
       URL.revokeObjectURL(url)
-      return { bytes: bytes.length, head, load: loaded }
+      return { load: loaded }
     }
 
     const asRecorded = String(video.duration)
@@ -141,8 +174,6 @@ const PROBE = `(async () => {
     URL.revokeObjectURL(url)
 
     return {
-      bytes: bytes.length,
-      head,
       load: { read: 'metadata', width: video.videoWidth, height: video.videoHeight },
       durationAsRecorded: asRecorded,
       durationAfterSeekToEnd: resolved,
@@ -154,13 +185,38 @@ const PROBE = `(async () => {
   for (const type of CANDIDATES) {
     if (!supported[type]) continue
     try {
-      recordings[type] = await record(type)
+      const blob = new Blob(await capture(type), { type })
+      recordings[type] = { ...(await describe(blob)), ...(await inspect(blob, type)) }
     } catch (error) {
       recordings[type] = { error: String(error) }
     }
   }
 
-  return { supported, canPlay, recordings }
+  /**
+   * Does the last chunk matter?
+   *
+   * The same recording twice: as it was captured, and with its final chunk left off —
+   * which is what happens when the file is closed before the chunk that stop produced has
+   * been read out of its blob and sent. If the two behave the same, the last chunk is
+   * only a lost second; if the trimmed one will not load, the last chunk is the
+   * container's own ending, and closing early produces a file nothing opens.
+   */
+  const tails = {}
+  for (const type of TAIL_TYPES) {
+    if (!supported[type]) continue
+    try {
+      const chunks = await capture(type)
+      tails[type] = {
+        chunks: chunks.length,
+        whole: await inspect(new Blob(chunks, { type }), type),
+        withoutLast: await inspect(new Blob(chunks.slice(0, -1), { type }), type),
+      }
+    } catch (error) {
+      tails[type] = { error: String(error) }
+    }
+  }
+
+  return { supported, canPlay, recordings, tails }
 })()`
 
 app.whenReady().then(async () => {

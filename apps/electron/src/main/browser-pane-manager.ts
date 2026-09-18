@@ -12,7 +12,7 @@ import { validateFilePath, getWorkspaceAllowedDirs } from '@craft-agent/server-c
 import { BrowserView, BrowserWindow, WebContentsView, app, ipcMain, nativeTheme, session, shell, type Session as ElectronSession } from 'electron'
 import { mainLog } from './logger'
 import type { WindowManager } from './window-manager'
-import { BrowserCDP, type AccessibilitySnapshot, type EditorLabels, type ElementGeometry } from './browser-cdp'
+import { BrowserCDP, type AccessibilitySnapshot, type ElementGeometry, type OverlayLabels } from './browser-cdp'
 import { sampleVideoFrames } from './video-frames'
 import { TabRecorder } from './tab-recorder'
 import {
@@ -185,8 +185,6 @@ const TOOLBAR_CHANNELS = {
   STATE_UPDATE: 'browser-toolbar:state-update',
   PICK_ELEMENT: 'browser-toolbar:pick-element',
   CANCEL_PICK: 'browser-toolbar:cancel-pick',
-  EDIT: 'browser-toolbar:edit',
-  CANCEL_EDIT: 'browser-toolbar:cancel-edit',
   TABS: 'browser-toolbar:tabs',
   DEVTOOLS: 'browser-toolbar:devtools',
   RECORD: 'browser-toolbar:record',
@@ -395,14 +393,13 @@ interface BrowserTab {
   downloads: BrowserDownloadEntry[]
 }
 
-/**
- * The editor bar's words when the caller brings none.
- *
- * The toolbar renderer passes its own (it is the side with i18n), so this is only
- * what a window armed from somewhere else would show — and English rather than
- * nothing, because a bar with unlabelled buttons is worse than an untranslated one.
- */
-const DEFAULT_EDITOR_LABELS: EditorLabels = { undo: 'Undo', save: 'Save {n}', discard: 'Discard' }
+/** The bar's words when the caller brings none — see `armOverlay`'s own defaults. */
+const DEFAULT_PICK_LABELS: OverlayLabels = {
+  add: 'Add to conversation',
+  undo: 'Undo',
+  save: 'Save {n}',
+  discard: 'Discard',
+}
 
 interface BrowserInstance {
   id: string
@@ -495,19 +492,24 @@ interface BrowserInstance {
   controlBy: Map<string, AgentControlLabel>
   lastLaunchToken: string | null
   /**
-   * Whether the element picker is **armed on this window** (plan §12.7).
+   * Whether the window's element overlay is **armed on this window** (plan §12.7).
    *
    * A window's mode rather than a tab's, because the mode is what the user turned
-   * on: they keep picking while they move between tabs, so the picker is re-armed
-   * on whatever tab comes to the front, and each pick carries the tab it came
-   * from. One pick does not end it — that is what "resident" means here — so it
-   * ends when the user says so (Escape in the page, or the toolbar button).
+   * on: they keep working on elements while they move between tabs, so the overlay
+   * is re-armed on whatever tab comes to the front, and each selection carries the
+   * tab it came from. One selection does not end it — that is what "resident" means
+   * here — so it ends when the user says so (Escape in the page, or the toolbar
+   * button), or when a draft is resolved.
    */
   picking: boolean
-  /** The label the injected bar shows — the toolbar's language, kept for re-arming. */
-  pickLabel: string
   /**
-   * Which tab the picker is armed on, or `null` while the mode is off.
+   * The bar's words, in the toolbar's language — kept for re-arming.
+   *
+   * The bar is drawn inside the page, which has no i18n; the toolbar renderer has.
+   */
+  pickLabels: OverlayLabels
+  /**
+   * Which tab the overlay is armed on, or `null` while the mode is off.
    *
    * Kept because the tab that has to be disarmed is the one the overlay is on,
    * and by the time a loop is torn down the tab on screen may be a different one
@@ -515,7 +517,7 @@ interface BrowserInstance {
    */
   pickTabId: string | null
   /**
-   * Which arming the running pick loop belongs to.
+   * Which arming the running loop belongs to.
    *
    * Bumped whenever the loop is superseded (a different tab came forward, the mode
    * was turned off), so a loop that comes back after being torn down can tell that
@@ -523,28 +525,6 @@ interface BrowserInstance {
    * mistaking its own teardown for the user giving up.
    */
   pickerGeneration: number
-  /**
-   * Whether the element **editor** is armed on this window — the mode where the
-   * person boxes elements and styles them, or double-clicks one to retype its text.
-   *
-   * The picker's sibling and its mirror in every respect: a mode of the window
-   * rather than of a tab (so it follows the tab that comes to the front), it stays
-   * on until the user says so, and what it produces is reported outward rather than
-   * acted on here. The two are mutually exclusive — one overlay per window, since
-   * both of them take the page's clicks.
-   */
-  editing: boolean
-  /**
-   * The editor bar's own words, in the toolbar's language — the page has no i18n.
-   *
-   * Kept here for the same reason as `pickLabel`: the mode is re-armed on a page
-   * that navigated, and what the bar says has to survive that.
-   */
-  editLabels: EditorLabels
-  /** Which tab the editor is armed on, or `null` while the mode is off. */
-  editTabId: string | null
-  /** Which arming the running editor loop belongs to — see {@link pickerGeneration}. */
-  editorGeneration: number
 }
 
 /**
@@ -1025,13 +1005,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       controlBy: new Map(),
       lastLaunchToken: null,
       picking: false,
-      pickLabel: 'Add to conversation',
+      pickLabels: DEFAULT_PICK_LABELS,
       pickTabId: null,
       pickerGeneration: 0,
-      editing: false,
-      editLabels: DEFAULT_EDITOR_LABELS,
-      editTabId: null,
-      editorGeneration: 0,
       // What the window *is showing*, as one value, because `BrowserInstanceSnapshot`
       // (what the server side reads, and what the toolbar's state reports) is phrased
       // in terms of the window: "the window's address" has to mean "the address of the
@@ -1333,9 +1309,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // forward (plan §12.7): the user keeps picking across tabs, and this is where
     // "any tab's elements can be picked" is made true.
     if (instance.picking) this.armPickerOn(instance, tab)
-    // The editor is the window's mode too, and follows the front tab for the same
-    // reason: the user edits across the window's tabs.
-    if (instance.editing) this.armEditorOn(instance, tab)
     mainLog.info(`[browser-pane] Tab activated instance=${instance.id} tab=${tab.id} url=${tab.currentUrl}`)
   }
 
@@ -1407,11 +1380,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // armed on a tab nobody can see would be a mode with nothing to click.
     if (instance.pickTabId === tab.id) {
       instance.pickTabId = null
-      void tab.cdp.cancelPicker()
-    }
-    if (instance.editTabId === tab.id) {
-      instance.editTabId = null
-      void tab.cdp.teardownEditor()
+      void tab.cdp.teardownOverlay()
     }
 
     // Out of the window and gone — `instance.tabs` is not the window's view list.
@@ -1536,27 +1505,28 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   // ---------------------------------------------------------------------------
-  // Element picker (plan §12.7)
+  // The window's element overlay (plan §12.7)
   // ---------------------------------------------------------------------------
 
   /**
-   * Turn the element picker on for this window — and leave it on.
+   * Turn the overlay on for this window — and leave it on.
    *
-   * The mode belongs to the window, so it is remembered here and applied to
-   * whatever tab is on screen: now, and each time the user moves to another one.
-   * That is the whole of "any tab's elements can be picked".
+   * The mode belongs to the window, so it is remembered here and applied to whatever
+   * tab is on screen: now, and each time the user moves to another one. That is the
+   * whole of "any tab's elements can be worked on".
+   *
+   * The bar's words come with the call: it is drawn inside the page, which has no
+   * i18n, and the toolbar renderer is the side that has it.
    */
-  private armPicker(instance: BrowserInstance, label?: string): void {
-    if (label) instance.pickLabel = label
-    // One overlay at a time: the editor takes the page's clicks too.
-    if (instance.editing) this.disarmEditor(instance)
+  private armPicker(instance: BrowserInstance, labels?: OverlayLabels): void {
+    if (labels) instance.pickLabels = labels
     instance.picking = true
     this.armPickerOn(instance, activeTab(instance))
     this.pushToolbarState(instance)
   }
 
   /**
-   * Turn it off.
+   * Take it down, draft and all.
    *
    * The running loop is superseded rather than told: it is being torn down, and a
    * page that answers its teardown must not be read as the user giving up (the
@@ -1567,19 +1537,33 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     instance.pickerGeneration += 1
     const tab = tabById(instance, instance.pickTabId)
     instance.pickTabId = null
-    if (tab) void tab.cdp.cancelPicker()
+    if (tab) void tab.cdp.teardownOverlay()
     this.pushToolbarState(instance)
   }
 
   /**
-   * Arm the picker on one tab, taking it off whichever tab had it before.
+   * Ask the overlay to leave, without tearing it down.
    *
-   * One tab at a time: the picker is a mode *in a page* — its own UI is drawn in that tab's
+   * What the toolbar's button does, and the difference matters: a session with
+   * unsaved edits is the one case where leaving is a decision, and the page is the
+   * side holding the draft. So it either leaves — and the loop hears `cancelled` on
+   * its next poll, which is what actually disarms — or puts save-or-discard on its
+   * own bar and stays mounted.
+   */
+  private askPickerToLeave(instance: BrowserInstance): void {
+    const tab = tabById(instance, instance.pickTabId)
+    if (tab) void tab.cdp.askOverlayToLeave()
+  }
+
+  /**
+   * Arm the overlay on one tab, taking it off whichever tab had it before.
+   *
+   * One tab at a time: the overlay is a mode *in a page* — its own UI is drawn in that tab's
    * document — so a second armed tab would be a document waiting for clicks nobody aimed at it.
    */
   private armPickerOn(instance: BrowserInstance, tab: BrowserTab): void {
     const previous = tabById(instance, instance.pickTabId)
-    if (previous && previous.id !== tab.id) void previous.cdp.cancelPicker()
+    if (previous && previous.id !== tab.id) void previous.cdp.teardownOverlay()
 
     instance.pickTabId = tab.id
     const generation = ++instance.pickerGeneration
@@ -1599,11 +1583,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   private async runPickLoop(instance: BrowserInstance, tab: BrowserTab, generation: number): Promise<void> {
     const isCurrent = () => instance.pickerGeneration === generation
     // The accent is resolved here, once per arming: the page cannot see the app's
-    // variables, and a theme change mid-mode is not worth re-injecting for.
+    // variables, and a theme change mid-mode is not worth re-injecting for. The
+    // bar's words ride along for the same kind of reason — the page has no i18n.
     const arm = {
-      addToConversation: true,
-      addLabel: instance.pickLabel,
       accent: this.getResolvedAccentColor(),
+      labels: instance.pickLabels,
+      bar: true,
       resident: true,
     } as const
 
@@ -1613,34 +1598,40 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     while (isCurrent()) {
       try {
         if (!armed) {
-          await tab.cdp.armPicker(arm)
+          await tab.cdp.armOverlay(arm)
           armed = true
         }
 
-        const report = await tab.cdp.drainPicker()
+        const report = await tab.cdp.drainOverlay()
         // Read while the window may already be someone else's to report on.
         if (!isCurrent()) return
 
         for (const element of report.picks) {
-          // Every pick that arrives here is the bar's "add to conversation":
-          // clicking an element while the mode is on only selects it (plan §12.7).
+          // Every pick that arrives here is the bar's "add to conversation": the
+          // selection itself only selects (plan §12.7).
           this.emitToolbarAction({
             kind: 'add-to-conversation',
             instanceId: instance.id,
             element,
-            // The tab it came from, read at the moment of the pick: the picker is
+            // The tab it came from, read at the moment of the pick: the overlay is
             // the window's, so the element alone does not say where it was picked.
             origin: this.describeTabLocation(tab),
           })
         }
 
+        // One action per save: what the person accumulated is one moment of intent,
+        // and the main window writes it as one entry in the change layer.
+        for (const edits of report.saves) {
+          this.emitToolbarAction({ kind: 'edit-requested', instanceId: instance.id, edits })
+        }
+
         if (report.status === 'cancelled') {
-          mainLog.info(`[browser-pane] Picker stopped in the page instance=${instance.id} tab=${tab.id}`)
+          mainLog.info(`[browser-pane] Overlay left the page instance=${instance.id} tab=${tab.id}`)
           this.disarmPicker(instance)
           return
         }
 
-        // `missing` = this document has no picker: the page navigated out from
+        // `missing` = this document has no overlay: the page navigated out from
         // under it, or the injection did not take. The mode is the window's, so the
         // tab is armed again rather than the mode quietly ending.
         armed = report.status !== 'missing'
@@ -1649,7 +1640,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         if (!isCurrent()) return
 
         // A tab that is gone is not a failure to report: the window it belonged to
-        // is closed, and the picker went with it.
+        // is closed, and the overlay went with it.
         if (instance.window.isDestroyed() || tab.tabView.webContents.isDestroyed()) {
           instance.picking = false
           instance.pickTabId = null
@@ -1674,137 +1665,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
           instanceId: instance.id,
           message: 'The page would not keep the element picker.',
         })
-        return
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, PICKER_POLL_MS))
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Element editor — the person's own edits (plan §12.7 / §21)
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Turn the editor on for this window, and leave it on.
-   *
-   * The picker's sibling, down to the reason for being a window-level mode: the
-   * user edits across the window's tabs, so it is applied to whatever tab is on
-   * screen — now, and each time they move to another one.
-   *
-   * The two are mutually exclusive. Both draw an overlay that takes the page's
-   * clicks, so arming one takes the other off; the picker answers "which element",
-   * the editor asks "what should it look like", and neither question can be asked
-   * while the other mode is holding the page.
-   */
-  private armEditor(instance: BrowserInstance, labels?: EditorLabels): void {
-    if (labels) instance.editLabels = labels
-    if (instance.picking) this.disarmPicker(instance)
-    instance.editing = true
-    this.armEditorOn(instance, activeTab(instance))
-    this.pushToolbarState(instance)
-  }
-
-  /** Turn it off, taking the draft with it. The running loop is superseded, for the reason {@link disarmPicker} gives. */
-  private disarmEditor(instance: BrowserInstance): void {
-    instance.editing = false
-    instance.editorGeneration += 1
-    const tab = tabById(instance, instance.editTabId)
-    instance.editTabId = null
-    if (tab) void tab.cdp.teardownEditor()
-    this.pushToolbarState(instance)
-  }
-
-  /**
-   * The button, while the mode is on: ask the editor to leave.
-   *
-   * Not a teardown, and deliberately not awaited for an outcome: a session with
-   * unsaved edits is the one case where leaving is a decision, and the page is the
-   * side holding the draft — so it either leaves (and the loop hears `cancelled` on
-   * its next poll, which is what actually disarms) or puts save-or-drop on its own
-   * bar and stays mounted.
-   */
-  private askEditorToLeave(instance: BrowserInstance): void {
-    const tab = tabById(instance, instance.editTabId)
-    if (tab) void tab.cdp.askEditorToLeave()
-  }
-
-  /** Arm the editor on one tab, taking it off whichever tab had it before. */
-  private armEditorOn(instance: BrowserInstance, tab: BrowserTab): void {
-    const previous = tabById(instance, instance.editTabId)
-    if (previous && previous.id !== tab.id) void previous.cdp.teardownEditor()
-
-    instance.editTabId = tab.id
-    const generation = ++instance.editorGeneration
-    void this.runEditorLoop(instance, tab, generation)
-  }
-
-  /**
-   * Poll the page for edits, and hand each one to the main window.
-   *
-   * Nothing is written here, and nothing is applied: *which* prototype and page an
-   * edit belongs to is a fact about the window (its tab's prototype), and the main
-   * window is where that is known — so an edit travels out the way a pick does, and
-   * is written as a patch there (`edit-patch.ts`).
-   *
-   * There is no "the page said stop" answer to report, unlike the picker's
-   * `cancelled`: Escape in the page ends the mode, and that is this side's decision
-   * to make, so the loop only ever reports edits.
-   */
-  private async runEditorLoop(instance: BrowserInstance, tab: BrowserTab, generation: number): Promise<void> {
-    const isCurrent = () => instance.editorGeneration === generation
-
-    let armed = false
-    let unusable = 0
-
-    while (isCurrent()) {
-      try {
-        if (!armed) {
-          // The accent is resolved once per arming, like the picker's: a page cannot
-          // see the app's variables. The bar's words travel with it for the same
-          // reason — the page has no i18n of its own.
-          await tab.cdp.armEditor({ accent: this.getResolvedAccentColor(), labels: instance.editLabels })
-          armed = true
-        }
-
-        const report = await tab.cdp.drainEditor()
-        // Read while the window may already be someone else's to report on.
-        if (!isCurrent()) return
-
-        // One action per save: what the person accumulated is one moment of intent,
-        // and the main window writes it as one entry in the change layer.
-        for (const edits of report.saves) {
-          this.emitToolbarAction({ kind: 'edit-requested', instanceId: instance.id, edits })
-        }
-
-        if (report.status === 'cancelled') {
-          mainLog.info(`[browser-pane] Editor stopped in the page instance=${instance.id} tab=${tab.id}`)
-          this.disarmEditor(instance)
-          return
-        }
-
-        // `missing` = this document has no editor: the page navigated out from under
-        // it, or the injection did not take. The mode is the window's, so the tab is
-        // armed again rather than the mode quietly ending.
-        armed = report.status !== 'missing'
-        unusable = armed ? 0 : unusable + 1
-      } catch (error) {
-        if (!isCurrent()) return
-
-        if (instance.window.isDestroyed() || tab.tabView.webContents.isDestroyed()) {
-          instance.editing = false
-          instance.editTabId = null
-          return
-        }
-
-        armed = false
-        unusable += 1
-        mainLog.debug(`[browser-pane] Editor poll failed instance=${instance.id} tab=${tab.id}: ${String(error)}`)
-      }
-
-      if (unusable >= PICKER_MAX_CONSECUTIVE_FAILURES) {
-        mainLog.warn(`[browser-pane] Giving up on the editor instance=${instance.id} tab=${tab.id}`)
-        this.disarmEditor(instance)
         return
       }
 
@@ -4356,7 +4216,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
        * flag here any more, because a pick with no conversation to go to opens one.
        */
       picking: instance.picking,
-      editing: instance.editing,
       /**
        * Whether the tab on screen has its developer tools up.
        *
@@ -4595,40 +4454,18 @@ export class BrowserPaneManager implements IBrowserPaneManager {
      * conversation of its own when there is none, there is always somewhere for it
      * to go (plan §12.7).
      */
-    ipcMain.handle(TOOLBAR_CHANNELS.PICK_ELEMENT, (_event, instanceId: string, addLabel?: string) => {
+    ipcMain.handle(TOOLBAR_CHANNELS.PICK_ELEMENT, (_event, instanceId: string, labels?: OverlayLabels) => {
       const inst = findInstance(instanceId)
       if (!inst) return
-      this.armPicker(inst, addLabel)
+      this.armPicker(inst, labels)
     })
 
     ipcMain.handle(TOOLBAR_CHANNELS.CANCEL_PICK, (_event, instanceId: string) => {
       const inst = findInstance(instanceId)
       if (!inst) return
-      // The toolbar button, as opposed to Escape in the page — both mean the same
-      // thing, and both end the mode.
-      this.disarmPicker(inst)
-    })
-
-    /**
-     * The editor's button: arm it, or take it off.
-     *
-     * Like the picker's, this returns as soon as the mode is on rather than when an
-     * edit happens — the person keeps editing, and a save travels back through
-     * `emitToolbarAction` when they press save. The bar's words come with the call:
-     * the page has no i18n, and the toolbar renderer is the side that has it.
-     */
-    ipcMain.handle(TOOLBAR_CHANNELS.EDIT, (_event, instanceId: string, labels?: EditorLabels) => {
-      const inst = findInstance(instanceId)
-      if (!inst) return
-      this.armEditor(inst, labels)
-    })
-
-    ipcMain.handle(TOOLBAR_CHANNELS.CANCEL_EDIT, (_event, instanceId: string) => {
-      const inst = findInstance(instanceId)
-      if (!inst) return
-      // Asking rather than tearing down: with unsaved edits the page turns this into
-      // a question on its own bar, and the mode ends when that question is answered.
-      this.askEditorToLeave(inst)
+      // Asking rather than tearing down: with unsaved edits the page turns this into a
+      // question on its own bar, and the mode ends when that question is answered.
+      this.askPickerToLeave(inst)
     })
 
     /**
