@@ -46,15 +46,19 @@ contextBridge.exposeInMainWorld('browserToolbar', {
    *
    * Resolves as soon as the mode is on, not when something happens: the person keeps
    * clicking and boxing (and keeps moving between the window's tabs while they do).
-   * A selection shows the bar over it, whose buttons are the work: style, undo, save,
-   * discard, and hand it to the conversation. Each pick arrives on the host side as
-   * an `add-to-conversation` action, each save as an `edit-requested` one; nothing is
-   * written before a save. Page clicks are suppressed for as long as the mode is on;
-   * `cancelPick` asks it to leave, and Escape in the page does the same.
+   * A selection shows the bar — pinned to the top of the page, in the app's menu
+   * colours — and its buttons are the work: B, I, and hand it to the conversation,
+   * with undo, redo and save on their own at the page's top-left. Each pick arrives on
+   * the host side as an `add-to-conversation` action, each save as an `edit-requested`
+   * one; nothing is written before a save. Page clicks are suppressed for as long as
+   * the mode is on; `cancelPick` asks it to leave, and Escape in the page does the
+   * same — with unsaved edits it turns into "save before leaving?" instead
+   * (`ToolbarState.leavingWithEdits`), and the bar's own save button is the answer.
    *
-   * `labels` are the bar's own words — the page has no i18n, and this renderer does.
+   * `labels` are the bar's words — titles, in this renderer's language, since the page
+   * has no i18n and the buttons themselves carry glyphs.
    */
-  pickElement: (labels?: { add: string; undo: string; save: string; discard: string }) =>
+  pickElement: (labels?: { add: string; undo: string; redo: string; save: string; bold: string; italic: string }) =>
     ipcRenderer.invoke(CHANNELS.PICK_ELEMENT, instanceId, labels),
   cancelPick: () => ipcRenderer.invoke(CHANNELS.CANCEL_PICK, instanceId),
   /**

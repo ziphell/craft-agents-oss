@@ -397,8 +397,10 @@ interface BrowserTab {
 const DEFAULT_PICK_LABELS: OverlayLabels = {
   add: 'Add to conversation',
   undo: 'Undo',
-  save: 'Save {n}',
-  discard: 'Discard',
+  redo: 'Redo',
+  save: 'Save',
+  bold: 'Bold',
+  italic: 'Italic',
 }
 
 interface BrowserInstance {
@@ -516,6 +518,15 @@ interface BrowserInstance {
    * — the tab left behind would otherwise keep swallowing the user's clicks.
    */
   pickTabId: string | null
+  /**
+   * Whether the page's draft is what is holding the mode open: the person tried to
+   * leave and has not answered "save before leaving?" yet.
+   *
+   * Reported by the page on every poll, and pushed to the toolbar only when it changes:
+   * it is what makes the window's chip say the question instead of how the mode works.
+   * It means nothing while the mode is off.
+   */
+  leavingWithEdits: boolean
   /**
    * Which arming the running loop belongs to.
    *
@@ -1007,6 +1018,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       picking: false,
       pickLabels: DEFAULT_PICK_LABELS,
       pickTabId: null,
+      leavingWithEdits: false,
       pickerGeneration: 0,
       // What the window *is showing*, as one value, because `BrowserInstanceSnapshot`
       // (what the server side reads, and what the toolbar's state reports) is phrased
@@ -1534,6 +1546,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    */
   private disarmPicker(instance: BrowserInstance): void {
     instance.picking = false
+    instance.leavingWithEdits = false
     instance.pickerGeneration += 1
     const tab = tabById(instance, instance.pickTabId)
     instance.pickTabId = null
@@ -1587,6 +1600,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // bar's words ride along for the same kind of reason — the page has no i18n.
     const arm = {
       accent: this.getResolvedAccentColor(),
+      menu: this.getResolvedMenuColors(),
       labels: instance.pickLabels,
       bar: true,
       resident: true,
@@ -1605,6 +1619,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         const report = await tab.cdp.drainOverlay()
         // Read while the window may already be someone else's to report on.
         if (!isCurrent()) return
+
+        // Whether the draft is holding the mode open, as of now. Pushed rather than
+        // polled onward: the window's chip says the question with it, and a state push
+        // every 200ms would be noise.
+        if (instance.leavingWithEdits !== report.leavingWithEdits) {
+          instance.leavingWithEdits = report.leavingWithEdits
+          this.pushToolbarState(instance)
+        }
 
         for (const element of report.picks) {
           // Every pick that arrives here is the bar's "add to conversation": the
@@ -2911,10 +2933,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     tabId?: string,
   ): Promise<PickedElement | null> {
     const instance = this.requireAliveInstance(id)
-    // The overlay is drawn in the app's colour, which only this side can resolve.
+    // The overlay is drawn in the app's colours, which only this side can resolve.
     return this.tabOf(instance, tabId).cdp.pickElement({
       ...options,
       accent: this.getResolvedAccentColor(),
+      menu: this.getResolvedMenuColors(),
     })
   }
 
@@ -3213,6 +3236,36 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       ? (userTheme?.dark?.accent ?? userTheme?.accent ?? DEFAULT_THEME.dark!.accent!)
       : (userTheme?.accent ?? DEFAULT_THEME.accent!)
     return accent
+  }
+
+  /**
+   * What the injected **bar** is drawn in: the app's menu surface and text.
+   *
+   * A menu's colours rather than the accent's, because that is what the bar is — a
+   * small menu of ours on somebody else's page — and because a page is not our
+   * surface: a bar in the brand colour reads as part of the site, while a bar in the
+   * menu's own colours reads as ours, the same as every dropdown in the app.
+   *
+   * Resolved here for the same reason the accent is (a page cannot see the app's
+   * variables), and pushed on every arming so a theme switch reaches it.
+   */
+  private getResolvedMenuColors(): { surface: string; text: string } {
+    const isDark = nativeTheme.shouldUseDarkColors
+    const userTheme = loadAppTheme()
+    const dark = userTheme?.dark
+    const fallback = isDark ? DEFAULT_THEME.dark! : DEFAULT_THEME
+    const background =
+      (isDark ? (dark?.background ?? userTheme?.background) : userTheme?.background) ?? fallback.background!
+    // The same order the app's own stylesheet uses for `--popover`: the solid one
+    // first (a bar over a scenic background must not be see-through), then the
+    // ordinary one, then the background.
+    const surface =
+      (isDark
+        ? (dark?.popoverSolid ?? dark?.popover ?? userTheme?.popoverSolid ?? userTheme?.popover)
+        : (userTheme?.popoverSolid ?? userTheme?.popover)) ?? background
+    const text =
+      (isDark ? (dark?.foreground ?? userTheme?.foreground) : userTheme?.foreground) ?? fallback.foreground!
+    return { surface, text }
   }
 
   /**
@@ -4216,6 +4269,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
        * flag here any more, because a pick with no conversation to go to opens one.
        */
       picking: instance.picking,
+      // Whether the draft is why the mode is still on: the chip says the question
+      // instead of how the mode works.
+      leavingWithEdits: instance.leavingWithEdits,
       /**
        * Whether the tab on screen has its developer tools up.
        *
@@ -4463,8 +4519,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     ipcMain.handle(TOOLBAR_CHANNELS.CANCEL_PICK, (_event, instanceId: string) => {
       const inst = findInstance(instanceId)
       if (!inst) return
-      // Asking rather than tearing down: with unsaved edits the page turns this into a
-      // question on its own bar, and the mode ends when that question is answered.
+      // Asking rather than tearing down: with unsaved edits the page keeps the mode on
+      // and reports `leavingWithEdits`, which is what puts the question in the window's
+      // chip; the mode ends when the bar's own save button (or Escape) answers it.
       this.askPickerToLeave(inst)
     })
 

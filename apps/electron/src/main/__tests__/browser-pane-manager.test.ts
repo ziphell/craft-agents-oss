@@ -346,6 +346,24 @@ mock.module('../browser-cdp', () => ({
       box: { x: 5, y: 5, width: 20, height: 20 },
       clickPoint: { x: 15, y: 15 },
     }))
+    /**
+     * The element overlay (plan §12.7).
+     *
+     * One script serves two callers, so these are the calls the manager makes on it:
+     * arm a tab, read what it has reported, ask it to leave, and take it down. A test
+     * that is about the picker replaces this whole object with its own stub
+     * (`stubPicker`); the ones that only need the manager not to crash — closing a tab
+     * that was being picked, say — get this and nothing happens.
+     */
+    armOverlay = mock(async (_options: unknown) => {})
+    drainOverlay = mock(async () => ({
+      status: 'pending' as const,
+      picks: [],
+      saves: [],
+      leavingWithEdits: false,
+    }))
+    askOverlayToLeave = mock(async () => {})
+    teardownOverlay = mock(async () => {})
   },
 }))
 
@@ -1357,6 +1375,9 @@ describe('BrowserPaneManager', () => {
         // The picker is off, and the window has one tab — which the rail draws and
         // the bar leaves alone.
         picking: false,
+        // Nothing is holding the mode open, so the chip says how the mode works rather
+        // than asking whether to save.
+        leavingWithEdits: false,
         // …and so are the tab's developer tools, which the bar's own button toggles.
         devTools: false,
         tabs: [
@@ -1365,8 +1386,7 @@ describe('BrowserPaneManager', () => {
         // Nothing opened these tabs through a conversation, so there is no group to
         // name — the rail draws no headers for a window that is all one person's.
         sessionLabels: {},
-        // Nobody is editing and nobody pressed the record button.
-        editing: false,
+        // Nobody pressed the record button.
         recording: null,
       },
     ])
@@ -1399,13 +1419,13 @@ describe('BrowserPaneManager', () => {
         canGoForward: true,
         prototypeSlug: null,
         picking: false,
+        leavingWithEdits: false,
         devTools: false,
         tabs: [
           tabSummary({ id: instance.tabs[0].id, url: 'https://craft.do', title: 'Craft', isLoading: true, active: true }),
         ],
         sessionLabels: {},
-        // Nobody is editing and nobody pressed the record button.
-        editing: false,
+        // Nobody pressed the record button.
         recording: null,
       },
     ])
@@ -3104,16 +3124,36 @@ describe('BrowserPaneManager', () => {
      */
     function stubPicker(tab: any, reports: Array<{ status: string; picks?: unknown[] }>) {
       let reads = 0
-      const armPicker = mock(async (_options: unknown) => {})
-      const drainPicker = mock(async () => {
+      const armOverlay = mock(async (_options: unknown) => {})
+      const drainOverlay = mock(async () => {
         const report = reports[Math.min(reads++, reports.length - 1)]
-        // The same shape the CDP session answers with: a status, and whatever
-        // elements it has to hand over (usually none).
-        return report ? { status: report.status, picks: report.picks ?? [] } : { status: 'pending', picks: [] }
+        // The same shape the CDP session answers with: a status, whatever elements it
+        // has to hand over (usually none), and whether a draft is holding the mode open.
+        const empty = { status: 'pending', picks: [], saves: [], leavingWithEdits: false }
+        return report ? { ...empty, status: report.status, picks: report.picks ?? [] } : empty
       })
-      const cancelPicker = mock(async () => {})
-      tab.cdp = { armPicker, drainPicker, cancelPicker }
-      return { armPicker, drainPicker, cancelPicker }
+      const askOverlayToLeave = mock(async () => {})
+      const teardownOverlay = mock(async () => {})
+      tab.cdp = { armOverlay, drainOverlay, askOverlayToLeave, teardownOverlay }
+      return { armOverlay, drainOverlay, askOverlayToLeave, teardownOverlay }
+    }
+
+    /**
+     * Long enough for one more pass of the poll loop (250ms between passes).
+     *
+     * The loop is not driven by the calls that change the mode — asking the page to
+     * leave is answered by the page, on its next poll — so a test that waits for the
+     * answer has to wait that long.
+     */
+    const PICKER_POLL_WAIT = 350
+
+    /** The toolbar's words, as the panel sends them down (the page has no i18n). */
+    const PICK_LABELS = {
+      add: 'Add to conversation',
+      undo: 'Undo',
+      redo: 'Redo',
+      bold: 'Bold',
+      italic: 'Italic',
     }
 
     /** An element as the page reports it. */
@@ -3130,30 +3170,71 @@ describe('BrowserPaneManager', () => {
     it('stays on until it is turned off, and reports the mode to the toolbar', async () => {
       manager.createInstance('pick-mode')
       const instance = (manager as any).instances.get('pick-mode')
-      const { armPicker, cancelPicker } = stubPicker(instance.tabs[0], [{ status: 'pending', picks: [] }])
+      const { armOverlay, askOverlayToLeave, teardownOverlay } = stubPicker(instance.tabs[0], [
+        { status: 'pending', picks: [] },
+        { status: 'cancelled' },
+      ])
       manager.registerToolbarIpc()
 
-      await toolbarHandler('browser-toolbar:pick-element')({}, 'pick-mode', 'Add to conversation')
+      await toolbarHandler('browser-toolbar:pick-element')({}, 'pick-mode', PICK_LABELS)
       await tick()
 
-      expect(armPicker).toHaveBeenCalledWith(
+      expect(armOverlay).toHaveBeenCalledWith(
         expect.objectContaining({
-          addToConversation: true,
-          addLabel: 'Add to conversation',
+          // The window's own mode: it stays mounted, and it draws the bar.
           resident: true,
+          bar: true,
+          // The bar's words travel down with the call: the page has no i18n.
+          labels: PICK_LABELS,
           // The app's own accent: a concrete colour, because a page cannot see the
-          // app's variables and the overlay has to be drawn in it.
+          // app's variables and the overlay has to be drawn in it. The bar's *own*
+          // colours come down beside it, resolved the same way (the menu's, not the
+          // accent — the bar is our menu on their page).
           accent: expect.stringMatching(/^(#|oklch|rgb|hsl)/),
+          menu: { surface: expect.any(String), text: expect.any(String) },
         }),
       )
       expect(lastToolbarState(instance).picking).toBe(true)
+      // Nothing is holding the mode open: the chip says how the mode works rather than
+      // asking the save question.
+      expect(lastToolbarState(instance).leavingWithEdits).toBe(false)
       // Picking is a mode, not a pick: arming leaves the page's overlay in place.
-      expect(cancelPicker).not.toHaveBeenCalled()
+      expect(teardownOverlay).not.toHaveBeenCalled()
 
       await toolbarHandler('browser-toolbar:cancel-pick')({}, 'pick-mode')
 
-      expect(cancelPicker).toHaveBeenCalled()
+      // Asking, not tearing down: the page may be holding a draft, so leaving is a
+      // question — and the answer comes back on the next poll, not from this call.
+      expect(askOverlayToLeave).toHaveBeenCalled()
+      expect(teardownOverlay).not.toHaveBeenCalled()
+      expect(lastToolbarState(instance).picking).toBe(true)
+
+      await new Promise((resolve) => setTimeout(resolve, PICKER_POLL_WAIT))
+
       expect(lastToolbarState(instance).picking).toBe(false)
+    })
+
+    // The save button is drawn in the page, so the one thing the window's chip needs out
+    // of the loop is whether that draft is what is holding the mode open: the person
+    // tried to leave and has not answered yet.
+    it('says when the draft is what holds the mode open', async () => {
+      manager.createInstance('pick-save')
+      const instance = (manager as any).instances.get('pick-save')
+      const { drainOverlay } = stubPicker(instance.tabs[0], [{ status: 'pending' }])
+      drainOverlay.mockImplementation(async () => ({
+        status: 'pending',
+        picks: [],
+        saves: [],
+        leavingWithEdits: true,
+      }))
+      manager.registerToolbarIpc()
+
+      await toolbarHandler('browser-toolbar:pick-element')({}, 'pick-save', PICK_LABELS)
+      await tick()
+
+      expect(lastToolbarState(instance).leavingWithEdits).toBe(true)
+
+      await toolbarHandler('browser-toolbar:cancel-pick')({}, 'pick-save')
     })
 
     // The element alone cannot say which tab it came from, and the picker is the
@@ -3175,7 +3256,7 @@ describe('BrowserPaneManager', () => {
       stubPicker(tab, [{ status: 'pending', picks: [ELEMENT] }])
       manager.registerToolbarIpc()
 
-      await toolbarHandler('browser-toolbar:pick-element')({}, 'pick-origin', 'Add to conversation')
+      await toolbarHandler('browser-toolbar:pick-element')({}, 'pick-origin', PICK_LABELS)
       await tick()
 
       expect(actions).toContainEqual({
@@ -3236,14 +3317,16 @@ describe('BrowserPaneManager', () => {
       await toolbarHandler('browser-toolbar:pick-element')({}, 'pick-switch')
       await tick()
 
-      expect(first.armPicker).toHaveBeenCalledTimes(1)
-      expect(second.armPicker).not.toHaveBeenCalled()
+      expect(first.armOverlay).toHaveBeenCalledTimes(1)
+      expect(second.armOverlay).not.toHaveBeenCalled()
 
       manager.activateTab('pick-switch', secondId)
       await tick()
 
-      expect(second.armPicker).toHaveBeenCalledTimes(1)
-      expect(first.cancelPicker).toHaveBeenCalled()
+      expect(second.armOverlay).toHaveBeenCalledTimes(1)
+      // The tab left behind has its overlay taken off — torn down rather than asked:
+      // nobody is there to answer the question, the window is on another tab now.
+      expect(first.teardownOverlay).toHaveBeenCalled()
 
       await toolbarHandler('browser-toolbar:cancel-pick')({}, 'pick-switch')
     })

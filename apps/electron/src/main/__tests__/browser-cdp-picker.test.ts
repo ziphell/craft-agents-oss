@@ -32,8 +32,18 @@ function createFakeWebContents(respond: (params: any) => unknown) {
 
 const ACCENT = '#8b5cf6'
 
+/** The bar's colours: the app's menu surface and text, resolved by the caller. */
+const MENU = { surface: 'oklch(0.2 0.01 270)', text: 'oklch(0.95 0.01 270)' }
+
 /** The bar's words travel from the toolbar renderer, which is the side with i18n. */
-const LABELS: OverlayLabels = { add: 'Add to conversation', undo: 'Undo', save: 'Save {n}', discard: 'Discard' }
+const LABELS: OverlayLabels = {
+  add: 'Add to conversation',
+  undo: 'Undo',
+  redo: 'Redo',
+  save: 'Save',
+  bold: 'Bold',
+  italic: 'Italic',
+}
 
 const PICKED = {
   selector: '[data-testid="pay"]',
@@ -50,16 +60,61 @@ describe('BrowserCDP overlay', () => {
   it('injects a syntactically valid script, in the window’s colour and language', async () => {
     const { webContents, expressions } = createFakeWebContents(() => ({}))
     const cdp = new BrowserCDP(webContents)
-    await cdp.armOverlay({ accent: ACCENT, labels: LABELS, bar: true, resident: true })
+    await cdp.armOverlay({ accent: ACCENT, menu: MENU, labels: LABELS, bar: true, resident: true })
 
     const injectExpression = expressions[0]!
     expect(injectExpression).toContain('__craft_agent_overlay__')
+    // The marks the app draws *about* the page keep the accent...
     expect(injectExpression).toContain(ACCENT)
+    // ...while the bar wears the app's menu colours, which the caller resolves.
+    expect(injectExpression).toContain(MENU.surface)
+    expect(injectExpression).toContain(MENU.text)
     // The bar is drawn inside the page, which has no i18n: the words have to come
-    // down with the call or the buttons would be blank.
+    // down with the call or the buttons would be untitled.
     expect(injectExpression).toContain(JSON.stringify(LABELS.add))
-    expect(injectExpression).toContain(JSON.stringify(LABELS.save))
+    expect(injectExpression).toContain(JSON.stringify(LABELS.undo))
     expect(() => new Function(injectExpression)).not.toThrow()
+    cdp.detach()
+  })
+
+  it('pins the bar out of the way, and puts the selection’s name below its corner', async () => {
+    const { webContents, expressions } = createFakeWebContents(() => ({}))
+    const cdp = new BrowserCDP(webContents)
+    await cdp.armOverlay({ accent: ACCENT, menu: MENU, labels: LABELS, bar: true, resident: true })
+
+    const injectExpression = expressions[0]!
+    // Top of the page, centred: the one place that is never over the thing being
+    // changed, and the same place whatever is selected.
+    expect(injectExpression).toContain('left:50%;top:8px;transform:translateX(-50%)')
+    // The name sits under the frame's bottom-left corner rather than on it.
+    expect(injectExpression).toContain("+ 'display:block;left:' + r.left + 'px;top:' + Math.min(window.innerHeight - 24, r.bottom + 4) + 'px;'")
+    cdp.detach()
+  })
+
+  it('keeps back and forward at the page’s top-left, on the keyboard too', async () => {
+    const { webContents, expressions } = createFakeWebContents(() => ({}))
+    const cdp = new BrowserCDP(webContents)
+    await cdp.armOverlay({ accent: ACCENT, menu: MENU, labels: LABELS, bar: true, resident: true })
+
+    const injectExpression = expressions[0]!
+    // The two the person reaches for constantly live on their own — with save beside
+    // them, which is about the draft as a whole rather than about the selection — so
+    // the rest of the bar can change with the selection while these stay put.
+    expect(injectExpression).toContain('left:8px;top:8px;')
+    expect(injectExpression).toContain("const undoButton = makeButton('\\u21b6'")
+    expect(injectExpression).toContain("const redoButton = makeButton('\\u21b7'")
+    expect(injectExpression).toContain("const saveButton = makeButton('\\u2713'")
+    expect(injectExpression).toContain('for (const node of [undoButton, redoButton, saveButton]) {')
+    expect(injectExpression).toContain('undoBar.appendChild(node);')
+    expect(injectExpression).toContain('undoBar.style.display = WITH_BAR && working ?')
+    expect(injectExpression).toContain('const working = selected.length > 0 || unsaved() > 0 || undone.length > 0;')
+    // ...and answers to the shortcuts every editor uses: Ctrl/Cmd+Z back, and either
+    // Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y forward.
+    expect(injectExpression).toContain('if ((e.ctrlKey || e.metaKey) && !e.altKey && !editing) {')
+    expect(injectExpression).toContain("if (key === 'z' && !e.shiftKey) {")
+    expect(injectExpression).toContain("if ((key === 'z' && e.shiftKey) || key === 'y') {")
+    // Enter finishes a retype; Shift+Enter stays a line break for the page.
+    expect(injectExpression).toContain("if (editing && e.key === 'Enter' && !e.shiftKey) {")
     cdp.detach()
   })
 
@@ -80,6 +135,31 @@ describe('BrowserCDP overlay', () => {
     expect(injectExpression).toContain("if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;")
     // Nothing the person pressed may activate the page under the mode.
     expect(injectExpression).toContain('const swallowClick = (e) => {')
+    cdp.detach()
+  })
+
+  it('freezes the page against the mouse, in both spellings', async () => {
+    const { webContents, expressions } = createFakeWebContents(() => ({}))
+    const cdp = new BrowserCDP(webContents)
+    await cdp.armOverlay({ accent: ACCENT, menu: MENU, labels: LABELS, bar: true, resident: true })
+
+    const injectExpression = expressions[0]!
+    // A page listens to the mouse events as often as to the pointer ones, and they are
+    // separate events: a press the pointer handler refuses is a press the page still
+    // gets, and a double-click that reached it selects its text or follows its link.
+    expect(injectExpression).toContain('const swallowMouse = (e) => {')
+    expect(injectExpression).toContain("document.addEventListener('mousedown', swallowMouse, true);")
+    expect(injectExpression).toContain("document.addEventListener('mouseup', swallowMouse, true);")
+    expect(injectExpression).toContain("document.removeEventListener('mousedown', swallowMouse, true);")
+    expect(injectExpression).toContain("document.removeEventListener('mouseup', swallowMouse, true);")
+    // Two exceptions, and only two: the overlay's own chrome, and the element being
+    // typed into — where the caret and the word selection belong to the browser.
+    expect(injectExpression).toContain('const browserOwnsIt = (e) => inOverlay(e.target) || !!(editing && editing.el.contains(e.target));')
+    expect(injectExpression).toContain('if (!WITH_BAR || browserOwnsIt(e)) return;')
+    expect(injectExpression).toContain('if (browserOwnsIt(e)) return;')
+    // A press outside what is being typed into is still the mode's: the edit is
+    // committed by us rather than by a blur the page's own focus handling caused.
+    expect(injectExpression).toContain('if (editing && !editing.el.contains(e.target)) endText(true);')
     cdp.detach()
   })
 
@@ -114,11 +194,18 @@ describe('BrowserCDP overlay', () => {
     expect(injectExpression).toContain("draft.push({ kind: 'style', targets: elements.map(targetOf), declarations: declarations });")
     expect(injectExpression).toContain('const renderPreview = () => {')
     expect(injectExpression).toContain('preview.textContent = chunks.join(')
-    // Undo is regenerating it, and a text edit goes back to what it said — which is
-    // why the draft keeps the element and its original text.
+    // Undo and redo are the same move in both directions, and a text edit is the one
+    // that has to touch the page — which is why the draft keeps the element and its
+    // original text.
+    expect(injectExpression).toContain('const applyEntry = (entry, forward) => {')
+    expect(injectExpression).toContain('entry.el.textContent = forward ? entry.text : entry.before;')
     expect(injectExpression).toContain('const undo = () => {')
-    expect(injectExpression).toContain('draft.pop()')
-    expect(injectExpression).toContain('entry.el.textContent = entry.before')
+    expect(injectExpression).toContain('undone.unshift(entry);')
+    expect(injectExpression).toContain('const redo = () => {')
+    expect(injectExpression).toContain('const entry = undone.shift();')
+    // A new edit forks the draft: what was taken back is no longer ahead of us — and
+    // it is the person working on rather than answering, so any leave question drops.
+    expect(injectExpression).toContain('    undone = [];\n    confirming = false;\n    draft.push({ kind: \'style\'')
     expect(injectExpression).toContain("draft.push({ kind: 'text', targets: [targetOf(inFlight.el)], text: text, el: inFlight.el, before: inFlight.before });")
     cdp.detach()
   })
@@ -126,42 +213,56 @@ describe('BrowserCDP overlay', () => {
   it('writes one save as one batch, and hands the selection to the conversation', async () => {
     const { webContents, expressions } = createFakeWebContents(() => ({}))
     const cdp = new BrowserCDP(webContents)
-    await cdp.armOverlay({ accent: ACCENT, labels: LABELS, bar: true, resident: true })
+    await cdp.armOverlay({ accent: ACCENT, menu: MENU, labels: LABELS, bar: true, resident: true })
 
     const injectExpression = expressions[0]!
     // What crosses to the caller is the moment they said keep it, not the edits.
     expect(injectExpression).toContain('const batch = draft.slice(savedCount).map(')
     expect(injectExpression).toContain('state.saves.push(batch);')
     expect(injectExpression).toContain('savedCount = draft.length;')
-    // One bar carries both: the draft's own work, and the way out of it.
+    // One bar carries the draft's own work and the way out of it.
     expect(injectExpression).toContain('const addToConversation = () => {')
     expect(injectExpression).toContain('state.picks.push(elementPayload(el));')
-    expect(injectExpression).toContain('for (const node of [boldButton, italicButton, styleSpacer, undoButton, saveButton, discardButton, addSpacer, addButton]) {')
-    // The bar is what makes a draft honest: a count, and it stays reachable — an edit
-    // nobody can press save on is worse than a bar with no selection under it.
-    expect(injectExpression).toContain("saveButton.textContent = SAVE_LABEL.split('{n}').join(String(waiting));")
-    expect(injectExpression).toContain('if (!WITH_BAR || (unsaved() === 0 && !confirming)) { bar.style.display = ')
+    // Glyphs for the draft's own actions, and words only for the odd one out.
+    expect(injectExpression).toContain("const undoButton = makeButton('\\u21b6'")
+    expect(injectExpression).toContain("const redoButton = makeButton('\\u21b7'")
+    expect(injectExpression).toContain("const saveButton = makeButton('\\u2713'")
+    expect(injectExpression).toContain('for (const node of [undoButton, redoButton, saveButton]) {')
+    expect(injectExpression).toContain('for (const node of [boldButton, italicButton, addSpacer, addButton]) {')
+    // No discard button and no count: the bar says what it can do by dimming, and the
+    // way to drop a draft is to leave the mode (which asks first).
+    expect(injectExpression).not.toContain('discardButton')
+    expect(injectExpression).toContain("undoButton.style.opacity = unsaved() === 0 ? '0.45' : '1';")
+    expect(injectExpression).toContain("redoButton.style.opacity = undone.length === 0 ? '0.45' : '1';")
+    expect(injectExpression).toContain("saveButton.style.opacity = unsaved() === 0 ? '0.45' : '1';")
+    // Both clusters are where the draft lives, so they stay while there is something to
+    // decide or something to take back.
+    expect(injectExpression).toContain('bar.style.display = WITH_BAR && working ?')
+    // The ✓ writes the draft down, and it is the same save as any other: one batch.
+    expect(injectExpression).toContain("saveButton.addEventListener('click', (e) => {")
+    // What the window's chip is told: whether that draft is what holds the mode open.
+    expect(injectExpression).toContain('get leavingWithEdits() { return confirming; },')
     cdp.detach()
   })
 
   it('asks before leaving when there is a draft, and answers what Escape means', async () => {
     const { webContents, expressions } = createFakeWebContents(() => ({}))
     const cdp = new BrowserCDP(webContents)
-    await cdp.armOverlay({ accent: ACCENT, labels: LABELS, bar: true, resident: true })
+    await cdp.armOverlay({ accent: ACCENT, menu: MENU, labels: LABELS, bar: true, resident: true })
 
     const injectExpression = expressions[0]!
-    // Leaving with a draft is a question, not a decision: the bar becomes save or
-    // drop and the mode stays mounted until one of them is chosen.
+    // Leaving with a draft is a question, not a decision: the mode stays mounted and
+    // the toolbar is told to ask — that is what `leavingWithEdits` is for.
     expect(injectExpression).toContain('const requestLeave = (immediate) => {')
     expect(injectExpression).toContain('if (!immediate && unsaved() > 0) {')
     expect(injectExpression).toContain('confirming = true;')
-    expect(injectExpression).toContain("control.style.display = confirming ? 'none' : ''")
     // The toolbar's button asks, Escape asks, and a teardown does not (nobody is left
     // to ask: the tab is closing, or the overlay is being re-armed on another page).
     expect(injectExpression).toContain('window.__craft_agent_overlay_ask_leave__ = () => requestLeave(false);')
     expect(injectExpression).toContain('window.__craft_agent_overlay_cancel__ = () => requestLeave(true);')
     expect(injectExpression).toContain('if (WITH_BAR) { requestLeave(false); return; }')
-    // A second Escape is the "no", and saving is the "yes" — both end the mode.
+    // Escape is the "no" — the bar has no discard button — and the toolbar's save is
+    // the "yes"; both end the mode.
     expect(injectExpression).toContain("if (confirming) { confirming = false; discard(); finish('cancelled'); return; }")
     expect(injectExpression).toContain("if (confirming) { confirming = false; finish('cancelled'); return; }")
     // Teardown is a mode ending, not an edit being saved: nothing unsaved may be left.
@@ -205,8 +306,15 @@ describe('BrowserCDP overlay', () => {
     expect(await cdp.drainOverlay()).toMatchObject({ picks: [], saves: [] })
     cdp.detach()
 
+    // Whether the draft is what holds the mode open comes from the same read.
+    const waiting = createFakeWebContents(() => ({
+      result: { value: JSON.stringify({ status: 'pending', picks: [], saves: [], leavingWithEdits: true }) },
+    }))
+    expect(await new BrowserCDP(waiting.webContents).drainOverlay()).toMatchObject({ leavingWithEdits: true })
+
     const missing = createFakeWebContents(() => ({ result: { value: undefined } }))
-    expect(await new BrowserCDP(missing.webContents).drainOverlay()).toEqual({ status: 'missing', picks: [], saves: [] })
+    expect(await new BrowserCDP(missing.webContents).drainOverlay())
+      .toEqual({ status: 'missing', picks: [], saves: [], leavingWithEdits: false })
   })
 
   it('has two ways out: an ask the page may refuse, and a teardown', async () => {

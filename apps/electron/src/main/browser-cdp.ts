@@ -144,23 +144,34 @@ export interface OverlayReport {
   picks: PickedElement[]
   /** Saves made since the last read, in order — cleared as they are read. */
   saves: BrowserEdit[][]
+  /**
+   * Whether the draft is what is keeping the mode open: the person tried to leave and
+   * was asked to save or drop, and has not answered yet.
+   */
+  leavingWithEdits: boolean
 }
 
 /** The bar's words when the caller brings none (the toolbar renderer brings its own). */
 const DEFAULT_OVERLAY_LABELS: OverlayLabels = {
   add: 'Add to conversation',
   undo: 'Undo',
-  save: 'Save {n}',
-  discard: 'Discard',
+  redo: 'Redo',
+  save: 'Save',
+  bold: 'Bold',
+  italic: 'Italic',
 }
 
+/** The bar's colours when the caller brings none — the bar is not drawn then anyway. */
+const DEFAULT_OVERLAY_MENU = { surface: '#ffffff', text: '#111111' }
+
 /**
- * How both overlays draw a selection: a solid frame around it, and its name on a
- * chip of the app's accent above it.
+ * How a selection is drawn: a solid frame around it, and its name on a chip of the
+ * app's accent just under its bottom-left corner.
  *
- * Shared because there is one selection in the window, however it was made — the
- * picker's click and the editor's box mean the same thing to look at, and two
- * copies of a chip is how the two modes would come to look like two features.
+ * The frame and the chip are the app's marks *about* the page, which is why they keep
+ * the accent while the bar wears the menu's colours — and why the chip sits outside
+ * the frame: it says what the thing is, and covering what it names is how a selection
+ * gets in the way.
  */
 function selectionFrameStyle(accent: string): string {
   return `position:fixed;display:none;border:2px solid ${accent};border-radius:4px;pointer-events:none;`
@@ -173,10 +184,10 @@ function selectionLabelStyle(accent: string): string {
 /**
  * `buildStableSelector`, as source, for the scripts injected into a page.
  *
- * One copy for both overlays on purpose: the picker's selection and the editor's
- * are the same element described the same way — the selector the agent, a patch's
- * `@target` and the anchor record all agree on. A second copy would be a second
- * description of one thing, and the two would drift.
+ * One copy for both of the overlay's users on purpose: the window's mode and the
+ * agent's one-shot pick describe an element the same way — the selector the agent, a
+ * patch's `@target` and the anchor record all agree on. A second copy would be a
+ * second description of one thing, and the two would drift.
  */
 const STABLE_SELECTOR_FN = `  const buildStableSelector = (el) => {
     if (!el || el.nodeType !== 1) return '';
@@ -234,14 +245,28 @@ function buildOverlayScript(options: {
    */
   accent: string
   /**
+   * What the bar is drawn in: the app's *menu* surface and text.
+   *
+   * The bar is a menu of ours sitting on somebody else's page — the same job a
+   * dropdown in the app does — so it wears what a dropdown wears. The accent stays
+   * for the marks the app draws *about* the page (the selection's frames and its
+   * name), which are not part of the menu.
+   */
+  menu: { surface: string; text: string }
+  /**
    * Draw the bar, and keep what the person makes as a draft.
    *
    * The window's own mode does. A one-shot pick does not — the agent asked for one
    * element, and a bar nobody asked for is chrome drawn over somebody's page.
    */
   bar: boolean
-  /** The bar's words, in the caller's language — the toolbar owns the i18n, not this. */
-  labels: { add: string; undo: string; save: string; discard: string }
+  /**
+   * The bar's words, in the caller's language — the toolbar owns the i18n, not this.
+   *
+   * They are titles rather than labels: the buttons carry glyphs, and what each one
+   * means is said on hover (and to a screen reader).
+   */
+  labels: { add: string; undo: string; redo: string; save: string; bold: string; italic: string }
   /**
    * Stay armed after a selection.
    *
@@ -262,9 +287,14 @@ function buildOverlayScript(options: {
   const frameStyle = selectionFrameStyle(accent)
   const labelStyle = selectionLabelStyle(accent)
   const layerStyle = `position:fixed;inset:0;pointer-events:none;`
-  const barStyle = `position:fixed;display:none;align-items:center;gap:3px;padding:3px;border-radius:8px;background:${accent};box-shadow:0 2px 10px rgba(0,0,0,0.25);pointer-events:auto;`
-  const barButtonStyle = `all:unset;cursor:pointer;min-width:22px;height:24px;line-height:24px;padding:0 6px;text-align:center;border-radius:6px;color:#fff;font:600 13px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;white-space:nowrap;`
-  const spacerStyle = `width:1px;height:16px;background:rgba(255,255,255,0.35);margin:0 2px;`
+  // One surface for both clusters of the bar — the selection's work at the top of the
+  // page, and the draft's back-and-forward at its top-left — so the two read as one
+  // thing that happens to be in two places.
+  const barSurfaceStyle = `position:fixed;display:none;align-items:center;gap:2px;padding:4px;border-radius:10px;background:${options.menu.surface};border:1px solid color-mix(in oklab, ${options.menu.text} 14%, transparent);box-shadow:0 6px 20px rgba(0,0,0,0.18);pointer-events:auto;`
+  const barStyle = barSurfaceStyle + 'left:50%;top:8px;transform:translateX(-50%);'
+  const undoBarStyle = barSurfaceStyle + 'left:8px;top:8px;'
+  const barButtonStyle = `all:unset;cursor:pointer;min-width:24px;height:24px;line-height:24px;padding:0 6px;text-align:center;border-radius:6px;color:${options.menu.text};font:400 13px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;white-space:nowrap;`
+  const spacerStyle = `width:1px;height:16px;background:color-mix(in oklab, ${options.menu.text} 20%, transparent);margin:0 3px;`
 
   return `(() => {
   try { window.${OVERLAY_CANCEL_KEY} && window.${OVERLAY_CANCEL_KEY}(); } catch (e) {}
@@ -299,33 +329,51 @@ function buildOverlayScript(options: {
   const preview = document.createElement('style');
   root.appendChild(preview);
 
-  // The bar, which is the whole of what a person acts with: two styles, take one
-  // back, write it down, drop it, hand it to the conversation. It is built even for
-  // a one-shot pick (where nothing shows it) rather than spliced in conditionally —
-  // one script, one shape, and no second description of the bar to drift.
+  // The bar, which is the whole of what a person acts with on the page: two styles,
+  // back and forward through the draft, write it down, and hand it to the conversation.
+  // It is built even for a one-shot pick (where nothing shows it) rather than spliced
+  // in conditionally — one script, one shape, and no second description to drift.
   const bar = document.createElement('div');
   bar.setAttribute('style', ${JSON.stringify(barStyle)});
-  const makeButton = (text, title, extra) => {
+  // Back, forward and save live on their own, at the page's top-left: the first two
+  // are the ones the person reaches for constantly (and by keyboard), and keeping them
+  // apart lets the rest of the bar change with the selection while these stay where
+  // they are. Save belongs with them for the same reason — it is about the draft as a
+  // whole, not about what is selected, and it is the answer to "save before leaving?".
+  const undoBar = document.createElement('div');
+  undoBar.setAttribute('style', ${JSON.stringify(undoBarStyle)});
+  // A button is a glyph with a title: on a bar this small, what each one does is said
+  // on hover (and to a screen reader) rather than written out.
+  const makeButton = (glyph, title, extra) => {
     const button = document.createElement('button');
     button.type = 'button';
-    button.textContent = text;
+    button.textContent = glyph;
     button.title = title;
+    button.setAttribute('aria-label', title);
     button.setAttribute('style', ${JSON.stringify(barButtonStyle)} + extra);
+    // Menus here have no room for a pressed state: a hover tint is what says the
+    // pointer is on a control rather than on the page behind it.
+    button.addEventListener('mouseenter', () => {
+      button.style.background = 'color-mix(in oklab, ' + ${JSON.stringify(options.menu.text)} + ' 12%, transparent)';
+    });
+    button.addEventListener('mouseleave', () => { button.style.background = ''; });
     return button;
   };
-  const boldButton = makeButton('B', 'font-weight', 'font-weight:700;');
-  const italicButton = makeButton('I', 'font-style', 'font-style:italic;');
-  const styleSpacer = document.createElement('div');
-  styleSpacer.setAttribute('style', ${JSON.stringify(spacerStyle)});
-  const undoButton = makeButton('', '', 'font-weight:400;');
-  const saveButton = makeButton('', '', 'font-weight:600;');
-  const discardButton = makeButton('', '', 'font-weight:400;');
+  const boldButton = makeButton('B', ${JSON.stringify(options.labels.bold)}, 'font-weight:700;');
+  const italicButton = makeButton('I', ${JSON.stringify(options.labels.italic)}, 'font-style:italic;');
+  const undoButton = makeButton('\\u21b6', ${JSON.stringify(options.labels.undo)}, '');
+  const redoButton = makeButton('\\u21b7', ${JSON.stringify(options.labels.redo)}, '');
+  const saveButton = makeButton('\\u2713', ${JSON.stringify(options.labels.save)}, '');
   const addSpacer = document.createElement('div');
   addSpacer.setAttribute('style', ${JSON.stringify(spacerStyle)});
-  const addButton = makeButton(${JSON.stringify(options.labels.add)}, '', 'font-weight:600;padding:0 10px;');
-  for (const node of [boldButton, italicButton, styleSpacer, undoButton, saveButton, discardButton, addSpacer, addButton]) {
+  const addButton = makeButton(${JSON.stringify(options.labels.add)}, ${JSON.stringify(options.labels.add)}, 'padding:0 10px;');
+  for (const node of [undoButton, redoButton, saveButton]) {
+    undoBar.appendChild(node);
+  }
+  for (const node of [boldButton, italicButton, addSpacer, addButton]) {
     bar.appendChild(node);
   }
+  root.appendChild(undoBar);
   root.appendChild(bar);
 
   document.documentElement.appendChild(root);
@@ -333,20 +381,27 @@ function buildOverlayScript(options: {
 ${STABLE_SELECTOR_FN}
 
   const WITH_BAR = ${options.bar};
-  const SAVE_LABEL = ${JSON.stringify(options.labels.save)};
-  undoButton.textContent = ${JSON.stringify(options.labels.undo)};
-  discardButton.textContent = ${JSON.stringify(options.labels.discard)};
 
   // The overlay's whole outward state: what it has picked, what it has been told to
-  // write down, and whether it is still mounted. Written into the window key at the
-  // end of this script, where the caller polls it — and kept out of cleanup(), so the
-  // final status is still readable after the overlay is gone.
-  const state = { status: 'pending', picks: [], saves: [] };
+  // write down, and whether the draft is holding the mode open. Written into the
+  // window key at the end of this script, where the caller polls it — and kept out of
+  // cleanup(), so the final status is still readable after the overlay is gone. The
+  // last one is read through a getter: it is a fact about now, and the caller has to
+  // see it as it is at the moment it asks — that is what the window's chip says the
+  // question is, while the bar's own save button is the answer.
+  const state = {
+    status: 'pending',
+    picks: [],
+    saves: [],
+    get leavingWithEdits() { return confirming; },
+  };
 
   // The draft, and where the last save left it: the draft is appended to and popped
-  // from the end, so one boundary is all the history this needs.
+  // from the end, so one boundary is all the history this needs. What was taken back
+  // is kept aside, in the order it was taken back, so forward is possible too.
   let draft = [];
   let savedCount = 0;
+  let undone = [];
   let confirming = false;   // the bar is asking save-or-drop; the mode stays until it is answered
   let selected = [];
   let current = null;       // what the cursor is over
@@ -439,25 +494,25 @@ ${STABLE_SELECTOR_FN}
     preview.textContent = chunks.join('\\n\\n');
   };
 
+  /** What each button can do right now — which is the only thing the bar says about the draft. */
   const paintBar = () => {
-    const waiting = unsaved();
-    saveButton.textContent = SAVE_LABEL.split('{n}').join(String(waiting));
-    const dim = waiting === 0 ? '0.5' : '1';
-    saveButton.style.opacity = dim;
-    discardButton.style.opacity = '1';
-    undoButton.style.opacity = dim;
-    // While the bar is asking, the only two answers are on it: making a style or
-    // taking one back is not an answer to "save or drop?".
-    for (const control of [boldButton, italicButton, styleSpacer, undoButton, addSpacer, addButton]) {
-      control.style.display = confirming ? 'none' : '';
-    }
+    // Nothing unsaved means the "save or drop?" question has nothing left to ask.
+    if (unsaved() === 0) confirming = false;
+    undoButton.style.opacity = unsaved() === 0 ? '0.45' : '1';
+    redoButton.style.opacity = undone.length === 0 ? '0.45' : '1';
+    // Dimmed rather than hidden, like the two above: the bar says what it can do by
+    // what is lit, and save is the one whose availability the person is asking about.
+    saveButton.style.opacity = unsaved() === 0 ? '0.45' : '1';
   };
 
   /**
-   * Draw the selection, and put the bar above it.
+   * Draw the selection, and put the bar where it cannot cover the work.
    *
-   * Above the first selected element — the one the bar's own name belongs to — and
-   * below it only when there is no room; never outside the viewport.
+   * The bar is pinned to the top of the page rather than hung off the selection: it
+   * belongs to the window, it stays put while the person moves between elements, and
+   * above the page's own content is the one place that is never over the thing being
+   * changed. Each selected element gets a frame, and its name in the corner the frame
+   * does not need — just under its bottom-left.
    */
   const paint = () => {
     layer.textContent = '';
@@ -465,21 +520,15 @@ ${STABLE_SELECTOR_FN}
     hoverLabel.style.display = 'none';
     selected = selected.filter((el) => el.isConnected && !inOverlay(el));
 
-    if (selected.length === 0) {
-      paintBar();
-      // With nothing selected the bar has nothing to point at — but it is where save
-      // lives, so it stays while there is something to decide, parked out of the way
-      // rather than gone. An edit nobody can press save on is the worse bug.
-      if (!WITH_BAR || (unsaved() === 0 && !confirming)) { bar.style.display = 'none'; return; }
-      bar.style.display = 'flex';
-      bar.style.left = 'auto';
-      bar.style.top = 'auto';
-      bar.style.right = '16px';
-      bar.style.bottom = '16px';
-      return;
-    }
+    // Both clusters are where the draft lives — save among them — so they stay while
+    // there is something to decide or something to take back, even with nothing
+    // selected to point at.
+    const working = selected.length > 0 || unsaved() > 0 || undone.length > 0;
+    bar.style.display = WITH_BAR && working ? 'flex' : 'none';
+    undoBar.style.display = WITH_BAR && working ? 'flex' : 'none';
+    paintBar();
+    if (selected.length === 0) return;
 
-    let anchor = null;
     for (const el of selected) {
       const r = el.getBoundingClientRect();
       const frame = document.createElement('div');
@@ -487,21 +536,13 @@ ${STABLE_SELECTOR_FN}
         + 'display:block;left:' + r.left + 'px;top:' + r.top + 'px;width:' + r.width + 'px;height:' + r.height + 'px;');
       layer.appendChild(frame);
       const label = document.createElement('div');
+      // The name sits under the frame's bottom-left corner rather than on it: it is
+      // about the element, and covering what it names is how a selection gets in the way.
       label.setAttribute('style', ${JSON.stringify(labelStyle)}
-        + 'display:block;left:' + r.left + 'px;top:' + Math.max(4, r.top - 22) + 'px;');
+        + 'display:block;left:' + r.left + 'px;top:' + Math.min(window.innerHeight - 24, r.bottom + 4) + 'px;');
       label.textContent = buildStableSelector(el);
       layer.appendChild(label);
-      if (!anchor) anchor = r;
     }
-
-    if (!WITH_BAR) return;
-    const above = anchor.top - bar.offsetHeight - 6;
-    bar.style.display = 'flex';
-    bar.style.right = 'auto';
-    bar.style.bottom = 'auto';
-    bar.style.left = Math.max(4, Math.min(anchor.left, window.innerWidth - bar.offsetWidth - 6)) + 'px';
-    bar.style.top = Math.max(4, above >= 4 ? above : Math.min(anchor.bottom + 6, window.innerHeight - bar.offsetHeight - 4)) + 'px';
-    paintBar();
   };
 
   /**
@@ -524,6 +565,10 @@ ${STABLE_SELECTOR_FN}
     const turnOff = elements.every((el) => isOn(el));
     const declarations = {};
     declarations[property] = turnOff ? off : on;
+    // A new edit forks the draft: what was taken back is no longer ahead of us, and the
+    // person working on rather than answering is the answer to "save or drop?".
+    undone = [];
+    confirming = false;
     draft.push({ kind: 'style', targets: elements.map(targetOf), declarations: declarations });
     renderPreview();
     paintBar();
@@ -563,16 +608,48 @@ ${STABLE_SELECTOR_FN}
     const text = inFlight.el.textContent || '';
     if (text === inFlight.before) return;
     // The element, not just its selector: taking this edit back has to put the old
-    // text back, and that needs the node the person typed into.
+    // text back, and that needs the node the person typed into. It forks the draft,
+    // like any other new edit — and it, too, is the person working on rather than
+    // answering the save-or-drop question.
+    undone = [];
+    confirming = false;
     draft.push({ kind: 'text', targets: [targetOf(inFlight.el)], text: text, el: inFlight.el, before: inFlight.before });
     paintBar();
+  };
+
+  /**
+   * Put one entry's change on the page, or take it back off.
+   *
+   * Styles need nothing here — they are drawn by regenerating the preview from the
+   * draft — so this is about the text a retype left in an element. The element may be
+   * gone (the page re-rendered it away), and then there is nothing to move.
+   */
+  const applyEntry = (entry, forward) => {
+    if (entry.kind !== 'text' || !entry.el || !entry.el.isConnected) return;
+    entry.el.textContent = forward ? entry.text : entry.before;
   };
 
   /** Take the last unsaved edit back — and with it, whatever it did to the page. */
   const undo = () => {
     if (unsaved() === 0) return;
     const entry = draft.pop();
-    if (entry.kind === 'text' && entry.el && entry.el.isConnected) entry.el.textContent = entry.before;
+    applyEntry(entry, false);
+    undone.unshift(entry);
+    renderPreview();
+    paintBar();
+  };
+
+  /**
+   * Put the last edit taken back on again.
+   *
+   * Only ever forward within the unsaved part of the draft: undo refuses once it
+   * reaches the line the last save drew, so nothing that came back can cross it.
+   */
+  const redo = () => {
+    const entry = undone.shift();
+    if (!entry) return;
+    applyEntry(entry, true);
+    draft.push(entry);
     renderPreview();
     paintBar();
   };
@@ -581,8 +658,9 @@ ${STABLE_SELECTOR_FN}
   const discard = () => {
     while (unsaved() > 0) {
       const entry = draft.pop();
-      if (entry.kind === 'text' && entry.el && entry.el.isConnected) entry.el.textContent = entry.before;
+      applyEntry(entry, false);
     }
+    undone = [];
     renderPreview();
     paintBar();
   };
@@ -598,6 +676,9 @@ ${STABLE_SELECTOR_FN}
       : { kind: 'style', targets: entry.targets, declarations: entry.declarations });
     state.saves.push(batch);
     savedCount = draft.length;
+    // A save is a new baseline: what was taken back before it is not "behind" the
+    // line any more, and offering to put it forward again would be a second history.
+    undone = [];
     // Saving while the bar is asking "save or drop?" is the answer: the work is
     // written, so the mode has nothing left to hold open.
     if (confirming) { confirming = false; finish('cancelled'); return; }
@@ -648,11 +729,37 @@ ${STABLE_SELECTOR_FN}
     paintHover(el);
   };
 
+  /**
+   * Whether an event belongs to the browser rather than to the mode.
+   *
+   * Two places, and both are where the browser's own behaviour is the point: the
+   * overlay's own chrome (its buttons are clicked, not selected), and the element
+   * being typed into (placing the caret and selecting a word inside it is what makes
+   * typing in it possible at all). Everything else is the mode's.
+   */
+  const browserOwnsIt = (e) => inOverlay(e.target) || !!(editing && editing.el.contains(e.target));
+
+  /**
+   * The mouse events behind the pointer events, refused the same way.
+   *
+   * A page is as likely to be listening to mousedown / mouseup as to pointerdown, and
+   * those are separate events with separate listeners: a press the mode does not take
+   * is a press the page still gets, and a double-click the page still gets selects its
+   * text or follows its link. Nothing is acted on here — the pointer handlers do the
+   * work — so this is only the refusal, with the same two exceptions.
+   */
+  const swallowMouse = (e) => {
+    if (e.button !== 0 || browserOwnsIt(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
   const onPointerDown = (e) => {
-    // A press while typing belongs to the page (it is how the person leaves the
-    // element they were editing); a press on the overlay's chrome belongs to it; and
-    // while the bar is asking, a press on the page is not an answer.
-    if (e.button !== 0 || inOverlay(e.target) || editing || confirming) return;
+    // A press outside what is being typed into ends that edit — and the mode keeps the
+    // press: committing here rather than letting the page blur the element means the
+    // typed text goes into the draft and the press itself is still ours.
+    if (editing && !editing.el.contains(e.target)) endText(true);
+    if (e.button !== 0 || browserOwnsIt(e)) return;
     e.preventDefault();
     e.stopPropagation();
     drag = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY, moved: false };
@@ -695,13 +802,13 @@ ${STABLE_SELECTOR_FN}
   // Choosing is not using: nothing the person pressed may activate the page under
   // the mode.
   const swallowClick = (e) => {
-    if (inOverlay(e.target) || editing) return;
+    if (browserOwnsIt(e)) return;
     e.preventDefault();
     e.stopPropagation();
   };
 
   const onDblClick = (e) => {
-    if (!WITH_BAR || inOverlay(e.target) || editing || confirming) return;
+    if (!WITH_BAR || browserOwnsIt(e)) return;
     e.preventDefault();
     e.stopPropagation();
     const el = e.target;
@@ -724,6 +831,40 @@ ${STABLE_SELECTOR_FN}
       if (confirming) { confirming = false; discard(); finish('cancelled'); return; }
       if (WITH_BAR) { requestLeave(false); return; }
       finish('cancelled');
+      return;
+    }
+
+    // Enter finishes a retype: what was typed is a change the person made, so it goes
+    // into the draft. Shift+Enter is a line break, and belongs to the page.
+    if (editing && e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      e.stopPropagation();
+      endText(true);
+      paint();
+      return;
+    }
+
+    // Back and forward, spelled the way every editor spells them: Ctrl/Cmd+Z, and
+    // either Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y for forward. Not while typing: there the
+    // browser's own undo belongs to the text being typed.
+    //
+    // Swallowed even when there is nothing to move: while this mode holds the page, an
+    // undo the page performs on its own is a change neither the person nor the app sees
+    // or can record.
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !editing) {
+      const key = (e.key || '').toLowerCase();
+      if (key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        undo();
+        return;
+      }
+      if ((key === 'z' && e.shiftKey) || key === 'y') {
+        e.preventDefault();
+        e.stopPropagation();
+        redo();
+        return;
+      }
     }
   };
 
@@ -737,6 +878,8 @@ ${STABLE_SELECTOR_FN}
     document.removeEventListener('pointerdown', onPointerDown, true);
     document.removeEventListener('pointermove', onPointerMove, true);
     document.removeEventListener('pointerup', onPointerUp, true);
+    document.removeEventListener('mousedown', swallowMouse, true);
+    document.removeEventListener('mouseup', swallowMouse, true);
     document.removeEventListener('click', swallowClick, true);
     document.removeEventListener('dblclick', onDblClick, true);
     document.removeEventListener('keydown', onKey, true);
@@ -778,17 +921,15 @@ ${STABLE_SELECTOR_FN}
     e.stopPropagation();
     undo();
   });
+  redoButton.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    redo();
+  });
   saveButton.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
     save();
-  });
-  discardButton.addEventListener('click', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    discard();
-    // Dropping is also the answer to "save or drop?" — and then the mode is done.
-    if (confirming) { confirming = false; finish('cancelled'); }
   });
   addButton.addEventListener('click', (e) => {
     e.preventDefault();
@@ -796,10 +937,11 @@ ${STABLE_SELECTOR_FN}
     addToConversation();
   });
 
-  // Two ways out, and they ask different questions: the toolbar's button asks (there
-  // may be a draft, and that is the person's call), while a teardown — the tab
-  // closing, the overlay being re-armed on a new page, a one-shot pick being finished
-  // — takes the draft with it, because there is nobody left to ask.
+  // The two ways out ask different things: the window's crosshair asks (there may be a
+  // draft, and that is the person's call — the bar's own save button is the answer),
+  // while a teardown — the tab closing, the overlay being re-armed on a new page, a
+  // one-shot pick being finished — takes the draft with it, because there is nobody
+  // left to ask.
   window.${OVERLAY_CANCEL_KEY} = () => requestLeave(true);
   window.${OVERLAY_ASK_KEY} = () => requestLeave(false);
   window.${OVERLAY_STATE_KEY} = state;
@@ -808,6 +950,8 @@ ${STABLE_SELECTOR_FN}
   document.addEventListener('pointerdown', onPointerDown, true);
   document.addEventListener('pointermove', onPointerMove, true);
   document.addEventListener('pointerup', onPointerUp, true);
+  document.addEventListener('mousedown', swallowMouse, true);
+  document.addEventListener('mouseup', swallowMouse, true);
   document.addEventListener('click', swallowClick, true);
   document.addEventListener('dblclick', onDblClick, true);
   document.addEventListener('keydown', onKey, true);
@@ -833,7 +977,12 @@ const OVERLAY_DRAIN_EXPRESSION = `(() => {
   const saves = state.saves || [];
   state.picks = [];
   state.saves = [];
-  return JSON.stringify({ status: state.status, picks: picks, saves: saves });
+  return JSON.stringify({
+    status: state.status,
+    picks: picks,
+    saves: saves,
+    leavingWithEdits: state.leavingWithEdits === true,
+  });
 })()`
 
 const OVERLAY_CANCEL_EXPRESSION = `(() => { try { window.${OVERLAY_CANCEL_KEY} && window.${OVERLAY_CANCEL_KEY}(); } catch (e) {} })()`
@@ -844,18 +993,24 @@ const OVERLAY_ASK_EXPRESSION = `(() => { try { window.${OVERLAY_ASK_KEY} && wind
 /**
  * The bar's own words, in the window's language — the page has no i18n.
  *
- * `add` is the odd one out: the other three are about the draft, this one hands the
- * selection to the conversation. They travel together because they are one bar.
+ * Titles, not labels: the buttons carry glyphs (B, I, ↶, ↷, ✓), and these are what
+ * hover and a screen reader say about them. `add` is the one word actually written on
+ * the bar — handing the selection to the conversation, the odd one out among the
+ * draft's own actions.
  */
 export interface OverlayLabels {
   /** Hand the selection to the conversation. */
   add: string
   /** Take the last unsaved edit back. */
   undo: string
-  /** Write the session down; `{n}` is how many edits are waiting. */
+  /** Put the last edit taken back on again. */
+  redo: string
+  /** Write the draft down. */
   save: string
-  /** Drop everything unsaved. */
-  discard: string
+  /** Make the selection bold. */
+  bold: string
+  /** Make the selection italic. */
+  italic: string
 }
 
 export class BrowserCDP {
@@ -1388,6 +1543,8 @@ export class BrowserCDP {
   async armOverlay(options: {
     /** The app's accent, as a concrete CSS colour — see `buildOverlayScript`. */
     accent: string
+    /** The bar's colours: the app's menu surface and text — see `buildOverlayScript`. */
+    menu?: { surface: string; text: string }
     /** The bar's words, in the caller's language — the toolbar renderer has i18n. */
     labels?: Partial<OverlayLabels>
     /**
@@ -1402,6 +1559,7 @@ export class BrowserCDP {
   }): Promise<void> {
     const script = buildOverlayScript({
       accent: options.accent,
+      menu: options.menu ?? DEFAULT_OVERLAY_MENU,
       bar: options.bar === true,
       labels: { ...DEFAULT_OVERLAY_LABELS, ...options.labels },
       resident: options.resident === true,
@@ -1422,17 +1580,23 @@ export class BrowserCDP {
     })
 
     const raw = res?.result?.value
-    if (typeof raw !== 'string') return { status: 'missing', picks: [], saves: [] }
+    if (typeof raw !== 'string') return { status: 'missing', picks: [], saves: [], leavingWithEdits: false }
 
     try {
-      const parsed = JSON.parse(raw) as { status?: string; picks?: PickedElement[]; saves?: BrowserEdit[][] }
+      const parsed = JSON.parse(raw) as {
+        status?: string
+        picks?: PickedElement[]
+        saves?: BrowserEdit[][]
+        leavingWithEdits?: boolean
+      }
       return {
         status: (parsed.status as OverlayReport['status']) ?? 'missing',
         picks: Array.isArray(parsed.picks) ? parsed.picks : [],
         saves: Array.isArray(parsed.saves) ? parsed.saves.filter((save) => Array.isArray(save)) : [],
+        leavingWithEdits: parsed.leavingWithEdits === true,
       }
     } catch {
-      return { status: 'missing', picks: [], saves: [] }
+      return { status: 'missing', picks: [], saves: [], leavingWithEdits: false }
     }
   }
 
@@ -1453,11 +1617,13 @@ export class BrowserCDP {
     pollMs?: number
     /** The app's accent, as a concrete CSS colour — see `buildOverlayScript`. */
     accent: string
+    /** The bar's colours — never drawn for a one-shot pick, but the script is one script. */
+    menu?: { surface: string; text: string }
   }): Promise<PickedElement | null> {
     const timeoutMs = Math.max(1_000, options.timeoutMs ?? 120_000)
     const pollMs = Math.max(50, options.pollMs ?? 200)
 
-    await this.armOverlay({ accent: options.accent, bar: false, resident: false })
+    await this.armOverlay({ accent: options.accent, menu: options.menu, bar: false, resident: false })
 
     const deadline = Date.now() + timeoutMs
     try {
@@ -1480,10 +1646,11 @@ export class BrowserCDP {
   /**
    * Ask the overlay to leave.
    *
-   * It ends only if there is nothing unsaved to lose — otherwise the page puts
-   * save-or-discard on its own bar and stays. So there is nothing to await, and the
-   * caller learns the outcome the way it learns everything else: the next
-   * `drainOverlay` says `cancelled` once the overlay has really gone.
+   * It ends only if there is nothing unsaved to lose — otherwise the mode stays and
+   * says so (`leavingWithEdits`), which is what puts "save before leaving?" in the
+   * window's chip; the answer is the bar's own save button or Escape. So there is
+   * nothing to await, and the caller learns the outcome the way it learns everything
+   * else: the next `drainOverlay` says `cancelled` once the overlay has really gone.
    */
   async askOverlayToLeave(): Promise<void> {
     try {

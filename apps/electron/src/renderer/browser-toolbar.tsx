@@ -54,6 +54,15 @@ interface ToolbarState {
    */
   picking?: boolean
   /**
+   * Whether the page's draft is why the mode is still on: the person tried to leave and
+   * has not answered "save before leaving?" — and the answer is the bar's own save
+   * button, which is drawn in the page.
+   *
+   * Reported, not remembered: the draft lives in the page, and this side only ever
+   * knows what it was last told.
+   */
+  leavingWithEdits?: boolean
+  /**
    * Whether the tab on screen has its developer tools up.
    *
    * The tab's tools, not the window's: they follow what is on screen, so they are put
@@ -107,10 +116,10 @@ declare global {
       hideWindow: () => Promise<void>
       closeWindowEntirely: () => Promise<void>
       /**
-       * The label is the caller's: the bar is drawn in the page, which has no i18n.
-       * All four words travel together because they are one bar.
+       * The labels are the caller's: the bar is drawn in the page, which has no i18n.
+       * All of them travel together because they are one bar.
        */
-      pickElement: (labels?: { add: string; undo: string; save: string; discard: string }) => Promise<void>
+      pickElement: (labels?: { add: string; undo: string; redo: string; save: string; bold: string; italic: string }) => Promise<void>
       cancelPick: () => Promise<void>
       /** Switch to one of this window's tabs, close one, add one, or unlock one. */
       tabAction: (
@@ -696,8 +705,10 @@ function BrowserToolbarApp() {
     void api.pickElement({
       add: t('browser.addToConversation'),
       undo: t('browserEdit.editorUndo'),
+      redo: t('browserEdit.editorRedo'),
       save: t('browserEdit.editorSave'),
-      discard: t('browserEdit.editorDiscard'),
+      bold: t('browserEdit.editorBold'),
+      italic: t('browserEdit.editorItalic'),
     })
   }, [api, picking, t])
 
@@ -873,13 +884,14 @@ function BrowserToolbarApp() {
         trailingContent={(
           <div className="ml-2 flex items-center gap-1.5 titlebar-no-drag">
             {/*
-              Edit mode indicator. Text, not just a highlighted icon: the user is
-              about to click into the page, and a wrong click there would activate
-              whatever is under the cursor if this mode were not clearly entered.
+              What the mode is doing, in the window's own chrome: how to use it, or —
+              when the person tried to leave with edits still unwritten — that the draft
+              is what is holding it open. The answer to that question is the ✓ on the
+              page's own bar (the bar's top-left cluster), or Escape.
             */}
             {picking && (
               <span className="inline-flex select-none items-center whitespace-nowrap rounded-[6px] bg-accent/15 px-2 py-1 text-[11px] text-accent">
-                {t('browser.pickHint')}
+                {state.leavingWithEdits ? t('browserEdit.leavingWithEdits') : t('browser.pickHint')}
               </span>
             )}
 
@@ -890,8 +902,8 @@ function BrowserToolbarApp() {
               aria-label={picking ? t('browser.cancelPick') : t('browser.pickElement')}
               className={picking ? 'bg-accent/15 text-accent' : undefined}
               // One door for everything done *with* the page: click an element, or box
-              // several, and the bar over the selection is where the work is — styling,
-              // saving, discarding, or handing it to the conversation (plan §12.7).
+              // several, and the toolbar above the page is where the work is — styling,
+              // back and forward, and handing it to the conversation (plan §12.7).
               onClick={handleTogglePick}
             />
 
