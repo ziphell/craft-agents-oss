@@ -26,7 +26,7 @@
  *
  * - **The store is ours, not the page's.** It starts from `state.json` (which the
  *   author writes) and lives in memory for as long as the mock is applied — one
- *   `prototype-mock-apply` is one run of the flow, and re-applying resets it. The
+ *   `mock-apply` is one run of the flow, and re-applying resets it. The
  *   mock never writes a file: that would make the deliverable depend on the order
  *   someone clicked in.
  * - **A path addresses a collection or one of its elements.** A trailing

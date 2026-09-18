@@ -201,7 +201,7 @@ export function validateTaskSpec(spec: TaskSpec): ValidationResult {
         errors.push(
           err(
             `${path}.writes`,
-            `"${writer}" is reserved for prototype-commit's folds`,
+            `"${writer}" is reserved for a prototype's folded changes`,
             'Pick another identity — the consolidator is written by the control plane only',
           ),
         );

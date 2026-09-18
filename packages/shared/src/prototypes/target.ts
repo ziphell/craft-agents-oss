@@ -86,14 +86,14 @@ export function setPrototypePageUrl(
   page?: string,
 ): PrototypeConfig {
   if (!existsSync(getPrototypeDirPath(workspaceRootPath, slug))) {
-    throw new Error(`Prototype "${slug}" does not exist. See "prototype-list" for what exists.`)
+    throw new Error(`Prototype "${slug}" does not exist. See "list" for what exists.`)
   }
 
   const pages = listPrototypePages(workspaceRootPath, slug)
   if (pages.length === 0) {
     throw new Error(
       `Prototype "${slug}" has no pages, so there is no overlay page to point anywhere. ` +
-        `Add one with "prototype-pages --add <name>=<url>" first.`,
+        `Add one with "pages --add <name>=<url>" first.`,
     )
   }
 
@@ -102,7 +102,7 @@ export function setPrototypePageUrl(
     throw new Error(
       `Page "${target.name}" of prototype "${slug}" is a scratch page: it is our own ${target.file ?? 'document'}, ` +
         `so there is no external page for an address to mean. Add an overlay page instead ` +
-        `("prototype-pages --add <name>=<url>").`,
+        `("pages --add <name>=<url>").`,
     )
   }
 

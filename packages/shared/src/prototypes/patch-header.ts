@@ -15,7 +15,7 @@
  * Parsing them in one place is what makes the two edges available everywhere
  * without a second mechanism:
  *
- * - `@requirement` is the edge to `prd.md` (see `coverage.ts`) — the *why* of a
+ * - `@requirement` is the edge to `PRD.md` (see `coverage.ts`) — the *why* of a
  *   change.
  * - `@target` is the edge to the element on the page — which is what lets a
  *   patch be **checked** rather than merely replayed. An apply counts what the
@@ -132,8 +132,8 @@ function cleanTargetValue(raw: string): string {
 /**
  * The selectors a patch declares it is aimed at.
  *
- * A **list**, not one selector, and that is not a convenience: `prototype-commit`
- * folds several patches into one file and writes each source's marker into the
+ * A **list**, not one selector, and that is not a convenience: folding the change
+ * layer puts several patches into one file and writes each source's marker into the
  * provenance comment it leaves behind. If only the first marker were read, every
  * other anchor would look like a patch that no longer exists — the record would
  * go stale the moment it was most useful (plan §21.3).

@@ -236,7 +236,7 @@ export function buildPrototypeIndexDocument(input: {
   const body = pages.length === 0
     ? '  <p class="empty">This prototype has no pages yet. Write one (a top-level ' +
       '<code>&lt;name&gt;.html</code>), or add an overlay page with ' +
-      '<code>prototype-pages --add &lt;name&gt;=&lt;url&gt;</code>.</p>'
+      '<code>pages --add &lt;name&gt;=&lt;url&gt;</code>.</p>'
     : ['  <ol class="pages">', ...rows, '  </ol>'].join('\n')
 
   return `<!doctype html>

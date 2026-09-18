@@ -500,7 +500,7 @@ export function formatProjectContextForPrompt(ctx: ProjectPromptContext): string
     lines.push(`<project_prototypes> are the prototypes this project is worked on with — **background,`);
     lines.push(`like a connected source**: they are told, and nothing is targeted for you. This conversation`);
     lines.push(`is not bound to any of them (plan §15.1.3, §15.1.2), so work on one by naming its slug on a`);
-    lines.push(`\`prototype-*\` command, or bind it here (\`prototype-bind <slug>\`).`);
+    lines.push(`\`prototype_tool\` command, or ask the person to bind this conversation to it.`);
   }
   if (ctx.assets.length > 0) {
     lines.push(`<project_assets> lists reference files the user provided. Read a specific file on-demand by`);
@@ -593,7 +593,7 @@ function getPrototypeGuideSection(): string | null {
 
   return `## Prototypes — the full guide
 
-This session works on a prototype, so the guide is here in full (the same text as \`${DOC_REFS.prototypes}\`): what a prototype is, how its files are laid out, who owns which artifact, and every \`prototype-*\` command.
+This session works on a prototype, so the guide is here in full (the same text as \`${DOC_REFS.prototypes}\`): what a prototype is, how its files are laid out, who owns which artifact, and every \`prototype_tool\` command.
 
 ${guide.trim()}
 `;
@@ -678,8 +678,9 @@ Use the browser as an **alternative/fallback** path when source setup is fragile
 - \`hide\` — temporarily done, may need browser again later in conversation
 ` : '';
 
-  // Prototype commands are `browser_tool` subcommands, so this section is subject to
-  // the same switch as the browser one above.
+  // The prototype workbench is the same runtime as the browser tool behind its own door, so this
+  // section is subject to the same switch as the browser one above: its commands drive the window,
+  // and it is registered only while the built-in browser is on.
   //
   // A session that is bound to a prototype gets the guide itself rather than a pointer to
   // it: that is what the binding is for, so the rules are in front of the agent instead of
@@ -691,17 +692,17 @@ Use the browser as an **alternative/fallback** path when source setup is fragile
 
 A prototype is a proposal the user can look at: a **flow of pages** under \`{workspace}/prototypes/{slug}/\`. Each page is one of two kinds — a **page of ours** (\`scratch\`: an ordinary \`<name>.html\` in that directory, which we own and edit) or a **live page** (\`overlay\`: somebody else's address, patched in place, never copied) — and one flow may mix both. A prototype is **not a project**: projects are separate containers that group sessions and shared assets, and a prototype only records which project it was made for.
 
-Every prototype command is a \`prototype-*\` subcommand of \`browser_tool\`, and the slug is optional for almost all of them: the prototype is read from the page the command acts on, then from this session's binding. \`prototype-list\` shows what exists.
+Every prototype command belongs to \`prototype_tool\` and carries no prefix — \`create\`, \`apply\`, \`status\`, \`export\` — while the browser's own surface is \`browser_tool\`; both drive the same shared window. The slug is optional for almost all of them: the prototype is read from the page the command acts on, then from this session's binding. \`list\` shows what exists.
 
-**Read \`${DOC_REFS.prototypes}\` before your first prototype command** — it is the whole guide: the two page kinds, the directory layout, who owns which artifact, \`prd.md\` / \`research/\` / \`reviews/\`, the patch naming rule, verification, and export.
+**Read \`${DOC_REFS.prototypes}\` before your first prototype command** — it is the whole guide: the two page kinds, the directory layout, who owns which artifact, \`PRD.md\` and the files beside it / \`research/\` / \`reviews/\`, the patch naming rule, verification, and export.
 
 **Recommended workflow:**
-1. \`prototype-create <name>\` — a container for pages. It starts empty; write the first requirement into \`prd.md\`
-2. Write \`<name>.html\` with the Write tool (that file *is* a page of ours), or \`prototype-pages --add <name>=<url>\` for a live page
-3. \`prototype-open\` — open it, then check the console (\`console 50 error\`) before calling anything done
+1. \`create <name>\` — a container for pages. It starts empty; write the requirements into \`PRD.md\`, and put a subject that outgrows it in its own file beside it
+2. Write \`<name>.html\` with the Write tool (that file *is* a page of ours), or \`pages --add <name>=<url>\` for a live page
+3. \`open\` — open it, then check the console (\`console 50 error\`) before calling anything done
 4. Change how an existing screen looks by writing a patch under \`patches/<page>/\` — never by rewriting the page document
-5. \`prototype-verify\` answers the PRD's \`check:\` lines, and \`prototype-status\` reports what is still owed
-6. \`prototype-export\` builds the deliverable — a loadable Chrome extension plus the change spec
+5. \`verify\` answers the PRD's \`check:\` lines, and \`status\` reports what is still owed
+6. \`export\` builds the deliverable — a loadable Chrome extension plus the change spec
 
 When this session is bound to a prototype, a \`<prototype_context>\` block is added to this prompt describing it: its pages, patches, requirements, findings, disputes and deliverables, as a snapshot taken when the session started. A project's own note about which prototype it is on is background and describes nothing for you.
 `;
@@ -778,7 +779,7 @@ Read relevant context files using the Read tool - they contain architecture info
 | Image Preview | \`${DOC_REFS.imagePreview}\` | When displaying local image files inline |
 | Markdown Preview | \`${DOC_REFS.markdownPreview}\` | When displaying rendered .md files inline |
 | Browser Tools | \`${DOC_REFS.browserTools}\` | When using in-app browser tools (\`browser_tool\`) |
-| Prototypes | \`${DOC_REFS.prototypes}\` | BEFORE the first \`prototype-*\` command |
+| Prototypes | \`${DOC_REFS.prototypes}\` | BEFORE the first \`prototype_tool\` command |
 | LLM Tool | \`${DOC_REFS.llmTool}\` | When using \`call_llm\` for subtasks |${FEATURE_FLAGS.craftAgentsCli ? `
 | Craft CLI | \`${DOC_REFS.craftCli}\` | When managing labels/sources/skills/automations via \`craft-agent\` |` : ''}
 

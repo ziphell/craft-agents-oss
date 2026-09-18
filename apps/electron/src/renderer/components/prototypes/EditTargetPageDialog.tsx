@@ -102,11 +102,11 @@ export function EditTargetPageDialog({
         </DialogHeader>
 
         <div className="space-y-1.5 pt-2">
-          <label htmlFor="edit-prototype-target" className="text-xs font-medium text-muted-foreground">
+          <label htmlFor="edit-target" className="text-xs font-medium text-muted-foreground">
             {t('prototypeTarget.addressLabel')}
           </label>
           <Input
-            id="edit-prototype-target"
+            id="edit-target"
             autoFocus
             value={url}
             disabled={submitting}

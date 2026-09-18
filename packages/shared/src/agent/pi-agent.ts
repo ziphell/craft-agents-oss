@@ -108,7 +108,8 @@ import { extractWorkspaceSlug } from '../utils/workspace.ts';
 
 // LLM tool types
 import { LLM_QUERY_TIMEOUT_MS, type LLMQueryRequest, type LLMQueryResult } from './llm-tool.ts';
-import { executeBrowserToolCommand } from './browser-tool-runtime.ts';
+import { executeBrowserToolCommand } from './browser-commands.ts';
+import { executePrototypeToolCommand } from './prototype-commands.ts';
 import { saveBinaryResponse } from '../utils/binary-detection.ts';
 
 // ============================================================
@@ -120,6 +121,7 @@ export const PI_BACKEND_SESSION_TOOL_NAMES = new Set<string>([
   'call_llm',
   'spawn_session',
   'browser_tool',
+  'prototype_tool',
 ]);
 
 /**
@@ -1577,8 +1579,9 @@ export class PiAgent extends BaseAgent {
         }
       }
 
-      // browser_tool — single CLI-like tool for all browser actions
-      if (toolName === 'browser_tool') {
+      // The pane tools — one command table, two doors: `browser_tool` for the window
+      // itself, `prototype_tool` for a prototype's own files and flow.
+      if (toolName === 'browser_tool' || toolName === 'prototype_tool') {
         const callbacks = getSessionScopedToolCallbacks(this._sessionId);
         const browserFns = callbacks?.browserPaneFns;
         if (!browserFns) {
@@ -1586,7 +1589,10 @@ export class PiAgent extends BaseAgent {
         }
 
         try {
-          const result = await executeBrowserToolCommand({
+          const execute = toolName === 'prototype_tool'
+            ? executePrototypeToolCommand
+            : executeBrowserToolCommand;
+          const result = await execute({
             command: (args.command as string | string[]) ?? '',
             fns: browserFns,
             sessionId: this._sessionId,
@@ -1615,6 +1621,23 @@ export class PiAgent extends BaseAgent {
             } else {
               content += `\n\n[Screenshot captured (${Math.round(result.image.sizeBytes / 1024)}KB ${result.image.mimeType}) but failed to save: ${saved.error}]`;
             }
+          }
+
+          // Frames are already files: a capture writes them into the prototype's `research/`,
+          // which is the copy a finding cites. So they are shown from there rather than saved
+          // again — a second copy would be a second record of the same moment, and the reader
+          // would have to guess which one the rest of the work refers to.
+          for (const frame of result.images ?? []) {
+            if (!frame.path) continue;
+            content += [
+              '',
+              '```image-preview',
+              JSON.stringify({
+                src: frame.path,
+                title: frame.path.split(/[/\\]/).pop() ?? 'Frame',
+              }, null, 2),
+              '```',
+            ].join('\n');
           }
 
           return { content, isError: false };

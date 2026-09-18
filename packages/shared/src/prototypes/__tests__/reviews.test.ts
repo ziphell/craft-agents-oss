@@ -27,7 +27,7 @@ describe('parsePrototypeReview', () => {
         'on: 3f9a1c2e',
         'status: open',
         'claim: The summary row scrolls off screen once the list is long.',
-        'evidence: prototype-verify — check: selector [data-cart-total] did not match',
+        'evidence: verify — check: selector [data-cart-total] did not match',
         '',
         'position: sticky needs a scroll container that is not the page.',
       ]),
@@ -42,7 +42,7 @@ describe('parsePrototypeReview', () => {
     expect(review?.status).toBe('open')
     expect(review?.on).toBe('3f9a1c2e')
     expect(review?.claim).toBe('The summary row scrolls off screen once the list is long.')
-    expect(review?.evidence).toEqual(['prototype-verify — check: selector [data-cart-total] did not match'])
+    expect(review?.evidence).toEqual(['verify — check: selector [data-cart-total] did not match'])
     expect(review?.body).toContain('position: sticky needs a scroll container')
   })
 

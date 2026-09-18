@@ -152,7 +152,8 @@ describe('listPrototypePages', () => {
     expect(table.pages).toEqual([
       { name: 'cart', kind: 'scratch', file: null, url: null, entry: true },
     ])
-    expect(table.issues.join('\n')).toContain('cart.html is not in the prototype directory')
+    expect(table.issues.map((issue) => issue.code)).toEqual(['page.documentMissing'])
+    expect(table.issues[0]?.text).toContain('cart.html is not in the prototype directory')
   })
 })
 

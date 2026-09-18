@@ -97,27 +97,34 @@ describe('prototype path ownership', () => {
     })
   })
 
-  it('flags unowned paths', () => {
+  it('flags a file the tooling would silently ignore', () => {
     expect(classifyPrototypePath('services/api/random.txt')).toEqual({
       violation: 'unowned file inside a service directory',
     })
-    expect(classifyPrototypePath('README.md')).toEqual({ violation: 'unowned path' })
   })
 
   /**
-   * The workbench's own evidence and input files. They are not "unowned" — a prototype that has a
-   * PRD or findings used to report violations for them, which made the one report that says what is
-   * wrong with a prototype say something untrue about every prototype that had been worked on.
+   * The prototype's own files. There is nothing to say about them: the folder is the author's, in
+   * whatever format, and enumerating its shapes here was a second description of the directory —
+   * one that went stale, and that made the report say a prototype with a brief was violating
+   * something. A path with a rule of its own is named above; everything else lands here.
    */
-  it('assigns the input and evidence files the agent writes', () => {
-    expect(classifyPrototypePath('prd.md')).toEqual({ owner: { kind: 'control-plane' } })
+  it('treats the author’s own folder as theirs, at every level', () => {
+    expect(classifyPrototypePath('PRD.md')).toEqual({ owner: { kind: 'control-plane' } })
+    expect(classifyPrototypePath('personas.md')).toEqual({ owner: { kind: 'control-plane' } })
+    // Not prose at all — and still just a file of this prototype.
+    expect(classifyPrototypePath('mock.png')).toEqual({ owner: { kind: 'control-plane' } })
+    expect(classifyPrototypePath('notes.txt')).toEqual({ owner: { kind: 'control-plane' } })
     expect(classifyPrototypePath('assets/pages/cart.js')).toEqual({ owner: { kind: 'control-plane' } })
-    expect(classifyPrototypePath('assets/app.css')).toEqual({ owner: { kind: 'control-plane' } })
     expect(classifyPrototypePath('research/competitors.md')).toEqual({ owner: { kind: 'control-plane' } })
     expect(classifyPrototypePath('research/frames/session-1/001.jpg')).toEqual({
       owner: { kind: 'control-plane' },
     })
     expect(classifyPrototypePath('research/videos/demo.mp4')).toEqual({ owner: { kind: 'control-plane' } })
+    // A `.md` under `patches/` is not material: it is a patch file that will never be replayed.
+    expect(classifyPrototypePath('patches/notes.md')).toEqual({
+      violation: 'misnamed patch — expected {writer}-{nnn}-{name}.{css|js}, optionally under patches/<page>/',
+    })
   })
 
   /**
@@ -126,7 +133,7 @@ describe('prototype path ownership', () => {
    */
   it('assigns the anchor records to the tool that makes them', () => {
     expect(classifyPrototypePath('anchors/cart.json')).toEqual({
-      owner: { kind: 'tooling', by: 'prototype-apply' },
+      owner: { kind: 'tooling', by: 'apply' },
     })
   })
 
@@ -162,7 +169,7 @@ describe('writer write guard', () => {
   it('refuses the reserved consolidated prefix, even for a writer named Z', () => {
     const result = canWriterWrite('patches/Z-001-upper.css', 'Z')
     expect(result.ok).toBe(false)
-    expect(result.reason).toContain('reserved for prototype-commit')
+    expect(result.reason).toContain('reserved for a prototype\'s folded changes')
   })
 
   it('refuses writes to control-plane outputs', () => {
@@ -172,21 +179,24 @@ describe('writer write guard', () => {
     expect(canWriterWrite('services/api/openapi.yaml', 'contract').reason).toBe('owned by the control plane')
   })
 
-  it('refuses writes to paths nobody owns', () => {
-    expect(canWriterWrite('README.md', 'main').ok).toBe(false)
+  it('refuses anything that is not the writer’s own artifact', () => {
+    // The strict primitive: a writer writes its own patches and its own service files; everything
+    // else is the control plane's, and the guard the write path actually runs drops that case (see
+    // below). A file the tooling would silently ignore is refused either way.
+    expect(canWriterWrite('notes.txt', 'main').reason).toBe('owned by the control plane')
     expect(canWriterWrite('patches/notes.txt', 'main').ok).toBe(false)
   })
 
   it('refuses to let a writer author a record a tool made', () => {
     expect(canWriterWrite('anchors/cart.json', 'main').reason).toBe(
-      'written by prototype-apply, from what actually happened',
+      'written by apply, from what actually happened',
     )
   })
 })
 
 /**
- * The enforced rule is narrower than the primitive: the control plane *is* the agent, so its
- * files are the session's own work, while another writer's artifact and an artifact no rule owns
+ * The enforced rule is narrower than the primitive: the control plane *is* the agent, so its files
+ * are the session's own work, while another writer's artifact and a file the tooling would ignore
  * are both refusals the agent can act on (plan §3.6).
  */
 describe('whyWriterMayNotWrite', () => {
@@ -201,16 +211,20 @@ describe('whyWriterMayNotWrite', () => {
     expect(whyWriterMayNotWrite('dist/dev-spec.md', 'main')).toBeNull()
     // The input and the evidence the agent authors are its own work too — only the *record* a tool
     // made is off limits.
-    expect(whyWriterMayNotWrite('prd.md', 'main')).toBeNull()
+    expect(whyWriterMayNotWrite('PRD.md', 'main')).toBeNull()
+    expect(whyWriterMayNotWrite('personas.md', 'main')).toBeNull()
     expect(whyWriterMayNotWrite('research/competitors.md', 'main')).toBeNull()
     expect(whyWriterMayNotWrite('assets/pages/cart.js', 'main')).toBeNull()
+    // And so is everything else the author leaves in that folder, in whatever format.
+    expect(whyWriterMayNotWrite('mock.png', 'main')).toBeNull()
+    expect(whyWriterMayNotWrite('notes.txt', 'main')).toBeNull()
   })
 
   it('refuses a hand-written record, and says what to re-run instead', () => {
     const why = whyWriterMayNotWrite('anchors/cart.json', 'main')
 
-    expect(why).toContain('written by prototype-apply, from what actually happened')
-    expect(why).toContain('re-run prototype-apply')
+    expect(why).toContain('written by apply, from what actually happened')
+    expect(why).toContain('re-run apply')
   })
 
   it('refuses another writer’s artifact, naming whose it is and what to write instead', () => {
@@ -221,7 +235,7 @@ describe('whyWriterMayNotWrite', () => {
     expect(why).toContain('`A-<nnn>-<name>.{css,js}`')
   })
 
-  it('refuses an artifact no rule owns, since nothing would ever replay it', () => {
+  it('refuses a patch the replay scanner could never pick up, and says how to name it', () => {
     const why = whyWriterMayNotWrite('patches/notes.txt', 'main')
 
     expect(why).toContain('Writing patches/notes.txt as "main" is refused')
@@ -307,7 +321,7 @@ describe('resolvePrototypeOwnership', () => {
    */
   it('finds nothing wrong with a prototype that has been worked on', () => {
     const dir = getPrototypeDirPath(workspaceRoot, slug)
-    writeFileSync(join(dir, 'prd.md'), '## R-001 A cart holds its line\n', 'utf-8')
+    writeFileSync(join(dir, 'PRD.md'), '## R-001 A cart holds its line\n', 'utf-8')
     mkdirSync(getPrototypeResearchPath(workspaceRoot, slug), { recursive: true })
     writeFileSync(join(getPrototypeResearchPath(workspaceRoot, slug), 'competitors.md'), '# F-001 x\n', 'utf-8')
     mkdirSync(join(dir, 'assets', 'pages'), { recursive: true })
@@ -476,7 +490,10 @@ describe('buildPrototypeStatus', () => {
     const empty = buildPrototypeStatus(workspaceRoot, slug)
     expect(empty.pages).toEqual([])
     expect(empty.pageAvailable).toBe(false)
-    expect(empty.pageIssues.join('\n')).toContain('an overlay page needs a url')
+    expect(empty.pageIssues[0]?.text).toContain('an overlay page needs a url')
+    // A row the config could not be read as keeps its own words — it names the line
+    // and the key, which translation would only obscure (`notices.ts`).
+    expect(empty.pageIssues[0]?.code).toBe('raw')
   })
 
   /**
@@ -496,12 +513,13 @@ describe('buildPrototypeStatus', () => {
     writeFileSync(join(getPrototypePagePatchesPath(workspaceRoot, slug, 'nope'), 'C-001-x.css'), '.x{}', 'utf-8')
 
     const status = buildPrototypeStatus(workspaceRoot, slug)
-    const issues = status.pageIssues.join('\n')
+    const issues = status.pageIssues.map((issue) => issue.text).join('\n')
 
     expect(status.patches.total).toBe(3)
     expect(status.patches.scoped).toBe(2)
     expect(issues).toContain('patches/nope/ belongs to no page of this prototype')
     expect(issues).not.toContain('patches/cart/')
+    expect(status.pageIssues.map((issue) => issue.code)).toEqual(['page.patchScopeUnmatched'])
   })
 
   /**

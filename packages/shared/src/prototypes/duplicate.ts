@@ -24,10 +24,19 @@
  *   the patches — so a copied `dist/` would be a second, stale source of truth.
  *   Contract fragments and fixtures under `services/` are part of the prototype
  *   and do come along.
- * - **`config.json` is written fresh rather than copied.** The copy keeps the
- *   source's kind and target page (the same page, a different prototype), and a
- *   reference to the source itself would be a contradiction, so
- *   {@link normalizePrototypeReferences} drops that one.
+ * - **`config.json` is written fresh rather than copied.** Its content is the page
+ *   table, re-read from the source and normalised on the way in, so the copy's file
+ *   goes through the same shape a created one does instead of inheriting whatever the
+ *   source happened to have on disk.
+ *
+ * ## The one thing a copy can also do
+ *
+ * `{ fold: true }` collapses the copy's change layer on the way out
+ * ({@link foldPrototype}, plan §21.3): the new prototype starts converged — one
+ * document to read, one upper layer instead of a chain of patches — while the
+ * source keeps every patch it had. It is an option here and nowhere else because
+ * a fold is irreversible and only worth doing to work that has stopped moving, and
+ * a copy is the one prototype nobody minds collapsing: you asked for another one.
  *
  * @see docs/prototype-workbench-plan.md §13.1 (where a base page comes from)
  */
@@ -36,6 +45,7 @@ import { cpSync, existsSync } from 'fs'
 import { basename } from 'path'
 import { prototypeSlugFromName } from './create.ts'
 import { readPrototypeConfig, writePrototypeConfig } from './config.ts'
+import { foldPrototype, type PrototypeFoldResult } from './fold.ts'
 import { listPrototypePages } from './pages.ts'
 import { getPrototypeDirPath, scanPrototypePatches } from './storage.ts'
 
@@ -51,6 +61,16 @@ export interface DuplicatePrototypeOptions {
    * is called `<slug> copy`.
    */
   name?: string
+  /**
+   * Fold the copy's change layer as part of duplicating it (plan §21.3).
+   *
+   * The **copy** is folded, never the source: the fold takes the patches it folds
+   * (they stop existing as files) and rewrites a page of ours to link its own
+   * assets, so doing it to the original would be a destructive side effect of
+   * asking for a copy. Done to the copy it costs nothing — the new prototype starts
+   * converged, and the one it came from is untouched.
+   */
+  fold?: boolean
 }
 
 export interface DuplicatedPrototype {
@@ -63,6 +83,11 @@ export interface DuplicatedPrototype {
   copiedPages: string[]
   /** Replayable patch file names that came along, in replay order. */
   copiedPatches: string[]
+  /**
+   * What folding the copy did, or null when it was not asked for. Carried so the
+   * caller can say where the copied patches went: a fold deletes them as files.
+   */
+  folded: PrototypeFoldResult | null
 }
 
 /**
@@ -96,12 +121,17 @@ export function duplicatePrototype(
   const config = readPrototypeConfig(workspaceRootPath, source)
   writePrototypeConfig(workspaceRootPath, target, config)
 
+  // After the copy is complete, so a fold that refuses something (a page of ours
+  // whose document is missing) reports it rather than leaving half a copy.
+  const folded = options.fold ? foldPrototype(workspaceRootPath, target) : null
+
   return {
     slug: target,
     sourceSlug: source,
     dir,
     copiedPages: listPrototypePages(workspaceRootPath, target).map((page) => page.name),
     copiedPatches: scanPrototypePatches(workspaceRootPath, target).map((patch) => patch.file),
+    folded,
   }
 }
 

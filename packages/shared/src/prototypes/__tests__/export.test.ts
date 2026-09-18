@@ -359,7 +359,7 @@ describe('exportPrototype', () => {
   let patchesDir = ''
 
   beforeEach(() => {
-    workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-prototype-export-'))
+    workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-export-'))
     createPrototype(workspaceRoot, { name: slug })
     prototypeDir = getPrototypeDirPath(workspaceRoot, slug)
     patchesDir = getPrototypePatchesPath(workspaceRoot, slug)
@@ -458,7 +458,8 @@ describe('exportPrototype', () => {
     const html = readFileSync(result.pagePath!, 'utf-8')
     expect(html).toContain('<button>Pay</button>')
     // Patches are files the page references, not text inlined into it — the whole
-    // point of a package rather than a frozen page.
+    // point of a package rather than a frozen page. Exporting does not fold them: the
+    // package carries the change layer as the author left it.
     expect(html).toContain('href="patches/A-001-btn.css"')
     expect(readFileSync(join(result.extensionDir, 'patches', 'A-001-btn.css'), 'utf-8')).toBe('.btn{}\n')
 
@@ -482,7 +483,7 @@ describe('exportPrototype', () => {
     writePage('cart')
     writePatch('A-001-btn.css', '.btn{}')
     // A requirement nothing implements is a blocker, so the package has to say so.
-    writeFileSync(join(prototypeDir, 'prd.md'), '## R-001 A cart holds its line\n', 'utf-8')
+    writeFileSync(join(prototypeDir, 'PRD.md'), '## R-001 A cart holds its line\n', 'utf-8')
 
     const result = exportPrototype(workspaceRoot, slug)
 
@@ -502,7 +503,7 @@ describe('exportPrototype', () => {
 
     // The gate, on the package's own first page rather than only in the conversation.
     expect(handoff).toContain('## What this delivery does not settle')
-    expect(handoff).toContain('R-001 is in prd.md but no page or patch refers to it')
+    expect(handoff).toContain('R-001 is in PRD.md but no page or patch refers to it')
   })
 
   /**
@@ -855,7 +856,7 @@ describe('resolvePrototypeEntry', () => {
   let workspaceRoot = ''
 
   beforeEach(() => {
-    workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-prototype-entry-'))
+    workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-entry-'))
     createPrototype(workspaceRoot, { name: slug })
   })
 

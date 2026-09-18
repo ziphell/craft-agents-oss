@@ -217,7 +217,7 @@ export interface SessionConfig {
   /**
    * Prototype this session is working on (a slug under the workspace's
    * `prototypes/` folder; undefined = none). Binding is what lets the agent
-   * resolve `prototype-*` commands without being told a slug every turn.
+   * resolve `prototype_tool` commands without being told a slug every turn.
    *
    * It is the session's own binding and nothing else writes one here: a project tells
    * its conversations what prototypes exist, and what it is on (plan §15.1.3) — as
@@ -345,7 +345,7 @@ export interface SessionHeader {
   /**
    * Prototype this session is bound to (a slug under the workspace's
    * `prototypes/` folder; undefined = unbound). Binding is what lets the agent
-   * resolve `prototype-*` commands without being told a slug every turn.
+   * resolve `prototype_tool` commands without being told a slug every turn.
    */
   prototypeSlug?: string;
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */
@@ -457,7 +457,7 @@ export interface SessionMetadata {
   /**
    * Prototype this session is bound to (a slug under the workspace's
    * `prototypes/` folder; undefined = unbound). Binding is what lets the agent
-   * resolve `prototype-*` commands without being told a slug every turn.
+   * resolve `prototype_tool` commands without being told a slug every turn.
    */
   prototypeSlug?: string;
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */

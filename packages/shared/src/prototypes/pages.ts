@@ -26,6 +26,7 @@
 import { existsSync, readdirSync, renameSync, rmSync } from 'fs'
 import { basename, join } from 'path'
 import { readPrototypeConfig, writePrototypeConfig, type PrototypePageEntry } from './config.ts'
+import { notice, rawNotice, type PrototypeNotice } from './notices.ts'
 import { getPrototypeDirPath, getPrototypePagePatchesPath } from './storage.ts'
 import { requireTargetUrl } from './target.ts'
 import { prototypeOriginUrl } from './url.ts'
@@ -54,7 +55,7 @@ export function pageNameForFile(file: string): string {
 
 export interface PrototypePage {
   /**
-   * Short label — what commands take (`prototype-open --page cart`), what the
+   * Short label — what commands take (`open --page cart`), what the
    * address answers to (`/cart`) and what a scratch page's file is called.
    */
   name: string
@@ -72,7 +73,7 @@ export interface PrototypePageTable {
   /** In flow order: declared rows first (table order), then undeclared documents by name. */
   pages: PrototypePage[]
   /** Problems worth saying out loud — a declared page with no document is a screen that is not there. */
-  issues: string[]
+  issues: PrototypeNotice[]
 }
 
 /**
@@ -118,7 +119,9 @@ export function describePrototypePages(workspaceRootPath: string, slug: string):
   const origin = prototypeOriginUrl(workspaceRootPath, slug)
   const dir = getPrototypeDirPath(workspaceRootPath, slug)
   const documents = listPageDocuments(dir)
-  const issues = [...(config.pageIssues ?? [])]
+  // The config's own parse errors keep their wording (`rawNotice`): they name the
+  // line, the key and the shape it was expected to have.
+  const issues = (config.pageIssues ?? []).map(rawNotice)
 
   const addressOf = (file: string): string | null =>
     origin ? `${origin.replace(/\/+$/, '')}/${file}` : null
@@ -136,7 +139,7 @@ export function describePrototypePages(workspaceRootPath: string, slug: string):
     const file = documents.find((candidate) => pageNameForFile(candidate) === row.name) ?? null
     if (!file) {
       issues.push(
-        `the page table lists "${row.name}", but ${pageFileName(row.name)} is not in the prototype directory.`,
+        notice('page.documentMissing', { name: row.name, file: pageFileName(row.name) }),
       )
     }
     pages.push({
@@ -243,7 +246,7 @@ export interface PrototypePagesResult {
 function requirePageName(value: string): string {
   const name = value.trim()
   if (!name) {
-    throw new Error('A page needs a name. Example: prototype-pages --add payment=https://app.example.com/pay')
+    throw new Error('A page needs a name. Example: pages --add payment=https://app.example.com/pay')
   }
   if (/[\\/]/.test(name) || name === '.' || name === '..') {
     throw new Error(`"${value}" cannot be a page name: it becomes a file name and an address segment.`)
@@ -274,7 +277,7 @@ export function updatePrototypePages(
   change: PrototypePagesChange,
 ): PrototypePagesResult {
   if (!existsSync(getPrototypeDirPath(workspaceRootPath, slug))) {
-    throw new Error(`Prototype "${slug}" does not exist. See "prototype-list" for what exists.`)
+    throw new Error(`Prototype "${slug}" does not exist. See "list" for what exists.`)
   }
 
   const config = readPrototypeConfig(workspaceRootPath, slug)

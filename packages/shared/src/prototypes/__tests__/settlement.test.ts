@@ -10,6 +10,8 @@ import {
   getPrototypeDirPath,
   getPrototypePatchesPath,
   getPrototypeReviewsPath,
+  getContractPathsPath,
+  getContractFixturesPath,
   patchFingerprint,
   readPrototypeRequirements,
   resolveRequirementCoverage,
@@ -42,7 +44,7 @@ describe('whyPrototypeIsNotSettled', () => {
     workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-settlement-'))
     createPrototype(workspaceRoot, { name: slug })
     writePrototypePage(workspaceRoot, slug, 'cart', PAGE)
-    writeFileSync(join(getPrototypeDirPath(workspaceRoot, slug), 'prd.md'), PRD, 'utf-8')
+    writeFileSync(join(getPrototypeDirPath(workspaceRoot, slug), 'PRD.md'), PRD, 'utf-8')
     mkdirSync(getPrototypePatchesPath(workspaceRoot, slug), { recursive: true })
     writeFileSync(join(getPrototypePatchesPath(workspaceRoot, slug), 'main-001-total.css'), PATCH, 'utf-8')
     // R-002 is served by the contract in this fixture, but the thread reads pages and patches: a
@@ -95,9 +97,13 @@ describe('whyPrototypeIsNotSettled', () => {
   it('names a requirement nothing implements', () => {
     recordGreenRound()
 
-    expect(whyPrototypeIsNotSettled(buildPrototypeStatus(workspaceRoot, slug))).toEqual([
-      'R-003 is in prd.md but no page or patch refers to it, so nothing implements it.',
-    ])
+    const reasons = whyPrototypeIsNotSettled(buildPrototypeStatus(workspaceRoot, slug))
+
+    // The code is the contract with the panel; the sentence is what the agent prints.
+    expect(reasons.map((reason) => reason.code)).toEqual(['gate.requirementUnmet'])
+    expect(reasons[0]?.text).toBe(
+      'R-003 is in PRD.md but no page or patch refers to it, so nothing implements it.',
+    )
   })
 
   it('names an objection nobody answered, and a stale one with its reason', () => {
@@ -122,9 +128,10 @@ describe('whyPrototypeIsNotSettled', () => {
     const reasons = whyPrototypeIsNotSettled(buildPrototypeStatus(workspaceRoot, slug))
 
     expect(reasons).toHaveLength(1)
-    expect(reasons[0]).toContain('reviews/D-001-total.md disputes patch patches/main-001-total.css')
-    expect(reasons[0]).toContain('still stands (open)')
-    expect(reasons[0]).toContain('has changed since this was filed')
+    expect(reasons[0]?.code).toBe('gate.disputeStanding')
+    expect(reasons[0]?.text).toContain('reviews/D-001-total.md disputes patch patches/main-001-total.css')
+    expect(reasons[0]?.text).toContain('still stands (open)')
+    expect(reasons[0]?.text).toContain('has changed since this was filed')
   })
 
   it('names a red check from the last round', () => {
@@ -139,9 +146,10 @@ describe('whyPrototypeIsNotSettled', () => {
     )
     writeAcceptanceState(workspaceRoot, slug, state)
 
-    expect(whyPrototypeIsNotSettled(buildPrototypeStatus(workspaceRoot, slug))).toEqual([
-      '`selector: [data-cart-total]` failed in the last verification round.',
-    ])
+    const reasons = whyPrototypeIsNotSettled(buildPrototypeStatus(workspaceRoot, slug))
+
+    expect(reasons.map((reason) => reason.code)).toEqual(['gate.checkFailed'])
+    expect(reasons[0]?.text).toBe('`selector: [data-cart-total]` failed in the last verification round.')
   })
 
   it('tells "never ran" apart from "nothing is red"', () => {
@@ -149,8 +157,68 @@ describe('whyPrototypeIsNotSettled', () => {
 
     const reasons = whyPrototypeIsNotSettled(buildPrototypeStatus(workspaceRoot, slug))
 
-    expect(reasons).toHaveLength(1)
-    expect(reasons[0]).toContain('have never been run here')
+    expect(reasons.map((reason) => reason.code)).toEqual(['gate.checksNeverRun'])
+    expect(reasons[0]?.text).toContain('have never been run here')
+  })
+
+  it('names a faked response the contract declares but nobody wrote', () => {
+    implementR003()
+    recordGreenRound()
+
+    // A service whose one faked response has no file: the route is skipped, so the request is
+    // not faked — the recipient gets a page that reaches for something they do not have.
+    const paths = getContractPathsPath(workspaceRoot, slug, 'checkout-api')
+    mkdirSync(paths, { recursive: true })
+    writeFileSync(
+      join(paths, 'list-orders.yaml'),
+      [
+        '/orders:',
+        '  get:',
+        '    x-mock:',
+        '      fixture: list-orders-200',
+        '    responses:',
+        "      '200':",
+        '        description: OK',
+        '',
+      ].join('\n'),
+      'utf-8',
+    )
+
+    const reasons = whyPrototypeIsNotSettled(buildPrototypeStatus(workspaceRoot, slug))
+
+    expect(reasons.map((reason) => reason.code)).toEqual(['gate.serviceUncovered'])
+    expect(reasons[0]?.params).toEqual({ service: 'checkout-api', fixtures: 'list-orders-200' })
+    expect(reasons[0]?.text).toBe(
+      'checkout-api declares responses that are not on disk: list-orders-200 — those requests are not faked, ' +
+        'so they go to the real backend.',
+    )
+  })
+
+  it('says nothing about a service whose faked response is on disk', () => {
+    implementR003()
+    recordGreenRound()
+
+    const paths = getContractPathsPath(workspaceRoot, slug, 'checkout-api')
+    mkdirSync(paths, { recursive: true })
+    writeFileSync(
+      join(paths, 'list-orders.yaml'),
+      [
+        '/orders:',
+        '  get:',
+        '    x-mock:',
+        '      fixture: list-orders-200',
+        '    responses:',
+        "      '200':",
+        '        description: OK',
+        '',
+      ].join('\n'),
+      'utf-8',
+    )
+    const fixtures = getContractFixturesPath(workspaceRoot, slug, 'checkout-api')
+    mkdirSync(fixtures, { recursive: true })
+    writeFileSync(join(fixtures, 'list-orders-200.json'), '[{ "id": 1 }]', 'utf-8')
+
+    expect(whyPrototypeIsNotSettled(buildPrototypeStatus(workspaceRoot, slug))).toEqual([])
   })
 })
 
@@ -162,7 +230,7 @@ describe('the status report carries the argument and the last round', () => {
     workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-settlement-status-'))
     createPrototype(workspaceRoot, { name: slug })
     writePrototypePage(workspaceRoot, slug, 'cart', PAGE)
-    writeFileSync(join(getPrototypeDirPath(workspaceRoot, slug), 'prd.md'), PRD, 'utf-8')
+    writeFileSync(join(getPrototypeDirPath(workspaceRoot, slug), 'PRD.md'), PRD, 'utf-8')
     mkdirSync(getPrototypePatchesPath(workspaceRoot, slug), { recursive: true })
     writeFileSync(join(getPrototypePatchesPath(workspaceRoot, slug), 'main-001-total.css'), PATCH, 'utf-8')
     mkdirSync(getPrototypeReviewsPath(workspaceRoot, slug), { recursive: true })

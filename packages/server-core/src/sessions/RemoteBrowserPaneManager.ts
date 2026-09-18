@@ -21,9 +21,6 @@ import type {
   BrowserScreenshotOptions,
   BrowserScreenshotRegionTarget,
   BrowserScreenshotResult,
-  FrameCaptureOptions,
-  FrameCaptureResult,
-  FrameCaptureStarted,
   VideoFrameExtractionResult,
   VideoFrameOptions,
   BrowserConsoleOptions,
@@ -164,7 +161,7 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
    * an awaited call (navigate, screenshot, …) that surfaces real errors.
    *
    * Callers that need the actual instanceId should use the async-friendly
-   * `createForSession` path via the browser-tool-runtime, which awaits.
+   * `createForSession` path via the command-runtime, which awaits.
    */
   getOrCreateForSession(sessionId: string, _options?: { workspaceId?: string | null }): string {
     // The remote bridge can't synchronously block on a WS round-trip. Return
@@ -383,18 +380,6 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
 
   async clearInitScripts(id: string, keyPrefix: string, tabId?: string): Promise<string[]> {
     return await this.invoke<string[]>('clearInitScripts', [id, keyPrefix], tabId)
-  }
-
-  async startFrameCapture(id: string, options?: FrameCaptureOptions, tabId?: string): Promise<FrameCaptureStarted> {
-    return await this.invoke<FrameCaptureStarted>('startFrameCapture', [id, options], tabId)
-  }
-
-  async stopFrameCapture(id: string): Promise<FrameCaptureResult | null> {
-    return await this.invoke<FrameCaptureResult | null>('stopFrameCapture', [id])
-  }
-
-  async pickVideoFile(): Promise<string | null> {
-    return await this.invoke<string | null>('pickVideoFile', [])
   }
 
   async extractVideoFrames(

@@ -4,7 +4,6 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import {
   createPrototype,
-  linkPrototypeReference,
   readPrototypeConfig,
   requireTargetUrl,
   setPrototypePageUrl,
@@ -19,7 +18,7 @@ describe('setPrototypePageUrl', () => {
   let workspaceRoot = ''
 
   beforeEach(() => {
-    workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-prototype-target-'))
+    workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-target-'))
   })
 
   afterEach(() => {
@@ -87,19 +86,21 @@ describe('setPrototypePageUrl', () => {
 
   it('leaves everything else about the prototype alone', () => {
     const slug = makeOverlay()
-    createPrototype(workspaceRoot, { name: 'rival-cart' })
-    writePrototypeConfig(workspaceRoot, 'rival-cart', {
-      pages: [{ name: 'cart', kind: 'scratch', entry: true }],
+    // A second page, so "the rest of the table is untouched" has something to mean.
+    writePrototypeConfig(workspaceRoot, slug, {
+      pages: [
+        { name: 'entry', kind: 'overlay', url: 'https://app.example.com/checkout', entry: true },
+        { name: 'orders', kind: 'scratch' },
+      ],
     })
-    linkPrototypeReference(workspaceRoot, slug, 'rival-cart')
 
     setPrototypePageUrl(workspaceRoot, slug, 'http://localhost:3000/checkout')
 
     const config = readPrototypeConfig(workspaceRoot, slug)
     expect(config.pages).toEqual([
       { name: 'entry', kind: 'overlay', url: 'http://localhost:3000/checkout', entry: true },
+      { name: 'orders', kind: 'scratch' },
     ])
-    expect(config.references).toEqual(['rival-cart'])
   })
 
   /**
@@ -125,7 +126,7 @@ describe('setPrototypePageUrl', () => {
     expect(() => setPrototypePageUrl(workspaceRoot, 'empty', 'https://app.example.com/x'))
       .toThrow(/has no pages/)
     expect(() => setPrototypePageUrl(workspaceRoot, 'empty', 'https://app.example.com/x'))
-      .toThrow(/prototype-pages --add/)
+      .toThrow(/pages --add/)
   })
 
   // One screen, one name: two pages claiming one address would make "which page am
@@ -139,7 +140,7 @@ describe('setPrototypePageUrl', () => {
 
   it('refuses a prototype that does not exist, naming how to list them', () => {
     expect(() => setPrototypePageUrl(workspaceRoot, 'nope', 'https://app.example.com/x'))
-      .toThrow(/prototype-list/)
+      .toThrow(/list/)
   })
 
   it('refuses a value a browser cannot open', () => {

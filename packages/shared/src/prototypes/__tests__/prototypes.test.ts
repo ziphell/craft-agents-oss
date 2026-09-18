@@ -3,8 +3,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import {
+  getPrototypeDirPath,
   getPrototypePatchesPath,
   getPrototypePagePatchesPath,
+  listPrototypeFiles,
   listPrototypePatchPages,
   loadPrototypeArtifacts,
   scanPrototypePatches,
@@ -192,5 +194,67 @@ describe('buildPatchInitScript', () => {
     new Function('state', 'window', `${patch('A-001-one.js')}\n${patch('A-002-two.js')}`)(state, {})
 
     expect(state.value).toBe(2)
+  })
+})
+
+/**
+ * The prototype's own directory is a folder of the author's files, and the workbench lists it
+ * as one: no extension rule, no ownership rule, and nothing above the directory's own level.
+ */
+describe('listPrototypeFiles', () => {
+  const slug = 'checkout-flow'
+  let workspaceRoot = ''
+  let dir = ''
+
+  beforeEach(() => {
+    workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-prototype-files-'))
+    dir = getPrototypeDirPath(workspaceRoot, slug)
+    mkdirSync(dir, { recursive: true })
+  })
+
+  afterEach(() => {
+    rmSync(workspaceRoot, { recursive: true, force: true })
+  })
+
+  it('lists every file in any format, and picks the brief out of them', () => {
+    writeFileSync(join(dir, 'PRD.md'), '## R-001 A cart holds its line\n', 'utf-8')
+    writeFileSync(join(dir, 'personas.md'), '# who this is for\n', 'utf-8')
+    // Not prose: a format the workbench never reads is still a file of this prototype.
+    writeFileSync(join(dir, 'mock.png'), 'not really a png')
+    writeFileSync(join(dir, 'flows.xlsx'), 'not really a workbook')
+
+    const listed = listPrototypeFiles(workspaceRoot, slug, 'PRD.md')
+
+    expect(listed.entry).toEqual({ name: 'PRD.md', path: join(dir, 'PRD.md') })
+    expect(listed.files.map((file) => file.name)).toEqual(['flows.xlsx', 'mock.png', 'personas.md'])
+    expect(listed.files[0]?.path).toBe(join(dir, 'flows.xlsx'))
+  })
+
+  it('skips hidden files, and lists files rather than directories', () => {
+    writeFileSync(join(dir, 'PRD.md'), '## R-001 x\n', 'utf-8')
+    writeFileSync(join(dir, '.DS_Store'), '')
+    writeFileSync(join(dir, 'notes.txt'), 'scratch')
+    mkdirSync(join(dir, 'assets'), { recursive: true })
+    writeFileSync(join(dir, 'assets', 'app.css'), '.a{}')
+
+    const listed = listPrototypeFiles(workspaceRoot, slug, 'PRD.md')
+
+    expect(listed.files.map((file) => file.name)).toEqual(['notes.txt'])
+  })
+
+  it('has no entry, and still lists what is there, before the brief is written', () => {
+    writeFileSync(join(dir, 'sketches.pdf'), 'not really a pdf')
+
+    expect(listPrototypeFiles(workspaceRoot, slug, 'PRD.md')).toEqual({
+      entry: null,
+      files: [{ name: 'sketches.pdf', path: join(dir, 'sketches.pdf') }],
+    })
+  })
+
+  it('answers an empty directory rather than failing when it is gone', () => {
+    expect(listPrototypeFiles(join(tmpdir(), 'craft-does-not-exist'), 'gone', 'PRD.md')).toEqual({
+      entry: null,
+      files: [],
+    })
   })
 })

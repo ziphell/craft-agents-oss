@@ -59,10 +59,10 @@ export interface ProjectConfig {
    * **Background information, like a connected source.** It is told to the conversations
    * in the project (`ProjectPromptContext.prototypes` → `<project_prototypes>`) and
    * nothing follows from it: no conversation is bound by it, no prototype context or
-   * guide is injected because of it, and it is not a default target for `prototype-*`
-   * commands. A session still binds itself (`prototype-bind`) or names a slug, so no
-   * choice is made on its behalf — what the project gains is a place to *say* which
-   * prototypes its work touches, not a way to decide for anyone (plan §15.1.2, §15.1.3).
+   * guide is injected because of it, and it is not a default target for `prototype_tool`
+   * commands — a session names a slug, or is bound by the person, and either way no choice
+   * is made on its behalf. What the project gains is a place to *say* which prototypes its
+   * work touches, not a way to decide for anyone (plan §15.1.2, §15.1.3).
    *
    * A **set**, not a "current" one: a project works on several prototypes, and nothing
    * here says which is in front. The other direction does not exist — a prototype

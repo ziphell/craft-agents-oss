@@ -75,32 +75,6 @@ describe('readPrototypeConfig', () => {
     writeRawConfig(workspaceRoot, { kind: 'nonsense' })
     expect(readPrototypeConfig(workspaceRoot, SLUG)).toEqual({})
   })
-
-  it('reads references back', () => {
-    workspaceRoot = makePrototype()
-    writePrototypeConfig(workspaceRoot, SLUG, { references: ['rival-checkout'] })
-    expect(readPrototypeConfig(workspaceRoot, SLUG)).toEqual({ references: ['rival-checkout'] })
-  })
-
-  // A reference says "study something else", so pointing at yourself is
-  // contradictory rather than merely useless.
-  it('drops a self-reference', () => {
-    workspaceRoot = makePrototype()
-    writeRawConfig(workspaceRoot, { references: [SLUG, 'rival-checkout'] })
-    expect(readPrototypeConfig(workspaceRoot, SLUG).references).toEqual(['rival-checkout'])
-  })
-
-  it('ignores a references value that is not an array', () => {
-    workspaceRoot = makePrototype()
-    writeRawConfig(workspaceRoot, { references: 'rival-checkout' })
-    expect(readPrototypeConfig(workspaceRoot, SLUG)).toEqual({})
-  })
-
-  it('drops blank and non-string entries, and de-duplicates', () => {
-    workspaceRoot = makePrototype()
-    writeRawConfig(workspaceRoot, { references: [' a ', 'a', '', 7, null, 'b'] })
-    expect(readPrototypeConfig(workspaceRoot, SLUG).references).toEqual(['a', 'b'])
-  })
 })
 
 /**
@@ -373,25 +347,16 @@ describe('writePrototypeConfig', () => {
     expect(readFileSync(getPrototypeConfigPath(workspaceRoot, SLUG), 'utf-8')).toBe('{}\n')
   })
 
-  it('omits an empty references list rather than writing an empty array', () => {
-    workspaceRoot = makePrototype()
-    writePrototypeConfig(workspaceRoot, SLUG, { references: [] })
-
-    expect(readPrototypeConfig(workspaceRoot, SLUG)).toEqual({})
-  })
-
   // Writing is what retires the old shape: the file has no `kind` or `targetUrl`
   // at this level any more, so reading it back can only be the page table.
   it('writes a page table and nothing else', () => {
     workspaceRoot = makePrototype()
     writePrototypeConfig(workspaceRoot, SLUG, {
       pages: [{ name: 'pay', kind: 'overlay', url: 'https://app.example.com/pay', entry: true }],
-      references: ['rival-checkout'],
     })
 
     expect(JSON.parse(readFileSync(getPrototypeConfigPath(workspaceRoot, SLUG), 'utf-8'))).toEqual({
       pages: [{ name: 'pay', kind: 'overlay', url: 'https://app.example.com/pay', entry: true }],
-      references: ['rival-checkout'],
     })
   })
 })

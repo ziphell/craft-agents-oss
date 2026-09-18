@@ -432,13 +432,6 @@ const PICKER_DRAIN_EXPRESSION = `(() => {
 
 const PICKER_CANCEL_EXPRESSION = `(() => { try { window.${PICKER_CANCEL_KEY} && window.${PICKER_CANCEL_KEY}(); } catch (e) {} })()`
 
-export interface BrowserPageAction {
-  /** `click` | `type` | `key` | `navigate`. */
-  kind: string
-  /** What it acted on — a key, an address, some text, or coordinates. */
-  target: string
-}
-
 export class BrowserCDP {
   private webContents: WebContents
   private attached = false
@@ -460,16 +453,6 @@ export class BrowserCDP {
   private fetchMockRoutes: MockRoute[] = []
   private fetchMockStore: MockStore = {}
   private debuggerMessageListenerRegistered = false
-
-  /**
-   * Told about every action taken on the page, read off the CDP traffic.
-   *
-   * Set by the pane manager while a frame capture is running. One hook rather than
-   * one report per verb, because every way of acting on a page goes through
-   * `Input.*` or `Page.navigate`: clicks, typing, selecting and dragging are all
-   * covered without any of them having to remember to say so (plan §20.3).
-   */
-  onAction?: (action: BrowserPageAction) => void
 
   constructor(webContents: WebContents) {
     this.webContents = webContents
@@ -552,48 +535,10 @@ export class BrowserCDP {
   private async send(method: string, params?: Record<string, unknown>): Promise<any> {
     await this.ensureAttached()
     try {
-      const result = await this.webContents.debugger.sendCommand(method, params)
-      this.reportAction(method, params)
-      return result
+      return await this.webContents.debugger.sendCommand(method, params)
     } finally {
       // Keep detach countdown tied to completed calls so we do not detach mid-flight.
       this.resetIdleDetachTimer()
-    }
-  }
-
-  /**
-   * Turn a CDP call into "what somebody did", for the frame capture.
-   *
-   * Only after the call succeeded: a frame whose caption is an action that never
-   * happened would be a lie about the cause, which is the one thing these frames
-   * are for. Deliberate silence is fine — most CDP traffic is not an action, and
-   * the list below is the whole of what counts as one.
-   */
-  private reportAction(method: string, params?: Record<string, unknown>): void {
-    const listener = this.onAction
-    if (!listener) return
-
-    if (method === 'Page.navigate') {
-      listener({ kind: 'navigate', target: String(params?.url ?? '') })
-      return
-    }
-    if (method === 'Input.insertText') {
-      listener({ kind: 'type', target: String(params?.text ?? '').slice(0, 40) })
-      return
-    }
-    if (method === 'Input.dispatchKeyEvent') {
-      // Only a press: keyUp doubles every keystroke, and `char` events are text.
-      if (params?.type !== 'keyDown') return
-      const key = typeof params.key === 'string' ? params.key : ''
-      if (key.length > 1) listener({ kind: 'key', target: key })
-      return
-    }
-    if (method === 'Input.dispatchMouseEvent' && params?.type === 'mousePressed') {
-      const button = typeof params.button === 'string' ? params.button : 'left'
-      const clicks = Number(params.clickCount ?? 1)
-      const x = Math.round(Number(params.x ?? 0))
-      const y = Math.round(Number(params.y ?? 0))
-      listener({ kind: 'click', target: `${button}${clicks > 1 ? ` ×${clicks}` : ''} at ${x},${y}` })
     }
   }
 
@@ -1179,7 +1124,7 @@ export class BrowserCDP {
    * page globals and without the app having to point at a mock server.
    *
    * The store is **copied** here, which is what makes one apply one run of the
-   * flow: a second `prototype-mock-apply` starts the prototype's state over rather
+   * flow: a second `prototype_tool mock-apply` starts the prototype's state over rather
    * than continuing whatever the last round of clicking left behind.
    *
    * Like init scripts this is CDP session state, so the debugger is held

@@ -544,17 +544,6 @@ export interface ElectronAPI {
   /** Write `dist/*` for a prototype so it can be handed to developers. */
   exportPrototype(workspaceId: string, slug: string): Promise<unknown>
   /**
-   * Sample frames out of a video the user recorded elsewhere (plan §20.5).
-   *
-   * No path is passed: the picker runs in the main process, so the panel never
-   * handles one. Returns null when the dialog was dismissed.
-   */
-  importPrototypeVideo(
-    workspaceId: string,
-    slug: string,
-    options?: { mode?: 'timeline' | 'changes'; everyMs?: number; maxFrames?: number },
-  ): Promise<unknown>
-  /**
    * Create a prototype: a container for pages. It has none to begin with — a page
    * is either a document of ours (something writes `<name>.html`) or a live page
    * added afterwards — so creation asks for nothing but a name (plan §19.8).
@@ -569,26 +558,17 @@ export interface ElectronAPI {
    */
   replayPrototype(workspaceId: string, slug: string): Promise<unknown>
   /**
-   * Fold a prototype's delta layer into what owns it (plan §21.3): a page of ours
-   * into `assets/<page>/committed.*`, a live page into
-   * `patches/<page>/Z-001-upper.css`. The folded patch files are deleted, so the
-   * caller asks the user first — there is no undo.
-   */
-  commitPrototype(workspaceId: string, slug: string, options?: { page?: string }): Promise<unknown>
-  /**
-   * Declare that `slug` is studied from `referenceSlug` (plan §14). The two stay
-   * separate projects: that is what keeps the reference's patches out of this
-   * prototype's deliverable.
-   */
-  linkPrototypeReference(workspaceId: string, slug: string, referenceSlug: string): Promise<unknown>
-  /** Drop the relation. Idempotent, and how a dangling reference is cleaned up. */
-  unlinkPrototypeReference(workspaceId: string, slug: string, referenceSlug: string): Promise<unknown>
-  /**
    * Copy a prototype into a new one (the list's "Duplicate"). Same page and same
    * patches, its own slug and `config.json`; the two are independent afterwards.
-   * `name` only derives the new slug — omitted, the copy is `<slug> copy`.
+   * `name` only derives the new slug — omitted, the copy is `<slug> copy` — and
+   * `fold` collapses the *copy's* change layer as part of copying it (plan §21.3),
+   * leaving the prototype it came from untouched.
    */
-  duplicatePrototype(workspaceId: string, slug: string, name?: string): Promise<unknown>
+  duplicatePrototype(
+    workspaceId: string,
+    slug: string,
+    options?: { name?: string; fold?: boolean },
+  ): Promise<unknown>
   /**
    * Remove a prototype and everything in it. Irreversible — the caller asks the
    * user first. Returns the slugs of prototypes still referencing it, which are
@@ -598,7 +578,7 @@ export interface ElectronAPI {
   /**
    * Change one prototype's page table (plan §19): add a page, remove one, rename
    * one, or mark which page the address root opens. The same data the agent
-   * reaches through `prototype-pages` / `prototype-entry`.
+   * reaches through `prototype_tool pages` / `prototype_tool entry`.
    */
   setPrototypePages(
     workspaceId: string,

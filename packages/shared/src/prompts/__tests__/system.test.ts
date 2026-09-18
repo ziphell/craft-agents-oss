@@ -158,7 +158,7 @@ describe('formatProjectContextForPrompt', () => {
   // nothing in the block ranks them (§15.1.3). It is *background*, the same shape a
   // connected source has: the conversation is told, nothing is targeted for it, and it is
   // still not bound to any of them. The block has to say all three, or the agent reads a
-  // project's note as its own binding and runs `prototype-*` commands with no slug.
+  // project's note as its own binding and runs `prototype_tool` commands with no slug.
   it("lists the prototypes the project is worked on with, as background", () => {
     const block = formatProjectContextForPrompt(baseCtx({ prototypes: ['checkout-flow', 'search-flow'] }))
 
@@ -168,7 +168,10 @@ describe('formatProjectContextForPrompt', () => {
     expect(block).toContain('**background,')
     expect(block).toContain('nothing is targeted for you')
     expect(block).toContain('is not bound to any of them')
-    expect(block).toContain('prototype-bind <slug>')
+    // The note tells the agent how to work on one of them: name the slug. Binding is the person's,
+    // so the block asks rather than claiming a command that does it.
+    expect(block).toContain('naming its slug')
+    expect(block).toContain('ask the person to bind this conversation')
   })
 
   it('omits the prototype list when the project works on none', () => {

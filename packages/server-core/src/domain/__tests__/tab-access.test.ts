@@ -64,7 +64,7 @@ describe('whyTabIsOutOfReach', () => {
   })
 
   it('lets a conversation work on a tab it opened itself, whatever it is bound to', () => {
-    // Otherwise `prototype-open <slug>` from an unbound conversation would open a tab
+    // Otherwise `open <slug>` from an unbound conversation would open a tab
     // it could not then read.
     expect(whyTabIsOutOfReach({ id: 'tab-2', belongsTo: session('session-a'), cursorOf: null }, session('session-a'))).toBeNull()
   })
@@ -166,6 +166,6 @@ describe('whyTabIsLocked', () => {
 
     expect(why).toContain('Tab tab-2 is locked while session-b works on it')
     expect(why).toContain('until that turn ends')
-    expect(why).not.toContain('prototype-bind')
+    expect(why).not.toContain('bind')
   })
 })

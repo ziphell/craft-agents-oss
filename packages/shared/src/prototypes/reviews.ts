@@ -12,7 +12,7 @@
  * on: 3f9a1c2e
  * status: open
  * claim: The summary row is not on screen once the list is longer than the viewport.
- * evidence: prototype-verify — check: selector [data-cart-total] did not match
+ * evidence: verify — check: selector [data-cart-total] did not match
  *
  * `position: sticky` needs a scroll container that is not the page…
  * ```
@@ -76,7 +76,7 @@ export interface PrototypeReview {
   on: string | null
   /** The one sentence being argued. Null when the file has no `claim:` line. */
   claim: string | null
-  /** As written — a `prototype-verify` line, a match count, a file. */
+  /** As written — a `verify` line, a match count, a file. */
   evidence: string[]
   /**
    * The record disagrees with the files: an `open` dispute whose patch has changed since it was
@@ -313,7 +313,7 @@ export function readPrototypeReviews(workspaceRootPath: string, slug: string): P
     if (review.target?.kind === 'patch' && !review.on) {
       issues.push(
         `${review.file}: a patch dispute needs "on:" — the fingerprint of ${review.target.ref} as you are ` +
-          `looking at it (printed by 'prototype-status'). Without it nothing can tell an objection about the ` +
+          `looking at it (printed by 'status'). Without it nothing can tell an objection about the ` +
           `current file from one about a version that no longer exists.`,
       )
     }

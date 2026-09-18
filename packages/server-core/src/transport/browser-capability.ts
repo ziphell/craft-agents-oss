@@ -60,11 +60,7 @@ export type BrowserCapabilityMethod =
   // Persistent injection
   | 'addInitScript'
   | 'clearInitScripts'
-  // Frame capture
-  | 'startFrameCapture'
-  | 'stopFrameCapture'
   // Video frames
-  | 'pickVideoFile'
   | 'extractVideoFrames'
   // Network-level mock
   | 'setFetchMock'

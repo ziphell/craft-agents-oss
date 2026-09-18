@@ -2,11 +2,11 @@
 
 A prototype is a proposal you can look at: a folder of ordinary files describing a **flow of pages**, plus the tooling that renders it, patches it onto real pages, and packages it so somebody else can open it.
 
-Every prototype command is a `prototype-*` subcommand of `browser_tool` — the browser surface itself (windows, pages, refs, snapshots, `--tab`) is documented in `~/.craft-agent/docs/browser-tools.md`.
+Every command belongs to `prototype_tool` and carries no prefix — `list`, `create`, `apply`, `status`, `export`. It works on two things: a prototype's **files**, and the workspace's browser window, which it drives through the same runtime as `browser_tool` — the browser surface itself (windows, tabs, refs, snapshots, input, console, network) is documented in `~/.craft-agent/docs/browser-tools.md`.
 
-> **Quick start:** `prototype-list` shows what exists, `prototype-create <name>` makes one, then write `prototypes/<slug>/cart.html` — that file *is* the first page — and run `prototype-open`.
+> **Quick start:** `list` shows what exists, `create <name>` makes one, then write `prototypes/<slug>/cart.html` — that file *is* the first page — and run `open`.
 
-**Read this before your first `prototype-*` command.** It is the whole guide: what a prototype is, how its files are laid out, who owns which artifact, and the full command reference.
+**Read this before your first `prototype_tool` command.** It is the whole guide: what a prototype is, how its files are laid out, who owns which artifact, and the full command reference.
 
 ---
 
@@ -20,8 +20,8 @@ Every prototype command is a `prototype-*` subcommand of `browser_tool` — the 
 
 - **Not a project.** Projects are separate containers that group sessions, tasks and shared assets; a prototype is never nested inside one. A prototype also **belongs to no project**: the same prototype can be worked on from conversations of different projects, so there is no membership. A project may only note which prototypes its work touches (see "A project's prototypes are not yours to act on" below) — background information, never a binding.
 - **Its own origin.** Each prototype is served from `http://<slug>-<hash>.localhost/` (no port, so the address is the same on every run), answered by Electron itself, with the prototype's directory as that origin's root. Root-absolute paths (`/assets/app.css`), relative `fetch`, ES modules, cookies and `localStorage` all work, and the origin is stable across restarts.
-- **Independent, and able to reference each other.** Each prototype keeps its own patches; one can *reference* another without merging them. Referencing is how you build one thing by studying another. `prototype-list` shows every prototype with its pages and references in both directions.
-- **A bound session is told about its prototype up front.** When a conversation is bound to a prototype, a `<prototype_context>` block is injected into its system prompt describing that prototype's pages, patches, requirements, findings, disputes, services and deliverables before the user says anything. This guide is the general model; the block is the specific state.
+- **Independent.** Each prototype keeps its own patches, and studying one while building another never merges or copies the two — there is no relation stored between prototypes. What a prototype is built with in view (a competitor's screen, a design file, another prototype) is written down in that prototype's own folder, beside `PRD.md`.
+- **A bound session is told about its prototype up front.** When a conversation is bound to a prototype, a `<prototype_context>` block is injected into its system prompt describing that prototype's pages, patches, requirements, findings, disputes, services and deliverables before the user says anything. This guide is the general model; the block is the specific state. **Binding is the person's and there is no command for it**: opening a prototype into a conversation (the panel's *Open in conversation*, the prototype page's own button) sets it, the conversation's menu changes or clears it, and `create` binds what it made. The agent names a slug when it means a prototype other than the one in view.
 
 ---
 
@@ -31,7 +31,8 @@ Every prototype command is a `prototype-*` subcommand of `browser_tool` — the 
 prototypes/{slug}/
 ├── _layout.html                 the shared shell for the pages of ours (optional)
 ├── cart.html                    a page of ours — every top-level .html is a page
-├── prd.md                       the requirements, one `## R-001 …` entry each
+├── PRD.md                       the brief — the one file requirements are read from
+├── personas.md                  material beside it: any format, any number of files
 ├── research/                    what you learned — findings, frames/, videos/
 ├── reviews/                     the argument against the work, one dispute per file
 ├── patches/                     the change layer
@@ -39,13 +40,13 @@ prototypes/{slug}/
 │   └── cart/ui-002-flow-guard.js    the page `cart` only
 ├── assets/                      a page's own css/js, images and fonts (packaged verbatim)
 ├── services/{svc}/              contract fragments (paths/*.yaml), fixtures/, openapi.yaml
-├── anchors/                     written by `prototype-apply` — evidence about the page
-├── acceptance/                  written by `prototype-verify` — the rounds
+├── anchors/                     written by `apply` — evidence about the page
+├── acceptance/                  written by `verify` — the rounds
 ├── config.json                  the page table (order + entry) and the prototype's own settings
 └── dist/                        the deliverables
 ```
 
-**The filesystem says what exists; the table says the order and the entry.** Every top-level `.html` is a page of the prototype (`cart.html` → page `cart`) and needs no declaration at all; declaring one only puts it in the flow order, and `prototype-entry` is what hands it the address root. Two things are deliberately not pages: `_`-prefixed files (`_layout.html`, the shared shell, and the generated `/_index`) and documents in subdirectories (assets).
+**The filesystem says what exists; the table says the order and the entry.** Every top-level `.html` is a page of the prototype (`cart.html` → page `cart`) and needs no declaration at all; declaring one only puts it in the flow order, and `entry` is what hands it the address root. Two things are deliberately not pages: `_`-prefixed files (`_layout.html`, the shared shell, and the generated `/_index`) and documents in subdirectories (assets). The rest of what sits at that level is the author's material, in any format; `PRD.md` is the one file requirements are read from.
 
 **A page's name is its identity on every surface**: `--page <name>` on the commands, `/<name>` on the address, `patches/<name>/` for its own changes, and the `page` a `snapshot` reports. It is a short name chosen when the page is added (`cart`, `pay`) — not a URL fragment.
 
@@ -57,17 +58,17 @@ A shell shared by the pages of ours may live in `_layout.html`; its `<slot name=
 
 Three kinds of file, three jobs, and the ones you write are **all yours** — nothing in the workbench generates them:
 
-- **`prd.md`** — the requirements. One entry each, headed by a stable id: `## R-001 A cart holds its line until stock runs out`, then the prose under it (who it is for, what happens today, what has to be true). The id is what every other file refers to, so keep it stable when you rewrite the prose around it.
+- **`PRD.md`, and whatever is written beside it** — the brief. One entry per requirement, headed by a stable id: `## R-001 A cart holds its line until stock runs out`, then the prose under it (who it is for, what happens today, what has to be true). The id is what every other file refers to, so keep it stable when you rewrite the prose around it. `PRD.md` is the **only** file read for requirements; material that makes an entry readable — personas, the flow as it stands today, a glossary, a screenshot of the old screen — goes beside it in whatever format suits, and the entry points at it. The name is exact: a lower-case `prd.md` is material, not a second brief. A document under `research/`, `reviews/` or `assets/` belongs to that directory, not to the brief.
 - **`research/`** — what you learned about other products, one finding per file: `# F-001 <what you found>`, then labelled lines `claim:`, `source:`, `captured:`, `evidence:`, `requirements:`. Evidence names files you keep in `research/` (screenshots go there). Deliberately **not** packaged: the reader receives the requirements, not your notes.
-- **`patches/` and the page documents** — what changed, each one declaring what it serves: `@requirement R-001` in a patch header, or in a comment in the page document it changes. `prototype-status` turns those markers into the two answers nobody can get by reading files one at a time: a requirement nothing implements, and a marker naming an id the PRD does not define. `dist/dev-spec.md` carries the same table to whoever receives the delivery.
+- **`patches/` and the page documents** — what changed, each one declaring what it serves: `@requirement R-001` in a patch header, or in a comment in the page document it changes. `status` turns those markers into the two answers nobody can get by reading files one at a time: a requirement nothing implements, and a marker naming an id the PRD does not define. `dist/dev-spec.md` carries the same table to whoever receives the delivery.
 
-Both `prd.md` and `research/` are ordinary files — write them with the Write tool like any other, and read them before re-studying something. They also appear in the bound prototype's context block, so a session starts knowing what was already found.
+Both `PRD.md` (with the material beside it) and `research/` are ordinary files — write them with the Write tool like any other, and read them before re-studying something. They also appear in the bound prototype's context block, so a session starts knowing what was already found.
 
-**Ownership** is how parallel work stays safe here: every artifact path belongs to exactly one owner, and writers never write each other's files.
+**Ownership** is how parallel work stays safe here. It answers exactly one question — *would two writers overwrite each other?* — so it names only the paths where that can happen, and the rest of the folder is simply the author's.
 
-- **a writer** — whatever the work declared; there is no fixed vocabulary. A patch's writer comes from its name (`{writer}-{nnn}-…`, so `ui-001-btn.css` belongs to `ui`), and service paths are declared by rule: `services/<svc>/paths/*` and `services/<svc>/config.json` belong to `contract`, `services/<svc>/fixtures/*` to `data`.
-- **the control plane** — which is you, on the person's behalf: the page documents (any top-level `.html`, `_layout.html` included), `config.json`, `prd.md`, `assets/`, `research/`, `reviews/`, `services/<svc>/openapi.yaml`, and everything under `dist/`.
-- **a tool** — `anchors/`, which `prototype-apply` writes from what actually matched, and `acceptance/`, which `prototype-verify` writes from what the checks answered. This is the one direction you may not write: a record you authored is not a record of anything, and hand-editing one is what would make "it stopped matching" indistinguishable from "it never matched", or "it was red" indistinguishable from "it was never looked at".
+- **a writer** — whatever the work declared; there is no fixed vocabulary. A patch's writer comes from its name (`{writer}-{nnn}-…`, so `ui-001-btn.css` belongs to `ui`), and service paths are declared by rule: `services/<svc>/paths/*` and `services/<svc>/config.json` belong to `contract`, `services/<svc>/fixtures/*` and `state.json` to `data`.
+- **the control plane** — which is you, on the person's behalf: everything not named here, including the page documents (any top-level `.html`, `_layout.html` included), `config.json`, `PRD.md` and the material beside it, `assets/`, `research/`, `reviews/`, `services/<svc>/openapi.yaml`, and everything under `dist/`.
+- **a tool** — `anchors/`, which `apply` writes from what actually matched, and `acceptance/`, which `verify` writes from what the checks answered. This is the one direction you may not write: a record you authored is not a record of anything, and hand-editing one is what would make "it stopped matching" indistinguishable from "it never matched", or "it was red" indistinguishable from "it was never looked at".
 
 Writing outside your own artifacts is refused **before the write**, with the reason: a `patches/<page>/` directory only says *which page* a patch changes, never who may write it.
 
@@ -75,67 +76,67 @@ Writing outside your own artifacts is refused **before the write**, with the rea
 
 ## The workflow
 
-1. **Create** — `prototype-create <name>` makes a container for pages and nothing else; it asks for a name only, because "which kind" and "which address" are facts about a *page*. Write a requirement into `prd.md` before building the next screen.
-2. **Add pages** — write `<name>.html` with the Write tool for a page of ours, or `prototype-pages --add <name>=<url>` for a live page. `prototype-entry <name>` marks what the address root opens.
+1. **Create** — `create <name>` makes a container for pages and nothing else; it asks for a name only, because "which kind" and "which address" are facts about a *page*. Write a requirement into `PRD.md` before building the next screen.
+2. **Add pages** — write `<name>.html` with the Write tool for a page of ours, or `pages --add <name>=<url>` for a live page. `entry <name>` marks what the address root opens.
 3. **Study what you need** — for a live page, use the browser tool on the real address (and `pick` when a selector is easier to point at than to describe). Record what you learn as findings under `research/`.
 4. **Make the change** — a new screen is a page document; a change to how an existing screen looks is a patch under `patches/<page>/`. Never rewrite a page document to restyle it.
-5. **See it** — `prototype-open` (or save and let the automatic replay fire), then read the console (`console 50 error`) before calling anything done: nothing else here checks a page, so a script error stays invisible until then.
-6. **Answer the checks** — `prototype-verify` runs the `check:` lines the PRD declares and records each round.
-7. **Argue with it** — file what you disagree with under `reviews/`; `prototype-status` reports what is still owed.
-8. **Commit the layer** — `prototype-commit` folds the delta layer into what owns it, once the work has stopped moving. It is the one irreversible action here.
-9. **Export** — `prototype-export` builds the deliverables into `dist/` for whoever receives the work.
+5. **See it** — `open` (or save and let the automatic replay fire), then read the console (`console 50 error`) before calling anything done: nothing else here checks a page, so a script error stays invisible until then.
+6. **Answer the checks** — `verify` runs the `check:` lines the PRD declares and records each round.
+7. **Argue with it** — file what you disagree with under `reviews/`; `status` reports what is still owed.
+8. **Export** — `export` builds the deliverables into `dist/` for whoever receives the work. Exporting does not fold anything: the package carries the change layer as you left it.
+9. **Converge a copy instead** — collapsing the change layer is an option of *copying* a prototype in the app's prototype list ("duplicate with the changes folded in"): the copy starts as one document rather than a chain of patches, and the prototype it came from is untouched. It is the one action here that deletes patch files, which is why it is never done to the prototype you are still working on.
 
 ---
 
 ## Command examples
 
 ```text
-browser_tool({ command: "prototype-list" })
-browser_tool({ command: "prototype-create Landing page" })
-browser_tool({ command: "prototype-pages --add cart" })
-browser_tool({ command: "prototype-pages --add pay=https://app.example.com/pay" })
-browser_tool({ command: "prototype-entry cart" })
-browser_tool({ command: "prototype-target https://staging.example.com/checkout --page pay" })
-browser_tool({ command: "prototype-open" })
-browser_tool({ command: "prototype-open --page cart" })
-browser_tool({ command: "prototype-reference rival-checkout" })
-browser_tool({ command: "prototype-bind checkout-flow" })
-browser_tool({ command: "prototype-apply" })
-browser_tool({ command: "prototype-apply --file prototypes/cart/patches/ui-002-total.js" })
-browser_tool({ command: "prototype-clear" })
-browser_tool({ command: "prototype-commit --page cart" })
-browser_tool({ command: "prototype-record start" })
-browser_tool({ command: "prototype-record stop" })
-browser_tool({ command: "prototype-record import ~/Desktop/demo.mp4" })
-browser_tool({ command: "prototype-verify" })
-browser_tool({ command: "prototype-status" })
-browser_tool({ command: "prototype-contract-compose" })
-browser_tool({ command: "prototype-contract-export" })
-browser_tool({ command: "prototype-mock-apply" })
-browser_tool({ command: "prototype-mock-clear" })
-browser_tool({ command: "prototype-export" })
-browser_tool({ command: "prototype-export --strict" })
+prototype_tool({ command: "list" })
+prototype_tool({ command: "create Landing page" })
+prototype_tool({ command: "pages --add cart" })
+prototype_tool({ command: "pages --add pay=https://app.example.com/pay" })
+prototype_tool({ command: "entry cart" })
+prototype_tool({ command: "pages --change pay=https://staging.example.com/pay" })
+prototype_tool({ command: "open" })
+prototype_tool({ command: "open --page cart" })
+prototype_tool({ command: "apply" })
+prototype_tool({ command: "apply --file prototypes/cart/patches/ui-002-total.js" })
+prototype_tool({ command: "clear" })
+prototype_tool({ command: "verify" })
+prototype_tool({ command: "sample-video ~/Desktop/demo.mp4" })
+prototype_tool({ command: "status" })
+prototype_tool({ command: "contract-compose" })
+prototype_tool({ command: "contract-export" })
+prototype_tool({ command: "mock-apply" })
+prototype_tool({ command: "mock-clear" })
+prototype_tool({ command: "export" })
+prototype_tool({ command: "export --strict" })
 ```
 
-**A slug is optional for almost every `prototype-*` command.** Which prototype a command means is read from the **page it acts on** — your own page first, then the one in front of you — and only then from this conversation's binding. That is what lets one conversation drive several prototypes without binding any of them: `--tab <id>` picks the page, and the page says whose it is. Pass a slug explicitly (`prototype-apply checkout-flow`) to work on a different one; `prototype-list`, `prototype-create`, `prototype-bind` and `prototype-reference` are the exceptions that always need their argument.
+**A slug is optional for almost every command.** Which prototype a command means is read from the **page this conversation is on**, when it is on one — your own page first, then the one in front of you — and only then from this conversation's binding. That is what lets one conversation drive several prototypes without binding any of them: `--tab <id>` picks the page, and the page says whose it is. Pass a slug explicitly (`apply checkout-flow`) to work on a different one; `list` and `create` are the exceptions that take no prototype at all (`create` binds what it made).
+
+**Nothing here needs a window to run.** Only `open`, `apply`, `clear` and the mocks act on a tab; every other command — `list`, `create`, `pages`, `entry`, `contract-*`, `verify` (its page checks are reported as skipped when no page is open), `status`, `export`, `sample-video` — works on files alone, and resolves its prototype from the binding when no page is there.
 
 ---
 
-## Creating, listing and binding
+## Creating and listing
 
-### `prototype-list`
-Every prototype in the workspace, with its pages and its references (both directions). Start here when you do not know what exists.
+### `list`
+Every prototype in the workspace, with its pages. Start here when you do not know what exists.
 
-### `prototype-create <name> [--no-bind]`
+### `create <name> [--no-bind]`
 Create a prototype: a **container for pages**, and nothing else. Creation asks for a name and nothing more — no kind and no address, because both of those are facts about a *page* — and it creates no page at all: "this prototype has no pages yet" is a true statement, not a broken state. `--no-bind` leaves the session's current binding alone, which is what studying another prototype needs.
 
-Pages arrive afterwards, one of two ways: write `<name>.html` for a page of ours (the agent's `Write` tool is allowed to), or add a live page with `prototype-pages --add <name>=<url>`.
+Pages arrive afterwards, one of two ways: write `<name>.html` for a page of ours (the agent's `Write` tool is allowed to), or add a live page with `pages --add <name>=<url>`.
 
-### `prototype-bind <slug>` / `prototype-bind --clear`
-Bind this session to a prototype (or unbind with `--clear`). A bound prototype becomes the fallback for a `prototype-*` command that names no slug, and its state is what the `<prototype_context>` block describes. The page a command acts on still wins over the binding.
+### Studying something else
 
-### `prototype-reference <slug>`
-Study another prototype from the bound one, whatever either is made of. A reference is **evidence, not material**: the other prototype's patches were written against a different document, so read them for intent and never copy them into the bound prototype's `patches/` — they would not match here, and they would ship silently inside the deliverable. Translate the intent into this prototype's own markup, and say in the conversation what you took from the reference.
+"How this is built" is not a relation between prototypes: **write it down beside the brief.** A file you keep next to `PRD.md` carries a competitor's address, the path to a screenshot or a design file, or another prototype's slug, and the entry points at it. The person reading the prototype then meets the same list you did, and it travels with nothing and to nowhere.
+
+Two rules do not bend, because the deliverable depends on them:
+
+- material is **evidence, not material to copy** — read it for intent, then translate what you took into this prototype's own markup, and say in the conversation what you took and from where;
+- another prototype's patch files are **never copied into this prototype's `patches/`**. They were written against a different document, so their selectors would not match here, and every patch under `patches/` ships inside the deliverable — the mistake would be silent.
 
 ### A project's prototypes are not yours to act on
 
@@ -144,32 +145,33 @@ A project may note which prototypes its work touches, and a conversation inside 
 It is **background information, like a connected source**, and nothing more:
 
 - The list has no first entry in any meaningful sense: a project works on several prototypes at once, and none of them is "the" one. Read it as a set.
-- No conversation is bound by it, no prototype context or guide is injected because of it, and it is not a default target for anything — a `prototype-*` command still takes its slug from the page and this session's binding.
-- It is recorded by the user in the app (the project's Prototypes tab), so there is no command for it. Work on one of them by naming its slug, or make it this session's default first with `prototype-bind <slug>`.
+- No conversation is bound by it, no prototype context or guide is injected because of it, and it is not a default target for anything — a `prototype_tool` command still takes its slug from the page and this session's binding.
+- It is recorded by the user in the app (the project's Prototypes tab), so there is no command for it. Work on one of them by naming its slug on a command; nothing else follows from the note.
 - It says nothing about whether anyone is working on those prototypes, and nothing about which prototypes belong to the project — **no prototype belongs to a project**: one prototype is routinely worked on from conversations of several projects at once.
 
 ---
 
 ## Pages
 
-### `prototype-pages [slug]`
+### `pages [slug]`
 The flow's pages, in order — which screens this prototype covers. One change at a time:
 
 - `--add payment=https://app.example.com/pay` adds a **live page**: that address *is* the page, and it is patched in place.
 - `--add orders` places an existing document (`orders.html`) in the flow order. It does not create a page: a page of ours **is** a file, so the file has to be there first — write it and it is already a page, declared or not.
 - `--rename cart=basket` · `--remove payment`. Renaming a page of ours takes its document and its own patches along; removing one deletes its document (and those patches), while a live page is only taken out of the flow.
+- `--change payment=https://staging.example.com/pay` re-points one **live page** at another environment — the same page in a dev server, staging or production (see below).
 
-A name has to be free and usable (a leading `_` belongs to the host's own files, and no two pages may share an address), and a live page needs an address a browser can open — a scheme-less value is refused here rather than becoming a page nothing covers. The same list feeds `prototype-status`, `prototype-open --page`, the `page` name in `snapshot`, and the extension's content scripts (one per live page), so re-export after a change: the delivered package is a snapshot and does not see it until then.
+A name has to be free and usable (a leading `_` belongs to the host's own files, and no two pages may share an address), and a live page needs an address a browser can open — a scheme-less value is refused here rather than becoming a page nothing covers. The same list feeds `status`, `open --page`, the `page` name in `snapshot`, and the extension's content scripts (one per live page), so re-export after a change: the delivered package is a snapshot and does not see it until then.
 
-### `prototype-entry <name|none>`
+### `entry <name|none>`
 Which page the address root (`/`) opens. `<name>` marks one page as the entry — that page is what `/` renders or redirects to; `none` clears it, and `/` shows the generated **page index** again, which is the default because no page of a flow is naturally the first one. The index stays reachable at `/_index` either way: configuring an entry changes what `/` opens, and never takes the list away. A configured entry whose document is gone is an error naming the page, not a quiet fall back to the index.
 
 Re-export after changing it: the extension's toolbar icon opens the entry page (the index when there is none).
 
-### `prototype-target <url> [--page <name>]`
-Point one **live page** at the same page in another environment — a local dev server, staging, production. The address is a fact about where the page is, not part of its identity, so this is an ordinary edit. Without `--page` it moves the entry page when that one is live, otherwise the first live page. Two things go stale silently, and are said out loud when it changes: windows already open keep the old page until they navigate again, and the selectors were written against the old DOM (a patch that matches nothing looks exactly like a patch that did nothing). A page of ours is refused — it is our own document, so there is no external page for an address to mean. A page's kind cannot change.
+### `pages --change <name>=<url>`
+Point one **live page** at the same page in another environment — a local dev server, staging, production. The address is a fact about where the page is, not part of its identity, so this is an ordinary edit to the table; it names its page, since the table `pages` prints is the list of names. Two things go stale silently, and are said out loud when it changes: windows already open keep the old page until they navigate again, and the selectors were written against the old DOM (a patch that matches nothing looks exactly like a patch that did nothing). A page of ours is refused — it is our own document, so there is no external page for an address to mean. A page's kind cannot change.
 
-### `prototype-open <slug>`
+### `open <slug>`
 Open a prototype in the browser, and replay its patches into what opens.
 
 A prototype is a **flow of pages**, and each page is one of two kinds — which is what decides where opening it goes:
@@ -183,7 +185,7 @@ Opening **adds a page to the window** rather than replacing what it was showing,
 
 Nothing stands in for a page that does not exist: a live page with no address, or a page of ours whose document is gone, fails with the remedy named rather than letting the browser show a confusing load error.
 
-Starting from nothing needs no special command: write `prototypes/{slug}/cart.html` (the agent's `Write` tool is allowed to) — that alone makes it a page — or duplicate another prototype from the panel, then run `prototype-open`.
+Starting from nothing needs no special command: write `prototypes/{slug}/cart.html` (the agent's `Write` tool is allowed to) — that alone makes it a page — or duplicate another prototype from the panel, then run `open`.
 
 `--page <name>` opens that page instead; a name that does not exist is refused with the list of names that do.
 
@@ -226,7 +228,7 @@ What bites later, in order of how often it does:
 - **Assets use root-absolute paths** (`/assets/app.css`). No CDN and no external host: the prototype is
   opened offline and only its own directory answers. Everything under `assets/` travels with the package,
   copied verbatim, bytes and all.
-- **Check the page after writing it**: `prototype-open`, then `console 50 error`. Nothing else in the
+- **Check the page after writing it**: `open`, then `console 50 error`. Nothing else in the
   workbench validates a page, so a thrown error is invisible until someone looks.
 - **No `eval` and no `new Function`** — the delivered extension forbids them and the export would fail.
   **No bundler**: plain `<script>`, `<style>`, and `<script type="module">` with relative imports are fine.
@@ -298,7 +300,7 @@ patch, behaviour goes in a page's module, shared structure goes in the shell, sh
 
 ## The change layer: patches
 
-### `prototype-apply [slug] [--file <path>]` / `prototype-clear [slug]`
+### `apply [slug] [--file <path>]` / `clear [slug]`
 Replay (or remove) a prototype's patches in the current browser.
 
 A prototype lives under `{workspace}/prototypes/{slug}/` and its patches are ordinary files named `{writer}-{nnn}-{name}.{css|js}`, where `{writer}` is the identity of whoever wrote them:
@@ -308,24 +310,25 @@ prototypes/checkout-flow/patches/ui-001-btn-radius.css          ← every page
 prototypes/checkout-flow/patches/cart/ui-002-flow-guard.js      ← the page `cart` only
 ```
 
-- **The `{writer}` segment is your identity, not a code you pick from a list.** This conversation writes as the identity it was given (its `writes:` declaration, or `main`); its patches are named with that prefix, the `prototype_context` block at the top of the conversation says which, and a name claiming someone else's prefix is refused before the write and reported by `prototype-status`. It is what keeps concurrent writers from overwriting each other.
+- **The `{writer}` segment is your identity, not a code you pick from a list.** This conversation writes as the identity it was given (its `writes:` declaration, or `main`); its patches are named with that prefix, the `prototype_context` block at the top of the conversation says which, and a name claiming someone else's prefix is refused before the write and reported by `status`. It is what keeps concurrent writers from overwriting each other.
 - Files that do not follow the naming convention are ignored (READMEs, editor backups, dotfiles), so nothing unexpected gets executed.
-- Replay order is the declared numeric order → file name, with `prototype-commit`'s consolidated patches (`Z-…`) last by rule. The writer prefix is an identity, so it decides nothing about order.
-- **Where a patch sits is which page it changes**: `patches/*` applies to every page of the flow, `patches/<page>/*` to that page alone. A directory that matches no page is reported by `prototype-status` rather than silently replayed.
+- Replay order is the declared numeric order → file name, with the consolidated patches a fold produces (`Z-…`) last by rule. The writer prefix is an identity, so it decides nothing about order.
+- **Where a patch sits is which page it changes**: `patches/*` applies to every page of the flow, `patches/<page>/*` to that page alone. A directory that matches no page is reported by `status` rather than silently replayed.
 - Which patches this command replays follows the **page the command acts on** (your tab, or the one `--tab` names — not whatever the person is reading): that page brings the shared patches plus its own, and a page on no part of the prototype gets the shared ones only — the command says which page it used, so "the patch did nothing" and "the patch belongs to another page" read differently.
-- Patches are applied to the current page **and** registered for every future document, so they survive a reload. The index is recomputed from disk on every `prototype-apply`, so editing a patch file and re-running the command is all that is needed — deleting a patch file also un-applies it.
-- **`--file <path>` applies one named patch instead of the whole set** — the file just written. A relative path counts from the workspace root, like every other `--file`. Nothing is un-registered in that case: the patches the page was already given stay given, and the one file is registered again under its own key, so re-running it after an edit is idempotent. This is the loop for a patch being iterated on — write it, `prototype-apply --file <path>`, read the target report — and it is what keeps a patch from having to be spelled out inside a command (`evaluate --file` runs one without registering it; this is the one that leaves it behind). The file has to be a patch of *this* prototype, under its `patches/`: a file that is not (a README, a misnamed patch, another prototype's file) is refused **by name**, because the injector ignores such files silently on a whole-set replay and "named explicitly and quietly ignored" is the one outcome nobody can debug. Its own page scope still decides where it belongs — naming a `patches/cart/…` file while the `orders` page is open injects it into the wrong DOM, and the command says so rather than leaving every target's "matched nothing" to be misread.
+- Patches are applied to the current page **and** registered for every future document, so they survive a reload. The index is recomputed from disk on every `apply`, so editing a patch file and re-running the command is all that is needed — deleting a patch file also un-applies it.
+- **`--file <path>` applies one named patch instead of the whole set** — the file just written. A relative path counts from the workspace root, like every other `--file`. Nothing is un-registered in that case: the patches the page was already given stay given, and the one file is registered again under its own key, so re-running it after an edit is idempotent. This is the loop for a patch being iterated on — write it, `apply --file <path>`, read the target report — and it is what keeps a patch from having to be spelled out inside a command (`evaluate --file` runs one without registering it; this is the one that leaves it behind). The file has to be a patch of *this* prototype, under its `patches/`: a file that is not (a README, a misnamed patch, another prototype's file) is refused **by name**, because the injector ignores such files silently on a whole-set replay and "named explicitly and quietly ignored" is the one outcome nobody can debug. Its own page scope still decides where it belongs — naming a `patches/cart/…` file while the `orders` page is open injects it into the wrong DOM, and the command says so rather than leaving every target's "matched nothing" to be misread.
 - A page the host rendered (a page of ours, served from the prototype's own address) arrives with its patches already inlined, so there is nothing to inject into it; that is reported as *nothing to inject*, not as a failure. Patches written since that render still land on it — and a patch whose **contents** changed since then shows up on a `reload`, which is what a render is.
 - **A patch may declare what it is aimed at**, with `@target <css selector>` in its header (next to `@requirement R-001`, which says what it is for). The command then **counts** what each declared selector matched and says so:
   - a selector that matched nothing and has never matched is named — the selector is wrong, or the page is not the one it was written against;
   - a selector that matched before and does not now means the page moved, and the command offers selectors that resolve to exactly one element on the page today (a **re-anchor**, not a rewrite);
   - a patch with no `@target` is named as unchecked rather than treated as a clean run.
   Every successful match is recorded under `prototypes/{slug}/anchors/` — that record (selector, what the element looked like, when it last matched) is what makes "it stopped matching" distinguishable from "it never worked". Nothing in `anchors/` is rendered, replayed or packaged: it is evidence *about* the page.
-- `prototype-clear` unregisters a prototype's patches; the current document keeps their effects until you reload.
+- `clear` unregisters a prototype's patches; the current document keeps their effects until you reload.
 - Saving a file under `patches/` or `assets/`, or a page document, replays the prototype into every window that is showing it (a page of ours reloads, a live page is re-patched) — no apply needed. The switch for that is on the prototype's page in the app.
 
-### `prototype-commit [slug] [--page <name>]`
-**Fold the change layer into what owns it.** A prototype is a working set of patches on top of a page that is not ours; this is the operation that collapses that layer when the work has stopped moving, so the prototype converges instead of accumulating deltas forever.
+### Folding the change layer — an option of copying
+
+There is **no command** for this: a copy can be made with its change layer collapsed, from the prototype list in the app. That is deliberate — the fold is irreversible (it deletes the patches it takes), and the copy is the one prototype nobody minds collapsing.
 
 Where the fold lands is decided by whose the page is:
 
@@ -336,16 +339,16 @@ Where the fold lands is decided by whose the page is:
 
 - **JS is promoted, not folded**: a script is behaviour, and folding behaviour into a static document would mean rendering the page and serializing the result — which loses the readable document (and is why "freeze the live page" was never a thing here). Moving it into a file of ours is the same collapse: it stops being a delta and becomes source.
 - Each folded change leaves a **provenance header** naming the patch it came from, the date, and the markers it carried (`@requirement`, one `@target` per line) — so the anchors recorded for it and the requirement it serves survive the fold.
-- **The folded patch files are deleted.** That is what makes this the one prototype action with no undo: use your own git if you need the before and after, and commit when you mean it rather than after every change.
-- What it cannot do, it says: a page of ours whose document is missing is **refused** (nothing is deleted), and a folded CSS patch with no `@target` is listed as not checked. Running it twice reports "nothing to fold" instead of writing an empty file.
-- `--page <name>` folds that page's own patches only; the shared ones (`patches/*`) and other pages are left alone. Without it, the shared patches fold into `patches/Z-001-upper.css` and every page's own fold into its own place.
+- **The folded patch files are deleted**, which is what makes a fold the one irreversible action in the workbench. Nothing of it touches the prototype it was copied from.
+- What it cannot do, it says: a page of ours whose document is missing is **refused** (nothing is deleted), and a folded CSS patch with no `@target` is listed as not checked.
 - Folding a page of ours also drops that page's anchor records: the elements now live in a file we own, so there is nothing to drift against. A live page's records are kept — its address is still someone else's.
+- The consolidation is filed under the reserved writer `Z`, so **never name a patch `Z-…` yourself**.
 
 ---
 
 ## Verifying and arguing
 
-### `prototype-verify [slug]`
+### `verify [slug]`
 Run the acceptance checks the PRD puts under its requirements. Two kinds, both mechanical — an acceptance
 criterion only a person can judge is one nobody runs:
 
@@ -360,7 +363,7 @@ the two would make a verification worth running only once.
 The run writes `dist/acceptance.md`, a deliverable beside the change spec for the person who has to accept
 the work. It changes nothing else: a failing check leaves the prototype exactly as it was.
 
-**Each run is a round.** The record of what the checks answered lives under `prototypes/{slug}/acceptance/state.json` — not in `dist/` (that directory is the package, rewritten on every export) and not something you write by hand: it is what `prototype-apply` is to `anchors/`, a record of a run that actually happened, and the guard refuses a hand-written one. What it buys is the one thing a count cannot say: **`dist/acceptance.md` reports what moved since the round before** — newly red (it passed last time, so the change under review broke it), still red (nobody has acted on it), no longer looked at (it was red and this run could not check it), fixed, and checks the PRD no longer declares. Five red is an emergency if it was zero this morning and a shrug if it was five then.
+**Each run is a round.** The record of what the checks answered lives under `prototypes/{slug}/acceptance/state.json` — not in `dist/` (that directory is the package, rewritten on every export) and not something you write by hand: it is what `apply` is to `anchors/`, a record of a run that actually happened, and the guard refuses a hand-written one. What it buys is the one thing a count cannot say: **`dist/acceptance.md` reports what moved since the round before** — newly red (it passed last time, so the change under review broke it), still red (nobody has acted on it), no longer looked at (it was red and this run could not check it), fixed, and checks the PRD no longer declares. Five red is an emergency if it was zero this morning and a shrug if it was five then.
 
 The output also hands over the line to write for each failure — `about: requirement R-001` (or `about: page cart`), `about: endpoint GET /api/cart` — because a failure is a question, not an instruction: writing the objection down under `reviews/` (below) is what keeps the verdict readable after the conversation is gone.
 
@@ -375,19 +378,19 @@ about: patch ui-001-sticky-total.css
 on: 3f9a1c2e
 status: open
 claim: The summary row is not on screen once the list is longer than the viewport.
-evidence: prototype-verify — check: selector [data-cart-total] did not match
+evidence: verify — check: selector [data-cart-total] did not match
 
 `position: sticky` needs a scroll container that is not the page…
 ```
 
-- **`about:`** names one thing: `patch <file>`, `page <name>`, `endpoint <GET /path>` or `requirement <R-00x>`. A dispute that names nothing is an opinion, and `prototype-status` reports it as one. Where a dispute is about a patch or a page, it is **threaded onto the requirements that thing serves** — derived from the same `@requirement` markers as everything else, so a review never restates the thread. Work out which by asking what actually failed: a failed `check:` is usually the requirement or the page it looked at, and `prototype-verify` prints both for you.
+- **`about:`** names one thing: `patch <file>`, `page <name>`, `endpoint <GET /path>` or `requirement <R-00x>`. A dispute that names nothing is an opinion, and `status` reports it as one. Where a dispute is about a patch or a page, it is **threaded onto the requirements that thing serves** — derived from the same `@requirement` markers as everything else, so a review never restates the thread. Work out which by asking what actually failed: a failed `check:` is usually the requirement or the page it looked at, and `verify` prints both for you.
 - **`status:`** is `open` (it stands), `fixed` (the thing was changed), `rebutted` (you judged it unfounded, with the reason in the body) or `accepted` (valid, and the cost was taken deliberately). The status is checked against the disk, never trusted on its own: `open` on a patch that has **changed** since it was filed is reported **stale**, and `fixed` on a patch that has **not** changed is reported the same way — a record that disagrees with the files is exactly what this is for.
-- **`on:`** is the fingerprint of the disputed patch when the review was filed (the 8 characters `prototype-status` prints beside each patch). It is required for a patch dispute, because that is the only target whose fingerprint is free and unambiguous; the other targets span several files, so there is nothing single to fingerprint.
-- A dispute that still stands is what `prototype-export --strict` refuses on, and `dist/dev-spec.md` carries the outstanding ones to whoever receives the package. A spec that lists only what was built hands over a claim, not a position.
+- **`on:`** is the fingerprint of the disputed patch when the review was filed (the 8 characters `status` prints beside each patch). It is required for a patch dispute, because that is the only target whose fingerprint is free and unambiguous; the other targets span several files, so there is nothing single to fingerprint.
+- A dispute that still stands is what `export --strict` refuses on, and `dist/dev-spec.md` carries the outstanding ones to whoever receives the package. A spec that lists only what was built hands over a claim, not a position.
 
 Nothing here is packaged on its own: the receiver gets the requirements, the change spec, and the disputes still standing at that moment.
 
-### `prototype-status [slug]`
+### `status [slug]`
 Read-only report on a prototype:
 
 ```
@@ -408,57 +411,55 @@ Prototype "checkout-flow"
   reviews:    1 standing of 2 filed
   acceptance: round 3 — 2 passed, 1 failed, 1 skipped
   unresolved: 3
-    • R-004 is in prd.md but no page or patch refers to it, so nothing implements it.
+    • R-004 is in PRD.md but no page or patch refers to it, so nothing implements it.
     • reviews/D-001-total.md disputes patch patches/ui-001-total.css, and it still stands (open).
     • `selector: [data-cart-total]` failed in the last verification round.
 ```
 
-`reviews:` and `acceptance:` are the state of the argument and the last verification; `unresolved:` is what is still **owed**, last because it is the thing to act on, and it is the same list `prototype-export --strict` refuses on — so a run cannot look finished here while the export would stop.
+`reviews:` and `acceptance:` are the state of the argument and the last verification; `unresolved:` is what is still **owed**, last because it is the thing to act on, and it is the same list `export --strict` refuses on — so a run cannot look finished here while the export would stop.
 
 A prototype with no pages yet prints `pages: none yet` and `openable: no` — that is a starting state, not an error. `root:` says what the address root opens: a page name, or the generated page index. Entries of `pages` that could not be read, a declared page whose document is gone, and a `patches/<name>/` that matches no page are all listed as `page issues:` — a dropped page is a screen the flow no longer has, and a patch directory nothing reaches is a change that never lands, so neither is silent.
 
-**Ownership** violations are reported here (see "The artifacts, and who writes them" above). The check flags three things that are otherwise silent:
+**Ownership** violations are reported here (see "The artifacts, and who writes them" above). The check flags the files that break a rule of their own — otherwise silent:
 
-- a patch whose prefix claims the reserved consolidator (`patches/Z-…`) — only `prototype-commit` writes those;
+- a patch whose prefix claims the reserved consolidator (`patches/Z-…`) — only a fold writes those;
 - a misnamed patch (`patches/oops.css`) — the patch scanner ignores it;
-- a path no rule owns (`README.md`, `services/*/random.txt`).
+- a stray file inside a service directory (`services/*/random.txt`) — a service directory holds paths, fixtures, `state.json`, `openapi.yaml` and nothing else.
 
-`prototype-status` also lists what each patch is aimed at, and reports anchor records that outlived the patch that declared them — a record nothing refers to any more is named rather than left looking checked.
+Nothing else in the prototype's directory is a violation. That folder is the author's: a `screenshots/` or a `notes.xlsx` beside the brief is material, not a breach.
 
-### `prototype-record start` / `prototype-record stop [slug]`
+`status` also lists what each patch is aimed at, and reports anchor records that outlived the patch that declared them — a record nothing refers to any more is named rather than left looking checked.
 
-Keep frames of this window, then write them under the bound prototype's `research/`.
+### `sample-video <path>`
 
-A screen changes for two different reasons, and the capture keeps both:
-
-- **it moved on its own** — the screen is compared every `--interval` ms (default 400) and a frame is kept
-  when more than `--threshold` of it changed (default 0.005). This is what catches a page that streams:
-  a chat answering, a list filling in, an animation.
-- **somebody did something** — every action taken on the page (a click, typing, a key, a navigation) is
-  kept whatever the screen did, plus a second frame a moment later to catch what it produced. A click that
-  changed nothing is still a click somebody made, and `index.md` says so.
-
-`stop` writes them to `prototypes/<slug>/research/frames/<session>/` as `frame-0001.jpg` upward, with
-`frames.json` (machine-readable) and `index.md` (the same table, for a person) beside them. Each frame
-carries its address, the page it was on and why it is there — a wall of images with no coordinates is a
-wall of images, nothing in it can be cited.
-
-`--max <n>` caps a capture (default 60); a capture that hits the ceiling says so rather than quietly
-dropping the difference. Frames are deliberately **not** in the delivered package: they are how the
-requirements were reached, not part of what the reader receives.
-
-Cite them from a finding's `evidence:` line — `evidence: frames/20260915-183012/frame-0004.jpg`.
-
-**Importing a recording.** `prototype-record import <path>` samples a video you recorded elsewhere (a phone,
-Loom, QuickTime). `--every 2s` sets the interval, `--changes` keeps only the moments that moved, `--max 40`
-caps the frames. The recording is copied into `research/videos/` first — a capture whose source has been
-cleaned up cannot be re-sampled, and re-sampling is most of what a source is for. Decoding is Chromium's, so
+Frames out of a recording you made elsewhere (a phone, Loom, QuickTime) — a machine, a demo, a session
+someone screen-recorded: they are the one way pictures get under `research/` now (see the note at the end of
+this section). `--every 2s` sets the interval, `--changes` keeps only the moments that moved, `--max 40`
+caps the frames, and `--slug <slug>` aims it at a prototype other than the one in view (the path is this
+command's only positional, which is why the prototype is a flag here). The recording is copied into
+`research/videos/` first — a capture whose source has been cleaned up cannot be re-sampled, and re-sampling
+is most of what a source is for. Decoding is Chromium's, so
 nothing needs ffmpeg: a codec it cannot read (HEVC/H.265, ProRes, some `.mov`) fails with a message saying so,
-rather than producing a capture of one frame. Imported frames carry their position in the recording
+rather than producing a capture of one frame. Sampled frames carry their position in the recording
 (`imported [0:12.4]` in `index.md`), which is the coordinate a reader of a video can actually use.
 
-The panel's Frames section has the same thing behind a button — the picker runs in the main process, so no
-path ever passes through the page.
+Frames are written to `prototypes/<slug>/research/frames/<session>/` as `frame-0001.jpg` upward, with
+`frames.json` (machine-readable) and `index.md` (the same table, for a person) beside them, and are cited
+from a finding's `evidence:` line — `evidence: frames/20260915-183012/frame-0004.jpg`. They come back **in
+the reply** too: what reads them is a model, and a directory of files is something it never sees. A long
+sampling arrives as a sample — the first frame, the last, and what is between them, up to six — and the reply
+says how many of the total it is showing; every frame is on disk either way. Frames are deliberately **not**
+in the delivered package: they are how the requirements were reached, not part of what the reader receives.
+
+The command is the whole entry: nothing in the app offers this behind a button, because sampling is only the
+first half — what a recording is for is the finding that cites the frames it produced.
+
+**There is no live capture.** `record <for>` — watching the window for a while and keeping the frames where
+it changed — was built and then removed: recording *the two of you at once* is the one thing it was for
+(somebody drives the page while it watches), and neither a person nor an agent can be told "now do the
+thing" at the right moment from inside a tool call. A screen worth arguing about is a recording somebody
+made, which is what `sample-video` is for; a change worth looking at is `browser_tool screenshot` right
+after the action that caused it.
 
 ---
 
@@ -472,7 +473,7 @@ services/checkout-api/paths/list-orders.yaml   OpenAPI path items (a `paths:` bl
 services/checkout-api/fixtures/list-orders-200.json
 ```
 
-### `prototype-contract-compose [slug] [--service <svc>]`
+### `contract-compose [slug] [--service <svc>]`
 Compose the API contract fragments into one spec.
 
 `paths/*.yaml` are the source of truth; `openapi.yaml` is generated from them and should not be edited by hand. Each operation may declare what to serve while the backend does not exist yet:
@@ -537,9 +538,9 @@ The rules, in full:
 
 Two edges worth knowing: the collection is named by a **dot path**, so a prototype with several services shares one store (and two services declaring the same top-level key is reported rather than resolved silently), and a route matches the end of a pathname, so an app calling `${baseUrl}/cart/items` is answered even though the contract writes `/cart/items`.
 
-A service that declares collections is counted apart everywhere it is reported — `prototype-status` prints `N keep state` for it and the prototype page's Services block says the same — because a service of fixed answers and one whose screens depend on each other are read differently by whoever is building against them.
+A service that declares collections is counted apart everywhere it is reported — `status` prints `N keep state` for it — because a service of fixed answers and one whose screens depend on each other are read differently by whoever is building against them.
 
-### `prototype-contract-export [slug] [--service <svc>]`
+### `contract-export [slug] [--service <svc>]`
 Write the backend-facing deliverables into `dist/`:
 
 - `openapi.yaml` — the composed contract.
@@ -548,8 +549,12 @@ Write the backend-facing deliverables into `dist/`:
 
 `contract.md` deliberately calls out what is **not** declared (no error responses, no `authType`, no `x-contract` notes covering pagination/idempotency/concurrency) so an incomplete handoff is visible rather than silent.
 
-### `prototype-mock-apply [slug] [--service <svc>]` / `prototype-mock-clear`
+### `mock-apply [slug] [--service <svc>]` / `mock-clear`
 Serve the contract's `x-mock` responses so the prototype runs before the backend exists.
+
+**One program per tab.** Both commands act on the tab this session works from (`--tab <id>` names another), and `mock-apply` **replaces** what that tab was serving — a prototype with several services is one service at a time, which is why `--service` is required as soon as there is more than one. That is also why `mock-clear` names no service and takes no slug: there is one program to take off, and the tab already says which one.
+
+Two things are named for two different reasons, and both are needed to mock two prototypes at once: the **slug** says whose contract the routes are read from, and the **tab** says where they land. Each prototype keeps its mock on its own tab (`mock-apply checkout-flow --tab tab-1`, then `mock-apply rival --tab tab-2`), which is the same rule as everywhere else — a command acts on the page you point it at.
 
 Interception happens in the browser's **network layer** (CDP `Fetch`), which means:
 
@@ -559,9 +564,9 @@ Interception happens in the browser's **network layer** (CDP `Fetch`), which mea
 
 The command reports endpoints that declare no `x-mock` (they pass through to the real backend) and `x-mock` fixtures that have no file — those routes are **skipped rather than served empty**, because a silently-empty response is far harder to debug than a 404.
 
-When the service declares collections (`x-mock-collection`), the command also says how many routes remember state, where the store starts from, and any operation the vocabulary refused. **Every apply starts the store over**, so running it again is how a demo is reset — and that is the whole of the lifecycle: the mock holds its state in memory, writes nothing back, and `prototype-mock-clear` takes it away with the routes.
+When the service declares collections (`x-mock-collection`), the command also says how many routes remember state, where the store starts from, and any operation the vocabulary refused. **Every apply starts the store over**, so running it again is how a demo is reset — the mock holds its state in memory, writes nothing back, and stops with the program.
 
-`prototype-mock-clear` stops intercepting; requests fall through to the real network again.
+`mock-clear` takes that program off the tab — every route, and the store with it — and requests fall through to the real network again.
 
 While the mock is active the debugger stays attached — CDP drops interception on detach, so the client deliberately holds it.
 
@@ -569,7 +574,7 @@ While the mock is active the debugger stays attached — CDP drops interception 
 
 ## Export
 
-### `prototype-export [slug]`
+### `export [slug]`
 Build the prototype's deliverables into `prototypes/{slug}/dist/`:
 
 - `extension/` — **a loadable Chrome extension covering the whole flow**, the carrier for everything that cannot travel in a file. Nothing is published to a store: the recipient opens `chrome://extensions`, turns on **Developer mode**, and clicks **Load unpacked** on this folder. One package, whatever the flow is made of:
@@ -583,9 +588,9 @@ Build the prototype's deliverables into `prototypes/{slug}/dist/`:
 - `static/` — **every page of ours as one self-contained HTML file**, for the half of a flow that is ours and can therefore travel in a file: double-click it, send it on, no extension, no host and no server. It is the same page the preview shows — the same patches in the same order, inlined the same way — with the two things the preview gets from the workbench inlined as well: the mock layer (installed at the top of `<head>`, before the page's own code captures `fetch`) and every reference the page makes to a file of this prototype (`/assets/app.css`, an image, a font — carried inside the file as a base64 data URL, since a single file has no directory to resolve against). A reference to **another page** stays a link to the sibling file, which is why the page file names are kept — and a root-absolute one (`/orders.html`, which would resolve to the filesystem root here) is made relative. A reference that names no file of the prototype is **reported** rather than left as a link that breaks the moment the file is opened on its own; those are listed after the extension's own warnings, under their own heading. A prototype made only of live pages has **no** `static/` folder: a live page is somebody else's, so a copy of it would run none of its code and carry none of its session — only an extension can carry it.
 - `bookmarklet.html` — the **live** pages' changes as bookmarks, for the browser where an unpacked extension cannot be loaded at all (a managed one, someone's locked-down laptop, one look). One draggable link **per live page** — each carrying the same bundle the extension ships, plus the mock layer — and the same code printed underneath for pasting into the console, because the two ways a bookmark fails are a long `javascript:` URL and the page's own CSP (`script-src 'self'` refuses an inline bookmark outright; the console is not subject to it). The page states both, and the third cost: a bookmark is not scoped to an address the way a content script is, so it takes a click per page, per reload. Written only when a live page has something to apply.
 - `dev-spec.md` — the change list, **grouped by page**: every patch in replay order with its writer, kind and full content. The shared patches (`patches/*`) are listed once, and each page says how many of them it also carries. Each change also says what its `@target` was aimed at **and what the anchor record knows about that selector**: how many elements it matched and when, or that it was recorded and matches nothing now — the page moved, and the fingerprint's candidate selectors say where the element went. That second state is the one worth reading before translating anything into source. It also carries the **Reviews** section: the disputes that were still standing when the package was built, because a spec that lists only what was built hands over a claim rather than a position.
-- `handoff.md` — **the delivery's index**, written last so it lists what the run actually produced: a table of artifact → who it is for → what to do with it (`dev-spec.md` first, then the extension or the static pages, the bookmarklet, `acceptance.md`, the backend's `contract.md`/`openapi.yaml`/`fixtures/`), which page the flow starts at, and a closing section on **what this delivery does not settle** — the same list `prototype-export --strict` refuses on, on the package's first page rather than at the end of a spec nobody read that far into.
+- `handoff.md` — **the delivery's index**, written last so it lists what the run actually produced: a table of artifact → who it is for → what to do with it (`dev-spec.md` first, then the extension or the static pages, the bookmarklet, `acceptance.md`, the backend's `contract.md`/`openapi.yaml`/`fixtures/`), which page the flow starts at, and a closing section on **what this delivery does not settle** — the same list `export --strict` refuses on, on the package's first page rather than at the end of a spec nobody read that far into.
 
-**The export names what is still outstanding** — a requirement nothing implements, a dispute nobody answered, a check the last round failed — instead of handing over a package that looks finished. `prototype-export --strict` goes further and **refuses to build at all** while anything is: that is the mode for a run nobody is watching, where the "by the way" lines are not being read by anyone.
+**The export names what is still outstanding** — a requirement nothing implements, a dispute nobody answered, a check the last round failed, a response the contract declares that has no fixture file — instead of handing over a package that looks finished. `export --strict` goes further and **refuses to build at all** while anything is: that is the mode for a run nobody is watching, where the "by the way" lines are not being read by anyone.
 
 Keep the patch set small and delete patches that no longer change anything: all of them ship in the package, and everything in it is something a reviewer has to read. Patches are shipped unminified on purpose — the recipient runs this on their own page, and being able to read it is what makes that reasonable.
 
@@ -599,9 +604,9 @@ navigate http://checkout-flow-9f3a2b1c.localhost/dist/extension/cart.html
 
 ## Prototype pages in the browser window
 
-Prototype pages are **tabs of the workspace's single browser window**, the same window every other task browses in. That has a few consequences worth knowing when driving `prototype-*` commands:
+Prototype pages are **tabs of the workspace's single browser window**, the same window every other task browses in. That has a few consequences worth knowing when driving `prototype_tool` commands:
 
-- `prototype-open` **adds a tab** to the window rather than replacing what it was showing, which is what lets two prototypes be worked on side by side.
+- `open` **adds a tab** to the window rather than replacing what it was showing, which is what lets two prototypes be worked on side by side.
 - Commands act on **your** tab — the tab this conversation has been working from, marked `your tab` in `tabs` — or on the tab `--tab <id>` names, not on whatever the person happens to be reading.
 - Which prototype a command means is read off the tab it acts on: your own tab first, then the one in front of you, and only then this conversation's binding. A page whose address the prototype's own page table does not describe says so (`none of the prototype's pages`) rather than being given the nearest page name.
 - A page of ours is rendered from disk, so an edit to its document or to a patch it carries appears on the next render — `reload` is the browser's own reload button for that page, and `wait network-idle` before reading it, since nothing waits for the load.
@@ -612,13 +617,9 @@ The window and tab model itself — `tabs`, `tab-new`, `tab-show`, `tab-assign`,
 
 ## Common validation errors
 
-- `prototype-create needs a name.` → pass one: `prototype-create Checkout flow`
-- `prototype-<cmd> needs a prototype. Pass one — "prototype-<cmd> <slug>" — or bind this session with "prototype-bind <slug>".` → no slug was given and the page does not say which prototype
-- `prototype-pages --add needs a page name, and a url for a live page.` → `--add payment=https://app.example.com/pay` (live) or `--add orders` (a document that already exists)
-- `prototype-pages --rename needs old=new.` · `prototype-pages --remove needs a page name.`
-- `prototype-entry needs a page name, or "none".` → `prototype-entry cart`
-- `prototype-target needs the address to point at.` · `prototype-target --page needs a page name.`
-- `prototype-reference needs the slug of the prototype to study.`
-- `prototype-bind needs a slug.` → `prototype-bind checkout-flow` (or `prototype-bind --clear`)
-- `prototype-commit --page needs a page name.` → `prototype-commit --page cart`
+- `create needs a name.` → pass one: `create Checkout flow`
+- `<cmd> needs a prototype. Pass one — "<cmd> <slug>" — or open it in this window first ("open <slug>"), which is what makes the page say whose it is. "list" shows what exists.` → no slug was given, and neither the page this session works from nor its binding names one
+- `pages --add needs a page name, and a url for a live page.` → `--add payment=https://app.example.com/pay` (live) or `--add orders` (a document that already exists)
+- `pages --rename needs old=new.` · `pages --remove needs a page name.` · `pages --change needs <name>=<url>.`
+- `entry needs a page name, or "none".` → `entry cart`
 - `--tab needs a tab id.` → `tabs` lists them: `snapshot --tab tab-3`

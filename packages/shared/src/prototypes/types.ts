@@ -142,7 +142,7 @@ export const LEGACY_PROTOTYPE_LAYOUT_SLOT = '<!-- @page -->'
 export type PrototypePatchKind = 'css' | 'js'
 
 /**
- * The writer id a `prototype-commit` fold is filed under (`commit.ts`), and why it
+ * The writer id a folded change layer is filed under (`fold.ts`), and why it
  * is a writer id rather than a new artifact kind: a consolidated file is still a
  * patch — same naming, same ownership, same replay — and the only thing that makes
  * it special is that it must replay **after** everything it folded.
@@ -221,7 +221,7 @@ export interface PrototypePatchName {
 /**
  * Parse a patch file name (not a path). Returns null when the shape is wrong **or** the writer
  * id is unusable — both mean "this file is not a patch we wrote", which the injector ignores
- * and `prototype-status` reports as misnamed.
+ * and `status` reports as misnamed.
  */
 export function parsePrototypePatchName(file: string): PrototypePatchName | null {
   const match = PROTOTYPE_PATCH_NAME_RE.exec(file)
@@ -258,7 +258,7 @@ export interface PrototypePatch {
    * means nothing can be checked about what the patch matched, which is not the
    * same as a selector that matched nothing.
    *
-   * A list because a consolidated file (`commit.ts`) carries the markers of
+   * A list because a consolidated file (`fold.ts`) carries the markers of
    * everything it folded, so the anchors of the patches it replaced stay alive.
    */
   targets: string[]

@@ -120,12 +120,6 @@ export const RPC_CHANNELS = {
     ENTRY: 'prototypes:entry',
     /** Write `dist/*` so the prototype can be handed to developers. */
     EXPORT: 'prototypes:export',
-    /**
-     * Sample frames out of a video the user recorded elsewhere (plan §20.5).
-     *
-     * The file picker runs in the client, so the panel never handles a path.
-     */
-    IMPORT_VIDEO: 'prototypes:importVideo',
     /** Create a prototype (the panel's "New Prototype"). */
     CREATE: 'prototypes:create',
     /**
@@ -149,20 +143,9 @@ export const RPC_CHANNELS = {
      */
     REPLAY: 'prototypes:replay',
     /**
-     * Fold a prototype's delta layer into what owns it (plan §21.3): a page of
-     * ours takes it into `assets/<page>/committed.*`, a live page into
-     * `patches/<page>/Z-001-upper.css`. The folded patches are deleted, so this
-     * is the one prototype action with no undo — the caller asks first.
-     */
-    COMMIT: 'prototypes:commit',
-    /** Declare that a prototype is studied from another one (plan §14). */
-    LINK_REFERENCE: 'prototypes:linkReference',
-    /** Drop that relation. Idempotent, and the way a dangling reference is cleaned up. */
-    UNLINK_REFERENCE: 'prototypes:unlinkReference',
-    /**
      * Change one prototype's page table — add, remove, rename, or mark which page
      * the address root opens (plan §19). The panel's prototype list drives it; the
-     * agent reaches the same data through `prototype-pages` / `prototype-entry`.
+     * agent reaches the same data through `prototype_tool pages` / `prototype_tool entry`.
      */
     SET_PAGES: 'prototypes:setPages',
     /**

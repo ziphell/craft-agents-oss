@@ -23,6 +23,24 @@ export function dispatchFocusInputEvent(detail: FocusInputEventDetail = {}): voi
 }
 
 /**
+ * Put text in a session's composer, wherever that session is right now.
+ *
+ * The draft (written through `onInputChange`) is what the composer reads **on mount**;
+ * the event is what applies it to a composer that is **already open** — so a caller
+ * does both and then navigates, and one of the two always lands. Both carry the whole
+ * text, so the second cannot drop what the first wrote. The event name lives here for
+ * the same reason the focus event does: a contract with one definition, not a string
+ * two callers happen to agree on.
+ */
+export function dispatchRestoreInput(sessionId: string, text: string): void {
+  window.dispatchEvent(
+    new CustomEvent<{ sessionId: string; text: string }>('craft:restore-input', {
+      detail: { sessionId, text },
+    }),
+  )
+}
+
+/**
  * Consume queued focus request for a specific session. Returns true when consumed.
  */
 export function consumePendingFocusForSession(sessionId?: string | null): boolean {

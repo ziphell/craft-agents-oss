@@ -1,5 +1,5 @@
 export * from './title-sanitizer'
-export * from './browser-tool-detection'
+export * from './tool-detection'
 export * from './prototype-page'
 export * from './tab-access'
 export * from './init-gate'

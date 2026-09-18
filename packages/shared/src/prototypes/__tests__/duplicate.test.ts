@@ -52,6 +52,41 @@ describe('duplicatePrototype', () => {
     expect(copied.copiedPages).toEqual(['orders'])
     expect(copied.copiedPatches).toEqual(['A-001-heading.css', 'B-002-total.js'])
     expect(readPrototypePage(workspaceRoot, 'orders-copy', 'orders.html')).toBe(PAGE)
+    // Not asked for, so nothing was folded.
+    expect(copied.folded).toBeNull()
+  })
+
+  /**
+   * Folding is an option of copying (plan §21.3, revised): the **copy** is the one
+   * that gets converged, so asking for a copy never destroys anything in the
+   * prototype the copy came from.
+   */
+  it('folds the copy when asked, and leaves the source exactly as it was', () => {
+    // A page's own patches, so the fold has somewhere of the page's own to put them.
+    createPrototype(workspaceRoot, { name: 'orders' })
+    writePrototypePage(workspaceRoot, 'orders', 'orders', PAGE)
+    const ownPatches = getPrototypePagePatchesPath(workspaceRoot, 'orders', 'orders')
+    mkdirSync(ownPatches, { recursive: true })
+    writeFileSync(join(ownPatches, 'A-001-heading.css'), 'h1 { color: red; }', 'utf-8')
+    writeFileSync(join(ownPatches, 'B-002-total.js'), 'console.log(1)', 'utf-8')
+
+    const copied = duplicatePrototype(workspaceRoot, 'orders', { fold: true })
+
+    expect(copied.folded?.nothingToFold).toBe(false)
+    // The copy's page took its own changes into itself, so no patch file is left.
+    expect(copied.copiedPatches).toEqual([])
+    expect(existsSync(join(getPrototypePagePatchesPath(workspaceRoot, 'orders-copy', 'orders'), 'A-001-heading.css'))).toBe(false)
+    expect(readPrototypePage(workspaceRoot, 'orders-copy', 'orders.html')).toContain(
+      'href="/assets/orders/committed.css"',
+    )
+    expect(readPrototypePage(workspaceRoot, 'orders-copy', 'orders.html')).toContain(
+      'src="/assets/orders/committed.js"',
+    )
+
+    // The source is untouched: same patches, same document.
+    expect(existsSync(join(ownPatches, 'A-001-heading.css'))).toBe(true)
+    expect(readPrototypePage(workspaceRoot, 'orders', 'orders.html')).toBe(PAGE)
+    expect(readFileSync(join(ownPatches, 'B-002-total.js'), 'utf-8')).toBe('console.log(1)')
   })
 
   // The two prototypes stop sharing anything the moment the copy exists: a copy
@@ -152,23 +187,15 @@ describe('duplicatePrototype', () => {
     expect(() => duplicatePrototype(workspaceRoot, 'nope')).toThrow(/does not exist/)
   })
 
-  // A reference to the source would say "study yourself" once the copy carries it.
-  it('drops a reference that would point at the copy itself', () => {
+  // The copy's config is written from the source's page table, so the flow is the
+  // same flow at a new slug — and nothing but the table travels.
+  it('writes the copy a page table of its own', () => {
     makeSource()
-    writePrototypeConfig(workspaceRoot, 'orders', { references: ['orders-copy'] })
 
     const copied = duplicatePrototype(workspaceRoot, 'orders')
 
-    expect(readPrototypeConfig(workspaceRoot, copied.slug).references ?? []).toEqual([])
-  })
-
-  it('keeps the ordinary references of the source', () => {
-    makeSource()
-    createPrototype(workspaceRoot, { name: 'Quotes' })
-    writePrototypeConfig(workspaceRoot, 'orders', { references: ['quotes'] })
-
-    const copied = duplicatePrototype(workspaceRoot, 'orders')
-
-    expect(readPrototypeConfig(workspaceRoot, copied.slug).references ?? []).toEqual(['quotes'])
+    expect(readPrototypeConfig(workspaceRoot, copied.slug).pages).toEqual(
+      readPrototypeConfig(workspaceRoot, 'orders').pages,
+    )
   })
 })

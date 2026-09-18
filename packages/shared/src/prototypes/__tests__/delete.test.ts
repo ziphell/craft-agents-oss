@@ -7,10 +7,8 @@ import {
   deletePrototype,
   getPrototypeDirPath,
   getPrototypePatchesPath,
-  linkPrototypeReference,
   listPrototypePages,
   listPrototypeStatuses,
-  readPrototypeConfig,
   writePrototypeConfig,
   writePrototypePage,
 } from '..'
@@ -66,26 +64,6 @@ describe('deletePrototype', () => {
   // never there.
   it('refuses an unknown prototype', () => {
     expect(() => deletePrototype(workspaceRoot, 'nope')).toThrow(/does not exist/)
-  })
-
-  // The relation lives in the *referring* prototype, so this reports it rather
-  // than rewriting someone else's config behind their back.
-  it('reports the prototypes left pointing at the deleted one, without touching them', () => {
-    makePrototype('orders')
-    makePrototype('quotes')
-    linkPrototypeReference(workspaceRoot, 'quotes', 'orders')
-
-    const deleted = deletePrototype(workspaceRoot, 'orders')
-
-    expect(deleted.referencedBy).toEqual(['quotes'])
-    expect(readPrototypeConfig(workspaceRoot, 'quotes').references ?? []).toEqual(['orders'])
-  })
-
-  it('reports nothing when no one references it', () => {
-    makePrototype('orders')
-    makePrototype('quotes')
-
-    expect(deletePrototype(workspaceRoot, 'orders').referencedBy).toEqual([])
   })
 
   // A page that is a live address has no document to lose, but it is still a page:

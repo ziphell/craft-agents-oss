@@ -41,12 +41,14 @@ export {
   getPrototypeLayoutPath,
   getPrototypeDistPath,
   getPrototypePatchKey,
+  listPrototypeFiles,
   patchFingerprint,
   listPrototypePatchPages,
   scanPrototypePatches,
   scanPrototypePatchesForPage,
   loadPrototypeArtifacts,
 } from './storage.ts'
+export type { PrototypeFileEntry } from './storage.ts'
 
 export type {
   ContractConfig,
@@ -122,9 +124,9 @@ export type {
   PrototypeAnchorReport,
 } from './anchors.ts'
 
-// Folding the delta layer into what owns it (`commit.ts`, plan §21.3).
-export { commitPrototype } from './commit.ts'
-export type { PrototypeCommitResult, PrototypeCommitScopeResult } from './commit.ts'
+// Folding the delta layer into what owns it (`fold.ts`, plan §21.3).
+export { foldPrototype, COMMITTED_CSS, COMMITTED_JS } from './fold.ts'
+export type { PrototypeFoldResult, PrototypeFoldScopeResult } from './fold.ts'
 
 export type {
   PrototypeArtifactPath,
@@ -144,9 +146,21 @@ export {
 
 export type { PrototypeStatus, PrototypeStatusFinding, PrototypeStatusFrameCapture, PrototypeStatusRequirement, PrototypeStatusService } from './status.ts'
 export { buildPrototypeStatus, listPrototypeStatuses, whyPrototypeIsNotSettled } from './status.ts'
+export { notice, rawNotice } from './notices.ts'
+export type { PrototypeNotice, PrototypeNoticeCode, PrototypeNoticeParams } from './notices.ts'
 
-export { PROTOTYPE_PRD_FILENAME, getPrototypePrdPath, parsePrototypePrd, readPrototypeRequirements } from './requirements.ts'
-export type { PrototypeCheck, PrototypeCheckKind, PrototypeRequirement, PrototypeRequirements } from './requirements.ts'
+export {
+  PROTOTYPE_PRD_FILENAME,
+  getPrototypePrdPath,
+  parsePrototypePrd,
+  readPrototypeRequirements,
+} from './requirements.ts'
+export type {
+  PrototypeCheck,
+  PrototypeCheckKind,
+  PrototypeRequirement,
+  PrototypeRequirements,
+} from './requirements.ts'
 
 export { PROTOTYPE_RESEARCH_DIRNAME, getPrototypeResearchPath, parsePrototypeFinding, readPrototypeFindings } from './research.ts'
 export type { PrototypeFinding, PrototypeFindings } from './research.ts'
@@ -203,16 +217,9 @@ export {
   isPageKind,
   legacyPageRows,
   normalizePrototypePages,
-  normalizePrototypeReferences,
   readPrototypeConfig,
   writePrototypeConfig,
 } from './config.ts'
-
-export {
-  getPrototypeReferences,
-  linkPrototypeReference,
-  unlinkPrototypeReference,
-} from './references.ts'
 
 export {
   getProjectPrototypes,

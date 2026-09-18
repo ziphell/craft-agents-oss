@@ -8,7 +8,14 @@
  * something to copy rather than something to agree with, so this module is the
  * difference between a prototype tool and a requirement workbench (plan §20.1).
  *
- * A requirement is a **heading with a stable id** in `prd.md`:
+ * The brief is **one file among the prototype's own files**, not a container: `PRD.md` at
+ * the prototype's root is the one requirements are read from, and everything beside it is
+ * material — in whatever format the author put there (`listPrototypeFiles` in `storage.ts`).
+ * Nothing else is parsed. Letting a file beside it define `R-…` ids too
+ * would make "which requirement has nothing implementing it" depend on files nobody
+ * listed, and a requirement nobody lists is the one failure this module exists to catch.
+ *
+ * A requirement is a **heading with a stable id** in `PRD.md`:
  *
  * ```md
  * ## R-001 A cart holds its line until stock runs out
@@ -25,7 +32,8 @@
  *
  * The PRD is deliberately **not** in `config.json`. It is prose that the agent
  * writes as a file, and parsing it here is what keeps it a document people can
- * read rather than a form they have to fill in.
+ * read rather than a form they have to fill in. The prototype's own files are the control
+ * plane's (`ownership.ts`), so no writer identity gates the brief.
  */
 
 import { existsSync, readFileSync } from 'fs'
@@ -39,9 +47,14 @@ import { normalizeRequirementId } from './patch-header.ts'
 // import, and so the public surface of this workbench is unchanged.
 export { extractRequirementIds, normalizeRequirementId } from './patch-header.ts'
 
-export const PROTOTYPE_PRD_FILENAME = 'prd.md'
+/**
+ * The brief's file name. Case matters here the way `SKILL.md` does: this exact name is
+ * the one file requirements are read from, so a `prd.md` written by hand is material
+ * beside the brief rather than a second entry.
+ */
+export const PROTOTYPE_PRD_FILENAME = 'PRD.md'
 
-/** Absolute path to a prototype's `prd.md`. */
+/** Absolute path to a prototype's `PRD.md`. */
 export function getPrototypePrdPath(workspaceRootPath: string, slug: string): string {
   return join(getPrototypeDirPath(workspaceRootPath, slug), PROTOTYPE_PRD_FILENAME)
 }
@@ -55,7 +68,7 @@ export type PrototypeCheckKind = 'selector' | 'endpoint'
  * `selector` is asserted against the page on screen, `endpoint` against the
  * contract. Both are deliberately mechanical: an acceptance criterion that only a
  * person can judge is a criterion nobody runs, and the point of these lines is
- * that `prototype-verify` can answer pass or fail without an opinion.
+ * that `verify` can answer pass or fail without an opinion.
  */
 export interface PrototypeCheck {
   kind: PrototypeCheckKind
@@ -179,10 +192,12 @@ export function parsePrototypePrd(source: string): PrototypeRequirements {
 }
 
 /**
- * Read a prototype's PRD.
+ * Read a prototype's requirements — the entry document of the collection, and the
+ * only one.
  *
- * A prototype with no `prd.md` is a prototype whose requirements have not been
- * written yet — not an error, and the status report says so in those words.
+ * A prototype with no `PRD.md` is a prototype whose requirements have not been
+ * written yet — not an error, and the status report says so in those words. The
+ * documents beside it are not read here: they are material the entry points at.
  */
 export function readPrototypeRequirements(workspaceRootPath: string, slug: string): PrototypeRequirements {
   const path = getPrototypePrdPath(workspaceRootPath, slug)

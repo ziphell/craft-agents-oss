@@ -1098,7 +1098,7 @@ export interface BrowserTabSummary {
    * How the browser asked for this tab, when the browser asked for it rather than a
    * command opening it: `'link'` for a `target="_blank"`, `'popup'` for a scripted
    * `window.open` with features, `null` for every other way a tab comes to exist
-   * (the address bar, `tab-new`, `prototype-open`, the panel).
+   * (the address bar, `tab-new`, `prototype_tool open`, the panel).
    *
    * Here rather than in the declaration half because nobody *stated* it — the browser
    * reported it, the same way it reports a title. It is worth keeping because both are

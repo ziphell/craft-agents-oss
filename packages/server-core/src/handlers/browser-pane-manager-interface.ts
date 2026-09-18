@@ -185,55 +185,6 @@ export interface AccessibilitySnapshot {
 // Interface
 // ---------------------------------------------------------------------------
 
-/** How a capture is sampled. Every field has a default, so a caller can pass none. */
-export interface FrameCaptureOptions {
-  /** How often the screen is compared, ms. */
-  intervalMs?: number
-  /** Share of the sampled screen that must differ to keep a frame (0.005 = 0.5%). */
-  threshold?: number
-  /** Ceiling on frames per capture — a session that is left running must not fill a disk. */
-  maxFrames?: number
-}
-
-export interface FrameCaptureStarted {
-  /** ISO timestamp the capture began. */
-  startedAt: string
-  /** What the capture is actually using, defaults resolved — reported so the caller can say it. */
-  intervalMs: number
-  threshold: number
-  maxFrames: number
-}
-
-/**
- * One frame, as it crosses the boundary: the bytes and the coordinates.
- *
- * Bytes rather than a path, because the browser pane has no business knowing
- * where a prototype keeps its research (`shared/prototypes/frames.ts` decides
- * that). The same reasoning as a screenshot's `imageBuffer`.
- */
-export interface CapturedFrame {
-  index: number
-  at: string
-  url: string
-  reason: 'start' | 'changed' | 'action' | 'result'
-  /** What was done, for a frame an action caused. */
-  action?: string
-  bytes: Uint8Array
-}
-
-export interface FrameCaptureResult {
-  startedAt: string
-  endedAt: string
-  intervalMs: number
-  threshold: number
-  maxFrames: number
-  /** Size of the captured image in device pixels, from the first frame. */
-  viewport: { width: number; height: number } | null
-  /** True when the ceiling was reached: what came back is a sample. */
-  truncated: boolean
-  frames: CapturedFrame[]
-}
-
 /** How a video is sampled (plan §20.5). */
 export interface VideoFrameOptions {
   /** `timeline` samples on an interval; `changes` keeps only what moved. */
@@ -482,37 +433,7 @@ export interface IBrowserPaneManager {
    */
   clearInitScripts(id: string, keyPrefix: string, tabId?: string): Promise<string[]>
 
-  // -- Frame capture --------------------------------------------------------
-
-  /**
-   * Start keeping frames of one tab of this window.
-   *
-   * Two things put a frame in the capture, because a screen changes for two
-   * different reasons: the screen is compared every `intervalMs` and kept when
-   * more than `threshold` of it differs (a stream answering, a list loading, an
-   * animation), and every action the agent takes is kept whatever the screen did
-   * (a click is a cause, and the reason a frame is here is worth more than the
-   * pixels). The second is what lets a reader tell "somebody did this" from "it
-   * moved on its own".
-   *
-   * Frames stay in memory until {@link stopFrameCapture} — a capture is one
-   * session, and writing half of it would be a record of nothing.
-   */
-  startFrameCapture(id: string, options?: FrameCaptureOptions, tabId?: string): Promise<FrameCaptureStarted>
-
-  /** Stop the capture and hand back what it kept, or null when none was running. */
-  stopFrameCapture(id: string): Promise<FrameCaptureResult | null>
-
   // -- Video frames ---------------------------------------------------------
-
-  /**
-   * Ask the user for a video file; null when the dialog was dismissed.
-   *
-   * Here rather than in the panel because the panel never sees a path — Electron's
-   * dialog is the only party that knows where the user's file actually is, and a
-   * path that travels through a renderer is a string from anywhere.
-   */
-  pickVideoFile(): Promise<string | null>
 
   /**
    * Sample frames out of a video the user recorded elsewhere (plan §20.5).

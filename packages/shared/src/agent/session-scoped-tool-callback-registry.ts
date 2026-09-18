@@ -12,7 +12,7 @@
 
 import type { LLMQueryRequest, LLMQueryResult } from './llm-tool.ts';
 import type { SpawnSessionFn } from './spawn-session-tool.ts';
-import type { BrowserPaneFns } from './browser-tools.ts';
+import type { BrowserPaneFns } from './browser-pane.ts';
 import type { AuthRequest } from '@craft-agent/session-tools-core';
 import { debug } from '../utils/debug.ts';
 

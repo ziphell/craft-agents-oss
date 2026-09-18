@@ -18,7 +18,7 @@
  * @see docs/prototype-workbench-plan.md §20.5
  */
 
-import { BrowserWindow, dialog } from 'electron'
+import { BrowserWindow } from 'electron'
 import { pathToFileURL } from 'url'
 
 export interface VideoSampleOptions {
@@ -65,20 +65,6 @@ const VIDEO_FRAME_QUALITY = 70
  * one seek per interval.
  */
 const SAMPLE_BUDGET_FACTOR = 4
-
-/** Ask the user for a recording. Null when they dismiss the dialog. */
-export async function pickVideoFile(): Promise<string | null> {
-  const result = await dialog.showOpenDialog({
-    title: 'Choose a recording to sample frames from',
-    properties: ['openFile'],
-    filters: [
-      { name: 'Video', extensions: ['mp4', 'm4v', 'webm', 'mov', 'mkv'] },
-      { name: 'All files', extensions: ['*'] },
-    ],
-  })
-  if (result.canceled) return null
-  return result.filePaths[0] ?? null
-}
 
 /**
  * Decode a recording into JPEG frames at (or near) the requested offsets.

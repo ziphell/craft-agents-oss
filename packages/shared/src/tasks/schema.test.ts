@@ -205,13 +205,13 @@ describe('validate', () => {
     expect(ambiguous.errors.some((e) => e.message.includes('not usable as a writer identity'))).toBe(true);
   });
 
-  it('refuses the consolidator identity, which only prototype-commit writes', () => {
+  it('refuses the consolidator identity, which only a folded change layer writes', () => {
     const res = validateTaskInput({
       id: 'x', title: 'X', goal: 'g',
       nodes: [{ id: 'ui', prompt: 'p', writes: 'z' }],
     });
     expect(res.valid).toBe(false);
-    expect(res.errors.some((e) => e.message.includes("reserved for prototype-commit's folds"))).toBe(true);
+    expect(res.errors.some((e) => e.message.includes("reserved for a prototype's folded changes"))).toBe(true);
   });
 
   it('refuses two nodes claiming one identity, however it is spelled', () => {

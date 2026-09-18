@@ -68,8 +68,8 @@ export function prototypeSlugFromName(name: string): string {
  * Create a prototype directory.
  *
  * Writes an empty `patches/`, a `_layout.html` to copy from, and nothing else — no
- * page, and no `config.json` either: with no pages and no references there is
- * nothing to declare, and an empty file would only be a second way of saying that.
+ * page, and no `config.json` either: with no pages there is nothing to declare, and
+ * an empty file would only be a second way of saying that.
  * The shell is not a page (nothing lists it), so its presence says nothing about
  * what the prototype contains; it is there so the first page has a validated shape
  * to follow.

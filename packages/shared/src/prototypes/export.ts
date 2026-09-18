@@ -619,7 +619,7 @@ export function buildDevSpec(
       ? [
           '## Requirements',
           '',
-          'From `prd.md`. The last column is derived from `@requirement R-00x` markers in patch headers and page',
+          'From `PRD.md`. The last column is derived from `@requirement R-00x` markers in patch headers and page',
           'documents, so a row without one is a requirement that nothing here implements.',
           '',
           '| # | Id | Requirement | Referred to by |',
@@ -689,8 +689,8 @@ export function buildDevSpec(
     '',
     '## Patches',
     '',
-    '`patches/*` repeats on every page; `patches/<page>/*` belongs to that page only. Writer `Z` is what',
-    '`prototype-commit` folded together — it replays after everything else, and its provenance comments name',
+    '`patches/*` repeats on every page; `patches/<page>/*` belongs to that page only. Writer `Z` is a copy whose',
+    'changes were folded in — it replays after everything else, and its provenance comments name',
     'the patches it replaced.',
     '',
     'Each change says what its `@target` was aimed at, and what the anchor record knows about that',
@@ -805,7 +805,7 @@ export function buildHandoff(input: {
     rows.push([
       '`acceptance.md`',
       'the person accepting the work',
-      'what the checks in `prd.md` answered last time, and how that differs from the round before',
+      'what the checks in `PRD.md` answered last time, and how that differs from the round before',
     ])
   }
   if (has('contract.md')) {
@@ -850,7 +850,7 @@ export function buildHandoff(input: {
           ...blockers.map((blocker) => `- ${blocker}`),
         ]
       : [
-          'Nothing: every requirement in `prd.md` is implemented, no objection is still standing, and the',
+          'Nothing: every requirement in `PRD.md` is implemented, no objection is still standing, and the',
           'last verification round had no failures.',
         ]),
     '',
@@ -935,7 +935,7 @@ export function resolvePrototypeEntry(
     throw new Error(
       `Prototype "${slug}" has no pages yet, so there is nothing to open. Write one ` +
         `(a top-level <name>.html in ${dir}), or add an overlay page ` +
-        `("prototype-pages --add <name>=<url>").`,
+        `("pages --add <name>=<url>").`,
     )
   }
 
@@ -1025,7 +1025,7 @@ export function resolvePrototypeEntry(
  * One program rather than one per service, because nothing in a path item says
  * which service a collection belongs to: the author writes a dot path. Two
  * services naming the same top-level key is therefore a conflict, reported by
- * whoever applies the mock (`prototype-mock-apply`) rather than resolved here.
+ * whoever applies the mock (`mock-apply`) rather than resolved here.
  * A service whose `state.json` is unusable still contributes its routes — an empty
  * store answers per request (404/500) instead of taking the whole mock down.
  */
@@ -1298,7 +1298,10 @@ export function exportPrototype(workspaceRootPath: string, slug: string): Protot
       patches,
       entry,
       files: listDistNames(getPrototypeDistPath(workspaceRootPath, slug)),
-      blockers: buildPrototypeStatus(workspaceRootPath, slug).settleBlockers,
+      // The gate is quoted in the words the agent uses: the handoff is a document
+      // for whoever implements the change, and the panel's translation of these
+      // lines belongs to the panel (`notices.ts`).
+      blockers: buildPrototypeStatus(workspaceRootPath, slug).settleBlockers.map((blocker) => blocker.text),
     }),
     'utf-8',
   )

@@ -17,7 +17,6 @@
 
 import { existsSync } from 'fs'
 import { getPrototypeDirPath, getPrototypeLayoutPath } from './storage.ts'
-import { listPrototypePages } from './pages.ts'
 import { buildPrototypeStatus } from './status.ts'
 import { CONSOLIDATED_WRITER, PROTOTYPE_LAYOUT_SLOT, type PageKind } from './types.ts'
 import type { AcceptanceSummary } from './acceptance.ts'
@@ -42,14 +41,8 @@ export interface PrototypePromptContext {
    */
   layoutPath: string | null
   /**
-   * Prototypes this one is being built with reference to (plan §14), each with a
-   * one-line summary of what it is made of — enough to know what looking at it
-   * means, without reading its config.
-   */
-  references: Array<{ slug: string; summary: string }>
-  /**
    * The PRD's requirements with what refers to each one (plan §20.1). Empty when
-   * there is no `prd.md` — a state the prompt has to name out loud, because the
+   * there is no `PRD.md` — a state the prompt has to name out loud, because the
    * agent is the only writer of that file.
    */
   requirements: Array<{ id: string; title: string; pages: string[]; patches: string[]; findings: string[] }>
@@ -114,21 +107,6 @@ export interface PrototypePromptContext {
   violations: Array<{ path: string; reason: string }>
 }
 
-/** One line saying what a referenced prototype is made of. */
-function describeReference(workspaceRootPath: string, slug: string): { slug: string; summary: string } {
-  const pages = listPrototypePages(workspaceRootPath, slug)
-  if (pages.length === 0) return { slug, summary: 'no pages yet' }
-
-  const ours = pages.filter((page) => page.kind === 'scratch').length
-  const live = pages.filter((page) => page.kind === 'overlay').length
-  const parts = [
-    ours > 0 ? `${ours} of ours` : '',
-    live > 0 ? `${live} on a live site` : '',
-  ].filter(Boolean)
-
-  return { slug, summary: `${pages.length} page${pages.length === 1 ? '' : 's'} (${parts.join(', ')})` }
-}
-
 /**
  * Build the snapshot for a bound prototype.
  *
@@ -163,7 +141,6 @@ export function buildPrototypePromptContext(
     layoutPath: existsSync(getPrototypeLayoutPath(workspaceRootPath, slug))
       ? getPrototypeLayoutPath(workspaceRootPath, slug)
       : null,
-    references: status.references.map((referenceSlug) => describeReference(workspaceRootPath, referenceSlug)),
     patches: status.patches.entries.map((entry) => ({
       file: entry.file,
       writer: entry.writer,
@@ -259,7 +236,7 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
   lines.push('')
 
   if (ctx.pages.length > 0) {
-    lines.push(`Pages, in flow order — 'prototype-open --page <name>' opens one, and 'snapshot' says which`)
+    lines.push(`Pages, in flow order — 'open --page <name>' opens one, and 'browser_tool snapshot' says which`)
     lines.push(`page a window is on:`)
     for (const page of ctx.pages) {
       const where = page.kind === 'overlay' ? (page.url ?? 'no address') : (page.file ?? 'document missing')
@@ -270,44 +247,23 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
         ? `The address root (/) opens '${sanitize(ctx.entryPage)}'.`
         : `The address root (/) shows the generated page index, which lists every page above.`,
     )
-    lines.push(`Mark a page as the entry with 'prototype-entry <name>', or go back to the index with`)
-    lines.push(`'prototype-entry none'. Add a live page with 'prototype-pages --add <name>=<url>' and rename or`)
+    lines.push(`Mark a page as the entry with 'entry <name>', or go back to the index with`)
+    lines.push(`'entry none'. Add a live page with 'pages --add <name>=<url>' and rename or`)
     lines.push(`remove one with --rename / --remove. A page of ours is a file: write it and it is a page —`)
-    lines.push(`'prototype-pages --add <name>' only puts it in the flow order, once the file exists.`)
+    lines.push(`'pages --add <name>' only puts it in the flow order, once the file exists.`)
   } else {
     lines.push(`This prototype has **no pages yet**. That is a starting state, not a mistake: write`)
     lines.push(`<name>.html with the Write tool for a page of ours, or add a live page with`)
-    lines.push(`'prototype-pages --add <name>=<url>'.`)
+    lines.push(`'pages --add <name>=<url>'.`)
   }
   lines.push('')
 
   if (overlayPages.length > 0) {
     lines.push(`A live page's address usually exists in several environments (a dev server, staging, production).`)
-    lines.push(`Repoint it with 'prototype-target <url> [--page <name>]' rather than making a second prototype — and`)
+    lines.push(`Repoint it with 'pages --url <name>=<url>' rather than making a second prototype — and`)
     lines.push(`say what that costs when you do: windows already open keep the old page, and the selectors were`)
     lines.push(`written against the old DOM (a patch that matches nothing looks like a patch that did nothing). A`)
     lines.push(`page's kind cannot change, and a page of ours has no external page for an address to mean.`)
-    lines.push('')
-  }
-
-  // References come before the patch rules: they change how the agent should read
-  // everything below (patches here are the deliverable; patches over there are
-  // notes), so they cannot be deferred to a footnote.
-  //
-  // The rule is deliberately stated once, without regard to what kind either side
-  // is: a reference is a relation between two independent prototypes, and one
-  // scratch prototype referencing another works exactly like one referencing a
-  // prototype of live pages.
-  if (ctx.references.length > 0) {
-    lines.push(`This prototype is being built with reference to other prototypes:`)
-    for (const reference of ctx.references) {
-      lines.push(`- ${sanitize(reference.slug)} — ${sanitize(reference.summary)}, at prototypes/${sanitize(reference.slug)}/`)
-    }
-    lines.push(`A reference is **evidence, not material**, whatever it is made of. Its patches were written`)
-    lines.push(`against a different document: Do NOT copy a reference's patch files into this prototype's`)
-    lines.push(`patches/ — their selectors would not match here, and they would ship inside the deliverable`)
-    lines.push(`without erroring. Translate the intent into this prototype's own markup, and say in the`)
-    lines.push(`conversation what you took from the reference.`)
     lines.push('')
   }
 
@@ -318,7 +274,7 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
 
   // Requirements and research come next because they are what the work is *for*,
   // and because the agent is their only writer: nothing in the workbench produces
-  // `prd.md` or a finding, so a block that does not ask for them leaves them not
+  // `PRD.md` or a finding, so a block that does not ask for them leaves them not
   // existing at all (plan §20).
   lines.push(`Requirements and research — both are files you write; nothing else here produces them:`)
   lines.push(`- Before writing a requirement, think from first principles about the value: what the person cannot`)
@@ -326,8 +282,12 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
   lines.push(`  from a screen, a competitor's feature or the user's own phrasing — a requirement that only`)
   lines.push(`  restates one of those has not been thought about, and nothing here can check that for you: the`)
   lines.push(`  workbench can show a requirement is unimplemented, never that it was worth writing.`)
-  lines.push(`- ${sanitize(ctx.dir)}/prd.md holds the requirements. One entry each, headed by a stable id:`)
-  lines.push(`  '## R-001 <what it is>', then the prose — who it is for, what happens today, what has to be true.`)
+  lines.push(`- The requirements are written in ${sanitize(ctx.dir)}/PRD.md, and the folder beside it is yours:`)
+  lines.push(`  only PRD.md is read for requirements — one entry each, headed by a stable id, '## R-001 <what it`)
+  lines.push(`  is>' — and any other file you keep there is material, in any format. A subject that outgrows the`)
+  lines.push(`  entry (personas, the flow as it stands today, a glossary) becomes its own file rather than one`)
+  lines.push(`  document nobody can skim, and what the work is studied from belongs there too: a competitor's`)
+  lines.push(`  address, the path to a screenshot or a design file, another prototype's slug.`)
   if (ctx.requirements.length > 0) {
     lines.push(`  Written so far, and what refers to each:`)
     for (const requirement of ctx.requirements) {
@@ -345,16 +305,22 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
       )
     }
   } else {
-    lines.push(`  There is no prd.md yet. Write it before building the next screen: a prototype nobody can read a`)
+    lines.push(`  There is no PRD.md yet. Write it before building the next screen: a prototype nobody can read a`)
     lines.push(`  requirement out of is a picture, not a proposal.`)
   }
   lines.push(`- Say which requirement a change serves: '@requirement R-001' in a patch header, or in a comment in the`)
-  lines.push(`  page document it changes. 'prototype-status' turns that into the two answers nobody can get by reading`)
-  lines.push(`  files: which requirement nothing implements, and which marker names an id prd.md does not define.`)
+  lines.push(`  page document it changes. 'status' turns that into the two answers nobody can get by reading`)
+  lines.push(`  files: which requirement nothing implements, and which marker names an id PRD.md does not define.`)
   lines.push(`- ${sanitize(ctx.dir)}/research/ holds what you learned from other products. One finding per file:`)
   lines.push(`  '# F-001 <what you found>', then labelled lines 'claim:', 'source:', 'captured:', 'evidence:',`)
   lines.push(`  'requirements:'. Evidence names files you keep in research/ (screenshots go there), and 'requirements:'`)
   lines.push(`  names the requirements the finding argues for. A finding with no source cannot be checked later.`)
+  lines.push(`- What this prototype is studied from is yours to write down, in a file of that folder: a`)
+  lines.push(`  competitor's address, the path to a screenshot or a design file, or another prototype's slug. Two`)
+  lines.push(`  rules do not bend, because the deliverable depends on them: material is read for intent and`)
+  lines.push(`  translated into this prototype's own markup, and another prototype's patch files are NEVER copied`)
+  lines.push(`  into patches/ — they were written against a different document, so their selectors would not match`)
+  lines.push(`  here and they would ship inside the deliverable without erroring.`)
   if (ctx.findings.length > 0) {
     lines.push(`  Recorded so far — read these before studying the same product again:`)
     for (const finding of ctx.findings) {
@@ -374,7 +340,7 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
   lines.push(`  (and 'on:' for a patch dispute).`)
   lines.push(`- 'about:' names one thing: 'patch <file>', 'page <name>', 'endpoint <GET /path>' or 'requirement R-001'.`)
   lines.push(`  Work out which by asking what actually failed — a failed 'check:' is usually the requirement or`)
-  lines.push(`  the page it looked at, and 'prototype-verify' prints both for you.`)
+  lines.push(`  the page it looked at, and 'verify' prints both for you.`)
   lines.push(`- A dispute about a **patch** also needs 'on:' — the fingerprint printed beside that patch below.`)
   lines.push(`  It is what lets a later reader tell an argument about the current file from one about a version`)
   lines.push(`  that no longer exists; without it the objection cannot be checked, and the report says so.`)
@@ -394,7 +360,7 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
     lines.push(`  Nothing is standing: all ${ctx.reviews.total} filed so far were answered.`)
   }
   lines.push('')
-  lines.push(`Acceptance: the 'check:' lines in prd.md are answered by 'prototype-verify', which records each`)
+  lines.push(`Acceptance: the 'check:' lines in PRD.md are answered by 'verify', which records each`)
   lines.push(`round under acceptance/ (and writes dist/acceptance.md). Only the tool writes that record — a`)
   lines.push(`hand-written one would be a report of a run that never happened — but it is there to be read:`)
   if (ctx.acceptance) {
@@ -406,7 +372,7 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
     lines.push(`- Re-run it after changing something: the report says what *moved* since the round before, which`)
     lines.push(`  is the only way to tell "this change broke it" from "it was already broken and nobody said".`)
   } else {
-    lines.push(`- Nothing has been run here yet. If prd.md declares checks, run 'prototype-verify' before calling`)
+    lines.push(`- Nothing has been run here yet. If PRD.md declares checks, run 'verify' before calling`)
     lines.push(`  anything done: a check that was never run is not a check that passed.`)
   }
   lines.push('')
@@ -415,7 +381,7 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
   lines.push(`you do not need to pass a slug, though you may pass one to work on a different prototype.`)
   lines.push('')
   lines.push(`The state below is a snapshot taken when this session started, kept stable so the prompt`)
-  lines.push(`stays cacheable. Run 'prototype-status' before relying on it for anything you have changed.`)
+  lines.push(`stays cacheable. Run 'status' before relying on it for anything you have changed.`)
   lines.push('')
 
   // Pages first: without one there is nothing for a patch to apply to, and the
@@ -460,7 +426,7 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
     lines.push(`  localStorage, which survives because this prototype's origin is stable.`)
     lines.push(`- Add a screen by writing a page; change how an existing screen looks by writing a patch under`)
     lines.push(`  patches/<page>/. Do not rewrite a page document to restyle it.`)
-    lines.push(`- After writing or changing a page, open it ('prototype-open') and read the console ('console 50 error')`)
+    lines.push(`- After writing or changing a page, open it ('open') and read the console ('browser_tool console 50 error')`)
     lines.push(`  before calling it done: nothing else here checks a page, so a script error stays invisible until then.`)
     lines.push('')
   }
@@ -469,7 +435,7 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
   lines.push(`segment is your identity**: this conversation writes as '${sanitize(ctx.writer)}', so its patches are`)
   lines.push(`named ${sanitize(ctx.writer)}-<nnn>-<name>.{css,js} — write that prefix yourself, it is not a code you pick`)
   lines.push(`from a list, and a name that claims someone else's prefix is refused (and reported by`)
-  lines.push(`'prototype-status'). The reserved token '${CONSOLIDATED_WRITER}' belongs to 'prototype-commit' folds alone.`)
+  lines.push(`'status'). The reserved token '${CONSOLIDATED_WRITER}' belongs to folded changes alone.`)
   lines.push(`**Where the file sits is which page it changes**: patches/<page>/… applies to that page only,`)
   lines.push(`patches/… applies to every page. A file that does not match the name pattern is ignored by the`)
   lines.push(`injector. To add a UI change, write a new file (e.g. patches/${sanitize(ctx.writer)}-002-highlight.css for`)
@@ -477,7 +443,7 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
   lines.push(`not edit a page's document for presentation work, and do not rewrite an existing patch file whose`)
   lines.push(`prefix is not yours. Every patch is replayed on reload, so the page state is reproducible.`)
   lines.push(`Say what each patch is aimed at: a header line '@target <css selector>' (and '@requirement R-001').`)
-  lines.push(`That is what makes the patch checkable — 'prototype-apply' reports which targets matched nothing, and`)
+  lines.push(`That is what makes the patch checkable — 'apply' reports which targets matched nothing, and`)
   lines.push(`a target that used to match and does not any more means the page moved, not that the patch was`)
   lines.push(`ignored. Without a '@target' nothing can tell the two apart, and the patch rots quietly.`)
   lines.push('')
@@ -533,19 +499,20 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
 
   lines.push(`Deliverables: ${ctx.distFiles.length > 0 ? ctx.distFiles.map(sanitize).join(', ') : 'none exported yet'}.`)
   lines.push('')
-  lines.push(`Workflow: edit the files above, then 'prototype-apply' to see the result in the bound browser`)
-  lines.push(`window, and 'prototype-export' to build the deliverable — one loadable extension plus the change`)
-  lines.push(`spec a developer reads. 'prototype-status' re-reads everything from disk when you need to confirm`)
+  lines.push(`Workflow: edit the files above, then 'apply' to see the result in the bound browser`)
+  lines.push(`window, and 'export' to build the deliverable — one loadable extension plus the change`)
+  lines.push(`spec a developer reads. 'status' re-reads everything from disk when you need to confirm`)
   lines.push(`what is actually there.`)
-  // Commit is described here rather than with the patches because it is the one
+  // The fold is described here rather than with the patches because it is the one
   // action that *removes* patches: an agent that has not read this would keep
   // writing new files where the change now has a home.
-  lines.push(`'prototype-commit' folds the delta layer into what owns it, when the work has stopped moving: a`)
-  lines.push(`page of ours gets its css folded into assets/<page>/committed.css and its js promoted into`)
-  lines.push(`assets/<page>/committed.js (the document is linked to both, and the patch files are deleted); a live`)
-  lines.push(`page's patches are folded into patches/<page>/Z-001-upper.css and Z-002-upper.js, which replay last.`)
-  lines.push(`It is irreversible — a folded patch no longer exists as a file — so commit at a point, not after every`)
-  lines.push(`change. Keep writing patches until then; a run of small edits is what the layer is for.`)
+  lines.push(`A prototype can also be **copied with its changes folded in** — a person does that from the`)
+  lines.push(`prototype list, and it is the one action that removes patches: the copy's css goes into`)
+  lines.push(`assets/<page>/committed.css and its js into assets/<page>/committed.js (the document is linked to`)
+  lines.push(`both, and the patch files are deleted), while a live page's patches go into`)
+  lines.push(`patches/<page>/Z-001-upper.css and Z-002-upper.js, which replay last. It never touches the`)
+  lines.push(`prototype it was copied from, so keep writing patches as usual: a run of small edits is what the`)
+  lines.push(`layer is for, and folding is something that happens to a copy rather than to this one.`)
   lines.push(`</prototype_context>`)
   lines.push('')
   return lines.join('\n')

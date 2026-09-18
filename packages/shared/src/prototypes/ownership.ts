@@ -1,12 +1,15 @@
 /**
  * Prototype file ownership.
  *
- * Parallel writers are made safe by **ownership**, not by locks: every artifact
- * path belongs to exactly one writer, and writers only communicate through files
- * they read but never write (plan §3.4/§3.5).
+ * Ownership exists for **one** problem: two writers working on the same prototype at the
+ * same time must not overwrite each other (plan §3.4/§3.5). So it speaks only about the
+ * paths where that can happen — a patch, whose writer is the prefix in its file name, and
+ * the contract's own files under `services/` — plus the records only a tool may author.
  *
- * This module makes that matrix executable, so violations are caught by tooling
- * instead of by a lost update at 2am.
+ * Everything else is simply the author's folder. There is no matrix to keep in step with
+ * the directory: enumerating every path shape would be a second description of the folder,
+ * and a second description goes stale the moment the folder changes (see
+ * {@link classifyPrototypePath}).
  *
  * @see docs/prototype-workbench-plan.md §3.5
  */
@@ -14,13 +17,10 @@
 import { readdirSync } from 'fs'
 import { resolve, join } from 'path'
 import { getPrototypeDirPath } from './storage.ts'
-import { PROTOTYPE_PRD_FILENAME } from './requirements.ts'
 import {
   CONSOLIDATED_WRITER,
   PROTOTYPE_ACCEPTANCE_DIRNAME,
   PROTOTYPE_ANCHORS_DIRNAME,
-  PROTOTYPE_RESEARCH_DIRNAME,
-  PROTOTYPE_REVIEWS_DIRNAME,
   parsePrototypePatchName,
 } from './types.ts'
 
@@ -31,14 +31,17 @@ import {
  * - a **declared writer identity** (from the name for patches, from the path rule for `services/`).
  *   The old five-letter vocabulary is gone: a writer id is whatever the graph declares, and the
  *   only reserved one is the consolidator (`Z`);
- * - the **control plane**, which is the agent itself — the page documents, the page table, the PRD,
- *   `assets/`, `research/` and `dist/`;
- * - a **tool**, for the artifacts that record what actually happened (`anchors/`). The agent may
- *   not hand-write those: a record it authored is not a record of anything (§3.5).
+ * - the **control plane**, which is the agent itself — the page documents, the page table, the
+ *   prototype's own files (the brief and the material beside it, any format), `assets/`,
+ *   `research/` and `dist/`;
+ * - a **tool**, for the artifacts that record what actually happened (`anchors/`, `acceptance/`).
+ *   The agent may not hand-write those: a record it authored is not a record of anything (§3.5).
  *
  * Two rules, and they are different rules — which is why they are two functions rather than one:
- * - **may it be written at all** (`classifyPrototypePath`): every path has exactly one owner,
- *   and anything nobody owns is a violation. This is what `prototype-status` reports;
+ * - **may it be written at all** (`classifyPrototypePath`): the paths with a rule of their own
+ *   resolve to their owner, and a path that breaks its own rule is a violation. Everything else
+ *   is the author's folder and resolves to the control plane. This is what `status`
+ *   reports;
  * - **may *this* writer write it** (`canWriterWrite`): the guard, which refuses with a reason
  *   the agent can act on.
  *
@@ -72,25 +75,24 @@ export type PrototypePathClassification =
   | { owner: PrototypeOwner }
   | { violation: string }
 
-/** A page document of ours: a top-level `.html` (the page table names them; `_layout.html` is one of ours too). */
-const PAGE_DOCUMENT_RE = /^[^/]+\.html?$/i
-
 /**
  * Classify a prototype-relative path (always `/`-separated).
  *
- * Patch ownership is derived from the **writer id encoded in the file name** rather than a fixed
- * rule, because any writer may append its own patches — that is what makes patch writing
- * contention-free in the first place. Which directory a patch sits in decides the *page* it
- * changes, not who may write it (plan §19.4).
+ * **Only the paths with a rule of their own are named.** Patch ownership is derived from the
+ * writer id encoded in the file name rather than a fixed rule, because any writer may append
+ * its own patches — that is what makes patch writing contention-free in the first place; which
+ * directory a patch sits in decides the *page* it changes, not who may write it (plan §19.4).
+ *
+ * Everything else falls through to the control plane, deliberately. The prototype folder is a
+ * **collection of the author's files** — the pages, the page table, the brief and whatever sits
+ * beside it in whatever format, `assets/`, `research/`, `reviews/`, `dist/`, and any directory
+ * nobody has heard of — and listing every shape here would be a second description of that
+ * folder. A second description goes stale the moment the folder changes: one did, and it made
+ * the report say every prototype with a brief was violating something. What is worth reporting
+ * is a file that will not do what its author meant — a patch the injector ignores, a stray file
+ * inside a service directory — and both of those are named above.
  */
 export function classifyPrototypePath(relativePath: string): PrototypePathClassification {
-  // Root-level control-plane files: the page table, and the documents the pages
-  // are. Both are written by the control plane (the agent, on the human's behalf)
-  // and read by the writers, so they are not writer-owned.
-  if (relativePath === 'config.json' || PAGE_DOCUMENT_RE.test(relativePath)) {
-    return { owner: { kind: 'control-plane' } }
-  }
-
   if (relativePath.startsWith('patches/')) {
     const rest = relativePath.slice('patches/'.length)
     const segments = rest.split('/')
@@ -129,44 +131,23 @@ export function classifyPrototypePath(relativePath: string): PrototypePathClassi
     return { violation: 'unowned file inside a service directory' }
   }
 
-  if (relativePath.startsWith('dist/')) {
-    return { owner: { kind: 'control-plane' } }
-  }
-
-  // The requirement set is the input the work is measured against, and `assets/` is the source of
-  // the pages we own (a page's own css/js, and what a commit folded into). Both are the control
-  // plane's, like the page documents themselves.
-  if (relativePath === PROTOTYPE_PRD_FILENAME || relativePath.startsWith('assets/')) {
-    return { owner: { kind: 'control-plane' } }
-  }
-
-  // Findings, frames and videos are ordinary files the agent writes: a finding *cites* its frames
-  // rather than deriving a decision from them, so nothing breaks if one is written by hand.
-  if (relativePath.startsWith(`${PROTOTYPE_RESEARCH_DIRNAME}/`)) {
-    return { owner: { kind: 'control-plane' } }
-  }
-
-  // A dispute is the agent's own argument — it arrives the way a finding does, as a file in a
-  // directory whose shape is the interface (`reviews.ts`).
-  if (relativePath.startsWith(`${PROTOTYPE_REVIEWS_DIRNAME}/`)) {
-    return { owner: { kind: 'control-plane' } }
-  }
-
-  // The anchor records are the opposite kind of artifact: `prototype-apply` writes them from what
+  // The anchor records are the opposite kind of artifact: `apply` writes them from what
   // actually matched, and the drift check compares them against the live page. A hand-written
   // record is what would make "it stopped matching" indistinguishable from "it never matched" —
   // the one distinction they exist to draw — so this is the direction the agent may not write.
   if (relativePath.startsWith(`${PROTOTYPE_ANCHORS_DIRNAME}/`)) {
-    return { owner: { kind: 'tooling', by: 'prototype-apply' } }
+    return { owner: { kind: 'tooling', by: 'apply' } }
   }
 
   // Same reasoning for the acceptance record: it says what the checks answered, so one written by
   // hand would be a report of a run that never happened.
   if (relativePath.startsWith(`${PROTOTYPE_ACCEPTANCE_DIRNAME}/`)) {
-    return { owner: { kind: 'tooling', by: 'prototype-verify' } }
+    return { owner: { kind: 'tooling', by: 'verify' } }
   }
 
-  return { violation: 'unowned path' }
+  // Everything else is the author's own folder — see the note above. No rule to state, and
+  // nothing to report.
+  return { owner: { kind: 'control-plane' } }
 }
 
 export interface WriterWriteCheck {
@@ -178,10 +159,14 @@ export interface WriterWriteCheck {
 /**
  * May `writer` write `relativePath`?
  *
- * Writers must not write each other's files or control-plane outputs — a shared writer is the one
- * thing that breaks parallel work. Writer ids compare case-insensitively (the on-disk spelling is
- * the author's), and the consolidator is reserved: only the control plane writes `Z-…`, so an
- * agent writer putting that prefix in a patch name is overstepping (§3.4).
+ * The strict reading: a writer may write its own patches and the service files its path rule
+ * declares, and nothing else. Deliberately narrower than reality — everything that is neither is
+ * the control plane's, and the control plane *is* the agent — so the guard that runs on a write is
+ * {@link whyWriterMayNotWrite}, which drops that case and keeps the collision.
+ *
+ * Writer ids compare case-insensitively (the on-disk spelling is the author's), and the
+ * consolidator is reserved: only the control plane writes `Z-…`, so an agent writer putting that
+ * prefix in a patch name is overstepping (§3.4).
  */
 export function canWriterWrite(relativePath: string, writer: string): WriterWriteCheck {
   const classified = classifyPrototypePath(relativePath)
@@ -204,7 +189,7 @@ export function canWriterWrite(relativePath: string, writer: string): WriterWrit
     }
   }
   if (owner.writer.toUpperCase() === CONSOLIDATED_WRITER) {
-    return { ok: false, owner, reason: `"${CONSOLIDATED_WRITER}" is reserved for prototype-commit's folds` }
+    return { ok: false, owner, reason: `"${CONSOLIDATED_WRITER}" is reserved for a prototype's folded changes` }
   }
   return { ok: true, owner }
 }
@@ -213,15 +198,16 @@ export function canWriterWrite(relativePath: string, writer: string): WriterWrit
  * Why `writer` may not write this prototype-relative path, or `null` when it may.
  *
  * This is the guard **as the write path applies it**, and it is deliberately narrower than
- * `canWriterWrite`. The strict function refuses control-plane paths too, because every path has
- * exactly one owner — but *the control plane is the agent itself*: it writes the page documents,
- * the page table and `dist/`, and a prototype is built by writing those. Refusing them would
- * refuse the common case, not a collision. So what is enforced is the collision:
+ * `canWriterWrite`. The strict function refuses control-plane paths too, since everything the
+ * folder does not put a rule on belongs to the control plane by default — but *the control plane
+ * is the agent itself*: it writes the pages, the page table, the brief and `dist/`, and a
+ * prototype is built by writing those. Refusing them would refuse the common case, not a
+ * collision. So what is enforced is the collision:
  *
  * - another writer's patch, contract file or fixture → refused, naming whose it is;
- * - a path no rule owns (a misnamed patch, a stray file in `services/`) → refused, because an
- *   artifact nobody owns is one the injector silently ignores;
- * - a control-plane path → allowed.
+ * - a file that will not do what its author meant — a misnamed patch, a stray file inside
+ *   `services/` (the injector and the contract reader ignore both, silently) → refused;
+ * - anything else the author put in the folder → allowed, because it is theirs.
  *
  * The phrasing (reason-first, no boolean) is deliberate: the reader is the agent, and "no"
  * without a why is a dead end (§3.6, same shape as `whyTabIsOutOfReach`).
@@ -283,7 +269,7 @@ export interface PrototypeOwnershipEntry {
 export interface PrototypeOwnershipReport {
   /** Every inspected file with its classification. */
   entries: PrototypeOwnershipEntry[]
-  /** Files that no writer or control-plane rule accepts. */
+  /** Files that break a rule of their own — a misnamed patch, a stray file in a service directory. */
   violations: Array<{ path: string; reason: string }>
   inspected: number
 }

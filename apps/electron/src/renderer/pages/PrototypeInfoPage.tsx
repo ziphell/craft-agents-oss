@@ -2,16 +2,42 @@
  * PrototypeInfoPage
  *
  * Workspace-prototype detail page: the workbench control plane for a single
- * prototype. Shows what the derived status report already knows (its **pages in
- * flow order**, patches by writer, per-service contract coverage, dist/,
- * ownership) and exposes the actions that mutate or re-read it: Open, Export,
- * and the page-table edits (entry, address, rename, remove).
+ * prototype. It is read in three moments, and the screen is arranged by them
+ * rather than by where each fact comes from:
+ *
+ * 1. **Handing over** — can this go out, and what stands in the way? Both live on
+ *    the header's **Delivery** button: the badge beside it is the verdict at a
+ *    glance, and opening it gives every outstanding thing in the reader's language
+ *    (each with a way to where it is settled), the last export's files, and the
+ *    export itself. It is a button rather than the page's first section because
+ *    handing work over is a verdict and a package, not a block of prose to read
+ *    before the work (plan §19.9, revised).
+ * 2. **The work itself**, in this order: the **flow** (the page index — one row per
+ *    page: kind, entry, how many changes belong to it, whether its selectors still
+ *    match, and everything you can do to it — then the page table's own problems),
+ *    then the **requirements** and the **research** behind them.
+ * 3. **Looking into the machinery** — the change list, anchors, service coverage,
+ *    ownership — is not here at all: it is the agent's report (`prototype_tool status`),
+ *    and appears only where a person acts on it, in the Delivery card's gate.
+ *
+ * What is deliberately **not** here: objections and the last verification round. Both
+ * are what one round produced and both are settled in the conversation, so the page
+ * only carries them where they block the handover — in the gate, with "hand it to the
+ * conversation" as their entry (plan §19.10, revised).
+ *
+ * Each section costs one line while it is empty, so an untouched prototype is a
+ * short screen instead of fourteen sections of "nothing here yet".
  *
  * A prototype is a **flow** (plan §19): its pages are the thing being worked on,
- * and their order, kind and entry are the flow's shape. So the page list comes
- * first, one page is marked as what the address root opens, and everything that
- * describes the prototype as a whole (patch totals, services, the deliverable)
- * follows.
+ * and their order, kind and entry are the flow's shape. The page index is also the
+ * **only** place a page's facts and actions appear (see `PrototypesListPanel`):
+ * a page is looked at in the workspace's browser window, so what a page *is* is
+ * read here, beside the flow it belongs to.
+ *
+ * What the report says about the prototype travels as **notices**
+ * (`notices.ts`): `code` + `params` are rendered in the reader's language, and the
+ * sentence the agent prints is kept beside it — in full where a person hands work
+ * over, as the tooltip where a diagnostic is being read.
  *
  * The status is recomputed on the main side on every call — this page never
  * caches it beyond the current render, and re-reads on every `prototypes:changed`
@@ -21,66 +47,109 @@
 import { useTranslation } from 'react-i18next'
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
-import { Download, ExternalLink, Flag, FlagOff, FlaskConical, FolderOpen, Globe, Layers, Link2, MessageSquare, Pencil, Trash2, TriangleAlert, Unlink } from 'lucide-react'
+import { Check, ChevronRight, Download, ExternalLink, File, Flag, FlagOff, FlaskConical, FolderOpen, Globe, MessageSquare, MoreHorizontal, PackageCheck, Pencil, Plus, Trash2, TriangleAlert } from 'lucide-react'
 import { useActiveWorkspace, useAppShellContext } from '@/context/AppShellContext'
 import { navigate, routes } from '@/lib/navigate'
+import { cn } from '@/lib/utils'
+import { usePrototypeAskAgent } from '@/hooks/usePrototypeAskAgent'
 import { sessionMetaMapAtom } from '@/atoms/sessions'
 import { prototypeAutoReplayAtom, setPrototypeAutoReplayAtom } from '@/atoms/prototypes'
-import { Info_Page, Info_Section, Info_Table, Info_Badge, Info_Alert } from '@/components/info'
+import { Info_Page, Info_Section, Info_Badge, Info_Alert, Info_Markdown } from '@/components/info'
+import { DropdownMenu, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import {
+  StyledDropdownMenuContent,
+  StyledDropdownMenuItem,
+} from '@/components/ui/styled-dropdown'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { RenameDialog } from '@/components/ui/rename-dialog'
 import { EditTargetPageDialog } from '@/components/prototypes/EditTargetPageDialog'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@craft-agent/ui'
-import type { CreatedPrototype, PrototypeCommitResult, PrototypeEntry, PrototypeExportResult, PrototypePage, PrototypeStatus } from '@craft-agent/shared/prototypes'
+import {
+  CreatePageDialog,
+  buildNewPageDocument,
+  pageDocumentPath,
+  type CreatePageValues,
+} from '@/components/prototypes/CreatePageDialog'
+import type { PrototypeEntry, PrototypeExportResult, PrototypeNoticeCode, PrototypePage, PrototypeStatus } from '@craft-agent/shared/prototypes'
 
 interface PrototypeInfoPageProps {
   prototypeSlug: string
 }
 
 /**
- * The page name a reference created from an address gets.
+ * What a blocker's action is — where that thing actually gets settled.
  *
- * A reference is a prototype whose one page is the site being studied, and the
- * page has to be marked as *its* entry for `prototype-open` to have somewhere to
- * go. `entry` is the name the data layer itself gives a legacy overlay's page
- * when it promotes it to a row (plan §19.7) — an ordinary page name, not a
- * reserved one.
+ * Two kinds, and the difference is not cosmetic. A page problem or an unmet requirement
+ * is settled **on this page**: the page index and the requirements section hold what it
+ * names, so the action jumps there. An objection and a verification are settled **in the
+ * conversation** — somebody has to answer the objection, a round has to be run — so their
+ * action is an entry: the sentence goes into the draft (`usePrototypeAskAgent`). A jump
+ * button for those two would have been a door into an empty room; the sections that used
+ * to hold them were removed for exactly that reason.
+ *
+ * The mapping lives on this side on purpose: a notice describes the prototype
+ * (`notices.ts`), and which screen settles it is not the prototype's business.
  */
-const REFERENCE_PAGE_NAME = 'entry'
+type BlockerAction =
+  | { kind: 'section'; id: string; titleKey: string }
+  | { kind: 'conversation' }
+
+const BLOCKER_ACTIONS: Partial<Record<PrototypeNoticeCode, BlockerAction>> = {
+  'page.documentMissing': { kind: 'section', id: 'pages', titleKey: 'prototypeInfo.pages' },
+  'page.patchScopeUnmatched': { kind: 'section', id: 'pages', titleKey: 'prototypeInfo.pages' },
+  'requirement.unimplemented': { kind: 'section', id: 'requirements', titleKey: 'prototypeInfo.requirements' },
+  'requirement.undefined': { kind: 'section', id: 'requirements', titleKey: 'prototypeInfo.requirements' },
+  'gate.requirementUnmet': { kind: 'section', id: 'requirements', titleKey: 'prototypeInfo.requirements' },
+  'gate.disputeStanding': { kind: 'conversation' },
+  'gate.checkFailed': { kind: 'conversation' },
+  'gate.checksNeverRun': { kind: 'conversation' },
+  // A response the contract names but nobody wrote is a hole in the delivery, and where it gets
+  // filled is the conversation: the fix is a fixture file or the `x-mock` line that points at it.
+  // Its state is on the screen too, as the service's own line in the Delivery card (same fact,
+  // two readers).
+  'gate.serviceUncovered': { kind: 'conversation' },
+  // No section for the machinery (plan §21.5, revised): a stale record is cleaned up by
+  // the agent — re-applying your patches rewrites the anchors, and a copy whose layer was
+  // folded starts without them.
+  'anchor.orphaned': { kind: 'conversation' },
+}
 
 export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPageProps) {
   const { t } = useTranslation()
   const workspace = useActiveWorkspace()
   const workspaceId = workspace?.id
-  const { onCreateSession } = useAppShellContext()
+  const { onCreateSession, onOpenFile } = useAppShellContext()
   const sessionMetaMap = useAtomValue(sessionMetaMapAtom)
 
   const [status, setStatus] = useState<PrototypeStatus | null>(null)
-  /** Every prototype in the workspace — references are resolved against it. */
-  const [allStatuses, setAllStatuses] = useState<PrototypeStatus[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [exporting, setExporting] = useState(false)
   const [exportResult, setExportResult] = useState<PrototypeExportResult | null>(null)
-  /** The "add a reference" form, which is hidden until it is asked for. */
-  const [referenceFormOpen, setReferenceFormOpen] = useState(false)
-  const [referenceName, setReferenceName] = useState('')
-  const [referenceUrl, setReferenceUrl] = useState('')
-  const [linkingReference, setLinkingReference] = useState(false)
   /** The live page whose address the dialog is changing, if any. */
   const [targetPage, setTargetPage] = useState<PrototypePage | null>(null)
   /** The page the rename dialog is editing, if any. */
   const [renamePage, setRenamePage] = useState<string | null>(null)
   const [renamePageValue, setRenamePageValue] = useState('')
+  /** The page whose row is open in the page index — where its changes and actions are. */
+  const [expandedPage, setExpandedPage] = useState<string | null>(null)
+  /** The "add a page" dialog, hidden until the page index asks for it. */
+  const [createPageOpen, setCreatePageOpen] = useState(false)
+  /** The delivery card, opened from its button in the header (plan §19.9, revised). */
+  const [deliveryOpen, setDeliveryOpen] = useState(false)
+  /** The section a blocker asked to be taken to — scrolled to once it is on screen. */
+  const [focusTarget, setFocusTarget] = useState<string | null>(null)
   /** Failure from Open or Export — both surface the throwing RPC's message verbatim. */
   const [actionError, setActionError] = useState<string | null>(null)
-  /** A recording is being sampled — the import shells out to a decoder, so it takes a moment. */
-  const [importingVideo, setImportingVideo] = useState(false)
-  /** The delta layer is being folded — a write per scope, so it takes a moment. */
-  const [committing, setCommitting] = useState(false)
-  /** What the last commit did (or why it did nothing), in one line. */
-  const [commitOutcome, setCommitOutcome] = useState<string | null>(null)
+  /**
+   * The brief, as the page shows it. The status carries its path rather than its text
+   * (`status.ts`), so it is re-read on every status load — an edit has to show up. The rest of
+   * the folder is listed, not rendered: any format lives there, and what a `.png` or a workbook
+   * wants is its own program.
+   */
+  const [prdContent, setPrdContent] = useState<string | null>(null)
+  /** The entry exists but could not be read: said out loud rather than shown as blank. */
+  const [prdUnreadable, setPrdUnreadable] = useState(false)
   /** Whether an edit under `patches/` is replayed into the open windows (§21.4). */
   const autoReplay = useAtomValue(prototypeAutoReplayAtom)
   const setAutoReplay = useSetAtom(setPrototypeAutoReplayAtom)
@@ -95,7 +164,6 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
     try {
       const result = await window.electronAPI.listPrototypes(workspaceId)
       const list = Array.isArray(result) ? (result as PrototypeStatus[]) : []
-      setAllStatuses(list)
       const found = list.find((item) => item.slug === prototypeSlug)
       if (!found) {
         setStatus(null)
@@ -115,6 +183,53 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
   useEffect(() => {
     loadStatus()
   }, [loadStatus])
+
+  // A different prototype is a different flow: an open row belongs to the flow you
+  // were looking at, not to a page name two prototypes happen to share.
+  useEffect(() => {
+    setExpandedPage(null)
+    setPrdContent(null)
+    setPrdUnreadable(false)
+  }, [prototypeSlug])
+
+  // `PRD.md`, the one file requirements are read from. Re-read on every status load — the
+  // status is what says where it is, and an edit to it arrives as a status change — and
+  // kept while re-reading so a reload does not blank the section for a frame.
+  // Guarded on the slug because a status from the prototype we just left is still in
+  // state for a render: reading it would show the wrong document for that frame.
+  const prdPath =
+    status && status.slug === prototypeSlug ? (status.entryDocument?.path ?? null) : null
+  useEffect(() => {
+    if (!prdPath) {
+      setPrdContent(null)
+      setPrdUnreadable(false)
+      return
+    }
+    let cancelled = false
+    window.electronAPI
+      .readFile(prdPath)
+      .then((text) => {
+        if (cancelled) return
+        setPrdContent(text)
+        setPrdUnreadable(false)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setPrdContent(null)
+        setPrdUnreadable(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [prdPath, status])
+
+  // Take the reader to the section a blocker named. The scroll waits for a commit so it
+  // cannot run before the section is on screen.
+  useEffect(() => {
+    if (!focusTarget) return
+    document.getElementById(focusTarget)?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+    setFocusTarget(null)
+  }, [focusTarget])
 
   // Re-read on artifact changes (event carries only the changed file name).
   // Silent so a burst of patch writes doesn't flash the spinner.
@@ -162,9 +277,7 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
   // `bindToSessionId` is a different thing: it says which conversation owns the
   // window (the toolbar's prototype actions are resolved through it, and the
   // agent's windows are locked to their session). Only set when this prototype
-  // already has a conversation — opening a preview must not create one. A
-  // reference is opened with neither on purpose: it is not this prototype, so its
-  // window must not behave as if it were.
+  // already has a conversation — opening a preview must not create one.
   const openInBrowserPane = useCallback(async (
     url: string,
     options?: { injectPatchesFor?: string; bindToSessionId?: string; prototype?: { slug: string; origin: string } },
@@ -210,6 +323,31 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
     }
   }, [workspaceId, prototypeSlug, openInBrowserPane, prototypeSessions])
 
+  /**
+   * Open one page of this prototype, wherever it lives.
+   *
+   * The address comes from `getPrototypeEntry` *with the page's name*: a live
+   * page's real address is not in the page table at all, and a document's address
+   * exists only while a host is serving prototypes. Passing the page is what makes
+   * "open" mean *this* page rather than the entry — without it the window would
+   * land on whatever `/` happens to open.
+   */
+  const handleOpenPage = useCallback(async (page: PrototypePage) => {
+    if (!workspaceId) return
+    setActionError(null)
+    try {
+      const entry = (await window.electronAPI.getPrototypeEntry(workspaceId, prototypeSlug, page.name)) as PrototypeEntry
+      await openInBrowserPane(entry.url, {
+        ...(entry.injectPatches ? { injectPatchesFor: prototypeSlug } : {}),
+        ...(prototypeSessions[0] ? { bindToSessionId: prototypeSessions[0].id } : {}),
+        ...(entry.origin ? { prototype: { slug: prototypeSlug, origin: entry.origin } } : {}),
+      })
+    } catch (err) {
+      console.error('[PrototypeInfoPage] Failed to open the page:', err)
+      setActionError(err instanceof Error ? err.message : String(err))
+    }
+  }, [workspaceId, prototypeSlug, openInBrowserPane, prototypeSessions])
+
   const handleExport = useCallback(async () => {
     if (!workspaceId) return
     setExporting(true)
@@ -227,48 +365,6 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
       setExporting(false)
     }
   }, [workspaceId, prototypeSlug, loadStatus])
-
-  /**
-   * Fold the delta layer into what owns it (plan §21.3).
-   *
-   * Asked for first, because it is the one action on this page with no undo: the
-   * patches it folds are deleted as files, and what they changed lives on in a
-   * page of ours or in a consolidated patch. The outcome is reported in one line
-   * — including anything left alone, which is the only part a person has to act
-   * on.
-   */
-  const handleCommit = useCallback(async () => {
-    if (!workspaceId || !status) return
-    if (!window.confirm(t('prototypeInfo.commitConfirm', { slug: status.slug }))) return
-
-    setCommitting(true)
-    setActionError(null)
-    setCommitOutcome(null)
-    try {
-      const result = (await window.electronAPI.commitPrototype(workspaceId, status.slug)) as PrototypeCommitResult
-      const folded = result.scopes.reduce((total, scope) => total + scope.folded.length + scope.promoted.length, 0)
-      const refused = result.scopes.reduce((total, scope) => total + scope.refused.length, 0)
-      const unverified = result.scopes.reduce((total, scope) => total + scope.unverified.length, 0)
-
-      const parts = [
-        result.nothingToCommit
-          ? t('prototypeInfo.commitNothing')
-          : t('prototypeInfo.commitDone', { count: folded }),
-      ]
-      if (refused + unverified > 0) {
-        parts.push(t('prototypeInfo.commitIssues', { count: refused + unverified }))
-      }
-      setCommitOutcome(parts.join(' · '))
-      // The patches/ directory just changed — reflect it without waiting for the
-      // watcher, so the list below matches what was just reported.
-      await loadStatus(true)
-    } catch (err) {
-      console.error('[PrototypeInfoPage] Failed to commit prototype:', err)
-      setActionError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setCommitting(false)
-    }
-  }, [workspaceId, status, loadStatus, t])
 
   // Open the conversation for this prototype, reusing the existing one when there
   // is one. A prototype is long-lived and gets revisited, so always creating a new
@@ -292,20 +388,10 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
     }
   }, [workspaceId, prototypeSessions, onCreateSession, prototypeSlug])
 
-  // Open a reference for study: its own entry page. No patches are injected — a
-  // reference is evidence, and its own changes must not land on the page you are
-  // studying.
-  const handleOpenReference = useCallback(async (referenceSlug: string) => {
-    if (!workspaceId) return
-    setActionError(null)
-    try {
-      const entry = (await window.electronAPI.getPrototypeEntry(workspaceId, referenceSlug)) as PrototypeEntry
-      await openInBrowserPane(entry.url)
-    } catch (err) {
-      console.error('[PrototypeInfoPage] Failed to open the reference:', err)
-      setActionError(err instanceof Error ? err.message : String(err))
-    }
-  }, [workspaceId, openInBrowserPane])
+  // "Hand this to the conversation" — for the blockers that are only settled in one
+  // (an objection to answer, a round to run). The rule for which conversation lives in
+  // the hook, because the prototype panel will need the same one (plan §23.4).
+  const askAgent = usePrototypeAskAgent(prototypeSlug)
 
   // Repoint one live page at the same page in another environment (plan §13.2.1).
   //
@@ -325,37 +411,9 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
    * generated page index again (plan §19.3).
    *
    * Every edit is one call to the page table, the same data the agent reaches
-   * through `prototype-entry`: the panel is a caller, not a second rule about
+   * through `entry`: the panel is a caller, not a second rule about
    * what a flow is.
    */
-  /**
-   * Import a recording the user made elsewhere and sample frames out of it.
-   *
-   * The file is chosen in the main process, so no path ever passes through this
-   * page; a dismissed dialog comes back as null and is not an error. Frames land
-   * in `research/frames/`, the same place a live capture writes them, which is
-   * what lets a finding cite either without caring which it was (plan §20.5).
-   */
-  const handleImportVideo = useCallback(async () => {
-    if (!workspaceId) return
-    setImportingVideo(true)
-    setActionError(null)
-    try {
-      const result = (await window.electronAPI.importPrototypeVideo(workspaceId, prototypeSlug, {
-        mode: 'timeline',
-        everyMs: 2000,
-        maxFrames: 40,
-      })) as { frames: number } | null
-      // Null means the dialog was dismissed — nothing to re-read.
-      if (result) await loadStatus(true)
-    } catch (err) {
-      console.error('[PrototypeInfoPage] Failed to import the recording:', err)
-      setActionError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setImportingVideo(false)
-    }
-  }, [workspaceId, prototypeSlug, loadStatus])
-
   const handleSetEntryPage = useCallback(async (pageName: string | null) => {
     if (!workspaceId) return
     setActionError(null)
@@ -417,84 +475,37 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
     }
   }, [workspaceId, prototypeSlug, loadStatus, t])
 
-  // Add a reference: create the prototype that will hold it, give it the page
-  // being studied, and link it.
-  //
-  // Three steps rather than one RPC, and in this order, so the page being built
-  // is never the thing left half-made: if the reference's name is taken, the
-  // create fails and this prototype is untouched.
-  //
-  // The address becomes an **overlay page** marked as that prototype's entry —
-  // the kind and the entry are facts about a page now (plan §19), and a reference
-  // with no entry has nothing to open.
-  const handleAddReference = useCallback(async () => {
-    if (!workspaceId) return
-    const name = referenceName.trim()
-    const url = referenceUrl.trim()
-    if (!name || !url) return
-
-    setLinkingReference(true)
-    setActionError(null)
-    try {
-      const created = (await window.electronAPI.createPrototype(workspaceId, { name })) as CreatedPrototype
-      await window.electronAPI.setPrototypePages(workspaceId, created.slug, {
-        op: 'add',
-        name: REFERENCE_PAGE_NAME,
-        url,
-      })
-      await window.electronAPI.setPrototypePages(workspaceId, created.slug, {
-        op: 'entry',
-        name: REFERENCE_PAGE_NAME,
-      })
-      await window.electronAPI.linkPrototypeReference(workspaceId, prototypeSlug, created.slug)
-      setReferenceFormOpen(false)
-      setReferenceName('')
-      setReferenceUrl('')
-      await loadStatus(true)
-    } catch (err) {
-      console.error('[PrototypeInfoPage] Failed to add a reference:', err)
-      setActionError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setLinkingReference(false)
+  /**
+   * Add one page to this flow.
+   *
+   * The kind decides what has to exist first (plan §19.8): a live page *is* its
+   * address, while a page of ours *is* a document — and the control plane refuses
+   * to declare one that is not there, so the minimal document is written first,
+   * through the one write the host confines to the workspace prototypes folder.
+   *
+   * Adding a page is a decision about this flow, which is why the dialog is here
+   * and not on the sidebar row: the flow is what this section shows.
+   */
+  const handleCreatePage = useCallback(async (values: CreatePageValues) => {
+    if (!workspaceId || !status) return
+    if (values.kind === 'scratch') {
+      await window.electronAPI.writeFile(
+        pageDocumentPath(status.dir, values.name),
+        buildNewPageDocument(values.name),
+      )
     }
-  }, [workspaceId, referenceName, referenceUrl, prototypeSlug, loadStatus])
-
-  const handleRemoveReference = useCallback(async (referenceSlug: string) => {
-    if (!workspaceId) return
-    setActionError(null)
-    try {
-      await window.electronAPI.unlinkPrototypeReference(workspaceId, prototypeSlug, referenceSlug)
-      await loadStatus(true)
-    } catch (err) {
-      console.error('[PrototypeInfoPage] Failed to remove the reference:', err)
-      setActionError(err instanceof Error ? err.message : String(err))
-    }
-  }, [workspaceId, prototypeSlug, loadStatus])
-
-  // Link a prototype that already exists. Any shape qualifies: a reference is
-  // only something to look at, not about what either prototype is — so studying
-  // another flow of ours is the same thing as studying someone's page.
-  const handleLinkExistingReference = useCallback(async (referenceSlug: string) => {
-    if (!workspaceId) return
-    setLinkingReference(true)
-    setActionError(null)
-    try {
-      await window.electronAPI.linkPrototypeReference(workspaceId, prototypeSlug, referenceSlug)
-      setReferenceFormOpen(false)
-      await loadStatus(true)
-    } catch (err) {
-      console.error('[PrototypeInfoPage] Failed to link the reference:', err)
-      setActionError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setLinkingReference(false)
-    }
-  }, [workspaceId, prototypeSlug, loadStatus])
-
-  /** Anything that could be linked, minus this prototype and what is already linked. */
-  const referenceCandidates = useMemo(() => {
-    const linked = new Set(status?.references ?? [])
-    return allStatuses.filter((item) => item.slug !== prototypeSlug && !linked.has(item.slug))
-  }, [allStatuses, prototypeSlug, status?.references])
+    // Deliberately not caught: the dialog shows the control plane's own refusal
+    // (a name already in the table, a name that cannot be a file).
+    await window.electronAPI.setPrototypePages(
+      workspaceId,
+      prototypeSlug,
+      values.kind === 'overlay'
+        ? { op: 'add', name: values.name, url: values.url }
+        : { op: 'add', name: values.name },
+    )
+    setCreatePageOpen(false)
+    await loadStatus(true)
+  }, [workspaceId, prototypeSlug, status, loadStatus])
 
   const handleRevealFolder = useCallback(async () => {
     if (!status) return
@@ -505,21 +516,37 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
     }
   }, [status])
 
-  const writerEntries = status ? Object.entries(status.patches.byWriter) : []
+  /**
+   * Take the reader to the section that holds whatever a blocker named — the page
+   * index or the requirements, the two things a person can act on from here. The
+   * scroll itself happens in the effect above, after the commit.
+   */
+  const focusSection = useCallback((id: string) => {
+    setFocusTarget(id)
+  }, [])
 
   /** The page the address root opens, as the table resolves it. */
   const entryPage = status?.pages.find((page) => page.name === status.entryPage) ?? null
 
   /**
-   * What "Open" will actually do, in terms of the page it lands on (plan §19.3):
-   * a live page opens on the real site with the patches replayed, a page of ours
-   * opens the host's rendering, and with no entry the root shows the page index.
+   * What the header says about the gate.
+   *
+   * A **state**, not the absence of one: "nothing is outstanding" used to be said
+   * by the fact that no warning was on screen, which is not a thing anybody can
+   * read. What it means in detail — what stands in the way, and where each of
+   * those is fixed — is behind the Delivery button it sits next to; this is the
+   * one-line answer to the question the page gets opened with.
    */
-  const openWillOpen = entryPage
-    ? t(entryPage.kind === 'overlay'
-      ? 'prototypeInfo.openWillOpenOverlay'
-      : 'prototypeInfo.openWillOpenScratch', { page: entryPage.name })
-    : t('prototypeInfo.openWillOpenIndex')
+  const gate = !status
+    ? null
+    : status.pages.length === 0
+      ? { color: 'muted' as const, label: t('prototypesList.noPages') }
+      : status.settleBlockers.length > 0
+        ? {
+            color: 'warning' as const,
+            label: t('prototypesList.notSettled', { count: status.settleBlockers.length }),
+          }
+        : { color: 'success' as const, label: t('prototypeInfo.deliveryReady') }
 
   return (
     <Info_Page
@@ -530,34 +557,184 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
       <Info_Page.Header title={status?.slug ?? ''} />
       {status && (
         <Info_Page.Content>
-          <Info_Page.Hero
-            avatar={<FlaskConical className="h-6 w-6 text-foreground/60" />}
-            title={status.slug}
-            // The tagline says where the prototype's address root lands, which is
-            // the one thing about a flow that is not visible from its name.
-            tagline={
-              status.pages.length === 0
-                ? t('prototypeInfo.heroNoPages')
-                : entryPage
-                  ? t('prototypeInfo.heroEntry', { page: entryPage.name })
-                  : t('prototypeInfo.heroIndex')
-            }
-          />
+          <Info_Page.Hero avatar={<FlaskConical className="h-6 w-6 text-foreground/60" />} title={status.slug} />
 
-          {/* Three controls: look at the prototype, go where it gets built, and
-              everything else behind one menu. The nine flat buttons this replaces
-              were mostly variants of "open something", and three of them appeared
-              or vanished with the prototype's state — so the row reshuffled
-              between prototypes and had to be re-read every time. State-dependent
-              actions live in the menu now, which is a fixed list you can learn. */}
-          <div className="flex flex-col gap-1.5">
-            <div className="flex flex-wrap items-center gap-2 pl-1">
+          {/* The state, and the things done from here.
+              The badge answers "can this go out?" on arrival; *why* not, and where
+              each of those is fixed, is behind the Delivery button beside it. Where
+              the address root lands is said once, in the page index — it used to be
+              here, under the buttons and in the index at the same time. */}
+          <div className="flex flex-wrap items-center gap-2 pl-1">
+            {gate && (
+              <Info_Badge color={gate.color} className="!py-0.5 !pl-1.5 !pr-2 !text-[11px]">
+                {gate.label}
+              </Info_Badge>
+            )}
+
+            <div className="ml-auto flex shrink-0 items-center gap-2">
+              {/* Delivery, on the button that does it. It used to be the page's first
+                  section; handing work over is a verdict and a package, and both belong
+                  on the action rather than between the reader and the flow (plan §19.9,
+                  revised). The badge beside it is the verdict at a glance — this is the
+                  list behind it, what the last run produced, and Export.
+
+                  Each gate line is a notice (`notices.ts`): the top line is this
+                  reader's language, the mono line under it is the sentence the agent
+                  prints — kept in full because it is what a person pastes into the
+                  conversation, and two wordings of one verdict would be two answers. */}
+              <Popover open={deliveryOpen} onOpenChange={setDeliveryOpen}>
+                <PopoverTrigger asChild>
+                  <Button size="sm" variant="outline">
+                    <PackageCheck className="h-3.5 w-3.5" />
+                    {t('prototypeInfo.delivery')}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-[26rem] p-0">
+                  <div className="max-h-[70vh] overflow-y-auto">
+                    {status.settleBlockers.length === 0 ? (
+                      <div className="px-4 py-3 text-sm text-foreground/70">
+                        {t('prototypeInfo.deliveryReady')}
+                      </div>
+                    ) : (
+                      <>
+                        <div className="px-4 pt-3 text-xs font-medium text-foreground/70">
+                          {t('prototypeInfo.notSettled')}
+                        </div>
+                        <ul className="divide-y divide-border/30">
+                          {status.settleBlockers.map((blocker) => {
+                            const action = BLOCKER_ACTIONS[blocker.code]
+                            return (
+                              <li key={blocker.text} className="flex items-start gap-3 px-4 py-2.5">
+                                <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-[var(--info-text)]" />
+                                <div className="min-w-0 flex-1">
+                                  <div className="text-sm">
+                                    {t(`prototypeNotice.${blocker.code}`, blocker.params)}
+                                  </div>
+                                  <div className="mt-0.5 font-mono text-xs break-words text-muted-foreground">
+                                    {blocker.text}
+                                  </div>
+                                </div>
+                                {/* The popover closes on the way out: both actions land
+                                    somewhere else (a section, the conversation). */}
+                                {action?.kind === 'section' && (
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="shrink-0 px-2"
+                                    onClick={() => {
+                                      setDeliveryOpen(false)
+                                      focusSection(action.id)
+                                    }}
+                                  >
+                                    {t(action.titleKey)}
+                                  </Button>
+                                )}
+                                {action?.kind === 'conversation' && (
+                                  // Settled in the conversation, so the action is an
+                                  // entry: the agent's own sentence goes into the draft,
+                                  // and nothing is sent until the person adds what they
+                                  // want (`usePrototypeAskAgent`).
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="shrink-0 px-2"
+                                    onClick={() => {
+                                      setDeliveryOpen(false)
+                                      void askAgent(blocker.text)
+                                    }}
+                                  >
+                                    {t('prototypeInfo.askAgent')}
+                                  </Button>
+                                )}
+                              </li>
+                            )
+                          })}
+                        </ul>
+                      </>
+                    )}
+
+                    {/* What the requests do once this is somewhere else. It is the one
+                        service fact a person decides on: a service whose responses are
+                        all faked runs anywhere, one that reaches a real backend needs it
+                        there. Fragments, fixture counts and state belong to the agent's
+                        report — this is one line per service, and the one case that stops
+                        a hand-over is also a line above (plan §21.5). */}
+                    {status.services.length > 0 && (
+                      <div className="border-t border-border/40 px-4 py-3">
+                        <div className="text-xs font-medium text-foreground/70">
+                          {t('prototypeInfo.services')}
+                        </div>
+                        <ul className="mt-1 space-y-1">
+                          {status.services.map((service) => {
+                            const live = service.endpoints - service.mockedEndpoints
+                            return (
+                              <li key={service.slug} className="text-xs">
+                                <span className="font-medium">{service.slug}</span>
+                                <span className="text-muted-foreground">
+                                  {' — '}
+                                  {service.endpoints === 0
+                                    ? t('prototypeInfo.serviceEmpty')
+                                    : live === 0
+                                      ? t('prototypeInfo.serviceFaked')
+                                      : t('prototypeInfo.serviceLive', { count: live })}
+                                </span>
+                                {service.missingFixtures.length > 0 && (
+                                  <span className="ml-1 text-destructive">
+                                    {t('prototypeInfo.serviceMissing', {
+                                      names: service.missingFixtures.join(', '),
+                                    })}
+                                  </span>
+                                )}
+                              </li>
+                            )
+                          })}
+                        </ul>
+                      </div>
+                    )}
+
+                    {/* What the last export left behind, in the names the folder actually
+                        has — a deliverable nobody can point at is a promise, not a result. */}
+                    <div className="border-t border-border/40 px-4 py-3">
+                      <div className="text-xs font-medium text-foreground/70">
+                        {t('prototypeInfo.dist')}
+                      </div>
+                      {status.distFiles.length === 0 ? (
+                        <p className="mt-1 text-xs text-muted-foreground">{t('prototypeInfo.distEmpty')}</p>
+                      ) : (
+                        <ul className="mt-1 space-y-0.5">
+                          {status.distFiles.map((file) => (
+                            <li key={file} className="font-mono text-xs break-all">
+                              {file}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2 border-t border-border/40 px-4 py-3">
+                      <Button
+                        size="sm"
+                        onClick={() => void handleExport()}
+                        // Export needs what its deliverable is built from, and that is
+                        // the same condition as "is there a page that can be shown": our
+                        // documents are packaged, a live page's address is what a content
+                        // script is scoped to. One rule, so one field.
+                        disabled={exporting || !status.pageAvailable}
+                        title={status.pageAvailable ? undefined : t('prototypeInfo.noPageYet')}
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        {exporting ? t('prototypeInfo.exporting') : t('prototypeInfo.export')}
+                      </Button>
+                    </div>
+                  </div>
+                </PopoverContent>
+              </Popover>
+
               <Button
                 size="sm"
                 onClick={() => void handleOpen()}
                 // Nothing to open yet: the button would only produce an error
-                // written for the agent. The alert below says what to do instead,
-                // and the line under this row says where Open would land.
+                // written for the agent. The alert below says what to do instead.
                 disabled={!status.pageAvailable}
                 title={status.pageAvailable ? undefined : t('prototypeInfo.noPageYet')}
               >
@@ -570,49 +747,42 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
                 <MessageSquare className="h-3.5 w-3.5" />
                 {prototypeSessions.length > 0 ? t('prototypeInfo.openChat') : t('prototypeInfo.startChat')}
               </Button>
-
-              {/* Export belongs in the row rather than behind a menu: with the
-                  preparation actions gone there is nothing left to put in one, and
-                  a menu holding a single item is just a click tax. */}
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => void handleExport()}
-                // Export needs what its deliverable is built from, and that is the
-                // same condition as "is there a page that can be shown": our
-                // documents are packaged, a live page's address is what a content
-                // script is scoped to. One rule, so one field.
-                disabled={exporting || !status.pageAvailable}
-                title={status.pageAvailable ? undefined : t('prototypeInfo.noPageYet')}
-              >
-                <Download className="h-3.5 w-3.5" />
-                {exporting ? t('prototypeInfo.exporting') : t('prototypeInfo.export')}
-              </Button>
+              {/* Where it lives on disk, and the one preference that changes what a window
+                  does while you work. Both are the person's occasional business rather than
+                  the page's — the machinery those two used to sit next to is not shown at all
+                  (see the note at the end of this content block). */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="px-2"
+                    aria-label={t('prototypeInfo.moreActions')}
+                    title={status.dir}
+                  >
+                    <MoreHorizontal className="h-3.5 w-3.5" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <StyledDropdownMenuContent align="end">
+                  <StyledDropdownMenuItem onSelect={() => void handleRevealFolder()}>
+                    <FolderOpen className="h-3.5 w-3.5" />
+                    {t('prototypeInfo.openLocation')}
+                  </StyledDropdownMenuItem>
+                  <StyledDropdownMenuItem
+                    onSelect={(event) => {
+                      // The menu is where this lives, not a section of its own; keeping it
+                      // open on toggle is what lets the check mark read as the state.
+                      event.preventDefault()
+                      setAutoReplay(!autoReplay)
+                    }}
+                  >
+                    {autoReplay ? <Check className="h-3.5 w-3.5" /> : <span className="h-3.5 w-3.5" />}
+                    {t('prototypeInfo.autoReplay')}
+                  </StyledDropdownMenuItem>
+                </StyledDropdownMenuContent>
+              </DropdownMenu>
             </div>
-
-            {/* What Open does, said in pages rather than in kinds: which page is
-                opened, and on whose address. */}
-            {status.pageAvailable && (
-              <p className="pl-1 text-xs text-muted-foreground">{openWillOpen}</p>
-            )}
           </div>
-
-          {/* The gate, and it belongs above the files rather than only in the
-              conversation: what still stands between this work and its handover is
-              one verdict, and it is the same list the strict export refuses on and
-              the status output prints. `settleBlockers` is the gate in its own
-              words, carried as data so this screen cannot answer "is it done?"
-              differently from the agent. */}
-          {status.settleBlockers.length > 0 && (
-            <Info_Alert variant="warning" icon={<TriangleAlert className="h-4 w-4" />}>
-              <Info_Alert.Title>{t('prototypeInfo.notSettled')}</Info_Alert.Title>
-              <Info_Alert.Description>
-                {status.settleBlockers.map((reason) => (
-                  <div key={reason} className="font-mono text-xs break-words">{reason}</div>
-                ))}
-              </Info_Alert.Description>
-            </Info_Alert>
-          )}
 
           {/* And that is the whole screen: look at it, change it, hand it over.
               Opening a browser window, studying the target page, importing
@@ -681,43 +851,230 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
             </Info_Alert>
           )}
 
-          {/* Requirements — what the work is *for*, before how it is done. The
-              second line is derived from `@requirement R-00x` markers in patch
-              headers and page documents, so a row without one is a requirement
-              this prototype does not implement (plan §20.1). Findings are shown
-              as evidence, never as implementation: "argued for, never built" must
-              not read as done. */}
+          {/* Pages — the flow itself, and the record of every page in it. One row
+              per page, in flow order: what it is (kind, address or document),
+              whether it carries the entry, how many changes belong to it, and
+              whether its selectors still match. Expanding a row is where that
+              page's changes are read and where everything you can do to it lives.
+
+              This is the *only* place a page's facts and actions are shown. The
+              sidebar has no second level for them (see PrototypesListPanel): a page
+              is looked at in the browser window, and what a page *is* — its type,
+              its entry, the changes it carries — is read here, next to the flow it
+              belongs to. Two surfaces for the same page is how they drift. */}
           <Info_Section
-            title={t('prototypeInfo.requirements')}
-            description={t('prototypeInfo.requirementsHint')}
+            id="pages"
+            title={t('prototypeInfo.pages')}
+            description={status.pages.length > 0
+              ? entryPage
+                ? t('prototypeInfo.pageEntryIs', { page: entryPage.name })
+                : t('prototypeInfo.pageIndexAtRoot')
+              : undefined}
+            actions={
+              <Button size="sm" variant="outline" onClick={() => setCreatePageOpen(true)}>
+                <Plus className="h-3.5 w-3.5" />
+                {t('prototypesList.newPage')}
+              </Button>
+            }
           >
-            {status.requirements.length === 0 ? (
+            {status.pages.length === 0 ? (
               <div className="px-4 py-6 text-sm text-muted-foreground">
-                {t('prototypeInfo.requirementsEmpty')}
+                {t('prototypeInfo.pagesEmpty')}
               </div>
             ) : (
               <ul className="divide-y divide-border/30">
-                {status.requirements.map((requirement) => {
-                  const covered = [
-                    ...requirement.pages,
-                    ...requirement.patches,
-                    ...requirement.findings.map((id) => `${id} (${t('prototypeInfo.findingsShort')})`),
-                  ]
+                {status.pages.map((page) => {
+                  // The page's own slice of the two records: the changes filed
+                  // under it (`patches/<page>/`, plan §19.4) and what this page's
+                  // selectors last matched (plan §21.2). Shared patches replay on
+                  // every page, so they are counted rather than listed here — the
+                  // changes section below is where their own list lives.
+                  const ownChanges = status.patches.entries.filter((entry) => entry.page === page.name)
+                  const sharedChanges = status.patches.entries.filter((entry) => entry.page === null)
+                  const record = status.anchors.files.find((file) => file.page === page.name) ?? null
+                  const stale = (record?.anchors ?? []).filter((anchor) => anchor.matched === 0)
+                  const open = expandedPage === page.name
+                  const addressMissing = page.kind === 'overlay'
+                    ? t('prototypeInfo.pageNoAddress')
+                    : t('prototypeInfo.pageDocumentGone')
+
                   return (
-                    <li key={requirement.id} className="flex items-start gap-3 px-4 py-2">
-                      <span className="shrink-0 pt-0.5 font-mono text-xs text-foreground/70">
-                        {requirement.id}
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm">
-                          {requirement.title || t('prototypeInfo.requirementUntitled')}
-                        </div>
-                        <div className="mt-0.5 font-mono text-xs break-words text-foreground/60">
-                          {covered.length > 0
-                            ? covered.join(', ')
-                            : t('prototypeInfo.requirementUncovered')}
-                        </div>
+                    <li key={page.name}>
+                      <div className="flex items-center gap-2 px-4 py-2">
+                        {/* The whole left side toggles, not just the chevron: a
+                            disclosure control the size of its glyph is one nobody
+                            hits. The open button stays outside it, so the two
+                            never both fire. */}
+                        <button
+                          type="button"
+                          onClick={() => setExpandedPage(open ? null : page.name)}
+                          aria-expanded={open}
+                          aria-label={open ? t('prototypesList.collapse') : t('prototypesList.expand')}
+                          className="flex min-w-0 flex-1 items-center gap-2 rounded text-left"
+                        >
+                          <ChevronRight
+                            className={cn(
+                              'h-3.5 w-3.5 shrink-0 text-foreground/50 transition-transform',
+                              open && 'rotate-90',
+                            )}
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="flex min-w-0 items-center gap-2">
+                              <span className="truncate text-sm font-medium">{page.name}</span>
+                              <Info_Badge color="muted" className="!py-0.5 !pl-1.5 !pr-2 !text-[10px]">
+                                {page.kind === 'overlay'
+                                  ? t('prototypePage.kindOverlayShort')
+                                  : t('prototypePage.kindScratchShort')}
+                              </Info_Badge>
+                              {page.entry && (
+                                <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-accent">
+                                  {t('prototypeInfo.pageEntry')}
+                                </span>
+                              )}
+                            </span>
+                            {/* Where the page lives: the document for a page of ours
+                                (the name *is* the file), its address for a live one. */}
+                            <span className="block truncate font-mono text-xs text-foreground/60">
+                              {page.kind === 'overlay'
+                                ? page.url ?? t('prototypeInfo.pageNoAddress')
+                                : page.file ?? t('prototypeInfo.pageDocumentGone')}
+                            </span>
+                          </span>
+                        </button>
+
+                        <span className="shrink-0 text-xs text-foreground/60">
+                          {t('prototypesList.patchCount', { count: ownChanges.length })}
+                        </span>
+                        {stale.length > 0 && (
+                          <span
+                            className="shrink-0 text-xs text-destructive"
+                            title={stale
+                              .map((anchor) =>
+                                t('prototypeInfo.anchorMissing', {
+                                  date: anchor.lastMatchedAt.slice(0, 10) || '—',
+                                }),
+                              )
+                              .join('\n')}
+                          >
+                            {t('prototypeInfo.pageStaleTargets', { count: stale.length })}
+                          </span>
+                        )}
+
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={!page.url}
+                          title={page.url ? undefined : addressMissing}
+                          onClick={() => void handleOpenPage(page)}
+                        >
+                          <ExternalLink className="h-3.5 w-3.5" />
+                          {t('prototypeInfo.open')}
+                        </Button>
                       </div>
+
+                      {open && (
+                        <div className="space-y-3 border-t border-border/30 bg-foreground/[0.02] px-4 py-3">
+                          <div>
+                            <div className="text-xs font-medium text-foreground/70">
+                              {t('prototypeInfo.pageChanges')}
+                            </div>
+                            {ownChanges.length === 0 ? (
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                {t('prototypeInfo.pageChangesEmpty')}
+                              </p>
+                            ) : (
+                              <ul className="mt-1.5 space-y-1.5">
+                                {ownChanges.map((change) => (
+                                  <li
+                                    key={change.file}
+                                    className="flex flex-wrap items-baseline gap-x-3 gap-y-1"
+                                  >
+                                    <span className="font-mono text-xs break-all">{change.file}</span>
+                                    {change.targets.length === 0 ? (
+                                      // A change that names no selector is the fact
+                                      // worth seeing: nothing can check what it
+                                      // matched (plan §21.1).
+                                      <span className="text-xs text-muted-foreground">
+                                        {t('prototypeInfo.pageNoTarget')}
+                                      </span>
+                                    ) : (
+                                      change.targets.map((target) => {
+                                        const anchor =
+                                          record?.anchors.find((item) => item.target === target) ?? null
+                                        const lost = anchor !== null && anchor.matched === 0
+                                        return (
+                                          <code
+                                            key={target}
+                                            title={
+                                              lost
+                                                ? t('prototypeInfo.anchorMissing', {
+                                                    date: anchor.lastMatchedAt.slice(0, 10) || '—',
+                                                  })
+                                                : undefined
+                                            }
+                                            className={cn(
+                                              'rounded px-1 py-0.5 font-mono text-xs',
+                                              lost ? 'bg-destructive/10 text-destructive' : 'bg-muted',
+                                            )}
+                                          >
+                                            {target}
+                                          </code>
+                                        )
+                                      })
+                                    )}
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                            {sharedChanges.length > 0 && (
+                              <p className="mt-1.5 text-xs text-muted-foreground">
+                                {t('prototypeInfo.pageSharedChanges', { count: sharedChanges.length })}
+                              </p>
+                            )}
+                          </div>
+
+                          {/* Everything you can do to a page, in one row: the entry
+                              is a mark on a row, the address is what a live page
+                              *is*, and the last two are the ones that change the
+                              flow's shape. */}
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => void handleSetEntryPage(page.entry ? null : page.name)}
+                            >
+                              {page.entry ? <FlagOff className="h-3.5 w-3.5" /> : <Flag className="h-3.5 w-3.5" />}
+                              {page.entry ? t('prototypeInfo.pageEntryClear') : t('prototypeInfo.pageSetEntry')}
+                            </Button>
+                            {page.kind === 'overlay' && page.url && (
+                              <Button size="sm" variant="outline" onClick={() => setTargetPage(page)}>
+                                <Globe className="h-3.5 w-3.5" />
+                                {t('prototypeInfo.editPageAddress')}
+                              </Button>
+                            )}
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                setRenamePageValue(page.name)
+                                setRenamePage(page.name)
+                              }}
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                              {t('prototypeInfo.renamePage')}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="text-destructive hover:text-destructive"
+                              onClick={() => void handleRemovePage(page)}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                              {t('prototypeInfo.removePage')}
+                            </Button>
+                          </div>
+                        </div>
+                      )}
                     </li>
                   )
                 })}
@@ -725,98 +1082,142 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
             )}
           </Info_Section>
 
-          {/* The argument against the work (plan §3.7), right after what the work
-              is for. `unresolved` is every dispute that still stands — open, or a
-              record that disagrees with the patches it names — so a stale argument
-              is visible as stale rather than as settled. */}
-          <Info_Section
-            title={t('prototypeInfo.reviews')}
-            description={t('prototypeInfo.reviewsHint')}
-          >
-            {status.reviews.unresolved.length === 0 ? (
-              <div className="px-4 py-6 text-sm text-muted-foreground">
-                {status.reviews.total === 0
-                  ? t('prototypeInfo.reviewsEmpty')
-                  : t('prototypeInfo.reviewsSettled', { count: status.reviews.total })}
-              </div>
-            ) : (
-              <ul className="divide-y divide-border/30">
-                {status.reviews.unresolved.map((dispute) => (
-                  <li key={dispute.id} className="flex items-start gap-3 px-4 py-2">
-                    <span className="shrink-0 pt-0.5 font-mono text-xs text-foreground/70">
-                      {dispute.id}
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm">{dispute.claim ?? t('prototypeInfo.reviewNoClaim')}</div>
-                      <div className="mt-0.5 font-mono text-xs break-words text-foreground/60">
-                        {[dispute.file, dispute.about, dispute.status, dispute.stale ? t('prototypeInfo.reviewStale') : null]
-                          .filter(Boolean)
-                          .join(' · ')}
-                      </div>
-                      {dispute.stale && dispute.staleReason && (
-                        <div className="mt-0.5 text-xs text-foreground/60">{dispute.staleReason}</div>
-                      )}
-                    </div>
+          {/* Everything worth saying out loud about the page table, when there is
+              anything: a row that cannot be read, a declared page whose document
+              is gone, or a `patches/<page>/` that matches no page — each of them a
+              silent failure otherwise (plan §19.4/§19.8). */}
+          {status.pageIssues.length > 0 && (
+            <Info_Section
+              title={t('prototypeInfo.pageIssues')}
+              description={t('prototypeInfo.pageIssuesHint')}
+            >
+              <ul className="divide-y divide-border/30 bg-destructive/5">
+                {status.pageIssues.map((issue) => (
+                  // The translated line is the message; the sentence the agent
+                  // prints is a hover away (`notices.ts`).
+                  <li
+                    key={issue.text}
+                    title={issue.text}
+                    className="px-4 py-2 text-xs text-destructive break-words"
+                  >
+                    {t(`prototypeNotice.${issue.code}`, issue.params)}
                   </li>
                 ))}
               </ul>
-            )}
-          </Info_Section>
+            </Info_Section>
+          )}
 
-          {/* What the checks in the PRD answered last time (plan §20.7). A fact
-              about a run, not about the prototype: nothing here changes a page, and
-              what a red check means for the delivery is the reader's call. */}
+          {/* Requirements — what the work is *for*, before how it is done (plan §20.1).
+              `PRD.md` is the brief and the one file requirements are read from, so what is
+              shown here is the document itself rather than a paraphrase of it — a PRD is
+              prose written to be read, and a list of ids is not the argument. What the
+              document cannot say about itself is which requirement nothing implements: that
+              list is read off `@requirement R-00x` markers in patch headers and page
+              documents, and the findings appear in it as evidence, never as implementation
+              — "argued for, never built" must not read as done. The folder around the brief
+              is the author's, in any format, so its files are only listed by name and opened
+              with whatever program the OS has for them. */}
           <Info_Section
-            title={t('prototypeInfo.acceptance')}
-            description={t('prototypeInfo.acceptanceHint')}
+            id="requirements"
+            title={t('prototypeInfo.requirements')}
+            description={status.entryDocument ? t('prototypeInfo.requirementsHint') : undefined}
+            bare={!status.entryDocument}
           >
-            {status.acceptance === null ? (
-              <div className="px-4 py-6 text-sm text-muted-foreground">
-                {t('prototypeInfo.acceptanceNeverRun')}
-              </div>
+            {!status.entryDocument ? (
+              <p className="pl-1 text-sm text-muted-foreground">
+                {t('prototypeInfo.requirementsEmpty')}
+              </p>
             ) : (
               <>
-                <Info_Table>
-                  <Info_Table.Row
-                    label={t('prototypeInfo.acceptanceRound')}
-                    value={String(status.acceptance.round)}
-                  />
-                  <Info_Table.Row
-                    label={t('prototypeInfo.acceptancePassed')}
-                    value={String(status.acceptance.passed)}
-                  />
-                  <Info_Table.Row
-                    label={t('prototypeInfo.acceptanceFailed')}
-                    value={String(status.acceptance.failed)}
-                  />
-                  <Info_Table.Row
-                    label={t('prototypeInfo.acceptanceSkipped')}
-                    value={String(status.acceptance.skipped)}
-                  />
-                </Info_Table>
-                {/* The red ones by name: a count nobody can act on is the shape of
-                    report this page exists to avoid. */}
-                {status.acceptance.red.length > 0 && (
-                  <ul className="divide-y divide-border/30 border-t border-border/40">
-                    {status.acceptance.red.map((check) => (
-                      <li key={check} className="px-4 py-2 font-mono text-xs break-all text-destructive">
-                        {check}
-                      </li>
-                    ))}
-                  </ul>
+                {prdUnreadable ? (
+                  <p className="px-6 pb-3 text-sm text-destructive">
+                    {t('prototypeInfo.documentUnreadable')}
+                  </p>
+                ) : prdContent !== null ? (
+                  <Info_Markdown fullscreen>{prdContent}</Info_Markdown>
+                ) : null}
+
+                {status.requirements.length > 0 && (
+                  <div className="px-6 pb-3">
+                    <div className="pb-1 text-xs font-medium text-muted-foreground">
+                      {t('prototypeInfo.requirementsCoverage')}
+                    </div>
+                    <ul className="divide-y divide-border/30">
+                      {status.requirements.map((requirement) => {
+                        const covered = [
+                          ...requirement.pages,
+                          ...requirement.patches,
+                          ...requirement.findings.map((id) => `${id} (${t('prototypeInfo.findingsShort')})`),
+                        ]
+                        return (
+                          <li key={requirement.id} className="flex items-start gap-3 py-1.5">
+                            <span className="shrink-0 pt-0.5 font-mono text-xs text-foreground/70">
+                              {requirement.id}
+                            </span>
+                            <div
+                              className={cn(
+                                'min-w-0 flex-1 font-mono text-xs break-words',
+                                covered.length > 0 ? 'text-foreground/60' : 'text-destructive',
+                              )}
+                            >
+                              {covered.length > 0
+                                ? covered.join(', ')
+                                : t('prototypeInfo.requirementUncovered')}
+                            </div>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  </div>
+                )}
+
+                {status.files.length > 0 && (
+                  <div className="px-6 pb-3">
+                    <div className="pb-1 text-xs font-medium text-muted-foreground">
+                      {t('prototypeInfo.requirementsFiles')}
+                    </div>
+                    <ul className="divide-y divide-border/30">
+                      {status.files.map((file) => (
+                        <li key={file.name}>
+                          <button
+                            type="button"
+                            onClick={() => onOpenFile(file.path)}
+                            className="flex w-full items-center gap-2 py-1.5 text-left"
+                          >
+                            <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                            <span className="min-w-0 flex-1 truncate font-mono text-xs">
+                              {file.name}
+                            </span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
                 )}
               </>
             )}
           </Info_Section>
 
+          {/* Objections and the last verification round are **not** shown here.
+              Both are what one round produced, and both are settled in the conversation:
+              somebody has to answer the objection, a verification has to be run — so a
+              section for either could only offer a jump into an empty room. Nothing is
+              lost: the objections that still stand and the checks that came back red are
+              named one by one in the gate above, and their entry is "hand it to the
+              conversation" (plan §19.10, revised). */}
+
           {/* Research — what was learned about other products. Source and
               requirements are the two edges that make a finding more than a
               bookmark, and neither ships with the delivery (plan §20.2). */}
-          <Info_Section title={t('prototypeInfo.research')} description={t('prototypeInfo.researchHint')}>
+          <Info_Section
+            title={t('prototypeInfo.research')}
+            description={t('prototypeInfo.researchHint')}
+            bare={status.findings.length === 0}
+          >
             {status.findings.length === 0 ? (
-              <div className="px-4 py-6 text-sm text-muted-foreground">
+              <p className="pl-1 text-sm text-muted-foreground">
                 {t('prototypeInfo.researchEmpty')}
-              </div>
+              </p>
             ) : (
               <ul className="divide-y divide-border/30">
                 {status.findings.map((finding) => (
@@ -839,53 +1240,10 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
             )}
           </Info_Section>
 
-          {/* Frame captures — the pictures a finding cites (plan §20.3). Listed
-              rather than previewed: the frames are for the model, and the panel's
-              job is to say that a capture exists, how big it is, and whether it
-              is a sample of the session or all of it. */}
-          <Info_Section title={t('prototypeInfo.frames')} description={t('prototypeInfo.framesHint')}>
-            {/* A recording made elsewhere is the other way frames arrive, and the
-                same evidence once they are here. The picker is the main process's,
-                so this button only ever asks for the work. */}
-            <div className="flex flex-wrap items-center gap-2 border-b border-border/30 px-4 py-2">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => void handleImportVideo()}
-                disabled={importingVideo}
-              >
-                <FolderOpen className="h-3.5 w-3.5" />
-                {importingVideo ? t('prototypeInfo.importingVideo') : t('prototypeInfo.importVideo')}
-              </Button>
-              <span className="text-xs text-muted-foreground">{t('prototypeInfo.importVideoHint')}</span>
-            </div>
-            {status.frameCaptures.length === 0 ? (
-              <div className="px-4 py-6 text-sm text-muted-foreground">
-                {t('prototypeInfo.framesEmpty')}
-              </div>
-            ) : (
-              <ul className="divide-y divide-border/30">
-                {status.frameCaptures.map((capture) => (
-                  <li key={capture.session} className="flex items-center gap-3 px-4 py-2">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-sm">{capture.session}</span>
-                        {capture.truncated && (
-                          <Info_Badge color="muted" className="!py-0.5 !pl-1.5 !pr-2 !text-[10px]">
-                            {t('prototypeInfo.frameTruncated')}
-                          </Info_Badge>
-                        )}
-                      </div>
-                      <div className="truncate font-mono text-xs text-foreground/60">{capture.file}</div>
-                    </div>
-                    <span className="shrink-0 text-xs text-foreground/60">
-                      {t('prototypeInfo.frameCount', { count: capture.frames })}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Info_Section>
+          {/* Frame captures are **not** listed here either (plan §20.3, revised).
+              They are pictures for the model, read from `research/frames/*` — a recording
+              somebody else made is brought in by the agent (`sample-video`), which is the
+              same conversation that cites the frames it produced. */}
 
           {/* The silent failures of the layer above — a requirement nothing
               implements, a marker naming an id the PRD does not define, a finding
@@ -896,503 +1254,25 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
               <Info_Alert.Title>{t('prototypeInfo.briefIssues')}</Info_Alert.Title>
               <Info_Alert.Description>
                 {status.briefIssues.map((issue) => (
-                  <div key={issue} className="font-mono text-xs break-words">{issue}</div>
+                  // Translated line, agent's sentence on hover — one wording each,
+                  // both from the same notice (`notices.ts`).
+                  <div key={issue.text} title={issue.text} className="text-xs break-words">
+                    {t(`prototypeNotice.${issue.code}`, issue.params)}
+                  </div>
                 ))}
               </Info_Alert.Description>
             </Info_Alert>
           )}
 
-          {/* Pages — the flow itself, in order. A page is either a document of
-              ours (its file is the page) or a live address, and one row carries
-              the entry: that flag is what `/` opens, and no row carrying it means
-              `/` shows the generated index (plan §19.3). */}
-          <Info_Section
-            title={t('prototypeInfo.pages')}
-            description={status.pages.length > 0
-              ? entryPage
-                ? t('prototypeInfo.pageEntryIs', { page: entryPage.name })
-                : t('prototypeInfo.pageIndexAtRoot')
-              : undefined}
-          >
-            {status.pages.length === 0 ? (
-              <div className="px-4 py-6 text-sm text-muted-foreground">
-                {t('prototypeInfo.pagesEmpty')}
-              </div>
-            ) : (
-              <ul className="divide-y divide-border/30">
-                {status.pages.map((page) => (
-                  <li key={page.name} className="flex items-center gap-2 px-4 py-2">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex min-w-0 items-center gap-2">
-                        <span className="truncate text-sm font-medium">{page.name}</span>
-                        <Info_Badge color="muted" className="!py-0.5 !pl-1.5 !pr-2 !text-[10px]">
-                          {page.kind === 'overlay'
-                            ? t('prototypePage.kindOverlayShort')
-                            : t('prototypePage.kindScratchShort')}
-                        </Info_Badge>
-                        {page.entry && (
-                          <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-accent">
-                            {t('prototypeInfo.pageEntry')}
-                          </span>
-                        )}
-                      </div>
-                      {/* Where the page lives: the document for a page of ours
-                          (the name *is* the file), its address for a live one. */}
-                      <div className="truncate font-mono text-xs text-foreground/60">
-                        {page.kind === 'overlay'
-                          ? page.url ?? t('prototypeInfo.pageNoAddress')
-                          : page.file ?? t('prototypeInfo.pageDocumentGone')}
-                      </div>
-                    </div>
+          {/* Changes, anchors, services and ownership are **not** shown here.
+              They answer "how is this made, and is the machinery healthy" — the agent's
+              questions, not a person's: file names, `@target` selectors, matched counts,
+              mocked endpoints, write violations. The people this page is for meet the
+              same facts where they can act on them: a selector that stopped matching is a
+              red mark on the page's own row in the index above, a missing mock is the page
+              failing in the window, and "can this go out" is the Delivery card.
+              The machinery's reader is `prototype_tool status` (plan §21.5, revised). */}
 
-                    {/* A live page's address is the page, so it is editable in
-                        place — the same page exists in several environments and
-                        switching between them is an ordinary edit (plan §13.2.1). */}
-                    {page.kind === 'overlay' && page.url && (
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <button
-                            type="button"
-                            onClick={() => setTargetPage(page)}
-                            className="shrink-0 inline-flex h-6 w-6 items-center justify-center rounded text-foreground/50 hover:text-foreground hover:bg-foreground/5 transition-colors"
-                            aria-label={t('prototypeInfo.editPageAddress')}
-                          >
-                            <Globe className="h-3.5 w-3.5" />
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent>{t('prototypeInfo.editPageAddress')}</TooltipContent>
-                      </Tooltip>
-                    )}
-
-                    {/* The entry is a mark on a row, so setting it is a click on
-                        the row that should carry it — and clearing it puts the
-                        index back at the root. */}
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <button
-                          type="button"
-                          onClick={() => void handleSetEntryPage(page.entry ? null : page.name)}
-                          className="shrink-0 inline-flex h-6 w-6 items-center justify-center rounded text-foreground/50 hover:text-foreground hover:bg-foreground/5 transition-colors"
-                          aria-label={page.entry ? t('prototypeInfo.pageEntryClear') : t('prototypeInfo.pageSetEntry')}
-                        >
-                          {page.entry ? <FlagOff className="h-3.5 w-3.5" /> : <Flag className="h-3.5 w-3.5" />}
-                        </button>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        {page.entry ? t('prototypeInfo.pageEntryClear') : t('prototypeInfo.pageSetEntry')}
-                      </TooltipContent>
-                    </Tooltip>
-
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setRenamePageValue(page.name)
-                            setRenamePage(page.name)
-                          }}
-                          className="shrink-0 inline-flex h-6 w-6 items-center justify-center rounded text-foreground/50 hover:text-foreground hover:bg-foreground/5 transition-colors"
-                          aria-label={t('prototypeInfo.renamePage')}
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                        </button>
-                      </TooltipTrigger>
-                      <TooltipContent>{t('prototypeInfo.renamePage')}</TooltipContent>
-                    </Tooltip>
-
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <button
-                          type="button"
-                          onClick={() => void handleRemovePage(page)}
-                          className="shrink-0 inline-flex h-6 w-6 items-center justify-center rounded text-foreground/50 hover:text-destructive hover:bg-destructive/10 transition-colors"
-                          aria-label={t('prototypeInfo.removePage')}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </TooltipTrigger>
-                      <TooltipContent>{t('prototypeInfo.removePage')}</TooltipContent>
-                    </Tooltip>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Info_Section>
-
-          {/* Everything worth saying out loud about the page table, when there is
-              anything: a row that cannot be read, a declared page whose document
-              is gone, or a `patches/<page>/` that matches no page — each of them a
-              silent failure otherwise (plan §19.4/§19.8). */}
-          {status.pageIssues.length > 0 && (
-            <Info_Section
-              title={t('prototypeInfo.pageIssues')}
-              description={t('prototypeInfo.pageIssuesHint')}
-            >
-              <ul className="divide-y divide-border/30 bg-destructive/5">
-                {status.pageIssues.map((issue) => (
-                  <li key={issue} className="px-4 py-2 text-xs text-destructive break-words">
-                    {issue}
-                  </li>
-                ))}
-              </ul>
-            </Info_Section>
-          )}
-
-          {/* References — the prototypes this one is studied from. Each stays a
-              separate prototype, which is what keeps its patches out of this
-              prototype's deliverable (plan §14). */}
-          <Info_Section
-            title={t('prototypeInfo.references')}
-            description={status.references.length > 0 ? t('prototypeInfo.referencesHint') : undefined}
-          >
-            {status.references.length === 0 ? (
-              <div className="px-4 py-6 text-sm text-muted-foreground">
-                {t('prototypeInfo.referencesEmpty')}
-              </div>
-            ) : (
-              <ul className="divide-y divide-border/30">
-                {status.references.map((referenceSlug) => {
-                  const reference = allStatuses.find((item) => item.slug === referenceSlug)
-                  return (
-                    <li key={referenceSlug} className="flex items-center gap-2 px-4 py-2">
-                      <button
-                        type="button"
-                        onClick={() => navigate(routes.view.prototypes(referenceSlug))}
-                        className="min-w-0 flex-1 text-left"
-                      >
-                        <div className="truncate text-sm font-medium">{referenceSlug}</div>
-                        {/* What a reference *is* is its flow, so say which of its
-                            pages would open rather than reporting a missing URL. */}
-                        <div className="truncate font-mono text-xs text-foreground/60">
-                          {reference?.entryPage
-                            ? t('prototypeInfo.referenceEntry', { page: reference.entryPage })
-                            : t('prototypeInfo.referenceNoPages')}
-                        </div>
-                      </button>
-                      <Button size="sm" variant="ghost" onClick={() => void handleOpenReference(referenceSlug)}>
-                        <ExternalLink className="h-3.5 w-3.5" />
-                        {t('prototypeInfo.open')}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        aria-label={t('prototypeInfo.removeReference')}
-                        onClick={() => void handleRemoveReference(referenceSlug)}
-                      >
-                        <Unlink className="h-3.5 w-3.5" />
-                      </Button>
-                    </li>
-                  )
-                })}
-              </ul>
-            )}
-
-            <div className="px-4 py-3">
-              {referenceFormOpen ? (
-                <div className="space-y-3">
-                  {/* Linking an existing prototype comes first: it creates nothing,
-                      and it is the only way to study another one of your own. */}
-                  {referenceCandidates.length > 0 && (
-                    <div className="space-y-1.5">
-                      <p className="text-xs text-muted-foreground">{t('prototypeInfo.referenceLinkExisting')}</p>
-                      <div className="flex flex-wrap gap-2">
-                        {referenceCandidates.map((candidate) => (
-                          <Button
-                            key={candidate.slug}
-                            size="sm"
-                            variant="outline"
-                            onClick={() => void handleLinkExistingReference(candidate.slug)}
-                            disabled={linkingReference}
-                          >
-                            {candidate.slug}
-                          </Button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="space-y-2">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Input
-                        value={referenceName}
-                        onChange={(event) => setReferenceName(event.target.value)}
-                        placeholder={t('prototypeInfo.referenceNamePlaceholder')}
-                        className="h-8 w-48"
-                      />
-                      <Input
-                        value={referenceUrl}
-                        onChange={(event) => setReferenceUrl(event.target.value)}
-                        placeholder={t('prototypeInfo.referenceUrlPlaceholder')}
-                        className="h-8 w-72"
-                      />
-                      <Button
-                        size="sm"
-                        onClick={() => void handleAddReference()}
-                        disabled={!referenceName.trim() || !referenceUrl.trim() || linkingReference}
-                      >
-                        <Link2 className="h-3.5 w-3.5" />
-                        {t('prototypeInfo.referenceAdd')}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => setReferenceFormOpen(false)}
-                        disabled={linkingReference}
-                      >
-                        {t('common.cancel')}
-                      </Button>
-                    </div>
-                    {/* Says out loud that this creates a whole prototype — a side
-                        effect nobody would guess from a button labelled "Add". */}
-                    <p className="text-xs text-muted-foreground">{t('prototypeInfo.addReferenceHint')}</p>
-                  </div>
-                </div>
-              ) : (
-                <Button size="sm" variant="outline" onClick={() => setReferenceFormOpen(true)}>
-                  <Link2 className="h-3.5 w-3.5" />
-                  {t('prototypeInfo.addReference')}
-                </Button>
-              )}
-            </div>
-          </Info_Section>
-
-          {/* Patches — the changes, what each is aimed at, and the two controls a
-              reader of them needs: whether an edit is replayed into the open
-              windows (§21.4), and the action that folds the layer into what owns
-              it (§21.3). */}
-          <Info_Section title={t('prototypeInfo.patches')}>
-            <Info_Table>
-              <Info_Table.Row label={t('prototypeInfo.patchTotal')} value={String(status.patches.total)} />
-              {writerEntries.map(([writer, count]) => (
-                <Info_Table.Row
-                  key={writer}
-                  label={writer}
-                  value={String(count)}
-                />
-              ))}
-            </Info_Table>
-
-            {/* One row per patch, with the markers its header declares: the page it
-                belongs to and the selectors it is aimed at. A row with no selector
-                is the fact worth seeing — nothing checks what that patch matched. */}
-            {status.patches.entries.length > 0 && (
-              <ul className="divide-y divide-border/30 border-t border-border/40">
-                {status.patches.entries.map((entry) => (
-                  <li key={entry.file} className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 px-4 py-2">
-                    <span className="font-mono text-xs break-all">{entry.file}</span>
-                    <span className="flex flex-wrap items-center justify-end gap-2">
-                      <span className="text-xs text-muted-foreground">
-                        {entry.page ?? t('prototypeInfo.patchShared')}
-                      </span>
-                      {entry.targets.length === 0 ? (
-                        <span className="text-xs text-muted-foreground">—</span>
-                      ) : (
-                        entry.targets.map((target) => (
-                          <code key={target} className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
-                            {target}
-                          </code>
-                        ))
-                      )}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/40 px-4 py-3">
-              <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                <input
-                  type="checkbox"
-                  checked={autoReplay}
-                  onChange={(event) => setAutoReplay(event.target.checked)}
-                />
-                {t('prototypeInfo.autoReplay')}
-              </label>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => void handleCommit()}
-                disabled={committing || status.patches.total === 0}
-                title={t('prototypeInfo.commitHint')}
-              >
-                <Layers className="h-3.5 w-3.5" />
-                {t('prototypeInfo.commit')}
-              </Button>
-            </div>
-            <p className="px-4 pb-3 text-xs text-muted-foreground">{t('prototypeInfo.autoReplayHint')}</p>
-            {commitOutcome && <p className="px-4 pb-3 text-xs text-muted-foreground">{commitOutcome}</p>}
-          </Info_Section>
-
-          {/* Anchors — what each declared @target matched, and when (plan §21.2).
-              This is what makes a selector's health a fact rather than a guess: an
-              anchor whose last match is in the past is a page that moved, and the
-              patch itself looks exactly like one that works. */}
-          <Info_Section title={t('prototypeInfo.anchors')}>
-            {status.anchors.files.length === 0 ? (
-              <div className="px-4 py-6 text-sm text-muted-foreground">{t('prototypeInfo.anchorsEmpty')}</div>
-            ) : (
-              <ul className="divide-y divide-border/30">
-                {status.anchors.files.map((file) => (
-                  <li key={file.page ?? 'shared'} className="px-4 py-3">
-                    <div className="flex flex-wrap items-baseline gap-2 text-sm font-medium">
-                      {file.page ?? t('prototypeInfo.patchShared')}
-                      {file.url && (
-                        <span className="font-mono text-xs font-normal text-muted-foreground">{file.url}</span>
-                      )}
-                    </div>
-                    <ul className="mt-1 space-y-0.5">
-                      {file.anchors.map((anchor) => (
-                        <li
-                          key={anchor.target}
-                          className="flex flex-wrap items-baseline justify-between gap-x-4 text-xs"
-                        >
-                          <code className="font-mono break-all">{anchor.target}</code>
-                          <span className={anchor.matched > 0 ? 'text-muted-foreground' : 'text-destructive'}>
-                            {anchor.matched > 0
-                              ? t('prototypeInfo.anchorMatched', { count: anchor.matched })
-                              : t('prototypeInfo.anchorMissing', {
-                                  date: anchor.lastMatchedAt.slice(0, 10) || '—',
-                                })}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  </li>
-                ))}
-              </ul>
-            )}
-            {status.anchors.issues.length > 0 && (
-              <ul className="space-y-0.5 border-t border-border/40 px-4 py-3">
-                {status.anchors.issues.map((issue) => (
-                  <li key={issue} className="text-xs text-destructive">
-                    {issue}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Info_Section>
-
-          {/* Services — contract coverage per service */}
-          <Info_Section title={t('prototypeInfo.services')}>
-            {status.services.length === 0 ? (
-              <div className="px-4 py-6 text-sm text-muted-foreground">
-                {t('prototypeInfo.servicesEmpty')}
-              </div>
-            ) : (
-              <ul className="divide-y divide-border/30">
-                {status.services.map((service) => (
-                  <li key={service.slug} className="px-4 py-3">
-                    <div className="text-sm font-medium">{service.slug}</div>
-                    <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-foreground/60">
-                      <span>
-                        {t('prototypeInfo.endpoints')}: {service.endpoints}
-                      </span>
-                      <span>
-                        {t('prototypeInfo.mockedEndpoints')}: {service.mockedEndpoints}
-                      </span>
-                      {/* Only when there is something to say: "keeps state: 0" would read like a
-                          count of something missing, while the fact worth having is that a screen
-                          depends on what the last request did (plan §5.3). */}
-                      {service.statefulEndpoints > 0 && (
-                        <span className="text-foreground/80">
-                          {t('prototypeInfo.statefulEndpoints')}: {service.statefulEndpoints}
-                        </span>
-                      )}
-                      <span>
-                        {t('prototypeInfo.fragments')}: {service.fragments}
-                      </span>
-                      <span>
-                        {t('prototypeInfo.fixtures')}: {service.fixtures}
-                      </span>
-                    </div>
-                    {service.missingFixtures.length > 0 && (
-                      <div className="mt-2">
-                        <div className="text-xs font-medium text-destructive">
-                          {t('prototypeInfo.missingFixtures')}
-                        </div>
-                        <ul className="mt-1 space-y-0.5">
-                          {service.missingFixtures.map((fixture) => (
-                            <li key={fixture} className="font-mono text-xs text-destructive break-all">
-                              {fixture}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Info_Section>
-
-          {/* dist/ contents */}
-          <Info_Section title={t('prototypeInfo.dist')}>
-            {status.distFiles.length === 0 ? (
-              <div className="px-4 py-6 text-sm text-muted-foreground">
-                {t('prototypeInfo.distEmpty')}
-              </div>
-            ) : (
-              <ul className="divide-y divide-border/30">
-                {status.distFiles.map((file) => (
-                  <li key={file} className="px-4 py-2 font-mono text-xs break-all">
-                    {file}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Info_Section>
-
-          {/* Ownership — write violations are the loud part; silence means clean */}
-          <Info_Section
-            title={t('prototypeInfo.ownership')}
-            description={
-              status.ownership.violations.length > 0
-                ? t('prototypeInfo.violations', { violations: status.ownership.violations.length })
-                : undefined
-            }
-          >
-            {status.ownership.violations.length === 0 ? (
-              <div className="px-4 py-3 text-sm text-foreground/70">
-                {t('prototypeInfo.ownershipOk', { inspected: status.ownership.inspected })}
-              </div>
-            ) : (
-              <ul className="divide-y divide-border/30 bg-destructive/5">
-                {status.ownership.violations.map((violation) => (
-                  <li key={`${violation.path}:${violation.reason}`} className="px-4 py-2">
-                    <div className="font-mono text-xs text-destructive break-all">{violation.path}</div>
-                    <div className="text-xs text-foreground/60">{violation.reason}</div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Info_Section>
-
-          {/* Metadata read-out for quick reference. What the flow *is* — its pages,
-          their order and its entry — is in the Pages section rather than here, so
-          this stays what it says: where the prototype lives. */}
-          <Info_Section title={t('prototypeInfo.metadata')}>
-            <Info_Table>
-              <Info_Table.Row label={t('common.slug')} value={status.slug} />
-              <Info_Table.Row label={t('common.location')}>
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="flex-1 min-w-0 truncate font-mono text-xs">{status.dir}</span>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        onClick={handleRevealFolder}
-                        className="shrink-0 inline-flex h-6 w-6 items-center justify-center rounded text-foreground/50 hover:text-foreground hover:bg-foreground/5 transition-colors"
-                        aria-label={t('prototypeInfo.openLocation')}
-                      >
-                        <FolderOpen className="h-3.5 w-3.5" />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent>{t('prototypeInfo.openLocation')}</TooltipContent>
-                  </Tooltip>
-                </div>
-              </Info_Table.Row>
-            </Info_Table>
-          </Info_Section>
         </Info_Page.Content>
       )}
 
@@ -1422,6 +1302,19 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
         onValueChange={setRenamePageValue}
         onSubmit={() => void handleRenamePageSubmit()}
       />
+
+      {/* Adding a page. The kind it asks for decides what has to exist: an
+          address, or a document this writes before declaring the row. */}
+      {status && (
+        <CreatePageDialog
+          open={createPageOpen}
+          slug={prototypeSlug}
+          dir={status.dir}
+          existingNames={status.pages.map((page) => page.name)}
+          onCancel={() => setCreatePageOpen(false)}
+          onSubmit={handleCreatePage}
+        />
+      )}
     </Info_Page>
   )
 }

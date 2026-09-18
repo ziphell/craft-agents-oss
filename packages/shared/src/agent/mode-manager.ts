@@ -18,7 +18,7 @@ import { debug } from '../utils/debug.ts';
 import { dirname, isAbsolute, relative, resolve } from 'path';
 import { getSessionSafeAllowedToolNames } from '@craft-agent/session-tools-core';
 import { FEATURE_FLAGS } from '../feature-flags.ts';
-import { isBrowserToolNameOrAlias } from './browser-tool-names.ts';
+import { resolveToolName } from './tool-names.ts';
 import type { PermissionsContext, MergedPermissionsConfig } from './permissions-config.ts';
 import {
   validateBashCommand,
@@ -1781,6 +1781,9 @@ const ALWAYS_ALLOWED_TOOLS = new Set([
   'LSP',                            // Language server (read-only)
   // Browser automation tool (canonical wrapper)
   'browser_tool',
+  // Prototype workbench (the other door onto the same wrapper): a prototype is built by
+  // writing its files, and the browser wrapper is what turns them into something to look at.
+  'prototype_tool',
 ]);
 
 /**
@@ -1846,9 +1849,9 @@ export function shouldAllowToolInMode(
     }
   }
 
-  // Browser tool aliases (legacy browser_open/browser_snapshot/...)
-  // are normalized centrally to avoid drift across permission checks.
-  if (isBrowserToolNameOrAlias(toolName)) {
+  // The browser tool is read-only by nature, under any of its spellings — the old split names
+  // (browser_open/browser_snapshot/…) included, which is why the judgement is central.
+  if (resolveToolName(toolName) === 'browser') {
     return { allowed: true };
   }
 

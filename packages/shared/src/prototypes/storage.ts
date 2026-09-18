@@ -106,6 +106,56 @@ export function getPrototypeAcceptancePath(workspaceRootPath: string, slug: stri
   return join(getPrototypeDirPath(workspaceRootPath, slug), PROTOTYPE_ACCEPTANCE_DIRNAME)
 }
 
+/** One file of a prototype's own directory: a name to show, and the absolute path to open. */
+export interface PrototypeFileEntry {
+  name: string
+  path: string
+}
+
+/**
+ * The files in a prototype's own directory, with one of them picked out as the entry.
+ *
+ * Everything directly in that directory, in file-name order, in **any format** (§20.1): what an
+ * author keeps beside the brief is a screenshot, a spreadsheet or a design file as often as it is
+ * prose, and the folder is theirs. That is also why there is no filter here — not by extension,
+ * and not by ownership, which has nothing to say about a folder nobody contends for
+ * (`ownership.ts`).
+ *
+ * The entry is returned separately rather than dropped: it is the file the workbench reads
+ * requirements out of, and a caller that renders it does not want it listed twice.
+ *
+ * Hidden files are skipped — an editor's swap file is not something the author put there — and
+ * directories are not listed at all: this is a list of *files*, and the directories beside them
+ * have their own readers.
+ */
+export function listPrototypeFiles(
+  workspaceRootPath: string,
+  slug: string,
+  entryName: string,
+): { entry: PrototypeFileEntry | null; files: PrototypeFileEntry[] } {
+  const dir = getPrototypeDirPath(workspaceRootPath, slug)
+
+  let names: string[]
+  try {
+    names = readdirSync(dir, { withFileTypes: true })
+      .filter((item) => item.isFile() && !item.name.startsWith('.'))
+      .map((item) => item.name)
+      .sort()
+  } catch {
+    // No directory is an empty directory: a prototype that has not been created yet, or one
+    // whose directory was removed behind us.
+    return { entry: null, files: [] }
+  }
+
+  const toEntry = (name: string): PrototypeFileEntry => ({ name, path: join(dir, name) })
+  const entry = names.includes(entryName) ? toEntry(entryName) : null
+
+  return {
+    entry,
+    files: names.filter((name) => name !== entryName).map(toEntry),
+  }
+}
+
 /**
  * A short content fingerprint of a patch, for the one thing a fingerprint is for here: telling
  * "this file changed" from "this file is as it was" without keeping a copy of it.
@@ -161,8 +211,8 @@ function readPatch(
  * order never matters.
  *
  * Two rules, both stated rather than inherited:
- * - the consolidated layer (`commit.ts`) is checked **first**, and **by rule**: what a commit
- *   folded together has to replay after everything it folded;
+ * - the consolidated layer (`fold.ts`) is checked **first**, and **by rule**: what a fold
+ *   brought together has to replay after everything it folded;
  * - the writer id is **not** a sort key. It used to be, which meant a patch's position depended
  *   on what the other writers happened to be called — and now that a writer id can be anything
  *   the graph declares, that dependency would be a way to reorder history by renaming a writer.

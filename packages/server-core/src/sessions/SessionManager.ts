@@ -8,7 +8,7 @@ import { basename, dirname, join } from 'path'
 import { existsSync } from 'fs'
 import { readFile, writeFile, mkdir } from 'fs/promises'
 import { randomUUID } from 'node:crypto'
-import { type AgentEvent, setPermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserPaneFns, generateConversationSummary, resolveKeepBackgroundTasksAlive } from '@craft-agent/shared/agent'
+import { type AgentEvent, setPermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserPaneFns, generateConversationSummary, resolveKeepBackgroundTasksAlive, resolveToolName } from '@craft-agent/shared/agent'
 import type { BrowserInstanceInfo, BrowserTabSummary, TabBelongsTo } from '@craft-agent/shared/protocol'
 import { sameTask, sameWork, workOfSession } from '@craft-agent/shared/protocol'
 import {
@@ -24,15 +24,8 @@ import {
   createPrototype as createNewPrototype,
   setPrototypePageUrl as setPrototypePageUrlImpl,
   updatePrototypePages,
-  linkPrototypeReference as linkReference,
-  unlinkPrototypeReference as unlinkReference,
-  commitPrototype as commitPrototypeArtifacts,
 } from '@craft-agent/shared/prototypes'
 import { applyPrototypeToBrowser, clearPrototypeFromBrowser } from '../domain/apply-prototype'
-import {
-  startPrototypeFrameCapture,
-  stopPrototypeFrameCapture,
-} from '../domain/record-prototype-frames'
 import { importPrototypeVideo as importPrototypeVideoArtifacts } from '../domain/import-prototype-video'
 import { verifyPrototype as verifyPrototypeArtifacts } from '../domain/verify-prototype'
 import { describePrototypeAtPage } from '../domain/prototype-page'
@@ -137,7 +130,7 @@ import { buildBackendRuntimeSignature, buildRestartRequiredSignature, filterAtta
 import { validateArchiveTarget } from './archive-guards'
 
 // Import from server-core domain utilities
-import { sanitizeForTitle, shouldActivateBrowserOverlay, normalizeBrowserToolName, rollbackFailedBranchCreation, releaseBrowserOnForcedStop } from '@craft-agent/server-core/domain'
+import { sanitizeForTitle, shouldActivateBrowserOverlay, rollbackFailedBranchCreation, releaseBrowserOnForcedStop } from '@craft-agent/server-core/domain'
 import { resizeImageForAPI, resizeIconBuffer } from '@craft-agent/server-core/services'
 export { sanitizeForTitle }
 
@@ -660,10 +653,10 @@ async function resolveToolDisplayMeta(
       if (internalServer) {
         const displayName = internalServer[toolSlug]
         if (displayName) {
-          const normalizedBrowserTool = normalizeBrowserToolName(toolSlug)
+          const isBrowserTool = resolveToolName(toolSlug) === 'browser'
           return {
             displayName,
-            iconDataUrl: normalizedBrowserTool ? await getBrowserToolIconDataUrl() : undefined,
+            iconDataUrl: isBrowserTool ? await getBrowserToolIconDataUrl() : undefined,
             category: 'native' as const,
           }
         }
@@ -746,17 +739,11 @@ async function resolveToolDisplayMeta(
     }
   }
 
-  // Native browser tool names (with Chrome icon)
-  const normalizedBrowserToolName = normalizeBrowserToolName(toolName)
-  if (normalizedBrowserToolName) {
-    const browserDisplayName = normalizedBrowserToolName
-      .split('_')
-      .map((part, index) => (index === 0 ? part : part.charAt(0).toUpperCase() + part.slice(1)))
-      .join(' ')
-      .replace(/^browser\s+/i, 'Browser ')
-
+  // The browser tool's own name (with the Chrome icon). Its canonical name is the label: the
+  // legacy split names answer "browser" too, and they are the same tool.
+  if (resolveToolName(toolName) === 'browser') {
     return {
-      displayName: browserDisplayName,
+      displayName: 'Browser Tool',
       iconDataUrl: await getBrowserToolIconDataUrl(),
       category: 'native' as const,
     }
@@ -779,6 +766,8 @@ async function resolveToolDisplayMeta(
     'NotebookEdit': 'Edit Notebook',
     'KillShell': 'Kill Shell',
     'TaskOutput': 'Task Output',
+    // The prototype workbench: it drives the same window, but it is not the browser (no Chrome icon).
+    'prototype_tool': 'Prototype',
   }
 
   const nativeDisplayName = nativeToolNames[toolName]
@@ -895,7 +884,7 @@ interface ManagedSession {
   projectId?: string
   // Prototype binding (slug under the workspace's prototypes/ folder; undefined = unbound).
   // Resolved into <prototype_context> for the agent and used as the default
-  // target of every `prototype-*` browser_tool command.
+  // target of every `prototype_tool` command.
   prototypeSlug?: string
   // Parent session id — when set, this session is a subtask of the parent (undefined = top-level task)
   parentSessionId?: string
@@ -4138,17 +4127,6 @@ export class SessionManager implements ISessionManager {
             bindPrototype: async (prototypeSlug) => {
               await this.setSessionPrototypeSlug(managed.id, prototypeSlug)
             },
-            // Pure config writes against two separate prototypes. Kept as the only
-            // supported way to connect them: a reference's patches must never end
-            // up in the reader's patches/ (they would ship inside its deliverable).
-            linkPrototypeReference: async (prototypeSlug, referenceSlug) => {
-              const config = linkReference(managed.workspace.rootPath, prototypeSlug, referenceSlug)
-              return { references: config.references ?? [] }
-            },
-            unlinkPrototypeReference: async (prototypeSlug, referenceSlug) => {
-              const config = unlinkReference(managed.workspace.rootPath, prototypeSlug, referenceSlug)
-              return { references: config.references ?? [] }
-            },
             applyPrototype: async (prototypeSlug, options) => {
               const { instanceId, tabId } = await resolveCommandTarget('browser_prototype_apply')
               // The tab is named, not looked up: the apply reads *which page of the prototype*
@@ -4159,26 +4137,6 @@ export class SessionManager implements ISessionManager {
             clearPrototype: async (prototypeSlug) => {
               const { instanceId, tabId } = await resolveCommandTarget('browser_prototype_clear')
               return clearPrototypeFromBrowser(bpm, instanceId, prototypeSlug, tabId)
-            },
-            // Folding the delta layer is a pure file operation — no browser, no
-            // session state — because it is about where a change *lives*, not about
-            // the page it is on (plan §21.3). Open windows pick it up through the
-            // file watcher's auto-replay.
-            commitPrototype: async (prototypeSlug, options) => {
-              return commitPrototypeArtifacts(managed.workspace.rootPath, prototypeSlug, options)
-            },
-            // Frames are evidence, not a deliverable: they are written under the
-            // prototype's `research/` and ship with nothing (plan §20.3). The
-            // window is resolved like every other browser command's, so a capture
-            // runs against the window this session already has — and against the
-            // tab it works from, which is where the evidence is.
-            startPrototypeFrames: async (options) => {
-              const { instanceId, tabId } = await resolveCommandTarget('browser_prototype_record')
-              return startPrototypeFrameCapture(bpm, instanceId, options, tabId)
-            },
-            stopPrototypeFrames: async (prototypeSlug) => {
-              const { instanceId } = await resolveCommandTarget('browser_prototype_record')
-              return stopPrototypeFrameCapture(bpm, instanceId, managed.workspace.rootPath, prototypeSlug)
             },
             // No browser instance: a recording is decoded by a hidden window, not
             // by the one the session is driving, so this works in a session that
@@ -4831,7 +4789,7 @@ export class SessionManager implements ISessionManager {
           workingDirectory: request.workingDirectory,
           projectId: request.projectId ?? managed.projectId,
           // A subtask of a prototype-bound session works on the same prototype —
-          // inheriting it is what keeps the child's prototype-* commands aimed at
+          // inheriting it is what keeps the child's prototype_tool commands aimed at
           // the right prototype without the parent having to pass it down.
           prototypeSlug: managed.prototypeSlug,
           // Spawned sessions become subtasks of the spawning session.
@@ -8003,7 +7961,7 @@ export class SessionManager implements ISessionManager {
    *
    * Binding is what makes the conversation usable without naming artifacts:
    * the agent gets the prototype as `<prototype_context>` in its system prompt
-   * and every `prototype-*` browser_tool command defaults to it.
+   * and every `prototype_tool` command defaults to it.
    *
    * The slug is NOT validated against disk here — a prototype can legitimately
    * be deleted and re-created while a session stays bound, and refusing to bind

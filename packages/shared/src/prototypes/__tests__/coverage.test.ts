@@ -4,7 +4,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import {
   buildPrototypeStatus,
-  commitPrototype,
+  foldPrototype,
   exportPrototype,
   extractRequirementIds,
   getPrototypeDirPath,
@@ -15,6 +15,7 @@ import {
   parsePrototypeFinding,
   parsePrototypePrd,
   readPrototypeFindings,
+  readPrototypeRequirements,
   writePrototypeConfig,
 } from '..'
 
@@ -36,7 +37,7 @@ function makePrototype(slug = 'checkout-flow'): string {
 }
 
 function writePrd(slug: string, source: string): void {
-  writeFileSync(join(getPrototypeDirPath(workspaceRoot, slug), 'prd.md'), source, 'utf-8')
+  writeFileSync(join(getPrototypeDirPath(workspaceRoot, slug), 'PRD.md'), source, 'utf-8')
 }
 
 function writePatch(slug: string, name: string, source: string): void {
@@ -222,11 +223,17 @@ describe('the thread from a requirement to what implements it', () => {
     // PRD order, not discovery order: the document's order is part of its argument.
     expect(repaired.requirements.map((requirement) => requirement.id)).toEqual(['R-001', 'R-002', 'R-003'])
 
-    expect(repaired.briefIssues.join('\n')).toContain('R-003 is in prd.md but no page or patch refers to it')
-    expect(repaired.briefIssues.join('\n')).toContain('patches/A-002-unknown.css refers to R-009')
+    // The notices are codes plus params; `text` is the sentence the agent prints.
+    const briefIssues = repaired.briefIssues.map((issue) => issue.text).join('\n')
+    expect(briefIssues).toContain('R-003 is in PRD.md but no page or patch refers to it')
+    expect(briefIssues).toContain('patches/A-002-unknown.css refers to R-009')
     // The requirement has a patch before the page marker is added — the first
     // report is what a prototype looks like while it is being built.
-    expect(status.briefIssues.join('\n')).not.toContain('R-001 is in prd.md')
+    expect(status.briefIssues.map((issue) => issue.text).join('\n')).not.toContain('R-001 is in PRD.md')
+    expect(repaired.briefIssues.map((issue) => issue.code)).toEqual([
+      'requirement.unimplemented',
+      'requirement.undefined',
+    ])
   })
 
   it('ships the thread inside the dev spec, and keeps research out of the package', () => {
@@ -263,7 +270,7 @@ describe('the thread from a requirement to what implements it', () => {
     expect(before.requirements[0]?.patches).toEqual(['patches/cart/A-001-sticky.css'])
     expect(before.unresolved.unmet).toEqual([])
 
-    commitPrototype(workspaceRoot, slug)
+    foldPrototype(workspaceRoot, slug)
 
     // The change is in the page's own stylesheet now, with its markers kept.
     const folded = readFileSync(join(getPrototypeDirPath(workspaceRoot, slug), 'assets', 'cart', 'committed.css'), 'utf-8')

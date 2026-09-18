@@ -168,6 +168,24 @@ export function matchPatternForUrl(url: string): string | null {
   return `${parsed.protocol}//${parsed.host}${path}*`
 }
 
+/**
+ * The pattern for a live page, or a throw naming the page it could not scope.
+ *
+ * A page that cannot become a pattern is an error rather than a page that quietly gets
+ * no patches — silently covering one page less is the failure this design keeps
+ * avoiding.
+ */
+export function requireMatchPattern(slug: string, page: string, url: string): string {
+  const pattern = matchPatternForUrl(url)
+  if (!pattern) {
+    throw new Error(
+      `Prototype "${slug}" page "${page}" records "${url}", which is not an address a browser can match on. ` +
+        `Include the scheme, e.g. https://app.example.com/checkout`,
+    )
+  }
+  return pattern
+}
+
 export interface ExtensionFile {
   /** Path inside `dist/extension/`. */
   path: string
@@ -785,18 +803,9 @@ export function buildExtensionPackage(input: ExtensionPackageInput): ExtensionPa
     warnings.push(...page.warnings.map((warning) => `${document.path}: ${warning}`))
   }
 
-  // Each overlay page gets its own pattern and its own file list. A page that
-  // cannot become a pattern is an error rather than a page that quietly gets no
-  // patches — silently covering one page less is the failure this design keeps
-  // avoiding.
+  // Each overlay page gets its own pattern and its own file list.
   const targets = overlayPages.map((page) => {
-    const pattern = matchPatternForUrl(page.url)
-    if (!pattern) {
-      throw new Error(
-        `Prototype "${slug}" page "${page.page}" records "${page.url}", which is not an address a browser can match on. ` +
-          `Include the scheme, e.g. https://app.example.com/checkout`,
-      )
-    }
+    const pattern = requireMatchPattern(slug, page.page, page.url)
 
     const bundle = buildPagePatchBundle(slug, page.page, patches)
     if (bundle) files.push(bundle)

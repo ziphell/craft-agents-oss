@@ -5,7 +5,7 @@ import {
   getSessionScopedToolCallbacks,
   unregisterSessionScopedToolCallbacks,
 } from '../session-scoped-tools.ts';
-import type { BrowserPaneFns } from '../browser-tools.ts';
+import type { BrowserPaneFns } from '../browser-pane.ts';
 
 describe('session-scoped tool callback merge', () => {
   const sessionId = 'test-session-merge';
@@ -44,7 +44,6 @@ describe('session-scoped tool callback merge', () => {
       pick: async () => null,
       applyPrototype: async (slug: string) => ({ slug, applied: 0, files: [], skipped: [] }),
       clearPrototype: async (slug: string) => ({ slug, removed: [] }),
-      commitPrototype: async (slug: string) => ({ slug, scopes: [], nothingToCommit: true }),
       verifyPrototype: async (slug: string) => ({
         slug,
         page: null,
@@ -59,14 +58,17 @@ describe('session-scoped tool callback merge', () => {
         statePath: `/tmp/prototypes/${slug}/acceptance/state.json`,
         results: [],
       }),
-      startPrototypeFrames: async () => ({
-        startedAt: '2026-09-15T00:00:00.000Z',
-        intervalMs: 400,
-        threshold: 0.005,
-        maxFrames: 60,
+      importPrototypeVideo: async () => ({
+        session: 'import-demo-20260915-000000',
+        video: 'research/videos/demo.mp4',
+        frames: 3,
+        files: ['research/frames/import-demo-20260915-000000/frame-0001.jpg'],
+        truncated: false,
+        durationMs: 12_000,
+        images: [
+          { path: '/tmp/prototypes/checkout-flow/research/frames/import-demo-20260915-000000/frame-0001.jpg', bytes: new Uint8Array([1]) },
+        ],
       }),
-      stopPrototypeFrames: async () => null,
-      importPrototypeVideo: async () => null,
       exportPrototype: async (slug: string) => ({
         slug,
         extensionDir: '/tmp/prototypes/checkout-flow/dist/extension',
@@ -112,11 +114,12 @@ describe('session-scoped tool callback merge', () => {
       prototypeStatus: async (slug: string) => ({
         slug,
         dir: '/tmp/prototypes',
-        references: [],
         pages: [],
         entryPage: null,
         pageIssues: [],
         requirements: [],
+        entryDocument: null,
+        files: [],
         findings: [],
         briefIssues: [],
         frameCaptures: [],
@@ -150,8 +153,6 @@ describe('session-scoped tool callback merge', () => {
       }),
       setPrototypePages: async (slug: string) => ({ slug, pages: [], note: 'no change' }),
       bindPrototype: async (_slug: string | null) => {},
-      linkPrototypeReference: async (_slug: string, referenceSlug: string) => ({ references: [referenceSlug] }),
-      unlinkPrototypeReference: async () => ({ references: [] }),
       focusWindow: async () => ({ instanceId: 'browser-1', title: 'Example', url: 'https://example.com' }),
       createTab: async () => 'tab-1',
       targetTab: async () => {},

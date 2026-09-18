@@ -12,6 +12,7 @@ import { existsSync, readdirSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { getWorkspacePrototypesPath } from '../workspaces/storage.ts'
 import { readPrototypeConfig } from './config.ts'
+import { notice, type PrototypeNotice } from './notices.ts'
 import { buildMockRoutes, composeContract, listContractServices, loadContractService } from './contract.ts'
 import { describePrototypePages, findEntryPage, type PrototypePage } from './pages.ts'
 import { resolvePrototypeOwnership } from './ownership.ts'
@@ -19,7 +20,7 @@ import { resolveRequirementCoverage, type RequirementDispute } from './coverage.
 import { listFrameCaptures } from './frames.ts'
 import { readAllPrototypeAnchors, resolveAnchorOrphans, SHARED_ANCHOR_SCOPE, type PrototypeAnchor } from './anchors.ts'
 import { readPrototypeFindings } from './research.ts'
-import type { PrototypeCheck } from './requirements.ts'
+import { PROTOTYPE_PRD_FILENAME, type PrototypeCheck } from './requirements.ts'
 import { readAcceptanceState, summarizeAcceptance, type AcceptanceSummary } from './acceptance.ts'
 import type { PrototypeReviewStatus } from './reviews.ts'
 import { prototypeOriginUrl } from './url.ts'
@@ -27,9 +28,11 @@ import {
   getPrototypeDistPath,
   getPrototypePatchesPath,
   getPrototypeDirPath,
+  listPrototypeFiles,
   listPrototypePatchPages,
   patchFingerprint,
   scanPrototypePatches,
+  type PrototypeFileEntry,
 } from './storage.ts'
 
 export interface PrototypeStatusService {
@@ -102,13 +105,6 @@ export interface PrototypeStatus {
   /** Absolute path to the prototype's directory. */
   dir: string
   /**
-   * Slugs of prototypes this one is studied from (plan §14). Raw slugs rather
-   * than resolved values: callers that need more join against their own status
-   * list, and the one caller that needs a page (the prompt) resolves it from that
-   * reference's own table.
-   */
-  references: string[]
-  /**
    * The pages of this prototype, in flow order (plan §19): declared rows first,
    * then the documents nobody declared, by name.
    */
@@ -124,14 +120,30 @@ export interface PrototypeStatus {
    * (`config.ts`), a declared page whose document is gone, and a
    * `patches/<name>/` directory that matches no page. All three are silent
    * failures otherwise — a screen that is not there, or a patch nothing replays.
+   *
+   * Notices rather than sentences (`notices.ts`): the panel shows these in the
+   * reader's language, the agent prints `text`.
    */
-  pageIssues: string[]
+  pageIssues: PrototypeNotice[]
   /**
    * The PRD's requirements, each with the pages, patches and findings that refer
-   * to it (plan §20.1). Empty when there is no `prd.md`, which is the honest
+   * to it (plan §20.1). Empty when there is no `PRD.md`, which is the honest
    * state of a prototype whose requirements have not been written down yet.
    */
   requirements: PrototypeStatusRequirement[]
+  /**
+   * `PRD.md` — the brief, and the one file requirements are read from (plan §20.1). Null when it
+   * has not been written down yet, which is the honest state of a prototype just created.
+   */
+  entryDocument: PrototypeFileEntry | null
+  /**
+   * Everything else in the prototype's own directory, in **any format** — the folder is the
+   * author's and there is no rule about what may sit in it (`listPrototypeFiles`).
+   *
+   * Paths rather than text: the panel reads what it shows through `file:read`, and a list of
+   * status reports is no place to carry every prototype's files.
+   */
+  files: PrototypeFileEntry[]
   /** Findings under `research/` — what was learned about other products (plan §20.2). */
   findings: PrototypeStatusFinding[]
   /**
@@ -176,7 +188,7 @@ export interface PrototypeStatus {
    * runtime function from the shared barrel (dev doc §3.6), so the verdict travels with the facts
    * it was reached from. Empty when there is nothing outstanding.
    */
-  settleBlockers: string[]
+  settleBlockers: PrototypeNotice[]
   /**
    * Everything worth saying about the PRD and the research: an entry that could
    * not be read, a requirement nothing implements, a reference to an id the PRD
@@ -184,7 +196,7 @@ export interface PrototypeStatus {
    * disk. Each is a silent failure otherwise — precisely the kind this report
    * exists to make loud.
    */
-  briefIssues: string[]
+  briefIssues: PrototypeNotice[]
   /**
    * Frame captures of the browser window, newest first (plan §20.3).
    *
@@ -257,7 +269,7 @@ export interface PrototypeStatus {
      * record left behind. Named rather than dropped: a record that outlives its
      * patch is how a stale selector keeps looking checked.
      */
-    issues: string[]
+    issues: PrototypeNotice[]
   }
   services: PrototypeStatusService[]
   /**
@@ -345,8 +357,10 @@ export function buildPrototypeStatus(workspaceRootPath: string, slug: string): P
   for (const patchPage of listPrototypePatchPages(workspaceRootPath, slug)) {
     if (!pageNames.has(patchPage)) {
       issues.push(
-        `patches/${patchPage}/ belongs to no page of this prototype, so nothing there is replayed. ` +
-          `Pages: ${[...pageNames].join(', ') || 'none'}`,
+        notice('page.patchScopeUnmatched', {
+          name: patchPage,
+          pages: [...pageNames].join(', ') || 'none',
+        }),
       )
     }
   }
@@ -356,10 +370,17 @@ export function buildPrototypeStatus(workspaceRootPath: string, slug: string): P
   // The thread from the PRD to what implements it, derived in one place so this
   // report and the delivered dev spec cannot disagree (see `coverage.ts`).
   const coverage = resolveRequirementCoverage(workspaceRootPath, slug)
+  // The prototype's own files, and which of them is the brief. No filter of any kind: the folder
+  // is the author's, and what sits in it is their business (plan §20.1).
+  const { entry: entryDocument, files } = listPrototypeFiles(
+    workspaceRootPath,
+    slug,
+    PROTOTYPE_PRD_FILENAME,
+  )
   const findings = readPrototypeFindings(workspaceRootPath, slug)
   const frameCaptures = listFrameCaptures(workspaceRootPath, slug)
   // What the checks answered last time: a fact about a run, so it is read from the record
-  // `prototype-verify` wrote rather than remembered here.
+  // `verify` wrote rather than remembered here.
   const acceptance = summarizeAcceptance(readAcceptanceState(workspaceRootPath, slug))
 
   // Anchors: what each declared `@target` matched, and which records nothing
@@ -368,22 +389,19 @@ export function buildPrototypeStatus(workspaceRootPath: string, slug: string): P
   // is reported by an apply.
   const anchorFiles = readAllPrototypeAnchors(workspaceRootPath, slug)
   const anchors = resolveAnchorOrphans(anchorFiles, patches)
-  const anchorIssues = anchors.orphaned.map(
-    (anchor) =>
-      `anchors/${anchor.target} was recorded but no patch declares it any more — the patch was edited or ` +
-      `removed, and the record outlived it.`,
-  )
+  const anchorIssues = anchors.orphaned.map((anchor) => notice('anchor.orphaned', { target: anchor.target }))
 
   const briefIssues = [...coverage.issues]
 
   const report: Omit<PrototypeStatus, 'settleBlockers'> = {
     slug,
     dir,
-    references: config.references ?? [],
     pages,
     entryPage: entry?.name ?? null,
     pageIssues: issues,
     requirements: coverage.requirements,
+    entryDocument,
+    files,
     reviews: coverage.reviews,
     acceptance,
     unresolved: {
@@ -447,39 +465,59 @@ export function buildPrototypeStatus(workspaceRootPath: string, slug: string): P
 }
 
 /**
- * What this prototype still owes, as sentences — empty when there is nothing outstanding.
+ * What this prototype still owes — empty when there is nothing outstanding.
  *
- * This is the **gate**, expressed once: `prototype-export --strict` refuses on a non-empty list, the
+ * This is the **gate**, expressed once: `export --strict` refuses on a non-empty list, the
  * status output prints it, and a task graph branches on it. Reason-first, like the write guard and
  * for the same reader — an agent that has to decide whether to keep working, or whether what it has
  * is finished.
  *
  * Three things count, and they are deliberately not summed into one number: a requirement nothing
- * implements, an objection nobody answered, a check that failed. Each is a different action.
+ * implements, an objection nobody answered, a check that failed. Each is a different action — and
+ * each is a {@link PrototypeNotice}, so the panel can name the action in the reader's language while
+ * the sentence the agent prints stays the one above.
+ *
+ * With the one a person meets on the screen that hands the work over: a service that declares a
+ * faked response which is not on disk. It is a delivery fact rather than a mechanism detail — the
+ * request is simply not faked, so whoever receives this gets a page that reaches for something they
+ * do not have (plan §21.5).
  */
-export function whyPrototypeIsNotSettled(status: PrototypeStatus): string[] {
-  const reasons: string[] = []
+export function whyPrototypeIsNotSettled(status: PrototypeStatus): PrototypeNotice[] {
+  const reasons: PrototypeNotice[] = []
+  const prd = PROTOTYPE_PRD_FILENAME
 
   for (const id of status.unresolved.unmet) {
-    reasons.push(`${id} is in prd.md but no page or patch refers to it, so nothing implements it.`)
+    reasons.push(notice('gate.requirementUnmet', { id, prd }))
   }
 
   for (const dispute of status.unresolved.disputes) {
     const about = dispute.stale && dispute.staleReason ? `${dispute.about} — ${dispute.staleReason}` : dispute.about
-    reasons.push(`${dispute.file} disputes ${about}, and it still stands (${dispute.status}).`)
+    reasons.push(
+      notice('gate.disputeStanding', { file: dispute.file, about, status: dispute.status }),
+    )
   }
 
   for (const check of status.unresolved.redChecks) {
-    reasons.push(`\`${check}\` failed in the last verification round.`)
+    reasons.push(notice('gate.checkFailed', { check }))
   }
 
   // A PRD that carries checks nobody has ever run is the one state the record cannot show: the
   // file exists, so "no failures" and "never looked" look identical from here.
   const declaresChecks = status.requirements.some((requirement) => requirement.checks.length > 0)
   if (declaresChecks && status.acceptance === null) {
+    reasons.push(notice('gate.checksNeverRun', { prd }))
+  }
+
+  // A contract that names a `x-mock` fixture which is not there is a hole in what is handed over:
+  // the route is skipped, so the request goes to a backend the recipient may not have. One line per
+  // service rather than per fixture — the fix is one edit, and the names are in the line.
+  for (const service of status.services) {
+    if (service.missingFixtures.length === 0) continue
     reasons.push(
-      'prd.md declares acceptance checks and they have never been run here — `prototype-verify` is ' +
-        'what turns them into an answer.',
+      notice('gate.serviceUncovered', {
+        service: service.slug,
+        fixtures: service.missingFixtures.join(', '),
+      }),
     )
   }
 

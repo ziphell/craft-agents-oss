@@ -8,7 +8,7 @@
  *
  * **Background information, like a connected source.** A conversation in that project is
  * told the fact (`<project_prototypes>`), and nothing else follows: it is not bound by
- * it, no prototype context or guide is injected because of it, and `prototype-*`
+ * it, no prototype context or guide is injected because of it, and `prototype_tool`
  * commands still take their default slug from the page and the conversation's own
  * binding. The record is written from the app — a person ticking them in the project's
  * Prototypes tab — so there is no agent command for it.
@@ -64,7 +64,7 @@ export function getProjectPrototypes(workspaceRootPath: string, projectSlug: str
  * Record the prototypes a project is worked on with, replacing the set.
  *
  * An empty list (or a list where nothing survives {@link existingPrototypeSlugs}) leaves
- * no key at all — the same "absent means none" rule pages and references follow.
+ * no key at all — the same "absent means none" rule the page table follows.
  *
  * The project has to exist, and only the storage layer says so (`updateProject`) — it is
  * the one that would have to write the record, and nothing here creates a project. A

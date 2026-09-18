@@ -18,7 +18,7 @@
  * the fact, derive the meaning — rather than keeping a version number nobody can tie to a change.
  *
  * Never delivered: `dist/` is the package, this is our memory. Like `anchors/`, only the tool that
- * ran the checks writes it (`prototype-verify`), and the agent is refused a hand-written one — a
+ * ran the checks writes it (`verify`), and the agent is refused a hand-written one — a
  * record of a run that did not happen is worse than no record.
  *
  * @see docs/prototype-workbench-plan.md §20.7, §3.7

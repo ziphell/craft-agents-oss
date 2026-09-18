@@ -7,13 +7,14 @@
  */
 
 import { join, parse as parsePath } from 'path'
-import { existsSync, mkdirSync } from 'fs'
+import { existsSync, mkdirSync, rmSync } from 'fs'
 import { validateFilePath, getWorkspaceAllowedDirs } from '@craft-agent/server-core/handlers'
 import { BrowserView, BrowserWindow, WebContentsView, app, ipcMain, nativeTheme, session, shell, type Session as ElectronSession } from 'electron'
 import { mainLog } from './logger'
 import type { WindowManager } from './window-manager'
 import { BrowserCDP, type AccessibilitySnapshot, type ElementGeometry } from './browser-cdp'
-import { pickVideoFile as pickVideoFileWithDialog, sampleVideoFrames } from './video-frames'
+import { sampleVideoFrames } from './video-frames'
+import { TabRecorder } from './tab-recorder'
 import {
   type BrowserEmptyStateLaunchPayload,
   type BrowserEmptyStateLaunchResult,
@@ -66,69 +67,6 @@ const DEFAULT_WAIT_TIMEOUT_MS = 10_000
 const DEFAULT_WAIT_POLL_MS = 100
 const SCREENSHOT_HIDDEN_CAPTURE_ATTEMPTS = 3
 
-/**
- * Frame capture defaults (plan §20.3).
- *
- * A capture has two samplers with different jobs, and both need bounds: four
- * comparisons a second is fast enough that a streaming answer leaves a trail,
- * and slow enough that it is not a video encoder; a ceiling per capture is what
- * keeps a forgotten recording from filling a disk.
- */
-const FRAME_CAPTURE_INTERVAL_MS = 400
-const FRAME_CAPTURE_MIN_INTERVAL_MS = 100
-const FRAME_CAPTURE_THRESHOLD = 0.005
-const FRAME_CAPTURE_MAX_FRAMES = 60
-const FRAME_CAPTURE_JPEG_QUALITY = 70
-/** How long after an action the "what it produced" frame is taken. */
-const FRAME_CAPTURE_RESULT_DELAY_MS = 350
-/** Every 16th pixel — see {@link changedRatio}. */
-const FRAME_CAPTURE_SAMPLE_STEP_BYTES = 64
-
-/**
- * Share of the sampled screen that differs between two frames.
- *
- * Sampled rather than compared pixel by pixel: a 1280×800 window is 4 MB of BGRA
- * per frame, and the question is only "did the screen move". Reading every 16th
- * pixel answers it, at a cost small enough to run four times a second.
- */
-function changedRatio(previous: Buffer, current: Buffer): number {
-  if (previous.length === 0 || previous.length !== current.length) return 1
-
-  let sampled = 0
-  let changed = 0
-  for (let offset = 0; offset < current.length; offset += FRAME_CAPTURE_SAMPLE_STEP_BYTES) {
-    sampled += 1
-    if (previous[offset] !== current[offset]) changed += 1
-  }
-  return sampled === 0 ? 0 : changed / sampled
-}
-
-/** One capture session, held in memory until it is stopped. */
-interface FrameCaptureState {
-  startedAt: string
-  /** The tab whose frames are kept: a recording follows the tab it was started on. */
-  tabId: string
-  intervalMs: number
-  threshold: number
-  maxFrames: number
-  /** Size of the first frame, in device pixels. */
-  viewport: { width: number; height: number } | null
-  /** Set once the ceiling was reached: what came back is a sample of the session. */
-  truncated: boolean
-  frames: Array<{
-    index: number
-    at: string
-    url: string
-    reason: 'start' | 'changed' | 'action' | 'result'
-    action?: string
-    bytes: Buffer
-  }>
-  /** The previous frame's pixels, which is what the next one is compared against. */
-  lastBitmap: Buffer | null
-  /** Set while a capture is in flight, so a slow one cannot stack behind itself. */
-  capturing: boolean
-  timer: ReturnType<typeof setInterval> | null
-}
 const SCREENSHOT_RETRY_DELAY_MS = 120
 const SCREENSHOT_RESCUE_PAINT_DELAY_MS = 180
 const SCREENSHOT_NETWORK_IDLE_TIMEOUT_MS = 1_000
@@ -250,6 +188,16 @@ const TOOLBAR_CHANNELS = {
   APPLY_PROTOTYPE: 'browser-toolbar:apply-prototype',
   TABS: 'browser-toolbar:tabs',
   DEVTOOLS: 'browser-toolbar:devtools',
+  RECORD: 'browser-toolbar:record',
+  /**
+   * The encoded bytes, one message each.
+   *
+   * Its own channel rather than an action on `RECORD` because it is the one message here
+   * that is not a command: it arrives on every `dataavailable`, and a recording's last
+   * chunk must be on disk before the stop that follows it — one channel, in order, is what
+   * makes that true.
+   */
+  RECORD_CHUNK: 'browser-toolbar:record-chunk',
 } as const
 export const BROWSER_PANE_SESSION_PARTITION = 'persist:browser-pane'
 const SESSION_PARTITION = BROWSER_PANE_SESSION_PARTITION
@@ -354,7 +302,7 @@ interface BrowserTab {
    * The **work this tab is part of** — whose tab it is, or `null` for a person's.
    *
    * Written by whoever created it (a person through the toolbar or the panel, or the agent
-   * through `tab-new`/`prototype-open`) and inherited by tabs derived from it; nothing
+   * through `tab-new`/`prototype_tool open`) and inherited by tabs derived from it; nothing
    * rewrites it afterwards (plan §22, 第十一轮). It lives here rather than being inferred
    * because an agent has to leave other people's tabs alone, and no URL says which ones
    * those are.
@@ -414,7 +362,7 @@ interface BrowserTab {
    * `'link'` for a `target="_blank"` (or any click that wants a window of its own),
    * `'popup'` for a scripted `window.open` with features — the OAuth-window shape.
    * `null` for every other way a tab is opened (the address bar, `tab-new`,
-   * `prototype-open`, the panel).
+   * `prototype_tool open`, the panel).
    *
    * Recorded because both are now played in the same window, which has one cost worth
    * being able to name: a tab opened this way has no `window.opener`, so a popup that
@@ -739,6 +687,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   private removedCallback: ((id: string) => void) | null = null
   private interactedCallback: ((id: string) => void) | null = null
   private partitionPermissionsInitialized = false
+  private partitionDisplayMediaInitialized = false
   private partitionObserversInitialized = false
   private inFlightRequestsByWebContentsId = new Map<number, number>()
   private lastNetworkActivityByWebContentsId = new Map<number, number>()
@@ -796,6 +745,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * back to a generic label rather than showing an id.
    */
   private sessionLabelResolver: ((sessionId: string) => string | null) | null = null
+
+  /**
+   * The person's recording of a tab, if one is running.
+   *
+   * One per app rather than per window: the display-media handler answers per session,
+   * and only one thing can be armed at a time anyway — the button is a person's, and a
+   * person records one thing at a time.
+   */
+  private readonly tabRecorder = new TabRecorder()
 
   setWindowManager(windowManager: WindowManager): void {
     this.windowManager = windowManager
@@ -911,6 +869,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     const ses = session.fromPartition(SESSION_PARTITION)
     this.setupSessionPermissions(ses)
+    this.setupDisplayMediaHandler(ses)
     this.setupSessionObservers(ses)
 
     // Match background to current OS theme to prevent black/white flash on open. The same
@@ -1356,6 +1315,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.inFlightRequestsByWebContentsId.delete(wcId)
     this.lastNetworkActivityByWebContentsId.delete(wcId)
 
+    // A recording follows a tab, so the tab going away ends it — with what was captured
+    // kept: the person was recording something, and part of it happened. Nobody else can
+    // say "stop" for a file whose tab is closed, so this is the one that must.
+    if (this.tabRecorder.stopIfSource(wcId)) this.pushToolbarState(instance)
+
     // A lock never outlives what it locks: closing the tab a session was holding lets go
     // of it here, rather than leaving the window claiming a tab that is gone (plan §22,
     // 第九轮修正). The cursor needs no such care — it lived on the tab and went with it.
@@ -1724,6 +1688,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       this.inFlightRequestsByWebContentsId.delete(wcId)
       this.lastNetworkActivityByWebContentsId.delete(wcId)
     }
+    // A window takes its tabs with it, and a recording of one of them ends with what it
+    // captured — there is no button left to press once the window is gone.
+    this.tabRecorder.stopIfSource(...instance.tabs.map((tab) => tab.tabView.webContents.id))
     instance.pendingShowOnReady = false
     instance.pendingShowToken += 1
 
@@ -2884,187 +2851,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       ...options,
       accent: this.getResolvedAccentColor(),
     })
-  }
-
-  // -- Frame capture --------------------------------------------------------
-
-  /**
-   * Frame captures, one per window, in memory until they are stopped.
-   *
-   * Keyed by instance rather than kept on `BrowserInstance`: a capture is a
-   * session of observation, not a property of a window, and a window destroyed
-   * mid-capture must leave nothing behind (the state goes when the key does).
-   */
-  private frameCaptures = new Map<string, FrameCaptureState>()
-
-  /**
-   * Start keeping frames of a window.
-   *
-   * Two samplers, because a screen changes for two reasons that are worth
-   * different things: the interval keeps what moved on its own (a stream
-   * answering), and {@link noteFrameAction} keeps what was *done* (a click),
-   * whether or not the screen agreed to move.
-   */
-  async startFrameCapture(
-    id: string,
-    options?: { intervalMs?: number; threshold?: number; maxFrames?: number },
-    tabId?: string,
-  ) {
-    const instance = this.requireAliveInstance(id)
-    const tab = this.tabOf(instance, tabId)
-    // One capture per window: starting a second replaces the first rather than
-    // running two timers over the same screen.
-    const previous = this.frameCaptures.get(id)
-    if (previous?.timer) clearInterval(previous.timer)
-
-    const state: FrameCaptureState = {
-      startedAt: new Date().toISOString(),
-      tabId: tab.id,
-      intervalMs: Math.max(FRAME_CAPTURE_MIN_INTERVAL_MS, options?.intervalMs ?? FRAME_CAPTURE_INTERVAL_MS),
-      threshold: Math.min(1, Math.max(0.0001, options?.threshold ?? FRAME_CAPTURE_THRESHOLD)),
-      maxFrames: Math.max(1, Math.min(600, options?.maxFrames ?? FRAME_CAPTURE_MAX_FRAMES)),
-      viewport: null,
-      truncated: false,
-      frames: [],
-      lastBitmap: null,
-      capturing: false,
-      timer: null,
-    }
-    this.frameCaptures.set(id, state)
-
-    // The first frame is forced: without it the first comparison would have
-    // nothing to compare against, and a capture would open on a change rather
-    // than on the screen as it was.
-    await this.captureFrame(instance, state, { reason: 'start', force: true })
-    state.timer = setInterval(
-      () => void this.captureFrame(instance, state, { reason: 'changed' }),
-      state.intervalMs,
-    )
-
-    return {
-      startedAt: state.startedAt,
-      intervalMs: state.intervalMs,
-      threshold: state.threshold,
-      maxFrames: state.maxFrames,
-    }
-  }
-
-  /** Stop a capture and hand back what it kept, or null when none was running. */
-  async stopFrameCapture(id: string) {
-    const state = this.frameCaptures.get(id)
-    if (!state) return null
-    // Removed before it is returned: a timer that fired during serialisation
-    // would push frames into a capture its caller already has.
-    this.frameCaptures.delete(id)
-    if (state.timer) clearInterval(state.timer)
-
-    return {
-      startedAt: state.startedAt,
-      endedAt: new Date().toISOString(),
-      intervalMs: state.intervalMs,
-      threshold: state.threshold,
-      maxFrames: state.maxFrames,
-      viewport: state.viewport,
-      truncated: state.truncated,
-      frames: state.frames,
-    }
-  }
-
-  /**
-   * Keep a frame for an action that was just taken.
-   *
-   * Called from the CDP client, which is the one place every verb passes through.
-   * The action frame is forced — a click that changed nothing is still a click
-   * somebody made, and "nothing happened" is a finding of its own — and a second
-   * frame follows a moment later to catch what it produced.
-   */
-  private noteFrameAction(instance: BrowserInstance, action: { kind: string; target: string }): void {
-    const state = this.frameCaptures.get(instance.id)
-    if (!state) return
-
-    const label = action.target ? `${action.kind} ${action.target}` : action.kind
-    void this.captureFrame(instance, state, { reason: 'action', action: label, force: true })
-
-    // The result frame waits a beat: what an action produces is rarely there in
-    // the same tick, and one taken too early is a picture of the old screen.
-    const timer = setTimeout(() => {
-      if (this.frameCaptures.get(instance.id) !== state) return
-      void this.captureFrame(instance, state, { reason: 'result', force: true })
-    }, FRAME_CAPTURE_RESULT_DELAY_MS)
-    timer.unref?.()
-  }
-
-  private async captureFrame(
-    instance: BrowserInstance,
-    state: FrameCaptureState,
-    frame: { reason: 'start' | 'changed' | 'action' | 'result'; action?: string; force?: boolean },
-  ): Promise<void> {
-    // A capture slower than the interval must not stack up behind itself.
-    if (state.capturing) return
-
-    if (instance.window.isDestroyed()) {
-      this.frameCaptures.delete(instance.id)
-      if (state.timer) clearInterval(state.timer)
-      return
-    }
-
-    // A recording follows one tab. When that tab is gone there is nothing left to
-    // record — and following the tab on screen instead would quietly tape something
-    // else, which is worse than an ended recording.
-    const tab = tabById(instance, state.tabId)
-    if (!tab) {
-      this.frameCaptures.delete(instance.id)
-      if (state.timer) clearInterval(state.timer)
-      return
-    }
-
-    state.capturing = true
-    try {
-      const image = await tab.tabView.webContents.capturePage(undefined, {
-        stayHidden: true,
-        stayAwake: true,
-      })
-      if (image.isEmpty()) return
-
-      const bitmap = image.toBitmap()
-      if (!frame.force && state.lastBitmap && changedRatio(state.lastBitmap, bitmap) < state.threshold) return
-      state.lastBitmap = bitmap
-
-      if (state.frames.length >= state.maxFrames) {
-        state.truncated = true
-        if (state.timer) clearInterval(state.timer)
-        state.timer = null
-        return
-      }
-
-      const size = image.getSize()
-      if (!state.viewport) state.viewport = { width: size.width, height: size.height }
-
-      state.frames.push({
-        index: state.frames.length + 1,
-        at: new Date().toISOString(),
-        url: tab.currentUrl,
-        reason: frame.reason,
-        ...(frame.action ? { action: frame.action } : {}),
-        bytes: image.toJPEG(FRAME_CAPTURE_JPEG_QUALITY),
-      })
-    } catch {
-      // A capture that fails is skipped: a window being resized or hidden
-      // mid-shot is ordinary, and losing one frame must not end a recording.
-    } finally {
-      state.capturing = false
-    }
-  }
-
-  /**
-   * Ask the user for a recording. Null when they dismiss the dialog.
-   *
-   * The dialog and the decoder live together in `video-frames.ts`: one answers
-   * "which file", the other reads it, and neither has anything to do with a
-   * browser window — this method exists so the interface stays one surface.
-   */
-  async pickVideoFile(): Promise<string | null> {
-    return pickVideoFileWithDialog()
   }
 
   /** Sample frames out of a recording someone recorded elsewhere (plan §20.5). */
@@ -4347,6 +4133,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
        * the rail says so generically rather than printing an id.
        */
       sessionLabels: this.sessionLabelsFor(instance),
+      /**
+       * The recording in progress, if a person started one (plan §20.3, revised).
+       *
+       * `null` is the ordinary state. It is pushed rather than remembered by the button,
+       * because a recording also ends from here — the recorded tab is closed, or the
+       * window is destroyed — and a button that kept saying "recording" about a file that
+       * is finished would be worse than no button.
+       */
+      recording: this.tabRecorder.state(),
     }
     this.sendToChrome(instance, TOOLBAR_CHANNELS.STATE_UPDATE, state)
   }
@@ -4582,6 +4377,56 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     ipcMain.handle(TOOLBAR_CHANNELS.DEVTOOLS, async (_event, instanceId: string) => {
       const inst = findInstance(instanceId)
       if (inst) this.toggleTabDevTools(inst)
+    })
+
+    /**
+     * The record button.
+     *
+     * Two commands, because the bytes are not one of them (see `RECORD_CHUNK`): `start`
+     * arms a recording and answers with what the button should show, `stop` finishes the
+     * file and answers with where it went.
+     *
+     * What is recorded is **the tab on screen when it starts** — the person pressed the
+     * button while looking at the thing they mean. The picture itself is not taken here:
+     * the chrome asks for display media, and the display-media handler hands back exactly
+     * this tab, which is the only thing it will ever hand back.
+     */
+    ipcMain.handle(
+      TOOLBAR_CHANNELS.RECORD,
+      async (_event, instanceId: string, action: 'start' | 'stop') => {
+        const inst = findInstance(instanceId)
+        if (!inst) return null
+
+        if (action === 'stop') {
+          const finished = this.tabRecorder.stop()
+          this.pushToolbarState(inst)
+          if (!finished) return null
+
+          // An empty file is not a recording: the picture never arrived (the chrome's
+          // display-media request was refused, or there was no tab to grab), and a session
+          // should not keep a webm that shows nothing. `null` is the chrome's "nothing came
+          // of it".
+          if (finished.bytes === 0) {
+            rmSync(finished.file, { force: true })
+            return null
+          }
+          return finished
+        }
+
+        const tab = activeTab(inst)
+        const sessionId = tab.cursorOf ?? tab.belongsTo?.sessionId ?? null
+        const state = this.tabRecorder.start({
+          dir: this.resolveRecordsDir(sessionId),
+          sessionName: sessionId ? this.sessionLabelResolver?.(sessionId) ?? null : null,
+          source: tab.tabView.webContents,
+        })
+        this.pushToolbarState(inst)
+        return state
+      },
+    )
+
+    ipcMain.on(TOOLBAR_CHANNELS.RECORD_CHUNK, (_event, _instanceId: string, chunk: Uint8Array) => {
+      if (chunk) this.tabRecorder.append(chunk)
     })
 
     mainLog.info('[browser-pane] Toolbar IPC handlers registered')
@@ -4964,23 +4809,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         this.requireInstanceInWorkspace(instanceId, workspaceId)
         return this.clearInitScripts(instanceId, keyPrefix, commandTabId)
       }
-      case 'startFrameCapture': {
-        const [instanceId, options] = args as [
-          string,
-          { intervalMs?: number; threshold?: number; maxFrames?: number } | undefined,
-        ]
-        this.requireInstanceInWorkspace(instanceId, workspaceId)
-        return this.startFrameCapture(instanceId, options, commandTabId)
-      }
-      case 'stopFrameCapture': {
-        const [instanceId] = args as [string]
-        this.requireInstanceInWorkspace(instanceId, workspaceId)
-        return this.stopFrameCapture(instanceId)
-      }
-      case 'pickVideoFile':
-        // No instance: choosing a recording is not an act on a window, and a
-        // remote session that may not open one still may import a video.
-        return this.pickVideoFile()
       case 'extractVideoFrames': {
         const [filePath, options] = args as [
           string,
@@ -5386,6 +5214,25 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     return app.getPath('downloads')
   }
 
+  /**
+   * Where a tab's recordings are filed: the conversation that tab belongs to, else the OS
+   * downloads folder.
+   *
+   * The same rule as its downloads ({@link resolveDownloadsDir}) and for the same reason —
+   * a recording is the tab's, and "whose page is this" is the tab's own answer
+   * (`cursorOf ?? belongsTo`). That is also what "the current session" means for the record
+   * button: the person must not have to say which conversation they are recording for, and
+   * the tab in front of them already says it. A tab nobody owns is the person's own
+   * browsing, and its recording lands with their other downloads.
+   */
+  private resolveRecordsDir(sessionId: string | null): string {
+    if (sessionId && this.sessionPathResolver) {
+      const sessionPath = this.sessionPathResolver(sessionId)
+      if (sessionPath) return join(sessionPath, 'records')
+    }
+    return app.getPath('downloads')
+  }
+
   private uniqueFilename(dir: string, filename: string): string {
     if (!existsSync(join(dir, filename))) return filename
     const { name, ext } = parsePath(filename)
@@ -5531,10 +5378,20 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       'idle-detection',
     ])
 
+    /**
+     * Screen capture is the one permission that is not a yes/no for the whole partition.
+     *
+     * The record button asks for it from our own chrome, and what it gets back is decided
+     * by {@link setupDisplayMediaHandler} — so our surface is allowed to ask, and a page
+     * in a tab is not (a page that could ask would be a page that could capture the window).
+     */
+    const mayAsk = (permission: string, webContents: Electron.WebContents | null): boolean =>
+      permission === 'display-capture' ? this.isChromeWebContents(webContents) : allow.has(permission)
+
     if (typeof ses.setPermissionCheckHandler === 'function') {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      ses.setPermissionCheckHandler((_webContents, permission: string, requestingOrigin: string, _details: any) => {
-        const allowed = allow.has(permission)
+      ses.setPermissionCheckHandler((webContents, permission: string, requestingOrigin: string, _details: any) => {
+        const allowed = mayAsk(permission, webContents)
         if (!allowed) {
           this.logPermissionDecision('check', permission, requestingOrigin)
         }
@@ -5544,14 +5401,43 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     if (typeof ses.setPermissionRequestHandler === 'function') {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      ses.setPermissionRequestHandler((_webContents, permission: string, callback: (allow: boolean) => void, details: any) => {
-        const allowed = allow.has(permission)
+      ses.setPermissionRequestHandler((webContents, permission: string, callback: (allow: boolean) => void, details: any) => {
+        const allowed = mayAsk(permission, webContents)
         if (!allowed) {
           this.logPermissionDecision('request', permission, details?.requestingOrigin ?? 'unknown')
         }
         callback(allowed)
       })
     }
+  }
+
+  /**
+   * Answer `getDisplayMedia` for this partition — the record button's one door onto a tab.
+   *
+   * Every request in this partition lands here, ours and a page's alike, and the only
+   * thing that answers anything is an **armed recording**: the person pressed the button,
+   * which is what picked the tab. Nothing else is ever captured, and a page asking for the
+   * screen gets an empty answer rather than a picker.
+   */
+  private setupDisplayMediaHandler(ses: ElectronSession): void {
+    if (this.partitionDisplayMediaInitialized) return
+    this.partitionDisplayMediaInitialized = true
+    if (typeof ses.setDisplayMediaRequestHandler !== 'function') return
+
+    ses.setDisplayMediaRequestHandler((_request, callback) => {
+      const source = this.tabRecorder.armedSource()
+      callback(source ? { video: source } : {})
+    })
+  }
+
+  /** Whether this is one of our own chrome surfaces — the address bar or the tab rail. */
+  private isChromeWebContents(webContents: Electron.WebContents | null | undefined): boolean {
+    if (!webContents || webContents.isDestroyed()) return false
+    for (const instance of this.instances.values()) {
+      if (instance.toolbarView.webContents.id === webContents.id) return true
+      if (instance.railView.webContents.id === webContents.id) return true
+    }
+    return false
   }
 
   private isToolbarUiDocumentUrl(url: string): boolean {
@@ -5689,11 +5575,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // The chrome stays on top of whatever tab is showing — both surfaces of it.
     this.raiseChromeViews(instance)
     void this.loadNativeOverlayPage(instance, tab)
-
-    // Every action taken on this tab is a frame, whatever the screen did with it:
-    // a click is a *cause*, and a reader who cannot tell "somebody did this" from
-    // "it moved on its own" has a pile of pictures rather than a record (plan §20.3).
-    tab.cdp.onAction = (action) => this.noteFrameAction(instance, action)
 
     tabWc.on('did-start-loading', () => {
       tab.isLoading = true

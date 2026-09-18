@@ -1,21 +1,21 @@
 /**
- * prototype-commit — folding the delta layer back into the artifact that owns it.
+ * Folding the delta layer back into the artifact that owns it.
  *
  * Every prototype is a two-layer thing, the way a qcow2 image is: a **base** that
- * is not ours to write, and a layer of deltas we own. What the workbench has been
- * missing is the operation that collapses the layer — so the deltas only ever
- * accumulate, nobody ever sees the prototype as one artifact, and a person who
- * wants to change something has to edit the middle of a chain.
+ * is not ours to write, and a layer of deltas we own. Without an operation that
+ * collapses the layer, the deltas only ever accumulate, nobody sees the prototype
+ * as one artifact, and a person who wants to change something has to edit the
+ * middle of a chain.
  *
  * Whether the collapse is possible is decided by **whose the base is**, and that
  * is exactly the difference between the two kinds of page:
  *
- * | | base | can it be committed? |
+ * | | base | can it be folded? |
  * | --- | --- | --- |
  * | a page of ours (`scratch`) | `cart.html`, under `assets/` | **yes** — the deltas belong *in* the document |
  * | a live page (`overlay`) | someone else's address | **no** — the page is not a file we can rewrite |
  *
- * So a commit produces two shapes, and both end with the delta layer gone:
+ * So a fold produces two shapes, and both end with the delta layer gone:
  *
  * - **scratch**: css is folded into the page's own stylesheet
  *   (`assets/<page>/committed.css`, linked from the document) and js is
@@ -30,6 +30,21 @@
  *   into — one file we own, replaying last by rule (`byReplayOrder`), which is
  *   what makes a live page's prototype a thing that converges instead of a chain
  *   that grows.
+ *
+ * ## Why this is an option of copying rather than an action of its own
+ *
+ * A fold is irreversible — the patches it takes are deleted as files — and it is
+ * only worth doing to a prototype that has stopped moving. Both of those are
+ * answered by **where it now lives: {@link duplicatePrototype} folds the copy,
+ * never the original** (plan §21.3, revised). A copy is a prototype you asked for
+ * anyway, so collapsing its layer costs nothing and takes nothing away: the source
+ * stays exactly as it was, patches and all, and the new one starts converged — one
+ * document to read, one upper layer instead of a chain.
+ *
+ * That is also why there is no longer a `prototype-commit` for a person or an
+ * agent to reach for: there was never a moment where folding *that* prototype was
+ * the thing to do. Exporting does not fold either — a package carries the change
+ * layer as the author left it.
  *
  * Three rules keep the fold honest:
  *
@@ -46,11 +61,6 @@
  *    about. Nothing is refused for being unverifiable — a fold is textual and
  *    safe — but the reader is told which part of it nobody checked.
  *
- * There is no automatic commit: collapsing a layer is irreversible in the same
- * way `qemu-img commit` is, and the user's own git is the place where the before
- * and after survive. It is a deliberate action, taken when the work has stopped
- * moving.
- *
  * @see docs/prototype-workbench-plan.md §21.3
  */
 
@@ -62,8 +72,8 @@ import { listPrototypePages, type PrototypePage } from './pages.ts'
 import { getPrototypeDirPath, scanPrototypePatches } from './storage.ts'
 import { CONSOLIDATED_WRITER, isConsolidatedWriter, type PageKind, type PrototypePatch } from './types.ts'
 
-/** What a commit did to one scope — the shared patches, or one page's own. */
-export interface PrototypeCommitScopeResult {
+/** What a fold did to one scope — the shared patches, or one page's own. */
+export interface PrototypeFoldScopeResult {
   /** The page name, or null for the shared scope (`patches/*`). */
   page: string | null
   kind: PageKind | 'shared'
@@ -77,15 +87,15 @@ export interface PrototypeCommitScopeResult {
   deleted: string[]
   /** Folded css patches with no `@target`, so nothing could check what they match. */
   unverified: string[]
-  /** Patches left alone, each with the reason a commit could not take it. */
+  /** Patches left alone, each with the reason a fold could not take it. */
   refused: Array<{ file: string; reason: string }>
 }
 
-export interface PrototypeCommitResult {
+export interface PrototypeFoldResult {
   slug: string
-  scopes: PrototypeCommitScopeResult[]
-  /** True when there was nothing left to fold — the honest answer for a second commit. */
-  nothingToCommit: boolean
+  scopes: PrototypeFoldScopeResult[]
+  /** True when there was nothing left to fold — the honest answer for a prototype already converged. */
+  nothingToFold: boolean
 }
 
 /**
@@ -122,7 +132,7 @@ function insertBeforeClosingTag(html: string, block: string, closingTag: string)
  * one, comes last.
  */
 function provenanceLines(patch: PrototypePatch, kind: 'css' | 'js', now: string): string[] {
-  const head = `patches/${patch.file} — committed ${now.slice(0, 10)}`
+  const head = `patches/${patch.file} — folded ${now.slice(0, 10)}`
   const requirements = extractRequirementIds(patch.source)
   // Requirements first, then one target per line: the parser reads the rest of a
   // marker's line as its value, so two markers on one line would make the first
@@ -171,7 +181,7 @@ function writeFileEnsuringDir(path: string, content: string): void {
  */
 function banner(target: string, kind: 'css' | 'js'): string {
   const lines = [
-    `Consolidated by prototype-commit — the patches below were folded into ${target}.`,
+    `Consolidated by folding the change layer — the patches below were folded into ${target}.`,
     `Each keeps its own provenance header, and the markers that header carries are read by the workbench.`,
     `Nothing folded in here is duplicated: the patch files this replaced were removed.`,
   ]
@@ -185,50 +195,39 @@ interface Scope {
 }
 
 /**
- * Fold a prototype's delta layer into the artifacts that own it.
+ * Fold a prototype's delta layer into the articles that own it: the shared patches
+ * into the shared upper layer, and every page's own patches into its page.
  *
- * With `page`, only that page's own patches are folded: the shared ones stay
- * shared (folding them into one page would change what they apply to, which is a
- * different edit from collapsing a layer). Without it, the shared patches fold
- * into their own upper layer and every page's own patches fold in their page.
+ * @throws never for a patch it cannot take — a refusal is reported in the scope it
+ *   belongs to. There is nothing to throw about: a fold of a prototype that does not
+ *   exist simply finds nothing.
  */
-export function commitPrototype(
+export function foldPrototype(
   workspaceRootPath: string,
   slug: string,
-  options: { page?: string; now?: Date } = {},
-): PrototypeCommitResult {
+  options: { now?: Date } = {},
+): PrototypeFoldResult {
   const now = (options.now ?? new Date()).toISOString()
-  const dir = getPrototypeDirPath(workspaceRootPath, slug)
   const pages = listPrototypePages(workspaceRootPath, slug)
-  // The consolidated files are the *target* of a commit, never its input: a
-  // second commit folds into them rather than folding them into themselves.
+  // The consolidated files are the *target* of a fold, never its input: folding a
+  // second time folds into them rather than folding them into themselves.
   const patches = scanPrototypePatches(workspaceRootPath, slug).filter(
     (patch) => !isConsolidatedWriter(patch.writer),
   )
 
   const scopes: Scope[] = []
-  if (options.page) {
-    const page = pages.find((candidate) => candidate.name === options.page)
-    if (!page) {
-      throw new Error(
-        `No page "${options.page}" in prototype "${slug}". Pages: ${pages.map((p) => p.name).join(', ') || '(none)'}`,
-      )
-    }
-    scopes.push({ page, patches: patches.filter((patch) => patch.page === page.name) })
-  } else {
-    const shared = patches.filter((patch) => patch.page === null)
-    if (shared.length > 0) scopes.push({ page: null, patches: shared })
-    for (const page of pages) {
-      const own = patches.filter((patch) => patch.page === page.name)
-      if (own.length > 0) scopes.push({ page, patches: own })
-    }
+  const shared = patches.filter((patch) => patch.page === null)
+  if (shared.length > 0) scopes.push({ page: null, patches: shared })
+  for (const page of pages) {
+    const own = patches.filter((patch) => patch.page === page.name)
+    if (own.length > 0) scopes.push({ page, patches: own })
   }
 
-  const results = scopes.map((scope) => commitScope(workspaceRootPath, slug, scope, now))
+  const results = scopes.map((scope) => foldScope(workspaceRootPath, slug, scope, now))
   return {
     slug,
     scopes: results,
-    nothingToCommit: results.every(
+    nothingToFold: results.every(
       (scope) => scope.folded.length === 0 && scope.promoted.length === 0 && scope.refused.length === 0,
     ),
   }
@@ -240,12 +239,12 @@ function foldedTargets(patches: PrototypePatch[]): string[] {
 }
 
 /** Fold one scope, writing what it can and reporting what it cannot. */
-function commitScope(
+function foldScope(
   workspaceRootPath: string,
   slug: string,
   scope: Scope,
   now: string,
-): PrototypeCommitScopeResult {
+): PrototypeFoldScopeResult {
   const dir = getPrototypeDirPath(workspaceRootPath, slug)
   const page = scope.page
   const css = scope.patches.filter((patch) => patch.kind === 'css')
@@ -257,7 +256,7 @@ function commitScope(
   const asAssets = page !== null && page.kind === 'scratch'
   const base = asAssets ? `assets/${page.name}` : page ? `patches/${page.name}` : 'patches'
 
-  const result: PrototypeCommitScopeResult = {
+  const result: PrototypeFoldScopeResult = {
     page: page?.name ?? null,
     kind: page?.kind ?? 'shared',
     wrote: [],

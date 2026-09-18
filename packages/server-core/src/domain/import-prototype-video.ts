@@ -12,16 +12,19 @@
  * - **the video is copied in first** (`research/videos/`), because a capture whose
  *   source has been cleaned up cannot be re-sampled, and re-sampling is most of
  *   what having a source is for;
- * - **the file chooser is the browser pane's**, because a renderer never sees a
- *   path and the panel should not learn one;
+ * - **the recording arrives as a path**, not as a picker: the only caller is the
+ *   agent's command (`sample-video <path>`), so nobody here asks the
+ *   user for anything (plan §20.5);
  * - **an imported frame carries its offset**, not just a wall-clock timestamp —
  *   "0:12" is the coordinate a reader of a recording can use.
  *
  * @see docs/prototype-workbench-plan.md §20.5
  */
 
+import { join } from 'node:path'
 import {
   copyPrototypeVideo,
+  frameFileName,
   sessionDirName,
   writeFrameCapture,
   type PrototypeFrame,
@@ -30,8 +33,8 @@ import {
 import type { IBrowserPaneManager } from '../handlers/browser-pane-manager-interface'
 
 export interface PrototypeVideoImportOptions {
-  /** The recording. Omitted by the panel, which asks the user instead. */
-  path?: string
+  /** The recording to sample. */
+  path: string
   /** `timeline` samples on an interval; `changes` keeps only what moved. */
   mode?: 'timeline' | 'changes'
   /** Sampling interval, ms. */
@@ -49,6 +52,8 @@ export interface PrototypeVideoImportResult {
   files: string[]
   truncated: boolean
   durationMs: number
+  /** The frames themselves, in order, with the file each was written to (the reply's copy). */
+  images: Array<{ path: string; bytes: Uint8Array }>
 }
 
 const DEFAULT_EVERY_MS = 2_000
@@ -57,18 +62,16 @@ const DEFAULT_MAX_FRAMES = 40
 /**
  * Sample a recording into the prototype's frames.
  *
- * Returns null when no recording was chosen — the panel's button and the agent's
- * command both need "the user changed their mind" to be an ordinary answer rather
- * than an error.
+ * A recording that cannot be read throws (naming the codec when that is the
+ * reason) — there is no "the user changed their mind" answer left to return.
  */
 export async function importPrototypeVideo(
   bpm: IBrowserPaneManager,
   workspaceRootPath: string,
   slug: string,
-  options: PrototypeVideoImportOptions = {},
-): Promise<PrototypeVideoImportResult | null> {
-  const source = options.path ?? (await bpm.pickVideoFile())
-  if (!source) return null
+  options: PrototypeVideoImportOptions,
+): Promise<PrototypeVideoImportResult> {
+  const source = options.path
 
   const mode = options.mode ?? 'timeline'
   const everyMs = Math.max(100, options.everyMs ?? DEFAULT_EVERY_MS)
@@ -123,5 +126,9 @@ export async function importPrototypeVideo(
     files: written.files,
     truncated: extracted.truncated,
     durationMs: extracted.durationMs,
+    images: frames.map((frame, position) => ({
+      path: join(written.dir, frameFileName(frame.index)),
+      bytes: extracted.frames[position]!.bytes,
+    })),
   }
 }

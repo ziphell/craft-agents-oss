@@ -106,7 +106,7 @@ import { createLabelMenuItems, filterItems as filterLabelMenuItems, type LabelMe
 import { buildLabelTree, getDescendantIds, getLabelDisplayName, flattenLabels, extractLabelId, findLabelById, sortLabelsForDisplay, matchesLabelFilter } from "@craft-agent/shared/labels"
 import type { LabelConfig, LabelTreeNode } from "@craft-agent/shared/labels"
 import { resolveEntityColor } from "@craft-agent/shared/colors"
-import type { CreatedPrototype, DuplicatedPrototype, PrototypeEntry, PrototypePage } from "@craft-agent/shared/prototypes"
+import type { CreatedPrototype, DuplicatedPrototype } from "@craft-agent/shared/prototypes"
 import * as storage from "@/lib/local-storage"
 import { toast } from "sonner"
 import { navigate, routes } from "@/lib/navigate"
@@ -138,13 +138,6 @@ import { FabNewChat } from "./FabNewChat"
 import { SendToWorkspaceDialog } from "./SendToWorkspaceDialog"
 import { CreateProjectDialog } from "../projects/CreateProjectDialog"
 import { CreatePrototypeDialog, type CreatePrototypeValues } from "../prototypes/CreatePrototypeDialog"
-import {
-  CreatePageDialog,
-  buildNewPageDocument,
-  pageDocumentPath,
-  type CreatePageValues,
-} from "../prototypes/CreatePageDialog"
-import { RenameDialog } from "@/components/ui/rename-dialog"
 import { useBrowserToolbarActions, type AddElementRequest, type EditElementRequest } from "@/hooks/useBrowserToolbarActions"
 import { MessagingDialogHost } from "@/components/messaging/MessagingDialogHost"
 import { EditPopover, getEditConfig, type EditContextKey } from "@/components/ui/EditPopover"
@@ -161,7 +154,7 @@ import {
 } from "./panel-constants"
 import { hasOpenOverlay } from "@/lib/overlay-detection"
 import { clearSourceIconCaches } from "@/lib/icon-cache"
-import { dispatchFocusInputEvent } from "./input/focus-input-events"
+import { dispatchFocusInputEvent, dispatchRestoreInput } from "./input/focus-input-events"
 import { appendRestoredInput } from "@/lib/input-text"
 import { buildElementMention } from "@/lib/element-mention"
 import { buildTabMention, type TabRef } from "@/lib/tab-mention"
@@ -985,9 +978,7 @@ function AppShellContent({
     // Both carry the whole text, so the second cannot drop what the first wrote.
     const next = appendRestoredInput(prompt, getDraft(request.sessionId))
     onInputChange(request.sessionId, next)
-    window.dispatchEvent(new CustomEvent('craft:restore-input', {
-      detail: { sessionId: request.sessionId, text: next },
-    }))
+    dispatchRestoreInput(request.sessionId, next)
     navigate(routes.view.allSessions(request.sessionId))
   }, [getDraft, onInputChange, t])
 
@@ -2188,16 +2179,25 @@ function AppShellContent({
   // Duplicate opens the copy: taking a variant somewhere else is the whole point
   // of the action, so landing on it is the expected next screen. The copy brings
   // its pages and patches along (`copiedPages` / `copiedPatches`) — a flow, not a
-  // container with one kind.
-  const handleDuplicatePrototype = useCallback(async (slug: string) => {
+  // container with one kind. `foldChanges` collapses the copy's change layer on the
+  // way out (plan §21.3): the new one starts converged, and this one is untouched.
+  const handleDuplicatePrototype = useCallback(async (slug: string, foldChanges = false) => {
     if (!activeWorkspace?.id) return
     try {
       const copied = (await window.electronAPI.duplicatePrototype(
         activeWorkspace.id,
         slug,
+        { fold: foldChanges },
       )) as DuplicatedPrototype
       await refreshPrototypes()
-      toast.success(t('prototypesList.duplicated', { name: copied.slug }))
+      const folded = copied.folded
+        ? copied.folded.scopes.reduce((total, scope) => total + scope.folded.length + scope.promoted.length, 0)
+        : 0
+      toast.success(
+        folded > 0
+          ? t('prototypesList.duplicatedFolded', { name: copied.slug, count: folded })
+          : t('prototypesList.duplicated', { name: copied.slug }),
+      )
       navigate(routes.view.prototypes(copied.slug))
     } catch (err) {
       console.error('[AppShell] Failed to duplicate prototype:', err)
@@ -2206,26 +2206,16 @@ function AppShellContent({
   }, [activeWorkspace?.id, refreshPrototypes, navigate, t])
 
   // Deleting removes the directory and everything in it, so it is confirmed
-  // first — the one irreversible thing the workbench offers. References the
-  // deleted prototype is named in are left alone (see delete.ts) but reported,
-  // so a relation that just went dangling does not turn up later by surprise.
+  // first — the one irreversible thing the workbench offers. Nothing else has to
+  // be cleaned up or reported: another prototype may mention this slug in a
+  // document, and that is prose, not a relation (see delete.ts).
   const handleDeletePrototype = useCallback(async (slug: string) => {
     if (!activeWorkspace?.id) return
     if (!window.confirm(t('prototypesList.deleteConfirm', { name: slug }))) return
     try {
-      const deleted = (await window.electronAPI.deletePrototype(
-        activeWorkspace.id,
-        slug,
-      )) as { referencedBy: string[] }
+      await window.electronAPI.deletePrototype(activeWorkspace.id, slug)
       await refreshPrototypes()
-      toast.success(
-        deleted.referencedBy.length > 0
-          ? t('prototypesList.deletedReferenced', {
-              name: slug,
-              references: deleted.referencedBy.join(', '),
-            })
-          : t('prototypesList.deleted', { name: slug }),
-      )
+      toast.success(t('prototypesList.deleted', { name: slug }))
       // The details page would otherwise keep showing a prototype that is gone.
       if (isPrototypesNavigation(navState) && navState.details?.prototypeSlug === slug) {
         navigate(routes.view.prototypes())
@@ -2235,173 +2225,6 @@ function AppShellContent({
       toast.error(t('prototypesList.deleteFailed'))
     }
   }, [activeWorkspace?.id, refreshPrototypes, navigate, t, navState])
-
-  // ---------------------------------------------------------------------------
-  // A prototype's pages (plan §19)
-  //
-  // The sidebar's second level acts on one page at a time, and every action is
-  // the same RPC the agent reaches through `prototype-pages` / `prototype-entry`:
-  // the page table is one writer's file, and the panel is one of its callers.
-  // ---------------------------------------------------------------------------
-
-  /** The prototype the "new page" dialog is adding to, if any. */
-  const [createPageDialogSlug, setCreatePageDialogSlug] = useState<string | null>(null)
-  /** The page the rename dialog is editing, if any. */
-  const [renamePageTarget, setRenamePageTarget] = useState<{ slug: string; page: string } | null>(null)
-  const [renamePageValue, setRenamePageValue] = useState('')
-
-  const openAddPage = useCallback((slug: string) => {
-    setCreatePageDialogSlug(slug)
-  }, [])
-
-  /** The status of the prototype being added to — the dialog needs its directory. */
-  const createPagePrototype = useMemo(
-    () => prototypes.find((item) => item.slug === createPageDialogSlug) ?? null,
-    [prototypes, createPageDialogSlug],
-  )
-
-  /**
-   * Add one page. The kind decides what else has to exist first (plan §19.8):
-   *
-   * - a **live page** *is* its address, so the row is the whole page;
-   * - a **page of ours** *is* a document, and the control plane refuses to
-   *   declare one that is not there — so the document is written first, through
-   *   the one write the host confines to the workspace prototypes folder.
-   */
-  const handleCreatePageSubmit = useCallback(async (values: CreatePageValues) => {
-    if (!activeWorkspace?.id || !createPagePrototype) return
-    const { slug, dir } = createPagePrototype
-
-    if (values.kind === 'scratch') {
-      await window.electronAPI.writeFile(
-        pageDocumentPath(dir, values.name),
-        buildNewPageDocument(values.name),
-      )
-    }
-    await window.electronAPI.setPrototypePages(
-      activeWorkspace.id,
-      slug,
-      values.kind === 'overlay'
-        ? { op: 'add', name: values.name, url: values.url }
-        : { op: 'add', name: values.name },
-    )
-    setCreatePageDialogSlug(null)
-    await refreshPrototypes()
-    toast.success(t('prototypePage.success', { name: values.name }))
-  }, [activeWorkspace?.id, createPagePrototype, refreshPrototypes, t])
-
-  /**
-   * Mark which page the address root opens, or clear it.
-   *
-   * The flag lives on a row, so a page that was never declared (a document
-   * nobody placed in the flow) becomes one when it takes the entry — that is the
-   * data layer's rule, and the panel just asks for it.
-   */
-  const handleSetEntryPage = useCallback(async (slug: string, page: string | null) => {
-    if (!activeWorkspace?.id) return
-    try {
-      await window.electronAPI.setPrototypePages(activeWorkspace.id, slug, { op: 'entry', name: page })
-      await refreshPrototypes()
-    } catch (err) {
-      console.error('[AppShell] Failed to change the entry page:', err)
-      toast.error(t('prototypesList.pageActionFailed'))
-    }
-  }, [activeWorkspace?.id, refreshPrototypes, t])
-
-  const openRenamePage = useCallback((slug: string, page: string) => {
-    setRenamePageValue(page)
-    setRenamePageTarget({ slug, page })
-  }, [])
-
-  const handleRenamePageSubmit = useCallback(async () => {
-    if (!activeWorkspace?.id || !renamePageTarget) return
-    const { slug, page } = renamePageTarget
-    const next = renamePageValue.trim()
-    if (!next || next === page) {
-      setRenamePageTarget(null)
-      return
-    }
-    try {
-      // One call renames the document, the page's own patches and the entry flag
-      // together, so a rename cannot leave a dangling reference behind.
-      await window.electronAPI.setPrototypePages(activeWorkspace.id, slug, {
-        op: 'rename',
-        from: page,
-        to: next,
-      })
-      setRenamePageTarget(null)
-      await refreshPrototypes()
-      toast.success(t('prototypesList.pageRenamed', { name: next }))
-    } catch (err) {
-      console.error('[AppShell] Failed to rename the page:', err)
-      toast.error(err instanceof Error && err.message ? err.message : t('prototypesList.pageActionFailed'))
-    }
-  }, [activeWorkspace?.id, renamePageTarget, renamePageValue, refreshPrototypes, t])
-
-  // Removing a page removes what the page *is* (plan §19.2): a document of ours
-  // goes with its own patches, while a live page exists only as a row and the
-  // page itself is someone else's. So the question differs by kind.
-  const handleRemovePage = useCallback(async (slug: string, page: PrototypePage) => {
-    if (!activeWorkspace?.id) return
-    const confirmed = window.confirm(
-      page.kind === 'overlay'
-        ? t('prototypesList.pageDeleteConfirmOverlay', { name: page.name })
-        : t('prototypesList.pageDeleteConfirm', { name: page.name, file: page.file ?? page.name }),
-    )
-    if (!confirmed) return
-    try {
-      await window.electronAPI.setPrototypePages(activeWorkspace.id, slug, { op: 'remove', name: page.name })
-      await refreshPrototypes()
-      toast.success(t('prototypesList.pageDeleted', { name: page.name }))
-    } catch (err) {
-      console.error('[AppShell] Failed to remove the page:', err)
-      toast.error(t('prototypesList.pageActionFailed'))
-    }
-  }, [activeWorkspace?.id, refreshPrototypes, t])
-
-  /**
-   * Open one page of a prototype in a browser window.
-   *
-   * The address is the page's own (`PrototypePage.url`), because that is what
-   * "this page" means once a flow has more than one — the entry is only what `/`
-   * happens to open. `injectPatches` follows the page's kind: a live page needs
-   * its patches replayed into it, while a page of ours arrives from the host with
-   * them already applied.
-   *
-   * The window's *identity* is still the prototype, and its own address is the
-   * one fact the page table does not carry — `getPrototypeEntry` is where it
-   * comes from. Without it the address bar would read a third-party address for a
-   * live page and the prototype actions would be greyed out.
-   */
-  const handleOpenPage = useCallback(async (slug: string, page: PrototypePage) => {
-    if (!activeWorkspace?.id) return
-    if (!page.url) {
-      toast.error(t('prototypesList.pageNotOpenable', { name: page.name }))
-      return
-    }
-    try {
-      let origin: string | null = null
-      try {
-        origin = ((await window.electronAPI.getPrototypeEntry(activeWorkspace.id, slug)) as PrototypeEntry).origin
-      } catch {
-        // Nothing to resolve as an entry (no host, a page whose document is gone):
-        // the page's own address is still worth opening, so carry on without an
-        // identity rather than refusing.
-      }
-      const instanceId = await window.electronAPI.browserPane.create({
-        show: true,
-        ...(origin ? { prototype: { slug, origin } } : {}),
-      })
-      await window.electronAPI.browserPane.navigate(instanceId, page.url)
-      if (page.kind === 'overlay') {
-        await window.electronAPI.applyPrototype(activeWorkspace.id, instanceId, slug)
-      }
-      await window.electronAPI.browserPane.focus(instanceId)
-    } catch (err) {
-      console.error('[AppShell] Failed to open the page:', err)
-      toast.error(t('prototypesList.pageOpenFailed'))
-    }
-  }, [activeWorkspace?.id, t])
 
   /**
    * Resolve the "inherit sole active filter" rule for new sessions. Only
@@ -3926,16 +3749,11 @@ function AppShellContent({
               />
             )}
             {isPrototypesNavigation(navState) && (
-              /* Prototypes List — one prototype per row, its pages one level down */
+              /* Prototypes List — one prototype per row; its pages are in its details page */
               <PrototypesListPanel
                 prototypes={prototypes}
                 onPrototypeClick={(slug) => navigate(routes.view.prototypes(slug))}
-                onOpenPage={handleOpenPage}
                 onAddPrototype={openAddPrototype}
-                onAddPage={openAddPage}
-                onSetEntryPage={handleSetEntryPage}
-                onRenamePage={openRenamePage}
-                onRemovePage={handleRemovePage}
                 onDuplicatePrototype={handleDuplicatePrototype}
                 onDeletePrototype={handleDeletePrototype}
                 selectedPrototypeSlug={isPrototypesNavigation(navState) ? navState.details?.prototypeSlug ?? null : null}
@@ -4335,30 +4153,6 @@ function AppShellContent({
         open={createPrototypeDialogOpen}
         onCancel={() => setCreatePrototypeDialogOpen(false)}
         onSubmit={handleCreatePrototypeSubmit}
-      />
-
-      {/* Add-a-page dialog. The kind it asks for decides what has to exist: an
-          address, or a document this writes before declaring the row. */}
-      <CreatePageDialog
-        open={createPageDialogSlug !== null && createPagePrototype !== null}
-        slug={createPagePrototype?.slug ?? ''}
-        dir={createPagePrototype?.dir ?? ''}
-        existingNames={createPagePrototype?.pages.map((page) => page.name) ?? []}
-        onCancel={() => setCreatePageDialogSlug(null)}
-        onSubmit={handleCreatePageSubmit}
-      />
-
-      {/* Renaming a page renames its document and its patch directory with it,
-          so the name is asked for rather than typed into a file. */}
-      <RenameDialog
-        open={renamePageTarget !== null}
-        onOpenChange={(open) => {
-          if (!open) setRenamePageTarget(null)
-        }}
-        title={t('prototypesList.pageRenamePrompt', { name: renamePageTarget?.page ?? '' })}
-        value={renamePageValue}
-        onValueChange={setRenamePageValue}
-        onSubmit={() => void handleRenamePageSubmit()}
       />
 
       {/* Messaging dialogs (pairing-code + WA connect) — driven by messagingDialogAtom.

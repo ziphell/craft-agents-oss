@@ -33,7 +33,9 @@ import {
 } from '@craft-agent/session-tools-core';
 import { createLLMTool, type LLMQueryRequest, type LLMQueryResult } from './llm-tool.ts';
 import { createSpawnSessionTool, type SpawnSessionFn } from './spawn-session-tool.ts';
-import { createBrowserTools, type BrowserPaneFns } from './browser-tools.ts';
+import { createBrowserTools } from './browser-tools.ts';
+import { createPrototypeTools } from './prototype-tools.ts';
+import type { BrowserPaneFns } from './browser-pane.ts';
 import { FEATURE_FLAGS } from '../feature-flags.ts';
 import { getBrowserToolEnabled } from '../config/storage.ts';
 
@@ -54,7 +56,7 @@ export type {
 } from '@craft-agent/session-tools-core';
 
 // Re-export browser pane types for session manager wiring
-export type { BrowserPaneFns } from './browser-tools.ts';
+export type { BrowserPaneFns } from './browser-pane.ts';
 
 // ============================================================
 // Session-Scoped Tool Callbacks (re-exported from dedicated registry module)
@@ -78,6 +80,7 @@ export const CLAUDE_BACKEND_SESSION_TOOL_NAMES = new Set<string>([
   'call_llm',
   'spawn_session',
   'browser_tool',
+  'prototype_tool',
 ]);
 
 /**
@@ -295,6 +298,16 @@ export function getSessionScopedTools(
     if (getBrowserToolEnabled()) {
       tools.push(
         ...createBrowserTools({
+          sessionId,
+          workspaceRootPath,
+          getBrowserPaneFns: () => {
+            const callbacks = getSessionScopedToolCallbacks(sessionId);
+            return callbacks?.browserPaneFns;
+          },
+        }),
+        // The prototype workbench is the same runtime behind its own door: its commands drive
+        // this window too, so it is under the same switch.
+        ...createPrototypeTools({
           sessionId,
           workspaceRootPath,
           getBrowserPaneFns: () => {

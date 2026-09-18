@@ -6,7 +6,6 @@ import {
   buildPrototypePromptContext,
   createPrototype,
   formatPrototypeContextForPrompt,
-  linkPrototypeReference,
   writePrototypeConfig,
   writePrototypePage,
   PROTOTYPE_DEFAULT_WRITER,
@@ -22,7 +21,6 @@ function makeContext(overrides: Partial<PrototypePromptContext> = {}): Prototype
     pages: [],
     entryPage: null,
     layoutPath: null,
-    references: [],
     requirements: [],
     findings: [],
     reviews: { total: 0, unresolved: [] },
@@ -170,40 +168,14 @@ describe('formatPrototypeContextForPrompt', () => {
     expect(liveOnly).not.toContain('Writing a page of ours')
   })
 
-  // Reading 14-B: this is the rule that keeps reference selectors out of the
-  // reader's deliverable. Without it an agent will copy the patch files across.
-  it('lists references and forbids copying their patches', () => {
-    const text = formatPrototypeContextForPrompt(
-      makeContext({
-        references: [{ slug: 'rival-checkout', summary: '3 pages (3 on a live site)' }],
-      }),
-    )
-
-    expect(text).toContain('- rival-checkout — 3 pages (3 on a live site), at prototypes/rival-checkout/')
-    expect(text).toContain('evidence, not material')
-    expect(text).toContain('Do NOT copy a reference')
-  })
-
-  it('says nothing about references when there are none', () => {
+  // Reading 14-B: this is the rule that keeps another prototype's selectors out of the
+  // reader's deliverable. Without it an agent will copy the patch files across. It has no
+  // per-reference listing to hang off any more, so it is stated once and unconditionally.
+  it('says where what you study is written down, and forbids copying another prototype’s patches', () => {
     const text = formatPrototypeContextForPrompt(makeContext())
-    expect(text).not.toContain('evidence, not material')
-  })
 
-  // A reference is a relation between two independent prototypes, so the rule must
-  // not depend on what either side is made of — a scratch prototype referencing
-  // another scratch prototype is the same thing as one referencing live pages.
-  it('states the same rule whatever the referenced prototype is made of', () => {
-    const ours = formatPrototypeContextForPrompt(
-      makeContext({ references: [{ slug: 'our-other-page', summary: '2 pages (2 of ours)' }] }),
-    )
-    const theirs = formatPrototypeContextForPrompt(
-      makeContext({ references: [{ slug: 'rival-checkout', summary: '3 pages (3 on a live site)' }] }),
-    )
-
-    expect(ours).toContain('- our-other-page — 2 pages (2 of ours), at prototypes/our-other-page/')
-    // The rule paragraph is identical apart from the listing above it.
-    const ruleOf = (text: string) => text.slice(text.indexOf('A reference is **evidence'))
-    expect(ruleOf(ours)).toBe(ruleOf(theirs))
+    expect(text).toContain('is yours to write down')
+    expect(text).toContain("another prototype's patch files are NEVER copied")
   })
 
   // The one thing the workbench cannot check about a requirement is whether it was worth
@@ -241,22 +213,6 @@ describe('buildPrototypePromptContext', () => {
       'pay:overlay:false',
     ])
     expect(context?.entryPage).toBe('cart')
-  })
-
-  it('summarises each referenced prototype from its own page table', () => {
-    workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-prototype-prompt-'))
-    createPrototype(workspaceRoot, { name: 'Checkout flow' })
-    createPrototype(workspaceRoot, { name: 'Rival checkout' })
-    writePrototypeConfig(workspaceRoot, 'rival-checkout', {
-      pages: [{ name: 'pay', kind: 'overlay', url: 'https://rival.example.com/cart', entry: true }],
-    })
-    linkPrototypeReference(workspaceRoot, 'checkout-flow', 'rival-checkout')
-
-    const context = buildPrototypePromptContext(workspaceRoot, 'checkout-flow', PROTOTYPE_DEFAULT_WRITER)
-
-    expect(context?.references).toEqual([
-      { slug: 'rival-checkout', summary: '1 page (1 on a live site)' },
-    ])
   })
 
   it('carries the writer identity into the block and its naming rule', () => {

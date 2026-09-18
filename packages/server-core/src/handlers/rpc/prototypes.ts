@@ -14,14 +14,13 @@ import { watch } from 'fs'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import { ensureWorkspacePrototypesPath } from '@craft-agent/shared/workspaces'
-import { exportPrototype, commitPrototype, createPrototype, deletePrototype, duplicatePrototype, linkPrototypeReference, listPrototypeStatuses, resolvePrototypeEntry, setPrototypePageUrl, unlinkPrototypeReference, updatePrototypePages } from '@craft-agent/shared/prototypes'
+import { exportPrototype, createPrototype, deletePrototype, duplicatePrototype, listPrototypeStatuses, resolvePrototypeEntry, setPrototypePageUrl, updatePrototypePages } from '@craft-agent/shared/prototypes'
 import type { PrototypePagesChange } from '@craft-agent/shared/prototypes'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import {
   applyPrototypeToBrowser,
   replayPrototypeInBrowser,
 } from '../../domain/apply-prototype'
-import { importPrototypeVideo } from '../../domain/import-prototype-video'
 import type { HandlerDeps } from '../handler-deps'
 
 export const HANDLED_CHANNELS = [
@@ -30,17 +29,13 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.prototypes.LIST,
   RPC_CHANNELS.prototypes.ENTRY,
   RPC_CHANNELS.prototypes.EXPORT,
-  RPC_CHANNELS.prototypes.IMPORT_VIDEO,
   RPC_CHANNELS.prototypes.CREATE,
   RPC_CHANNELS.prototypes.DUPLICATE,
   RPC_CHANNELS.prototypes.DELETE,
   RPC_CHANNELS.prototypes.APPLY,
-  RPC_CHANNELS.prototypes.LINK_REFERENCE,
-  RPC_CHANNELS.prototypes.UNLINK_REFERENCE,
   RPC_CHANNELS.prototypes.SET_PAGES,
   RPC_CHANNELS.prototypes.SET_TARGET,
   RPC_CHANNELS.prototypes.REPLAY,
-  RPC_CHANNELS.prototypes.COMMIT,
 ] as const
 
 /** Batch rapid changes before notifying (matches the session file watcher). */
@@ -98,29 +93,6 @@ export function registerPrototypesHandlers(server: RpcServer, deps: HandlerDeps)
       const workspace = getWorkspaceByNameOrId(workspaceId)
       if (!workspace) throw new Error(`PROTOTYPES_ENTRY: Workspace not found: ${workspaceId}`)
       return resolvePrototypeEntry(workspace.rootPath, slug, page)
-    },
-  )
-
-  // Sample frames out of a video the user recorded elsewhere (plan §20.5). The
-  // picker runs in the client, so this is the same call locally and remotely and
-  // the panel never handles a path. Returns null when the dialog was dismissed.
-  server.handle(
-    RPC_CHANNELS.prototypes.IMPORT_VIDEO,
-    async (
-      _ctx,
-      workspaceId: string,
-      slug: string,
-      options?: Parameters<typeof importPrototypeVideo>[3],
-    ) => {
-      const workspace = getWorkspaceByNameOrId(workspaceId)
-      if (!workspace) throw new Error(`PROTOTYPES_IMPORT_VIDEO: Workspace not found: ${workspaceId}`)
-
-      // The pane manager is what decodes the recording, and a runtime without one
-      // cannot import — said out loud rather than cast away.
-      const bpm = deps.browserPaneManager
-      if (!bpm) throw new Error('PROTOTYPES_IMPORT_VIDEO: this runtime has no browser pane manager.')
-
-      return importPrototypeVideo(bpm, workspace.rootPath, slug, options ?? {})
     },
   )
 
@@ -238,73 +210,34 @@ export function registerPrototypesHandlers(server: RpcServer, deps: HandlerDeps)
     },
   )
 
-  // Fold the delta layer into what owns it (plan §21.3). Pure files, no browser:
-  // which file a change belongs in is a question about the artifact, not about
-  // the page. Open windows pick the result up through REPLAY above.
-  server.handle(
-    RPC_CHANNELS.prototypes.COMMIT,
-    async (_ctx, workspaceId: string, slug: string, options?: { page?: string }) => {
-      const workspace = getWorkspaceByNameOrId(workspaceId)
-      if (!workspace) throw new Error(`PROTOTYPES_COMMIT: Workspace not found: ${workspaceId}`)
-      const result = commitPrototype(workspace.rootPath, slug, options)
-      log.info(
-        `PROTOTYPES_COMMIT: ${slug} → ${result.scopes.reduce((total, scope) => total + scope.folded.length, 0)} folded`,
-      )
-      return result
-    },
-  )
-
-  // References are a relation between two prototypes, not a third kind: the
-  // reader keeps its own patches and the reference keeps its own, which is what
-  // stops reference selectors from being inlined into the reader's deliverable.
-  server.handle(
-    RPC_CHANNELS.prototypes.LINK_REFERENCE,
-    async (_ctx, workspaceId: string, slug: string, referenceSlug: string) => {
-      const workspace = getWorkspaceByNameOrId(workspaceId)
-      if (!workspace) throw new Error(`PROTOTYPES_LINK_REFERENCE: Workspace not found: ${workspaceId}`)
-      const config = linkPrototypeReference(workspace.rootPath, slug, referenceSlug)
-      log.info(`PROTOTYPES_LINK_REFERENCE: ${slug} ← reference ${referenceSlug}`)
-      return config
-    },
-  )
-
-  server.handle(
-    RPC_CHANNELS.prototypes.UNLINK_REFERENCE,
-    async (_ctx, workspaceId: string, slug: string, referenceSlug: string) => {
-      const workspace = getWorkspaceByNameOrId(workspaceId)
-      if (!workspace) throw new Error(`PROTOTYPES_UNLINK_REFERENCE: Workspace not found: ${workspaceId}`)
-      const config = unlinkPrototypeReference(workspace.rootPath, slug, referenceSlug)
-      log.info(`PROTOTYPES_UNLINK_REFERENCE: ${slug} ↛ reference ${referenceSlug}`)
-      return config
-    },
-  )
-
   // Copy a prototype into a new one — the panel's "Duplicate". Two prototypes
   // stop sharing anything the moment the copy exists; the caller is told the new
-  // slug so it can open it.
+  // slug so it can open it. `fold` collapses the copy's change layer on the way out
+  // (plan §21.3), which is the only place a fold is reachable from.
   server.handle(
     RPC_CHANNELS.prototypes.DUPLICATE,
-    async (_ctx, workspaceId: string, slug: string, name?: string) => {
+    async (_ctx, workspaceId: string, slug: string, options?: { name?: string; fold?: boolean }) => {
       const workspace = getWorkspaceByNameOrId(workspaceId)
       if (!workspace) throw new Error(`PROTOTYPES_DUPLICATE: Workspace not found: ${workspaceId}`)
-      const copied = duplicatePrototype(workspace.rootPath, slug, { name })
-      log.info(`PROTOTYPES_DUPLICATE: ${slug} → ${copied.slug} (${copied.copiedPatches.length} patches)`)
+      const copied = duplicatePrototype(workspace.rootPath, slug, options)
+      log.info(
+        `PROTOTYPES_DUPLICATE: ${slug} → ${copied.slug} (${copied.copiedPatches.length} patches` +
+          `${copied.folded && !copied.folded.nothingToFold ? ', folded' : ''})`,
+      )
       return copied
     },
   )
 
   // Delete a prototype. No confirmation here: this is the layer that does what
   // it is told, and the panel has already asked (the agent has no command that
-  // reaches this). Readers left pointing at the gone slug are reported.
+  // reaches this).
   server.handle(
     RPC_CHANNELS.prototypes.DELETE,
     async (_ctx, workspaceId: string, slug: string) => {
       const workspace = getWorkspaceByNameOrId(workspaceId)
       if (!workspace) throw new Error(`PROTOTYPES_DELETE: Workspace not found: ${workspaceId}`)
       const deleted = deletePrototype(workspace.rootPath, slug)
-      log.info(
-        `PROTOTYPES_DELETE: ${slug} (${deleted.referencedBy.length} prototype(s) still reference it)`,
-      )
+      log.info(`PROTOTYPES_DELETE: ${slug}`)
       return deleted
     },
   )

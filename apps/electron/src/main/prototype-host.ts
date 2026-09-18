@@ -97,7 +97,7 @@
  *   is not: a URL from a previous session answers 404 until its prototype is
  *   opened again.
  * - Because the page arrives with its patches already inlined, there is nothing
- *   for `prototype-apply` to do on it — and running the JS patches again would
+ *   for `prototype_tool apply` to do on it — and running the JS patches again would
  *   apply their effects twice. The injector therefore reads the list of what is
  *   already inlined off the document and skips exactly those; patches written
  *   since the render still land on it.

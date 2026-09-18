@@ -11,7 +11,7 @@ import ReactDOM from 'react-dom/client'
 import { useTranslation, initReactI18next } from 'react-i18next'
 import LanguageDetector from 'i18next-browser-languagedetector'
 import { setupI18n } from '@craft-agent/shared/i18n'
-import { EyeOff, Globe, Lock, MessageSquare, MousePointerClick, Plus, X, XCircle, Zap } from 'lucide-react'
+import { Circle, Code, EyeOff, Globe, Lock, MessageSquare, MousePointerClick, Plus, Square, X, XCircle, Zap } from 'lucide-react'
 import { BrowserControls, Spinner } from '@craft-agent/ui'
 import { HeaderIconButton } from '@/components/ui/HeaderIconButton'
 import { cn } from '@/lib/utils'
@@ -87,6 +87,23 @@ interface ToolbarState {
    * something generic rather than printing an id.
    */
   sessionLabels?: Record<string, string>
+  /**
+   * The recording the person started from this window, if one is running.
+   *
+   * `null` (or no state yet) is the ordinary case. The window reports it rather than the
+   * button remembering it, because a recording also ends from the host side — the
+   * recorded tab is closed, or its window is — and a button still claiming to record a
+   * file that is already finished would be worse than no button.
+   */
+  recording?: {
+    /** Where the file is being written. */
+    file: string
+    /** Whose conversation it is filed under; `null` for the person's own browsing. */
+    sessionName: string | null
+    /** Epoch ms, so the elapsed time is counted from the recording rather than from a click. */
+    startedAt: number
+    bytes: number
+  } | null
 }
 
 declare global {
@@ -118,6 +135,12 @@ declare global {
       ) => Promise<void>
       /** Open the current tab's developer tools, or close them if they are up. */
       toggleDevTools: () => Promise<void>
+      /** Arm a recording of the tab on screen; the display media request follows it. */
+      startRecording: () => Promise<ToolbarState['recording']>
+      /** Finish the recording and close the file. Answers with `null` when nothing came through. */
+      stopRecording: () => Promise<{ file: string; bytes: number; seconds: number } | null>
+      /** One encoded chunk, in the order produced. */
+      sendRecordingChunk: (chunk: ArrayBuffer) => void
       onStateUpdate: (callback: (state: ToolbarState) => void) => () => void
       onForceCloseMenu: (callback: (payload: { reason?: string }) => void) => () => void
     }
@@ -136,6 +159,14 @@ declare global {
  * copy is. The document is identical; only the shape of the surface differs.
  */
 const IS_RAIL = new URLSearchParams(window.location.search).get('view') === 'rail'
+
+/** `0:07` — a recording's length, in the form a person reads a stopwatch in. */
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}:${String(seconds).padStart(2, '0')}`
+}
 
 /* ------------------------------------------------------------------ */
 /*  Tab rail                                                          */
@@ -522,6 +553,19 @@ function BrowserToolbarApp() {
 
   const api = window.browserToolbar
 
+  /**
+   * The recording, as the window reports it (plan §20.3, revised).
+   *
+   * The person's own recording of the tab in front of them: they press the button, drive
+   * the page, press it again. It is here rather than in the agent's tool set because
+   * "now" is the one thing nobody can say from inside the thing being recorded.
+   */
+  const recording = state.recording ?? null
+  const [recorder, setRecorder] = useState<MediaRecorder | null>(null)
+  const [elapsedMs, setElapsedMs] = useState(0)
+  const [savedFile, setSavedFile] = useState<string | null>(null)
+  const [recordFailed, setRecordFailed] = useState(false)
+
   useEffect(() => {
     if (!api) return
     return api.onStateUpdate(setState)
@@ -567,6 +611,31 @@ function BrowserToolbarApp() {
       void api.setMenuGeometry(false, 0)
     }
   }, [api, windowMenuOpen])
+
+  /**
+   * How long the recording has been running, counted from when it started.
+   *
+   * From the host's `startedAt` rather than from a click here: the button is the person's,
+   * and a renderer that reloaded mid-recording would otherwise start counting again.
+   */
+  const recordingStartedAt = recording?.startedAt ?? null
+  useEffect(() => {
+    if (recordingStartedAt === null) {
+      setElapsedMs(0)
+      return
+    }
+    const tick = () => setElapsedMs(Date.now() - recordingStartedAt)
+    tick()
+    const timer = setInterval(tick, 500)
+    return () => clearInterval(timer)
+  }, [recordingStartedAt])
+
+  /** Where it went, said for a moment and then out of the way. */
+  useEffect(() => {
+    if (!savedFile) return
+    const timer = setTimeout(() => setSavedFile(null), 8000)
+    return () => clearTimeout(timer)
+  }, [savedFile])
 
   const handleNavigate = useCallback((url: string) => {
     void api?.navigate(url)
@@ -621,6 +690,58 @@ function BrowserToolbarApp() {
   const handleToggleDevTools = useCallback(() => {
     void api?.toggleDevTools()
   }, [api])
+
+  /**
+   * Start or stop the person's recording of this tab.
+   *
+   * Starting is three steps in a fixed order: **arm** the recording (the host opens the
+   * file and takes the tab — the display-media request is answered with exactly that tab),
+   * **ask** for the picture, then record what comes back. There is no picker to click
+   * through: the request this makes is the one the host is waiting for.
+   */
+  const handleToggleRecord = useCallback(async () => {
+    if (!api) return
+
+    if (recording) {
+      // Stopped through the recorder rather than straight at the host: the final chunk is
+      // produced by `stop`, and the file must not be closed before it has been sent. (The
+      // recorder can also be gone — the host ends a recording whose tab is closed — and
+      // then there is nothing left but to tell the host, which answers `null`.)
+      if (recorder && recorder.state !== 'inactive') recorder.stop()
+      else void api.stopRecording()
+      return
+    }
+
+    setRecordFailed(false)
+    setSavedFile(null)
+    try {
+      await api.startRecording()
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false })
+      const media = new MediaRecorder(stream, { mimeType: 'video/webm' })
+      media.ondataavailable = (event) => {
+        if (event.data.size === 0) return
+        void event.data.arrayBuffer().then((chunk) => api.sendRecordingChunk(chunk))
+      }
+      media.onstop = () => {
+        stream.getTracks().forEach((track) => track.stop())
+        setRecorder(null)
+        void api.stopRecording().then((finished) => {
+          // `null` is "nothing reached the file", which the host has already removed.
+          if (finished) setSavedFile(finished.file)
+        })
+      }
+      // A chunk a second: the file is playable up to the last one, so a crash or a killed
+      // window costs a second rather than the whole recording.
+      media.start(1000)
+      setRecorder(media)
+    } catch {
+      // No picture — the request was refused, or there is no tab to record. Nothing was
+      // captured, so the armed file goes away rather than sitting in the session empty.
+      setRecordFailed(true)
+      setRecorder(null)
+      void api.stopRecording()
+    }
+  }, [api, recording, recorder])
 
   const handleSelectTab = useCallback((tabId: string) => {
     void api?.tabAction('activate', tabId)
@@ -749,6 +870,42 @@ function BrowserToolbarApp() {
               className={devTools ? 'bg-foreground/10 text-foreground' : undefined}
               onClick={handleToggleDevTools}
             />
+
+            {/*
+              The record button: the person's own recording of the tab they are on, which
+              is the one thing a recording needs that no agent can supply — "now". The
+              file goes to the conversation this tab belongs to (see the host's
+              `resolveRecordsDir`), and nothing is sent to that conversation about it.
+            */}
+            <HeaderIconButton
+              icon={recording
+                ? <Square className="h-3 w-3 fill-current" />
+                : <Circle className="h-3.5 w-3.5" />}
+              aria-label={recording ? t('browser.stopRecording') : t('browser.startRecording')}
+              className={recording ? 'bg-destructive/15 text-destructive' : undefined}
+              onClick={() => void handleToggleRecord()}
+            />
+
+            {recording && (
+              <span className="inline-flex select-none items-center whitespace-nowrap rounded-[6px] bg-destructive/15 px-2 py-1 text-[11px] tabular-nums text-destructive">
+                {formatElapsed(elapsedMs)}
+              </span>
+            )}
+
+            {savedFile && (
+              <span
+                className="inline-flex max-w-[220px] select-none items-center truncate whitespace-nowrap rounded-[6px] bg-foreground/5 px-2 py-1 text-[11px] text-muted-foreground"
+                title={savedFile}
+              >
+                {t('browser.recordingSaved')} · {savedFile.split(/[/\\]/).pop()}
+              </span>
+            )}
+
+            {recordFailed && (
+              <span className="inline-flex select-none items-center whitespace-nowrap rounded-[6px] bg-destructive/15 px-2 py-1 text-[11px] text-destructive">
+                {t('browser.recordFailed')}
+              </span>
+            )}
 
             <DropdownMenu open={windowMenuOpen} onOpenChange={setWindowMenuOpen}>
               <DropdownMenuTrigger asChild>

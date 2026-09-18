@@ -7,7 +7,7 @@
  * this change serve, and which requirement does nothing serve** — and it answers
  * it from markers in the files rather than from a stored link:
  *
- * - a requirement is a heading with an id in `prd.md` (see `requirements.ts`);
+ * - a requirement is a heading with an id in `PRD.md` (see `requirements.ts`);
  * - a change declares what it serves with `@requirement R-001` in its patch
  *   header, or in a comment in a page document;
  * - a finding declares what it argues for with `requirements:` (see `research.ts`);
@@ -35,7 +35,8 @@
 
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
-import { COMMITTED_CSS, COMMITTED_JS } from './commit.ts'
+import { COMMITTED_CSS, COMMITTED_JS } from './fold.ts'
+import { notice, rawNotice, type PrototypeNotice } from './notices.ts'
 import { listPrototypePages } from './pages.ts'
 import {
   extractRequirementIds,
@@ -117,7 +118,7 @@ export interface RequirementCoverageReport {
    */
   unclaimed: string[]
   /** The two derived failures, plus whatever the PRD itself could not be read as. */
-  issues: string[]
+  issues: PrototypeNotice[]
   /**
    * The argument against the work, as one list (plan §3.7).
    *
@@ -152,7 +153,10 @@ export function resolveRequirementCoverage(
   const patches = scanPrototypePatches(workspaceRootPath, slug)
   const dir = getPrototypeDirPath(workspaceRootPath, slug)
 
-  const issues = [...prd.issues, ...findings.issues, ...reviews.issues]
+  // The PRD's, the research's and the reviews' own file-level problems keep their
+  // wording (`rawNotice`): each names a file and what is wrong with it. The two
+  // derived failures below are the ones a person acts on, so those are codes.
+  const issues: PrototypeNotice[] = [...prd.issues, ...findings.issues, ...reviews.issues].map(rawNotice)
   const declared = new Map<string, RequirementCoverage>()
 
   const claim = (id: string): RequirementCoverage => {
@@ -196,7 +200,7 @@ export function resolveRequirementCoverage(
     }
     const ids = new Set(extractRequirementIds(document))
 
-    // A page of ours keeps its own deltas in files it owns once `prototype-commit` folds them
+    // A page of ours keeps its own deltas in files it owns once the layer is folded
     // (`assets/<page>/committed.*`), and the fold carries the markers into them on purpose so the
     // thread survives (plan §21.3). Read them here too: `patches/` no longer holds that change, and a
     // reader that stopped at the document would report a converged requirement as implemented by
@@ -281,8 +285,7 @@ export function resolveRequirementCoverage(
     const entry = declared.get(requirement.id)
     if (entry && (entry.pages.length > 0 || entry.patches.length > 0)) continue
     issues.push(
-      `${requirement.id} is in ${PROTOTYPE_PRD_FILENAME} but no page or patch refers to it, so nothing in this ` +
-        `prototype implements it.`,
+      notice('requirement.unimplemented', { id: requirement.id, prd: PROTOTYPE_PRD_FILENAME }),
     )
   }
 
@@ -293,7 +296,9 @@ export function resolveRequirementCoverage(
       ...entry.patches,
       ...entry.findings,
     ].join(', ')
-    issues.push(`${where} refers to ${entry.id}, which ${PROTOTYPE_PRD_FILENAME} does not define.`)
+    issues.push(
+      notice('requirement.undefined', { where, id: entry.id, prd: PROTOTYPE_PRD_FILENAME }),
+    )
   }
 
   // PRD order, and only the PRD's requirements: the table mirrors the document. A

@@ -241,7 +241,7 @@ function buildAcceptanceDoc(verification: PrototypeVerification): string {
 
   if (verification.results.length === 0 && !droppedEveryCheck) {
     lines.push(
-      'No checks yet. A requirement carries them as `check:` lines under its entry in `prd.md`:',
+      'No checks yet. A requirement carries them as `check:` lines under its entry in `PRD.md`:',
       '',
       '```md',
       '## R-001 A cart holds its line',
@@ -289,7 +289,7 @@ function buildAcceptanceDoc(verification: PrototypeVerification): string {
         return `- \`${result.requirementId}\` \`${result.kind}: ${result.target}\` → \`about: ${about}\`${alternative}`
       }),
       '',
-      'A dispute filed against a patch needs `on:` as well — the fingerprint `prototype-status` prints',
+      'A dispute filed against a patch needs `on:` as well — the fingerprint `prototype_tool status` prints',
       'for that patch, so a later reader can tell an argument about the current file from one about a',
       'version that no longer exists.',
       '',
@@ -297,7 +297,7 @@ function buildAcceptanceDoc(verification: PrototypeVerification): string {
   }
 
   lines.push(
-    'Run `prototype-verify` again to re-check; the checks come from `prd.md`, so editing that document is how they change.',
+    'Run `prototype_tool verify` again to re-check; the checks come from `PRD.md`, so editing that document is how they change.',
     '',
   )
 

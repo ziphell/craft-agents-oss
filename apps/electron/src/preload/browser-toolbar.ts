@@ -25,6 +25,8 @@ const CHANNELS = {
   APPLY_PROTOTYPE: 'browser-toolbar:apply-prototype',
   TABS: 'browser-toolbar:tabs',
   DEVTOOLS: 'browser-toolbar:devtools',
+  RECORD: 'browser-toolbar:record',
+  RECORD_CHUNK: 'browser-toolbar:record-chunk',
 } as const
 
 // Instance ID is passed via query parameter by BrowserPaneManager
@@ -75,6 +77,26 @@ contextBridge.exposeInMainWorld('browserToolbar', {
    * can also be closed from their own window, which this side never sees otherwise.
    */
   toggleDevTools: () => ipcRenderer.invoke(CHANNELS.DEVTOOLS, instanceId),
+  /**
+   * The record button.
+   *
+   * `start` arms a recording of the tab on screen — the host opens the file, in the
+   * conversation that tab belongs to — and answers with what the button should draw.
+   * The picture is not taken here: right after this, this renderer asks for display
+   * media and the host hands it that exact tab, which is the only thing it hands back.
+   * `stop` closes the file and answers with where it went.
+   */
+  startRecording: () => ipcRenderer.invoke(CHANNELS.RECORD, instanceId, 'start'),
+  stopRecording: () => ipcRenderer.invoke(CHANNELS.RECORD, instanceId, 'stop'),
+  /**
+   * One encoded chunk of the recording, in the order produced.
+   *
+   * `send` rather than `invoke`: there is nothing to say back, and a dozen answers to
+   * "did you write it" per recording would be a second thing to keep in order. The
+   * host appends each one as it arrives, and the stop that follows the last chunk is
+   * on the same channel, so it cannot overtake it.
+   */
+  sendRecordingChunk: (chunk: ArrayBuffer) => ipcRenderer.send(CHANNELS.RECORD_CHUNK, instanceId, chunk),
   onStateUpdate: (callback: (state: unknown) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, state: unknown) => callback(state)
     ipcRenderer.on(CHANNELS.STATE_UPDATE, handler)

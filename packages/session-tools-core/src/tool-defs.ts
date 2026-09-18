@@ -163,6 +163,14 @@ export const BrowserToolSchema = z.object({
   ]).describe('Browser command as a string (e.g., "click @e1") or array (e.g., ["evaluate", "var x = 1; x + 2"]). Array mode preserves semicolons and whitespace in arguments.'),
 });
 
+// Prototype tool schema — the same CLI-like shape, one command per call (no batching).
+export const PrototypeToolSchema = z.object({
+  command: z.union([
+    z.string(),
+    z.array(z.string()),
+  ]).describe('Prototype command as a string (e.g., "list") or array (e.g., ["apply", "--file", "prototypes/cart/patches/ui-002-total.js"]).'),
+});
+
 export const SpawnSessionSchema = z.object({
   help: z.boolean().optional().describe('If true, returns available connections, models, and sources instead of creating a session'),
   prompt: z.string().optional().describe('Instructions for the new session (required when not in help mode)'),
@@ -445,6 +453,29 @@ Examples:
 - \`close\` — close and destroy the browser window
 - \`hide\` — hide the window while preserving state`,
 
+  prototype_tool: `Run a prototype's own commands (one command per call — string or array input, no batching).
+
+A prototype is a **folder** (\`{workspace}/prototypes/{slug}/\`) plus a **flow of pages**. The folder holds
+the work; the flow is looked at in the workspace's browser window — the one the person and every
+conversation share.
+
+**The files** are the prototype, and they are yours to organize:
+- \`PRD.md\` — the brief: one \`## R-001 …\` entry per requirement, and the only file requirements are read
+  from. Beside it: material in any format, and your other pages (\`<name>.html\` is a page, \`_layout.html\`
+  is the shell they share).
+- \`patches/\` — the change layer: \`{writer}-{nnn}-{name}.{css,js}\` for every page, \`patches/<page>/…\` for
+  one. The writer segment is your identity, and a name the scanner cannot parse is silently never replayed.
+- \`config.json\` — the page table; \`services/{svc}/\` — the contract and its fixtures; \`research/\`,
+  \`reviews/\` — what you learned and the argument against it (neither ships); \`dist/\` — the deliverables.
+Pages and patches are written with the Write/Edit tools — no command here writes them for you.
+
+**The window** is where the flow is looked at: \`open\` adds a tab of its own, and
+\`apply\` replays the patches into the tab you are on. Everything about the window itself —
+refs, snapshots, \`evaluate\`, console, network, tabs — is \`browser_tool\`'s.
+
+Read \`docs/prototypes.md\` before your first prototype command: it is the whole guide. Run
+\`prototype_tool --help\` for the commands, their flags and examples.`,
+
   call_llm: `Invoke a secondary LLM for focused subtasks. Use for:
 - Cost optimization: use a smaller model for simple tasks (summarization, classification)
 - Structured output: JSON schema compliance via prompt instructions
@@ -596,6 +627,8 @@ export const SESSION_TOOL_DEFS: SessionToolDef[] = [
   // Browser tool (backend-specific — requires BrowserPaneManager in Electron)
   // Single CLI-like tool that handles all browser actions via command string.
   { name: 'browser_tool', description: TOOL_DESCRIPTIONS.browser_tool, inputSchema: BrowserToolSchema, executionMode: 'backend', safeMode: 'allow', handler: null },
+  // Prototype workbench (backend-specific — same runtime as the browser tool, other door)
+  { name: 'prototype_tool', description: TOOL_DESCRIPTIONS.prototype_tool, inputSchema: PrototypeToolSchema, executionMode: 'backend', safeMode: 'allow', handler: null },
   // Session self-management tools (registry — use context callbacks to reach SessionManager)
   { name: 'set_session_labels', description: TOOL_DESCRIPTIONS.set_session_labels, inputSchema: SetSessionLabelsSchema, executionMode: 'registry', safeMode: 'block', handler: handleSetSessionLabels },
   { name: 'set_session_status', description: TOOL_DESCRIPTIONS.set_session_status, inputSchema: SetSessionStatusSchema, executionMode: 'registry', safeMode: 'block', handler: handleSetSessionStatus },

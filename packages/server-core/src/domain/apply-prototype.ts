@@ -1,7 +1,7 @@
 /**
  * Prototype ↔ live-browser bridge.
  *
- * Shared by the agent tool (`browser_tool prototype-apply`), the prototype
+ * Shared by the agent tool (`browser_tool apply`), the prototype
  * panel's buttons and the auto-replay that follows a file change, so every path
  * produces identical results — a divergence here would mean the UI and the agent
  * disagree about what is on the page.
@@ -342,7 +342,7 @@ function namedPatchPath(workspaceRootPath: string, slug: string, absolutePath: s
   if (inside === '' || inside.startsWith('..') || isAbsolute(inside)) {
     throw new Error(
       `${absolutePath} is not inside prototype "${slug}" (${dir}). A patch of this prototype is what ` +
-      `"prototype-apply --file" can apply; name one of its own files.`,
+      `"apply --file" can apply; name one of its own files.`,
     )
   }
 

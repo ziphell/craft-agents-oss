@@ -3,7 +3,7 @@
  *
  * This is the counterpart to the prototype panel's "Open in conversation":
  * the panel starts the binding, this menu changes or clears it. Binding is what
- * lets the agent run `prototype-*` commands without a slug, so the current
+ * lets the agent run `prototype_tool` commands without a slug, so the current
  * binding is shown on the session rather than hidden inside the agent's prompt.
  *
  * **One conversation, one binding, or none.** Nothing else decides this: a project can

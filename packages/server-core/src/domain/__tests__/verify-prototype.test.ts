@@ -60,7 +60,7 @@ function makePrototype(prd: string): void {
 
 /** Rewrite the PRD — how a requirement's checks change between rounds. */
 function writePrd(prd: string): void {
-  writeFileSync(join(getPrototypeDirPath(workspaceRoot, SLUG), 'prd.md'), prd, 'utf-8')
+  writeFileSync(join(getPrototypeDirPath(workspaceRoot, SLUG), 'PRD.md'), prd, 'utf-8')
 }
 
 /** A service whose contract declares exactly these `[method, path]` pairs. */
