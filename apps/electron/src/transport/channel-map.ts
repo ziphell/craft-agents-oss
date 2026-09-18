@@ -229,6 +229,7 @@ export const CHANNEL_MAP = {
   duplicatePrototype: invoke(RPC_CHANNELS.prototypes.DUPLICATE),
   deletePrototype: invoke(RPC_CHANNELS.prototypes.DELETE),
   applyPrototype: invoke(RPC_CHANNELS.prototypes.APPLY),
+  editPrototype: invoke(RPC_CHANNELS.prototypes.EDIT),
   replayPrototype: invoke(RPC_CHANNELS.prototypes.REPLAY),
   setPrototypeTarget: invoke(RPC_CHANNELS.prototypes.SET_TARGET),
   setPrototypePages: invoke(RPC_CHANNELS.prototypes.SET_PAGES),

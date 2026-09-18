@@ -552,6 +552,22 @@ export interface ElectronAPI {
   /** Replay a prototype's patches into a live browser instance. */
   applyPrototype(workspaceId: string, instanceId: string, slug: string): Promise<unknown>
   /**
+   * Write one save from the browser window's editor as a patch of `slug`, scoped to
+   * `page` (null = the whole flow).
+   *
+   * The edits travel as plain data (`PrototypeEdit`): what was boxed and what to set
+   * on it, or the elements whose text was retyped — everything accumulated before
+   * save, because that is one moment of intent and one entry in the change layer.
+   * The patch is what carries it from there — the watcher replays it, and this call
+   * applies nothing.
+   */
+  editPrototype(
+    workspaceId: string,
+    slug: string,
+    page: string | null,
+    edits: import('@craft-agent/shared/prototypes').PrototypeEdit[],
+  ): Promise<unknown>
+  /**
    * Replay one prototype into every window showing it, after its files changed
    * (plan §21.4). The window decides what that means: a page of ours is reloaded
    * (the host re-renders from disk), someone else's page is re-applied.

@@ -12,7 +12,7 @@ import { validateFilePath, getWorkspaceAllowedDirs } from '@craft-agent/server-c
 import { BrowserView, BrowserWindow, WebContentsView, app, ipcMain, nativeTheme, session, shell, type Session as ElectronSession } from 'electron'
 import { mainLog } from './logger'
 import type { WindowManager } from './window-manager'
-import { BrowserCDP, type AccessibilitySnapshot, type ElementGeometry } from './browser-cdp'
+import { BrowserCDP, type AccessibilitySnapshot, type EditorLabels, type ElementGeometry } from './browser-cdp'
 import { sampleVideoFrames } from './video-frames'
 import { TabRecorder } from './tab-recorder'
 import {
@@ -185,6 +185,8 @@ const TOOLBAR_CHANNELS = {
   STATE_UPDATE: 'browser-toolbar:state-update',
   PICK_ELEMENT: 'browser-toolbar:pick-element',
   CANCEL_PICK: 'browser-toolbar:cancel-pick',
+  EDIT: 'browser-toolbar:edit',
+  CANCEL_EDIT: 'browser-toolbar:cancel-edit',
   TABS: 'browser-toolbar:tabs',
   DEVTOOLS: 'browser-toolbar:devtools',
   RECORD: 'browser-toolbar:record',
@@ -200,6 +202,20 @@ const TOOLBAR_CHANNELS = {
 } as const
 export const BROWSER_PANE_SESSION_PARTITION = 'persist:browser-pane'
 const SESSION_PARTITION = BROWSER_PANE_SESSION_PARTITION
+
+/**
+ * The container the record button asked for, from the set it may ask for.
+ *
+ * The chrome picks the format — it is the side that has `MediaRecorder`, and the file has
+ * to be named for what is about to be written into it, so the extension has to come from
+ * there. Taken from a list rather than trusted: this ends up in a file name, and a name the
+ * other side invents is what a path traversal looks like.
+ */
+const RECORDING_EXTENSIONS = new Set(['mp4', 'webm', 'mkv'])
+function recordingExtension(requested: string | undefined): string {
+  const wanted = (requested ?? '').toLowerCase().replace(/^\./, '')
+  return RECORDING_EXTENSIONS.has(wanted) ? wanted : 'webm'
+}
 
 /**
  * How often an armed picker is asked whether anything was picked.
@@ -252,9 +268,10 @@ interface BrowserTab {
    * itself and only that class can do it (`applyPageCornerRadius`). Everything else in the
    * window is still a `BrowserView`; the two share one view tree, so they stack against each
    * other normally (one is added through `contentView`, the other through `addBrowserView`).
+   *
+   * The ground it sits on is the window's, not this tab's: `BrowserInstance.nativeOverlayView`.
    */
   tabView: WebContentsView
-  nativeOverlayView: BrowserView
   cdp: BrowserCDP
   currentUrl: string
   title: string
@@ -370,7 +387,6 @@ interface BrowserTab {
    * said how it was requested, and only here is that kept (plan §22).
    */
   disposition: 'link' | 'popup' | null
-  nativeOverlayReady: boolean
   themeColor: string | null
   inPageThemeTimer: ReturnType<typeof setTimeout> | null
   themeObserverToken: string | null
@@ -378,6 +394,15 @@ interface BrowserTab {
   networkLogs: BrowserNetworkEntry[]
   downloads: BrowserDownloadEntry[]
 }
+
+/**
+ * The editor bar's words when the caller brings none.
+ *
+ * The toolbar renderer passes its own (it is the side with i18n), so this is only
+ * what a window armed from somewhere else would show — and English rather than
+ * nothing, because a bar with unlabelled buttons is worse than an untranslated one.
+ */
+const DEFAULT_EDITOR_LABELS: EditorLabels = { undo: 'Undo', save: 'Save {n}', discard: 'Discard' }
 
 interface BrowserInstance {
   id: string
@@ -392,6 +417,20 @@ interface BrowserInstance {
    * stay above the tab, so neither can be covered by it.
    */
   railView: BrowserView
+  /**
+   * The ground the page sits on: the surface in the gutter around the page and the panel's
+   * hairline, and — while a conversation holds the tab on screen — the agent's frame, chip and
+   * shield.
+   *
+   * The **window's**, not a tab's. What it draws is the same for every tab (the geometry is
+   * constants, the colours come from the theme), and it has to be there *before* the page it
+   * frames: a tab's page view is added on top of it. Built per tab it was a document to load
+   * per tab, which is a panel whose line arrives a beat after the page does — visible every
+   * time a tab is opened. Built here it is loaded once, before any page view exists, and a new
+   * tab's page lands inside a frame that is already drawn.
+   */
+  nativeOverlayView: BrowserView
+  nativeOverlayReady: boolean
   /**
    * The window's tabs, in the order they were opened.
    *
@@ -484,6 +523,28 @@ interface BrowserInstance {
    * mistaking its own teardown for the user giving up.
    */
   pickerGeneration: number
+  /**
+   * Whether the element **editor** is armed on this window — the mode where the
+   * person boxes elements and styles them, or double-clicks one to retype its text.
+   *
+   * The picker's sibling and its mirror in every respect: a mode of the window
+   * rather than of a tab (so it follows the tab that comes to the front), it stays
+   * on until the user says so, and what it produces is reported outward rather than
+   * acted on here. The two are mutually exclusive — one overlay per window, since
+   * both of them take the page's clicks.
+   */
+  editing: boolean
+  /**
+   * The editor bar's own words, in the toolbar's language — the page has no i18n.
+   *
+   * Kept here for the same reason as `pickLabel`: the mode is re-armed on a page
+   * that navigated, and what the bar says has to survive that.
+   */
+  editLabels: EditorLabels
+  /** Which tab the editor is armed on, or `null` while the mode is off. */
+  editTabId: string | null
+  /** Which arming the running editor loop belongs to — see {@link pickerGeneration}. */
+  editorGeneration: number
 }
 
 /**
@@ -791,9 +852,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Build one tab: its two views, its CDP session, and the state that starts
-   * empty. Nothing is wired and nothing is laid out — `attachTab` does that, and
-   * every tab goes through both, so a tab cannot be half-created.
+   * Build one tab: its page, its CDP session, and the state that starts empty. Nothing is
+   * wired and nothing is laid out — `attachTab` does that, and every tab goes through both,
+   * so a tab cannot be half-created.
    */
   private buildTab(ses: ElectronSession): BrowserTab {
     /**
@@ -816,20 +877,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       },
     })
 
-    const nativeOverlayView = new BrowserView({
-      webPreferences: {
-        partition: SESSION_PARTITION,
-        session: ses,
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-      },
-    })
-
     return {
       id: `tab-${++tabCounter}`,
       tabView,
-      nativeOverlayView,
       cdp: new BrowserCDP(tabView.webContents),
       currentUrl: 'about:blank',
       title: 'New Tab',
@@ -846,7 +896,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       cursorOf: null,
       heldBy: null,
       disposition: null,
-      nativeOverlayReady: false,
       themeColor: null,
       inPageThemeTimer: null,
       themeObserverToken: null,
@@ -931,6 +980,23 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     })
     railView.setBackgroundColor('#00000000')
 
+    /**
+     * The ground the page sits on, built here rather than per tab: created before any page
+     * exists and loaded once, so a tab opened later has a frame around it from its first
+     * frame instead of one that arrives with the document (see
+     * {@link BrowserInstance.nativeOverlayView}).
+     */
+    const nativeOverlayView = new BrowserView({
+      webPreferences: {
+        partition: SESSION_PARTITION,
+        session: ses,
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+      },
+    })
+    nativeOverlayView.setBackgroundColor('#00000000')
+
     // A window is *opened on* something, so it starts with one tab; the tabs a
     // user adds afterwards go through `createTab`.
     const tab = this.buildTab(ses)
@@ -940,6 +1006,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       window,
       toolbarView,
       railView,
+      nativeOverlayView,
+      nativeOverlayReady: false,
       tabs: [tab],
       activeTabId: tab.id,
       workspaceId,
@@ -960,6 +1028,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       pickLabel: 'Add to conversation',
       pickTabId: null,
       pickerGeneration: 0,
+      editing: false,
+      editLabels: DEFAULT_EDITOR_LABELS,
+      editTabId: null,
+      editorGeneration: 0,
       // What the window *is showing*, as one value, because `BrowserInstanceSnapshot`
       // (what the server side reads, and what the toolbar's state reports) is phrased
       // in terms of the window: "the window's address" has to mean "the address of the
@@ -976,6 +1048,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     window.addBrowserView(toolbarView)
     window.addBrowserView(railView)
+    // The ground goes in before the page does: a tab's page view is added *on top* of it
+    // (`attachTab`), which is what makes the panel's line sit under the page's edge.
+    window.addBrowserView(nativeOverlayView)
     this.raiseChromeViews(instance)
 
     this.attachTab(instance, tab)
@@ -984,6 +1059,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     this.setupWindowListeners(instance)
     this.instances.set(instanceId, instance)
+    this.loadNativeOverlay(instance)
     this.emitStateChange(instance)
     mainLog.info(`[browser-pane] toolbar version: v4-react-chromeless`)
     mainLog.info(`[browser-pane] Created instance: ${instanceId} (show=${shouldShow}, workspace=${workspaceId ?? 'none'})`)
@@ -1257,6 +1333,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // forward (plan §12.7): the user keeps picking across tabs, and this is where
     // "any tab's elements can be picked" is made true.
     if (instance.picking) this.armPickerOn(instance, tab)
+    // The editor is the window's mode too, and follows the front tab for the same
+    // reason: the user edits across the window's tabs.
+    if (instance.editing) this.armEditorOn(instance, tab)
     mainLog.info(`[browser-pane] Tab activated instance=${instance.id} tab=${tab.id} url=${tab.currentUrl}`)
   }
 
@@ -1324,11 +1403,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // 第九轮修正). The cursor needs no such care — it lived on the tab and went with it.
     this.releaseHeldTab(instance, tab.id)
 
-    // A tab that is going away takes its overlay with it: leaving the picker
+    // A mode armed on a tab that is going away goes with it: leaving the picker
     // armed on a tab nobody can see would be a mode with nothing to click.
     if (instance.pickTabId === tab.id) {
       instance.pickTabId = null
       void tab.cdp.cancelPicker()
+    }
+    if (instance.editTabId === tab.id) {
+      instance.editTabId = null
+      void tab.cdp.teardownEditor()
     }
 
     // Out of the window and gone — `instance.tabs` is not the window's view list.
@@ -1395,42 +1478,33 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   /**
    * Take a tab out of the window and let go of it.
    *
-   * `instance.tabs` is not the window's view list. A tab removed from the array alone
-   * would keep its two views as children of the window: still painting at the tab area,
-   * still in the stack (so it is a tab nobody can name showing through every tab opened
-   * after it, and one more renderer to pay for), and its overlay would keep whatever size
-   * it had — `updateNativeOverlayState` only zeroes the overlays of tabs that are still
-   * in `tabs`. So a tab that is closed leaves the window the same way it would leave a
-   * display: its two views come off the window, then the contents are closed.
+   * `instance.tabs` is not the window's view list. A tab removed from the array alone would keep
+   * its view as a child of the window: still painting at the tab area, still in the stack (so it
+   * is a tab nobody can name showing through every tab opened after it, and one more renderer to
+   * pay for). So a tab that is closed leaves the window the same way it would leave a display:
+   * its view comes off the window, then its contents are closed.
    *
-   * The two views come off through the two APIs they were added with — the page is a
-   * `WebContentsView` (`contentView.removeChildView`), the overlay still a `BrowserView`
-   * (`removeBrowserView`) — because each API only knows its own kind, and both are the same
-   * tree underneath.
+   * Only the page: the overlay around it is the window's and stays (`nativeOverlayView`) — a tab
+   * going away does not take the panel's ground with it.
    */
   private detachTab(instance: BrowserInstance, tab: BrowserTab): void {
     tab.cdp.detach()
     // A tab that is going away takes its developer tools with it.
     this.closeTabDevTools(tab)
 
-    for (const view of [tab.tabView, tab.nativeOverlayView]) {
-      if (!instance.window.isDestroyed()) {
-        try {
-          // Named per kind rather than through the loop's variable: each API only accepts its
-          // own kind of view, and the union of the two has neither method.
-          if (view === tab.tabView) instance.window.contentView.removeChildView(tab.tabView)
-          else instance.window.removeBrowserView(tab.nativeOverlayView)
-        } catch (error) {
-          mainLog.debug(`[browser-pane] detaching tab=${tab.id} view ignored: ${String(error)}`)
-        }
-      }
-
-      const contents = view.webContents
+    if (!instance.window.isDestroyed()) {
       try {
-        if (!contents.isDestroyed()) contents.close()
+        instance.window.contentView.removeChildView(tab.tabView)
       } catch (error) {
-        mainLog.debug(`[browser-pane] tab close ignored tab=${tab.id}: ${String(error)}`)
+        mainLog.debug(`[browser-pane] detaching tab=${tab.id} view ignored: ${String(error)}`)
       }
+    }
+
+    try {
+      const contents = tab.tabView.webContents
+      if (!contents.isDestroyed()) contents.close()
+    } catch (error) {
+      mainLog.debug(`[browser-pane] tab close ignored tab=${tab.id}: ${String(error)}`)
     }
   }
 
@@ -1474,6 +1548,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    */
   private armPicker(instance: BrowserInstance, label?: string): void {
     if (label) instance.pickLabel = label
+    // One overlay at a time: the editor takes the page's clicks too.
+    if (instance.editing) this.disarmEditor(instance)
     instance.picking = true
     this.armPickerOn(instance, activeTab(instance))
     this.pushToolbarState(instance)
@@ -1498,9 +1574,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   /**
    * Arm the picker on one tab, taking it off whichever tab had it before.
    *
-   * One tab at a time: the overlay follows what the user is looking at, and a
-   * tab nobody is looking at that kept its overlay would be swallowing clicks
-   * the user never aimed at picking.
+   * One tab at a time: the picker is a mode *in a page* — its own UI is drawn in that tab's
+   * document — so a second armed tab would be a document waiting for clicks nobody aimed at it.
    */
   private armPickerOn(instance: BrowserInstance, tab: BrowserTab): void {
     const previous = tabById(instance, instance.pickTabId)
@@ -1599,6 +1674,137 @@ export class BrowserPaneManager implements IBrowserPaneManager {
           instanceId: instance.id,
           message: 'The page would not keep the element picker.',
         })
+        return
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, PICKER_POLL_MS))
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Element editor — the person's own edits (plan §12.7 / §21)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Turn the editor on for this window, and leave it on.
+   *
+   * The picker's sibling, down to the reason for being a window-level mode: the
+   * user edits across the window's tabs, so it is applied to whatever tab is on
+   * screen — now, and each time they move to another one.
+   *
+   * The two are mutually exclusive. Both draw an overlay that takes the page's
+   * clicks, so arming one takes the other off; the picker answers "which element",
+   * the editor asks "what should it look like", and neither question can be asked
+   * while the other mode is holding the page.
+   */
+  private armEditor(instance: BrowserInstance, labels?: EditorLabels): void {
+    if (labels) instance.editLabels = labels
+    if (instance.picking) this.disarmPicker(instance)
+    instance.editing = true
+    this.armEditorOn(instance, activeTab(instance))
+    this.pushToolbarState(instance)
+  }
+
+  /** Turn it off, taking the draft with it. The running loop is superseded, for the reason {@link disarmPicker} gives. */
+  private disarmEditor(instance: BrowserInstance): void {
+    instance.editing = false
+    instance.editorGeneration += 1
+    const tab = tabById(instance, instance.editTabId)
+    instance.editTabId = null
+    if (tab) void tab.cdp.teardownEditor()
+    this.pushToolbarState(instance)
+  }
+
+  /**
+   * The button, while the mode is on: ask the editor to leave.
+   *
+   * Not a teardown, and deliberately not awaited for an outcome: a session with
+   * unsaved edits is the one case where leaving is a decision, and the page is the
+   * side holding the draft — so it either leaves (and the loop hears `cancelled` on
+   * its next poll, which is what actually disarms) or puts save-or-drop on its own
+   * bar and stays mounted.
+   */
+  private askEditorToLeave(instance: BrowserInstance): void {
+    const tab = tabById(instance, instance.editTabId)
+    if (tab) void tab.cdp.askEditorToLeave()
+  }
+
+  /** Arm the editor on one tab, taking it off whichever tab had it before. */
+  private armEditorOn(instance: BrowserInstance, tab: BrowserTab): void {
+    const previous = tabById(instance, instance.editTabId)
+    if (previous && previous.id !== tab.id) void previous.cdp.teardownEditor()
+
+    instance.editTabId = tab.id
+    const generation = ++instance.editorGeneration
+    void this.runEditorLoop(instance, tab, generation)
+  }
+
+  /**
+   * Poll the page for edits, and hand each one to the main window.
+   *
+   * Nothing is written here, and nothing is applied: *which* prototype and page an
+   * edit belongs to is a fact about the window (its tab's prototype), and the main
+   * window is where that is known — so an edit travels out the way a pick does, and
+   * is written as a patch there (`edit-patch.ts`).
+   *
+   * There is no "the page said stop" answer to report, unlike the picker's
+   * `cancelled`: Escape in the page ends the mode, and that is this side's decision
+   * to make, so the loop only ever reports edits.
+   */
+  private async runEditorLoop(instance: BrowserInstance, tab: BrowserTab, generation: number): Promise<void> {
+    const isCurrent = () => instance.editorGeneration === generation
+
+    let armed = false
+    let unusable = 0
+
+    while (isCurrent()) {
+      try {
+        if (!armed) {
+          // The accent is resolved once per arming, like the picker's: a page cannot
+          // see the app's variables. The bar's words travel with it for the same
+          // reason — the page has no i18n of its own.
+          await tab.cdp.armEditor({ accent: this.getResolvedAccentColor(), labels: instance.editLabels })
+          armed = true
+        }
+
+        const report = await tab.cdp.drainEditor()
+        // Read while the window may already be someone else's to report on.
+        if (!isCurrent()) return
+
+        // One action per save: what the person accumulated is one moment of intent,
+        // and the main window writes it as one entry in the change layer.
+        for (const edits of report.saves) {
+          this.emitToolbarAction({ kind: 'edit-requested', instanceId: instance.id, edits })
+        }
+
+        if (report.status === 'cancelled') {
+          mainLog.info(`[browser-pane] Editor stopped in the page instance=${instance.id} tab=${tab.id}`)
+          this.disarmEditor(instance)
+          return
+        }
+
+        // `missing` = this document has no editor: the page navigated out from under
+        // it, or the injection did not take. The mode is the window's, so the tab is
+        // armed again rather than the mode quietly ending.
+        armed = report.status !== 'missing'
+        unusable = armed ? 0 : unusable + 1
+      } catch (error) {
+        if (!isCurrent()) return
+
+        if (instance.window.isDestroyed() || tab.tabView.webContents.isDestroyed()) {
+          instance.editing = false
+          instance.editTabId = null
+          return
+        }
+
+        armed = false
+        unusable += 1
+        mainLog.debug(`[browser-pane] Editor poll failed instance=${instance.id} tab=${tab.id}: ${String(error)}`)
+      }
+
+      if (unusable >= PICKER_MAX_CONSECUTIVE_FAILURES) {
+        mainLog.warn(`[browser-pane] Giving up on the editor instance=${instance.id} tab=${tab.id}`)
+        this.disarmEditor(instance)
         return
       }
 
@@ -2988,7 +3194,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * Non-destructive: the window stays, because the workspace's window is almost never
    * this session's alone — the next turn, the next conversation or the user picks it up
    * from here. What goes is what this session put there: its tab leases (across every
-   * window, see `clearTabLeases`), its holds, and its overlay.
+   * window, see `clearTabLeases`) and its holds — and with the holds, whatever the overlay
+   * was drawing for them.
    */
   unbindAllForSession(sessionId: string): void {
     this.clearTabLeases(sessionId)
@@ -3150,7 +3357,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   /**
    * The document that draws everything the page's own view cannot: the surface *around* the page,
-   * the panel's line there, and the agent's own frame when it holds this tab.
+   * the panel's line there, and the agent's own frame when it holds the tab on screen.
    *
    * Five layers, in this order:
    *
@@ -3172,9 +3379,27 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    *
    * Geometry is baked here because it does not change with the theme or with who is working —
    * only the colours and which frame is shown do, and those are pushed on every update so a
-   * theme switch reaches them.
+   * theme switch reaches them. It is the **window's** document: loaded once, at `createInstance`,
+   * so the ground is up before the first page is (plan §22).
    */
-  private async loadNativeOverlayPage(instance: BrowserInstance, tab: BrowserTab): Promise<void> {
+  private loadNativeOverlay(instance: BrowserInstance): void {
+    // A menu of ours was open when the person tapped the page under it: the overlay is over the
+    // page exactly then, so the tap lands here rather than on the page — and a click on the page
+    // is how a menu is dismissed. One install, because there is one overlay.
+    instance.nativeOverlayView.webContents.on('before-input-event', (event, input) => {
+      if (!instance.toolbarMenuOverlayActive) return
+
+      const inputType = input.type || ''
+      if (inputType === 'mouseDown' || inputType === 'touchStart' || inputType === 'pointerDown') {
+        event.preventDefault()
+        this.forceCloseToolbarMenu(instance, 'overlay-tap')
+      }
+    })
+
+    void this.loadNativeOverlayDocument(instance)
+  }
+
+  private async loadNativeOverlayDocument(instance: BrowserInstance): Promise<void> {
     const inset = this.pagePanelInsets()
 
     const html = `<!doctype html>
@@ -3289,12 +3514,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 </html>`
 
     try {
-      await tab.nativeOverlayView.webContents.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(html)}`)
-      tab.nativeOverlayReady = true
+      await instance.nativeOverlayView.webContents.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(html)}`)
+      instance.nativeOverlayReady = true
       mainLog.info(`[browser-pane] native overlay ready id=${instance.id} pageCorner=${PANEL_RADIUS_INNER} gutter=${inset.left}/${inset.right}/${inset.bottom}`)
       this.updateNativeOverlayState(instance)
     } catch (error) {
-      tab.nativeOverlayReady = false
+      instance.nativeOverlayReady = false
       mainLog.warn(`[browser-pane] native overlay load failed id=${instance.id}: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
@@ -3577,13 +3802,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * that tab.
    *
    * The overlay is up whenever the window is, not only while somebody is working: it is what
-   * rounds the page's corners and rings it (`loadNativeOverlayPage`), and nothing else can —
-   * a tab is a `BrowserView`, which is a rectangle. What comes and goes with the work is the
-   * **accent** and the shield: while this tab is held, the ring turns accent, the page dims,
-   * and the tab stops taking input; on any other tab the panel is just the panel.
+   * rings the page (`loadNativeOverlay`), and the page's own corner is cut by the page's view
+   * (`applyPageCornerRadius`), so there is nothing else that could. What comes and goes with
+   * the work is the **accent** and the shield: while the tab on screen is held, the ring turns
+   * accent, the page dims, and the tab stops taking input; on any other tab the panel is just
+   * the panel.
    *
-   * A tab that is not the one on screen gets nothing sized, for the reason it always did: an
-   * overlay on a tab nobody is looking at would swallow clicks nobody made.
+   * One overlay for the window, so one position: the tab area of the tab on screen. A tab
+   * nobody is looking at draws nothing here for free — there is no view of its own to leave
+   * behind (see `BrowserInstance.nativeOverlayView`).
    */
   private updateNativeOverlayState(instance: BrowserInstance): void {
     const heldBy = activeTab(instance).heldBy
@@ -3592,29 +3819,19 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // question, and all three belong to the tab on screen alone (plan §22, 第九轮修正 /
     // 第十三轮修正).
     const locked = heldBy !== null
-    // What is being done is named by whoever is at the wheel on *this* tab — the overlay is
-    // this tab's, so there is no other conversation it could be reporting.
+    // What is being done is named by whoever is at the wheel on the tab on screen — the state
+    // is read off that tab, so there is no other conversation it could be reporting.
     const label = this.getAgentControlLabel(heldBy ? instance.controlBy.get(heldBy) : null)
     // The tab on screen is the only one a person can touch, and it takes input back only while
     // that tab is the held one, or a menu of ours is open above it. Switching to another tab
     // therefore hands the keyboard and mouse straight back.
     const shieldActive = locked || menuActive
 
-    // Only the tab on screen can be overlaid: an overlay on a tab nobody is
-    // looking at would swallow clicks nobody made. Auto-resize goes off with it —
-    // a zero-sized view that still resizes with the window would grow back into a
-    // strip of click-swallowing overlay at the window's top-left corner, which is
-    // where the tab rail is.
-    for (const tab of instance.tabs) {
-      if (tab.id !== instance.activeTabId) {
-        tab.nativeOverlayView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
-        tab.nativeOverlayView.setAutoResize({ width: false, height: false })
-      }
-    }
+    const overlay = instance.nativeOverlayView
 
-    if (!activeTab(instance).nativeOverlayReady || instance.window.isDestroyed()) {
-      activeTab(instance).nativeOverlayView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
-      activeTab(instance).nativeOverlayView.setAutoResize({ width: false, height: false })
+    if (!instance.nativeOverlayReady || instance.window.isDestroyed()) {
+      overlay.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+      overlay.setAutoResize({ width: false, height: false })
       if (!instance.window.isDestroyed()) {
         this.raiseChromeViews(instance)
       }
@@ -3626,8 +3843,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // still not covered by it: the rail and the bar stay the person's, and a person has to be
     // able to switch tabs while it is up.
     const area = this.tabAreaBounds(instance)
-    activeTab(instance).nativeOverlayView.setBounds(area)
-    activeTab(instance).nativeOverlayView.setAutoResize({ width: true, height: true })
+    overlay.setBounds(area)
+    overlay.setAutoResize({ width: true, height: true })
 
     // Which of the two is on top is the whole of "is this tab locked or not", and the page is
     // on top whenever it can be: a view covers a rectangle whatever it paints, so an overlay
@@ -3636,7 +3853,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // the panel's hairline) or belongs to a lock, so under the page it is invisible where it
     // would matter and harmless where it is not.
     if (shieldActive) {
-      instance.window.setTopBrowserView(activeTab(instance).nativeOverlayView)
+      instance.window.setTopBrowserView(overlay)
     } else {
       instance.window.contentView.addChildView(activeTab(instance).tabView)
     }
@@ -3649,7 +3866,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const accent = this.getResolvedAccentColor()
     const lockedGlow = `inset 0 0 0 1px color-mix(in oklab, ${accent} 45%, transparent), inset 0 0 24px color-mix(in oklab, ${accent} 28%, transparent)`
 
-    void activeTab(instance).nativeOverlayView.webContents.executeJavaScript(`(() => {
+    void overlay.webContents.executeJavaScript(`(() => {
       const mask = document.getElementById('mask');
       const frame = document.getElementById('frame');
       const lock = document.getElementById('lock');
@@ -3764,8 +3981,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    *
    * The page is raised through `contentView` (it is a `WebContentsView`) while the chrome is
    * raised through `setTopBrowserView` (still a `BrowserView`) — the two share one tree, so the
-   * order they are given here holds. The tab's own overlay is not part of this: where it sits
-   * depends on whether the tab is locked, which is `updateNativeOverlayState`'s business.
+   * order they are given here holds. The window's overlay is not part of this: whether it sits
+   * above or below the page depends on whether the tab on screen is locked, which is
+   * `updateNativeOverlayState`'s business.
    */
   private raiseActiveTab(instance: BrowserInstance): void {
     if (instance.window.isDestroyed()) return
@@ -4138,6 +4356,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
        * flag here any more, because a pick with no conversation to go to opens one.
        */
       picking: instance.picking,
+      editing: instance.editing,
       /**
        * Whether the tab on screen has its developer tools up.
        *
@@ -4391,6 +4610,28 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     })
 
     /**
+     * The editor's button: arm it, or take it off.
+     *
+     * Like the picker's, this returns as soon as the mode is on rather than when an
+     * edit happens — the person keeps editing, and a save travels back through
+     * `emitToolbarAction` when they press save. The bar's words come with the call:
+     * the page has no i18n, and the toolbar renderer is the side that has it.
+     */
+    ipcMain.handle(TOOLBAR_CHANNELS.EDIT, (_event, instanceId: string, labels?: EditorLabels) => {
+      const inst = findInstance(instanceId)
+      if (!inst) return
+      this.armEditor(inst, labels)
+    })
+
+    ipcMain.handle(TOOLBAR_CHANNELS.CANCEL_EDIT, (_event, instanceId: string) => {
+      const inst = findInstance(instanceId)
+      if (!inst) return
+      // Asking rather than tearing down: with unsaved edits the page turns this into
+      // a question on its own bar, and the mode ends when that question is answered.
+      this.askEditorToLeave(inst)
+    })
+
+    /**
      * The tab's developer tools, from the bar's button.
      *
      * Only the opening and closing are asked for here; whether they are up is read from
@@ -4417,7 +4658,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
      */
     ipcMain.handle(
       TOOLBAR_CHANNELS.RECORD,
-      async (_event, instanceId: string, action: 'start' | 'stop') => {
+      async (_event, instanceId: string, action: 'start' | 'stop', extension?: string) => {
         const inst = findInstance(instanceId)
         if (!inst) return null
 
@@ -4447,6 +4688,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
           // hand it on (or tell an agent to sample it).
           dir: app.getPath('downloads'),
           source: tab.tabView.webContents,
+          extension: recordingExtension(extension),
         })
         this.pushToolbarState(inst)
         return state
@@ -5560,14 +5802,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    */
   private attachTab(instance: BrowserInstance, tab: BrowserTab): void {
     const tabWc = tab.tabView.webContents
-    const overlayWc = tab.nativeOverlayView.webContents
 
     // Everything a tab needs to be a tab: a user agent that does not announce
     // Electron (the site's own scripts should not see the frame we put it in), its
-    // own background so about:blank does not flash, its views in the window, and the
-    // overlay document the page's panel — its rounded corners, its ring, and the agent's
-    // control chip — is drawn in. Both entry points — `createInstance` and `createTab` —
-    // come through here, so a second tab cannot be missing one of these.
+    // own background so about:blank does not flash, and its view in the window. Both
+    // entry points — `createInstance` and `createTab` — come through here, so a second
+    // tab cannot be missing one of these. The overlay is not on this list: it is the
+    // window's and is already up (see `BrowserInstance.nativeOverlayView`).
     const defaultUa = tabWc.userAgent || ''
     const sanitizedUa = defaultUa.replace(/\sElectron\/[^\s]+/g, '')
     if (sanitizedUa && sanitizedUa !== defaultUa) {
@@ -5578,19 +5819,16 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // background of its own — is not a hole: every tab is laid out at the same bounds, so a
     // transparent tab would show whichever tab is stacked under it.
     tab.tabView.setBackgroundColor(getBackgroundColor(nativeTheme.shouldUseDarkColors))
-    tab.nativeOverlayView.setBackgroundColor('#00000000')
     this.applyPageCornerRadius(tab)
 
-    // The overlay goes in first, so the page starts out **above** it. Everything the overlay
-    // draws is *around* the page (the gutter's surface, the panel's hairline), and a view left
-    // on top of the page takes its clicks — a view covers a rectangle whatever it paints. From
-    // here on `updateNativeOverlayState` is what decides which of the two is on top, because
-    // that is also what "this tab is locked" means.
-    instance.window.addBrowserView(tab.nativeOverlayView)
+    // The page goes in **above** the overlay, which is already there and in the window before
+    // this. Everything the overlay draws is *around* the page (the gutter's surface, the
+    // panel's hairline), so below is where it belongs; from here on
+    // `updateNativeOverlayState` is what decides which of the two is on top, because that is
+    // also what "this tab is locked" means.
     instance.window.contentView.addChildView(tab.tabView)
     // The chrome stays on top of whatever tab is showing — both surfaces of it.
     this.raiseChromeViews(instance)
-    void this.loadNativeOverlayPage(instance, tab)
 
     tabWc.on('did-start-loading', () => {
       tab.isLoading = true
@@ -5632,17 +5870,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     })
 
     // The window's own toolbar listener lives in `setupWindowListeners` — one
-    // install per window, not per tab.
-
-    overlayWc.on('before-input-event', (event, input) => {
-      if (!instance.toolbarMenuOverlayActive) return
-
-      const inputType = input.type || ''
-      if (inputType === 'mouseDown' || inputType === 'touchStart' || inputType === 'pointerDown') {
-        event.preventDefault()
-        this.forceCloseToolbarMenu(instance, 'overlay-tap')
-      }
-    })
+    // install per window, not per tab. The overlay's own listener is one too, and is
+    // installed where that view is (`loadNativeOverlay`).
 
     tabWc.on('did-navigate', (_event, urlFromEvent) => {
       const url = typeof tabWc.getURL === 'function' ? tabWc.getURL() : (urlFromEvent || tab.currentUrl)

@@ -22,6 +22,8 @@ const CHANNELS = {
   STATE_UPDATE: 'browser-toolbar:state-update',
   PICK_ELEMENT: 'browser-toolbar:pick-element',
   CANCEL_PICK: 'browser-toolbar:cancel-pick',
+  EDIT: 'browser-toolbar:edit',
+  CANCEL_EDIT: 'browser-toolbar:cancel-edit',
   TABS: 'browser-toolbar:tabs',
   DEVTOOLS: 'browser-toolbar:devtools',
   RECORD: 'browser-toolbar:record',
@@ -53,6 +55,21 @@ contextBridge.exposeInMainWorld('browserToolbar', {
   pickElement: (addLabel?: string) => ipcRenderer.invoke(CHANNELS.PICK_ELEMENT, instanceId, addLabel),
   cancelPick: () => ipcRenderer.invoke(CHANNELS.CANCEL_PICK, instanceId),
   /**
+   * Turn the window's element editor on — and leave it on.
+   *
+   * Resolves as soon as the mode is on, not when an edit happens: the person keeps
+   * boxing elements and retyping text, and each save travels back as an
+   * `edit-requested` action, which the main window writes as one patch. Nothing is
+   * written before that, so leaving the mode (`cancelEdit`, or Escape in the page)
+   * takes the unsaved edits back. Arming this takes the picker off, and the other way
+   * round: one overlay per window.
+   *
+   * `labels` are the bar's own words — the page has no i18n, and this renderer does.
+   */
+  startEditing: (labels?: { undo: string; save: string; discard: string }) =>
+    ipcRenderer.invoke(CHANNELS.EDIT, instanceId, labels),
+  cancelEdit: () => ipcRenderer.invoke(CHANNELS.CANCEL_EDIT, instanceId),
+  /**
    * Manage this window's own tabs from the rail: switch to one, close one, add one,
    * or take a locked tab back (`release`). The host owns what a tab is, so nothing
    * about it travels back here except through `onStateUpdate`.
@@ -78,12 +95,14 @@ contextBridge.exposeInMainWorld('browserToolbar', {
    * The record button.
    *
    * `start` arms a recording of the tab on screen — the host opens the file, in the
-   * conversation that tab belongs to — and answers with what the button should draw.
+   * person's downloads folder — and answers with what the button should draw. The
+   * extension is the container the caller is about to record into (`mp4`, `webm`): the file
+   * is named before the picture exists, so the two have to be decided together.
    * The picture is not taken here: right after this, this renderer asks for display
    * media and the host hands it that exact tab, which is the only thing it hands back.
    * `stop` closes the file and answers with where it went.
    */
-  startRecording: () => ipcRenderer.invoke(CHANNELS.RECORD, instanceId, 'start'),
+  startRecording: (extension?: string) => ipcRenderer.invoke(CHANNELS.RECORD, instanceId, 'start', extension),
   stopRecording: () => ipcRenderer.invoke(CHANNELS.RECORD, instanceId, 'stop'),
   /**
    * One encoded chunk of the recording, in the order produced.

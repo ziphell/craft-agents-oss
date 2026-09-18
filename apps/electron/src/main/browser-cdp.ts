@@ -10,7 +10,7 @@
  */
 
 import type { WebContents } from 'electron'
-import type { PickedElement } from '@craft-agent/shared/protocol'
+import type { BrowserEdit, PickedElement } from '@craft-agent/shared/protocol'
 import {
   applyMockRequest,
   matchMockRoute,
@@ -136,6 +136,53 @@ export interface PickerReport {
 }
 
 /**
+ * How both overlays draw a selection: a solid frame around it, and its name on a
+ * chip of the app's accent above it.
+ *
+ * Shared because there is one selection in the window, however it was made — the
+ * picker's click and the editor's box mean the same thing to look at, and two
+ * copies of a chip is how the two modes would come to look like two features.
+ */
+function selectionFrameStyle(accent: string): string {
+  return `position:fixed;display:none;border:2px solid ${accent};border-radius:4px;pointer-events:none;`
+}
+
+function selectionLabelStyle(accent: string): string {
+  return `position:fixed;display:none;padding:2px 6px;border-radius:6px;font:12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;background:${accent};color:#fff;pointer-events:none;max-width:70vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;`
+}
+
+/**
+ * `buildStableSelector`, as source, for the scripts injected into a page.
+ *
+ * One copy for both overlays on purpose: the picker's selection and the editor's
+ * are the same element described the same way — the selector the agent, a patch's
+ * `@target` and the anchor record all agree on. A second copy would be a second
+ * description of one thing, and the two would drift.
+ */
+const STABLE_SELECTOR_FN = `  const buildStableSelector = (el) => {
+    if (!el || el.nodeType !== 1) return '';
+    const testId = el.getAttribute('data-testid') || el.getAttribute('data-test-id') || el.getAttribute('data-test');
+    if (testId) return '[data-testid="' + testId + '"]';
+    if (el.id && !/^[0-9]/.test(el.id)) return '#' + el.id;
+
+    const parts = [];
+    let cur = el;
+    while (cur && cur.nodeType === 1 && parts.length < 6 && cur !== document.documentElement) {
+      if (cur.id && !/^[0-9]/.test(cur.id)) { parts.unshift('#' + cur.id); break; }
+      let part = cur.tagName.toLowerCase();
+      const parent = cur.parentElement;
+      if (parent) {
+        const sameTag = [];
+        for (const child of parent.children) { if (child.tagName === cur.tagName) sameTag.push(child); }
+        if (sameTag.length > 1) part += ':nth-of-type(' + (sameTag.indexOf(cur) + 1) + ')';
+      }
+      parts.unshift(part);
+      cur = parent;
+    }
+    return parts.join(' > ');
+  };`
+
+/**
  * Injected picker: previews the element under the cursor, and turns the user's
  * click into a *selection* — a stable selector plus a box that stays on screen,
  * which is what the bar under it acts on. It reports into `PICKER_STATE_KEY`
@@ -174,8 +221,8 @@ function buildPickerInjectScript(options: {
   // (dashed + tinted = what a click would take, solid = what it took), so the
   // selection is readable without covering the element up.
   const hoverBoxStyle = `position:fixed;display:none;border:1px dashed ${accent};background:color-mix(in oklab, ${accent} 15%, transparent);border-radius:4px;pointer-events:none;`
-  const selectedBoxStyle = `position:fixed;display:none;border:2px solid ${accent};border-radius:4px;pointer-events:none;`
-  const labelStyle = `position:fixed;display:none;padding:2px 6px;border-radius:6px;font:12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;background:${accent};color:#fff;pointer-events:none;max-width:70vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;`
+  const selectedBoxStyle = selectionFrameStyle(accent)
+  const labelStyle = selectionLabelStyle(accent)
   const buttonStyle = `all:unset;cursor:pointer;padding:3px 10px;border-radius:6px;background:${accent};color:#fff;font:12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;white-space:nowrap;`
 
   // The bar is only built when there is a conversation to add to: a button that
@@ -259,28 +306,7 @@ function buildPickerInjectScript(options: {
 
   document.documentElement.appendChild(root);
 
-  const buildStableSelector = (el) => {
-    if (!el || el.nodeType !== 1) return '';
-    const testId = el.getAttribute('data-testid') || el.getAttribute('data-test-id') || el.getAttribute('data-test');
-    if (testId) return '[data-testid="' + testId + '"]';
-    if (el.id && !/^[0-9]/.test(el.id)) return '#' + el.id;
-
-    const parts = [];
-    let cur = el;
-    while (cur && cur.nodeType === 1 && parts.length < 6 && cur !== document.documentElement) {
-      if (cur.id && !/^[0-9]/.test(cur.id)) { parts.unshift('#' + cur.id); break; }
-      let part = cur.tagName.toLowerCase();
-      const parent = cur.parentElement;
-      if (parent) {
-        const sameTag = [];
-        for (const child of parent.children) { if (child.tagName === cur.tagName) sameTag.push(child); }
-        if (sameTag.length > 1) part += ':nth-of-type(' + (sameTag.indexOf(cur) + 1) + ')';
-      }
-      parts.unshift(part);
-      cur = parent;
-    }
-    return parts.join(' > ');
-  };
+${STABLE_SELECTOR_FN}
 
   let current = null;   // what the cursor is over — what a click would take
   let selected = null;  // what the user clicked — what the bar adds
@@ -431,6 +457,564 @@ const PICKER_DRAIN_EXPRESSION = `(() => {
 })()`
 
 const PICKER_CANCEL_EXPRESSION = `(() => { try { window.${PICKER_CANCEL_KEY} && window.${PICKER_CANCEL_KEY}(); } catch (e) {} })()`
+
+// ---------------------------------------------------------------------------
+// Element editor (the person's own edits)
+// ---------------------------------------------------------------------------
+
+/** Window key the injected editor publishes its state into. */
+const EDITOR_STATE_KEY = '__craft_agent_editor_state__'
+/** Window key exposing the injected editor's cancel handle — leave now, dropping the draft. */
+const EDITOR_CANCEL_KEY = '__craft_agent_editor_cancel__'
+/**
+ * Window key asking the editor to leave *if it has nothing unsaved*.
+ *
+ * A second handle rather than a flag on the first, because the two are asked by
+ * different callers for different reasons: the toolbar's button asks (the person may
+ * have work in the draft, and that is a decision, not a teardown), while closing a
+ * tab, re-arming the mode or the page going away tears down (there is nobody left to
+ * ask, and the overlay must not outlive the mode).
+ */
+const EDITOR_ASK_KEY = '__craft_agent_editor_ask_leave__'
+const EDITOR_OVERLAY_ID = '__craft_agent_editor_overlay__'
+
+/**
+ * What the injected editor has reported since the last read.
+ *
+ * A **save** at a time rather than an edit: the person's session accumulates in the
+ * page, and what crosses this boundary is the moment they said "keep it" — which is
+ * what the caller writes as one entry in the change layer.
+ */
+export interface EditorReport {
+  /** `pending` while armed, `cancelled` once Escape ended the mode, `missing` = no editor in this document. */
+  status: 'pending' | 'cancelled' | 'missing'
+  /** Saves made since the last read, in order, cleared as they are read. */
+  saves: BrowserEdit[][]
+}
+
+/** The bar's own words, in the window's language — the page has no i18n. */
+export interface EditorLabels {
+  /** Button that takes the last unsaved edit back. */
+  undo: string
+  /** Button that writes the session down; `{n}` is how many edits are waiting. */
+  save: string
+  /** Button that drops everything unsaved. */
+  discard: string
+}
+
+/**
+ * Injected editor: box elements and set styles on them, retype an element's text,
+ * and press save — which is when anything is written.
+ *
+ * The window's third gesture, and a sibling of the picker — the same shape (an
+ * overlay drawn in the page, a window key the caller polls, Escape ending the mode),
+ * asking a different question. The picker answers *which element*; this one answers
+ * *what it should look like*, and what it produces is one patch per save: the caller
+ * writes the session as an entry in the change layer, which is what survives a
+ * reload, reaches every window showing the prototype, and ships in the delivery.
+ *
+ * Three properties, each one a cost the other two bought:
+ *
+ * - **Nothing is written until save.** The session lives here as a draft: styles go
+ *   into a preview stylesheet of our own (generated from the draft, so taking an
+ *   edit back is regenerating it), text is what the person already typed into the
+ *   element. That is what makes undo cheap and what keeps a session from being
+ *   interrupted — a write would trigger the replay, and a page of ours re-renders on
+ *   one, taking the selection and the draft with it.
+ * - **The page therefore shows a draft**, which no patch states yet — the one thing
+ *   this workbench otherwise refuses. It is bounded by the mode and owned by the
+ *   bar: unsaved edits are counted, save and discard are the two ways out, and
+ *   anything still unsaved when the mode ends is taken back rather than left on the
+ *   page. The bar is not decoration; it is what makes this honest.
+ * - **Text is the element's whole text.** Double-clicking makes the element editable
+ *   and committing replaces all of it, children included — which is what "this
+ *   element now says this" means, and what one `textContent` assignment can keep.
+ *   Editing *part* of a text node would mean storing the element's markup in the
+ *   patch, i.e. serializing the DOM (plan §14.1).
+ */
+function buildEditorInjectScript(options: { accent: string; labels: EditorLabels }): string {
+  const accent = options.accent
+  const marqueeStyle = `position:fixed;display:none;border:1px dashed ${accent};background:color-mix(in oklab, ${accent} 12%, transparent);border-radius:4px;pointer-events:none;`
+  const frameStyle = selectionFrameStyle(accent)
+  const labelStyle = selectionLabelStyle(accent)
+  const layerStyle = `position:fixed;inset:0;pointer-events:none;`
+  const barStyle = `position:fixed;display:none;align-items:center;gap:3px;padding:3px;border-radius:8px;background:${accent};box-shadow:0 2px 10px rgba(0,0,0,0.25);pointer-events:auto;`
+  const barButtonStyle = `all:unset;cursor:pointer;min-width:22px;height:24px;line-height:24px;padding:0 6px;text-align:center;border-radius:6px;color:#fff;font:600 13px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;white-space:nowrap;`
+  const barSpacerStyle = `width:1px;height:16px;background:rgba(255,255,255,0.35);margin:0 2px;`
+
+  return `(() => {
+  try { window.${EDITOR_CANCEL_KEY} && window.${EDITOR_CANCEL_KEY}(); } catch (e) {}
+
+  const root = document.createElement('div');
+  root.id = '${EDITOR_OVERLAY_ID}';
+  root.setAttribute('style', 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;');
+
+  // The box the current drag covers (dashed, the same frame the picker previews a
+  // click with) and the boxes of what is selected (solid).
+  const marquee = document.createElement('div');
+  marquee.setAttribute('style', ${JSON.stringify(marqueeStyle)});
+  root.appendChild(marquee);
+
+  const layer = document.createElement('div');
+  layer.setAttribute('style', ${JSON.stringify(layerStyle)});
+  root.appendChild(layer);
+
+  // The draft, drawn: the rules the session has made so far, in the order they were
+  // made, so a later edit wins exactly as it will once it is written. It is our own
+  // stylesheet and it lives and dies with the mode — the patch that follows is what
+  // keeps the page looking like this afterwards.
+  const preview = document.createElement('style');
+  root.appendChild(preview);
+
+  // The bar the person acts with. Five things, no more: two styles, take one back,
+  // write it down, drop it.
+  const bar = document.createElement('div');
+  bar.setAttribute('style', ${JSON.stringify(barStyle)});
+  const makeButton = (text, title, extra) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = text;
+    button.title = title;
+    button.setAttribute('style', ${JSON.stringify(barButtonStyle)} + extra);
+    return button;
+  };
+  const boldButton = makeButton('B', 'font-weight', 'font-weight:700;');
+  const italicButton = makeButton('I', 'font-style', 'font-style:italic;');
+  const spacer = document.createElement('div');
+  spacer.setAttribute('style', ${JSON.stringify(barSpacerStyle)});
+  const undoButton = makeButton('\\u21b6', '', 'font-weight:400;');
+  const saveButton = makeButton('', '', 'font-weight:600;');
+  const discardButton = makeButton('', '', 'font-weight:400;opacity:0.85;');
+  bar.appendChild(boldButton);
+  bar.appendChild(italicButton);
+  bar.appendChild(spacer);
+  bar.appendChild(undoButton);
+  bar.appendChild(saveButton);
+  bar.appendChild(discardButton);
+  root.appendChild(bar);
+
+  document.documentElement.appendChild(root);
+
+${STABLE_SELECTOR_FN}
+
+  const SAVE_LABEL = ${JSON.stringify(options.labels.save)};
+  const UNDO_LABEL = ${JSON.stringify(options.labels.undo)};
+  const DISCARD_LABEL = ${JSON.stringify(options.labels.discard)};
+  undoButton.textContent = UNDO_LABEL;
+  discardButton.textContent = DISCARD_LABEL;
+
+  // What the mode has reported, and what it has in hand. Two counters rather than
+  // one list of "written" flags: the draft is appended to and popped from the end,
+  // so the boundary is all the history this needs.
+  const state = { status: 'pending', saves: [] };
+  let draft = [];
+  let savedCount = 0;
+  let confirming = false;   // the bar is asking save-or-drop; the mode stays until it is answered
+  let selected = [];
+  let editing = null;   // { el, before, onBlur } — the element being typed into
+  let drag = null;
+
+  const inOverlay = (el) => !!el && root.contains(el);
+  const targetOf = (el) => ({ selector: buildStableSelector(el), tag: el.tagName ? el.tagName.toLowerCase() : '' });
+  const unsaved = () => draft.length - savedCount;
+
+  const rectOf = (d) => ({
+    left: Math.min(d.x0, d.x1),
+    top: Math.min(d.y0, d.y1),
+    right: Math.max(d.x0, d.x1),
+    bottom: Math.max(d.y0, d.y1),
+  });
+
+  /**
+   * What a rectangle selects.
+   *
+   * Inline boxes are skipped, and only the innermost of what is left is kept:
+   * boxing a paragraph has to mean the paragraph and not the spans inside it, and
+   * boxing a card has to mean its contents rather than the card *and* everything
+   * in it. A click is a box with no area, so it takes the innermost element under
+   * the cursor — the same answer, from the same rule.
+   */
+  const within = (rect) => {
+    if (!document.body) return [];
+    const hits = [];
+    for (const el of document.body.querySelectorAll('*')) {
+      if (el === document.body || inOverlay(el)) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 && r.height === 0) continue;
+      if (r.bottom < rect.top || r.top > rect.bottom || r.right < rect.left || r.left > rect.right) continue;
+      const display = window.getComputedStyle(el).display;
+      if (display === 'inline' || display === 'contents') continue;
+      hits.push(el);
+    }
+    return hits.filter((el) => !hits.some((other) => other !== el && el.contains(other)));
+  };
+
+  const drawMarquee = () => {
+    if (!drag) return;
+    const r = rectOf(drag);
+    marquee.setAttribute('style', ${JSON.stringify(marqueeStyle)}
+      + 'display:block;left:' + r.left + 'px;top:' + r.top + 'px;width:' + (r.right - r.left) + 'px;height:' + (r.bottom - r.top) + 'px;');
+  };
+
+  /** The draft as CSS: every style edit so far, in the order it was made. */
+  const renderPreview = () => {
+    const chunks = [];
+    for (const entry of draft) {
+      if (entry.kind !== 'style') continue;
+      const body = Object.keys(entry.declarations).map((property) => '  ' + property + ': ' + entry.declarations[property] + ';').join('\\n');
+      for (const target of entry.targets) chunks.push(target.selector + ' {\\n' + body + '\\n}');
+    }
+    preview.textContent = chunks.join('\\n\\n');
+  };
+
+  const paintBar = () => {
+    const waiting = unsaved();
+    saveButton.textContent = SAVE_LABEL.split('{n}').join(String(waiting));
+    const dim = waiting === 0 ? '0.5' : '1';
+    saveButton.style.opacity = dim;
+    discardButton.style.opacity = '1';
+    undoButton.style.opacity = dim;
+    // While the bar is asking, the only two answers are on it: making a style or
+    // taking one back is not an answer to "save or drop?".
+    for (const control of [boldButton, italicButton, spacer, undoButton]) {
+      control.style.display = confirming ? 'none' : '';
+    }
+  };
+
+  /** Draw the selection: one frame and one name per element, and the bar over the first. */
+  const paint = () => {
+    layer.textContent = '';
+    selected = selected.filter((el) => el.isConnected);
+    if (selected.length === 0) {
+      paintBar();
+      // With nothing selected the bar has nothing to point at — but it is where save
+      // lives, so it stays while there is something to decide, parked out of the way
+      // rather than gone. An edit nobody can press save on is the worse bug.
+      if (unsaved() === 0 && !confirming) { bar.style.display = 'none'; return; }
+      bar.style.display = 'flex';
+      bar.style.left = 'auto';
+      bar.style.top = 'auto';
+      bar.style.right = '16px';
+      bar.style.bottom = '16px';
+      return;
+    }
+
+    let anchor = null;
+    for (const el of selected) {
+      const r = el.getBoundingClientRect();
+      const frame = document.createElement('div');
+      frame.setAttribute('style', ${JSON.stringify(frameStyle)}
+        + 'display:block;left:' + r.left + 'px;top:' + r.top + 'px;width:' + r.width + 'px;height:' + r.height + 'px;');
+      layer.appendChild(frame);
+      const label = document.createElement('div');
+      label.setAttribute('style', ${JSON.stringify(labelStyle)}
+        + 'display:block;left:' + r.left + 'px;top:' + Math.max(4, r.top - 22) + 'px;');
+      label.textContent = buildStableSelector(el);
+      layer.appendChild(label);
+      if (!anchor) anchor = r;
+    }
+
+    // The bar hangs off the first selection: above it when there is room, below it
+    // otherwise, and never outside the viewport.
+    const above = anchor.top - bar.offsetHeight - 6;
+    bar.style.display = 'flex';
+    bar.style.right = 'auto';
+    bar.style.bottom = 'auto';
+    bar.style.left = Math.max(4, Math.min(anchor.left, window.innerWidth - bar.offsetWidth - 6)) + 'px';
+    bar.style.top = Math.max(4, above >= 4 ? above : Math.min(anchor.bottom + 6, window.innerHeight - bar.offsetHeight - 4)) + 'px';
+    paintBar();
+  };
+
+  /**
+   * The two style toggles, read from the page rather than remembered here.
+   *
+   * What is on an element *now* is a fact only the page has — a patch may have set
+   * it, and so may an edit made earlier in this same session (the preview is what
+   * makes the second one read right) — and a mixed selection means "make them all
+   * bold", which is what boxing several elements and pressing B means.
+   */
+  const isBold = (el) => {
+    const weight = window.getComputedStyle(el).fontWeight;
+    return weight === 'bold' || weight === 'bolder' || parseInt(weight, 10) >= 600;
+  };
+  const isItalic = (el) => window.getComputedStyle(el).fontStyle === 'italic';
+
+  const applyStyle = (property, on, off, isOn) => {
+    const elements = selected.filter((el) => el.isConnected);
+    if (elements.length === 0) return;
+    const turnOff = elements.every((el) => isOn(el));
+    const declarations = {};
+    declarations[property] = turnOff ? off : on;
+    draft.push({ kind: 'style', targets: elements.map(targetOf), declarations: declarations });
+    renderPreview();
+    paintBar();
+  };
+
+  /** Type into one element: the whole of its text, replaced by what is typed. */
+  const beginText = (el) => {
+    if (editing) endText(true);
+    const onBlur = () => endText(true);
+    editing = { el: el, before: el.textContent, onBlur: onBlur };
+    el.setAttribute('contenteditable', 'true');
+    el.addEventListener('blur', onBlur, true);
+    try { el.focus(); } catch (e) {}
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const selectionApi = window.getSelection();
+    if (selectionApi) { selectionApi.removeAllRanges(); selectionApi.addRange(range); }
+    selected = [el];
+    paint();
+  };
+
+  /**
+   * Leave the text edit. Committing records what the element now says as a draft
+   * entry; Escape puts the original text back — "not this" must not leave the page
+   * saying something nobody asked for.
+   *
+   * What is read back is the element's own text, so the patch ends up asserting the
+   * value the page is showing; typing nothing is not an edit and is dropped.
+   */
+  const endText = (commit) => {
+    const current = editing;
+    if (!current) return;
+    editing = null;
+    current.el.removeEventListener('blur', current.onBlur, true);
+    current.el.removeAttribute('contenteditable');
+    if (!commit) { current.el.textContent = current.before; return; }
+    const text = current.el.textContent || '';
+    if (text === current.before) return;
+    // The element, not just its selector: taking this edit back has to put the old
+    // text back, and that needs the node the person typed into.
+    draft.push({ kind: 'text', targets: [targetOf(current.el)], text: text, el: current.el, before: current.before });
+    paintBar();
+  };
+
+  /** Take the last unsaved edit back — and with it, whatever it did to the page. */
+  const undo = () => {
+    if (unsaved() === 0) return;
+    const entry = draft.pop();
+    if (entry.kind === 'text' && entry.el && entry.el.isConnected) entry.el.textContent = entry.before;
+    renderPreview();
+    paintBar();
+  };
+
+  /** Drop everything unsaved, the same way taking each one back would. */
+  const discard = () => {
+    while (unsaved() > 0) {
+      const entry = draft.pop();
+      if (entry.kind === 'text' && entry.el && entry.el.isConnected) entry.el.textContent = entry.before;
+    }
+    renderPreview();
+    paintBar();
+  };
+
+  /**
+   * Write the session down: what crosses to the caller is this moment, not the
+   * individual edits — one save is one entry in the change layer.
+   */
+  const save = () => {
+    if (unsaved() === 0) return;
+    const batch = draft.slice(savedCount).map((entry) => entry.kind === 'text'
+      ? { kind: 'text', targets: entry.targets, text: entry.text }
+      : { kind: 'style', targets: entry.targets, declarations: entry.declarations });
+    state.saves.push(batch);
+    savedCount = draft.length;
+    // Saving while the bar is asking "save or drop?" is the answer: the work is
+    // written, so the mode has nothing left to hold open.
+    if (confirming) { confirming = false; finish('cancelled'); return; }
+    paintBar();
+  };
+
+  /**
+   * Leave the mode — or, when there is a draft to lose, ask which it is.
+   *
+   * Leaving is the only way a session's work disappears without anyone deciding, so
+   * it is the one moment the mode asks instead of acting: the bar becomes save or
+   * drop, the mode stays, and nothing else is answerable until one of them is chosen
+   * (Escape is the "no"). An immediate request is the caller saying there is nobody
+   * left to ask — the tab is closing, or the mode is being re-armed on another page.
+   *
+   * A text edit in flight counts as an edit: what was typed is a change the person
+   * made, so it goes into the draft rather than being thrown away with the mode.
+   */
+  const requestLeave = (immediate) => {
+    if (editing) endText(true);
+    if (!immediate && unsaved() > 0) {
+      confirming = true;
+      paint();
+      return;
+    }
+    discard();
+    finish('cancelled');
+  };
+
+  const onPointerDown = (e) => {
+    // A press while typing belongs to the page (it is how the person leaves the
+    // element they were editing); a press on the bar belongs to the bar; and while
+    // the bar is asking, a press on the page is not an answer.
+    if (e.button !== 0 || inOverlay(e.target) || editing || confirming) return;
+    e.preventDefault();
+    e.stopPropagation();
+    drag = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY, moved: false };
+    drawMarquee();
+  };
+
+  const onPointerMove = (e) => {
+    if (!drag) return;
+    drag.x1 = e.clientX;
+    drag.y1 = e.clientY;
+    if (Math.abs(drag.x1 - drag.x0) > 3 || Math.abs(drag.y1 - drag.y0) > 3) drag.moved = true;
+    drawMarquee();
+  };
+
+  const onPointerUp = () => {
+    if (!drag) return;
+    const box = rectOf(drag);
+    const moved = drag.moved;
+    drag = null;
+    marquee.style.display = 'none';
+    selected = moved ? within(box) : within({ left: box.left, top: box.top, right: box.left + 1, bottom: box.top + 1 });
+    paint();
+  };
+
+  // Selecting is not using: nothing the person pressed may activate the page under
+  // the mode (the picker suppresses clicks for the same reason).
+  const swallowClick = (e) => {
+    if (inOverlay(e.target) || editing) return;
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const onDblClick = (e) => {
+    if (inOverlay(e.target) || editing || confirming) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const el = e.target;
+    if (!el || el.nodeType !== 1 || el === document.body || el === document.documentElement) return;
+    // A form control keeps its own editing: contenteditable does nothing on it, and
+    // its value is not its textContent — an edit read back here would report nothing
+    // and be dropped, so it is not offered at all.
+    const tag = el.tagName ? el.tagName.toUpperCase() : '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    beginText(el);
+  };
+
+  const onKey = (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      // Escape answers whatever the mode is currently asking: an open text edit
+      // ("not this"), then the save-or-drop question ("no"), and only then "leave".
+      if (editing) { endText(false); paint(); return; }
+      if (confirming) { confirming = false; discard(); finish('cancelled'); return; }
+      requestLeave(false);
+      return;
+    }
+    if (editing && e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      e.stopPropagation();
+      endText(true);
+      paint();
+    }
+  };
+
+  function cleanup() {
+    document.removeEventListener('pointerdown', onPointerDown, true);
+    document.removeEventListener('pointermove', onPointerMove, true);
+    document.removeEventListener('pointerup', onPointerUp, true);
+    document.removeEventListener('click', swallowClick, true);
+    document.removeEventListener('dblclick', onDblClick, true);
+    document.removeEventListener('keydown', onKey, true);
+    window.removeEventListener('scroll', paint, true);
+    window.removeEventListener('resize', paint, true);
+    // Leave nothing of ours on the page. The text being typed goes back, and so does
+    // every unsaved entry: this teardown is a mode ending, not an edit being saved,
+    // and a change no patch states is the one thing this mode may not leave behind.
+    if (editing) {
+      const current = editing;
+      editing = null;
+      current.el.removeEventListener('blur', current.onBlur, true);
+      current.el.removeAttribute('contenteditable');
+      current.el.textContent = current.before;
+    }
+    discard();
+    const existing = document.getElementById('${EDITOR_OVERLAY_ID}');
+    if (existing) existing.remove();
+    try { delete window.${EDITOR_CANCEL_KEY}; } catch (e) { window.${EDITOR_CANCEL_KEY} = undefined; }
+  }
+
+  function finish(status) {
+    cleanup();
+    state.status = status;
+  }
+
+  boldButton.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    applyStyle('font-weight', '700', '400', isBold);
+  });
+  italicButton.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    applyStyle('font-style', 'italic', 'normal', isItalic);
+  });
+  undoButton.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    undo();
+  });
+  saveButton.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    save();
+  });
+  discardButton.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    discard();
+    // Dropping is also the answer to "save or drop?" — and then the mode is done.
+    if (confirming) { confirming = false; finish('cancelled'); }
+  });
+
+  // Two ways out, and they ask different questions: the toolbar's button asks (there
+  // may be a draft, and that is the person's call), while a teardown — the tab
+  // closing, the mode being re-armed on a new page — takes the draft with it, because
+  // there is nobody left to ask.
+  window.${EDITOR_CANCEL_KEY} = () => requestLeave(true);
+  window.${EDITOR_ASK_KEY} = () => requestLeave(false);
+  window.${EDITOR_STATE_KEY} = state;
+
+  document.addEventListener('pointerdown', onPointerDown, true);
+  document.addEventListener('pointermove', onPointerMove, true);
+  document.addEventListener('pointerup', onPointerUp, true);
+  document.addEventListener('click', swallowClick, true);
+  document.addEventListener('dblclick', onDblClick, true);
+  document.addEventListener('keydown', onKey, true);
+  window.addEventListener('scroll', paint, true);
+  window.addEventListener('resize', paint, true);
+  paintBar();
+
+  return true;
+})()`
+}
+
+/**
+ * Read the editor's reports and clear them in one expression — the same
+ * read-and-clear the picker uses, and for the same reason: two reads must not both
+ * see the same save, and a save landing between them must not be dropped.
+ */
+const EDITOR_DRAIN_EXPRESSION = `(() => {
+  const state = window.${EDITOR_STATE_KEY};
+  if (!state) return JSON.stringify({ status: 'missing', saves: [] });
+  const saves = state.saves || [];
+  state.saves = [];
+  return JSON.stringify({ status: state.status, saves: saves });
+})()`
+
+const EDITOR_CANCEL_EXPRESSION = `(() => { try { window.${EDITOR_CANCEL_KEY} && window.${EDITOR_CANCEL_KEY}(); } catch (e) {} })()`
+
+/** Ask the editor to leave — it answers by leaving, or by asking which it is. */
+const EDITOR_ASK_EXPRESSION = `(() => { try { window.${EDITOR_ASK_KEY} && window.${EDITOR_ASK_KEY}(); } catch (e) {} })()`
 
 export class BrowserCDP {
   private webContents: WebContents
@@ -1064,6 +1648,70 @@ export class BrowserCDP {
       await this.send('Runtime.evaluate', { expression: PICKER_CANCEL_EXPRESSION })
     } catch (err) {
       mainLog.debug(`[browser-cdp] cancelPicker ignored: ${String(err)}`)
+    }
+  }
+
+  /**
+   * Put the editor on the page and leave it there.
+   *
+   * Re-injecting is also how a page is re-armed, exactly as it is for the picker:
+   * the script tears down whatever was installed before it, so an arm is
+   * idempotent and a page that navigated out from under an armed editor gets a
+   * fresh one.
+   */
+  async armEditor(options: { accent: string; labels: EditorLabels }): Promise<void> {
+    const script = buildEditorInjectScript({ accent: options.accent, labels: options.labels })
+    await this.send('Runtime.evaluate', { expression: script })
+  }
+
+  /**
+   * Take the saves made since the last call, and clear them.
+   *
+   * Never throws on a missing editor: "there is no editor in this document" is an
+   * answer (the page navigated), not a failure.
+   */
+  async drainEditor(): Promise<EditorReport> {
+    const res = await this.send('Runtime.evaluate', {
+      expression: EDITOR_DRAIN_EXPRESSION,
+      returnByValue: true,
+    })
+
+    const raw = res?.result?.value
+    if (typeof raw !== 'string') return { status: 'missing', saves: [] }
+
+    try {
+      const parsed = JSON.parse(raw) as { status?: string; saves?: BrowserEdit[][] }
+      return {
+        status: (parsed.status as EditorReport['status']) ?? 'missing',
+        saves: Array.isArray(parsed.saves) ? parsed.saves.filter((save) => Array.isArray(save)) : [],
+      }
+    } catch {
+      return { status: 'missing', saves: [] }
+    }
+  }
+
+  /**
+   * Ask the editor to leave.
+   *
+   * The mode ends only if there is nothing unsaved to lose — otherwise the page puts
+   * save-or-discard on its own bar and stays. So this returns nothing to await, and
+   * the caller learns the outcome the same way it learns everything else: the next
+   * `drainEditor` says `cancelled` once the mode has really ended.
+   */
+  async askEditorToLeave(): Promise<void> {
+    try {
+      await this.send('Runtime.evaluate', { expression: EDITOR_ASK_EXPRESSION })
+    } catch (err) {
+      mainLog.debug(`[browser-cdp] askEditorToLeave ignored: ${String(err)}`)
+    }
+  }
+
+  /** Tear an armed editor down, draft and all. Safe to call when none is running. */
+  async teardownEditor(): Promise<void> {
+    try {
+      await this.send('Runtime.evaluate', { expression: EDITOR_CANCEL_EXPRESSION })
+    } catch (err) {
+      mainLog.debug(`[browser-cdp] teardownEditor ignored: ${String(err)}`)
     }
   }
 

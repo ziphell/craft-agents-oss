@@ -1365,7 +1365,8 @@ describe('BrowserPaneManager', () => {
         // Nothing opened these tabs through a conversation, so there is no group to
         // name — the rail draws no headers for a window that is all one person's.
         sessionLabels: {},
-        // Nobody pressed the record button, so there is no recording to draw either.
+        // Nobody is editing and nobody pressed the record button.
+        editing: false,
         recording: null,
       },
     ])
@@ -1403,6 +1404,8 @@ describe('BrowserPaneManager', () => {
           tabSummary({ id: instance.tabs[0].id, url: 'https://craft.do', title: 'Craft', isLoading: true, active: true }),
         ],
         sessionLabels: {},
+        // Nobody is editing and nobody pressed the record button.
+        editing: false,
         recording: null,
       },
     ])
@@ -1990,14 +1993,14 @@ describe('BrowserPaneManager', () => {
 
   describe('agent control overlay', () => {
     /**
-     * The script the **tab on screen's** overlay was last told to run.
+     * The script the **window's** overlay was last told to run.
      *
-     * The overlay is up for that tab whenever the window is — it draws the page's panel — so
-     * this is where both the panel's colours and the agent's markings are observable.
+     * The overlay is up for the window whenever it is — it draws the page's panel — so this is
+     * where both the panel's colours and the agent's markings are observable. It is the window's
+     * view, so what it says is about the tab on screen (`updateNativeOverlayState` reads that).
      */
     const overlayScript = (instance: any): string => {
-      const active = instance.tabs.find((tab: any) => tab.id === instance.activeTabId)
-      return active?.nativeOverlayView.webContents.executeJavaScript.mock.calls.at(-1)?.[0] ?? ''
+      return instance.nativeOverlayView.webContents.executeJavaScript.mock.calls.at(-1)?.[0] ?? ''
     }
 
     /**
@@ -2026,10 +2029,10 @@ describe('BrowserPaneManager', () => {
       // the agent's markings are drawn for. The panel's own line is up either way (the page's
       // corner comes from the page's view, not from this document).
       expect(tab(instance).heldBy ?? null).toBeNull()
-      expect(tab(instance).nativeOverlayView.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 48, width: 1000, height: 852 })
+      expect(instance.nativeOverlayView.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 48, width: 1000, height: 852 })
       expect(overlayScript(instance)).toContain('const locked = false;')
       expect(overlayScript(instance)).toContain('const shieldActive = false;')
-      expect(tab(instance).nativeOverlayView.webContents.focus).not.toHaveBeenCalled()
+      expect(instance.nativeOverlayView.webContents.focus).not.toHaveBeenCalled()
       expect(manager.listInstances().find(i => i.id === 'ac-1')?.agentControlActive).toBe(true)
     })
 
@@ -2047,7 +2050,6 @@ describe('BrowserPaneManager', () => {
       manager.createInstance('ac-lock')
       drive('ac-lock', 'sess-lock')
       const instance = (manager as any).instances.get('ac-lock')
-      const tabById = (id: string) => instance.tabs.find((candidate: any) => candidate.id === id)
       instance.tabs[0].currentUrl = 'https://first.example.com/'
       // The tab the session is working on is the one on screen — commands act on the
       // tab in front, which is what the lock follows.
@@ -2073,17 +2075,17 @@ describe('BrowserPaneManager', () => {
       await settle()
 
       // The held tab is on screen: covered, locked, and the pointer says so.
-      expect(tabById(heldId).nativeOverlayView.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 48, width: 1000, height: 852 })
+      expect(instance.nativeOverlayView.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 48, width: 1000, height: 852 })
       expect(overlayScript(instance)).toContain('const shieldActive = true;')
       expect(overlayScript(instance)).toContain('const locked = true;')
 
       manager.activateTab('ac-lock', otherId)
       await settle()
 
-      // A tab the person switched to is not the agent's to hold. Its own panel comes forward
-      // with it — the page is never left unrounded — but nothing on it is a lock: no accent, no
-      // dim, no chip, and the page takes input.
-      expect(tabById(otherId).nativeOverlayView.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 48, width: 1000, height: 852 })
+      // A tab the person switched to is not the agent's to hold. The panel comes forward with it
+      // — same overlay, sized to the tab area, saying this tab's state — but nothing on it is a
+      // lock: no accent, no dim, no chip, and the page takes input.
+      expect(instance.nativeOverlayView.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 48, width: 1000, height: 852 })
       expect(overlayScript(instance)).toContain('const locked = false;')
       expect(overlayScript(instance)).toContain('const shieldActive = false;')
       // …while the tab it *is* working on stays locked in the model.
@@ -2110,10 +2112,10 @@ describe('BrowserPaneManager', () => {
 
       const instance = (manager as any).instances.get('ac-idle')
       // The panel's line around the page is up, and it says no lock.
-      expect(tab(instance).nativeOverlayView.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 48, width: 1000, height: 852 })
+      expect(instance.nativeOverlayView.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 48, width: 1000, height: 852 })
       expect(overlayScript(instance)).toContain('const locked = false;')
       expect(overlayScript(instance)).toContain('const shieldActive = false;')
-      expect(tab(instance).nativeOverlayView.webContents.focus).not.toHaveBeenCalled()
+      expect(instance.nativeOverlayView.webContents.focus).not.toHaveBeenCalled()
       expect(manager.listInstances().find(i => i.id === 'ac-idle')?.agentControlActive).toBe(true)
     })
 
@@ -2141,12 +2143,12 @@ describe('BrowserPaneManager', () => {
       await Promise.resolve()
 
       const instance = (manager as any).instances.get('ac-reapply')
-      const callCountAfterSet = tab(instance).nativeOverlayView.webContents.executeJavaScript.mock.calls.length
+      const callCountAfterSet = instance.nativeOverlayView.webContents.executeJavaScript.mock.calls.length
 
       tab(instance).tabView.webContents._emit('did-stop-loading')
       await Promise.resolve()
 
-      expect(tab(instance).nativeOverlayView.webContents.executeJavaScript.mock.calls.length).toBeGreaterThan(callCountAfterSet)
+      expect(instance.nativeOverlayView.webContents.executeJavaScript.mock.calls.length).toBeGreaterThan(callCountAfterSet)
     })
 
     it('reapplies native overlay after hide/show while control is active', async () => {
@@ -2158,13 +2160,13 @@ describe('BrowserPaneManager', () => {
       await Promise.resolve()
 
       const instance = (manager as any).instances.get('ac-show-reapply')
-      const callCountAfterSet = tab(instance).nativeOverlayView.webContents.executeJavaScript.mock.calls.length
+      const callCountAfterSet = instance.nativeOverlayView.webContents.executeJavaScript.mock.calls.length
 
       instance.window._emit('hide')
       instance.window._emit('show')
       await Promise.resolve()
 
-      expect(tab(instance).nativeOverlayView.webContents.executeJavaScript.mock.calls.length).toBeGreaterThan(callCountAfterSet)
+      expect(instance.nativeOverlayView.webContents.executeJavaScript.mock.calls.length).toBeGreaterThan(callCountAfterSet)
     })
 
     it('setAgentControl uses fallback label when no intent', async () => {
@@ -2176,7 +2178,7 @@ describe('BrowserPaneManager', () => {
       await Promise.resolve()
 
       const instance = (manager as any).instances.get('ac-2')
-      const calls = tab(instance).nativeOverlayView.webContents.executeJavaScript.mock.calls
+      const calls = instance.nativeOverlayView.webContents.executeJavaScript.mock.calls
       expect(calls.length).toBeGreaterThan(0)
       expect(String(calls[calls.length - 1][0])).toContain('Browser Snapshot')
     })
@@ -2190,7 +2192,7 @@ describe('BrowserPaneManager', () => {
       await Promise.resolve()
 
       const instance = (manager as any).instances.get('ac-3')
-      const calls = tab(instance).nativeOverlayView.webContents.executeJavaScript.mock.calls
+      const calls = instance.nativeOverlayView.webContents.executeJavaScript.mock.calls
       expect(calls.length).toBeGreaterThan(0)
       expect(String(calls[calls.length - 1][0])).toContain('Agent is working…')
     })
@@ -2204,7 +2206,7 @@ describe('BrowserPaneManager', () => {
 
       const instance = (manager as any).instances.get('ac-4')
       expect(instance.controlBy.size).toBe(0)
-      expect(tab(instance).nativeOverlayView.setBounds).toHaveBeenCalledWith({ x: 0, y: 0, width: 0, height: 0 })
+      expect(instance.nativeOverlayView.setBounds).toHaveBeenCalledWith({ x: 0, y: 0, width: 0, height: 0 })
     })
 
     it('clearAgentControl is a no-op when not active', () => {
@@ -2214,7 +2216,7 @@ describe('BrowserPaneManager', () => {
       manager.clearAgentControl('sess-5')
 
       const instance = (manager as any).instances.get('ac-5')
-      expect(tab(instance).nativeOverlayView.webContents.executeJavaScript).not.toHaveBeenCalled()
+      expect(instance.nativeOverlayView.webContents.executeJavaScript).not.toHaveBeenCalled()
     })
 
     it('clearVisualsForSession resets agent control state', async () => {
@@ -2226,7 +2228,7 @@ describe('BrowserPaneManager', () => {
 
       const instance = (manager as any).instances.get('ac-6')
       expect(instance.controlBy.size).toBe(0)
-      expect(tab(instance).nativeOverlayView.setBounds).toHaveBeenCalledWith({ x: 0, y: 0, width: 0, height: 0 })
+      expect(instance.nativeOverlayView.setBounds).toHaveBeenCalledWith({ x: 0, y: 0, width: 0, height: 0 })
     })
 
     it('setAgentControl is a no-op when the workspace has no window', () => {
@@ -2238,7 +2240,7 @@ describe('BrowserPaneManager', () => {
 
       const instance = (manager as any).instances.get('ac-7')
       expect(instance.controlBy.size).toBe(0)
-      expect(tab(instance).nativeOverlayView.webContents.executeJavaScript).not.toHaveBeenCalled()
+      expect(instance.nativeOverlayView.webContents.executeJavaScript).not.toHaveBeenCalled()
     })
 
     it('navigate does not trigger overlay by itself', async () => {
@@ -2344,7 +2346,9 @@ describe('BrowserPaneManager', () => {
       const first = instance.tabs[0]
 
       expect(first.tabView.setBackgroundColor).toHaveBeenCalledWith(BACKGROUND_HEX.light)
-      expect(first.nativeOverlayView.setBackgroundColor).toHaveBeenCalledWith('#00000000')
+      // The overlay is the window's and is transparent: what it paints — the gutter's surface —
+      // is its document's business, not the view's backdrop.
+      expect(instance.nativeOverlayView.setBackgroundColor).toHaveBeenCalledWith('#00000000')
 
       const secondId = manager.createTab('tabs-backdrop', { url: 'https://second.example.com/' })
       const second = instance.tabs.find((tab: any) => tab.id === secondId)
@@ -2466,10 +2470,12 @@ describe('BrowserPaneManager', () => {
       expect(first.tabView.setBorderRadius).toHaveBeenCalledWith(10)
       // …and it is in the window's view tree through that same view's API.
       expect(instance.window.contentView.children).toContain(first.tabView)
-      expect(instance.window.contentView.children).toContain(first.nativeOverlayView)
-      // The overlay sits under the page: what it draws is around the page.
+      expect(instance.window.contentView.children).toContain(instance.nativeOverlayView)
+      // The overlay sits under the page: what it draws is around the page. It is the window's,
+      // and it is in the window before any page is — a new tab's page lands inside a frame that
+      // is already drawn rather than one that arrives with the page.
       expect(instance.window.contentView.children.indexOf(first.tabView))
-        .toBeGreaterThan(instance.window.contentView.children.indexOf(first.nativeOverlayView))
+        .toBeGreaterThan(instance.window.contentView.children.indexOf(instance.nativeOverlayView))
     })
 
     it('says the page corner radius again when the window lands on another display', () => {
@@ -2490,7 +2496,7 @@ describe('BrowserPaneManager', () => {
     it('draws no corner of its own, leaving the shape to the page', () => {
       manager.createInstance('tabs-mask-square')
       const instance = (manager as any).instances.get('tabs-mask-square')
-      const loaded = String(tab(instance).nativeOverlayView.webContents.loadURL.mock.calls[0]?.[0] ?? '')
+      const loaded = String(instance.nativeOverlayView.webContents.loadURL.mock.calls[0]?.[0] ?? '')
       const html = decodeURIComponent(loaded.slice(loaded.indexOf(',') + 1))
 
       // What is behind the page is square, so the corner's shape is the page's own cut and only
@@ -2507,7 +2513,7 @@ describe('BrowserPaneManager', () => {
     it('draws the agent frame over the page edge and into the gutter', () => {
       manager.createInstance('tabs-lock-frame')
       const instance = (manager as any).instances.get('tabs-lock-frame')
-      const loaded = String(tab(instance).nativeOverlayView.webContents.loadURL.mock.calls[0]?.[0] ?? '')
+      const loaded = String(instance.nativeOverlayView.webContents.loadURL.mock.calls[0]?.[0] ?? '')
       const html = decodeURIComponent(loaded.slice(loaded.indexOf(',') + 1))
 
       // The agent's frame is its own element, in the resting line's box (1px outside the page, so
@@ -2532,21 +2538,21 @@ describe('BrowserPaneManager', () => {
       expect(instance.tabs).toHaveLength(1)
       expect(instance.activeTabId).toBe(secondId)
 
-      // A closed tab leaves the window, both halves of it: `tabs` is not the view list,
-      // and a view left behind keeps painting at the tab area — a tab nobody can name
-      // showing through every tab opened after it, and one more renderer to pay for. Each
-      // half leaves through the API it arrived by: the page is a `WebContentsView`.
+      // A closed tab leaves the window: `tabs` is not the view list, and a view left behind
+      // keeps painting at the tab area — a tab nobody can name showing through every tab
+      // opened after it, and one more renderer to pay for. The overlay is not part of this:
+      // it is the window's, so a tab going away does not take the panel's ground with it.
       expect(instance.window.contentView.removeChildView.mock.calls.map((call: unknown[]) => call[0]))
         .toEqual([first.tabView])
-      expect(instance.window.removeBrowserView.mock.calls.map((call: unknown[]) => call[0]))
-        .toEqual([first.nativeOverlayView])
       expect(instance.window.contentView.children).not.toContain(first.tabView)
-      expect(instance.window.contentView.children).not.toContain(first.nativeOverlayView)
+      expect(instance.window.removeBrowserView.mock.calls.map((call: unknown[]) => call[0]))
+        .not.toContain(instance.nativeOverlayView)
+      expect(instance.window.contentView.children).toContain(instance.nativeOverlayView)
       expect(first.tabView.webContents.close).toHaveBeenCalled()
-      expect(first.nativeOverlayView.webContents.close).toHaveBeenCalled()
-      // …and the tab that is still open is not touched by somebody else's tab going away.
+      // …and the tab that is still open is not touched by somebody else's tab going away,
+      // nor is the overlay the window keeps for it.
       expect(second.tabView.webContents.close).not.toHaveBeenCalled()
-      expect(second.nativeOverlayView.webContents.close).not.toHaveBeenCalled()
+      expect(instance.nativeOverlayView.webContents.close).not.toHaveBeenCalled()
 
       manager.closeTab('tabs-close', secondId)
       expect((manager as any).instances.has('tabs-close')).toBe(false)
@@ -3288,6 +3294,29 @@ describe('BrowserPaneManager', () => {
       // nothing in it is not left behind as a webm that shows nothing.
       expect(await toolbarHandler('browser-toolbar:record')({}, instanceId, 'stop')).toBeNull()
       expect(existsSync(started.file)).toBe(false)
+    })
+
+    it('names the file for the container the chrome is about to record into', async () => {
+      const instanceId = manager.createInstance('record-format')
+      manager.registerToolbarIpc()
+      const record = toolbarHandler('browser-toolbar:record')
+
+      // The extension comes from the chrome — it is the side that knows what
+      // `MediaRecorder` will write — but from a list: the last case is a name, and a name
+      // is not the caller's to invent.
+      const cases: Array<[string | undefined, string]> = [
+        ['mp4', '.mp4'],
+        ['WEBM', '.webm'],
+        ['../../evil', '.webm'],
+        [undefined, '.webm'],
+      ]
+      for (const [asked, expected] of cases) {
+        const started = await record({}, instanceId, 'start', asked)
+        expect(started.file.endsWith(expected)).toBe(true)
+        // Every one of these is empty (nothing was ever captured), so this also removes
+        // the file it just made.
+        await record({}, instanceId, 'stop')
+      }
     })
 
     it('reports the recording to the toolbar, and stops reporting it once it is done', async () => {

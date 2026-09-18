@@ -11,7 +11,7 @@ import ReactDOM from 'react-dom/client'
 import { useTranslation, initReactI18next } from 'react-i18next'
 import LanguageDetector from 'i18next-browser-languagedetector'
 import { setupI18n } from '@craft-agent/shared/i18n'
-import { Circle, Code, EyeOff, Globe, Lock, MessageSquare, MousePointerClick, Plus, Square, X, XCircle } from 'lucide-react'
+import { Circle, Code, EyeOff, Globe, Lock, MessageSquare, MousePointerClick, Pencil, Plus, Square, X, XCircle } from 'lucide-react'
 import { BrowserControls, Spinner } from '@craft-agent/ui'
 import { HeaderIconButton } from '@/components/ui/HeaderIconButton'
 import { cn } from '@/lib/utils'
@@ -53,6 +53,15 @@ interface ToolbarState {
    * state yet, which reads as "off" — the picker is not something to flash on.
    */
   picking?: boolean
+  /**
+   * Whether the window's element **editor** is on.
+   *
+   * Reported rather than remembered, for the picker's reason (it also ends from
+   * inside the page, and arming one mode takes the other off) — and one thing more:
+   * what the person does in it is written into a patch, so this button's state is
+   * the only place the window says "changes you make here are being saved".
+   */
+  editing?: boolean
   /**
    * Whether the tab on screen has its developer tools up.
    *
@@ -109,6 +118,9 @@ declare global {
       /** The label is the caller's: the bar is drawn in the page, which has no i18n. */
       pickElement: (addLabel?: string) => Promise<void>
       cancelPick: () => Promise<void>
+      /** Turn the window's element editor on, or take it off. */
+      startEditing: (labels?: { undo: string; save: string; discard: string }) => Promise<void>
+      cancelEdit: () => Promise<void>
       /** Switch to one of this window's tabs, close one, add one, or unlock one. */
       tabAction: (
         action: 'activate' | 'close' | 'new' | 'release',
@@ -123,7 +135,7 @@ declare global {
       /** Open the current tab's developer tools, or close them if they are up. */
       toggleDevTools: () => Promise<void>
       /** Arm a recording of the tab on screen; the display media request follows it. */
-      startRecording: () => Promise<ToolbarState['recording']>
+      startRecording: (extension?: string) => Promise<ToolbarState['recording']>
       /** Finish the recording and close the file. Answers with `null` when nothing came through. */
       stopRecording: () => Promise<{ file: string; bytes: number; seconds: number } | null>
       /** One encoded chunk, in the order produced. */
@@ -153,6 +165,38 @@ function formatElapsed(ms: number): string {
   const minutes = Math.floor(totalSeconds / 60)
   const seconds = totalSeconds % 60
   return `${minutes}:${String(seconds).padStart(2, '0')}`
+}
+
+/**
+ * What to record into, best first.
+ *
+ * **mp4 first**, and for two reasons that were measured rather than assumed (see
+ * `apps/electron/spike/recorder-formats.cjs`): it is the container everything else opens —
+ * QuickTime, Windows, a browser tab — and it is the one whose duration a `<video>` knows
+ * the moment it loads, which is what `sample-video` computes its sampling step from. A
+ * webm (or mkv) recorded live reports `duration: Infinity` until something reads the file
+ * out, so it is the fallback for a build that cannot record mp4 rather than the default.
+ * Both play back and sample here; the sampler resolves a webm's duration itself.
+ */
+const RECORDING_FORMATS = [
+  { mimeType: 'video/mp4;codecs=avc1.42E01E', extension: 'mp4' },
+  { mimeType: 'video/mp4', extension: 'mp4' },
+  { mimeType: 'video/webm;codecs=vp9', extension: 'webm' },
+  { mimeType: 'video/webm', extension: 'webm' },
+]
+
+/** The first format this build will record, or `null` when it will record none of them. */
+function pickRecordingFormat(): { mimeType: string; extension: string } | null {
+  if (typeof MediaRecorder === 'undefined') return null
+  for (const format of RECORDING_FORMATS) {
+    try {
+      if (MediaRecorder.isTypeSupported(format.mimeType)) return format
+    } catch {
+      // `isTypeSupported` can throw on a string it cannot parse; a format that cannot be
+      // asked about is not a format to record into.
+    }
+  }
+  return null
 }
 
 /* ------------------------------------------------------------------ */
@@ -522,6 +566,16 @@ function BrowserToolbarApp() {
    */
   const picking = state.picking === true
   /**
+   * Edit mode, as the window reports it.
+   *
+   * The mode where a change made here is *saved*: boxing elements and pressing B,
+   * or double-clicking a line and retyping it, writes a patch of the prototype this
+   * page belongs to. Which is also why the bar says so while it is on — a page that
+   * looks one way until a reload and another way after it is worse than one that was
+   * never touched.
+   */
+  const editing = state.editing === true
+  /**
    * Whether the current tab's developer tools are up, as the window reports it.
    *
    * Not this renderer's state for the same reason as `picking`: the tools can be closed
@@ -661,6 +715,26 @@ function BrowserToolbarApp() {
     void api.pickElement(t('browser.addToConversation'))
   }, [api, picking, t])
 
+  /**
+   * Turn the window's editor on or off.
+   *
+   * Neither call is awaited for its outcome, for the picker's reason: the mode is
+   * the window's and arrives back as state. The bar's words go with the call — it is
+   * drawn inside the page, which has no i18n, and this is the side that does.
+   */
+  const handleToggleEdit = useCallback(() => {
+    if (!api) return
+    if (editing) {
+      void api.cancelEdit()
+      return
+    }
+    void api.startEditing({
+      undo: t('browserEdit.editorUndo'),
+      save: t('browserEdit.editorSave'),
+      discard: t('browserEdit.editorDiscard'),
+    })
+  }, [api, editing, t])
+
   const handleToggleDevTools = useCallback(() => {
     void api?.toggleDevTools()
   }, [api])
@@ -688,10 +762,19 @@ function BrowserToolbarApp() {
 
     setRecordFailed(false)
     setSavedFile(null)
+
+    // The format first, because the host opens the file — and names it — before any of the
+    // picture exists: an mp4 that ended up as `…webm` would be a file nothing opens.
+    const format = pickRecordingFormat()
+    if (!format) {
+      setRecordFailed(true)
+      return
+    }
+
     try {
-      await api.startRecording()
+      await api.startRecording(format.extension)
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false })
-      const media = new MediaRecorder(stream, { mimeType: 'video/webm' })
+      const media = new MediaRecorder(stream, { mimeType: format.mimeType })
       media.ondataavailable = (event) => {
         if (event.data.size === 0) return
         void event.data.arrayBuffer().then((chunk) => api.sendRecordingChunk(chunk))
@@ -824,6 +907,25 @@ function BrowserToolbarApp() {
               // selection gets turned *into* is decided after it is picked, and a
               // pick with no conversation to go to opens one (plan §12.7).
               onClick={handleTogglePick}
+            />
+
+            {/*
+              The editor: the mode where the person's own change is written down.
+              Always available whatever the page is — which prototype (and which page)
+              an edit belongs to is the window's own fact, and a page that belongs to
+              none says so when the edit is made rather than never offering the mode.
+            */}
+            {editing && (
+              <span className="inline-flex select-none items-center whitespace-nowrap rounded-[6px] bg-accent/15 px-2 py-1 text-[11px] text-accent">
+                {t('browser.editHint')}
+              </span>
+            )}
+
+            <HeaderIconButton
+              icon={editing ? <X className="h-3.5 w-3.5" /> : <Pencil className="h-3.5 w-3.5" />}
+              aria-label={t('browser.editMode')}
+              className={editing ? 'bg-accent/15 text-accent' : undefined}
+              onClick={handleToggleEdit}
             />
 
             {/*

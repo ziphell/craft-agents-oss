@@ -135,6 +135,17 @@ export const RPC_CHANNELS = {
     /** Replay a prototype's patches into a live browser instance. */
     APPLY: 'prototypes:apply',
     /**
+     * Write one save from the browser window's editor as a patch of a prototype
+     * (`edit-patch.ts`), scoped to the page it was made on.
+     *
+     * The window reports what the person accumulated — boxed elements and what they
+     * set on them, elements whose text they retyped — and this turns that **one
+     * moment of intent** into the artifact every other change is: a patch file (two
+     * when the session did both styles and text), which the watcher then replays into
+     * every window showing the prototype. Nothing is applied by this call.
+     */
+    EDIT: 'prototypes:edit',
+    /**
      * Replay one prototype into every window that is showing it (plan §21.4).
      *
      * Sent after a file change, so an edit made in an external editor shows up in

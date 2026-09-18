@@ -18,8 +18,8 @@ import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
 import { browserInstancesAtom } from '@/atoms/browser-pane'
 import { sessionMetaMapAtom } from '@/atoms/sessions'
-import type { PickedElement, PickedElementOrigin } from '@craft-agent/shared/protocol'
-import type { PrototypeEntry } from '@craft-agent/shared/prototypes'
+import type { BrowserEdit, PickedElement, PickedElementOrigin } from '@craft-agent/shared/protocol'
+import type { PrototypeEdit, PrototypeEntry } from '@craft-agent/shared/prototypes'
 
 export interface EditElementRequest {
   element: PickedElement
@@ -94,6 +94,24 @@ export function useBrowserToolbarActions({
   }, [instances, sessionMetaMap])
 
   /**
+   * Which prototype — and which page of it — an edit made in this window is about.
+   *
+   * Read off the **tab**, which is the only thing that carries both halves
+   * (`prototype`, `prototypePage`), and the page is half of where the patch goes:
+   * `patches/<page>/` scopes the change to the page the person was looking at, and a
+   * page that cannot be named falls back to the prototype's shared patches — which
+   * every page carries, this one included. Deliberately not the window's binding:
+   * that answers what the window is *for*, while this answers what was edited.
+   */
+  const resolveEditTarget = useCallback((instanceId: string): { slug: string; page: string | null } | null => {
+    const instance = instances.find((item) => item.id === instanceId)
+    const activeTab = instance?.tabs?.find((tab) => tab.active)
+    const slug = activeTab?.prototype?.slug
+    if (!slug) return null
+    return { slug, page: activeTab?.prototypePage ?? null }
+  }, [instances])
+
+  /**
    * Open a prototype — or one of its pages — in one of the panel's windows.
    *
    * Mirrors the panel's own preview: the address comes from `getPrototypeEntry` —
@@ -140,6 +158,43 @@ export function useBrowserToolbarActions({
         return
       }
 
+      // One save in the window's editor is written as a patch of the prototype the tab
+      // belongs to (plan §12.7 / §21). Nothing is applied here: writing the file is what
+      // makes the change travel, and every window showing the prototype follows it — the
+      // same path an edit in an external editor takes.
+      if (action.kind === 'edit-requested') {
+        if (!workspaceId) return
+        const target = resolveEditTarget(action.instanceId)
+        if (!target) {
+          // Not an error worth an alert: an ordinary tab — or one the user steered
+          // away — has no prototype to write a patch of.
+          toast.info(t('browserEdit.noPrototype'))
+          return
+        }
+        const edits = action.edits
+          .map(asPrototypeEdit)
+          .filter((edit): edit is PrototypeEdit => edit !== null)
+        // Nothing to write: an empty batch, or edits that would be a patch changing
+        // nothing. Saying so would be noise; the bar still shows them unsaved.
+        if (edits.length === 0) return
+        void window.electronAPI
+          .editPrototype(workspaceId, target.slug, target.page, edits)
+          .then((result) => {
+            const files = (result as { files?: string[] } | null)?.files ?? []
+            // One toast, replaced rather than stacked: a person styling several
+            // elements is one session of work, and the file is the receipt.
+            toast.success(t('browserEdit.edited', { file: files.join(', ') }), { id: 'prototype-edit' })
+          })
+          .catch((err: unknown) => {
+            console.error('[useBrowserToolbarActions] Failed to write the edits:', err)
+            toast.error(t('browserEdit.editFailed'), {
+              id: 'prototype-edit',
+              description: err instanceof Error ? err.message : String(err),
+            })
+          })
+        return
+      }
+
       // The bar under the selection needs no prototype — a page nobody owns is
       // the case it exists for — so it is answered before the prototype check
       // rather than gated behind it (plan §12.7).
@@ -174,5 +229,22 @@ export function useBrowserToolbarActions({
     return () => {
       if (typeof off === 'function') off()
     }
-  }, [resolveBinding, openPrototype, workspaceId, activeSessionId, onEditElement, onAddElementToConversation, t])
+  }, [resolveBinding, resolveEditTarget, openPrototype, workspaceId, activeSessionId, onEditElement, onAddElementToConversation, t])
+}
+
+/**
+ * A page's report as the edit a patch can be written from.
+ *
+ * The wire shape carries each target's tag — what the page says it acted on — while
+ * a patch is built from selectors alone: a selector is the part that can be
+ * replayed, and the only part of an element a patch can name. `null` when there is
+ * nothing to write: no selector survived, or a style edit with no declarations.
+ */
+function asPrototypeEdit(edit: BrowserEdit): PrototypeEdit | null {
+  const targets = edit.targets.map((target) => target.selector).filter((selector) => selector.length > 0)
+  if (targets.length === 0) return null
+  if (edit.kind === 'text') return { kind: 'text', selector: targets[0]!, text: edit.text ?? '' }
+  const declarations = edit.declarations ?? {}
+  if (Object.keys(declarations).length === 0) return null
+  return { kind: 'style', targets, declarations }
 }

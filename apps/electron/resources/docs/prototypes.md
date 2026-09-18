@@ -311,6 +311,7 @@ prototypes/checkout-flow/patches/cart/ui-002-flow-guard.js      ← the page `ca
 ```
 
 - **The `{writer}` segment is your identity, not a code you pick from a list.** This conversation writes as the identity it was given (its `writes:` declaration, or `main`); its patches are named with that prefix, the `prototype_context` block at the top of the conversation says which, and a name claiming someone else's prefix is refused before the write and reported by `status`. It is what keeps concurrent writers from overwriting each other.
+- **The browser window's own editor writes as `ui`.** What a person does in the window's edit mode — boxing elements and setting them bold or italic, double-clicking a line to retype it — is written down as a patch too, under the writer id `ui`. **One save is one patch** (`patches/<page>/ui-00N-….css|js`, the same number for both when the session did styles and text), numbered after everything already written so the change is not overridden by the patch it corrects; nothing exists on disk while they are still working, so a session that is thrown away leaves nothing behind. Those patches follow every rule the others do (marked with their `@target`, replayed in order, checked for drift, folded when the layer is folded): read them, build on them, and leave the prefix alone — it is not an identity you write under.
 - Files that do not follow the naming convention are ignored (READMEs, editor backups, dotfiles), so nothing unexpected gets executed.
 - Replay order is the declared numeric order → file name, with the consolidated patches a fold produces (`Z-…`) last by rule. The writer prefix is an identity, so it decides nothing about order.
 - **Where a patch sits is which page it changes**: `patches/*` applies to every page of the flow, `patches/<page>/*` to that page alone. A directory that matches no page is reported by `status` rather than silently replayed.
@@ -434,14 +435,15 @@ Nothing else in the prototype's directory is a violation. That folder is the aut
 
 Frames out of a recording you made elsewhere (a phone, Loom, QuickTime) — a machine, a demo, a session
 someone screen-recorded: they are the one way pictures get under `research/` now (see the note at the end of
-this section). `--every 2s` sets the interval, `--changes` keeps only the moments that moved, `--max 40`
-caps the frames, and `--slug <slug>` aims it at a prototype other than the one in view (the path is this
-command's only positional, which is why the prototype is a flag here). The recording is copied into
+this section). A recording the person made from this window's own record button is **mp4**, the format that
+needs nothing done to it here. `--every 2s` sets the interval, `--changes` keeps only the moments that moved,
+`--max 40` caps the frames, and `--slug <slug>` aims it at a prototype other than the one in view (the path is
+this command's only positional, which is why the prototype is a flag here). The recording is copied into
 `research/videos/` first — a capture whose source has been cleaned up cannot be re-sampled, and re-sampling
-is most of what a source is for. Decoding is Chromium's, so
-nothing needs ffmpeg: a codec it cannot read (HEVC/H.265, ProRes, some `.mov`) fails with a message saying so,
-rather than producing a capture of one frame. Sampled frames carry their position in the recording
-(`imported [0:12.4]` in `index.md`), which is the coordinate a reader of a video can actually use.
+is most of what a source is for. Decoding is Chromium's, so nothing needs ffmpeg: a codec it cannot read
+(HEVC/H.265, ProRes, some `.mov`) fails with a message saying so, rather than producing a capture of one
+frame. Sampled frames carry their position in the recording (`imported [0:12.4]` in `index.md`), which is the
+coordinate a reader of a video can actually use.
 
 Frames are written to `prototypes/<slug>/research/frames/<session>/` as `frame-0001.jpg` upward, with
 `frames.json` (machine-readable) and `index.md` (the same table, for a person) beside them, and are cited
@@ -458,13 +460,13 @@ first half — what a recording is for is the finding that cites the frames it p
 frames where it changed — was built and then removed: its one irreplaceable use was recording *the two of you
 at once* (somebody drives the page while it watches), and neither a person nor an agent can be told "now do
 the thing" from inside a tool call. That use has a better home now: **the window's own record button**
-records the tab on screen to a webm while the person drives it, and files it in their **downloads folder** —
-where a download from that window already goes, because the file is theirs and not a conversation's (whose tab
-it was says who opened it, not who the recording is for). Tell them so if a demo is what you need — their
-recording is the one
-thing you cannot take yourself — and then `sample-video <path-to-it>` turns it into frames here. A screen
-worth arguing about is a recording somebody made, which is what `sample-video` is for; a change worth looking
-at is `browser_tool screenshot` right after the action that caused it.
+records the tab on screen to an **mp4** (webm only where the build cannot record mp4) while the person drives
+it, and files it in their **downloads folder** — where a download from that window already goes, because the
+file is theirs and not a conversation's (whose tab it was says who opened it, not who the recording is for).
+Tell them so if a demo is what you need — their recording is the one thing you cannot take yourself — and then
+`sample-video <path-to-it>` turns it into frames here. A screen worth arguing about is a recording somebody
+made, which is what `sample-video` is for; a change worth looking at is `browser_tool screenshot` right after
+the action that caused it.
 
 ---
 

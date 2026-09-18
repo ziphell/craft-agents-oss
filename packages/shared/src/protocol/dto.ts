@@ -871,6 +871,31 @@ export interface PickedElementOrigin {
   prototypePage: string | null
 }
 
+/** One element an edit made in the window's editor acts on. */
+export interface BrowserEditTarget {
+  selector: string
+  /** Lowercase tag name, for a report the person reads. */
+  tag: string
+}
+
+/**
+ * One edit the person made in the window's editor.
+ *
+ * What the *page* knows, and nothing more: which elements were boxed and what to
+ * set on them, or the element whose text was replaced and what it now says. Where
+ * the change belongs is not here — a patch of which prototype and which page is a
+ * fact about the window the edit came from, and the main window is the side that
+ * knows it (`edit-patch.ts` writes the file).
+ */
+export interface BrowserEdit {
+  kind: 'style' | 'text'
+  targets: BrowserEditTarget[]
+  /** Style edits: what to set, e.g. `{ 'font-weight': '700' }`. */
+  declarations?: Record<string, string>
+  /** Text edits: the element's new text. */
+  text?: string
+}
+
 /**
  * An action the browser panel's toolbar forwards to the main window.
  *
@@ -885,6 +910,16 @@ export type BrowserToolbarAction =
       /** Null when the user pressed Escape or the pick timed out. */
       element: PickedElement | null
     }
+  /**
+   * The person pressed save in the window's editor: everything they accumulated is
+   * on its way to being written down.
+   *
+   * A list, not one edit: the session's edits are one moment of intent, so the main
+   * window writes them as one entry in the change layer (a patch file, or two when
+   * the session did both styles and text). Until this arrives, nothing has been
+   * written anywhere — which is what makes the draft cheap to take back.
+   */
+  | { kind: 'edit-requested'; instanceId: string; edits: BrowserEdit[] }
   /**
    * The person used the bar under the highlight: the element goes into a
    * conversation rather than into a prototype patch (plan §12.7).

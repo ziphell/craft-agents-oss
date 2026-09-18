@@ -128,6 +128,11 @@ export type {
 export { foldPrototype, COMMITTED_CSS, COMMITTED_JS } from './fold.ts'
 export type { PrototypeFoldResult, PrototypeFoldScopeResult } from './fold.ts'
 
+// A person's own edits, written from the browser window as patches too
+// (`edit-patch.ts`, plan §12.7 / §21).
+export { writePrototypeEdits, UI_WRITER } from './edit-patch.ts'
+export type { PrototypeEdit, WrittenEditPatch } from './edit-patch.ts'
+
 export type {
   PrototypeArtifactPath,
   PrototypeOwner,

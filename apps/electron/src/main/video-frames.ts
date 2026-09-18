@@ -106,6 +106,13 @@ export async function sampleVideoFrames(
 
 interface SamplerReply {
   error?: string
+  /**
+   * What kind of failure it was, when it was not about decoding.
+   *
+   * `file` is "this recording is not usable as a recording" — it says nothing about its
+   * length, or there is nothing in it — and the codec advice below would be wrong for it.
+   */
+  errorKind?: 'file'
   durationMs?: number
   width?: number
   height?: number
@@ -155,7 +162,35 @@ function buildSamplerScript(url: string, options: VideoSampleOptions): string {
   canvas.width = width
   canvas.height = height
   const context = canvas.getContext('2d')
-  const durationMs = Math.round(video.duration * 1000)
+
+  // How long it is, which is not always something the file says yet. A recording written
+  // live by \`MediaRecorder\` has its header written before its length is known, so
+  // \`duration\` is \`Infinity\` — measured, see apps/electron/spike/recorder-formats.cjs. An
+  // unresolved duration is not a slower sample: as a step size it is \`Infinity\`, and the
+  // loop below would then seek to no particular place, doing it over and over. So it is
+  // resolved first, by asking to play past the end — the one way to make the browser read
+  // the rest of the file — and a recording that still will not say is reported, not guessed
+  // at.
+  let durationMs = Math.round(video.duration * 1000)
+  if (!Number.isFinite(durationMs)) {
+    await new Promise((resolve) => {
+      const done = () => {
+        video.removeEventListener('durationchange', done)
+        clearTimeout(timeout)
+        resolve(true)
+      }
+      const timeout = setTimeout(done, 5000)
+      video.addEventListener('durationchange', done)
+      try {
+        video.currentTime = 1e101
+      } catch {
+        done()
+      }
+    })
+    durationMs = Math.round(video.duration * 1000)
+  }
+  if (!Number.isFinite(durationMs)) return { error: 'the recording does not say how long it is', errorKind: 'file' }
+  if (durationMs <= 0) return { error: 'the recording is empty', errorKind: 'file' }
 
   // Bounded work: a long recording is sampled more coarsely rather than seeking
   // thousands of times, and the reply says so through \`truncated\`.
@@ -204,10 +239,11 @@ function buildSamplerScript(url: string, options: VideoSampleOptions): string {
 
 function toSampledVideo(raw: SamplerReply): SampledVideo {
   if (raw?.error) {
-    throw new Error(
-      `Could not read the recording: ${raw.error}. Chromium decodes mp4 (H.264), webm and most mov files; ` +
-        `a HEVC, ProRes or otherwise unsupported recording has to be converted first.`,
-    )
+    const codecAdvice =
+      raw.errorKind === 'file'
+        ? ''
+        : ' Chromium decodes mp4 (H.264), webm and most mov files; a HEVC, ProRes or otherwise unsupported recording has to be converted first.'
+    throw new Error(`Could not read the recording: ${raw.error}.${codecAdvice}`)
   }
 
   const frames = (raw.frames ?? []).map((frame) => ({

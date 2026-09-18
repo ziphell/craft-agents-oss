@@ -14,8 +14,8 @@ import { watch } from 'fs'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import { ensureWorkspacePrototypesPath } from '@craft-agent/shared/workspaces'
-import { exportPrototype, createPrototype, deletePrototype, duplicatePrototype, listPrototypeStatuses, resolvePrototypeEntry, setPrototypePageUrl, updatePrototypePages } from '@craft-agent/shared/prototypes'
-import type { PrototypePagesChange } from '@craft-agent/shared/prototypes'
+import { exportPrototype, createPrototype, deletePrototype, duplicatePrototype, listPrototypeStatuses, resolvePrototypeEntry, setPrototypePageUrl, updatePrototypePages, writePrototypeEdits } from '@craft-agent/shared/prototypes'
+import type { PrototypeEdit, PrototypePagesChange } from '@craft-agent/shared/prototypes'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import {
   applyPrototypeToBrowser,
@@ -33,6 +33,7 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.prototypes.DUPLICATE,
   RPC_CHANNELS.prototypes.DELETE,
   RPC_CHANNELS.prototypes.APPLY,
+  RPC_CHANNELS.prototypes.EDIT,
   RPC_CHANNELS.prototypes.SET_PAGES,
   RPC_CHANNELS.prototypes.SET_TARGET,
   RPC_CHANNELS.prototypes.REPLAY,
@@ -142,6 +143,26 @@ export function registerPrototypesHandlers(server: RpcServer, deps: HandlerDeps)
       )
       log.info(`PROTOTYPES_APPLY: ${slug} → ${result.applied} patch(es) into ${instanceId}`)
       return result
+    },
+  )
+
+  // One save in the browser window's editor, written as a patch of the prototype it
+  // was made on (plan §12.7 / §21). No instance id and nothing applied: the file is
+  // what makes the change travel, and the windows showing the prototype follow it
+  // through the same replay an edit in an external editor gets — applying it again
+  // from here would be a second path to the same fact, and on a live page it would
+  // run every other patch a second time.
+  //
+  // A list rather than one edit: what the person accumulated before pressing save is
+  // one moment of intent, so it is one entry in the change layer (`edit-patch.ts`).
+  server.handle(
+    RPC_CHANNELS.prototypes.EDIT,
+    async (_ctx, workspaceId: string, slug: string, page: string | null, edits: PrototypeEdit[]) => {
+      const workspace = getWorkspaceByNameOrId(workspaceId)
+      if (!workspace) throw new Error(`PROTOTYPES_EDIT: Workspace not found: ${workspaceId}`)
+      const written = writePrototypeEdits(workspace.rootPath, slug, page, edits)
+      log.info(`PROTOTYPES_EDIT: ${slug} → ${written.files.join(', ')}`)
+      return written
     },
   )
 
