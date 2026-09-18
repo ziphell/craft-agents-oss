@@ -22,6 +22,7 @@ const CHANNELS = {
   STATE_UPDATE: 'browser-toolbar:state-update',
   PICK_ELEMENT: 'browser-toolbar:pick-element',
   CANCEL_PICK: 'browser-toolbar:cancel-pick',
+  SAVE_EDITS: 'browser-toolbar:save-edits',
   TABS: 'browser-toolbar:tabs',
   DEVTOOLS: 'browser-toolbar:devtools',
   RECORD: 'browser-toolbar:record',
@@ -51,9 +52,12 @@ contextBridge.exposeInMainWorld('browserToolbar', {
    * with undo, redo and save on their own at the page's top-left. Each pick arrives on
    * the host side as an `add-to-conversation` action, each save as an `edit-requested`
    * one; nothing is written before a save. Page clicks are suppressed for as long as
-   * the mode is on; `cancelPick` asks it to leave, and Escape in the page does the
-   * same — with unsaved edits it turns into "save before leaving?" instead
-   * (`ToolbarState.leavingWithEdits`), and the bar's own save button is the answer.
+   * the mode is on.
+   *
+   * `cancelPick` asks it to leave — and, with unsaved edits, asking turns into the
+   * question "save before leaving?" (`ToolbarState.leavingWithEdits`), whose answers are
+   * `saveEdits` (yes: write it down and go) and `cancelPick` again (no: go, draft and
+   * all). Escape in the page is the same "no".
    *
    * `labels` are the bar's words — titles, in this renderer's language, since the page
    * has no i18n and the buttons themselves carry glyphs.
@@ -61,6 +65,15 @@ contextBridge.exposeInMainWorld('browserToolbar', {
   pickElement: (labels?: { add: string; undo: string; redo: string; save: string; bold: string; italic: string }) =>
     ipcRenderer.invoke(CHANNELS.PICK_ELEMENT, instanceId, labels),
   cancelPick: () => ipcRenderer.invoke(CHANNELS.CANCEL_PICK, instanceId),
+  /**
+   * Write the page's draft down and leave — the ✓ beside the crosshair.
+   *
+   * Drawn only while the question is up (`ToolbarState.leavingWithEdits`), because that
+   * is the only moment the window has an answer to give: saving without leaving is the
+   * ✓ on the page's own bar. What the save *is* travels back as an `edit-requested`
+   * action, like every other save: one entry in the change layer.
+   */
+  saveEdits: () => ipcRenderer.invoke(CHANNELS.SAVE_EDITS, instanceId),
   /**
    * Manage this window's own tabs from the rail: switch to one, close one, add one,
    * or take a locked tab back (`release`). The host owns what a tab is, so nothing

@@ -151,6 +151,7 @@
   "browserEdit.editorItalic": "Dőlt",
   "browserEdit.editorRedo": "Újra",
   "browserEdit.editorSave": "Mentés",
+  "browserEdit.editorSaveAndLeave": "Mentés és kilépés",
   "browserEdit.editorUndo": "Visszavonás",
   "browserEdit.elementReference": "Hivatkozott elem: {{selector}} (\"{{text}}\")",
   "browserEdit.elementReferenceFrom": "Hivatkozott elem: {{selector}} (\"{{text}}\") — innen kiválasztva: {{where}}",

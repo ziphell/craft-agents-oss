@@ -151,6 +151,7 @@
   "browserEdit.editorItalic": "斜体",
   "browserEdit.editorRedo": "やり直し",
   "browserEdit.editorSave": "保存",
+  "browserEdit.editorSaveAndLeave": "保存して終了",
   "browserEdit.editorUndo": "元に戻す",
   "browserEdit.elementReference": "参照した要素: {{selector}}（\"{{text}}\"）",
   "browserEdit.elementReferenceFrom": "参照した要素: {{selector}}（\"{{text}}\"）— {{where}} で選択",

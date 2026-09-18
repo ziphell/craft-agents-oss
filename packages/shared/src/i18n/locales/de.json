@@ -151,6 +151,7 @@
   "browserEdit.editorItalic": "Kursiv",
   "browserEdit.editorRedo": "Wiederholen",
   "browserEdit.editorSave": "Speichern",
+  "browserEdit.editorSaveAndLeave": "Speichern und verlassen",
   "browserEdit.editorUndo": "Rückgängig",
   "browserEdit.elementReference": "Referenziertes Element: {{selector}} (\"{{text}}\")",
   "browserEdit.elementReferenceFrom": "Referenziertes Element: {{selector}} (\"{{text}}\") — ausgewählt auf {{where}}",

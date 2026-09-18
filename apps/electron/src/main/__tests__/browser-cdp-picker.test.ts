@@ -77,7 +77,7 @@ describe('BrowserCDP overlay', () => {
     cdp.detach()
   })
 
-  it('pins the bar out of the way, and puts the selection’s name below its corner', async () => {
+  it('pins the bar out of the way, and the name to the page’s bottom-left', async () => {
     const { webContents, expressions } = createFakeWebContents(() => ({}))
     const cdp = new BrowserCDP(webContents)
     await cdp.armOverlay({ accent: ACCENT, menu: MENU, labels: LABELS, bar: true, resident: true })
@@ -86,8 +86,15 @@ describe('BrowserCDP overlay', () => {
     // Top of the page, centred: the one place that is never over the thing being
     // changed, and the same place whatever is selected.
     expect(injectExpression).toContain('left:50%;top:8px;transform:translateX(-50%)')
-    // The name sits under the frame's bottom-left corner rather than on it.
-    expect(injectExpression).toContain("+ 'display:block;left:' + r.left + 'px;top:' + Math.min(window.innerHeight - 24, r.bottom + 4) + 'px;'")
+    // The name is one chip in one place — the page's bottom-left, fixed — rather than
+    // hung off whatever it names: a chip that moves with the page covers the very thing
+    // the person is looking at.
+    expect(injectExpression).toContain('left:8px;bottom:8px;')
+    expect(injectExpression).toContain('const nameLabel = document.createElement(\'div\');')
+    expect(injectExpression).toContain('const paintName = () => {')
+    // Which is what the frame no longer carries: a frame per selected element, no label.
+    expect(injectExpression).not.toContain('hoverLabel')
+    expect(injectExpression).not.toContain("r.bottom + 4")
     cdp.detach()
   })
 
@@ -242,6 +249,23 @@ describe('BrowserCDP overlay', () => {
     expect(injectExpression).toContain("saveButton.addEventListener('click', (e) => {")
     // What the window's chip is told: whether that draft is what holds the mode open.
     expect(injectExpression).toContain('get leavingWithEdits() { return confirming; },')
+    cdp.detach()
+  })
+
+  it('lets the window’s ✓ answer the question it asked', async () => {
+    const { webContents, expressions } = createFakeWebContents(() => ({}))
+    const cdp = new BrowserCDP(webContents)
+    await cdp.armOverlay({ accent: ACCENT, menu: MENU, labels: LABELS, bar: true, resident: true })
+
+    const injectExpression = expressions[0]!
+    // The handle the window's ✓ presses — published beside the two ways out, and running
+    // through the same save as the bar's own button, which is why it also ends the mode.
+    expect(injectExpression).toContain('window.__craft_agent_overlay_save__ = () => save();')
+    // Saving while the question is up is the answer to it, and the mode goes with it.
+    expect(injectExpression).toContain("if (confirming) { confirming = false; finish('cancelled'); return; }")
+
+    await cdp.saveEdits()
+    expect(expressions[expressions.length - 1]).toContain('__craft_agent_overlay_save__')
     cdp.detach()
   })
 

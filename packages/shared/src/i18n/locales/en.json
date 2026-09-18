@@ -151,6 +151,7 @@
   "browserEdit.editorItalic": "Italic",
   "browserEdit.editorRedo": "Redo",
   "browserEdit.editorSave": "Save",
+  "browserEdit.editorSaveAndLeave": "Save and leave",
   "browserEdit.editorUndo": "Undo",
   "browserEdit.elementReference": "Referenced element: {{selector}} (\"{{text}}\")",
   "browserEdit.elementReferenceFrom": "Referenced element: {{selector}} (\"{{text}}\") — picked on {{where}}",

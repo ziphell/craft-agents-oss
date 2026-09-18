@@ -151,6 +151,7 @@
   "browserEdit.editorItalic": "Kursywa",
   "browserEdit.editorRedo": "Ponów",
   "browserEdit.editorSave": "Zapisz",
+  "browserEdit.editorSaveAndLeave": "Zapisz i wyjdź",
   "browserEdit.editorUndo": "Cofnij",
   "browserEdit.elementReference": "Element odniesienia: {{selector}} (\"{{text}}\")",
   "browserEdit.elementReferenceFrom": "Element odniesienia: {{selector}} (\"{{text}}\") — wybrany na {{where}}",

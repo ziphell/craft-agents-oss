@@ -11,7 +11,7 @@ import ReactDOM from 'react-dom/client'
 import { useTranslation, initReactI18next } from 'react-i18next'
 import LanguageDetector from 'i18next-browser-languagedetector'
 import { setupI18n } from '@craft-agent/shared/i18n'
-import { Circle, Code, EyeOff, Globe, Lock, MessageSquare, MousePointerClick, Plus, Square, X, XCircle } from 'lucide-react'
+import { Check, Circle, Code, EyeOff, Globe, Lock, MessageSquare, MousePointerClick, Plus, Square, X, XCircle } from 'lucide-react'
 import { BrowserControls, Spinner } from '@craft-agent/ui'
 import { HeaderIconButton } from '@/components/ui/HeaderIconButton'
 import { cn } from '@/lib/utils'
@@ -121,6 +121,8 @@ declare global {
        */
       pickElement: (labels?: { add: string; undo: string; redo: string; save: string; bold: string; italic: string }) => Promise<void>
       cancelPick: () => Promise<void>
+      /** Write the page's draft down and leave — the ✓ that answers "save before leaving?". */
+      saveEdits: () => Promise<void>
       /** Switch to one of this window's tabs, close one, add one, or unlock one. */
       tabAction: (
         action: 'activate' | 'close' | 'new' | 'release',
@@ -712,6 +714,15 @@ function BrowserToolbarApp() {
     })
   }, [api, picking, t])
 
+  /**
+   * Answer "save before leaving?" with yes: the page writes the draft down and the mode
+   * ends with it. Nothing is awaited for an outcome, like the mode toggle — the state
+   * that comes back is the answer.
+   */
+  const handleSaveEdits = useCallback(() => {
+    void api?.saveEdits()
+  }, [api])
+
   const handleToggleDevTools = useCallback(() => {
     void api?.toggleDevTools()
   }, [api])
@@ -886,13 +897,27 @@ function BrowserToolbarApp() {
             {/*
               What the mode is doing, in the window's own chrome: how to use it, or —
               when the person tried to leave with edits still unwritten — that the draft
-              is what is holding it open. The answer to that question is the ✓ on the
-              page's own bar (the bar's top-left cluster), or Escape.
+              is what is holding it open.
             */}
             {picking && (
               <span className="inline-flex select-none items-center whitespace-nowrap rounded-[6px] bg-accent/15 px-2 py-1 text-[11px] text-accent">
                 {state.leavingWithEdits ? t('browserEdit.leavingWithEdits') : t('browser.pickHint')}
               </span>
+            )}
+
+            {/*
+              The question's "yes", and only while the question is up: save the draft and
+              leave. Beside the crosshair because that is where the question is asked —
+              the page's own ✓ does the same thing, but a page cannot be sure its bar is
+              visible, and this is one press either way.
+            */}
+            {picking && state.leavingWithEdits && (
+              <HeaderIconButton
+                icon={<Check className="h-3.5 w-3.5" />}
+                aria-label={t('browserEdit.editorSaveAndLeave')}
+                tooltip={t('browserEdit.editorSaveAndLeave')}
+                onClick={handleSaveEdits}
+              />
             )}
 
             <HeaderIconButton
@@ -904,6 +929,8 @@ function BrowserToolbarApp() {
               // One door for everything done *with* the page: click an element, or box
               // several, and the toolbar above the page is where the work is — styling,
               // back and forward, and handing it to the conversation (plan §12.7).
+              // Pressed while the question is up it is the "no": leave, draft and all
+              // (the host reads the same state this chip does).
               onClick={handleTogglePick}
             />
 

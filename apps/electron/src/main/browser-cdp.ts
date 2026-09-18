@@ -129,6 +129,16 @@ const OVERLAY_CANCEL_KEY = '__craft_agent_overlay_cancel__'
  * nobody left to ask, and the overlay must not outlive the mode).
  */
 const OVERLAY_ASK_KEY = '__craft_agent_overlay_ask_leave__'
+/**
+ * Window key the window's own ✓ presses to write the draft down.
+ *
+ * One caller, one moment: while the bar is asking "save before leaving?", the ✓ beside
+ * the crosshair is the "yes" — save the draft and end the mode. Saving in the ordinary
+ * way is the ✓ on the page's own bar and needs no handle out here; this exists because
+ * the question is *asked* in the window's chrome (a page cannot be sure its own bar is
+ * visible), and the answer still has to reach the page's draft.
+ */
+const OVERLAY_SAVE_KEY = '__craft_agent_overlay_save__'
 const OVERLAY_ID = '__craft_agent_overlay__'
 
 /** What the injected overlay has reported since the last read. */
@@ -166,19 +176,20 @@ const DEFAULT_OVERLAY_MENU = { surface: '#ffffff', text: '#111111' }
 
 /**
  * How a selection is drawn: a solid frame around it, and its name on a chip of the
- * app's accent just under its bottom-left corner.
+ * app's accent.
  *
  * The frame and the chip are the app's marks *about* the page, which is why they keep
- * the accent while the bar wears the menu's colours — and why the chip sits outside
- * the frame: it says what the thing is, and covering what it names is how a selection
- * gets in the way.
+ * the accent while the bar wears the menu's colours. The chip is **fixed to the page's
+ * bottom-left corner** rather than hung off the frame it describes: a name that moves
+ * with the page covers the very thing the person is looking at, at the one moment they
+ * are looking at it, and it changes place every time the page scrolls.
  */
 function selectionFrameStyle(accent: string): string {
   return `position:fixed;display:none;border:2px solid ${accent};border-radius:4px;pointer-events:none;`
 }
 
 function selectionLabelStyle(accent: string): string {
-  return `position:fixed;display:none;padding:2px 6px;border-radius:6px;font:12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;background:${accent};color:#fff;pointer-events:none;max-width:70vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;`
+  return `position:fixed;display:none;left:8px;bottom:8px;padding:2px 6px;border-radius:6px;font:12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;background:${accent};color:#fff;pointer-events:none;max-width:70vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;`
 }
 
 /**
@@ -285,7 +296,7 @@ function buildOverlayScript(options: {
   const hoverBoxStyle = `position:fixed;display:none;border:1px dashed ${accent};background:color-mix(in oklab, ${accent} 15%, transparent);border-radius:4px;pointer-events:none;`
   const marqueeStyle = `position:fixed;display:none;border:1px dashed ${accent};background:color-mix(in oklab, ${accent} 12%, transparent);border-radius:4px;pointer-events:none;`
   const frameStyle = selectionFrameStyle(accent)
-  const labelStyle = selectionLabelStyle(accent)
+  const nameStyle = selectionLabelStyle(accent)
   const layerStyle = `position:fixed;inset:0;pointer-events:none;`
   // One surface for both clusters of the bar — the selection's work at the top of the
   // page, and the draft's back-and-forward at its top-left — so the two read as one
@@ -308,9 +319,11 @@ function buildOverlayScript(options: {
   hoverBox.setAttribute('style', ${JSON.stringify(hoverBoxStyle)});
   root.appendChild(hoverBox);
 
-  const hoverLabel = document.createElement('div');
-  hoverLabel.setAttribute('style', ${JSON.stringify(labelStyle)});
-  root.appendChild(hoverLabel);
+  // The name of what is hovered or selected — one chip, fixed at the page's bottom-left
+  // by its own style, so it never covers what it names.
+  const nameLabel = document.createElement('div');
+  nameLabel.setAttribute('style', ${JSON.stringify(nameStyle)});
+  root.appendChild(nameLabel);
 
   // What the drag covers right now.
   const marquee = document.createElement('div');
@@ -455,13 +468,27 @@ ${STABLE_SELECTOR_FN}
     return hits.filter((el) => !hits.some((other) => other !== el && el.contains(other)));
   };
 
+  /**
+   * What the name chip says — one chip, one place (the page's bottom-left).
+   *
+   * What the cursor is over comes first, because it is what a click would take;
+   * otherwise it is what is selected. Several selected read one after another — each
+   * has its own frame to point at it, and the chip is what says which is which.
+   */
+  const paintName = () => {
+    const hovered = current && !inOverlay(current) && selected.indexOf(current) === -1 ? current : null;
+    const names = hovered ? [buildStableSelector(hovered)] : selected.map(buildStableSelector);
+    nameLabel.textContent = names.join('  ·  ');
+    nameLabel.style.display = names.length > 0 ? 'block' : 'none';
+  };
+
   const paintHover = (el) => {
     // Nothing to preview while dragging (the marquee says it), on the overlay's own
     // chrome, or on something already selected — it has a marker of its own, and a
     // second frame there would only say the same thing twice.
     if (drag || !el || inOverlay(el) || selected.indexOf(el) !== -1) {
       hoverBox.style.display = 'none';
-      hoverLabel.style.display = 'none';
+      paintName();
       return;
     }
     const r = el.getBoundingClientRect();
@@ -470,10 +497,7 @@ ${STABLE_SELECTOR_FN}
     hoverBox.style.top = r.top + 'px';
     hoverBox.style.width = r.width + 'px';
     hoverBox.style.height = r.height + 'px';
-    hoverLabel.style.display = 'block';
-    hoverLabel.style.left = r.left + 'px';
-    hoverLabel.style.top = Math.max(4, r.top - 22) + 'px';
-    hoverLabel.textContent = buildStableSelector(el);
+    paintName();
   };
 
   const drawMarquee = () => {
@@ -511,13 +535,12 @@ ${STABLE_SELECTOR_FN}
    * The bar is pinned to the top of the page rather than hung off the selection: it
    * belongs to the window, it stays put while the person moves between elements, and
    * above the page's own content is the one place that is never over the thing being
-   * changed. Each selected element gets a frame, and its name in the corner the frame
-   * does not need — just under its bottom-left.
+   * changed. Each selected element gets a frame, and the name of what is selected is
+   * on the one chip at the page's bottom-left — out of the way of everything.
    */
   const paint = () => {
     layer.textContent = '';
     hoverBox.style.display = 'none';
-    hoverLabel.style.display = 'none';
     selected = selected.filter((el) => el.isConnected && !inOverlay(el));
 
     // Both clusters are where the draft lives — save among them — so they stay while
@@ -527,6 +550,7 @@ ${STABLE_SELECTOR_FN}
     bar.style.display = WITH_BAR && working ? 'flex' : 'none';
     undoBar.style.display = WITH_BAR && working ? 'flex' : 'none';
     paintBar();
+    paintName();
     if (selected.length === 0) return;
 
     for (const el of selected) {
@@ -535,13 +559,6 @@ ${STABLE_SELECTOR_FN}
       frame.setAttribute('style', ${JSON.stringify(frameStyle)}
         + 'display:block;left:' + r.left + 'px;top:' + r.top + 'px;width:' + r.width + 'px;height:' + r.height + 'px;');
       layer.appendChild(frame);
-      const label = document.createElement('div');
-      // The name sits under the frame's bottom-left corner rather than on it: it is
-      // about the element, and covering what it names is how a selection gets in the way.
-      label.setAttribute('style', ${JSON.stringify(labelStyle)}
-        + 'display:block;left:' + r.left + 'px;top:' + Math.min(window.innerHeight - 24, r.bottom + 4) + 'px;');
-      label.textContent = buildStableSelector(el);
-      layer.appendChild(label);
     }
   };
 
@@ -763,6 +780,9 @@ ${STABLE_SELECTOR_FN}
     e.preventDefault();
     e.stopPropagation();
     drag = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY, moved: false };
+    // Nothing is hovering anything while a box is being drawn, so the chip falls back
+    // to what is selected rather than naming whatever the drag started over.
+    current = null;
     paintHover(null);
     drawMarquee();
   };
@@ -937,11 +957,14 @@ ${STABLE_SELECTOR_FN}
     addToConversation();
   });
 
-  // The two ways out ask different things: the window's crosshair asks (there may be a
-  // draft, and that is the person's call — the bar's own save button is the answer),
-  // while a teardown — the tab closing, the overlay being re-armed on a new page, a
-  // one-shot pick being finished — takes the draft with it, because there is nobody
-  // left to ask.
+  // The window's chrome has two handles on the question "save before leaving?" — the ✓
+  // beside the crosshair is the "yes" (and the same save as the bar's own button, which
+  // is why it runs through save()), and the crosshair pressed a second time is the "no"
+  // (leave, draft and all). The two ways out still ask different things: the crosshair
+  // asks (there may be a draft, and that is the person's call), while a teardown — the
+  // tab closing, the overlay being re-armed on a new page, a one-shot pick being
+  // finished — takes the draft with it, because there is nobody left to ask.
+  window.${OVERLAY_SAVE_KEY} = () => save();
   window.${OVERLAY_CANCEL_KEY} = () => requestLeave(true);
   window.${OVERLAY_ASK_KEY} = () => requestLeave(false);
   window.${OVERLAY_STATE_KEY} = state;
@@ -989,6 +1012,9 @@ const OVERLAY_CANCEL_EXPRESSION = `(() => { try { window.${OVERLAY_CANCEL_KEY} &
 
 /** Ask the overlay to leave — it answers by leaving, or by asking which it is. */
 const OVERLAY_ASK_EXPRESSION = `(() => { try { window.${OVERLAY_ASK_KEY} && window.${OVERLAY_ASK_KEY}(); } catch (e) {} })()`
+
+/** Write the draft down and end the mode — the window's ✓ answering "save before leaving?". */
+const OVERLAY_SAVE_EXPRESSION = `(() => { try { window.${OVERLAY_SAVE_KEY} && window.${OVERLAY_SAVE_KEY}(); } catch (e) {} })()`
 
 /**
  * The bar's own words, in the window's language — the page has no i18n.
@@ -1648,9 +1674,11 @@ export class BrowserCDP {
    *
    * It ends only if there is nothing unsaved to lose — otherwise the mode stays and
    * says so (`leavingWithEdits`), which is what puts "save before leaving?" in the
-   * window's chip; the answer is the bar's own save button or Escape. So there is
-   * nothing to await, and the caller learns the outcome the way it learns everything
-   * else: the next `drainOverlay` says `cancelled` once the overlay has really gone.
+   * window's chip. The answers are `saveEdits` (the ✓ beside the crosshair, and the
+   * bar's own button), a second request (the crosshair again, or Escape — leave, draft
+   * and all), so there is nothing to await: the caller learns the outcome the way it
+   * learns everything else, and the next `drainOverlay` says `cancelled` once the
+   * overlay has really gone.
    */
   async askOverlayToLeave(): Promise<void> {
     try {
@@ -1666,6 +1694,22 @@ export class BrowserCDP {
       await this.send('Runtime.evaluate', { expression: OVERLAY_CANCEL_EXPRESSION })
     } catch (err) {
       mainLog.debug(`[browser-cdp] teardownOverlay ignored: ${String(err)}`)
+    }
+  }
+
+  /**
+   * Write the draft down, and end the mode — the window's ✓ answering the question.
+   *
+   * The same save the page's own bar performs, reached from the window's chrome because
+   * that is where the question is asked (`leavingWithEdits`); nothing is awaited for an
+   * outcome, as ever: what the save *is* comes back through the next `drainOverlay` as
+   * one `saves` entry.
+   */
+  async saveEdits(): Promise<void> {
+    try {
+      await this.send('Runtime.evaluate', { expression: OVERLAY_SAVE_EXPRESSION })
+    } catch (err) {
+      mainLog.debug(`[browser-cdp] saveEdits ignored: ${String(err)}`)
     }
   }
 

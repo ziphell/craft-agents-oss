@@ -350,10 +350,10 @@ mock.module('../browser-cdp', () => ({
      * The element overlay (plan §12.7).
      *
      * One script serves two callers, so these are the calls the manager makes on it:
-     * arm a tab, read what it has reported, ask it to leave, and take it down. A test
-     * that is about the picker replaces this whole object with its own stub
-     * (`stubPicker`); the ones that only need the manager not to crash — closing a tab
-     * that was being picked, say — get this and nothing happens.
+     * arm a tab, read what it has reported, ask it to leave, write the draft down, and
+     * take it down. A test that is about the picker replaces this whole object with its
+     * own stub (`stubPicker`); the ones that only need the manager not to crash — closing
+     * a tab that was being picked, say — get this and nothing happens.
      */
     armOverlay = mock(async (_options: unknown) => {})
     drainOverlay = mock(async () => ({
@@ -364,6 +364,7 @@ mock.module('../browser-cdp', () => ({
     }))
     askOverlayToLeave = mock(async () => {})
     teardownOverlay = mock(async () => {})
+    saveEdits = mock(async () => {})
   },
 }))
 
@@ -3134,8 +3135,9 @@ describe('BrowserPaneManager', () => {
       })
       const askOverlayToLeave = mock(async () => {})
       const teardownOverlay = mock(async () => {})
-      tab.cdp = { armOverlay, drainOverlay, askOverlayToLeave, teardownOverlay }
-      return { armOverlay, drainOverlay, askOverlayToLeave, teardownOverlay }
+      const saveEdits = mock(async () => {})
+      tab.cdp = { armOverlay, drainOverlay, askOverlayToLeave, teardownOverlay, saveEdits }
+      return { armOverlay, drainOverlay, askOverlayToLeave, teardownOverlay, saveEdits }
     }
 
     /**
@@ -3214,13 +3216,13 @@ describe('BrowserPaneManager', () => {
       expect(lastToolbarState(instance).picking).toBe(false)
     })
 
-    // The save button is drawn in the page, so the one thing the window's chip needs out
-    // of the loop is whether that draft is what is holding the mode open: the person
-    // tried to leave and has not answered yet.
-    it('says when the draft is what holds the mode open', async () => {
+    // The question "save before leaving?" is asked in the window's chrome, and answered
+    // there: the ✓ writes the draft down and leaves, and the crosshair pressed again is
+    // the "no" — the draft goes, and the mode with it.
+    it('carries the question, and takes both answers from the window’s chrome', async () => {
       manager.createInstance('pick-save')
       const instance = (manager as any).instances.get('pick-save')
-      const { drainOverlay } = stubPicker(instance.tabs[0], [{ status: 'pending' }])
+      const { drainOverlay, saveEdits, teardownOverlay } = stubPicker(instance.tabs[0], [{ status: 'pending' }])
       drainOverlay.mockImplementation(async () => ({
         status: 'pending',
         picks: [],
@@ -3232,9 +3234,18 @@ describe('BrowserPaneManager', () => {
       await toolbarHandler('browser-toolbar:pick-element')({}, 'pick-save', PICK_LABELS)
       await tick()
 
+      // What the chip says ("unsaved edits — save before leaving?") comes from the page.
       expect(lastToolbarState(instance).leavingWithEdits).toBe(true)
 
+      // The ✓: the page writes it down, and nothing here pretends to know what a save is.
+      await toolbarHandler('browser-toolbar:save-edits')({}, 'pick-save')
+      expect(saveEdits).toHaveBeenCalled()
+
+      // The crosshair, pressed again while the question is up: no second ask, it leaves.
       await toolbarHandler('browser-toolbar:cancel-pick')({}, 'pick-save')
+      expect(teardownOverlay).toHaveBeenCalled()
+      expect(instance.picking).toBe(false)
+      expect(lastToolbarState(instance).picking).toBe(false)
     })
 
     // The element alone cannot say which tab it came from, and the picker is the

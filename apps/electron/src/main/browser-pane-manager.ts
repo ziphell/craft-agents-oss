@@ -185,6 +185,7 @@ const TOOLBAR_CHANNELS = {
   STATE_UPDATE: 'browser-toolbar:state-update',
   PICK_ELEMENT: 'browser-toolbar:pick-element',
   CANCEL_PICK: 'browser-toolbar:cancel-pick',
+  SAVE_EDITS: 'browser-toolbar:save-edits',
   TABS: 'browser-toolbar:tabs',
   DEVTOOLS: 'browser-toolbar:devtools',
   RECORD: 'browser-toolbar:record',
@@ -4519,10 +4520,32 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     ipcMain.handle(TOOLBAR_CHANNELS.CANCEL_PICK, (_event, instanceId: string) => {
       const inst = findInstance(instanceId)
       if (!inst) return
-      // Asking rather than tearing down: with unsaved edits the page keeps the mode on
-      // and reports `leavingWithEdits`, which is what puts the question in the window's
-      // chip; the mode ends when the bar's own save button (or Escape) answers it.
+      // The crosshair, pressed again while the chip is asking "save before leaving?":
+      // that is the "no" — the draft goes, and the mode with it. (Escape in the page
+      // says the same thing.)
+      if (inst.leavingWithEdits) {
+        this.disarmPicker(inst)
+        return
+      }
+      // Otherwise it asks rather than tearing down: there may be a draft by now, and
+      // keeping it or not is the person's call. The question comes back as
+      // `leavingWithEdits`, and the window's chip says it.
       this.askPickerToLeave(inst)
+    })
+
+    /**
+     * The ✓ beside the crosshair, while that question is up: save the draft and leave.
+     *
+     * The page's own ✓ does the same thing, but the question is *asked* in the window's
+     * chrome (a page cannot be sure its bar is visible), so the answer has to be
+     * reachable there too. It presses the page rather than doing anything here — what a
+     * save *is* comes back through the loop as one `saves` entry.
+     */
+    ipcMain.handle(TOOLBAR_CHANNELS.SAVE_EDITS, (_event, instanceId: string) => {
+      const inst = findInstance(instanceId)
+      if (!inst) return
+      const tab = tabById(inst, inst.pickTabId)
+      if (tab) void tab.cdp.saveEdits()
     })
 
     /**

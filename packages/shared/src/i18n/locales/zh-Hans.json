@@ -151,6 +151,7 @@
   "browserEdit.editorItalic": "斜体",
   "browserEdit.editorRedo": "重做",
   "browserEdit.editorSave": "保存",
+  "browserEdit.editorSaveAndLeave": "保存并退出",
   "browserEdit.editorUndo": "撤销",
   "browserEdit.elementReference": "引用的元素：{{selector}}（\"{{text}}\"）",
   "browserEdit.elementReferenceFrom": "引用的元素：{{selector}}（\"{{text}}\"）——来自 {{where}}",
