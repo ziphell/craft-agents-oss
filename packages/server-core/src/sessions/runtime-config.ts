@@ -1,5 +1,5 @@
 import type { AgentProvider, LlmAuthType } from '@craft-agent/shared/agent/backend'
-import { isCompatProvider, modelSupportsImages, type LlmConnection } from '@craft-agent/shared/config'
+import { isCompatProvider, modelSupportsImages, toCustomEndpointModels, type LlmConnection } from '@craft-agent/shared/config'
 import type { FileAttachment } from '@craft-agent/shared/protocol'
 
 export interface BackendRuntimeSignatureInput {
@@ -20,17 +20,16 @@ function definedObject<T extends Record<string, unknown>>(obj: T): Record<string
   return Object.fromEntries(Object.entries(obj).filter(([, value]) => value !== undefined))
 }
 
-function normalizeCustomModels(connection: LlmConnection): Array<Record<string, unknown>> {
-  return (connection.models ?? [])
-    .map(model => {
-      if (typeof model === 'string') return { id: model }
-      return definedObject({
-        id: model.id,
-        contextWindow: model.contextWindow,
-        supportsImages: typeof model.supportsImages === 'boolean' ? model.supportsImages : undefined,
-      })
-    })
-    .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+/**
+ * Runtime-relevant shape of a connection's custom models, sorted for a stable
+ * signature. Uses the shared projection so a newly supported per-model
+ * parameter automatically drifts the signature (and therefore forces the
+ * dispose + recreate path) instead of being silently ignored here.
+ */
+function normalizeCustomModels(connection: LlmConnection): unknown[] {
+  return toCustomEndpointModels(connection.models)
+    .map(entry => (typeof entry === 'string' ? { id: entry } : { ...entry }))
+    .sort((a, b) => a.id.localeCompare(b.id))
 }
 
 /**
@@ -71,6 +70,7 @@ export function buildBackendRuntimeSignature(input: BackendRuntimeSignatureInput
         providerType: connection.providerType,
         authType: connection.authType,
         defaultModel: connection.defaultModel,
+        fastModel: connection.fastModel,
         ...(isCompatProvider(connection.providerType)
           ? {
               baseUrl: connection.baseUrl,
@@ -78,9 +78,7 @@ export function buildBackendRuntimeSignature(input: BackendRuntimeSignatureInput
               customEndpoint: connection.customEndpoint
                 ? definedObject({
                     api: connection.customEndpoint.api,
-                    supportsImages: typeof connection.customEndpoint.supportsImages === 'boolean'
-                      ? connection.customEndpoint.supportsImages
-                      : undefined,
+                    headers: connection.customEndpoint.headers,
                   })
                 : undefined,
               models: normalizeCustomModels(connection),
@@ -102,9 +100,13 @@ export function isImageAttachment(attachment: Pick<FileAttachment, 'type' | 'mim
 }
 
 /**
- * Enforce saved custom-endpoint image capability at send time. The session can
- * still persist/display image attachments, but they are not passed to text-only
- * models even if an older subprocess has stale vision-capable registry state.
+ * Enforce the saved image capability at send time. The session can still
+ * persist/display image attachments, but they are not passed to a model whose
+ * entry says `supportsImages: false` — even if an older subprocess still has
+ * vision-capable registry state.
+ *
+ * The model entry is the only gate: it applies whatever the connection type,
+ * and anything unset stays "supported" (see `modelSupportsImages`).
  */
 export function filterAttachmentsForModelInput(
   attachments: FileAttachment[] | undefined,
@@ -112,7 +114,7 @@ export function filterAttachmentsForModelInput(
   modelId: string,
 ): ModelAttachmentFilterResult {
   if (!attachments?.length) return { attachments, omittedImages: [] }
-  if (!connection || !isCompatProvider(connection.providerType)) return { attachments, omittedImages: [] }
+  if (!connection) return { attachments, omittedImages: [] }
   if (modelSupportsImages(connection, modelId)) return { attachments, omittedImages: [] }
 
   const modelAttachments: FileAttachment[] = []

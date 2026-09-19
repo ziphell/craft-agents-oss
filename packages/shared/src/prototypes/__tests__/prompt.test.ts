@@ -124,11 +124,11 @@ describe('formatPrototypeContextForPrompt', () => {
 
   /**
    * A page of ours is a document the agent writes, so the block has to say what a
-   * good one looks like — and where the frame already is, since that is the only
+   * good one looks like — and where the shared layout already is, since that is the only
    * reuse mechanism this model has (no template engine, by design).
    */
-  it('tells the agent how to write a page, and where the frame already is', () => {
-    const withShell = formatPrototypeContextForPrompt(
+  it('tells the agent how to write a page, and where the shared layout already is', () => {
+    const withLayout = formatPrototypeContextForPrompt(
       makeContext({
         pages: [{ name: 'cart', kind: 'scratch', url: 'http://x/cart.html', file: 'cart.html', entry: true }],
         entryPage: 'cart',
@@ -136,26 +136,26 @@ describe('formatPrototypeContextForPrompt', () => {
       }),
     )
 
-    expect(withShell).toContain('Writing a page of ours')
-    expect(withShell).toContain('no build step')
-    expect(withShell).toContain('/w/prototypes/checkout-flow/_layout.html')
-    expect(withShell).toContain('Do not copy the frame into a page')
-    expect(withShell).toContain('No eval and no new Function')
-    expect(withShell).toContain('no external host')
+    expect(withLayout).toContain('Writing a page of ours')
+    expect(withLayout).toContain('no build step')
+    expect(withLayout).toContain('/w/prototypes/checkout-flow/_layout.html')
+    expect(withLayout).toContain('Do not copy the layout into a page')
+    expect(withLayout).toContain('No eval and no new Function')
+    expect(withLayout).toContain('no external host')
     // Standard HTML first: the page-level answer to "do I need a library for this?"
-    expect(withShell).toContain('Reach for standard HTML before writing any JS')
-    expect(withShell).toContain('<details>')
+    expect(withLayout).toContain('Reach for standard HTML before writing any JS')
+    expect(withLayout).toContain('<details>')
     // Where a change belongs is the rule the model turns on most often.
-    expect(withShell).toContain('Add a screen by writing a page')
+    expect(withLayout).toContain('Add a screen by writing a page')
 
-    // No shell yet: say how to make one rather than naming a file that is not there.
-    const withoutShell = formatPrototypeContextForPrompt(
+    // No layout yet: say how to make one rather than naming a file that is not there.
+    const withoutLayout = formatPrototypeContextForPrompt(
       makeContext({
         pages: [{ name: 'cart', kind: 'scratch', url: 'http://x/cart.html', file: 'cart.html', entry: true }],
         entryPage: 'cart',
       }),
     )
-    expect(withoutShell).toContain('write _layout.html')
+    expect(withoutLayout).toContain('write _layout.html')
 
     // All pages are live ones: there is no document of ours to write, so the
     // guidance would be noise.

@@ -16,7 +16,7 @@ import type {
 } from '@craft-agent/core/types'
 import type { PermissionMode } from '../agent/mode-types'
 import type { ThinkingLevel } from '../agent/thinking-levels'
-import type { CustomEndpointConfig } from '../config/llm-connections'
+import type { ConnectionModelEntry, CustomEndpointConfig } from '../config/llm-connections'
 import type {
   AuthRequest as SharedAuthRequest,
   CredentialInputMode as SharedCredentialInputMode,
@@ -596,7 +596,10 @@ export interface LlmConnectionSetup {
   credential?: string
   baseUrl?: string | null
   defaultModel?: string | null
-  models?: string[] | null
+  /** Explicit small/fast model (title generation, summarization, mini agents). Absent = not picked, `null` = cleared. */
+  fastModel?: string | null
+  /** Model ids, or ids with per-model parameters for custom endpoints. */
+  models?: ConnectionModelEntry[] | null
   piAuthProvider?: string
   modelSelectionMode?: 'automaticallySyncedFromProvider' | 'userDefined3Tier'
   /** When true, reject setup if the connection doesn't already exist (reauth guard). */

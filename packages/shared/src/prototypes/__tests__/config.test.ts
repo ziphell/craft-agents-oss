@@ -60,6 +60,44 @@ describe('readPrototypeConfig', () => {
     })
   })
 
+  // A page of ours can say the shared layout does not wrap it — a document that is a
+  // design of its own (plan §19.2). `true` is what every page got before the flag
+  // existed, so it is never stored: written, it would be a second way of saying
+  // nothing.
+  it('keeps a page that stands on its own, and drops the default', () => {
+    workspaceRoot = makePrototype()
+    writeRawConfig(workspaceRoot, {
+      pages: [
+        { name: 'cart', kind: 'scratch', useLayout: false },
+        { name: 'orders', kind: 'scratch', useLayout: true },
+      ],
+    })
+
+    expect(readPrototypeConfig(workspaceRoot, SLUG)).toEqual({
+      pages: [
+        { name: 'cart', kind: 'scratch', useLayout: false },
+        { name: 'orders', kind: 'scratch' },
+      ],
+    })
+  })
+
+  // The layout is ours and a live page is someone else's document, so the flag on an
+  // overlay row is a claim nothing can honour: it is reported and the row keeps the
+  // rest, exactly like a stray url on a page of ours (plan §13.4).
+  it('reports useLayout on a live page, and keeps the page', () => {
+    workspaceRoot = makePrototype()
+    writeRawConfig(workspaceRoot, {
+      pages: [{ name: 'pay', kind: 'overlay', url: 'https://app.example.com/pay', useLayout: false }],
+    })
+
+    const config = readPrototypeConfig(workspaceRoot, SLUG)
+
+    expect(config.pages).toEqual([
+      { name: 'pay', kind: 'overlay', url: 'https://app.example.com/pay' },
+    ])
+    expect(config.pageIssues?.join('\n')).toContain('drop useLayout')
+  })
+
   // This file can be edited by hand or by another process, so a broken one is
   // expected rather than exceptional — it must not make the prototype unusable.
   it('reads a malformed config as no pages, instead of throwing', () => {

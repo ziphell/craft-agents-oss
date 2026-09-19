@@ -9,7 +9,7 @@
 import { join, parse as parsePath } from 'path'
 import { existsSync, mkdirSync, rmSync } from 'fs'
 import { validateFilePath, getWorkspaceAllowedDirs } from '@craft-agent/server-core/handlers'
-import { BrowserView, BrowserWindow, WebContentsView, app, ipcMain, nativeTheme, session, shell, type Session as ElectronSession } from 'electron'
+import { BrowserView, BrowserWindow, WebContentsView, app, ipcMain, nativeTheme, screen, session, shell, type Session as ElectronSession } from 'electron'
 import { mainLog } from './logger'
 import type { WindowManager } from './window-manager'
 import { BrowserCDP, type AccessibilitySnapshot, type ElementGeometry, type OverlayLabels } from './browser-cdp'
@@ -65,12 +65,31 @@ const MAX_NETWORK_LOG_ENTRIES = 500
 const MAX_DOWNLOAD_LOG_ENTRIES = 200
 const DEFAULT_WAIT_TIMEOUT_MS = 10_000
 const DEFAULT_WAIT_POLL_MS = 100
-const SCREENSHOT_HIDDEN_CAPTURE_ATTEMPTS = 3
+/** How many goes a capture gets where the tab already has a surface to copy. */
+const SCREENSHOT_CAPTURE_ATTEMPTS = 3
 
 const SCREENSHOT_RETRY_DELAY_MS = 120
-const SCREENSHOT_RESCUE_PAINT_DELAY_MS = 180
 const SCREENSHOT_NETWORK_IDLE_TIMEOUT_MS = 1_000
 const SCREENSHOT_NETWORK_IDLE_MS = 300
+/**
+ * How long a single capture may take before it counts as no image at all.
+ *
+ * A live surface answers in tens of milliseconds (measured: 10–68ms across every combination in
+ * `apps/electron/spike/screenshot-e2e.cjs`); this bound is for the case that never answers at all.
+ */
+const SCREENSHOT_CAPTURE_TIMEOUT_MS = 1_000
+/**
+ * How long a parked view is given to produce its first frame (`captureWhileParked`).
+ *
+ * One frame at 60Hz, which is what the measurement showed is needed: nothing at all is not enough,
+ * and 16ms, 32ms and 200ms all are. It is also the whole of what the shot waits on.
+ */
+const SCREENSHOT_FIRST_FRAME_MS = 16
+/** How far past the right edge of the desktop a parking spot sits (`offscreenSpot`). */
+const SCREENSHOT_PARK_MARGIN = 400
+/** Only ever seen inside this file: how a capture that never answered names its own error. */
+const SCREENSHOT_CAPTURE_TIMEOUT_MARKER = 'capture did not come back'
+
 const THEME_COLOR_SIGNAL_PREFIX = '__craft_theme_color__:'
 const THEME_COLOR_NULL_SENTINEL = '__NULL__'
 const THEME_OBSERVER_MIN_INTERVAL_MS = 120
@@ -806,6 +825,25 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * person records one thing at a time.
    */
   private readonly tabRecorder = new TabRecorder()
+
+  /**
+   * How long one capture may take before it counts as no image at all
+   * (`SCREENSHOT_CAPTURE_TIMEOUT_MS`), on the instance rather than read from the constant
+   * so a test can hold a capture to a bound it can wait for.
+   */
+  private captureTimeoutMs = SCREENSHOT_CAPTURE_TIMEOUT_MS
+
+  /**
+   * Whether a window that is not on screen can still be captured where it is.
+   *
+   * Not on Windows, where it was measured: a hidden window has no surface, and every path either
+   * refuses or stops answering (`apps/electron/spike/capture-methods.cjs`), so a shot of a hidden
+   * window goes straight to the parked view instead of paying the bound for an answer that is not
+   * coming. On macOS Electron does answer for a hidden window, so it gets the first go there and the
+   * parked view is the fallback — that side is Electron's documented behaviour, not something this
+   * machine could measure.
+   */
+  private canCaptureHiddenWindows = process.platform !== 'win32'
 
   setWindowManager(windowManager: WindowManager): void {
     this.windowManager = windowManager
@@ -2560,115 +2598,217 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     },
   ): Promise<{ imageBuffer: Buffer; imageFormat: 'png' | 'jpeg'; warnings: string[] }> {
     const tab = options.tab
-    let rescueUsed = false
-    let sawDisplaySurfaceUnavailable = false
+    let sawNoSurface = false
     const warnings: string[] = []
     const imageOpts = { dpr: options.dpr, format: options.format, jpegQuality: options.jpegQuality }
 
-    for (let attempt = 1; attempt <= SCREENSHOT_HIDDEN_CAPTURE_ATTEMPTS; attempt += 1) {
-      let result: { buffer: Buffer; format: 'png' | 'jpeg' } | null = null
-      try {
-        result = await this.capturePageImage({
-          tab,
-          rect: options.rect,
-          useHiddenCaptureOptions: true,
-          ...imageOpts,
-        })
-      } catch (error) {
-        if (this.isDisplaySurfaceUnavailableError(error)) {
-          sawDisplaySurfaceUnavailable = true
-          mainLog.warn(
-            `[browser-pane] ${options.errorPrefix} display surface unavailable instance=${instance.id} mode=${options.mode} attempt=${attempt}/${SCREENSHOT_HIDDEN_CAPTURE_ATTEMPTS} visible=${instance.isVisible} tab=${tab.id} url=${tab.currentUrl}`,
-          )
-        } else {
-          throw error
-        }
-      }
-
-      if (result) {
-        if (attempt > 1) {
-          warnings.push(`Capture recovered after ${attempt} hidden attempt${attempt === 1 ? '' : 's'}.`)
-        }
-        return { imageBuffer: result.buffer, imageFormat: result.format, warnings }
-      }
-
-      mainLog.warn(
-        `[browser-pane] ${options.errorPrefix} empty capture attempt instance=${instance.id} mode=${options.mode} attempt=${attempt}/${SCREENSHOT_HIDDEN_CAPTURE_ATTEMPTS} visible=${instance.isVisible} isLoading=${tab.isLoading} tab=${tab.id} url=${tab.currentUrl}`,
-      )
-
-      if (attempt < SCREENSHOT_HIDDEN_CAPTURE_ATTEMPTS) {
-        await this.waitForScreenshotReadiness(instance.id)
-      }
-    }
-
-    const window = instance.window
-    const wasVisible = instance.isVisible
-
-    if (!window.isDestroyed()) {
-      try {
-        if (!wasVisible) {
-          if (window.isMinimized()) {
-            window.restore()
-          }
-          window.showInactive()
-          instance.isVisible = true
-          this.emitStateChange(instance)
-          rescueUsed = true
-          await this.sleep(SCREENSHOT_RESCUE_PAINT_DELAY_MS)
-          await this.waitForScreenshotReadiness(instance.id)
-        }
-
-        let rescueResult: { buffer: Buffer; format: 'png' | 'jpeg' } | null = null
+    // Where the tab already has something to copy, the shot is taken where it is: a few goes, because
+    // a page that has just been painted can still answer empty once. A window that is not on screen is
+    // skipped unless it is known to answer there (`canCaptureHiddenWindows`) — on Windows it has no
+    // surface at all, so the wait would buy nothing and the parked shot below is the way to any tab in
+    // it, the one on screen included.
+    if (instance.isVisible || this.canCaptureHiddenWindows) {
+      for (let attempt = 1; attempt <= SCREENSHOT_CAPTURE_ATTEMPTS; attempt += 1) {
+        let result: { buffer: Buffer; format: 'png' | 'jpeg' } | null = null
         try {
-          rescueResult = await this.capturePageImage({
+          result = await this.capturePageImage({
             tab,
             rect: options.rect,
-            useHiddenCaptureOptions: false,
+            useHiddenCaptureOptions: true,
             ...imageOpts,
           })
         } catch (error) {
-          if (this.isDisplaySurfaceUnavailableError(error)) {
-            sawDisplaySurfaceUnavailable = true
+          if (this.isNoSurfaceCaptureError(error)) {
+            sawNoSurface = true
             mainLog.warn(
-              `[browser-pane] ${options.errorPrefix} display surface unavailable during rescue instance=${instance.id} mode=${options.mode} visible=${instance.isVisible} tab=${tab.id} url=${tab.currentUrl}`,
+              `[browser-pane] ${options.errorPrefix} no surface to capture instance=${instance.id} mode=${options.mode} attempt=${attempt}/${SCREENSHOT_CAPTURE_ATTEMPTS} tab=${tab.id} url=${tab.currentUrl} detail=${error instanceof Error ? error.message : String(error)}`,
             )
-          } else {
-            throw error
+            // Nothing inside this window will find one for this tab — a page that has never been
+            // composited has no surface to copy — so the parked shot below is the way to it.
+            break
           }
+          throw error
         }
 
-        if (rescueResult) {
-          if (rescueUsed) {
-            warnings.push('Capture required temporary inactive reveal for rendering; browser visibility was restored immediately.')
+        if (result) {
+          if (attempt > 1) {
+            warnings.push(`Capture recovered after ${attempt} attempt${attempt === 1 ? '' : 's'}.`)
           }
-          return { imageBuffer: rescueResult.buffer, imageFormat: rescueResult.format, warnings }
+          return { imageBuffer: result.buffer, imageFormat: result.format, warnings }
         }
-      } finally {
-        if (!wasVisible && !window.isDestroyed()) {
-          window.hide()
-          instance.isVisible = false
-          this.emitStateChange(instance)
+
+        mainLog.warn(
+          `[browser-pane] ${options.errorPrefix} empty capture attempt instance=${instance.id} mode=${options.mode} attempt=${attempt}/${SCREENSHOT_CAPTURE_ATTEMPTS} isLoading=${tab.isLoading} tab=${tab.id} url=${tab.currentUrl}`,
+        )
+
+        if (attempt < SCREENSHOT_CAPTURE_ATTEMPTS) {
+          await this.waitForScreenshotReadiness(instance.id)
         }
+      }
+    } else {
+      // A window that is not on screen has no surface at all — no attempt inside it can answer
+      // (measured: every hidden state missed on every path) — so the shot goes straight to the parked
+      // view, which is the only way to a background tab's pixels anyway.
+      mainLog.info(`[browser-pane] ${options.errorPrefix} window is not on screen; taking the shot from a parked view instance=${instance.id} mode=${options.mode} tab=${tab.id}`)
+    }
+
+    let parked: { buffer: Buffer; format: 'png' | 'jpeg' } | null = null
+    try {
+      parked = await this.captureWhileParked(instance, tab, options.rect, imageOpts)
+    } catch (error) {
+      if (this.isNoSurfaceCaptureError(error)) {
+        sawNoSurface = true
+        mainLog.warn(
+          `[browser-pane] ${options.errorPrefix} no surface to capture from a parked view instance=${instance.id} mode=${options.mode} tab=${tab.id} url=${tab.currentUrl} detail=${error instanceof Error ? error.message : String(error)}`,
+        )
+      } else {
+        throw error
       }
     }
 
+    if (parked) {
+      warnings.push('Capture parked that tab in a window nobody can see for the shot; it was put straight back.')
+      return { imageBuffer: parked.buffer, imageFormat: parked.format, warnings }
+    }
+
     mainLog.warn(
-      `[browser-pane] ${options.errorPrefix} capture failed after recovery instance=${instance.id} mode=${options.mode} visible=${instance.isVisible} isLoading=${tab.isLoading} tab=${tab.id} url=${tab.currentUrl} rescueUsed=${rescueUsed}`,
+      `[browser-pane] ${options.errorPrefix} capture failed after recovery instance=${instance.id} mode=${options.mode} isLoading=${tab.isLoading} tab=${tab.id} url=${tab.currentUrl}`,
     )
 
-    if (sawDisplaySurfaceUnavailable) {
+    if (sawNoSurface) {
       throw new Error(
-        `Failed to capture ${options.errorPrefix}: current display surface is unavailable. `
-        + `Try focusing the browser window first ("focus ${instance.id}" or "open --foreground") and retry.`
+        `Failed to capture ${options.errorPrefix}: the page had no display surface to copy, even from a view of its own. `
+        + `Wait for it to paint ("browser_tool wait network-idle") and retry.`
       )
     }
 
     throw new Error(`Failed to capture ${options.errorPrefix}: empty image buffer`)
   }
 
-  private isDisplaySurfaceUnavailableError(error: unknown): boolean {
+  /**
+   * Take the shot from a view parked in a window nobody can see.
+   *
+   * This is where a page gets its first frame. Chromium gives a page a surface when it is first
+   * composited, and both cases that need this have none: a window that is not on screen is not
+   * composited at all, and a tab opened behind the person's (`activate: false`, how an agent's tab is
+   * opened) has never been on screen. Nothing short of putting the view somewhere that gets
+   * composited changes that (`setVisible`, `invalidate`, `setBounds`, unthrottling and the window
+   * being up all missed; measured in `apps/electron/spike/screenshot-e2e.ts`).
+   *
+   * "Somewhere that gets composited" does not have to be anywhere a person can see: the view is handed
+   * to a window parked outside every display — shown, because a window that is never shown is never
+   * composited either — and taken back a frame later. Their own window is not shown, moved or touched;
+   * nothing of it appears on screen, on the taskbar or in anyone's focus. Measured: 16ms of wait is
+   * enough, ~40ms for the shot from a parked view against ~355ms for the same tab through a revealed
+   * window, and the person's window's bounds and stacking unchanged.
+   */
+  private async captureWhileParked(
+    instance: BrowserInstance,
+    tab: BrowserTab,
+    rect: { x: number; y: number; width: number; height: number } | undefined,
+    imageOpts: { dpr?: number; format?: 'png' | 'jpeg'; jpegQuality?: number },
+  ): Promise<{ buffer: Buffer; format: 'png' | 'jpeg' } | null> {
+    const area = this.pageAreaBounds(instance)
+    const spot = this.offscreenSpot()
+    let parking: BrowserWindow | null = null
+
+    try {
+      // The same size as the page area it is leaving, so the page's own viewport never changes while
+      // it is away: a site that reflows on resize would otherwise reflow twice for a screenshot.
+      parking = new BrowserWindow({
+        x: spot.x,
+        y: spot.y,
+        width: area.width,
+        height: area.height,
+        show: false,
+        frame: false,
+        skipTaskbar: true,
+        backgroundColor: getBackgroundColor(nativeTheme.shouldUseDarkColors),
+      })
+      parking.contentView.addChildView(tab.tabView)
+      tab.tabView.setBounds({ x: 0, y: 0, width: area.width, height: area.height })
+      parking.showInactive()
+      await this.sleep(SCREENSHOT_FIRST_FRAME_MS)
+
+      return await this.capturePageImage({
+        tab,
+        rect,
+        useHiddenCaptureOptions: false,
+        ...imageOpts,
+      })
+    } finally {
+      // Handed back, at the size the page area has, with the stacking as it was: the tab on screen is
+      // the person's, and the overlay belongs above the page exactly when that page is the locked one.
+      if (!instance.window.isDestroyed() && !tab.tabView.webContents.isDestroyed()) {
+        instance.window.contentView.addChildView(tab.tabView)
+        tab.tabView.setBounds(area)
+        this.raiseActiveTab(instance)
+        this.updateNativeOverlayState(instance)
+      }
+      if (parking && !parking.isDestroyed()) parking.destroy()
+    }
+  }
+
+  /**
+   * A spot past the right edge of the *union* of the displays, where where the person's screens end
+   * is not this window's business.
+   */
+  private offscreenSpot(): { x: number; y: number } {
+    const displays = screen.getAllDisplays()
+    return {
+      x: Math.max(...displays.map((display) => display.bounds.x + display.bounds.width)) + SCREENSHOT_PARK_MARGIN,
+      y: Math.min(...displays.map((display) => display.bounds.y)),
+    }
+  }
+
+  /**
+   * Whether a failed capture means "this window has no surface to copy" — the one thing another
+   * attempt inside the same window cannot fix, and what the parked view is for.
+   *
+   * Two symptoms, one cause: Chromium says so in as many words when the surface is gone, and
+   * stays silent instead — the promise never settles — when the window is not on screen
+   * (`captureWithinBound`, and the spike named there).
+   */
+  private isNoSurfaceCaptureError(error: unknown): boolean {
     if (!(error instanceof Error)) return false
-    return error.message.toLowerCase().includes('current display surface not available for capture')
+    const message = error.message.toLowerCase()
+    return message.includes('current display surface not available for capture')
+      || message.includes(SCREENSHOT_CAPTURE_TIMEOUT_MARKER)
+  }
+
+  /**
+   * A capture that cannot hang.
+   *
+   * On a window that is not on screen, `capturePage` does not fail — it stops answering:
+   * the surface it would copy is gone, so the promise never settles at all (measured for
+   * every non-visible window state in `apps/electron/spike/capture-methods.cjs`). Awaiting
+   * that is what left the screenshot command stuck until the browser was brought up by
+   * hand. A capture that has not come back within the bound is therefore reported as a
+   * miss, which is a state `capturePageWithRecovery` already knows how to answer.
+   */
+  private async captureWithinBound(capture: Promise<Electron.NativeImage>, webContentsId: number): Promise<Electron.NativeImage> {
+    // A capture that fails only after the bound is not this call's answer anymore, and an
+    // unhandled rejection would be noise about a picture nobody is waiting for.
+    capture.catch(() => {})
+
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const timedOut = Symbol('capture-timeout')
+    const outcome = await Promise.race([
+      capture,
+      new Promise<typeof timedOut>((resolve) => {
+        timer = setTimeout(() => resolve(timedOut), this.captureTimeoutMs)
+      }),
+    ])
+    if (timer) clearTimeout(timer)
+
+    if (outcome === timedOut) {
+      mainLog.warn(
+        `[browser-pane] capture did not come back within ${this.captureTimeoutMs}ms webContents=${webContentsId} — treating it as no image`,
+      )
+      throw new Error(`${SCREENSHOT_CAPTURE_TIMEOUT_MARKER} after ${this.captureTimeoutMs}ms`)
+    }
+
+    return outcome
   }
 
   private async capturePageImage(
@@ -2686,9 +2826,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       : undefined
 
     const tabView = options.tab.tabView
-    let image = options.rect
-      ? await tabView.webContents.capturePage(options.rect, captureOpts)
-      : await tabView.webContents.capturePage(undefined, captureOpts)
+    const capture = options.rect
+      ? tabView.webContents.capturePage(options.rect, captureOpts)
+      : tabView.webContents.capturePage(undefined, captureOpts)
+
+    let image = await this.captureWithinBound(capture, tabView.webContents.id)
 
     if (image.isEmpty()) {
       return null
@@ -5672,30 +5814,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       mainLog.warn(`[browser-pane] toolbar did-fail-load id=${instance.id} code=${errorCode} url=${validatedURL} error=${errorDescription}`)
     })
 
-    /**
-     * A chrome renderer that died is that surface's problem, not the window's.
-     *
-     * Every piece of the chrome — the bar, the rail, the surface drawn around the page —
-     * is a document of its own in a view of its own, and every tab the window shows is
-     * another one. So a crash in one of them leaves the pages, and the window, exactly
-     * where they were: nothing here closes it, hides it or stops it working. What it does
-     * cost is that surface, and only that surface — with no document there is nothing to
-     * draw or click — so it is loaded again, and whatever it needs to catch up on arrives
-     * the way it always does (the state push each document gets once it finishes loading).
-     */
-    const reloadChromeAfterGone = (surface: string, reload: () => void) =>
-      (_event: Electron.Event, details: Electron.RenderProcessGoneDetails) => {
-        // A window being closed takes its own chrome with it, which is not a failure.
-        if (details.reason === 'clean-exit' || instance.window.isDestroyed()) return
-        mainLog.warn(`[browser-pane] ${surface} renderer gone id=${instance.id} reason=${details.reason} exitCode=${details.exitCode}`)
-        reload()
-      }
-
-    toolbarWc.on('render-process-gone', reloadChromeAfterGone('bar', () => { void this.loadChromePage(instance, 'bar') }))
-    instance.nativeOverlayView.webContents.on('render-process-gone', reloadChromeAfterGone('overlay', () => {
-      void this.loadNativeOverlayDocument(instance)
-    }))
-
     // The rail is the window's other chrome surface: same pushes, and its own document
     // — a push sent before it finished loading would be lost, so its own
     // `did-finish-load` is where it catches up on the tabs it has to draw.
@@ -5704,10 +5822,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     railWc.on('did-finish-load', () => {
       this.pushToolbarState(instance)
     })
-
-    // The rail is chrome like the bar, and its crash is answered the same way: its own
-    // document comes back, and the window is never the thing that pays for it.
-    railWc.on('render-process-gone', reloadChromeAfterGone('rail', () => { void this.loadChromePage(instance, 'rail') }))
 
     instance.window.on('focus', () => {
       this.interactedCallback?.(instance.id)

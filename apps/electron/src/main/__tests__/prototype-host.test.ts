@@ -249,38 +249,74 @@ describe('prototype host', () => {
     expect(body).toContain('font-weight: 700')
   })
 
-  it('applies the shared shell to a page, and uses a shell with no slot as it stands', async () => {
+  it('applies the shared layout to a page, and uses a layout with no slot as it stands', async () => {
     writeFileSync(
       join(host.dir, '_layout.html'),
-      '<!doctype html><html><body><nav id="shell">shell</nav><slot name="page"></slot></body></html>',
+      '<!doctype html><html><body><nav id="layout">layout</nav><slot name="page"></slot></body></html>',
       'utf-8',
     )
 
     const framed = await (await host.servePath('/cart.html')).text()
-    expect(framed).toContain('id="shell"')
+    expect(framed).toContain('id="layout"')
     expect(framed).toContain('cart page')
 
-    // The slot used to be spelled `<!-- @page -->`, and a shell written then still
-    // renders its page: the alternative is that it reads as "a shell with no slot",
+    // The slot used to be spelled `<!-- @page -->`, and a layout written then still
+    // renders its page: the alternative is that it reads as "a layout with no slot",
     // whose fallback would silently drop the page.
     writeFileSync(
       join(host.dir, '_layout.html'),
-      '<!doctype html><html><body><nav id="shell">shell</nav><!-- @page --></body></html>',
+      '<!doctype html><html><body><nav id="layout">layout</nav><!-- @page --></body></html>',
       'utf-8',
     )
     expect(await (await host.servePath('/cart.html')).text()).toContain('cart page')
 
-    // A shell with no slot is the whole document, which is a legitimate frame.
-    writeFileSync(join(host.dir, '_layout.html'), page('shell alone'), 'utf-8')
+    // A layout with no slot is the whole document, which is a legitimate layout.
+    writeFileSync(join(host.dir, '_layout.html'), page('layout alone'), 'utf-8')
 
     const unplaced = await (await host.servePath('/cart.html')).text()
-    expect(unplaced).toContain('shell alone')
+    expect(unplaced).toContain('layout alone')
     expect(unplaced).not.toContain('cart page')
 
-    // The shell is not a page: served by name, it is the file as written.
-    expect(await (await host.servePath('/_layout.html')).text()).toBe(page('shell alone'))
+    // The layout is not a page: served by name, it is the file as written.
+    expect(await (await host.servePath('/_layout.html')).text()).toBe(page('layout alone'))
 
     rmSync(join(host.dir, '_layout.html'), { force: true })
+  })
+
+  // A page whose row says the shared layout does not wrap it is served as written —
+  // the same document on its own address and at the root — while a page that says
+  // nothing keeps the layout. Standing outside the layout is not standing outside the
+  // change layer: the patches it carries still land on it (plan §19.2, §19.4).
+  it('serves a page as written when its row says the layout does not wrap it', async () => {
+    writeFileSync(
+      join(host.dir, '_layout.html'),
+      '<!doctype html><html><body><nav id="layout">layout</nav><slot name="page"></slot></body></html>',
+      'utf-8',
+    )
+    writeFileSync(join(host.dir, 'solo.html'), page('solo page'), 'utf-8')
+    writePrototypeConfig(host.workspaceRoot, SLUG, {
+      pages: [
+        { name: 'cart', kind: 'scratch' },
+        { name: 'solo', kind: 'scratch', useLayout: false },
+      ],
+    })
+
+    const framed = await (await host.servePath('/cart.html')).text()
+    expect(framed).toContain('id="layout"')
+
+    const own = await (await host.servePath('/solo.html')).text()
+    expect(own).toContain('solo page')
+    expect(own).not.toContain('id="layout"')
+    expect(own).toContain('font-weight: 700')
+
+    rmSync(join(host.dir, '_layout.html'), { force: true })
+    rmSync(join(host.dir, 'solo.html'), { force: true })
+    writePrototypeConfig(host.workspaceRoot, SLUG, {
+      pages: [
+        { name: 'cart', kind: 'scratch', entry: true },
+        { name: 'orders', kind: 'scratch' },
+      ],
+    })
   })
 
   // Configuring an entry changes what `/` opens; it never takes the list away.

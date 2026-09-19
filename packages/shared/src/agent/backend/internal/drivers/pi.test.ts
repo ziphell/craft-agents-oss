@@ -15,7 +15,7 @@ describe('piDriver.buildRuntime custom endpoint models', () => {
           providerType: 'pi',
           authType: 'api_key',
           baseUrl: 'http://127.0.0.1:11111/v1',
-          customEndpoint: { api: 'anthropic-messages', supportsImages: true },
+          customEndpoint: { api: 'anthropic-messages' },
           models: [
             { id: 'vision-model', contextWindow: 262_144, supportsImages: true },
             { id: 'text-only-model', supportsImages: false },

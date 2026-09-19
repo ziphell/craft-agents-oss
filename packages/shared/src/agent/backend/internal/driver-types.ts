@@ -7,6 +7,7 @@ import type {
   LlmProviderType,
 } from '../types.ts';
 import type { LlmConnection } from '../../../config/storage.ts';
+import type { CustomEndpointConfig, CustomEndpointModelConfig } from '../../../config/llm-connections.ts';
 import type { ModelFetchResult } from '../../../config/model-fetcher.ts';
 import type { CredentialManager } from '../../../credentials/manager.ts';
 import type { ResolvedBackendRuntimePaths } from './runtime-resolver.ts';
@@ -26,9 +27,9 @@ export interface BackendRuntimePayload extends Record<string, unknown> {
   /** Custom base URL from the LLM connection (e.g. Azure OpenAI endpoint). */
   baseUrl?: string;
   /** Custom endpoint protocol config (api type for routing). */
-  customEndpoint?: { api: string; supportsImages?: boolean };
-  /** Models registered for a custom endpoint. Strings default to 128K context; objects allow overrides. */
-  customModels?: Array<string | { id: string; contextWindow?: number; supportsImages?: boolean }>;
+  customEndpoint?: CustomEndpointConfig;
+  /** Models registered for a custom endpoint. Strings default to the built-in context window; objects carry per-model parameters. */
+  customModels?: CustomEndpointModelConfig[];
 }
 
 export interface BackendResolutionContext {

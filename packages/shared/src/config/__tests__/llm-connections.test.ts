@@ -10,6 +10,9 @@ import {
   fromBedrockNativeId,
   normalizeBedrockModelId,
   deriveBedrockRegionPrefix,
+  toCustomEndpointModels,
+  modelContextWindow,
+  findDuplicateModelIds,
 } from '../llm-connections'
 import { ANTHROPIC_MODELS, getModelDisplayName, getModelContextWindow, getModelShortName, isClaudeModel } from '../models'
 
@@ -84,6 +87,108 @@ describe('getDefaultModelForConnection', () => {
   it('returns empty string for pi_compat (dynamic provider)', () => {
     const defaultModel = getDefaultModelForConnection('pi_compat')
     expect(defaultModel).toBe('')
+  })
+})
+
+// ============================================================
+// Custom endpoint model projection (host → pi-agent-server)
+// ============================================================
+
+describe('toCustomEndpointModels', () => {
+  it('collapses entries without parameters to a bare id', () => {
+    expect(toCustomEndpointModels(['plain-model', { id: 'other-model' }])).toEqual([
+      'plain-model',
+      'other-model',
+    ])
+  })
+
+  it('forwards every per-model parameter', () => {
+    const params = {
+      name: 'Qwen3 Coder',
+      supportsImages: true,
+      supportsThinking: true,
+      contextWindow: 262_144,
+      maxTokens: 32_768,
+      cost: { input: 0.3, output: 1.2 },
+      headers: { 'X-Gateway-Token': 'abc' },
+      compat: { maxTokensField: 'max_tokens' },
+      thinkingLevelMap: { off: null, high: 'high' },
+    }
+
+    expect(toCustomEndpointModels([{ id: 'qwen3-coder', ...params }])).toEqual([
+      { id: 'qwen3-coder', ...params },
+    ])
+  })
+
+  it('drops display-only fields the SDK does not model', () => {
+    const models = toCustomEndpointModels([
+      { id: 'qwen3-coder', shortName: 'Qwen3', description: 'local coder', provider: 'pi_compat' } as never,
+    ])
+
+    expect(models).toEqual(['qwen3-coder'])
+  })
+
+  it('keeps an explicit false capability instead of collapsing', () => {
+    expect(toCustomEndpointModels([{ id: 'text-only', supportsImages: false }])).toEqual([
+      { id: 'text-only', supportsImages: false },
+    ])
+  })
+
+  it('returns an empty array for a connection without models', () => {
+    expect(toCustomEndpointModels(undefined)).toEqual([])
+  })
+})
+
+// ============================================================
+// Context window resolution (connection's model layer first)
+// ============================================================
+
+describe('modelContextWindow', () => {
+  const connection = {
+    models: [
+      { id: 'qwen3-coder', contextWindow: 262_144 },
+      { id: 'no-window', name: 'No Window' },
+      'bare-id',
+    ],
+  }
+
+  it('reads the context window written on the model entry', () => {
+    expect(modelContextWindow(connection, 'qwen3-coder')).toBe(262_144)
+  })
+
+  it('returns undefined when the entry does not declare one', () => {
+    expect(modelContextWindow(connection, 'no-window')).toBeUndefined()
+  })
+
+  it('returns undefined for a bare id entry', () => {
+    expect(modelContextWindow(connection, 'bare-id')).toBeUndefined()
+  })
+
+  it('returns undefined for an unknown model or a missing connection', () => {
+    expect(modelContextWindow(connection, 'unknown')).toBeUndefined()
+    expect(modelContextWindow(null, 'qwen3-coder')).toBeUndefined()
+  })
+})
+
+// ============================================================
+// Duplicate model ids
+// ============================================================
+
+describe('findDuplicateModelIds', () => {
+  it('returns nothing for a list without repeats', () => {
+    expect(findDuplicateModelIds(['a', { id: 'b' }])).toEqual([])
+  })
+
+  it('finds an id listed twice (string and object forms count as the same id)', () => {
+    expect(findDuplicateModelIds(['qwen3-coder', { id: 'qwen3-coder', contextWindow: 262_144 }])).toEqual(['qwen3-coder'])
+  })
+
+  it('ignores surrounding whitespace and empty rows', () => {
+    expect(findDuplicateModelIds([' qwen ', 'qwen', '', '  '])).toEqual(['qwen'])
+  })
+
+  it('reports each repeated id once', () => {
+    expect(findDuplicateModelIds(['a', 'b', 'a', 'b', 'a']).sort()).toEqual(['a', 'b'])
   })
 })
 

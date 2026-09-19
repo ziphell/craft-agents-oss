@@ -10,7 +10,7 @@
  * Used in: Onboarding CredentialsStep, Settings API dialog
  */
 
-import { useState, useEffect, useCallback, useRef } from "react"
+import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { useTranslation } from "react-i18next"
 import { Command as CommandPrimitive } from "cmdk"
 import { Input } from "@/components/ui/input"
@@ -30,18 +30,35 @@ import {
   resolvePresetStateForBaseUrlChange,
   type PresetKey,
 } from "./submit-helpers"
+import { CustomModelListEditor, ConnectionHeadersEditor } from "./CustomModelListEditor"
 
-import type { CustomEndpointApi, CustomEndpointConfig } from '@config/llm-connections'
+import {
+  customEndpointEntryHasParams,
+  findDuplicateModelIds,
+  guessSmallModelId,
+  type ConnectionModelEntry,
+  type CustomEndpointApi,
+  type CustomEndpointConfig,
+} from '@config/llm-connections'
 
 export type ApiKeyStatus = 'idle' | 'validating' | 'success' | 'error'
 
 export type { CustomEndpointApi }
 
+/** Pre-filled values when editing an existing connection. */
+export type ApiKeyInitialValues = NonNullable<ApiKeyInputProps['initialValues']>
+
 export interface ApiKeySubmitData {
   apiKey: string
   baseUrl?: string
   connectionDefaultModel?: string
-  models?: string[]
+  /**
+   * Small/fast model for this connection. Absent = leave the connection as it
+   * is, `null` = follow the default model, an id = the user's pick.
+   */
+  connectionFastModel?: string | null
+  /** Model ids, or ids with per-model parameters for custom endpoints. */
+  models?: ConnectionModelEntry[]
   piAuthProvider?: string
   modelSelectionMode?: 'automaticallySyncedFromProvider' | 'userDefined3Tier'
   /** Custom endpoint protocol — set when user configures an arbitrary API endpoint */
@@ -76,10 +93,15 @@ export interface ApiKeyInputProps {
     apiKey?: string
     baseUrl?: string
     connectionDefaultModel?: string
+    /** Small/fast model; unset = not picked (a custom endpoint then follows the default). */
+    fastModel?: string
     activePreset?: string
-    models?: string[]
+    /** Model ids, or ids with per-model parameters for custom endpoints. */
+    models?: ConnectionModelEntry[]
     /** Pre-fill the protocol toggle for custom endpoints */
     customApi?: CustomEndpointApi
+    /** Pre-fill `customEndpoint.headers` */
+    connectionHeaders?: Record<string, string>
   }
 }
 
@@ -201,7 +223,20 @@ export function ApiKeyInput({
     initialPreset !== 'custom' ? initialPreset : defaultPreset.key
   )
   const [connectionDefaultModel, setConnectionDefaultModel] = useState(initialValues?.connectionDefaultModel ?? '')
+  // Small/fast model pick. `undefined` = untouched, `null` = the user cleared it
+  // (follow the default model), a string = the pick. Custom endpoints have no
+  // name-based guess, so "not set" already means "follow the default".
+  const [connectionFastModel, setConnectionFastModel] = useState<string | null | undefined>(initialValues?.fastModel)
   const [customApi, setCustomApi] = useState<CustomEndpointApi>(initialValues?.customApi ?? 'openai-completions')
+  // Custom endpoint connections edit models as rows (id + parameters), so the
+  // stored entries are kept as-is instead of being flattened to a comma list.
+  // Falling back to the comma string keeps callers that only know ids working.
+  const [customModels, setCustomModels] = useState<ConnectionModelEntry[]>(
+    initialValues?.models ?? parseModelList(initialValues?.connectionDefaultModel ?? ''),
+  )
+  const [connectionHeaders, setConnectionHeaders] = useState<Record<string, string> | undefined>(
+    initialValues?.connectionHeaders,
+  )
   const [modelError, setModelError] = useState<string | null>(null)
 
   // Bedrock auth state
@@ -231,6 +266,37 @@ export function ApiKeyInput({
   const DEFAULT_ENDPOINT_PROVIDERS = new Set(['anthropic', 'openai', 'pi', 'google'])
   const isDefaultProviderPreset = DEFAULT_ENDPOINT_PROVIDERS.has(activePreset)
 
+  /**
+   * Custom endpoint connections get the per-model editor (id + parameters) and
+   * the request-headers field; every other flow keeps the comma-separated model
+   * list. Derived from the same helper the submit path uses, so the control the
+   * user sees is the payload that gets saved.
+   */
+  const isCustomEndpointForm = useMemo(() => {
+    if (activePreset === 'custom') return true
+    const { customEndpoint } = resolveCustomEndpointPayload({
+      activePreset,
+      baseUrl: baseUrl.trim(),
+      customApi,
+      brandedOpenAiCompatPresets: OPENAI_COMPAT_CUSTOM_URL_PRESETS,
+      fallbackPiAuthProvider: isPiApiKeyFlow
+        ? resolvePiAuthProviderForSubmit(activePreset, lastNonCustomPreset)
+        : undefined,
+    })
+    return !!customEndpoint
+  }, [activePreset, baseUrl, customApi, isPiApiKeyFlow, lastNonCustomPreset])
+
+  /**
+   * What the fast-model field shows: the stored pick, or — when the connection
+   * has none — the same answer the resolver gives, so the field never names a
+   * different model than the one actually in use. Custom endpoints are always
+   * saved as `pi_compat`, which has no name-based guess: they follow the default.
+   */
+  const effectiveFastModel = useMemo(() => {
+    if (typeof connectionFastModel === 'string') return connectionFastModel
+    return guessSmallModelId({ providerType: 'pi_compat', models: customModels }) ?? ''
+  }, [connectionFastModel, customModels])
+
   // Provider-specific placeholders from the active preset
   const activePresetObj = presets.find(p => p.key === activePreset)
   const apiKeyPlaceholder = activePresetObj?.placeholder
@@ -252,7 +318,8 @@ export function ApiKeyInput({
       setPiModels(result.models)
 
       if (hydratedTierProviderRef.current !== provider) {
-        const tiers = resolveTierModels(result.models, provider === initialPreset ? initialValues?.models : undefined)
+        const preselectedModelIds = initialValues?.models?.map(m => typeof m === 'string' ? m : m.id)
+        const tiers = resolveTierModels(result.models, provider === initialPreset ? preselectedModelIds : undefined)
         setBestModel(tiers.best)
         setDefaultModel(tiers.default_)
         setCheapModel(tiers.cheap)
@@ -273,6 +340,21 @@ export function ApiKeyInput({
   // Whether to show 3 tier dropdowns instead of text input
   const hasPiModels = isPiApiKeyFlow && piModels.length > 0 && !isDefaultProviderPreset && activePreset !== 'custom' && !isBedrock
 
+  /**
+   * Seed the model rows from a preset's recommended list.
+   *
+   * The custom-endpoint editor edits rows, not the comma field, so a preset that
+   * only wrote the comma list left the editor empty — "0 configured", with
+   * nothing to choose as the default or fast model. An existing list is never
+   * touched: this is a starting point, not a reset.
+   */
+  const seedModelsFromPreset = (commaSeparated: string) => {
+    const ids = parseModelList(commaSeparated)
+    if (ids.length === 0) return
+    setCustomModels(prev =>
+      prev.some(model => (typeof model === 'string' ? model : model.id).trim()) ? prev : ids)
+  }
+
   const handlePresetSelect = (preset: Preset) => {
     setActivePreset(preset.key)
     if (preset.key !== 'custom') {
@@ -284,21 +366,28 @@ export function ApiKeyInput({
       setBaseUrl(preset.url)
     }
     setModelError(null)
-    // Pre-fill recommended model for Ollama; clear for all others
-    // (Default provider presets hide the field entirely, others default to provider model IDs when empty)
+    // Pre-fill recommended models; clear for the built-in provider presets
+    // (they hide the model field entirely and fall back to provider defaults).
+    const compatDefaults = providerType === 'openai' ? COMPAT_OPENAI_DEFAULTS : COMPAT_ANTHROPIC_DEFAULTS
     if (preset.key === 'ollama') {
       setConnectionDefaultModel('qwen3-coder')
+      seedModelsFromPreset('qwen3-coder')
     } else if (preset.key === 'openrouter' || preset.key === 'vercel-ai-gateway') {
-      setConnectionDefaultModel(providerType === 'openai' ? COMPAT_OPENAI_DEFAULTS : COMPAT_ANTHROPIC_DEFAULTS)
+      setConnectionDefaultModel(compatDefaults)
+      seedModelsFromPreset(compatDefaults)
     } else if (preset.key === 'minimax-global' || preset.key === 'minimax-cn') {
       setConnectionDefaultModel(COMPAT_MINIMAX_DEFAULTS)
+      seedModelsFromPreset(COMPAT_MINIMAX_DEFAULTS)
     } else if (preset.key === 'kimi-coding') {
       setConnectionDefaultModel(COMPAT_KIMI_DEFAULTS)
+      seedModelsFromPreset(COMPAT_KIMI_DEFAULTS)
     } else if (preset.key === 'manifest') {
       setConnectionDefaultModel('auto')
-    } else if (preset.key === 'custom' || OPENAI_COMPAT_CUSTOM_URL_PRESETS.has(preset.key)) {
-      setConnectionDefaultModel(providerType === 'openai' ? COMPAT_OPENAI_DEFAULTS : COMPAT_ANTHROPIC_DEFAULTS)
+      seedModelsFromPreset('auto')
     } else {
+      // 'custom' plus the built-in provider presets. An arbitrary endpoint gets
+      // no recommended rows — another vendor's ids would be misleading — and the
+      // built-in ones hide the model field entirely.
       setConnectionDefaultModel('')
     }
   }
@@ -317,17 +406,24 @@ export function ApiKeyInput({
     setLastNonCustomPreset(nextPresetState.lastNonCustomPreset)
     setModelError(null)
     if (!connectionDefaultModel.trim()) {
+      const compatDefaults = providerType === 'openai' ? COMPAT_OPENAI_DEFAULTS : COMPAT_ANTHROPIC_DEFAULTS
       if (presetKey === 'ollama') {
         setConnectionDefaultModel('qwen3-coder')
+        seedModelsFromPreset('qwen3-coder')
       } else if (presetKey === 'manifest') {
         setConnectionDefaultModel('auto')
+        seedModelsFromPreset('auto')
       } else if (presetKey === 'minimax-global' || presetKey === 'minimax-cn') {
         setConnectionDefaultModel(COMPAT_MINIMAX_DEFAULTS)
+        seedModelsFromPreset(COMPAT_MINIMAX_DEFAULTS)
       } else if (presetKey === 'kimi-coding') {
         setConnectionDefaultModel(COMPAT_KIMI_DEFAULTS)
-      } else if (presetKey === 'openrouter' || presetKey === 'vercel-ai-gateway' || presetKey === 'custom') {
-        setConnectionDefaultModel(providerType === 'openai' ? COMPAT_OPENAI_DEFAULTS : COMPAT_ANTHROPIC_DEFAULTS)
+        seedModelsFromPreset(COMPAT_KIMI_DEFAULTS)
+      } else if (presetKey === 'openrouter' || presetKey === 'vercel-ai-gateway') {
+        setConnectionDefaultModel(compatDefaults)
+        seedModelsFromPreset(compatDefaults)
       }
+      // 'custom' (an arbitrary endpoint) gets no recommended rows: see handlePresetSelect.
     }
   }
 
@@ -349,6 +445,9 @@ export function ApiKeyInput({
         apiKey: apiKey.trim(),
         baseUrl: baseUrl.trim() || undefined,
         connectionDefaultModel: bestModel,
+        // The tiers are Best / Balanced / Fast, so the Fast pick is this
+        // connection's small/fast model (titles, summaries).
+        connectionFastModel: cheapModel,
         models,
         piAuthProvider: effectivePiAuthProvider,
         modelSelectionMode: 'userDefined3Tier',
@@ -390,10 +489,49 @@ export function ApiKeyInput({
 
     const parsedModels = parseModelList(connectionDefaultModel)
 
+    // Custom endpoints submit the rows from the editor (ids plus whatever
+    // parameters the user set), collapsing rows without parameters back to bare
+    // ids so config.json stays readable. Every other flow keeps the comma list.
+    const editedModels: ConnectionModelEntry[] = customModels
+      .map(model => typeof model === 'string' ? { id: model.trim() } : { ...model, id: model.id.trim() })
+      .filter(model => (typeof model === 'string' ? model : model.id) !== '')
+      .map(model => customEndpointEntryHasParams(model) ? model : (typeof model === 'string' ? model : model.id))
+
+    const modelsPayload: ConnectionModelEntry[] | undefined = isCustomEndpointForm
+      ? (editedModels.length > 0 ? editedModels : undefined)
+      : (parsedModels.length > 0 ? parsedModels : undefined)
+    const editedModelIds = editedModels
+      .map(model => typeof model === 'string' ? model : model.id)
+      .filter(id => id !== '')
+    // The pick is stored by id, so the stored value is honoured and the first
+    // row is only the default when the connection has no pick (or it names a
+    // model that is no longer listed).
+    const defaultModelId = isCustomEndpointForm
+      ? (editedModelIds.includes(connectionDefaultModel) ? connectionDefaultModel : editedModelIds[0])
+      : parsedModels[0]
+
     const isUsingDefaultEndpoint = isDefaultProviderPreset || !effectiveBaseUrl
     const requiresModel = !isDefaultProviderPreset && !!effectiveBaseUrl
-    if (requiresModel && parsedModels.length === 0) {
+    if (requiresModel && !defaultModelId) {
       setModelError('Default model is required for custom endpoints.')
+      return
+    }
+    // A repeated id means the three views disagree (editor shows both rows,
+    // storage keeps the first, the SDK lets the last override win) — see
+    // findDuplicateModelIds.
+    const duplicateIds = isCustomEndpointForm ? findDuplicateModelIds(editedModels) : []
+    if (duplicateIds.length > 0) {
+      setModelError(`Each model id can appear once: ${duplicateIds.join(', ')}.`)
+      return
+    }
+    // A row with a display name but no id is dropped by the filter above, which
+    // would silently lose what the user typed. The row says "needs an id"; this
+    // stops the save so the value cannot disappear unnoticed.
+    const namedRowWithoutId = isCustomEndpointForm
+      ? customModels.some(model => typeof model !== 'string' && !model.id.trim() && !!model.name?.trim())
+      : false
+    if (namedRowWithoutId) {
+      setModelError('Each model needs an id — one row has a name but no id.')
       return
     }
 
@@ -408,16 +546,23 @@ export function ApiKeyInput({
       fallbackPiAuthProvider: effectivePiAuthProvider,
     })
 
+    const hasConnectionHeaders = !!connectionHeaders && Object.keys(connectionHeaders).length > 0
+
     onSubmit({
       apiKey: apiKey.trim(),
       baseUrl: isUsingDefaultEndpoint ? undefined : effectiveBaseUrl,
-      connectionDefaultModel: parsedModels[0],
-      models: parsedModels.length > 0 ? parsedModels : undefined,
+      connectionDefaultModel: defaultModelId,
+      // Absent = the user did not touch it (leave the connection as it is),
+      // `null` = cleared, i.e. follow the default model.
+      connectionFastModel: isCustomEndpointForm ? connectionFastModel : undefined,
+      models: modelsPayload,
       piAuthProvider: resolvedPiAuthProvider,
       modelSelectionMode: isPiApiKeyFlow
         ? (parsedModels.length > 0 ? 'userDefined3Tier' : 'automaticallySyncedFromProvider')
         : undefined,
-      customEndpoint,
+      customEndpoint: customEndpoint && hasConnectionHeaders
+        ? { ...customEndpoint, headers: connectionHeaders }
+        : customEndpoint,
     })
   }
 
@@ -545,6 +690,15 @@ export function ApiKeyInput({
             Most third-party APIs (Ollama, vLLM, DashScope) use OpenAI Compatible.
           </p>
         </div>
+      )}
+
+      {/* Connection-level request headers — endpoint config, not a model one */}
+      {isCustomEndpointForm && !isDefaultProviderPreset && (
+        <ConnectionHeadersEditor
+          value={connectionHeaders}
+          onChange={setConnectionHeaders}
+          disabled={isDisabled}
+        />
       )}
 
       {/* Bedrock Auth Section */}
@@ -783,6 +937,21 @@ export function ApiKeyInput({
           )}
         </div>
       ) : !isDefaultProviderPreset && (
+        isCustomEndpointForm ? (
+          <CustomModelListEditor
+            value={customModels}
+            onChange={next => {
+              setCustomModels(next)
+              setModelError(null)
+            }}
+            defaultModel={connectionDefaultModel}
+            onDefaultModelChange={setConnectionDefaultModel}
+            fastModel={effectiveFastModel}
+            onFastModelChange={setConnectionFastModel}
+            disabled={isDisabled}
+            error={modelError}
+          />
+        ) : (
         <div className="space-y-2">
           <Label htmlFor="connection-default-model" className="text-muted-foreground font-normal">
             Default Model{' '}
@@ -812,7 +981,7 @@ export function ApiKeyInput({
             <p className="text-xs text-destructive">{modelError}</p>
           )}
           <p className="text-xs text-foreground/30">
-            Comma-separated list. The first model is the default. The last is used for summarization.
+            Comma-separated list. The first model is the default.
           </p>
           {(activePreset === 'custom' || !activePreset) && (
             <p className="text-xs text-foreground/30">
@@ -820,6 +989,7 @@ export function ApiKeyInput({
             </p>
           )}
         </div>
+        )
       )}
 
       {/* Error message */}

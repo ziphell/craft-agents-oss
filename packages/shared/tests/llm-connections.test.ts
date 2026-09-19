@@ -1,19 +1,34 @@
 /**
  * Tests for LLM connection utilities (llm-connections.ts).
  *
- * Focuses on getMiniModel() / findSmallModel() — the provider-aware small
- * model resolution used for title generation, summarization, and call_llm.
+ * Focuses on getMiniModel() / findSmallModel() — the small-model resolution
+ * used for title generation, summarization, and call_llm.
+ *
+ * `fastModel` is an explicit pick: without it, a built-in catalog is guessed at
+ * by name ("haiku" / "mini" / "flash") while a custom endpoint follows the
+ * connection's default model.
  */
 import { describe, it, expect } from 'bun:test';
-import { getMiniModel, getSummarizationModel, isDeniedMiniModelId } from '../src/config/llm-connections.ts';
+import {
+  getMiniModel,
+  getSummarizationModel,
+  guessSmallModelId,
+  isDeniedMiniModelId,
+} from '../src/config/llm-connections.ts';
 import type { LlmProviderType } from '../src/config/llm-connections.ts';
 
 // ============================================================
 // Helpers
 // ============================================================
 
-function makeConnection(providerType: LlmProviderType, models: string[], piAuthProvider?: string) {
-  return { providerType, models, piAuthProvider };
+function makeConnection(overrides: {
+  models?: string[];
+  piAuthProvider?: string;
+  fastModel?: string;
+  defaultModel?: string;
+  providerType?: LlmProviderType;
+} = {}) {
+  return { providerType: 'pi' as LlmProviderType, ...overrides };
 }
 
 // ============================================================
@@ -21,116 +36,153 @@ function makeConnection(providerType: LlmProviderType, models: string[], piAuthP
 // ============================================================
 
 describe('getMiniModel()', () => {
-  // --- Anthropic providers ---
+  // --- No pick: the name-based guess applies (unchanged behaviour) ---
 
   it('finds haiku for anthropic provider', () => {
-    const conn = makeConnection('anthropic', [
-      'claude-opus-4-7',
-      'claude-sonnet-4-6',
-      'claude-haiku-4-5-20251001',
-    ]);
+    const conn = makeConnection({
+      providerType: 'anthropic',
+      models: ['claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'],
+      defaultModel: 'claude-opus-4-7',
+    });
     expect(getMiniModel(conn)).toBe('claude-haiku-4-5-20251001');
   });
 
-  // --- Pi providers ---
-
   it('finds mini for pi provider', () => {
-    const conn = makeConnection('pi', [
-      'pi/gpt-5.2-codex',
-      'pi/gpt-5.1-codex-mini',
-    ]);
+    const conn = makeConnection({ models: ['pi/gpt-5.2-codex', 'pi/gpt-5.1-codex-mini'] });
     expect(getMiniModel(conn)).toBe('pi/gpt-5.1-codex-mini');
   });
 
-  it('skips denied codex-mini-latest alias for pi provider', () => {
-    const conn = makeConnection('pi', [
-      'pi/codex-mini-latest',
-      'pi/gpt-5.1-codex-mini',
-      'pi/gpt-5.2-codex',
-    ]);
-    expect(getMiniModel(conn)).toBe('pi/gpt-5.1-codex-mini');
-  });
-
-  it('skips denied pi/codex-mini-latest alias for pi provider', () => {
-    const conn = makeConnection('pi', [
-      'pi/codex-mini-latest',
-      'pi/gpt-5.1-codex-mini',
-      'pi/gpt-5.3-codex',
-    ]);
-    expect(getMiniModel(conn)).toBe('pi/gpt-5.1-codex-mini');
-  });
-
-  it('finds mini for pi_compat provider', () => {
-    const conn = makeConnection('pi_compat', [
-      'openai/gpt-5.2-codex',
-      'openai/gpt-5.1-codex-mini',
-    ]);
-    expect(getMiniModel(conn)).toBe('openai/gpt-5.1-codex-mini');
-  });
-
-  // --- Pi fallback behavior ---
-
-  it('finds mini for Pi list with mixed models', () => {
-    const conn = makeConnection('pi', [
-      'pi/claude-sonnet-4.6',
-      'pi/gpt-5',
-      'pi/gpt-5-mini',
-      'pi/o3',
-    ]);
-    expect(getMiniModel(conn)).toBe('pi/gpt-5-mini');
-  });
-
-  it('finds mini even when model name has "mini" in different position', () => {
-    const conn = makeConnection('pi', [
-      'pi/gpt-5',
-      'pi/o4-mini',
-      'pi/claude-sonnet-4.6',
-    ]);
-    expect(getMiniModel(conn)).toBe('pi/o4-mini');
-  });
-
-  it('falls back to last model when Pi list has no mini/flash model', () => {
-    const conn = makeConnection('pi', [
-      'pi/gpt-5',
-      'pi/claude-sonnet-4.6',
-      'pi/o3',
-    ]);
+  it('falls back to the last model when nothing matches by name', () => {
+    const conn = makeConnection({
+      models: ['pi/gpt-5', 'pi/claude-sonnet-4.6', 'pi/o3'],
+      defaultModel: 'pi/gpt-5',
+    });
+    // The guess's trailing fallback, not the default model — that is what the
+    // pre-pick behaviour was, and built-in connections keep it.
     expect(getMiniModel(conn)).toBe('pi/o3');
   });
 
-  // --- Edge cases ---
-
-  it('returns undefined for empty model list', () => {
-    const conn = makeConnection('anthropic', []);
-    expect(getMiniModel(conn)).toBeUndefined();
+  it('answers with the default model when there is no model list', () => {
+    expect(getMiniModel(makeConnection({ models: [], defaultModel: 'claude-opus-4-7' })))
+      .toBe('claude-opus-4-7');
   });
 
-  it('returns undefined for undefined models', () => {
-    const conn = { providerType: 'anthropic' as LlmProviderType, models: undefined };
-    expect(getMiniModel(conn)).toBeUndefined();
+  it('returns undefined when there is neither a list nor a default model', () => {
+    expect(getMiniModel(makeConnection({ models: [] }))).toBeUndefined();
+    expect(getMiniModel(makeConnection({ providerType: 'anthropic' }))).toBeUndefined();
+  });
+});
+
+// ============================================================
+// Custom endpoints — the model list is the user's own, so there is no guess
+// ============================================================
+
+describe('getMiniModel() — custom endpoint', () => {
+  it('follows the default model instead of guessing by name', () => {
+    const conn = makeConnection({
+      providerType: 'pi_compat',
+      models: ['qwen-max', 'qwen-turbo-mini'],
+      defaultModel: 'qwen-max',
+    });
+    expect(getMiniModel(conn)).toBe('qwen-max');
   });
 
-  it('falls back to last model when no keyword match', () => {
-    const conn = makeConnection('anthropic', [
-      'claude-opus-4-7',
-      'claude-sonnet-4-6',
-    ]);
-    // No haiku in list — falls back to last model
-    expect(getMiniModel(conn)).toBe('claude-sonnet-4-6');
+  it('falls back to the last entry when there is no default model either', () => {
+    const conn = makeConnection({
+      providerType: 'pi_compat',
+      models: ['qwen-max', 'qwen-turbo'],
+    });
+    expect(getMiniModel(conn)).toBe('qwen-turbo');
   });
 
-  it('fallback ignores denied alias and returns last allowed model', () => {
-    const conn = makeConnection('pi', [
-      'pi/codex-mini-latest',
-      'pi/gpt-5',
-      'pi/claude-sonnet-4.6',
-    ]);
-    expect(getMiniModel(conn)).toBe('pi/claude-sonnet-4.6');
+  it('treats an empty fastModel as not picked', () => {
+    const conn = makeConnection({
+      providerType: 'pi_compat',
+      models: ['qwen-max', 'qwen-mini'],
+      defaultModel: 'qwen-max',
+      fastModel: '',
+    });
+    expect(getMiniModel(conn)).toBe('qwen-max');
+  });
+});
+
+// ============================================================
+// Explicit fastModel pick — the user's choice always wins
+// ============================================================
+
+describe('getMiniModel() — explicit fastModel', () => {
+  it('wins over the guess and over the default model', () => {
+    const conn = makeConnection({
+      providerType: 'pi_compat',
+      models: ['qwen-turbo-mini', 'qwen-plus', 'qwen-turbo'],
+      defaultModel: 'qwen-plus',
+      fastModel: 'qwen-turbo',
+    });
+    expect(getMiniModel(conn)).toBe('qwen-turbo');
   });
 
-  it('handles single-model list', () => {
-    const conn = makeConnection('pi', ['pi/gpt-5']);
+  it('wins even when it does not look like a small model by name', () => {
+    const conn = makeConnection({
+      models: ['pi/gpt-5', 'pi/gpt-5-mini'],
+      defaultModel: 'pi/gpt-5',
+      fastModel: 'pi/gpt-5',
+    });
     expect(getMiniModel(conn)).toBe('pi/gpt-5');
+  });
+
+  it('honours the pick when the connection lists no models at all', () => {
+    const conn = makeConnection({ providerType: 'anthropic', fastModel: 'claude-haiku-4-5' });
+    expect(getMiniModel(conn)).toBe('claude-haiku-4-5');
+  });
+
+  it('trims a hand-written pick', () => {
+    const conn = makeConnection({ models: ['pi/gpt-5'], fastModel: '  pi/gpt-5  ' });
+    expect(getMiniModel(conn)).toBe('pi/gpt-5');
+  });
+
+  it('falls back to the guess when the pick is no longer in the list', () => {
+    // The row was removed: a dangling pick behaves as if it were unset rather
+    // than pointing the SDK at a model the connection does not have.
+    const conn = makeConnection({
+      models: ['pi/gpt-5', 'pi/gpt-5-mini'],
+      defaultModel: 'pi/gpt-5',
+      fastModel: 'pi/removed-model',
+    });
+    expect(getMiniModel(conn)).toBe('pi/gpt-5-mini');
+  });
+
+  it('falls back to the guess when the auth flavor rejects the pick', () => {
+    const conn = makeConnection({
+      models: ['pi/gpt-5', 'pi/gpt-5-mini', 'pi/gpt-5.1-codex-mini'],
+      piAuthProvider: 'openai-codex',
+      fastModel: 'pi/gpt-5.1-codex-mini',
+    });
+    expect(getMiniModel(conn)).toBe('pi/gpt-5-mini');
+  });
+});
+
+// ============================================================
+// Cleared pick — the same as never having picked one
+// ============================================================
+
+describe('getMiniModel() — empty fastModel', () => {
+  it('is treated as not picked (built-in: the guess still applies)', () => {
+    const conn = makeConnection({
+      models: ['qwen-max', 'qwen-mini'],
+      defaultModel: 'qwen-max',
+      fastModel: '',
+    });
+    expect(getMiniModel(conn)).toBe('qwen-mini');
+  });
+
+  it('is treated as not picked (custom endpoint: the default model)', () => {
+    const conn = makeConnection({
+      providerType: 'pi_compat',
+      models: ['qwen-max', 'qwen-mini'],
+      defaultModel: 'qwen-max',
+      fastModel: '   ',
+    });
+    expect(getMiniModel(conn)).toBe('qwen-max');
   });
 });
 
@@ -140,12 +192,41 @@ describe('getMiniModel()', () => {
 
 describe('getSummarizationModel()', () => {
   it('returns same result as getMiniModel (shared implementation)', () => {
-    const conn = makeConnection('pi', [
-      'pi/gpt-5',
-      'pi/gpt-5-mini',
-      'pi/claude-sonnet-4.6',
-    ]);
+    const conn = makeConnection({
+      models: ['pi/gpt-5', 'pi/gpt-5-mini'],
+      defaultModel: 'pi/gpt-5',
+      fastModel: 'pi/gpt-5-mini',
+    });
     expect(getSummarizationModel(conn)).toBe(getMiniModel(conn));
+    expect(getSummarizationModel(conn)).toBe('pi/gpt-5-mini');
+  });
+});
+
+// ============================================================
+// guessSmallModelId — exported because the editor pre-selects its answer
+// ============================================================
+
+describe('guessSmallModelId()', () => {
+  it('returns undefined without a model list', () => {
+    expect(guessSmallModelId(makeConnection({ models: [] }))).toBeUndefined();
+    expect(guessSmallModelId(makeConnection({}))).toBeUndefined();
+  });
+
+  it('returns undefined for a custom endpoint — there is nothing to guess', () => {
+    const conn = makeConnection({
+      providerType: 'pi_compat',
+      models: ['qwen-max', 'qwen-turbo-mini'],
+    });
+    expect(guessSmallModelId(conn)).toBeUndefined();
+  });
+
+  it('ignores the default model — it is a name-based guess only', () => {
+    const conn = makeConnection({
+      providerType: 'anthropic',
+      models: ['claude-opus-4-7', 'claude-haiku-4-5'],
+      defaultModel: 'claude-opus-4-7',
+    });
+    expect(guessSmallModelId(conn)).toBe('claude-haiku-4-5');
   });
 });
 
@@ -159,31 +240,26 @@ describe('getMiniModel() — auth-flavor awareness', () => {
     //   "The 'gpt-5.1-codex-mini' model is not supported when using Codex
     //    with a ChatGPT account."
     // The keyword search would otherwise pick gpt-5.1-codex-mini first.
-    const conn = makeConnection(
-      'pi',
-      ['pi/gpt-5.2-codex', 'pi/gpt-5.1-codex-mini', 'pi/gpt-5-mini'],
-      'openai-codex',
-    );
+    const conn = makeConnection({
+      models: ['pi/gpt-5.2-codex', 'pi/gpt-5.1-codex-mini', 'pi/gpt-5-mini'],
+      piAuthProvider: 'openai-codex',
+    });
     expect(getMiniModel(conn)).toBe('pi/gpt-5-mini');
   });
 
   it('still returns *codex-mini* variants under regular openai (API-key) auth', () => {
-    const conn = makeConnection(
-      'pi',
-      ['pi/gpt-5.2-codex', 'pi/gpt-5.1-codex-mini'],
-      'openai',
-    );
+    const conn = makeConnection({
+      models: ['pi/gpt-5.2-codex', 'pi/gpt-5.1-codex-mini'],
+      piAuthProvider: 'openai',
+    });
     expect(getMiniModel(conn)).toBe('pi/gpt-5.1-codex-mini');
   });
 
-  it('falls back to last allowed model when every mini candidate is denied', () => {
-    const conn = makeConnection(
-      'pi',
-      ['pi/gpt-5', 'pi/gpt-5.1-codex-mini', 'pi/gpt-5.2-codex'],
-      'openai-codex',
-    );
-    // No remaining mini/flash candidate after filtering → falls back to last
-    // allowed model (gpt-5.2-codex).
+  it('falls back to the last allowed model when every mini candidate is denied', () => {
+    const conn = makeConnection({
+      models: ['pi/gpt-5', 'pi/gpt-5.1-codex-mini', 'pi/gpt-5.2-codex'],
+      piAuthProvider: 'openai-codex',
+    });
     expect(getMiniModel(conn)).toBe('pi/gpt-5.2-codex');
   });
 });

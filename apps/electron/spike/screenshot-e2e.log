@@ -1,0 +1,110 @@
+
+2026-09-18T12:27:53.504Z INFO  [main] [browser-pane] toolbar version: v4-react-chromeless
+2026-09-18T12:27:53.508Z INFO  [main] [browser-pane] Created instance: state-visible (show=true, workspace=none)
+2026-09-18T12:27:53.589Z INFO  [main] [browser-pane] native overlay ready id=state-visible pageCorner=10 gutter=1/6/6
+2026-09-18T12:27:53.648Z INFO  [main] [browser-pane] toolbar ready id=state-visible reason=did-finish-load
+2026-09-18T12:27:53.759Z INFO  [main] [browser-pane] did-navigate id=state-visible from=about:blank to=about:blank
+2026-09-18T12:27:54.534Z INFO  [main] [browser-pane] Tab reused instance=state-visible tab=tab-1 url=about:blank
+2026-09-18T12:27:54.546Z INFO  [main] [browser-pane] did-navigate id=state-visible from=about:blank to=data:text/html;charset=UTF-8,%3C!doctype%20html%3E%3Chtml%3E%3Chead%3E%3Cmeta%20charset%3D%22utf-8%22%3E%0A%3Cstyle%3Ehtml%2Cbody%7Bmargin%3A0%3Bwidth%3A100%25%3Bheight%3A100%25%3Bbackground%3A%23ff0000%3Boverflow%3Ahidden%7D%3C%2Fstyle%3E%3C%2Fhead%3E%0A%3Cbody%3E%3Ch1%20style%3D%22font%3A14px%20sans-serif%22%3Ethe%20tab%20on%20screen%3C%2Fh1%3E%3C%2Fbody%3E%3C%2Fhtml%3E
+2026-09-18T12:27:55.460Z INFO  [main] [browser-pane] Tab opened instance=state-visible tab=tab-2 total=2 active=tab-1
+2026-09-18T12:27:55.537Z INFO  [main] [browser-pane] did-navigate id=state-visible from=about:blank to=data:text/html;charset=UTF-8,%3C!doctype%20html%3E%3Chtml%3E%3Chead%3E%3Cmeta%20charset%3D%22utf-8%22%3E%0A%3Cstyle%3Ehtml%2Cbody%7Bmargin%3A0%3Bwidth%3A100%25%3Bheight%3A100%25%3Bbackground%3A%230000ff%3Boverflow%3Ahidden%7D%3C%2Fstyle%3E%3C%2Fhead%3E%0A%3Cbody%3E%3Ch1%20style%3D%22font%3A14px%20sans-serif%22%3Ethe%20tab%20the%20agent%20works%20on%3C%2Fh1%3E%3C%2Fbody%3E%3C%2Fhtml%3E
+SPIKE_STEP visible window → on screen            {"window":"visible","tab":"on screen","shown":"not shown","ms":13,"bytes":2152,"format":"png","centrePixel":[0,0,255,255],"ownPixels":true,"notTheOtherTab":true,"parked":false}
+SPIKE_STEP visible window → behind it            {"window":"visible","tab":"behind it","shown":"not shown","ms":53,"bytes":2676,"format":"png","centrePixel":[255,0,0,255],"ownPixels":true,"notTheOtherTab":true,"parked":true}
+2026-09-18T12:27:56.442Z INFO  [main] [browser-pane] destroy requested id=state-visible destroyedBefore=false keepAlive=true
+2026-09-18T12:27:56.449Z INFO  [main] [browser-pane] Destroyed instance: state-visible (closed)
+2026-09-18T12:27:56.450Z INFO  [main] [browser-pane] destroy completed id=state-visible removed=true
+2026-09-18T12:27:56.463Z INFO  [main] [browser-pane] toolbar version: v4-react-chromeless
+2026-09-18T12:27:56.463Z INFO  [main] [browser-pane] Created instance: state-hidden (show=true, workspace=none)
+2026-09-18T12:27:56.554Z INFO  [main] [browser-pane] native overlay ready id=state-hidden pageCorner=10 gutter=1/6/6
+2026-09-18T12:27:56.599Z INFO  [main] [browser-pane] toolbar ready id=state-hidden reason=did-finish-load
+2026-09-18T12:27:56.702Z INFO  [main] [browser-pane] did-navigate id=state-hidden from=about:blank to=about:blank
+2026-09-18T12:27:57.484Z INFO  [main] [browser-pane] Tab reused instance=state-hidden tab=tab-3 url=about:blank
+2026-09-18T12:27:57.489Z INFO  [main] [browser-pane] did-navigate id=state-hidden from=about:blank to=data:text/html;charset=UTF-8,%3C!doctype%20html%3E%3Chtml%3E%3Chead%3E%3Cmeta%20charset%3D%22utf-8%22%3E%0A%3Cstyle%3Ehtml%2Cbody%7Bmargin%3A0%3Bwidth%3A100%25%3Bheight%3A100%25%3Bbackground%3A%23ff0000%3Boverflow%3Ahidden%7D%3C%2Fstyle%3E%3C%2Fhead%3E%0A%3Cbody%3E%3Ch1%20style%3D%22font%3A14px%20sans-serif%22%3Ethe%20tab%20on%20screen%3C%2Fh1%3E%3C%2Fbody%3E%3C%2Fhtml%3E
+SPIKE_STEP window hidden visible=false
+2026-09-18T12:27:58.810Z INFO  [main] [browser-pane] Tab opened instance=state-hidden tab=tab-4 total=2 active=tab-3
+2026-09-18T12:27:58.854Z INFO  [main] [browser-pane] did-navigate id=state-hidden from=about:blank to=data:text/html;charset=UTF-8,%3C!doctype%20html%3E%3Chtml%3E%3Chead%3E%3Cmeta%20charset%3D%22utf-8%22%3E%0A%3Cstyle%3Ehtml%2Cbody%7Bmargin%3A0%3Bwidth%3A100%25%3Bheight%3A100%25%3Bbackground%3A%230000ff%3Boverflow%3Ahidden%7D%3C%2Fstyle%3E%3C%2Fhead%3E%0A%3Cbody%3E%3Ch1%20style%3D%22font%3A14px%20sans-serif%22%3Ethe%20tab%20the%20agent%20works%20on%3C%2Fh1%3E%3C%2Fbody%3E%3C%2Fhtml%3E
+2026-09-18T12:27:59.727Z INFO  [main] [browser-pane] screenshot window is not on screen; taking the shot from a parked view instance=state-hidden mode=raw tab=tab-3
+SPIKE_STEP hidden  window → on screen            {"window":"hidden","tab":"on screen","shown":"not shown","ms":63,"bytes":2152,"format":"png","centrePixel":[0,0,255,255],"ownPixels":true,"notTheOtherTab":true,"parked":true}
+2026-09-18T12:27:59.790Z INFO  [main] [browser-pane] screenshot window is not on screen; taking the shot from a parked view instance=state-hidden mode=raw tab=tab-4
+SPIKE_STEP hidden  window → behind it            {"window":"hidden","tab":"behind it","shown":"not shown","ms":47,"bytes":2676,"format":"png","centrePixel":[255,0,0,255],"ownPixels":true,"notTheOtherTab":true,"parked":true}
+2026-09-18T12:27:59.836Z INFO  [main] [browser-pane] destroy requested id=state-hidden destroyedBefore=false keepAlive=true
+2026-09-18T12:27:59.840Z INFO  [main] [browser-pane] Destroyed instance: state-hidden (closed)
+2026-09-18T12:27:59.840Z INFO  [main] [browser-pane] destroy completed id=state-hidden removed=true
+SPIKE_JSON {"rows":[{"window":"visible","tab":"on screen","shown":"not shown","ms":13,"bytes":2152,"format":"png","centrePixel":[0,0,255,255],"ownPixels":true,"notTheOtherTab":true,"parked":false},{"window":"visible","tab":"behind it","shown":"not shown","ms":53,"bytes":2676,"format":"png","centrePixel":[255,0,0,255],"ownPixels":true,"notTheOtherTab":true,"parked":true},{"window":"hidden","tab":"on screen","shown":"not shown","ms":63,"bytes":2152,"format":"png","centrePixel":[0,0,255,255],"ownPixels":true,"notTheOtherTab":true,"parked":true},{"window":"hidden","tab":"behind it","shown":"not shown","ms":47,"bytes":2676,"format":"png","centrePixel":[255,0,0,255],"ownPixels":true,"notTheOtherTab":true,"parked":true}],"failures":[]}
+
+SPIKE_OK — every combination came back with its own tab
+2026-09-18T12:27:59.854Z INFO  [main] [browser-pane] toolbar version: v4-react-chromeless
+2026-09-18T12:27:59.854Z INFO  [main] [browser-pane] Created instance: park-capturedWhileParkedNotShown (show=true, workspace=none)
+2026-09-18T12:27:59.945Z INFO  [main] [browser-pane] native overlay ready id=park-capturedWhileParkedNotShown pageCorner=10 gutter=1/6/6
+2026-09-18T12:27:59.986Z INFO  [main] [browser-pane] toolbar ready id=park-capturedWhileParkedNotShown reason=did-finish-load
+2026-09-18T12:28:00.097Z INFO  [main] [browser-pane] did-navigate id=park-capturedWhileParkedNotShown from=about:blank to=about:blank
+2026-09-18T12:28:00.577Z INFO  [main] [browser-pane] Tab reused instance=park-capturedWhileParkedNotShown tab=tab-5 url=about:blank
+2026-09-18T12:28:00.581Z INFO  [main] [browser-pane] did-navigate id=park-capturedWhileParkedNotShown from=about:blank to=data:text/html;charset=UTF-8,%3C!doctype%20html%3E%3Chtml%3E%3Chead%3E%3Cmeta%20charset%3D%22utf-8%22%3E%0A%3Cstyle%3Ehtml%2Cbody%7Bmargin%3A0%3Bwidth%3A100%25%3Bheight%3A100%25%3Bbackground%3A%23ff0000%3Boverflow%3Ahidden%7D%3C%2Fstyle%3E%3C%2Fhead%3E%0A%3Cbody%3E%3Ch1%20style%3D%22font%3A14px%20sans-serif%22%3Epark%20front%3C%2Fh1%3E%3C%2Fbody%3E%3C%2Fhtml%3E
+2026-09-18T12:28:01.388Z INFO  [main] [browser-cdp] idle detach — detaching debugger after inactivity
+2026-09-18T12:28:01.704Z INFO  [main] [browser-pane] Tab opened instance=park-capturedWhileParkedNotShown tab=tab-6 total=2 active=tab-5
+2026-09-18T12:28:01.746Z INFO  [main] [browser-pane] did-navigate id=park-capturedWhileParkedNotShown from=about:blank to=data:text/html;charset=UTF-8,%3C!doctype%20html%3E%3Chtml%3E%3Chead%3E%3Cmeta%20charset%3D%22utf-8%22%3E%0A%3Cstyle%3Ehtml%2Cbody%7Bmargin%3A0%3Bwidth%3A100%25%3Bheight%3A100%25%3Bbackground%3A%230000ff%3Boverflow%3Ahidden%7D%3C%2Fstyle%3E%3C%2Fhead%3E%0A%3Cbody%3E%3Ch1%20style%3D%22font%3A14px%20sans-serif%22%3Epark%20back%20capturedWhileParkedNotShown%3C%2Fh1%3E%3C%2Fbody%3E%3C%2Fhtml%3E
+SPIKE_STEP parked view — capturedWhileParkedNotShown  {"error":"Current display surface not available for capture","ms":36}
+2026-09-18T12:28:02.468Z INFO  [main] [browser-pane] destroy requested id=park-capturedWhileParkedNotShown destroyedBefore=false keepAlive=true
+2026-09-18T12:28:02.477Z INFO  [main] [browser-pane] Destroyed instance: park-capturedWhileParkedNotShown (closed)
+2026-09-18T12:28:02.479Z INFO  [main] [browser-pane] destroy completed id=park-capturedWhileParkedNotShown removed=true
+2026-09-18T12:28:02.499Z INFO  [main] [browser-pane] toolbar version: v4-react-chromeless
+2026-09-18T12:28:02.499Z INFO  [main] [browser-pane] Created instance: park-capturedWhileParkedShown (show=true, workspace=none)
+2026-09-18T12:28:02.590Z INFO  [main] [browser-pane] native overlay ready id=park-capturedWhileParkedShown pageCorner=10 gutter=1/6/6
+2026-09-18T12:28:02.632Z INFO  [main] [browser-pane] toolbar ready id=park-capturedWhileParkedShown reason=did-finish-load
+2026-09-18T12:28:02.736Z INFO  [main] [browser-pane] did-navigate id=park-capturedWhileParkedShown from=about:blank to=about:blank
+2026-09-18T12:28:03.209Z INFO  [main] [browser-pane] Tab reused instance=park-capturedWhileParkedShown tab=tab-7 url=about:blank
+2026-09-18T12:28:03.214Z INFO  [main] [browser-pane] did-navigate id=park-capturedWhileParkedShown from=about:blank to=data:text/html;charset=UTF-8,%3C!doctype%20html%3E%3Chtml%3E%3Chead%3E%3Cmeta%20charset%3D%22utf-8%22%3E%0A%3Cstyle%3Ehtml%2Cbody%7Bmargin%3A0%3Bwidth%3A100%25%3Bheight%3A100%25%3Bbackground%3A%23ff0000%3Boverflow%3Ahidden%7D%3C%2Fstyle%3E%3C%2Fhead%3E%0A%3Cbody%3E%3Ch1%20style%3D%22font%3A14px%20sans-serif%22%3Epark%20front%3C%2Fh1%3E%3C%2Fbody%3E%3C%2Fhtml%3E
+2026-09-18T12:28:04.339Z INFO  [main] [browser-pane] Tab opened instance=park-capturedWhileParkedShown tab=tab-8 total=2 active=tab-7
+2026-09-18T12:28:04.380Z INFO  [main] [browser-pane] did-navigate id=park-capturedWhileParkedShown from=about:blank to=data:text/html;charset=UTF-8,%3C!doctype%20html%3E%3Chtml%3E%3Chead%3E%3Cmeta%20charset%3D%22utf-8%22%3E%0A%3Cstyle%3Ehtml%2Cbody%7Bmargin%3A0%3Bwidth%3A100%25%3Bheight%3A100%25%3Bbackground%3A%230000ff%3Boverflow%3Ahidden%7D%3C%2Fstyle%3E%3C%2Fhead%3E%0A%3Cbody%3E%3Ch1%20style%3D%22font%3A14px%20sans-serif%22%3Epark%20back%20capturedWhileParkedShown%3C%2Fh1%3E%3C%2Fbody%3E%3C%2Fhtml%3E
+2026-09-18T12:28:04.791Z INFO  [main] [browser-cdp] idle detach — detaching debugger after inactivity
+SPIKE_STEP parked view — capturedWhileParkedShown     {"ownPixels":true,"ms":36}
+2026-09-18T12:28:05.096Z INFO  [main] [browser-pane] destroy requested id=park-capturedWhileParkedShown destroyedBefore=false keepAlive=true
+2026-09-18T12:28:05.100Z INFO  [main] [browser-pane] Destroyed instance: park-capturedWhileParkedShown (closed)
+2026-09-18T12:28:05.100Z INFO  [main] [browser-pane] destroy completed id=park-capturedWhileParkedShown removed=true
+2026-09-18T12:28:05.113Z INFO  [main] [browser-pane] toolbar version: v4-react-chromeless
+2026-09-18T12:28:05.113Z INFO  [main] [browser-pane] Created instance: park-capturedAfterHandingBack (show=true, workspace=none)
+2026-09-18T12:28:05.201Z INFO  [main] [browser-pane] native overlay ready id=park-capturedAfterHandingBack pageCorner=10 gutter=1/6/6
+2026-09-18T12:28:05.239Z INFO  [main] [browser-pane] toolbar ready id=park-capturedAfterHandingBack reason=did-finish-load
+2026-09-18T12:28:05.338Z INFO  [main] [browser-pane] did-navigate id=park-capturedAfterHandingBack from=about:blank to=about:blank
+2026-09-18T12:28:05.822Z INFO  [main] [browser-pane] Tab reused instance=park-capturedAfterHandingBack tab=tab-9 url=about:blank
+2026-09-18T12:28:05.827Z INFO  [main] [browser-pane] did-navigate id=park-capturedAfterHandingBack from=about:blank to=data:text/html;charset=UTF-8,%3C!doctype%20html%3E%3Chtml%3E%3Chead%3E%3Cmeta%20charset%3D%22utf-8%22%3E%0A%3Cstyle%3Ehtml%2Cbody%7Bmargin%3A0%3Bwidth%3A100%25%3Bheight%3A100%25%3Bbackground%3A%23ff0000%3Boverflow%3Ahidden%7D%3C%2Fstyle%3E%3C%2Fhead%3E%0A%3Cbody%3E%3Ch1%20style%3D%22font%3A14px%20sans-serif%22%3Epark%20front%3C%2Fh1%3E%3C%2Fbody%3E%3C%2Fhtml%3E
+2026-09-18T12:28:06.937Z INFO  [main] [browser-pane] Tab opened instance=park-capturedAfterHandingBack tab=tab-10 total=2 active=tab-9
+2026-09-18T12:28:06.980Z INFO  [main] [browser-pane] did-navigate id=park-capturedAfterHandingBack from=about:blank to=data:text/html;charset=UTF-8,%3C!doctype%20html%3E%3Chtml%3E%3Chead%3E%3Cmeta%20charset%3D%22utf-8%22%3E%0A%3Cstyle%3Ehtml%2Cbody%7Bmargin%3A0%3Bwidth%3A100%25%3Bheight%3A100%25%3Bbackground%3A%230000ff%3Boverflow%3Ahidden%7D%3C%2Fstyle%3E%3C%2Fhead%3E%0A%3Cbody%3E%3Ch1%20style%3D%22font%3A14px%20sans-serif%22%3Epark%20back%20capturedAfterHandingBack%3C%2Fh1%3E%3C%2Fbody%3E%3C%2Fhtml%3E
+SPIKE_STEP parked view — capturedAfterHandingBack     {"error":"Current display surface not available for capture","ms":27}
+2026-09-18T12:28:07.684Z INFO  [main] [browser-pane] destroy requested id=park-capturedAfterHandingBack destroyedBefore=false keepAlive=true
+2026-09-18T12:28:07.688Z INFO  [main] [browser-pane] Destroyed instance: park-capturedAfterHandingBack (closed)
+2026-09-18T12:28:07.688Z INFO  [main] [browser-pane] destroy completed id=park-capturedAfterHandingBack removed=true
+2026-09-18T12:28:07.699Z INFO  [main] [browser-pane] toolbar version: v4-react-chromeless
+2026-09-18T12:28:07.700Z INFO  [main] [browser-pane] Created instance: offscreen-tab (show=true, workspace=none)
+2026-09-18T12:28:07.785Z INFO  [main] [browser-pane] native overlay ready id=offscreen-tab pageCorner=10 gutter=1/6/6
+2026-09-18T12:28:07.827Z INFO  [main] [browser-pane] toolbar ready id=offscreen-tab reason=did-finish-load
+2026-09-18T12:28:07.931Z INFO  [main] [browser-pane] did-navigate id=offscreen-tab from=about:blank to=about:blank
+2026-09-18T12:28:08.412Z INFO  [main] [browser-pane] Tab reused instance=offscreen-tab tab=tab-11 url=about:blank
+2026-09-18T12:28:08.418Z INFO  [main] [browser-pane] did-navigate id=offscreen-tab from=about:blank to=data:text/html;charset=UTF-8,%3C!doctype%20html%3E%3Chtml%3E%3Chead%3E%3Cmeta%20charset%3D%22utf-8%22%3E%0A%3Cstyle%3Ehtml%2Cbody%7Bmargin%3A0%3Bwidth%3A100%25%3Bheight%3A100%25%3Bbackground%3A%23ff0000%3Boverflow%3Ahidden%7D%3C%2Fstyle%3E%3C%2Fhead%3E%0A%3Cbody%3E%3Ch1%20style%3D%22font%3A14px%20sans-serif%22%3Eoff%20front%3C%2Fh1%3E%3C%2Fbody%3E%3C%2Fhtml%3E
+2026-09-18T12:28:09.226Z INFO  [main] [browser-pane] Tab opened instance=offscreen-tab tab=tab-12 total=2 active=tab-11
+2026-09-18T12:28:09.270Z INFO  [main] [browser-pane] did-navigate id=offscreen-tab from=about:blank to=data:text/html;charset=UTF-8,%3C!doctype%20html%3E%3Chtml%3E%3Chead%3E%3Cmeta%20charset%3D%22utf-8%22%3E%0A%3Cstyle%3Ehtml%2Cbody%7Bmargin%3A0%3Bwidth%3A100%25%3Bheight%3A100%25%3Bbackground%3A%230000ff%3Boverflow%3Ahidden%7D%3C%2Fstyle%3E%3C%2Fhead%3E%0A%3Cbody%3E%3Ch1%20style%3D%22font%3A14px%20sans-serif%22%3Eoff%20back%200%3C%2Fh1%3E%3C%2Fbody%3E%3C%2Fhtml%3E
+2026-09-18T12:28:09.875Z INFO  [main] [browser-pane] Tab opened instance=offscreen-tab tab=tab-13 total=3 active=tab-11
+2026-09-18T12:28:09.919Z INFO  [main] [browser-pane] did-navigate id=offscreen-tab from=about:blank to=data:text/html;charset=UTF-8,%3C!doctype%20html%3E%3Chtml%3E%3Chead%3E%3Cmeta%20charset%3D%22utf-8%22%3E%0A%3Cstyle%3Ehtml%2Cbody%7Bmargin%3A0%3Bwidth%3A100%25%3Bheight%3A100%25%3Bbackground%3A%230000ff%3Boverflow%3Ahidden%7D%3C%2Fstyle%3E%3C%2Fhead%3E%0A%3Cbody%3E%3Ch1%20style%3D%22font%3A14px%20sans-serif%22%3Eoff%20back%2016%3C%2Fh1%3E%3C%2Fbody%3E%3C%2Fhtml%3E
+2026-09-18T12:28:10.555Z INFO  [main] [browser-pane] Tab opened instance=offscreen-tab tab=tab-14 total=4 active=tab-11
+2026-09-18T12:28:10.627Z INFO  [main] [browser-pane] did-navigate id=offscreen-tab from=about:blank to=data:text/html;charset=UTF-8,%3C!doctype%20html%3E%3Chtml%3E%3Chead%3E%3Cmeta%20charset%3D%22utf-8%22%3E%0A%3Cstyle%3Ehtml%2Cbody%7Bmargin%3A0%3Bwidth%3A100%25%3Bheight%3A100%25%3Bbackground%3A%230000ff%3Boverflow%3Ahidden%7D%3C%2Fstyle%3E%3C%2Fhead%3E%0A%3Cbody%3E%3Ch1%20style%3D%22font%3A14px%20sans-serif%22%3Eoff%20back%2032%3C%2Fh1%3E%3C%2Fbody%3E%3C%2Fhtml%3E
+2026-09-18T12:28:11.244Z INFO  [main] [browser-pane] Tab opened instance=offscreen-tab tab=tab-15 total=5 active=tab-11
+2026-09-18T12:28:11.284Z INFO  [main] [browser-pane] did-navigate id=offscreen-tab from=about:blank to=data:text/html;charset=UTF-8,%3C!doctype%20html%3E%3Chtml%3E%3Chead%3E%3Cmeta%20charset%3D%22utf-8%22%3E%0A%3Cstyle%3Ehtml%2Cbody%7Bmargin%3A0%3Bwidth%3A100%25%3Bheight%3A100%25%3Bbackground%3A%230000ff%3Boverflow%3Ahidden%7D%3C%2Fstyle%3E%3C%2Fhead%3E%0A%3Cbody%3E%3Ch1%20style%3D%22font%3A14px%20sans-serif%22%3Eoff%20back%20200%3C%2Fh1%3E%3C%2Fbody%3E%3C%2Fhtml%3E
+SPIKE_STEP offscreen-tab {"rounds":{"wait0ms":{"createMs":7,"outAndBackMs":12,"destroyMs":1,"empty":true},"wait16ms":{"createMs":13,"outAndBackMs":38,"destroyMs":1,"pixel":[255,0,0,255],"ownPixels":true},"wait32ms":{"createMs":5,"outAndBackMs":48,"destroyMs":1,"pixel":[255,0,0,255],"ownPixels":true},"wait200ms":{"createMs":5,"outAndBackMs":218,"destroyMs":1,"pixel":[255,0,0,255],"ownPixels":true}},"boundsUnchanged":true,"thePersonsTabStillOnTop":true}
+2026-09-18T12:28:12.103Z INFO  [main] [browser-pane] destroy requested id=offscreen-tab destroyedBefore=false keepAlive=true
+2026-09-18T12:28:12.112Z INFO  [main] [browser-pane] Destroyed instance: offscreen-tab (closed)
+2026-09-18T12:28:12.113Z INFO  [main] [browser-pane] destroy completed id=offscreen-tab removed=true
+2026-09-18T12:28:12.124Z INFO  [main] [browser-pane] toolbar version: v4-react-chromeless
+2026-09-18T12:28:12.125Z INFO  [main] [browser-pane] Created instance: probe (show=true, workspace=none)
+2026-09-18T12:28:12.217Z INFO  [main] [browser-pane] native overlay ready id=probe pageCorner=10 gutter=1/6/6
+2026-09-18T12:28:12.259Z INFO  [main] [browser-pane] toolbar ready id=probe reason=did-finish-load
+2026-09-18T12:28:12.366Z INFO  [main] [browser-pane] did-navigate id=probe from=about:blank to=about:blank
+2026-09-18T12:28:12.834Z INFO  [main] [browser-pane] Tab reused instance=probe tab=tab-16 url=about:blank
+2026-09-18T12:28:12.839Z INFO  [main] [browser-pane] did-navigate id=probe from=about:blank to=data:text/html;charset=UTF-8,%3C!doctype%20html%3E%3Chtml%3E%3Chead%3E%3Cmeta%20charset%3D%22utf-8%22%3E%0A%3Cstyle%3Ehtml%2Cbody%7Bmargin%3A0%3Bwidth%3A100%25%3Bheight%3A100%25%3Bbackground%3A%230000ff%3Boverflow%3Ahidden%7D%3C%2Fstyle%3E%3C%2Fhead%3E%0A%3Cbody%3E%3Ch1%20style%3D%22font%3A14px%20sans-serif%22%3Eprobe%20back%3C%2Fh1%3E%3C%2Fbody%3E%3C%2Fhtml%3E
+2026-09-18T12:28:13.959Z INFO  [main] [browser-pane] screenshot window is not on screen; taking the shot from a parked view instance=probe mode=raw tab=tab-16
+SPIKE_STEP parked shot, focus {"ms":46,"ownPixels":true,"focusedBefore":null,"focusedAfter":null,"focusEvents":[],"windowLeftHidden":true,"parked":true}
+SPIKE_JSON {"rows":[{"window":"visible","tab":"on screen","shown":"not shown","ms":13,"bytes":2152,"format":"png","centrePixel":[0,0,255,255],"ownPixels":true,"notTheOtherTab":true,"parked":false},{"window":"visible","tab":"behind it","shown":"not shown","ms":53,"bytes":2676,"format":"png","centrePixel":[255,0,0,255],"ownPixels":true,"notTheOtherTab":true,"parked":true},{"window":"hidden","tab":"on screen","shown":"not shown","ms":63,"bytes":2152,"format":"png","centrePixel":[0,0,255,255],"ownPixels":true,"notTheOtherTab":true,"parked":true},{"window":"hidden","tab":"behind it","shown":"not shown","ms":47,"bytes":2676,"format":"png","centrePixel":[255,0,0,255],"ownPixels":true,"notTheOtherTab":true,"parked":true}],"failures":[],"focus":{"ms":46,"ownPixels":true,"focusedBefore":null,"focusedAfter":null,"focusEvents":[],"windowLeftHidden":true,"parked":true}}
+
+SPIKE_OK — every combination came back with its own tab, unseen and unfelt
+2026-09-18T12:28:14.006Z INFO  [main] [browser-pane] destroy requested id=probe destroyedBefore=false keepAlive=true
+2026-09-18T12:28:14.010Z INFO  [main] [browser-pane] Destroyed instance: probe (closed)
+2026-09-18T12:28:14.011Z INFO  [main] [browser-pane] destroy completed id=probe removed=true

@@ -35,9 +35,11 @@ export interface PrototypePromptContext {
   /** The page `/` opens, or null when the root shows the generated page index (plan §19.3). */
   entryPage: string | null
   /**
-   * Absolute path to the shared shell (`_layout.html`) every page of ours renders
-   * inside, or null when the prototype has none. Reported so the agent reuses the
-   * frame instead of inventing one per screen (plan §19.2).
+   * Absolute path to the shared layout (`_layout.html`) the pages of ours render
+   * inside, or null when the prototype has none — the state a new prototype starts
+   * in, since a layout is written when two pages would repeat the same shared markup.
+   * Reported so the agent reuses the shared markup instead of inventing one per screen
+   * (plan §19.2).
    */
   layoutPath: string | null
   /**
@@ -405,11 +407,14 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
     lines.push(`Writing a page of ours — an ordinary HTML document, no build step and no template syntax:`)
     lines.push(`- A complete document (<!doctype html> …): the file is what the browser loads, and nothing compiles it.`)
     if (ctx.layoutPath) {
-      lines.push(`- The frame is already written once, in ${sanitize(ctx.layoutPath)}: put only this screen's content in`)
-      lines.push(`  the page and reuse the shell's tokens (var(--accent), .card, .row). Do not copy the frame into a page`)
-      lines.push(`  — two copies drift, and the shell is where a change to the frame belongs.`)
+      lines.push(`- The shared layout is already written once, in ${sanitize(ctx.layoutPath)}: put only this screen's`)
+      lines.push(`  content in the page and reuse its tokens (var(--accent), .card, .row). Do not copy the layout into a page`)
+      lines.push(`  — two copies drift, and the layout is the one place a change to it belongs.`)
+      lines.push(`- A page that is a design of its own (an email, a landing page, another product's screen) is not put in`)
+      lines.push(`  the layout: set "useLayout": false on its row in config.json and it is served as written, with its own`)
+      lines.push(`  head. Its patches still apply either way.`)
     } else {
-      lines.push(`- This prototype has no shared shell. If two pages would repeat the same frame, write _layout.html`)
+      lines.push(`- This prototype has no shared layout. If two pages would repeat the same markup, write _layout.html`)
       lines.push(`  with the slot ${PROTOTYPE_LAYOUT_SLOT} — the pages of ours render inside it.`)
     }
     lines.push(`- Assets: root-absolute paths (/assets/app.css) — the prototype's directory is the origin root. No CDN`)
@@ -421,7 +426,7 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
     lines.push(`- No eval and no new Function (the delivered extension forbids them), and no bundler: plain <script>,`)
     lines.push(`  <style> and <script type="module"> with relative imports are all fine.`)
     lines.push(`- Shared behaviour goes in a file under assets/ that the pages needing it load; shared structure goes in`)
-    lines.push(`  the shell. That is the whole component story — there is no template engine, by design.`)
+    lines.push(`  the layout. That is the whole component story — there is no template engine, by design.`)
     lines.push(`- Data: fetch('/api/…') (relative), answered by the contract's fixtures when mocked; keep state in`)
     lines.push(`  localStorage, which survives because this prototype's origin is stable.`)
     lines.push(`- Add a screen by writing a page; change how an existing screen looks by writing a patch under`)

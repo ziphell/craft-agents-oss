@@ -8,7 +8,6 @@ import {
   getPrototypeDirPath,
   getPrototypePatchesPath,
   listPrototypePages,
-  PROTOTYPE_LAYOUT_SLOT,
   prototypeSlugFromName,
   readPrototypeLayout,
   readPrototypePage,
@@ -52,13 +51,12 @@ describe('createPrototype', () => {
 
   /**
    * Creation asks for a name and nothing else (plan §19.8): it writes no page and
-   * no config, because "this prototype has no pages yet" is a true statement, and
-   * a seeded document would assert a screen that is not there. What it does write
-   * is a shell to copy from — not a page, so it claims nothing about the contents,
-   * and it gives the first screen one validated shape to follow instead of being
-   * invented per screen.
+   * no config, because "this prototype has no pages yet" is a true statement, and a
+   * seeded document would assert a screen that is not there. It writes no layout
+   * either: `_layout.html` appears when two pages would repeat the same shared markup, which
+   * is a fact about the flow rather than a guess creation can make (plan §19.2).
    */
-  it('creates the directory, its patches folder, and a shell to copy from', () => {
+  it('creates the directory and its patches folder, and nothing else', () => {
     const created = createPrototype(workspaceRoot, { name: 'Checkout Flow' })
 
     expect(created.slug).toBe('checkout-flow')
@@ -66,14 +64,11 @@ describe('createPrototype', () => {
     expect(existsSync(created.patchesPath)).toBe(true)
 
     // The whole directory, so the shape of a new prototype is checkable rather than
-    // assumed.
-    expect(readdirSync(created.dir).sort()).toEqual(['_layout.html', 'patches'])
+    // assumed — and a layout is not part of it.
+    expect(readdirSync(created.dir).sort()).toEqual(['patches'])
     expect(existsSync(getPrototypeConfigPath(workspaceRoot, 'checkout-flow'))).toBe(false)
     expect(listPrototypePages(workspaceRoot, 'checkout-flow')).toEqual([])
-
-    // The shell has to be able to hold a page, or it is just a file: the slot is
-    // what makes it a frame, and `_` is what keeps it out of the page list.
-    expect(readPrototypeLayout(workspaceRoot, 'checkout-flow')).toContain(PROTOTYPE_LAYOUT_SLOT)
+    expect(readPrototypeLayout(workspaceRoot, 'checkout-flow')).toBeNull()
   })
 
   /**
@@ -142,7 +137,7 @@ describe('writePrototypePage', () => {
   })
 
   // The name becomes the file name and an address segment, so it has to be usable
-  // as both — and a leading "_" is the host's own namespace (the shell, the index).
+  // as both — and a leading "_" is the host's own namespace (the layout, the index).
   it('refuses a name that cannot be a page', () => {
     expect(() => writePrototypePage(workspaceRoot, 'checkout-flow', '_layout', '<html></html>')).toThrow(
       /cannot be a page name/,

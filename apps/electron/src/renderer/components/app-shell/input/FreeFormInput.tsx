@@ -64,6 +64,8 @@ import {
   resolveEffectiveConnectionSlug,
   isCompatProvider,
   modelSupportsImages,
+  modelSupportsThinking,
+  modelContextWindow,
 } from '@config/llm-connections'
 import { useOptionalAppShellContext } from '@/context/AppShellContext'
 import { EditPopover, getEditConfig } from '@/components/ui/EditPopover'
@@ -376,12 +378,6 @@ export function FreeFormInput({
 
   const availableThinkingLevels = THINKING_LEVELS
 
-  // Disable thinking selector when the current model explicitly doesn't support it
-  const thinkingDisabled = React.useMemo(() => {
-    const model = availableModels.find(m => typeof m !== 'string' && m.id === currentModel)
-    return typeof model !== 'string' && model?.supportsThinking === false
-  }, [availableModels, currentModel])
-
   // Get display name for current model (full name, not short name)
   const currentModelDisplayName = React.useMemo(() => {
     const modelToDisplay = connectionDefaultModel ?? currentModel
@@ -416,6 +412,14 @@ export function FreeFormInput({
     if (!effectiveConnection) return null
     return llmConnections.find(c => c.slug === effectiveConnection) ?? null
   }, [llmConnections, effectiveConnection])
+
+  // Disable the thinking selector only when the model explicitly opts out.
+  // Custom endpoints default to capable; built-in catalogs keep their own
+  // default — see the helper.
+  const thinkingDisabled = React.useMemo(() => {
+    const model = availableModels.find(m => typeof m !== 'string' && m.id === currentModel)
+    return !modelSupportsThinking(model)
+  }, [availableModels, currentModel])
 
 
   // Access sessionStatuses and onSessionStatusChange from context for the # menu state picker
@@ -1621,15 +1625,13 @@ export function FreeFormInput({
 
   const hasContent = input.trim() || attachments.length > 0 || followUpItems.length > 0
 
-  // Pre-flight image-support check: warn when staged images would be silently
-  // stripped by Pi SDK because the active custom-endpoint model is text-only.
-  // Gate on pi_compat — built-in catalogs (anthropic/pi) are owned by the SDK
-  // and we can't repair them from the UI here.
+  // Pre-flight image-support check: warn when staged images would be stripped
+  // because the active model's entry says supportsImages: false. The model entry
+  // is the only gate (whatever the connection type), so the warning follows it.
   const hasStagedImages = attachments.some(a => a.type === 'image' || a.mimeType?.startsWith('image/'))
   const showVisionWarning =
     hasStagedImages
     && !!effectiveConnectionDetails
-    && isCompatProvider(effectiveConnectionDetails.providerType)
     && !modelSupportsImages(effectiveConnectionDetails, currentModel)
 
   return (
@@ -1711,9 +1713,8 @@ export function FreeFormInput({
           />
         )}
 
-        {/* Pre-flight image-support warning — only for pi_compat connections
-            where the renderer can both detect text-only models and offer to
-            flip the per-model supportsImages override on the spot. */}
+        {/* Pre-flight image-support warning — shown whenever the active model's
+            entry disables image input, with a one-click per-model override. */}
         {showVisionWarning && effectiveConnectionDetails && (
           <ImageSupportWarningBanner
             modelName={currentModelDisplayName}
@@ -2473,8 +2474,13 @@ export function FreeFormInput({
             // Calculate usage percentage based on compaction threshold (~77.5% of context window),
             // not the full context window - this gives users meaningful warnings before compaction kicks in.
             // SDK triggers compaction at ~155k tokens for a 200k context window.
-            // Falls back to known per-model context window when SDK hasn't reported usage yet.
-            const effectiveContextWindow = contextStatus?.contextWindow || getModelContextWindow(currentModel)
+            // Read order: the model layer (what the connection declares, and what
+            // we registered with the SDK) → what the SDK reported → the static
+            // registry, which does not know custom models at all.
+            const effectiveContextWindow =
+              modelContextWindow(effectiveConnectionDetails, currentModel)
+              ?? contextStatus?.contextWindow
+              ?? getModelContextWindow(currentModel)
             const compactionThreshold = effectiveContextWindow
               ? Math.round(effectiveContextWindow * 0.775)
               : null

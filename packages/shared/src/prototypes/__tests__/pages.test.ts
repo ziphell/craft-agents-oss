@@ -26,7 +26,7 @@ describe('isPrototypePagePath', () => {
     expect(isPrototypePagePath('/orders.html')).toBe(true)
   })
 
-  // Underlined names are the host's own: the shared shell and the generated page
+  // Underlined names are the host's own: the shared layout and the generated page
   // index. That is the whole rule that keeps "is this a page" answerable without
   // a list to check against.
   it('refuses the host’s own files', () => {
@@ -76,7 +76,7 @@ describe('listPrototypePages', () => {
     })
 
     const dir = getPrototypeDirPath(workspaceRoot, 'checkout-flow')
-    // None of these is a page: the shell is the host's, the rest are assets.
+    // None of these is a page: the layout is the host's, the rest are assets.
     mkdirSync(join(dir, 'flows'), { recursive: true })
     writeFileSync(join(dir, 'flows', 'step1.html'), PAGE, 'utf-8')
     writeFileSync(join(dir, 'notes.txt'), 'scratch', 'utf-8')
@@ -91,6 +91,7 @@ describe('listPrototypePages', () => {
       file: 'cart.html',
       url: `${ORIGIN}/cart.html`,
       entry: true,
+      useLayout: true,
     })
     expect(pages[1]).toEqual({
       name: 'orders',
@@ -98,6 +99,7 @@ describe('listPrototypePages', () => {
       file: 'orders.html',
       url: `${ORIGIN}/orders.html`,
       entry: false,
+      useLayout: true,
     })
   })
 
@@ -113,6 +115,25 @@ describe('listPrototypePages', () => {
     expect(pages.some((page) => page.entry)).toBe(false)
   })
 
+  // A page can be a design of its own: its row says the shared layout does not wrap
+  // it, which is the answer the rest of the engine reads off the resolved page —
+  // and every other page, declared or not, keeps the default (plan §19.2).
+  it('carries a page’s own answer about the shared layout', () => {
+    createPrototype(workspaceRoot, { name: 'checkout-flow' })
+    writePrototypePage(workspaceRoot, 'checkout-flow', 'cart', PAGE)
+    writePrototypePage(workspaceRoot, 'checkout-flow', 'landing', PAGE)
+    writePrototypeConfig(workspaceRoot, 'checkout-flow', {
+      pages: [
+        { name: 'cart', kind: 'scratch' },
+        { name: 'landing', kind: 'scratch', useLayout: false },
+      ],
+    })
+
+    const pages = listPrototypePages(workspaceRoot, 'checkout-flow')
+
+    expect(pages.map((page) => `${page.name}:${page.useLayout}`)).toEqual(['cart:true', 'landing:false'])
+  })
+
   it('lists an overlay row as a page with no document, on its own address', () => {
     createPrototype(workspaceRoot, { name: 'rival' })
     writePrototypeConfig(workspaceRoot, 'rival', {
@@ -122,7 +143,15 @@ describe('listPrototypePages', () => {
     })
 
     expect(listPrototypePages(workspaceRoot, 'rival')).toEqual([
-      { name: 'pay', kind: 'overlay', file: null, url: 'https://rival.example.com/pay', entry: true },
+      {
+        name: 'pay',
+        kind: 'overlay',
+        file: null,
+        url: 'https://rival.example.com/pay',
+        entry: true,
+        // A live page is someone else's document: not ours to wrap (plan §19.2).
+        useLayout: false,
+      },
     ])
   })
 
@@ -150,7 +179,7 @@ describe('listPrototypePages', () => {
     const table = describePrototypePages(workspaceRoot, 'checkout-flow')
 
     expect(table.pages).toEqual([
-      { name: 'cart', kind: 'scratch', file: null, url: null, entry: true },
+      { name: 'cart', kind: 'scratch', file: null, url: null, entry: true, useLayout: true },
     ])
     expect(table.issues.map((issue) => issue.code)).toEqual(['page.documentMissing'])
     expect(table.issues[0]?.text).toContain('cart.html is not in the prototype directory')
@@ -159,8 +188,22 @@ describe('listPrototypePages', () => {
 
 describe('matchPrototypePage', () => {
   const pages = [
-    { name: 'cart', kind: 'scratch' as const, file: 'cart.html', url: `${ORIGIN}/cart.html`, entry: true },
-    { name: 'orders', kind: 'scratch' as const, file: 'orders.html', url: `${ORIGIN}/orders.html`, entry: false },
+    {
+      name: 'cart',
+      kind: 'scratch' as const,
+      file: 'cart.html',
+      url: `${ORIGIN}/cart.html`,
+      entry: true,
+      useLayout: true,
+    },
+    {
+      name: 'orders',
+      kind: 'scratch' as const,
+      file: 'orders.html',
+      url: `${ORIGIN}/orders.html`,
+      entry: false,
+      useLayout: true,
+    },
   ]
 
   it('names the page a URL is', () => {
@@ -191,6 +234,7 @@ describe('matchPrototypePage', () => {
         file: null,
         url: 'https://app.example.com/checkout',
         entry: true,
+        useLayout: false,
       },
     ]
 
@@ -255,9 +299,30 @@ describe('the page table', () => {
     writePrototypePage(workspaceRoot, SLUG, 'orders', PAGE)
 
     expect(listPrototypePages(workspaceRoot, SLUG)).toEqual([
-      { name: 'cart', kind: 'scratch', file: 'cart.html', url: `${ORIGIN}/cart.html`, entry: true },
-      { name: 'orders', kind: 'scratch', file: 'orders.html', url: `${ORIGIN}/orders.html`, entry: false },
-      { name: 'pay', kind: 'overlay', file: null, url: 'https://app.example.com/pay', entry: false },
+      {
+        name: 'cart',
+        kind: 'scratch',
+        file: 'cart.html',
+        url: `${ORIGIN}/cart.html`,
+        entry: true,
+        useLayout: true,
+      },
+      {
+        name: 'orders',
+        kind: 'scratch',
+        file: 'orders.html',
+        url: `${ORIGIN}/orders.html`,
+        entry: false,
+        useLayout: true,
+      },
+      {
+        name: 'pay',
+        kind: 'overlay',
+        file: null,
+        url: 'https://app.example.com/pay',
+        entry: false,
+        useLayout: false,
+      },
     ])
   })
 
@@ -369,6 +434,48 @@ describe('the page table', () => {
     expect(existsSync(join(getPrototypeDirPath(workspaceRoot, SLUG), 'checkout.html'))).toBe(true)
     expect(existsSync(getPrototypePagePatchesPath(workspaceRoot, SLUG, 'checkout'))).toBe(true)
     expect(existsSync(join(getPrototypeDirPath(workspaceRoot, SLUG), 'cart.html'))).toBe(false)
+  })
+
+  // Every table operation rewrites the file, so a page's answer about the layout has
+  // to travel through them: reframing a page as a side effect of renaming it or of
+  // moving the entry would be a change nobody asked for (plan §19.2).
+  it('keeps a page’s answer about the layout through a rename and an entry change', () => {
+    seed([{ name: 'cart', kind: 'scratch', useLayout: false }])
+    writePrototypePage(workspaceRoot, SLUG, 'cart', PAGE)
+
+    const renamed = updatePrototypePages(workspaceRoot, SLUG, { op: 'rename', from: 'cart', to: 'checkout' })
+    expect(renamed.pages).toEqual([{ name: 'checkout', kind: 'scratch', useLayout: false }])
+
+    const entry = updatePrototypePages(workspaceRoot, SLUG, { op: 'entry', name: 'checkout' })
+    expect(entry.pages).toEqual([{ name: 'checkout', kind: 'scratch', entry: true, useLayout: false }])
+  })
+
+  // The flag lives on a row, so a document nobody declared becomes one the moment it
+  // has something to say — and a live page has nothing to say about a layout that is
+  // not ours (plan §19.2).
+  it('sets and clears whether the shared layout wraps a page', () => {
+    seed([])
+    writePrototypePage(workspaceRoot, SLUG, 'landing', PAGE)
+
+    const off = updatePrototypePages(workspaceRoot, SLUG, { op: 'layout', name: 'landing', useLayout: false })
+    expect(off.note).toContain('is served as written')
+    expect(off.note).toContain('it can carry the flag')
+    expect(off.pages).toEqual([{ name: 'landing', kind: 'scratch', useLayout: false }])
+
+    // Going back to the default drops the key rather than storing a second way of
+    // saying nothing.
+    const on = updatePrototypePages(workspaceRoot, SLUG, { op: 'layout', name: 'landing', useLayout: true })
+    expect(on.pages).toEqual([{ name: 'landing', kind: 'scratch' }])
+    expect(on.note).toContain('is wrapped by the shared layout again')
+  })
+
+  it('refuses a layout decision about a page that is not there, or is not ours', () => {
+    seed([{ name: 'pay', kind: 'overlay', url: PAY }])
+
+    expect(() => updatePrototypePages(workspaceRoot, SLUG, { op: 'layout', name: 'nope', useLayout: false }))
+      .toThrow(/has no page "nope"/)
+    expect(() => updatePrototypePages(workspaceRoot, SLUG, { op: 'layout', name: 'pay', useLayout: false }))
+      .toThrow(/someone else's document/)
   })
 
   // The entry is a flag on a row, so it can only ever point at a page that is

@@ -1,0 +1,80 @@
+
+SPIKE_STEP 09:47:22.733 window visible
+SPIKE_STEP 09:47:22.766 load visible • covered tab
+SPIKE_STEP 09:47:22.777 load visible • tab on top
+SPIKE_STEP 09:47:22.847 loaded visible • covered tab
+SPIKE_STEP 09:47:22.861 loaded visible • tab on top
+SPIKE_STEP 09:47:23.191 window hidden-after-show
+SPIKE_STEP 09:47:23.222 load hidden-after-show • covered tab
+SPIKE_STEP 09:47:23.228 load hidden-after-show • tab on top
+SPIKE_STEP 09:47:23.290 loaded hidden-after-show • covered tab
+SPIKE_STEP 09:47:23.300 loaded hidden-after-show • tab on top
+SPIKE_STEP 09:47:23.626 window never-shown
+SPIKE_STEP 09:47:23.636 load never-shown • covered tab
+SPIKE_STEP 09:47:23.641 load never-shown • tab on top
+SPIKE_STEP 09:47:23.701 loaded never-shown • covered tab
+SPIKE_STEP 09:47:23.706 loaded never-shown • tab on top
+SPIKE_STEP 09:47:24.021 measure visible • covered
+SPIKE_STEP 09:47:24.026 → capturePage-hidden
+SPIKE_STEP 09:47:24.057 → capturePage-plain
+SPIKE_STEP 09:47:24.089 → cdp-screenshot
+SPIKE_STEP 09:47:26.600 → cdp-screenshot
+SPIKE_STEP 09:47:26.713 → capturePage-hidden
+SPIKE_STEP 09:47:26.912 → capturePage-hidden
+SPIKE_STEP 09:47:26.946 measure visible • on-top
+SPIKE_STEP 09:47:26.948 → capturePage-hidden
+SPIKE_STEP 09:47:26.960 → capturePage-plain
+SPIKE_STEP 09:47:26.991 → cdp-screenshot
+SPIKE_STEP 09:47:27.147 measure hidden-after-show • covered
+SPIKE_STEP 09:47:27.151 → capturePage-hidden
+SPIKE_STEP 09:47:29.657 → capturePage-plain
+SPIKE_STEP 09:47:32.166 → cdp-screenshot
+SPIKE_STEP 09:47:34.879 → cdp-screenshot
+SPIKE_STEP 09:47:34.995 → capturePage-hidden
+SPIKE_STEP 09:47:35.202 → capturePage-hidden
+SPIKE_STEP 09:47:37.709 measure hidden-after-show • on-top
+SPIKE_STEP 09:47:37.712 → capturePage-hidden
+SPIKE_STEP 09:47:40.222 → capturePage-plain
+SPIKE_STEP 09:47:42.725 → cdp-screenshot
+SPIKE_STEP 09:47:45.235 measure never-shown • covered
+SPIKE_STEP 09:47:45.237 → capturePage-hidden
+SPIKE_STEP 09:47:45.237 → capturePage-plain
+SPIKE_STEP 09:47:45.237 → cdp-screenshot
+SPIKE_STEP 09:47:47.940 → cdp-screenshot
+SPIKE_STEP 09:47:50.451 → capturePage-hidden
+SPIKE_STEP 09:47:50.668 → capturePage-hidden
+SPIKE_STEP 09:47:53.180 measure never-shown • on-top
+SPIKE_STEP 09:47:53.190 → capturePage-hidden
+SPIKE_STEP 09:47:55.696 → capturePage-plain
+SPIKE_STEP 09:47:58.205 → cdp-screenshot
+SPIKE_JSON [{"state":"visible","windowVisible":true},{"state":"hidden-after-show","windowVisible":false},{"state":"never-shown","windowVisible":false}]
+SPIKE_JSON [{"scenario":"visible","tab":"covered","methods":[{"method":"capturePage-hidden","ms":30,"size":"1200x840","bgra":[0,0,255,255],"verdict":"own-pixels"},{"method":"capturePage-plain","ms":30,"size":"1200x840","bgra":[0,0,255,255],"verdict":"own-pixels"},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2511}],"probe":{"label":"visible • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","ms":113,"size":"1200x840","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterReveal":{"method":"capturePage-hidden","ms":12,"size":"1200x840","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterRaise":{"method":"capturePage-hidden","ms":30,"size":"1200x840","bgra":[0,0,255,255],"verdict":"own-pixels"}},{"scenario":"visible","tab":"on-top","methods":[{"method":"capturePage-hidden","ms":10,"size":"1200x840","bgra":[255,0,0,255],"verdict":"own-pixels"},{"method":"capturePage-plain","ms":29,"size":"1200x840","bgra":[255,0,0,255],"verdict":"own-pixels"},{"method":"cdp-screenshot","ms":155,"size":"1200x840","bgra":[255,0,0,255],"verdict":"own-pixels"}],"probe":{"label":"visible • tab on top","visibility":"visible","innerWidth":600,"innerHeight":420},"isPainting":false},{"scenario":"hidden-after-show","tab":"covered","methods":[{"method":"capturePage-hidden","verdict":"TIMED-OUT","ms":2506},{"method":"capturePage-plain","verdict":"TIMED-OUT","ms":2509},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2512}],"probe":{"label":"hidden-after-show • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","ms":115,"size":"1200x840","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterReveal":{"method":"capturePage-hidden","ms":11,"size":"1200x840","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterRaise":{"method":"capturePage-hidden","verdict":"TIMED-OUT","ms":2507}},{"scenario":"hidden-after-show","tab":"on-top","methods":[{"method":"capturePage-hidden","verdict":"TIMED-OUT","ms":2510},{"method":"capturePage-plain","verdict":"TIMED-OUT","ms":2503},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2510}],"probe":{"label":"hidden-after-show • tab on top","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false},{"scenario":"never-shown","tab":"covered","methods":[{"method":"capturePage-hidden","verdict":"error","ms":0,"detail":"Current display surface not available for capture"},{"method":"capturePage-plain","verdict":"error","ms":0,"detail":"Current display surface not available for capture"},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2516}],"probe":{"label":"never-shown • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2511},"afterReveal":{"method":"capturePage-hidden","ms":18,"size":"1200x840","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterRaise":{"method":"capturePage-hidden","verdict":"TIMED-OUT","ms":2512}},{"scenario":"never-shown","tab":"on-top","methods":[{"method":"capturePage-hidden","verdict":"TIMED-OUT","ms":2506},{"method":"capturePage-plain","verdict":"TIMED-OUT","ms":2509},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2522}],"probe":{"label":"never-shown • tab on top","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false}]
+
+scenario            tab      vis      painting  method                                 verdict        time
+visible             covered  hidden   false     capturePage-hidden                     own-pixels       30ms [0,0,255,255] 1200x840
+visible             covered  hidden   false     capturePage-plain                      own-pixels       30ms [0,0,255,255] 1200x840
+visible             covered  hidden   false     cdp-screenshot                         TIMED-OUT      2511ms
+visible             covered  hidden   false     after reveal                           own-pixels       12ms [0,0,255,255] 1200x840
+visible             covered  hidden   false     after reveal (cdp)                     own-pixels      113ms [0,0,255,255] 1200x840
+visible             covered  hidden   false     raised to top                          own-pixels       30ms [0,0,255,255] 1200x840
+visible             on-top   visible  false     capturePage-hidden                     own-pixels       10ms [255,0,0,255] 1200x840
+visible             on-top   visible  false     capturePage-plain                      own-pixels       29ms [255,0,0,255] 1200x840
+visible             on-top   visible  false     cdp-screenshot                         own-pixels      155ms [255,0,0,255] 1200x840
+hidden-after-show   covered  hidden   false     capturePage-hidden                     TIMED-OUT      2506ms
+hidden-after-show   covered  hidden   false     capturePage-plain                      TIMED-OUT      2509ms
+hidden-after-show   covered  hidden   false     cdp-screenshot                         TIMED-OUT      2512ms
+hidden-after-show   covered  hidden   false     after reveal                           own-pixels       11ms [0,0,255,255] 1200x840
+hidden-after-show   covered  hidden   false     after reveal (cdp)                     own-pixels      115ms [0,0,255,255] 1200x840
+hidden-after-show   covered  hidden   false     raised to top                          TIMED-OUT      2507ms
+hidden-after-show   on-top   hidden   false     capturePage-hidden                     TIMED-OUT      2510ms
+hidden-after-show   on-top   hidden   false     capturePage-plain                      TIMED-OUT      2503ms
+hidden-after-show   on-top   hidden   false     cdp-screenshot                         TIMED-OUT      2510ms
+never-shown         covered  hidden   false     capturePage-hidden                     error             0ms Current display surface not available for capture
+never-shown         covered  hidden   false     capturePage-plain                      error             0ms Current display surface not available for capture
+never-shown         covered  hidden   false     cdp-screenshot                         TIMED-OUT      2516ms
+never-shown         covered  hidden   false     after reveal                           own-pixels       18ms [0,0,255,255] 1200x840
+never-shown         covered  hidden   false     after reveal (cdp)                     TIMED-OUT      2511ms
+never-shown         covered  hidden   false     raised to top                          TIMED-OUT      2512ms
+never-shown         on-top   hidden   false     capturePage-hidden                     TIMED-OUT      2506ms
+never-shown         on-top   hidden   false     capturePage-plain                      TIMED-OUT      2509ms
+never-shown         on-top   hidden   false     cdp-screenshot                         TIMED-OUT      2522ms

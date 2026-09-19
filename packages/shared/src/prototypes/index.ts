@@ -259,7 +259,7 @@ export {
   updatePrototypePages,
 } from './pages.ts'
 
-export { applyPrototypeLayout, buildLayoutShell, buildPrototypeIndexDocument } from './page-document.ts'
+export { applyPrototypeLayout, buildPrototypeIndexDocument } from './page-document.ts'
 
 export type { PrototypeEntry, PrototypeExportResult } from './export.ts'
 export {

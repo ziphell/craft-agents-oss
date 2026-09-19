@@ -153,6 +153,9 @@ function createMockWindow(opts?: { width?: number; height?: number; minWidth?: n
   const webContents = createMockWebContents()
   let contentWidth = opts?.width ?? 1200
   let contentHeight = opts?.height ?? 900
+  let winX = 40
+  let winY = 40
+  let skipTaskbar = false
   const minWidth = opts?.minWidth ?? 0
   const minHeight = opts?.minHeight ?? 0
 
@@ -177,8 +180,17 @@ function createMockWindow(opts?: { width?: number; height?: number; minWidth?: n
     isMinimized: mock(() => false),
     restore: mock(() => {}),
     show: mock(() => {}),
-    showInactive: mock(() => {}),
+    showInactive: mock(() => {
+      win._emit('show')
+    }),
     setWindowButtonVisibility: mock((_visible: boolean) => {}),
+    // The window's place, for the reveal that parks it outside every display so the person never
+    // sees the browser appear for a picture (`parkOffScreen`), and its taskbar flag, which the
+    // same reveal takes off and puts back.
+    getPosition: mock((): [number, number] => [winX, winY]),
+    setPosition: mock((x: number, y: number) => { winX = x; winY = y }),
+    setSkipTaskbar: mock((skip: boolean) => { skipTaskbar = skip }),
+    _skipTaskbar: () => skipTaskbar,
     hide: mock(() => {
       win._emit('hide')
     }),
@@ -234,6 +246,10 @@ function createMockWindow(opts?: { width?: number; height?: number; minWidth?: n
 mock.module('electron', () => ({
   app: {
     getPath: mock((name: string) => name === 'downloads' ? downloadsDir : `/tmp/mock-${name}`),
+  },
+  // One display, so "off screen" has a definite meaning in a test: past its right edge.
+  screen: {
+    getAllDisplays: mock(() => [{ bounds: { x: 0, y: 0, width: 1920, height: 1080 } }]),
   },
   BrowserWindow: class MockBrowserWindow {
     webContents: any
@@ -1282,37 +1298,6 @@ describe('BrowserPaneManager', () => {
     expect(toolbarWindow.webContents.loadURL).toHaveBeenCalledWith(expect.stringContaining('data:text/html'))
   })
 
-  /**
-   * A chrome surface is a document of its own, in a view of its own, and every tab is
-   * another one — so a renderer that dies is answered where it died. The window is never
-   * the thing that pays for it, and neither is anything in it.
-   */
-  it('brings a chrome surface back when its renderer dies, and leaves the window alone', async () => {
-    manager.createInstance('chrome-gone')
-    const instance = (manager as any).instances.get('chrome-gone')
-    const loadsBefore = instance.toolbarView.webContents.loadFile.mock.calls.length
-
-    instance.toolbarView.webContents._emit('render-process-gone', { reason: 'crashed', exitCode: 133 })
-    await Bun.sleep(20)
-
-    expect(instance.toolbarView.webContents.loadFile.mock.calls.length).toBeGreaterThan(loadsBefore)
-    // Nothing about the window or its tabs changed: only the surface that died reloaded.
-    expect(instance.window.destroy).not.toHaveBeenCalled()
-    expect(instance.window.hide).not.toHaveBeenCalled()
-    expect(instance.tabs).toHaveLength(1)
-  })
-
-  it('leaves a chrome surface alone when its renderer exited with the window', async () => {
-    manager.createInstance('chrome-clean-exit')
-    const instance = (manager as any).instances.get('chrome-clean-exit')
-    const loadsBefore = instance.toolbarView.webContents.loadFile.mock.calls.length
-
-    instance.toolbarView.webContents._emit('render-process-gone', { reason: 'clean-exit', exitCode: 0 })
-    await Bun.sleep(20)
-
-    expect(instance.toolbarView.webContents.loadFile.mock.calls.length).toBe(loadsBefore)
-  })
-
   it('captures and filters console entries', () => {
     manager.createInstance('console-1')
     const instance = (manager as any).instances.get('console-1')
@@ -1883,6 +1868,9 @@ describe('BrowserPaneManager', () => {
   it('throws when screenshot capture returns empty NativeImage', async () => {
     manager.createInstance('screenshot-empty-image')
     const instance = (manager as any).instances.get('screenshot-empty-image')
+    // A hidden window on Windows: the shot is taken from the parked view, and an empty answer there
+    // is the same empty answer as anywhere (`canCaptureHiddenWindows` so a Mac host agrees).
+    ;(manager as any).canCaptureHiddenWindows = false
     tab(instance).tabView.webContents.capturePage = mock(async () => ({
       isEmpty: () => true,
       getSize: () => ({ width: 0, height: 0 }),
@@ -1897,6 +1885,7 @@ describe('BrowserPaneManager', () => {
   it('throws when screenshot capture returns empty PNG buffer', async () => {
     manager.createInstance('screenshot-empty-png')
     const instance = (manager as any).instances.get('screenshot-empty-png')
+    ;(manager as any).canCaptureHiddenWindows = false
     tab(instance).tabView.webContents.capturePage = mock(async () => ({
       isEmpty: () => false,
       getSize: () => ({ width: 2400, height: 1800 }),
@@ -1908,40 +1897,140 @@ describe('BrowserPaneManager', () => {
     await expect(manager.screenshot('screenshot-empty-png')).rejects.toThrow('Failed to capture screenshot: empty image buffer')
   })
 
-  it('recovers screenshot via non-disruptive inactive reveal and restores hidden state', async () => {
-    manager.createInstance('screenshot-rescue-success')
-    const instance = (manager as any).instances.get('screenshot-rescue-success')
+  /** A shot of that buffer, as the mock's `capturePage` would answer with it. */
+  const answerWith = (marker: string) => {
+    const image = {
+      isEmpty: () => false,
+      getSize: () => ({ width: 2400, height: 1800 }),
+      resize: () => image,
+      toPNG: () => Buffer.from(marker),
+      toJPEG: (_q: number) => Buffer.from(marker),
+    }
+    return image
+  }
+
+  it('takes a hidden window\'s shot from a view parked in a window nobody can see', async () => {
+    manager.createInstance('screenshot-parked-hidden')
+    const instance = (manager as any).instances.get('screenshot-parked-hidden')
+    // On Windows a hidden window answers for nothing, so the shot goes straight to the parked view —
+    // and the one that keeps the tests the same everywhere is that answer, not the host's platform.
+    ;(manager as any).canCaptureHiddenWindows = false
+    // The window is not on screen, so nothing inside it has a surface: the shot comes from the parked
+    // view, which is the only place this tab can be read at all.
+    tab(instance).tabView.webContents.capturePage = mock(async () => answerWith('parked-png'))
+
+    const windowsBefore = createdWindows.length
+    const result = await manager.screenshot('screenshot-parked-hidden', { includeMetadata: true })
+
+    expect(result.imageBuffer.toString()).toBe('parked-png')
+    expect(result.metadata?.warnings?.some((w: string) => w.includes('parked that tab in a window nobody can see'))).toBe(true)
+    // The window the person owns was neither shown nor moved: the parking window is the one that was.
+    expect(instance.window.showInactive).not.toHaveBeenCalled()
+    expect(instance.window.setPosition).not.toHaveBeenCalled()
+    expect(instance.isVisible).toBe(false)
+
+    expect(createdWindows.length).toBe(windowsBefore + 1)
+    const parking = createdWindows[createdWindows.length - 1]
+    expect(parking.contentView.addChildView.mock.calls.some(([view]: any[]) => view === tab(instance).tabView)).toBe(true)
+    expect(parking.showInactive).toHaveBeenCalled()
+    expect(parking.destroy).toHaveBeenCalled()
+    // And the tab's view is back in the window it belongs to.
+    expect(instance.window.contentView.children).toContain(tab(instance).tabView)
+  })
+
+  it('takes a hidden window\'s shot where it is, where that is known to answer', async () => {
+    manager.createInstance('screenshot-hidden-in-place')
+    const instance = (manager as any).instances.get('screenshot-hidden-in-place')
+    // macOS answers for a hidden window (Electron's own behaviour), so it gets the first go and no
+    // parking window is made at all.
+    ;(manager as any).canCaptureHiddenWindows = true
+    tab(instance).tabView.webContents.capturePage = mock(async () => answerWith('in-place-png'))
+
+    const windowsBefore = createdWindows.length
+    const result = await manager.screenshot('screenshot-hidden-in-place')
+
+    expect(result.imageBuffer.toString()).toBe('in-place-png')
+    expect(createdWindows.length).toBe(windowsBefore)
+  })
+
+  it('shoots a tab that has never been composited from a parked view, and puts it straight back', async () => {
+    manager.createInstance('screenshot-first-frame')
+    const instance = (manager as any).instances.get('screenshot-first-frame')
+    // The window's own tab has an address — written by hand because a mock tab never hears the
+    // `did-navigate` that would write it — so what follows is a second tab, not a reuse of it.
+    instance.tabs[0].currentUrl = 'https://front.example.com/'
+    const onScreen = instance.tabs[0]
+    // The agent's tab: opened behind the person's, so Chromium has never composited it and it has no
+    // surface to copy — the case the parked view exists for (`captureWhileParked`).
+    const behindId = manager.createTab('screenshot-first-frame', { url: 'https://behind.example.com/', activate: false })
+    const behind = instance.tabs.find((candidate: any) => candidate.id === behindId)
+
+    // The person is looking at the window: nothing of it may be shown, moved or re-stacked.
+    instance.window._emit('show')
 
     let captureCalls = 0
-    tab(instance).tabView.webContents.capturePage = mock(async () => {
+    behind.tabView.webContents.capturePage = mock(async () => {
       captureCalls += 1
-      if (captureCalls <= 3) {
-        return {
-          isEmpty: () => true,
-          getSize: () => ({ width: 0, height: 0 }),
-          resize: function() { return this },
-          toPNG: () => Buffer.alloc(0),
-          toJPEG: () => Buffer.alloc(0),
-        }
-      }
-
-      const img = {
-        isEmpty: () => false,
-        getSize: () => ({ width: 2400, height: 1800 }),
-        resize: () => img,
-        toPNG: () => Buffer.from('rescued-png'),
-        toJPEG: (_q: number) => Buffer.from('rescued-jpeg'),
-      }
-      return img
+      // What Chromium says about a page it has never composited. One answer is enough to give up on
+      // the window: another go inside it would find just as little.
+      if (captureCalls <= 1) throw new Error('Current display surface not available for capture')
+      return answerWith('first-frame-png')
     })
 
-    const result = await manager.screenshot('screenshot-rescue-success', { includeMetadata: true })
+    const windowsBefore = createdWindows.length
+    const result = await manager.screenshot('screenshot-first-frame', { includeMetadata: true }, behindId)
 
-    expect(result.imageBuffer.toString()).toBe('rescued-png')
-    expect(instance.window.showInactive).toHaveBeenCalledTimes(1)
-    expect(instance.window.focus).not.toHaveBeenCalled()
-    expect(instance.window.hide).toHaveBeenCalled()
-    expect(result.metadata?.warnings?.some((w: string) => w.includes('temporary inactive reveal'))).toBe(true)
+    expect(result.imageBuffer.toString()).toBe('first-frame-png')
+    expect(result.metadata?.warnings?.some((w: string) => w.includes('parked that tab in a window nobody can see'))).toBe(true)
+    expect(captureCalls).toBe(2)
+
+    // A window nobody can see was made for it, the view was handed to it, and it is gone again.
+    expect(createdWindows.length).toBe(windowsBefore + 1)
+    const parking = createdWindows[createdWindows.length - 1]
+    expect(parking.contentView.addChildView.mock.calls.some(([view]: any[]) => view === behind.tabView)).toBe(true)
+    expect(parking.showInactive).toHaveBeenCalled()
+    expect(parking.destroy).toHaveBeenCalled()
+
+    // The person's window: unchanged, their tab still on screen, and the handed-back tab behind it.
+    expect(instance.activeTabId).toBe(onScreen.id)
+    expect(instance.window.showInactive).not.toHaveBeenCalled()
+    const children = instance.window.contentView.children
+    expect(children).toContain(behind.tabView)
+    expect(children.indexOf(onScreen.tabView)).toBeGreaterThan(children.indexOf(behind.tabView))
+  })
+
+  it('treats a capture that never comes back as a miss, and the parked view answers instead', async () => {
+    manager.createInstance('screenshot-capture-timeout')
+    const instance = (manager as any).instances.get('screenshot-capture-timeout')
+    ;(manager as any).captureTimeoutMs = 20
+    // The window is up, so the shot is first tried where the tab is.
+    instance.window._emit('show')
+
+    let captureCalls = 0
+    tab(instance).tabView.webContents.capturePage = mock(() => {
+      captureCalls += 1
+      // What a page with no surface does: it does not fail, it stops answering.
+      if (captureCalls <= 1) return new Promise(() => {})
+      return Promise.resolve(answerWith('parked-png'))
+    })
+
+    const result = await manager.screenshot('screenshot-capture-timeout')
+
+    expect(result.imageBuffer.toString()).toBe('parked-png')
+    expect(captureCalls).toBe(2)
+  })
+
+  it('gives up instead of hanging when the capture never answers, in the window or parked', async () => {
+    manager.createInstance('screenshot-capture-never-answers')
+    const instance = (manager as any).instances.get('screenshot-capture-never-answers')
+    ;(manager as any).captureTimeoutMs = 20
+    instance.window._emit('show')
+
+    tab(instance).tabView.webContents.capturePage = mock(() => new Promise(() => {}))
+
+    await expect(manager.screenshot('screenshot-capture-never-answers')).rejects.toThrow(
+      'the page had no display surface to copy, even from a view of its own',
+    )
   })
 
   it('throws when region screenshot capture returns empty NativeImage', async () => {

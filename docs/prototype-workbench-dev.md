@@ -13,10 +13,10 @@
 | 文件 | 负责 |
 |---|---|
 | `types.ts` | **零依赖**的类型与常量（`PageKind`、`DEFAULT_PAGE_KIND`、提升用的页名 `LEGACY_BASE_PAGE_NAME` / `LEGACY_ENTRY_PAGE_NAME`、`_layout.html` 与它的插槽、带 `page` 的 `PrototypePatch` 与 `PrototypeWindowDescriptor`）。**这里的"零依赖"是硬约束**，见 §3.6 |
-| `config.ts` | `config.json`（页表 `pages`）的读写与规范化；旧形状（顶层 `kind` / `targetUrl`）**读时提升**成行（`legacyPageRows`）；读不干净的条目丢弃进 `pageIssues`，该字段永不写回 |
+| `config.ts` | `config.json`（页表 `pages`）的读写与规范化；旧形状（顶层 `kind` / `targetUrl`）**读时提升**成行（`legacyPageRows`）；读不干净的条目丢弃进 `pageIssues`，该字段永不写回。页行的 `useLayout: false` = 共享布局不套这一页（§19.2）；`true` 是默认、从不落盘，写在 overlay 行上是没有读者可兑现的声明（报进 `pageIssues`） |
 | `storage.ts` | 路径工具（含 `getPrototypeAnchorsPath`）+ `scanPrototypePatches()`（**派生索引**，不落盘；补丁的页域就是目录——根 = 每页都重放、`patches/<页名>/` = 只那一页；顺序 = **`Z` 按规则排最后**，再按序号 → 路径——写入者前缀是身份，不是排序键）+ `scanPrototypePatchesForPage()` / `listPrototypePatchPages()` + `listPrototypeFiles()`（原型自己目录里**有哪些文件**，入口单独挑出来；**不按任何条件过滤**——不按扩展名、也不按所有权，见 §20.1） |
-| `pages.ts` | 页的判定与页表合并（`isPrototypePagePath` / `describePrototypePages` / `listPrototypePages` / `findEntryPage` / `matchPrototypePage`）与页表增删改（`updatePrototypePages`：add / remove / rename / entry） |
-| `page-document.ts` | 生成的**页索引**（`buildPrototypeIndexDocument`：`/` 没有入口时的落点，也是导出包的 options 页）与**共享外壳**（`applyPrototypeLayout`：`_layout.html` 的单插槽，纯文本替换第一次出现） |
+| `pages.ts` | 页的判定与页表合并（`isPrototypePagePath` / `describePrototypePages` / `listPrototypePages` / `findEntryPage` / `matchPrototypePage`；解析出的页带 `useLayout` —— 共享布局是否套这一页，overlay 恒为 false，因为它不是我们的文档）与页表增删改（`updatePrototypePages`：add / remove / rename / entry / layout，命令面是 `pages --add` / `--remove` / `--rename` / `--change` / `--layout` / `--no-layout` 与 `entry`；行上的 `useLayout` 在每次改写中原样带走） |
+| `page-document.ts` | 生成的**页索引**（`buildPrototypeIndexDocument`：`/` 没有入口时的落点，也是导出包的 options 页）与**共享布局**（`applyPrototypeLayout`：`_layout.html` 的单插槽，纯文本替换第一次出现） |
 | `patch-script.ts` | `buildPatchInitScript()`：patch → init script 的纯变换（live 注入与导出共用，见 §3.4）；外加**每个补丁的自我报告**——css 报 `@target` 命中了几个元素、js 报有没有抛错，写进 `window.__craft_patch_state__`，由 `buildPatchStateProbeScript()` 读回；宿主页的 css 是纯文本内联、没有脚本可报，所以另有一个批量记录脚本（`buildPatchMatchRecorderScript`，只对声明了 `@target` 的补丁生成） |
 | `patch-header.ts` | 标记解析（`@requirement` / `@target`），**零依赖**：`storage.ts`（补丁记录）与 `requirements.ts`（需求线）都要用它，而后者已经依赖 storage |
 | `anchors.ts` | **虚拟 base**（§21.2）：`anchors/<页名\|shared>.json` 的读/合并写、漂移与孤儿判定、`dropPrototypeAnchors`，以及两个页面探针（`buildAnchorProbeScript` 取 fingerprint / `buildAnchorCandidateScript` 取候选选择器） |
@@ -40,7 +40,7 @@
 | `coverage.ts` | **需求线**：`resolveRequirementCoverage()` 把 PRD 与页 / 补丁 / findings / 折入文件对上，产出 `unmet` / 悬空引用 / 每条需求的 `disputes`。`status` 与 `dist/dev-spec.md` 读的是同一份结果 |
 | `research.ts` | `research/*.md` 的 finding（`# F-001` + `claim:` / `source:` / `captured:` / `evidence:` / `requirements:`）与其 `evidence:` 的存在性检查 |
 | `frames.ts` | 帧采集的记录与读回：`research/frames/<session>/frames.json` + 编号 JPEG、`research/videos/` 的来源副本、`listFrameCaptures` |
-| `create.ts` / `duplicate.ts` / `delete.ts` | 创建（只建目录与 `patches/`，不写 `config.json`、不预置页）、写页文档（`writePrototypePage`）、读页文档与 `_layout.html`、复制（`config.json` 按源的页表重写；`{ fold: true }` 时连副本一起折）、删除（目录整份删掉，**不**去改别的原型） |
+| `create.ts` / `duplicate.ts` / `delete.ts` | 创建（只建目录与 `patches/`，不写 `config.json`、不预置页、**不预置布局**）、写页文档（`writePrototypePage`）、读页文档与 `_layout.html`、复制（`config.json` 按源的页表重写；`{ fold: true }` 时连副本一起折）、删除（目录整份删掉，**不**去改别的原型） |
 | `index.ts` | barrel。**渲染层只能对它 `import type`**，见 §3.6 |
 
 ### agent 侧
@@ -91,7 +91,8 @@
 | 7 放开面 | 新增 `PROTOTYPE_PARTITION` 并只对它允许 `webSecurity:false` | **决定不做**（结论见实施方案 §6 阶段 7） | `webSecurity:false` 买到的是"页面脚本自己跨域"，而同一批能力用 CDP 也能做（`Fetch` 兑现、`Runtime.evaluate` 指定 frame）；代价是不可回退的真实安全弱化 |
 | 16 载体 | 原型文档以 `file://` 打开 | 先做了一次回环服务器，**后来换成**在浏览器 session 上拦 `http`（`protocol.handle`），origin 无端口、跨重启稳定 | opaque origin 缺 cookie 域、相对 `fetch`/XHR 与 ES module——mock 层因此永远看不到请求（实施方案 §16）。换载体是因为回环的端口每次启动都变 ⇒ origin 变 ⇒ cookie 与 localStorage 不跨重启；代价（我们站在真实浏览的 http 路径上）与边界见 §3.11 |
 | 19 kind 的位置 | `kind` 在**原型**上（§13）：一条流程要么整条 overlay、要么整条 scratch | **下沉到页**：`config.json` 的 `pages` 每行各自 `overlay` / `scratch`，一条流程可以混 | 类型描述的是**一份文档**的性质（我们自己写的 vs 别人的活页面），不是容器的性质；三个"想做却无处放"的证据见实施方案 §19 |
-| 19 壳 | scratch 页各自是完整文档，共享部分靠复制 | 可选 `_layout.html`，单插槽 `<slot name="page"></slot>`（读时兼容旧拼写 `<!-- @page -->`），宿主渲染与导出都套（`applyPrototypeLayout`） | 复用停在"共享外壳 + 页自己的资源引用"。**不引模板引擎**：作者面必须仍是最终产物，否则 agent 要学一套我们自己的语法，导出还得反过来还原它。插槽用 HTML 自己的拼写，就是为了不再多造一个只有本工程懂的标记 |
+| 19 布局 | scratch 页各自是完整文档，共享部分靠复制 | 可选 `_layout.html`，单插槽 `<slot name="page"></slot>`（读时兼容旧拼写 `<!-- @page -->`），宿主渲染与导出都套（`applyPrototypeLayout`） | 复用停在"共享布局 + 页自己的资源引用"。**不引模板引擎**：作者面必须仍是最终产物，否则 agent 要学一套我们自己的语法，导出还得反过来还原它。插槽用 HTML 自己的拼写，就是为了不再多造一个只有本工程懂的标记 |
+| 19.2 布局的默认与作用域（实施时修订） | 创建时预置一个示例布局；布局存在就套住每一页 | 创建**不写布局**（两页要重复同一段标记时才写）；页行 `"useLayout": false` = 共享布局不套这一页，该页按原样送出，宿主与导出走同一条判断，命令面是 `pages --layout/--no-layout <页名>` | "共用一个布局"是**页之间**的事实，不是原型级的默认：不同页可以是完全不同的设计，套上就是替它做决定。示例布局随之删掉——它本来只是"给第一页抄的形状"，而布局现在只在真需要时出现。没有多插槽、没有按页命名布局文件、没有继承链，作者面仍是完整 HTML 文档 |
 | 19.4 补丁页域 | 补丁没有页域，整原型全量重放 | **目录即归属**：`patches/*` 每页重放、`patches/<页名>/*` 只那一页；`patches/<页名>/` 对不上任何页 → `status.pageIssues` 点名 | 只影响 dev-spec 与状态报告的**分组**，不影响注入正确性（补丁本来就要防御式书写，不匹配即静默无害）；旧数据全在根，语义一模一样 |
 | 19.3 `/` | `/` 恒等于 `base.html`（§18），而文件名同时是导出路径与页间链接的锚 | `/` = **入口页**（行上的 `entry` 标记）；没有行标它时 = 宿主生成的**页索引** | 一张表里没有哪一页天然是第一页；换入口不该改文件名。"还没做出这个决定"应当看得见，而不是被一个文件名假装掉 |
 | 19.3 `/_index` | 只有 `/` 一个地址 | `/_index` 恒可达（真文件优先，§16.3 的老规矩）；配入口只是换掉 `/` 的落点 | 索引谁也没有被顶掉：配入口是可逆的一步，不是把这个列表拿走 |
@@ -276,15 +277,6 @@ storage: true        moduleRan: true               ← localStorage 与 <script 
 - **同时统一的行为**：尾部回退匹配（见实施方案 §5.3）——此前页面载体连 `baseUrl` 前缀都命中不了。
 - **教训**：这个仓库里"两份实现"是有先例的（`onboarding.ts` 的两份 handler），所以规则不是"永不重复"，而是**重复必须有对照测试**。没有对照的那一份，等于没有实现。
 
-### 3.22 地址栏里一个渲染错误能把整条 chrome 抹白（而且没人兜）
-
-- **症状**：按准星上的 `✗`（有未保存改动时提问的那一下）之后，**整个地址栏空白**，窗口点不动。
-- **根因**：那一版给准星左边新加的 `✓` 用了 `HeaderIconButton` 的 `tooltip`，它渲染的是应用那套 radix Tooltip——而 **radix 在没有 `TooltipProvider` 时直接 throw**。provider 挂在 `App.tsx` 的根上，**窗口这条地址栏的文档没有**（这也是为什么这条 bar 上其它按钮都只用 `aria-label`）。异常发生在 React 渲染里，整棵树被卸掉，于是这个文档什么都不画；地址栏和标签栏共用同一份 bundle，两块一起白。
-- **修法**：两层兜，各管一半。
-  - **文档这侧**：`browser-toolbar.tsx` 的挂载点套一个 `ChromeErrorBoundary`——渲染错误停在那一个 surface 里，画"这里出了点问题，页面不受影响" + 「重新加载」，而不是让树消失。**不自动重载**：确定的错误会变成无限重载。
-  - **主进程那侧**：真正的进程死掉（React 兜不住的）走 `render-process-gone`，bar / rail / overlay **各挂一个**，把**那一个** surface 的文档重新载入（走既有的重试与兜底页），窗口、标签页、别人的会话一概不动；`reason: 'clean-exit'`（窗口自己关时的连带退出）不算崩溃，不重载。
-- **判据**：窗口的每一块 chrome 都是自己的文档、自己的 view，每个标签页也是——所以"某一块的渲染器死了"从来不是"窗口死了"。要做的是把那一块拿回来，而不是动窗口。
-
 ---
 
 ## 4. 已删除的机制（墓园）
@@ -395,7 +387,7 @@ cd apps/electron && bun run build:renderer
 
 ## 6. 调试入口
 
-- **地址栏语法**：敲原型的**根地址** = 打开这个原型（主进程用 `resolveServedPrototype` 反查 label，并把窗口绑到这个原型上）；敲原型内部的路径（`/cart.html`、`/dist/extension/cart.html`、SPA 路由）= 普通导航。**不经面板的加载器**（agent 的 `navigate`、任何直接请求）取根地址 = **入口页**：是 overlay 就 `302` 到它自己的地址，是我们自己的页就渲染（文档 + **该页**的补丁 + `_layout.html` 外壳）；**没有行带 `entry` 时给的是生成的页索引**。`/_index` 恒给索引，`/<页名>` 对 overlay 是 `302`，而且**文件优先于页名**。
+- **地址栏语法**：敲原型的**根地址** = 打开这个原型（主进程用 `resolveServedPrototype` 反查 label，并把窗口绑到这个原型上）；敲原型内部的路径（`/cart.html`、`/dist/extension/cart.html`、SPA 路由）= 普通导航。**不经面板的加载器**（agent 的 `navigate`、任何直接请求）取根地址 = **入口页**：是 overlay 就 `302` 到它自己的地址，是我们自己的页就渲染（文档 + **该页**的补丁 + `_layout.html` 共享布局；该页的行写了 `useLayout: false` 时不套布局，按文档原样送出，§19.2）；**没有行带 `entry` 时给的是生成的页索引**。`/_index` 恒给索引，`/<页名>` 对 overlay 是 `302`，而且**文件优先于页名**。
 - **原型优先于对话**：原型可以先存在，`prototypes/<slug>` 目录建好就有地址与页面；对话是来访者——`handleOpenChat` 在没有对话时新建一个（`prototypeSlug` 落在会话头上），有对话时复用；同一个 `prototypeSlug` 可以挂在多个会话上，`prototype_tool` 命令按会话解析。窗口的身份则与对话无关（见上一条）。
 - **面板工具栏为什么不亮**：工具栏在独立渲染进程里，拿不到 workspace / 会话——它只显示主进程推来的地址与 `prototypeSlug`；两个按钮的可用性完全由那个 slug 决定（没有原型就置灰）。slug 有两条来路，主进程按这个顺序答（`prototypeBindingFor`）：**窗口被打开时声明的原型** → **会话链**（窗口所属会话在做哪个原型）。只留后者时，"刚创建、还没有对话"的原型点「打开」会得到地址栏写着真实 URL、按钮全灰的普通窗口——这是 §3.3 同一族的身份缺失，已修。
 - **"补丁没生效"还是"页面不是这一页"**：先看 `status` 的 `pages:`（每页带类型、地址或文件、`[entry]`）与 `root:` 两行，再看 `page issues:`——`patches/<页名>/` 对不上任何页、声明的页文档不在、行读不干净都在这里点名（§19.4 / §19.8）。`apply` 的输出也会说这次重放的是**哪一页**的补丁（没有页就是"只有共享补丁"），所以"改错了页"和"补丁没生效"分得开。

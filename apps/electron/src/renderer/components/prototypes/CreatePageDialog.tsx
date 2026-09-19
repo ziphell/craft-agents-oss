@@ -86,8 +86,8 @@ export function pageDocumentPath(dir: string, name: string): string {
  * a fragment is not a page (`writePrototypePage` refuses one, and patches could
  * not be applied to it).
  *
- * With a shell present the document is left bare on purpose: `_layout.html` is
- * applied by the host around the page's own document, and it is the shell that
+ * With a layout present the document is left bare on purpose: `_layout.html` is
+ * applied by the host around the page's own document, and it is the layout that
  * carries the slot — a page that repeated it would render it twice.
  */
 export function buildNewPageDocument(name: string): string {
@@ -136,7 +136,7 @@ export function CreatePageDialog({
     setSubmitting(false)
   }, [open])
 
-  // Whether the prototype has a shared shell. Read once per open: it changes the
+  // Whether the prototype has a shared layout. Read once per open: it changes the
   // wording (and what the first document will look like), and it is cheap.
   React.useEffect(() => {
     if (!open || !dir) return
@@ -149,7 +149,7 @@ export function CreatePageDialog({
         if (!cancelled) setHasLayout(true)
       })
       .catch(() => {
-        // No shell is the ordinary case, not an error worth reporting.
+        // No layout is the ordinary case, not an error worth reporting.
         if (!cancelled) setHasLayout(false)
       })
     return () => {

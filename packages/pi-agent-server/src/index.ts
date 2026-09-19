@@ -62,6 +62,7 @@ import {
   buildCustomEndpointModelDef,
   normalizeCustomEndpointModelEntry,
   stripPiPrefix,
+  type CustomEndpointModelConfig,
   type CustomEndpointModelEntry,
   type CustomEndpointModelOverrides,
 } from './custom-endpoint-models.ts';
@@ -73,6 +74,7 @@ import { buildCallLlmRequest, withTimeout, LLM_QUERY_TIMEOUT_MS } from '../../sh
 import type { LLMQueryRequest, LLMQueryResult } from '../../shared/src/agent/llm-tool.ts';
 import { PI_TOOL_NAME_MAP, THINKING_TO_PI } from '../../shared/src/agent/backend/pi/constants.ts';
 import { getDefaultSummarizationModel } from '../../shared/src/config/models.ts';
+import type { CustomEndpointConfig } from '../../shared/src/config/llm-connections.ts';
 import { createWebFetchTool } from './tools/web-fetch.ts';
 import { resolveSearchProvider } from './tools/search/resolve-provider.ts';
 import { createSearchTool } from './tools/search/create-search-tool.ts';
@@ -90,7 +92,7 @@ type PiCredential =
   | { type: 'iam'; accessKeyId: string; secretAccessKey: string; region?: string; sessionToken?: string };
 
 /** Custom endpoint protocol — determines which streaming adapter Pi SDK uses */
-type CustomEndpointApi = 'openai-completions' | 'anthropic-messages';
+type CustomEndpointApi = CustomEndpointConfig['api'];
 
 /** Init message from main process — configures the Pi agent server */
 interface InitMessage {
@@ -113,8 +115,8 @@ interface InitMessage {
   branchFromSdkSessionId?: string;
   branchFromSessionPath?: string;
   branchFromSdkTurnId?: string;
-  customEndpoint?: { api: CustomEndpointApi; supportsImages?: boolean };
-  customModels?: Array<string | { id: string; contextWindow?: number; supportsImages?: boolean }>;
+  customEndpoint?: CustomEndpointConfig;
+  customModels?: CustomEndpointModelConfig[];
   piAuth?: { provider: string; credential: PiCredential };
 }
 
@@ -125,8 +127,8 @@ interface RuntimeConfigUpdateMessage {
   providerType?: string;
   authType?: string;
   baseUrl?: string;
-  customEndpoint?: { api: CustomEndpointApi; supportsImages?: boolean };
-  customModels?: Array<string | { id: string; contextWindow?: number; supportsImages?: boolean }>;
+  customEndpoint?: CustomEndpointConfig;
+  customModels?: CustomEndpointModelConfig[];
 }
 
 /** Messages from main process (stdin) */
@@ -444,24 +446,23 @@ function registerCustomEndpointModels(
 ): void {
   for (const m of models) {
     customEndpointModelIds.add(m.id);
-    if (m.contextWindow || m.supportsImages !== undefined) {
-      customModelOverrides.set(m.id, {
-        ...(m.contextWindow ? { contextWindow: m.contextWindow } : {}),
-        ...(m.supportsImages !== undefined ? { supportsImages: m.supportsImages } : {}),
-      });
+    // Everything except the id is a parameter override. Forwarding the whole
+    // rest (rather than a hand-picked subset) is what keeps a newly supported
+    // parameter from silently stopping at this line.
+    const { id: _id, ...params } = m;
+    if (Object.keys(params).length > 0) {
+      customModelOverrides.set(m.id, params);
     }
   }
   const allIds = [...customEndpointModelIds];
+  const providerHeaders = initConfig?.customEndpoint?.headers;
   registry.registerProvider('custom-endpoint', {
     baseUrl,
     apiKey: resolveCustomEndpointApiKey(),
     api,
     authHeader: true,
-    models: allIds.map(id => buildCustomEndpointModelDef(
-      id,
-      { supportsImages: initConfig?.customEndpoint?.supportsImages === true },
-      customModelOverrides.get(id),
-    )),
+    ...(providerHeaders ? { headers: providerHeaders } : {}),
+    models: allIds.map(id => buildCustomEndpointModelDef(id, customModelOverrides.get(id))),
   });
   debugLog(`Registered custom endpoint: ${baseUrl} with ${allIds.length} model(s) [${allIds.join(', ')}], api: ${api}`);
 }

@@ -53,6 +53,7 @@ const cartPage: PrototypePage = {
   file: 'cart.html',
   url: 'http://checkout-flow-abc123ab.localhost:41234/cart.html',
   entry: true,
+  useLayout: true,
 }
 
 const payPage: PrototypePage = {
@@ -61,6 +62,7 @@ const payPage: PrototypePage = {
   file: null,
   url: 'https://app.example.com/pay',
   entry: false,
+  useLayout: false,
 }
 
 const BASE = '<!doctype html><html><head><meta charset="utf-8"></head><body><button>Pay</button></body></html>'
@@ -430,6 +432,39 @@ describe('exportPrototype', () => {
     // …and the reference in the page resolves inside the package, which is what the
     // existing "every reference exists" check below asserts for the rest.
     expect(readFileSync(result.pagePath!, 'utf-8')).toContain('href="/assets/app.css"')
+  })
+
+  /**
+   * A page whose row says the shared layout does not wrap it travels as written: the
+   * delivered document is the one the host serves, which is the whole point of the
+   * answer — a page that is a design of its own keeps its own head (plan §19.2).
+   */
+  it('delivers a page as written when its row says the layout does not wrap it', () => {
+    writeFileSync(
+      join(prototypeDir, '_layout.html'),
+      '<!doctype html><html><body><nav id="layout">layout</nav><slot name="page"></slot></body></html>',
+      'utf-8',
+    )
+    writePrototypeConfig(workspaceRoot, slug, {
+      pages: [
+        { name: 'cart', kind: 'scratch' },
+        { name: 'landing', kind: 'scratch', useLayout: false },
+      ],
+    })
+    writePage('cart')
+    writePage(
+      'landing',
+      '<!doctype html><html><head><style>body { color: red }</style></head><body>landing</body></html>',
+    )
+
+    const result = exportPrototype(workspaceRoot, slug)
+
+    // The page that said nothing still gets the shared markup…
+    expect(readFileSync(join(result.extensionDir, 'cart.html'), 'utf-8')).toContain('id="layout"')
+    // …and the one that said so is the document it was written as.
+    const delivered = readFileSync(join(result.extensionDir, 'landing.html'), 'utf-8')
+    expect(delivered).not.toContain('id="layout"')
+    expect(delivered).toContain('<style>body { color: red }</style>')
   })
 
   it('writes a loadable extension and a dev spec into dist/', () => {

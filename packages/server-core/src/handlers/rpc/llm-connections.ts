@@ -1,7 +1,7 @@
 import { RPC_CHANNELS, type LlmConnectionSetup } from '@craft-agent/shared/protocol'
-import { getLlmConnections, getLlmConnection, addLlmConnection, updateLlmConnection, deleteLlmConnection, getDefaultLlmConnection, setDefaultLlmConnection, touchLlmConnection, isCompatProvider, isAnthropicProvider, getDefaultModelsForConnection, getDefaultModelForConnection, type LlmConnection, type LlmConnectionWithStatus, toBedrockNativeId, deriveBedrockRegionPrefix } from '@craft-agent/shared/config'
+import { getLlmConnections, getLlmConnection, addLlmConnection, updateLlmConnection, deleteLlmConnection, getDefaultLlmConnection, setDefaultLlmConnection, touchLlmConnection, isCompatProvider, isAnthropicProvider, getDefaultModelsForConnection, getDefaultModelForConnection, type LlmConnection, type LlmConnectionUpdate, type LlmConnectionWithStatus, toBedrockNativeId, deriveBedrockRegionPrefix } from '@craft-agent/shared/config'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
-import { setSetupDeferred } from '@craft-agent/shared/config/storage'
+import { setSetupDeferred, applyLlmConnectionUpdate } from '@craft-agent/shared/config/storage'
 import {
   resolveSetupTestConnectionHint,
   testBackendConnection,
@@ -84,10 +84,11 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
         isNewConnection = true
       }
 
-      const updates: Partial<LlmConnection> = {}
-      const hasConfiguredBaseUrl = !!setup.baseUrl?.trim()
+      const updates: LlmConnectionUpdate = {};
+      const hasConfiguredBaseUrl = !!setup.baseUrl?.trim();
       if (setup.baseUrl !== undefined) {
-        updates.baseUrl = setup.baseUrl?.trim() || undefined
+        // Explicit null = clear the stored baseUrl (merge semantics).
+        updates.baseUrl = setup.baseUrl?.trim() || null;
 
         // Only mutate providerType for API key connections (not OAuth connections)
         if (isAnthropicProvider(connection.providerType) && connection.authType !== 'oauth') {
@@ -109,10 +110,15 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
       }
 
       if (setup.defaultModel !== undefined) {
-        updates.defaultModel = setup.defaultModel ?? undefined
+        updates.defaultModel = setup.defaultModel ?? null
+      }
+      if (setup.fastModel !== undefined) {
+        // Merge semantics: `null` deletes the key (back to the name-based
+        // guess), `''` is stored as-is and means "follow the default model".
+        updates.fastModel = setup.fastModel ?? null
       }
       if (setup.models !== undefined) {
-        updates.models = setup.models ?? undefined
+        updates.models = setup.models ?? null
       }
       if (setup.modelSelectionMode !== undefined) {
         updates.modelSelectionMode = setup.modelSelectionMode
@@ -139,9 +145,10 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
       } else if (setup.baseUrl !== undefined) {
         // Base URL was explicitly updated without custom protocol config.
         // Treat this as non-custom mode and clear stale custom endpoint metadata.
+        // Explicit null (not undefined) is what clear means under merge semantics.
         // Only downgrade existing connections — new ones already have the correct
         // providerType from createBuiltInConnection().
-        updates.customEndpoint = undefined
+        updates.customEndpoint = null
         if (connection.providerType === 'pi_compat' && connection.authType !== 'oauth' && !isNewConnection) {
           updates.providerType = 'pi'
           updates.authType = 'api_key'
@@ -200,18 +207,23 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
           const normalized = isBedrockPi ? toBedrockNativeId(bare, regionPrefix) : bare
           return `pi/${normalized}`
         }
-        if (updates.models) {
+        if (Array.isArray(updates.models)) {
           updates.models = updates.models.map(m => typeof m === 'string' ? toPiModelId(m) : { ...m, id: toPiModelId(m.id) })
         }
-        if (updates.defaultModel) {
+        if (typeof updates.defaultModel === 'string') {
           updates.defaultModel = toPiModelId(updates.defaultModel)
+        }
+        // Same convention as defaultModel: on a Pi connection every model id in
+        // config.json carries the `pi/` prefix. `''` ("follow the default") is
+        // left alone rather than turned into a bare `pi/`.
+        if (typeof updates.fastModel === 'string' && updates.fastModel) {
+          updates.fastModel = toPiModelId(updates.fastModel)
         }
       }
 
-      const pendingConnection: LlmConnection = {
-        ...connection,
-        ...updates,
-      }
+      // Same merge the storage layer will apply on save — a plain spread would
+      // keep `null` markers in the pending shape (schema rejects null).
+      const pendingConnection: LlmConnection = applyLlmConnectionUpdate(connection, updates)
 
       if (pendingConnection.providerType === 'pi') {
         const modelIds = (pendingConnection.models ?? []).map(m => typeof m === 'string' ? m : m.id)

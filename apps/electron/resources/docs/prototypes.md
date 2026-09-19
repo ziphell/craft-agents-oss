@@ -29,7 +29,7 @@ Every command belongs to `prototype_tool` and carries no prefix — `list`, `cre
 
 ```
 prototypes/{slug}/
-├── _layout.html                 the shared shell for the pages of ours (optional)
+├── _layout.html                 the shared layout for the pages of ours (optional)
 ├── cart.html                    a page of ours — every top-level .html is a page
 ├── PRD.md                       the brief — the one file requirements are read from
 ├── personas.md                  material beside it: any format, any number of files
@@ -42,15 +42,15 @@ prototypes/{slug}/
 ├── services/{svc}/              contract fragments (paths/*.yaml), fixtures/, openapi.yaml
 ├── anchors/                     written by `apply` — evidence about the page
 ├── acceptance/                  written by `verify` — the rounds
-├── config.json                  the page table (order + entry) and the prototype's own settings
+├── config.json                  the page table (order, entry, useLayout) and the prototype's own settings
 └── dist/                        the deliverables
 ```
 
-**The filesystem says what exists; the table says the order and the entry.** Every top-level `.html` is a page of the prototype (`cart.html` → page `cart`) and needs no declaration at all; declaring one only puts it in the flow order, and `entry` is what hands it the address root. Two things are deliberately not pages: `_`-prefixed files (`_layout.html`, the shared shell, and the generated `/_index`) and documents in subdirectories (assets). The rest of what sits at that level is the author's material, in any format; `PRD.md` is the one file requirements are read from.
+**The filesystem says what exists; the table says the order, the entry, and whether the shared layout wraps a page.** Every top-level `.html` is a page of the prototype (`cart.html` → page `cart`) and needs no declaration at all; declaring one only puts it in the flow order, hands it the address root (`entry`), or says that it stands on its own (`useLayout: false`). Two things are deliberately not pages: `_`-prefixed files (`_layout.html`, the shared layout, and the generated `/_index`) and documents in subdirectories (assets). The rest of what sits at that level is the author's material, in any format; `PRD.md` is the one file requirements are read from.
 
 **A page's name is its identity on every surface**: `--page <name>` on the commands, `/<name>` on the address, `patches/<name>/` for its own changes, and the `page` a `snapshot` reports. It is a short name chosen when the page is added (`cart`, `pay`) — not a URL fragment.
 
-A shell shared by the pages of ours may live in `_layout.html`; its `<slot name="page"></slot>` is where a page renders. Patches scope the same way: `patches/*` applies to every page, `patches/<page>/*` to that one page, and a directory matching no page is reported, never replayed.
+A layout shared by the pages of ours lives in `_layout.html` (write one when two pages would repeat the same shared markup — a new prototype has none); its `<slot name="page"></slot>` is where a page renders. A page whose row carries `"useLayout": false` is not put in it: that page is served as written, with its own `<head>`. Patches scope the same way either way: `patches/*` applies to every page, `patches/<page>/*` to that one page, and a directory matching no page is reported, never replayed.
 
 ---
 
@@ -160,6 +160,7 @@ The flow's pages, in order — which screens this prototype covers. One change a
 - `--add orders` places an existing document (`orders.html`) in the flow order. It does not create a page: a page of ours **is** a file, so the file has to be there first — write it and it is already a page, declared or not.
 - `--rename cart=basket` · `--remove payment`. Renaming a page of ours takes its document and its own patches along; removing one deletes its document (and those patches), while a live page is only taken out of the flow.
 - `--change payment=https://staging.example.com/pay` re-points one **live page** at another environment — the same page in a dev server, staging or production (see below).
+- `--no-layout landing` · `--layout landing` say whether the shared layout wraps one page of ours (see below).
 
 A name has to be free and usable (a leading `_` belongs to the host's own files, and no two pages may share an address), and a live page needs an address a browser can open — a scheme-less value is refused here rather than becoming a page nothing covers. The same list feeds `status`, `open --page`, the `page` name in `snapshot`, and the extension's content scripts (one per live page), so re-export after a change: the delivered package is a snapshot and does not see it until then.
 
@@ -170,6 +171,11 @@ Re-export after changing it: the extension's toolbar icon opens the entry page (
 
 ### `pages --change <name>=<url>`
 Point one **live page** at the same page in another environment — a local dev server, staging, production. The address is a fact about where the page is, not part of its identity, so this is an ordinary edit to the table; it names its page, since the table `pages` prints is the list of names. Two things go stale silently, and are said out loud when it changes: windows already open keep the old page until they navigate again, and the selectors were written against the old DOM (a patch that matches nothing looks exactly like a patch that did nothing). A page of ours is refused — it is our own document, so there is no external page for an address to mean. A page's kind cannot change.
+
+### `pages --layout <name>` · `pages --no-layout <name>`
+Whether the shared layout (`_layout.html`) wraps that page. `--no-layout` is for a page that is a design of its own — an email, a landing page, a screen from another product: it is then served, and delivered, exactly as written, with its own head and its own styles, and `--layout` puts it back in the layout. It is a fact about the page, so it travels with it, and the page keeps its patches either way. Only a page of ours can carry it — a live page is someone else's document and the layout is ours, so the answer does not exist for one. Naming a document nobody declared declares it, because the flag lives on a row.
+
+A flow whose screens do not share one look is what this is for: the layout is for pages that belong to the same design, not a funnel every page has to pass through.
 
 ### `open <slug>`
 Open a prototype in the browser, and replay its patches into what opens.
@@ -192,8 +198,7 @@ Starting from nothing needs no special command: write `prototypes/{slug}/cart.ht
 ### Writing a page of ours (the shape to copy)
 
 A page of ours is an ordinary HTML document — no build step, no template language — and the prototype's
-directory *is* the origin root. Every new prototype starts with a shell (`_layout.html`) that wraps each of
-its pages, so a page carries only its own screen and reuses the shell's tokens:
+directory *is* the origin root. What you write is what the browser loads:
 
 ```html
 <!doctype html>
@@ -201,23 +206,33 @@ its pages, so a page carries only its own screen and reuses the shell's tokens:
 <head>
 <meta charset="utf-8">
 <title>Cart</title>
+<style>
+  /* This screen's own styling. */
+  .total { font-weight: 600 }
+</style>
 </head>
 <body>
-  <div class="app">
-    <h1>Cart</h1>
-    <section class="card stack">
-      <div class="row"><span>Delivery</span><span class="muted">Free</span></div>
-      <button class="row">Checkout</button>
-    </section>
-  </div>
+  <h1>Cart</h1>
+  <section class="total">
+    <div><span>Delivery</span> <span>Free</span></div>
+    <button>Checkout</button>
+  </section>
 </body>
 </html>
 ```
 
-`var(--accent)`, `.card`, `.row`, `.stack` and `.muted` come from the shell, as do the scale tokens behind
-them (`--size-2`, `--gray-8`, `--radius-2`). Prefer the meaning, reach for the scale when there is no word
-for what you need. **Do not copy the frame** (header, nav, tokens) into a page — that is what `_layout.html`
-is for, and two copies drift.
+**A layout is something you add when it has earned its place.** A new prototype has no `_layout.html`: write
+the pages first, and when two of them would repeat the same markup, write `_layout.html` — an ordinary
+document whose `<slot name="page"></slot>` is where each of those pages renders. Put the shared markup and
+the design tokens in it (a scale like `--gray-8`, a meaning like `--accent`, and the pieces every screen
+needs such as `.card` / `.row`), and from then on a page that shares that design carries only its own screen
+and reuses them. **Do not copy the layout into a page** (header, nav, tokens) — two copies drift, and the
+layout is the one place a change to it belongs.
+
+A page that is a design of its own — an email, a landing page, a screen from another product — is not put in
+the layout at all: set `"useLayout": false` on its row in `config.json` and it is served (and delivered)
+exactly as written, with its own head. That is the answer for a flow whose screens do not share one look, and
+it is a fact about the page, so it travels with it. Every page keeps its own patches either way.
 
 What bites later, in order of how often it does:
 
@@ -232,7 +247,7 @@ What bites later, in order of how often it does:
   workbench validates a page, so a thrown error is invisible until someone looks.
 - **No `eval` and no `new Function`** — the delivered extension forbids them and the export would fail.
   **No bundler**: plain `<script>`, `<style>`, and `<script type="module">` with relative imports are fine.
-- **Reuse has two places, not a third**: shared structure goes in the shell, shared helpers go in
+- **Reuse has two places, not a third**: shared structure goes in the layout, shared helpers go in
   `assets/lib/` (the JS shape below). There is no template engine, by design.
 - **Data**: `fetch('/api/…')` (relative), answered by the contract's fixtures when mocked. State belongs in
   `localStorage` — the prototype's origin is stable, so it survives.
@@ -293,7 +308,7 @@ init()
 | Making failure visible | a silent `catch {}` |
 
 Four boundaries, and keeping them apart is what stops a prototype from rotting: **structure changes go in a
-patch, behaviour goes in a page's module, shared structure goes in the shell, shared helpers go in
+patch, behaviour goes in a page's module, shared structure goes in the layout, shared helpers go in
 `assets/lib/`.**
 
 ---
@@ -585,7 +600,7 @@ While the mock is active the debugger stays attached — CDP drops interception 
 Build the prototype's deliverables into `prototypes/{slug}/dist/`:
 
 - `extension/` — **a loadable Chrome extension covering the whole flow**, the carrier for everything that cannot travel in a file. Nothing is published to a store: the recipient opens `chrome://extensions`, turns on **Developer mode**, and clicks **Load unpacked** on this folder. One package, whatever the flow is made of:
-  - **pages of ours ship in it** — each document under the name it has on disk (`cart.html`), so the links an author wrote between pages keep working; each carries only the patches that apply to it (the shared ones plus its own), and the layout shell is applied exactly as the host applies it. The prototype's own static files travel with the package too: the whole of `assets/` is copied **verbatim**, under `assets/…`, which is the path the pages already address it by — images, fonts and video included, copied as bytes so nothing is corrupted on the way, and the directory as a whole rather than a list of extensions, because whether a png is addressed is not answerable from the markup (a script builds the URL).
+  - **pages of ours ship in it** — each document under the name it has on disk (`cart.html`), so the links an author wrote between pages keep working; each carries only the patches that apply to it (the shared ones plus its own), and the layout is applied exactly as the host applies it — so a page that stands on its own (`"useLayout": false`) ships as written. The prototype's own static files travel with the package too: the whole of `assets/` is copied **verbatim**, under `assets/…`, which is the path the pages already address it by — images, fonts and video included, copied as bytes so nothing is corrupted on the way, and the directory as a whole rather than a list of extensions, because whether a png is addressed is not answerable from the markup (a script builds the URL).
   - **live pages are injected into** — one content script per live page, which Chrome itself scopes to that page's address. The patches are simply there when the page loads: nothing to click, and they survive a reload. `README.md` says where it applies. Nothing is copied or frozen, so the page keeps its own JavaScript, session and data.
   - The extension's **options** page is the generated **page index** (every page with a way into each: our documents are package files, live pages are their addresses), and the toolbar icon opens the entry page — the index when no page is marked as the entry.
   - The package carries the contract's `x-mock` routes when there are any: a script in the page's own world (`world: "MAIN"`, `document_start`) answers them by wrapping the page's `fetch`/`XHR`, and `README.md` lists exactly which requests are faked — and what that cannot cover (requests a PWA's own service worker makes never pass through the page).
@@ -627,6 +642,6 @@ The window and tab model itself — `tabs`, `tab-new`, `tab-show`, `tab-assign`,
 - `create needs a name.` → pass one: `create Checkout flow`
 - `<cmd> needs a prototype. Pass one — "<cmd> <slug>" — or open it in this window first ("open <slug>"), which is what makes the page say whose it is. "list" shows what exists.` → no slug was given, and neither the page this session works from nor its binding names one
 - `pages --add needs a page name, and a url for a live page.` → `--add payment=https://app.example.com/pay` (live) or `--add orders` (a document that already exists)
-- `pages --rename needs old=new.` · `pages --remove needs a page name.` · `pages --change needs <name>=<url>.`
+- `pages --rename needs old=new.` · `pages --remove needs a page name.` · `pages --change needs <name>=<url>.` · `pages --layout/--no-layout needs a page name.`
 - `entry needs a page name, or "none".` → `entry cart`
 - `--tab needs a tab id.` → `tabs` lists them: `snapshot --tab tab-3`

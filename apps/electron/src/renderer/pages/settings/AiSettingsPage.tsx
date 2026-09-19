@@ -50,6 +50,7 @@ import {
 import { useOnboarding } from '@/hooks/useOnboarding'
 import { useWorkspaceIcon } from '@/hooks/useWorkspaceIcon'
 import { OnboardingWizard, type ApiSetupMethod } from '@/components/onboarding'
+import type { ApiKeyInitialValues } from '@/components/apisetup'
 import { RenameDialog } from '@/components/ui/rename-dialog'
 import { useAppShellContext } from '@/context/AppShellContext'
 import { getModelShortName, type ModelDefinition } from '@config/models'
@@ -631,14 +632,7 @@ export default function AiSettingsPage() {
   const [showApiSetup, setShowApiSetup] = useState(false)
   const [editingConnectionSlug, setEditingConnectionSlug] = useState<string | null>(null)
   const [isDirectEdit, setIsDirectEdit] = useState(false)
-  const [editInitialValues, setEditInitialValues] = useState<{
-    apiKey?: string
-    baseUrl?: string
-    connectionDefaultModel?: string
-    activePreset?: string
-    models?: string[]
-    customApi?: CustomEndpointApi
-  } | undefined>(undefined)
+  const [editInitialValues, setEditInitialValues] = useState<ApiKeyInitialValues | undefined>(undefined)
   const setFullscreenOverlayOpen = useSetAtom(fullscreenOverlayOpenAtom)
 
   // Workspaces for override cards
@@ -826,23 +820,27 @@ export default function AiSettingsPage() {
 
     // Build model string from connection's models array
     const modelStr = connection.models
-      ?.map((m: string | ModelDefinition) => typeof m === 'string' ? m : m.id)
+      ?.map(m => typeof m === 'string' ? m : m.id)
       .join(', ') || connection.defaultModel || ''
-
-    // Set initial values before opening overlay so ApiKeyInput mounts with them
-    const modelIds = connection.models
-      ?.map((m: string | ModelDefinition) => typeof m === 'string' ? m : m.id)
-      .filter(Boolean)
 
     const isCustomEndpointConnection = !!connection.customEndpoint && !!connection.baseUrl?.trim()
 
     setEditInitialValues({
       apiKey,
       baseUrl: connection.baseUrl,
-      connectionDefaultModel: modelStr,
+      // The custom endpoint editor edits models as rows and keeps the default as
+      // a single picked id, so this field carries one id there — the comma list
+      // is only the seed for the flows that edit models as a comma string.
+      connectionDefaultModel: isCustomEndpointConnection
+        ? (connection.defaultModel ?? '')
+        : modelStr,
+      fastModel: connection.fastModel,
       activePreset: isCustomEndpointConnection ? 'custom' : (connection.piAuthProvider || undefined),
-      models: modelIds,
+      // Pass the stored entries themselves (not just ids): the custom endpoint
+      // editor edits per-model parameters, and unknown keys must survive a save.
+      models: connection.models,
       customApi: connection.customEndpoint?.api,
+      connectionHeaders: connection.customEndpoint?.headers,
     })
 
     // Open overlay and jump directly to credentials step (no reset — jumpToCredentials sets state)

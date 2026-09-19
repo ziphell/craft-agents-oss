@@ -174,7 +174,14 @@ function createMockFns(): BrowserPaneFns {
       slug,
       dir: `/tmp/prototypes/${slug}`,
       pages: [
-        { name: 'entry', kind: 'overlay' as const, file: null, url: 'https://app.example.com/checkout', entry: true },
+        {
+          name: 'entry',
+          kind: 'overlay' as const,
+          file: null,
+          url: 'https://app.example.com/checkout',
+          entry: true,
+          useLayout: false,
+        },
       ],
       entryPage: 'entry',
       pageIssues: [],
@@ -297,6 +304,8 @@ function page(
     file: where.file ?? null,
     url: where.url ?? null,
     entry,
+    // Only a document of ours can be wrapped by the layout (plan §19.2).
+    useLayout: kind === 'scratch',
   }
 }
 
@@ -906,6 +915,37 @@ describe('the pane tools', () => {
 
       expect(result.content[0].text).toContain('orders.html has to exist')
       expect(result.content[0].text).toContain('/tmp/prototypes/checkout-flow/orders.html')
+    })
+
+    // The other flag a row can carry, and the two spellings are one operation on the
+    // table: a page that is a design of its own is not wrapped by the shared layout,
+    // and --layout puts it back (plan §19.2).
+    it('sets and clears a page that stands on its own', async () => {
+      const changes: unknown[] = []
+      mockFns.setPrototypePages = async (slug, change) => {
+        changes.push(change)
+        return {
+          slug,
+          pages: [{ name: 'landing', kind: 'scratch', useLayout: false }],
+          note: '"landing" is served as written from now on',
+        }
+      }
+
+      const off = await executeTool(tools, 'prototype_tool', { command: 'pages checkout-flow --no-layout landing' })
+      const on = await executeTool(tools, 'prototype_tool', { command: 'pages checkout-flow --layout landing' })
+
+      expect(changes).toEqual([
+        { op: 'layout', name: 'landing', useLayout: false },
+        { op: 'layout', name: 'landing', useLayout: true },
+      ])
+      expect(off.content[0].text).toContain('"landing" is served as written')
+      expect(off.content[0].text).toContain('landing (scratch) — a document of ours')
+      expect(on.content[0].text).toContain('landing (scratch)')
+    })
+
+    it('asks which page when --layout is given no name', async () => {
+      const result = await executeTool(tools, 'prototype_tool', { command: 'pages checkout-flow --no-layout' })
+      expect(result.content[0].text).toContain('pages --no-layout needs a page name')
     })
 
     it('removes and renames pages', async () => {

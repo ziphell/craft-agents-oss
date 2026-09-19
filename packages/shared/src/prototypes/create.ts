@@ -29,7 +29,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { getPrototypeDirPath, getPrototypeLayoutPath, getPrototypePatchesPath } from './storage.ts'
-import { buildLayoutShell } from './page-document.ts'
 import { pageFileName } from './pages.ts'
 
 /** Slug characters that cannot escape the prototypes directory. */
@@ -67,12 +66,12 @@ export function prototypeSlugFromName(name: string): string {
 /**
  * Create a prototype directory.
  *
- * Writes an empty `patches/`, a `_layout.html` to copy from, and nothing else — no
- * page, and no `config.json` either: with no pages there is nothing to declare, and
- * an empty file would only be a second way of saying that.
- * The shell is not a page (nothing lists it), so its presence says nothing about
- * what the prototype contains; it is there so the first page has a validated shape
- * to follow.
+ * Writes an empty `patches/` and nothing else — no page, no `config.json`, and no
+ * `_layout.html` either: with no pages there is nothing to declare, and a layout now
+ * appears the moment there is something to share (two pages that would repeat the
+ * same shared markup), which is the rule the prompt states. Seeding one up front would be a
+ * layout around screens that may not want it at all — a page can be a design of its
+ * own (plan §19.2).
  *
  * @throws when the name produces an empty slug, or when the prototype already
  *   exists (silently reusing a directory would mix two prototypes' patches).
@@ -93,11 +92,6 @@ export function createPrototype(workspaceRootPath: string, input: CreatePrototyp
   mkdirSync(dir, { recursive: true })
   const patchesPath = getPrototypePatchesPath(workspaceRootPath, slug)
   mkdirSync(patchesPath, { recursive: true })
-  // A shell to copy from, not a page: `_layout.html` is never listed as a page, so
-  // writing it claims nothing about what the prototype contains — "no pages yet"
-  // stays true until someone writes one. It exists so the first page has one
-  // validated shape to follow instead of being invented per screen (plan §19.2).
-  writeFileSync(getPrototypeLayoutPath(workspaceRootPath, slug), buildLayoutShell(), 'utf-8')
 
   return { slug, dir, patchesPath }
 }
@@ -166,12 +160,12 @@ export function readPrototypePage(
 }
 
 /**
- * Read the optional shell a page of ours is rendered inside, or null when there is
+ * Read the optional layout a page of ours is rendered inside, or null when there is
  * none (plan §19.2).
  *
- * The shell is applied wherever a page is turned into a document — the host on
+ * The layout is applied wherever a page is turned into a document — the host on
  * every request, and export when it writes the package — so the delivered page is
- * the page that was previewed, shell and all.
+ * the page that was previewed, layout and all.
  */
 export function readPrototypeLayout(workspaceRootPath: string, slug: string): string | null {
   const path = getPrototypeLayoutPath(workspaceRootPath, slug)

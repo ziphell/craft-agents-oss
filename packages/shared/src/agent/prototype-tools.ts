@@ -51,12 +51,13 @@ shared assets, and a prototype is never nested inside one.
 **The files** are the prototype, and they are yours to organize — \`{workspace}/prototypes/{slug}/\`:
 - \`PRD.md\` — the brief: one \`## R-001 …\` entry per requirement, and the **only** file requirements are
   read from. What sits beside it is material in any format (personas, the flow as it stands today, a
-  glossary, a screenshot of the old screen), and your other pages (\`_layout.html\` is the shell they share,
-  \`<name>.html\` is a page).
+  glossary, a screenshot of the old screen), and your other pages (\`<name>.html\` is a page, and
+  \`_layout.html\`, once you write one, is the layout they share).
 - \`patches/\` — the change layer: \`{writer}-{nnn}-{name}.{css,js}\` applies to every page, \`patches/<page>/…\`
   to that page only. The writer segment is your identity, and a name the scanner cannot parse is **silently
   never replayed**.
-- \`config.json\` — the page table: their order, and which one the address root opens. A \`config.json\` holding
+- \`config.json\` — the page table: their order, which one the address root opens, and which pages stand on
+  their own (\`"useLayout": false\` = the shared layout does not wrap that page). A \`config.json\` holding
   only \`pages\` is the normal shape; prototypes written before pages had kinds are read as this same table.
 - \`services/{svc}/\` — the contract: \`paths/*.yaml\` fragments, \`fixtures/\`, \`state.json\`, and the composed
   \`openapi.yaml\`.

@@ -461,12 +461,14 @@ conversation share.
 
 **The files** are the prototype, and they are yours to organize:
 - \`PRD.md\` — the brief: one \`## R-001 …\` entry per requirement, and the only file requirements are read
-  from. Beside it: material in any format, and your other pages (\`<name>.html\` is a page, \`_layout.html\`
-  is the shell they share).
+  from. Beside it: material in any format, and your other pages (\`<name>.html\` is a page, \`_layout.html\`,
+  once you write one, is the layout they share).
 - \`patches/\` — the change layer: \`{writer}-{nnn}-{name}.{css,js}\` for every page, \`patches/<page>/…\` for
   one. The writer segment is your identity, and a name the scanner cannot parse is silently never replayed.
-- \`config.json\` — the page table; \`services/{svc}/\` — the contract and its fixtures; \`research/\`,
-  \`reviews/\` — what you learned and the argument against it (neither ships); \`dist/\` — the deliverables.
+- \`config.json\` — the page table (their order, which one the address root opens, and which pages stand on
+  their own: \`"useLayout": false\` = the shared layout does not wrap that page); \`services/{svc}/\` — the
+  contract and its fixtures; \`research/\`, \`reviews/\` — what you learned and the argument against it
+  (neither ships); \`dist/\` — the deliverables.
 Pages and patches are written with the Write/Edit tools — no command here writes them for you.
 
 **The window** is where the flow is looked at: \`open\` adds a tab of its own, and

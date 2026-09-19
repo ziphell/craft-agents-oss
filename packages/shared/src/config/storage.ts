@@ -41,7 +41,7 @@ export type {
 import type { Workspace, AuthType } from '@craft-agent/core/types';
 
 // Import LLM connection types and constants
-import type { LlmConnection } from './llm-connections.ts';
+import type { LlmConnection, LlmConnectionUpdate, ConnectionModelEntry } from './llm-connections.ts';
 import { isValidProviderAuthCombination, getDefaultModelsForConnection, getDefaultModelForConnection, isPiProvider, toBedrockNativeId, type LlmProviderType } from './llm-connections.ts';
 import {
   getModelProvider,
@@ -1818,6 +1818,23 @@ function backfillAllConnectionModels(config: StoredConfig): boolean {
         changed = true;
       }
     }
+
+    // A userDefined3Tier list is [best, balanced, fast] by definition, so the
+    // third entry is the model the user picked as Fast. Record it explicitly so
+    // the choice survives a reorder or a rename that the name-based guess would
+    // read differently.
+    if (
+      connection.modelSelectionMode === 'userDefined3Tier' &&
+      !connection.fastModel &&
+      Array.isArray(connection.models) &&
+      connection.models.length >= 3
+    ) {
+      const fastModelId = normalizeModelIds(connection.models)[2];
+      if (fastModelId) {
+        connection.fastModel = fastModelId;
+        changed = true;
+      }
+    }
   }
   return changed;
 }
@@ -1883,9 +1900,9 @@ function displayNameForMigratedModel(modelId: string): string {
 
 function withUpdatedModelEntry(
   connection: LlmConnection,
-  entry: ModelDefinition | string,
+  entry: ConnectionModelEntry,
   nextId: string,
-): ModelDefinition | string {
+): ConnectionModelEntry {
   if (typeof entry === 'string') {
     if (connection.providerType === 'anthropic' && nextId === OPUS_DEFAULT_ID) {
       return { ...getModelById(OPUS_DEFAULT_ID)! };
@@ -1893,7 +1910,7 @@ function withUpdatedModelEntry(
     return nextId;
   }
 
-  const nextEntry: ModelDefinition = { ...entry, id: nextId };
+  const nextEntry = { ...entry, id: nextId };
   if (connection.providerType === 'anthropic' && nextId === OPUS_DEFAULT_ID) {
     return { ...getModelById(OPUS_DEFAULT_ID)! };
   }
@@ -1937,7 +1954,7 @@ function migrateLegacyOpusToDefaultOpus(config: StoredConfig): boolean {
     }
 
     if (connection.models && Array.isArray(connection.models)) {
-      const nextModels: Array<ModelDefinition | string> = [];
+      const nextModels: ConnectionModelEntry[] = [];
       const seen = new Set<string>();
       let connectionModelsChanged = false;
 
@@ -2733,12 +2750,86 @@ export function addLlmConnection(connection: LlmConnection): boolean {
 }
 
 /**
+ * Merge a `models[]` update by id.
+ *
+ * A bare string id means the writer only edited the id list (that is what the
+ * connection form produces), so whatever per-model parameters are already on
+ * disk for that id are kept. An object entry is the writer's full intent for
+ * that model and replaces the stored entry. Incoming order wins — the array is
+ * ordered and load-bearing (first = default, last = small/summarization).
+ */
+function mergeModelEntries(
+  previous: LlmConnection['models'],
+  incoming: NonNullable<LlmConnection['models']>,
+): LlmConnection['models'] {
+  const previousById = new Map<string, ConnectionModelEntry>();
+  for (const entry of previous ?? []) {
+    previousById.set(typeof entry === 'string' ? entry : entry.id, entry);
+  }
+
+  const seen = new Set<string>();
+  const merged: NonNullable<LlmConnection['models']> = [];
+  for (const entry of incoming) {
+    const id = typeof entry === 'string' ? entry : entry?.id;
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    merged.push(typeof entry === 'string' ? (previousById.get(id) ?? entry) : entry);
+  }
+  return merged;
+}
+
+/**
+ * Apply an update to a stored connection without rebuilding it field by field.
+ *
+ * Any key the caller does not mention — including keys this codebase has never
+ * heard of, which the storage schema deliberately passes through — survives.
+ * See {@link LlmConnectionUpdate} for the full contract.
+ *
+ * Exported so callers that need a preview of the persisted shape (the setup
+ * handler validates a pending connection before saving it) get the exact same
+ * result instead of re-implementing the merge with a spread — a spread would
+ * turn `null` into a stored `null`, which the schema rejects.
+ */
+export function applyLlmConnectionUpdate(existing: LlmConnection, updates: LlmConnectionUpdate): LlmConnection {
+  const merged: Record<string, unknown> = { ...existing };
+
+  for (const [key, value] of Object.entries(updates)) {
+    if (value === undefined) continue; // absent in intent → leave on disk as-is
+    if (value === null) {
+      delete merged[key]; // explicit null → remove the key
+      continue;
+    }
+    if (key === 'customEndpoint') {
+      merged.customEndpoint = {
+        ...(existing.customEndpoint ?? {}),
+        ...(value as unknown as Record<string, unknown>),
+      };
+      continue;
+    }
+    if (key === 'models' && Array.isArray(value)) {
+      merged.models = mergeModelEntries(existing.models, value);
+      continue;
+    }
+    merged[key] = value;
+  }
+
+  merged.slug = existing.slug; // slug is immutable
+  return merged as unknown as LlmConnection;
+}
+
+/**
  * Update an existing LLM connection.
+ *
+ * Merge semantics (see docs/custom-endpoint-plan.md D2): keys absent from
+ * `updates` are left untouched, an explicit `null` deletes a key, `models[]`
+ * merges by id and `customEndpoint` shallow-merges. A save therefore cannot
+ * erase parameters a user wrote by hand into config.json.
+ *
  * @param slug - Connection slug to update
  * @param updates - Partial updates to apply (slug is ignored)
  * @returns true if updated, false if not found
  */
-export function updateLlmConnection(slug: string, updates: Partial<Omit<LlmConnection, 'slug'>>): boolean {
+export function updateLlmConnection(slug: string, updates: LlmConnectionUpdate): boolean {
   const config = loadStoredConfig();
   if (!config) return false;
 
@@ -2755,34 +2846,7 @@ export function updateLlmConnection(slug: string, updates: Partial<Omit<LlmConne
   const toModelIds = (models?: Array<{ id: string } | string>): string[] =>
     (models ?? []).map(m => typeof m === 'string' ? m : m.id);
 
-  connections[index] = {
-    // Preserve required fields from existing
-    slug: existing.slug,
-    name: updates.name ?? existing.name,
-    providerType: updates.providerType ?? existing.providerType,
-    type: updates.type ?? existing.type, // Legacy field
-    authType: updates.authType ?? existing.authType,
-    createdAt: updates.createdAt ?? existing.createdAt,
-    // Optional fields from updates or existing
-    baseUrl: updates.baseUrl !== undefined ? updates.baseUrl : existing.baseUrl,
-    models: updates.models !== undefined ? updates.models : existing.models,
-    defaultModel: updates.defaultModel !== undefined ? updates.defaultModel : existing.defaultModel,
-    modelSelectionMode: updates.modelSelectionMode !== undefined ? updates.modelSelectionMode : existing.modelSelectionMode,
-    // Pi auth provider
-    piAuthProvider: updates.piAuthProvider !== undefined ? updates.piAuthProvider : existing.piAuthProvider,
-    // Custom endpoint protocol (Anthropic/OpenAI compatible)
-    customEndpoint: updates.customEndpoint !== undefined ? updates.customEndpoint : existing.customEndpoint,
-    // Mid-stream send behavior (steer vs queue) — read via resolveMidStreamBehavior()
-    midStreamBehavior: updates.midStreamBehavior !== undefined ? updates.midStreamBehavior : existing.midStreamBehavior,
-    // Resolved Anthropic OAuth identity (issue #838) — preserved across unrelated saves
-    oauthAccountUuid: updates.oauthAccountUuid !== undefined ? updates.oauthAccountUuid : existing.oauthAccountUuid,
-    oauthAccountEmail: updates.oauthAccountEmail !== undefined ? updates.oauthAccountEmail : existing.oauthAccountEmail,
-    oauthOrganizationUuid: updates.oauthOrganizationUuid !== undefined ? updates.oauthOrganizationUuid : existing.oauthOrganizationUuid,
-    oauthOrganizationName: updates.oauthOrganizationName !== undefined ? updates.oauthOrganizationName : existing.oauthOrganizationName,
-    oauthProfileVerifiedAt: updates.oauthProfileVerifiedAt !== undefined ? updates.oauthProfileVerifiedAt : existing.oauthProfileVerifiedAt,
-    // Timestamps
-    lastUsedAt: updates.lastUsedAt !== undefined ? updates.lastUsedAt : existing.lastUsedAt,
-  };
+  connections[index] = applyLlmConnectionUpdate(existing, updates);
 
   const updated = connections[index]!;
   if (updated.providerType === 'pi') {

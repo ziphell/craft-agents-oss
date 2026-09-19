@@ -5,9 +5,9 @@
  * No dependency on ipcMain, sessionManager, credential manager, or file I/O.
  */
 
-import type { ModelDefinition } from '@craft-agent/shared/config/models'
 import {
   type LlmConnection,
+  type ConnectionModelEntry,
   type CustomEndpointApi,
   getDefaultModelsForConnection,
   getDefaultModelForConnection,
@@ -257,7 +257,7 @@ export function createBuiltInConnection(slug: string, baseUrl?: string | null): 
  * objects, always returning false for Pi connections.
  */
 export function validateModelList(
-  models: Array<ModelDefinition | string>,
+  models: ConnectionModelEntry[],
   defaultModel: string | undefined,
 ): { valid: boolean; error?: string; resolvedDefaultModel?: string } {
   if (!models || models.length === 0) {

@@ -28,6 +28,7 @@ import {
 import {
   isCompatProvider,
   modelSupportsImages,
+  modelSupportsThinking,
   resolveEffectiveConnectionSlug,
   type LlmConnectionWithStatus,
 } from '@config/llm-connections'
@@ -127,7 +128,7 @@ export function CompactModelSelector({
     const model = availableModels.find(
       m => typeof m !== 'string' && m.id === currentModel,
     )
-    return typeof model !== 'string' && model?.supportsThinking === false
+    return !modelSupportsThinking(model)
   }, [availableModels, currentModel])
 
   const connectionsByProvider = React.useMemo(

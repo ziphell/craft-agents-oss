@@ -10,15 +10,17 @@
  *
  * - **the filesystem says what exists** — every top-level `*.html` is a page, and
  *   the page `cart` is the file `cart.html`;
- * - **the page table says the order and the entry** (`config.json`). A row is
- *   also a page's *only* existence when it is an overlay, whose page is an
- *   address on someone else's site and cannot be discovered by walking anything.
+ * - **the page table says the order, the entry, and whether the shared layout wraps
+ *   one** (`config.json`). A row is also a page's *only* existence when it is an
+ *   overlay, whose page is an address on someone else's site and cannot be
+ *   discovered by walking anything.
  *
  * So a scratch page needs no declaration at all — write the file and it is a
- * page, in name order — and declaring one is how you place it in the flow or hand
- * it the entry, never how you create it. Two documents are deliberately **not**
- * pages: `_layout.html` and anything else starting with `_`, and documents in
- * subdirectories (assets — a page lives at the root, the way it does on a site).
+ * page, in name order — and declaring one is how you place it in the flow, hand it
+ * the entry, or say that it is a design of its own (`useLayout: false`), never how
+ * you create it. Two documents are deliberately **not** pages: `_layout.html` and
+ * anything else starting with `_`, and documents in subdirectories (assets — a page
+ * lives at the root, the way it does on a site).
  *
  * @see docs/prototype-workbench-plan.md §19
  */
@@ -34,7 +36,7 @@ import { PROTOTYPE_LAYOUT_FILENAME, PROTOTYPE_LAYOUT_SLOT } from './types.ts'
 import type { PageKind } from './types.ts'
 
 /**
- * The shell a scratch page may share, and the one slot in it — declared in
+ * The layout a scratch page may share, and the one slot in it — declared in
  * `types.ts` (the module that imports nothing) and re-exported here, where the
  * page rule that keeps it out of the page list lives.
  */
@@ -66,6 +68,12 @@ export interface PrototypePage {
   url: string | null
   /** Whether this is the page the address root opens. */
   entry: boolean
+  /**
+   * Whether the shared layout (`_layout.html`) wraps this page's document — false
+   * when its row says so (`"useLayout": false`), and false for a live page, which
+   * is someone else's document and not ours to wrap at all (plan §19.2).
+   */
+  useLayout: boolean
 }
 
 /** What the page table resolves to, plus the rows that could not be read. */
@@ -132,7 +140,15 @@ export function describePrototypePages(workspaceRootPath: string, slug: string):
   for (const row of config.pages ?? []) {
     claimed.add(row.name)
     if (row.kind === 'overlay') {
-      pages.push({ name: row.name, kind: 'overlay', file: null, url: row.url ?? null, entry: row.entry === true })
+      pages.push({
+        name: row.name,
+        kind: 'overlay',
+        file: null,
+        url: row.url ?? null,
+        entry: row.entry === true,
+        // Not ours to wrap: a live page is someone else's document.
+        useLayout: false,
+      })
       continue
     }
 
@@ -148,13 +164,14 @@ export function describePrototypePages(workspaceRootPath: string, slug: string):
       file,
       url: file ? addressOf(file) : null,
       entry: row.entry === true,
+      useLayout: row.useLayout !== false,
     })
   }
 
   for (const file of documents) {
     const name = pageNameForFile(file)
     if (claimed.has(name)) continue
-    pages.push({ name, kind: 'scratch', file, url: addressOf(file), entry: false })
+    pages.push({ name, kind: 'scratch', file, url: addressOf(file), entry: false, useLayout: true })
   }
 
   return { pages, issues }
@@ -233,6 +250,8 @@ export type PrototypePagesChange =
   | { op: 'remove'; name: string }
   | { op: 'rename'; from: string; to: string }
   | { op: 'entry'; name: string | null }
+  /** Whether the shared layout wraps this page (`useLayout: false` = it stands on its own). */
+  | { op: 'layout'; name: string; useLayout: boolean }
 
 export interface PrototypePagesResult {
   slug: string
@@ -253,7 +272,7 @@ function requirePageName(value: string): string {
   }
   if (name.startsWith('_')) {
     throw new Error(
-      `"${value}" cannot be a page name: a leading "_" is reserved for the host's own files (the layout shell, the page index).`,
+      `"${value}" cannot be a page name: a leading "_" is reserved for the host's own files (the shared layout, the page index).`,
     )
   }
   return name
@@ -372,7 +391,38 @@ export function updatePrototypePages(
       rows[at] = { ...rows[at]!, name: to }
       note = `renamed overlay page "${from}" to "${to}"`
     }
+  } else if (change.op === 'layout') {
+    const name = requirePageName(change.name)
+    const page = pages.find((candidate) => candidate.name === name)
+    if (!page) throw new Error(`Prototype "${slug}" has no page "${name}". Pages: ${names()}`)
+    // A live page is someone else's document and the layout is ours, so neither
+    // answer is ours to give — the same claim written into the file by hand is
+    // reported rather than honoured (config.ts).
+    if (page.kind === 'overlay') {
+      throw new Error(
+        `"${name}" is a live page — someone else's document — so the shared layout never wraps it. ` +
+          `There is nothing to set.`,
+      )
+    }
+
+    const at = rows.findIndex((row) => row.name === name)
+    const declared = at !== -1
+    // The flag lives on a row, so a document nobody declared becomes one now — the
+    // same reason `entry` declares the page it points at.
+    const next = at === -1 ? { name, kind: 'scratch' as const } : { ...rows[at]! }
+    // `true` is the default and is never stored, so going back to it drops the key
+    // rather than writing a second way of saying nothing (config.ts).
+    if (change.useLayout) delete next.useLayout
+    else next.useLayout = false
+    if (at === -1) rows.push(next)
+    else rows[at] = next
+
+    const how = change.useLayout
+      ? `"${name}" is wrapped by the shared layout again`
+      : `"${name}" is served as written from now on — the shared layout does not wrap it`
+    note = declared ? how : `${how} (declared, so it can carry the flag)`
   } else {
+    // `entry` — the last op in the union, so the chain ends here.
     const name = change.name === null ? null : requirePageName(change.name)
     if (name !== null && !pages.some((page) => page.name === name)) {
       throw new Error(`Prototype "${slug}" has no page "${name}". Pages: ${names()}`)

@@ -18,7 +18,7 @@ import type {
 import type { ProviderChoice } from '@/components/onboarding/ProviderSelectStep'
 import type { LocalModelSubmitData } from '@/components/onboarding/LocalModelStep'
 import type { ApiKeySubmitData } from '@/components/apisetup'
-import type { CustomEndpointConfig } from '@config/llm-connections'
+import type { ConnectionModelEntry, CustomEndpointConfig } from '@config/llm-connections'
 import type { SetupNeeds, LlmConnectionSetup, ClaudeOAuthIdentityDto } from '../../shared/types'
 
 interface UseOnboardingOptions {
@@ -140,7 +140,10 @@ export function apiSetupMethodToConnectionSetup(
     credential?: string
     baseUrl?: string
     connectionDefaultModel?: string
-    models?: string[]
+    /** Explicit small/fast model; absent = not picked, null = cleared. */
+    connectionFastModel?: string | null
+    /** Model ids, or ids with per-model parameters for custom endpoints. */
+    models?: ConnectionModelEntry[]
     piAuthProvider?: string
     modelSelectionMode?: 'automaticallySyncedFromProvider' | 'userDefined3Tier'
     customEndpoint?: CustomEndpointConfig
@@ -161,6 +164,7 @@ export function apiSetupMethodToConnectionSetup(
         credential: options.credential,
         baseUrl: options.baseUrl,
         defaultModel: options.connectionDefaultModel,
+        fastModel: options.connectionFastModel,
         models: options.models,
         customEndpoint: options.customEndpoint,
       }
@@ -182,6 +186,7 @@ export function apiSetupMethodToConnectionSetup(
         credential: options.credential,
         baseUrl: options.baseUrl,
         defaultModel: options.connectionDefaultModel,
+        fastModel: options.connectionFastModel,
         models: options.models,
         piAuthProvider: options.piAuthProvider,
         modelSelectionMode: options.modelSelectionMode,
@@ -247,7 +252,10 @@ export function useOnboarding({
     options?: {
       baseUrl?: string
       connectionDefaultModel?: string
-      models?: string[]
+      /** Explicit small/fast model; absent = not picked, null = cleared. */
+      connectionFastModel?: string | null
+      /** Model ids, or ids with per-model parameters for custom endpoints. */
+      models?: ConnectionModelEntry[]
       piAuthProvider?: string
       modelSelectionMode?: 'automaticallySyncedFromProvider' | 'userDefined3Tier'
       customEndpoint?: CustomEndpointConfig
@@ -273,6 +281,7 @@ export function useOnboarding({
         credential,
         baseUrl: options?.baseUrl,
         connectionDefaultModel: options?.connectionDefaultModel,
+        connectionFastModel: options?.connectionFastModel,
         models: options?.models,
         piAuthProvider: options?.piAuthProvider,
         modelSelectionMode: options?.modelSelectionMode,
@@ -392,6 +401,7 @@ export function useOnboarding({
         const saved = await handleSaveConfig(undefined, {
           baseUrl: data.baseUrl,
           connectionDefaultModel: data.connectionDefaultModel,
+          connectionFastModel: data.connectionFastModel,
           models: data.models,
           piAuthProvider: data.piAuthProvider,
           modelSelectionMode: data.modelSelectionMode,
@@ -412,6 +422,7 @@ export function useOnboarding({
         const saved = await handleSaveConfig(undefined, {
           baseUrl: data.baseUrl,
           connectionDefaultModel: data.connectionDefaultModel,
+          connectionFastModel: data.connectionFastModel,
           models: data.models,
           piAuthProvider: data.piAuthProvider,
           modelSelectionMode: data.modelSelectionMode,
@@ -452,11 +463,14 @@ export function useOnboarding({
       // Validate connection by spawning a lightweight subprocess test.
       // Custom endpoint protocol routes through PiAgent at runtime, so test with Pi too.
       const setupTestProvider = data.customEndpoint ? 'pi' : (isPiApiKeyFlow ? 'pi' : 'anthropic')
+      // Models may carry per-model parameters — the test only needs the id.
+      const firstModel = data.models?.[0]
+      const testModel = typeof firstModel === 'string' ? firstModel : firstModel?.id
       const testResult = await window.electronAPI.testLlmConnectionSetup({
         provider: setupTestProvider,
         apiKey: data.apiKey,
         baseUrl: data.baseUrl,
-        model: data.models?.[0],
+        model: testModel,
         piAuthProvider: data.piAuthProvider,
         customEndpoint: data.customEndpoint,
       })
@@ -473,6 +487,7 @@ export function useOnboarding({
       const saved = await handleSaveConfig(data.apiKey, {
         baseUrl: data.baseUrl,
         connectionDefaultModel: data.connectionDefaultModel,
+        connectionFastModel: data.connectionFastModel,
         models: data.models,
         piAuthProvider: data.piAuthProvider,
         modelSelectionMode: data.modelSelectionMode,

@@ -1,23 +1,21 @@
+import {
+  CUSTOM_ENDPOINT_MODEL_DEFAULTS,
+  type CustomEndpointModelConfig,
+  type CustomEndpointModelEntry,
+  type CustomEndpointModelParams,
+} from '../../shared/src/config/llm-connections.ts';
+
 export type CustomEndpointInput = 'text' | 'image'
 
-export interface CustomEndpointModelDefaults {
-  supportsImages?: boolean
-}
+/**
+ * The parameter shape is defined once in shared config — the host, the UI and
+ * this server all read the same type, so a new parameter cannot be dropped on
+ * the way here without a type error.
+ */
+export type { CustomEndpointModelConfig, CustomEndpointModelEntry, CustomEndpointModelParams }
 
-export interface CustomEndpointModelOverrides {
-  contextWindow?: number
-  supportsImages?: boolean
-}
-
-export interface CustomEndpointModelEntry extends CustomEndpointModelOverrides {
-  id: string
-}
-
-export type CustomEndpointModelConfig = string | {
-  id: string
-  contextWindow?: number
-  supportsImages?: boolean
-}
+/** Per-model parameter overrides, applied on top of {@link buildCustomEndpointModelDef}. */
+export type CustomEndpointModelOverrides = CustomEndpointModelParams
 
 /** Strip bare model IDs (remove pi/ prefix if present). */
 export function stripPiPrefix(id: string): string {
@@ -27,43 +25,50 @@ export function stripPiPrefix(id: string): string {
 /**
  * Normalize a user-configured custom endpoint model for Pi SDK registration.
  *
- * Keep explicit per-model capability overrides intact. In particular,
- * `supportsImages: false` is meaningful because it can override a global
- * endpoint default of `supportsImages: true` for text-only models.
+ * Keeps every per-model parameter intact — including explicit `false` values
+ * such as `supportsImages: false`, which are the user stating the model cannot
+ * take images — and only normalizes the id.
  */
 export function normalizeCustomEndpointModelEntry(model: CustomEndpointModelConfig): CustomEndpointModelEntry {
   if (typeof model === 'string') {
     return { id: stripPiPrefix(model) }
   }
 
-  return {
-    id: stripPiPrefix(model.id),
-    ...(model.contextWindow !== undefined ? { contextWindow: model.contextWindow } : {}),
-    ...(model.supportsImages !== undefined ? { supportsImages: model.supportsImages } : {}),
-  }
+  return { ...model, id: stripPiPrefix(model.id) }
 }
+
+/** Fallbacks for parameters a user did not set. */
+const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
 
 /**
  * Build a synthetic model definition for a custom endpoint.
- * Uses reasonable defaults for context window and max tokens since we can't
- * query the endpoint for its actual capabilities. Image support must be
- * explicitly enabled either at the connection level or per-model.
+ *
+ * Every field the user can write in `config.json` wins over the fallback below;
+ * the fallbacks exist because the endpoint cannot be queried for its actual
+ * capabilities. Capability flags default to **true** (permissive): a custom
+ * endpoint is assumed capable until the user says otherwise with an explicit
+ * `false`.
+ *
+ * The user-facing `supportsThinking` becomes the SDK's `reasoning` here — this
+ * is the only place the SDK's name for it appears.
  */
 export function buildCustomEndpointModelDef(
   id: string,
-  defaults?: CustomEndpointModelDefaults,
   overrides?: CustomEndpointModelOverrides,
 ) {
-  const supportsImages = overrides?.supportsImages ?? defaults?.supportsImages ?? true
+  const supportsImages = overrides?.supportsImages ?? true
   const input: CustomEndpointInput[] = supportsImages ? ['text', 'image'] : ['text']
 
   return {
     id,
-    name: id,
-    reasoning: true,
+    name: overrides?.name ?? id,
+    reasoning: overrides?.supportsThinking ?? true,
     input,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: overrides?.contextWindow ?? 1_000_000,
-    maxTokens: 393_216,
+    cost: { ...ZERO_COST, ...(overrides?.cost ?? {}) },
+    contextWindow: overrides?.contextWindow ?? CUSTOM_ENDPOINT_MODEL_DEFAULTS.contextWindow,
+    maxTokens: overrides?.maxTokens ?? CUSTOM_ENDPOINT_MODEL_DEFAULTS.maxTokens,
+    ...(overrides?.headers ? { headers: overrides.headers } : {}),
+    ...(overrides?.compat ? { compat: overrides.compat } : {}),
+    ...(overrides?.thinkingLevelMap ? { thinkingLevelMap: overrides.thinkingLevelMap } : {}),
   }
 }

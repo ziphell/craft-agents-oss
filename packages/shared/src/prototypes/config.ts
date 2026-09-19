@@ -7,13 +7,15 @@
  * - **`overlay`** — someone else's live page. We inject patches into it and never
  *   copy it, so the row carries the `url` it lives at.
  * - **`scratch`** — a document of ours: `name.html` in the prototype directory.
- *   The row carries nothing else — a file name would be a second name for the
- *   same fact, and files cannot drift from themselves.
+ *   The row carries nothing about the file itself — a file name would be a second
+ *   name for the same fact, and files cannot drift from themselves — and one fact
+ *   about how it is served: whether the shared layout wraps it (`useLayout`).
  *
- * The file is therefore the **order** and the **entry** of the flow, and nothing
- * else; what *exists* is the filesystem (`pages.ts` merges the two). That split is
- * why writing `cart.html` is enough to have a page: declaring it is how you place
- * it in the flow, or hand it the entry — never how you create it.
+ * The file is therefore the **order**, the **entry**, and — for a page that says so
+ * — the absence of the shared layout; what *exists* is the filesystem (`pages.ts`
+ * merges the two). That split is why writing `cart.html` is enough to have a page:
+ * declaring it is how you place it in the flow, hand it the entry, or say that it
+ * is a design of its own — never how you create it.
  *
  * Stored in `config.json`, written **only** by the control plane. This does not
  * conflict with the "no shared index file" rule (see storage.ts): that rule
@@ -51,6 +53,16 @@ export interface PrototypePageEntry {
    * one.
    */
   entry?: boolean
+  /**
+   * `false` on a page of ours that the shared layout (`_layout.html`) does **not**
+   * wrap — a page whose document is a design of its own (plan §19.2). Absent means
+   * the layout wraps it, which is what every page got before a page could say
+   * otherwise; `true` is the same as absent.
+   *
+   * Meaningful on a page of ours only: a live page is someone else's document and
+   * the layout is ours, so it cannot wrap one.
+   */
+  useLayout?: boolean
 }
 
 export interface PrototypeConfig {
@@ -100,7 +112,8 @@ export function isPageKind(value: unknown): value is PageKind {
  * resolve) or an **address** (two names for one screen would make "which page am
  * I looking at" ambiguous rather than merely redundant). A scratch page carrying
  * a `url` loses the url and keeps its row: the page is real, the claim is the
- * part that cannot be honoured (plan §13.4).
+ * part that cannot be honoured (plan §13.4). A live page carrying `useLayout` is
+ * treated the same way.
  */
 export function normalizePrototypePages(
   value: unknown,
@@ -156,6 +169,15 @@ export function normalizePrototypePages(
       )
     }
 
+    // A live page is someone else's document and the layout is ours, so `useLayout`
+    // on its row is a claim nothing can honour — reported, and the row keeps the
+    // rest, exactly as a scratch page's stray url does.
+    if (raw.kind === 'overlay' && raw.useLayout !== undefined) {
+      issues.push(
+        `${at} ("${name}"): a live page is someone else's document, so the shared layout cannot wrap it — drop useLayout.`,
+      )
+    }
+
     const wantsEntry = raw.entry === true
     const entry = wantsEntry && !pages.some((page) => page.entry)
     if (wantsEntry && !entry) {
@@ -169,6 +191,7 @@ export function normalizePrototypePages(
       kind: raw.kind,
       ...(raw.kind === 'overlay' ? { url } : {}),
       ...(entry ? { entry: true } : {}),
+      ...(raw.kind === 'scratch' && raw.useLayout === false ? { useLayout: false } : {}),
     })
   })
 

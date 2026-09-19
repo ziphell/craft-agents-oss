@@ -404,7 +404,7 @@ function insertAfterOpeningTag(html: string, block: string, openingTag: string):
  * captures a reference to `fetch` — the same reason the extension declares it
  * `document_start`, in the page's world.
  *
- * @param document the page, with the shared shell already applied — what the host
+ * @param document the page, with the shared layout already applied — what the host
  *   would serve and the extension package ships.
  * @param patches the whole prototype's patches; only the ones **this page** carries
  *   are inlined, by the same rule as everywhere else (plan §19.4).
@@ -1198,9 +1198,14 @@ export function exportPrototype(workspaceRootPath: string, slug: string): Protot
     .map((page) => ({
       path: page.file,
       page: page.name,
-      // The shell travels with the page, exactly as the host applies it, so the
-      // delivered document is the one that was previewed (plan §19.2).
-      html: applyPrototypeLayout(readFileSync(join(dir, page.file), 'utf-8'), layout),
+      // The layout travels with the page, exactly as the host applies it, so the
+      // delivered document is the one that was previewed (plan §19.2) — and a page
+      // whose row says the layout does not wrap it (`"useLayout": false`) is delivered
+      // as written, which is the same document the host serves.
+      html: applyPrototypeLayout(
+        readFileSync(join(dir, page.file), 'utf-8'),
+        page.useLayout ? layout : null,
+      ),
     }))
 
   const targets = pages

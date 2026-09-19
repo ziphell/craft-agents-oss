@@ -47,7 +47,7 @@
  * A prototype is a **table of pages** (plan §19), and the address follows it:
  *
  * - `/` is the **entry page**: a live page → 302 to its own address; a page of
- *   ours → that document with the patches it carries (plus the shared shell).
+ *   ours → that document with the patches it carries (plus the shared layout).
  *   When no row carries the entry flag, `/` is the generated **page index** —
  *   which is the default, because no page of a flow is naturally the first one.
  * - `/_index` is that same index, always: configuring an entry changes what `/`
@@ -331,7 +331,7 @@ function overlayPageUrl(prototype: ServedPrototype, requested: string): string |
 }
 
 /**
- * A page of ours, rendered the way its address serves it: the document, the shell
+ * A page of ours, rendered the way its address serves it: the document, the layout
  * it may share, and **exactly the patches it carries**.
  *
  * `scanPrototypePatchesForPage` is the one rule for "what this page carries" — the
@@ -340,16 +340,23 @@ function overlayPageUrl(prototype: ServedPrototype, requested: string): string |
  * cannot disagree. The prototype's whole patch set must never be inlined in its
  * place: a patch written for another screen would land on this one.
  *
- * The shell comes from `_layout.html` (optional) and is applied *before* the
- * patches, exactly as export writes it, so both see the same document (§19.2).
+ * The layout comes from `_layout.html` (optional) and is applied *before* the
+ * patches, exactly as export writes it, so both see the same document (§19.2) —
+ * unless the page's row says the layout does not wrap it (`"useLayout": false`),
+ * which is how a page that is a design of its own is served as written.
  */
-function buildPrototypePage(prototype: ServedPrototype, page: string, document: string): Payload {
-  const withShell = applyPrototypeLayout(
+function buildPrototypePage(
+  prototype: ServedPrototype,
+  page: string,
+  document: string,
+  useLayout: boolean,
+): Payload {
+  const withLayout = applyPrototypeLayout(
     document,
-    readPrototypeLayout(prototype.workspaceRootPath, prototype.slug),
+    useLayout ? readPrototypeLayout(prototype.workspaceRootPath, prototype.slug) : null,
   )
   const rendered = buildSelfContainedHtml(
-    withShell,
+    withLayout,
     scanPrototypePatchesForPage(prototype.workspaceRootPath, prototype.slug, page),
   )
   return { body: Buffer.from(rendered, 'utf8'), contentType: 'text/html; charset=utf-8' }
@@ -363,7 +370,9 @@ function buildPrototypePage(prototype: ServedPrototype, page: string, document: 
 function pagePayload(prototype: ServedPrototype, page: PrototypePage): Payload | null {
   if (page.kind !== 'scratch' || !page.file) return null
   const document = readPrototypePage(prototype.workspaceRootPath, prototype.slug, page.file)
-  return document === null ? null : buildPrototypePage(prototype, page.name, document)
+  return document === null
+    ? null
+    : buildPrototypePage(prototype, page.name, document, page.useLayout)
 }
 
 /**
@@ -371,7 +380,7 @@ function pagePayload(prototype: ServedPrototype, page: PrototypePage): Payload |
  *
  * Generated per request from the page table rather than stored, so it cannot
  * become a second answer to "what pages are there". It belongs to no page, so it
- * is neither wrapped in the shell nor patched.
+ * is neither wrapped in the layout nor patched.
  *
  * Every link is root-absolute and stays on this origin — a page of ours is its
  * document (`/cart.html`) and a live page is its name (`/pay`), which is what the
@@ -400,8 +409,8 @@ function indexPayload(prototype: ServedPrototype): Payload {
  * patches it carries, computed here rather than written. Two kinds of document
  * are deliberately *not* rendered, because they are not pages:
  *
- * - `_`-prefixed files — `_layout.html` is the shell, and the host's own reserved
- *   names live under the same rule (`isPrototypePagePath`), so a shell stays
+ * - `_`-prefixed files — `_layout.html` is the layout, and the host's own reserved
+ *   names live under the same rule (`isPrototypePagePath`), so a layout stays
  *   readable exactly as an author wrote it;
  * - anything under a subdirectory (`/flows/step1.html`) — pages live at the root
  *   of the prototype, and a document in a subdirectory is an asset.
@@ -410,7 +419,15 @@ function indexPayload(prototype: ServedPrototype): Payload {
  */
 async function filePayload(path: string, prototype: ServedPrototype, requested: string): Promise<Payload> {
   if (isPrototypePagePath(requested)) {
-    return buildPrototypePage(prototype, pageNameForFile(requested), await readFile(path, 'utf-8'))
+    const name = pageNameForFile(requested)
+    // Addressed by its document name or by its page name, a page is served the same
+    // way, so its row decides about the layout here too. Every top-level document is
+    // a page (`pages.ts`), declared or not, so the row is there; the default only
+    // covers a document that appeared between the check above and this read.
+    const page = listPrototypePages(prototype.workspaceRootPath, prototype.slug).find(
+      (candidate) => candidate.name === name,
+    )
+    return buildPrototypePage(prototype, name, await readFile(path, 'utf-8'), page?.useLayout ?? true)
   }
   return {
     body: await readFile(path),

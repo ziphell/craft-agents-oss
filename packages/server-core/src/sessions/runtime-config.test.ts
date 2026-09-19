@@ -12,8 +12,8 @@ const baseCompat: LlmConnection = {
   baseUrl: 'http://127.0.0.1:1234/v1',
   defaultModel: 'gemma',
   piAuthProvider: 'openai',
-  customEndpoint: { api: 'openai-completions', supportsImages: true },
-  models: [{ id: 'gemma', supportsImages: true } as never],
+  customEndpoint: { api: 'openai-completions' },
+  models: [{ id: 'gemma', supportsImages: true }],
 }
 
 function sig(connection: LlmConnection) {
@@ -48,7 +48,7 @@ describe('buildBackendRuntimeSignature', () => {
     const enabled = sig(baseCompat)
     const disabled = sig({
       ...baseCompat,
-      models: [{ id: 'gemma', supportsImages: false } as never],
+      models: [{ id: 'gemma', supportsImages: false }],
     })
 
     expect(disabled).not.toBe(enabled)
@@ -63,7 +63,7 @@ describe('filterAttachmentsForModelInput', () => {
   it('omits images for pi_compat text-only models while preserving other attachments', () => {
     const result = filterAttachmentsForModelInput(
       [imageAttachment, textAttachment],
-      { ...baseCompat, models: [{ id: 'gemma', supportsImages: false } as never] },
+      { ...baseCompat, models: [{ id: 'gemma', supportsImages: false }] },
       'gemma',
     )
 
@@ -78,11 +78,26 @@ describe('filterAttachmentsForModelInput', () => {
     expect(result.attachments).toEqual([imageAttachment])
   })
 
-  it('treats explicit supportsImages=false as overriding endpoint-level true', () => {
+  it('keeps images when the model entry does not declare image support (defaults to capable)', () => {
     const result = filterAttachmentsForModelInput(
       [imageAttachment],
-      { ...baseCompat, customEndpoint: { api: 'openai-completions', supportsImages: true }, models: [{ id: 'gemma', supportsImages: false } as never] },
+      { ...baseCompat, models: ['gemma'] },
       'gemma',
+    )
+
+    expect(result.omittedImages).toHaveLength(0)
+    expect(result.attachments).toEqual([imageAttachment])
+  })
+
+  it('honours an explicit supportsImages: false on a built-in connection too', () => {
+    const result = filterAttachmentsForModelInput(
+      [imageAttachment],
+      {
+        slug: 'anthropic', name: 'Anthropic', providerType: 'anthropic', authType: 'api_key',
+        models: [{ id: 'claude-haiku', supportsImages: false }],
+        createdAt: 1,
+      },
+      'claude-haiku',
     )
 
     expect(result.omittedImages).toEqual([imageAttachment])

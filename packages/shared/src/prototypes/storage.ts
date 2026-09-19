@@ -61,7 +61,7 @@ export function getPrototypePagePatchesPath(workspaceRootPath: string, slug: str
   return join(getPrototypePatchesPath(workspaceRootPath, slug), page)
 }
 
-/** Absolute path to the optional shell a scratch page shares (plan §19.2). */
+/** Absolute path to the optional layout a scratch page shares (plan §19.2). */
 export function getPrototypeLayoutPath(workspaceRootPath: string, slug: string): string {
   return join(getPrototypeDirPath(workspaceRootPath, slug), PROTOTYPE_LAYOUT_FILENAME)
 }

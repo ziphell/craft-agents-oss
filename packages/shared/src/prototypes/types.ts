@@ -63,7 +63,7 @@ export const LEGACY_ENTRY_PAGE_NAME = 'entry'
 export const LEGACY_BASE_PAGE_NAME = 'base'
 
 /**
- * The shell a scratch page may share, and the one slot in it (plan §19.2).
+ * The layout a scratch page may share, and the one slot in it (plan §19.2).
  *
  * Underscored so it cannot be mistaken for a page — the page rule skips
  * `_`-prefixed names, which is what keeps "is this a page" answerable without a
@@ -72,7 +72,7 @@ export const LEGACY_BASE_PAGE_NAME = 'base'
  * import-nothing module is what stops that becoming a cycle).
  *
  * The slot is spelled the way HTML already spells a slot, so an author — usually
- * the agent — recognises it without being taught a syntax of ours, and a shell
+ * the agent — recognises it without being taught a syntax of ours, and a layout
  * that later becomes a real Web Component needs no rewriting. The host and export
  * still fill it by replacing the first occurrence: the mechanism is unchanged, only
  * the markup is the standard one.
@@ -130,8 +130,8 @@ export const PROTOTYPE_ACCEPTANCE_DIRNAME = 'acceptance'
 /**
  * The slot as it was first written, read for compatibility only.
  *
- * A shell written before the standard spelling would otherwise look like "a shell
- * with no slot", and the fallback for that is "use the shell as it stands" — which
+ * A layout written before the standard spelling would otherwise look like "a layout
+ * with no slot", and the fallback for that is "use the layout as it stands" — which
  * would silently drop the page. A page that disappears is the worst failure this
  * model has, so the old spelling keeps working (the same reason old configs are
  * read as a page table, plan §19.7).

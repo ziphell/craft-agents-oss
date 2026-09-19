@@ -79,7 +79,9 @@ const LlmAuthTypeSchema = z.enum([
 
 const CustomEndpointSchema = z.object({
   api: z.enum(['openai-completions', 'anthropic-messages']),
-  supportsImages: z.boolean().optional(),
+  // Extra request headers for the endpoint (gateway tokens, routing hints).
+  // Model capabilities are per model, not per endpoint — see CustomEndpointConfig.
+  headers: z.record(z.string(), z.string()).optional(),
 });
 
 const LlmConnectionSchema = z.object({
@@ -90,6 +92,7 @@ const LlmConnectionSchema = z.object({
   baseUrl: z.string().optional(),
   models: z.array(z.union([z.string(), z.object({ id: z.string() }).passthrough()])).optional(),
   defaultModel: z.string().optional(),
+  fastModel: z.string().optional(),
   modelSelectionMode: z.enum(['automaticallySyncedFromProvider', 'userDefined3Tier']).optional(),
   customEndpoint: CustomEndpointSchema.optional(),
   createdAt: z.number(),

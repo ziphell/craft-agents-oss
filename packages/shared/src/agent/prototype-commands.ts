@@ -38,10 +38,12 @@ export function getPrototypeToolHelp(): string {
     '  list                                           prototypes in this workspace, their pages, and which is bound',
     '  create <name> [--no-bind]                      create a prototype (a container: it starts with no pages)',
     '  pages [slug] [--add <name>[=<url>]] [--rename <old>=<new>] [--remove <name>] [--change <name>=<url>]',
+    '                                                 [--layout <name>] [--no-layout <name>]',
     '                                                 the flow\'s pages, in order. <name>=<url> adds a live page;',
     '                                                 <name> alone places an existing document; --remove deletes a',
     '                                                 document of ours with its page; --change re-points one live page',
-    '                                                 at another environment',
+    '                                                 at another environment; --no-layout says the shared layout does',
+    '                                                 not wrap that page (it is served as written), --layout puts it back',
     '  entry <name|none>                              which page the address root opens (none = the page index)',
     '  open [slug] [--page <name>]                    open it in a tab of its own: the page you are on,',
     '                                                 else the entry page, else the generated index',
@@ -64,11 +66,13 @@ export function getPrototypeToolHelp(): string {
     'yours to organize — "{workspace}/prototypes/{slug}/":',
     '  PRD.md             the brief: one "## R-001 …" entry per requirement, and the only file requirements',
     '                     are read from. Beside it: material in any format (personas, a glossary, a screenshot),',
-    '                     and your pages — "<name>.html" is a page, and "_layout.html" is the shell they share.',
+    '                     and your pages — "<name>.html" is a page, and "_layout.html", once you write one,',
+    '                     is the layout they share.',
     '  patches/           the change layer: "<writer>-{nnn}-{name}.{css,js}" (the writer segment is your',
     '                     identity) for every page, "patches/<page>/…" for one. A name the scanner cannot',
     '                     parse is silently never replayed.',
-    '  config.json        the page table: their order, and which one the address root opens.',
+    '  config.json        the page table: their order, which one the address root opens, and which pages',
+    '                     stand on their own ("useLayout": false = the shared layout does not wrap it).',
     '  services/{svc}/    the contract: "paths/*.yaml" fragments, "fixtures/", "state.json", "openapi.yaml".',
     '  research/          what you learned, one finding per file. Not packaged.',
     '  reviews/           the argument against the work, one dispute per file. Not packaged.',
@@ -101,6 +105,7 @@ export function getPrototypeToolHelp(): string {
     '  create Rival checkout --no-bind',
     '  pages --add payment=https://app.example.com/pay   (a live page, in flow order)',
     '  pages --add cart                     (place an existing cart.html in the flow)',
+    '  pages --no-layout landing            (a page that is a design of its own: the shared layout does not wrap it)',
     '  entry cart                           (the address root opens cart from now on)',
     '  pages --change pay=https://staging.example.com/pay   (one live page, another environment)',
     '  open checkout-flow --page orders     (one page of a multi-page prototype)',
@@ -360,7 +365,9 @@ export async function runPrototypeCommand(ctx: ToolCommandContext): Promise<Brow
 
     // One change at a time: "add this page and rename that one" is two decisions,
     // and reporting them as one line would hide which one failed.
-    const flags = ['--add', '--remove', '--rename', '--change'].filter((flag) => parts.includes(flag));
+    const flags = ['--add', '--remove', '--rename', '--change', '--layout', '--no-layout'].filter((flag) =>
+      parts.includes(flag),
+    );
     if (flags.length > 1) {
       throw new Error(`pages takes one change at a time (got ${flags.join(' and ')}).`);
     }
@@ -374,8 +381,10 @@ export async function runPrototypeCommand(ctx: ToolCommandContext): Promise<Brow
             ? 'pages --rename needs old=new. Example: pages --rename cart=basket'
             : flag === '--change'
               ? 'pages --change needs <name>=<url>. Example: pages --change payment=https://staging.example.com/pay'
-              : 'pages --add needs a page name, and a url for a live page. Examples: ' +
-                'pages --add payment=https://app.example.com/pay · pages --add orders',
+              : flag === '--layout' || flag === '--no-layout'
+                ? `pages ${flag} needs a page name. Example: pages --no-layout landing`
+                : 'pages --add needs a page name, and a url for a live page. Examples: ' +
+                  'pages --add payment=https://app.example.com/pay · pages --add orders',
       );
     }
 
@@ -434,6 +443,8 @@ export async function runPrototypeCommand(ctx: ToolCommandContext): Promise<Brow
         throw new Error('pages --rename needs old=new. Example: pages --rename cart=basket');
       }
       change = { op: 'rename', from: value!.slice(0, separator), to: value!.slice(separator + 1) };
+    } else if (flag === '--layout' || flag === '--no-layout') {
+      change = { op: 'layout', name: value!.trim(), useLayout: flag === '--layout' };
     } else if (flag === '--add') {
       // `name=url` adds a page that belongs to a real site; a bare `name` places
       // one of our documents in the flow order, which is the only thing the table
