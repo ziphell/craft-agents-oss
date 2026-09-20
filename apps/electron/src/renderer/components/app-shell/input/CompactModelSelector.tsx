@@ -23,7 +23,6 @@ import { useOptionalAppShellContext } from '@/context/AppShellContext'
 import {
   ANTHROPIC_MODELS,
   getModelDisplayName,
-  getModelShortName,
 } from '@config/models'
 import {
   isCompatProvider,
@@ -41,6 +40,7 @@ import { derivePickerMode } from './picker-mode'
 import {
   formatTokenCount,
   groupConnectionsByProvider,
+  modelLabel,
   stripPiPrefixForDisplay,
 } from './model-picker-helpers'
 import { useModelVisionToggle } from './useModelVisionToggle'
@@ -300,12 +300,11 @@ export function CompactModelSelector({
                         <div className="pl-6 flex flex-col gap-0.5">
                           {(conn.models || ANTHROPIC_MODELS).map(model => {
                             const modelId = typeof model === 'string' ? model : model.id
-                            const modelName = typeof model === 'string'
-                              ? stripPiPrefixForDisplay(getModelShortName(model))
-                              : (model.name ?? stripPiPrefixForDisplay(model.id))
+                            const customEndpoint = isCompatProvider(conn.providerType)
+                            const modelName = modelLabel(model, { customEndpoint })
                             const isSelectedModel =
                               isCurrentConnection && currentModel === modelId
-                            const showVision = isCompatProvider(conn.providerType)
+                            const showVision = customEndpoint
                             const visionOn = showVision && modelSupportsImages(conn, modelId)
                             return (
                               <DrawerClose asChild key={modelId}>
@@ -350,9 +349,10 @@ export function CompactModelSelector({
             // 'flat' — list models of the active connection
             availableModels.map(model => {
               const modelId = typeof model === 'string' ? model : model.id
-              const modelName = typeof model === 'string'
-                ? stripPiPrefixForDisplay(getModelShortName(model))
-                : (model.name ?? stripPiPrefixForDisplay(model.id))
+              const customEndpoint =
+                !!effectiveConnectionDetails &&
+                isCompatProvider(effectiveConnectionDetails.providerType)
+              const modelName = modelLabel(model, { customEndpoint })
               const isSelected = currentModel === modelId
               const descriptionKey =
                 typeof model !== 'string' && 'descriptionKey' in model
@@ -363,9 +363,7 @@ export function CompactModelSelector({
                 : (typeof model !== 'string' && 'description' in model
                     ? (model.description as string)
                     : '')
-              const showVision =
-                !!effectiveConnectionDetails &&
-                isCompatProvider(effectiveConnectionDetails.providerType)
+              const showVision = customEndpoint
               const visionOn =
                 showVision && modelSupportsImages(effectiveConnectionDetails!, modelId)
               return (

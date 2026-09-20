@@ -54,7 +54,7 @@ import type { ApiKeyInitialValues } from '@/components/apisetup'
 import { RenameDialog } from '@/components/ui/rename-dialog'
 import { useAppShellContext } from '@/context/AppShellContext'
 import { getModelShortName, type ModelDefinition } from '@config/models'
-import { getModelsForProviderType, resolveMidStreamBehavior, type CustomEndpointApi, type MidStreamBehavior } from '@config/llm-connections'
+import { getModelsForProviderType, isCompatProvider, resolveMidStreamBehavior, type CustomEndpointApi, type MidStreamBehavior } from '@config/llm-connections'
 import { toast } from 'sonner'
 
 /**
@@ -77,11 +77,16 @@ function getModelOptionsForConnection(
 ): Array<{ value: string; label: string; description: string; descriptionKey?: string }> {
   if (!connection) return []
 
+  // A custom endpoint's models are named by the user, so the id *is* the display
+  // name unless they set one — showing a prettified guess ("Deepseek Flash")
+  // would name a model the endpoint has never heard of.
+  const isCustomEndpoint = isCompatProvider(connection.providerType)
+
   // If connection has explicit models, use those
   if (connection.models && connection.models.length > 0) {
     return connection.models.map((m) => {
       if (typeof m === 'string') {
-        return { value: m, label: getModelShortName(m), description: '' }
+        return { value: m, label: isCustomEndpoint ? m : getModelShortName(m), description: '' }
       }
       // ModelDefinition object. Custom-endpoint entries carry only what the user
       // set — `name` is optional there, so falling back to the id keeps the
@@ -89,7 +94,7 @@ function getModelOptionsForConnection(
       const def = m as ModelDefinition
       return {
         value: def.id,
-        label: def.name ?? getModelShortName(def.id),
+        label: def.name ?? (isCustomEndpoint ? def.id : getModelShortName(def.id)),
         description: def.description ?? '',
         descriptionKey: def.descriptionKey,
       }
