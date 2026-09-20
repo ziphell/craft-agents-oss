@@ -83,9 +83,16 @@ function getModelOptionsForConnection(
       if (typeof m === 'string') {
         return { value: m, label: getModelShortName(m), description: '' }
       }
-      // ModelDefinition object
+      // ModelDefinition object. Custom-endpoint entries carry only what the user
+      // set — `name` is optional there, so falling back to the id keeps the
+      // option (and therefore the whole dropdown) from rendering blank.
       const def = m as ModelDefinition
-      return { value: def.id, label: def.name, description: def.description, descriptionKey: def.descriptionKey }
+      return {
+        value: def.id,
+        label: def.name ?? getModelShortName(def.id),
+        description: def.description ?? '',
+        descriptionKey: def.descriptionKey,
+      }
     })
   }
 
