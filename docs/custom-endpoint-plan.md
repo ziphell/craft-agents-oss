@@ -208,6 +208,8 @@ SDK 实际接受的定义（`node_modules/@earendil-works/pi-coding-agent/dist/c
 
 **数字参数的常用值**：参数表里给 `contextWindow` 与 `maxTokens` 各带一组 `presets`（128k / 256k / 1M，8k / 128k / 384k），渲染成输入框下面可点的小按钮；`Add model` 新建的行直接以 `CUSTOM_ENDPOINT_MODEL_DEFAULTS`（1M / 384k）开头。也就是说这两个数字从"隐含的兜底"变成"看得见、可改"，而 SDK 侧的 `buildCustomEndpointModelDef` 读同一个常量（原先写死在 `pi-agent-server/src/custom-endpoint-models.ts`，现提到 `llm-connections.ts`，两处不再各写一遍）。折叠行的摘要也按同一套单位显示（`131072 → 128k`、`1000000 → 1M`），否则会与按钮上的字不一致。
 
+**预设不会被 URL 自动改写**：表单原先会在 URL 恰好等于某个已知端点时自动切到那个预设 —— 把 `https://api.deepseek.com` 粘进 Custom 就会变成内置 DeepSeek provider，自定义端点的模型表、协议、请求头全部作废。现在选中 `Custom` 之后改 URL 不再切预设（要换预设就从下拉里显式选），也不会把别的预设的推荐模型播进 Custom。Provider 之间（openai → deepseek 之类）照旧按 URL 跟随。
+
 **重复 id 被拒（编辑器 + 提交两处拦）**：`models[]` 在每个消费方都是按 id 作键的（storage 保存时去重取第一个、pi-agent-server 用 Set 注册、覆盖参数用 Map 让后者赢），所以重复 id 会让"界面 / 盘 / 运行时"三处答案不同。`findDuplicateModelIds()` 是唯一判据：行上标红 + 底部点名，提交时直接拦下。storage 的去重保留作为兜底（也顺手清掉手写进配置的重复）。
 
 **三条硬要求**：

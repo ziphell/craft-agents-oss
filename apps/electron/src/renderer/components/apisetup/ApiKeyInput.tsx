@@ -405,7 +405,11 @@ export function ApiKeyInput({
     setActivePreset(nextPresetState.activePreset)
     setLastNonCustomPreset(nextPresetState.lastNonCustomPreset)
     setModelError(null)
-    if (!connectionDefaultModel.trim()) {
+    // Recommended rows only follow a preset the URL actually switched to. While
+    // the picked Custom preset stays in place, another endpoint's model ids must
+    // not be seeded into it — see resolvePresetStateForBaseUrlChange.
+    const switchedPreset = nextPresetState.activePreset !== 'custom'
+    if (switchedPreset && !connectionDefaultModel.trim()) {
       const compatDefaults = providerType === 'openai' ? COMPAT_OPENAI_DEFAULTS : COMPAT_ANTHROPIC_DEFAULTS
       if (presetKey === 'ollama') {
         setConnectionDefaultModel('qwen3-coder')
