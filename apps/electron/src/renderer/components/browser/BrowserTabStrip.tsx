@@ -13,7 +13,7 @@
  * it is.
  */
 
-import { Fragment, useCallback, useEffect, useMemo, useRef } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import { useTranslation } from 'react-i18next'
 import * as Icons from 'lucide-react'
@@ -61,6 +61,27 @@ function hasTabOf(instance: BrowserInstanceInfo, sessionId: string | null): bool
       tab.belongsTo?.sessionId === sessionId
       || tab.cursorOf === sessionId
       || tab.lockedBy === sessionId,
+  )
+}
+
+/**
+ * The page's own icon, where the list would otherwise draw a globe.
+ *
+ * Only the globe is replaced: what is happening to a tab is said by its own mark —
+ * the check on the tab on screen, the spinner on one still loading — and this never
+ * stands in for those. A page with no icon (or one that will not load) is the globe.
+ */
+function TabFavicon({ src }: { src: string | null }) {
+  const [failed, setFailed] = useState(false)
+  useEffect(() => { setFailed(false) }, [src])
+  if (!src || failed) return <Icons.Globe className="h-3.5 w-3.5 opacity-70" />
+  return (
+    <img
+      src={src}
+      alt=""
+      className="h-3.5 w-3.5 rounded-[3px] object-cover opacity-70"
+      onError={() => setFailed(true)}
+    />
   )
 }
 
@@ -370,7 +391,7 @@ export function BrowserTabStrip({
                   ) : tab.isLoading ? (
                     <Spinner className="text-[10px]" />
                   ) : (
-                    <Icons.Globe className="h-3.5 w-3.5 opacity-70" />
+                    <TabFavicon src={tab.favicon} />
                   )}
                   <span className="min-w-0 truncate">{label}</span>
                 </StyledDropdownMenuItem>

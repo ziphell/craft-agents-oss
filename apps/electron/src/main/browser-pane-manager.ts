@@ -5938,6 +5938,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       this.clearInPageThemeTimer(tab)
       tab.themeObserverToken = null
       tab.themeColor = null // reset for new page (batched with state push below)
+      // The icon belongs to the document that is being replaced, and the only thing
+      // that ever writes one is this tab's `page-favicon-updated` — a page that
+      // reports no icon reports nothing at all, so without this reset the previous
+      // site's icon would stay on the tab after the address bar moved on.
+      tab.favicon = null
       const normalized = this.normalizeTabState(url, tabWc.getTitle())
       tab.currentUrl = normalized.url
       tab.title = normalized.title
@@ -5997,6 +6002,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     tabWc.on('page-favicon-updated', (_event, favicons) => {
       tab.favicon = favicons[0] || null
       this.emitStateChange(instance)
+      // The rail draws each tab's icon from this state, and the icon only arrives
+      // here — after the pushes that came with the navigation. Without this one the
+      // rail keeps the iconless snapshot it was last sent.
+      void this.pushToolbarState(instance)
     })
 
     // The bar draws whether this tab's developer tools are up, and they are closed from
