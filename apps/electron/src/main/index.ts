@@ -21,9 +21,11 @@ Sentry.init({
   dsn: process.env.SENTRY_ELECTRON_INGEST_URL,
   environment: app.isPackaged ? 'production' : 'development',
   release: app.getVersion(),
-  // Enabled whenever the ingest URL is available — works in both production (baked via CI)
-  // and development (injected via .env / 1Password). Filter by environment in Sentry dashboard.
-  enabled: !!process.env.SENTRY_ELECTRON_INGEST_URL,
+  // TEMPORARILY DISABLED — no events leave the app. The main-process client is the
+  // single egress point: renderer and preload events are forwarded here over IPC and
+  // dropped by the disabled client. To restore, replace `false` with:
+  //   !!process.env.SENTRY_ELECTRON_INGEST_URL
+  enabled: false,
 
   // Scrub sensitive data before sending to Sentry.
   // Removes authorization headers, API keys/tokens, and credential-like values.
