@@ -1,5 +1,6 @@
 import {
   CUSTOM_ENDPOINT_MODEL_DEFAULTS,
+  type CustomEndpointApi,
   type CustomEndpointModelConfig,
   type CustomEndpointModelEntry,
   type CustomEndpointModelParams,
@@ -51,13 +52,25 @@ const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
  *
  * The user-facing `supportsThinking` becomes the SDK's `reasoning` here — this
  * is the only place the SDK's name for it appears.
+ *
+ * For `openai-completions` endpoints we set `compat.supportsStore = false` so the
+ * pi-ai driver omits the OpenAI-platform-specific `store` param entirely. Third-party
+ * OpenAI-compatible gateways gain nothing from `store`, and strict ones reject unknown
+ * params with a 400 — which made those connections unusable. See craft-agents-oss#1022.
+ * A user-written `compat` still wins over that default.
  */
 export function buildCustomEndpointModelDef(
   id: string,
   overrides?: CustomEndpointModelOverrides,
+  api?: CustomEndpointApi,
 ) {
   const supportsImages = overrides?.supportsImages ?? true
   const input: CustomEndpointInput[] = supportsImages ? ['text', 'image'] : ['text']
+
+  const compat = {
+    ...(api === 'openai-completions' ? { supportsStore: false } : {}),
+    ...(overrides?.compat ?? {}),
+  }
 
   return {
     id,
@@ -68,7 +81,7 @@ export function buildCustomEndpointModelDef(
     contextWindow: overrides?.contextWindow ?? CUSTOM_ENDPOINT_MODEL_DEFAULTS.contextWindow,
     maxTokens: overrides?.maxTokens ?? CUSTOM_ENDPOINT_MODEL_DEFAULTS.maxTokens,
     ...(overrides?.headers ? { headers: overrides.headers } : {}),
-    ...(overrides?.compat ? { compat: overrides.compat } : {}),
+    ...(Object.keys(compat).length > 0 ? { compat } : {}),
     ...(overrides?.thinkingLevelMap ? { thinkingLevelMap: overrides.thinkingLevelMap } : {}),
   }
 }
