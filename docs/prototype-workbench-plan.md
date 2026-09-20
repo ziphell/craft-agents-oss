@@ -2547,6 +2547,8 @@ overlay 的页面是别人的活地址，它不会、也不该变成我们的文
 
 **未量到**：键盘的实际路由。`before-input-event` 探针两次都是 0 命中（窗口自身 / toolbar / rail / 两个标签页全为 0），所以"持有或丢掉这个焦点，打字究竟去哪儿"仍是空白——上面写的都只是 `document.hasFocus()` / `document.activeElement` / `webContents.isFocused()` 三个读数。
 
+**修正（第十七轮之后由用户实测发现）**：交给键盘这一句**必须排在把 view 搬进窗口之后**。标签页上屏要把它的 view 从停车窗搬回 app 窗口（第十七轮），而**搬动本身会丢掉键盘**——A/B 实测（`background-viewport.ts` F 段）：先把键盘给那支 view、再把它搬进窗口 → 两个 view 都 `hasFocus: false`（谁都没有）；先搬、再给 → `hasFocus: true`。原写法把 `focusTheTabOnScreen` 放在 `layoutAllViews` **之前**，用户的现象正是"从标签栏切回来，焦点没还给网页"。现在 `activateTab`（两条路径）与 `closeTab` 的接替分支都在布局之后才交给键盘；spike 的 phase 10 把"后台开标签页不抢键盘"与"切回来必须还回来"从报告改成**断言**，防止再退化。
+
 - 验收：`browser-pane-manager.test.ts` 的「keeps the keyboard on the tab on screen when a page loads in a tab behind it」「leaves the address bar alone when a page loads in a tab behind the person」「gives the keyboard to the tab that comes forward, and never moves the window for it」「hands the keyboard to the tab that takes over when the tab on screen closes」；同一场景的真 Electron 读数在 `spike/screenshot-e2e.ts` phase 8 / 10，那里原有的四种截图组合仍然是 `SPIKE_OK`。
 
 **第十七轮（后台标签页住在离屏停车窗：窗口 resize 只碰屏幕上那个）**：

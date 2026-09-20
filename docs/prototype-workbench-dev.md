@@ -281,7 +281,7 @@ storage: true        moduleRan: true               ← localStorage 与 <script 
 
 - **症状**：光标停在屏幕上那个标签页的输入框里（页面收到 `blur`），agent 在后台开一个标签页 → 光标没了；切到别的标签页再**切回来** → 还是不回来，键盘留在已经不在屏幕上的那个标签页上；关掉屏幕上那个标签页 → 也没有交接。`document.hasFocus()` 在两边的答案与肉眼所见相反。
 - **根因**：**Chromium 在页面 commit 时把焦点给那个 webContents，且不问它是不是屏幕上那个**（量出来的：裸 `WebContentsView` 创建时、挂进窗口后都不给焦点，第一次**加载**才给；同一个窗口里第二支 view 加载完，焦点就从第一支转过去）。而 manager 这一侧**从没有一处向标签页要过焦点**：`activateTab` 只改 `activeTabId`、重排 view、推状态。于是一旦 agent 的标签页（它总是最新那个）加载完，键盘就归它，直到有别人再来要。
-- **修法**：`focusTheTabOnScreen(instance, tab)` 一处，三个调用点——`activateTab`（放在"已经是当前标签页"的提前返回**之前**）、标签页的 `did-navigate`（页面 commit 就是移交时刻）、`closeTab` 的接替分支（`activeTabId` 全库只有两处直接赋值，这是另一处）。两条守门别丢：**只在 `window.isFocused()` 时**动（`webContents.focus()` 会把窗口拉到前台，后台干活的 agent 绝不能翻窗口），**只从"另一个标签页"手里拿回**（地址栏与 rail 是人打字的地方）。
+- **修法**：`focusTheTabOnScreen(instance, tab)` 一处，三个调用点——`activateTab`（放在"已经是当前标签页"的提前返回**之前**）、标签页的 `did-navigate`（页面 commit 就是移交时刻）、`closeTab` 的接替分支（`activeTabId` 全库只有两处直接赋值，这是另一处）。两条守门别丢：**只在 `window.isFocused()` 时**动（`webContents.focus()` 会把窗口拉到前台，后台干活的 agent 绝不能翻窗口），**只从"另一个标签页"手里拿回**（地址栏与 rail 是人打字的地方）。**顺序也是它的一部分**：这句话必须排在"把 view 搬进窗口"（`layoutAllViews` / `raiseActiveTab`）**之后**——搬动本身会丢掉键盘，先给后搬等于没给（A/B 实测：先给再搬 → 两个 view 都 `hasFocus: false`；先搬再给 → `true`；用户实测"从标签栏切回来焦点没还给网页"就是这一条，见实施方案 §22 第十六轮末尾的修正）。
 - **教训**：这类"两个独立状态跟着一个动作走"的地方（这里是"显示"与"键盘"），要成对地找一遍：**直接写 `activeTabId` 的地方就是候选**（当时全库只有 `activateTab` 与 `closeTab` 两处）。每个标签页的文档自己记着聚焦的元素，所以只要把键盘交给正确的标签页，光标就回到原处——不需要自己存"上次焦点在哪"。
 - **验收**：`browser-pane-manager.test.ts` 四条（后台加载交还 / 地址栏不动 / 激活交给上屏者 + 窗口不在人手里不动 / 关闭交接）；真 Electron 读数在 `apps/electron/spike/screenshot-e2e.ts` phase 8 / 10（实施方案 §22 第十六轮）。
 

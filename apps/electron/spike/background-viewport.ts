@@ -410,6 +410,68 @@ async function main(): Promise<void> {
     report.aViewParkedOutsideItsWindow = { bornOutside: e1WhileOutside, afterComingInside: e1AfterComingInside, movedOutAfterBeingComposited: e2AfterBeingMovedOut }
   }
 
+  // ---------------------------------------------------------------------------------------------
+  // F — the order of "hand the keyboard over" and "move the view": a tab coming forward is moved out
+  // of the parking window and raised in the person's window, and whichever of the two is done second
+  // wins. A/B, because the app got this wrong (the keyboard was asked for *before* the move, and the
+  // person switching back to their own tab got nothing).
+  // ---------------------------------------------------------------------------------------------
+  {
+    const home = new BrowserWindow({
+      ...spot(7000), width: FROZEN.width, height: FROZEN.height, show: false, frame: false, skipTaskbar: true,
+    })
+    const resident = new WebContentsView({ webPreferences: { backgroundThrottling: false } })
+    resident.setBounds({ x: 0, y: 0, ...FROZEN })
+    home.contentView.addChildView(resident)
+    home.showInactive()
+    await load(resident, page('#00aa88', 'the tab on screen'), 'F resident')
+    await sleep(600)
+
+    const parked = new BrowserWindow({
+      ...spot(8000), width: FROZEN.width, height: FROZEN.height, show: false, frame: false, skipTaskbar: true,
+    })
+    const arriving = new WebContentsView({ webPreferences: { backgroundThrottling: false } })
+    arriving.setBounds({ x: 0, y: 0, ...FROZEN })
+    parked.contentView.addChildView(arriving)
+    parked.showInactive()
+    await load(arriving, page('#8800aa', 'the tab coming forward'), 'F arriving')
+    await sleep(600)
+
+    const says = async (wc: Electron.WebContents) => ({
+      hasFocus: await wc.executeJavaScript('document.hasFocus()'),
+      isFocused: wc.isFocused(),
+    })
+    const focusedBeforeAnything = { resident: await says(resident.webContents), arriving: await says(arriving.webContents) }
+
+    // A: the keyboard first, the move second — what the app did.
+    arriving.webContents.focus()
+    await sleep(250)
+    const arrivingAfterBeingFocusedInTheParkingWindow = await says(arriving.webContents)
+    home.contentView.addChildView(arriving)
+    arriving.setBounds({ x: 0, y: 0, ...FROZEN })
+    await sleep(400)
+    const afterFocusingItFirstThenMoving = { resident: await says(resident.webContents), arriving: await says(arriving.webContents) }
+
+    // B: the move first, the keyboard second — what the app does now.
+    parked.contentView.addChildView(arriving)
+    arriving.setBounds({ x: 0, y: 0, ...FROZEN })
+    await sleep(400)
+    home.contentView.addChildView(arriving)
+    arriving.setBounds({ x: 0, y: 0, ...FROZEN })
+    await sleep(400)
+    arriving.webContents.focus()
+    await sleep(400)
+    const afterMovingItFirstThenFocusing = { resident: await says(resident.webContents), arriving: await says(arriving.webContents) }
+
+    report.theOrderOfFocusAndTheMove = {
+      focusedBeforeAnything,
+      arrivingAfterBeingFocusedInTheParkingWindow,
+      afterFocusingItFirstThenMoving,
+      afterMovingItFirstThenFocusing,
+    }
+    keptAlive.push(home, parked)
+  }
+
   for (const window of keptAlive) {
     if (!window.isDestroyed()) window.destroy()
   }

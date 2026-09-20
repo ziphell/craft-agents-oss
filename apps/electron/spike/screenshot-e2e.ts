@@ -1252,6 +1252,22 @@ app.whenReady().then(async () => {
       order.theFrontWindowAtTheEnd = BrowserWindow.getFocusedWindow()?.getTitle() ?? null
 
       console.log('SPIKE_STEP focus order ' + JSON.stringify(order, null, 1))
+
+      // The two things a person notices, **asserted** rather than reported: opening a tab behind
+      // theirs must not take the keyboard off their page, and switching back to their tab must give
+      // it back. Both were wrong once — the keyboard was asked for *before* the view was moved into
+      // the window, and the move dropped it (the app's own tab strip goes through `activateTab`).
+      const openedBehind = order.afterTheAgentOpenedATabBehindIt as any
+      const switchedBack = order.afterSwitchingBackToThePersonsTab as any
+      if (openedBehind.theTabOnScreen.hasFocus !== true) {
+        failures.push('a tab opened behind took the keyboard off the tab on screen')
+      }
+      if (switchedBack.thePersonTab.hasFocus !== true) {
+        failures.push('switching back to the person\'s tab did not give its page the keyboard')
+      }
+      if (switchedBack.theAgentTab.hasFocus !== false) {
+        failures.push('the tab that is not on screen kept the keyboard after switching back')
+      }
       manager.destroyInstance(id)
     }
 

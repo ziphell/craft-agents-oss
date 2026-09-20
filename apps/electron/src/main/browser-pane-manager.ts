@@ -1372,11 +1372,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const tab = tabById(instance, tabId)
     if (!tab) throw new Error(`Browser window "${instanceId}" has no tab "${tabId}".`)
 
-    // Before the "already on screen" way out: a tab that is already showing still has to be
-    // handed the keyboard, which is what a person clicking their own tab means.
-    this.focusTheTabOnScreen(instance, tab)
-
-    if (instance.activeTabId === tab.id) return
+    if (instance.activeTabId === tab.id) {
+      // A tab that is already showing still has to be handed the keyboard — that is what a person
+      // clicking their own tab means — and nothing about it moves.
+      this.focusTheTabOnScreen(instance, tab)
+      return
+    }
 
     // The developer tools inspect the tab that is on screen, so they leave with the tab
     // that is leaving: the window must never show one page while its tools describe
@@ -1393,6 +1394,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // forward (plan §12.7): the user keeps picking across tabs, and this is where
     // "any tab's elements can be picked" is made true.
     if (instance.picking) this.armPickerOn(instance, tab)
+    // **After** the layout, never before: the tab that just came forward has been moved out of the
+    // parking window and raised in this one, and a view that is about to be handed to another window
+    // cannot hold the keyboard — asking for it first is asking the wrong view (measured: the focus
+    // is lost by the move).
+    this.focusTheTabOnScreen(instance, tab)
     mainLog.info(`[browser-pane] Tab activated instance=${instance.id} tab=${tab.id} url=${tab.currentUrl}`)
   }
 
@@ -1500,9 +1506,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       const next = this.successorOf(instance, tab, index)
       if (next) {
         instance.activeTabId = next.id
-        // The keyboard goes with the display here too: the tab that just went away had it,
-        // and what the window shows next is what the person types into.
-        this.focusTheTabOnScreen(instance, next)
         this.forceCloseToolbarMenu(instance, 'tab-closed')
         this.layoutAllViews(instance)
         this.updateNativeOverlayState(instance)
@@ -1510,6 +1513,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         this.pushToolbarState(instance)
         // Whatever tab the window shows next is where an armed picker belongs.
         if (instance.picking) this.armPickerOn(instance, next)
+        // The keyboard goes with the display here too, and **after** the layout for the same reason
+        // as `activateTab`: the tab that takes over has just been moved into this window.
+        this.focusTheTabOnScreen(instance, next)
       }
     } else {
       // Closing a tab the window was not showing still shrinks the chrome when it
