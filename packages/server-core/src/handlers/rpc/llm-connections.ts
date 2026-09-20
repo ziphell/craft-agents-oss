@@ -1,5 +1,5 @@
 import { RPC_CHANNELS, type LlmConnectionSetup } from '@craft-agent/shared/protocol'
-import { getLlmConnections, getLlmConnection, addLlmConnection, updateLlmConnection, deleteLlmConnection, getDefaultLlmConnection, setDefaultLlmConnection, touchLlmConnection, isCompatProvider, isAnthropicProvider, getDefaultModelsForConnection, getDefaultModelForConnection, type LlmConnection, type LlmConnectionUpdate, type LlmConnectionWithStatus, toBedrockNativeId, deriveBedrockRegionPrefix } from '@craft-agent/shared/config'
+import { getLlmConnections, getLlmConnection, addLlmConnection, updateLlmConnection, deleteLlmConnection, getDefaultLlmConnection, setDefaultLlmConnection, touchLlmConnection, isCompatProvider, isAnthropicProvider, getDefaultModelsForConnection, getDefaultModelForConnection, maskCredential, isMaskedCredential, type LlmConnection, type LlmConnectionUpdate, type LlmConnectionWithStatus, toBedrockNativeId, deriveBedrockRegionPrefix } from '@craft-agent/shared/config'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
 import { setSetupDeferred, applyLlmConnectionUpdate } from '@craft-agent/shared/config/storage'
 import {
@@ -279,8 +279,7 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
       }
 
       // Store credential if provided (skip masked placeholders from GET_API_KEY)
-      const isMasked = setup.credential?.includes('••')
-      if (setup.credential && !isMasked) {
+      if (setup.credential && !isMaskedCredential(setup.credential)) {
         const authType = pendingConnection.authType
         if (authType === 'oauth') {
           await manager.setLlmOAuth(setup.slug, { accessToken: setup.credential })
@@ -459,11 +458,7 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
     const manager = getCredentialManager()
     const key = await manager.getLlmApiKey(slug)
     if (!key) return null
-    // Show provider prefix (first 7 chars) + last 4 chars, mask the middle
-    if (key.length > 15) {
-      return key.slice(0, 7) + '••••••••' + key.slice(-4)
-    }
-    return '••••••••'
+    return maskCredential(key)
   })
 
   // Save (create or update) an LLM connection

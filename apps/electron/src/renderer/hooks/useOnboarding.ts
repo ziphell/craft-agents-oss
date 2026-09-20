@@ -18,7 +18,7 @@ import type {
 import type { ProviderChoice } from '@/components/onboarding/ProviderSelectStep'
 import type { LocalModelSubmitData } from '@/components/onboarding/LocalModelStep'
 import type { ApiKeySubmitData } from '@/components/apisetup'
-import type { ConnectionModelEntry, CustomEndpointConfig } from '@config/llm-connections'
+import { isMaskedCredential, type ConnectionModelEntry, type CustomEndpointConfig } from '@config/llm-connections'
 import type { SetupNeeds, LlmConnectionSetup, ClaudeOAuthIdentityDto } from '../../shared/types'
 
 interface UseOnboardingOptions {
@@ -394,6 +394,11 @@ export function useOnboarding({
     setState(s => ({ ...s, credentialStatus: 'validating', errorMessage: undefined }))
 
     const isPiApiKeyFlow = state.apiSetupMethod === 'pi_api_key'
+    // The edit form is pre-filled with the display mask (GET_API_KEY), so an
+    // untouched field submits the mask. It is not a credential: read it as "keep
+    // the stored key" — neither testing nor saving it (the • characters are not
+    // valid header bytes, so the endpoint would reject the request outright).
+    const apiKey = isMaskedCredential(data.apiKey) ? '' : data.apiKey
 
     try {
       // Bedrock (Pi+amazon-bedrock) — skip API key validation and connection test
@@ -418,7 +423,7 @@ export function useOnboarding({
       }
 
       // When editing an existing connection, API key is optional (empty = keep existing credential)
-      if (!data.apiKey.trim() && editingSlug) {
+      if (!apiKey.trim() && editingSlug) {
         const saved = await handleSaveConfig(undefined, {
           baseUrl: data.baseUrl,
           connectionDefaultModel: data.connectionDefaultModel,
@@ -441,7 +446,7 @@ export function useOnboarding({
       // - Non-local endpoints require an API key
       const isLoopbackCustomEndpoint = isLoopbackEndpoint(data.baseUrl)
       if (isPiApiKeyFlow) {
-        if (!data.apiKey.trim() && !isLoopbackCustomEndpoint) {
+        if (!apiKey.trim() && !isLoopbackCustomEndpoint) {
           setState(s => ({
             ...s,
             credentialStatus: 'error',
@@ -450,7 +455,7 @@ export function useOnboarding({
           return
         }
       } else {
-        if (!data.apiKey.trim() && !isLoopbackCustomEndpoint) {
+        if (!apiKey.trim() && !isLoopbackCustomEndpoint) {
           setState(s => ({
             ...s,
             credentialStatus: 'error',
@@ -468,7 +473,7 @@ export function useOnboarding({
       const testModel = typeof firstModel === 'string' ? firstModel : firstModel?.id
       const testResult = await window.electronAPI.testLlmConnectionSetup({
         provider: setupTestProvider,
-        apiKey: data.apiKey,
+        apiKey,
         baseUrl: data.baseUrl,
         model: testModel,
         piAuthProvider: data.piAuthProvider,
@@ -484,7 +489,7 @@ export function useOnboarding({
         return
       }
 
-      const saved = await handleSaveConfig(data.apiKey, {
+      const saved = await handleSaveConfig(apiKey, {
         baseUrl: data.baseUrl,
         connectionDefaultModel: data.connectionDefaultModel,
         connectionFastModel: data.connectionFastModel,

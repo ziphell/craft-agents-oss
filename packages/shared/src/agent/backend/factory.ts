@@ -34,6 +34,7 @@ import {
 import type { LlmConnectionType, CustomEndpointConfig } from '../../config/llm-connections.ts';
 // Import validation helpers for provider-auth combinations
 import {
+  isMaskedCredential,
   isValidProviderAuthCombination,
 } from '../../config/llm-connections.ts';
 import { parseValidationError, type LlmValidationResult } from '../../config/llm-validation.ts';
@@ -694,6 +695,12 @@ export async function testBackendConnection(args: {
   connection?: Pick<LlmConnection, 'providerType' | 'piAuthProvider' | 'customEndpoint'>;
 }): Promise<{ success: boolean; error?: string }> {
   const trimmedKey = args.apiKey.trim();
+  if (isMaskedCredential(trimmedKey)) {
+    // The edit form shows a masked key; submitting it unchanged means "keep the
+    // stored one". Sending it would fail at the HTTP layer with an unreadable
+    // "Header has invalid value" (the • characters are not valid header bytes).
+    return { success: false, error: 'The API key is a masked placeholder — leave it blank to keep the stored key.' };
+  }
   if (!trimmedKey && !args.allowEmptyApiKey) {
     return { success: false, error: 'API key is required' };
   }

@@ -13,6 +13,8 @@ import {
   toCustomEndpointModels,
   modelContextWindow,
   findDuplicateModelIds,
+  maskCredential,
+  isMaskedCredential,
 } from '../llm-connections'
 import { ANTHROPIC_MODELS, getModelDisplayName, getModelContextWindow, getModelShortName, isClaudeModel } from '../models'
 
@@ -189,6 +191,40 @@ describe('findDuplicateModelIds', () => {
 
   it('reports each repeated id once', () => {
     expect(findDuplicateModelIds(['a', 'b', 'a', 'b', 'a']).sort()).toEqual(['a', 'b'])
+  })
+})
+
+// ============================================================
+// maskCredential / isMaskedCredential
+//
+// The pair is the single judge of "is this a key, or the display mask?". It
+// exists because the edit form is pre-filled with the mask, and a mask submitted
+// as a credential is rejected by the endpoint as an invalid header value.
+// ============================================================
+
+describe('maskCredential', () => {
+  it('keeps the provider prefix and the last four characters', () => {
+    expect(maskCredential('sk-oct-abcdefghijklmnop5503')).toBe('sk-oct-••••••••5503')
+  })
+
+  it('masks short keys entirely', () => {
+    expect(maskCredential('sk-1234')).toBe('••••••••')
+  })
+})
+
+describe('isMaskedCredential', () => {
+  it('recognises the output of maskCredential', () => {
+    expect(isMaskedCredential(maskCredential('sk-oct-abcdefghijklmnop5503'))).toBe(true)
+  })
+
+  it('does not mistake a real key for a mask', () => {
+    expect(isMaskedCredential('sk-oct-abcdefghijklmnop5503')).toBe(false)
+  })
+
+  it('handles empty and missing values', () => {
+    expect(isMaskedCredential('')).toBe(false)
+    expect(isMaskedCredential(undefined)).toBe(false)
+    expect(isMaskedCredential(null)).toBe(false)
   })
 })
 

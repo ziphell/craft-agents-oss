@@ -611,6 +611,25 @@ function lastAllowedModelId(
 }
 
 /**
+ * Display-only mask for a stored API key, e.g. `sk-oct-••••••••5503`.
+ *
+ * A masked value is **not** a credential, and this is the only place that knows
+ * the convention. Use {@link isMaskedCredential} wherever a submitted value
+ * could be one: the setup handler must not store it over the real key, and an
+ * edit form showing it must read an untouched field as "keep the stored key"
+ * rather than testing or saving the mask (which the endpoint rejects as an
+ * invalid header value).
+ */
+export function maskCredential(key: string): string {
+  return key.length > 15 ? `${key.slice(0, 7)}••••••••${key.slice(-4)}` : '••••••••';
+}
+
+/** Whether a value is a {@link maskCredential} placeholder rather than a key. */
+export function isMaskedCredential(value: string | null | undefined): boolean {
+  return !!value?.includes('••');
+}
+
+/**
  * Generate a URL-safe slug from a display name.
  * @param name - Display name to convert
  * @returns URL-safe slug
