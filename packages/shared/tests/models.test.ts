@@ -75,24 +75,34 @@ describe('getModelShortName', () => {
     expect(getModelShortName('anthropic/claude-sonnet-4')).toBe('claude-sonnet-4');
   });
 
-  it('preserves version numbers for custom endpoint models', () => {
-    expect(getModelShortName('gpt-5.4')).toBe('Gpt 5.4');
-    expect(getModelShortName('gpt-5.2')).toBe('Gpt 5.2');
-    expect(getModelShortName('glm-4.7')).toBe('Glm 4.7');
+  it('returns the id verbatim for models the registry does not know', () => {
+    // Pi-catalogue and custom-endpoint ids. Prettifying these used to invent
+    // names nobody has ever heard of ("Deepseek v4.flash", "Mistral large"), so
+    // the id itself is the label.
+    expect(getModelShortName('gpt-5.4')).toBe('gpt-5.4');
+    expect(getModelShortName('glm-4.7')).toBe('glm-4.7');
+    expect(getModelShortName('mistral')).toBe('mistral');
+    expect(getModelShortName('gemma2')).toBe('gemma2');
+    expect(getModelShortName('mistral-large')).toBe('mistral-large');
+    expect(getModelShortName('deepseek-v4-flash')).toBe('deepseek-v4-flash');
+    expect(getModelShortName('deepseek-r1')).toBe('deepseek-r1');
   });
 
-  it('humanizes bare model names without versions', () => {
-    expect(getModelShortName('mistral')).toBe('Mistral');
-    expect(getModelShortName('gemma2')).toBe('Gemma2');
+  it('returns an unlisted Claude id verbatim too', () => {
+    // Normalization only covers the deprecated Opus aliases; anything older
+    // than the registry is reported as-is rather than prettified.
+    expect(getModelShortName('claude-sonnet-3-5-20241022')).toBe('claude-sonnet-3-5-20241022');
+  });
+});
+
+describe('getModelDisplayName', () => {
+  it('uses the registry name for known models', () => {
+    expect(getModelDisplayName('claude-opus-4-8')).toBe('Opus 4.8');
   });
 
-  it('humanizes multi-part model names', () => {
-    expect(getModelShortName('mistral-large')).toBe('Mistral large');
-    expect(getModelShortName('deepseek-r1')).toBe('Deepseek r1');
-  });
-
-  it('strips date suffix for unknown claude models', () => {
-    expect(getModelShortName('claude-sonnet-3-5-20241022')).toBe('Sonnet 3.5');
+  it('returns the id verbatim for models the registry does not know', () => {
+    expect(getModelDisplayName('deepseek-v4-flash')).toBe('deepseek-v4-flash');
+    expect(getModelDisplayName('qwen3-coder')).toBe('qwen3-coder');
   });
 });
 

@@ -287,44 +287,34 @@ export function getModelById(modelId: string): ModelDefinition | undefined {
 
 /**
  * Get display name for a model ID (full name with version).
+ *
+ * Same rule as {@link getModelShortName}: the registry's name when the model is
+ * known (including Bedrock-native and deprecated ids, which `getModelById`
+ * normalizes), the id **verbatim** otherwise.
  */
 export function getModelDisplayName(modelId: string): string {
-  const model = getModelById(modelId);
-  if (model) return model.name;
-  // Fallback: normalize deprecated/Bedrock-native IDs, then strip prefix and date suffix
-  // e.g., "claude-opus-4-5-20251101" → "Opus 4.8"
-  const normalized = bedrockToBareId(normalizeDeprecatedModelId(modelId));
-  const stripped = normalized
-    .replace('claude-', '')
-    .replace(/-\d{8}$/, '');  // Remove date suffix
-  // Split on dashes, capitalize first part, join version parts with dots
-  const parts = stripped.split('-');
-  const first = parts[0];
-  if (!first) return modelId;
-  const name = first.charAt(0).toUpperCase() + first.slice(1);
-  const version = parts.slice(1).join('.');
-  return version ? `${name} ${version}` : name;
+  return getModelById(modelId)?.name ?? modelId;
 }
 
 /**
  * Get short display name for a model ID (without version number).
+ *
+ * The registry is the only place a model's name is actually known — it carries
+ * the curated short names of the Claude family ("Opus", "Sonnet", "Haiku"). For
+ * an id it does not know — Pi-catalogue models (`deepseek-v4-flash`), custom
+ * endpoints, anything arbitrary — the id is returned verbatim. Guessing a name
+ * from the id is not a service: it produced labels like "Deepseek v4.flash" for
+ * models nobody has ever heard of.
  */
 export function getModelShortName(modelId: string): string {
   const model = getModelById(modelId);
   if (model) return model.shortName;
-  // For provider-prefixed IDs (e.g. "openai/gpt-5"), show just the model part
+  // Provider-prefixed ids ("openai/gpt-5.4") are how the Pi catalogue names its
+  // models; the id without its provider is the most honest short label.
   if (modelId.includes('/')) {
     return modelId.split('/').pop() || modelId;
   }
-  // Fallback: normalize deprecated/Bedrock-native IDs, then humanize (same logic as getModelDisplayName)
-  const normalized = bedrockToBareId(normalizeDeprecatedModelId(modelId));
-  const stripped = normalized.replace('claude-', '').replace(/-\d{8}$/, '');
-  const parts = stripped.split('-');
-  const first = parts[0];
-  if (!first) return modelId;
-  const name = first.charAt(0).toUpperCase() + first.slice(1);
-  const version = parts.slice(1).join('.');
-  return version ? `${name} ${version}` : name;
+  return modelId;
 }
 
 /**
