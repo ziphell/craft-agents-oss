@@ -901,9 +901,21 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
-        // Throttling stays Chromium's business here; "pretend this tab is in front" is turned
-        // on per tab, where it is known which tab a conversation is working from. See
-        // `syncTabThrottling`.
+        /**
+         * Never throttled — for every tab, not only the one somebody works from.
+         *
+         * Every tab but the one on screen is covered by the view above it (the tab on screen,
+         * or the window's overlay while that tab is held), and Chromium marks a covered page
+         * **hidden**. A hidden page stops honouring the layout it is handed: with the window
+         * grown while the page sat behind, its viewport kept the old size — measured in
+         * `apps/electron/spike/resize-follow.cjs`, where a throttled covered page stayed at 573
+         * as the window went 780 → 1420 while its unthrottled twin followed both ways. Growing
+         * was what it ignored; shrinking still applied, which is what made this read as "it
+         * follows one way only". Letting the page stay counted as visible is also what the rest
+         * of this file assumes: a background tab keeps a real viewport, which is what
+         * coordinates, scrolling and captures are read against (`layoutTabView`).
+         */
+        backgroundThrottling: false,
       },
     })
 
@@ -3793,8 +3805,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     if (target && instance.controlBy.has(sessionId)) {
       this.holdTab(instance, target.id, sessionId)
     }
-
-    this.syncTabThrottling(instance)
   }
 
   /**
@@ -3821,27 +3831,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     if (!changed) return
     this.updateNativeOverlayState(instance)
     mainLog.info(`[browser-pane] Tab held session=${sessionId} instance=${instance.id} tab=${tabId}`)
-  }
-
-  /**
-   * Pretend the tabs a conversation works from are in front — and only those.
-   *
-   * A tab Chromium counts as hidden stops animating *and tells the site it is hidden*, so the
-   * same tab would behave differently depending on which tab happens to be on screen. Turning
-   * throttling off for every tab would fix that at the cost of keeping every background
-   * animation running (memory is not the issue — the spike measured 613MB parked vs 614MB
-   * unthrottled for four tabs); this follows the **cursors** instead, so exactly the tabs
-   * somebody is working from are treated as in front and the rest stay Chromium's business.
-   * The geometry never depends on it: a covered tab keeps its viewport and its captures are
-   * correct either way (measured in `apps/electron/spike`).
-   */
-  private syncTabThrottling(instance: BrowserInstance): void {
-    for (const tab of instance.tabs) {
-      const webContents = tab.tabView.webContents
-      if (webContents.isDestroyed()) continue
-      if (typeof webContents.setBackgroundThrottling !== 'function') continue
-      webContents.setBackgroundThrottling(tab.cursorOf === null)
-    }
   }
 
   /**
@@ -5930,10 +5919,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       this.installThemeObserver(instance, tab)
       void this.extractThemeColor(instance, tab)
     })
-
-    // Every tab's answer to "may Chromium throttle this?" is stated once it exists, so a tab
-    // is never left on an inherited default it did not mean (`syncTabThrottling`).
-    this.syncTabThrottling(instance)
 
     // A locked tab takes no input from a person. The shield already swallows the mouse;
     // this is the keyboard half — typing into a tab a conversation is driving is the

@@ -138,10 +138,16 @@ function createMockBrowserView() {
  * — the page's corners are cut out of its own view, so nothing is drawn over the page and the
  * person keeps their clicks — so that is what this mock exists to expose.
  */
-function createMockWebContentsView() {
+function createMockWebContentsView(options?: any) {
   const webContents = createMockWebContents()
   return {
     webContents,
+    /**
+     * What the view was built with. A page's `backgroundThrottling` is part of how it behaves
+     * rather than a detail of its construction — a covered page Chromium counts as hidden stops
+     * honouring the layout it is given — so the tests read it back from here.
+     */
+    _options: options,
     setBounds: mock(() => {}),
     setBackgroundColor: mock((_color: string) => {}),
     setBorderRadius: mock((_radius: number) => {}),
@@ -269,8 +275,8 @@ mock.module('electron', () => ({
   },
   WebContentsView: class MockWebContentsView {
     webContents: any
-    constructor(_opts?: any) {
-      const view = createMockWebContentsView()
+    constructor(opts?: any) {
+      const view = createMockWebContentsView(opts)
       this.webContents = view.webContents
       Object.assign(this, view)
     }
@@ -3049,10 +3055,11 @@ describe('BrowserPaneManager', () => {
       expect(whyTabIsOutOfReach(tab(), nodeWork('checkout-flow', 'cart', 'child-2'))).not.toBeNull()
     })
 
-    // "Pretend this tab is in front" is turned on per tab, not for the whole window: the tabs
-    // somebody works from are the ones whose timers and rendering must not be throttled, and a
-    // tab nobody works from stays Chromium's business (plan §22, 第十二轮).
-    it('simulates the foreground only for the tabs a conversation works from', () => {
+    // Every tab but the one on screen is covered by the view above it, and Chromium marks a
+    // covered page hidden — and a hidden page stops honouring the layout it is handed, which is
+    // how a background tab was left at the old size when the window grew (measured in
+    // `apps/electron/spike/resize-follow.cjs`). So no tab's throttling is narrowed, for anybody.
+    it('builds every tab view never-throttled, whoever works from it', () => {
       manager.createInstance('tabs-throttle')
       const instance = (manager as any).instances.get('tabs-throttle')
       instance.tabs[0].currentUrl = 'https://first.example.com/'
@@ -3060,22 +3067,23 @@ describe('BrowserPaneManager', () => {
       const mine = manager.createTab('tabs-throttle', { belongsTo: work('session-a') })
       const nobodys = manager.createTab('tabs-throttle')
 
-      /** `true` = Chromium may throttle this tab when it is not in front. */
-      const throttlingOf = (tabId: string) => {
+      /** `false` = Chromium may not throttle this page when it is not the one on screen. */
+      const builtUnthrottled = (tabId: string) => {
         const tab = instance.tabs.find((candidate: any) => candidate.id === tabId)
-        return tab.tabView.webContents.setBackgroundThrottling.mock.calls.at(-1)?.[0]
+        return tab.tabView._options?.webPreferences?.backgroundThrottling
       }
 
-      expect(throttlingOf(mine)).toBe(false)
-      expect(throttlingOf(nobodys)).toBe(true)
-      // The window's own tab was never anybody's.
-      expect(throttlingOf(instance.tabs[0].id)).toBe(true)
+      expect(builtUnthrottled(instance.tabs[0].id)).toBe(false)
+      expect(builtUnthrottled(mine)).toBe(false)
+      expect(builtUnthrottled(nobodys)).toBe(false)
 
-      // Moving the cursor hands the tab back to Chromium and the new tab over.
+      // And nothing re-states it per tab afterwards: the page's visibility is not something a
+      // cursor or a hand-over may narrow.
+      const narrowed = () => instance.tabs
+        .map((tab: any) => tab.tabView.webContents.setBackgroundThrottling.mock.calls.length)
+      const before = narrowed()
       manager.setSessionTab('tabs-throttle', nobodys, 'session-a')
-
-      expect(throttlingOf(mine)).toBe(true)
-      expect(throttlingOf(nobodys)).toBe(false)
+      expect(narrowed()).toEqual(before)
     })
 
     // Which page of the prototype it is on is the page table's answer, and it is
