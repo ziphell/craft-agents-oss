@@ -2737,11 +2737,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         ...imageOpts,
       })
     } finally {
-      // Handed back, at the size the page area has, with the stacking as it was: the tab on screen is
-      // the person's, and the overlay belongs above the page exactly when that page is the locked one.
+      // Handed back, at the size the page area has *now*, with the stacking as it was: the tab on
+      // screen is the person's, and the overlay belongs above the page exactly when that page is the
+      // locked one. Read again rather than reusing `area`: that one is the size the shot was taken
+      // at, and the window may have been resized while the page was away — handing it back at the
+      // old size would leave it at a size the window does not have.
       if (!instance.window.isDestroyed() && !tab.tabView.webContents.isDestroyed()) {
         instance.window.contentView.addChildView(tab.tabView)
-        tab.tabView.setBounds(area)
+        tab.tabView.setBounds(this.pageAreaBounds(instance))
         this.raiseActiveTab(instance)
         this.updateNativeOverlayState(instance)
       }
@@ -5787,6 +5790,21 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     })
 
     instance.window.on('resize', () => {
+      this.layoutAllViews(instance)
+    })
+
+    /**
+     * …and once more when the drag is over.
+     *
+     * `resize` fires all through a drag, and on Windows the size it reports can be a step
+     * behind the window the person has actually ended up with. The chrome never shows it —
+     * the bar, the rail and the overlay are `BrowserView`s, which resize themselves natively
+     * — but the page does, because the page is the one view that cannot: a `WebContentsView`
+     * has no `setAutoResize`, so it is placed from what these handlers read. Saying the
+     * layout again once the window has finished is what leaves the page on the size the
+     * window has rather than on the size the last event happened to see.
+     */
+    instance.window.on('resized', () => {
       this.layoutAllViews(instance)
     })
 

@@ -1974,6 +1974,8 @@ describe('BrowserPaneManager', () => {
       // What Chromium says about a page it has never composited. One answer is enough to give up on
       // the window: another go inside it would find just as little.
       if (captureCalls <= 1) throw new Error('Current display surface not available for capture')
+      // The person drags the window edge while the page is away — the shot is taken at 1200 wide.
+      instance.window.setContentSize(1000, 900)
       return answerWith('first-frame-png')
     })
 
@@ -1997,6 +1999,11 @@ describe('BrowserPaneManager', () => {
     const children = instance.window.contentView.children
     expect(children).toContain(behind.tabView)
     expect(children.indexOf(onScreen.tabView)).toBeGreaterThan(children.indexOf(behind.tabView))
+
+    // Handed back at the size the window has *now*, not the one the shot was taken at: the page
+    // went back at the 1000 the person dragged the window to while it was away — that width minus
+    // the 200 rail, the 1px against the chrome and the 6px of panel gutter.
+    expect(behind.tabView.setBounds).toHaveBeenLastCalledWith({ x: 201, y: 49, width: 793, height: 845 })
   })
 
   it('treats a capture that never comes back as a miss, and the parked view answers instead', async () => {
@@ -2130,6 +2137,35 @@ describe('BrowserPaneManager', () => {
     // BrowserWindow minWidth/minHeight is 700x500, and the chrome plus the panel's gutter takes
     // 200 + 7 of the width and 48 + 7 of the height, so the effective viewport is 493x445.
     expect(resized).toEqual({ width: 493, height: 445 })
+  })
+
+  /**
+   * The window being resized is what a person does with the window itself — and it is the
+   * only thing that lays the page out again, because the page is the one view in the window
+   * with no `setAutoResize` of its own (`buildTab`). So the page has to be laid out both
+   * while the drag reports sizes and on the size the window ends up with: on Windows the
+   * last step of a drag arrives as `resized`, not as another `resize`.
+   */
+  it('lays the page out on the size the window ends up with, not the last one it reported', () => {
+    manager.createInstance('resize-by-hand')
+    const instance = (manager as any).instances.get('resize-by-hand')
+    const tabView = tab(instance).tabView
+    tabView.setBounds.mockClear()
+
+    // The drag, a step of it: 1200 wide when it opened.
+    instance.window.setContentSize(1010, 900)
+    instance.window._emit('resize')
+
+    // The rail keeps its 200 and the bar its 48; the page is what is left of the window,
+    // minus the 1px it keeps against each of them and the 6px of panel gutter on the right
+    // and below (`pageAreaBounds`).
+    expect(tabView.setBounds).toHaveBeenLastCalledWith({ x: 201, y: 49, width: 803, height: 845 })
+
+    // And where the window actually landed — a size no `resize` reported.
+    instance.window.setContentSize(1000, 900)
+    instance.window._emit('resized')
+
+    expect(tabView.setBounds).toHaveBeenLastCalledWith({ x: 201, y: 49, width: 793, height: 845 })
   })
 
   describe('agent control overlay', () => {
