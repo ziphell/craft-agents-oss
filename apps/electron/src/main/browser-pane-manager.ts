@@ -426,6 +426,19 @@ const DEFAULT_PICK_LABELS: OverlayLabels = {
 interface BrowserInstance {
   id: string
   window: BrowserWindow
+  /**
+   * Where every tab that is **not on screen** lives: a window of its own, outside every display,
+   * shown but never seen.
+   *
+   * Shown, because a view in a window that is never shown is never composited — and a view that is
+   * not composited has **no viewport at all** (`innerWidth` 0, no layout, input landing nowhere), so
+   * a tab parked in an unshown window would lose the very layout the freeze keeps
+   * (`apps/electron/spike/background-viewport.ts` section E). Outside every display, because a tab
+   * that is not on screen must not be visible whatever size the person's window is; `skipTaskbar`,
+   * because it is not a window of theirs. One per browser window, made when the first tab is parked
+   * and destroyed with the window (`parkingWindowFor`).
+   */
+  parkingWindow: BrowserWindow | null
   /** The address bar, across the top of the window. */
   toolbarView: BrowserView
   /**
@@ -1046,6 +1059,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const instance: BrowserInstance = {
       id: instanceId,
       window,
+      parkingWindow: null,
       toolbarView,
       railView,
       nativeOverlayView,
@@ -1345,7 +1359,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * description of the same thing.
    *
    * This is the *display's* verb: the person switching tabs, and the agent's one
-   * explicit "bring it forward" (`browser_tab_activate`). A command no longer comes
+   * explicit "bring it forward" (`browser_tab_activate`). The keyboard goes with the display:
+   * the tab that comes on screen is the one the person types into
+   * ({@link focusTheTabOnScreen}), and each tab keeps its own focused element, so coming back
+   * to a tab comes back to where they were. A command no longer comes
    * through here — it records the tab it works from and leaves the window where it is
    * ({@link setSessionTab}), because moving the person's view is not a command's to do
    * (plan §22, 第十二轮).
@@ -1354,6 +1371,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const instance = this.requireAliveInstance(instanceId)
     const tab = tabById(instance, tabId)
     if (!tab) throw new Error(`Browser window "${instanceId}" has no tab "${tabId}".`)
+
+    // Before the "already on screen" way out: a tab that is already showing still has to be
+    // handed the keyboard, which is what a person clicking their own tab means.
+    this.focusTheTabOnScreen(instance, tab)
 
     if (instance.activeTabId === tab.id) return
 
@@ -1373,6 +1394,32 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // "any tab's elements can be picked" is made true.
     if (instance.picking) this.armPickerOn(instance, tab)
     mainLog.info(`[browser-pane] Tab activated instance=${instance.id} tab=${tab.id} url=${tab.currentUrl}`)
+  }
+
+  /**
+   * The keyboard belongs to the tab that is on screen — and only ever inside the window the
+   * person is already in.
+   *
+   * Chromium hands a page the focus when that page commits, and it does not ask which tab is
+   * showing: a tab opened behind the person's (`activate: false`) takes the caret out of
+   * whatever they were typing into, and the page sees its own `blur` — measured, with the
+   * cursor in a field on the tab on screen: opening an agent's tab behind it left that tab
+   * with `document.hasFocus() === false` and fired the field's `blur`, and switching back to
+   * it did not bring the caret back, because nothing here ever asks for the focus back. What
+   * a browser does instead is what this is: the tab that comes on screen takes the keyboard
+   * ({@link activateTab}), and a tab that loads while another one is on screen gives it
+   * straight back (`did-navigate`).
+   *
+   * The window check is the whole reason this is not just `webContents.focus()`: that call
+   * activates the window when it is not active (measured: the app's window came forward over
+   * another window), and a conversation working in the background must never pull the window
+   * in front of what the person is doing.
+   */
+  private focusTheTabOnScreen(instance: BrowserInstance, tab: BrowserTab): void {
+    if (instance.window.isDestroyed() || !instance.window.isFocused()) return
+    const tabWc = tab.tabView.webContents
+    if (tabWc.isDestroyed() || tabWc.isFocused()) return
+    tabWc.focus()
   }
 
   /**
@@ -1453,6 +1500,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       const next = this.successorOf(instance, tab, index)
       if (next) {
         instance.activeTabId = next.id
+        // The keyboard goes with the display here too: the tab that just went away had it,
+        // and what the window shows next is what the person types into.
+        this.focusTheTabOnScreen(instance, next)
         this.forceCloseToolbarMenu(instance, 'tab-closed')
         this.layoutAllViews(instance)
         this.updateNativeOverlayState(instance)
@@ -1524,9 +1574,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // A tab that is going away takes its developer tools with it.
     this.closeTabDevTools(tab)
 
-    if (!instance.window.isDestroyed()) {
+    // Out of whichever window holds it: the tab on screen lives in the window itself, and every tab
+    // that is not on screen lives in the parking window (`parkTab`).
+    for (const home of [instance.window, instance.parkingWindow]) {
+      if (!home || home.isDestroyed()) continue
       try {
-        instance.window.contentView.removeChildView(tab.tabView)
+        home.contentView.removeChildView(tab.tabView)
       } catch (error) {
         mainLog.debug(`[browser-pane] detaching tab=${tab.id} view ignored: ${String(error)}`)
       }
@@ -2720,25 +2773,27 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     rect: { x: number; y: number; width: number; height: number } | undefined,
     imageOpts: { dpr?: number; format?: 'png' | 'jpeg'; jpegQuality?: number },
   ): Promise<{ buffer: Buffer; format: 'png' | 'jpeg' } | null> {
-    const area = this.pageAreaBounds(instance)
+    // This tab's own viewport: the page area while it is the one on screen, and the viewport it had
+    // the last time it *was* on screen otherwise (`layoutTabView` lays out only the tab on screen).
+    // The parking window is built to this size and the view keeps it while it is away, so the page's
+    // viewport never changes for a shot — making the window is cheap either way (~5–18ms, measured).
+    const own = tab.tabView.getBounds()
     const spot = this.offscreenSpot()
     let parking: BrowserWindow | null = null
 
     try {
-      // The same size as the page area it is leaving, so the page's own viewport never changes while
-      // it is away: a site that reflows on resize would otherwise reflow twice for a screenshot.
       parking = new BrowserWindow({
         x: spot.x,
         y: spot.y,
-        width: area.width,
-        height: area.height,
+        width: own.width,
+        height: own.height,
         show: false,
         frame: false,
         skipTaskbar: true,
         backgroundColor: getBackgroundColor(nativeTheme.shouldUseDarkColors),
       })
       parking.contentView.addChildView(tab.tabView)
-      tab.tabView.setBounds({ x: 0, y: 0, width: area.width, height: area.height })
+      tab.tabView.setBounds({ x: 0, y: 0, width: own.width, height: own.height })
       parking.showInactive()
       await this.sleep(SCREENSHOT_FIRST_FRAME_MS)
 
@@ -2749,14 +2804,18 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         ...imageOpts,
       })
     } finally {
-      // Handed back, at the size the page area has *now*, with the stacking as it was: the tab on
-      // screen is the person's, and the overlay belongs above the page exactly when that page is the
-      // locked one. Read again rather than reusing `area`: that one is the size the shot was taken
-      // at, and the window may have been resized while the page was away — handing it back at the
-      // old size would leave it at a size the window does not have.
+      // Handed back to wherever it belongs now, having kept the viewport the shot was taken at: the
+      // tab on screen goes back into the window (the person may have resized it while the page was
+      // away, and this is the tab they are looking at), and a tab that is not showing goes back to
+      // the window it lives in (`parkTab`). The overlay belongs above the page exactly when that page
+      // is the locked one, so it is told either way.
       if (!instance.window.isDestroyed() && !tab.tabView.webContents.isDestroyed()) {
-        instance.window.contentView.addChildView(tab.tabView)
-        tab.tabView.setBounds(this.pageAreaBounds(instance))
+        if (instance.activeTabId === tab.id) {
+          instance.window.contentView.addChildView(tab.tabView)
+          tab.tabView.setBounds(this.pageAreaBounds(instance))
+        } else {
+          this.parkTab(instance, tab, own)
+        }
         this.raiseActiveTab(instance)
         this.updateNativeOverlayState(instance)
       }
@@ -3056,9 +3115,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     const requestedViewportWidth = Math.max(320, Math.floor(width))
     const requestedViewportHeight = Math.max(240, Math.floor(height))
-    // The promise is the *tab's* viewport, so the window grows by everything the tab does not
-    // get: the bar from the top, the rail from the side, and the panel's gutter
-    // (`pageAreaBounds`).
+    // The promise is the *tab on screen's* viewport, so the window grows by everything that tab does
+    // not get: the bar from the top, the rail from the side, and the panel's gutter
+    // (`pageAreaBounds`). A tab that is not on screen keeps the viewport it already had — see
+    // `layoutTabView` — so this number describes the tab the person is looking at, and the others
+    // will be this size when they come forward.
     const inset = this.pagePanelInsets()
     instance.window.setContentSize(
       requestedViewportWidth + TAB_RAIL_WIDTH + inset.left + inset.right,
@@ -3974,40 +4035,118 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.destroyingIds.delete(instance.id)
     this.updateNativeOverlayState(instance)
     activeTab(instance).cdp.detach()
+    // The window the tabs that are not on screen live in goes with the window they belong to.
+    const parking = instance.parkingWindow
+    if (parking && !parking.isDestroyed()) parking.destroy()
+    instance.parkingWindow = null
     this.instances.delete(instance.id)
     this.removedCallback?.(instance.id)
     mainLog.info(`[browser-pane] Destroyed instance: ${instance.id} (${source})`)
   }
 
   /**
-   * Lay every tab out at the tab area and stack the one on screen on top.
+   * Lay the tab on screen out at the page area, stack it on top, and keep every other tab where it
+   * lives.
    *
-   * The others are **not** parked at zero size: a zero-sized view has no viewport (so
-   * coordinates, rects and scrolling in it mean nothing) and paints nothing (so capturing it
-   * returns an empty image) — which is what used to make a background tab unusable. Stacked
-   * under the active tab instead, a background tab is a real tab that happens not to be
-   * visible: it keeps its viewport, and with `backgroundThrottling: false` on the tab views
-   * (`buildTab`) Chromium keeps counting it visible. Measured in `apps/electron/spike`.
+   * The ones behind are **not** parked at zero size, and not moved out of this window either: a view
+   * at zero size or outside a window's rectangle has **no viewport at all** (coordinates, rects and
+   * scrolling in it mean nothing, and capturing it returns an empty image), which is what used to
+   * make a background tab unusable. They live in the parking window, shown off screen, at the size
+   * they had when they were last on screen — see `parkTab`.
    *
-   * Being laid out at the same bounds is also the whole of "switching tabs": raising the
-   * other view is a stack change, not a resize, so nothing has to be re-attached and the
-   * tabs that are not on screen never learned they were anywhere else.
+   * Switching tabs is therefore: the tab arriving on screen is laid out and raised, the one leaving
+   * is parked — one resize for the arrival, and nothing for a tab that stays behind, whatever the
+   * person does to the window (measured in `apps/electron/spike/background-viewport.ts`).
    */
   private layoutTabView(instance: BrowserInstance): void {
     // The page panel, not the whole tab area: the gutter around it is the overlay's to paint
     // (`pageAreaBounds`), and the page's own corners are cut out of its view
     // (`applyPageCornerRadius`) so the surface behind them shows through.
     const area = this.pageAreaBounds(instance)
+    const onScreen = activeTab(instance)
 
+    // **The tab on screen is the only one laid out**, and it is laid out to the window. Every other
+    // tab is parked in the window they live in, at the viewport it has — so the person dragging the
+    // window is not a reason for an agent's background page to reflow, and the agent measured that
+    // page, its elements and their coordinates at the size it has. That a parked tab keeps its
+    // viewport is the whole reason it is parked in a *shown* window rather than moved out of this
+    // one (`parkTab`, `parkingWindowFor`).
+    onScreen.tabView.setBounds(area)
     for (const tab of instance.tabs) {
-      // Anchored at the chrome's inside corner, so a tab resizes with the window but never
-      // moves over the chrome. No `setAutoResize`: the page is a `WebContentsView`, which has
-      // no such call — every layout comes through here anyway (`layoutAllViews` on resize).
-      tab.tabView.setBounds(area)
+      if (tab.id === onScreen.id) continue
+      this.parkTab(instance, tab)
     }
 
     this.raiseActiveTab(instance)
     this.updateNativeOverlayState(instance)
+  }
+
+  /**
+   * The window a tab that is not on screen lives in — outside every display, and **shown**.
+   *
+   * Shown is the point: a view in a window that is never shown is never composited, and a view that
+   * is not composited has **no viewport** — measured, for a view created at negative coordinates or
+   * in an unshown window: `innerWidth` 0, `document.hidden`, 0 frames, a `0×0` capture, and CDP
+   * input landing nowhere (`apps/electron/spike/background-viewport.ts` section E). So a frozen tab
+   * is not "moved out of the window's way"; it is *housed* somewhere it can keep its layout.
+   *
+   * Off every display, `skipTaskbar`, shown without being activated: nothing of it is visible, it is
+   * never in the taskbar, and it never takes anyone's focus. One per browser window, made when the
+   * first tab is parked and destroyed with the window. It grows to fit what is parked in it — a
+   * window clips its children, and a clipped view is a view with a smaller viewport.
+   */
+  private parkingWindowFor(instance: BrowserInstance, size: { width: number; height: number }): BrowserWindow {
+    const wanted = {
+      width: Math.max(1, Math.ceil(size.width)),
+      height: Math.max(1, Math.ceil(size.height)),
+    }
+    const existing = instance.parkingWindow
+    if (existing && !existing.isDestroyed()) {
+      const [width, height] = existing.getContentSize()
+      if (wanted.width > width || wanted.height > height) {
+        existing.setContentSize(Math.max(wanted.width, width), Math.max(wanted.height, height))
+      }
+      return existing
+    }
+
+    const spot = this.offscreenSpot()
+    const parking = new BrowserWindow({
+      x: spot.x,
+      y: spot.y,
+      width: wanted.width,
+      height: wanted.height,
+      show: false,
+      frame: false,
+      skipTaskbar: true,
+      backgroundColor: getBackgroundColor(nativeTheme.shouldUseDarkColors),
+    })
+    instance.parkingWindow = parking
+    // Shown, or nothing inside it is composited — and never activated, so it cannot take the focus.
+    parking.showInactive()
+    mainLog.info(`[browser-pane] parking window up instance=${instance.id} at=${spot.x},${spot.y} size=${wanted.width}x${wanted.height}`)
+    return parking
+  }
+
+  /**
+   * House a tab that is not on screen: **the parking window**, at the size it has.
+   *
+   * A tab that has never been on screen is *created* here (`attachTab`), at the size the page area
+   * had at that moment — that is its viewport until it comes forward, and nothing about the person's
+   * window touches it in the meantime (`layoutTabView` only lays out the tab on screen).
+   */
+  private parkTab(instance: BrowserInstance, tab: BrowserTab, size?: { width: number; height: number }): void {
+    const own = size ?? {
+      width: tab.tabView.getBounds().width,
+      height: tab.tabView.getBounds().height,
+    }
+    const parking = this.parkingWindowFor(instance, own)
+    if (parking.isDestroyed() || tab.tabView.webContents.isDestroyed()) return
+    parking.contentView.addChildView(tab.tabView)
+    // At the window's corner: parked views sit at the same spot and overlap, which costs the ones
+    // underneath their *surface* (Chromium treats a covered view as hidden) and costs none of them
+    // their viewport — the layout is what the freeze is for, and a shot of a parked tab is taken in
+    // a window of its own anyway (`captureWhileParked`).
+    tab.tabView.setBounds({ x: 0, y: 0, width: own.width, height: own.height })
   }
 
   /**
@@ -5882,17 +6021,26 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
 
     // The view's own backdrop, so a document that paints nothing — a prototype page with no
-    // background of its own — is not a hole: every tab is laid out at the same bounds, so a
-    // transparent tab would show whichever tab is stacked under it.
+    // background of its own — is not a hole: what sits under a tab's view is the window's overlay
+    // and the tabs stacked below it, and neither is what this page is meant to look like.
     tab.tabView.setBackgroundColor(getBackgroundColor(nativeTheme.shouldUseDarkColors))
     this.applyPageCornerRadius(tab)
 
-    // The page goes in **above** the overlay, which is already there and in the window before
-    // this. Everything the overlay draws is *around* the page (the gutter's surface, the
-    // panel's hairline), so below is where it belongs; from here on
-    // `updateNativeOverlayState` is what decides which of the two is on top, because that is
-    // also what "this tab is locked" means.
-    instance.window.contentView.addChildView(tab.tabView)
+    // A tab is **born at the window's current page area** — a viewport has to exist from the first
+    // frame — and where its view goes depends on whether it is the tab on screen. The one on screen
+    // goes in the window itself, above the overlay that is already there (everything the overlay
+    // draws is *around* the page, so below is where the page belongs; from here on
+    // `updateNativeOverlayState` decides which of the two is on top, because that is also what "this
+    // tab is locked" means). A tab opened behind the person's (`activate: false`, how an agent's tab
+    // is opened) is **created in the parking window** and stays there, at this size, until it comes
+    // forward — the window the person sees never holds a page that is not on screen.
+    const bornAt = this.pageAreaBounds(instance)
+    if (instance.activeTabId === tab.id) {
+      tab.tabView.setBounds(bornAt)
+      instance.window.contentView.addChildView(tab.tabView)
+    } else {
+      this.parkTab(instance, tab, bornAt)
+    }
     // The chrome stays on top of whatever tab is showing — both surfaces of it.
     this.raiseChromeViews(instance)
 
@@ -5959,6 +6107,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       void this.pushToolbarState(instance)
       this.scheduleEarlyThemeExtraction(instance, tab, url)
       this.updateNativeOverlayState(instance)
+      // Committing a page is where Chromium moves the focus: a page that loaded in a tab that
+      // is not the one on screen hands it straight back — but only off another **tab**. The
+      // address bar and the rail are the person's to type in, and a page committing behind
+      // their back is no reason to take that away from them.
+      const tabOnScreen = activeTab(instance)
+      const anotherTabHoldsIt = instance.tabs.some(
+        (candidate) => candidate.id !== tabOnScreen.id && candidate.tabView.webContents.isFocused(),
+      )
+      if (anotherTabHoldsIt) this.focusTheTabOnScreen(instance, tabOnScreen)
     })
 
     tabWc.on('did-redirect-navigation', (_event, url, isInPlace, isMainFrame) => {

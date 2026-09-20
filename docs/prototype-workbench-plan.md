@@ -2200,7 +2200,7 @@ overlay 的页面是别人的活地址，它不会、也不该变成我们的文
 
 ## 22. 窗口、标签与"谁在驱动"
 
-> **状态**：模型、标签 API、**打开与目标**、**元信息两分**、**UI（标签栏 + 面板按窗口分组）**、**一个工作区一个浏览器窗口（+ 多标签）**、**元素选择器常驻（窗口级模式，跨标签页可用）**、**标签级占用与接管**、**开窗通道收敛（一切开窗都成标签页）**、**标签锁回到标签页上**、**游标归驱动者（人在看哪个标签页不决定命令打哪个标签页）**、**归属是一份"活"（`TabBelongsTo` + `tab-assign`）**、**几何永远真实 + 按需前台**、**后台执行（命令作用于自己的标签页，窗口不动；`windows` 命令已删）**都已落地。**面板按会话分组**仍留待下一轮（标签栏与徽章已经按"谁的活"分段）。这一节记的是方向与规则——它们必须先定，因为它们决定状态放哪。
+> **状态**：模型、标签 API、**打开与目标**、**元信息两分**、**UI（标签栏 + 面板按窗口分组）**、**一个工作区一个浏览器窗口（+ 多标签）**、**元素选择器常驻（窗口级模式，跨标签页可用）**、**标签级占用与接管**、**开窗通道收敛（一切开窗都成标签页）**、**标签锁回到标签页上**、**游标归驱动者（人在看哪个标签页不决定命令打哪个标签页）**、**归属是一份"活"（`TabBelongsTo` + `tab-assign`）**、**几何永远真实 + 按需前台**、**后台执行（命令作用于自己的标签页，窗口不动；`windows` 命令已删）**、**键盘跟着屏幕走（焦点归屏幕上那个标签页，切回来回到原处，且绝不抢窗口前台）**、**后台标签页住在离屏停车窗（视口是自己的，窗口 resize 只碰屏幕上那个；人的窗口里永远没有不在屏幕上的页面）**都已落地。**面板按会话分组**仍留待下一轮（标签栏与徽章已经按"谁的活"分段）。这一节记的是方向与规则——它们必须先定，因为它们决定状态放哪。
 
 > **名词**：本节（以及全部关于浏览器窗口的文字）里，窗口中的一条一律叫 **标签页（tab）**——`tabs` / `tab-new` / `tab-show` / `tab-assign` / `tab-close` / `--tab`、`BrowserTabSummary`、`tabView` / `tabAreaBounds` / `TabRail` / `tab-groups.ts` 都是这个词。**page 只留两义**：①原型流程里的一屏（`prototypePage` / `--page <name>` / `patches/<page>/` / "a page of ours" / "entry page"）；②第三方网站自己的页面与 DOM（CDP `Page.*`、"reload the page"）。三者永不混用（用户定的）。
 
@@ -2514,6 +2514,72 @@ overlay 的页面是别人的活地址，它不会、也不该变成我们的文
 **§23 的摆放与这条约束无关**：面板里的预览是**搬**（同一实例换父容器），因此它天然不产生第二份活页——它不需要"禁止多实例"这条约束。
 
 - 验收（实现时钉在 `apply-prototype.test.ts` 与 `browser-tools.test.ts`）：重放时只有工作视图写 `observed`（另开一份、被操作过、报 `matched: 0`，不影响记录）；`open` 在重定向／SPA 漂移时的回执报 `landed on:`（已有用例，保留并作为规则）。
+
+**第十六轮（键盘跟着屏幕走：焦点归给屏幕上的标签页，且绝不抢窗口前台）**：
+
+> 起于三问："焦点应该在前台标签页上，最新挂上 widget 持有焦点是 electron 行为吗？量一下最新创建后台页面不给焦点是否可行，有什么影响"；"为什么没有给用户激活的 tab 设焦点？怎么解决？切换 tab 再切回来，应该聚焦原来的地方，这是浏览器标准行为"；"先解释：用户来回切换 tab，能否交还焦点"。**全程先量后答**，读数在 `spike/screenshot-e2e.ts` 的 phase 8 / 10。
+
+**成因（量出来的，不是推的）**：
+
+- **不是"挂载即聚焦"**：裸 `WebContentsView` 创建时、挂进窗口后、把那个窗口 `focus()` 成前台再挂第二支——三处 `isFocused()` 全是 `false`。
+- **是页面 commit 时给的**：同一个窗口里，第一支 view **加载完**就有焦点；第二支挂上时焦点还在第一支；第二支**加载完**焦点才过去。所以"最新挂上的 view 持有焦点"的准确说法是"最新**导航**的那个 view 持有它"，而 agent 的标签页恰好永远是最新的那个（`activate: false` 拦不住）。
+- **窗口不在前台时谁也不给**：窗口被另一个窗口压住时新建标签页，新的、屏幕上那个、之前的，三个 view **全是 `false`**。
+
+**修复前**（光标放在屏幕上那个标签页的输入框里）：agent 在后台开一个标签页 → 屏幕上那个标签页 `document.hasFocus() === false`、**输入框收到 `blur`**（页面自报 "the cursor left the field"）；切到 agent 的标签页再**切回来** → 依旧是 `false`，键盘留在已经不在屏幕上的那个标签页上；**关掉屏幕上那个标签页** → 没有任何交接。原因是全库没有一处向标签页要过焦点：`activateTab` 只改 `activeTabId`、重排 view、推状态。
+
+**改法（一处机制，三个调用点）**：新增 `focusTheTabOnScreen(instance, tab)`，把键盘交给指定标签页，两条守门：
+
+- **只在人正在用的那个窗口里**：`webContents.focus()` 会把窗口**拉到前台**（量过：另一个窗口在前时，调用后 `getFocusedWindow()` 从 `OTHER-WINDOW` 变成 `Electron`），所以窗口不聚焦就直接返回——agent 在后台干活绝不能把窗口翻到人面前。三个调用点都过这道门：`activateTab`（放在"已经是当前标签页"那个提前返回**之前**，所以人再点一次自己那个标签页也能把键盘要回来）、标签页的 `did-navigate`（页面 commit 正是 Chromium 移焦点的时刻）、`closeTab`（`activeTabId` 全库只有两处直接赋值，这是另一处"显示动了、键盘没跟"）。
+- **只从"另一个标签页"手里拿回**（`did-navigate` 那处）：地址栏与 rail 是人在打字的地方，后台页面 commit 不该把它们抢走。
+
+**实测（修复后，同一场景）**：
+
+| 动作 | 屏幕上 / 用户的标签页 | 另一个标签页 |
+| --- | --- | --- |
+| agent 在后台开标签页 | `hasFocus`/`isFocused` 都 `true`，光标仍在输入框里（**连 blur 都没发生**） | 都 `false` |
+| 切到 agent 的标签页 | `false`（走的时候正常 blur） | 都 `true` |
+| **切回来** | **都 `true`，`activeElement` 仍是那个输入框，页面自报光标回到框里** | `false` |
+| **关掉屏幕上那个标签页** | — | **接手的标签页都 `true`** |
+
+全程 `getFocusedWindow()` 始终是 `Electron`（没有把窗口带到前台）。
+
+**为什么切回来能回到原处**：每个标签页的文档一直记着自己聚焦的元素（修复前的读数里 `activeElement` 始终是那个输入框，只是文档不是聚焦态），缺的只是"向屏幕上这个标签页要键盘"这一步；一给，Chromium 就把光标还给那个元素，页面的 `blur`/`focus` 也就和真浏览器一样成对。
+
+**未量到**：键盘的实际路由。`before-input-event` 探针两次都是 0 命中（窗口自身 / toolbar / rail / 两个标签页全为 0），所以"持有或丢掉这个焦点，打字究竟去哪儿"仍是空白——上面写的都只是 `document.hasFocus()` / `document.activeElement` / `webContents.isFocused()` 三个读数。
+
+- 验收：`browser-pane-manager.test.ts` 的「keeps the keyboard on the tab on screen when a page loads in a tab behind it」「leaves the address bar alone when a page loads in a tab behind the person」「gives the keyboard to the tab that comes forward, and never moves the window for it」「hands the keyboard to the tab that takes over when the tab on screen closes」；同一场景的真 Electron 读数在 `spike/screenshot-e2e.ts` phase 8 / 10，那里原有的四种截图组合仍然是 `SPIKE_OK`。
+
+**第十七轮（后台标签页住在离屏停车窗：窗口 resize 只碰屏幕上那个）**：
+
+> 起于一问："后台标签不改变大小（住在窗口不可见区域），到前台才改变大小，避免后台自动化被改变大小样式变化，是否合理"。**先量后改**（探针 `apps/electron/spike/background-viewport.ts`，离屏与真屏各跑一遍，读数一致），中途走过两条弯路，都由读数否掉，一并记下。
+
+**量出来的**：
+
+- **原语**：窗口 900×620 → 1400×900，只给屏幕上那支 `setBounds` —— 屏幕上那支 `innerWidth` 900→1400、1 次 resize（8ms 后到）；**被留在原处那支 `innerWidth` 不变、`resizes: 0`**。所以"不调 `setBounds`"本身就是冻结，不需要 CDP override。
+- **坐标**：冻结页（视口 900×620）放在 1400×900 的窗口里，按**页面自己报的**坐标发 CDP 点击**命中**；视口之外 `elementFromPoint` 为 `null`、点了没有反应。CDP 用的是页面坐标系。
+- **切回前台**：`setBounds` 之后立刻读，`innerWidth` 已经是新尺寸（页面还没跑 resize 事件），事件 8–9ms（真屏）／27ms（离屏）后到。"人会不会看到一帧旧尺寸"**没量到**（要逐帧证据）。
+- **弯路一：把 view 移到窗口外（负坐标／"窗口不可见区域"）不行**。一个**出生就在窗口外**的 view：`innerWidth` **0**、`hidden`、0 帧、截图回来 `0×0`、CDP 点击**落空** —— Chromium 的视口是"view 与窗口的可见交集"，窗口外就是空，等于第十二轮否掉的 0×0 停放。注意这与"**先在窗口内被合成过、再移出去**"是**两个状态**：后者仍有 surface、`innerWidth` 不变、还能原地截图（这一条我先测错了状态，被用户纠正）。
+- **弯路二：窗口缩到比冻结视口还小时，"被盖住"也不成立**。屏幕上那个 700×500，后台那个 1200×900 —— **右边探出 500px、下边 400px**，人能看见别人的页面。
+
+**改法**（规则一句话：**标签页的视口 = 它最后一次在前台时的视口；不在屏幕上的标签页根本不在那扇窗口里**）：
+
+- `parkingWindowFor`：每个浏览器窗口一扇**常驻停车窗** —— 所有显示器之外、`showInactive()`（**必须被显示**：没被显示的窗口里的 view 没有视口，就是弯路一）、`skipTaskbar: true`、随 app 窗口一起销毁；不够大时 `setContentSize` 长（窗口会裁剪子 view）。
+- `attachTab`：不在屏幕上的标签页**出生就在停车窗**里，尺寸取当时的 page area（"首次就在后台创建时，就在停车窗创建"）；屏幕上那个进 app 窗口。
+- `layoutTabView`：只给屏幕上那个 `setBounds`；其余 `parkTab`（停车窗里 `(0,0)` + 自己的尺寸；只重述同样的数字，不重排）。
+- `captureWhileParked` 交回：屏幕上那个回 app 窗口，其余回停车窗。
+- `detachTab` 从两扇窗都摘；`finalizeDestroyedInstance` 销毁停车窗。
+
+**实测（真 Electron，`screenshot-e2e.ts` phase 11）**：停车窗 `isVisible: true`、`isFocused: false`、在所有显示器之外、持有那个后台标签页，而**人的窗口不持有**它；人的窗口 993→1200 时后台那个仍是 993×845、**0 次 resize**；它的截图 **993×845**、像素是它自己的、**原地取到**（`parked: false`，90ms）；**切到前台才** 1200×900、1 次 resize；再把人窗口缩到 700×500，后台那个**仍是 1200×900、0 变化**，且仍在停车窗里（露不出来）。
+
+**一个连带的好处**：停车窗是显示着的，后台标签页因此**有 surface**，截图不必再挪一次 —— phase 1 的 "behind it" 那行从 `parked: true` 变成 `parked: false`（69ms）。`captureWhileParked` 仍是隐藏窗口与"从没被合成过的 view"的路径（phase 1c 三行照旧：未被显示的窗口没有 surface、显示过的有、交回未显示窗口后又没有）。
+
+**修正第十二轮的一处旧读数**：那句"被覆盖的标签页 = `hidden` / 0 帧"既不是这条规则的依据、也靠不住 —— 窗口一变大，被盖住的 view 就会变成 `visible`/约 24 帧每 500ms（离屏与真屏一致）。现在后台标签页在停车窗里**就是被合成、跑帧、`document.hidden === false`** 的，这是明摆着的代价。
+
+**代价（说清的）**：每个浏览器窗口多一扇离屏窗口（第十二轮量过"一个标签页一原生窗口"约 +3MB/标签页，窗口本身很便宜）；后台标签页会被合成、跑帧（CPU 不再省）；切回前台必然重排一次（浏览器同样如此）；**后台标签页的截图是它自己的视口尺寸**，而 `window-resize` 的数字只描述屏幕上那个标签页。
+
+**没采用**：`Emulation.setDeviceMetricsOverride`（量到 override 期间窗口 resize 不产生 `innerWidth` 变化）—— 几何自身就是开关，不必再加一层页面级状态。
+
+- 验收：`browser-pane-manager.test.ts` 的「keeps a tab that is not on screen out of the window, at the size it was opened at」（停车窗持有、人的窗口不持有、resize 不碰它、切到前台才给窗口尺寸）、「keeps a background tab's navigation on itself」、「shoots a tab that has never been composited…」（交回停车窗）；真 Electron 读数在 `spike/screenshot-e2e.ts` phase 11 与 `spike/background-viewport.ts`（E1/E2 两个状态分开量）。
 
 **下一轮**：**面板按会话分组**：徽章那一列现在按窗口分组，但没有说"哪个会话在用这个窗口"。
 

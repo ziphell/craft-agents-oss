@@ -277,6 +277,21 @@ storage: true        moduleRan: true               ← localStorage 与 <script 
 - **同时统一的行为**：尾部回退匹配（见实施方案 §5.3）——此前页面载体连 `baseUrl` 前缀都命中不了。
 - **教训**：这个仓库里"两份实现"是有先例的（`onboarding.ts` 的两份 handler），所以规则不是"永不重复"，而是**重复必须有对照测试**。没有对照的那一份，等于没有实现。
 
+### 3.22 画面切了，键盘没跟（焦点在错误的标签页上）
+
+- **症状**：光标停在屏幕上那个标签页的输入框里（页面收到 `blur`），agent 在后台开一个标签页 → 光标没了；切到别的标签页再**切回来** → 还是不回来，键盘留在已经不在屏幕上的那个标签页上；关掉屏幕上那个标签页 → 也没有交接。`document.hasFocus()` 在两边的答案与肉眼所见相反。
+- **根因**：**Chromium 在页面 commit 时把焦点给那个 webContents，且不问它是不是屏幕上那个**（量出来的：裸 `WebContentsView` 创建时、挂进窗口后都不给焦点，第一次**加载**才给；同一个窗口里第二支 view 加载完，焦点就从第一支转过去）。而 manager 这一侧**从没有一处向标签页要过焦点**：`activateTab` 只改 `activeTabId`、重排 view、推状态。于是一旦 agent 的标签页（它总是最新那个）加载完，键盘就归它，直到有别人再来要。
+- **修法**：`focusTheTabOnScreen(instance, tab)` 一处，三个调用点——`activateTab`（放在"已经是当前标签页"的提前返回**之前**）、标签页的 `did-navigate`（页面 commit 就是移交时刻）、`closeTab` 的接替分支（`activeTabId` 全库只有两处直接赋值，这是另一处）。两条守门别丢：**只在 `window.isFocused()` 时**动（`webContents.focus()` 会把窗口拉到前台，后台干活的 agent 绝不能翻窗口），**只从"另一个标签页"手里拿回**（地址栏与 rail 是人打字的地方）。
+- **教训**：这类"两个独立状态跟着一个动作走"的地方（这里是"显示"与"键盘"），要成对地找一遍：**直接写 `activeTabId` 的地方就是候选**（当时全库只有 `activateTab` 与 `closeTab` 两处）。每个标签页的文档自己记着聚焦的元素，所以只要把键盘交给正确的标签页，光标就回到原处——不需要自己存"上次焦点在哪"。
+- **验收**：`browser-pane-manager.test.ts` 四条（后台加载交还 / 地址栏不动 / 激活交给上屏者 + 窗口不在人手里不动 / 关闭交接）；真 Electron 读数在 `apps/electron/spike/screenshot-e2e.ts` phase 8 / 10（实施方案 §22 第十六轮）。
+
+### 3.23 探针里 `destroy()` 一扇窗，下一扇窗的 `loadURL` 会报 `ERR_FAILED (-2)`
+
+- **症状**：一支 spike 顺序跑四段，每段自己建窗、跑完 `window.destroy()`；第二段的 `loadURL(data:…)` 抛 `ERR_FAILED (-2)`，而**第一段同样写法的加载完全正常**，且报错 URL 与它自己要去的地方一字不差。
+- **根因**（同一族：报错归错人，机制与 §3.3 相同）：Teardown 的 abort 会被交给**随后**那个 `loadURL` 的 promise——这一点是 §3.3 实测出来的（Electron 把 abort 归给"当前"那个，不给被顶掉的那个）。本机只量到"中途销毁 → 下一段加载失败 / 不中途销毁 → 四段全正常"，没有单独复现机制本身。
+- **修法**：spike 里**不要中途销毁**——把窗口收进一个数组，全部跑完再一起 `destroy()`。（报错归错人这件事在应用侧也一样：看到 `loadURL` 失败，先确认它是不是被别人的导航/销毁顶掉的。）
+- **教训**：`ERR_FAILED (-2)` 与 URL 对不上上下文时，先怀疑"是谁在同时拆东西"，不要怀疑 URL。
+
 ---
 
 ## 4. 已删除的机制（墓园）
@@ -338,6 +353,7 @@ cd apps/electron && bun run build:renderer
 - **typecheck 这条线已经干净**：页的归属改名（`BrowserTabSummary.belongsTo: TabBelongsTo`、`BrowserCapabilityRequest.work`、`assignTab(instanceId, tabId, to, by)`）早已完成，`packages/shared/src/tasks/outputs.ts` 那处 `ParsedOutputs.problems` 也已修，实测 `bun run typecheck:shared` 无报错。（`outputs.ts` 仍是**未跟踪**文件——判断自己有没有引入类型错误时，按包单独跑 `bun run tsc --noEmit` 比 `typecheck:all` 更快定位。）
 - **"哪一段"只有一处定义**：`tabSectionOf`（`packages/shared/src/protocol/dto.ts`——`person` / `session:<id>` / `task:<slug>`）。rail 与徽章画段读它，主进程决定"关掉一个标签页之后谁接替"也读它。**别在 rail 之外再写一遍"按会话/任务分段"**：画出来的段与交接用的段一旦不一致，表现是"接替跳到了别的分组"，从现象看不出是哪一边错。它是 `sameWork` 的粗版（任务的不同节点算同一段），所以**不能当权限判据用**，reach 只认 `sameWork`。
 - `apps/electron` 的 `browser-pane-manager.test.ts`：源码树里 **5 个**窗口生命周期用例失败（`focus brings the instance window to front`、`dedupes repeated focus calls before ready-to-show`、`still destroys instance when cleanup throws`、`retries toolbar load and recovers`、`loads toolbar fallback page after retry exhaustion`）。都是 `window.show()` / 工具栏加载一类 mock 断言，与原型逻辑无关。（`destroys child popups…` 曾在这份名单里：它是 CDP mock 缺 overlay 方法导致的 `teardownOverlay is not a function`，补上 mock 后已绿；element picker 那批用例的失败来自旧桩名 `armPicker`/`cancelPicker`，同期改成 `armOverlay`/`teardownOverlay` 后也绿了。）
+- 同一次全量跑里还有 **4 个路径相关**的失败：`use-working-directory-state.test.ts` 的 `deriveSortedRecent` 1 条与 `deriveSelectionFlags` 3 条（自定义目录 / `folderName` 回退）。它们在 renderer 的工作目录状态里，按 basename 判路径——**Windows 上本机既有**，与浏览器窗口无关（最近一次全量：1116 pass / 9 fail = 上面 5 + 这 4）。
 - **测试路径会连带跑 `release/win-unpacked/resources/app/...` 下的旧副本**：`bun test <路径>` 会把打包目录里那份同名测试也收进来，于是失败数与通过数**翻倍**；而且那份旧拷贝会多出 2 个**源码树里已经通过**的失败（`replays toolbar state with theme color when window is shown`、`replays full toolbar state when toolbar renderer finishes loading`）。判断"是不是我引入的"时先排除这些重复项。
 
 ### 5.3 测试落点
@@ -378,6 +394,8 @@ cd apps/electron && bun run build:renderer
 | 页名与入口在真窗口里对得上 | 开根地址 → 落在入口页；没配入口时落在**页索引**，点一页进得去；`snapshot` 的 `Prototype:` 行带 `page "<名字>"` | `status` 的 `pages:` / `root:` 两行；`matchPrototypePage` 认不认得出窗口的真实 URL（overlay 的跳转、SPA 路由都算） |
 | 地址栏写着"哪一页"，而且敲得回去 | 在一个 overlay 页上（视图停在真实站点）→ 地址栏是 `http://<label>.localhost/<页名>`；把它敲一遍回车 → 回到**同一页**（不是入口页），地址栏照旧 | `main/index.ts` 注入的 `pageOfPrototypeUrl`（认地址）与 `pageResolver`（认窗口在哪一页）；页名对不上时只写原型域名 |
 | 敲普通网址 = 交出这个标签页 | 从原型打开的窗口里敲 `https://example.com` 回车 → 地址栏写目标地址，标签栏那一行不再标原型/页名，「应用补丁」变灰；按 Back 回来仍然如此（粘性）。敲自己域名上的 `/dist/…` 或某一页的真实地址 → 标签页还是它的 | `browser-toolbar:navigate` 处理器里那一段（`prototypeReleased`）；`__tests__/browser-pane-manager.test.ts` 的「gives the tab up…」「keeps the tab…」 |
+| **键盘跟着屏幕走** | 在屏幕上那个标签页的输入框里点一下（页面自报"光标在框里"）→ agent 在后台开一个标签页并等它加载完 → 那个输入框**不该**收到 `blur`；切到别的标签页再切回来 → 光标回到原处；关掉当前标签页 → 接手的标签页拿到键盘。全程 `BrowserWindow.getFocusedWindow()` 不变 | `focusTheTabOnScreen`（`browser-pane-manager.ts`）与它的三个调用点（`activateTab` / 标签页的 `did-navigate` / `closeTab` 的接替分支）；真 Electron 读数在 `apps/electron/spike/screenshot-e2e.ts` 的 phase 8 / 10，看 `afterTheAgentOpenedATabBehindIt`、`afterSwitchingBackToThePersonsTab`、`afterClosingTheTabOnScreen` 三处（§3.22、实施方案 §22 第十六轮） |
+| **后台标签页不被人的 resize 打扰** | 在屏幕上那个标签页里把窗口拖大、再拖小：屏幕上那个的 `innerWidth` 跟着变，**后台那个的 `innerWidth` 与 `resize` 次数都不动**，而且它**不在人的窗口里**（在停车窗，所以再小的窗口也露不出它）；截后台那张图，图片尺寸是**它自己的视口**；切到它才跟着窗口变一次 | `parkingWindowFor` / `parkTab`（`browser-pane-manager.ts`）：不在屏幕上的标签页出生就在离屏停车窗，`layoutTabView` 只给屏幕上那个 `setBounds`。**别把 view 移到窗口外或 0×0**：那样 Chromium 给它的视口是空的（`innerWidth` 0、CDP 输入落空、截图 0×0），测量见 `apps/electron/spike/screenshot-e2e.ts` phase 11 与 `background-viewport.ts`（§22 第十七轮） |
 | **真实站点的 pass-through 无损** | 在同一个窗口打开一个真实站点：上传一张图（分块）、播一段视频（流式）、下载一个文件、来回导航看缓存 | `net.fetch` 那一行；必要时把 handler 临时换成只打日志的版本做二分（见 §3.11） |
 | 我们的 host 上 cookie 能回写 | 在原型页里 `document.cookie='a=1'`，刷新后读回 | 同上；回环时代这条是通的 |
 | 真实浏览没变慢 | 同一个站点，装/不装 handler 各开一次，比首屏与资源加载 | 那一跳 `net.fetch` |

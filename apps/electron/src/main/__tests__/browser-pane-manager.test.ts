@@ -96,6 +96,7 @@ function createMockWebContents() {
     }),
     executeJavaScript: mock(async (expr: string) => eval(expr)),
     focus: mock(() => {}),
+    isFocused: mock(() => false),
     setWindowOpenHandler: mock((_handler: any) => {}),
     send: mock((_channel: string, _payload?: unknown) => {}),
     debugger: {
@@ -140,6 +141,10 @@ function createMockBrowserView() {
  */
 function createMockWebContentsView(options?: any) {
   const webContents = createMockWebContents()
+  // The view's own bounds, remembered the way the real one remembers them: a tab that is not on
+  // screen keeps whatever it was last given (that *is* its viewport), and the manager reads it back
+  // when it hands the view to a parking window.
+  let bounds = { x: 0, y: 0, width: 0, height: 0 }
   return {
     webContents,
     /**
@@ -148,11 +153,19 @@ function createMockWebContentsView(options?: any) {
      * honouring the layout it is given — so the tests read it back from here.
      */
     _options: options,
-    setBounds: mock(() => {}),
+    setBounds: mock((next: { x: number; y: number; width: number; height: number }) => { bounds = next }),
+    getBounds: mock(() => bounds),
     setBackgroundColor: mock((_color: string) => {}),
     setBorderRadius: mock((_radius: number) => {}),
   }
 }
+
+/**
+ * Electron's rule about views, which the manager leans on now that a tab can live in one of two
+ * windows: a view has **one** parent, and adding it to another window's view tree takes it out of
+ * the tree it was in. Without this the mock would report a parked tab as a child of both windows.
+ */
+const viewParent = new WeakMap<object, any[]>()
 
 function createMockWindow(opts?: { width?: number; height?: number; minWidth?: number; minHeight?: number }) {
   const listeners: Record<string, Function[]> = {}
@@ -201,6 +214,10 @@ function createMockWindow(opts?: { width?: number; height?: number; minWidth?: n
       win._emit('hide')
     }),
     focus: mock(() => {}),
+    // The app's window is the one the person is in, unless a test says otherwise: the keyboard
+    // only goes back to the tab on screen inside the window that already has it
+    // (`focusTheTabOnScreen`).
+    isFocused: mock(() => true),
     destroy: mock(() => {
       win._emit('closed')
     }),
@@ -217,13 +234,23 @@ function createMockWindow(opts?: { width?: number; height?: number; minWidth?: n
     contentView: {
       children: [] as any[],
       addChildView: mock((view: any) => {
+        // A view has one parent, like the real thing: adding it to this window's tree takes it out
+        // of the one it was in. That is what "the person's window never holds a page that is not on
+        // screen" is observed through, now that a tab can live in either of two windows.
+        const previous = viewParent.get(view)
+        if (previous && previous !== win.contentView.children) {
+          const was = previous.indexOf(view)
+          if (was >= 0) previous.splice(was, 1)
+        }
         const index = win.contentView.children.indexOf(view)
         if (index >= 0) win.contentView.children.splice(index, 1)
         win.contentView.children.push(view)
+        viewParent.set(view, win.contentView.children)
       }),
       removeChildView: mock((view: any) => {
         const index = win.contentView.children.indexOf(view)
         if (index >= 0) win.contentView.children.splice(index, 1)
+        if (viewParent.get(view) === win.contentView.children) viewParent.delete(view)
       }),
     },
     addBrowserView: mock((view: any) => {
@@ -1999,17 +2026,23 @@ describe('BrowserPaneManager', () => {
     expect(parking.showInactive).toHaveBeenCalled()
     expect(parking.destroy).toHaveBeenCalled()
 
-    // The person's window: unchanged, their tab still on screen, and the handed-back tab behind it.
+    // The person's window: unchanged, their tab still on screen — and **only** theirs in it. The tab
+    // that is not on screen lives in the parking window, so the window someone is looking at never
+    // holds a page nobody asked to see.
     expect(instance.activeTabId).toBe(onScreen.id)
     expect(instance.window.showInactive).not.toHaveBeenCalled()
     const children = instance.window.contentView.children
-    expect(children).toContain(behind.tabView)
-    expect(children.indexOf(onScreen.tabView)).toBeGreaterThan(children.indexOf(behind.tabView))
+    expect(children).toContain(onScreen.tabView)
+    expect(children).not.toContain(behind.tabView)
 
-    // Handed back at the size the window has *now*, not the one the shot was taken at: the page
-    // went back at the 1000 the person dragged the window to while it was away — that width minus
-    // the 200 rail, the 1px against the chrome and the 6px of panel gutter.
-    expect(behind.tabView.setBounds).toHaveBeenLastCalledWith({ x: 201, y: 49, width: 793, height: 845 })
+    // Handed back to **the window it lives in**, at the viewport the shot was taken at: this tab is
+    // not on screen, so the person dragging the window to 1000 while it was away does not reach it —
+    // the tab on screen is the one that follows the window (`layoutTabView`), while every other tab
+    // is parked at the size it had when it was last on screen (`parkTab`).
+    const resident = instance.parkingWindow
+    expect(resident.contentView.children).toContain(behind.tabView)
+    expect(behind.tabView.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 993, height: 845 })
+    expect(behind.tabView.getBounds()).toEqual({ x: 0, y: 0, width: 993, height: 845 })
   })
 
   it('treats a capture that never comes back as a miss, and the parked view answers instead', async () => {
@@ -2172,6 +2205,46 @@ describe('BrowserPaneManager', () => {
     instance.window._emit('resized')
 
     expect(tabView.setBounds).toHaveBeenLastCalledWith({ x: 201, y: 49, width: 793, height: 845 })
+  })
+
+  /**
+   * A tab that is not on screen keeps the viewport it has, because it is not in the person's window
+   * at all: it lives in the parking window, so what an agent measured there — the page's layout, its
+   * elements, the coordinates of both — survives the person dragging the window. It gets the
+   * window's size when it comes forward, which is what a browser does with a background tab
+   * (`apps/electron/spike/background-viewport.ts`).
+   */
+  it('keeps a tab that is not on screen out of the window, at the size it was opened at', () => {
+    manager.createInstance('resize-frozen')
+    const instance = (manager as any).instances.get('resize-frozen')
+    instance.tabs[0].currentUrl = 'https://front.example.com/'
+    const onScreen = instance.tabs[0]
+    const behindId = manager.createTab('resize-frozen', { url: 'https://behind.example.com/', activate: false })
+    const behind = instance.tabs.find((tab: any) => tab.id === behindId)
+
+    // Born in the parking window, at the size the page area had then.
+    expect(behind.tabView.getBounds()).toEqual({ x: 0, y: 0, width: 993, height: 845 })
+    expect(instance.parkingWindow.contentView.children).toContain(behind.tabView)
+    expect(instance.window.contentView.children).not.toContain(behind.tabView)
+    behind.tabView.setBounds.mockClear()
+
+    instance.window.setContentSize(1010, 900)
+    instance.window._emit('resize')
+
+    // The tab the person is looking at follows the window…
+    expect(onScreen.tabView.setBounds).toHaveBeenLastCalledWith({ x: 201, y: 49, width: 803, height: 845 })
+    // …and the one that is not on screen is only ever told the size it already has: it is parked
+    // again at the very viewport it was given, so the page is not laid out a second time, and it is
+    // never given the window's area while it is not showing.
+    expect(behind.tabView.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 993, height: 845 })
+    expect(behind.tabView.getBounds()).toEqual({ x: 0, y: 0, width: 993, height: 845 })
+    expect(instance.window.contentView.children).not.toContain(behind.tabView)
+
+    // Coming forward is where it gets the window's size — and the window holds it from then on.
+    manager.activateTab('resize-frozen', behindId)
+    expect(behind.tabView.setBounds).toHaveBeenLastCalledWith({ x: 201, y: 49, width: 803, height: 845 })
+    expect(instance.window.contentView.children).toContain(behind.tabView)
+    expect(instance.parkingWindow.contentView.children).not.toContain(behind.tabView)
   })
 
   describe('agent control overlay', () => {
@@ -2612,12 +2685,13 @@ describe('BrowserPaneManager', () => {
 
       expect(second.currentUrl).toBe('https://second.example.com/')
       expect(instance.currentUrl).toBe('https://first.example.com/')
-      // A tab that is not on screen is laid out at the same area as the one that is — not
-      // parked at zero size, which left it with no viewport and nothing painted, and that is
-      // what made a background tab useless (plan §22, 第十二轮). The area is the **page
-      // panel**: the tab area minus the 1px it keeps against the rail and the bar, and the 6px
-      // it keeps from the window's right and bottom edges.
-      expect(second.tabView.setBounds).toHaveBeenCalledWith({ x: 201, y: 49, width: 993, height: 845 })
+      // A tab that is not on screen is **created in the parking window** — the window shown off
+      // screen where every tab that is not showing lives — at the size the page area had when it was
+      // opened. That is its viewport until it comes forward, and it is what keeps the person's window
+      // free of pages nobody asked to see (plan §22 第十七轮).
+      expect(second.tabView.setBounds).toHaveBeenCalledWith({ x: 0, y: 0, width: 993, height: 845 })
+      expect(instance.window.contentView.children).not.toContain(second.tabView)
+      expect(instance.parkingWindow.contentView.children).toContain(second.tabView)
     })
 
     it('switches tabs and reports the one that came forward', () => {
@@ -2641,6 +2715,76 @@ describe('BrowserPaneManager', () => {
       const pageRaises = instance.window.contentView.addChildView.mock.calls.map((call: unknown[]) => call[0])
       const tabsRaised = pageRaises.filter((view: unknown) => view === first.tabView || view === second.tabView)
       expect(tabsRaised[tabsRaised.length - 1]).toBe(first.tabView)
+    })
+
+    // Committing a page is where Chromium hands a webContents the focus, and it does not ask
+    // which tab is showing (measured: the cursor left the field on the tab on screen the moment
+    // an agent's tab loaded, and switching back did not bring it back).
+    it('keeps the keyboard on the tab on screen when a page loads in a tab behind it', () => {
+      manager.createInstance('tabs-focus-behind')
+      const instance = (manager as any).instances.get('tabs-focus-behind')
+      const onScreen = instance.tabs[0]
+      const behindId = manager.createTab('tabs-focus-behind', { activate: false })
+      const behind = instance.tabs.find((tab: any) => tab.id === behindId)
+      // The page that just committed is the one that was handed the focus…
+      behind.tabView.webContents.isFocused = mock(() => true)
+      onScreen.tabView.webContents.focus.mockClear()
+
+      navigateOwn(behind, 'https://behind.example.com/')
+
+      // …and the tab on screen takes it back, because that is the one the person is looking at.
+      expect(onScreen.tabView.webContents.focus).toHaveBeenCalled()
+    })
+
+    it('leaves the address bar alone when a page loads in a tab behind the person', () => {
+      manager.createInstance('tabs-focus-bar')
+      const instance = (manager as any).instances.get('tabs-focus-bar')
+      const onScreen = instance.tabs[0]
+      const behindId = manager.createTab('tabs-focus-bar', { activate: false })
+      const behind = instance.tabs.find((tab: any) => tab.id === behindId)
+      onScreen.tabView.webContents.focus.mockClear()
+
+      // No tab holds the keyboard: the person is typing into the window's chrome (the address
+      // bar, the rail), and a page committing behind their back is no reason to take that away.
+      navigateOwn(behind, 'https://behind.example.com/')
+
+      expect(onScreen.tabView.webContents.focus).not.toHaveBeenCalled()
+    })
+
+    it('gives the keyboard to the tab that comes forward, and never moves the window for it', () => {
+      manager.createInstance('tabs-focus-switch')
+      const instance = (manager as any).instances.get('tabs-focus-switch')
+      const first = instance.tabs[0]
+      const secondId = manager.createTab('tabs-focus-switch', { activate: false })
+      const second = instance.tabs.find((tab: any) => tab.id === secondId)
+      second.tabView.webContents.focus.mockClear()
+
+      manager.activateTab('tabs-focus-switch', secondId)
+      expect(second.tabView.webContents.focus).toHaveBeenCalled()
+
+      // A window that is not the one the person is in is left alone: `webContents.focus()`
+      // activates its window (measured: the app's window came forward over another one), and a
+      // conversation working in the background must never pull the window in front.
+      instance.window.focus.mockClear()
+      first.tabView.webContents.focus.mockClear()
+      instance.window.isFocused = mock(() => false)
+      manager.activateTab('tabs-focus-switch', first.id)
+
+      expect(first.tabView.webContents.focus).not.toHaveBeenCalled()
+      expect(instance.window.focus).not.toHaveBeenCalled()
+    })
+
+    it('hands the keyboard to the tab that takes over when the tab on screen closes', () => {
+      manager.createInstance('tabs-focus-close')
+      const instance = (manager as any).instances.get('tabs-focus-close')
+      const onScreen = instance.tabs[0]
+      manager.createTab('tabs-focus-close', { activate: false })
+
+      manager.closeTab('tabs-focus-close', onScreen.id)
+
+      // The tab that went away had the keyboard; what the window shows next takes it.
+      const next = instance.tabs.find((tab: any) => tab.id === instance.activeTabId)
+      expect(next.tabView.webContents.focus).toHaveBeenCalled()
     })
 
     it('rounds the page itself, so any page is a rounded panel the person can click', () => {
