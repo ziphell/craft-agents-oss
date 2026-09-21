@@ -472,6 +472,63 @@ async function main(): Promise<void> {
     keptAlive.push(home, parked)
   }
 
+  // ---------------------------------------------------------------------------------------------
+  // G — how far out a window can be put before the desktop stops honouring it, and does a view in a
+  // window that far out still have a viewport and a picture? The parking window has to be far enough
+  // that a second screen, a scaling change or the desktop's own tidying-up cannot bring it into view
+  // (the person's report: "your parking window is too close to the screen").
+  // ---------------------------------------------------------------------------------------------
+  {
+    const displays = screen.getAllDisplays()
+    const unionRight = Math.max(...displays.map((display) => display.bounds.x + display.bounds.width))
+    const unionTop = Math.min(...displays.map((display) => display.bounds.y))
+    const tries: Record<string, unknown> = {}
+    for (const margin of [400, 20_000, 100_000, 1_000_000]) {
+      const asked = { x: unionRight + margin, y: unionTop }
+      const win = new BrowserWindow({
+        x: asked.x, y: asked.y, width: FROZEN.width, height: FROZEN.height, show: false, frame: false, skipTaskbar: true,
+      })
+      const view = new WebContentsView({ webPreferences: { backgroundThrottling: false } })
+      view.setBounds({ x: 0, y: 0, ...FROZEN })
+      win.contentView.addChildView(view)
+      win.showInactive()
+      await load(view, page('#aa5500', `parked ${margin} past the last display`), `G ${margin}`)
+      await sleep(500)
+
+      const got = win.getBounds()
+      const onADisplay = screen.getAllDisplays().some((display) => (
+        got.x < display.bounds.x + display.bounds.width
+        && got.x + got.width > display.bounds.x
+        && got.y < display.bounds.y + display.bounds.height
+        && got.y + got.height > display.bounds.y
+      ))
+      let capture: unknown
+      try {
+        capture = await Promise.race([
+          view.webContents.capturePage().then((image) => `answered ${image.getSize().width}×${image.getSize().height}`),
+          sleep(1200).then(() => 'no answer within 1200ms'),
+        ])
+      } catch (error) {
+        capture = `refused: ${error instanceof Error ? error.message : String(error)}`
+      }
+      tries[`margin${margin}`] = {
+        asked: { x: asked.x, y: asked.y },
+        got: { x: got.x, y: got.y },
+        keptIt: got.x === asked.x && got.y === asked.y,
+        onADisplay,
+        innerWidth: await view.webContents.executeJavaScript('window.innerWidth'),
+        capture,
+      }
+      keptAlive.push(win)
+    }
+    report.howFarOutAWindowCanBePut = {
+      displays: displays.map((display) => ({ bounds: display.bounds, scaleFactor: display.scaleFactor })),
+      unionRight,
+      unionTop,
+      tries,
+    }
+  }
+
   for (const window of keptAlive) {
     if (!window.isDestroyed()) window.destroy()
   }

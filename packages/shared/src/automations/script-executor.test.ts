@@ -13,7 +13,7 @@ import { join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { executeScriptAction, clampScriptTimeout, createScriptHistoryEntry, DEFAULT_SCRIPT_TIMEOUT_MS, MAX_SCRIPT_TIMEOUT_MS } from './script-executor.ts';
 import { buildScriptEnv } from './utils.ts';
-import { loadPageConfig, savePageConfig } from '../pages/storage.ts';
+import { loadWebsiteConfig, saveWebsiteConfig } from '../websites/storage.ts';
 import type { ScriptAction } from './types.ts';
 
 const IS_WINDOWS = process.platform === 'win32';
@@ -158,9 +158,9 @@ describe('script-executor', () => {
 
   describe('page refresh recording', () => {
     it('records the outcome on page.json after the run', async () => {
-      const pageDir = join(workspaceDir, 'pages', 'dash');
+      const pageDir = join(workspaceDir, 'websites', 'dash');
       mkdirSync(pageDir, { recursive: true });
-      savePageConfig(workspaceDir, {
+      saveWebsiteConfig(workspaceDir, {
         schemaVersion: 1,
         id: 'page_test0001',
         slug: 'dash',
@@ -177,15 +177,15 @@ describe('script-executor', () => {
       );
       expect(result.success).toBe(true);
 
-      const config = loadPageConfig(workspaceDir, 'dash');
+      const config = loadWebsiteConfig(workspaceDir, 'dash');
       expect(config?.lastRefresh?.ok).toBe(true);
       expect(config?.lastRefresh?.durationMs).toBeGreaterThanOrEqual(0);
       expect(config?.lastRefresh?.error).toBeUndefined();
     });
 
     it('records failures with the captured stderr', async () => {
-      mkdirSync(join(workspaceDir, 'pages', 'dash'), { recursive: true });
-      savePageConfig(workspaceDir, {
+      mkdirSync(join(workspaceDir, 'websites', 'dash'), { recursive: true });
+      saveWebsiteConfig(workspaceDir, {
         schemaVersion: 1,
         id: 'page_test0002',
         slug: 'dash',
@@ -202,7 +202,7 @@ describe('script-executor', () => {
       );
       expect(result.success).toBe(false);
 
-      const config = loadPageConfig(workspaceDir, 'dash');
+      const config = loadWebsiteConfig(workspaceDir, 'dash');
       expect(config?.lastRefresh?.ok).toBe(false);
       expect(config?.lastRefresh?.error).toContain('kaput');
     });
@@ -255,9 +255,9 @@ describe('script-executor', () => {
         expect(env.NOT_CRAFT_SECRET).toBeUndefined();
         expect(env.CRAFT_EVENT).toBe('SchedulerTick');
         expect(env.CRAFT_WORKSPACE_PATH).toBe(workspaceDir);
-        expect(env.CRAFT_PAGE_SLUG).toBe('dash');
-        expect(env.CRAFT_PAGE_DIR).toBe(join(workspaceDir, 'pages', 'dash'));
-        expect(env.CRAFT_PAGE_DATA_DIR).toBe(join(workspaceDir, 'pages', 'dash', 'data'));
+        expect(env.CRAFT_WEBSITE_SLUG).toBe('dash');
+        expect(env.CRAFT_WEBSITE_DIR).toBe(join(workspaceDir, 'websites', 'dash'));
+        expect(env.CRAFT_WEBSITE_DATA_DIR).toBe(join(workspaceDir, 'websites', 'dash', 'data'));
         expect(env.PATH).toBeUndefined();
         // Every key is CRAFT_* or a documented essential
         const essentials = new Set(IS_WINDOWS

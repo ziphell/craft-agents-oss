@@ -35,7 +35,7 @@ export type CredentialType =
   // Messaging gateway credentials (keyed by workspaceId + platform)
   | 'messaging_bearer'   // Platform tokens (e.g., Telegram bot token)
   // Page publication admin token (keyed by workspaceId + pageId)
-  | 'page_publish_token'; // Secret capability that authorizes publication update/unpublish
+  | 'website_publish_token'; // Secret capability that authorizes publication update/unpublish
 
 /** Valid credential types for validation */
 const VALID_CREDENTIAL_TYPES: readonly CredentialType[] = [
@@ -51,7 +51,7 @@ const VALID_CREDENTIAL_TYPES: readonly CredentialType[] = [
   'source_apikey',
   'source_basic',
   'messaging_bearer',
-  'page_publish_token',
+  'website_publish_token',
 ] as const;
 
 /** Check if a string is a valid CredentialType */
@@ -154,7 +154,7 @@ function isMessagingCredential(type: CredentialType): boolean {
 
 /** Check if type is a page publication credential (workspaceId + pageId via `name`) */
 function isPageCredential(type: CredentialType): boolean {
-  return type === 'page_publish_token';
+  return type === 'website_publish_token';
 }
 
 /** LLM connection credential types */
@@ -211,7 +211,7 @@ export function credentialIdToAccount(id: CredentialId): string {
   }
 
   // Page-scoped format:
-  // page_publish_token::{workspaceId}::{pageId}
+  // website_publish_token::{workspaceId}::{pageId}
   if (isPageCredential(id.type) && id.workspaceId && id.name) {
     parts.push(id.workspaceId);
     parts.push(id.name);
@@ -287,7 +287,7 @@ export function accountToCredentialId(account: string): CredentialId | null {
   }
 
   // Page-scoped format:
-  // page_publish_token::{workspaceId}::{pageId}
+  // website_publish_token::{workspaceId}::{pageId}
   if (isPageCredential(type) && parts.length === 3) {
     return { type, workspaceId: parts[1], name: parts[2] };
   }

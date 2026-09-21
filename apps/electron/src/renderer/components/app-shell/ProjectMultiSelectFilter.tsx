@@ -25,7 +25,8 @@ interface ProjectMultiSelectFilterProps {
   onChange: (next: string[]) => void
   /**
    * When set, an extra "No project" checkbox is offered whose selection is
-   * carried in `value` under this sentinel id (e.g. Pages' unassigned filter).
+   * carried in `value` under this sentinel id (e.g. the websites library's
+   * unassigned filter).
    */
   unassignedId?: string
   className?: string

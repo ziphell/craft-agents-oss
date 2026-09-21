@@ -142,9 +142,9 @@ export function attachSessionSelfManagementBindings(
     enumerable: true,
   });
 
-  Object.defineProperty(context, 'pages', {
+  Object.defineProperty(context, 'websites', {
     get() {
-      return getSessionScopedToolCallbacks(sessionId)?.pages;
+      return getSessionScopedToolCallbacks(sessionId)?.websites;
     },
     configurable: true,
     enumerable: true,

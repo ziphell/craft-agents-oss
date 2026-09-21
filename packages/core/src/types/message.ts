@@ -178,7 +178,7 @@ export type AnnotationSelector =
       y: number;
       w: number;
       h: number;
-      page?: number;
+      website?: number;
       rotation?: number;
     }
   | {

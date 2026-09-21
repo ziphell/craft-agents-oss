@@ -104,11 +104,11 @@ export function registerProjectsHandlers(server: RpcServer, deps: HandlerDeps): 
 
     const { unbindProjectFromSessions } = await import('@craft-agent/shared/sessions')
     const touched = await unbindProjectFromSessions(workspace.rootPath, project.config.id)
-    const { unbindProjectFromPages } = await import('@craft-agent/shared/pages')
-    const touchedPages = unbindProjectFromPages(workspace.rootPath, project.config.id)
+    const { unbindProjectFromWebsites } = await import('@craft-agent/shared/websites')
+    const touchedWebsites = unbindProjectFromWebsites(workspace.rootPath, project.config.id)
     deleteProject(workspace.rootPath, projectSlug)
     await broadcastChanged(workspaceId, workspace.rootPath)
-    log.info(`Deleted project ${projectSlug} (unbound ${touched} sessions, ${touchedPages} pages)`)
+    log.info(`Deleted project ${projectSlug} (unbound ${touched} sessions, ${touchedWebsites} pages)`)
   })
 
   // List assets in a project

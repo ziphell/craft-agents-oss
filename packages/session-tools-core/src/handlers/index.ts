@@ -79,20 +79,20 @@ export type { CreateTaskArgs } from './create-task.ts';
 export { handleArchiveSession } from './archive-session.ts';
 export type { ArchiveSessionArgs } from './archive-session.ts';
 
-// Pages
+// Websites
 export {
-  handleListPages,
-  handleGetPage,
-  handleCreatePage,
-  handleUpdatePage,
-  handleWritePageData,
-  handleDeletePage,
-} from './pages.ts';
+  handleListWebsites,
+  handleGetWebsite,
+  handleCreateWebsite,
+  handleUpdateWebsite,
+  handleWriteWebsiteData,
+  handleDeleteWebsite,
+} from './websites.ts';
 export type {
-  ListPagesArgs,
-  GetPageArgs,
-  CreatePageArgs,
-  UpdatePageArgs,
-  WritePageDataArgs,
-  DeletePageArgs,
-} from './pages.ts';
+  ListWebsitesArgs,
+  GetWebsiteArgs,
+  CreateWebsiteArgs,
+  UpdateWebsiteArgs,
+  WriteWebsiteDataArgs,
+  DeleteWebsiteArgs,
+} from './websites.ts';

@@ -1319,6 +1319,31 @@ app.whenReady().then(async () => {
           }
         })(),
       }
+      // The person's screens change under it, or the desktop moves it back onto one — both happen
+      // without us, and both end the same way. Forced here the way the desktop does it (a move),
+      // because "plug a screen in beside the spot" cannot be staged in a spike.
+      const showsOnADisplay = (window: BrowserWindow) => {
+        const [x, y] = window.getPosition()
+        const [width, height] = window.getContentSize()
+        return screen.getAllDisplays().some((display) => x < display.bounds.x + display.bounds.width
+          && x + width > display.bounds.x
+          && y < display.bounds.y + display.bounds.height
+          && y + height > display.bounds.y)
+      }
+      if (instance.parkingWindow) {
+        const parking = instance.parkingWindow
+        const whereItWasPut = { at: parking.getPosition(), onADisplay: showsOnADisplay(parking) }
+        parking.setPosition(0, 0)
+        await sleep(600)
+        frozen.theParkingWindowMovedOntoADisplay = {
+          whereItWasPut,
+          afterTheMove: parking.getPosition(),
+          backOffEveryDisplay: !showsOnADisplay(parking),
+          stillShowingTheParkedTab: parking.contentView.children.includes(tabOf(agentTab).tabView),
+          theParkedTabStillHasItsViewport: (await sizeOf(agentWc)).innerWidth,
+        }
+      }
+
       // The person drags the window bigger, through the same call the app's own resize uses.
       frozen.promised = manager.windowResize(id, 1200, 900)
       await sleep(700)
@@ -1357,6 +1382,19 @@ app.whenReady().then(async () => {
       }
 
       console.log('SPIKE_STEP frozen viewport ' + JSON.stringify(frozen, null, 1))
+
+      // Asserted, because a parking window on a display is a window appearing on the person's screen
+      // for no reason they can see — the thing the parking window exists to never do.
+      const parkedOnADisplay = frozen.theParkingWindowMovedOntoADisplay as any
+      if (parkedOnADisplay.whereItWasPut.onADisplay) {
+        failures.push('the parking window was put on a display in the first place')
+      }
+      if (parkedOnADisplay.backOffEveryDisplay !== true) {
+        failures.push('a parking window that the desktop moved onto a display stayed there')
+      }
+      if (parkedOnADisplay.theParkedTabStillHasItsViewport === 0) {
+        failures.push('moving a parking window off a display cost the tab in it its viewport')
+      }
       manager.destroyInstance(id)
     }
 

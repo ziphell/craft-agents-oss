@@ -136,17 +136,17 @@ export type {
   ResolvedStatusResult,
   CreateTaskInput,
   CreateTaskResult,
-  // Pages types
-  PagesToolCallbacks,
-  PageToolRefreshSpec,
-  PageToolSummary,
-  PageToolDataSummary,
-  PageToolDetails,
-  CreatePageToolInput,
-  UpdatePageToolPatch,
-  PageDataToolPatch,
-  PageDataWriteSummary,
-  DeletePageToolResult,
+  // Websites types
+  WebsiteToolCallbacks,
+  WebsiteToolRefreshSpec,
+  WebsiteToolSummary,
+  WebsiteToolDataSummary,
+  WebsiteToolDetails,
+  CreateWebsiteToolInput,
+  UpdateWebsiteToolPatch,
+  WebsiteDataToolPatch,
+  WebsiteDataWriteSummary,
+  DeleteWebsiteToolResult,
 } from './context.ts';
 
 export { createNodeFileSystem } from './context.ts';
@@ -180,13 +180,13 @@ export {
   handleRenderTemplate,
   // Send Developer Feedback
   handleSendDeveloperFeedback,
-  // Pages
-  handleListPages,
-  handleGetPage,
-  handleCreatePage,
-  handleUpdatePage,
-  handleWritePageData,
-  handleDeletePage,
+  // Websites
+  handleListWebsites,
+  handleGetWebsite,
+  handleCreateWebsite,
+  handleUpdateWebsite,
+  handleWriteWebsiteData,
+  handleDeleteWebsite,
 } from './handlers/index.ts';
 
 export type {
@@ -205,12 +205,12 @@ export type {
   ScriptSandboxArgs,
   RenderTemplateArgs,
   SendDeveloperFeedbackArgs,
-  ListPagesArgs,
-  GetPageArgs,
-  CreatePageArgs,
-  UpdatePageArgs,
-  WritePageDataArgs,
-  DeletePageArgs,
+  ListWebsitesArgs,
+  GetWebsiteArgs,
+  CreateWebsiteArgs,
+  UpdateWebsiteArgs,
+  WriteWebsiteDataArgs,
+  DeleteWebsiteArgs,
 } from './handlers/index.ts';
 
 // Tool definitions — single source of truth
@@ -232,13 +232,13 @@ export {
   BrowserToolSchema,
   // Developer feedback schema
   SendDeveloperFeedbackSchema,
-  // Pages schemas
-  ListPagesSchema,
-  GetPageSchema,
-  CreatePageSchema,
-  UpdatePageSchema,
-  WritePageDataSchema,
-  DeletePageSchema,
+  // Websites schemas
+  ListWebsitesSchema,
+  GetWebsiteSchema,
+  CreateWebsiteSchema,
+  UpdateWebsiteSchema,
+  WriteWebsiteDataSchema,
+  DeleteWebsiteSchema,
   // Descriptions
   TOOL_DESCRIPTIONS,
   // Registry

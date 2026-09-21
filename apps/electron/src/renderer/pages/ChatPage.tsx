@@ -15,6 +15,7 @@ import { SessionMenu } from '@/components/app-shell/SessionMenu'
 import { CompactSessionMenu } from '@/components/app-shell/CompactSessionMenu'
 import { SessionInfoPopover } from '@/components/app-shell/SessionInfoPopover'
 import { PrototypeBindingMenu } from '@/components/prototypes/PrototypeBindingMenu'
+import { SessionWebsitesMenu } from '@/components/app-shell/SessionWebsitesMenu'
 import { RenameDialog } from '@/components/ui/rename-dialog'
 import { toast } from 'sonner'
 import { PanelHeaderCenterButton } from '@/components/ui/PanelHeaderCenterButton'
@@ -654,6 +655,11 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
           sessionId={sessionId}
           prototypeSlug={sessionMeta.prototypeSlug}
         />
+      )}
+      {sessionMeta && (
+        // What this conversation produced — the way back to the websites it made,
+        // without a library in the sidebar. Renders nothing until there is one.
+        <SessionWebsitesMenu sessionId={sessionId} />
       )}
       {editTaskButton}
       {primaryHeaderAction}

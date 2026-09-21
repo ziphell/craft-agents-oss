@@ -24,6 +24,29 @@ const mockShellOpenExternal = mock(async () => {})
 const mockIpcMainHandle = mock(() => {})
 
 /**
+ * The `screen` module, as the manager sees it: one display, 0..1920.
+ *
+ * The display events are **real** here — a person plugs a screen in and the manager has to hear it —
+ * so a test fires them (`mockScreen._emit('display-added')`) after changing what the displays are.
+ */
+const mockScreen = (() => {
+  const listeners: Record<string, Function[]> = {}
+  return {
+    getAllDisplays: mock(() => [{ bounds: { x: 0, y: 0, width: 1920, height: 1080 } }]),
+    on: mock((event: string, listener: Function) => {
+      ;(listeners[event] ??= []).push(listener)
+    }),
+    removeListener: mock((event: string, listener: Function) => {
+      listeners[event] = (listeners[event] ?? []).filter((registered) => registered !== listener)
+    }),
+    _emit: (event: string) => {
+      for (const listener of listeners[event] ?? []) listener()
+    },
+    _listeners: listeners,
+  }
+})()
+
+/**
  * The downloads folder, as `app.getPath` reports it.
  *
  * A real directory rather than a made-up path: the recorder writes here, and a path that
@@ -175,6 +198,7 @@ function createMockWindow(opts?: { width?: number; height?: number; minWidth?: n
   let winX = 40
   let winY = 40
   let skipTaskbar = false
+  let visible = false
   const minWidth = opts?.minWidth ?? 0
   const minHeight = opts?.minHeight ?? 0
 
@@ -198,19 +222,31 @@ function createMockWindow(opts?: { width?: number; height?: number; minWidth?: n
     isDestroyed: mock(() => false),
     isMinimized: mock(() => false),
     restore: mock(() => {}),
-    show: mock(() => {}),
-    showInactive: mock(() => {
+    show: mock(() => {
+      visible = true
       win._emit('show')
     }),
+    showInactive: mock(() => {
+      visible = true
+      win._emit('show')
+    }),
+    isVisible: mock(() => visible),
     setWindowButtonVisibility: mock((_visible: boolean) => {}),
-    // The window's place, for the reveal that parks it outside every display so the person never
-    // sees the browser appear for a picture (`parkOffScreen`), and its taskbar flag, which the
-    // same reveal takes off and puts back.
+    // The window's place, for a parking window that has to stay off every display whatever the
+    // person does to their screens (`keepOffEveryDisplay`), and its taskbar flag.
+    getBounds: mock(() => ({ x: winX, y: winY, width: contentWidth, height: contentHeight })),
     getPosition: mock((): [number, number] => [winX, winY]),
-    setPosition: mock((x: number, y: number) => { winX = x; winY = y }),
+    // Moving a window is something the desktop can do too, and the manager hears about it: the real
+    // one fires `move` for both, which is why this does.
+    setPosition: mock((x: number, y: number) => {
+      winX = x
+      winY = y
+      win._emit('move')
+    }),
     setSkipTaskbar: mock((skip: boolean) => { skipTaskbar = skip }),
     _skipTaskbar: () => skipTaskbar,
     hide: mock(() => {
+      visible = false
       win._emit('hide')
     }),
     focus: mock(() => {}),
@@ -281,9 +317,7 @@ mock.module('electron', () => ({
     getPath: mock((name: string) => name === 'downloads' ? downloadsDir : `/tmp/mock-${name}`),
   },
   // One display, so "off screen" has a definite meaning in a test: past its right edge.
-  screen: {
-    getAllDisplays: mock(() => [{ bounds: { x: 0, y: 0, width: 1920, height: 1080 } }]),
-  },
+  screen: mockScreen,
   BrowserWindow: class MockBrowserWindow {
     webContents: any
     constructor(opts?: any) {
@@ -473,6 +507,8 @@ describe('BrowserPaneManager', () => {
     emptyStateLoadError = null
     mockShellOpenExternal.mockClear()
     mockIpcMainHandle.mockClear()
+    mockScreen.getAllDisplays.mockImplementation(() => [{ bounds: { x: 0, y: 0, width: 1920, height: 1080 } }])
+    for (const event of Object.keys(mockScreen._listeners)) delete mockScreen._listeners[event]
     manager = new BrowserPaneManager()
   })
 
@@ -2205,6 +2241,42 @@ describe('BrowserPaneManager', () => {
     instance.window._emit('resized')
 
     expect(tabView.setBounds).toHaveBeenLastCalledWith({ x: 201, y: 49, width: 793, height: 845 })
+  })
+
+  /**
+   * Where a window nobody may see is put, and — the part that matters — that it *stays* out: the
+   * person can plug a screen in beside the spot or change scaling, and the desktop itself will bring
+   * a window it judges unreachable back onto a screen. Reported by the person: "你的停车窗太靠近屏幕
+   * 了，用户切换双屏幕/调整 dpi 就露出来了".
+   */
+  it('keeps a window nobody may see off every display, through screen changes and being moved onto one', () => {
+    manager.createInstance('parking-away')
+    const instance = (manager as any).instances.get('parking-away')
+    instance.tabs[0].currentUrl = 'https://front.example.com/'
+    manager.createTab('parking-away', { url: 'https://behind.example.com/', activate: false })
+    const parking = instance.parkingWindow
+    expect(parking).toBeTruthy()
+
+    // Put past the right edge of the only display (0..1920) — and far past it, not just past the
+    // window's own edge: this is a request the desktop may cap (measured: it lands at 16383 whatever
+    // you ask for), which is why where it ended up is checked rather than assumed.
+    expect(parking.getBounds().x).toBeGreaterThan(1920)
+    const whereItWasFirstPut = parking.getBounds().x
+
+    // The person plugs a screen in that covers that spot, and the manager hears about it.
+    mockScreen.getAllDisplays.mockImplementation(() => [{ bounds: { x: 0, y: 0, width: 40_000, height: 1080 } }])
+    mockScreen._emit('display-added')
+    expect(parking.getBounds().x).toBeGreaterThanOrEqual(40_000)
+
+    // And the desktop moving it back onto a screen — the other thing that happens without us: the
+    // window is watched, so it goes back out.
+    parking.setPosition(0, 0)
+    expect(parking.getBounds().x).toBeGreaterThanOrEqual(40_000)
+    expect(parking.getBounds().x).not.toBe(whereItWasFirstPut)
+
+    // The subscription is dropped with the last window, rather than outliving the manager.
+    manager.destroyAll()
+    expect(mockScreen.removeListener).toHaveBeenCalled()
   })
 
   /**

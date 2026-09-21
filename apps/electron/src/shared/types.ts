@@ -820,34 +820,34 @@ export interface ElectronAPI {
   deleteProjectAsset(workspaceId: string, projectSlug: string, filename: string): Promise<void>
   onProjectsChanged(callback: (workspaceId: string, projects: unknown) => void): () => void
 
-  // Pages (workspace-scoped mini dashboards)
-  getPages(workspaceId: string): Promise<import('@craft-agent/shared/pages/types').LoadedPage[]>
-  getPage(workspaceId: string, pageIdOrSlug: string): Promise<import('@craft-agent/shared/pages/types').LoadedPage | null>
-  createPage(workspaceId: string, input: import('@craft-agent/shared/pages/types').CreatePageInput): Promise<import('@craft-agent/shared/pages/types').PageConfig>
+  // Websites (workspace-scoped mini sites)
+  getWebsites(workspaceId: string): Promise<import('@craft-agent/shared/websites/types').LoadedWebsite[]>
+  getWebsite(workspaceId: string, websiteIdOrSlug: string): Promise<import('@craft-agent/shared/websites/types').LoadedWebsite | null>
+  createWebsite(workspaceId: string, input: import('@craft-agent/shared/websites/types').CreateWebsiteInput): Promise<import('@craft-agent/shared/websites/types').WebsiteConfig>
   /** Optional fields (projectId, description, refresh) accept explicit null = clear (undefined is dropped by the JSON transport). */
-  updatePage(workspaceId: string, pageSlug: string, patch: Partial<Omit<import('@craft-agent/shared/pages/types').PageConfig, 'id' | 'slug' | 'createdAt' | 'contentDigest' | 'lastRefresh' | 'grants' | 'share' | 'projectId' | 'description' | 'refresh'>> & { projectId?: string | null; description?: string | null; refresh?: import('@craft-agent/shared/pages/types').PageRefreshSpec | null }): Promise<import('@craft-agent/shared/pages/types').PageConfig>
-  deletePage(workspaceId: string, pageSlug: string): Promise<{ publicCopyMayRemain: boolean }>
-  getPageContent(workspaceId: string, pageSlug: string): Promise<{ content: string | null; contentDigest?: string }>
-  setPageContent(workspaceId: string, pageSlug: string, content: string): Promise<import('@craft-agent/shared/pages/types').PageConfig>
-  getPageData(workspaceId: string, pageSlug: string): Promise<import('@craft-agent/shared/pages/types').PageDataSnapshot | null>
-  listPageGrants(workspaceId: string, pageSlug: string): Promise<import('@craft-agent/shared/pages/types').PageActionGrant[]>
-  issuePageGrant(workspaceId: string, pageSlug: string, input: { action: import('@craft-agent/shared/pages/types').PageActionDescriptor; description?: string; ttlMs?: number }): Promise<import('@craft-agent/shared/pages/types').PageActionGrant>
-  revokePageGrant(workspaceId: string, pageSlug: string, grantId: string): Promise<boolean>
-  createPageLease(workspaceId: string, pageSlug: string): Promise<{ lease: import('@craft-agent/shared/pages/types').PageRenderLease; content: string }>
-  releasePageLease(workspaceId: string, leaseId: string): Promise<void>
-  executePageAction(workspaceId: string, request: import('@craft-agent/shared/pages/types').PageActionRequest): Promise<import('@craft-agent/shared/pages/types').PageActionResult>
-  cancelPageAction(workspaceId: string, requestId: string): Promise<boolean>
-  getPageShareCapabilities(): Promise<{ sharingEnabled: boolean }>
+  updateWebsite(workspaceId: string, websiteSlug: string, patch: Partial<Omit<import('@craft-agent/shared/websites/types').WebsiteConfig, 'id' | 'slug' | 'createdAt' | 'contentDigest' | 'lastRefresh' | 'grants' | 'share' | 'projectId' | 'description' | 'refresh'>> & { projectId?: string | null; description?: string | null; refresh?: import('@craft-agent/shared/websites/types').WebsiteRefreshSpec | null }): Promise<import('@craft-agent/shared/websites/types').WebsiteConfig>
+  deleteWebsite(workspaceId: string, websiteSlug: string): Promise<{ publicCopyMayRemain: boolean }>
+  getWebsiteContent(workspaceId: string, websiteSlug: string): Promise<{ content: string | null; contentDigest?: string }>
+  setWebsiteContent(workspaceId: string, websiteSlug: string, content: string): Promise<import('@craft-agent/shared/websites/types').WebsiteConfig>
+  getWebsiteData(workspaceId: string, websiteSlug: string): Promise<import('@craft-agent/shared/websites/types').WebsiteDataSnapshot | null>
+  listWebsiteGrants(workspaceId: string, websiteSlug: string): Promise<import('@craft-agent/shared/websites/types').WebsiteActionGrant[]>
+  issueWebsiteGrant(workspaceId: string, websiteSlug: string, input: { action: import('@craft-agent/shared/websites/types').WebsiteActionDescriptor; description?: string; ttlMs?: number }): Promise<import('@craft-agent/shared/websites/types').WebsiteActionGrant>
+  revokeWebsiteGrant(workspaceId: string, websiteSlug: string, grantId: string): Promise<boolean>
+  createWebsiteLease(workspaceId: string, websiteSlug: string): Promise<{ lease: import('@craft-agent/shared/websites/types').WebsiteRenderLease; content: string }>
+  releaseWebsiteLease(workspaceId: string, leaseId: string): Promise<void>
+  executeWebsiteAction(workspaceId: string, request: import('@craft-agent/shared/websites/types').WebsiteActionRequest): Promise<import('@craft-agent/shared/websites/types').WebsiteActionResult>
+  cancelWebsiteAction(workspaceId: string, requestId: string): Promise<boolean>
+  getWebsiteShareCapabilities(): Promise<{ sharingEnabled: boolean }>
   /** What `includeData` would publish + key paths that look credential-bearing (warn-only). */
-  getPageShareDataScan(workspaceId: string, pageSlug: string): Promise<{ snapshotBytes: number | null; secretCandidates: string[] }>
-  publishPage(workspaceId: string, pageSlug: string, options: { includeData: boolean; password?: string; viewOnlyAcknowledged?: boolean }): Promise<import('@craft-agent/shared/pages/types').PageConfig>
-  setPagePublicationPassword(workspaceId: string, pageSlug: string, password: string | null): Promise<import('@craft-agent/shared/pages/types').PageConfig>
-  unpublishPage(workspaceId: string, pageSlug: string): Promise<{ config: import('@craft-agent/shared/pages/types').PageConfig; warning?: 'remote-copy-may-remain' }>
+  getWebsiteShareDataScan(workspaceId: string, websiteSlug: string): Promise<{ snapshotBytes: number | null; secretCandidates: string[] }>
+  publishWebsite(workspaceId: string, websiteSlug: string, options: { includeData: boolean; password?: string; viewOnlyAcknowledged?: boolean }): Promise<import('@craft-agent/shared/websites/types').WebsiteConfig>
+  setWebsitePublicationPassword(workspaceId: string, websiteSlug: string, password: string | null): Promise<import('@craft-agent/shared/websites/types').WebsiteConfig>
+  unpublishWebsite(workspaceId: string, websiteSlug: string): Promise<{ config: import('@craft-agent/shared/websites/types').WebsiteConfig; warning?: 'remote-copy-may-remain' }>
   /** Read a page's cached poster as a data URL — only returns when fresh (digest matches current content). */
-  getPageThumbnail(workspaceId: string, pageSlug: string): Promise<{ dataUrl: string; digest: string } | null>
+  getWebsiteThumbnail(workspaceId: string, websiteSlug: string): Promise<{ dataUrl: string; digest: string } | null>
   /** Request a (re)capture of a page's poster (no-op on hosts without a capturer). */
-  regeneratePageThumbnail(workspaceId: string, pageSlug: string): Promise<boolean>
-  onPagesChanged(callback: (workspaceId: string, pages: import('@craft-agent/shared/pages/types').LoadedPage[]) => void): () => void
+  regenerateWebsiteThumbnail(workspaceId: string, websiteSlug: string): Promise<boolean>
+  onWebsitesChanged(callback: (workspaceId: string, websites: import('@craft-agent/shared/websites/types').LoadedWebsite[]) => void): () => void
 
   // Automations
   getAutomations(workspaceId: string): Promise<unknown>
@@ -1091,15 +1091,15 @@ export interface PrototypesNavigationState {
 }
 
 /**
- * Pages navigation state
+ * Websites navigation state
  *
- * Bare `pages` (details: null) shows the full-width library grid — it never
- * auto-selects a page. Like board mode, the middle navigator collapses to
- * zero width while a pages route is active.
+ * Bare `websites` (details: null) shows the full-width library grid — it never
+ * auto-selects a website. Like board mode, the middle navigator collapses to
+ * zero width while a websites route is active.
  */
-export interface PagesNavigationState {
-  navigator: 'pages'
-  details: { type: 'page'; pageSlug: string } | null
+export interface WebsitesNavigationState {
+  navigator: 'websites'
+  details: { type: 'website'; websiteSlug: string } | null
   rightSidebar?: RightSidebarPanel
 }
 
@@ -1114,7 +1114,7 @@ export type NavigationState =
   | AutomationsNavigationState
   | ProjectsNavigationState
   | PrototypesNavigationState
-  | PagesNavigationState
+  | WebsitesNavigationState
 
 export const isSessionsNavigation = (
   state: NavigationState
@@ -1144,9 +1144,9 @@ export const isPrototypesNavigation = (
   state: NavigationState
 ): state is PrototypesNavigationState => state.navigator === 'prototypes'
 
-export const isPagesNavigation = (
+export const isWebsitesNavigation = (
   state: NavigationState
-): state is PagesNavigationState => state.navigator === 'pages'
+): state is WebsitesNavigationState => state.navigator === 'websites'
 
 export const DEFAULT_NAVIGATION_STATE: NavigationState = {
   navigator: 'sessions',
@@ -1185,11 +1185,11 @@ export const getNavigationStateKey = (state: NavigationState): string => {
     }
     return 'prototypes'
   }
-  if (state.navigator === 'pages') {
-    if (state.details?.type === 'page') {
-      return `pages/page/${state.details.pageSlug}`
+  if (state.navigator === 'websites') {
+    if (state.details?.type === 'website') {
+      return `websites/website/${state.details.websiteSlug}`
     }
-    return 'pages'
+    return 'websites'
   }
   if (state.navigator === 'settings') {
     if (state.subpage === null) return 'settings'
@@ -1259,14 +1259,14 @@ export const parseNavigationStateKey = (key: string): NavigationState | null => 
     return { navigator: 'prototypes', details: null }
   }
 
-  // Handle pages
-  if (key === 'pages') return { navigator: 'pages', details: null }
-  if (key.startsWith('pages/page/')) {
-    const pageSlug = key.slice(11)
-    if (pageSlug) {
-      return { navigator: 'pages', details: { type: 'page', pageSlug } }
+  // Handle websites
+  if (key === 'websites') return { navigator: 'websites', details: null }
+  if (key.startsWith('websites/website/')) {
+    const websiteSlug = key.slice(17)
+    if (websiteSlug) {
+      return { navigator: 'websites', details: { type: 'website', websiteSlug } }
     }
-    return { navigator: 'pages', details: null }
+    return { navigator: 'websites', details: null }
   }
 
   // Handle settings

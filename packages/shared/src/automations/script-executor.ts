@@ -10,8 +10,8 @@
  * - Child env is CRAFT_*-only (see buildScriptEnv in utils.ts).
  * - SIGTERM on timeout with a SIGKILL fallback so trapped signals can't hang
  *   the host process.
- * - Page refreshes record their outcome on page.json LAST, making it the
- *   completion marker the config watcher turns into `pages:changed`.
+ * - Website refreshes record their outcome on website.json LAST, making it the
+ *   completion marker the config watcher turns into `websites:changed`.
  *
  * The per-matcher concurrency lock lives in the ScriptHandler — this module
  * executes exactly one action.
@@ -25,7 +25,7 @@ import {
   isPathWithinDirectory,
 } from '@craft-agent/session-tools-core';
 import { createLogger } from '../utils/debug.ts';
-import { recordPageRefresh } from '../pages/storage.ts';
+import { recordWebsiteRefresh } from '../websites/storage.ts';
 import { HISTORY_FIELD_MAX_LENGTH } from './constants.ts';
 import type { ScriptAction, ScriptActionResult } from './types.ts';
 
@@ -202,17 +202,17 @@ export async function executeScriptAction(
     });
   });
 
-  // --- Page refresh completion marker (must be the LAST write of the run) ---
+  // --- Website refresh completion marker (must be the LAST write of the run) ---
   if (action.page) {
     try {
-      recordPageRefresh(ctx.workspaceRootPath, action.page, {
+      recordWebsiteRefresh(ctx.workspaceRootPath, action.page, {
         at: Date.now(),
         ok: result.success,
         durationMs: result.durationMs,
         error: result.success ? undefined : (result.stderr || undefined),
       });
     } catch (e) {
-      log.debug(`[ScriptExecutor] Failed to record page refresh for ${action.page}: ${e}`);
+      log.debug(`[ScriptExecutor] Failed to record website refresh for ${action.page}: ${e}`);
     }
   }
 

@@ -108,7 +108,7 @@ async function getExpectedChannels(): Promise<Set<string>> {
     tasks,
     projects,
     prototypes,
-    pages,
+    websites,
   ] = await Promise.all([
     import('@craft-agent/server-core/handlers/rpc/auth'),
     import('@craft-agent/server-core/handlers/rpc/automations'),
@@ -129,7 +129,7 @@ async function getExpectedChannels(): Promise<Set<string>> {
     import('@craft-agent/server-core/handlers/rpc/tasks'),
     import('@craft-agent/server-core/handlers/rpc/projects'),
     import('@craft-agent/server-core/handlers/rpc/prototypes'),
-    import('@craft-agent/server-core/handlers/rpc/pages'),
+    import('@craft-agent/server-core/handlers/rpc/websites'),
   ])
 
   // GUI handler channels (remain in electron)
@@ -160,7 +160,7 @@ async function getExpectedChannels(): Promise<Set<string>> {
     ...tasks.HANDLED_CHANNELS,
     ...projects.HANDLED_CHANNELS,
     ...prototypes.HANDLED_CHANNELS,
-    ...pages.HANDLED_CHANNELS,
+    ...websites.HANDLED_CHANNELS,
     ...browser.HANDLED_CHANNELS,
     ...guiSystem.GUI_HANDLED_CHANNELS,
     ...guiWorkspace.GUI_HANDLED_CHANNELS,

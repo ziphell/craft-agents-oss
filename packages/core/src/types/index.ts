@@ -65,23 +65,23 @@ export type {
   ActiveSessionInfo,
 } from './server.ts';
 
-// Page types (workspace-scoped mini dashboards)
+// Website types (workspace-scoped single-file sites)
 export type {
-  PageKind,
-  PageScriptRuntime,
-  PageRefreshSpec,
-  PageRefreshStatus,
-  PageSeriesPoint,
-  PageDataSnapshot,
-  PageActionHttpMethod,
-  PageActionDescriptor,
-  PageActionGrant,
-  PageRenderLease,
-  PageActionInvocation,
-  PageActionRequest,
-  PageActionResult,
-  PageShareInfo,
-  PageThumbnailInfo,
-  PageConfig,
-} from './page.ts';
+  WebsiteKind,
+  WebsiteScriptRuntime,
+  WebsiteRefreshSpec,
+  WebsiteRefreshStatus,
+  WebsiteSeriesPoint,
+  WebsiteDataSnapshot,
+  WebsiteActionHttpMethod,
+  WebsiteActionDescriptor,
+  WebsiteActionGrant,
+  WebsiteRenderLease,
+  WebsiteActionInvocation,
+  WebsiteActionRequest,
+  WebsiteActionResult,
+  WebsiteShareInfo,
+  WebsiteThumbnailInfo,
+  WebsiteConfig,
+} from './website.ts';
 

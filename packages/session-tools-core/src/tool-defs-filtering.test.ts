@@ -62,13 +62,13 @@ describe('session tool filtering helpers', () => {
     expect(blocked.has('source_credential_prompt')).toBe(true);
     expect(blocked.has('spawn_session')).toBe(true);
 
-    // Pages: reads are Explore-safe, mutations are not
-    expect(allowed.has('list_pages')).toBe(true);
-    expect(allowed.has('get_page')).toBe(true);
-    expect(blocked.has('create_page')).toBe(true);
-    expect(blocked.has('update_page')).toBe(true);
-    expect(blocked.has('write_page_data')).toBe(true);
-    expect(blocked.has('delete_page')).toBe(true);
+    // Websites: reads are Explore-safe, mutations are not
+    expect(allowed.has('list_websites')).toBe(true);
+    expect(allowed.has('get_website')).toBe(true);
+    expect(blocked.has('create_website')).toBe(true);
+    expect(blocked.has('update_website')).toBe(true);
+    expect(blocked.has('write_website_data')).toBe(true);
+    expect(blocked.has('delete_website')).toBe(true);
   });
 
   it('safe-mode helpers support MCP prefixing', () => {

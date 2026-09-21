@@ -23,7 +23,7 @@ import { createLogger } from '../utils/debug.ts';
 import { WorkspaceEventBus, type EventPayloadMap } from './event-bus.ts';
 import { PromptHandler, EventLogHandler, WebhookHandler, ScriptHandler, type AutomationsConfigProvider } from './handlers/index.ts';
 import { type AutomationsConfig, type AutomationEvent, type AutomationMatcher, type PendingPrompt, type WebhookActionResult, type ScriptActionResult, type AppEvent, type AgentEvent, type SdkAutomationCallbackMatcher, type SdkAutomationInput } from './types.ts';
-import { buildPageRefreshMatchers } from '../pages/refresh.ts';
+import { buildWebsiteRefreshMatchers } from '../websites/refresh.ts';
 import { validateAutomationsConfig } from './validation.ts';
 import { matcherMatchesSdk } from './utils.ts';
 import { SchedulerService, type SchedulerTickPayload } from '../scheduler/scheduler-service.ts';
@@ -77,7 +77,7 @@ export class AutomationSystem implements AutomationsConfigProvider {
   private scheduler: SchedulerService | null = null;
   private disposed = false;
   /** Synthetic SchedulerTick matchers derived from page refresh specs */
-  private pageRefreshMatchers: AutomationMatcher[] = [];
+  private websiteRefreshMatchers: AutomationMatcher[] = [];
 
   // Session metadata tracking (moved from SessionManager)
   private readonly lastKnownMetadata: Map<string, SessionMetadataSnapshot> = new Map();
@@ -90,7 +90,7 @@ export class AutomationSystem implements AutomationsConfigProvider {
     this.loadConfig();
 
     // Materialize page refresh specs as synthetic cron matchers
-    this.reloadPageRefreshMatchers();
+    this.reloadWebsiteRefreshMatchers();
 
     // Create handlers
     this.createHandlers();
@@ -244,29 +244,29 @@ export class AutomationSystem implements AutomationsConfigProvider {
   getMatchersForEvent(event: AutomationEvent): AutomationMatcher[] {
     const configured = this.config?.automations[event] ?? [];
     // Page refreshes are cron-driven: synthetic matchers only join SchedulerTick
-    if (event === 'SchedulerTick' && this.pageRefreshMatchers.length > 0) {
-      return [...configured, ...this.pageRefreshMatchers];
+    if (event === 'SchedulerTick' && this.websiteRefreshMatchers.length > 0) {
+      return [...configured, ...this.websiteRefreshMatchers];
     }
     return configured;
   }
 
   /**
-   * Rebuild the synthetic page-refresh matchers from pages/{slug}/page.json.
-   * Called at construction and whenever the config watcher reports a pages
-   * change. Returns the number of scheduled page refreshes.
+   * Rebuild the synthetic website-refresh matchers from websites/{slug}/website.json.
+   * Called at construction and whenever the config watcher reports a websites
+   * change. Returns the number of scheduled website refreshes.
    */
-  reloadPageRefreshMatchers(): number {
+  reloadWebsiteRefreshMatchers(): number {
     try {
-      this.pageRefreshMatchers = buildPageRefreshMatchers(this.options.workspaceRootPath);
+      this.websiteRefreshMatchers = buildWebsiteRefreshMatchers(this.options.workspaceRootPath);
     } catch (e) {
-      // Non-critical — a broken page config must never break automations
-      log.debug(`[AutomationSystem] Failed to build page refresh matchers: ${e}`);
-      this.pageRefreshMatchers = [];
+      // Non-critical — a broken website config must never break automations
+      log.debug(`[AutomationSystem] Failed to build website refresh matchers: ${e}`);
+      this.websiteRefreshMatchers = [];
     }
-    if (this.pageRefreshMatchers.length > 0) {
-      log.debug(`[AutomationSystem] ${this.pageRefreshMatchers.length} page refresh matcher(s) active`);
+    if (this.websiteRefreshMatchers.length > 0) {
+      log.debug(`[AutomationSystem] ${this.websiteRefreshMatchers.length} website refresh matcher(s) active`);
     }
-    return this.pageRefreshMatchers.length;
+    return this.websiteRefreshMatchers.length;
   }
 
   // ============================================================================

@@ -349,18 +349,18 @@ export interface SessionToolContext {
   createTask?(input: CreateTaskInput): Promise<CreateTaskResult>;
 
   // ============================================================
-  // Pages (list_pages / get_page / create_page / update_page /
-  //        write_page_data / delete_page)
+  // Websites (list_websites / get_website / create_website / update_website /
+  //        write_website_data / delete_website)
   // ============================================================
 
   /**
-   * Pages tool callbacks — workspace-scoped mini dashboards. Grouped in one
+   * Websites tool callbacks — workspace-scoped mini sites. Grouped in one
    * object (unlike the flat session-management callbacks) because the six
    * operations always ship together. Injected by the backend (SessionManager);
    * undefined in backends that don't run alongside it — handlers degrade
    * gracefully.
    */
-  pages?: PagesToolCallbacks;
+  websites?: WebsiteToolCallbacks;
 
   // ============================================================
   // Inter-Session Messaging
@@ -499,14 +499,14 @@ export interface CreateTaskResult {
 }
 
 // ============================================================
-// Pages Types
+// Websites Types
 // ============================================================
-// Plain JSON shapes mirroring @craft-agent/core page types — duplicated here
+// Plain JSON shapes mirroring @craft-agent/core website types — duplicated here
 // on purpose so this package stays dependency-free (same rule as
-// CreateTaskInput). The backend maps real PageConfig/LoadedPage onto these.
+// CreateTaskInput). The backend maps real WebsiteConfig/LoadedWebsite onto these.
 
-/** Scheduled refresh spec for a page (5-field cron → workspace-relative script). */
-export interface PageToolRefreshSpec {
+/** Scheduled refresh spec for a website (5-field cron → workspace-relative script). */
+export interface WebsiteToolRefreshSpec {
   /** 5-field cron expression evaluated once per minute */
   cron: string;
   /** Script path relative to the workspace root (must stay within it) */
@@ -521,29 +521,34 @@ export interface PageToolRefreshSpec {
   enabled?: boolean;
 }
 
-/** Compact page entry (returned by list_pages). */
-export interface PageToolSummary {
+/** Compact website entry (returned by list_websites). */
+export interface WebsiteToolSummary {
   slug: string;
   name: string;
   description?: string;
   /** 'static' | 'interactive' | 'live' */
   kind: string;
   projectId?: string;
+  /**
+   * The conversation the website was created from — the website's record of why it
+   * exists. May point at a session that no longer exists (weak reference).
+   */
+  originSessionId?: string;
   createdAt: number;
   updatedAt: number;
   /** Whether index.html exists yet */
   hasContent: boolean;
-  refresh?: PageToolRefreshSpec;
+  refresh?: WebsiteToolRefreshSpec;
   /** Outcome of the most recent data refresh (scheduled or agent write) */
   lastRefresh?: { at: number; ok: boolean; durationMs: number; error?: string };
-  /** Whether the page is currently published (share link exists) */
+  /** Whether the website is currently published (share link exists) */
   shared: boolean;
-  /** Absolute path to the page folder (pages/{slug}/) */
+  /** Absolute path to the website folder (websites/{slug}/) */
   folderPath: string;
 }
 
-/** Summary of a page's data snapshot (kv keys + per-series stats, not full points). */
-export interface PageToolDataSummary {
+/** Summary of a website's data snapshot (kv keys + per-series stats, not full points). */
+export interface WebsiteToolDataSummary {
   generatedAt: number;
   kvKeys: string[];
   series: Array<{ name: string; points: number; latest?: { t: number; v: number } }>;
@@ -551,8 +556,8 @@ export interface PageToolDataSummary {
   snapshotPath: string;
 }
 
-/** Full page details (returned by get_page / create_page / update_page). */
-export interface PageToolDetails extends PageToolSummary {
+/** Full website details (returned by get_website / create_website / update_website). */
+export interface WebsiteToolDetails extends WebsiteToolSummary {
   id: string;
   /** sha256 hex of index.html (grants and render leases bind to it) */
   contentDigest?: string;
@@ -561,7 +566,7 @@ export interface PageToolDetails extends PageToolSummary {
   /** Absolute path to index.html */
   contentPath: string;
   /** Data snapshot summary, or null when no data has been written yet */
-  data: PageToolDataSummary | null;
+  data: WebsiteToolDataSummary | null;
   /** Source-action grants (user-approved; stale = digest mismatch or expired) */
   grants: Array<{
     id: string;
@@ -580,32 +585,32 @@ export interface PageToolDetails extends PageToolSummary {
   content?: string;
 }
 
-/** Input for create_page. */
-export interface CreatePageToolInput {
+/** Input for create_website. */
+export interface CreateWebsiteToolInput {
   name: string;
   description?: string;
   /** 'static' | 'interactive' | 'live' (default: 'interactive') */
   kind?: string;
-  /** Stable Project ID to bind the page to */
+  /** Stable Project ID to bind the website to */
   projectId?: string;
   /** Full self-contained HTML document for index.html */
   content?: string;
-  refresh?: PageToolRefreshSpec;
+  refresh?: WebsiteToolRefreshSpec;
 }
 
-/** Patch for update_page — only provided fields change; null clears a field. */
-export interface UpdatePageToolPatch {
+/** Patch for update_website — only provided fields change; null clears a field. */
+export interface UpdateWebsiteToolPatch {
   name?: string;
   description?: string | null;
   kind?: string;
   projectId?: string | null;
   /** Replaces index.html entirely (re-digests; existing grants go stale by design) */
   content?: string;
-  refresh?: PageToolRefreshSpec | null;
+  refresh?: WebsiteToolRefreshSpec | null;
 }
 
-/** Data mutation batch for write_page_data (applied in one transaction). */
-export interface PageDataToolPatch {
+/** Data mutation batch for write_website_data (applied in one transaction). */
+export interface WebsiteDataToolPatch {
   /** KV upserts: key → any JSON value */
   set?: Record<string, unknown>;
   /** KV keys to delete */
@@ -616,8 +621,8 @@ export interface PageDataToolPatch {
   pruneSeries?: Record<string, number>;
 }
 
-/** Result of write_page_data. */
-export interface PageDataWriteSummary {
+/** Result of write_website_data. */
+export interface WebsiteDataWriteSummary {
   slug: string;
   kvCount: number;
   seriesCount: number;
@@ -626,24 +631,24 @@ export interface PageDataWriteSummary {
   durationMs: number;
 }
 
-/** Result of delete_page. */
-export interface DeletePageToolResult {
+/** Result of delete_website. */
+export interface DeleteWebsiteToolResult {
   deleted: true;
-  /** True when the page was published and the remote copy may still exist */
+  /** True when the website was published and the remote copy may still exist */
   publicCopyMayRemain: boolean;
 }
 
 /**
- * Pages tool callbacks, injected by the backend (SessionManager). All storage
- * logic lives behind these — this package never touches pages/ directly.
+ * Websites tool callbacks, injected by the backend (SessionManager). All storage
+ * logic lives behind these — this package never touches websites/ directly.
  */
-export interface PagesToolCallbacks {
-  listPages(): PageToolSummary[] | Promise<PageToolSummary[]>;
-  getPage(slug: string, options?: { includeContent?: boolean }): PageToolDetails | null | Promise<PageToolDetails | null>;
-  createPage(input: CreatePageToolInput): Promise<PageToolDetails>;
-  updatePage(slug: string, patch: UpdatePageToolPatch): Promise<PageToolDetails>;
-  writePageData(slug: string, patch: PageDataToolPatch): Promise<PageDataWriteSummary>;
-  deletePage(slug: string): Promise<DeletePageToolResult>;
+export interface WebsiteToolCallbacks {
+  listWebsites(): WebsiteToolSummary[] | Promise<WebsiteToolSummary[]>;
+  getWebsite(slug: string, options?: { includeContent?: boolean }): WebsiteToolDetails | null | Promise<WebsiteToolDetails | null>;
+  createWebsite(input: CreateWebsiteToolInput): Promise<WebsiteToolDetails>;
+  updateWebsite(slug: string, patch: UpdateWebsiteToolPatch): Promise<WebsiteToolDetails>;
+  writeWebsiteData(slug: string, patch: WebsiteDataToolPatch): Promise<WebsiteDataWriteSummary>;
+  deleteWebsite(slug: string): Promise<DeleteWebsiteToolResult>;
 }
 
 export interface SessionInfo {

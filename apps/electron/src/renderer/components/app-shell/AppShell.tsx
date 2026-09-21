@@ -121,7 +121,7 @@ import {
   isAutomationsNavigation,
   isProjectsNavigation,
   isPrototypesNavigation,
-  isPagesNavigation,
+  isWebsitesNavigation,
   type NavigationState,
 } from "@/contexts/NavigationContext"
 import type { SettingsSubpage } from "../../../shared/types"
@@ -134,7 +134,7 @@ import { APP_EVENTS, AGENT_EVENTS, type AutomationFilterKind, AUTOMATION_TYPE_TO
 import { useAutomations } from "@/hooks/useAutomations"
 import { useProjects } from "@/hooks/useProjects"
 import { usePrototypes } from "@/hooks/usePrototypes"
-import { usePages } from "@/hooks/usePages"
+import { useWebsites } from "@/hooks/useWebsites"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { PanelHeader } from "./PanelHeader"
 import { FabNewChat } from "./FabNewChat"
@@ -646,9 +646,9 @@ function AppShellContent({
   // so the navigator (and its resize handle) collapse to zero width while it's active.
   const isBoardView = isSessionsNavigation(navState) && navState.viewMode === 'board'
 
-  // Pages behaves the same way: both the library grid and an open page render
-  // full-width in the content area — there is no pages navigator list.
-  const isPagesView = isPagesNavigation(navState)
+  // Websites behaves the same way: both the library grid and an open website
+  // render full-width in the content area — there is no websites navigator list.
+  const isWebsitesView = isWebsitesNavigation(navState)
 
   // Derive source filter from navigation state (only when in sources navigator)
   const sourceFilter: SourceFilter | null = isSourcesNavigation(navState) ? navState.filter ?? null : null
@@ -1079,7 +1079,7 @@ function AppShellContent({
     onAddElementToConversation: handleAddElementToConversation,
   })
 
-  const { pages } = usePages(activeWorkspaceId)
+  const { websites } = useWebsites(activeWorkspaceId)
 
   const projectMenuOptions = useMemo(
     () => projects.map(p => ({ id: p.config.id, slug: p.config.slug, name: p.config.name, color: p.config.color })),
@@ -1982,9 +1982,9 @@ function AppShellContent({
     navigate(routes.view.prototypes())
   }, [])
 
-  // Handler for pages view
-  const handlePagesClick = useCallback(() => {
-    navigate(routes.view.pages())
+  // Handler for websites view
+  const handleWebsitesClick = useCallback(() => {
+    navigate(routes.view.websites())
   }, [])
 
   const handleAutomationsScheduledClick = useCallback(() => {
@@ -2359,18 +2359,18 @@ function AppShellContent({
     }
     flattenTree(labelTree)
 
-    // 3. Sources, Skills, Projects, Prototypes, Pages, Automations, Settings (visual order)
+    // 3. Sources, Skills, Projects, Prototypes, Websites, Automations, Settings (visual order)
     result.push({ id: 'nav:sources', type: 'nav', action: handleSourcesClick })
     result.push({ id: 'nav:skills', type: 'nav', action: handleSkillsClick })
     result.push({ id: 'nav:projects', type: 'nav', action: handleProjectsClick })
     result.push({ id: 'nav:prototypes', type: 'nav', action: handlePrototypesClick })
-    result.push({ id: 'nav:pages', type: 'nav', action: handlePagesClick })
+    result.push({ id: 'nav:websites', type: 'nav', action: handleWebsitesClick })
     result.push({ id: 'nav:automations', type: 'nav', action: handleAutomationsClick })
     result.push({ id: 'nav:settings', type: 'nav', action: () => handleSettingsClick() })
     result.push({ id: 'nav:whats-new', type: 'nav', action: handleWhatsNewClick })
 
     return result
-  }, [handleAllSessionsClick, handleFlaggedClick, handleArchivedClick, handleSessionStatusClick, effectiveSessionStatuses, handleLabelClick, labelConfigs, labelTree, viewConfigs, handleViewClick, handleSourcesClick, handleSkillsClick, handleProjectsClick, handlePagesClick, handleAutomationsClick, handlePrototypesClick, handleSettingsClick, handleWhatsNewClick])
+  }, [handleAllSessionsClick, handleFlaggedClick, handleArchivedClick, handleSessionStatusClick, effectiveSessionStatuses, handleLabelClick, labelConfigs, labelTree, viewConfigs, handleViewClick, handleSourcesClick, handleSkillsClick, handleProjectsClick, handleAutomationsClick, handlePrototypesClick, handleWebsitesClick, handleSettingsClick, handleWhatsNewClick])
 
   // Toggle folder expanded state
   const handleToggleFolder = React.useCallback((path: string) => {
@@ -2499,9 +2499,9 @@ function AppShellContent({
       return t("sidebar.allPrototypes")
     }
 
-    // Pages navigator
-    if (isPagesNavigation(navState)) {
-      return t("sidebar.allPages")
+    // Websites navigator
+    if (isWebsitesNavigation(navState)) {
+      return t("sidebar.allWebsites")
     }
 
     // Automations navigator
@@ -2879,22 +2879,22 @@ function AppShellContent({
                       onClick: handlePrototypesClick,
                     },
                     {
-                      id: "nav:pages",
-                      title: t("sidebar.pages"),
-                      label: String(pages.length),
+                      id: "nav:websites",
+                      title: t("sidebar.websites"),
+                      label: String(websites.length),
                       icon: PanelsTopLeft,
-                      // Highlight on the library grid only, not when a page is open (mirrors Projects)
-                      variant: (isPagesNavigation(navState) && !navState.details) ? "default" : "ghost",
-                      onClick: handlePagesClick,
-                      expandable: pages.length > 0,
-                      expanded: isExpanded('nav:pages'),
-                      onToggle: () => toggleExpanded('nav:pages'),
-                      items: pages.map(p => ({
-                        id: `nav:pages:${p.config.id}`,
-                        title: p.config.name,
+                      // Highlight on the library grid only, not when a website is open (mirrors Projects)
+                      variant: (isWebsitesNavigation(navState) && !navState.details) ? "default" : "ghost",
+                      onClick: handleWebsitesClick,
+                      expandable: websites.length > 0,
+                      expanded: isExpanded('nav:websites'),
+                      onToggle: () => toggleExpanded('nav:websites'),
+                      items: websites.map(website => ({
+                        id: `nav:websites:${website.config.slug}`,
+                        title: website.config.name,
                         icon: PanelsTopLeft,
-                        variant: (isPagesNavigation(navState) && navState.details?.pageSlug === p.config.slug) ? "default" as const : "ghost" as const,
-                        onClick: () => navigate(routes.view.pages(p.config.slug)),
+                        variant: (isWebsitesNavigation(navState) && navState.details?.websiteSlug === website.config.slug) ? "default" as const : "ghost" as const,
+                        onClick: () => navigate(routes.view.websites(website.config.slug)),
                       })),
                     },
                     {
@@ -3888,7 +3888,7 @@ function AppShellContent({
             )}
             </div>
           }
-          navigatorWidth={isAutoCompact ? sessionListWidth : (effectiveSidebarAndNavigatorHidden || isBoardView || isPagesView ? 0 : sessionListWidth)}
+          navigatorWidth={isAutoCompact ? sessionListWidth : (effectiveSidebarAndNavigatorHidden || isBoardView || isWebsitesView ? 0 : sessionListWidth)}
           isSidebarAndNavigatorHidden={effectiveSidebarAndNavigatorHidden}
           isRightSidebarVisible={false}
           isCompact={isAutoCompact}
@@ -3928,8 +3928,8 @@ function AppShellContent({
         </div>
         )}
 
-        {/* Session List Resize Handle (absolute, hidden in focused mode, board view, and pages) */}
-        {!effectiveSidebarAndNavigatorHidden && !isBoardView && !isPagesView && (
+        {/* Session List Resize Handle (absolute, hidden in focused mode, board view, and websites) */}
+        {!effectiveSidebarAndNavigatorHidden && !isBoardView && !isWebsitesView && (
         <div
           ref={sessionListHandleRef}
           onMouseDown={(e) => { e.preventDefault(); setIsResizing('session-list') }}

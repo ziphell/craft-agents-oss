@@ -35,7 +35,7 @@ export interface ParsedRoute {
 // Compound Route Types (new format)
 // =============================================================================
 
-export type NavigatorType = 'sessions' | 'sources' | 'skills' | 'automations' | 'projects' | 'prototypes' | 'pages' | 'settings'
+export type NavigatorType = 'sessions' | 'sources' | 'skills' | 'automations' | 'projects' | 'prototypes' | 'websites' | 'settings'
 
 export interface ParsedCompoundRoute {
   /** The navigator type */
@@ -63,7 +63,7 @@ export interface ParsedCompoundRoute {
  * Known prefixes that indicate a compound route
  */
 const COMPOUND_ROUTE_PREFIXES = [
-  'allSessions', 'flagged', 'archived', 'state', 'label', 'view', 'board', 'sources', 'skills', 'automations', 'projects', 'prototypes', 'pages', 'settings'
+  'allSessions', 'flagged', 'archived', 'state', 'label', 'view', 'board', 'sources', 'skills', 'automations', 'projects', 'prototypes', 'websites', 'settings'
 ]
 
 /**
@@ -206,15 +206,15 @@ export function parseCompoundRoute(route: string): ParsedCompoundRoute | null {
     return null
   }
 
-  // Pages navigator
-  if (first === 'pages') {
+  // Websites navigator
+  if (first === 'websites') {
     if (segments.length === 1) {
-      return { navigator: 'pages', details: null }
+      return { navigator: 'websites', details: null }
     }
-    if (segments[1] === 'page' && segments[2]) {
+    if (segments[1] === 'website' && segments[2]) {
       return {
-        navigator: 'pages',
-        details: { type: 'page', id: segments[2] },
+        navigator: 'websites',
+        details: { type: 'website', id: segments[2] },
       }
     }
     return null
@@ -358,9 +358,9 @@ export function buildCompoundRoute(parsed: ParsedCompoundRoute): string {
     return `prototypes/prototype/${parsed.details.id}`
   }
 
-  if (parsed.navigator === 'pages') {
-    if (!parsed.details) return 'pages'
-    return `pages/page/${parsed.details.id}`
+  if (parsed.navigator === 'websites') {
+    if (!parsed.details) return 'websites'
+    return `websites/website/${parsed.details.id}`
   }
 
   // Sessions navigator
@@ -505,12 +505,12 @@ function convertCompoundToViewRoute(compound: ParsedCompoundRoute): ParsedRoute 
     return { type: 'view', name: 'prototype-info', id: compound.details.id, params: {} }
   }
 
-  // Pages
-  if (compound.navigator === 'pages') {
+  // Websites
+  if (compound.navigator === 'websites') {
     if (!compound.details) {
-      return { type: 'view', name: 'pages', params: {} }
+      return { type: 'view', name: 'websites', params: {} }
     }
-    return { type: 'view', name: 'page-info', id: compound.details.id, params: {} }
+    return { type: 'view', name: 'website-info', id: compound.details.id, params: {} }
   }
 
   // Sessions
@@ -670,14 +670,14 @@ function convertCompoundToNavigationState(compound: ParsedCompoundRoute): Naviga
     }
   }
 
-  // Pages
-  if (compound.navigator === 'pages') {
+  // Websites
+  if (compound.navigator === 'websites') {
     if (!compound.details) {
-      return { navigator: 'pages', details: null }
+      return { navigator: 'websites', details: null }
     }
     return {
-      navigator: 'pages',
-      details: { type: 'page', pageSlug: compound.details.id },
+      navigator: 'websites',
+      details: { type: 'website', websiteSlug: compound.details.id },
     }
   }
 
@@ -779,16 +779,16 @@ function convertParsedRouteToNavigationState(parsed: ParsedRoute): NavigationSta
         }
       }
       return { navigator: 'prototypes', details: null }
-    case 'pages':
-      return { navigator: 'pages', details: null }
-    case 'page-info':
+    case 'websites':
+      return { navigator: 'websites', details: null }
+    case 'website-info':
       if (parsed.id) {
         return {
-          navigator: 'pages',
-          details: { type: 'page', pageSlug: parsed.id },
+          navigator: 'websites',
+          details: { type: 'website', websiteSlug: parsed.id },
         }
       }
-      return { navigator: 'pages', details: null }
+      return { navigator: 'websites', details: null }
     case 'session':
       if (parsed.id) {
         // Reconstruct filter from params
@@ -911,10 +911,10 @@ function navigationStateToCompoundRoute(state: NavigationState): ParsedCompoundR
     }
   }
 
-  if (state.navigator === 'pages') {
+  if (state.navigator === 'websites') {
     return {
-      navigator: 'pages',
-      details: state.details ? { type: 'page', id: state.details.pageSlug } : null,
+      navigator: 'websites',
+      details: state.details ? { type: 'website', id: state.details.websiteSlug } : null,
     }
   }
 

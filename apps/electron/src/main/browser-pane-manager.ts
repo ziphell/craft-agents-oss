@@ -85,8 +85,21 @@ const SCREENSHOT_CAPTURE_TIMEOUT_MS = 1_000
  * and 16ms, 32ms and 200ms all are. It is also the whole of what the shot waits on.
  */
 const SCREENSHOT_FIRST_FRAME_MS = 16
-/** How far past the right edge of the desktop a parking spot sits (`offscreenSpot`). */
-const SCREENSHOT_PARK_MARGIN = 400
+/**
+ * How far past the last display a window that must never be seen is *asked* to go.
+ *
+ * "Off screen" is not a place, it is a relation to the displays — and the displays move: a screen
+ * plugged in to the right of the old spot, a scaling change (which rescales every coordinate), or
+ * the desktop's own habit of bringing a window it judges unreachable back onto a screen. 400 DIPs —
+ * what this used to be — is about one dragged window away, so a second screen arriving put the
+ * parking window on it (the person's report: "你的停车窗太靠近屏幕了").
+ *
+ * It is a request, not a fact: measured, the desktop caps it and quietly lands the window on its own
+ * limit (20_000, 100_000 and 1_000_000 all came back as **16_383** DIPs), while a view that far out
+ * still has its viewport and its picture exactly as it does at 400. So this constant only has to be
+ * "more than any desk", and `keepOffEveryDisplay` is what actually holds the window off the screens.
+ */
+const OFFSCREEN_PARK_MARGIN = 20_000
 /** Only ever seen inside this file: how a capture that never answered names its own error. */
 const SCREENSHOT_CAPTURE_TIMEOUT_MARKER = 'capture did not come back'
 
@@ -845,7 +858,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * so a test can hold a capture to a bound it can wait for.
    */
   private captureTimeoutMs = SCREENSHOT_CAPTURE_TIMEOUT_MS
-
+  /**
+   * Windows that are supposed to be off every display and would not go: remembered so the attempt to
+   * move them is not repeated on every move event, and forgotten as soon as one is found clear (which
+   * is what a person changing displays again can do — see `keepOffEveryDisplay`).
+   */
+  private parkingStuck = new WeakSet<BrowserWindow>()
+  /** The one `screen` subscription that keeps parking windows off the displays, if any is live. */
+  private displayWatcher: (() => void) | null = null
   /**
    * Whether a window that is not on screen can still be captured where it is.
    *
@@ -2784,7 +2804,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // The parking window is built to this size and the view keeps it while it is away, so the page's
     // viewport never changes for a shot — making the window is cheap either way (~5–18ms, measured).
     const own = tab.tabView.getBounds()
-    const spot = this.offscreenSpot()
+    const size = { width: own.width, height: own.height }
+    const spot = this.offscreenSpot(size)
     let parking: BrowserWindow | null = null
 
     try {
@@ -2801,6 +2822,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       parking.contentView.addChildView(tab.tabView)
       tab.tabView.setBounds({ x: 0, y: 0, width: own.width, height: own.height })
       parking.showInactive()
+      // Shown for one frame and lived in for less than a shot, but it is shown: where it ended up may
+      // not be on a display (`keepOffEveryDisplay`).
+      this.keepOffEveryDisplay(parking)
       await this.sleep(SCREENSHOT_FIRST_FRAME_MS)
 
       return await this.capturePageImage({
@@ -2830,15 +2854,73 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * A spot past the right edge of the *union* of the displays, where where the person's screens end
-   * is not this window's business.
+   * A spot **off every display** for a window of this size, as far out as the desktop will let us ask
+   * (`OFFSCREEN_PARK_MARGIN`). Right of the desktop first, then left, then below, then above — the
+   * first side that has room off every display, since the desktop caps how far out a window may go
+   * and a desktop already at that cap has to be gone round rather than past.
    */
-  private offscreenSpot(): { x: number; y: number } {
+  private offscreenSpot(size: { width: number; height: number }): { x: number; y: number } {
     const displays = screen.getAllDisplays()
-    return {
-      x: Math.max(...displays.map((display) => display.bounds.x + display.bounds.width)) + SCREENSHOT_PARK_MARGIN,
-      y: Math.min(...displays.map((display) => display.bounds.y)),
+    const right = Math.max(...displays.map((display) => display.bounds.x + display.bounds.width))
+    const left = Math.min(...displays.map((display) => display.bounds.x))
+    const top = Math.min(...displays.map((display) => display.bounds.y))
+    const bottom = Math.max(...displays.map((display) => display.bounds.y + display.bounds.height))
+
+    const candidates = [
+      { x: right + OFFSCREEN_PARK_MARGIN, y: top },
+      { x: left - OFFSCREEN_PARK_MARGIN - size.width, y: top },
+      { x: left, y: bottom + OFFSCREEN_PARK_MARGIN },
+      { x: left, y: top - OFFSCREEN_PARK_MARGIN - size.height },
+    ]
+    for (const candidate of candidates) {
+      if (!this.overlapsADisplay({ ...candidate, ...size })) return candidate
     }
+    // Every side is already taken by a display whose desktop reaches the cap: go as far out as the
+    // desktop allows and let `keepOffEveryDisplay` keep asking.
+    return candidates[0]
+  }
+
+  /** Whether a rectangle shares any pixel with any display the person has. */
+  private overlapsADisplay(rect: { x: number; y: number; width: number; height: number }): boolean {
+    return screen.getAllDisplays().some((display) => (
+      rect.x < display.bounds.x + display.bounds.width
+      && rect.x + rect.width > display.bounds.x
+      && rect.y < display.bounds.y + display.bounds.height
+      && rect.y + rect.height > display.bounds.y
+    ))
+  }
+
+  /**
+   * Hold a window nobody may see **off every display**: check where it actually is, and put it back
+   * out if a display is under it.
+   *
+   * Nothing about this can be left to the placement that made the window: the person can plug a
+   * screen in beside the spot, change scaling (which rescales the coordinates themselves), and the
+   * desktop itself will bring a window back onto a screen when it thinks nobody can reach it. So it
+   * is called when the displays change and whenever the window moves, and it does nothing at all
+   * unless the window is really on a display (one comparison in the ordinary case).
+   */
+  private keepOffEveryDisplay(window: BrowserWindow): void {
+    if (window.isDestroyed()) return
+    const rect = window.getBounds()
+    if (!this.overlapsADisplay(rect)) {
+      this.parkingStuck.delete(window)
+      return
+    }
+    // The desktop would not take it further last time: asking again for the same coordinate would
+    // only bounce it back and forth, once per move event.
+    if (this.parkingStuck.has(window)) return
+
+    const spot = this.offscreenSpot({ width: rect.width, height: rect.height })
+    window.setPosition(spot.x, spot.y)
+    const landed = window.getBounds()
+    const stillOnADisplay = this.overlapsADisplay(landed)
+    if (stillOnADisplay) {
+      this.parkingStuck.add(window)
+      mainLog.warn(`[browser-pane] a window nobody may see could not be moved clear of the displays: it asked for ${spot.x},${spot.y} and is at ${landed.x},${landed.y}, which a display still covers`)
+      return
+    }
+    mainLog.warn(`[browser-pane] a window nobody may see was on a display at ${rect.x},${rect.y}; moved it back off every display to ${landed.x},${landed.y}`)
   }
 
   /**
@@ -4031,6 +4113,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     for (const id of [...this.instances.keys()]) {
       this.destroyInstance(id)
     }
+    this.stopWatchingDisplays()
   }
 
   private finalizeDestroyedInstance(instance: BrowserInstance, source: 'destroy' | 'closed'): void {
@@ -4096,10 +4179,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * input landing nowhere (`apps/electron/spike/background-viewport.ts` section E). So a frozen tab
    * is not "moved out of the window's way"; it is *housed* somewhere it can keep its layout.
    *
-   * Off every display, `skipTaskbar`, shown without being activated: nothing of it is visible, it is
-   * never in the taskbar, and it never takes anyone's focus. One per browser window, made when the
-   * first tab is parked and destroyed with the window. It grows to fit what is parked in it — a
-   * window clips its children, and a clipped view is a view with a smaller viewport.
+   * Off every display (`offscreenSpot`), `skipTaskbar`, shown without being activated: nothing of it
+   * is visible, it is never in the taskbar, and it never takes anyone's focus. One per browser window,
+   * made when the first tab is parked and destroyed with the window. It grows to fit what is parked
+   * in it — a window clips its children, and a clipped view is a view with a smaller viewport.
+   *
+   * "Off every display" is then **kept true** rather than assumed (`keepOffEveryDisplay`): the spot
+   * is only what the desktop was asked for, and the person can change their screens out from under it.
    */
   private parkingWindowFor(instance: BrowserInstance, size: { width: number; height: number }): BrowserWindow {
     const wanted = {
@@ -4112,10 +4198,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       if (wanted.width > width || wanted.height > height) {
         existing.setContentSize(Math.max(wanted.width, width), Math.max(wanted.height, height))
       }
+      this.keepOffEveryDisplay(existing)
       return existing
     }
 
-    const spot = this.offscreenSpot()
+    const spot = this.offscreenSpot(wanted)
     const parking = new BrowserWindow({
       x: spot.x,
       y: spot.y,
@@ -4129,8 +4216,49 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     instance.parkingWindow = parking
     // Shown, or nothing inside it is composited — and never activated, so it cannot take the focus.
     parking.showInactive()
+    // Wherever it ended up (the desktop may have capped the spot), it may not be on a display; and it
+    // is watched from here on, because it can stop being clear of them without anyone asking us.
+    parking.on('move', () => this.keepOffEveryDisplay(parking))
+    parking.on('resize', () => this.keepOffEveryDisplay(parking))
+    this.keepOffEveryDisplay(parking)
+    this.watchDisplays()
     mainLog.info(`[browser-pane] parking window up instance=${instance.id} at=${spot.x},${spot.y} size=${wanted.width}x${wanted.height}`)
     return parking
+  }
+
+  /**
+   * Watch the displays, because "off every display" is a relation and the displays move: a screen
+   * plugged in beside the parking spot, a scaling change that rescales every coordinate.
+   *
+   * Registered the first time a parking window exists, and dropped with the last one
+   * (`stop`/`destroyAll`), so a manager that never parks anything subscribes to nothing.
+   */
+  private watchDisplays(): void {
+    if (this.displayWatcher) return
+    this.displayWatcher = () => {
+      for (const instance of this.instances.values()) {
+        const parking = instance.parkingWindow
+        if (parking && !parking.isDestroyed()) {
+          // Whatever the change did to the coordinates, the answer is the same: it may not be on a
+          // display, and it may not be *shown* as anything else either — it is what makes the views
+          // inside it real, so it stays up.
+          this.keepOffEveryDisplay(parking)
+          if (!parking.isVisible()) parking.showInactive()
+        }
+      }
+    }
+    screen.on('display-added', this.displayWatcher)
+    screen.on('display-removed', this.displayWatcher)
+    screen.on('display-metrics-changed', this.displayWatcher)
+  }
+
+  /** Stop watching the displays (the instances and their parking windows are gone). */
+  private stopWatchingDisplays(): void {
+    if (!this.displayWatcher) return
+    screen.removeListener('display-added', this.displayWatcher)
+    screen.removeListener('display-removed', this.displayWatcher)
+    screen.removeListener('display-metrics-changed', this.displayWatcher)
+    this.displayWatcher = null
   }
 
   /**

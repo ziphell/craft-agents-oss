@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿import type { EventSink, RpcServer } from '@craft-agent/server-core/transport'
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿import type { EventSink, RpcServer } from '@craft-agent/server-core/transport'
 import { CLIENT_BROWSER_INVOKE } from '@craft-agent/server-core/transport'
 import type { ISessionManager, IBrowserPaneManager, ExecutePromptAutomationInput } from '@craft-agent/server-core/handlers'
 import { RemoteBrowserPaneManager } from './RemoteBrowserPaneManager'
@@ -103,7 +103,7 @@ import {
 import { loadWorkspaceSources, loadAllSources, getSourcesBySlugs, isSourceUsable, type LoadedSource, type McpServerConfig, getSourcesNeedingAuth, getSourceCredentialManager, TokenRefreshManager } from '@craft-agent/shared/sources'
 import { listTaskSlugs, parseTaskSpec, uniqueTaskSlug } from '@craft-agent/shared/tasks'
 import { createTaskFromSpec, resolveCreateTaskProjectId } from '../tasks'
-import { buildPagesToolCallbacks } from '../pages/tool-callbacks'
+import { buildWebsitesToolCallbacks } from '../websites/tool-callbacks'
 import { buildServersFromSources as buildServersFromSourcesShared } from '../sources/build-servers'
 import { ConfigWatcher, type ConfigWatcherCallbacks } from '@craft-agent/shared/config'
 import { getValidClaudeOAuthToken } from '@craft-agent/shared/auth'
@@ -1256,7 +1256,7 @@ export class SessionManager implements ISessionManager {
   }
 
   private browserPaneManager: IBrowserPaneManager | null = null
-  private enqueuePageThumbnailFn?: (req: { workspaceId: string; workspaceRootPath: string; slug: string }) => void
+  private enqueueWebsiteThumbnailFn?: (req: { workspaceId: string; workspaceRootPath: string; slug: string }) => void
   private rpcServer: RpcServer | null = null
   private remoteBpms = new Map<string, RemoteBrowserPaneManager>()
   /** Pinned desktop client per session for `client:browser:invoke` routing. */
@@ -1273,21 +1273,21 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
-   * Inject the page thumbnail capturer (Electron main only — needs a
+   * Inject the website thumbnail capturer (Electron main only — needs a
    * BrowserWindow). Headless/WebUI hosts never call this, so
-   * {@link enqueuePageThumbnail} no-ops and tiles fall back to the placeholder.
+   * {@link enqueueWebsiteThumbnail} no-ops and tiles fall back to the placeholder.
    */
-  setPageThumbnailer(fn: (req: { workspaceId: string; workspaceRootPath: string; slug: string }) => void): void {
-    this.enqueuePageThumbnailFn = fn
+  setWebsiteThumbnailer(fn: (req: { workspaceId: string; workspaceRootPath: string; slug: string }) => void): void {
+    this.enqueueWebsiteThumbnailFn = fn
   }
 
   /**
-   * Request a (re)capture of a page's preview poster. Fire-and-forget: the
-   * injected capturer queues it, writes thumbnail.jpg, and stamps page.json
-   * (which broadcasts pages:changed). No-op when no capturer is injected.
+   * Request a (re)capture of a website's preview poster. Fire-and-forget: the
+   * injected capturer queues it, writes thumbnail.jpg, and stamps website.json
+   * (which broadcasts websites:changed). No-op when no capturer is injected.
    */
-  enqueuePageThumbnail(workspaceId: string, workspaceRootPath: string, slug: string): void {
-    this.enqueuePageThumbnailFn?.({ workspaceId, workspaceRootPath, slug })
+  enqueueWebsiteThumbnail(workspaceId: string, workspaceRootPath: string, slug: string): void {
+    this.enqueueWebsiteThumbnailFn?.({ workspaceId, workspaceRootPath, slug })
   }
 
   /**
@@ -1601,12 +1601,18 @@ export class SessionManager implements ISessionManager {
         // Notify renderer to re-read automations.json
         this.broadcastAutomationsChanged(workspaceId)
       },
-      onPagesListChange: (pages) => {
-        sessionLog.info(`Pages changed in ${workspaceId} (${pages.length} pages)`)
-        // Rebuild the synthetic page-refresh cron matchers (page.json is the
-        // completion marker, so this also fires after every refresh run)
-        this.automationSystems.get(workspaceRootPath)?.reloadPageRefreshMatchers()
-        this.broadcastPagesChanged(workspaceId, pages)
+      onWebsitesListChange: (websites) => {
+        sessionLog.info(`Websites changed in ${workspaceId} (${websites.length} websites)`)
+        // Rebuild the synthetic website-refresh cron matchers (website.json is
+        // the completion marker, so this also fires after every refresh run)
+        this.automationSystems.get(workspaceRootPath)?.reloadWebsiteRefreshMatchers()
+        this.broadcastWebsitesChanged(workspaceId, websites)
+      },
+      onWebsitesContentChange: (websiteSlug) => {
+        // index.html was edited outside the tools: the digest moved, so the
+        // cached poster is stale by definition. Re-render it (a data-only
+        // refresh never reaches this callback).
+        this.enqueueWebsiteThumbnail(workspaceId, workspaceRootPath, websiteSlug)
       },
       onLlmConnectionsChange: () => {
         sessionLog.info(`LLM connections changed in ${workspaceId}`)
@@ -1810,10 +1816,10 @@ export class SessionManager implements ISessionManager {
     this.eventSink(RPC_CHANNELS.skills.CHANGED, { to: 'workspace', workspaceId }, workspaceId, skills)
   }
 
-  private broadcastPagesChanged(workspaceId: string, pages: import('@craft-agent/shared/pages').LoadedPage[]): void {
+  private broadcastWebsitesChanged(workspaceId: string, websites: import('@craft-agent/shared/websites').LoadedWebsite[]): void {
     if (!this.eventSink) return
-    sessionLog.info(`Broadcasting pages changed (${pages.length} pages)`)
-    this.eventSink(RPC_CHANNELS.pages.CHANGED, { to: 'workspace', workspaceId }, workspaceId, pages)
+    sessionLog.info(`Broadcasting websites changed (${websites.length} websites)`)
+    this.eventSink(RPC_CHANNELS.websites.CHANGED, { to: 'workspace', workspaceId }, workspaceId, websites)
   }
 
   private broadcastDefaultPermissionsChanged(): void {
@@ -4851,23 +4857,23 @@ export class SessionManager implements ISessionManager {
           const created = await createTaskFromSpec(this, ws.id, ws.rootPath, parsed.data)
           return { ...created, warnings: [...warnings, ...created.warnings] }
         },
-        // Pages tools (list_pages/get_page/create_page/update_page/
-        // write_page_data/delete_page) — grouped callbacks bound to the
-        // invoking session's workspace. Storage flows are shared with the
-        // pages RPC handlers; after each mutation we poke the watcher (Linux
-        // atomic-rename workaround) and broadcast pages:changed, exactly like
-        // those handlers do.
-        pages: buildPagesToolCallbacks({
+        // Websites tools (list_websites/get_website/create_website/
+        // update_website/write_website_data/delete_website) — grouped callbacks
+        // bound to the invoking session's workspace. Storage flows are shared
+        // with the websites RPC handlers; after each mutation we poke the
+        // watcher (Linux atomic-rename workaround) and broadcast
+        // websites:changed, exactly like those handlers do.
+        websites: buildWebsitesToolCallbacks({
           workspaceId: managed.workspace.id,
           workspaceRootPath: managed.workspace.rootPath,
           log: (message: string) => sessionLog.info(message),
-          onPagesMutated: async (pageSlug: string) => {
-            this.notifyConfigFileChange(managed.workspace.rootPath, `pages/${pageSlug}/page.json`)
-            const { loadWorkspacePages } = await import('@craft-agent/shared/pages')
-            this.broadcastPagesChanged(managed.workspace.id, loadWorkspacePages(managed.workspace.rootPath))
+          onWebsitesMutated: async (websiteSlug: string) => {
+            this.notifyConfigFileChange(managed.workspace.rootPath, `websites/${websiteSlug}/website.json`)
+            const { loadWorkspaceWebsites } = await import('@craft-agent/shared/websites')
+            this.broadcastWebsitesChanged(managed.workspace.id, loadWorkspaceWebsites(managed.workspace.rootPath))
           },
-          onContentChanged: (pageSlug: string) => {
-            this.enqueuePageThumbnail(managed.workspace.id, managed.workspace.rootPath, pageSlug)
+          onContentChanged: (websiteSlug: string) => {
+            this.enqueueWebsiteThumbnail(managed.workspace.id, managed.workspace.rootPath, websiteSlug)
           },
         }),
         getSessionInfoFn: (sessionId?: string) => {

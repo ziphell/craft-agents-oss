@@ -256,7 +256,7 @@ export interface ISessionManager {
    * was injected (Electron main only); headless/WebUI hosts fall back to the
    * placeholder tile.
    */
-  enqueuePageThumbnail(workspaceId: string, workspaceRootPath: string, slug: string): void
+  enqueueWebsiteThumbnail(workspaceId: string, workspaceRootPath: string, slug: string): void
 
   // ---------------------------------------------------------------------------
   // Server-level observability

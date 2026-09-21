@@ -30,7 +30,7 @@ Sentry.init({
 
   // Scrub sensitive data before sending to Sentry.
   // Shared logic in @craft-agent/shared/utils redaction.ts (also used by the
-  // renderer hook and the Pages action audit log) — keep semantics there.
+  // renderer hook and the websites action audit log) — keep semantics there.
   beforeSend(event) {
     // Scrub request headers (authorization, cookies)
     if (event.request?.headers) {
@@ -77,7 +77,7 @@ import { join, delimiter } from 'path'
 import { existsSync, readFileSync } from 'fs'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { SessionManager, setSessionPlatform, setSessionRuntimeHooks } from '@craft-agent/server-core/sessions'
-import { PageThumbnailer } from './page-thumbnailer'
+import { WebsiteThumbnailer } from './website-thumbnailer'
 import { registerAllRpcHandlers } from './handlers/index'
 import { registerCoreRpcHandlers, cleanupSessionFileWatchForClient, cleanupPrototypesWatchForClient } from '@craft-agent/server-core/handlers/rpc'
 import type { PlatformServices } from '../runtime/platform'
@@ -667,16 +667,16 @@ app.whenReady().then(async () => {
         createSessionManager: () => {
           const sm = new SessionManager()
           sm.setBrowserPaneManager(browserPaneManager!)
-          // Page preview posters: offscreen capture is Electron-main-only. On
-          // capture, nudge the watcher so the pages:changed push carries the
+          // Website preview posters: offscreen capture is Electron-main-only. On
+          // capture, nudge the watcher so the websites:changed push carries the
           // fresh thumbnail pointer to open grids.
-          const pageThumbnailer = new PageThumbnailer({
+          const websiteThumbnailer = new WebsiteThumbnailer({
             log: (m) => mainLog.info(m),
             onCaptured: ({ workspaceRootPath, slug }) => {
-              sm.notifyConfigFileChange(workspaceRootPath, `pages/${slug}/page.json`)
+              sm.notifyConfigFileChange(workspaceRootPath, `websites/${slug}/website.json`)
             },
           })
-          sm.setPageThumbnailer((req) => pageThumbnailer.enqueue(req))
+          sm.setWebsiteThumbnailer((req) => websiteThumbnailer.enqueue(req))
           return sm
         },
         bindRpcServer: (sm, server) => sm.setRpcServer(server),

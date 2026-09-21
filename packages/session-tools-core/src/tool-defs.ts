@@ -41,13 +41,13 @@ import { handleListSessions } from './handlers/list-sessions.ts';
 import { handleListBackgroundTasks } from './handlers/list-background-tasks.ts';
 import { handleCreateTask } from './handlers/create-task.ts';
 import {
-  handleListPages,
-  handleGetPage,
-  handleCreatePage,
-  handleUpdatePage,
-  handleWritePageData,
-  handleDeletePage,
-} from './handlers/pages.ts';
+  handleListWebsites,
+  handleGetWebsite,
+  handleCreateWebsite,
+  handleUpdateWebsite,
+  handleWriteWebsiteData,
+  handleDeleteWebsite,
+} from './handlers/websites.ts';
 import { handleArchiveSession } from './handlers/archive-session.ts';
 import { handleSendAgentMessage } from './handlers/send-agent-message.ts';
 import { handleListMessagingChannels, handleUnbindMessagingChannel } from './handlers/messaging.ts';
@@ -229,8 +229,8 @@ export const CreateTaskSchema = z.object({
   projectId: z.string().optional().describe("Project ID to bind the task to (defaults to the invoking session's project)"),
 });
 
-// Pages tools
-const PageRefreshSpecInputSchema = z.object({
+// Websites tools
+const WebsiteRefreshSpecInputSchema = z.object({
   cron: z.string().describe('5-field cron expression evaluated once per minute (e.g. "*/15 * * * *")'),
   script: z.string().describe('Script path relative to the workspace root (must stay inside it). Bun runtime.'),
   args: z.array(z.string()).optional().describe('Extra argv appended after the script path'),
@@ -239,38 +239,38 @@ const PageRefreshSpecInputSchema = z.object({
   enabled: z.boolean().optional().describe('Set false to pause scheduling without deleting the spec'),
 });
 
-export const ListPagesSchema = z.object({
-  projectId: z.string().optional().describe('Only return pages bound to this project ID'),
+export const ListWebsitesSchema = z.object({
+  projectId: z.string().optional().describe('Only return websites bound to this project ID'),
 });
 
-export const GetPageSchema = z.object({
-  slug: z.string().describe('Page slug (from list_pages or create_page)'),
+export const GetWebsiteSchema = z.object({
+  slug: z.string().describe('Website slug (from list_websites or create_website)'),
   includeContent: z.boolean().optional().describe('Also return the full index.html content (can be large). Default false — the response always includes contentPath for reading it from disk instead.'),
 });
 
-export const CreatePageSchema = z.object({
-  name: z.string().describe('Page name shown on the tile (also drives the slug)'),
+export const CreateWebsiteSchema = z.object({
+  name: z.string().describe('Website name shown on the tile (also drives the slug)'),
   description: z.string().optional().describe('Short description shown in lists'),
   kind: z.enum(['static', 'interactive', 'live'])
     .optional()
     .describe('Runtime capability class: static = no JS, interactive = JS allowed, live = JS + receives data snapshot updates while open. Default: interactive.'),
-  projectId: z.string().optional().describe('Stable Project ID to bind the page to'),
-  content: z.string().optional().describe('Full self-contained HTML document for index.html (inline CSS/JS, no external requests). Read ~/.craft-agent/docs/pages.md for the authoring guide and data-bridge snippet BEFORE writing page HTML.'),
-  refresh: PageRefreshSpecInputSchema.optional().describe('Scheduled data refresh: cron + workspace-relative Bun script that updates the page data store'),
+  projectId: z.string().optional().describe('Stable Project ID to bind the website to'),
+  content: z.string().optional().describe('Full self-contained HTML document for index.html (inline CSS/JS, no external requests). Read ~/.craft-agent/docs/websites.md for the authoring guide and data-bridge snippet BEFORE writing website HTML.'),
+  refresh: WebsiteRefreshSpecInputSchema.optional().describe('Scheduled data refresh: cron + workspace-relative Bun script that updates the website data store'),
 });
 
-export const UpdatePageSchema = z.object({
-  slug: z.string().describe('Slug of the page to update'),
-  name: z.string().optional().describe('New page name (slug stays stable)'),
+export const UpdateWebsiteSchema = z.object({
+  slug: z.string().describe('Slug of the website to update'),
+  name: z.string().optional().describe('New website name (slug stays stable)'),
   description: z.string().nullable().optional().describe('New description. Pass null to clear.'),
   kind: z.enum(['static', 'interactive', 'live']).optional().describe('New runtime capability class'),
   projectId: z.string().nullable().optional().describe('New Project ID. Pass null to unbind from its project.'),
   content: z.string().optional().describe('Replacement index.html (full document). Re-digests the content — existing source-action grants become stale by design and need re-approval.'),
-  refresh: PageRefreshSpecInputSchema.nullable().optional().describe('New refresh spec. Pass null to remove scheduled refresh.'),
+  refresh: WebsiteRefreshSpecInputSchema.nullable().optional().describe('New refresh spec. Pass null to remove scheduled refresh.'),
 });
 
-export const WritePageDataSchema = z.object({
-  slug: z.string().describe('Slug of the page whose data store to write'),
+export const WriteWebsiteDataSchema = z.object({
+  slug: z.string().describe('Slug of the website whose data store to write'),
   set: z.record(z.string(), z.unknown()).optional().describe('KV upserts: key → any JSON value (objects/arrays allowed)'),
   delete: z.array(z.string()).optional().describe('KV keys to delete'),
   appendSeries: z.record(z.string(), z.array(z.object({
@@ -280,8 +280,8 @@ export const WritePageDataSchema = z.object({
   pruneSeries: z.record(z.string(), z.number()).optional().describe('Timeseries prunes: series name → deleteBefore timestamp (points with t < value are removed)'),
 });
 
-export const DeletePageSchema = z.object({
-  slug: z.string().describe('Slug of the page to delete'),
+export const DeleteWebsiteSchema = z.object({
+  slug: z.string().describe('Slug of the website to delete'),
 });
 
 export const ListSessionsSchema = z.object({
@@ -592,31 +592,31 @@ Provide title + description (the description becomes the task goal and the initi
 
 Returns { slug, orchestratorSessionId, taskLabelId, warnings } — unknown source/skill slugs are reported as warnings, not errors. Use it when the user asks to capture or queue work as a task; to execute work right now, use the current session or spawn_session instead.`,
 
-  list_pages: `List the workspace's Pages — persistent, agent-authored HTML mini dashboards/documents rendered in the app's Pages section (sidebar) and optionally shared via password-protected public links.
+  list_websites: `List the workspace's Websites — persistent sites you author, each one a single self-contained HTML file at its own address. A file can hold several screens (its JS switches between them), but it is one address: it cannot pull in other files and it has no routes, so a second address means a second website. They render in the app's Websites section and can be shared via password-protected public links.
 
-Returns compact summaries: slug, name, kind (static/interactive/live), project, refresh schedule, last refresh outcome, share state, and folder path. Optionally filter by projectId. Use get_page for full details on one page.`,
+Returns compact summaries: slug, name, kind (static/interactive/live), project, refresh schedule, last refresh outcome, share state, and folder path. Optionally filter by projectId. Use get_website for full details on one website.`,
 
-  get_page: `Get full details for one Page by slug: config, content digest/length/path, a data summary (KV keys + per-series point counts and latest values), source-action grants, and share state.
+  get_website: `Get full details for one Website by slug: config, content digest/length/path, a data summary (KV keys + per-series point counts and latest values), source-action grants, and share state.
 
 The response includes absolute paths (contentPath, data.snapshotPath) — Read those files for the full HTML or the complete data snapshot. Pass includeContent: true only when you need the HTML inline.`,
 
-  create_page: `Create a new Page: a persistent, self-contained HTML document stored at pages/{slug}/ in the workspace, shown as a tile in the app's Pages section, and rendered in a sandboxed iframe.
+  create_website: `Create a new Website: one self-contained HTML file at websites/{slug}/ in the workspace, its own address, shown as a tile in the app's Websites section and rendered in a sandboxed iframe.
 
-IMPORTANT — read ~/.craft-agent/docs/pages.md BEFORE authoring page HTML. Key rules: provide a FULL standalone HTML document with ALL CSS/JS inline (no external requests — shared copies get network egress blocked); to display data from the page's data store, listen for the 'craft-pages/v1' bridge messages (init/data) documented there; kind 'live' pages receive replacement data snapshots automatically while open.
+IMPORTANT — read ~/.craft-agent/docs/websites.md BEFORE authoring website HTML. Key rules: provide a FULL standalone HTML document with ALL CSS/JS inline (no external requests — shared copies get network egress blocked); several screens are fine inside that one document (switch them in JS) but it is one address, so it cannot link to other files and wanting a second address means a second website; to display data from the website's data store, listen for the 'craft-websites/v1' bridge messages (init/data) documented there; kind 'live' websites receive replacement data snapshots automatically while open.
 
-Use Pages (instead of chat previews) when the user wants something persistent: a dashboard that an automation refreshes, a report they'll revisit or share, a tracker fed by write_page_data. Returns the created page details including the slug.`,
+Use Websites (instead of chat previews) when the user wants something persistent: a dashboard that an automation refreshes, a report they'll revisit or share, a tracker fed by write_website_data. A website is the right artifact when nobody has to implement it — when the user instead wants a change to a real product that somebody else will build, that is a prototype (prototype_tool), not a website. Returns the created website details including the slug.`,
 
-  update_page: `Update an existing Page: metadata (name, description, kind, projectId), the scheduled refresh spec, and/or replace its HTML content.
+  update_website: `Update an existing Website: metadata (name, description, kind, projectId), the scheduled refresh spec, and/or replace its HTML content.
 
 Only provided fields change; pass null to clear description/projectId/refresh. Replacing content re-computes the content digest, so existing source-action grants go stale by design (the user must re-approve them). The slug never changes.`,
 
-  write_page_data: `Write to a Page's data store: KV upserts/deletes plus numeric timeseries appends/prunes, applied in one transaction. The data snapshot (data/snapshot.json) is regenerated and pushed to open renders — 'live' pages update on screen without a reload.
+  write_website_data: `Write to a Website's data store: KV upserts/deletes plus numeric timeseries appends/prunes, applied in one transaction. The data snapshot (data/snapshot.json) is regenerated and pushed to open renders — 'live' websites update on screen without a reload.
 
 Data model: kv is key → any JSON value; series are named lists of { t: epoch ms, v: number } points with idempotent (series, t) upserts — re-running the same write is safe. Use timeseries for anything you may want charted over time (metrics, counts, prices). Composes with scheduled refresh scripts writing the same store.`,
 
-  delete_page: `Delete a Page permanently — removes its folder including content, data store, and grants. DESTRUCTIVE: confirm with the user first unless they explicitly asked for the deletion.
+  delete_website: `Delete a Website permanently — removes its folder including content, data store, and grants. DESTRUCTIVE: confirm with the user first unless they explicitly asked for the deletion.
 
-A published page is unpublished first (best effort); the result reports publicCopyMayRemain when the remote copy could not be confirmed removed.`,
+A published website is unpublished first (best effort); the result reports publicCopyMayRemain when the remote copy could not be confirmed removed.`,
 
   get_session_info: `Get metadata about the current session or a specific session by ID.
 
@@ -725,13 +725,13 @@ export const SESSION_TOOL_DEFS: SessionToolDef[] = [
   { name: 'set_session_status', description: TOOL_DESCRIPTIONS.set_session_status, inputSchema: SetSessionStatusSchema, executionMode: 'registry', safeMode: 'block', handler: handleSetSessionStatus },
   { name: 'archive_session', description: TOOL_DESCRIPTIONS.archive_session, inputSchema: ArchiveSessionSchema, executionMode: 'registry', safeMode: 'block', handler: handleArchiveSession },
   { name: 'create_task', description: TOOL_DESCRIPTIONS.create_task, inputSchema: CreateTaskSchema, executionMode: 'registry', safeMode: 'block', handler: handleCreateTask },
-  // Pages tools (registry — use the grouped ctx.pages callbacks from SessionManager)
-  { name: 'list_pages', description: TOOL_DESCRIPTIONS.list_pages, inputSchema: ListPagesSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleListPages },
-  { name: 'get_page', description: TOOL_DESCRIPTIONS.get_page, inputSchema: GetPageSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleGetPage },
-  { name: 'create_page', description: TOOL_DESCRIPTIONS.create_page, inputSchema: CreatePageSchema, executionMode: 'registry', safeMode: 'block', handler: handleCreatePage },
-  { name: 'update_page', description: TOOL_DESCRIPTIONS.update_page, inputSchema: UpdatePageSchema, executionMode: 'registry', safeMode: 'block', handler: handleUpdatePage },
-  { name: 'write_page_data', description: TOOL_DESCRIPTIONS.write_page_data, inputSchema: WritePageDataSchema, executionMode: 'registry', safeMode: 'block', handler: handleWritePageData },
-  { name: 'delete_page', description: TOOL_DESCRIPTIONS.delete_page, inputSchema: DeletePageSchema, executionMode: 'registry', safeMode: 'block', handler: handleDeletePage },
+  // Websites tools (registry — use the grouped ctx.websites callbacks from SessionManager)
+  { name: 'list_websites', description: TOOL_DESCRIPTIONS.list_websites, inputSchema: ListWebsitesSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleListWebsites },
+  { name: 'get_website', description: TOOL_DESCRIPTIONS.get_website, inputSchema: GetWebsiteSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleGetWebsite },
+  { name: 'create_website', description: TOOL_DESCRIPTIONS.create_website, inputSchema: CreateWebsiteSchema, executionMode: 'registry', safeMode: 'block', handler: handleCreateWebsite },
+  { name: 'update_website', description: TOOL_DESCRIPTIONS.update_website, inputSchema: UpdateWebsiteSchema, executionMode: 'registry', safeMode: 'block', handler: handleUpdateWebsite },
+  { name: 'write_website_data', description: TOOL_DESCRIPTIONS.write_website_data, inputSchema: WriteWebsiteDataSchema, executionMode: 'registry', safeMode: 'block', handler: handleWriteWebsiteData },
+  { name: 'delete_website', description: TOOL_DESCRIPTIONS.delete_website, inputSchema: DeleteWebsiteSchema, executionMode: 'registry', safeMode: 'block', handler: handleDeleteWebsite },
   { name: 'get_session_info', description: TOOL_DESCRIPTIONS.get_session_info, inputSchema: GetSessionInfoSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleGetSessionInfo },
   { name: 'list_sessions', description: TOOL_DESCRIPTIONS.list_sessions, inputSchema: ListSessionsSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleListSessions },
   { name: 'list_background_tasks', description: TOOL_DESCRIPTIONS.list_background_tasks, inputSchema: ListBackgroundTasksSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleListBackgroundTasks },

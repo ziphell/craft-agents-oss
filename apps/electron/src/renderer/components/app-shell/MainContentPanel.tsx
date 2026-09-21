@@ -33,7 +33,7 @@ import {
   isAutomationsNavigation,
   isProjectsNavigation,
   isPrototypesNavigation,
-  isPagesNavigation,
+  isWebsitesNavigation,
 } from '@/contexts/NavigationContext'
 import { useSessionSelection, useIsMultiSelectActive, useSelectedIds, useSelectionCount } from '@/hooks/useSession'
 import { sourceSelection, skillSelection, automationSelection } from '@/hooks/useEntitySelection'
@@ -46,8 +46,8 @@ import { AutomationInfoPage } from '../automations/AutomationInfoPage'
 import ProjectInfoPage from '@/pages/ProjectInfoPage'
 import PrototypeInfoPage from '@/pages/PrototypeInfoPage'
 import { KanbanBoardContainer } from './kanban/KanbanBoardContainer'
-import { PagesHome } from '../pages/PagesHome'
-import { PageView } from '../pages/PageView'
+import { WebsitesHome } from '../websites/WebsitesHome'
+import { WebsiteView } from '../websites/WebsiteView'
 import type { ExecutionEntry } from '../automations/types'
 import { automationsAtom } from '@/atoms/automations'
 import { SendResourceToWorkspaceDialog, type SendResourceType } from './SendResourceToWorkspaceDialog'
@@ -363,14 +363,14 @@ export function MainContentPanel({
     )
   }
 
-  // Pages navigator - full-width library grid, or one page's embedded render
-  if (isPagesNavigation(navState)) {
+  // Websites navigator - full-width library grid, or one website's embedded render
+  if (isWebsitesNavigation(navState)) {
     return wrapWithStoplight(
       <Panel variant="grow" className={className}>
         {navState.details ? (
-          <PageView key={navState.details.pageSlug} pageSlug={navState.details.pageSlug} />
+          <WebsiteView key={navState.details.websiteSlug} websiteSlug={navState.details.websiteSlug} />
         ) : (
-          <PagesHome />
+          <WebsitesHome />
         )}
       </Panel>
     )

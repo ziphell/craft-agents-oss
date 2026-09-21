@@ -43,7 +43,7 @@ import {
 import { permissionsConfigCache, getAppPermissionsDir } from '../agent/permissions-config.ts';
 import { getWorkspacePath, getWorkspaceSourcesPath, getWorkspaceSkillsPath } from '../workspaces/storage.ts';
 import type { LoadedSkill } from '../skills/types.ts';
-import { loadWorkspacePages } from '../pages/storage.ts';
+import { loadWorkspaceWebsites, WEBSITE_CONFIG_FILENAME, WEBSITE_CONTENT_FILENAME, syncWebsiteContentDigest } from '../websites/storage.ts';
 import { loadSkill, loadAllSkills, invalidateSkillsCache, skillNeedsIconDownload, downloadSkillIcon } from '../skills/storage.ts';
 import {
   loadStatusConfig,
@@ -154,13 +154,20 @@ export interface ConfigWatcherCallbacks {
   /** Called when automations.json changes */
   onAutomationsConfigChange?: (workspaceId: string) => void;
 
-  // Page callbacks
+  // Website callbacks
   /**
-   * Called when any pages/{slug}/page.json changes (create/delete/refresh
-   * completion). page.json is the completion marker of a refresh run, so
-   * data/ churn (sqlite, snapshot tmp files) is deliberately NOT watched.
+   * Called when any websites/{slug}/website.json changes (create/delete/refresh
+   * completion), or when a website's index.html is edited outside the tools.
+   * website.json is the completion marker of a refresh run, so data/ churn
+   * (sqlite, snapshot tmp files) is deliberately NOT watched.
    */
-  onPagesListChange?: (pages: import('../pages/types.ts').LoadedPage[]) => void;
+  onWebsitesListChange?: (websites: import('../websites/types.ts').LoadedWebsite[]) => void;
+  /**
+   * Called after an out-of-band `index.html` edit moved a website's content
+   * digest (the derived poster is stale by definition at that point). Not
+   * called for website.json writes or data-only refreshes.
+   */
+  onWebsitesContentChange?: (websiteSlug: string) => void;
 
   // Session callbacks
   /** Called when a session's JSONL header is modified externally (labels, name, flags, etc.) */
@@ -481,14 +488,17 @@ export class ConfigWatcher {
       return;
     }
 
-    // Pages changes: pages/{slug}/page.json is the ONLY trigger — a refresh
-    // run's last write is page.json, so reacting to it (and nothing else)
-    // means observers never see a half-written data/ directory. Slug-dir
-    // add/remove also fires (page created/deleted externally).
-    if (parts[0] === 'pages' && parts.length >= 2) {
+    // Websites changes: website.json (the completion marker of a refresh run, and
+    // the only thing that means "the data/ directory is finished") plus index.html,
+    // which the website's own author may edit directly — the file is the truth, so
+    // an out-of-band edit has to move the derived digest (see the handler).
+    // Slug-dir add/remove also fires (website created/deleted externally).
+    if (parts[0] === 'websites' && parts.length >= 2) {
+      const slug = parts[1]!;
       const file = parts[2];
-      if (parts.length === 2 || file === 'page.json') {
-        this.debounce('pages-dir', () => this.handlePagesChange());
+      if (parts.length === 2 || file === WEBSITE_CONFIG_FILENAME || file === WEBSITE_CONTENT_FILENAME) {
+        const contentEdited = file === WEBSITE_CONTENT_FILENAME;
+        this.debounce('websites-dir', () => this.handleWebsitesChange(contentEdited ? slug : undefined));
       }
       return;
     }
@@ -968,22 +978,39 @@ export class ConfigWatcher {
   }
 
   // ============================================================
-  // Page Handlers
+  // Website Handlers
   // ============================================================
 
   /**
-   * Handle a pages change (any page.json touched, or a page folder
-   * added/removed). Coarse by design: reload the full list once per
-   * debounce window.
+   * A website's files changed on disk.
+   *
+   * `contentEditedSlug` is set when the triggering path was that website's
+   * index.html: the digest is derived from the file, so it is realigned here —
+   * before anyone reads the list — and the host is told only if it actually
+   * moved (a re-save of identical content must not re-render the poster).
+   * Saving website.json from inside that realignment re-enters this handler with
+   * no slug, which is why the second pass is cheap and idempotent.
    */
-  private handlePagesChange(): void {
-    if (!this.callbacks.onPagesListChange) return;
+  private handleWebsitesChange(contentEditedSlug?: string): void {
+    if (contentEditedSlug) {
+      try {
+        const synced = syncWebsiteContentDigest(this.workspaceDir, contentEditedSlug);
+        if (synced?.contentChanged) {
+          debug('[ConfigWatcher] website content changed:', this.workspaceId, contentEditedSlug);
+          this.callbacks.onWebsitesContentChange?.(contentEditedSlug);
+        }
+      } catch (error) {
+        debug('[ConfigWatcher] Failed to realign website content digest:', error);
+      }
+    }
+
+    if (!this.callbacks.onWebsitesListChange) return;
     try {
-      const pages = loadWorkspacePages(this.workspaceDir);
-      debug('[ConfigWatcher] pages changed:', this.workspaceId, `(${pages.length} pages)`);
-      this.callbacks.onPagesListChange(pages);
+      const websites = loadWorkspaceWebsites(this.workspaceDir);
+      debug('[ConfigWatcher] websites changed:', this.workspaceId, `(${websites.length} websites)`);
+      this.callbacks.onWebsitesListChange(websites);
     } catch (error) {
-      debug('[ConfigWatcher] Failed to reload pages:', error);
+      debug('[ConfigWatcher] Failed to reload websites:', error);
     }
   }
 

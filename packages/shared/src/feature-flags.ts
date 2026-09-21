@@ -60,18 +60,19 @@ export function isEmbeddedServerEnabled(): boolean {
 }
 
 /**
- * Runtime-evaluated check for Pages sharing (Cloudflare publication).
+ * Runtime-evaluated check for Websites sharing (Cloudflare publication).
  *
- * Server-evaluated: the renderer learns it via `pages:getShareCapabilities`,
+ * Server-evaluated: the renderer learns it via `websites:getShareCapabilities`,
  * never from its own process.env. Gates publish/update only — unpublish stays
- * available regardless, so disabling the flag never strands a published page.
+ * available regardless, so disabling the flag never strands a published website.
  *
  * Defaults to ENABLED as of 2026-08-27 (the Cloudflare publication Worker is
- * deployed and verified live). Publishing sends the page bundle to Cloudflare,
- * so this is opt-out: set CRAFT_FEATURE_PAGES_SHARING=0 to hide the Share UI.
+ * deployed and verified live). Publishing sends the website bundle to
+ * Cloudflare, so this is opt-out: set CRAFT_FEATURE_WEBSITES_SHARING=0 to hide
+ * the Share UI.
  */
-export function isPagesSharingEnabled(): boolean {
-  const override = parseBooleanEnv(getEnv('CRAFT_FEATURE_PAGES_SHARING'));
+export function isWebsitesSharingEnabled(): boolean {
+  const override = parseBooleanEnv(getEnv('CRAFT_FEATURE_WEBSITES_SHARING'));
   if (override !== undefined) return override;
   return true;
 }
@@ -105,12 +106,12 @@ export const FEATURE_FLAGS = {
     return isEmbeddedServerEnabled();
   },
   /**
-   * Enable Pages sharing (publish to Cloudflare).
+   * Enable Websites sharing (publish to Cloudflare).
    *
    * Defaults to ENABLED (Worker deployed 2026-08-27). Opt out with
-   * CRAFT_FEATURE_PAGES_SHARING=0.
+   * CRAFT_FEATURE_WEBSITES_SHARING=0.
    */
-  get pagesSharing(): boolean {
-    return isPagesSharingEnabled();
+  get websitesSharing(): boolean {
+    return isWebsitesSharingEnabled();
   },
 } as const;

@@ -770,7 +770,6 @@ Read relevant context files using the Read tool - they contain architecture info
 | Permissions | \`${DOC_REFS.permissions}\` | BEFORE modifying ${PERMISSION_MODE_CONFIG['safe'].displayName} mode rules |
 | Skills | \`${DOC_REFS.skills}\` | BEFORE creating custom skills |
 | Automations | \`${DOC_REFS.hooks}\` | BEFORE creating/modifying automations |
-| Pages | \`${DOC_REFS.pages}\` | BEFORE creating Pages or authoring page HTML |
 | Themes | \`${DOC_REFS.themes}\` | BEFORE customizing colors |
 | Statuses | \`${DOC_REFS.statuses}\` | When user mentions statuses or workflow states |
 | Labels | \`${DOC_REFS.labels}\` | BEFORE creating/modifying labels |
@@ -783,6 +782,7 @@ Read relevant context files using the Read tool - they contain architecture info
 | Markdown Preview | \`${DOC_REFS.markdownPreview}\` | When displaying rendered .md files inline |
 | Browser Tools | \`${DOC_REFS.browserTools}\` | When using in-app browser tools (\`browser_tool\`) |
 | Prototypes | \`${DOC_REFS.prototypes}\` | BEFORE the first \`prototype_tool\` command |
+| Websites | \`${DOC_REFS.websites}\` | BEFORE creating Websites or authoring website HTML |
 | LLM Tool | \`${DOC_REFS.llmTool}\` | When using \`call_llm\` for subtasks |${FEATURE_FLAGS.craftAgentsCli ? `
 | Craft CLI | \`${DOC_REFS.craftCli}\` | When managing labels/sources/skills/automations via \`craft-agent\` |` : ''}
 
@@ -1086,29 +1086,29 @@ Setting labels or status triggers the corresponding automation events (\`LabelAd
 2. Agent completes work
 3. Agent calls \`set_session_status\` with "needs-review" → triggers downstream webhook/notification (closing the task into "done"/"cancelled" remains the user's call)
 
-## Pages
+## Websites
 
-Pages are persistent, self-hosted HTML mini apps you can create for the user: dashboards, reports, trackers, tools. They live in the workspace at \`pages/{slug}/\`, appear as tiles in the app's **Pages** sidebar section (filterable by Project), and render inside the app in a sandboxed iframe. Unlike chat previews (\`html-preview\`, \`datatable\`), Pages persist across sessions, can be auto-refreshed by schedules, and can be shared as password-protected public links.
+Websites are persistent, self-hosted sites you can create for the user: a dashboard, a report, a tracker, a small tool. Each one is a **single self-contained HTML file at its own address** — several screens can live in that one file (switch them in JS), but it cannot pull in other files and it has no routes, so a second address means a second website. They live in the workspace at \`websites/{slug}/\`, appear as tiles in the app's **Websites** section (filterable by Project), and render inside the app in a sandboxed iframe. Unlike chat previews (\`html-preview\`, \`datatable\`), Websites persist across sessions, can be auto-refreshed by schedules, and can be shared as password-protected public links. A website is the right artifact when **nobody has to implement it** — when the user instead wants a change to a real product that somebody else will build, that is a prototype (\`prototype_tool\`).
 
 **Tools:**
-- \`list_pages\` / \`get_page\` — discover pages and inspect one (config, content path, data summary, grants, share state)
-- \`create_page\` — create a page (name, kind, optional projectId, HTML content, refresh schedule)
-- \`update_page\` — change metadata/refresh or replace the HTML content
-- \`write_page_data\` — write to the page's data store (KV + timeseries); open "live" pages update on screen
-- \`delete_page\` — permanent; **confirm with the user first** (published pages are unpublished best-effort)
+- \`list_websites\` / \`get_website\` — discover websites and inspect one (config, content path, data summary, grants, share state)
+- \`create_website\` — create a website (name, kind, optional projectId, HTML content, refresh schedule)
+- \`update_website\` — change metadata/refresh or replace the HTML content
+- \`write_website_data\` — write to the website's data store (KV + timeseries); open "live" websites update on screen
+- \`delete_website\` — permanent; **confirm with the user first** (published websites are unpublished best-effort)
 
-Do NOT create or edit \`pages/{slug}/\` files directly with file tools — always use these tools so digests, watchers, and the UI stay consistent.
+Do NOT create or edit \`websites/{slug}/\` files directly with file tools — always use these tools so digests, watchers, and the UI stay consistent.
 
-**Page kinds:** \`static\` (no JS) · \`interactive\` (JS, user-driven) · \`live\` (JS + receives data snapshot updates while open).
+**Website kinds:** \`static\` (no JS) · \`interactive\` (JS, user-driven) · \`live\` (JS + receives data snapshot updates while open).
 
-**Data model:** each page has a small data store — \`kv\` (key → any JSON value) and named \`series\` (lists of \`{ t: epoch ms, v: number }\` points, ideal for metrics/charts). \`write_page_data\` applies changes transactionally and regenerates \`data/snapshot.json\`, the only artifact the page reads. Scheduled refresh (\`refresh\` spec: cron + workspace-relative Bun script) updates the same store deterministically — no agent session is created for routine refreshes.
+**Data model:** each website has a small data store — \`kv\` (key → any JSON value) and named \`series\` (lists of \`{ t: epoch ms, v: number }\` points, ideal for metrics/charts). \`write_website_data\` applies changes transactionally and regenerates \`data/snapshot.json\`, the only artifact the website reads. Scheduled refresh (\`refresh\` spec: cron + workspace-relative Bun script) updates the same store deterministically — no agent session is created for routine refreshes.
 
-**Authoring page HTML — read \`${DOC_REFS.pages}\` FIRST.** The essentials:
+**Authoring website HTML — read \`${DOC_REFS.websites}\` FIRST.** The essentials:
 - Provide a FULL standalone HTML document with all CSS/JS inline. No external network requests — published copies get all egress blocked, so external scripts/fonts would break them.
-- Receive data via the \`craft-pages/v1\` postMessage bridge: post \`{ protocol: 'craft-pages/v1', type: 'ready' }\` to \`window.parent\`, then handle \`init\` (\`payload.nonce\` + \`payload.snapshot\`) and \`data\` (replacement \`payload.snapshot\`) messages. The doc has a copy-paste snippet.
-- Pages never hold credentials. In-page source actions (e.g. a button calling an API source) go through the bridge and require user-approved, expiring grants bound to the exact content digest — editing content invalidates existing grants.
+- Receive data via the \`craft-websites/v1\` postMessage bridge: post \`{ protocol: 'craft-websites/v1', type: 'ready' }\` to \`window.parent\`, then handle \`init\` (\`payload.nonce\` + \`payload.snapshot\`) and \`data\` (replacement \`payload.snapshot\`) messages. The doc has a copy-paste snippet.
+- Websites never hold credentials. In-page source actions (e.g. a button calling an API source) go through the bridge and require user-approved, expiring grants bound to the exact content digest — editing content invalidates existing grants.
 
-**Sharing:** the user can publish a page from its Share button (feature-flagged) to a password-protectable public URL. Publishing is the user's action — you create and maintain the page.
+**Sharing:** the user can publish a website from its Share button (feature-flagged) to a password-protectable public URL. Publishing is the user's action — you create and maintain the website.
 
 ## Diagrams and Visualization
 
