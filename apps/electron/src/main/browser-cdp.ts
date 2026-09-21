@@ -1054,6 +1054,18 @@ export class BrowserCDP {
   // Caller-supplied init-script key → CDP identifier. Also gates idle detach:
   // CDP drops `addScriptToEvaluateOnNewDocument` registrations on detach.
   private initScriptIds: Map<string, string> = new Map()
+  /**
+   * Whether `Page.enable` has been sent on this session.
+   *
+   * `Page.addScriptToEvaluateOnNewDocument` is answered without it — an identifier
+   * comes back — but a registration made while the domain is **off** is inert: the
+   * script is never run in a document created afterwards (measured on Electron 39:
+   * register, reload, and the flag the script sets is still absent, with the
+   * debugger attached throughout). So the domain is turned on once per session,
+   * before the first registration, and forgotten on detach along with the
+   * registrations it is what makes live.
+   */
+  private pageDomainEnabled = false
   // CDP `Fetch.enable` state plus the mock served while it is on: the routes, and
   // the store they remember between requests (one apply = one run of the flow).
   private fetchMockEnabled = false
@@ -1134,6 +1146,7 @@ export class BrowserCDP {
     }
     // CDP registrations die with the session, so our bookkeeping must too.
     this.initScriptIds.clear()
+    this.pageDomainEnabled = false
     this.fetchMockEnabled = false
     this.fetchMockRoutes = []
     this.fetchMockStore = {}
@@ -1725,9 +1738,12 @@ export class BrowserCDP {
    * script, so re-applying an edited patch is idempotent.
    *
    * While any init script is registered the debugger is held attached, because
-   * CDP drops these registrations when the session detaches.
+   * CDP drops these registrations when the session detaches — and the Page domain
+   * has to be on, or the registration is accepted and then never run
+   * ({@link enablePageDomain}).
    */
   async addInitScript(key: string, source: string): Promise<string> {
+    await this.enablePageDomain()
     await this.removeInitScript(key)
 
     const result = await this.send('Page.addScriptToEvaluateOnNewDocument', { source })
@@ -1756,6 +1772,21 @@ export class BrowserCDP {
   /** Keys of every currently registered init script, in registration order. */
   listInitScriptKeys(): string[] {
     return Array.from(this.initScriptIds.keys())
+  }
+
+  /**
+   * Turn the Page domain on, once per session.
+   *
+   * Without it `Page.addScriptToEvaluateOnNewDocument` is a registration nothing
+   * reads back: the script runs in no document at all, which is indistinguishable
+   * from a patch that changed nothing ({@link pageDomainEnabled} for the
+   * measurement). Done here rather than at attach time so that the domains this
+   * session uses stay the ones its features need.
+   */
+  private async enablePageDomain(): Promise<void> {
+    if (this.pageDomainEnabled) return
+    await this.send('Page.enable')
+    this.pageDomainEnabled = true
   }
 
   // ---------------------------------------------------------------------------

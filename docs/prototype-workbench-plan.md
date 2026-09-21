@@ -379,7 +379,7 @@ node 声明 writes: checkout-ui      ← spec，与 outputs 同层的声明式�
 #### 3.1 持久注入原语
 - `apps/electron/src/main/browser-cdp.ts`：`addInitScript(key, source)` / `removeInitScript(key)` / `listInitScriptKeys()`，底层是 CDP `Page.addScriptToEvaluateOnNewDocument`。
 - **实现形态**：css 与 js **都走 init script**（css 补丁由脚本自己创建/更新 `<style>`），没有 `injectStyle`——注入的 `<style>` 元素不随 reload 保留，init script 会，统一后"reload 重放"只有一条机制。
-- **一处必须的配套**：CDP 的 init script 注册**随 debugger 分离而失效**，所以有注册时不能空闲 detach（`holdsSessionState()` 判据，`detach()` 同步清空键表）。踩坑记录见 [开发文档](prototype-workbench-dev.md) §3.1。
+- **两处必须的配套**（都是会话级状态，缺一条"reload 保留"就静默失效）：① CDP 的 init script 注册**随 debugger 分离而失效**，所以有注册时不能空闲 detach（`holdsSessionState()` 判据，`detach()` 同步清空键表）；② 注册前要**开 Page 域**（`Page.enable`，`enablePageDomain()`）——域关着时 `Page.addScriptToEvaluateOnNewDocument` 照样返回 identifier，但注册是惰性的，新文档里一次都不跑。踩坑记录见 [开发文档](prototype-workbench-dev.md) §3.1。
 - `key` 由调用方指定，重复注册同一 key 会**先移除旧的**（替换语义），所以重放是幂等的。
 
 #### 3.2 patch 索引与重放

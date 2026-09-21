@@ -157,6 +157,8 @@ storage: true        moduleRan: true               ← localStorage 与 <script 
 - **症状**：打上补丁 → 页面刷新 → 什么都没了，没有报错。
 - **根因**：CDP 的 init script 注册（`Page.addScriptToEvaluateOnNewDocument`）**随 debugger 分离而失效**，而 `CDP_IDLE_DETACH_MS = 5s` 空闲即分离——所以"reload 保留"会在 5 秒后静默失效。
 - **修法**：`resetIdleDetachTimer()` 在 `initScriptIds` 非空时直接返回（持有连接），最后一个脚本移除后恢复计时；`detach()` 同步清空键表（CDP 那边也一起没了）。同样的判据后来扩到 `Fetch.enable`（开着 mock 也算持有连接）。
+- **2026-09-21 真窗口实测补正**：上面那条只解释了"5 秒后失效"，**不是**这个症状的全部——真正让"刷新一下什么都没有"的是**Page 域没开**。`Page.addScriptToEvaluateOnNewDocument` 在域关着时**照样返回 identifier**，但那个注册是**惰性的**：新文档里一次都不跑（实测 Electron 39：注册 → reload → 脚本设的标记仍然不存在，debugger 全程 attached、`isAttached()` 为 true）。症状因此长成"**地址栏敲一遍地址能看见补丁**（那条路是显式 apply 的 `evaluate`，作用于当前文档）、**刷新就没了**（只走 init script）"。**修法**：`enablePageDomain()` 在第一次注册前发一次 `Page.enable`，每会话一次；它和注册一样是会话状态，所以 `detach()` 里跟 `initScriptIds` 一起清。补上之后 reload、后续导航、以及重复注册（替换语义）都实测生效。
+- **这条只有真窗口能验**：单元测试用的是假 debugger，只记下调用，"注册返回了"和"脚本真跑了"不在同一个地方——判据是 §5.4 那一行（在真窗口里敲一遍刷新）。
 
 ### 3.2 拾取器被空闲 detach 打断
 
@@ -391,6 +393,7 @@ cd apps/electron && bun run build:renderer
 | 改完即见 | 用外部编辑器改一条补丁 → 该原型**已打开的窗口** 1 秒内自己跟上（我们自己的页刷新、活页面重新打补丁）；连存三个文件只跟上一次 | `usePrototypes` 里的 `prototypeSlugForChangedFile`（路径是不是落在 `patches/`、`assets/`、顶层 `.html`）；`prototypes:replay` 有没有找到那些标签页（它逐窗口读标签列表，找 `tab.prototype.slug === slug` 的**每个标签页**——同一个窗口里两个标签页同一原型也要各重放一次，§22 第十三轮） |
 | 收敛之后效果不变 | 复制一个原型并选「复制并折叠改动」→ 打开**副本**那一页，改动**还在**且和折入前一样；原件与它的补丁文件都还在 | 副本里折进去的文件（`patches/<页名>/Z-00x-upper.*` 或 `assets/<页名>/committed.*`）；Z 是不是真的排在最后（`status` 的补丁清单按重放序列出） |
 | 原型页在无端口地址上打开 | 打开一个页是我们自己的原型 → 地址栏是 `http://<label>.localhost/`，页面带着**这一页**的补丁 | 主进程日志里有没有 `[prototype-host] answering prototypes at …`；handler 是不是装在了 `persist:browser-pane` 上 |
+| **补丁在刷新后仍在（活页面）** | 打开一个 overlay 页的原型（视图停在真实站点）→ 页面带补丁 → **点刷新** → 补丁还在；再点一个站内链接 → 也在（持久注入不是一次性动作）。我们自己的页不走这条路：它每次请求都由宿主按盘重渲染（§16.6） | `addInitScript` 有没有开 Page 域（`enablePageDomain`）——域关着时注册照样返回 identifier 而新文档里不跑（§3.1）；日志里有没有 `[browser-cdp] idle detach`（那说明注册已经丢了） |
 | 页名与入口在真窗口里对得上 | 开根地址 → 落在入口页；没配入口时落在**页索引**，点一页进得去；`snapshot` 的 `Prototype:` 行带 `page "<名字>"` | `status` 的 `pages:` / `root:` 两行；`matchPrototypePage` 认不认得出窗口的真实 URL（overlay 的跳转、SPA 路由都算） |
 | 地址栏写着"哪一页"，而且敲得回去 | 在一个 overlay 页上（视图停在真实站点）→ 地址栏是 `http://<label>.localhost/<页名>`；把它敲一遍回车 → 回到**同一页**（不是入口页），地址栏照旧 | `main/index.ts` 注入的 `pageOfPrototypeUrl`（认地址）与 `pageResolver`（认窗口在哪一页）；页名对不上时只写原型域名 |
 | 敲普通网址 = 交出这个标签页 | 从原型打开的窗口里敲 `https://example.com` 回车 → 地址栏写目标地址，标签栏那一行不再标原型/页名，「应用补丁」变灰；按 Back 回来仍然如此（粘性）。敲自己域名上的 `/dist/…` 或某一页的真实地址 → 标签页还是它的 | `browser-toolbar:navigate` 处理器里那一段（`prototypeReleased`）；`__tests__/browser-pane-manager.test.ts` 的「gives the tab up…」「keeps the tab…」 |
