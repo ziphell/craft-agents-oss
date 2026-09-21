@@ -1863,7 +1863,7 @@
   "websites.deleteWebsite": "删除网站",
   "websites.designWithAgent": "让智能体设计",
   "websites.designWithAgentPrompt": "请设计网站「{{name}}」（slug：{{slug}}）。它已存在于我的工作区但还没有内容——请按照 Websites 编写指南，用 update_website 为它编写 index.html。",
-  "websites.emptyDescription": "网站是工作区里的一个 HTML 文件，里面可以放多个页面：仪表盘、报告、小工具都行。让智能体创建一个，或从空白网站开始。",
+  "websites.emptyDescription": "网站是工作区里的一个 HTML 文件，里面可以做多个视图：仪表盘、报告、小工具都行。让智能体创建一个，或从空白网站开始。",
   "websites.emptyTitle": "还没有网站",
   "websites.grants.apiAction": "对 {{source}} 的 {{method}}“{{path}}”",
   "websites.grants.approve": "允许",

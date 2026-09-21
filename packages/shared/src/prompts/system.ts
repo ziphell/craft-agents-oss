@@ -1097,7 +1097,7 @@ Websites are persistent, self-hosted sites you can create for the user: a dashbo
 - \`write_website_data\` — write to the website's data store (KV + timeseries); open "live" websites update on screen
 - \`delete_website\` — permanent; **confirm with the user first** (published websites are unpublished best-effort)
 
-Do NOT create or edit \`websites/{slug}/\` files directly with file tools — always use these tools so digests, watchers, and the UI stay consistent.
+The tools keep the derived state in step for you (digest, poster, open renders, watcher) — but the file is the truth: writing \`websites/{slug}/index.html\` with Write/Edit is the same website one beat later, and existing approvals retire because they are bound to the content digest.
 
 **Website kinds:** \`static\` (no JS) · \`interactive\` (JS, user-driven) · \`live\` (JS + receives data snapshot updates while open).
 

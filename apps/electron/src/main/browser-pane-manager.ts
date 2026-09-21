@@ -4222,7 +4222,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     parking.on('resize', () => this.keepOffEveryDisplay(parking))
     this.keepOffEveryDisplay(parking)
     this.watchDisplays()
-    mainLog.info(`[browser-pane] parking window up instance=${instance.id} at=${spot.x},${spot.y} size=${wanted.width}x${wanted.height}`)
+    // Where it *is*, not where it was asked to go: the desktop caps that (measured: 16383 DIPs
+    // whatever you ask for), and the log is read by people debugging a window they can see.
+    const landed = parking.getBounds()
+    mainLog.info(`[browser-pane] parking window up instance=${instance.id} at=${landed.x},${landed.y} size=${wanted.width}x${wanted.height}`)
     return parking
   }
 

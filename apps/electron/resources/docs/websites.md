@@ -63,9 +63,10 @@ Series are ascending by `t`, capped at the newest 1000 points per series. The st
 
 Rules that make websites work everywhere (local sandbox AND published copies):
 
-1. **One full standalone HTML document.** Inline ALL CSS and JS. No external requests of any kind — published copies are served with `connect-src 'none'` (all network egress blocked), so CDN scripts, fonts, or fetch() calls would break them. Render charts with inline SVG/canvas you draw yourself. Several screens are welcome inside that one document (show and hide them in JS); what does not work is a second file — the website is one address, so links to other documents go nowhere.
+1. **One full standalone HTML document.** Inline ALL CSS and JS. No external requests of any kind — published copies are served with `connect-src 'none'` (all network egress blocked), so CDN scripts, fonts, or fetch() calls would break them. Render charts with inline SVG/canvas you draw yourself.
 2. **Data arrives via the bridge, not fetch.** The host injects the data snapshot through `postMessage`; `live` websites get replacement snapshots automatically whenever the data changes.
 3. **The iframe is opaque-origin** (`sandbox` without `allow-same-origin`): no cookies, no localStorage, no parent DOM access. Keep state in JS variables.
+4. **Nothing navigates.** Views inside the one document are welcome — switch them in JS, or with `location.hash`, which is the only URL facility this sandbox keeps (`history.pushState` / `replaceState` throw here, so a History-API router fails on load). There is no second address and no link to another file, and the share link has no fragment, so it always opens the file's initial state — a view worth sharing has to be reachable from a hash on load.
 
 ### Bridge snippet (copy-paste)
 
