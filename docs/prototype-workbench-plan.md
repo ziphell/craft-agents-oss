@@ -2577,7 +2577,8 @@ overlay 的页面是别人的活地址，它不会、也不该变成我们的文
 
 1. **放得远**：`OFFSCREEN_PARK_MARGIN = 20_000`（原 400）。但**桌面会钳**：要 20 000 / 100 000 / 1 000 000，实测都回到 **16 383**（DIPs）；而那么远处的 view 视口照旧（`innerWidth: 900`）、截图照旧（`background-viewport.ts` section G）。所以这只是一个**请求**。
 2. **关系要有人守着**（真正的保证）："不在任何显示器上"是**关系**——显示器会变，桌面还会"好心"把判定成够不着的窗口搬回屏幕。`keepOffEveryDisplay` 因此在三种时刻核对窗口**实际** bounds（创建之后、窗口的 `move`/`resize`、以及 `screen` 的 `display-added`/`display-removed`/`display-metrics-changed`），一旦与任一显示器相交就挪回去；挪不动的记进 `parkingStuck` 不再反复试（否则每个 `move` 事件来回弹）。实测（phase 11）：停车窗落在 **(16383,0)**；把它按桌面的方式挪到 (0,0) 之后，**600ms 内自己回到 (16383,0)**、`backOffEveryDisplay: true`、里面那个标签页的视口仍是 993、内容仍在。
-3. 单测：测试替身里的 `screen` 现在**真的派发**显示器事件——"插一块把停车点盖住的屏"→ 它挪开；"把窗口挪到 (0,0)"→ 它挪回去；`destroyAll()` 退订。
+3. **"被显示"也是关系**（同一族，用户追问"最小化会把后台停车窗口最小化吗"时补的）：停车窗**必须一直处于显示状态**，因为没被显示的窗口里的 view 会连视口一起丢掉（section E）。实测两件事：**最小化人自己的窗口不会波及它**（两扇独立顶层窗、无 owner：人的窗口 `isMinimized: true` / `contentSize [0,0]` 的同时，停车窗 `isMinimized: false`、`isVisible: true`、仍在 (16383,0)、里面那个标签页 16–17 帧/500ms、`document.hidden: false`、`innerWidth: 993`、**原地截图仍给出 1986×1690**）；但**反过来没人守**——于是 `parking.on('minimize'|'hide')` → `keepShowing`（`restore()` + `showInactive()` + 再核一遍离屏）。实测：强行 `minimize()` 停车窗后它自己回来（`isMinimized: false`、`isVisible: true`、仍在 (16383,0)），标签页视口仍是 993。两条断言进了 spike。
+4. 单测：测试替身里的 `screen` 现在**真的派发**显示器事件——"插一块把停车点盖住的屏"→ 它挪开；"把窗口挪到 (0,0)"→ 它挪回去；"停车窗被最小化/隐藏"→ 它回来；`destroyAll()` 退订。
 
 **一个连带的好处**：停车窗是显示着的，后台标签页因此**有 surface**，截图不必再挪一次 —— phase 1 的 "behind it" 那行从 `parked: true` 变成 `parked: false`（69ms）。`captureWhileParked` 仍是隐藏窗口与"从没被合成过的 view"的路径（phase 1c 三行照旧：未被显示的窗口没有 surface、显示过的有、交回未显示窗口后又没有）。
 
@@ -2588,6 +2589,54 @@ overlay 的页面是别人的活地址，它不会、也不该变成我们的文
 **没采用**：`Emulation.setDeviceMetricsOverride`（量到 override 期间窗口 resize 不产生 `innerWidth` 变化）—— 几何自身就是开关，不必再加一层页面级状态。
 
 - 验收：`browser-pane-manager.test.ts` 的「keeps a tab that is not on screen out of the window, at the size it was opened at」（停车窗持有、人的窗口不持有、resize 不碰它、切到前台才给窗口尺寸）、「keeps a background tab's navigation on itself」、「shoots a tab that has never been composited…」（交回停车窗）；真 Electron 读数在 `spike/screenshot-e2e.ts` phase 11 与 `spike/background-viewport.ts`（E1/E2 两个状态分开量）。
+
+**第十八轮（最小化的窗口不该产生几何：193×93 的来源）**：
+
+> 用户报："怎么用着用着浏览器窗口会变成一个很小的值 193×93。切换标签界面又恢复了。"
+
+**量到的**（`screenshot-e2e.ts` phase 1 的窗口状态那一段，这台机器）：
+
+- **193×93 不是谁设的，是算出来的**：`tabAreaBounds` 的 `Math.max(200, width - 200)` 与 `Math.max(100, height - 48)`，再减去面板内边距 1/6 → 193×93。也就是窗口内容尺寸被读成了 **0×0**。
+- **谁报 0×0**：**被最小化的窗口**（Windows，`getContentSize()` → `[0, 0]`、`isMinimized()` true）。顺带否掉一条：**隐藏**的窗口照旧报 `1200×900`，所以不是 `hide()` 这条路径 —— 两者不能混。
+- **于是就成了**：最小化那一刻窗口的 `resize` 触发一次布局 → 193×93 被写进页面 view → **窗口恢复后它还在**（实测：窗口 1200×900，页面 `innerWidth` **193**）→ 直到下一次布局（对用户来说就是"切换标签"）才修好。用户看到的"变小 + 切标签恢复"就是这个。
+
+**改法**（一条判据、三个调用点、一个事件）：
+
+- `windowHasSize(instance)`：窗口被销毁、**被最小化**、或内容尺寸非正 → **没有可交付的几何**。
+- `layoutTabView`：没有尺寸就**直接返回**——谁都不动（屏幕上那个保持原尺寸，停车窗里的照旧按自己的视口）。
+- `updateNativeOverlayState`：同样返回（overlay 也是按 tab area 量的，也会被编成 193×93）。
+- `captureWhileParked` 交回屏幕上那个标签页时：窗口没有尺寸就交回**它自己的** viewport，而不是 `pageAreaBounds`。
+- 窗口的 `restore`/`maximize`/`unmaximize` → `layoutAllViews`：**回来这件事必须自己布局一次**（实测：单靠恢复并不会布局，这正是页面卡在 193 的原因；用户只能靠切标签触发）。
+
+**实测（修后）**：最小化期间 `pageAreaBounds` 仍然"会"给出 193×93（那是算术，不打算改），但**一次布局不再动页面**（仍是 993×845、`innerWidth` 993）；`restore()` 之后窗口 1200×900、页面 **993×845**（正是 page area）。两条断言进 spike：最小化时的布局不许把页面改成窗口没有过的尺寸、回来后页面必须拿回窗口的尺寸。
+
+- 验收：`browser-pane-manager.test.ts` 的「lays nothing out from a window that has no size, and lays out again when it comes back」；真 Electron 读数在 `spike/screenshot-e2e.ts` 的 `SPIKE_STEP minimized window`。
+
+**第十九轮（terminate 要逐页关：销毁窗口不会关掉 `WebContentsView` 的页面）**：
+
+> 起于一问："terminate 浏览器窗口，是否正确销毁这个窗口所有标签页的停车窗？" 以及一句纠正："销毁停车窗，应该是销毁 webcontent 的副作用，不应该先作用于停车窗。"
+
+**量到的**（`screenshot-e2e.ts` phase 12，按 **id** 钉住这个窗口的全部渲染器）：
+
+- terminate 之后：窗口数回到基线（**没有**窗口被留下）、停车窗 `isDestroyed: true`、chrome 的三个面（toolbar 123 / rail 124 / overlay 125）都已关闭 —— 但**两个页面都还在跑**（前台 126、停车窗里的 127），且 2.5s 后仍在、手动 `close()` 能关掉（说明是活渲染器，不是残影）。
+- 差别在**视图类型**：chrome 用的是 `BrowserView`（窗口自己拥有，随窗口一起关），标签页用的是 `WebContentsView`（**销毁窗口并不关掉它的 webContents**）。
+- 后果是系统性的：同一串"建了又销毁"的实例，webContents 基线从 **45**（修前）降到 **17**（修后）——之前**每个**被销毁的浏览器窗口都漏掉它所有标签页的页面。
+- 另一个细节：`close()` 之后 `view.webContents` 变成 **`undefined`**（不是"destroyed 的同一个对象"），所以清理代码不能盲读它。
+
+**改法**（顺序即用户说的那条）：`finalizeDestroyedInstance` 里**先逐个关闭每个标签页的页面**（`tab.tabView.webContents?.close()`，带 `clearInPageThemeTimer`），**停车窗的销毁是后果**——它已经什么都不装了。两条销毁路径（`destroyInstance`、人的窗口 `closed`、以及过期实例清理）都汇到这里，所以一处改全库生效。
+
+- 实测（phase 12）：terminate 后那个窗口的 5 个渲染器**一个都不剩**，停车窗也没留下；断言写成按 id 的"还活着吗"，而不是视图上的 flag。
+- 验收：`browser-pane-manager.test.ts` 的「closes every tab's page when the window goes, the parked ones included」——它钉的是**顺序**：屏幕上那个页面 → 停车窗里的页面 → 停车窗（"现在空了"）。
+
+**第二十轮（清理基线：一条真 bug + 四条过时用例）**：
+
+> 起于一问："5 条既有失败是什么"，以及一句"清理下"。
+
+**那条真 bug**：`destroyInstance` 给自己的清理步骤都套了兜（`runCleanup`），但 `finalizeDestroyedInstance` 里**又裸调一次** `updateNativeOverlayState`——它一抛错，后面的"逐页关闭 → 销毁停车窗 → `instances.delete` → `removedCallback`"全被跳过：窗口没了，实例还在表里，调用方继续看到一个不存在的窗口。改法是给最终化函数一个局部 `step(label, action)`（每个会失败的动作都走它），而 `instances.delete` 与 `removedCallback` 放在**无条件路径**上。**一个实例离开 `instances` 是承诺，不是动作。**
+
+**四条过时用例**（都是契约搬走了，不是产品错了）：显示时机从窗口的 `ready-to-show` 改到**地址栏真的载入完**（`markToolbarReady`）；地址栏与标签栏各是 `BrowserView`，所以数窗口 webContents 只能数到 0；测试的失败旋钮 `toolbarLoadFailuresRemaining` 被**标签栏**（加载同一个 `browser-toolbar.html`，只是 `view=rail`）分吃掉，导致期望值本身说不清。用例改走真契约（`finishLoadingTheBar`）、数 `instance.toolbarView.webContents`，旋钮按 `view=bar` 钉在地址栏上。
+
+- 实测：`cd apps/electron && bun test src/main/__tests__/browser-pane-manager.test.ts` → **162 pass / 0 fail**；全量 `1183 pass / 4 fail`（只剩 `use-working-directory-state` 那 4 条 Windows 路径类的既有失败，与窗口无关）。`bun run typecheck:electron` 干净。
 
 **下一轮**：**面板按会话分组**：徽章那一列现在按窗口分组，但没有说"哪个会话在用这个窗口"。
 

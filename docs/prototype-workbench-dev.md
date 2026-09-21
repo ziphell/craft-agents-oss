@@ -294,6 +294,46 @@ storage: true        moduleRan: true               ← localStorage 与 <script 
 - **修法**：spike 里**不要中途销毁**——把窗口收进一个数组，全部跑完再一起 `destroy()`。（报错归错人这件事在应用侧也一样：看到 `loadURL` 失败，先确认它是不是被别人的导航/销毁顶掉的。）
 - **教训**：`ERR_FAILED (-2)` 与 URL 对不上上下文时，先怀疑"是谁在同时拆东西"，不要怀疑 URL。
 
+### 3.24 兜底值会把"没有尺寸"伪装成一个尺寸（页面变成 193×93）
+
+- **症状**：用着用着，浏览器窗口里的页面变成一个很小的方块 —— 具体是 **193×93**；**切换标签就恢复**。
+- **根因**：`tabAreaBounds` 用 `Math.max(200, width - TAB_RAIL_WIDTH)`、`Math.max(100, height - TOOLBAR_HEIGHT)` 防负值；而**被最小化的窗口在 Windows 上 `getContentSize()` 报 0×0**（实测；**隐藏**的窗口照旧报真实尺寸，两者不能混）。于是这个兜底把 0×0 产成 200-7 × 100-7 = **193×93** —— 一个"看着像尺寸"的数字。最小化那一刻窗口的 `resize` 触发一次布局，把这个尺寸写进了页面的 view；而**恢复窗口不会再触发一次布局**，所以页面停在 193×93，直到下一次布局（用户能做的最近一件事就是切标签）。
+- **修法**：`windowHasSize(instance)`（销毁 / 最小化 / 内容尺寸非正 → 没有几何可交付），挡住"从没有尺寸的窗口布局"——`layoutTabView`、`updateNativeOverlayState`，以及 `captureWhileParked` 交回屏幕上那个标签页时（改交回它自己的 viewport）；并给窗口的 `restore` / `maximize` / `unmaximize` 加一次 `layoutAllViews`（回来这件事必须自己布局）。
+- **教训**：**clamp / max / min 这类兜底会把"输入不可信"变成"输出看着合理"**，比直接报错更难发现（0×0 一眼就知道坏了，193×93 不会）。凡是几何，先问一句"这个窗口现在有尺寸吗"。测量见实施方案 §22 第十八轮。
+- **验收**：`browser-pane-manager.test.ts` 的「lays nothing out from a window that has no size, and lays out again when it comes back」；真机看 `SPIKE_STEP minimized window`（`apps/electron/spike/screenshot-e2e.ts`）。
+
+### 3.25 停车窗的两条"关系"都要有人守：不在显示器上、并且一直"被显示"
+
+- **症状（潜在）**：停车窗被挪到屏幕上（显示器一变就露出来，用户已遇到），或者停车窗自己**被最小化/隐藏**（shell 级的"最小化所有窗口"、或我们自己一次 `hide()`）——后者更隐蔽：里面的 view 会连**视口**一起丢掉（`innerWidth` 0、CDP 输入落空），截图与"冻结"随之失效。
+- **根因**：把窗口放到屏幕外、`showInactive()` 各只有一次，是**动作**；而这两件事都是**关系**——显示器会变、桌面会把够不着的窗口搬回来、别的东西会最小化它。应用侧还实测到一条有用的边界：**最小化人自己的窗口不会波及停车窗**（两扇独立顶层窗、无 owner）。
+- **修法**：`keepOffEveryDisplay`（创建后、`move`/`resize`、`display-added`/`display-removed`/`display-metrics-changed` 三种时刻核对实际 bounds；挪不动就记 `parkingStuck` 停止反复试）+ `keepShowing`（`minimize`/`hide` 时 `restore()` + `showInactive()` 再来一遍）。两者都只在真正需要时才动手。
+- **教训**：凡是"某扇窗必须处于某个状态"（离屏、可见、置顶…），都要问一句**谁来维持它**；一次性设置必然会被环境改掉。
+- **验收**：`browser-pane-manager.test.ts` 的「keeps a window nobody may see off every display, through screen changes and being moved onto one」（显示器变化 / 被挪到 (0,0) / 被最小化 / 被隐藏）；真机 `SPIKE_STEP minimized window` 与 `background-viewport.ts` section E。
+
+### 3.26 terminate 窗口漏页面：销毁窗口**不会**关掉 `WebContentsView` 的 webContents
+
+- **症状**：terminate 一个浏览器窗口后，窗口和它的停车窗都没了，但**标签页的页面还在跑**（前台那个、以及停在停车窗里的那个），进程/内存不回收；反复开关窗口越积越多。
+- **根因**：**视图类型不同，销毁语义不同**。chrome 用的是 `BrowserView`（窗口自己拥有，随窗口一起关）；标签页用的是 `WebContentsView`，**销毁承载它的窗口并不会关掉它的 webContents**（实测：`destroyInstance` 后窗口数回基线、停车窗 `isDestroyed: true`、三个 chrome 面都关了，但两个页面 2.5s 后仍在 `webContents.getAllWebContents()` 里，且手动 `close()` 能关掉 —— 活渲染器，不是残影）。修前 vs 修后，同一串"建了又销毁"的实例，webContents 基线 **45 → 17**。
+- **修法**：在 `finalizeDestroyedInstance` 里**逐页关闭**（`clearInPageThemeTimer` + `tab.tabView.webContents?.close()`），**再**销毁停车窗——停车窗的销毁是"它已经空了"的后果，不是手段；所有销毁路径（`destroyInstance`、窗口 `closed`、过期实例清理）都汇到这里。
+- **教训**：①"销毁容器 = 销毁内容"要**按类型核对**，别假设；②`webContents.close()` 之后 `view.webContents` 是 **`undefined`**（不是 destroyed 的同一个对象），清理代码不能盲读；③验证"有没有泄漏"要**按 id 核对 `webContents.getAllWebContents()`**，不要读视图上的 flag（那条 flag 在页面已经消失后仍可能说 `false`）。
+- **验收**：`browser-pane-manager.test.ts` 的「closes every tab's page when the window goes, the parked ones included」（钉的是顺序：屏幕上的页面 → 停车窗里的页面 → 停车窗）；真机 `SPIKE_STEP terminate`（`apps/electron/spike/screenshot-e2e.ts` phase 12）。
+
+### 3.27 善后代码自己也会被抛错打断：实例必须无条件离开 `instances`
+
+- **症状**：`still destroys instance when cleanup throws`（很早就写下的用例）一直红。它把 `updateNativeOverlayState` 换成会抛错的 mock，要求实例照样离场。
+- **根因**：`destroyInstance` 给自己的清理步骤都套了 `runCleanup`，但 `finalizeDestroyedInstance` 里**又调了一次** `updateNativeOverlayState`，而且是裸调——异常直接穿出 `finally`，后面的"逐页关闭 → 销毁停车窗 → `instances.delete` → `removedCallback`"**全部被跳过**。表现是：窗口已经没了，实例还留在表里（调用方继续看到一个不存在的窗口），`removedCallback` 不响，页面与停车窗都留在原地。
+- **修法**：`finalizeDestroyedInstance` 里放一个局部 `step(label, action)`（try/catch + warn 日志），**每个**可能失败的动作都走它（overlay、CDP detach、逐页 close、停车窗 destroy）；`instances.delete` 与 `removedCallback` 放在这些之后、**无条件**执行。
+- **教训**：①"这一步已经包了 try/catch"要看**调用点有几个**——同一个动作从两处被调用、只有一处有兜，等于没兜；②最终化函数的硬承诺要写在**无条件路径**上（不在 `try` 里、也不在 `if` 里）；③"哪个依赖坏了会怎样"值得专门 mock 一条用例，但红着的用例要能说清它是**真 bug** 还是**测试过时**（§5.2、§3.28），否则真 bug 会一直在"已知失败"里躺着。
+- **验收**：`browser-pane-manager.test.ts` 的「still destroys instance when cleanup throws」（不抛 + `window.destroy` 恰好一次 + `listInstances()` 为空）。
+
+### 3.28 四条过时用例：契约搬走了，断言还停在旧事件上
+
+- **症状**：`focus brings the instance window to front`、`dedupes repeated focus calls before ready-to-show`、`retries toolbar load and recovers`、`loads toolbar fallback page after retry exhaustion` 一直红，但四条都**不是**产品的错。
+- **三处真变化**：① 窗口的显示时机从**窗口**的 `ready-to-show` 挪到**地址栏真的载入完**（`markToolbarReady`）——没有地址栏的窗口不值得先显示出来，于是那个事件已经什么都不驱动；② 地址栏与标签栏不再是窗口 webContents 里的文档，而是各自一个 `BrowserView`——`createdWindows[0].webContents` 永远看不到那些 `loadFile`/`loadURL`，只能数到 0；③ 测试的失败旋钮 `toolbarLoadFailuresRemaining` 本意只作用于地址栏，可**标签栏加载的是同一个 `browser-toolbar.html`**（`view=rail`），谁先调用谁吃掉失败，最后连期望的 3 / 5 到底该算哪一面都说不清。
+- **修法**：用例走真契约——`finishLoadingTheBar(instance)`（把地址栏 `getURL` 指向 `browser-toolbar.html` 再 `_emit('did-finish-load')`）；计数改成数 `instance.toolbarView.webContents`；mock 按 `view=bar` / `opts.query.view === 'bar'` 认面，把旋钮钉在地址栏上。
+- **教训**：①"测试红了"先问**契约是不是搬走了**，不要直接改断言去迁就现状（那会把真 bug 一起固化）；②mock 里的"全局开关"会**跨面泄漏**，开关必须钉在它真正针对的那一个东西上；③`cancels deferred focus when hide happens first` 原来也发 `ready-to-show`（空转，只是"恰好绿"），一并改到地址栏就绪后，它才真的在测"hide 取消待显示"。
+- **验收**：`cd apps/electron && bun test src/main/__tests__/browser-pane-manager.test.ts` → **162 pass / 0 fail**。
+
 ---
 
 ## 4. 已删除的机制（墓园）
@@ -354,8 +394,8 @@ cd apps/electron && bun run build:renderer
 - **`routing.test.ts` 那两条已经绿了**（实测 `cd packages/shared && bun test src/protocol` 全过）：`prototypes:replay` / `setPages` 已经补进分类（§3.7；`prototypes:commit` 随折叠改到复制上整条删掉，`setProject` 随 §15.1.4 删掉了）。但**加通道时仍然要同时改注册表与 routing**，否则这两条会立刻红。
 - **typecheck 这条线已经干净**：页的归属改名（`BrowserTabSummary.belongsTo: TabBelongsTo`、`BrowserCapabilityRequest.work`、`assignTab(instanceId, tabId, to, by)`）早已完成，`packages/shared/src/tasks/outputs.ts` 那处 `ParsedOutputs.problems` 也已修，实测 `bun run typecheck:shared` 无报错。（`outputs.ts` 仍是**未跟踪**文件——判断自己有没有引入类型错误时，按包单独跑 `bun run tsc --noEmit` 比 `typecheck:all` 更快定位。）
 - **"哪一段"只有一处定义**：`tabSectionOf`（`packages/shared/src/protocol/dto.ts`——`person` / `session:<id>` / `task:<slug>`）。rail 与徽章画段读它，主进程决定"关掉一个标签页之后谁接替"也读它。**别在 rail 之外再写一遍"按会话/任务分段"**：画出来的段与交接用的段一旦不一致，表现是"接替跳到了别的分组"，从现象看不出是哪一边错。它是 `sameWork` 的粗版（任务的不同节点算同一段），所以**不能当权限判据用**，reach 只认 `sameWork`。
-- `apps/electron` 的 `browser-pane-manager.test.ts`：源码树里 **5 个**窗口生命周期用例失败（`focus brings the instance window to front`、`dedupes repeated focus calls before ready-to-show`、`still destroys instance when cleanup throws`、`retries toolbar load and recovers`、`loads toolbar fallback page after retry exhaustion`）。都是 `window.show()` / 工具栏加载一类 mock 断言，与原型逻辑无关。（`destroys child popups…` 曾在这份名单里：它是 CDP mock 缺 overlay 方法导致的 `teardownOverlay is not a function`，补上 mock 后已绿；element picker 那批用例的失败来自旧桩名 `armPicker`/`cancelPicker`，同期改成 `armOverlay`/`teardownOverlay` 后也绿了。）
-- 同一次全量跑里还有 **4 个路径相关**的失败：`use-working-directory-state.test.ts` 的 `deriveSortedRecent` 1 条与 `deriveSelectionFlags` 3 条（自定义目录 / `folderName` 回退）。它们在 renderer 的工作目录状态里，按 basename 判路径——**Windows 上本机既有**，与浏览器窗口无关（最近一次全量：1116 pass / 9 fail = 上面 5 + 这 4）。
+- `apps/electron` 的 `browser-pane-manager.test.ts`：源码树里**已 0 失败**（162 pass，2026-09-21 实测）。曾经挂着的 5 条窗口生命周期用例已清理：`focus brings the instance window to front`、`dedupes repeated focus calls before the bar has loaded`、`retries toolbar load and recovers`、`loads toolbar fallback page after retry exhaustion` 是**契约搬走了**（显示时机改到 `markToolbarReady`、地址栏/标签栏各是 `BrowserView`，§3.28）；`still destroys instance when cleanup throws` 是**真 bug**（`finalizeDestroyedInstance` 的清理步骤没有兜，§3.27）。（`destroys child popups…` 曾在这份名单里：它是 CDP mock 缺 overlay 方法导致的 `teardownOverlay is not a function`，补上 mock 后已绿；element picker 那批用例的失败来自旧桩名 `armPicker`/`cancelPicker`，同期改成 `armOverlay`/`teardownOverlay` 后也绿了。）
+- 同一次全量跑里还有 **4 个路径相关**的失败：`use-working-directory-state.test.ts` 的 `deriveSortedRecent` 1 条与 `deriveSelectionFlags` 3 条（自定义目录 / `folderName` 回退）。它们在 renderer 的工作目录状态里，按 basename 判路径——**Windows 上本机既有**，与浏览器窗口无关（最近一次全量：1183 pass / 4 fail = 只剩这 4 条）。
 - **测试路径会连带跑 `release/win-unpacked/resources/app/...` 下的旧副本**：`bun test <路径>` 会把打包目录里那份同名测试也收进来，于是失败数与通过数**翻倍**；而且那份旧拷贝会多出 2 个**源码树里已经通过**的失败（`replays toolbar state with theme color when window is shown`、`replays full toolbar state when toolbar renderer finishes loading`）。判断"是不是我引入的"时先排除这些重复项。
 
 ### 5.3 测试落点

@@ -44,7 +44,7 @@
  *     --outfile=apps/electron/spike/screenshot-e2e.cjs
  *   node_modules/electron/dist/electron.exe apps/electron/spike/screenshot-e2e.cjs
  */
-import { app, BrowserWindow, WebContentsView, nativeImage, screen } from 'electron'
+import { app, BrowserWindow, WebContentsView, nativeImage, screen, webContents } from 'electron'
 import { execFileSync } from 'node:child_process'
 import { BrowserPaneManager } from '../src/main/browser-pane-manager'
 
@@ -113,6 +113,16 @@ async function withTimeout<T>(work: Promise<T>): Promise<T> {
   if (timer) clearTimeout(timer)
   if (outcome === timedOut) throw new Error(`screenshot did not come back within ${TIMEOUT_MS}ms`)
   return outcome as T
+}
+
+/**
+ * Frames a page produced in half a second, counted from inside it — so it works on a page that has no
+ * counter of its own (the phase 1 pages), and answers with what the page itself can see.
+ */
+async function framesInHalfASecond(tab: any): Promise<number> {
+  return tab.tabView.webContents.executeJavaScript(
+    'new Promise((done) => { let frames = 0; const tick = () => { frames++; requestAnimationFrame(tick) }; requestAnimationFrame(tick); setTimeout(() => done(frames), 500) })',
+  )
 }
 
 /**
@@ -245,10 +255,134 @@ app.whenReady().then(async () => {
         console.log(`SPIKE_STEP ${windowState.padEnd(7)} window → ${String(row.tab).padEnd(20)} ${JSON.stringify(row)}`)
       }
 
+      // A window the person minimized: what does it report about itself, and what would a layout run
+      // at that moment write into the page? Reported: "怎么用着用着浏览器窗口会变成一个很小的值
+      // 193×93。切换标签界面又恢复了" — 193×93 is what `pageAreaBounds` makes of a window that
+      // reports no size (the floors in `tabAreaBounds`: 200-7 by 100-7).
+      if (windowState === 'visible') {
+        const screenTab = stateInstance.tabs.find((tab: any) => tab.id === onScreenTab)
+        const parkedTab = stateInstance.tabs.find((tab: any) => tab.id === behindTab)
+        const before = screenTab.tabView.getBounds()
+        // The parking window and the tab in it, before anything is minimized: what a parked tab is
+        // worth is whether it keeps its surface and its viewport while the person's window is away.
+        const parkedBefore = {
+          window: {
+            isMinimized: stateInstance.parkingWindow?.isMinimized(),
+            isVisible: stateInstance.parkingWindow?.isVisible(),
+            at: stateInstance.parkingWindow?.getPosition(),
+          },
+          tab: {
+            framesPer500ms: await framesInHalfASecond(parkedTab),
+            hidden: await parkedTab.tabView.webContents.executeJavaScript('document.hidden'),
+            innerWidth: await parkedTab.tabView.webContents.executeJavaScript('window.innerWidth'),
+          },
+        }
+        stateInstance.window.minimize()
+        await sleep(900)
+        const whileMinimized = {
+          contentSize: stateInstance.window.getContentSize(),
+          isMinimized: stateInstance.window.isMinimized(),
+          isVisible: stateInstance.window.isVisible(),
+          thePageAreaItWouldGive: (manager as any).pageAreaBounds(stateInstance),
+          // Does minimizing the person's window reach the parking window (a window of ours they never
+          // see)? They are separate top-level windows, so it should not — and if it did, the parked
+          // tabs would lose the surface the freeze is built on.
+          theParkingWindow: {
+            isMinimized: stateInstance.parkingWindow?.isMinimized(),
+            isVisible: stateInstance.parkingWindow?.isVisible(),
+            at: stateInstance.parkingWindow?.getPosition(),
+            isFocused: stateInstance.parkingWindow?.isFocused(),
+          },
+          theParkedTab: {
+            framesPer500ms: await framesInHalfASecond(parkedTab),
+            hidden: await parkedTab.tabView.webContents.executeJavaScript('document.hidden'),
+            innerWidth: await parkedTab.tabView.webContents.executeJavaScript('window.innerWidth'),
+            shotInPlace: await (async () => {
+              try {
+                return await Promise.race([
+                  parkedTab.tabView.webContents.capturePage().then((image) => `${image.getSize().width}×${image.getSize().height}`),
+                  sleep(1200).then(() => 'no answer within 1200ms'),
+                ])
+              } catch (error) {
+                return `refused: ${error instanceof Error ? error.message : String(error)}`
+              }
+            })(),
+          },
+        }
+        // A layout while minimized — anything that lays out (a tab switch, a shot's hand-back, the
+        // window's own resize) used to write that made-up size into the page's view.
+        ;(manager as any).layoutAllViews(stateInstance)
+        await sleep(200)
+        const afterALayoutWhileMinimized = {
+          theTabOnScreenWasLeftAt: screenTab.tabView.getBounds(),
+          theTabOnScreensInnerWidth: await screenTab.tabView.webContents.executeJavaScript('window.innerWidth'),
+        }
+        // …and the parking window itself, minimized the way a shell-wide "minimize everything" would:
+        // it has to come back, or the tab inside it stops having a viewport at all.
+        stateInstance.parkingWindow?.minimize()
+        await sleep(700)
+        const afterMinimizingTheParkingWindow = {
+          isMinimized: stateInstance.parkingWindow?.isMinimized(),
+          isVisible: stateInstance.parkingWindow?.isVisible(),
+          at: stateInstance.parkingWindow?.getPosition(),
+          theParkedTabInnerWidth: await parkedTab.tabView.webContents.executeJavaScript('window.innerWidth'),
+        }
+        stateInstance.window.restore()
+        await sleep(900)
+        const afterRestore = {
+          contentSize: stateInstance.window.getContentSize(),
+          theTabOnScreenIsAt: screenTab.tabView.getBounds(),
+          theTabOnScreensInnerWidth: await screenTab.tabView.webContents.executeJavaScript('window.innerWidth'),
+          thePageAreaItWouldGive: (manager as any).pageAreaBounds(stateInstance),
+          theParkingWindowIsMinimized: stateInstance.parkingWindow?.isMinimized(),
+          theParkedTabInnerWidth: await parkedTab.tabView.webContents.executeJavaScript('window.innerWidth'),
+        }
+        console.log('SPIKE_STEP minimized window ' + JSON.stringify({ before, parkedBefore, whileMinimized, afterALayoutWhileMinimized, afterMinimizingTheParkingWindow, afterRestore }))
+
+        // The parking window is the one thing that must keep being shown: not minimized, not hidden,
+        // whatever else on the desktop is minimizing windows.
+        if (afterMinimizingTheParkingWindow.isMinimized) {
+          failures.push('the parking window stayed minimized, which takes the viewport away from every tab parked in it')
+        }
+        if (afterMinimizingTheParkingWindow.theParkedTabInnerWidth === 0) {
+          failures.push('minimizing the parking window cost the tab parked in it its viewport')
+        }
+
+        // Neither the made-up size while minimized, nor a page left small once the window is back:
+        // measured before the fix, the window came back 1200×900 with the page `innerWidth` 193, and
+        // only a tab switch put it right.
+        if (afterALayoutWhileMinimized.theTabOnScreenWasLeftAt.width !== before.width
+          || afterALayoutWhileMinimized.theTabOnScreenWasLeftAt.height !== before.height) {
+          failures.push('a layout while the window was minimized resized the page to a size the window never had')
+        }
+        const page = afterRestore.thePageAreaItWouldGive
+        if (afterRestore.theTabOnScreenIsAt.width !== page.width || afterRestore.theTabOnScreenIsAt.height !== page.height) {
+          failures.push(`the page did not take the window's size back after a minimize: ${JSON.stringify(afterRestore.theTabOnScreenIsAt)} against ${JSON.stringify(page)}`)
+        }
+      }
+
       // Nothing about the window or the person's tab may have moved.
       const stateTabs = manager.listTabs(stateId)
       if (stateTabs.find((tab) => tab.active)?.id !== onScreenTab) failures.push(`${windowState} window: the tab on screen was switched`)
       if (windowState === 'hidden' && stateInstance.window.isVisible()) failures.push('the window was left visible')
+
+      // What a window that is not on screen reports about itself — the number every layout is built
+      // from — and what the tab on screen was left at. The person's report: "怎么用着用着浏览器窗口
+      // 会变成一个很小的值 193×93。切换标签界面又恢复了" — 193×93 is exactly what `pageAreaBounds`
+      // makes of a 0×0 window (200-7 by 100-7, the floors in `tabAreaBounds`), so a layout run while
+      // the window reported no size would leave the page that small until the next one.
+      if (windowState === 'hidden') {
+        const screenTab = stateInstance.tabs.find((tab: any) => tab.id === onScreenTab)
+        console.log('SPIKE_STEP hidden window geometry ' + JSON.stringify({
+          theWindowsContentSize: stateInstance.window.getContentSize(),
+          theWindowsBounds: stateInstance.window.getBounds(),
+          isVisible: stateInstance.window.isVisible(),
+          isMinimized: stateInstance.window.isMinimized(),
+          thePageAreaItWouldGive: (manager as any).pageAreaBounds(stateInstance),
+          theTabOnScreenWasLeftAt: screenTab.tabView.getBounds(),
+          theTabOnScreensInnerWidth: await screenTab.tabView.webContents.executeJavaScript('window.innerWidth'),
+        }))
+      }
       manager.destroyInstance(stateId)
     }
 
@@ -1396,6 +1530,102 @@ app.whenReady().then(async () => {
         failures.push('moving a parking window off a display cost the tab in it its viewport')
       }
       manager.destroyInstance(id)
+    }
+
+    // Phase 12 — terminating a browser window has to take the parking window with it, and with it the
+    // tabs parked there: a tab that is not on screen lives in that window, so a parking window left
+    // behind is a window that is gone with its tabs' renderer processes still running. Question it
+    // answers: "terminate 浏览器窗口，是否正确销毁这个窗口所有标签页的停车窗？"
+    {
+      const windowsBefore = BrowserWindow.getAllWindows().length
+      const contentsBefore = webContents.getAllWebContents().length
+
+      const id = manager.createInstance('terminate-parking', { show: true })
+      const instance = (manager as any).instances.get(id)
+      await sleep(700)
+      if (!instance.window.isVisible()) instance.window.showInactive()
+      manager.createTab(id, { url: page(FRONT.hex, 'terminate front'), activate: true })
+      await sleep(800)
+      const behind = manager.createTab(id, { url: page(BACK.hex, 'terminate behind'), activate: false })
+      await sleep(800)
+      const behindTab = instance.tabs.find((tab: any) => tab.id === behind)
+      const parking = instance.parkingWindow
+      // Every renderer this window owns, by identity: the page on screen, the page parked in the
+      // parking window, and the three surfaces of the chrome. Which of them is still running after a
+      // terminate is the whole question.
+      const tracked: Record<string, number> = {
+        thePageOnScreen: instance.tabs[0].tabView.webContents.id,
+        theParkedPage: behindTab.tabView.webContents.id,
+        theToolbar: instance.toolbarView.webContents.id,
+        theRail: instance.railView.webContents.id,
+        theOverlay: instance.nativeOverlayView.webContents.id,
+      }
+      const listed = () => new Set(webContents.getAllWebContents().map((each) => each.id))
+      const stillRunning = () => {
+        const ids = listed()
+        const out: Record<string, boolean> = {}
+        for (const [name, id] of Object.entries(tracked)) out[name] = ids.has(id)
+        out.total = ids.size
+        return out
+      }
+      const before = {
+        windows: BrowserWindow.getAllWindows().length,
+        theParkingWindowIsUp: !!parking && !parking.isDestroyed(),
+        stillRunning: stillRunning(),
+      }
+
+      manager.destroyInstance(id)
+      await sleep(700)
+      const justAfter = {
+        theInstanceIsGone: !(manager as any).instances.has(id),
+        theParkingWindowIsDestroyed: !!parking && parking.isDestroyed(),
+        // A closed page is not a destroyed page object: after `close()`, `view.webContents` is gone
+        // altogether (measured) — so this reads as "the view has no page any more" rather than as a
+        // flag. `twoSecondsLater` asks the question that matters: is that page still running?
+        theClosedViewsHaveNoPageLeft: [
+          (instance.tabs[0].tabView as any).webContents === undefined || (instance.tabs[0].tabView as any).webContents === null,
+          (behindTab.tabView as any).webContents === undefined || (behindTab.tabView as any).webContents === null,
+        ],
+        windows: BrowserWindow.getAllWindows().length,
+        stillRunning: stillRunning(),
+      }
+      // …and again a couple of seconds later, in case a renderer is torn down lazily.
+      await sleep(2500)
+      const twoSecondsLater = { windows: BrowserWindow.getAllWindows().length, stillRunning: stillRunning() }
+
+      // Would closing it by hand work? That says whether it is a live renderer or a stale record.
+      let closingItByHand = 'not tried'
+      if (twoSecondsLater.stillRunning.theParkedPage) {
+        try {
+          behindTab.tabView.webContents.close()
+          closingItByHand = 'closed'
+        } catch (error) {
+          closingItByHand = `refused: ${error instanceof Error ? error.message : String(error)}`
+        }
+        await sleep(500)
+        closingItByHand = `${closingItByHand}; still running: ${stillRunning().theParkedPage}`
+      }
+
+      console.log('SPIKE_STEP terminate ' + JSON.stringify({ windowsBefore, contentsBefore, tracked, before, justAfter, twoSecondsLater, closingItByHand }))
+
+      if (!justAfter.theParkingWindowIsDestroyed) {
+        failures.push('terminating a browser window left its parking window behind')
+      }
+      if (twoSecondsLater.stillRunning.theParkedPage) {
+        failures.push('terminating a browser window left the page of a tab parked in that window running')
+      }
+      if (justAfter.stillRunning.thePageOnScreen) {
+        failures.push('terminating a browser window left the page that was on screen running')
+      }
+      if (justAfter.stillRunning.theToolbar || justAfter.stillRunning.theRail || justAfter.stillRunning.theOverlay) {
+        failures.push('terminating a browser window left one of its chrome surfaces running')
+      }
+      if (justAfter.windows > windowsBefore) {
+        failures.push(`terminating a browser window left ${justAfter.windows - windowsBefore} window(s) behind`)
+      }
+      if (twoSecondsLater.stillRunning.total > contentsBefore) {
+        failures.push(`terminating a browser window left ${twoSecondsLater.stillRunning.total - contentsBefore} webContents behind`)
+      }
     }
 
     console.log('SPIKE_JSON ' + JSON.stringify({ rows, failures, focus }))

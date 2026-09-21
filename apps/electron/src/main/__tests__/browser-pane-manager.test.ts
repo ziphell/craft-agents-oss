@@ -64,6 +64,7 @@ function maybeFailEmptyStateLoad(target: string): void {
 
 function createMockWebContents() {
   const listeners: Record<string, Function[]> = {}
+  let closed = false
   const emit = (event: string, ...args: any[]) => {
     for (const cb of listeners[event] || []) cb({}, ...args)
   }
@@ -75,7 +76,6 @@ function createMockWebContents() {
   return {
     userAgent: 'Mock Chrome Electron/99.0.0',
     session: {},
-    isDestroyed: mock(() => false),
     on: (event: string, cb: Function) => {
       if (!listeners[event]) listeners[event] = []
       listeners[event].push(cb)
@@ -83,15 +83,21 @@ function createMockWebContents() {
     loadURL: mock(async (url: string) => {
       currentUrl = url
       maybeFailEmptyStateLoad(url)
-      const isToolbarUrl = typeof url === 'string' && url.includes('browser-toolbar.html')
-      if (isToolbarUrl && toolbarLoadFailuresRemaining > 0) {
+      // The bar's own document, and only the bar's: every chrome surface loads the same
+      // `browser-toolbar.html`, so the rail — which loads it with `view=rail` — used to swallow the
+      // failures meant for the bar and make the retry tests count whatever the two of them did
+      // together.
+      const isBarDocument = typeof url === 'string'
+        && url.includes('browser-toolbar.html')
+        && url.includes('view=bar')
+      if (isBarDocument && toolbarLoadFailuresRemaining > 0) {
         toolbarLoadFailuresRemaining--
         throw new Error('mock toolbar load failure')
       }
     }),
-    loadFile: mock(async (path: string, _opts?: unknown) => {
+    loadFile: mock(async (path: string, opts?: any) => {
       maybeFailEmptyStateLoad(path)
-      if (toolbarLoadFailuresRemaining > 0) {
+      if (opts?.query?.view === 'bar' && toolbarLoadFailuresRemaining > 0) {
         toolbarLoadFailuresRemaining--
         throw new Error('mock toolbar load failure')
       }
@@ -105,7 +111,16 @@ function createMockWebContents() {
     reload: mock(() => {}),
     stop: mock(() => {}),
     setUserAgent: mock(() => {}),
-    close: mock(() => {}),
+    /**
+     * Closing the page. A window being destroyed does **not** close the `WebContentsView`s inside it
+     * (measured on the terminate path: both tab pages were still running after the window and its
+     * parking window were gone), so the manager closes each tab's page by name — and this is how the
+     * tests see that happen.
+     */
+    close: mock(() => {
+      closed = true
+    }),
+    isDestroyed: mock(() => closed),
     setBackgroundThrottling: mock((_allowed: boolean) => {}),
     capturePage: mock(async () => {
       const img = {
@@ -199,6 +214,8 @@ function createMockWindow(opts?: { width?: number; height?: number; minWidth?: n
   let winY = 40
   let skipTaskbar = false
   let visible = false
+  let minimized = false
+  let destroyed = false
   const minWidth = opts?.minWidth ?? 0
   const minHeight = opts?.minHeight ?? 0
 
@@ -219,9 +236,16 @@ function createMockWindow(opts?: { width?: number; height?: number; minWidth?: n
     _emit: (event: string, ...args: any[]) => {
       for (const cb of listeners[event] || []) cb(...args)
     },
-    isDestroyed: mock(() => false),
-    isMinimized: mock(() => false),
-    restore: mock(() => {}),
+    isDestroyed: mock(() => destroyed),
+    isMinimized: mock(() => minimized),
+    restore: mock(() => {
+      minimized = false
+      win._emit('restore')
+    }),
+    minimize: mock(() => {
+      minimized = true
+      win._emit('minimize')
+    }),
     show: mock(() => {
       visible = true
       win._emit('show')
@@ -255,6 +279,7 @@ function createMockWindow(opts?: { width?: number; height?: number; minWidth?: n
     // (`focusTheTabOnScreen`).
     isFocused: mock(() => true),
     destroy: mock(() => {
+      destroyed = true
       win._emit('closed')
     }),
     setBrowserView: mock((_view: any) => {}),
@@ -463,6 +488,20 @@ const { BrowserPaneManager } = await import('../browser-pane-manager')
  */
 function tab(instance: any): any {
   return instance.tabs[0]
+}
+
+/**
+ * The bar has a document in it — which is the point at which a window may be shown.
+ *
+ * `focus` and `createInstance({ show: true })` do not open the window on the spot: a chromeless
+ * window shown before its address bar has painted is a window with a hole in it, so the show waits
+ * for the bar to report a real document (`markToolbarReady`). `ready-to-show` — the event these
+ * tests used to emit — is about the window rather than the bar and no longer drives anything; a
+ * test that wants the window on screen says so by finishing the bar's load.
+ */
+function finishLoadingTheBar(instance: any): void {
+  instance.toolbarView.webContents.getURL = mock(() => 'file:///mock/renderer/browser-toolbar.html')
+  instance.toolbarView.webContents._emit('did-finish-load')
 }
 
 /**
@@ -1248,13 +1287,13 @@ describe('BrowserPaneManager', () => {
     manager.focus('f1')
 
     const instance = (manager as any).instances.get('f1')
-    instance.window._emit('ready-to-show')
+    finishLoadingTheBar(instance)
 
     expect(instance.window.show).toHaveBeenCalled()
     expect(instance.window.focus).toHaveBeenCalled()
   })
 
-  it('dedupes repeated focus calls before ready-to-show', () => {
+  it('dedupes repeated focus calls before the bar has loaded', () => {
     manager.createInstance('f2')
 
     manager.focus('f2')
@@ -1262,13 +1301,13 @@ describe('BrowserPaneManager', () => {
     manager.focus('f2')
 
     const instance = (manager as any).instances.get('f2')
-    instance.window._emit('ready-to-show')
+    finishLoadingTheBar(instance)
 
     expect(instance.window.show.mock.calls.length).toBe(1)
     expect(instance.window.focus.mock.calls.length).toBe(1)
   })
 
-  it('cancels deferred pre-ready focus when hide happens first', () => {
+  it('cancels deferred focus when hide happens first', () => {
     manager.createInstance('f-hide-race')
 
     manager.focus('f-hide-race')
@@ -1278,7 +1317,7 @@ describe('BrowserPaneManager', () => {
     const showCallsBeforeReady = instance.window.show.mock.calls.length
     const focusCallsBeforeReady = instance.window.focus.mock.calls.length
 
-    instance.window._emit('ready-to-show')
+    finishLoadingTheBar(instance)
 
     expect(instance.window.show.mock.calls.length).toBe(showCallsBeforeReady)
     expect(instance.window.focus.mock.calls.length).toBe(focusCallsBeforeReady)
@@ -1338,33 +1377,41 @@ describe('BrowserPaneManager', () => {
   it('retries toolbar load and recovers', async () => {
     toolbarLoadFailuresRemaining = 2
     manager.createInstance('retry-toolbar')
+    const instance = (manager as any).instances.get('retry-toolbar')
 
     await Bun.sleep(1400)
 
-    const toolbarWindow = createdWindows[0]
-    const fileAttempts = toolbarWindow.webContents.loadFile.mock.calls.length
-    const toolbarUrlAttempts = toolbarWindow.webContents.loadURL.mock.calls
+    // The bar's own page, not the window's: the bar is a `BrowserView`, so its document is loaded
+    // into a webContents of its own (`instance.toolbarView`) — the app window's webContents never
+    // sees it.
+    const bar = instance.toolbarView.webContents
+    const fileAttempts = bar.loadFile.mock.calls.length
+    const toolbarUrlAttempts = bar.loadURL.mock.calls
       .filter((args: [string]) => args[0]?.includes('browser-toolbar.html')).length
     const totalAttempts = fileAttempts + toolbarUrlAttempts
 
+    // Two failures, then the third attempt lands — inside the retry budget, so the window keeps its
+    // real bar instead of the "failed to load" page.
     expect(totalAttempts).toBe(3)
-    expect(toolbarWindow.webContents.loadURL).not.toHaveBeenCalledWith(expect.stringContaining('data:text/html'))
+    expect(bar.loadURL).not.toHaveBeenCalledWith(expect.stringContaining('data:text/html'))
   })
 
   it('loads toolbar fallback page after retry exhaustion', async () => {
     toolbarLoadFailuresRemaining = 20
     manager.createInstance('fallback-toolbar')
+    const instance = (manager as any).instances.get('fallback-toolbar')
 
     await Bun.sleep(3200)
 
-    const toolbarWindow = createdWindows[0]
-    const fileAttempts = toolbarWindow.webContents.loadFile.mock.calls.length
-    const toolbarUrlAttempts = toolbarWindow.webContents.loadURL.mock.calls
+    const bar = instance.toolbarView.webContents
+    const fileAttempts = bar.loadFile.mock.calls.length
+    const toolbarUrlAttempts = bar.loadURL.mock.calls
       .filter((args: [string]) => args[0]?.includes('browser-toolbar.html')).length
     const totalAttempts = fileAttempts + toolbarUrlAttempts
 
+    // The first try plus every retry, and then the page that says so.
     expect(totalAttempts).toBe(5)
-    expect(toolbarWindow.webContents.loadURL).toHaveBeenCalledWith(expect.stringContaining('data:text/html'))
+    expect(bar.loadURL).toHaveBeenCalledWith(expect.stringContaining('data:text/html'))
   })
 
   it('captures and filters console entries', () => {
@@ -2244,6 +2291,80 @@ describe('BrowserPaneManager', () => {
   })
 
   /**
+   * Terminating a browser window has to close **every** tab's page, the ones parked in the parking
+   * window included — a window being destroyed does not close the `WebContentsView`s inside it
+   * (measured on the terminate path: both tab pages were still running after the window and its
+   * parking window were gone, and would have stayed running). Reported as a question: "terminate
+   * 浏览器窗口，是否正确销毁这个窗口所有标签页的停车窗？"
+   */
+  it('closes every tab\'s page when the window goes, the parked ones included', () => {
+    manager.createInstance('terminate-pages')
+    const instance = (manager as any).instances.get('terminate-pages')
+    instance.tabs[0].currentUrl = 'https://front.example.com/'
+    const onScreen = instance.tabs[0]
+    manager.createTab('terminate-pages', { url: 'https://behind.example.com/', activate: false })
+    const behind = instance.tabs[1]
+    const parking = instance.parkingWindow
+    expect(parking.contentView.children).toContain(behind.tabView)
+
+    // The order is the point: the pages are closed **first**, and the parking window goes afterwards,
+    // as the consequence — an empty window has nothing left to hold. Destroying the window is not what
+    // closes a `WebContentsView`'s page (measured: both pages were still running after both windows
+    // were gone), so it cannot be the other way round.
+    const order: string[] = []
+    onScreen.tabView.webContents.close.mockImplementation(() => { order.push('the page on screen') })
+    behind.tabView.webContents.close.mockImplementation(() => { order.push('the page parked in the parking window') })
+    parking.destroy.mockImplementation(() => { order.push('the parking window, now empty') })
+
+    manager.destroyInstance('terminate-pages')
+
+    expect(order).toEqual([
+      'the page on screen',
+      'the page parked in the parking window',
+      'the parking window, now empty',
+    ])
+    expect((manager as any).instances.has('terminate-pages')).toBe(false)
+  })
+
+  /**
+   * A **minimized** window reports no size at all (measured: 0×0), and the floors in `tabAreaBounds`
+   * turn that into a plausible-looking 193×93 — which the page then keeps once the window is back, so
+   * the person sees a tiny page in a full-size window until something lays out again. Reported:
+   * "怎么用着用着浏览器窗口会变成一个很小的值 193×93。切换标签界面又恢复了".
+   */
+  it('lays nothing out from a window that has no size, and lays out again when it comes back', () => {
+    manager.createInstance('minimized')
+    const instance = (manager as any).instances.get('minimized')
+    instance.tabs[0].currentUrl = 'https://front.example.com/'
+    const onScreen = instance.tabs[0]
+    manager.createTab('minimized', { url: 'https://behind.example.com/', activate: false })
+    const behind = instance.tabs[1]
+    expect(onScreen.tabView.getBounds()).toEqual({ x: 201, y: 49, width: 993, height: 845 })
+
+    // Minimized — no size at all — and a layout asked for anyway, which is what the window's own
+    // `resize` does on the way down.
+    instance.window.getContentSize.mockImplementation(() => [0, 0])
+    instance.window.isMinimized.mockImplementation(() => true)
+    onScreen.tabView.setBounds.mockClear()
+    behind.tabView.setBounds.mockClear()
+    instance.window._emit('resize')
+
+    // The page is left on the size it had, rather than on the size the window never had…
+    expect(onScreen.tabView.setBounds).not.toHaveBeenCalled()
+    expect(onScreen.tabView.getBounds()).toEqual({ x: 201, y: 49, width: 993, height: 845 })
+    // …and the tab that is not on screen is not touched either: it lives in the parking window, at
+    // its own viewport.
+    expect(behind.tabView.setBounds).not.toHaveBeenCalled()
+    expect(instance.parkingWindow.contentView.children).toContain(behind.tabView)
+
+    // Coming back is where the page takes the window's size again — without a tab switch to rescue it.
+    instance.window.getContentSize.mockImplementation(() => [1010, 900])
+    instance.window.isMinimized.mockImplementation(() => false)
+    instance.window._emit('restore')
+    expect(onScreen.tabView.setBounds).toHaveBeenLastCalledWith({ x: 201, y: 49, width: 803, height: 845 })
+  })
+
+  /**
    * Where a window nobody may see is put, and — the part that matters — that it *stays* out: the
    * person can plug a screen in beside the spot or change scaling, and the desktop itself will bring
    * a window it judges unreachable back onto a screen. Reported by the person: "你的停车窗太靠近屏幕
@@ -2254,6 +2375,7 @@ describe('BrowserPaneManager', () => {
     const instance = (manager as any).instances.get('parking-away')
     instance.tabs[0].currentUrl = 'https://front.example.com/'
     manager.createTab('parking-away', { url: 'https://behind.example.com/', activate: false })
+    const behind = instance.tabs[1]
     const parking = instance.parkingWindow
     expect(parking).toBeTruthy()
 
@@ -2273,6 +2395,17 @@ describe('BrowserPaneManager', () => {
     parking.setPosition(0, 0)
     expect(parking.getBounds().x).toBeGreaterThanOrEqual(40_000)
     expect(parking.getBounds().x).not.toBe(whereItWasFirstPut)
+
+    // And it may not stop being **shown**: a window that is not shown is not composited, and the
+    // views inside it lose the viewport the freeze is for. Nothing about it is the person's, so a
+    // shell-wide "minimize everything" does not get to leave it that way.
+    parking.minimize()
+    expect(parking.restore).toHaveBeenCalled()
+    expect(parking.isMinimized()).toBe(false)
+    parking.hide()
+    expect(parking.isVisible()).toBe(true)
+    // …while the tab in it is left alone, wherever the parking window had to go.
+    expect(instance.window.contentView.children).not.toContain(behind.tabView)
 
     // The subscription is dropped with the last window, rather than outliving the manager.
     manager.destroyAll()

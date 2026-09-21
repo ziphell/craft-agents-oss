@@ -2842,7 +2842,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       if (!instance.window.isDestroyed() && !tab.tabView.webContents.isDestroyed()) {
         if (instance.activeTabId === tab.id) {
           instance.window.contentView.addChildView(tab.tabView)
-          tab.tabView.setBounds(this.pageAreaBounds(instance))
+          // The window's page area — unless the window has no size right now (it may be minimized,
+          // which is exactly how a shot of a hidden window is asked for): then this tab goes back to
+          // the viewport it already had, rather than to a made-up one (`windowHasSize`).
+          tab.tabView.setBounds(this.windowHasSize(instance) ? this.pageAreaBounds(instance) : own)
         } else {
           this.parkTab(instance, tab, own)
         }
@@ -4035,6 +4038,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       return
     }
 
+    // The overlay is the tab area, so it is measured off the window the same way the page is — and a
+    // window with no size would give it the same made-up 193×93 (`windowHasSize`). Leave it as it is;
+    // the window coming back lays it out again.
+    if (!this.windowHasSize(instance)) return
+
     // The overlay covers the whole tab area — the page *and* the gutter the panel is inset by:
     // it is what paints the surface in that gutter and the panel's hairline. The chrome is
     // still not covered by it: the rail and the bar stay the person's, and a person has to be
@@ -4122,11 +4130,57 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
 
     this.destroyingIds.delete(instance.id)
-    this.updateNativeOverlayState(instance)
-    activeTab(instance).cdp.detach()
+
+    /*
+     * **Every step here is allowed to fail, and no step is allowed to stop the next one.** The
+     * instance leaving `instances` is the one thing this method owes: while it is in there, callers
+     * see a window that no longer exists, and `removedCallback` — how the rest of the app hears a
+     * browser window is gone — never runs. Measured: a throwing cleanup step (the overlay's own
+     * state push) used to escape from here, so the pages stayed open, the parking window stayed on
+     * the desktop and the instance stayed in the map.
+     */
+    const step = (label: string, action: () => void): void => {
+      try {
+        action()
+      } catch (error) {
+        mainLog.warn(`[browser-pane] teardown failed instance=${instance.id} step=${label} error=${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+
+    step('overlay', () => this.updateNativeOverlayState(instance))
+    step('cdp detach', () => activeTab(instance).cdp.detach())
+
+    /*
+     * **Every tab's page is closed by name**, because a window being destroyed does not close the
+     * `WebContentsView`s inside it.
+     *
+     * Measured, on the terminate path: the window and its parking window are gone, the chrome's own
+     * pages (toolbar, rail, overlay — `BrowserView`s, which the window does own) are closed, and both
+     * tab pages were **still running** a few seconds later — the page on screen *and* the one parked
+     * in the parking window — closable by hand, so they were live renderers, not stale records. Left
+     * alone, every terminated browser window would leave its tabs' processes behind.
+     *
+     * So this is not tidiness, it is what a terminate *is*: the pages go, and the windows follow. Each
+     * page is closed while the window holding its view still exists, and **the parking window's own
+     * destruction is the consequence** — it is left holding nothing, and a window left holding nothing
+     * must not be left behind on a desktop nobody can see.
+     */
+    for (const tab of instance.tabs) {
+      step(`closing tab ${tab.id}`, () => {
+        this.clearInPageThemeTimer(tab)
+        // `webContents` is gone from a view whose page has already been closed, not just destroyed:
+        // measured, `view.webContents` is `undefined` after `close()` — so a tab that was closed before
+        // its window is not an error here, it is a tab with nothing left to close.
+        const wc = tab.tabView.webContents
+        if (wc && !wc.isDestroyed()) wc.close()
+      })
+    }
+
     // The window the tabs that are not on screen live in goes with the window they belong to.
-    const parking = instance.parkingWindow
-    if (parking && !parking.isDestroyed()) parking.destroy()
+    step('parking window', () => {
+      const parking = instance.parkingWindow
+      if (parking && !parking.isDestroyed()) parking.destroy()
+    })
     instance.parkingWindow = null
     this.instances.delete(instance.id)
     this.removedCallback?.(instance.id)
@@ -4148,6 +4202,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * person does to the window (measured in `apps/electron/spike/background-viewport.ts`).
    */
   private layoutTabView(instance: BrowserInstance): void {
+    // A window with no size of its own has no geometry to hand out: laying anything out from it would
+    // write the floors in `tabAreaBounds` into the page — 193×93, which looks like a size rather than
+    // a mistake (`windowHasSize`). The window coming back is what lays out again.
+    if (!this.windowHasSize(instance)) return
+
     // The page panel, not the whole tab area: the gutter around it is the overlay's to paint
     // (`pageAreaBounds`), and the page's own corners are cut out of its view
     // (`applyPageCornerRadius`) so the surface behind them shows through.
@@ -4220,6 +4279,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // is watched from here on, because it can stop being clear of them without anyone asking us.
     parking.on('move', () => this.keepOffEveryDisplay(parking))
     parking.on('resize', () => this.keepOffEveryDisplay(parking))
+    // …and it may not stop being shown either. A window that is not shown is not composited, and a
+    // view that is not composited loses its viewport entirely (measured: `background-viewport.ts`
+    // section E), which is the one thing this window exists to prevent. Nothing about it is the
+    // person's — it is off every display, out of their taskbar, never focused — so a shell-wide
+    // "minimize everything" (or a stray `hide()` of ours) is not allowed to leave it that way.
+    parking.on('minimize', () => this.keepShowing(parking))
+    parking.on('hide', () => this.keepShowing(parking))
     this.keepOffEveryDisplay(parking)
     this.watchDisplays()
     // Where it *is*, not where it was asked to go: the desktop caps that (measured: 16383 DIPs
@@ -4227,6 +4293,27 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const landed = parking.getBounds()
     mainLog.info(`[browser-pane] parking window up instance=${instance.id} at=${landed.x},${landed.y} size=${wanted.width}x${wanted.height}`)
     return parking
+  }
+
+  /**
+   * Put a window that has to be shown **back on screen** — off every display, never focused, but
+   * shown: that is the whole reason the views inside it are real (`background-viewport.ts` section E).
+   *
+   * Called when something minimizes or hides it. Measured: minimizing the person's own window does
+   * **not** reach this one (separate top-level windows, no owner), so this is here for the things
+   * that do — a shell-wide "minimize everything", or our own mistake.
+   */
+  private keepShowing(window: BrowserWindow): void {
+    if (window.isDestroyed()) return
+    if (window.isMinimized()) {
+      window.restore()
+      mainLog.warn('[browser-pane] the parking window was minimized; restored it off screen')
+    }
+    if (!window.isVisible()) {
+      window.showInactive()
+      mainLog.warn('[browser-pane] the parking window was hidden; showed it again off screen')
+    }
+    this.keepOffEveryDisplay(window)
   }
 
   /**
@@ -4242,11 +4329,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       for (const instance of this.instances.values()) {
         const parking = instance.parkingWindow
         if (parking && !parking.isDestroyed()) {
-          // Whatever the change did to the coordinates, the answer is the same: it may not be on a
-          // display, and it may not be *shown* as anything else either — it is what makes the views
-          // inside it real, so it stays up.
-          this.keepOffEveryDisplay(parking)
-          if (!parking.isVisible()) parking.showInactive()
+          // Whatever the change did to the coordinates, the answer is the same: it stays off every
+          // display, and it stays *shown* — it is what makes the views inside it real.
+          this.keepShowing(parking)
         }
       }
     }
@@ -4265,7 +4350,27 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * House a tab that is not on screen: **the parking window**, at the size it has.
+   * Whether the window has a size to lay anything out to.
+   *
+   * A **minimized** window on Windows reports `getContentSize()` 0×0 (measured), and the floors in
+   * `tabAreaBounds` then turn that into a *plausible* 193×93 (200-7 by 100-7) instead of something
+   * obviously broken — so a layout run at that moment writes a fiction into the page's view, and the
+   * page stays that small after the window comes back (measured: window 1200×900, page `innerWidth`
+   * 193, until the next layout — a tab switch — put it right. The person's report: "怎么用着用着浏览器
+   * 窗口会变成一个很小的值 193×93。切换标签界面又恢复了").
+   *
+   * Nothing laid out while the window is minimized is visible to anyone, so the honest answer is to
+   * leave every view exactly as it is — a tab in the parking window keeps its viewport anyway — and
+   * lay out when there is a window to lay out into again.
+   */
+  private windowHasSize(instance: BrowserInstance): boolean {
+    if (instance.window.isDestroyed() || instance.window.isMinimized()) return false
+    const [width, height] = instance.window.getContentSize()
+    return width > 0 && height > 0
+  }
+
+  /**
+   * Where a tab that is not on screen lives: **the parking window**, at the size it has.
    *
    * A tab that has never been on screen is *created* here (`attachTab`), at the size the page area
    * had at that moment — that is its viewport until it comes forward, and nothing about the person's
@@ -6072,6 +6177,22 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     instance.window.on('resized', () => {
       this.layoutAllViews(instance)
     })
+
+    /**
+     * …and again when the window comes back from being minimized.
+     *
+     * A minimized window reports no size at all on Windows (see `windowHasSize`), so nothing may be
+     * laid out from it while it is away — and measured, **restoring it does not lay the page out
+     * either**: the window came back at 1200×900 with the page still 193×93 inside it, and only the
+     * next layout (a tab switch, for the person who reported it) put it right. So the coming-back is
+     * laid out here, explicitly, rather than left to whatever event happens to fire.
+     */
+    const cameBack = () => {
+      this.layoutAllViews(instance)
+    }
+    instance.window.on('restore', cameBack)
+    instance.window.on('maximize', cameBack)
+    instance.window.on('unmaximize', cameBack)
 
     // Arriving on another display: the page's cut corner does not come with it, so it is said
     // again here (`reassertPageCornerRadii`). Only `moved` — `move` fires throughout a drag and
