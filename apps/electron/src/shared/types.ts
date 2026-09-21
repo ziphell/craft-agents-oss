@@ -696,8 +696,6 @@ export interface ElectronAPI {
   setNotificationsEnabled(enabled: boolean): Promise<void>
 
   // Input settings
-  getAutoCapitalisation(): Promise<boolean>
-  setAutoCapitalisation(enabled: boolean): Promise<void>
   getSendMessageKey(): Promise<'enter' | 'cmd-enter'>
   setSendMessageKey(key: 'enter' | 'cmd-enter'): Promise<void>
   getSpellCheck(): Promise<boolean>

@@ -558,6 +558,9 @@ export const RichTextInput = React.forwardRef<RichTextInputHandle, RichTextInput
     const divRef = React.useRef<HTMLDivElement>(null)
     const [isFocused, setIsFocused] = React.useState(false)
     const isComposing = React.useRef(false)
+    // Mirror of the ref for rendering: mid-composition the value has not reached
+    // us yet, so the placeholder must stay hidden instead of covering the letters.
+    const [isComposingState, setIsComposingState] = React.useState(false)
     const lastValueRef = React.useRef(safeValue)
     const cursorPositionRef = React.useRef(0)
     const lastMentionSignatureRef = React.useRef('')
@@ -655,10 +658,12 @@ export const RichTextInput = React.forwardRef<RichTextInputHandle, RichTextInput
     // Handle composition (IME)
     const handleCompositionStart = React.useCallback(() => {
       isComposing.current = true
+      setIsComposingState(true)
     }, [])
 
     const handleCompositionEnd = React.useCallback(() => {
       isComposing.current = false
+      setIsComposingState(false)
       handleInput()
     }, [handleInput])
 
@@ -792,8 +797,10 @@ export const RichTextInput = React.forwardRef<RichTextInputHandle, RichTextInput
       return () => document.removeEventListener('selectionchange', handleSelectionChange)
     }, [])
 
-    // Show placeholder when input is empty (regardless of focus state)
-    const showPlaceholder = !safeValue
+    // Show placeholder when input is empty (regardless of focus state),
+    // but never while an IME composition is in flight: the composing text is not
+    // in `value` yet, and the placeholder would hide it (text-transparent).
+    const showPlaceholder = !safeValue && !isComposingState
 
     // Normalize placeholder to array for RotatingPlaceholder
     const placeholderArray = React.useMemo(() => {
