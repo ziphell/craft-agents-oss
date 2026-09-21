@@ -874,7 +874,7 @@
   "prototypeInfo.pageSharedChanges_other": "另有 {{count}} 处改动在所有页面生效",
   "prototypeInfo.pageStaleTargets_one": "{{count}} 个选择器已失效",
   "prototypeInfo.pageStaleTargets_other": "{{count}} 个选择器已失效",
-  "prototypeInfo.pages": "流程页",
+  "prototypeInfo.pages": "原型页",
   "prototypeInfo.pagesEmpty": "还没有页面。加一页就可以开始，也可以让 agent 写出第一份文档。",
   "prototypeInfo.removePage": "删除页面",
   "prototypeInfo.renamePage": "页面改名",
