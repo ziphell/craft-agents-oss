@@ -13,7 +13,7 @@ Every command belongs to `prototype_tool` and carries no prefix. It acts on the 
 ## What a prototype is
 
 - **One folder, and the specification is the markdown in it.** The specification is one file or several — `prototypes/{slug}/PRD.md` is the conventional entry, and any other markdown file is read the same way, so a subject that outgrows the first file gets its own (`docs/features.md`). Everything else in the folder is the author's: the documents that make up the work, and material in any format (personas, a glossary, a screenshot, a spreadsheet). There is no rule about what may sit there and nothing enumerates or filters it.
-- **The thread is markers, not a stored index.** A requirement is a heading in a markdown file whose id starts with `R-`; any file in the folder declares what it serves with `@requirement R-001` in a comment, and a finding declares what it argues for with `requirements:`. That is the whole mechanism, and it is what lets the report answer the two questions nobody can answer by reading files one at a time: **which requirement nothing implements**, and **which marker names an id no document defines**. A file that states requirements is a specification, not an implementation of them: a `@requirement` line inside one is not read as building what it specifies. Documents also point at each other with `[[…]]` — navigation, and where an index pointing at several documents comes from (see "Linking documents").
+- **The thread is markers, not a stored index.** A requirement is a heading in a markdown file whose id starts with `R-`; any file in the folder declares what it serves with `@requirement R-001` in a comment, and a finding declares what it argues for with `requirements:`. That is the whole mechanism, and it is what lets the report answer the two questions nobody can answer by reading files one at a time: **which requirement nothing implements**, and **which marker names an id no document defines**. A file that states requirements is a specification, not an implementation of them: a `@requirement` line inside one is not read as building what it specifies. Documents also point at each other with ordinary markdown links — navigation, and where an index pointing at several documents comes from (see "Linking documents").
 - **Not a project.** Projects are separate containers that group sessions, tasks and shared assets; a prototype is never nested inside one. A prototype also **belongs to no project**: the same prototype can be worked on from conversations of different projects. A project may only note which prototypes its work touches — background information, never a binding.
 - **A bound session is told about its prototype up front.** When a conversation is bound to a prototype, a `<prototype_context>` block is injected into its system prompt describing that prototype's requirements, findings and disputes before the user says anything. This guide is the general model; the block is the specific state. **Binding is the person's and there is no command for it**: the prototype panel sets it, `create` binds what it made, and `--no-bind` declines to. A command without a slug uses this session's binding.
 
@@ -39,18 +39,20 @@ prototypes/{slug}/
 
 ## Linking documents
 
-One document points at another with `[[…]]`, which is how a specification stays readable as it grows: the entry document states a requirement in a line and hands the detail to its own file.
+One document points at another with an ordinary markdown link, which is how a specification stays readable as it grows: the entry document states a requirement in a line and hands the detail to its own file.
 
 ```md
 ## R-003 Checkout, in detail
 
-The flow, the states and the error cases are in [[docs/checkout.md]].
+The flow, the states and the error cases are in [the checkout document](docs/checkout.md).
 ```
 
-- **A path resolves from the document it is written in first, then from the folder** — `[[docs/checkout.md]]` written in `PRD.md`, or `[[../PRD.md]]` written in `docs/checkout.md` — with the `.md` or without it.
-- **A bare name resolves wherever the file is** — `[[checkout]]` finds `checkout.md`, at any depth — and is **reported, not guessed at, when more than one file has that name**: which one was meant is not something this can know.
-- **A link is navigation, never a claim.** It says where to read next; it does not say a requirement is done. Implementation is still `@requirement R-00x` and nothing else, so pointing at a document is not the document building anything.
-- **A link that points at nothing is reported** — a `[[…]]` can only mean a file, and a name that stopped existing is exactly the silent failure an index has. A `[[…]]` inside a code span or a fenced block is text, not a link.
+**Ordinary markdown, deliberately.** The link is the same link in every reader — a colleague's editor, GitHub, this app — because it *is* markdown. A syntax of this app's own would be a pair of stray brackets everywhere else, which is the same argument that made a diagram's picture plain `![]()` rather than a fence only this app draws.
+
+- **A relative destination is resolved against the document it is written in, then the folder** — `docs/checkout.md` written in `PRD.md`, or `../PRD.md` written in `docs/checkout.md`. Write the file's own name, extension and all.
+- **A link to a document names a file.** A destination the browser fetches on its own (`https:`, `mailto:`, `data:`), an absolute path, a `#section`, or a relative destination that names no file is not a document in this folder — it is left alone.
+- **A link is navigation, never a claim.** It says where to read next; it does not say a requirement is done. Implementation is still `@requirement R-00x` and nothing else.
+- **A link that points at nothing is reported** — a target that stopped existing is exactly the silent failure an index has. A link written inside a code span or a fenced block is an example, not a link.
 - **The page reads them both ways**: under a document it lists what that document links to and what links back to it — the half a one-way pointer cannot give you.
 
 ---
@@ -174,7 +176,7 @@ Prototype "checkout-flow"
 
 - A row with `nothing refers to it yet` is a requirement nothing implements — the failure this report exists to name.
 - `spec:` names the markdown files that state requirements — one or several; the message about a requirement always names the file it was written in.
-- `issues:` are the silent failures: a reference to an id no document defines, a link that points at nothing or at a name two files share, a finding whose `evidence:` is not on disk, a duplicate id.
+- `issues:` are the silent failures: a reference to an id no document defines, a link that points at nothing, a finding whose `evidence:` is not on disk, a duplicate id.
 - `unresolved:` is what is still **owed** — last, because it is the thing to act on. It is the same list the app's gate reads, so a report cannot look calmer here than the work is.
 - `on:` beside each requirement is the value a review of it writes as `on:` (see `reviews/` above).
 

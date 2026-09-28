@@ -635,12 +635,12 @@ shared assets, and a prototype is never nested inside one.
 Everything in the folder is written with the Write/Edit tools: the specification and the material
 beside it (personas, a glossary, a screenshot, a spreadsheet — any format, no rule about what may sit
 there), the findings under \`research/\` and the disputes under \`reviews/\`. Documents point at each
-other with a wiki link — \`[[docs/checkout.md]]\` by path, or \`[[checkout]]\` by name — so one entry
-document can index several; that is navigation, and what implements a requirement is still only
-\`@requirement R-00x\`. What the commands *derive* from them is the point: \`status\` turns the markers
-into the two answers nobody can get by reading files one at a time — which requirement nothing
-implements, and which marker names an id no document defines (a link that points at nothing is
-reported too).
+other with an ordinary markdown link — \`[the flow](docs/checkout.md)\`, resolved from the linking
+document's folder and then the folder root — so one entry document can index several; that is
+navigation, and what implements a requirement is still only \`@requirement R-00x\`. What the commands
+*derive* from them is the point: \`status\` turns the markers into the two answers nobody can get by
+reading files one at a time — which requirement nothing implements, and which marker names an id no
+document defines (a link that points at nothing is reported too).
 
 **The window** is \`browser_tool\`'s, and **none of these commands needs a browser at all**: every one
 of them is file work on the prototype's folder. Naming tabs, snapshots, clicks and every page

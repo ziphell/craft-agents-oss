@@ -109,8 +109,8 @@ export function listPrototypeFiles(workspaceRootPath: string, slug: string): Pro
 
 /**
  * Whether a file is markdown — the kind whose text the workbench reads as a *document*: its headings
- * can state a requirement (`requirements.ts`) and its `[[…]]` links point at other documents
- * (`links.ts`). `.mdx` reads as markdown too.
+ * can state a requirement (`requirements.ts`) and its links point at other documents (`links.ts`).
+ * `.mdx` reads as markdown too.
  *
  * Here rather than in either reader because both have to agree on it: a file one reads and the other
  * does not is a requirement nothing can link to, or a link nothing can define.

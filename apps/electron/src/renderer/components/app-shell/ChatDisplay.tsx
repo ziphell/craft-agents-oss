@@ -131,6 +131,14 @@ function getTurnKey(turn: Turn): string {
   return `turn-${turn.turnId}-${turn.timestamp}`
 }
 
+/**
+ * Gap above a located turn. A turn can be taller than the viewport, so jumping
+ * to it must show its opening line — centering would land in the middle of the
+ * turn and push the first line off-screen. The gap also clears the top fade
+ * mask so that first line isn't half-transparent.
+ */
+const LOCATED_TURN_TOP_GAP = 32
+
 interface ChatDisplayProps {
   session: Session | null
   onSendMessage: (message: string, attachments?: FileAttachment[], skillSlugs?: string[]) => void
@@ -1415,7 +1423,10 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
 
   // Bring a turn into view, widening the reverse-pagination window first when the
   // target is older than what is currently mounted.
-  const scrollToTurnByIndex = useCallback((targetTurnIndex: number) => {
+  // `align: 'start'` reveals the turn's opening (used by the turn rail, whose turns
+  // are usually taller than the viewport); 'center' keeps the existing annotation
+  // and search behavior.
+  const scrollToTurnByIndex = useCallback((targetTurnIndex: number, align: 'center' | 'start' = 'center') => {
     const targetTurn = allTurns[targetTurnIndex]
     if (!targetTurn) return
 
@@ -1426,7 +1437,17 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
       const turnContainer = turnRefs.current.get(turnKey)
       if (!turnContainer) return false
 
-      turnContainer.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      if (align === 'center') {
+        turnContainer.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        return true
+      }
+
+      const viewport = scrollViewportRef.current
+      if (!viewport) return false
+      const delta = turnContainer.getBoundingClientRect().top
+        - viewport.getBoundingClientRect().top
+        - LOCATED_TURN_TOP_GAP
+      viewport.scrollTo({ top: viewport.scrollTop + delta, behavior: 'smooth' })
       return true
     }
 
@@ -1532,7 +1553,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
 
   const handleRailSelect = useCallback((key: string) => {
     const index = allTurns.findIndex((turn) => getTurnKey(turn) === key)
-    if (index >= 0) scrollToTurnByIndex(index)
+    if (index >= 0) scrollToTurnByIndex(index, 'start')
   }, [allTurns, scrollToTurnByIndex])
 
   // Compute if we should skip scroll-to-bottom (when search is active on session switch)

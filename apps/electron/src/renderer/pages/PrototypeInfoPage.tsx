@@ -54,7 +54,6 @@ import {
 } from '@/components/ui/styled-dropdown'
 import { Button } from '@/components/ui/button'
 import type { PrototypeStatus } from '@craft-agent/shared/prototypes'
-import { rewriteWikiLinks } from '@craft-agent/shared/prototypes/wiki-links'
 
 interface PrototypeInfoPageProps {
   prototypeSlug: string
@@ -66,15 +65,6 @@ interface PrototypeInfoPageProps {
 function absolutePath(dir: string, relative: string): string {
   const separator = dir.includes('\\') ? '\\' : '/'
   return `${dir}${separator}${relative.split('/').join(separator)}`
-}
-
-/**
- * The markdown destination for a link to a file: an absolute path is what the app's own click
- * routing sends to `onFileClick`, and a space is percent-encoded because a bare destination may not
- * carry one — the renderer decodes it back before opening the file.
- */
-function fileLinkDestination(dir: string, relative: string): string {
-  return absolutePath(dir, relative).replace(/ /g, '%20')
 }
 
 /**
@@ -274,7 +264,7 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
 
   /**
    * Open one of the prototype's own files, named the way a document names it — a prototype-relative
-   * path from a `[[…]]` link. The app's own open path routes it by what it is, so a `.md` opens in
+   * path from a markdown link. The app's own open path routes it by what it is, so a `.md` opens in
    * the reader and a page in the browser, exactly as it would from the folder's list.
    */
   const openPrototypeFile = useCallback(
@@ -517,24 +507,15 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
                   const defined = status.requirements.filter(
                     (requirement) => requirement.file === file.name,
                   )
-                  // Documents point at each other with `[[…]]`, which is not markdown — the
-                  // renderer would draw it as literal brackets. Each target this document actually
-                  // links to becomes an ordinary link first; one that resolves to nothing is left as
-                  // written, because it is already reported as a broken link.
+                  // Documents point at each other with ordinary markdown links — the renderer draws
+                  // them, and the app opens a relative destination from the document's own folder —
+                  // so all that is read here is the two lists below.
                   const outgoing = status.links.filter(
                     (link) => link.from === file.name && link.to !== null,
                   )
                   const incoming = status.links.filter(
                     (link) => link.to === file.name && link.from !== file.name,
                   )
-                  const targets = new Map(outgoing.map((link) => [link.target, link.to as string]))
-                  const display =
-                    content === undefined || content === null
-                      ? content
-                      : rewriteWikiLinks(content, (target) => {
-                          const to = targets.get(target)
-                          return to ? fileLinkDestination(status.dir, to) : null
-                        })
                   return (
                     <div key={file.path}>
                       <div className="px-6 pt-2 pb-1 font-mono text-xs text-muted-foreground">
@@ -544,14 +525,14 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
                         <p className="px-6 pb-3 text-sm text-destructive">
                           {t('prototypeInfo.documentUnreadable')}
                         </p>
-                      ) : typeof display === 'string' ? (
+                      ) : typeof content === 'string' ? (
                         <Info_Markdown
                           fullscreen
                           baseDir={baseDir}
                           onFileClick={onOpenFile}
                           onUrlClick={onOpenUrl}
                         >
-                          {display}
+                          {content}
                         </Info_Markdown>
                       ) : null}
 

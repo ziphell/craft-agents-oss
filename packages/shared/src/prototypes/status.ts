@@ -92,9 +92,9 @@ export interface PrototypeStatus {
    */
   files: PrototypeFileEntry[]
   /**
-   * How the documents point at each other (`[[…]]` — `links.ts`), read from both ends: a link with
-   * its `from` and `to` is simultaneously an outgoing link for `from` and a backlink for `to`, so the
-   * page can say "links to" and "linked from" without a second reading.
+   * How the documents point at each other (ordinary markdown links — `links.ts`), read from both
+   * ends: a link with its `from` and `to` is simultaneously an outgoing link for `from` and a
+   * backlink for `to`, so the page can say "links to" and "linked from" without a second reading.
    *
    * A link carries nothing about the work — it is navigation, never a claim that a requirement is
    * implemented (that is still `@requirement R-00x`). A link that resolves to nothing is in

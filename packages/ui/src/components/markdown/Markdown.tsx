@@ -21,6 +21,7 @@ import { MarkdownPdfBlock } from './MarkdownPdfBlock'
 import { MarkdownDocBlock } from './MarkdownDocBlock'
 import { preprocessLinks } from './linkify'
 import { resolveMarkdownLinkTarget } from './link-target'
+import { resolveDocumentPath } from './document-path'
 import remarkCollapsibleSections from './remarkCollapsibleSections'
 import { CollapsibleSection } from './CollapsibleSection'
 import { useCollapsibleMarkdown } from './CollapsibleMarkdownContext'
@@ -233,7 +234,10 @@ function createComponents(
 
         const resolvedTarget = resolveMarkdownLinkTarget(target)
         if (resolvedTarget.kind === 'file' && onFileClick) {
-          onFileClick(resolvedTarget.path)
+          // A file named beside the document is relative to *that* document, not to the app — the
+          // rule a picture already follows (`document-path.ts`). An absolute path or a `file:` URL
+          // comes back null and is opened exactly as written.
+          onFileClick(resolveDocumentPath(baseDir, resolvedTarget.path) ?? resolvedTarget.path)
         } else if (resolvedTarget.kind === 'url' && onUrlClick) {
           onUrlClick(resolvedTarget.url)
         }

@@ -39,9 +39,8 @@ export type {
 export { parsePrototypeFinding, readPrototypeFindings } from './research.ts'
 export type { PrototypeFinding, PrototypeFindings } from './research.ts'
 
-export { readPrototypeLinks } from './links.ts'
+export { extractLinkTargets, readPrototypeLinks } from './links.ts'
 export type { PrototypeLink, PrototypeLinks } from './links.ts'
-export { extractLinkTargets, rewriteWikiLinks } from './wiki-links.ts'
 
 export {
   formatReviewTarget,

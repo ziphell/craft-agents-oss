@@ -7,69 +7,139 @@
  * documents* — a note that says "the detail is over there" was a bare filename, unclickable, and
  * naming a document that had been renamed failed in silence.
  *
- * So a document may point at another with `[[…]]`:
+ * The syntax is **ordinary markdown**, deliberately:
  *
  * ```md
  * ## R-003 Checkout, in detail
  *
- * The flow, the states and the error cases live in [[docs/checkout.md]].
+ * The flow, the states and the error cases are in [the checkout document](docs/checkout.md).
  * ```
  *
- * - a **path** (`[[docs/checkout.md]]`, `[[docs/checkout]]`) is read relative to the document it is
- *   written in first, then from the prototype's own folder;
- * - a **name** (`[[checkout]]`) matches a document by its file name, wherever it is — and is
- *   reported rather than guessed at when more than one file has that name.
+ * A custom syntax (`[[…]]`, say) would be this app's own construct, and a specification carrying one
+ * is a document only this app can read: everywhere else — a colleague, GitHub, an editor — the link
+ * would be a pair of literal brackets, exactly the failure the diagrams in these documents were
+ * switched away from (`![]()` rather than a preview-only fence, see `docs/prototypes.md`). Markdown
+ * links read as links in every reader, and this app already knows how to open one.
  *
- * The backlink is the other half, and the reason this is not the pointer list this workbench
- * deliberately removed: a one-way reference can only report a typo, while a link read from both ends
- * says which document a reader should look at next from either one. `status` and the detail page
- * read the same `links` for both directions, so the two cannot disagree about who points at whom.
+ * So what this module adds is only what markdown itself does not say:
  *
- * What a link is **not** is a claim about the work: it is navigation. Whether a requirement is
- * implemented is still only `@requirement R-00x` (`coverage.ts`), or a link to a document would let
- * any paragraph quietly mark its own requirement done.
+ * - **a relative destination is resolved against the document it is written in**, then the
+ *   prototype's own folder — so `docs/checkout.md` from `PRD.md` and `../PRD.md` from a document
+ *   under `docs/` both resolve;
+ * - **a link that resolves to nothing is reported** — a missing target is the silent failure of an
+ *   index, and the one thing a reader cannot see for themselves;
+ * - **backlinks are the other half**, and the reason this is not the pointer list this workbench
+ *   deliberately removed: a one-way reference can only report a typo, while a link read from both
+ *   ends says which document to read next from either one.
  *
- * Only markdown is read for links. `[[…]]` in a script is an array literal, and a link that exists
- * only because a file happens to contain brackets is the kind of false report this module is meant
- * to prevent rather than produce.
+ * A link is **navigation, not a claim about the work**: whether a requirement is implemented is
+ * still only `@requirement R-00x` (`coverage.ts`), or a link would let any paragraph quietly mark
+ * its own requirement done.
+ *
+ * Only the prototype's own markdown is read. A link to a document names the file (with its
+ * extension) — a destination the browser fetches on its own, an absolute path, a fragment, or a
+ * relative destination that names no file is not this module's business, and is left alone.
  */
 
 import { readFileSync } from 'fs'
 import { isMarkdownFile, listPrototypeFiles } from './storage.ts'
-import { extractLinkTargets } from './wiki-links.ts'
 
 /** One document pointing at another. */
 export interface PrototypeLink {
   /** The document the link is written in — prototype-relative, e.g. `PRD.md`, `docs/features.md`. */
   from: string
-  /**
-   * The target as written, with a `|label` and a `#anchor` stripped: `docs/checkout.md`,
-   * `docs/checkout`, `checkout`.
-   */
+  /** What the link points at, as written minus its `#fragment`: `docs/checkout.md`. */
   target: string
-  /**
-   * The prototype-relative path the target resolves to, or null when it resolves to nothing — the
-   * broken link the report names.
-   */
+  /** The prototype-relative path that resolves to, or null when it resolves to nothing. */
   to: string | null
 }
 
 export interface PrototypeLinks {
   /** In reading order: file path order, and each document's own order within it. */
   links: PrototypeLink[]
-  /** Read problems, in their own words: a link that points at nothing, a name that matches two files. */
+  /** Read problems, in their own words: a link that points at nothing. */
   issues: string[]
 }
 
 /**
- * The file names a target could name, extension included when the target does not carry one.
- *
- * `checkout` is a markdown document's name — that is the convention linking follows — while a target
- * that already has an extension (`checkout.md`, `cart.png`) is taken as itself.
+ * An inline markdown link: `[text](destination)`, `[text](<destination>)`, with an optional title.
+ * The text may not contain an unescaped bracket; the destination is either pointy-bracketed (how a
+ * path with a space is written) or a run without whitespace or parentheses.
  */
-function extensionVariants(target: string): string[] {
-  const last = target.slice(target.lastIndexOf('/') + 1)
-  return last.includes('.') ? [target] : [`${target}.md`, `${target}.mdx`]
+const MARKDOWN_LINK_RE =
+  /\[(?:[^[\]\\]|\\.)*\]\(\s*(<[^<>\n]*>|[^()\s]*)(?:\s+(?:"[^"]*"|'[^']*'|\([^()]*\)))?\s*\)/g
+
+/** Spans of the source that are code, where a link is an example rather than a link. */
+function codeRanges(source: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = []
+
+  // Fenced blocks (` ``` ` or `~~~`), then inline spans outside them — the same reading the
+  // renderer's own linkifier does.
+  for (const match of source.matchAll(/```[\s\S]*?```|~~~[\s\S]*?~~~/g)) {
+    ranges.push([match.index ?? 0, (match.index ?? 0) + match[0].length])
+  }
+  for (const match of source.matchAll(/(?<!`)`(?!`)([^`\n]+)`(?!`)/g)) {
+    const start = match.index ?? 0
+    if (!ranges.some(([from, to]) => start >= from && start < to)) {
+      ranges.push([start, start + match[0].length])
+    }
+  }
+
+  return ranges
+}
+
+/**
+ * Whether a destination names a file beside the document.
+ *
+ * A link to a document names the file, extension and all. False for everything a browser fetches on
+ * its own (`https:`, `data:`, `mailto:`, …), for an absolute path (`/…`, `C:\…`, `\\server\…`), and
+ * for a fragment or a relative destination that names no file: none of them is "a document in this
+ * folder", so none of them is this module's business.
+ */
+function isRelativeFileTarget(destination: string): boolean {
+  if (!destination) return false
+  if (destination.startsWith('/') || destination.startsWith('\\')) return false
+  if (destination.startsWith('#')) return false
+  if (/^[A-Za-z]:[\\/]/.test(destination)) return false
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(destination)) return false
+  return /\.[A-Za-z0-9]{1,8}$/.test(destination)
+}
+
+/** Percent-decode a destination so `a%20file.md` resolves to the file the author meant. */
+function decode(destination: string): string {
+  if (!destination.includes('%')) return destination
+  try {
+    return decodeURIComponent(destination)
+  } catch {
+    return destination
+  }
+}
+
+/**
+ * The targets a document links to, in order and once each.
+ *
+ * Only relative destinations that name a file are read, and a `#fragment` is set aside — it names a
+ * place inside the target, not a second file. A link inside a code span or a fenced block is an
+ * example, not a link: the guide that explains this convention is written that way.
+ */
+export function extractLinkTargets(source: string): string[] {
+  const ranges = codeRanges(source)
+  const targets: string[] = []
+  const seen = new Set<string>()
+
+  for (const match of source.matchAll(MARKDOWN_LINK_RE)) {
+    if (ranges.some(([from, to]) => (match.index ?? 0) >= from && (match.index ?? 0) < to)) continue
+
+    const raw = match[1] ?? ''
+    const destination = (raw.startsWith('<') && raw.endsWith('>') ? raw.slice(1, -1) : raw).split('#')[0] ?? ''
+    const target = decode(destination)
+
+    if (!isRelativeFileTarget(target) || seen.has(target)) continue
+    seen.add(target)
+    targets.push(target)
+  }
+
+  return targets
 }
 
 /** The folder a document sits in, prototype-relative (`docs/features.md` → `docs`); empty at the root. */
@@ -80,9 +150,9 @@ function directoryOf(file: string): string {
 
 /**
  * Collapse `.` and `..` in a prototype-relative path, so a document in a subfolder can point back
- * past its own level (`[[../PRD.md]]`) and mean it. Anything above the prototype's own folder is
- * simply dropped: a link cannot address anything outside the folder, and a path that climbs out is
- * reported as pointing at nothing rather than followed.
+ * past its own level (`../PRD.md`) and mean it. Anything above the prototype's own folder is simply
+ * dropped: a link cannot address anything outside the folder, and a path that climbs out is reported
+ * as pointing at nothing rather than followed.
  */
 function normalizeRelative(path: string): string {
   const segments: string[] = []
@@ -98,51 +168,35 @@ function normalizeRelative(path: string): string {
 }
 
 /**
- * Where a target points, and — when a bare name is not unique — the files it could have meant.
+ * The file a target names, or null — the document's own folder first, then the prototype's.
  *
- * Deliberately narrow: the document's own folder, then the prototype's folder, then a unique file
- * name. No search, no fuzzy matching, and no guess: a name that matches two files is reported, not
- * resolved, because which one was meant is not something this can know.
+ * Deliberately narrow and unambiguous: a path, resolved, or nothing. There is no search and no
+ * guess, because a link that stopped resolving is a fact to report rather than something to repair
+ * from a resemblance.
  */
-function resolveLink(
-  target: string,
-  from: string,
-  files: readonly string[],
-): { to: string | null; ambiguous: string[] | null } {
+function resolveLink(target: string, from: string, known: Set<string>): string | null {
   const normalized = target.replace(/\\/g, '/').replace(/^\.\//, '')
   const directory = directoryOf(from)
-  const known = new Set(files)
 
-  for (const variant of extensionVariants(normalized)) {
-    const relative = normalizeRelative(directory ? `${directory}/${variant}` : variant)
-    if (known.has(relative)) return { to: relative, ambiguous: null }
-    const fromRoot = normalizeRelative(variant)
-    if (known.has(fromRoot)) return { to: fromRoot, ambiguous: null }
+  const candidates = directory
+    ? [normalizeRelative(`${directory}/${normalized}`), normalizeRelative(normalized)]
+    : [normalizeRelative(normalized)]
+
+  for (const candidate of candidates) {
+    if (known.has(candidate)) return candidate
   }
-
-  // A bare name is matched across the folder when no path does — Obsidian's habit, kept only where
-  // it is unambiguous.
-  if (!normalized.includes('/')) {
-    const name = normalized.replace(/\.(?:md|mdx)$/i, '')
-    const matches = files.filter(
-      (file) => file.slice(file.lastIndexOf('/') + 1).replace(/\.(?:md|mdx)$/i, '') === name,
-    )
-    if (matches.length === 1) return { to: matches[0]!, ambiguous: null }
-    if (matches.length > 1) return { to: null, ambiguous: matches }
-  }
-
-  return { to: null, ambiguous: null }
+  return null
 }
 
 /**
- * Read every link in a prototype's markdown, and what could not be resolved.
+ * Read every link between a prototype's documents, and what could not be resolved.
  *
  * Never throws: a document that cannot be read is skipped (its absence from the report is a fact
  * about the disk), and a link is resolved only against files that are actually there.
  */
 export function readPrototypeLinks(workspaceRootPath: string, slug: string): PrototypeLinks {
   const files = listPrototypeFiles(workspaceRootPath, slug)
-  const names = files.map((file) => file.name)
+  const known = new Set(files.map((file) => file.name))
   const links: PrototypeLink[] = []
   const issues: string[] = []
 
@@ -157,14 +211,9 @@ export function readPrototypeLinks(workspaceRootPath: string, slug: string): Pro
     }
 
     for (const target of extractLinkTargets(source)) {
-      const { to, ambiguous } = resolveLink(target, file.name, names)
+      const to = resolveLink(target, file.name, known)
       links.push({ from: file.name, target, to })
-
-      if (ambiguous) {
-        issues.push(
-          `${file.name} links to ${target}, which matches more than one file (${ambiguous.join(', ')}); say which one.`,
-        )
-      } else if (!to) {
+      if (!to) {
         issues.push(`${file.name} links to ${target}, which is not in this prototype.`)
       }
     }

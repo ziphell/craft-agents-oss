@@ -82,7 +82,7 @@ describe('whyPrototypeIsNotSettled', () => {
     const dir = getPrototypeDirPath(workspaceRoot, slug)
     writeFileSync(
       join(dir, 'PRD.md'),
-      `${PRD}\nThe detail is in [[docs/checkout.md]], and stray [[gone.md]].\n`,
+      `${PRD}\nThe detail is in [checkout](docs/checkout.md), and stray [gone](gone.md).\n`,
       'utf-8',
     )
     mkdirSync(join(dir, 'docs'), { recursive: true })

@@ -3,7 +3,7 @@
  *
  * A plain `<img>` for everything a browser fetches on its own. For a destination that names
  * a file beside the document, the file is read through the platform and shown as a data URL
- * — the document's folder is what makes that possible (`image-path.ts`).
+ * — the document's folder is what makes that possible (`document-path.ts`).
  *
  * The picture is only ever an `<img>`, and that is the point: an SVG shown this way is drawn
  * in the browser's static image mode, so nothing inside it runs and nothing inside it is
@@ -13,7 +13,7 @@
 
 import * as React from 'react'
 import { usePlatform } from '../../context/PlatformContext'
-import { resolveDocumentImagePath } from './image-path'
+import { resolveDocumentPath } from './document-path'
 
 export interface MarkdownImageProps extends React.ImgHTMLAttributes<HTMLImageElement> {
   /** The folder the document lives in; a relative `src` is read from there. */
@@ -24,7 +24,7 @@ export interface MarkdownImageProps extends React.ImgHTMLAttributes<HTMLImageEle
 
 export function MarkdownImage({ src, alt, baseDir, node, ...props }: MarkdownImageProps) {
   const { onReadFileDataUrl } = usePlatform()
-  const localPath = resolveDocumentImagePath(baseDir, src)
+  const localPath = resolveDocumentPath(baseDir, src)
   const [dataUrl, setDataUrl] = React.useState<string | null>(null)
 
   React.useEffect(() => {

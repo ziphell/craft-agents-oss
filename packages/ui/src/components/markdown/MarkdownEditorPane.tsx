@@ -25,7 +25,7 @@ import { useFileWriter } from '../editors/useFileWriter'
 import { FileSaveStatus } from '../editors/FileSaveStatus'
 import { cn } from '../../lib/utils'
 import { Markdown, type DisablablePreviewBlock } from './Markdown'
-import { documentDir } from './image-path'
+import { documentDir } from './document-path'
 import { ShikiCodeEditor } from '../code-viewer/ShikiCodeEditor'
 
 /**
