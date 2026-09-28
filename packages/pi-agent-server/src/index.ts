@@ -462,12 +462,48 @@ function isLocalhostUrl(url: string): boolean {
 let customEndpointModelIds: Set<string> = new Set();
 
 /**
+ * Per-model parameters the connection carries, keyed by model id (Craft's `pi/`
+ * prefix stripped). `resolvePiModel` applies them on top of whatever the registry
+ * resolves for that id, so they are not a custom-endpoint thing — they are what a
+ * user wrote about a model, and a built-in provider's catalog entry is the place
+ * that needs them most (an endpoint that does take images while the catalog says
+ * it does not, a different context window, …).
+ */
+const customModelOverrides = new Map<string, CustomEndpointModelOverrides>();
+
+/**
+ * The connection's model entries, normalized once for every consumer. A
+ * connection that lists no models still names one to run.
+ */
+function connectionModelEntries(): CustomEndpointModelEntry[] {
+  if (!initConfig) return [];
+  return (initConfig.customModels?.length ? initConfig.customModels : [initConfig.model || 'default'])
+    .map(normalizeCustomEndpointModelEntry);
+}
+
+/**
+ * Remember every per-model parameter the connection carries, for **every**
+ * connection type. Called on init and on every runtime update so a parameter
+ * written in `config.json` outlives a save / a re-registration.
+ */
+function rememberModelOverrides(entries: CustomEndpointModelEntry[]): void {
+  customModelOverrides.clear();
+  for (const m of entries) {
+    // Everything except the id is a parameter override. Forwarding the whole
+    // rest (rather than a hand-picked subset) is what keeps a newly supported
+    // parameter from silently stopping at this line.
+    const { id: _id, ...params } = m;
+    if (Object.keys(params).length > 0) {
+      customModelOverrides.set(m.id, params);
+    }
+  }
+}
+
+/**
  * Register (or re-register) the custom-endpoint provider with the given models.
  * Note: registerProvider replaces the entire provider, so we maintain a Set of all
  * known model IDs and always pass the full set.
  */
-const customModelOverrides = new Map<string, CustomEndpointModelOverrides>();
-
 function registerCustomEndpointModels(
   registry: PiModelRegistry,
   api: CustomEndpointApi,
@@ -476,13 +512,6 @@ function registerCustomEndpointModels(
 ): void {
   for (const m of models) {
     customEndpointModelIds.add(m.id);
-    // Everything except the id is a parameter override. Forwarding the whole
-    // rest (rather than a hand-picked subset) is what keeps a newly supported
-    // parameter from silently stopping at this line.
-    const { id: _id, ...params } = m;
-    if (Object.keys(params).length > 0) {
-      customModelOverrides.set(m.id, params);
-    }
   }
   const allIds = [...customEndpointModelIds];
   const providerHeaders = initConfig?.customEndpoint?.headers;
@@ -555,15 +584,16 @@ async function createAuthenticatedRuntime(): Promise<{
       // by creating synthetic Model<Api> objects that the SDK requires. One-time per cache
       // lifetime: later config changes re-register via update_runtime_config, which
       // operates on this same shared registry.
+      //
+      // The connection's per-model parameters are remembered first, and for every
+      // connection type — a built-in provider has no registration step, but its model
+      // entries still carry what the user stated about those models.
+      const modelEntries = connectionModelEntries();
+      rememberModelOverrides(modelEntries);
       const hasCustomEndpoint = !!initConfig?.baseUrl?.trim();
       if (hasCustomEndpoint && initConfig?.customEndpoint) {
-        const { api } = initConfig.customEndpoint;
-        const modelEntries: CustomEndpointModelEntry[] = (initConfig.customModels?.length
-          ? initConfig.customModels
-          : [initConfig.model || 'default']
-        ).map(normalizeCustomEndpointModelEntry);
         customEndpointModelIds = new Set();  // Reset on fresh registry creation
-        registerCustomEndpointModels(modelRegistry, api, initConfig.baseUrl!.trim(), modelEntries);
+        registerCustomEndpointModels(modelRegistry, initConfig.customEndpoint.api, initConfig.baseUrl!.trim(), modelEntries);
       } else if (hasCustomEndpoint && !initConfig?.customEndpoint) {
         debugLog('Custom endpoint without protocol config — models may not resolve. Set customEndpoint.api for proper routing.');
       }
@@ -700,7 +730,7 @@ async function ensureSession(): Promise<AgentSession> {
   // Set model if specified
   if (initConfig.model) {
     try {
-      const piModel = resolvePiModel(modelRegistry, initConfig.model, initConfig.piAuth?.provider, shouldPreferCustomEndpoint());
+      const piModel = resolvePiModel(modelRegistry, initConfig.model, initConfig.piAuth?.provider, shouldPreferCustomEndpoint(), customModelOverrides);
       if (piModel) {
         // Verify resolved model's provider is compatible with the authenticated provider.
         // Without this, a model that resolves to a different provider (e.g. azure-openai-responses
@@ -984,7 +1014,7 @@ async function queryLlm(
   if (initConfig.piAuth) {
     const authProvider = initConfig.piAuth.provider;
     const bareModel = model.startsWith('pi/') ? model.slice(3) : model;
-    const resolved = resolvePiModel(modelRegistry, bareModel, authProvider, shouldPreferCustomEndpoint());
+    const resolved = resolvePiModel(modelRegistry, bareModel, authProvider, shouldPreferCustomEndpoint(), customModelOverrides);
     const resolvedProvider = (resolved as any)?.provider;
     const isCompatible = resolvedProvider === authProvider || resolvedProvider === 'custom-endpoint';
     if (!resolved || !isCompatible || isDeniedMiniModelId(model, piAuthProvider)) {
@@ -1008,7 +1038,7 @@ async function queryLlm(
     // fall back to its own internal default (which may require a provider
     // the user hasn't authenticated with, surfacing as a misleading
     // "No API key found for <provider>" error).
-    const piModel = resolvePiModel(modelRegistry, modelId, initConfig!.piAuth?.provider, shouldPreferCustomEndpoint());
+    const piModel = resolvePiModel(modelRegistry, modelId, initConfig!.piAuth?.provider, shouldPreferCustomEndpoint(), customModelOverrides);
     if (!piModel) {
       throw new Error(
         `Could not resolve mini model "${modelId}" for provider "${initConfig!.piAuth?.provider ?? '(unknown)'}"`,
@@ -1130,7 +1160,7 @@ async function queryLlm(
       const retryModel = fallbackCandidates.find(candidate => {
         if (triedModels.has(candidate)) return false;
         try {
-          const resolved = resolvePiModel(modelRegistry, candidate, initConfig!.piAuth?.provider, shouldPreferCustomEndpoint());
+          const resolved = resolvePiModel(modelRegistry, candidate, initConfig!.piAuth?.provider, shouldPreferCustomEndpoint(), customModelOverrides);
           if (!resolved) return false;
           if (initConfig!.piAuth) {
             const rp = (resolved as any).provider;
@@ -1642,19 +1672,18 @@ async function handleUpdateRuntimeConfig(msg: RuntimeConfigUpdateMessage): Promi
       customModels: msg.customModels,
     };
 
+    // Same two steps as init, in the same order: remember the connection's per-model
+    // parameters (whatever the connection type), then re-register the custom endpoint
+    // provider when there is one.
+    const modelEntries = connectionModelEntries();
+    rememberModelOverrides(modelEntries);
     if (piModelRegistry && initConfig.baseUrl?.trim() && initConfig.customEndpoint) {
-      const modelEntries: CustomEndpointModelEntry[] = (initConfig.customModels?.length
-        ? initConfig.customModels
-        : [initConfig.model || 'default']
-      ).map(normalizeCustomEndpointModelEntry);
-
       customEndpointModelIds = new Set();
-      customModelOverrides.clear();
       registerCustomEndpointModels(piModelRegistry, initConfig.customEndpoint.api, initConfig.baseUrl.trim(), modelEntries);
     }
 
     if (piSession && piModelRegistry) {
-      let piModel = resolvePiModel(piModelRegistry, msg.model, initConfig.piAuth?.provider, shouldPreferCustomEndpoint());
+      let piModel = resolvePiModel(piModelRegistry, msg.model, initConfig.piAuth?.provider, shouldPreferCustomEndpoint(), customModelOverrides);
       if (!piModel && initConfig.baseUrl?.trim() && initConfig.customEndpoint) {
         const bareId = stripPiPrefix(msg.model);
         registerCustomEndpointModels(piModelRegistry, initConfig.customEndpoint.api, initConfig.baseUrl.trim(), [{ id: bareId }]);
@@ -1687,7 +1716,7 @@ async function handleSetModel(msg: Extract<InboundMessage, { type: 'set_model' }
     debugLog(`[set_model] No active session or model registry, ignoring`);
     return;
   }
-  let piModel = resolvePiModel(piModelRegistry, msg.model, initConfig?.piAuth?.provider, shouldPreferCustomEndpoint());
+  let piModel = resolvePiModel(piModelRegistry, msg.model, initConfig?.piAuth?.provider, shouldPreferCustomEndpoint(), customModelOverrides);
 
   // For custom endpoints, dynamically register unknown models so mid-session switching works.
   // Uses registerCustomEndpointModels which accumulates into the existing model set

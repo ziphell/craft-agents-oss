@@ -41,17 +41,56 @@ export function normalizeCustomEndpointModelEntry(model: CustomEndpointModelConf
 /** Fallbacks for parameters a user did not set. */
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
 
+/** The SDK's `input` value for a user's `supportsImages` statement. */
+function inputForImageSupport(supportsImages: boolean): CustomEndpointInput[] {
+  return supportsImages ? ['text', 'image'] : ['text']
+}
+
+/**
+ * Overlay the per-model parameters a user wrote onto a model definition.
+ *
+ * **This is the only place the user-facing parameter names become the SDK's**
+ * (`supportsImages` → `input`, `supportsThinking` → `reasoning`), so a model we
+ * build ourselves ({@link buildCustomEndpointModelDef}) and one the SDK owns (a
+ * built-in provider's catalog entry, see `resolvePiModel`) cannot disagree
+ * about what the user asked for. Capability flags are permissive: only an
+ * explicit `false` turns one off.
+ *
+ * Nothing is filled in — a key the user did not write is left exactly as the
+ * model had it. For a catalog model those values come from the SDK and are the
+ * real fallback; for a synthetic one the caller passes
+ * {@link CUSTOM_ENDPOINT_MODEL_DEFAULTS} as the base.
+ */
+export function applyModelOverrides<T extends object>(
+  model: T,
+  overrides?: CustomEndpointModelOverrides,
+): T {
+  if (!overrides) return model
+
+  const next: Record<string, unknown> = { ...(model as Record<string, unknown>) }
+  if (overrides.name !== undefined) next.name = overrides.name
+  if (overrides.supportsImages !== undefined) next.input = inputForImageSupport(overrides.supportsImages)
+  if (overrides.supportsThinking !== undefined) next.reasoning = overrides.supportsThinking
+  if (overrides.contextWindow !== undefined) next.contextWindow = overrides.contextWindow
+  if (overrides.maxTokens !== undefined) next.maxTokens = overrides.maxTokens
+  // Pricing and compat are partial by nature: the user states what they know
+  // and the rest of the model's own values stay.
+  if (overrides.cost) next.cost = { ...(next.cost as object | undefined), ...overrides.cost }
+  if (overrides.compat) next.compat = { ...(next.compat as object | undefined), ...overrides.compat }
+  if (overrides.headers) next.headers = overrides.headers
+  if (overrides.thinkingLevelMap) next.thinkingLevelMap = overrides.thinkingLevelMap
+
+  return next as T
+}
+
 /**
  * Build a synthetic model definition for a custom endpoint.
  *
- * Every field the user can write in `config.json` wins over the fallback below;
- * the fallbacks exist because the endpoint cannot be queried for its actual
- * capabilities. Capability flags default to **true** (permissive): a custom
- * endpoint is assumed capable until the user says otherwise with an explicit
- * `false`.
- *
- * The user-facing `supportsThinking` becomes the SDK's `reasoning` here — this
- * is the only place the SDK's name for it appears.
+ * The constants below are only a base for {@link applyModelOverrides}: every
+ * field the user can write in `config.json` wins. They exist because the
+ * endpoint cannot be queried for its actual capabilities, and they default to
+ * **true** (permissive) — a custom endpoint is assumed capable until the user
+ * says otherwise with an explicit `false`.
  *
  * For `openai-completions` endpoints we set `compat.supportsStore = false` so the
  * pi-ai driver omits the OpenAI-platform-specific `store` param entirely. Third-party
@@ -64,24 +103,17 @@ export function buildCustomEndpointModelDef(
   overrides?: CustomEndpointModelOverrides,
   api?: CustomEndpointApi,
 ) {
-  const supportsImages = overrides?.supportsImages ?? true
-  const input: CustomEndpointInput[] = supportsImages ? ['text', 'image'] : ['text']
-
-  const compat = {
-    ...(api === 'openai-completions' ? { supportsStore: false } : {}),
-    ...(overrides?.compat ?? {}),
-  }
-
-  return {
-    id,
-    name: overrides?.name ?? id,
-    reasoning: overrides?.supportsThinking ?? true,
-    input,
-    cost: { ...ZERO_COST, ...(overrides?.cost ?? {}) },
-    contextWindow: overrides?.contextWindow ?? CUSTOM_ENDPOINT_MODEL_DEFAULTS.contextWindow,
-    maxTokens: overrides?.maxTokens ?? CUSTOM_ENDPOINT_MODEL_DEFAULTS.maxTokens,
-    ...(overrides?.headers ? { headers: overrides.headers } : {}),
-    ...(Object.keys(compat).length > 0 ? { compat } : {}),
-    ...(overrides?.thinkingLevelMap ? { thinkingLevelMap: overrides.thinkingLevelMap } : {}),
-  }
+  return applyModelOverrides(
+    {
+      id,
+      name: id,
+      reasoning: true,
+      input: inputForImageSupport(true),
+      cost: { ...ZERO_COST },
+      contextWindow: CUSTOM_ENDPOINT_MODEL_DEFAULTS.contextWindow,
+      maxTokens: CUSTOM_ENDPOINT_MODEL_DEFAULTS.maxTokens,
+      ...(api === 'openai-completions' ? { compat: { supportsStore: false } } : {}),
+    },
+    overrides,
+  )
 }

@@ -1,4 +1,5 @@
 import type { ModelRegistry as PiModelRegistry } from '@earendil-works/pi-coding-agent';
+import { applyModelOverrides, type CustomEndpointModelOverrides } from './custom-endpoint-models.ts';
 
 // Re-export from shared so the auth-aware mini-model denylist has a single
 // source of truth (also used by `getMiniModel()` at selection time).
@@ -8,23 +9,45 @@ export { isDeniedMiniModelId } from '../../shared/src/config/llm-connections.ts'
 type PiModel<T = any> = ReturnType<PiModelRegistry['find']>;
 
 /**
- * Resolve a Pi SDK model from the registry, with optional custom-endpoint precedence.
+ * Resolve a Pi SDK model from the registry, with optional custom-endpoint precedence,
+ * and apply the connection's per-model parameters on top.
  *
- * Resolution order:
- * 1. If `preferCustomEndpoint` is true, try `'custom-endpoint'` provider first
- * 2. Exact provider+model lookup via `piAuthProvider`
- * 3. Full `getAll()` scan by id/name
- * 4. Common provider fallback list (includes 'custom-endpoint')
+ * The connection's model entry is the user's statement about the model, and it wins
+ * over whatever the SDK's own definition says — a built-in provider's catalog entry
+ * included (`docs/custom-endpoint-plan.md` D8: the rule does not depend on the
+ * connection type). For a custom endpoint the same parameters are already baked into
+ * the definition we registered, so this is a no-op there; for a catalog model it is
+ * what makes an explicit `supportsImages` / context window / thinking flag stick —
+ * including the SDK's `input` flag, which is what decides whether the read tool hands
+ * an image to the model (or annotates the result with "does not support images").
  */
 export function resolvePiModel(
   modelRegistry: PiModelRegistry,
   modelId: string,
   piAuthProvider?: string,
   preferCustomEndpoint?: boolean,
+  modelOverrides?: Map<string, CustomEndpointModelOverrides>,
 ): PiModel | undefined {
-  // Strip Craft's pi/ prefix — Pi SDK uses bare model IDs (e.g. "claude-sonnet-4-6")
+  // Strip Craft's pi/ prefix — Pi SDK uses bare model IDs (e.g. "claude-sonnet-4-6").
+  // The override map is keyed the same way (see `normalizeCustomEndpointModelEntry`).
   const bareId = modelId.startsWith('pi/') ? modelId.slice(3) : modelId;
+  const model = findPiModel(modelRegistry, bareId, piAuthProvider, preferCustomEndpoint);
+  return model ? applyModelOverrides(model, modelOverrides?.get(bareId)) : model;
+}
 
+/**
+ * Look a model up in the registry. Resolution order:
+ * 1. If `preferCustomEndpoint` is true, try `'custom-endpoint'` provider first
+ * 2. Exact provider+model lookup via `piAuthProvider`
+ * 3. Full `getAll()` scan by id/name
+ * 4. Common provider fallback list (includes 'custom-endpoint')
+ */
+function findPiModel(
+  modelRegistry: PiModelRegistry,
+  bareId: string,
+  piAuthProvider?: string,
+  preferCustomEndpoint?: boolean,
+): PiModel | undefined {
   // Custom-endpoint takes precedence when configured
   if (preferCustomEndpoint) {
     const custom = modelRegistry.find('custom-endpoint', bareId);

@@ -16,6 +16,19 @@ const baseCompat: LlmConnection = {
   models: [{ id: 'gemma', supportsImages: true }],
 }
 
+/** A built-in Pi provider: the SDK owns the catalog, the connection lists ids. */
+const baseBuiltIn: LlmConnection = {
+  slug: 'pi-api-key',
+  name: 'Craft Agents Backend (API Key)',
+  providerType: 'pi',
+  authType: 'api_key',
+  createdAt: 1,
+  baseUrl: 'https://api.deepseek.com',
+  defaultModel: 'pi/deepseek-v4-flash',
+  piAuthProvider: 'deepseek',
+  models: ['pi/deepseek-v4-pro', 'pi/deepseek-v4-flash'],
+}
+
 function sig(connection: LlmConnection) {
   return buildBackendRuntimeSignature({
     connection,
@@ -56,6 +69,30 @@ describe('buildBackendRuntimeSignature', () => {
 
   it('ignores non-runtime metadata such as lastUsedAt', () => {
     expect(sig({ ...baseCompat, lastUsedAt: 1 })).toBe(sig({ ...baseCompat, lastUsedAt: 2 }))
+  })
+
+  // A built-in provider's catalog belongs to the SDK, but the connection's model
+  // entries still carry what the user stated about those models, and
+  // `resolvePiModel` applies it — so a change there has to refresh live sessions.
+  it('changes when a built-in provider model parameter changes', () => {
+    const withOverride = sig({
+      ...baseBuiltIn,
+      models: ['pi/deepseek-v4-pro', { id: 'pi/deepseek-v4-flash', supportsImages: true }],
+    })
+
+    expect(withOverride).not.toBe(sig(baseBuiltIn))
+  })
+
+  it('ignores id-only churn on a built-in provider', () => {
+    // `automaticallySyncedFromProvider` connections get their whole catalog
+    // written to `models[]` on every refresh; the ids alone change nothing for a
+    // built-in provider (unlike a custom endpoint, where they are its model set).
+    const resynced = sig({
+      ...baseBuiltIn,
+      models: [...(baseBuiltIn.models ?? []), 'pi/deepseek-v4-flash-vision-exp'],
+    })
+
+    expect(resynced).toBe(sig(baseBuiltIn))
   })
 })
 

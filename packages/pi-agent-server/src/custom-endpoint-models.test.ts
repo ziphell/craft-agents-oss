@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import {
+  applyModelOverrides,
   buildCustomEndpointModelDef,
   normalizeCustomEndpointModelEntry,
   stripPiPrefix,
@@ -151,5 +152,61 @@ describe('buildCustomEndpointModelDef – image input', () => {
   it('does not set store compat when the api is unspecified', () => {
     const model = buildCustomEndpointModelDef('some-model')
     expect((model as { compat?: unknown }).compat).toBeUndefined()
+  })
+})
+
+describe('applyModelOverrides – a model the SDK owns', () => {
+  // A built-in provider's catalog entry: everything on it comes from the SDK,
+  // and only what the user wrote on the connection's model entry may win.
+  const catalogModel = {
+    id: 'deepseek-v4-flash',
+    name: 'DeepSeek V4 Flash',
+    provider: 'deepseek',
+    reasoning: true,
+    input: ['text'],
+    contextWindow: 128_000,
+    maxTokens: 8_192,
+    compat: { supportsDeveloperRole: true },
+  }
+
+  it('returns the model untouched when the connection says nothing', () => {
+    expect(applyModelOverrides(catalogModel, undefined)).toBe(catalogModel)
+  })
+
+  it('lets an explicit image-support statement win over the catalog', () => {
+    const enabled = applyModelOverrides(catalogModel, { supportsImages: true })
+    expect(enabled.input).toEqual(['text', 'image'])
+    // The catalog's own fields stay as they are.
+    expect(enabled.name).toBe('DeepSeek V4 Flash')
+    expect(enabled.provider).toBe('deepseek')
+    expect(enabled.contextWindow).toBe(128_000)
+
+    expect(applyModelOverrides(catalogModel, { supportsImages: false }).input).toEqual(['text'])
+  })
+
+  it('leaves the SDK input flag alone when the user did not write one', () => {
+    const overridden = applyModelOverrides(catalogModel, { contextWindow: 262_144 })
+    expect(overridden.input).toEqual(['text'])
+    expect(overridden.contextWindow).toBe(262_144)
+  })
+
+  it('translates supportsThinking to the SDK reasoning flag', () => {
+    expect(applyModelOverrides(catalogModel, { supportsThinking: false }).reasoning).toBe(false)
+  })
+
+  it('merges compat over the model’s own instead of replacing it', () => {
+    const overridden = applyModelOverrides(catalogModel, {
+      compat: { maxTokensField: 'max_tokens' },
+    })
+    expect(overridden.compat).toEqual({
+      supportsDeveloperRole: true,
+      maxTokensField: 'max_tokens',
+    })
+  })
+
+  it('does not mutate the model it was given', () => {
+    const before = { ...catalogModel, input: [...catalogModel.input] }
+    applyModelOverrides(catalogModel, { supportsImages: true, contextWindow: 1 })
+    expect(catalogModel).toEqual(before)
   })
 })

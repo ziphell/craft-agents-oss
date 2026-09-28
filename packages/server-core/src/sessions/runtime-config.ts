@@ -25,9 +25,15 @@ function definedObject<T extends Record<string, unknown>>(obj: T): Record<string
  * signature. Uses the shared projection so a newly supported per-model
  * parameter automatically drifts the signature (and therefore forces the
  * dispose + recreate path) instead of being silently ignored here.
+ *
+ * A custom endpoint's id list *is* its registered model set, so every entry
+ * counts there. A built-in provider's catalog belongs to the SDK, and only the
+ * per-model parameters we overlay change anything — dropping the id-only
+ * entries keeps a synced catalog from churning this signature.
  */
 function normalizeCustomModels(connection: LlmConnection): unknown[] {
   return toCustomEndpointModels(connection.models)
+    .filter(entry => isCompatProvider(connection.providerType) || typeof entry !== 'string')
     .map(entry => (typeof entry === 'string' ? { id: entry } : { ...entry }))
     .sort((a, b) => a.id.localeCompare(b.id))
 }
@@ -71,6 +77,11 @@ export function buildBackendRuntimeSignature(input: BackendRuntimeSignatureInput
         authType: connection.authType,
         defaultModel: connection.defaultModel,
         fastModel: connection.fastModel,
+        // Per-model parameters reach the runtime for every connection type —
+        // `update_runtime_config` carries them for a built-in provider too, and
+        // `resolvePiModel` applies them on top of the SDK's own definition. So
+        // they belong in the signature for every connection type as well.
+        models: normalizeCustomModels(connection),
         ...(isCompatProvider(connection.providerType)
           ? {
               baseUrl: connection.baseUrl,
@@ -81,7 +92,6 @@ export function buildBackendRuntimeSignature(input: BackendRuntimeSignatureInput
                     headers: connection.customEndpoint.headers,
                   })
                 : undefined,
-              models: normalizeCustomModels(connection),
             }
           : {}),
       })
