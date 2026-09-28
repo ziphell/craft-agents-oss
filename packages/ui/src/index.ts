@@ -30,6 +30,8 @@ export {
   SessionViewer,
   TurnCard,
   TurnCardActionsMenu,
+  TurnRail,
+  buildTurnRailItems,
   ResponseCard,
   UserMessageBubble,
   SystemMessage,
@@ -50,6 +52,9 @@ export {
   type SessionViewerMode,
   type TurnCardProps,
   type TurnCardActionsMenuProps,
+  type TurnRailProps,
+  type TurnRailItem,
+  type TurnRailRole,
   type ResponseCardProps,
   type UserMessageBubbleProps,
   type SystemMessageProps,
@@ -86,7 +91,21 @@ export {
   type MarkdownImageBlockProps,
   type ImageCardStackProps,
   type ImageCardStackItem,
+  MarkdownEditorPane,
+  type MarkdownEditorPaneProps,
 } from './components/markdown'
+
+// drawio — the diagram frames, the file-bound editor, and the origin they need
+export {
+  DrawioViewer,
+  DrawioEditorFrame,
+  DrawioEditorPane,
+  DrawioOverlay,
+  useDrawioOrigin,
+  type DrawioOrigin,
+  type DrawioEditorPaneProps,
+  type DrawioOverlayProps,
+} from './components/drawio'
 
 // UI primitives
 export {
@@ -206,8 +225,10 @@ export {
   JSONPreviewOverlay,
   DataTableOverlay,
   DocumentFormattedMarkdownOverlay,
+  MarkdownFileOverlay,
   ImagePreviewOverlay,
   PDFPreviewOverlay,
+  HTMLPreviewOverlay,
   detectLanguage,
   detectLanguageFromPath,
   type CodePreviewOverlayProps,
@@ -219,8 +240,10 @@ export {
   type JSONPreviewOverlayProps,
   type DataTableOverlayProps,
   type DocumentFormattedMarkdownOverlayProps,
+  type MarkdownFileOverlayProps,
   type ImagePreviewOverlayProps,
   type PDFPreviewOverlayProps,
+  type HTMLPreviewOverlayProps,
   ActivityCardsOverlay,
   type ActivityCardsOverlayProps,
 } from './components/overlay'

@@ -13,7 +13,7 @@ import {
   lstatSync,
   readdirSync,
 } from 'fs';
-import { join, dirname } from 'path';
+import { join } from 'path';
 import { createHash } from 'crypto';
 
 export type Platform = 'darwin' | 'win32' | 'linux';
@@ -483,26 +483,6 @@ export function copyInterceptorBundle(config: BuildConfig): void {
 }
 
 /**
- * Copy Session MCP Server to packaged app resources.
- * The session server provides session-scoped tools (SubmitPlan, config_validate, etc.) for agent sessions.
- */
-export function copySessionServer(config: BuildConfig): void {
-  const { rootDir, electronDir } = config;
-
-  const sessionSource = join(rootDir, 'packages', 'session-mcp-server', 'dist', 'index.js');
-  const sessionDest = join(electronDir, 'resources', 'session-mcp-server', 'index.js');
-
-  if (!existsSync(sessionSource)) {
-    console.warn(`Warning: Session server not found at ${sessionSource}. Session-scoped tools will not work.`);
-    return;
-  }
-
-  console.log('Copying Session MCP Server...');
-  mkdirSync(dirname(sessionDest), { recursive: true });
-  copyFileSync(sessionSource, sessionDest);
-}
-
-/**
  * Map our Platform type to koffi's directory naming convention.
  * koffi uses: darwin_arm64, darwin_x64, linux_x64, win32_x64, etc.
  */
@@ -571,29 +551,16 @@ export function copyPiAgentServer(config: BuildConfig): void {
 }
 
 /**
- * Build MCP servers (session) and Pi agent server.
+ * Build the Pi agent server.
  * Shared across all platforms to avoid drift.
  */
 export function buildMcpServers(config: BuildConfig): void {
   const { rootDir } = config;
 
-  const sessionDir = join(rootDir, 'packages', 'session-mcp-server');
-  const sessionOut = join(sessionDir, 'dist', 'index.js');
   const piDir = join(rootDir, 'packages', 'pi-agent-server');
   const piOut = join(piDir, 'dist', 'index.js');
 
-  console.log('Building MCP servers...');
-
-  mkdirSync(join(sessionDir, 'dist'), { recursive: true });
-
-  execSync(
-    `bun build ${join(sessionDir, 'src', 'index.ts')} --outfile ${sessionOut} --target node --format cjs`,
-    { cwd: rootDir, stdio: 'inherit', shell: true }
-  );
-
-  if (!existsSync(sessionOut)) {
-    throw new Error(`Session MCP server output not found at ${sessionOut}`);
-  }
+  console.log('Building Pi agent server...');
 
   // Pi agent server uses --target=bun --format=esm because its Pi SDK deps are ESM-only.
   // --target=node --format=cjs leaves ESM deps as external require() calls that fail at runtime.
@@ -633,17 +600,13 @@ export function buildWhatsAppWorker(config: BuildConfig): void {
 }
 
 /**
- * Verify MCP helper servers and Pi agent server are present in packaged resources.
+ * Verify the Pi agent server is present in packaged resources.
  */
 export function verifyMcpServersExist(config: BuildConfig): void {
   const { electronDir } = config;
 
-  const sessionPath = join(electronDir, 'resources', 'session-mcp-server', 'index.js');
   const piPath = join(electronDir, 'resources', 'pi-agent-server', 'index.js');
 
-  if (!existsSync(sessionPath)) {
-    throw new Error(`Session MCP server not found at ${sessionPath}`);
-  }
   if (!existsSync(piPath)) {
     console.warn(`Warning: Pi agent server not found at ${piPath}. Pi SDK sessions will not work.`);
   }

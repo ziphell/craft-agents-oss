@@ -2,7 +2,6 @@
  * MermaidPreviewOverlay — fullscreen diagram preview with zoom and pan.
  */
 
-import { useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { GitGraph } from 'lucide-react'
 import { PreviewOverlay } from './PreviewOverlay'
@@ -33,9 +32,9 @@ export function MermaidPreviewOverlay({
   code,
 }: MermaidPreviewOverlayProps) {
   const { t } = useTranslation()
-  const containerRef = useRef<HTMLDivElement>(null)
 
   const {
+    containerRef,
     scale,
     translate,
     isDragging,
@@ -47,10 +46,7 @@ export function MermaidPreviewOverlay({
     reset,
     onMouseDown,
     onDoubleClick,
-  } = useRichBlockInteractions({
-    isOpen,
-    containerRef,
-  })
+  } = useRichBlockInteractions({ isOpen })
 
   const isDefaultView = scale === 1 && translate.x === 0 && translate.y === 0
 

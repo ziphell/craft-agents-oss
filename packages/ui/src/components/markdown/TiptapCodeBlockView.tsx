@@ -7,6 +7,7 @@ import { bundledLanguages } from 'shiki'
 import { Check, ChevronDown, Copy } from 'lucide-react'
 import { SimpleDropdown, SimpleDropdownItem } from '../ui/SimpleDropdown'
 import { TiptapHoverActions, TiptapHoverActionButton } from './TiptapHoverActions'
+import { isPreviewBlockLanguage } from './extensions/preview-block-languages'
 import { cn } from '../../lib/utils'
 
 interface TiptapCodeBlockViewProps {
@@ -289,10 +290,13 @@ export const tiptapCodeBlock = CodeBlockShiki.extend({
   parseMarkdown: (token: any, helpers: any) => {
     const lang = (token.lang ?? '').toLowerCase()
 
-    // Dedicated rich block nodes handle these fenced languages.
+    // Dedicated rich block nodes handle these fenced languages. This node is the fallback for
+    // "a fence nobody else claims", so it has to let both lists through: the visual blocks
+    // below, and the ones with a component of their own in `PreviewBlock`.
     if (lang === 'mermaid' || lang === 'latex' || lang === 'math' || lang === 'tex' || lang === 'katex') {
       return []
     }
+    if (isPreviewBlockLanguage(lang)) return []
 
     return helpers.createNode(
       'codeBlock',

@@ -3,7 +3,7 @@
  *
  * The reverse index is the single weak reference a website carries
  * (`WebsiteConfig.originSessionId`), so this menu is the way back to it — no
- * library, no second navigator (plan §19.9: the sidebar carries scope).
+ * library, no second navigator.
  *
  * Nothing produced, nothing rendered.
  *

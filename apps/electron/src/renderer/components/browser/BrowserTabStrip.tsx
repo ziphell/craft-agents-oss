@@ -3,12 +3,12 @@
  *
  * Rendered in the TopBar, shows compact badges for all active browser instances.
  * Each badge opens a shared action menu, whose first group is that window's own
- * tabs (plan §22): one window is one badge, and its tabs are listed inside it.
+ * tabs: one window is one badge, and its tabs are listed inside it.
  *
  * A tab row answers two different questions, and they are kept apart. **Clicking**
  * it shows that tab — the switch is the window's own state, and the window comes up
  * with it, so a window behind something else is reached from here (用户报告).
- * **Right-clicking** it hands the tab to a conversation as a chip (plan §12.7),
+ * **Right-clicking** it hands the tab to a conversation as a chip,
  * which is about the tab as a thing to look at and leaves the window exactly where
  * it is.
  */
@@ -59,7 +59,7 @@ function hasTabOf(instance: BrowserInstanceInfo, sessionId: string | null): bool
   return !!instance.tabs?.some(
     (tab) =>
       tab.belongsTo?.sessionId === sessionId
-      || tab.cursorOf === sessionId
+      || tab.cursorOf.includes(sessionId)
       || tab.lockedBy === sessionId,
   )
 }
@@ -296,7 +296,7 @@ export function BrowserTabStrip({
    *
    * A tab is added in order to be looked at, so this also brings the window up: a
    * new tab in a window nobody can see is half an action, the same half that
-   * switching a tab used to make whole (plan §22). Which tab ends up in front is
+   * switching a tab used to make whole. Which tab ends up in front is
    * the window's own answer — the host activates the tab it just added.
    */
   const addTab = useCallback((instance: BrowserInstanceInfo) => {
@@ -326,8 +326,8 @@ export function BrowserTabStrip({
    *   up with it — a tab switched in a window nobody can see is half an action — so
    *   this is how a window behind something else is reached. The entry that is marked
    *   is where the window is, and that mark follows the window's own state.
-   * - **the row's context menu** hands the tab to a conversation as a chip (plan
-   *   §12.7) — about the tab as a thing to look at, so it leaves the window alone.
+   * - **the row's context menu** hands the tab to a conversation as a chip —
+   *   about the tab as a thing to look at, so it leaves the window alone.
    *
    * It lists the window even when that is one tab (用户报告): this is where you
    * look to see what is open, and leaving it out for a single tab answers the
@@ -380,7 +380,7 @@ export function BrowserTabStrip({
                * **Click shows it**: the tab comes forward and the window comes up, which
                * is the window's own verb — its rail means the same thing from inside, and
                * this is the way to it from a window that is behind something. **Right-click
-               * hands it to a conversation** (plan §12.7), which is about the tab as a
+               * hands it to a conversation**, which is about the tab as a
                * thing to look at rather than about what the window is showing, so it leaves
                * the window alone.
                */
@@ -442,7 +442,7 @@ export function BrowserTabStrip({
     const openTarget = openTargetOfActiveTab(instance.tabs, sessionMeta)
     const canOpenSession = !!openTarget
     // Named after what it actually opens, and after the **tab**: the item reads the tab on
-    // screen, because the window is the whole workspace's (plan §22).
+    // screen, because the window is the whole workspace's.
     const openSessionLabel = openTarget?.kind === 'task'
       ? t('browser.openTabTask')
       : t('browser.openTabConversation')
@@ -456,7 +456,7 @@ export function BrowserTabStrip({
           about this window's tabs — what is open, and the way to open one more — so a
           divider would only split one subject in two. It is an act rather than a
           report, and it is here whatever the window holds: a window with one tab is
-          exactly the one somebody wants a second tab in (plan §22, 用户报告).
+          exactly the one somebody wants a second tab in.
         */}
         <StyledDropdownMenuItem disabled={!!instancesOverride} onSelect={() => addTab(instance)}>
           <Icons.Plus className="h-3.5 w-3.5" />

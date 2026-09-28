@@ -24,6 +24,19 @@ export interface Info_MarkdownProps {
   className?: string
   /** Enable fullscreen button (shows Maximize2 icon on hover) */
   fullscreen?: boolean
+  /**
+   * The folder the document lives in, when the content *is* a file on disk — a picture
+   * named beside it is resolved from there (`Markdown`'s `baseDir`). Omitted for content
+   * that is not a file, where a relative destination has no folder to be relative to.
+   */
+  baseDir?: string
+  /**
+   * A link in the document, handed to the app rather than followed here — a file path opens in
+   * whatever shows that kind of file, an address in the browser. Omitted where the content is not
+   * something a reader can open (a skill's instructions, say), and then a link is just text.
+   */
+  onFileClick?: (path: string) => void
+  onUrlClick?: (url: string) => void
 }
 
 export function Info_Markdown({
@@ -32,6 +45,9 @@ export function Info_Markdown({
   mode = 'minimal',
   className,
   fullscreen = false,
+  baseDir,
+  onFileClick,
+  onUrlClick,
 }: Info_MarkdownProps) {
   const { t } = useTranslation()
   const [isFullscreen, setIsFullscreen] = useState(false)
@@ -69,15 +85,25 @@ export function Info_Markdown({
           </button>
         )}
 
-        <Markdown mode={mode}>{children}</Markdown>
+        <Markdown
+          mode={mode}
+          baseDir={baseDir}
+          onFileClick={onFileClick}
+          onUrlClick={onUrlClick}
+        >
+          {children}
+        </Markdown>
       </div>
 
       {/* Fullscreen overlay - reuses shared component from packages/ui */}
       {fullscreen && (
         <DocumentFormattedMarkdownOverlay
           content={children}
+          baseDir={baseDir}
           isOpen={isFullscreen}
           onClose={() => setIsFullscreen(false)}
+          onOpenFile={onFileClick}
+          onOpenUrl={onUrlClick}
         />
       )}
     </>

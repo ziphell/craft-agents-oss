@@ -116,6 +116,7 @@ export const DOC_REFS = {
   mermaid: `${APP_ROOT}/docs/mermaid.md`,
   dataTables: `${APP_ROOT}/docs/data-tables.md`,
   htmlPreview: `${APP_ROOT}/docs/html-preview.md`,
+  drawioTools: `${APP_ROOT}/docs/drawio-tools.md`,
   pdfPreview: `${APP_ROOT}/docs/pdf-preview.md`,
   imagePreview: `${APP_ROOT}/docs/image-preview.md`,
   markdownPreview: `${APP_ROOT}/docs/markdown-preview.md`,

@@ -15,7 +15,6 @@
 
 import { CodedError } from '@craft-agent/shared/protocol'
 import type { BrowserInstanceInfo, PickedElement, TabBelongsTo } from '@craft-agent/shared/protocol'
-import type { MockProgram } from '@craft-agent/shared/prototypes'
 import type {
   IBrowserPaneManager,
   BrowserScreenshotOptions,
@@ -23,6 +22,8 @@ import type {
   BrowserScreenshotResult,
   VideoFrameExtractionResult,
   VideoFrameOptions,
+  DrawioRenderOptions,
+  RenderedDrawioFile,
   BrowserConsoleOptions,
   BrowserConsoleEntry,
   BrowserNetworkOptions,
@@ -57,7 +58,7 @@ export interface RemoteBrowserPaneManagerDeps {
   readonly getHostClient: () => string | null
   /**
    * The **work** this session is part of — its task and node when it is a Conductor child,
-   * itself otherwise (plan §22).
+   * itself otherwise.
    *
    * Asked per call rather than captured once, because it can change: a session can be bound
    * to a task after it exists (`bindExistingSessionToTask`), and a tab opened before that is
@@ -82,7 +83,7 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
     this.getWork = deps.getWork ?? (() => null)
   }
 
-  /** Who is asking: the session, and the work it is part of (plan §22). */
+  /** Who is asking: the session, and the work it is part of. */
   private work(): TabBelongsTo {
     return this.getWork() ?? { kind: 'session', sessionId: this.sessionId }
   }
@@ -113,12 +114,11 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
       sessionId: this.sessionId,
       workspaceId: this.workspaceId,
       // The caller's work travels as identity, not in `args`: the far side stamps a new
-      // tab's `belongsTo` from it rather than from a value the caller could name
-      // (plan §22). Asked per call — a session can be bound to a task later.
+      // tab's `belongsTo` from it rather than from a value the caller could name.
+      // Asked per call — a session can be bound to a task later.
       work: this.work(),
       // Carried beside the session and workspace rather than inside `args`: it is routing,
-      // and the tab a command acts on is the caller's decision to state
-      // (plan §22, 第十二轮).
+      // and the tab a command acts on is the caller's decision to state.
       tabId,
     })
   }
@@ -281,7 +281,7 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
 
   assignTab(instanceId: string, tabId: string, to: TabBelongsTo, by: TabBelongsTo): void {
     // `to` travels in `args` (the far side cannot resolve the receiver's task), while `by`
-    // is the request's own identity — the same split `createTab` makes (plan §22).
+    // is the request's own identity — the same split `createTab` makes.
     this.invokeSync('assignTab', [instanceId, tabId, to, by])
   }
 
@@ -299,7 +299,7 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
   //
   // Each tab-scoped one takes the tab it acts on (`tabId`) and ships it as routing
   // context on the request: the local manager is shared by every conversation, so "which
-  // tab" has to travel with the call (plan §22, 第十二轮).
+  // tab" has to travel with the call.
   // ---------------------------------------------------------------------------
 
   async navigate(id: string, url: string, tabId?: string): Promise<{ url: string; title: string }> {
@@ -389,12 +389,8 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
     return await this.invoke<VideoFrameExtractionResult>('extractVideoFrames', [filePath, options])
   }
 
-  async setFetchMock(id: string, program: MockProgram, tabId?: string): Promise<number> {
-    return await this.invoke<number>('setFetchMock', [id, program], tabId)
-  }
-
-  async clearFetchMock(id: string, tabId?: string): Promise<void> {
-    await this.invoke<void>('clearFetchMock', [id], tabId)
+  async renderDrawio(options: DrawioRenderOptions): Promise<RenderedDrawioFile> {
+    return await this.invoke<RenderedDrawioFile>('renderDrawio', [options])
   }
 
   async screenshot(id: string, options?: BrowserScreenshotOptions, tabId?: string): Promise<BrowserScreenshotResult> {
@@ -412,8 +408,8 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
     void this.invoke<BrowserConsoleEntry[]>('getConsoleLogs', [id, options], tabId).catch(() => {})
     return []
   }
-  windowResize(id: string, width: number, height: number): { width: number; height: number } {
-    void this.invoke<{ width: number; height: number }>('windowResize', [id, width, height]).catch(() => {})
+  resizeViewport(id: string, width: number, height: number, tabId?: string): { width: number; height: number } {
+    void this.invoke<{ width: number; height: number }>('resizeViewport', [id, width, height], tabId).catch(() => {})
     return { width, height }
   }
   getNetworkLogs(id: string, options?: BrowserNetworkOptions, tabId?: string): BrowserNetworkEntry[] {

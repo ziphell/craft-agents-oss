@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { Globe2, Lock, RefreshCw, Trash2 } from 'lucide-react'
+import { PanelsTopLeft, RefreshCw, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
 import { cn } from '@/lib/utils'
@@ -10,7 +10,7 @@ import {
   StyledContextMenuItem,
 } from '@/components/ui/styled-context-menu'
 import type { LoadedWebsite } from '@craft-agent/shared/websites/types'
-import { WEBSITE_KIND_ICONS, WebsiteFreshness, WebsiteKindBadge } from './website-visuals'
+import { WebsiteFreshness } from './website-visuals'
 import { useInView } from '@/hooks/useInView'
 
 export interface WebsiteTileProject {
@@ -29,7 +29,7 @@ interface WebsiteTileProps {
 /**
  * One tile in the Websites library grid. Shows the cached preview poster when one
  * is fresh (lazily fetched once the tile scrolls into view); otherwise falls
- * back to a deterministic placeholder (kind glyph + title monogram + project
+ * back to a deterministic placeholder (glyph + title monogram + project
  * accent). "Fresh" = the poster's digest matches the current content digest,
  * mirroring `isThumbnailFresh` server-side (inlined here — the renderer must
  * not import Node-backed `@craft-agent/shared` code).
@@ -37,7 +37,6 @@ interface WebsiteTileProps {
 export function WebsiteTile({ website, project, onOpen, onDelete }: WebsiteTileProps) {
   const { t } = useTranslation()
   const { config } = website
-  const KindIcon = WEBSITE_KIND_ICONS[config.kind]
   const monogram = (config.name.trim()[0] ?? '?').toUpperCase()
   const accent = project?.color
 
@@ -117,7 +116,7 @@ export function WebsiteTile({ website, project, onOpen, onDelete }: WebsiteTileP
               ) : (
                 <>
                   <span className="select-none text-4xl font-semibold text-foreground/[0.08]">{monogram}</span>
-                  <KindIcon className="absolute h-6 w-6 text-foreground/25" strokeWidth={1.75} aria-hidden />
+                  <PanelsTopLeft className="absolute h-6 w-6 text-foreground/25" strokeWidth={1.75} aria-hidden />
                   <span
                     className="absolute -right-4 -top-4 h-16 w-16 rounded-full border border-foreground/[0.05]"
                     aria-hidden
@@ -135,7 +134,6 @@ export function WebsiteTile({ website, project, onOpen, onDelete }: WebsiteTileP
           <div className="flex min-w-0 flex-col gap-1 px-3.5 py-3">
             <span className="truncate text-[13px] font-semibold text-foreground">{config.name}</span>
             <span className="flex min-w-0 items-center gap-2">
-              <WebsiteKindBadge kind={config.kind} />
               {project && (
                 <span className="inline-flex min-w-0 items-center gap-1.5 text-[11px] text-foreground/50">
                   <span
@@ -147,18 +145,6 @@ export function WebsiteTile({ website, project, onOpen, onDelete }: WebsiteTileP
                 </span>
               )}
               <span className="ml-auto inline-flex items-center gap-2">
-                {config.share && (
-                  <span
-                    className="inline-flex items-center text-foreground/45"
-                    role="img"
-                    aria-label={t('websites.shared')}
-                    title={t('websites.shared')}
-                  >
-                    {config.share.passwordProtected
-                      ? <Lock className="h-3 w-3" aria-hidden />
-                      : <Globe2 className="h-3 w-3" aria-hidden />}
-                  </span>
-                )}
                 <WebsiteFreshness config={config} />
               </span>
             </span>

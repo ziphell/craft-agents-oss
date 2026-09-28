@@ -59,7 +59,7 @@ export function resolveBrowserLiveFxBorder(accentColor: string): { color: string
 
 export function getBrowserLiveFxCornerRadii(): BrowserLiveFxCornerRadii {
   /**
-   * The page is a panel like the app's own (plan §22), and all four of its corners are the same
+   * The page is a panel like the app's own, and all four of its corners are the same
    * corner: the page's view rounds them itself (`applyPageCornerRadius`) and a view takes one
    * radius, so the hairline and the mask behind it follow that one number. The app's own panels
    * draw the corner nearest the window a couple of pixels tighter — that corner is the window's

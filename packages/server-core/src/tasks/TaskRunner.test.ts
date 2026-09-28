@@ -245,41 +245,10 @@ describe('TaskRunner (Conductor)', () => {
   })
 
   /**
-   * The one hop of §3.6 that had no test: a node's `writes:` becomes the child session's
-   * `taskWrites`, which is where the write guard and `<prototype_context writer>` read it from. A
-   * node that declares nothing stamps nothing — "absent means the single-writer default" is a
-   * decision `resolvePrototypeWriter` makes, not one to write `main` in here.
+   * Two lanes in flight at the same time — both dispatched before either finishes, and the run
+   * settles only when both are done, like any fan-out.
    */
-  it("stamps the node's writer identity on its child, and leaves it off when the node declares none", async () => {
-    saveTaskSpec(
-      root,
-      specOf({
-        id: 'lanes',
-        title: 'Lanes',
-        goal: 'g',
-        nodes: [
-          { id: 'ui', prompt: 'ui', writes: 'checkout-ui' },
-          { id: 'notes', prompt: 'notes' },
-        ],
-      }),
-    );
-    const runner = makeRunner();
-    runner.run('lanes', { runId: 'r1' });
-    await tick();
-
-    const optionsFor = (node: string) => host.created.find((c) => c.options.taskNodeId === node)?.options;
-
-    expect(optionsFor('ui')?.taskWrites).toBe('checkout-ui');
-    expect(optionsFor('notes')?.taskWrites).toBeUndefined();
-  });
-
-  /**
-   * What §6.4 was waiting for, at the runner's level: two lanes in flight at the same time, each
-   * writing as its own identity. The files are protected by the pair — a distinct prefix per lane
-   * (refused at validation when they collide) and the write guard refusing a name that claims
-   * another's — so the runner's job is to get one stamp per node right, and to let both go.
-   */
-  it('keeps two writer lanes in flight at once, each stamped with its own identity', async () => {
+  it('keeps two lanes in flight at once, and settles when both are done', async () => {
     saveTaskSpec(
       root,
       specOf({
@@ -287,8 +256,8 @@ describe('TaskRunner (Conductor)', () => {
         title: 'Parallel',
         goal: 'g',
         nodes: [
-          { id: 'ui', prompt: 'ui', writes: 'checkout-ui' },
-          { id: 'api', prompt: 'api', writes: 'checkout-api' },
+          { id: 'ui', prompt: 'ui' },
+          { id: 'api', prompt: 'api' },
         ],
       }),
     );
@@ -298,17 +267,6 @@ describe('TaskRunner (Conductor)', () => {
 
     // Both dispatched before either finished: that is the concurrency, not a queue.
     expect(host.dispatchedNames().sort()).toEqual(['api', 'ui']);
-
-    const writers = host.created
-      .map((c) => ({ node: c.options.taskNodeId, writes: c.options.taskWrites }))
-      .sort((a, b) => String(a.node).localeCompare(String(b.node)));
-    expect(writers).toEqual([
-      { node: 'api', writes: 'checkout-api' },
-      { node: 'ui', writes: 'checkout-ui' },
-    ]);
-
-    // Two children, so no lane's guard can be reading the other's identity.
-    expect(new Set(host.created.map((c) => c.id)).size).toBe(2);
 
     // …and the run settles only when both are done, like any fan-out.
     host.complete('ui', { finalText: 'A' });

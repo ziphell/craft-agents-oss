@@ -20,7 +20,7 @@ import type { LoadedWebsite } from '@craft-agent/shared/websites/types'
 /**
  * Websites library — the full-width home grid (mirrors the Kanban board pane).
  * Header carries the controlled Project filter (with an Unassigned sentinel)
- * and the New Website action; tiles open the embedded website render.
+ * and the New Website action; tiles open the website's detail screen.
  */
 export function WebsitesHome() {
   const { activeWorkspaceId } = useAppShellContext()
@@ -89,7 +89,6 @@ export function WebsitesHome() {
     try {
       const created = await window.electronAPI.createWebsite(activeWorkspaceId, {
         name: t('websites.newWebsite'),
-        kind: 'interactive',
         ...(boundProjectId ? { projectId: boundProjectId } : {}),
       })
       navigate(routes.view.websites(created.slug))
@@ -109,14 +108,8 @@ export function WebsitesHome() {
     const { slug, name } = pendingDelete.config
     setPendingDelete(null)
     try {
-      const result = await window.electronAPI.deleteWebsite(activeWorkspaceId, slug)
-      if (result?.publicCopyMayRemain) {
-        toast.warning(t('toast.websiteDeleted', { name }), {
-          description: t('toast.websitePublicCopyMayRemain'),
-        })
-      } else {
-        toast.success(t('toast.websiteDeleted', { name }))
-      }
+      await window.electronAPI.deleteWebsite(activeWorkspaceId, slug)
+      toast.success(t('toast.websiteDeleted', { name }))
     } catch (err) {
       toast.error(t('toast.websiteDeleteFailed'), {
         description: err instanceof Error ? err.message : String(err),
@@ -191,7 +184,6 @@ export function WebsitesHome() {
 
       <DeleteWebsiteDialog
         websiteName={pendingDelete?.config.name ?? null}
-        shared={Boolean(pendingDelete?.config.share)}
         onConfirm={handleConfirmDelete}
         onCancel={() => setPendingDelete(null)}
       />

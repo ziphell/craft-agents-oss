@@ -4,57 +4,39 @@
  *
  * This is the reason a bound conversation needs no slugs: the block below is
  * injected into the system prompt, so the agent knows which prototype it is
- * working on, what its pages are and which kind each one is, which patches exist
- * and what they apply to, and how far the service contract reaches — before the
- * user says anything.
+ * working on, what its requirements are, and what research and reviews already
+ * exist — before the user says anything.
  *
  * Kept out of `status.ts` because this is a *presentation* concern: the same
  * facts are rendered differently for the panel (tables) and for the model
  * (prose + explicit instructions).
- *
- * @see docs/prototype-workbench-plan.md §3.1 (数据面 / 控制面分离), §19 (页层模型)
  */
 
 import { existsSync } from 'fs'
-import { getPrototypeDirPath, getPrototypeLayoutPath } from './storage.ts'
+import { getPrototypeDirPath } from './storage.ts'
 import { buildPrototypeStatus } from './status.ts'
-import { CONSOLIDATED_WRITER, PROTOTYPE_LAYOUT_SLOT, type PageKind } from './types.ts'
-import type { AcceptanceSummary } from './acceptance.ts'
 
 export interface PrototypePromptContext {
   slug: string
-  /** Absolute path to the prototype's directory (its documents and patches/ live here). */
+  /** Absolute path to the prototype's directory — the folder the author's files live in. */
   dir: string
   /**
-   * The flow's pages, in order (plan §19): every document of ours plus every
-   * recorded live address, each with the kind that decides how it is changed.
-   * Which page a *window* is on is a different, later question — `snapshot`
-   * answers that.
+   * The specification's requirements with what refers to each one. Empty when no markdown file
+   * states one — a state the prompt has to name out loud, because the agent is their only writer.
    */
-  pages: Array<{ name: string; kind: PageKind; url: string | null; file: string | null; entry: boolean }>
-  /** The page `/` opens, or null when the root shows the generated page index (plan §19.3). */
-  entryPage: string | null
+  requirements: Array<{
+    id: string
+    title: string
+    files: string[]
+    findings: string[]
+  }>
   /**
-   * Absolute path to the shared layout (`_layout.html`) the pages of ours render
-   * inside, or null when the prototype has none — the state a new prototype starts
-   * in, since a layout is written when two pages would repeat the same shared markup.
-   * Reported so the agent reuses the shared markup instead of inventing one per screen
-   * (plan §19.2).
-   */
-  layoutPath: string | null
-  /**
-   * The PRD's requirements with what refers to each one (plan §20.1). Empty when
-   * there is no `PRD.md` — a state the prompt has to name out loud, because the
-   * agent is the only writer of that file.
-   */
-  requirements: Array<{ id: string; title: string; pages: string[]; patches: string[]; findings: string[] }>
-  /**
-   * Findings already recorded under `research/` (plan §20.2). Carried so the agent
+   * Findings already recorded under `research/`. Carried so the agent
    * reads what it learned last time instead of studying the same product again.
    */
   findings: Array<{ id: string; claim: string | null; source: string | null; file: string }>
   /**
-   * The argument against the work (`reviews/`, plan §3.7): what still stands, and how many were
+   * The argument against the work (`reviews/`): what still stands, and how many were
    * settled. Carried for the same reason the findings are — an agent that cannot see the objection
    * will keep building the thing somebody already argued about.
    */
@@ -70,43 +52,6 @@ export interface PrototypePromptContext {
       claim: string | null
     }>
   }
-  /**
-   * What the acceptance checks answered last time (`acceptance/state.json`), or null when they have
-   * never run here. A count is not enough: "newly red" is the thing a change under review has to be
-   * judged by, and only a comparison against the round before can say it.
-   */
-  acceptance: AcceptanceSummary | null
-  /** Replayable patches, in replay order, each with the page it belongs to (null = every page). */
-  patches: Array<{
-    file: string
-    writer: string | null
-    kind: string
-    page: string | null
-    targets: string[]
-    /** The fingerprint a dispute about this patch records as `on:`. */
-    fingerprint: string
-  }>
-  /**
-   * The **writer identity this conversation writes as** (plan §3.6).
-   *
-   * It is the token the naming rule is written in terms of, so the agent has to be told it here
-   * rather than pick one: a patch's name is an ownership claim, and the claim has to match the
-   * writer the guard sees. Always present — a prototype with nothing declared writes as
-   * `PROTOTYPE_DEFAULT_WRITER`, because "one writer" is the normal case and it should not need
-   * a declaration to exist.
-   */
-  writer: string
-  /** Per-service contract coverage. */
-  services: Array<{
-    slug: string
-    endpoints: number
-    mockedEndpoints: number
-    missingFixtures: string[]
-  }>
-  /** File names already written to dist/. */
-  distFiles: string[]
-  /** Ownership violations — files that exist but will not be replayed. */
-  violations: Array<{ path: string; reason: string }>
 }
 
 /**
@@ -119,7 +64,6 @@ export interface PrototypePromptContext {
 export function buildPrototypePromptContext(
   workspaceRootPath: string,
   slug: string,
-  writer: string,
 ): PrototypePromptContext | null {
   // Checked before the status read rather than after: `buildPrototypeStatus`
   // reports a missing prototype as an empty one, so existence is not inferable
@@ -130,38 +74,11 @@ export function buildPrototypePromptContext(
 
   return {
     slug: status.slug,
-    writer,
     dir: status.dir,
-    pages: status.pages.map((page) => ({
-      name: page.name,
-      kind: page.kind,
-      url: page.url,
-      file: page.file,
-      entry: page.entry,
-    })),
-    entryPage: status.entryPage,
-    layoutPath: existsSync(getPrototypeLayoutPath(workspaceRootPath, slug))
-      ? getPrototypeLayoutPath(workspaceRootPath, slug)
-      : null,
-    patches: status.patches.entries.map((entry) => ({
-      file: entry.file,
-      writer: entry.writer,
-      kind: entry.kind,
-      page: entry.page,
-      targets: entry.targets,
-      fingerprint: entry.fingerprint,
-    })),
-    services: status.services.map((service) => ({
-      slug: service.slug,
-      endpoints: service.endpoints,
-      mockedEndpoints: service.mockedEndpoints,
-      missingFixtures: service.missingFixtures,
-    })),
     requirements: status.requirements.map((requirement) => ({
       id: requirement.id,
       title: requirement.title,
-      pages: requirement.pages,
-      patches: requirement.patches,
+      files: requirement.files,
       findings: requirement.findings,
     })),
     findings: status.findings.map((finding) => ({
@@ -182,9 +99,6 @@ export function buildPrototypePromptContext(
         claim: dispute.claim,
       })),
     },
-    acceptance: status.acceptance,
-    distFiles: status.distFiles,
-    violations: status.ownership.violations,
   }
 }
 
@@ -212,90 +126,38 @@ function sanitize(value: string): string {
  */
 export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): string {
   const lines: string[] = []
-  const overlayPages = ctx.pages.filter((page) => page.kind === 'overlay')
-  const scratchPages = ctx.pages.filter((page) => page.kind === 'scratch')
 
   lines.push('')
-  lines.push(`<prototype_context slug="${escapeAttr(ctx.slug)}" writer="${escapeAttr(ctx.writer)}">`)
+  lines.push(`<prototype_context slug="${escapeAttr(ctx.slug)}">`)
   lines.push(sanitize(ctx.dir))
   lines.push('')
 
-  // The model comes first because everything below depends on it: a page's kind
-  // decides what the page even is (a live address or a document of ours), how it
-  // is changed, and what the deliverable can contain. Getting it wrong makes every
-  // later instruction wrong too.
-  lines.push(`This is a prototype: a **flow of pages**, and each page is one of two kinds.`)
-  lines.push(`- **scratch** — a document of ours: <name>.html in the directory above. We own it, so the change`)
-  lines.push(`  is an edit to that file.`)
-  lines.push(`- **overlay** — someone else's live page at an address. It is never copied: the page *is* that`)
-  lines.push(`  address, with its own JavaScript, its own session and its own data. Study it with the browser`)
-  lines.push(`  tool before writing selectors — the live DOM is the only thing that says what they will match —`)
-  lines.push(`  and use the same window to ask the user to sign in when the page needs it.`)
-  lines.push(`One flow may mix both, and the list below says which is which; the patches never flow back into`)
-  lines.push(`a live page's source, so what leaves this workbench is a spec a developer translates onto it,`)
-  lines.push(`plus a loadable Chrome extension that puts the change on the real page for whoever wants to see`)
-  lines.push(`it — no clicking, no dependency on this workbench.`)
+  lines.push(`This is a prototype: a **folder that holds a specification**, and nothing else of ours.`)
+  lines.push(`- The specification is the markdown files in ${sanitize(ctx.dir)} — one file or several, flat or`)
+  lines.push(`  in folders. A requirement is a heading whose id starts with R- ('## R-001 <what it is>'), and`)
+  lines.push(`  that id is what every other file refers back to.`)
+  lines.push(`- Everything else in that folder is yours, in any format — flows, personas, screenshots, a spreadsheet,`)
+  lines.push(`  a stack of notes. There is no rule about what may sit there, and nothing enumerates or filters it.`)
   lines.push('')
-
-  if (ctx.pages.length > 0) {
-    lines.push(`Pages, in flow order — 'open --page <name>' opens one, and 'browser_tool snapshot' says which`)
-    lines.push(`page a window is on:`)
-    for (const page of ctx.pages) {
-      const where = page.kind === 'overlay' ? (page.url ?? 'no address') : (page.file ?? 'document missing')
-      lines.push(`- ${sanitize(page.name)} (${page.kind}) — ${sanitize(where)}${page.entry ? ' (entry)' : ''}`)
-    }
-    lines.push(
-      ctx.entryPage
-        ? `The address root (/) opens '${sanitize(ctx.entryPage)}'.`
-        : `The address root (/) shows the generated page index, which lists every page above.`,
-    )
-    lines.push(`Mark a page as the entry with 'entry <name>', or go back to the index with`)
-    lines.push(`'entry none'. Add a live page with 'pages --add <name>=<url>' and rename or`)
-    lines.push(`remove one with --rename / --remove. A page of ours is a file: write it and it is a page —`)
-    lines.push(`'pages --add <name>' only puts it in the flow order, once the file exists.`)
-  } else {
-    lines.push(`This prototype has **no pages yet**. That is a starting state, not a mistake: write`)
-    lines.push(`<name>.html with the Write tool for a page of ours, or add a live page with`)
-    lines.push(`'pages --add <name>=<url>'.`)
-  }
-  lines.push('')
-
-  if (overlayPages.length > 0) {
-    lines.push(`A live page's address usually exists in several environments (a dev server, staging, production).`)
-    lines.push(`Repoint it with 'pages --url <name>=<url>' rather than making a second prototype — and`)
-    lines.push(`say what that costs when you do: windows already open keep the old page, and the selectors were`)
-    lines.push(`written against the old DOM (a patch that matches nothing looks like a patch that did nothing). A`)
-    lines.push(`page's kind cannot change, and a page of ours has no external page for an address to mean.`)
-    lines.push('')
-  }
-
-  // Nothing here says which *project* this prototype is for, because it is not for one:
-  // a prototype belongs to no project (§15.1.4). A session that also has a project in
-  // front of it is told about the two containers separately, and this block goes on
-  // answering the half only it can: where *this prototype's* files go.
 
   // Requirements and research come next because they are what the work is *for*,
   // and because the agent is their only writer: nothing in the workbench produces
-  // `PRD.md` or a finding, so a block that does not ask for them leaves them not
-  // existing at all (plan §20).
+  // a requirement document or a finding, so a block that does not ask for them leaves them not
+  // existing at all.
   lines.push(`Requirements and research — both are files you write; nothing else here produces them:`)
   lines.push(`- Before writing a requirement, think from first principles about the value: what the person cannot`)
   lines.push(`  do today, and what actually changes for them if this exists. Start from that problem rather than`)
   lines.push(`  from a screen, a competitor's feature or the user's own phrasing — a requirement that only`)
   lines.push(`  restates one of those has not been thought about, and nothing here can check that for you: the`)
   lines.push(`  workbench can show a requirement is unimplemented, never that it was worth writing.`)
-  lines.push(`- The requirements are written in ${sanitize(ctx.dir)}/PRD.md, and the folder beside it is yours:`)
-  lines.push(`  only PRD.md is read for requirements — one entry each, headed by a stable id, '## R-001 <what it`)
-  lines.push(`  is>' — and any other file you keep there is material, in any format. A subject that outgrows the`)
-  lines.push(`  entry (personas, the flow as it stands today, a glossary) becomes its own file rather than one`)
-  lines.push(`  document nobody can skim, and what the work is studied from belongs there too: a competitor's`)
-  lines.push(`  address, the path to a screenshot or a design file, another prototype's slug.`)
+  lines.push(`- One entry per requirement, headed by a stable id — '## R-001 <what it is>' — and the id is the`)
+  lines.push(`  entire mechanism: short, survives rewriting the prose around it, and is what every reference is`)
+  lines.push(`  written against. The prose under it is the requirement.`)
   if (ctx.requirements.length > 0) {
     lines.push(`  Written so far, and what refers to each:`)
     for (const requirement of ctx.requirements) {
       const covered = [
-        ...requirement.pages,
-        ...requirement.patches,
+        ...requirement.files,
         ...requirement.findings.map((id) => `${id} (finding)`),
       ]
       lines.push(
@@ -307,22 +169,26 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
       )
     }
   } else {
-    lines.push(`  There is no PRD.md yet. Write it before building the next screen: a prototype nobody can read a`)
-    lines.push(`  requirement out of is a picture, not a proposal.`)
+    lines.push(`  No requirement has been written yet. Write one before building anything: a prototype nobody can`)
+    lines.push(`  read a requirement out of is a picture, not a proposal.`)
   }
-  lines.push(`- Say which requirement a change serves: '@requirement R-001' in a patch header, or in a comment in the`)
-  lines.push(`  page document it changes. 'status' turns that into the two answers nobody can get by reading`)
-  lines.push(`  files: which requirement nothing implements, and which marker names an id PRD.md does not define.`)
+  lines.push(`- Say which requirement what you write serves: '@requirement R-001' in a comment in the file. That`)
+  lines.push(`  is what 'status' turns into the two answers nobody can get by reading files: which requirement`)
+  lines.push(`  nothing implements, and which marker names an id no document defines.`)
+  lines.push(`- The specification may be one file or several: split a subject out (personas, the flow as it stands`)
+  lines.push(`  today, a glossary) into its own markdown file rather than growing one document nobody can skim.`)
+  lines.push(`- Documents point at each other with a wiki link — '[[docs/checkout.md]]' by path, or '[[checkout]]' by`)
+  lines.push(`  name. That is how one file indexes several: a complex requirement stays a line in the entry document`)
+  lines.push(`  and its detail lives beside it. A link is navigation, not a claim about the work — what implements a`)
+  lines.push(`  requirement is still only '@requirement R-00x' — and a link that points at nothing is reported.`)
   lines.push(`- ${sanitize(ctx.dir)}/research/ holds what you learned from other products. One finding per file:`)
   lines.push(`  '# F-001 <what you found>', then labelled lines 'claim:', 'source:', 'captured:', 'evidence:',`)
-  lines.push(`  'requirements:'. Evidence names files you keep in research/ (screenshots go there), and 'requirements:'`)
-  lines.push(`  names the requirements the finding argues for. A finding with no source cannot be checked later.`)
-  lines.push(`- What this prototype is studied from is yours to write down, in a file of that folder: a`)
-  lines.push(`  competitor's address, the path to a screenshot or a design file, or another prototype's slug. Two`)
-  lines.push(`  rules do not bend, because the deliverable depends on them: material is read for intent and`)
-  lines.push(`  translated into this prototype's own markup, and another prototype's patch files are NEVER copied`)
-  lines.push(`  into patches/ — they were written against a different document, so their selectors would not match`)
-  lines.push(`  here and they would ship inside the deliverable without erroring.`)
+  lines.push(`  'requirements:'. Evidence names files you keep in research/ (a screenshot you took, for`)
+  lines.push(`  instance), and 'requirements:' names the requirements the finding argues for. A finding with`)
+  lines.push(`  no source cannot be checked later.`)
+  lines.push(`- material is read for intent and translated into this prototype's own files; another prototype's`)
+  lines.push(`  files are NEVER copied in — they were written against a different body of work, and whatever they`)
+  lines.push(`  claim would be a second, contradictory statement of the thread.`)
   if (ctx.findings.length > 0) {
     lines.push(`  Recorded so far — read these before studying the same product again:`)
     for (const finding of ctx.findings) {
@@ -333,22 +199,21 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
       )
     }
   }
-  lines.push(`- research/ is **not** packaged (assets/ is): the reader receives the requirements, not your notes.`)
+  lines.push(`- research/ is **not** delivered: the reader receives the specification, not your notes.`)
   lines.push('')
+
   lines.push(`The argument *against* the work lives in ${sanitize(ctx.dir)}/reviews/ — one dispute per file. It is`)
   lines.push(`how you disagree with something without the disagreement dying with this conversation, and it is`)
   lines.push(`the point a task's critic writes to instead of a paragraph nobody can find later:`)
   lines.push(`- '# D-001 <what is disputed>', then labelled lines: 'about:', 'status:', 'claim:', 'evidence:'`)
-  lines.push(`  (and 'on:' for a patch dispute).`)
-  lines.push(`- 'about:' names one thing: 'patch <file>', 'page <name>', 'endpoint <GET /path>' or 'requirement R-001'.`)
-  lines.push(`  Work out which by asking what actually failed — a failed 'check:' is usually the requirement or`)
-  lines.push(`  the page it looked at, and 'verify' prints both for you.`)
-  lines.push(`- A dispute about a **patch** also needs 'on:' — the fingerprint printed beside that patch below.`)
-  lines.push(`  It is what lets a later reader tell an argument about the current file from one about a version`)
+  lines.push(`  (and 'on:' for a requirement dispute).`)
+  lines.push(`- 'about:' names one thing: 'requirement R-001'.`)
+  lines.push(`- A dispute also needs 'on:' — the fingerprint printed beside that requirement by 'status'. It is`)
+  lines.push(`  what lets a later reader tell an argument about the current wording from one about a wording`)
   lines.push(`  that no longer exists; without it the objection cannot be checked, and the report says so.`)
   lines.push(`- 'status:' is one of open (it stands), fixed (the thing was changed), rebutted (you judged it`)
   lines.push(`  unfounded, reason in the body) or accepted (valid, and the cost was taken deliberately). 'fixed'`)
-  lines.push(`  on a patch that has not changed is reported as a record that disagrees with the files.`)
+  lines.push(`  on a requirement that has not changed is reported as a record that disagrees with the files.`)
   if (ctx.reviews.unresolved.length > 0) {
     lines.push(`  Still standing (${ctx.reviews.total} filed so far) — reading these is part of the work, not a`)
     lines.push(`  formality: an objection nobody answered is the one thing a "finished" prototype must not hide.`)
@@ -362,22 +227,6 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
     lines.push(`  Nothing is standing: all ${ctx.reviews.total} filed so far were answered.`)
   }
   lines.push('')
-  lines.push(`Acceptance: the 'check:' lines in PRD.md are answered by 'verify', which records each`)
-  lines.push(`round under acceptance/ (and writes dist/acceptance.md). Only the tool writes that record — a`)
-  lines.push(`hand-written one would be a report of a run that never happened — but it is there to be read:`)
-  if (ctx.acceptance) {
-    lines.push(
-      `- Last round (${sanitize(String(ctx.acceptance.round))}): ${ctx.acceptance.passed} passed, ` +
-        `${ctx.acceptance.failed} failed, ${ctx.acceptance.skipped} skipped.`,
-    )
-    for (const check of ctx.acceptance.red) lines.push(`  - failing: \`${sanitize(check)}\``)
-    lines.push(`- Re-run it after changing something: the report says what *moved* since the round before, which`)
-    lines.push(`  is the only way to tell "this change broke it" from "it was already broken and nobody said".`)
-  } else {
-    lines.push(`- Nothing has been run here yet. If PRD.md declares checks, run 'verify' before calling`)
-    lines.push(`  anything done: a check that was never run is not a check that passed.`)
-  }
-  lines.push('')
 
   lines.push(`This session is bound to the prototype above. Commands below target it by default —`)
   lines.push(`you do not need to pass a slug, though you may pass one to work on a different prototype.`)
@@ -386,138 +235,8 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
   lines.push(`stays cacheable. Run 'status' before relying on it for anything you have changed.`)
   lines.push('')
 
-  // Pages first: without one there is nothing for a patch to apply to, and the
-  // agent must not write patches into a prototype that has no page at all.
-  if (ctx.pages.length === 0) {
-    lines.push(`Pages: none yet, so patches have nothing to apply to. Write the first page first.`)
-  } else if (scratchPages.length === 0) {
-    lines.push(`Pages: all of them are live pages (above). There is no document of ours in this prototype, and`)
-    lines.push(`none is wanted for them — a copy would run none of that page's own JavaScript and carry none of`)
-    lines.push(`its session.`)
-  } else {
-    lines.push(`Pages of ours live in the directory above as ordinary .html files; the others are addresses.`)
-  }
-  lines.push('')
-
-  // How to write a page of ours. Worth stating because the file *is* the artifact:
-  // there is no build step and no template language for a mistake to hide in, and
-  // the constraints that bite are the ones a browser enforces only later (an
-  // extension page's CSP) or never (a CDN that is simply unreachable offline).
-  if (ctx.pages.length === 0 || scratchPages.length > 0) {
-    lines.push(`Writing a page of ours — an ordinary HTML document, no build step and no template syntax:`)
-    lines.push(`- A complete document (<!doctype html> …): the file is what the browser loads, and nothing compiles it.`)
-    if (ctx.layoutPath) {
-      lines.push(`- The shared layout is already written once, in ${sanitize(ctx.layoutPath)}: put only this screen's`)
-      lines.push(`  content in the page and reuse its tokens (var(--accent), .card, .row). Do not copy the layout into a page`)
-      lines.push(`  — two copies drift, and the layout is the one place a change to it belongs.`)
-      lines.push(`- A page that is a design of its own (an email, a landing page, another product's screen) is not put in`)
-      lines.push(`  the layout: set "useLayout": false on its row in config.json and it is served as written, with its own`)
-      lines.push(`  head. Its patches still apply either way.`)
-    } else {
-      lines.push(`- This prototype has no shared layout. If two pages would repeat the same markup, write _layout.html`)
-      lines.push(`  with the slot ${PROTOTYPE_LAYOUT_SLOT} — the pages of ours render inside it.`)
-    }
-    lines.push(`- Assets: root-absolute paths (/assets/app.css) — the prototype's directory is the origin root. No CDN`)
-    lines.push(`  and no external host: the prototype is opened offline and only its own directory answers.`)
-    lines.push(`- Reach for standard HTML before writing any JS: <details> (disclosure), <dialog> (modal),`)
-    lines.push(`  :has()/:checked (state-driven styling), required/pattern on inputs (validation), <template>+<slot>`)
-    lines.push(`  (reuse). Most prototype interaction needs no script — and the standard version is what the preview`)
-    lines.push(`  and the delivered package run identically.`)
-    lines.push(`- No eval and no new Function (the delivered extension forbids them), and no bundler: plain <script>,`)
-    lines.push(`  <style> and <script type="module"> with relative imports are all fine.`)
-    lines.push(`- Shared behaviour goes in a file under assets/ that the pages needing it load; shared structure goes in`)
-    lines.push(`  the layout. That is the whole component story — there is no template engine, by design.`)
-    lines.push(`- Data: fetch('/api/…') (relative), answered by the contract's fixtures when mocked; keep state in`)
-    lines.push(`  localStorage, which survives because this prototype's origin is stable.`)
-    lines.push(`- Add a screen by writing a page; change how an existing screen looks by writing a patch under`)
-    lines.push(`  patches/<page>/. Do not rewrite a page document to restyle it.`)
-    lines.push(`- After writing or changing a page, open it ('open') and read the console ('browser_tool console 50 error')`)
-    lines.push(`  before calling it done: nothing else here checks a page, so a script error stays invisible until then.`)
-    lines.push('')
-  }
-
-  lines.push(`Patches are plain files under patches/, named {writer}-{nnn}-{name}.{css|js}. **The {writer}`)
-  lines.push(`segment is your identity**: this conversation writes as '${sanitize(ctx.writer)}', so its patches are`)
-  lines.push(`named ${sanitize(ctx.writer)}-<nnn>-<name>.{css,js} — write that prefix yourself, it is not a code you pick`)
-  lines.push(`from a list, and a name that claims someone else's prefix is refused (and reported by`)
-  lines.push(`'status'). The reserved token '${CONSOLIDATED_WRITER}' belongs to folded changes alone.`)
-  lines.push(`**Where the file sits is which page it changes**: patches/<page>/… applies to that page only,`)
-  lines.push(`patches/… applies to every page. A file that does not match the name pattern is ignored by the`)
-  lines.push(`injector. To add a UI change, write a new file (e.g. patches/${sanitize(ctx.writer)}-002-highlight.css for`)
-  lines.push(`the whole flow, or patches/cart/${sanitize(ctx.writer)}-002-total.js for one page) with the Write tool — do`)
-  lines.push(`not edit a page's document for presentation work, and do not rewrite an existing patch file whose`)
-  lines.push(`prefix is not yours. Every patch is replayed on reload, so the page state is reproducible.`)
-  lines.push(`Say what each patch is aimed at: a header line '@target <css selector>' (and '@requirement R-001').`)
-  lines.push(`That is what makes the patch checkable — 'apply' reports which targets matched nothing, and`)
-  lines.push(`a target that used to match and does not any more means the page moved, not that the patch was`)
-  lines.push(`ignored. Without a '@target' nothing can tell the two apart, and the patch rots quietly.`)
-  lines.push('')
-  // These rules exist because the patches are also shipped inside a loadable
-  // extension, running on pages we do not control. They are cheap to follow now
-  // and expensive to discover later (the failure is "it looked right in the
-  // preview and did nothing on the real page").
-  lines.push(`Write each patch for the way it will be *replayed*, not just for the state you can see. Two rules:`)
-  lines.push(`- It may run more than once, and on more than one page: every page it applies to gets it, a`)
-  lines.push(`  single-page view change replays it, and reloading the extension runs it again. Read what is on the`)
-  lines.push(`  page rather than assuming it, wait for an element instead of querying once, and keep each patch`)
-  lines.push(`  idempotent — appending or inserting twice duplicates something.`)
-  lines.push(`- It has no claim on running before the page does: stylesheets are in place before it paints, and js`)
-  lines.push(`  runs once the document is there. Do not depend on being first.`)
-  lines.push(`Keep the set small and delete patches that no longer change anything — all of them ship in the`)
-  lines.push(`deliverable. Keep the source readable, no minifying and no obfuscating: whoever receives the preview`)
-  lines.push(`is asked to run it on their page, and being able to read it is how they decide to.`)
-  lines.push('')
-
-  if (ctx.patches.length > 0) {
-    lines.push(`Replayed patches, in order (the 8 characters in brackets are the patch's fingerprint —`)
-    lines.push(`that is what a dispute's 'on:' records, so copy the one belonging to the patch):`)
-    for (const patch of ctx.patches) {
-      const scope = patch.page ? `page ${sanitize(patch.page)}` : 'every page'
-      const targets = patch.targets.length > 0 ? `, targets ${patch.targets.map(sanitize).join(', ')}` : ''
-      lines.push(
-        `- ${sanitize(patch.file)} [${sanitize(patch.fingerprint)}] (writer ${sanitize(patch.writer ?? '?')}, ${patch.kind}, ${scope}${targets})`,
-      )
-    }
-  } else {
-    lines.push(`Replayed patches: none yet.`)
-  }
-  lines.push('')
-
-  if (ctx.services.length > 0) {
-    lines.push(`Service contracts:`)
-    for (const service of ctx.services) {
-      const missing = service.missingFixtures.length > 0
-        ? ` — MISSING FIXTURES: ${service.missingFixtures.map(sanitize).join(', ')}`
-        : ''
-      lines.push(`- ${sanitize(service.slug)}: ${service.mockedEndpoints}/${service.endpoints} endpoints mocked${missing}`)
-    }
-    lines.push('')
-  }
-
-  if (ctx.violations.length > 0) {
-    lines.push(`Ownership violations (these files exist but are NOT replayed — fix or remove them):`)
-    for (const violation of ctx.violations) {
-      lines.push(`- ${sanitize(violation.path)}: ${sanitize(violation.reason)}`)
-    }
-    lines.push('')
-  }
-
-  lines.push(`Deliverables: ${ctx.distFiles.length > 0 ? ctx.distFiles.map(sanitize).join(', ') : 'none exported yet'}.`)
-  lines.push('')
-  lines.push(`Workflow: edit the files above, then 'apply' to see the result in the bound browser`)
-  lines.push(`window, and 'export' to build the deliverable — one loadable extension plus the change`)
-  lines.push(`spec a developer reads. 'status' re-reads everything from disk when you need to confirm`)
-  lines.push(`what is actually there.`)
-  // The fold is described here rather than with the patches because it is the one
-  // action that *removes* patches: an agent that has not read this would keep
-  // writing new files where the change now has a home.
-  lines.push(`A prototype can also be **copied with its changes folded in** — a person does that from the`)
-  lines.push(`prototype list, and it is the one action that removes patches: the copy's css goes into`)
-  lines.push(`assets/<page>/committed.css and its js into assets/<page>/committed.js (the document is linked to`)
-  lines.push(`both, and the patch files are deleted), while a live page's patches go into`)
-  lines.push(`patches/<page>/Z-001-upper.css and Z-002-upper.js, which replay last. It never touches the`)
-  lines.push(`prototype it was copied from, so keep writing patches as usual: a run of small edits is what the`)
-  lines.push(`layer is for, and folding is something that happens to a copy rather than to this one.`)
+  lines.push(`Workflow: write the files above, then 'status' to re-read everything from disk — it is what turns`)
+  lines.push(`the markers into the answers nobody can get by reading files one at a time.`)
   lines.push(`</prototype_context>`)
   lines.push('')
   return lines.join('\n')

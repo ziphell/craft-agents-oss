@@ -27,6 +27,7 @@
     "@uiw/react-json-view": "^2.0.0-alpha.40",
     "fflate": "^0.8.2",
     "nice-ticks": "^1.0.2",
+    "parse5": "^7.0.0",
     "unified": "^11.0.0",
     "unist-util-visit": "^5.0.0"
   },
@@ -53,6 +54,7 @@
     "tailwind-merge": ">=2.0.0",
     "tailwindcss": ">=4.0.0",
     "react-pdf": ">=10.0.0",
+    "react-simple-code-editor": "^0.14.1",
     "i18next": ">=26.0.0",
     "react-i18next": ">=17.0.0",
     "vaul": ">=1.0.0"

@@ -516,9 +516,6 @@ class ActiveRun {
         taskSlug: this.slug,
         taskRunId: this.runId,
         taskNodeId: node.id,
-        // The writer identity the child (and its prototype work) runs as: declared per node,
-        // absent meaning the single-writer default. Read by the prototype prompt and the guard.
-        ...(node.writes ? { taskWrites: node.writes } : {}),
         name: nodeTitle(node),
         model: node.model ?? this.spec.defaults?.model,
         // Required for non-default (e.g. pi/*) models to resolve a backend — without it the

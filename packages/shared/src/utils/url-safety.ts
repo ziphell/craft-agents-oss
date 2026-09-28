@@ -63,6 +63,24 @@ export function isSafeExternalUrl(rawUrl: string): boolean {
 }
 
 /**
+ * Whether an address is one a browser window can hold: `http:` or `https:`, and nothing else.
+ *
+ * A tab shows a page; what it is *given* is an address, and only these two are addresses it can
+ * load. Not the same question as `isSafeExternalUrl`: `mailto:`, `tel:` and someone else's app
+ * scheme (`obsidian:`, `vscode:`) are all safe to hand to the operating system, and none of them
+ * is something to open in a window. Where a link goes is decided with both: a browser address may
+ * go either way, anything else only to the OS.
+ */
+export function isBrowserUrl(rawUrl: string): boolean {
+  try {
+    const protocol = new URL(rawUrl.trim()).protocol
+    return protocol === 'http:' || protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+/**
  * Format a `dangerous` classification into a user-facing error message.
  * Returns an empty string for non-dangerous classifications.
  */

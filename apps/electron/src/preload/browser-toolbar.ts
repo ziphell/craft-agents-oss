@@ -22,7 +22,6 @@ const CHANNELS = {
   STATE_UPDATE: 'browser-toolbar:state-update',
   PICK_ELEMENT: 'browser-toolbar:pick-element',
   CANCEL_PICK: 'browser-toolbar:cancel-pick',
-  SAVE_EDITS: 'browser-toolbar:save-edits',
   TABS: 'browser-toolbar:tabs',
   DEVTOOLS: 'browser-toolbar:devtools',
   RECORD: 'browser-toolbar:record',
@@ -31,6 +30,27 @@ const CHANNELS = {
 
 // Instance ID is passed via query parameter by BrowserPaneManager
 const instanceId = new URLSearchParams(location.search).get('instanceId') || ''
+
+/**
+ * The last state the host pushed, and who wants the next one.
+ *
+ * The host pushes from its own side — on a tab being added, on a navigation, on the
+ * window being shown — and one of those lands before this document's React has
+ * subscribed (`onStateUpdate` runs in a mount effect, which is later than the load the
+ * host replays on, especially in dev). A push nobody hears is a push that never
+ * happened: that is exactly how a window opened from the app comes up with an empty tab
+ * rail — the rail is told which tabs exist rather than counting them, so no push means
+ * no tabs. This listener is registered while the preload runs, before any document
+ * script, so nothing is missed; a subscriber is handed the last state immediately, and
+ * the state is kept here rather than fetched so a late mount costs no round trip.
+ */
+let lastState: unknown
+const stateListeners = new Set<(state: unknown) => void>()
+
+ipcRenderer.on(CHANNELS.STATE_UPDATE, (_event, state) => {
+  lastState = state
+  for (const listener of stateListeners) listener(state)
+})
 
 contextBridge.exposeInMainWorld('browserToolbar', {
   instanceId,
@@ -43,37 +63,24 @@ contextBridge.exposeInMainWorld('browserToolbar', {
   hideWindow: () => ipcRenderer.invoke(CHANNELS.HIDE, instanceId),
   closeWindowEntirely: () => ipcRenderer.invoke(CHANNELS.DESTROY, instanceId),
   /**
-   * Turn the window's element overlay on — and leave it on.
+   * Turn the window's element picker on — and leave it on.
    *
    * Resolves as soon as the mode is on, not when something happens: the person keeps
    * clicking and boxing (and keeps moving between the window's tabs while they do).
-   * A selection shows the bar — pinned to the top of the page, in the app's menu
-   * colours — and its buttons are the work: B, I, and hand it to the conversation,
-   * with undo, redo and save on their own at the page's top-left. Each pick arrives on
-   * the host side as an `add-to-conversation` action, each save as an `edit-requested`
-   * one; nothing is written before a save. Page clicks are suppressed for as long as
+   * A selection shows the bar — at the selection's bottom-left corner, in the app's
+   * accent like the frame and the name — and its one button hands the selection to the
+   * conversation. Each pick arrives on the host side as an `add-to-conversation`
+   * action; nothing is written before that. Page clicks are suppressed for as long as
    * the mode is on.
    *
-   * `cancelPick` asks it to leave — and, with unsaved edits, asking turns into the
-   * question "save before leaving?" (`ToolbarState.leavingWithEdits`), whose answers are
-   * `saveEdits` (yes: write it down and go) and `cancelPick` again (no: go, draft and
-   * all). Escape in the page is the same "no".
+   * `cancelPick` turns it off again. Escape in the page does the same.
    *
-   * `labels` are the bar's words — titles, in this renderer's language, since the page
-   * has no i18n and the buttons themselves carry glyphs.
+   * `labels` are the bar's word — in this renderer's language, since the page has no
+   * i18n.
    */
-  pickElement: (labels?: { add: string; undo: string; redo: string; save: string; bold: string; italic: string }) =>
+  pickElement: (labels?: { add: string }) =>
     ipcRenderer.invoke(CHANNELS.PICK_ELEMENT, instanceId, labels),
   cancelPick: () => ipcRenderer.invoke(CHANNELS.CANCEL_PICK, instanceId),
-  /**
-   * Write the page's draft down and leave — the ✓ beside the crosshair.
-   *
-   * Drawn only while the question is up (`ToolbarState.leavingWithEdits`), because that
-   * is the only moment the window has an answer to give: saving without leaving is the
-   * ✓ on the page's own bar. What the save *is* travels back as an `edit-requested`
-   * action, like every other save: one entry in the change layer.
-   */
-  saveEdits: () => ipcRenderer.invoke(CHANNELS.SAVE_EDITS, instanceId),
   /**
    * Manage this window's own tabs from the rail: switch to one, close one, add one,
    * or take a locked tab back (`release`). The host owns what a tab is, so nothing
@@ -81,7 +88,7 @@ contextBridge.exposeInMainWorld('browserToolbar', {
    *
    * `work` belongs to `new` alone, and only when the tab is being opened **for** a piece
    * of work rather than as one more of the person's own: the `+` on a section header,
-   * which asks for a tab in that conversation's section (plan §22).
+   * which asks for a tab in that conversation's section.
    */
   tabAction: (
     action: 'activate' | 'close' | 'new' | 'release',
@@ -119,9 +126,9 @@ contextBridge.exposeInMainWorld('browserToolbar', {
    */
   sendRecordingChunk: (chunk: ArrayBuffer) => ipcRenderer.send(CHANNELS.RECORD_CHUNK, instanceId, chunk),
   onStateUpdate: (callback: (state: unknown) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, state: unknown) => callback(state)
-    ipcRenderer.on(CHANNELS.STATE_UPDATE, handler)
-    return () => { ipcRenderer.removeListener(CHANNELS.STATE_UPDATE, handler) }
+    if (lastState !== undefined) callback(lastState)
+    stateListeners.add(callback)
+    return () => { stateListeners.delete(callback) }
   },
   onForceCloseMenu: (callback: (payload: { reason?: string }) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: { reason?: string }) => callback(payload)

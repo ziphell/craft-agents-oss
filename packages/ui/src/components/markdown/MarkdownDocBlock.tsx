@@ -1,9 +1,11 @@
 /**
- * MarkdownDocBlock - Renders ```markdown-preview code blocks as inline rendered markdown.
+ * MarkdownDocBlock - Renders ```markdown-preview code blocks as the file they name.
  *
- * Loads markdown content from file(s) (via `src` or `items` field) and renders
- * it through the shared `Markdown` component. Supports multiple items with a
- * tab bar for switching between them.
+ * Loads markdown from file(s) (via `src` or `items` field) and shows each one **as the document it
+ * is** — drawn by the app's own markdown renderer, so a `.md` that quotes a diagram shows the
+ * diagram. The block itself is a look at the document and nothing more: it never changes one. That
+ * happens in the window, which opens on the file's source with the pencil and on the rendered
+ * document with the four corners. Supports multiple items with a tab bar for switching between them.
  *
  * Expected JSON shapes:
  * Single item:
@@ -21,20 +23,20 @@
  *   ]
  * }
  *
- * Recursion guard: the inner `Markdown` invocation passes
- * `disablePreviewBlocks={new Set(['markdown-preview'])}` so a nested
- * `markdown-preview` fence falls through to a regular code block instead of
- * recursing forever. Other preview blocks (datatable, mermaid, …) still work.
+ * The block is chrome: the title, the tab bar, the fixed box it may not grow past, and the two
+ * buttons in its corner. The pane behind it reads the file and follows it when an agent writes to
+ * it — none of which is this block's to answer a second time.
  */
 
 import * as React from 'react'
-import { FileText, Maximize2 } from 'lucide-react'
+import { FileText, Maximize2, Pencil } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { CodeBlock } from './CodeBlock'
 import { ItemNavigator } from '../overlay/ItemNavigator'
-import { usePlatform } from '../../context/PlatformContext'
+import { MarkdownFileOverlay } from '../overlay/MarkdownFileOverlay'
 import { useTranslation } from 'react-i18next'
-import { Markdown } from './Markdown'
+import { usePlatform } from '../../context/PlatformContext'
+import { MarkdownEditorPane } from './MarkdownEditorPane'
 import {
   parseMarkdownPreviewSpec,
   normalizePreviewItems,
@@ -56,8 +58,6 @@ class MarkdownDocBlockErrorBoundary extends React.Component<
   }
 }
 
-const DISABLE_INNER_MARKDOWN_PREVIEW: ReadonlySet<'markdown-preview'> = new Set(['markdown-preview'])
-
 export interface MarkdownDocBlockProps {
   code: string
   className?: string
@@ -65,22 +65,46 @@ export interface MarkdownDocBlockProps {
   onFileClick?: (path: string) => void
 }
 
+/** The corner buttons' chrome, which both of them share — they differ only in what they do. */
+const CORNER_BUTTON = cn(
+  'p-1 rounded-[6px] transition-all select-none',
+  'bg-background shadow-minimal',
+  'text-muted-foreground/50 hover:text-foreground',
+  'focus:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:opacity-100',
+)
+
 export function MarkdownDocBlock({ code, className, onUrlClick, onFileClick }: MarkdownDocBlockProps) {
   const { t } = useTranslation()
-  const { onReadFile } = usePlatform()
+  const { onWriteFile } = usePlatform()
 
   const spec = React.useMemo(() => parseMarkdownPreviewSpec(code), [code])
   const items = React.useMemo<MarkdownPreviewItem[]>(() => normalizePreviewItems(spec), [spec])
 
   const [activeIndex, setActiveIndex] = React.useState(0)
-  const [isFullscreen, setIsFullscreen] = React.useState(false)
+  /** Which way the window was opened, or that it is closed — one state, so it cannot disagree. */
+  const [overlay, setOverlay] = React.useState<'closed' | 'view' | 'edit'>('closed')
+  /**
+   * Whether the window wrote anything while it was open, and a counter that re-reads when it did.
+   *
+   * The block and the window are **two readers of the same file**: the window saves to the disk, and
+   * nothing here hears about it — the watcher only reports the prototypes tree, so a document
+   * anywhere else would keep showing the version from before the edit. Rather than copy the text
+   * across, the block reads the file again, which is the authority it was built on and also picks up
+   * whatever else changed meanwhile.
+   */
+  const wroteRef = React.useRef(false)
+  const [revision, setRevision] = React.useState(0)
 
-  const [contentCache, setContentCache] = React.useState<Record<string, string>>({})
-  const [loading, setLoading] = React.useState(false)
-  const [error, setError] = React.useState<string | null>(null)
+  const closeOverlay = React.useCallback(() => {
+    setOverlay('closed')
+    // On closing, not on every save: the block is behind the window and cannot be seen, and a save
+    // lands about a second after each pause in typing.
+    if (!wroteRef.current) return
+    wroteRef.current = false
+    setRevision((count) => count + 1)
+  }, [])
 
   const activeItem = items[activeIndex]
-  const activeContent = activeItem ? contentCache[activeItem.src] : undefined
 
   React.useEffect(() => {
     if (!activeItem) {
@@ -92,30 +116,6 @@ export function MarkdownDocBlock({ code, className, onUrlClick, onFileClick }: M
     }
   }, [activeIndex, activeItem, items.length])
 
-  React.useEffect(() => {
-    if (!activeItem?.src || !onReadFile) return
-    if (contentCache[activeItem.src] !== undefined) {
-      setError(null)
-      return
-    }
-    let cancelled = false
-    setLoading(true)
-    setError(null)
-    onReadFile(activeItem.src)
-      .then((content) => {
-        if (cancelled) return
-        setContentCache((prev) => ({ ...prev, [activeItem.src]: content }))
-      })
-      .catch((err) => {
-        if (cancelled) return
-        setError(err instanceof Error ? err.message : 'Failed to read markdown file')
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-    return () => { cancelled = true }
-  }, [activeItem?.src, onReadFile, contentCache])
-
   const fallback = <CodeBlock code={code} language="json" mode="full" className={className} />
 
   if (!spec || items.length === 0) {
@@ -124,6 +124,8 @@ export function MarkdownDocBlock({ code, className, onUrlClick, onFileClick }: M
 
   const hasMultiple = items.length > 1
   const headerTitle = spec.title || t('preview.markdownPreview')
+  /** Always in front when there is more than one document to step through up here. */
+  const reveal = hasMultiple ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
 
   return (
     <MarkdownDocBlockErrorBoundary fallback={fallback}>
@@ -133,57 +135,72 @@ export function MarkdownDocBlock({ code, className, onUrlClick, onFileClick }: M
           <span className="text-[12px] text-muted-foreground font-medium flex-1">{headerTitle}</span>
           <div className="flex items-center gap-1">
             <ItemNavigator items={items} activeIndex={activeIndex} onSelect={setActiveIndex} />
+
+            {/* The pencil: the window opened to be *typed in* — the caret goes into the document,
+                which is the only difference there can be, because this overlay has no read-only
+                face to switch to. Offered only where a write could land: a host with nothing to
+                save shows a document nothing can change. */}
+            {onWriteFile && (
+              <button
+                type="button"
+                onClick={() => setOverlay('edit')}
+                className={cn(CORNER_BUTTON, reveal)}
+                title={t('common.edit')}
+                aria-label={t('common.edit')}
+              >
+                <Pencil className="w-3.5 h-3.5" />
+              </button>
+            )}
+
+            {/* And the window, to read in: the same button in the same corner the diagram, page
+                and mermaid blocks carry, opening the document the way a `.md` link does. */}
             <button
-              onClick={() => setIsFullscreen((v) => !v)}
-              className={cn(
-                "p-1 rounded-[6px] transition-all select-none",
-                "bg-background shadow-minimal",
-                "text-muted-foreground/50 hover:text-foreground",
-                "focus:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:opacity-100",
-                hasMultiple ? "opacity-100" : "opacity-0 group-hover:opacity-100"
-              )}
-              title={isFullscreen ? t('common.close') : t('preview.expandPreview')}
+              type="button"
+              onClick={() => setOverlay('view')}
+              className={cn(CORNER_BUTTON, reveal)}
+              title={t('common.viewFullscreen')}
+              aria-label={t('common.viewFullscreen')}
             >
               <Maximize2 className="w-3.5 h-3.5" />
             </button>
           </div>
         </div>
 
-        <div
-          className={cn(
-            'relative px-3 py-2 overflow-auto',
-            isFullscreen ? 'max-h-[80vh]' : 'max-h-[400px]'
-          )}
-        >
-          {activeContent !== undefined && (
-            <Markdown
-              mode="minimal"
-              disablePreviewBlocks={DISABLE_INNER_MARKDOWN_PREVIEW}
+        {/* The block is a fixed height and scrolls: it is a look at a document inside a message, and
+            the window is where one is actually read. Keyed by path *and* by the re-reads, because a
+            pane is bound to one file for its whole life: switching tabs is switching files, and a
+            session in the window that wrote to this one gets it read again from the start. */}
+        <div className="overflow-auto max-h-[400px]">
+          {activeItem?.src && (
+            <MarkdownEditorPane
+              key={`${activeItem.src}:${revision}`}
+              src={activeItem.src}
+              layout="inline"
+              className="px-3 py-2"
               onUrlClick={onUrlClick}
               onFileClick={onFileClick}
-            >
-              {activeContent}
-            </Markdown>
-          )}
-
-          {activeContent === undefined && loading && (
-            <div className="py-8 text-center text-muted-foreground text-[13px]">{t('common.loading')}</div>
-          )}
-
-          {activeContent === undefined && !loading && error && (
-            <div className="py-6 text-center text-destructive/70 text-[13px]">{error}</div>
-          )}
-
-          {!isFullscreen && activeContent !== undefined && (
-            <div
-              className="absolute bottom-0 left-0 right-0 h-8 pointer-events-none"
-              style={{
-                background: 'linear-gradient(to bottom, transparent, var(--muted))',
-              }}
             />
           )}
         </div>
       </div>
+
+      {/* A sibling of the block rather than a child, the way `MarkdownDrawioBlock` opens its own
+          overlay: the block's overflow and hover styling then cannot clip or trap it. No title
+          when the spec has none, so the overlay names the file itself. */}
+      {activeItem?.src && (
+        <MarkdownFileOverlay
+          isOpen={overlay !== 'closed'}
+          onClose={closeOverlay}
+          filePath={activeItem.src}
+          title={spec.title}
+          initialMode={overlay === 'edit' ? 'edit' : 'view'}
+          onSaved={() => {
+            wroteRef.current = true
+          }}
+          onOpenUrl={onUrlClick}
+          onOpenFile={onFileClick}
+        />
+      )}
     </MarkdownDocBlockErrorBoundary>
   )
 }

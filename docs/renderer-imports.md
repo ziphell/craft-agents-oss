@@ -11,7 +11,7 @@
 |---|---|---|
 | **类型** | `import type { X } from '@craft-agent/shared/<任意路径>'` | 含 barrel。`import type` 在编译期整体擦除，不进包 |
 | **值** | 只从 `*/types` 模块取 | 约定是**只允许出现 `import type`**，不允许任何值依赖。列入白名单的这几个目前连 type import 都没有：`config/types`、`projects/types`、`sources/types`、`prototypes/types`（与 `packages/shared/package.json` 的 `exports` 一一对应） |
-| **值** | 只从浏览器安全的叶子模块取 | 现有：`@craft-agent/shared/agent/modes`（`mode-types.ts`，唯一依赖是 zod）、`@craft-agent/shared/agent/thinking-levels`（无 import） |
+| **值** | 只从浏览器安全的叶子模块取 | 现有：`@craft-agent/shared/agent/modes`（`mode-types.ts`，唯一依赖是 zod）、`@craft-agent/shared/agent/thinking-levels`（无 import）、`@craft-agent/shared/prototypes/wiki-links`（`wiki-links.ts`，无 import，渲染层取 `rewriteWikiLinks`） |
 | **值** | **barrel（`index.ts`）一律不行** | `@craft-agent/shared`、`@craft-agent/shared/prototypes` 等 barrel 会把整个家族（含 workspace / config storage）拉进浏览器包，哪怕你只要一个字符串常量 |
 
 ## 2. 为什么：一次真实事故（2026-09-15）
@@ -48,8 +48,8 @@ renderer/components/prototypes/CreatePrototypeDialog.tsx
 
 **渲染层需要一个共享包的新值时：**
 
-1. 把那个值（连同它的类型）放进所属家族的 `types.ts`——**该文件只允许出现 `import type`，不允许任何值依赖**。`prototypes/types.ts` 干脆一个 import 都没有，它的模块注释写明了这一点是刻意的（见 [prototypes/types.ts](file:///c:/Users/Ryan/code/craft-agents-oss/packages/shared/src/prototypes/types.ts)）。
-2. 在 [packages/shared/package.json](file:///c:/Users/Ryan/code/craft-agents-oss/packages/shared/package.json) 的 `exports` 里加一条 `"./<family>/types": "./src/<family>/types.ts"`。
+1. 把那个值（连同它的类型）放进所属家族的 `types.ts`——**该文件只允许出现 `import type`，不允许任何值依赖**；需要的是一个**函数**而不是常量时，放进一个**零依赖叶子**（`prototypes/wiki-links.ts` 就是这样：一个 import 都没有，所以渲染层能直接取 `rewriteWikiLinks`）。`prototypes/types.ts` 干脆一个 import 都没有，它的模块注释写明了这一点是刻意的（见 [prototypes/types.ts](file:///c:/Users/Ryan/code/craft-agents-oss/packages/shared/src/prototypes/types.ts)）。
+2. 在 [packages/shared/package.json](file:///c:/Users/Ryan/code/craft-agents-oss/packages/shared/package.json) 的 `exports` 里加一条子路径（`"./<family>/types"` 或那个叶子的 `"./<family>/<leaf>"`）。
 3. 服务端那侧照旧从原来的位置 import——`config.ts` 之类转发一层即可，调用方不用改。
 
 **不要用这些绕法：**

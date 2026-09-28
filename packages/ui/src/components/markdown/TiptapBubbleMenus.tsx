@@ -138,6 +138,20 @@ function getEditableBlockMeta(editor: Editor): { label: string; code: string; up
       }
     }
 
+    // A preview block is drawn by its own component, so the fence — the file it names, the rows
+    // it holds — has no place on screen to be edited. Its language is the label rather than a
+    // word for the family, because the fence is what is being edited: `drawio-preview` says what
+    // it is, "preview" does not.
+    if (node.type.name === 'previewBlock') {
+      return {
+        label: String(node.attrs.lang ?? 'preview'),
+        code: String(node.attrs.code ?? ''),
+        update: (next) => {
+          editor.chain().focus().setNodeSelection(pos).updateAttributes('previewBlock', { code: next }).run()
+        },
+      }
+    }
+
     return null
   }
 

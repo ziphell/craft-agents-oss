@@ -166,14 +166,6 @@ const TaskNodeObject = z.object({
   inputs: z.record(z.string(), InputRefSchema).optional(),
   outputs: z.array(OutputDeclSchema).optional(),
 
-  /**
-   * The writer identity this node writes prototype artifacts as (plan §3.6): the prefix its
-   * patches are named with, and what the write guard checks it against. Declared only when a task
-   * has more than one writer of the same artifact tree — a task that omits it runs as the
-   * single-writer default, so the common case needs no declaration.
-   */
-  writes: z.string().min(1).optional(),
-
   // Control-flow: `when` is executed (a false condition skips the node); the rest parse in P4.
   when: z.string().optional(),
   trigger: z.enum(TRIGGER_RULES).optional(),

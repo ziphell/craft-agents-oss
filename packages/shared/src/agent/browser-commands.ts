@@ -2,11 +2,11 @@
  * `browser_tool`'s commands.
  *
  * The window's own surface: pages, refs, input, screenshots, console, network, tabs. Every command
- * here drives the shared browser window and nothing else — a prototype's files are
+ * here drives the shared browser window and nothing else; the other door's commands live in
  * `prototype-commands.ts`, and the CLI both doors read their command line with is `command-cli.ts`.
  *
- * This door's own runtime lives here too, because only this door has it: batching (a prototype
- * command is one command per call), `evaluate --file`, and the settle timings `open` waits on.
+ * This door's own runtime lives here too, because only this door has it: batching (the other door
+ * takes one command per call), `evaluate --file`, and the settle timings `open` waits on.
  * This file imports `command-cli.ts` and nothing else of ours except types — `command-cli.ts` does
  * not import it back, which is what keeps the CLI free of either door.
  */
@@ -21,7 +21,6 @@ import type {
   BrowserScreenshotRegionArgs,
   BrowserWaitArgs,
 } from './browser-pane.ts';
-import type { PrototypeWindowDescriptor } from '../prototypes/types.ts';
 import { describeWork } from '../protocol/dto.ts';
 import {
   type BrowserCommandImage,
@@ -30,6 +29,7 @@ import {
   type ToolCommandArgs,
   type ToolCommandContext,
   createCommandRunner,
+  formatBytes,
   getPageMetrics,
   resolveLocalPath,
   tokenizeCommand,
@@ -188,9 +188,9 @@ const MAX_EVALUATE_FILE_BYTES = 256 * 1024;
  * Read the script `evaluate --file` names, and say which file it came from.
  *
  * The flag exists so the source never has to enter the command: the model writes the
- * script once (with the Write tool, or it is the patch it just wrote) and injects it by
- * path, instead of spelling the same code out a second time — which costs the
- * conversation twice, and escapes the code through a command string on the way.
+ * script once (with the Write tool) and injects it by path, instead of spelling the
+ * same code out a second time — which costs the conversation twice, and escapes the
+ * code through a command string on the way.
  */
 export function readEvaluateFile(filePath: string, workspaceRootPath?: string): { source: string; path: string } {
   const absolute = resolveLocalPath(filePath, workspaceRootPath);
@@ -225,15 +225,13 @@ export function readEvaluateFile(filePath: string, workspaceRootPath?: string): 
  * One browser command, once the command line has been read.
  *
  * The three things this door says about itself: its help, its command table, and what an unknown
- * command means — a browser command we do not have, or one of `prototype_tool`'s, which is why
- * the message names that tool (`browser_tool apply` reads perfectly plausible).
+ * command means — a browser command we do not have (`browser_tool status` reads perfectly
+ * plausible, and is not one of ours).
  */
 const runOneCommand = createCommandRunner({
   help: getBrowserToolHelp,
   run: runBrowserCommand,
-  unknownCommand: (cmd) =>
-    `Unknown browser_tool command "${cmd}". Use "--help" to see supported commands. ` +
-    `A prototype's own files and flow (apply, status, export, …) are prototype_tool's.`,
+  unknownCommand: (cmd) => `Unknown browser_tool command "${cmd}". Use "--help" to see supported commands.`,
 });
 
 /**
@@ -289,7 +287,7 @@ export function getBrowserToolHelp(): string {
     '  screenshot-region --ref <@eN> [--padding <px>] [--png]',
     '  screenshot-region --selector <css-selector> [--padding <px>] [--png]',
     '  console [limit] [level]',
-    '  window-resize <width> <height>',
+    '  viewport-resize <width> <height>                  size a tab\'s view; the window follows only when that tab is the one on screen',
     '  network [limit] [status]',
     '  wait <selector|text|url|network-idle> <value?> [timeoutMs]',
     '  key <key> [modifiers]',
@@ -317,10 +315,7 @@ export function getBrowserToolHelp(): string {
     '"release" drops your overlay and unlocks the tab it was holding — the window, the other',
     'tabs and the person\'s chrome were never held by it.',
     '',
-    'This is the window\'s own surface: pages, refs, input, screenshots, console, network, tabs. A',
-    'prototype is a separate tool — "prototype_tool" acts on a prototype\'s own files and flow, and drives',
-    'the same window ("prototype_tool open" adds a tab of its own). Both tools take bare command names,',
-    'so this "open" and that one are told apart by which tool you call.',
+    'This is the window\'s own surface: pages, refs, input, screenshots, console, network, tabs.',
     '',
     'The window is one and its tabs are many, so every command can name the tab it acts on:',
     '"--tab <id>" ("tabs" lists them). Without one it acts on **your** tab — the tab you have been',
@@ -329,10 +324,12 @@ export function getBrowserToolHelp(): string {
     'yours and stays behind whatever the person is reading — they share the window, and your work does not',
     'need their eyes on it. "tab-show <id>" is the one command that brings a tab up for them.',
     'A tab is yours to work on when it belongs to your task — the tabs you opened, the ones assigned to you,',
-    'plus the ones opened from them — or when nobody has claimed it yet (a tab the person opened, which you',
-    'may take over). Another conversation\'s tab is refused, whatever it holds: sessions running in parallel',
-    '(a parent and the children it spawned) each work in their own tab, and "tab-assign <id> <session>" is how',
-    'a parent hands one over.',
+    'plus the ones opened from them — or when it is nobody\'s work: a tab the person opened, which you may',
+    'take over. That includes a tab another conversation works from: the tab is the person\'s, and whoever',
+    'they are talking to works there (a command of theirs does not move because you are in it — each',
+    'conversation keeps its own tab). Another conversation\'s own tab is refused, whatever it holds: sessions',
+    'running in parallel (a parent and the children it spawned) each work in their own tab, and',
+    '"tab-assign <id> <session>" is how a parent hands one over.',
     'While you work on a tab it is **held** — the person cannot click or type there, and another',
     'conversation\'s command that names it is refused until your turn ends (or the person clicks the lock in',
     'the tab rail to let go of it). Other conversations hold their own tabs at the same time.',
@@ -360,7 +357,7 @@ export function getBrowserToolHelp(): string {
     '  paste Name\\tAge\\nAlice\\t30',
     '  scroll down 800',
     '  evaluate document.title',
-    '  evaluate --file prototypes/cart/patches/ui-002-total.js',
+    '  evaluate --file scripts/probe.js',
     '  pick',
     '  tabs                                            (which tabs the window has, and which is on screen)',
     '  snapshot --tab tab-3                            (act on a named tab, wherever the window is)',
@@ -372,7 +369,7 @@ export function getBrowserToolHelp(): string {
     '  screenshot-region --ref @e9 --padding 12',
     '  screenshot-region --selector div[data-testid="chart"]',
     '  console 100 warn',
-    '  window-resize 1280 720',
+    '  viewport-resize 1280 720',
     '  network 50 failed',
     '  wait network-idle 8000',
     '  key Enter',
@@ -404,18 +401,6 @@ function formatNodeLine(
   }
   if (node.description) line += ` — ${node.description}`;
   return line;
-}
-
-function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  let value = bytes;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  return `${value >= 10 || unit === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`;
 }
 
 function formatPercent(numerator: number, denominator: number): string {
@@ -472,43 +457,10 @@ function countActionableNodes(nodes: Array<{ role: string; disabled?: boolean }>
 function summarizeWindows(windows: Awaited<ReturnType<BrowserPaneFns['listWindows']>>): string {
   const visible = windows.filter((w) => w.isVisible).length;
   // "Working", not "locked": a window is one its workspace shares, and what this counts is
-  // conversations at work in it right now (plan §22). Which tab each one holds is the
+  // conversations at work in it right now. Which tab each one holds is the
   // tab's own answer, printed by `tabs`.
   const working = windows.filter((w) => w.agentControlActive).length;
   return `total=${windows.length}, visible=${visible}, working=${working}`;
-}
-
-/** `checkout-flow — page "orders" (overlay), its own address http://…`: which prototype, which screen, where it lives. */
-function describePrototypeAt(prototype: PrototypeWindowDescriptor): string {
-  const page = prototype.page
-    ? ` — page "${prototype.page}"${prototype.kind ? ` (${prototype.kind})` : ''}`
-    : ' — the page index';
-  const origin = prototype.origin ? `, its own address ${prototype.origin}` : '';
-  return `${prototype.slug}${page}${origin}`;
-}
-
-/**
- * The prototype a window is showing, and what that means for the next move.
- *
- * Both addresses are stated because they are two different facts: the `URL` above
- * is the tab on screen, this is where the prototype itself lives — for an overlay
- * page they are different addresses, for a page of ours they are the same one.
- * The kind is the decisive part: a document of ours is changed by editing files, an
- * overlay page belongs to a real site and is only ever patched. Without this the
- * agent is looking at an address and guessing.
- */
-function describeSnapshotPrototype(
-  prototype: PrototypeWindowDescriptor | null | undefined,
-): string[] {
-  if (!prototype) return [];
-  return [
-    `Prototype: ${describePrototypeAt(prototype)}`,
-    prototype.kind === 'overlay'
-      ? "  (the page above is the live site's own page, with this prototype's patches injected — patch it, never edit it in place)"
-      : prototype.kind === 'scratch'
-        ? '  (the document above is ours: that file rendered with its patches applied — changed by editing files)'
-        : "  (the window is on the prototype's own address but not on one of its pages — the page index, or a path the table does not describe)",
-  ];
 }
 
 async function waitForForegroundOpenVisibility(args: {
@@ -824,7 +776,6 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
     const lines: string[] = [
       `URL: ${snapshot.url}`,
       `Title: ${snapshot.title}`,
-      ...describeSnapshotPrototype(snapshot.prototype),
       `Elements: ${snapshot.nodes.length}${roleSummary ? ` (${roleSummary})` : ''}`,
       `Focused ref: ${focusedRef ?? 'none'}, disabled: ${disabledCount}`,
       '',
@@ -863,7 +814,6 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
           `Security verification detected (${challenge.provider}).`,
           `Signals: ${challenge.signals.join(', ')}`,
           `URL: ${snapshot.url}`,
-          ...describeSnapshotPrototype(snapshot.prototype),
           '',
           `Detected only ${actionableCount} actionable element(s) out of ${snapshot.nodes.length} accessibility nodes.`,
           'This is consistent with a security challenge page blocking normal interaction.',
@@ -1377,22 +1327,24 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
     return { output: lines.join('\n'), appendReleaseHint: true };
   }
 
-  if (cmd === 'window-resize') {
+  if (cmd === 'viewport-resize') {
     const widthRaw = parts[1];
     const heightRaw = parts[2];
-    if (!widthRaw || !heightRaw) throw new Error('window-resize requires width and height. Example: window-resize 1280 720');
+    if (!widthRaw || !heightRaw) throw new Error('viewport-resize requires width and height. Example: viewport-resize 1280 720');
     const width = Number(widthRaw);
     const height = Number(heightRaw);
     if (Number.isNaN(width) || Number.isNaN(height)) {
-      throw new Error('window-resize width and height must be numbers.');
+      throw new Error('viewport-resize width and height must be numbers.');
     }
 
-    const resized = await fns.windowResize({ width, height });
+    const resized = await fns.resizeViewport({ width, height });
     const clamped = resized.width !== width || resized.height !== height;
 
+    // The size is the view's, so the reply is about the view. Whether the person's window moved with
+    // it is visible from `tabs` (which tab is on screen) — and it had to, when it is this one.
     return {
       output: [
-        `Window resized to ${resized.width}x${resized.height}`,
+        `Your tab's viewport is now ${resized.width}x${resized.height}`,
         `Requested: ${width}x${height}${clamped ? ' (adjusted by platform constraints)' : ''}`,
       ].join('\n'),
       appendReleaseHint: true,
@@ -1619,7 +1571,7 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
   }
 
   if (cmd === 'evaluate') {
-    // The script may be named instead of spelled out: a patch the model already wrote is
+    // The script may be named instead of spelled out: a file the model already wrote is
     // injected by path, so the same source is not generated a second time inside the
     // command (see readEvaluateFile).
     const fileAt = parts.indexOf('--file');
@@ -1633,7 +1585,7 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
       const filePath = parts[fileAt + 1]?.trim();
       if (!filePath || filePath.startsWith('--')) {
         throw new Error(
-          '--file needs a path. Example: evaluate --file prototypes/cart/patches/ui-002-total.js',
+          '--file needs a path. Example: evaluate --file scripts/probe.js',
         );
       }
       const rest = [...parts.slice(1, fileAt), ...parts.slice(fileAt + 2)];
@@ -1716,7 +1668,7 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
     ];
     if (target) {
       // Who is working in it is per tab, so the window-level answer is just whether it is
-      // visible — "tabs" says which tab each conversation holds (plan §22).
+      // visible — "tabs" says which tab each conversation holds.
       lines.push(`Visible: ${target.isVisible}, working: ${target.agentControlActive ? 'yes' : 'no'}`);
     }
 
@@ -1745,19 +1697,6 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
       lines.push('');
       lines.push(`  ${tab.active ? '*' : ' '} ${tab.id}  ${tab.title.trim() || tab.url || '(untitled)'}`);
       lines.push(`      url:        ${tab.url || 'about:blank'}${tab.isLoading ? '  (loading)' : ''}`);
-      if (tab.prototype) {
-        // Which prototype, and which of its pages — the page table's answer, so a
-        // page that is not one of them says so instead of being given the nearest
-        // name.
-        lines.push(
-          `      prototype:  ${tab.prototype.slug}`,
-        );
-        lines.push(
-          tab.prototypePage
-            ? `      page:       ${tab.prototypePage}`
-            : '      page:       none of the prototype\'s pages (a file, or a route it does not describe)',
-        );
-      }
       // Whose tab it is, and who is on it — two different questions, and the second
       // one is the answer to "is somebody mid-work here".
       if (tab.disposition) {
@@ -1776,8 +1715,8 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
           : 'a person'}`,
       );
       lines.push(
-        `      driven by:  ${tab.driverSessionId
-          ? `${tab.driverSessionId}${tab.driverSessionId === ctx.sessionId ? ' (you)' : ''}`
+        `      driven by:  ${tab.drivenBy
+          ? `${tab.drivenBy}${tab.drivenBy === ctx.sessionId ? ' (you)' : ''}`
           : 'nobody right now'}`,
       );
       // Held right now, as opposed to merely driven: while this is up, the tab is the
@@ -1791,8 +1730,8 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
       }
       // Where this conversation's unnamed commands go. Worth stating because it is *not*
       // "the tab on screen": the person clicking around moves their own view, and this
-      // tab stays where it is (plan §22, 第十轮).
-      if (tab.cursorOf === ctx.sessionId) {
+      // tab stays where it is.
+      if (tab.cursorOf.includes(ctx.sessionId)) {
         lines.push('      your tab:  yes — a command that names no tab acts here');
       }
     }
@@ -1906,7 +1845,7 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
 
     // Three outcomes, and the middle one is the interesting one: the workspace's
     // window cannot be closed by a conversation, so `close` there means "close the
-    // tabs I opened" (plan §22).
+    // tabs I opened".
     const title = lifecycle.action === 'closed'
       ? 'Browser window closed and destroyed.'
       : lifecycle.action === 'pages-closed'

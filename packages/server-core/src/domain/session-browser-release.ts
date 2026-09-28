@@ -1,9 +1,9 @@
 /**
- * What letting go of the browser takes: the overlay comes off, and the lease goes
- * back. Nothing is owned to begin with — a window belongs to its workspace, and a
- * conversation only ever drove it for a while (plan §22).
+ * What letting go of the browser takes: the overlay comes off, and the marks of what this
+ * session drove go with it. Nothing is owned to begin with — a window belongs to its
+ * workspace, and a conversation only ever drove its tabs for a while.
  */
-export type BrowserLeaseReleaser = {
+export type BrowserReleaser = {
   clearVisualsForSession(sessionId: string): Promise<void>
   unbindAllForSession(sessionId: string): void
 }
@@ -18,7 +18,7 @@ export type BrowserLeaseReleaser = {
  * session-scoped BPM without leaking session identity into the releaser type.
  */
 export async function releaseBrowserOnForcedStop(
-  source: BrowserLeaseReleaser | ((sessionId: string) => BrowserLeaseReleaser | null) | null | undefined,
+  source: BrowserReleaser | ((sessionId: string) => BrowserReleaser | null) | null | undefined,
   sessionId: string,
 ): Promise<void> {
   if (!source) return

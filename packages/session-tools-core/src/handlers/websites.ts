@@ -3,7 +3,7 @@
  * update_website / write_website_data / delete_website.
  *
  * All storage logic (slug generation, digests, SQLite writes, watcher
- * notifications, unpublish-on-delete) happens behind the injected ctx.websites
+ * notifications) happens behind the injected ctx.websites
  * callbacks where the website primitives live — this package must stay
  * dependency-free of @craft-agent/shared (same rule as create_task).
  */
@@ -115,7 +115,7 @@ export async function handleUpdateWebsite(
   const { slug, ...patch } = args;
   const hasChanges = Object.keys(patch).some(key => (patch as Record<string, unknown>)[key] !== undefined);
   if (!hasChanges) {
-    return errorResponse('Nothing to update — provide at least one of name, description, kind, projectId, content, refresh.');
+    return errorResponse('Nothing to update — provide at least one of name, description, projectId, content, refresh.');
   }
 
   try {

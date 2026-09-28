@@ -34,6 +34,7 @@ import {
   isProjectsNavigation,
   isPrototypesNavigation,
   isWebsitesNavigation,
+  isTweaksNavigation,
 } from '@/contexts/NavigationContext'
 import { useSessionSelection, useIsMultiSelectActive, useSelectedIds, useSelectionCount } from '@/hooks/useSession'
 import { sourceSelection, skillSelection, automationSelection } from '@/hooks/useEntitySelection'
@@ -48,6 +49,8 @@ import PrototypeInfoPage from '@/pages/PrototypeInfoPage'
 import { KanbanBoardContainer } from './kanban/KanbanBoardContainer'
 import { WebsitesHome } from '../websites/WebsitesHome'
 import { WebsiteView } from '../websites/WebsiteView'
+import { TweaksHome } from '../tweaks/TweaksHome'
+import { TweakView } from '../tweaks/TweakView'
 import type { ExecutionEntry } from '../automations/types'
 import { automationsAtom } from '@/atoms/automations'
 import { SendResourceToWorkspaceDialog, type SendResourceType } from './SendResourceToWorkspaceDialog'
@@ -371,6 +374,19 @@ export function MainContentPanel({
           <WebsiteView key={navState.details.websiteSlug} websiteSlug={navState.details.websiteSlug} />
         ) : (
           <WebsitesHome />
+        )}
+      </Panel>
+    )
+  }
+
+  // Tweaks navigator - the library list, or one tweak's detail page
+  if (isTweaksNavigation(navState)) {
+    return wrapWithStoplight(
+      <Panel variant="grow" className={className}>
+        {navState.details ? (
+          <TweakView key={navState.details.tweakSlug} tweakSlug={navState.details.tweakSlug} />
+        ) : (
+          <TweaksHome />
         )}
       </Panel>
     )

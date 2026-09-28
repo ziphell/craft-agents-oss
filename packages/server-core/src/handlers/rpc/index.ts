@@ -20,6 +20,8 @@ export { getHealthCheck } from './server'
 import { registerSettingsHandlers } from './settings'
 import { registerProjectsHandlers } from './projects'
 import { registerWebsitesHandlers } from './websites'
+import { registerDrawioHandlers } from './drawio'
+import { registerTweaksHandlers } from './tweaks'
 import { registerSkillsHandlers } from './skills'
 import { registerSourcesHandlers } from './sources'
 import { registerStatusesHandlers } from './statuses'
@@ -48,6 +50,8 @@ export function registerCoreRpcHandlers(
   registerSettingsHandlers(server, deps)
   registerProjectsHandlers(server, deps)
   registerWebsitesHandlers(server, deps)
+  registerDrawioHandlers(server, deps)
+  registerTweaksHandlers(server, deps)
   registerSkillsHandlers(server, deps)
   registerSourcesHandlers(server, deps)
   registerStatusesHandlers(server, deps)

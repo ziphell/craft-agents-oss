@@ -33,9 +33,8 @@
  * - **`requirements`** — which requirement it argues for. This is the edge from
  *   evidence to decision, and the reason `research/` is worth its own directory.
  *
- * Nothing here is packaged for delivery: `research/` is how the reader got to the
- * requirements, not part of what they receive (that is `export.ts`, which ships
- * `assets/` and not this — plan §20.2).
+ * Nothing here is delivered: the reader receives the specification, not the notes it was written
+ * from.
  */
 
 import { existsSync, readdirSync, readFileSync } from 'fs'

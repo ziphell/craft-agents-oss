@@ -14,7 +14,6 @@ import { PanelHeader } from '@/components/app-shell/PanelHeader'
 import { SessionMenu } from '@/components/app-shell/SessionMenu'
 import { CompactSessionMenu } from '@/components/app-shell/CompactSessionMenu'
 import { SessionInfoPopover } from '@/components/app-shell/SessionInfoPopover'
-import { PrototypeBindingMenu } from '@/components/prototypes/PrototypeBindingMenu'
 import { SessionWebsitesMenu } from '@/components/app-shell/SessionWebsitesMenu'
 import { RenameDialog } from '@/components/ui/rename-dialog'
 import { toast } from 'sonner'
@@ -334,6 +333,19 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     await window.electronAPI.sessionCommand(session.id, { type: 'updateWorkingDirectory', dir: path })
   }, [session])
 
+  // The prototype half of the same choice: binding one makes its folder the working
+  // directory (the session does that), and picking a folder unbinds it. So there is one
+  // handler here, not two, and no local state to keep in step — the events come back.
+  const handlePrototypeChange = React.useCallback(async (slug: string | null) => {
+    if (!session) return
+    try {
+      await window.electronAPI.sessionCommand(session.id, { type: 'setPrototypeSlug', prototypeSlug: slug })
+    } catch (err) {
+      console.error('[ChatPage] Failed to change the prototype binding:', err)
+      toast.error(t('prototypeBind.failed'))
+    }
+  }, [session, t])
+
   const handleOpenFile = React.useCallback(
     async (path: string) => {
       // Resolve bare relative paths against session working directory,
@@ -642,20 +654,11 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
   }, [isTaskOrchestrator, handleEditTask, t])
 
   const primaryHeaderAction = isCompactMode ? compactInfoButton : shareButton
-  // The prototype binding sits first: it is session context (what this
-  // conversation is about), not an action performed on the session.
+  // Nothing about the prototype lives in the header: which prototype a conversation works
+  // in is *where it works*, so it belongs to the working-directory picker next to the
+  // input, where the folder half already is.
   const headerActions = (
     <div className="flex items-center gap-1.5">
-      {sessionMeta && (
-        // Nothing else decides this session's prototype: a project can note which one
-        // it is on and tells its conversations what exists, but that is background
-        // (plan §15.1.3) and it binds none of them — so the menu only ever shows what
-        // was bound here.
-        <PrototypeBindingMenu
-          sessionId={sessionId}
-          prototypeSlug={sessionMeta.prototypeSlug}
-        />
-      )}
       {sessionMeta && (
         // What this conversation produced — the way back to the websites it made,
         // without a library in the sidebar. Renders nothing until there is one.
@@ -755,6 +758,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
         isProcessing: sessionMeta.isProcessing || false,
         isFlagged: sessionMeta.isFlagged,
         workingDirectory: sessionMeta.workingDirectory,
+        prototypeSlug: sessionMeta.prototypeSlug,
         enabledSourceSlugs: sessionMeta.enabledSourceSlugs,
       }
 
@@ -793,6 +797,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
                 onSourcesChange={(slugs) => onSessionSourcesChange?.(sessionId, slugs)}
                 workingDirectory={sessionMeta.workingDirectory}
                 onWorkingDirectoryChange={handleWorkingDirectoryChange}
+                onPrototypeChange={handlePrototypeChange}
                 messagesLoading={messageLoadState.messagesLoading || (messagesRetrying && !messageLoadState.messagesReady)}
                 messagesLoadError={messageLoadState.error}
                 messagesRetrying={messagesRetrying}
@@ -873,6 +878,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
             workingDirectory={workingDirectory}
             onWorkingDirectoryChange={handleWorkingDirectoryChange}
             sessionFolderPath={session?.sessionFolderPath}
+            onPrototypeChange={handlePrototypeChange}
             messagesLoading={messageLoadState.messagesLoading || (messagesRetrying && !messageLoadState.messagesReady)}
             messagesLoadError={messageLoadState.error}
             messagesRetrying={messagesRetrying}

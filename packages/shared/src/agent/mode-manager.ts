@@ -1784,6 +1784,12 @@ const ALWAYS_ALLOWED_TOOLS = new Set([
   // Prototype workbench (the other door onto the same wrapper): a prototype is built by
   // writing its files, and the browser wrapper is what turns them into something to look at.
   'prototype_tool',
+  // Frames out of a recording, decoded by the browser the app already ships — the third door
+  // onto that same wrapper.
+  'video_tool',
+  // Diagrams: converted and drawn by the drawio webapp the app already ships, in a hidden window
+  // of its own — the fourth door, and the only one whose subject is a file rather than a window.
+  'drawio_tool',
 ]);
 
 /**
@@ -1875,7 +1881,7 @@ export function shouldAllowToolInMode(
         (rejection.type === 'dangerous_operator' && rejection.operatorType === 'redirect') ||
         looksLikePotentialWrite(command);
 
-      if (likelyWriteAttempt && (options?.plansFolderPath || options?.dataFolderPath || options?.prototypesFolderPath)) {
+      if (likelyWriteAttempt && (options?.plansFolderPath || options?.dataFolderPath)) {
         const targetPath = extractBashWriteTarget(command) ?? extractPowerShellWriteTarget(command);
         if (targetPath) {
           // Check plans folder with robust path containment (prevents sibling-prefix bypasses)
@@ -1887,12 +1893,6 @@ export function shouldAllowToolInMode(
           // Check data folder with robust path containment
           if (options?.dataFolderPath && isPathWithinDirectory(targetPath, options.dataFolderPath)) {
             debug(`[Mode] Allowing write to data folder: ${targetPath}`);
-            return { allowed: true };
-          }
-
-          // Check prototypes folder (workspace-level prototype-workbench artifacts)
-          if (options?.prototypesFolderPath && isPathWithinDirectory(targetPath, options.prototypesFolderPath)) {
-            debug(`[Mode] Allowing write to prototypes folder: ${targetPath}`);
             return { allowed: true };
           }
 
@@ -1910,19 +1910,15 @@ export function shouldAllowToolInMode(
           if (options?.dataFolderPath) {
             lines.push(`  Data:   ${options.dataFolderPath}`);
           }
-          if (options?.prototypesFolderPath) {
-            lines.push(`  Prototypes: ${options.prototypesFolderPath}`);
-          }
           if (pathHint) {
             lines.push(``, pathHint);
           }
           const plansHint = options?.plansFolderPath ? `For plans, write to: ${options.plansFolderPath}` : null;
           const dataHint = options?.dataFolderPath ? `For data output, write to: ${options.dataFolderPath}` : null;
-          const prototypesHint = options?.prototypesFolderPath ? `For prototype artifacts, write to: ${options.prototypesFolderPath}` : null;
           lines.push(
             ``,
             `Allowed paths in Explore mode:`,
-            ...[plansHint, dataHint, prototypesHint].filter(Boolean).map(p => `• ${p}`),
+            ...[plansHint, dataHint].filter(Boolean).map(p => `• ${p}`),
             `• Or ask the user to switch to Ask or Auto mode (${config.shortcutHint}) to enable writes anywhere`
           );
           return {
@@ -1945,7 +1941,10 @@ export function shouldAllowToolInMode(
     };
   }
 
-  // Handle Write/Edit/MultiEdit/NotebookEdit - allow if targeting plans folder or allowedWritePaths
+  // Handle Write/Edit/MultiEdit/NotebookEdit - allow if targeting the plans or data folder, or
+  // allowedWritePaths. The prototypes folder is deliberately NOT among them: it is the user's
+  // material rather than the mode's own plumbing, so a prototype file needs a mode that allows
+  // writes (or the person, editing it in the app).
   if (toolName === 'Write' || toolName === 'Edit' || toolName === 'MultiEdit' || toolName === 'NotebookEdit') {
     const input = toolInput as Record<string, unknown> | null;
     const filePath = (input?.file_path ?? input?.notebook_path) as string | undefined;
@@ -1966,12 +1965,6 @@ export function shouldAllowToolInMode(
         return { allowed: true };
       }
 
-      // Check prototypes folder exception (workspace-level prototype-workbench artifacts)
-      if (options?.prototypesFolderPath && isPathWithinDirectory(filePath, options.prototypesFolderPath)) {
-        debug(`[Mode] Allowing ${toolName} to prototypes folder`);
-        return { allowed: true };
-      }
-
       // Check allowedWritePaths from permissions config
       if (config.allowedWritePaths && config.allowedWritePaths.length > 0) {
         if (matchesAllowedWritePath(filePath, config.allowedWritePaths)) {
@@ -1981,7 +1974,7 @@ export function shouldAllowToolInMode(
       }
 
       // Not in plans/data folder and not in allowedWritePaths - provide detailed rejection
-      if (options?.plansFolderPath || options?.dataFolderPath || options?.prototypesFolderPath) {
+      if (options?.plansFolderPath || options?.dataFolderPath) {
         debug(`[Mode] ${toolName} target "${filePath}" not in allowed folders or allowedWritePaths`);
         const pathHint = options?.plansFolderPath ? getPathHint(filePath, options.plansFolderPath, options?.dataFolderPath) : null;
         const lines = [
@@ -1995,19 +1988,15 @@ export function shouldAllowToolInMode(
         if (options?.dataFolderPath) {
           lines.push(`  Data:   ${options.dataFolderPath}`);
         }
-        if (options?.prototypesFolderPath) {
-          lines.push(`  Prototypes: ${options.prototypesFolderPath}`);
-        }
         if (pathHint) {
           lines.push(``, pathHint);
         }
         const plansHint = options?.plansFolderPath ? `For plans, write to: ${options.plansFolderPath}` : null;
         const dataHint = options?.dataFolderPath ? `For data output, write to: ${options.dataFolderPath}` : null;
-        const prototypesHint = options?.prototypesFolderPath ? `For prototype artifacts, write to: ${options.prototypesFolderPath}` : null;
         lines.push(
           ``,
           `Allowed paths in Explore mode:`,
-          ...[plansHint, dataHint, prototypesHint].filter(Boolean).map(p => `• ${p}`),
+          ...[plansHint, dataHint].filter(Boolean).map(p => `• ${p}`),
           `• Or ask the user to switch to Ask or Auto mode (${config.shortcutHint}) to enable writes anywhere`
         );
         return {

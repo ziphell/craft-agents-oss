@@ -31,7 +31,7 @@ describe('website data write (spawned Bun one-shot)', () => {
 
   beforeAll(() => {
     workspace = mkdtempSync(join(tmpdir(), 'craft-data-write-'));
-    slug = createWebsite(workspace, { name: 'Write Target', kind: 'live' }).slug;
+    slug = createWebsite(workspace, { name: 'Write Target' }).slug;
   });
   afterAll(() => {
     rmSync(workspace, { recursive: true, force: true });
@@ -115,7 +115,7 @@ describe('website data write (spawned Bun one-shot)', () => {
   });
 
   it('concurrent writers never corrupt the snapshot and lose no writes (unique temp files)', async () => {
-    const website = createWebsite(workspace, { name: 'Concurrent Writers', kind: 'live' }).slug;
+    const website = createWebsite(workspace, { name: 'Concurrent Writers' }).slug;
     const N = 6;
 
     // Fire N writers at once at the SAME snapshot.json. With a fixed `.tmp`
@@ -145,7 +145,7 @@ describe('website data write (spawned Bun one-shot)', () => {
   });
 
   it('enforces the kv/series growth caps transactionally (violating patch rolls back whole)', async () => {
-    const website = createWebsite(workspace, { name: 'Capped', kind: 'live' }).slug;
+    const website = createWebsite(workspace, { name: 'Capped' }).slug;
 
     // Seed two keys + one series, then push past both caps in single patches.
     await applyWebsiteDataPatch(workspace, website, {

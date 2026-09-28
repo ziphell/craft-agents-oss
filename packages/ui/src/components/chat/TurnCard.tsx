@@ -99,7 +99,7 @@ import {
  * Removes markdown syntax to show plain text preview.
  * Code block content is preserved as plain text.
  */
-function stripMarkdown(text: string): string {
+export function stripMarkdown(text: string): string {
   return text
     // Extract content from fenced code blocks (remove ``` and optional language)
     .replace(/```(?:\w+)?\n?([\s\S]*?)```/g, '$1')
@@ -712,7 +712,7 @@ function formatToolDisplay(
 }
 
 /** Get the primary preview text for collapsed state */
-function getPreviewText(
+export function getPreviewText(
   activities: ActivityItem[],
   intent?: string,
   isStreaming?: boolean,
@@ -1479,8 +1479,6 @@ function BranchDropdown({ onBranch }: BranchDropdownProps) {
   )
 }
 
-const MAX_HEIGHT = 540
-
 function clearAnnotationMarks(root: HTMLElement): void {
   const annotatedInlineCodeNodes = root.querySelectorAll<HTMLElement>('code[data-ca-annotation-inline-code="true"]')
   annotatedInlineCodeNodes.forEach((codeNode) => {
@@ -1684,8 +1682,6 @@ export function ResponseCard({
   const [copied, setCopied] = useState(false)
   // Fullscreen state
   const [isFullscreen, setIsFullscreen] = useState(false)
-  // Dark mode detection - scroll fade only shown in dark mode
-  const [isDarkMode, setIsDarkMode] = useState(false)
   // Pending text selection waiting for explicit follow-up action
   const interaction = useAnnotationInteractionController()
   const {
@@ -1725,19 +1721,6 @@ export function ResponseCard({
     isStreaming,
   })
   const allowAnnotationIsland = annotationInteractionMode === 'interactive'
-
-  // Detect dark mode from document class and listen for changes
-  useEffect(() => {
-    const checkDarkMode = () => {
-      setIsDarkMode(document.documentElement.classList.contains('dark'))
-    }
-    checkDarkMode()
-
-    // Observe class changes on documentElement for theme switches
-    const observer = new MutationObserver(checkDarkMode)
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
-    return () => observer.disconnect()
-  }, [])
 
   const closeSelectionMenu = useCallback(() => {
     closeAll()
@@ -2452,24 +2435,14 @@ export function ResponseCard({
 
     return (
       <>
-        <div className="bg-background shadow-minimal rounded-[8px] overflow-hidden relative group">
-          {/* Fullscreen button - desktop only; compact mode keeps message chrome minimal */}
-          {!compactMode && (
-          <button
-            onClick={() => setIsFullscreen(true)}
-            className={cn(
-              "absolute top-2 right-2 p-1 rounded-[6px] transition-all z-10 select-none",
-              "opacity-0 group-hover:opacity-100",
-              "bg-background shadow-minimal",
-              "text-muted-foreground/50 hover:text-foreground",
-              "focus:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:opacity-100"
-            )}
-            title={t('common.viewFullscreen')}
-          >
-            <Maximize2 className="w-3.5 h-3.5" />
-          </button>
-          )}
-
+        {/* A plain response is text on the conversation's own surface. It used to be a
+            white card with a 1px ring, which made every preview block inside it a box
+            inside a box. A plan keeps the card: its header and Accept footer are a
+            deliverable's chrome, not a message's. */}
+        <div className={cn(
+          'overflow-hidden relative group',
+          isPlan && 'bg-background shadow-minimal rounded-[8px]'
+        )}>
           {/* Plan header - only shown for plan variant */}
           {isPlan && (
             <div
@@ -2483,21 +2456,14 @@ export function ResponseCard({
             </div>
           )}
 
-          {/* Scrollable content area with subtle fade at edges (dark mode only) */}
+          {/* The response is read whole: no height cap and no scrolling of its own —
+              a reply taller than the screen is read by scrolling the conversation. */}
           <div
             ref={contentRef}
             data-search-root="response"
             onMouseDown={handleSelectionPointerDown}
             onMouseUp={handleTextSelection}
-            className="pl-[22px] pr-[16px] py-3 text-sm overflow-y-auto scrollbar-hover"
-            style={{
-              maxHeight: MAX_HEIGHT,
-              // Subtle fade at top and bottom edges (16px) - only in dark mode for better contrast
-              ...(isDarkMode && {
-                maskImage: 'linear-gradient(to bottom, transparent 0%, black 16px, black calc(100% - 16px), transparent 100%)',
-                WebkitMaskImage: 'linear-gradient(to bottom, transparent 0%, black 16px, black calc(100% - 16px), transparent 100%)',
-              }),
-            }}
+            className="pl-[22px] pr-[16px] py-3 text-sm"
           >
             <div ref={contentLayerRef} className="relative">
               <Markdown
@@ -2515,7 +2481,10 @@ export function ResponseCard({
               Compact mode falls through to the slim Accept-Plan-only footer below. */}
           {!compactMode && (
             <div className={cn(
-              "pl-4 pr-2.5 py-2 border-t border-border/30 flex items-center justify-between bg-muted/20",
+              "pl-4 pr-2.5 py-2 flex items-center justify-between",
+              // The tint and the hairline were the card's bottom edge; with no card
+              // they would read as a strip with no sides.
+              isPlan && "border-t border-border/30 bg-muted/20",
               SIZE_CONFIG.fontSize
             )}>
               {/* Left side - Copy, View as Markdown, Annotation hint */}
@@ -2576,6 +2545,21 @@ export function ResponseCard({
                   </div>
                 )}
                 {onBranch && <BranchDropdown onBranch={onBranch} />}
+                {/* Read the response at window size. It sits with the other actions rather
+                    than floating over the text, so it is not a frame on the message. */}
+                <button
+                  type="button"
+                  onClick={() => setIsFullscreen(true)}
+                  aria-label={t('common.viewFullscreen')}
+                  title={t('common.viewFullscreen')}
+                  className={cn(
+                    "p-1 rounded-[4px] transition-colors select-none",
+                    "text-muted-foreground hover:text-foreground hover:bg-foreground/5",
+                    "focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  )}
+                >
+                  <Maximize2 className={SIZE_CONFIG.iconSize} />
+                </button>
               </div>
             </div>
           )}
@@ -2624,26 +2608,19 @@ export function ResponseCard({
     )
   }
 
-  // Streaming response - show throttled content with spinner
+  // Streaming response - show throttled content with spinner.
+  // Plan always renders through the completed branch above (its header/footer are
+  // delivery chrome), so this branch is plain responses only — flat, no card.
   return (
     <>
-      <div className="bg-background shadow-minimal rounded-[8px] overflow-hidden group">
+      <div className="overflow-hidden group">
         {/* Content area - uses displayedText (throttled) for performance */}
-        {/* Subtle fade at top and bottom edges (dark mode only) */}
         <div
           ref={contentRef}
           data-search-root="response"
           onMouseDown={handleSelectionPointerDown}
           onMouseUp={handleTextSelection}
-          className="pl-[22px] pr-4 py-3 text-sm overflow-y-auto scrollbar-hover"
-          style={{
-            maxHeight: MAX_HEIGHT,
-            // Subtle fade at top and bottom edges (16px) - only in dark mode for better contrast
-            ...(isDarkMode && {
-              maskImage: 'linear-gradient(to bottom, transparent 0%, black 16px, black calc(100% - 16px), transparent 100%)',
-              WebkitMaskImage: 'linear-gradient(to bottom, transparent 0%, black 16px, black calc(100% - 16px), transparent 100%)',
-            }),
-          }}
+          className="pl-[22px] pr-4 py-3 text-sm"
         >
           <div ref={contentLayerRef} className="relative">
             <Markdown
@@ -2660,7 +2637,10 @@ export function ResponseCard({
         {/* Desktop streaming footer; compact mode renders nothing here
             (the Accept-Plan footer only applies to completed plans). */}
         {!compactMode && (
-          <div className={cn("px-4 py-2 border-t border-border/30 flex items-center bg-muted/20", SIZE_CONFIG.fontSize)}>
+          <div className={cn(
+            "px-4 py-2 flex items-center",
+            SIZE_CONFIG.fontSize
+          )}>
             <div className="flex items-center gap-2 text-muted-foreground">
               <Spinner className={SIZE_CONFIG.spinnerSize} />
               <span>Streaming...</span>

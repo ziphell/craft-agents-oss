@@ -1,6 +1,6 @@
 import * as React from 'react'
 import type { ComponentEntry } from './types'
-import { Markdown, CollapsibleMarkdownProvider, CodeBlock, InlineCode, MarkdownDatatableBlock, MarkdownSpreadsheetBlock, MarkdownImageBlock, ImageCardStack, PlatformProvider } from '@craft-agent/ui'
+import { Markdown, CollapsibleMarkdownProvider, CodeBlock, InlineCode, MarkdownDatatableBlock, MarkdownSpreadsheetBlock, MarkdownImageBlock, ImageCardStack, MarkdownEditorPane, PlatformProvider } from '@craft-agent/ui'
 
 const sampleMarkdown = `# Welcome to Markdown
 
@@ -245,6 +245,72 @@ function ImageCardStackPlayground({
         )}
       </div>
     </div>
+  )
+}
+
+/** The document the pane fixture edits: two lines, so what happens to a keystroke is the variable. */
+const editorPaneFixtureDoc = `# Probe
+
+Type at the end of this line: `
+
+/**
+ * The same document as a conversation shows it: a `markdown-preview` block naming the file.
+ *
+ * Written as a fence rather than as the component, because the block is reached *through* the
+ * renderer in a real message — this is the path that has to keep working.
+ */
+const editorPaneFixtureBlock = '```markdown-preview\n' +
+  JSON.stringify({ src: '/playground/editor-pane-probe.md', title: 'Probe' }) +
+  '\n```'
+
+/**
+ * The markdown pane and the block that names the same file, with a host of their own.
+ *
+ * An editor needs somewhere to write to and the playground has no file to save: the "file" here is
+ * a line of memory. The host's copy is printed underneath, deliberately — the pane showing the text
+ * it holds proves nothing on its own, because a pane that never saved would look the same. What the
+ * host ended up with is the part that says a keystroke landed.
+ *
+ * Both readers are on screen on purpose: the pane is the window's face, the block is what a
+ * conversation shows, and they are two separate readers of one file.
+ */
+function MarkdownEditorPaneFixture() {
+  const fileRef = React.useRef(editorPaneFixtureDoc)
+  const [saved, setSaved] = React.useState(editorPaneFixtureDoc)
+
+  // Stable identities on purpose: the pane reads the file once per source, so a host whose
+  // callbacks changed on every write would send it back to read — and reset — on every save.
+  const actions = React.useMemo(
+    () => ({
+      onReadFile: async () => fileRef.current,
+      onWriteFile: async (path: string, content: string) => {
+        fileRef.current = content
+        setSaved(content)
+        return { path }
+      },
+    }),
+    [],
+  )
+
+  return (
+    <PlatformProvider actions={actions}>
+      <div className="flex h-[80vh] flex-col gap-4">
+        <div className="flex min-h-0 flex-1 flex-col">
+          <MarkdownEditorPane src="/playground/editor-pane-probe.md" mode="edit" className="px-6 py-4" />
+        </div>
+
+        <div data-testid="block-reader" className="shrink-0">
+          <Markdown mode="minimal">{editorPaneFixtureBlock}</Markdown>
+        </div>
+
+        <div className="shrink-0 border-t p-3">
+          <div className="text-[12px] text-muted-foreground">
+            What the host holds — written about a second after typing stops:
+          </div>
+          <pre data-testid="saved-file" className="mt-1 whitespace-pre-wrap text-[12px]">{saved}</pre>
+        </div>
+      </div>
+    </PlatformProvider>
   )
 }
 
@@ -643,6 +709,15 @@ export const markdownComponents: ComponentEntry[] = [
         props: { code: '{ invalid json here' },
       },
     ],
+  },
+  {
+    id: 'markdown-editor-pane',
+    name: 'MarkdownEditorPane',
+    category: 'Markdown',
+    description: 'The markdown pane on its source face, with a host that reads and writes a file of its own — where a keystroke that does not land, or a caret that jumps, is visible.',
+    component: MarkdownEditorPaneFixture,
+    layout: 'top',
+    props: [],
   },
   {
     id: 'rich-block-interaction-parity',

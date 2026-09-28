@@ -47,6 +47,8 @@ import type { PermissionMode } from "@craft-agent/shared/agent/modes"
 import type { ThinkingLevel } from "@craft-agent/shared/agent/thinking-levels"
 import {
   TurnCard,
+  TurnRail,
+  buildTurnRailItems,
   UserMessageBubble,
   groupMessagesByTurn,
   formatTurnAsMarkdown,
@@ -205,6 +207,9 @@ interface ChatDisplayProps {
   onWorkingDirectoryChange?: (path: string) => void
   /** Session folder path (for "Reset to Session Root" option) */
   sessionFolderPath?: string
+  /** Callback when the session's prototype binding changes (picked in the
+   *  working-directory picker, whose other half is the folder choice) */
+  onPrototypeChange?: (slug: string | null) => void
   // Lazy loading
   /** When true, messages are still loading - show spinner in messages area */
   messagesLoading?: boolean
@@ -477,6 +482,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   workingDirectory,
   onWorkingDirectoryChange,
   sessionFolderPath,
+  onPrototypeChange,
   // Lazy loading
   messagesLoading = false,
   messagesLoadError,
@@ -1407,20 +1413,16 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     return map
   }, [allTurns])
 
-  const scrollToFollowUpTurn = useCallback((item: {
-    messageId: string
-    annotationId: string
-  }) => {
-    const targetTurnIndex = assistantTurnIndexByMessageId.get(item.messageId)
-    if (targetTurnIndex == null) return
+  // Bring a turn into view, widening the reverse-pagination window first when the
+  // target is older than what is currently mounted.
+  const scrollToTurnByIndex = useCallback((targetTurnIndex: number) => {
+    const targetTurn = allTurns[targetTurnIndex]
+    if (!targetTurn) return
 
+    const turnKey = getTurnKey(targetTurn)
     const ensureVisibleCount = allTurns.length - targetTurnIndex
 
     const scrollToTurn = () => {
-      const targetTurn = allTurns[targetTurnIndex]
-      if (!targetTurn) return false
-
-      const turnKey = getTurnKey(targetTurn)
       const turnContainer = turnRefs.current.get(turnKey)
       if (!turnContainer) return false
 
@@ -1447,7 +1449,16 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
         void scrollToTurn()
       })
     }
-  }, [assistantTurnIndexByMessageId, allTurns, visibleTurnCount])
+  }, [allTurns, visibleTurnCount])
+
+  const scrollToFollowUpTurn = useCallback((item: {
+    messageId: string
+    annotationId: string
+  }) => {
+    const targetTurnIndex = assistantTurnIndexByMessageId.get(item.messageId)
+    if (targetTurnIndex == null) return
+    scrollToTurnByIndex(targetTurnIndex)
+  }, [assistantTurnIndexByMessageId, scrollToTurnByIndex])
 
   const handleFollowUpChipClick = useCallback((item: {
     messageId: string
@@ -1479,6 +1490,51 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     scrollToFollowUpTurn(item)
   }, [scrollToFollowUpTurn])
 
+  // --- Turn rail -----------------------------------------------------------
+  // Lists every turn in the session — including ones older than the reverse
+  // pagination window — so it can both orient and jump.
+  const railItems = useMemo(() => buildTurnRailItems(allTurns, getTurnKey), [allTurns])
+
+  const [activeTurnKey, setActiveTurnKey] = React.useState<string | null>(null)
+
+  // Reading position: the last turn whose top has passed the viewport's anchor
+  // line. Recomputed on scroll and whenever the mounted window changes.
+  React.useEffect(() => {
+    const viewport = scrollViewportRef.current
+    if (!viewport) return
+
+    let frame = 0
+    const measure = () => {
+      frame = 0
+      const anchorY = viewport.getBoundingClientRect().top + 80
+      let bestKey: string | null = null
+      let bestTop = -Infinity
+      turnRefs.current.forEach((element, key) => {
+        const top = element.getBoundingClientRect().top
+        if (top <= anchorY && top > bestTop) {
+          bestTop = top
+          bestKey = key
+        }
+      })
+      setActiveTurnKey((previous) => (previous === bestKey ? previous : bestKey))
+    }
+    const schedule = () => {
+      if (frame === 0) frame = requestAnimationFrame(measure)
+    }
+
+    measure()
+    viewport.addEventListener('scroll', schedule, { passive: true })
+    return () => {
+      viewport.removeEventListener('scroll', schedule)
+      if (frame !== 0) cancelAnimationFrame(frame)
+    }
+  }, [session?.id, turns.length, visibleTurnCount])
+
+  const handleRailSelect = useCallback((key: string) => {
+    const index = allTurns.findIndex((turn) => getTurnKey(turn) === key)
+    if (index >= 0) scrollToTurnByIndex(index)
+  }, [allTurns, scrollToTurnByIndex])
+
   // Compute if we should skip scroll-to-bottom (when search is active on session switch)
   // At render time, prevSessionIdForScrollRef still has the OLD session ID, so we can detect the switch
   const isSessionSwitchForScroll = prevSessionIdForScrollRef.current !== null && prevSessionIdForScrollRef.current !== session?.id
@@ -1494,7 +1550,10 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
           {/* Content layer */}
           <div className="flex flex-1 flex-col min-h-0 min-w-0 relative z-10">
           {/* === MESSAGES AREA: Scrollable list of message bubbles === */}
-          <div className="relative flex-1 min-h-0">
+          {/* The turn rail is a sibling column, not an overlay: it reserves its own
+              width instead of sitting on top of the conversation. */}
+          <div className="flex flex-1 min-h-0 min-w-0">
+          <div className="relative flex-1 min-h-0 min-w-0">
             {/* Mask wrapper - fades content at top and bottom over transparent/image backgrounds */}
             <div
               className="h-full"
@@ -1911,6 +1970,14 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
               </ScrollArea>
             </div>
           </div>
+          {!compactMode && (
+            <TurnRail
+              items={railItems}
+              activeKey={activeTurnKey}
+              onSelect={handleRailSelect}
+            />
+          )}
+          </div>
 
           {/* === INPUT CONTAINER: FreeForm or Structured Input === */}
           <ChatInputZone
@@ -1955,6 +2022,10 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
               workspaceId,
               workingDirectory,
               onWorkingDirectoryChange,
+              // The prototype the session works in comes off the session itself: binding
+              // is reported by events, so the picker never holds a second copy of it.
+              prototypeSlug: session.prototypeSlug,
+              onPrototypeChange,
               disableSend: disableSend || connectionUnavailable,
               connectionUnavailable,
               isEmptySession: session.messages.length === 0,

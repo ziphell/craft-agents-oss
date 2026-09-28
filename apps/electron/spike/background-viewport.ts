@@ -1,6 +1,6 @@
 ﻿﻿/**
  * Spike — a background tab's viewport: **if we stop resizing it, does its layout stop moving — and
- * what does that cost the shot and the coordinates?** (实施方案 §22 第十七轮, 探讨稿)
+ * what does that cost the shot and the coordinates?**
  *
  * The proposal under test: a tab that is not on screen keeps the size it had the last time it *was*
  * on screen, and only gets the window's size back when it comes forward — so an agent's background
@@ -112,8 +112,8 @@ async function main(): Promise<void> {
 
   const report: Record<string, unknown> = {}
   // Windows are kept until the end and destroyed together: a `destroy()` mid-run makes the *next*
-  // window's `loadURL` reject with the abort of the one just torn down (the repo has this on record
-  // — `prototype-workbench-dev.md` §3.3), which is a property of the harness, not of the question.
+  // window's `loadURL` reject with the abort of the one just torn down, which is a property
+  // of the harness, not of the question.
   const keptAlive: BrowserWindow[] = []
 
   // ---------------------------------------------------------------------------------------------

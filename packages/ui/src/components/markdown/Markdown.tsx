@@ -13,7 +13,9 @@ import { MarkdownMermaidBlock } from './MarkdownMermaidBlock'
 import { MarkdownDatatableBlock } from './MarkdownDatatableBlock'
 import { MarkdownSpreadsheetBlock } from './MarkdownSpreadsheetBlock'
 import { MarkdownHtmlBlock } from './MarkdownHtmlBlock'
+import { MarkdownDrawioBlock } from './MarkdownDrawioBlock'
 import { MarkdownImageBlock } from './MarkdownImageBlock'
+import { MarkdownImage } from './MarkdownImage'
 import { MarkdownLatexBlock } from './MarkdownLatexBlock'
 import { MarkdownPdfBlock } from './MarkdownPdfBlock'
 import { MarkdownDocBlock } from './MarkdownDocBlock'
@@ -37,6 +39,7 @@ export type DisablablePreviewBlock =
   | 'html-preview'
   | 'pdf-preview'
   | 'image-preview'
+  | 'drawio-preview'
 
 /**
  * Render modes for markdown content:
@@ -86,6 +89,15 @@ export interface MarkdownProps {
    */
   hideFirstMermaidExpand?: boolean
   /**
+   * The folder the document being rendered lives in, when it is a file on disk.
+   *
+   * A picture named beside the document (`![](shots/cart.png)`) is resolved against it —
+   * see `MarkdownImage`. Omitted for content that is not a file (a message in a
+   * conversation), where a relative destination has no folder to be relative to and is
+   * left as it was.
+   */
+  baseDir?: string
+  /**
    * Disable specific preview-block handlers for nested rendering.
    *
    * When a preview-block component renders user-supplied markdown through
@@ -115,6 +127,8 @@ interface CollapsibleContext {
  *   cause component re-mounting on every streaming update.
  * @param hideFirstMermaidExpand - Whether to hide the expand button on the first
  *   mermaid block when the message starts with a mermaid fence. Defaults to true.
+ * @param baseDir - The folder the document lives in, used to resolve a picture named
+ *   beside it. Absent for content that is not a file.
  */
 function stableHash(input: string): string {
   let hash = 2166136261
@@ -133,6 +147,7 @@ function createComponents(
   firstMermaidCodeRef?: React.RefObject<string | null>,
   hideFirstMermaidExpand: boolean = true,
   disablePreviewBlocks?: ReadonlySet<DisablablePreviewBlock>,
+  baseDir?: string,
 ): Partial<Components> {
   const isPreviewEnabled = (name: DisablablePreviewBlock) => !disablePreviewBlocks?.has(name)
   let blockIndex = 0
@@ -234,6 +249,9 @@ function createComponents(
         </a>
       )
     },
+    // Pictures: a destination that names a file beside the document is read and shown
+    // (`MarkdownImage`); everything else is the plain `<img>` it always was.
+    img: (props) => <MarkdownImage baseDir={baseDir} {...props} />,
   }
 
   // Terminal mode: minimal formatting
@@ -293,6 +311,10 @@ function createComponents(
           // HTML preview blocks → sandboxed iframe
           if (match?.[1] === 'html-preview' && isPreviewEnabled('html-preview')) {
             return wrapBlock('html-preview', code, <MarkdownHtmlBlock code={code} className="my-2" />, props.node?.position)
+          }
+          // drawio preview blocks → the diagram file, drawn by drawio's viewer
+          if (match?.[1] === 'drawio-preview' && isPreviewEnabled('drawio-preview')) {
+            return wrapBlock('drawio-preview', code, <MarkdownDrawioBlock code={code} className="my-2" />, props.node?.position)
           }
           // PDF preview blocks → inline first page with expand to full viewer
           if (match?.[1] === 'pdf-preview' && isPreviewEnabled('pdf-preview')) {
@@ -431,6 +453,10 @@ function createComponents(
         // HTML preview blocks → sandboxed iframe
         if (match?.[1] === 'html-preview' && isPreviewEnabled('html-preview')) {
           return wrapBlock('html-preview', code, <MarkdownHtmlBlock code={code} className="my-2" />, props.node?.position)
+        }
+        // drawio preview blocks → the diagram file, drawn by drawio's viewer
+        if (match?.[1] === 'drawio-preview' && isPreviewEnabled('drawio-preview')) {
+          return wrapBlock('drawio-preview', code, <MarkdownDrawioBlock code={code} className="my-2" />, props.node?.position)
         }
         // PDF preview blocks → inline first page with expand to full viewer
         if (match?.[1] === 'pdf-preview' && isPreviewEnabled('pdf-preview')) {
@@ -572,6 +598,7 @@ export function Markdown({
   onFileClick,
   collapsible = false,
   hideFirstMermaidExpand = true,
+  baseDir,
   disablePreviewBlocks,
 }: MarkdownProps) {
   // Get collapsible context if enabled
@@ -591,8 +618,8 @@ export function Markdown({
   }
 
   const components = React.useMemo(
-    () => wrapWithSafeProxy(createComponents(mode, onUrlClick, onFileClick, collapsible ? collapsibleContext : null, firstMermaidCodeRef, hideFirstMermaidExpand, disablePreviewBlocks)),
-    [mode, onUrlClick, onFileClick, collapsible, collapsibleContext, hideFirstMermaidExpand, disablePreviewBlocks]
+    () => wrapWithSafeProxy(createComponents(mode, onUrlClick, onFileClick, collapsible ? collapsibleContext : null, firstMermaidCodeRef, hideFirstMermaidExpand, disablePreviewBlocks, baseDir)),
+    [mode, onUrlClick, onFileClick, collapsible, collapsibleContext, hideFirstMermaidExpand, disablePreviewBlocks, baseDir]
   )
 
   // Preprocess to convert raw URLs and file paths to markdown links
@@ -646,6 +673,7 @@ export const MemoizedMarkdown = React.memo(
         prevProps.id === nextProps.id &&
         prevProps.children === nextProps.children &&
         prevProps.mode === nextProps.mode &&
+        prevProps.baseDir === nextProps.baseDir &&
         prevProps.disablePreviewBlocks === nextProps.disablePreviewBlocks
       )
     }
@@ -653,6 +681,7 @@ export const MemoizedMarkdown = React.memo(
     return (
       prevProps.children === nextProps.children &&
       prevProps.mode === nextProps.mode &&
+      prevProps.baseDir === nextProps.baseDir &&
       prevProps.disablePreviewBlocks === nextProps.disablePreviewBlocks
     )
   }

@@ -11,13 +11,16 @@ import { BrowserCDP } from '../browser-cdp'
  */
 function createFakeDebugger() {
   const calls: Array<{ method: string; params: any }> = []
+  const detachListeners: Array<() => void> = []
   let nextIdentifier = 0
 
   const fake = {
     debugger: {
       attach: () => {},
       detach: () => {},
-      on: () => {},
+      on: (event: string, listener: () => void) => {
+        if (event === 'detach') detachListeners.push(listener)
+      },
       sendCommand: async (method: string, params: any) => {
         calls.push({ method, params })
         if (method === 'Page.addScriptToEvaluateOnNewDocument') {
@@ -29,7 +32,12 @@ function createFakeDebugger() {
     },
   }
 
-  return { webContents: fake as unknown as WebContents, calls }
+  return {
+    webContents: fake as unknown as WebContents,
+    calls,
+    /** The session ending without us asking — the page's renderer dying. */
+    endSessionFromOutside: () => detachListeners.forEach((listener) => listener()),
+  }
 }
 
 describe('BrowserCDP persistent injection', () => {
@@ -37,10 +45,10 @@ describe('BrowserCDP persistent injection', () => {
     const { webContents, calls } = createFakeDebugger()
     const cdp = new BrowserCDP(webContents)
 
-    const identifier = await cdp.addInitScript('prototype:flow:A-001.css', 'window.__a = 1')
+    const identifier = await cdp.addInitScript('tweak:all', 'window.__a = 1')
 
     expect(identifier).toBe('script-1')
-    expect(cdp.listInitScriptKeys()).toEqual(['prototype:flow:A-001.css'])
+    expect(cdp.listInitScriptKeys()).toEqual(['tweak:all'])
     const registration = calls.find((call) => call.method === 'Page.addScriptToEvaluateOnNewDocument')
     expect(registration?.params?.source).toBe('window.__a = 1')
     cdp.detach()
@@ -122,6 +130,28 @@ describe('BrowserCDP persistent injection', () => {
     cdp.detach()
     await cdp.addInitScript('key-a', 'a')
 
+    expect(calls.filter((call) => call.method === 'Page.enable')).toHaveLength(2)
+    cdp.detach()
+  })
+
+  it('forgets them when the session ends from outside, not only when we end it', async () => {
+    // A session can end without `detach()` being called — the page's renderer dying is the
+    // one that happens. (Opening DevTools is not: measured on Electron 39, both sessions
+    // stand side by side — `spike/anti-bot-fingerprint.ts` round 5.) Whoever ended it, the
+    // registrations went with it, and a reader still listing them is how an injection stops
+    // applying without anything saying so.
+    const { webContents, calls, endSessionFromOutside } = createFakeDebugger()
+    const cdp = new BrowserCDP(webContents)
+
+    await cdp.addInitScript('key-a', 'a')
+    expect(cdp.listInitScriptKeys()).toEqual(['key-a'])
+
+    endSessionFromOutside()
+
+    expect(cdp.listInitScriptKeys()).toEqual([])
+    // And the domain is turned on again for what comes next: without that the script
+    // re-registered here is accepted and then never run in any document.
+    await cdp.addInitScript('key-b', 'b')
     expect(calls.filter((call) => call.method === 'Page.enable')).toHaveLength(2)
     cdp.detach()
   })

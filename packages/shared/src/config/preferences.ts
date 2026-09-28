@@ -34,6 +34,19 @@ export interface UserPreferences {
   // Whether to include Co-Authored-By trailer on git commits (default: true)
   includeCoAuthoredBy?: boolean;
   /**
+   * Which browser is the person's: the app's own browser window rather than the system browser
+   * (default: true). It answers two places — a link a person clicks (`http`/`https`) and the
+   * "open in browser" button in the window that draws an HTML file — one switch, because it is
+   * one question.
+   *
+   * Default *on* because that window is the only browser the agent can work in afterwards
+   * (snapshot, click, screenshot), which is most of the point of having one here at all.
+   * Maintained by Settings → Links; not exposed through `update_user_preferences`, because which
+   * browser a person uses is theirs to decide, not the agent's. It governs *clicks and buttons*
+   * only: what the agent drives with `browser_tool` is its own business.
+   */
+  openInAppBrowser?: boolean;
+  /**
    * Internal: persisted UI language code (mirrors Appearance → Language).
    * Maintained only by the main-process `i18n:changeLanguage` IPC handler.
    * Not user-editable; not exposed via the `update_user_preferences` tool.

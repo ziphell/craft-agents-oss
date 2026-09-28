@@ -1,5 +1,5 @@
 import { readFile, writeFile, unlink, mkdir, readdir, stat } from 'fs/promises'
-import { isAbsolute, join, relative, resolve, dirname, parse as parsePath } from 'path'
+import { isAbsolute, join, resolve, dirname, parse as parsePath } from 'path'
 import { homedir } from 'os'
 import { validatePathFormat } from '../../utils/path-validation'
 import { randomUUID } from 'crypto'
@@ -8,7 +8,6 @@ import type { StoredAttachment } from '@craft-agent/core/types'
 import { readFileAttachment, validateImageForClaudeAPI, IMAGE_LIMITS } from '@craft-agent/shared/utils'
 import { getSessionAttachmentsPath, validateSessionId } from '@craft-agent/shared/sessions'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
-import { getWorkspacePrototypesPath } from '@craft-agent/shared/workspaces'
 import { resizeImageForAPI, inspectImageBuffer } from '@craft-agent/server-core/services'
 import { sanitizeFilename, validateFilePath, getWorkspaceAllowedDirs } from '@craft-agent/server-core/handlers'
 import { MarkItDown } from 'markitdown-js'
@@ -31,17 +30,6 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.fs.LIST_DIRECTORY,
 ] as const
 
-/**
- * Scope-narrowing check for file:write — the validated path must sit inside the
- * workspace prototypes subtree. Uses path.relative semantics to avoid
- * sibling-prefix bypasses (e.g. `prototypes-evil/`). This narrows further on top
- * of validateFilePath(), which already confines paths to the workspace root.
- */
-function isWithinPrototypesDir(targetPath: string, prototypesRoot: string): boolean {
-  const rel = relative(resolve(prototypesRoot), resolve(targetPath))
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
-}
-
 export function registerFilesHandlers(server: RpcServer, deps: HandlerDeps): void {
   // Read a file (with path validation to prevent traversal attacks)
   server.handle(RPC_CHANNELS.file.READ, async (ctx, path: string) => {
@@ -62,23 +50,22 @@ export function registerFilesHandlers(server: RpcServer, deps: HandlerDeps): voi
     }
   })
 
-  // Write a UTF-8 file inside the workspace prototypes folder.
-  // Deliberately narrower than a general-purpose write: the validated path must
-  // resolve inside `<workspaceRoot>/prototypes` so the renderer / control plane
-  // cannot write anywhere else in the workspace.
+  // Write a UTF-8 file the person is looking at.
+  //
+  // The boundary is **the one that let the app show the file**: reads here go through
+  // `validateFilePath(path, getWorkspaceAllowedDirs(workspaceId))`, and saving the file that
+  // came back through it is the whole point of showing it. A narrower boundary would refuse the
+  // one case this path exists for ("open this page and fix it"), and a second, tighter rule for
+  // writing would be a description of the read side that has to be kept in step with it.
+  //
+  // It is deliberately NOT the agent's write policy (mode-manager: the plans and data folders
+  // plus the `allowedWritePaths` grants): that one governs tools, and widening this does not
+  // widen it. Sensitive paths (`.env`, keys, `credentials.json`) stay refused on both sides,
+  // because that rule lives in `validateFilePath` rather than in either caller.
   server.handle(RPC_CHANNELS.file.WRITE, async (ctx, path: string, content: string) => {
     try {
       const workspaceId = ctx.workspaceId ?? deps.windowManager?.getWorkspaceForWindow(ctx.webContentsId!)
       const safePath = await validateFilePath(path, getWorkspaceAllowedDirs(workspaceId))
-
-      const workspace = getWorkspaceByNameOrId(workspaceId ?? '')
-      if (!workspace) {
-        throw new Error('Unknown workspace')
-      }
-      const prototypesRoot = getWorkspacePrototypesPath(workspace.rootPath)
-      if (!isWithinPrototypesDir(safePath, prototypesRoot)) {
-        throw new Error(`Only paths inside the workspace prototypes folder are writable: ${prototypesRoot}`)
-      }
 
       await mkdir(dirname(safePath), { recursive: true })
       await writeFile(safePath, content, 'utf-8')

@@ -241,11 +241,11 @@ foreach ($dep in @("interceptor-common.ts", "feature-flags.ts", "interceptor-req
     }
 }
 
-# 6. Build subprocess servers (MCP servers + Pi agent server)
+# 6. Build subprocess servers (Pi agent server)
 Write-Host "  Building subprocess servers..."
 Push-Location $RootDir
 try {
-    # Builds session-mcp-server and pi-agent-server to packages/*/dist/index.js
+    # Builds pi-agent-server to packages/pi-agent-server/dist/index.js
     bun run server:build:subprocess
     if ($LASTEXITCODE -ne 0) { throw "Subprocess server build failed" }
 } finally {
@@ -339,11 +339,10 @@ try {
     Pop-Location
 }
 
-# Copy MCP servers and Pi agent server subprocess to resources/
-# Required by electron-builder.yml (resources/session-mcp-server/**/*, resources/pi-agent-server/**/*)
-Write-Host "  Copying MCP servers and Pi subprocess..."
+# Copy the Pi agent server subprocess to resources/
+# Required by electron-builder.yml (resources/pi-agent-server/**/*)
+Write-Host "  Copying Pi subprocess..."
 $SubprocessServers = @(
-    @{ Name = "session-mcp-server"; Source = "$RootDir\packages\session-mcp-server\dist\index.js" },
     @{ Name = "pi-agent-server";    Source = "$RootDir\packages\pi-agent-server\dist\index.js" }
 )
 foreach ($server in $SubprocessServers) {

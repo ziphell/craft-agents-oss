@@ -35,7 +35,7 @@ export interface ParsedRoute {
 // Compound Route Types (new format)
 // =============================================================================
 
-export type NavigatorType = 'sessions' | 'sources' | 'skills' | 'automations' | 'projects' | 'prototypes' | 'websites' | 'settings'
+export type NavigatorType = 'sessions' | 'sources' | 'skills' | 'automations' | 'projects' | 'prototypes' | 'websites' | 'tweaks' | 'settings'
 
 export interface ParsedCompoundRoute {
   /** The navigator type */
@@ -63,7 +63,7 @@ export interface ParsedCompoundRoute {
  * Known prefixes that indicate a compound route
  */
 const COMPOUND_ROUTE_PREFIXES = [
-  'allSessions', 'flagged', 'archived', 'state', 'label', 'view', 'board', 'sources', 'skills', 'automations', 'projects', 'prototypes', 'websites', 'settings'
+  'allSessions', 'flagged', 'archived', 'state', 'label', 'view', 'board', 'sources', 'skills', 'automations', 'projects', 'prototypes', 'websites', 'tweaks', 'settings'
 ]
 
 /**
@@ -220,6 +220,20 @@ export function parseCompoundRoute(route: string): ParsedCompoundRoute | null {
     return null
   }
 
+  // Tweaks navigator
+  if (first === 'tweaks') {
+    if (segments.length === 1) {
+      return { navigator: 'tweaks', details: null }
+    }
+    if (segments[1] === 'tweak' && segments[2]) {
+      return {
+        navigator: 'tweaks',
+        details: { type: 'tweak', id: segments[2] },
+      }
+    }
+    return null
+  }
+
   // Automations navigator - supports type filters (scheduled, event, agentic)
   if (first === 'automations') {
     if (segments.length === 1) {
@@ -361,6 +375,11 @@ export function buildCompoundRoute(parsed: ParsedCompoundRoute): string {
   if (parsed.navigator === 'websites') {
     if (!parsed.details) return 'websites'
     return `websites/website/${parsed.details.id}`
+  }
+
+  if (parsed.navigator === 'tweaks') {
+    if (!parsed.details) return 'tweaks'
+    return `tweaks/tweak/${parsed.details.id}`
   }
 
   // Sessions navigator
@@ -511,6 +530,14 @@ function convertCompoundToViewRoute(compound: ParsedCompoundRoute): ParsedRoute 
       return { type: 'view', name: 'websites', params: {} }
     }
     return { type: 'view', name: 'website-info', id: compound.details.id, params: {} }
+  }
+
+  // Tweaks
+  if (compound.navigator === 'tweaks') {
+    if (!compound.details) {
+      return { type: 'view', name: 'tweaks', params: {} }
+    }
+    return { type: 'view', name: 'tweak-info', id: compound.details.id, params: {} }
   }
 
   // Sessions
@@ -681,6 +708,17 @@ function convertCompoundToNavigationState(compound: ParsedCompoundRoute): Naviga
     }
   }
 
+  // Tweaks
+  if (compound.navigator === 'tweaks') {
+    if (!compound.details) {
+      return { navigator: 'tweaks', details: null }
+    }
+    return {
+      navigator: 'tweaks',
+      details: { type: 'tweak', tweakSlug: compound.details.id },
+    }
+  }
+
   // Sessions
   const filter = compound.sessionFilter || { kind: 'allSessions' as const }
   if (compound.details) {
@@ -789,6 +827,16 @@ function convertParsedRouteToNavigationState(parsed: ParsedRoute): NavigationSta
         }
       }
       return { navigator: 'websites', details: null }
+    case 'tweaks':
+      return { navigator: 'tweaks', details: null }
+    case 'tweak-info':
+      if (parsed.id) {
+        return {
+          navigator: 'tweaks',
+          details: { type: 'tweak', tweakSlug: parsed.id },
+        }
+      }
+      return { navigator: 'tweaks', details: null }
     case 'session':
       if (parsed.id) {
         // Reconstruct filter from params
@@ -915,6 +963,13 @@ function navigationStateToCompoundRoute(state: NavigationState): ParsedCompoundR
     return {
       navigator: 'websites',
       details: state.details ? { type: 'website', id: state.details.websiteSlug } : null,
+    }
+  }
+
+  if (state.navigator === 'tweaks') {
+    return {
+      navigator: 'tweaks',
+      details: state.details ? { type: 'tweak', id: state.details.tweakSlug } : null,
     }
   }
 

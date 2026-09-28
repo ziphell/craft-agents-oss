@@ -2,13 +2,22 @@
  * useLinkInterceptor - Centralized hook for intercepting file/URL open requests.
  *
  * Replaces the old handleOpenFile/handleOpenUrl in App.tsx that always opened externally.
- * Now classifies file types and decides whether to show an in-app preview overlay
- * or fall back to opening in the default external application.
+ * Now classifies file types and decides what a click means: an in-app preview overlay, the
+ * workspace's browser window, or the default external application.
  *
  * Architecture:
  *   Markdown click → PlatformContext → App.tsx → useLinkInterceptor
  *     ├── canPreview? → set previewState (renders overlay in App.tsx)
- *     └── can't preview? → electronAPI.openFile (opens externally)
+ *     └── else? → electronAPI.openFile (opens externally)
+ *
+ *   URL click → the app's own `openUrl` (App.tsx): a browser address opens in the workspace's
+ *   browser window, the system browser when the person asked for that — the same switch — and
+ *   the shell opener for everything that is not one.
+ *
+ * An `.html` file is a preview like any other and gets the same treatment: read here, drawn in
+ * the window that draws HTML. Opening it for real — in a browser, as a tab at its own address —
+ * is a button in that window's own header, not this decision: a click says "show me this file",
+ * nothing more.
  *
  * Uses refs for options to keep returned callbacks referentially stable,
  * preventing unnecessary re-renders of consumers (AppShellContext, PlatformProvider).
@@ -62,6 +71,26 @@ interface TextPreview {
   error?: string
 }
 
+interface DrawioPreview {
+  type: 'drawio'
+  filePath: string
+  /** The document, read before the window opens — the viewer draws what it is handed. */
+  content: string | null
+  error?: string
+}
+
+/**
+ * An HTML file, read before the window opens for the same reason a diagram is: the window draws
+ * what it is handed rather than fetching it, and a file that cannot be read has an error to show
+ * instead of an empty box.
+ */
+interface HTMLPreview {
+  type: 'html'
+  filePath: string
+  content: string | null
+  error?: string
+}
+
 export type FilePreviewState =
   | ImagePreview
   | PDFPreview
@@ -69,6 +98,8 @@ export type FilePreviewState =
   | MarkdownPreview
   | JSONPreview
   | TextPreview
+  | DrawioPreview
+  | HTMLPreview
 
 // ── Hook options ───────────────────────────────────────────────────────────────
 // Callbacks injected by App.tsx so the hook doesn't depend on window.electronAPI directly.
@@ -80,7 +111,7 @@ interface LinkInterceptorOptions {
   openUrl: (url: string) => Promise<void>
   /** Reveal file in system file manager */
   showInFolder: (path: string) => Promise<void>
-  /** Read file as UTF-8 text (for code, markdown, json, text previews) */
+  /** Read file as UTF-8 text (for code, markdown, json, text and html previews) */
   readFile: (path: string) => Promise<string>
   /** Read file as data URL (for image previews) */
   readFileDataUrl: (path: string) => Promise<string>
@@ -129,13 +160,13 @@ export function useLinkInterceptor(options: LinkInterceptorOptions): LinkInterce
 
   /**
    * Main entry point for file link clicks.
-   * Classifies the file by extension, then either opens a preview overlay
-   * or falls back to opening externally.
+   * Classifies the file by extension, then either opens a preview overlay or falls back to
+   * opening externally.
    *
-   * For text-based files (code, markdown, json, text), reads the content BEFORE
-   * showing the overlay — local filesystem reads are near-instant, so no loading
-   * state is needed. This avoids null-content issues in overlay components
-   * (e.g., @uiw/react-json-view crashes on null value).
+   * Reads the content BEFORE showing the overlay — local filesystem reads are near-instant, so
+   * no loading state is needed. This avoids null-content issues in overlay components
+   * (e.g., @uiw/react-json-view crashes on null value), and a diagram or HTML is read here for
+   * the same reason: the window draws what it is handed, it does not open the file itself.
    */
   const handleOpenFile = useCallback(async (path: string) => {
     const classification = classifyFile(path)
@@ -173,7 +204,12 @@ export function useLinkInterceptor(options: LinkInterceptorOptions): LinkInterce
     optionsRef.current.openFileExternal(path)
   }, []) // Stable: uses optionsRef
 
-  /** URLs always open externally — no in-app browser for security */
+  /**
+   * A URL is handed to the app, which decides where it opens: a page goes to the workspace's
+   * browser window by default (the person's setting, read there), the system browser when they
+   * asked for that, and the shell opener for anything that is not a page. This hook only
+   * carries the click.
+   */
   const handleOpenUrl = useCallback((url: string) => {
     optionsRef.current.openUrl(url)
   }, []) // Stable: uses optionsRef
@@ -226,6 +262,8 @@ export function useLinkInterceptor(options: LinkInterceptorOptions): LinkInterce
 /**
  * Build the initial preview state for text-based file types.
  * Content is null initially (loading), and gets populated after async read.
+ * HTML and a diagram are in here for the same reason as the text types: what they show is the
+ * file's own text, read first.
  */
 function buildInitialTextState(type: FilePreviewType, path: string): FilePreviewState {
   switch (type) {
@@ -237,8 +275,12 @@ function buildInitialTextState(type: FilePreviewType, path: string): FilePreview
       return { type: 'json', filePath: path, content: null }
     case 'text':
       return { type: 'text', filePath: path, content: null }
+    case 'drawio':
+      return { type: 'drawio', filePath: path, content: null }
+    case 'html':
+      return { type: 'html', filePath: path, content: null }
     default:
-      // Should never happen — image/pdf are handled before this function is called
+      // Should never happen — image/pdf are set before this is called.
       return { type: 'text', filePath: path, content: null }
   }
 }

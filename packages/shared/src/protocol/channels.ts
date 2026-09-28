@@ -116,15 +116,11 @@ export const RPC_CHANNELS = {
     CHANGED: 'prototypes:changed',
     /** Read-only listing of every prototype in a workspace (drives the panel). */
     LIST: 'prototypes:list',
-    /** Where to open a prototype: the origin that renders it, never the exported deliverable. */
-    ENTRY: 'prototypes:entry',
-    /** Write `dist/*` so the prototype can be handed to developers. */
-    EXPORT: 'prototypes:export',
     /** Create a prototype (the panel's "New Prototype"). */
     CREATE: 'prototypes:create',
     /**
-     * Copy a prototype into a new one: same page, same patches, its own slug and
-     * `config.json` (the list's "Duplicate"). The two are independent afterwards.
+     * Copy a prototype into a new one: the same files, its own slug (the list's
+     * "Duplicate"). The two are independent afterwards.
      */
     DUPLICATE: 'prototypes:duplicate',
     /**
@@ -132,40 +128,6 @@ export const RPC_CHANNELS = {
      * the one that asked the user first — the agent has no command for this.
      */
     DELETE: 'prototypes:delete',
-    /** Replay a prototype's patches into a live browser instance. */
-    APPLY: 'prototypes:apply',
-    /**
-     * Write one save from the browser window's editor as a patch of a prototype
-     * (`edit-patch.ts`), scoped to the page it was made on.
-     *
-     * The window reports what the person accumulated — boxed elements and what they
-     * set on them, elements whose text they retyped — and this turns that **one
-     * moment of intent** into the artifact every other change is: a patch file (two
-     * when the session did both styles and text), which the watcher then replays into
-     * every window showing the prototype. Nothing is applied by this call.
-     */
-    EDIT: 'prototypes:edit',
-    /**
-     * Replay one prototype into every window that is showing it (plan §21.4).
-     *
-     * Sent after a file change, so an edit made in an external editor shows up in
-     * the open window without anyone clicking apply: a page of ours is reloaded
-     * (the host re-renders from disk), someone else's page is re-applied.
-     */
-    REPLAY: 'prototypes:replay',
-    /**
-     * Change one prototype's page table — add, remove, rename, or mark which page
-     * the address root opens (plan §19). The panel's prototype list drives it; the
-     * agent reaches the same data through `prototype_tool pages` / `prototype_tool entry`.
-     */
-    SET_PAGES: 'prototypes:setPages',
-    /**
-     * Point one live page at the same page in another environment. The address is a
-     * fact about where the page is, not a rule of the page's kind, so it is
-     * changeable — see target.ts for what goes stale with it. `page` names which
-     * page moves; without it the entry page moves when it is a live one.
-     */
-    SET_TARGET: 'prototypes:setTarget',
   },
   debug: {
     LOG: 'debug:log',
@@ -419,6 +381,24 @@ export const RPC_CHANNELS = {
     DESTROY: 'browser-pane:destroy',
     LIST: 'browser-pane:list',
     NAVIGATE: 'browser-pane:navigate',
+    /**
+     * A local file opened as a page, in the workspace's window.
+     *
+     * A path rather than a URL, so that turning one into the other happens once, where
+     * `node:url` is — see the handler. Everything else about it is the same as a create
+     * plus a navigate plus a focus, which is what the caller would otherwise spell out
+     * three times.
+     */
+    OPEN_FILE: 'browser-pane:open-file',
+    /**
+     * A link opened as a page, in the workspace's window.
+     *
+     * Where a link goes by default: the app's own window is the one surface the agent can
+     * keep working on (see `open-file`), so a person's clicks land there unless they asked
+     * for their system browser. The caller classifies the URL first — what cannot go
+     * anywhere (`javascript:`, `data:`, `blob:`) never reaches this channel.
+     */
+    OPEN_URL: 'browser-pane:open-url',
     GO_BACK: 'browser-pane:go-back',
     GO_FORWARD: 'browser-pane:go-forward',
     RELOAD: 'browser-pane:reload',
@@ -486,21 +466,34 @@ export const RPC_CHANNELS = {
     GET_CONTENT: 'websites:getContent',
     SET_CONTENT: 'websites:setContent',
     GET_DATA: 'websites:getData',
-    LIST_GRANTS: 'websites:listGrants',
-    ISSUE_GRANT: 'websites:issueGrant',
-    REVOKE_GRANT: 'websites:revokeGrant',
-    CREATE_LEASE: 'websites:createLease',
-    RELEASE_LEASE: 'websites:releaseLease',
-    EXECUTE_ACTION: 'websites:executeAction',
-    CANCEL_ACTION: 'websites:cancelAction',
-    GET_SHARE_CAPABILITIES: 'websites:getShareCapabilities',
-    GET_SHARE_DATA_SCAN: 'websites:getShareDataScan',
-    PUBLISH: 'websites:publish',
-    SET_PUBLICATION_PASSWORD: 'websites:setPublicationPassword',
-    UNPUBLISH: 'websites:unpublish',
+    /** The website's own origin, handed out by a host that can serve one. */
+    GET_ORIGIN: 'websites:getOrigin',
+    /** Copy the website's files into a folder the person picked. */
+    EXPORT: 'websites:export',
     GET_THUMBNAIL: 'websites:getThumbnail',
     REGENERATE_THUMBNAIL: 'websites:regenerateThumbnail',
     CHANGED: 'websites:changed',
+  },
+  // The app's bundled drawio editor. Unlike a website this is not a workspace
+  // resource — one directory ships with the app and one origin serves it — which is
+  // why there is no per-workspace argument to the address below.
+  drawio: {
+    /** The origin the vendored editor is served at; throws when it is not installed. */
+    GET_ORIGIN: 'drawio:getOrigin',
+  },
+  tweaks: {
+    /** Every tweak in a workspace, as summaries (the list the page needs). */
+    GET: 'tweaks:get',
+    /** One tweak in full, or null. */
+    GET_ONE: 'tweaks:getOne',
+    /** The switch, plus name/description/patterns. Returns the updated details. */
+    UPDATE: 'tweaks:update',
+    /** Remove the folder. Irreversible. */
+    DELETE: 'tweaks:delete',
+    /** Build the loadable extension into a folder the person picked. */
+    EXPORT: 'tweaks:export',
+    /** Workspace-scoped push after any mutation, carrying the summaries. */
+    CHANGED: 'tweaks:changed',
   },
   messaging: {
     // WhatsApp subprocess → Gateway (subprocess invokes on server)

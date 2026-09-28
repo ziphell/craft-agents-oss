@@ -48,22 +48,5 @@ describe('tool detection', () => {
       expect(shouldActivateBrowserOverlay('browser_tool', { command: 'snapshot' })).toBe(true)
       expect(shouldActivateBrowserOverlay('mcp__session__browser_tool', { command: 'navigate https://linear.app' })).toBe(true)
     })
-
-    // The prototype workbench is the other door onto the same window: the commands that act on a
-    // page say so, and the ones that only read or write a prototype's files do not.
-    it('acts on the prototype tool only for the commands that drive a page', () => {
-      expect(shouldActivateBrowserOverlay('prototype_tool', { command: 'open' })).toBe(true)
-      expect(shouldActivateBrowserOverlay('mcp__session__prototype_tool', { command: 'apply' })).toBe(true)
-      expect(shouldActivateBrowserOverlay('prototype_tool', { command: 'verify' })).toBe(true)
-
-      expect(shouldActivateBrowserOverlay('prototype_tool', { command: 'list' })).toBe(false)
-      expect(shouldActivateBrowserOverlay('prototype_tool', { command: 'status' })).toBe(false)
-      expect(shouldActivateBrowserOverlay('prototype_tool', { command: 'export' })).toBe(false)
-      expect(shouldActivateBrowserOverlay('prototype_tool', { command: '--help' })).toBe(false)
-      // The frames come out of a file, not off a page: this one shares an artifact with
-      // `record`, not a tab with it.
-      expect(shouldActivateBrowserOverlay('prototype_tool', { command: 'sample-video demo.mp4' })).toBe(false)
-      expect(shouldActivateBrowserOverlay('prototype_tool', { command: 'pages --change pay=https://x.test/pay' })).toBe(false)
-    })
   })
 })

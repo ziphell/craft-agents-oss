@@ -13,14 +13,12 @@ import { Button } from '@/components/ui/button'
 interface DeleteWebsiteDialogProps {
   /** Website name shown in the confirmation copy; null = closed */
   websiteName: string | null
-  /** Published websites get an extra note: the public copy is taken offline too */
-  shared?: boolean
   onConfirm: () => void
   onCancel: () => void
 }
 
 /** Destructive confirmation — deleting a website removes its data folder too. */
-export function DeleteWebsiteDialog({ websiteName, shared, onConfirm, onCancel }: DeleteWebsiteDialogProps) {
+export function DeleteWebsiteDialog({ websiteName, onConfirm, onCancel }: DeleteWebsiteDialogProps) {
   const { t } = useTranslation()
   return (
     <Dialog open={websiteName !== null} onOpenChange={open => !open && onCancel()}>
@@ -29,7 +27,6 @@ export function DeleteWebsiteDialog({ websiteName, shared, onConfirm, onCancel }
           <DialogTitle>{t('websites.deleteConfirmTitle')}</DialogTitle>
           <DialogDescription>
             {t('websites.deleteConfirmDescription', { name: websiteName ?? '' })}
-            {shared ? ` ${t('websites.deleteSharedNote')}` : ''}
           </DialogDescription>
         </DialogHeader>
         <DialogFooter className="gap-2 sm:gap-0">

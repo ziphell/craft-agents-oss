@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Check, X, Search } from 'lucide-react'
+import { Check, FlaskConical, X, Search } from 'lucide-react'
 
 import { Icon_Home, Icon_Folder } from '@craft-agent/ui'
 import {
@@ -11,10 +11,11 @@ import {
   DrawerClose,
 } from '@/components/ui/drawer'
 import { FreeFormInputContextBadge } from '../app-shell/input/FreeFormInputContextBadge'
-import { useWorkingDirectoryState } from '../app-shell/input/use-working-directory-state'
+import { useWorkingDirectoryState, derivePrototypeChoices } from '../app-shell/input/use-working-directory-state'
 import { ServerDirectoryBrowser } from '@/components/ServerDirectoryBrowser'
 import { PATH_SEP, getPathBasename } from '@/lib/platform'
 import { cn } from '@/lib/utils'
+import { navigate, routes } from '@/lib/navigate'
 
 export interface CompactWorkingDirectorySelectorProps {
   workingDirectory?: string
@@ -22,10 +23,15 @@ export interface CompactWorkingDirectorySelectorProps {
   sessionFolderPath?: string
   isEmptySession?: boolean
   workspaceId?: string
+  /** Prototype this conversation works in, when it works in one. */
+  prototypeSlug?: string
+  /** Called when a prototype is picked. Absent hides the prototype list. */
+  onPrototypeChange?: (slug: string | null) => void
 }
 
 /**
- * CompactWorkingDirectorySelector — bottom-sheet working-directory picker.
+ * CompactWorkingDirectorySelector — bottom-sheet picker for where a conversation
+ * works: a folder, or a prototype's own folder.
  *
  * Drop-in replacement for `WorkingDirectoryBadge` in compact / touch mode.
  * Matches the `CompactSourceSelector` pattern: trigger badge + drawer so
@@ -41,6 +47,8 @@ export function CompactWorkingDirectorySelector({
   sessionFolderPath,
   isEmptySession = false,
   workspaceId,
+  prototypeSlug,
+  onPrototypeChange,
 }: CompactWorkingDirectorySelectorProps) {
   const { t } = useTranslation()
   const [open, setOpen] = React.useState(false)
@@ -52,6 +60,8 @@ export function CompactWorkingDirectorySelector({
     filter,
     setFilter,
     sortedRecent,
+    prototypes: allPrototypes,
+    hasPrototype,
     hasFolder,
     folderName,
     showReset,
@@ -60,6 +70,7 @@ export function CompactWorkingDirectorySelector({
     handleReset,
     handleRemoveRecent,
     handleChooseFolder,
+    handleSelectPrototype,
     serverBrowser: {
       showServerBrowser,
       serverBrowserMode,
@@ -71,6 +82,8 @@ export function CompactWorkingDirectorySelector({
     onWorkingDirectoryChange,
     sessionFolderPath,
     workspaceId,
+    prototypeSlug,
+    onPrototypeChange,
     isOpen: open,
     onClose: closeDrawer,
   })
@@ -86,20 +99,34 @@ export function CompactWorkingDirectorySelector({
     ))
   }, [sortedRecent, filter])
 
+  // The bound one is already pinned above with its check, so it is not offered twice.
+  const otherPrototypes = React.useMemo(
+    () => derivePrototypeChoices(allPrototypes, prototypeSlug, filter),
+    [allPrototypes, prototypeSlug, filter],
+  )
+
+  const nothingMatches = !!filter.trim() && filteredRecent.length === 0 && otherPrototypes.length === 0
+
   const displayFolderName = folderName ?? t('chat.chooseWorkingDirectory')
+  const displayLabel = hasPrototype ? prototypeSlug! : displayFolderName
 
   return (
     <>
       <FreeFormInputContextBadge
-        icon={<Icon_Home className="h-4 w-4" />}
-        label={displayFolderName}
+        icon={hasPrototype ? <FlaskConical className="h-4 w-4" /> : <Icon_Home className="h-4 w-4" />}
+        label={displayLabel}
         isExpanded={isEmptySession}
-        hasSelection={hasFolder}
+        hasSelection={hasPrototype || hasFolder}
         showChevron={true}
         isOpen={open}
         onClick={() => setOpen((prev) => !prev)}
         tooltip={
-          hasFolder ? (
+          hasPrototype ? (
+            <span className="flex flex-col gap-0.5">
+              <span className="font-medium">{t('prototypeBind.current', { slug: prototypeSlug! })}</span>
+              <span className="text-xs opacity-70">{formatPath(workingDirectory, homeDir)}</span>
+            </span>
+          ) : hasFolder ? (
             <span className="flex flex-col gap-0.5">
               <span className="font-medium">{t('chat.workingDirectory')}</span>
               <span className="text-xs opacity-70">{formatPath(workingDirectory, homeDir)}</span>
@@ -135,8 +162,19 @@ export function CompactWorkingDirectorySelector({
           )}
 
           <div className="px-2 pb-2 flex flex-col gap-0.5 max-h-[50vh] overflow-y-auto">
-            {/* Current folder — pinned at top, non-interactive */}
-            {hasFolder && (
+            {/* Where the conversation works now — pinned, non-interactive */}
+            {hasPrototype ? (
+              <div className="flex items-center gap-3 px-3 py-3 rounded-[10px] bg-foreground/5">
+                <FlaskConical className="h-5 w-5 shrink-0 text-foreground/60" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium truncate font-mono">{prototypeSlug}</div>
+                  <div className="text-xs text-foreground/50 truncate">
+                    {formatPath(workingDirectory, homeDir)}
+                  </div>
+                </div>
+                <Check className="h-4 w-4 shrink-0 text-foreground/60" />
+              </div>
+            ) : hasFolder && (
               <div className="flex items-center gap-3 px-3 py-3 rounded-[10px] bg-foreground/5">
                 <Icon_Folder className="h-5 w-5 shrink-0 text-foreground/60" />
                 <div className="flex-1 min-w-0">
@@ -154,10 +192,35 @@ export function CompactWorkingDirectorySelector({
               </div>
             )}
 
+            {/* The other prototypes — picking one replaces the folder */}
+            {otherPrototypes.length > 0 && (
+              <>
+                {!filter.trim() && (
+                  <div className="px-3 pt-3 pb-1 text-xs font-medium text-foreground/50">
+                    {t('chat.prototypes')}
+                  </div>
+                )}
+                {otherPrototypes.map((prototype) => (
+                  <DrawerClose asChild key={prototype.slug}>
+                    <button
+                      type="button"
+                      onClick={() => handleSelectPrototype(prototype.slug)}
+                      className="flex items-center gap-3 px-3 py-3 rounded-[10px] text-left transition-colors hover:bg-foreground/5"
+                    >
+                      <FlaskConical className="h-5 w-5 shrink-0 text-foreground/60" />
+                      <div className="flex-1 min-w-0 text-sm font-medium truncate font-mono">
+                        {prototype.slug}
+                      </div>
+                    </button>
+                  </DrawerClose>
+                ))}
+              </>
+            )}
+
             {/* Recent folders */}
-            {filteredRecent.length === 0 && filter.trim() ? (
+            {nothingMatches ? (
               <div className="px-4 py-6 text-center text-sm text-foreground/50">
-                {t('chat.noFoldersFound')}
+                {t('chat.noWorkingDirMatch')}
               </div>
             ) : (
               filteredRecent.map((path) => {
@@ -211,6 +274,19 @@ export function CompactWorkingDirectorySelector({
               >
                 <Icon_Home className="h-5 w-5 shrink-0 text-foreground/60" />
                 <span>{t('common.reset')}</span>
+              </button>
+            )}
+            {hasPrototype && prototypeSlug && (
+              <button
+                type="button"
+                onClick={() => {
+                  setOpen(false)
+                  navigate(routes.view.prototypes(prototypeSlug))
+                }}
+                className="w-full h-12 px-3 rounded-[10px] flex items-center gap-3 text-sm font-medium text-foreground/70 hover:bg-foreground/5 transition-colors"
+              >
+                <FlaskConical className="h-5 w-5 shrink-0 text-foreground/60" />
+                <span>{t('prototypeBind.openPanel')}</span>
               </button>
             )}
           </div>

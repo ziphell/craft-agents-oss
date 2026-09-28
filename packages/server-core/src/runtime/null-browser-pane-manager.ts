@@ -27,7 +27,6 @@ import type {
   BrowserWaitResult,
 } from '../handlers/browser-pane-manager-interface'
 import type { BrowserInstanceInfo, PickedElement, TabBelongsTo } from '@craft-agent/shared/protocol'
-import type { MockProgram } from '@craft-agent/shared/prototypes'
 
 const NOT_AVAILABLE = 'Browser automation is not available in headless mode'
 
@@ -112,8 +111,16 @@ export class NullBrowserPaneManager implements IBrowserPaneManager {
   }> {
     return unavailable('extractVideoFrames')
   }
-  async setFetchMock(_id: string, _program: MockProgram): Promise<number> { return unavailable('setFetchMock') }
-  async clearFetchMock(_id: string): Promise<void> { unavailable('clearFetchMock') }
+
+  // -- Diagrams --
+  async renderDrawio(_options: {
+    xml: string
+    format: 'svg' | 'xmlsvg' | 'png' | 'html'
+    scale?: number
+    dark?: boolean
+  }): Promise<{ bytes: Uint8Array; mimeType: string; extension: string }> {
+    return unavailable('renderDrawio')
+  }
 
   // -- Screenshot --
   async screenshot(_id: string, _options?: BrowserScreenshotOptions): Promise<BrowserScreenshotResult> { return unavailable('screenshot') }
@@ -121,7 +128,7 @@ export class NullBrowserPaneManager implements IBrowserPaneManager {
 
   // -- Monitoring --
   getConsoleLogs(_id: string, _options?: BrowserConsoleOptions): BrowserConsoleEntry[] { return [] }
-  windowResize(_id: string, _width: number, _height: number): { width: number; height: number } { return unavailable('windowResize') }
+  resizeViewport(_id: string, _width: number, _height: number): { width: number; height: number } { return unavailable('resizeViewport') }
   getNetworkLogs(_id: string, _options?: BrowserNetworkOptions): BrowserNetworkEntry[] { return [] }
   async waitFor(_id: string, _args: BrowserWaitArgs): Promise<BrowserWaitResult> { return unavailable('waitFor') }
   async getDownloads(_id: string, _options?: BrowserDownloadOptions): Promise<BrowserDownloadEntry[]> { return [] }

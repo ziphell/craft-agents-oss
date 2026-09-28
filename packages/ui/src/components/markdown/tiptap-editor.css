@@ -111,6 +111,44 @@
   list-style-type: square;
 }
 
+/* Tables — a requirement and what covers it, side by side, is most of what these
+   documents are made of. */
+.tiptap-editor .tiptap-prose table {
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+  width: 100%;
+  font-size: 13px;
+}
+
+.tiptap-editor .tiptap-prose th,
+.tiptap-editor .tiptap-prose td {
+  position: relative;
+  vertical-align: top;
+  border: 1px solid color-mix(in oklch, var(--foreground) 12%, transparent);
+  padding: 0.25rem 0.5rem;
+}
+
+.tiptap-editor .tiptap-prose th {
+  text-align: left;
+  font-weight: 600;
+  color: color-mix(in oklch, var(--foreground) 65%, transparent);
+  background: color-mix(in oklch, var(--foreground) 3%, transparent);
+}
+
+.tiptap-editor .tiptap-prose td > p,
+.tiptap-editor .tiptap-prose th > p {
+  margin: 0;
+}
+
+/* Cells covered by a cell selection, which is how a table is edited as a block. */
+.tiptap-editor .tiptap-prose .selectedCell::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: color-mix(in oklch, var(--accent) 10%, transparent);
+}
+
 /* Blockquote */
 .tiptap-editor .tiptap-prose blockquote {
   border-left: 2px solid color-mix(in oklch, var(--foreground) 30%, transparent);
@@ -485,7 +523,7 @@
   background: color-mix(in oklch, var(--accent) 12%, transparent);
 }
 
-/* Unified rich-block selection outline (image + mermaid + latex).
+/* Unified rich-block selection outline (image + mermaid + latex + preview blocks).
    Covers both keyboard NodeSelection (.ProseMirror-selectednode) and range
    decorations (.is-selected), where classes can land on the same element or
    a wrapping ancestor depending on ProseMirror/NodeView structure. */
@@ -500,7 +538,11 @@
 .tiptap-latex-block.ProseMirror-selectednode,
 .ProseMirror-selectednode .tiptap-latex-block,
 .tiptap-latex-block.is-selected,
-.is-selected .tiptap-latex-block {
+.is-selected .tiptap-latex-block,
+.tiptap-preview-block.ProseMirror-selectednode,
+.ProseMirror-selectednode .tiptap-preview-block,
+.tiptap-preview-block.is-selected,
+.is-selected .tiptap-preview-block {
   outline: var(--tiptap-image-selection-width) solid var(--tiptap-image-selection-color);
   outline-offset: 2px;
   border-radius: 0.5rem;

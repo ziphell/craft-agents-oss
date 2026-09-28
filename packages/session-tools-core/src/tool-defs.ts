@@ -48,6 +48,14 @@ import {
   handleWriteWebsiteData,
   handleDeleteWebsite,
 } from './handlers/websites.ts';
+import {
+  handleListTweaks,
+  handleGetTweak,
+  handleCreateTweak,
+  handleUpdateTweak,
+  handleDeleteTweak,
+  handleExportTweaks,
+} from './handlers/tweaks.ts';
 import { handleArchiveSession } from './handlers/archive-session.ts';
 import { handleSendAgentMessage } from './handlers/send-agent-message.ts';
 import { handleListMessagingChannels, handleUnbindMessagingChannel } from './handlers/messaging.ts';
@@ -176,7 +184,23 @@ export const PrototypeToolSchema = z.object({
   command: z.union([
     z.string(),
     z.array(z.string()),
-  ]).describe('Prototype command as a string (e.g., "list") or array (e.g., ["apply", "--file", "prototypes/cart/patches/ui-002-total.js"]).'),
+  ]).describe('Prototype command as a string (e.g., "list") or array (e.g., ["create", "Landing page"]). One command per call — batches are not supported here.'),
+});
+
+// Video tool schema — the same CLI-like shape, one command per call (no batching).
+export const VideoToolSchema = z.object({
+  command: z.union([
+    z.string(),
+    z.array(z.string()),
+  ]).describe('Video command as a string (e.g., "sample demo.mp4") or array (e.g., ["sample", "demo.mp4", "--out", "frames"]). One command per call — batches are not supported here.'),
+});
+
+// Drawio tool schema — the same CLI-like shape, one command per call (no batching).
+export const DrawioToolSchema = z.object({
+  command: z.union([
+    z.string(),
+    z.array(z.string()),
+  ]).describe('Drawio command as a string (e.g., "export flow.drawio --to flow.png --format png") or array (e.g., ["export", "flow.drawio", "--to", "flow.png", "--format", "png"]). One command per call — batches are not supported here.'),
 });
 
 export const SpawnSessionSchema = z.object({
@@ -251,11 +275,8 @@ export const GetWebsiteSchema = z.object({
 export const CreateWebsiteSchema = z.object({
   name: z.string().describe('Website name shown on the tile (also drives the slug)'),
   description: z.string().optional().describe('Short description shown in lists'),
-  kind: z.enum(['static', 'interactive', 'live'])
-    .optional()
-    .describe('Runtime capability class: static = no JS, interactive = JS allowed, live = JS + receives data snapshot updates while open. Default: interactive.'),
   projectId: z.string().optional().describe('Stable Project ID to bind the website to'),
-  content: z.string().optional().describe('Full self-contained HTML document for index.html (inline CSS/JS, no external requests). Read ~/.craft-agent/docs/websites.md for the authoring guide and data-bridge snippet BEFORE writing website HTML.'),
+  content: z.string().optional().describe('Full self-contained HTML document for index.html (inline CSS/JS, no external requests). Read ~/.craft-agent/docs/websites.md for the authoring guide and the data-reading snippet BEFORE writing website HTML.'),
   refresh: WebsiteRefreshSpecInputSchema.optional().describe('Scheduled data refresh: cron + workspace-relative Bun script that updates the website data store'),
 });
 
@@ -263,9 +284,8 @@ export const UpdateWebsiteSchema = z.object({
   slug: z.string().describe('Slug of the website to update'),
   name: z.string().optional().describe('New website name (slug stays stable)'),
   description: z.string().nullable().optional().describe('New description. Pass null to clear.'),
-  kind: z.enum(['static', 'interactive', 'live']).optional().describe('New runtime capability class'),
   projectId: z.string().nullable().optional().describe('New Project ID. Pass null to unbind from its project.'),
-  content: z.string().optional().describe('Replacement index.html (full document). Re-digests the content — existing source-action grants become stale by design and need re-approval.'),
+  content: z.string().optional().describe('Replacement index.html (full document). Re-digests the content.'),
   refresh: WebsiteRefreshSpecInputSchema.nullable().optional().describe('New refresh spec. Pass null to remove scheduled refresh.'),
 });
 
@@ -282,6 +302,52 @@ export const WriteWebsiteDataSchema = z.object({
 
 export const DeleteWebsiteSchema = z.object({
   slug: z.string().describe('Slug of the website to delete'),
+});
+
+// ---------------------------------------------------------------------------
+// Tweaks
+// ---------------------------------------------------------------------------
+
+export const ListTweaksSchema = z.object({});
+
+export const GetTweakSchema = z.object({
+  slug: z.string().describe('Tweak slug (from list_tweaks or create_tweak)'),
+});
+
+export const CreateTweakSchema = z.object({
+  name: z.string().describe('Tweak name (also drives the slug)'),
+  description: z.string().optional().describe('Short note on what it is for'),
+  matches: z
+    .array(z.string())
+    .describe(
+      'Chrome match patterns for the pages this tweak runs on, e.g. ["*://*.example.com/admin/*"]. At least one is required.',
+    ),
+  enabled: z
+    .boolean()
+    .optional()
+    .describe(
+      'Leave out unless the user asked for this change to take effect: a tweak injects into pages they are signed in to. Default false.',
+    ),
+  css: z.string().optional().describe('Written to tweak.css — the stylesheet the matching pages get'),
+  js: z.string().optional().describe('Written to tweak.js — JS that runs on every matching page'),
+});
+
+export const UpdateTweakSchema = z.object({
+  slug: z.string().describe('Tweak slug'),
+  name: z.string().optional().describe('New name'),
+  description: z.string().nullable().optional().describe('New note (null clears it)'),
+  matches: z.array(z.string()).optional().describe('Replace the match patterns'),
+  enabled: z.boolean().optional().describe('Switch the tweak on or off'),
+});
+
+export const DeleteTweakSchema = z.object({
+  slug: z.string().describe('Slug of the tweak to delete'),
+});
+
+export const ExportTweaksSchema = z.object({
+  destDir: z
+    .string()
+    .describe('Folder the user chose to export into. The extension lands in a craft-tweaks/ folder inside it.'),
 });
 
 export const ListSessionsSchema = z.object({
@@ -476,11 +542,36 @@ Templates use Mustache syntax — the tool handles rendering and writes the outp
 
 All browser interactions use this single tool with strict validation and actionable feedback.
 String mode supports batching with semicolons: \`fill @e1 value; fill @e2 value; click @e3\`
-Batch stops after navigation commands (click, navigate, back, forward) since page state may change.
+Batch stops after navigation commands (click, navigate, back, forward, reload) since page state may change.
 
 Array mode bypasses string parsing and preserves raw arguments exactly (recommended for semicolons, tabs, and newlines):
 - \`["evaluate", "var x = 1; var y = 2; x + y"]\`
 - \`["paste", "Name\\tAge\\nAlice\\t30"]\`
+
+\`evaluate --file <path>\` runs a script that is kept in a file instead of in the command (a relative path
+counts from the workspace root): write it once with the Write tool and name it here, so the same code is
+never spelled out a second time in a command. Use it for anything longer than a one-line probe. What it
+runs is **not registered**, so a reload drops it.
+Detailed rules and the full command reference: docs/browser-tools.md — read it before using this tool.
+
+The window is one and its tabs are many: every command can name the tab it acts on with \`--tab <id>\`
+(\`tabs\` lists them). Without one it acts on **your** tab — the tab you have been working from, which
+\`tabs\` marks as \`your tab\` — and only on the tab on screen when you have none yet; the person
+switching tabs does not move your commands. A session spawned by another one is the exception: it works
+in the tab it was given (\`tab-assign\`) or opens one with \`tab-new\`, and never takes over the tab on
+screen.
+
+There is **one browser window per workspace**, shared by every conversation in it and by the user — so \`open\`
+adds a tab to it instead of making a window, and the window is not yours to close: use \`tab-close <id>\` for
+the tabs of your task (the ones you opened, the ones handed to you, and the tabs opened from them — a Task's
+node tabs included, so a finished DAG can be tidied up), or \`release\` to drop your overlay. \`tabs\` says
+what each tab is, whose work it is in and who is working on it — another conversation's **work** is refused
+(a tab the person opened is nobody's work, and another conversation working from it does not
+change that), and \`tab-assign <tab-id> <session>\` is how a parent hands a tab to a session it spawned,
+so that parallel sessions each work in their own tab. A tab's work outlives the session that opened it: a
+Task node's tab belongs to that node, so a re-run of a node finds its predecessor's tab in \`tabs\` — read it
+before opening one, because \`tab-new\` always adds a tab. There is no window list to read, because there is
+one window.
 
 Examples:
 - \`--help\`
@@ -490,6 +581,7 @@ Examples:
 - \`find login button\` — search elements by keyword
 - \`click @e12\`
 - \`click-at 350 200\` — click at pixel coordinates (for canvas elements)
+- \`drag 100 200 300 400\` — drag from (100,200) to (300,400)
 - \`fill @e5 user@example.com\`
 - \`type Hello World\` — type into currently focused element (no ref needed)
 - \`select @e3 optionValue\`
@@ -497,49 +589,140 @@ Examples:
 - \`set-clipboard Name\\tAge\\nAlice\\t30\` — write text to clipboard
 - \`get-clipboard\` — read clipboard text content
 - \`paste Name\\tAge\\nAlice\\t30\` — set clipboard and trigger Ctrl/Cmd+V
+- \`upload @e3 /path/to/file.pdf\` — attach local file(s) to a file input
 - \`scroll down 800\`
+- \`reload\` — reload this page. A page of ours is rendered from disk, so an edit to it shows up on the next render; nothing waits for the load, so \`wait network-idle\` before reading it, and re-\`snapshot\` (every ref is stale)
 - \`evaluate document.title\`
+- \`evaluate --file scripts/probe.js\` — a script kept in a file
+- \`pick\` — ask the user to click an element; returns a stable selector + geometry
+- \`tabs\` — which tabs this window has, each with what it is and whose work it is in
+- \`snapshot --tab tab-3\` — act on a named tab (the window shows it while the command runs)
+- \`tab-new https://example.com\` — add a tab to the window
+- \`tab-assign tab-3 260915-brave-fox\` — hand a tab to a session you spawned
+- \`tab-close tab-2\` — close one tab (closing the last one closes the window)
 - \`console 50 error\`
 - \`screenshot\` — raw screenshot
 - \`screenshot --annotated\` — screenshot with @eN labels overlaid on interactive elements
 - \`screenshot-region 100 200 640 480\`
 - \`screenshot-region --ref @e12 --padding 8\`
 - \`screenshot-region --selector div[data-testid="chart"]\`
-- \`window-resize 1440 900\`
+- \`viewport-resize 1440 900\` — give the tab you act on this viewport. The window follows when that tab is the one on screen (its viewport *is* the window's page area); a tab working behind the person keeps its new size to itself, and their window is not touched
 - \`network 50 failed\`
 - \`wait network-idle 8000\`
 - \`key Enter\`
 - \`key k meta\`
 - \`downloads wait 15000\`
-- \`focus [windowId]\` — focus existing browser window (no new window)
-- \`release\` — dismiss the agent control overlay when done
-- \`close\` — close and destroy the browser window
-- \`hide\` — hide the window while preserving state`,
+- \`focus [windowId]\` — focus a browser window (no new window)
+- \`release [windowId|all]\` — dismiss the agent control overlay when done
+- \`close [windowId]\` — close a window of your own; the shared window is refused
+- \`hide [windowId]\` — hide the window while preserving state`,
 
   prototype_tool: `Run a prototype's own commands (one command per call — string or array input, no batching).
 
-A prototype is a **folder** (\`{workspace}/prototypes/{slug}/\`) plus a **flow of pages**. The folder holds
-the work; the flow is looked at in the workspace's browser window — the one the person and every
-conversation share.
+A prototype is a **folder** plus a **specification**. The folder is where the work lives; the
+specification is the folder's markdown — one file or several (\`PRD.md\` is the conventional entry a
+new prototype is seeded with, and any other markdown file is read the same way) — and every
+requirement is a heading whose id starts with \`R-\`
+(\`## R-001 <what the requirement is>\`). That id is the whole mechanism: any file in the folder
+declares what it serves with \`@requirement R-001\` in a comment, and that marker is what turns a
+requirement into "implemented by …". Nothing else records the link, so a requirement nothing refers
+to is a fact the report can state rather than a judgement. A file that *states* requirements is a
+specification, not an implementation of them.
 
-**The files** are the prototype, and they are yours to organize:
-- \`PRD.md\` — the brief: one \`## R-001 …\` entry per requirement, and the only file requirements are read
-  from. Beside it: material in any format, and your other pages (\`<name>.html\` is a page, \`_layout.html\`,
-  once you write one, is the layout they share).
-- \`patches/\` — the change layer: \`{writer}-{nnn}-{name}.{css,js}\` for every page, \`patches/<page>/…\` for
-  one. The writer segment is your identity, and a name the scanner cannot parse is silently never replayed.
-- \`config.json\` — the page table (their order, which one the address root opens, and which pages stand on
-  their own: \`"useLayout": false\` = the shared layout does not wrap that page); \`services/{svc}/\` — the
-  contract and its fixtures; \`research/\`, \`reviews/\` — what you learned and the argument against it
-  (neither ships); \`dist/\` — the deliverables.
-Pages and patches are written with the Write/Edit tools — no command here writes them for you.
+A prototype is **not a project**: projects are separate containers that group sessions, tasks and
+shared assets, and a prototype is never nested inside one.
 
-**The window** is where the flow is looked at: \`open\` adds a tab of its own, and
-\`apply\` replays the patches into the tab you are on. Everything about the window itself —
-refs, snapshots, \`evaluate\`, console, network, tabs — is \`browser_tool\`'s.
+Everything in the folder is written with the Write/Edit tools: the specification and the material
+beside it (personas, a glossary, a screenshot, a spreadsheet — any format, no rule about what may sit
+there), the findings under \`research/\` and the disputes under \`reviews/\`. Documents point at each
+other with a wiki link — \`[[docs/checkout.md]]\` by path, or \`[[checkout]]\` by name — so one entry
+document can index several; that is navigation, and what implements a requirement is still only
+\`@requirement R-00x\`. What the commands *derive* from them is the point: \`status\` turns the markers
+into the two answers nobody can get by reading files one at a time — which requirement nothing
+implements, and which marker names an id no document defines (a link that points at nothing is
+reported too).
 
-Read \`docs/prototypes.md\` before your first prototype command: it is the whole guide. Run
-\`prototype_tool --help\` for the commands, their flags and examples.`,
+**The window** is \`browser_tool\`'s, and **none of these commands needs a browser at all**: every one
+of them is file work on the prototype's folder. Naming tabs, snapshots, clicks and every page
+primitive are that tool's. Looking at a recording is neither — that is \`video_tool sample\`.
+
+Read \`docs/prototypes.md\` before your first prototype command: it is the whole guide, and what is
+above is the short version of it. Run \`--help\` for the commands, their flags and examples.
+
+Examples:
+- \`list\` — every prototype with its requirement and file counts, and which one is bound
+- \`create Landing page\` — a folder with a starter \`PRD.md\`. You write everything in it: the requirements into its markdown (one file or several), the work's files beside it
+- \`create Rival checkout --no-bind\` — create one *without* stealing this session's binding (the one to use when you only mean to study it)
+- \`status\` — the requirements and the files that implement them, the findings, the disputes that still stand, and what is still owed
+
+Which prototype a command means is read from this session's binding. A command that takes no slug
+therefore still works with no window open, as long as this conversation is bound; with no binding,
+name one. Binding is the person's: they set it in the app, or a \`create\` binds what it made. Every
+command here is file work: none needs a browser window this conversation drives.`,
+
+  video_tool: `Turn a recording into frames you can look at (one command per call — string or array input, no batching).
+
+\`sample <path> [--out <dir>] [--every <dur>] [--changes] [--max <n>]\` decodes the recording into
+JPEG frames and hands them back to you as images — the way to read a screen recording, which is not
+something you can watch. The decoding is Chromium's: a hidden window of the app's own browser loads
+the file and samples it, so nothing needs ffmpeg. mp4 (H.264), webm and most mov files read; a HEVC,
+ProRes or otherwise unsupported recording is refused by name instead of half-read.
+
+The default is a timeline: one frame every 2000 ms, at most 40 frames. \`--every <dur>\` changes the
+spacing (500ms, 2s), \`--changes\` keeps only the frames that moved, and \`--max <n>\` changes the
+ceiling. It writes **nothing** unless you pass \`--out <dir>\` — with it the frames are written there
+as \`frame-0001.jpg\`, \`frame-0002.jpg\`, … and the reply names them; without it they exist only in
+the reply, so run it again with \`--out\` when you need files to cite later. A relative \`<path>\` or
+\`<dir>\` counts from the workspace root.
+
+Examples:
+- \`--help\`
+- \`sample ~/Desktop/demo.mp4\` — frames of the recording, in the reply, nothing written
+- \`sample demo.mp4 --out research/demo --every 500ms\` — every half second, written as files
+- \`sample demo.mp4 --changes --max 20\` — only the moments that moved, at most 20 frames`,
+
+  drawio_tool: `Make and draw diagrams (one command per call — string or array input, no batching).
+
+A \`.drawio\` file is written by you, with \`Write\`/\`Edit\`, like every other file of your work — the
+format, and the rules that fail silently, are in \`docs/drawio-tools.md\`. What this tool does is
+*draw* one.
+
+\`pages <diagram-file>\` lists the pages the file holds — a \`.drawio\` file, or an SVG exported with a
+copy of its document inside (\`--editable\`). What it prints is what \`--page\` takes, in the order the
+document has them; read it before naming a page, because the name is the document's own and cannot be
+guessed.
+
+\`export <diagram-file> --to <path> [--format svg|png|html|drawio] [--editable] [--page <name>] [--scale <n>] [--dark]\`
+draws a \`.drawio\` file into a file that travels. \`svg\` (the default) is the picture and nothing else —
+what you show someone. Add \`--editable\` and the picture carries the drawing's own document as well, so
+whoever might have to change it opens that file in draw.io as the real diagram — its pages and shapes,
+not a picture of one — and hands it back; it is the bigger file, because the document rides along.
+\`drawio\` is not a drawing at all: the document itself, written out with every page uncompressed — how
+a file someone else saved compressed is made readable again (\`pages\` says when that is the case), and
+the one format whose suffix matters, because a diagram is opened by its \`.drawio\` name. A \`--to\` path
+that names no suffix gets the format's.
+
+\`render <diagram-file> [--page <name>] [--scale <n>] [--dark]\` draws it as a picture and puts the
+picture in the reply, writing nothing. Reach for it to check what you drew: XML that is well-formed
+is not a diagram that reads well, and a wall of overlapping boxes can only be seen.
+
+A file can hold several pages, and drawing is always one of them: \`--page <name>\` names it the way
+the document does, and with no \`--page\` it is the first page. A name no page has — or one that two
+pages share — is refused rather than drawn.
+
+The drawing is the drawio webapp the app already ships, in a hidden window of its own — no window of
+yours is involved, nothing is installed, and no diagram reaches the network. A relative path counts
+from the workspace root.
+
+Read \`docs/drawio-tools.md\` before your first drawio command: it is the whole guide — the file
+format and the rules that fail silently, where the shapes come from, and how a diagram takes part in
+a prototype.
+
+Examples:
+- \`--help\`
+- \`export flows/checkout.drawio --to out/checkout.svg\`
+- \`export flows/checkout.drawio --to out/checkout.png --format png --scale 2\`
+- \`render flows/checkout.drawio\``,
 
   call_llm: `Invoke a secondary LLM for focused subtasks. Use for:
 - Cost optimization: use a smaller model for simple tasks (summarization, classification)
@@ -592,31 +775,53 @@ Provide title + description (the description becomes the task goal and the initi
 
 Returns { slug, orchestratorSessionId, taskLabelId, warnings } — unknown source/skill slugs are reported as warnings, not errors. Use it when the user asks to capture or queue work as a task; to execute work right now, use the current session or spawn_session instead.`,
 
-  list_websites: `List the workspace's Websites — persistent sites you author, each one a single self-contained HTML file at its own address. A file can hold several screens (its JS switches between them), but it is one address: it cannot pull in other files and it has no routes, so a second address means a second website. They render in the app's Websites section and can be shared via password-protected public links.
+  list_websites: `List the workspace's Websites — persistent sites you author: dashboards, reports, trackers, small tools. Each one is a directory at websites/{slug}/ served at an address of its own, where index.html is what that address opens and every other file beside it is served too. They render in the app's Websites section.
 
-Returns compact summaries: slug, name, kind (static/interactive/live), project, refresh schedule, last refresh outcome, share state, and folder path. Optionally filter by projectId. Use get_website for full details on one website.`,
+Returns compact summaries: slug, name, project, refresh schedule, last refresh outcome, and folder path. Optionally filter by projectId. Use get_website for full details on one website.`,
 
-  get_website: `Get full details for one Website by slug: config, content digest/length/path, a data summary (KV keys + per-series point counts and latest values), source-action grants, and share state.
+  get_website: `Get full details for one Website by slug: config, content digest/length/path, and a data summary (KV keys + per-series point counts and latest values).
 
 The response includes absolute paths (contentPath, data.snapshotPath) — Read those files for the full HTML or the complete data snapshot. Pass includeContent: true only when you need the HTML inline.`,
 
-  create_website: `Create a new Website: one self-contained HTML file at websites/{slug}/ in the workspace, its own address, shown as a tile in the app's Websites section and rendered in a sandboxed iframe.
+  create_website: `Create a new Website: a directory at websites/{slug}/ in the workspace, served at an address of its own, shown as a tile in the app's Websites section and opened as a tab in the browser window at that address.
 
-IMPORTANT — read ~/.craft-agent/docs/websites.md BEFORE authoring website HTML. Key rules: provide a FULL standalone HTML document with ALL CSS/JS inline (no external requests — shared copies get network egress blocked); views inside that one document are fine (switch them in JS, or with location.hash — history.pushState throws in this sandbox, so a History-API router fails on load) but it is one address, so it cannot link to other files and wanting a second address means a second website; to display data from the website's data store, listen for the 'craft-websites/v1' bridge messages (init/data) documented there; kind 'live' websites receive replacement data snapshots automatically while open.
+IMPORTANT — read ~/.craft-agent/docs/websites.md BEFORE authoring website files. Key rules: the directory is the site's root, so its own files are loaded by root-absolute path (/assets/app.css) and several files are fine; no external requests (nothing from a CDN or another host, though a fetch to the site's own origin is fine); routes work (history.pushState is fine, and reloading a path with no file behind it opens index.html); the website reads its data with fetch('/data/snapshot.json') on its own origin — the published snapshot, where 404 means nothing has been written yet — and nothing pushes updates to it, so reload or re-fetch to see changes.
 
-Use Websites (instead of chat previews) when the user wants something persistent: a dashboard that an automation refreshes, a report they'll revisit or share, a tracker fed by write_website_data. A website is the right artifact when nobody has to implement it — when the user instead wants a change to a real product that somebody else will build, that is a prototype (prototype_tool), not a website. Returns the created website details including the slug.`,
+Use Websites (instead of chat previews) when the user wants something persistent: a dashboard that an automation refreshes, a report they'll revisit, a tracker fed by write_website_data. A website is the right artifact when nobody has to implement it — when the user instead wants a change to a real product that somebody else will build, that is a prototype (prototype_tool), not a website. Returns the created website details including the slug.`,
 
-  update_website: `Update an existing Website: metadata (name, description, kind, projectId), the scheduled refresh spec, and/or replace its HTML content.
+  update_website: `Update an existing Website: metadata (name, description, projectId), the scheduled refresh spec, and/or replace its HTML content.
 
-Only provided fields change; pass null to clear description/projectId/refresh. Replacing content re-computes the content digest, so existing source-action grants go stale by design (the user must re-approve them). The slug never changes.`,
+Only provided fields change; pass null to clear description/projectId/refresh. Replacing content re-computes the content digest. The slug never changes.`,
 
-  write_website_data: `Write to a Website's data store: KV upserts/deletes plus numeric timeseries appends/prunes, applied in one transaction. The data snapshot (data/snapshot.json) is regenerated and pushed to open renders — 'live' websites update on screen without a reload.
+  write_website_data: `Write to a Website's data store: KV upserts/deletes plus numeric timeseries appends/prunes, applied in one transaction. The data snapshot (data/snapshot.json) is regenerated — the site reads it at fetch('/data/snapshot.json') on its own origin.
 
 Data model: kv is key → any JSON value; series are named lists of { t: epoch ms, v: number } points with idempotent (series, t) upserts — re-running the same write is safe. Use timeseries for anything you may want charted over time (metrics, counts, prices). Composes with scheduled refresh scripts writing the same store.`,
 
-  delete_website: `Delete a Website permanently — removes its folder including content, data store, and grants. DESTRUCTIVE: confirm with the user first unless they explicitly asked for the deletion.
+  delete_website: `Delete a Website permanently — removes its folder including content and data store. DESTRUCTIVE: confirm with the user first unless they explicitly asked for the deletion.`,
 
-A published website is unpublished first (best effort); the result reports publicCopyMayRemain when the remote copy could not be confirmed removed.`,
+  list_tweaks: `List the workspace's tweaks — standing edits that run on pages nobody here owns (an admin console, a vendor's dashboard, a tool that is almost right). Each one is a folder at tweaks/{slug}/: a tweak.json naming the pages it is for, and tweak.css and/or tweak.js holding what it does. A tweak that is off does nothing anywhere.
+
+Returns compact summaries: slug, name, the match patterns it is for, whether it is on, and whether it has code to inject. Use get_tweak for one in detail, including whether what it is aimed at has stopped matching.`,
+
+  get_tweak: `Get one tweak: its config, the files it has, every selector it declares with a \`@target\` comment, and when each last matched.
+
+A target with \`stale: true\` matched before and did not the last time the tweak ran — the page moved and the selector needs updating. Read \`cssPath\`/\`jsPath\` to see the code itself; nothing here returns it inline.`,
+
+  create_tweak: `Create a tweak: the standing edit for the pages you name. Give it the match patterns and the code (\`css\`, \`js\`, or both).
+
+**It is created off.** A tweak injects into pages the user is signed in to, so naming those pages is not the same consent as agreeing to run this code in them. Switch it on (\`update_tweak\` with \`enabled: true\`) when the user asked for the change to take effect, and say plainly that it is off when they have not.
+
+\`matches\` is Chrome's own grammar — \`*://*.example.com/admin/*\` — which is also what the loadable extension needs, so the same tweak works both ways. Write the code for the way it runs: every load of every matching page, in a browser that is not this app, so it must not depend on anything here. Mark what it is aimed at with a \`/* @target <selector> */\` comment: that is what lets "stopped matching" be told from "never matched" later.`,
+
+  update_tweak: `Update an existing tweak: its name, description, the pages it matches, and whether it is on.
+
+Switching it on is the same judgement as creating it on: a tweak runs in pages the user is signed in to, so enable it when they asked for the change to take effect, not by default. Only provided fields change; \`description: null\` clears it.`,
+
+  delete_tweak: `Delete a tweak — its folder, its code and its record. DESTRUCTIVE: confirm with the user first unless they explicitly asked for the deletion.`,
+
+  export_tweaks: `Build the loadable browser extension for the workspace's enabled tweaks and write it into \`destDir\`.
+
+This is how a tweak reaches the browser the person actually works in — inside this app a tweak only ever runs on pages in the app's own browser window. Ask the user where to put it rather than choosing a folder for them; the export lands in a \`craft-tweaks/\` folder inside the one you name, and refuses if that folder already exists. The result names any tweak that was left out and why.`,
 
   get_session_info: `Get metadata about the current session or a specific session by ID.
 
@@ -684,7 +889,7 @@ export interface RegistrySessionToolDef extends SessionToolDefBase {
   handler: SessionToolHandler;
 }
 
-/** Tool executed by backend-specific adapters (Pi/Claude/session-mcp-server). */
+/** Tool executed by backend-specific adapters (Pi/Claude). */
 export interface BackendSessionToolDef extends SessionToolDefBase {
   executionMode: 'backend';
   handler: null;
@@ -720,6 +925,9 @@ export const SESSION_TOOL_DEFS: SessionToolDef[] = [
   { name: 'browser_tool', description: TOOL_DESCRIPTIONS.browser_tool, inputSchema: BrowserToolSchema, executionMode: 'backend', safeMode: 'allow', handler: null },
   // Prototype workbench (backend-specific — same runtime as the browser tool, other door)
   { name: 'prototype_tool', description: TOOL_DESCRIPTIONS.prototype_tool, inputSchema: PrototypeToolSchema, executionMode: 'backend', safeMode: 'allow', handler: null },
+  // Video tool (backend-specific — the same pane runtime, decoding a recording in a hidden window)
+  { name: 'video_tool', description: TOOL_DESCRIPTIONS.video_tool, inputSchema: VideoToolSchema, executionMode: 'backend', safeMode: 'allow', handler: null },
+  { name: 'drawio_tool', description: TOOL_DESCRIPTIONS.drawio_tool, inputSchema: DrawioToolSchema, executionMode: 'backend', safeMode: 'allow', handler: null },
   // Session self-management tools (registry — use context callbacks to reach SessionManager)
   { name: 'set_session_labels', description: TOOL_DESCRIPTIONS.set_session_labels, inputSchema: SetSessionLabelsSchema, executionMode: 'registry', safeMode: 'block', handler: handleSetSessionLabels },
   { name: 'set_session_status', description: TOOL_DESCRIPTIONS.set_session_status, inputSchema: SetSessionStatusSchema, executionMode: 'registry', safeMode: 'block', handler: handleSetSessionStatus },
@@ -732,6 +940,13 @@ export const SESSION_TOOL_DEFS: SessionToolDef[] = [
   { name: 'update_website', description: TOOL_DESCRIPTIONS.update_website, inputSchema: UpdateWebsiteSchema, executionMode: 'registry', safeMode: 'block', handler: handleUpdateWebsite },
   { name: 'write_website_data', description: TOOL_DESCRIPTIONS.write_website_data, inputSchema: WriteWebsiteDataSchema, executionMode: 'registry', safeMode: 'block', handler: handleWriteWebsiteData },
   { name: 'delete_website', description: TOOL_DESCRIPTIONS.delete_website, inputSchema: DeleteWebsiteSchema, executionMode: 'registry', safeMode: 'block', handler: handleDeleteWebsite },
+  // Tweaks tools (registry — grouped ctx.tweaks callbacks, same shape as websites)
+  { name: 'list_tweaks', description: TOOL_DESCRIPTIONS.list_tweaks, inputSchema: ListTweaksSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleListTweaks },
+  { name: 'get_tweak', description: TOOL_DESCRIPTIONS.get_tweak, inputSchema: GetTweakSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleGetTweak },
+  { name: 'create_tweak', description: TOOL_DESCRIPTIONS.create_tweak, inputSchema: CreateTweakSchema, executionMode: 'registry', safeMode: 'block', handler: handleCreateTweak },
+  { name: 'update_tweak', description: TOOL_DESCRIPTIONS.update_tweak, inputSchema: UpdateTweakSchema, executionMode: 'registry', safeMode: 'block', handler: handleUpdateTweak },
+  { name: 'delete_tweak', description: TOOL_DESCRIPTIONS.delete_tweak, inputSchema: DeleteTweakSchema, executionMode: 'registry', safeMode: 'block', handler: handleDeleteTweak },
+  { name: 'export_tweaks', description: TOOL_DESCRIPTIONS.export_tweaks, inputSchema: ExportTweaksSchema, executionMode: 'registry', safeMode: 'block', handler: handleExportTweaks },
   { name: 'get_session_info', description: TOOL_DESCRIPTIONS.get_session_info, inputSchema: GetSessionInfoSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleGetSessionInfo },
   { name: 'list_sessions', description: TOOL_DESCRIPTIONS.list_sessions, inputSchema: ListSessionsSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleListSessions },
   { name: 'list_background_tasks', description: TOOL_DESCRIPTIONS.list_background_tasks, inputSchema: ListBackgroundTasksSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleListBackgroundTasks },
@@ -751,7 +966,7 @@ export interface SessionToolFilterOptions {
  * Return session tools with optional feature filtering.
  *
  * Callers should use this helper instead of filtering ad hoc so tool visibility
- * stays consistent across Claude, Pi, and session-mcp-server backends.
+ * stays consistent across the Claude and Pi backends.
  */
 export function getSessionToolDefs(options?: SessionToolFilterOptions): SessionToolDef[] {
   const includeDeveloperFeedback = options?.includeDeveloperFeedback ?? true;
@@ -828,7 +1043,7 @@ export function getSessionSafeBlockedToolNames(options?: SessionToolNameOptions)
 /** Set of session tool names for quick membership checks. */
 export const SESSION_TOOL_NAMES = new Set(SESSION_TOOL_DEFS.map(d => d.name));
 
-/** Session tool names that must be handled by backend-specific adapters (Pi/Claude/session-mcp-server). */
+/** Session tool names that must be handled by backend-specific adapters (Pi/Claude). */
 export const SESSION_BACKEND_TOOL_NAMES = new Set(
   SESSION_TOOL_DEFS.filter(d => d.executionMode === 'backend').map(d => d.name)
 );

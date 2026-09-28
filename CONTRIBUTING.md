@@ -58,6 +58,7 @@ Use descriptive branch names:
 - Follow existing patterns in the codebase
 - Use meaningful variable and function names
 - Add comments for complex logic
+- Naming, domain words and user-facing copy have a written convention: [docs/vocabulary.md](docs/vocabulary.md) (e.g. a browser window holds **tabs**, a tab is given an **address**, and `page` means only what a browser displays)
 
 ### Type Checking
 

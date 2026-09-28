@@ -1,19 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import {
-  createPrototype,
-  deletePrototype,
-  getPrototypeDirPath,
-  getPrototypePatchesPath,
-  listPrototypePages,
-  listPrototypeStatuses,
-  writePrototypeConfig,
-  writePrototypePage,
-} from '..'
-
-const PAGE = '<!doctype html><html><body><h1>Orders</h1></body></html>'
+import { createPrototype, deletePrototype, getPrototypeDirPath, listPrototypeStatuses } from '..'
 
 describe('deletePrototype', () => {
   let workspaceRoot = ''
@@ -26,22 +15,17 @@ describe('deletePrototype', () => {
     rmSync(workspaceRoot, { recursive: true, force: true })
   })
 
-  /** A prototype with a document of ours, or one whose only page is a live address. */
-  function makePrototype(slug: string, kind: 'scratch' | 'overlay' = 'scratch'): string {
+  /** A prototype with a brief and some material beside it. */
+  function makePrototype(slug: string): string {
     createPrototype(workspaceRoot, { name: slug })
-    if (kind === 'scratch') {
-      writePrototypePage(workspaceRoot, slug, slug, PAGE)
-    } else {
-      writePrototypeConfig(workspaceRoot, slug, {
-        pages: [{ name: 'cart', kind: 'overlay', url: 'https://app.example.com/checkout', entry: true }],
-      })
-    }
+    const dir = getPrototypeDirPath(workspaceRoot, slug)
+    mkdirSync(join(dir, 'research'), { recursive: true })
+    writeFileSync(join(dir, 'research', 'F-001-x.md'), '# F-001 x\n\nclaim: y\n', 'utf-8')
     return slug
   }
 
   it('removes the directory with everything in it', () => {
     const slug = makePrototype('orders')
-    writeFileSync(join(getPrototypePatchesPath(workspaceRoot, slug), 'A-001-heading.css'), 'h1 { color: red; }', 'utf-8')
 
     const deleted = deletePrototype(workspaceRoot, slug)
 
@@ -64,16 +48,5 @@ describe('deletePrototype', () => {
   // never there.
   it('refuses an unknown prototype', () => {
     expect(() => deletePrototype(workspaceRoot, 'nope')).toThrow(/does not exist/)
-  })
-
-  // A page that is a live address has no document to lose, but it is still a page:
-  // deleting the prototype is what removes it.
-  it('deletes a prototype whose only page is a live address', () => {
-    const slug = makePrototype('rival', 'overlay')
-    expect(listPrototypePages(workspaceRoot, slug).map((page) => page.kind)).toEqual(['overlay'])
-
-    deletePrototype(workspaceRoot, slug)
-
-    expect(existsSync(getPrototypeDirPath(workspaceRoot, slug))).toBe(false)
   })
 })

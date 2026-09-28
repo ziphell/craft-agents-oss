@@ -1,21 +1,18 @@
 /**
  * Website Types
  *
- * Websites are workspace-scoped, agent-authored single-file sites. One website
- * is one self-contained HTML document at one address — it may hold as many
- * screens as its JS switches between, but it cannot pull in other files and it
- * has no routes. Rendered by the host in an opaque sandboxed iframe, backed by
- * data that refresh scripts write to disk, plus a mediated bridge for
- * privileged source actions (approved per-grant, executed by the host — never
- * by website JS directly).
+ * Websites are workspace-scoped, agent-authored sites. One website is one
+ * directory at one address — served at its own origin and opened as an ordinary
+ * page (a tab in the browser window), backed by data that refresh scripts write
+ * to disk.
  *
  * File structure:
  * {workspaceRootPath}/websites/{websiteSlug}/
- *   ├── index.html      - Website content (self-contained; rendered via srcDoc). The
- *   │                     file is the truth: it may be written by file tools, and
- *   │                     the host realigns `contentDigest` from it (grants and
- *   │                     render leases are keyed to that digest).
- *   ├── website.json       - WebsiteConfig (metadata, refresh spec, grants, content digest).
+ *   ├── index.html      - What the website's address opens. The file is the truth:
+ *   │                     it may be written by file tools, and the host realigns
+ *   │                     `contentDigest` from it (render leases are keyed to that
+ *   │                     digest).
+ *   ├── website.json       - WebsiteConfig (metadata, refresh spec, content digest).
  *   │                     Also the completion marker: refresh runs touch it last, and
  *   │                     the config watcher turns that into a `websites:changed` push.
  *   └── data/
@@ -26,18 +23,6 @@
  * These types are environment-agnostic (renderer/main/webui safe). Storage,
  * validation, and execution live in @craft-agent/shared/websites.
  */
-
-// ============================================================================
-// Website kind
-// ============================================================================
-
-/**
- * Runtime capability class of a website:
- * - static      — no JavaScript; data must already be rendered into the HTML
- * - interactive — JS in the opaque sandbox; data from the injected snapshot
- * - live        — interactive + receives replacement snapshots while open
- */
-export type WebsiteKind = 'static' | 'interactive' | 'live';
 
 // ============================================================================
 // Refresh
@@ -104,165 +89,6 @@ export interface WebsiteDataSnapshot {
 }
 
 // ============================================================================
-// Mediated source actions (grants + leases + requests)
-// ============================================================================
-
-/** HTTP methods a website action may use against an API source */
-export type WebsiteActionHttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
-
-/**
- * What a grant allows. Descriptors describe classes of calls (path regex),
- * requests carry the concrete invocation which must match the descriptor.
- */
-export type WebsiteActionDescriptor =
-  | {
-      kind: 'api';
-      /** API source slug the call is executed against */
-      sourceSlug: string;
-      method: WebsiteActionHttpMethod;
-      /** Regex the request path must fully match (anchored by the broker) */
-      pathPattern: string;
-    }
-  | {
-      kind: 'mcp';
-      /** MCP source slug the call is executed against */
-      sourceSlug: string;
-      /** Original (unprefixed) tool name on that server */
-      toolName: string;
-    }
-  | {
-      kind: 'script';
-      /**
-       * Workspace-relative path to the script to run (no leading slash, no ".."
-       * segments). Executed via the same argv/no-shell runner as website refreshes.
-       */
-      script: string;
-      /** Runtime used to execute the script (default: 'bun') */
-      runtime?: WebsiteScriptRuntime;
-      /**
-       * Fixed arguments passed to the script. Pinned at approval time — the
-       * website cannot supply or alter args at call time, so approving a grant
-       * approves an exact command, not a family of them.
-       */
-      args?: string[];
-    };
-
-/**
- * A user-approved capability persisted in website.json. Mirrors the
- * privileged-execution-broker commandHash pattern: bound to the website content
- * digest at approval time (content changes invalidate it) and to an expiry.
- */
-export interface WebsiteActionGrant {
-  /** Stable id, e.g. grant_1a2b3c4d */
-  id: string;
-  /** Human-readable purpose shown at approval time */
-  description?: string;
-  action: WebsiteActionDescriptor;
-  /** sha256 hex of the website content this grant was approved for */
-  contentDigest: string;
-  createdAt: number;
-  /** Hard expiry (epoch ms) — expired grants are rejected, never auto-renewed */
-  expiresAt: number;
-}
-
-/**
- * Short-lived, in-memory authorization to act as one render of one website.
- * Issued when the host mounts the website; the nonce travels into the iframe
- * and must be echoed on every request (frame identity without an Origin).
- */
-export interface WebsiteRenderLease {
-  leaseId: string;
-  /** Random per-lease secret echoed by the website on every request */
-  nonce: string;
-  websiteSlug: string;
-  /** Content digest the lease was issued for — a content change ends the lease */
-  contentDigest: string;
-  issuedAt: number;
-  expiresAt: number;
-}
-
-/** Concrete invocation carried by a request; must match the grant's descriptor */
-export type WebsiteActionInvocation =
-  | {
-      kind: 'api';
-      method: WebsiteActionHttpMethod;
-      /** Path under the source's baseUrl (leading slash optional) */
-      path: string;
-      /** Query params (GET/DELETE) or JSON body (POST/PUT/PATCH) */
-      params?: Record<string, unknown>;
-    }
-  | {
-      kind: 'mcp';
-      toolName: string;
-      args?: Record<string, unknown>;
-    }
-  | {
-      /**
-       * Pure trigger: the script, runtime, and args all come from the matched
-       * grant descriptor, never from the website. There is nothing to carry here.
-       */
-      kind: 'script';
-    };
-
-/** A website's request to execute a granted source action */
-export interface WebsiteActionRequest {
-  /** Caller-minted unique id; replayed ids are rejected per lease */
-  requestId: string;
-  websiteSlug: string;
-  leaseId: string;
-  /** Must equal the lease nonce */
-  nonce: string;
-  /** Grant that authorizes this invocation */
-  grantId: string;
-  invocation: WebsiteActionInvocation;
-}
-
-/** Result returned to the website (never contains credentials) */
-export interface WebsiteActionResult {
-  requestId: string;
-  ok: boolean;
-  /** HTTP status for api-kind invocations */
-  status?: number;
-  /** Parsed JSON body when possible, otherwise raw text (api) / tool result (mcp) */
-  body?: unknown;
-  error?: string;
-  durationMs: number;
-}
-
-// ============================================================================
-// Sharing (Cloudflare publication)
-// ============================================================================
-
-/**
- * Local pointer to a website's Cloudflare publication. Absent = private.
- *
- * This is display/bookkeeping state only — the remote D1 record stays
- * authoritative, and the admin token that authorizes update/unpublish lives
- * exclusively in the credential vault (`website_publish_token::{ws}::{websiteId}`),
- * never here. The public `publicationId` is a view capability, not a
- * mutation credential.
- */
-export interface WebsiteShareInfo {
-  /** Public publication id (random capability; identifies, never authorizes writes) */
-  publicationId: string;
-  /** Public URL of the trusted shell, e.g. https://thecraftagents.com/p/{id} */
-  url: string;
-  /** Remote revision id currently live */
-  publishedRevision: string;
-  /** sha256 hex of index.html at last successful publish (drift = "update available") */
-  publishedContentDigest: string;
-  /** Whether the data snapshot was included in the published bundle */
-  includesData: boolean;
-  /** First successful publish (epoch ms) */
-  publishedAt: number;
-  /** Last successful publish/update (epoch ms) */
-  updatedAt: number;
-  passwordProtected: boolean;
-  /** Truncated error of the most recent failed publish attempt, if any */
-  lastPublishError?: string;
-}
-
-// ============================================================================
 // Preview thumbnail (cached poster)
 // ============================================================================
 
@@ -304,8 +130,6 @@ export interface WebsiteConfig {
   name: string;
   /** Short description shown in lists */
   description?: string;
-  /** Runtime capability class (drives sandbox/CSP in the renderer) */
-  kind: WebsiteKind;
   /** Stable Project ID this website belongs to (never the project slug) */
   projectId?: string;
   /**
@@ -323,10 +147,6 @@ export interface WebsiteConfig {
   lastRefresh?: WebsiteRefreshStatus;
   /** sha256 hex of index.html; absent until content is first saved */
   contentDigest?: string;
-  /** User-approved source-action grants (content-digest-bound) */
-  grants?: WebsiteActionGrant[];
-  /** Cloudflare publication pointer (absent = private) */
-  share?: WebsiteShareInfo;
   /** Cached preview poster pointer (absent = none captured yet) */
   thumbnail?: WebsiteThumbnailInfo;
 }

@@ -240,6 +240,14 @@ describe('detectLinks', () => {
     expect(links[0]!.url).toBe('apps/electron/resources/docs/browser-tools.md')
   })
 
+  it('detects a drawio diagram path', () => {
+    const links = detectLinks('The diagram is assets/checkout/flow.drawio')
+    expect(links).toHaveLength(1)
+    expect(links[0]).toBeDefined()
+    expect(links[0]!.type).toBe('file')
+    expect(links[0]!.url).toBe('assets/checkout/flow.drawio')
+  })
+
   it('detects parent-relative file paths', () => {
     const links = detectLinks('See ../README.md for setup steps')
     expect(links).toHaveLength(1)
@@ -260,6 +268,18 @@ describe('isFilePathTarget', () => {
 
   it('accepts repo-relative markdown paths', () => {
     expect(isFilePathTarget('apps/electron/resources/docs/browser-tools.md')).toBe(true)
+  })
+
+  // A drive letter looks like a scheme, and the file-path character classes hold `/` but
+  // neither `:` nor `\` — so these matched nothing and were handed to the URL opener.
+  it('accepts a Windows path', () => {
+    expect(isFilePathTarget('C:\\Users\\tester\\prototypes\\a\\flow.drawio')).toBe(true)
+    expect(isFilePathTarget('C:/Users/tester/prototypes/a/flow.drawio')).toBe(true)
+  })
+
+  it('still reads a real scheme as a scheme', () => {
+    // No separator after the colon, so this is `c:` the scheme, not a drive.
+    expect(isFilePathTarget('c:not-a-path')).toBe(false)
   })
 
   it('rejects web URLs', () => {

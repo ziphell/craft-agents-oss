@@ -129,27 +129,6 @@ export interface PostInitResult {
 }
 
 /**
- * Context for applying bridge/config updates mid-session.
- * Used when sources change, tokens refresh, or auth completes.
- */
-export interface BridgeUpdateContext {
-  /** Path to the session folder */
-  sessionPath: string;
-  /** Currently enabled sources */
-  enabledSources: LoadedSource[];
-  /** Pre-built MCP server configs */
-  mcpServers: Record<string, SdkMcpServerConfig>;
-  /** Session ID */
-  sessionId: string;
-  /** Workspace root path */
-  workspaceRootPath: string;
-  /** Descriptive context for logging (e.g., 'token refresh', 'source enable') */
-  context: string;
-  /** URL of the McpPoolServer HTTP endpoint */
-  poolServerUrl?: string;
-}
-
-/**
  * Host runtime context passed from the application shell (Electron/CLI/etc.).
  * This is intentionally provider-agnostic metadata; backend drivers resolve
  * provider-specific paths from this context internally.
@@ -265,7 +244,7 @@ export interface CoreBackendConfig {
 
   /**
    * The prototype this conversation is working on *right now*, resolved by the host:
-   * its own binding, or the one its project provides when it has none (plan §15.1).
+   * its own binding, or the one its project provides when it has none.
    *
    * Asked live rather than read off `session.prototypeSlug`, because that field is a
    * snapshot taken when the agent was created — a conversation can be moved to
@@ -329,8 +308,6 @@ export type SdkMcpServerConfig =
       type: 'http' | 'sse';
       url: string;
       headers?: Record<string, string>;
-      /** Environment variable name containing bearer token (Codex-specific) */
-      bearerTokenEnvVar?: string;
     }
   | {
       type: 'stdio';
@@ -338,10 +315,6 @@ export type SdkMcpServerConfig =
       args?: string[];
       /** Environment variables to set (literal values) */
       env?: Record<string, string>;
-      /** Environment variable names to forward from parent process (Codex-specific) */
-      envVars?: string[];
-      /** Working directory for the server process (Codex-specific) */
-      cwd?: string;
     };
 
 /**
@@ -445,16 +418,6 @@ export interface AgentBackend {
    * Called after construction and callback wiring, before first chat().
    */
   postInit(): Promise<PostInitResult>;
-
-  /**
-   * Apply bridge/config updates mid-session.
-   * Called when sources change, tokens refresh, or auth completes.
-   * Each backend implements its own strategy:
-   * - Codex: regenerates config.toml and queues reconnect
-   * - Copilot: writes bridge-config.json and credential cache
-   * - Claude/Pi: no-op (they don't use bridge-mcp-server)
-   */
-  applyBridgeUpdates(context: BridgeUpdateContext): Promise<void>;
 
   /**
    * Ensure branch sessions are backend-ready before first user message.

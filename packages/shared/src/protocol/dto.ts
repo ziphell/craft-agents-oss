@@ -119,8 +119,6 @@ export interface Session {
   taskNodeCount?: number
   /** Tasks Conductor: how many `kind: approval` gates of the active run are waiting on a person. */
   taskAwaitingApproval?: number
-  /** The writer identity this session writes prototype artifacts as (task.yaml `writes:`, §3.6). */
-  taskWrites?: string
   /** Tasks Conductor: generate-time draft orchestrator, hidden from the board until adopted by createTask. */
   taskDraft?: boolean
 }
@@ -169,8 +167,6 @@ export interface CreateSessionOptions {
   taskRunId?: string
   /** Tasks Conductor: id of the DAG node this child session executes (child nodes only). */
   taskNodeId?: string
-  /** The writer identity this session writes prototype artifacts as (task.yaml `writes:`, §3.6). */
-  taskWrites?: string
   /** Tasks Conductor: mark the orchestrator as a generate-time draft (hidden until adopted by createTask). */
   taskDraft?: boolean
   /**
@@ -830,7 +826,7 @@ export interface WindowCloseRequest {
 // ---------------------------------------------------------------------------
 
 /**
- * Element picked by the prototype-workbench element picker.
+ * Element picked by the browser's element picker (`browser_tool pick`).
  *
  * Shared across the picker (BrowserCDP), the browser-pane capability wire
  * protocol, and the `browser_tool pick` command — defined once here so the
@@ -846,7 +842,7 @@ export interface PickedElement {
   /** Viewport-relative bounding box. */
   rect: { x: number; y: number; width: number; height: number }
   /**
-   * What the person asked for by the way they picked it (plan §12.7).
+   * What the person asked for by the way they picked it.
    *
    * The picker can show one button under the selection — "add to conversation" —
    * and which button was used is a fact about the gesture, not about the element.
@@ -858,50 +854,30 @@ export interface PickedElement {
 }
 
 /**
- * Where a picked element came from: the tab it was picked on (plan §12.7).
+ * Where a picked element came from: the tab it was picked on.
  *
  * The picker belongs to the **window**, and stays armed while the user moves
  * between its tabs — any tab's elements can be picked, and the same gesture on
  * two tabs means two different places to change. So the tab it happened on
  * travels with the element, and the chip and the agent read it from there.
  *
- * The same three answers a tab's summary gives about where it is, which is why
- * both are produced by one function in the pane manager.
+ * The address and title of that tab, which is why both are produced by one
+ * function in the pane manager.
  */
 export interface PickedElementOrigin {
   /** The address the tab was on when the element was picked. */
   url: string
   /** That tab's title. */
   title: string
-  /** The prototype this tab is for, if it is one. */
-  prototype: BrowserTabPrototype | null
-  /** Which page of that prototype, when the prototype's page table knows. */
-  prototypePage: string | null
-}
-
-/** One element an edit made in the window's editor acts on. */
-export interface BrowserEditTarget {
-  selector: string
-  /** Lowercase tag name, for a report the person reads. */
-  tag: string
-}
-
-/**
- * One edit the person made in the window's editor.
- *
- * What the *page* knows, and nothing more: which elements were boxed and what to
- * set on them, or the element whose text was replaced and what it now says. Where
- * the change belongs is not here — a patch of which prototype and which page is a
- * fact about the window the edit came from, and the main window is the side that
- * knows it (`edit-patch.ts` writes the file).
- */
-export interface BrowserEdit {
-  kind: 'style' | 'text'
-  targets: BrowserEditTarget[]
-  /** Style edits: what to set, e.g. `{ 'font-weight': '700' }`. */
-  declarations?: Record<string, string>
-  /** Text edits: the element's new text. */
-  text?: string
+  /**
+   * The website this page is, when the address is one this app serves.
+   *
+   * A website's pages are files in the workspace (`websites/<slug>/`), so a pick on one
+   * of them names both the page *and* the files it is made of. Resolved here rather than
+   * left as an addressing puzzle for whoever reads it: the host's registry is the only
+   * thing that knows a label is ours, and it is in this process.
+   */
+  website?: { slug: string; dir: string }
 }
 
 /**
@@ -919,57 +895,22 @@ export type BrowserToolbarAction =
       element: PickedElement | null
     }
   /**
-   * The person pressed save in the window's editor: everything they accumulated is
-   * on its way to being written down.
-   *
-   * A list, not one edit: the session's edits are one moment of intent, so the main
-   * window writes them as one entry in the change layer (a patch file, or two when
-   * the session did both styles and text). Until this arrives, nothing has been
-   * written anywhere — which is what makes the draft cheap to take back.
-   */
-  | { kind: 'edit-requested'; instanceId: string; edits: BrowserEdit[] }
-  /**
    * The person used the bar under the highlight: the element goes into a
-   * conversation rather than into a prototype patch (plan §12.7).
+   * conversation.
    *
    * Separate from `picked` because the two do different things with the same
-   * element — one opens the prototype's edit flow, the other writes a draft — and
-   * this one needs no prototype at all, only a conversation.
+   * element — one hands it to the edit flow, the other writes a draft — and this
+   * one needs no prototype at all, only a conversation.
    *
    * `origin` is the tab inside the window this pick came from: with the picker
    * resident across the window's tabs, the element alone does not say where it
    * was picked, and that is the part the conversation needs to act on it.
    */
   | { kind: 'add-to-conversation'; instanceId: string; element: PickedElement; origin: PickedElementOrigin }
-  /**
-   * The user typed one of a prototype's own addresses into the window's address
-   * bar.
-   *
-   * Two shapes, and both are "where the view should actually load": the root names
-   * the prototype, so it is opened the way the workbench opens one (its entry
-   * page, or the page index) and the bar keeps saying which prototype this is;
-   * `page` names one page, which is resolved to that page's own address and loaded
-   * directly — the bar is a display of where the window is, not a request the host
-   * has to redirect.
-   */
-  | { kind: 'open-prototype'; instanceId: string; slug: string; page?: string | null }
   | { kind: 'pick-failed'; instanceId: string; message: string }
 
 /**
- * The prototype a tab is for: the prototype, and its own origin
- * (`http://<slug>-<hash>.localhost`).
- *
- * The origin rather than the tab's address, because an overlay's document is
- * someone else's — once the view loads it, nothing in the URL says which
- * prototype the tab is working on.
- */
-export interface BrowserTabPrototype {
-  slug: string
-  origin: string
-}
-
-/**
- * The **work a tab is part of** — whose tab it is (plan §22).
+ * The **work a tab is part of** — whose tab it is.
  *
  * The subject is the *work*, not the conversation doing it: a conversation is an
  * executor, and executors change while the work stays the same. A DAG node re-run
@@ -1008,7 +949,7 @@ export type TabBelongsTo =
 
 /**
  * Whether two tabs are tabs of the **same work** — the same conversation, or the
- * same node of the same run of the same task (plan §22).
+ * same node of the same run of the same task.
  *
  * The precise question, and the one `reach` is decided by: a tab of another node of
  * my task is not mine to work in. A re-run of a node *is* the same work, which is what
@@ -1025,7 +966,7 @@ export function sameWork(a: TabBelongsTo | null, b: TabBelongsTo | null): boolea
 
 /**
  * Whether two tabs are tabs of the same **task**, whatever node and whatever run —
- * the looser question, used for housekeeping (plan §22).
+ * the looser question, used for housekeeping.
  *
  * Closing is not working in: the orchestrator never opened its nodes' tabs, so a rule
  * that read the precise work would leave a finished run's tabs in the window forever.
@@ -1040,7 +981,7 @@ export function sameTask(a: TabBelongsTo | null, b: TabBelongsTo | null): boolea
 export const PERSON_TAB_SECTION = 'person'
 
 /**
- * Which **section of a window's tab list** a tab is drawn in (plan §22).
+ * Which **section of a window's tab list** a tab is drawn in.
  *
  * Coarser than `sameWork`, on purpose and not by accident: the rail cuts a window's tabs into
  * one section per conversation and **one per task** — a task's nodes are one piece of work, so
@@ -1058,7 +999,7 @@ export function tabSectionOf(work: TabBelongsTo | null): string {
 }
 
 /**
- * The work a conversation is part of, told from the fields a session carries (plan §22).
+ * The work a conversation is part of, told from the fields a session carries.
  *
  * **The one place a session becomes a tab's owner.** A Conductor child says which task, run
  * and node it executes — so the session that runs a node and the one repair spawns to re-run
@@ -1083,7 +1024,7 @@ export function workOfSession(session: {
 }
 
 /**
- * A work, in words — for a message that has to say whose tab something is (plan §22).
+ * A work, in words — for a message that has to say whose tab something is.
  *
  * `"the task checkout-flow's node pay"`, `"session-4f2a…'s"`, or `"nobody's"` — never a bare
  * session id for a task tab, whose opener is provenance rather than the point.
@@ -1095,26 +1036,31 @@ export function describeWork(work: TabBelongsTo | null): string {
 }
 
 /**
- * One tab of a browser window (plan §22).
+ * One tab of a browser window.
  *
  * The fields are in three groups, because they are not equally trustworthy:
  *
  * - **observation** — what the tab itself reports (address, title, favicon,
- *   loading, which prototype and which of its pages it is on). One producer, so
- *   nothing here can disagree with the document it describes.
+ *   loading). One producer, so nothing here can disagree with the document it describes.
  * - **declaration** — whose work it is (`belongsTo`). Written once, when the
  *   tab is created, and never changed afterwards: a statement of intent.
- * - **lease** — who is working on it at the moment (`driverSessionId`). Written by
- *   whoever is using the tab and released when their turn ends: it says nothing
- *   about who the tab belongs to.
+ * - **driven-by** — who has been moving it (`drivenBy`). One per tab, and a
+ *   session may have several, so it is not a claim of its own: it is a trace of use,
+ *   and it is what the rail's plain dot draws. Swept when that session stops working
+ *   (its queue of turns empties, it is force-stopped or deleted) or when the tab
+ *   changes hands, and it says nothing about who the tab belongs to.
  *
  * Keeping them apart is the point: a caller that reads a declaration as a
- * measurement is reading somebody's intention as a fact, and one that reads a lease
- * as ownership will close work that is not theirs.
+ * measurement is reading somebody's intention as a fact, and one that reads a
+ * driven-by mark as ownership will close work that is not theirs.
  *
  * `lockedBy` is none of the three: it is the tab's own **hold** — who is mid-work on it
  * right now — which is written while that work lasts and let go when it ends (see the
  * field).
+ *
+ * The driven-by field is the one that used to be called the tab's **lease**. The data
+ * never changed; the word did, because "lease" promised an exclusivity and an expiry this
+ * fact never had.
  */
 export interface BrowserTabSummary {
   /** Stable across the tab's life; what `--tab` and the toolbar name it by. */
@@ -1127,27 +1073,17 @@ export interface BrowserTabSummary {
   isLoading: boolean
   /** Whether this is the tab the window is showing. */
   active: boolean
-  /** The prototype this tab is for, or null for an ordinary tab. */
-  prototype: BrowserTabPrototype | null
-  /**
-   * Which page of that prototype is on screen, or null when it cannot be told —
-   * no prototype, or a page of it that the prototype's own page table does not
-   * describe (a file, an SPA route). Read from the page table, never from the
-   * address.
-   */
-  prototypePage: string | null
   /**
    * How the browser asked for this tab, when the browser asked for it rather than a
    * command opening it: `'link'` for a `target="_blank"`, `'popup'` for a scripted
    * `window.open` with features, `null` for every other way a tab comes to exist
-   * (the address bar, `tab-new`, `prototype_tool open`, the panel).
+   * (the address bar, `tab-new`, the panel).
    *
    * Here rather than in the declaration half because nobody *stated* it — the browser
    * reported it, the same way it reports a title. It is worth keeping because both are
    * now played in the same window, which costs the tab its `window.opener`: a popup
    * that waits for a `postMessage` from the tab that opened it (Google's sign-in) will
-   * never get one, and this field is how that becomes diagnosable instead of mysterious
-   * (plan §22).
+   * never get one, and this field is how that becomes diagnosable instead of mysterious.
    */
   disposition: 'link' | 'popup' | null
 
@@ -1157,55 +1093,71 @@ export interface BrowserTabSummary {
    *
    * Written when the tab is created — by the conversation whose tool opened it, or by
    * **inheritance**: a tab derived from another (a `target="_blank"`, a popup, a link on a
-   * page of ours) belongs to whatever the tab it came from belongs to (plan §22, 第十一轮).
+   * page of ours) belongs to whatever the tab it came from belongs to.
    * Inheritance is what makes a conversation's tabs a *group* — the link it could not
    * follow itself still lands in its task — without asking who clicked, which could not be
    * answered anyway (an agent's click and a person's look the same from here).
    *
    * The reason it is here rather than derived: an agent must be able to leave other people's
-   * tabs alone (plan §22's third rule), and "which of these are mine" is not visible in a
+   * tabs alone, and "which of these are mine" is not visible in a
    * URL. It is also the key the tab rail groups by, so a window shows one section per task.
    *
    * The work rather than the conversation, because a tab outlives the session that opened
-   * it — see {@link TabBelongsTo}. Which conversation is working here *now* is the lease's
-   * answer (`driverSessionId` / `lockedBy`), and those stay session ids.
+   * it — see {@link TabBelongsTo}. Which conversation moved it last is
+   * `drivenBy`'s answer and which one is inside it *now* is `lockedBy`'s, and those
+   * stay session ids.
    */
   belongsTo: TabBelongsTo | null
 
-  // -- Where a conversation works from ------------------------------------
+  // -- Where conversations work from --------------------------------------
   /**
-   * Which conversation **works from this tab**, or `null` when it is no conversation's
-   * tab — its cursor (plan §22, 第十轮).
+   * Which conversations **work from this tab** — their cursors, one entry per conversation, and
+   * `[]` when it is no conversation's.
    *
-   * One tab per conversation, and it answers the question that otherwise has no answer:
-   * *where does my next command go when I name no tab?* Not "wherever the window is
-   * showing" — that tab belongs to the person, and it moves the moment they click, which
-   * is how a user switching tabs used to silently retarget somebody's work.
+   * It answers the question that otherwise has no answer: *where does my next command go when
+   * I name no tab?* Not "wherever the window is showing" — that tab belongs to the person, and
+   * it moves the moment they click, which is how a user switching tabs used to silently retarget
+   * somebody's work. One conversation, one entry: it moves when that conversation names another
+   * tab (or opens one), and is dropped when the conversation ceases to exist.
    *
-   * Sticky across turns, unlike the lease next to it: a conversation that comes back after
-   * its turn ended still works from the same tab. It moves only when that conversation
-   * names another tab (or opens one), and it is what the tab lock hangs off while its
-   * overlay is up.
+   * **Several conversations may hold one tab**, and that is the point rather than an accident:
+   * a tab that is nobody's work (a person's) is where the person is looking, so whoever they are
+   * talking to works there — one conversation's cursor cannot be the thing that decides another
+   * may not. It used to be a single id and doubled as a claim ("somebody works from this tab, so
+   * it is not yours"), which made the person's own tab out of reach for the conversation they had
+   * just handed it to; the list is what let that claim go. Being a **route** and not a claim, it
+   * decides nothing about who may work where: reach is about the **work** a tab belongs to
+   * (`whyTabIsOutOfReach`), and what keeps two conversations out of one tab at the same moment is
+   * the **hold** ({@link lockedBy}), which lasts a turn and is drawn.
    */
-  cursorOf: string | null
+  cursorOf: string[]
 
-  // -- Lease ---------------------------------------------------------------
+  // -- Driven by -----------------------------------------------------------
   /**
-   * Which session is working on this tab **now**, or `null` when nobody is.
+   * Which session moved this tab last, or `null` when nobody has — the trace the rail draws
+   * as a plain dot, and what the agent's `tabs` reports as `driven by`.
    *
-   * A lease, per tab (plan §22): a conversation's command reaches the tab it works from —
-   * its own cursor, which is written at the same moment — so that tab records who is driving
-   * it, and the turn ending releases it. Several conversations sharing the window take turns
-   * *here*, tab by tab, and this is what makes "who is moving which tab" answerable
-   * instead of guessed.
+   * One per tab, and a session may have several: a conversation's command reaches
+   * the tab it works from — its own cursor, written at the same moment — so that tab records
+   * who moved it. Several conversations sharing the window take turns *here*, tab by tab, and
+   * this is what makes "who is moving which tab" answerable instead of guessed.
+   *
+   * Let go when that session **stops working** — its queue of turns empties, it is force-stopped,
+   * or it is deleted — and when the tab changes hands. The hold next to it ({@link lockedBy}) is the
+   * one let go at the end of *every* turn, so the two part company exactly where a session drove a
+   * tab it is not inside at this moment. It decides nothing: no routing, no reach, no lock.
+   *
+   * This field was called `driverSessionId` and described as the tab's *lease*; the data never
+   * changed, and neither did what it means — the name and the prose did, because "lease"
+   * promised an exclusivity and an expiry this fact never had.
    */
-  driverSessionId: string | null
+  drivenBy: string | null
 
   // -- The lock ------------------------------------------------------------
   /**
    * Which session is **holding this tab at the moment**, or `null` when nobody is.
    *
-   * The tab lock (plan §22, 第九轮): a tab is held while the conversation working on it is
+   * The tab lock: a tab is held while the conversation working on it is
    * mid-work, which is when a person cannot click or type into it and another conversation's
    * commands that name it are refused — narrower than a window-wide lock: the chrome, the
    * other tabs and the window itself stay usable.
@@ -1233,15 +1185,6 @@ export interface BrowserInstanceInfo {
    * tab's, so a reader that only wants "what is on screen" needs nothing here.
    */
   tabs?: BrowserTabSummary[]
-  /**
-   * The prototype this window is working on, or `null` for a plain browser
-   * window. The main process's answer, not something a renderer derives: an
-   * overlay's view sits on a third-party address, so the URL cannot say it.
-   *
-   * Optional so a renderer that pre-dates the field keeps working — treat
-   * missing as `null`.
-   */
-  prototypeSlug?: string | null
   isVisible: boolean
   agentControlActive: boolean
   themeColor: string | null

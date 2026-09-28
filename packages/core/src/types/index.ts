@@ -67,20 +67,11 @@ export type {
 
 // Website types (workspace-scoped single-file sites)
 export type {
-  WebsiteKind,
   WebsiteScriptRuntime,
   WebsiteRefreshSpec,
   WebsiteRefreshStatus,
   WebsiteSeriesPoint,
   WebsiteDataSnapshot,
-  WebsiteActionHttpMethod,
-  WebsiteActionDescriptor,
-  WebsiteActionGrant,
-  WebsiteRenderLease,
-  WebsiteActionInvocation,
-  WebsiteActionRequest,
-  WebsiteActionResult,
-  WebsiteShareInfo,
   WebsiteThumbnailInfo,
   WebsiteConfig,
 } from './website.ts';

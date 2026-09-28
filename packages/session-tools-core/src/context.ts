@@ -144,9 +144,7 @@ export interface ValidatorInterface {
 /**
  * Main context interface for session tools.
  *
- * Both Claude and Codex create their own implementation of this interface:
- * - Claude: createClaudeContext() with direct access to Electron internals
- * - Codex: createCodexContext() with callback IPC and limited capabilities
+ * Claude's implementation (`createClaudeContext()`) has direct access to Electron internals.
  */
 export interface SessionToolContext {
   // ============================================================
@@ -294,14 +292,13 @@ export interface SessionToolContext {
   /**
    * Submit developer feedback. Injected by each backend:
    * - Claude: writes JSON files to ~/.craft-agent/feedback/
-   * - Codex/Pi: could send over IPC or write directly
+   * - Pi: could send over IPC or write directly
    */
   submitFeedback?(feedback: import('./types.ts').DeveloperFeedback): void;
 
   /**
    * Update user preferences. Injected by each backend:
    * - Claude: calls updatePreferences() from config/preferences.ts
-   * - Codex/session-mcp-server: writes directly to preferences.json
    * - Pi: calls updatePreferences() from config/preferences.ts
    */
   updatePreferences?(updates: Record<string, unknown>): void;
@@ -361,6 +358,14 @@ export interface SessionToolContext {
    * gracefully.
    */
   websites?: WebsiteToolCallbacks;
+
+  /**
+   * Tweaks tool callbacks — standing edits to pages nobody here owns, with two carriers
+   * (this app's browser window, and a loadable extension). Grouped for the same reason
+   * the websites ones are: the operations ship together. Injected by the backend
+   * (SessionManager); undefined elsewhere, where the handlers degrade gracefully.
+   */
+  tweaks?: TweakToolCallbacks;
 
   // ============================================================
   // Inter-Session Messaging
@@ -526,8 +531,6 @@ export interface WebsiteToolSummary {
   slug: string;
   name: string;
   description?: string;
-  /** 'static' | 'interactive' | 'live' */
-  kind: string;
   projectId?: string;
   /**
    * The conversation the website was created from — the website's record of why it
@@ -541,8 +544,6 @@ export interface WebsiteToolSummary {
   refresh?: WebsiteToolRefreshSpec;
   /** Outcome of the most recent data refresh (scheduled or agent write) */
   lastRefresh?: { at: number; ok: boolean; durationMs: number; error?: string };
-  /** Whether the website is currently published (share link exists) */
-  shared: boolean;
   /** Absolute path to the website folder (websites/{slug}/) */
   folderPath: string;
 }
@@ -559,7 +560,7 @@ export interface WebsiteToolDataSummary {
 /** Full website details (returned by get_website / create_website / update_website). */
 export interface WebsiteToolDetails extends WebsiteToolSummary {
   id: string;
-  /** sha256 hex of index.html (grants and render leases bind to it) */
+  /** sha256 hex of index.html (render leases bind to it) */
   contentDigest?: string;
   /** Byte length of index.html when present */
   contentLength?: number;
@@ -567,20 +568,6 @@ export interface WebsiteToolDetails extends WebsiteToolSummary {
   contentPath: string;
   /** Data snapshot summary, or null when no data has been written yet */
   data: WebsiteToolDataSummary | null;
-  /** Source-action grants (user-approved; stale = digest mismatch or expired) */
-  grants: Array<{
-    id: string;
-    kind: string;
-    /** Source slug for api/mcp grants (absent for script grants) */
-    sourceSlug?: string;
-    /** Workspace-relative script path for script grants (absent otherwise) */
-    script?: string;
-    description?: string;
-    expiresAt: number;
-    stale: boolean;
-  }>;
-  /** Public share URL when published */
-  shareUrl?: string;
   /** Full index.html content (only when requested with includeContent) */
   content?: string;
 }
@@ -589,8 +576,6 @@ export interface WebsiteToolDetails extends WebsiteToolSummary {
 export interface CreateWebsiteToolInput {
   name: string;
   description?: string;
-  /** 'static' | 'interactive' | 'live' (default: 'interactive') */
-  kind?: string;
   /** Stable Project ID to bind the website to */
   projectId?: string;
   /** Full self-contained HTML document for index.html */
@@ -602,9 +587,8 @@ export interface CreateWebsiteToolInput {
 export interface UpdateWebsiteToolPatch {
   name?: string;
   description?: string | null;
-  kind?: string;
   projectId?: string | null;
-  /** Replaces index.html entirely (re-digests; existing grants go stale by design) */
+  /** Replaces index.html entirely (re-digests) */
   content?: string;
   refresh?: WebsiteToolRefreshSpec | null;
 }
@@ -634,8 +618,6 @@ export interface WebsiteDataWriteSummary {
 /** Result of delete_website. */
 export interface DeleteWebsiteToolResult {
   deleted: true;
-  /** True when the website was published and the remote copy may still exist */
-  publicCopyMayRemain: boolean;
 }
 
 /**
@@ -649,6 +631,110 @@ export interface WebsiteToolCallbacks {
   updateWebsite(slug: string, patch: UpdateWebsiteToolPatch): Promise<WebsiteToolDetails>;
   writeWebsiteData(slug: string, patch: WebsiteDataToolPatch): Promise<WebsiteDataWriteSummary>;
   deleteWebsite(slug: string): Promise<DeleteWebsiteToolResult>;
+}
+
+// ============================================================
+// Tweaks (standing edits to pages nobody here owns)
+// ============================================================
+
+/** One tweak as the agent sees it in a list. */
+export interface TweakToolSummary {
+  slug: string;
+  name: string;
+  description?: string;
+  /** Chrome match patterns: the pages this tweak runs on. */
+  matches: string[];
+  /** Off means it does nothing anywhere — see `create_tweak`. */
+  enabled: boolean;
+  /** False when the folder has neither tweak.css nor tweak.js, so there is nothing to inject. */
+  hasCode: boolean;
+  /** Absolute path to the tweak's folder. */
+  folderPath: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/**
+ * One selector a tweak declares with `@target`, and what it has matched.
+ *
+ * `stale` is the whole point of keeping the record: the tweak has been applied since the
+ * last time this selector matched, and it did not match — the page moved.
+ */
+export interface TweakToolTarget {
+  selector: string;
+  /** Which of the tweak's files declares it. */
+  file: string;
+  /** When it last matched something, epoch ms. Absent means it never has. */
+  lastMatchedAt?: number;
+  /** It matched before, and the most recent apply did not see it. */
+  stale: boolean;
+}
+
+/** Full tweak detail (returned by get_tweak / create_tweak / update_tweak). */
+export interface TweakToolDetails extends TweakToolSummary {
+  /** Absolute path to tweak.css (whether or not it exists). */
+  cssPath: string;
+  /** Absolute path to tweak.js (whether or not it exists). */
+  jsPath: string;
+  /** Which of the two code files are actually there — a path does not say that. */
+  hasCss: boolean;
+  hasJs: boolean;
+  /** Absolute path to hits.json — written by whatever applies the tweak, never by hand. */
+  hitsPath: string;
+  targets: TweakToolTarget[];
+  /** When the hit record was last written, or null when nothing has applied it yet. */
+  appliedAt: number | null;
+}
+
+/** Input for create_tweak. */
+export interface CreateTweakToolInput {
+  name: string;
+  description?: string;
+  /** Chrome match patterns — at least one. */
+  matches: string[];
+  /** Created off unless this is true; see the tool's own description. */
+  enabled?: boolean;
+  /** Written to tweak.css */
+  css?: string;
+  /** Written to tweak.js */
+  js?: string;
+}
+
+/** Patch for update_tweak — only provided fields change; null clears the description. */
+export interface UpdateTweakToolPatch {
+  name?: string;
+  description?: string | null;
+  matches?: string[];
+  enabled?: boolean;
+}
+
+/** Result of delete_tweak. */
+export interface DeleteTweakToolResult {
+  deleted: true;
+}
+
+/** Result of export_tweaks. */
+export interface ExportTweaksToolResult {
+  /** Absolute path of the written extension folder. */
+  dir: string;
+  files: number;
+  /** How many tweaks made it in. */
+  tweaks: number;
+  /** Enabled-or-not is not the only reason to be left out; the reason comes with it. */
+  skipped: Array<{ slug: string; why: string }>;
+}
+
+/**
+ * Tweaks tool callbacks, injected by the backend (SessionManager). All storage logic
+ * lives behind these — this package never touches tweaks/ directly.
+ */
+export interface TweakToolCallbacks {
+  listTweaks(): TweakToolSummary[] | Promise<TweakToolSummary[]>;
+  getTweak(slug: string): TweakToolDetails | null | Promise<TweakToolDetails | null>;
+  createTweak(input: CreateTweakToolInput): Promise<TweakToolDetails>;
+  updateTweak(slug: string, patch: UpdateTweakToolPatch): Promise<TweakToolDetails>;
+  deleteTweak(slug: string): Promise<DeleteTweakToolResult>;
+  exportTweaks(destParent: string): Promise<ExportTweaksToolResult>;
 }
 
 export interface SessionInfo {

@@ -14,7 +14,6 @@ import type { ValidationIssue, ValidationResult } from '../config/validators.ts'
 import { getModelById } from '../config/models.ts';
 import { extractRefs } from './refs.ts';
 import { parseWhen } from './conditions.ts';
-import { CONSOLIDATED_WRITER, isValidWriterId } from '../prototypes/types.ts';
 import { parseTaskSpec, nodeDeps, APPROVAL_VERDICT_FIELD, type TaskSpec, type TaskNode } from './schema.ts';
 
 /** Generous structural backstops. Rarely bind; surface "too large — simplify", never silently truncate. */
@@ -50,9 +49,6 @@ export function validateTaskSpec(spec: TaskSpec): ValidationResult {
   for (const node of spec.nodes) byId.set(node.id, node);
 
   const declaredParams = new Set((spec.params ?? []).map((p) => p.name));
-
-  /** writer identity (lowercased) → the node that declared it, so one run never has two. */
-  const seenWriters = new Map<string, string>();
 
   // Materialized dependency edges (explicit depends_on ∪ ref targets), for cycle + metrics.
   const deps = materializeDeps(spec);
@@ -182,43 +178,6 @@ export function validateTaskSpec(spec: TaskSpec): ValidationResult {
           `Use kind: approval on node "${node.id}"`,
         ),
       );
-    }
-
-    // A node's write identity (`writes:`, plan §3.6): the prefix its patches will claim. Three
-    // things can be wrong, and the third is the real rule — two nodes declaring one identity
-    // would make "who owns this file" unanswerable, which is what the declaration is for.
-    if (node.writes !== undefined) {
-      const writer = node.writes.trim();
-      if (!isValidWriterId(writer)) {
-        errors.push(
-          err(
-            `${path}.writes`,
-            `"${node.writes}" is not usable as a writer identity`,
-            'Use a slug that does not end in -<digits> (that would make a patch name ambiguous), e.g. checkout-ui',
-          ),
-        );
-      } else if (writer.toUpperCase() === CONSOLIDATED_WRITER) {
-        errors.push(
-          err(
-            `${path}.writes`,
-            `"${writer}" is reserved for a prototype's folded changes`,
-            'Pick another identity — the consolidator is written by the control plane only',
-          ),
-        );
-      } else {
-        const owner = seenWriters.get(writer.toLowerCase());
-        if (owner) {
-          errors.push(
-            err(
-              `${path}.writes`,
-              `Node "${node.id}" declares the same writer identity as node "${owner}" ("${writer}")`,
-              'Two nodes writing as one identity means neither owns its files — give them different ones',
-            ),
-          );
-        } else {
-          seenWriters.set(writer.toLowerCase(), node.id);
-        }
-      }
     }
 
     // Unknown model — warning, not error: custom/Pi models are discovered at

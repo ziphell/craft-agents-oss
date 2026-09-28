@@ -3,8 +3,8 @@ import { useTranslation } from 'react-i18next'
 import { coerceInputText } from '@/lib/input-text'
 import { cn } from '@/lib/utils'
 import { findMentionMatches, parseMentions, type ComposerMentionType, type MentionMatch } from '@/lib/mentions'
-import { elementLabel, elementOriginText, parseElementMention } from '@/lib/element-mention'
-import { parseTabMention, tabLabel, tabOriginText } from '@/lib/tab-mention'
+import { elementLabel, parseElementMention } from '@/lib/element-mention'
+import { parseTabMention, tabLabel } from '@/lib/tab-mention'
 import {
   loadSourceIcon,
   loadSkillIcon,
@@ -433,16 +433,16 @@ export function textToHTML(
       const ref = parseElementMention(match.id)
       if (ref) {
         label = elementLabel(ref)
-        tooltip = [ref.selector, elementOriginText(ref)].filter(Boolean).join('\n')
+        tooltip = [ref.selector, ref.url].filter(Boolean).join('\n')
       }
     } else if (match.type === 'tab') {
       // The same encoded payload, for a whole tab (see tab-mention): the title is the
       // label, and on hover the address — which is what tells two tabs with the same
-      // title apart — plus the prototype it belongs to, when it is one's.
+      // title apart.
       const ref = parseTabMention(match.id)
       if (ref) {
         label = tabLabel(ref)
-        tooltip = [ref.url, tabOriginText(ref)].filter(Boolean).join('\n')
+        tooltip = ref.url
       }
     }
 

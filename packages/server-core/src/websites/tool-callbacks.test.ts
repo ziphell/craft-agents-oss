@@ -37,7 +37,6 @@ describe('websites tool callbacks (end-to-end against a temp workspace)', () => 
   it('create → list → get round-trips through real storage', async () => {
     const created = await callbacks.createWebsite({
       name: 'Build Health',
-      kind: 'live',
       description: 'CI dashboard',
       content: '<!doctype html><html><body>hi</body></html>',
     })
@@ -86,7 +85,6 @@ describe('websites tool callbacks (end-to-end against a temp workspace)', () => 
     expect(updated.contentLength).toBeGreaterThan(0)
 
     await expect(callbacks.updateWebsite('missing', { name: 'x' })).rejects.toThrow('Website not found')
-    await expect(callbacks.updateWebsite('build-health', { kind: 'wild' })).rejects.toThrow('Invalid website kind')
   })
 
   it('writeWebsiteData spawns the writer, exports the snapshot, and stamps website.json', async () => {
@@ -107,9 +105,9 @@ describe('websites tool callbacks (end-to-end against a temp workspace)', () => 
     expect(snapshot.kv.total).toBe(42)
   })
 
-  it('delete removes the folder and reports the unpublish outcome', async () => {
+  it('delete removes the folder', async () => {
     const result = await callbacks.deleteWebsite('build-health')
-    expect(result).toEqual({ deleted: true, publicCopyMayRemain: false })
+    expect(result).toEqual({ deleted: true })
     expect(await callbacks.getWebsite('build-health')).toBeNull()
     expect(existsSync(join(workspace, 'websites', 'build-health'))).toBe(false)
 

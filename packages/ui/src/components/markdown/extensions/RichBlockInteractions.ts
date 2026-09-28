@@ -4,8 +4,16 @@ import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import { isSlashSuggestionActive } from '../TiptapSlashMenu'
 import { RICH_BLOCK_EDIT_EVENT } from '../rich-block-events'
 
-const RICH_BLOCK_NODES = new Set(['image', 'mermaidBlock', 'latexBlock'])
-const EDITABLE_RICH_BLOCK_NODES = new Set(['mermaidBlock', 'latexBlock'])
+/**
+ * Nodes that are drawn as one object rather than as text.
+ *
+ * `previewBlock` is here for the same reason as the others — it is selected as a block, and the
+ * arrow keys step over it rather than into it — and its membership is also what makes its fence
+ * reachable: the block itself has no source to edit in place, so the way in is selecting it and
+ * asking for the editor (see `EDITABLE_RICH_BLOCK_NODES`).
+ */
+const RICH_BLOCK_NODES = new Set(['image', 'mermaidBlock', 'latexBlock', 'previewBlock'])
+const EDITABLE_RICH_BLOCK_NODES = new Set(['mermaidBlock', 'latexBlock', 'previewBlock'])
 const INLINE_MATH_EDIT_EVENT = 'inlineMathEdit'
 const RICH_BLOCK_SELECTION_HIGHLIGHT_KEY = new PluginKey<{ suspendDuringPointerDrag: boolean }>('richBlockSelectionHighlight')
 

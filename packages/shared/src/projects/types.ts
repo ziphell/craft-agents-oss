@@ -54,7 +54,7 @@ export interface ProjectConfig {
   kanbanColumns?: KanbanColumnDef[];
   /**
    * The prototypes this project is **worked on with** — a set, picked by the user in the
-   * project page (§15.1.3).
+   * project page.
    *
    * **Background information, like a connected source.** It is told to the conversations
    * in the project (`ProjectPromptContext.prototypes` → `<project_prototypes>`) and
@@ -62,11 +62,11 @@ export interface ProjectConfig {
    * guide is injected because of it, and it is not a default target for `prototype_tool`
    * commands — a session names a slug, or is bound by the person, and either way no choice
    * is made on its behalf. What the project gains is a place to *say* which prototypes its
-   * work touches, not a way to decide for anyone (plan §15.1.2, §15.1.3).
+   * work touches, not a way to decide for anyone.
    *
    * A **set**, not a "current" one: a project works on several prototypes, and nothing
    * here says which is in front. The other direction does not exist — a prototype
-   * records no project (§15.1.4).
+   * records no project.
    *
    * Absent means "none" — the key is not written, like `PrototypeConfig.references`.
    */
@@ -121,7 +121,7 @@ export interface ProjectPromptContext {
   description?: string;
   details?: string;
   /**
-   * The prototypes this project is worked on with (§15.1.3), only the ones that still
+   * The prototypes this project is worked on with, only the ones that still
    * exist. **Background**: the block says what the project's work touches, and nothing
    * is resolved for the conversation from it — see `ProjectConfig.prototypeSlugs`.
    *

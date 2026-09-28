@@ -5,7 +5,6 @@ import {
   findTabMentions,
   parseTabMention,
   tabLabel,
-  tabOriginText,
 } from '../tab-mention'
 
 const format = (ref: { url: string; title: string }) =>
@@ -35,22 +34,6 @@ describe('buildTabMention / parseTabMention', () => {
     expect(findTabMentions(marker)[0]?.ref).toEqual({ url: 'about:blank', title: '' })
   })
 
-  it('round-trips the prototype the tab belongs to', () => {
-    const marker = buildTabMention({
-      url: 'https://demo-1a2b.localhost/',
-      title: 'Cart',
-      prototypeSlug: 'demo',
-      prototypePage: 'cart',
-    })
-
-    expect(parseTabMention(marker.slice('[tab:'.length, -1))).toEqual({
-      url: 'https://demo-1a2b.localhost/',
-      title: 'Cart',
-      prototypeSlug: 'demo',
-      prototypePage: 'cart',
-    })
-  })
-
   it('drops the parts a tab did not carry', () => {
     const marker = buildTabMention({ url: 'https://example.com/', title: 'Example' })
 
@@ -64,21 +47,6 @@ describe('buildTabMention / parseTabMention', () => {
   it('rejects payloads that are not ours', () => {
     expect(parseTabMention('no-separator')).toBeNull()
     expect(parseTabMention('%E0%A4%A|title')).toBeNull()
-  })
-})
-
-describe('tabOriginText', () => {
-  it('names the prototype and its page', () => {
-    expect(tabOriginText({ url: 'https://x/', title: 'Cart', prototypeSlug: 'demo', prototypePage: 'cart' }))
-      .toBe('demo / cart')
-  })
-
-  it('names the prototype alone when the page is unknown', () => {
-    expect(tabOriginText({ url: 'https://x/', title: 'Cart', prototypeSlug: 'demo' })).toBe('demo')
-  })
-
-  it('is empty for a tab nobody owns', () => {
-    expect(tabOriginText({ url: 'https://example.com/', title: 'Example' })).toBe('')
   })
 })
 

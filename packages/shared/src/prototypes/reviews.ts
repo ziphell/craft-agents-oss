@@ -8,13 +8,12 @@
  * ```md
  * # D-001 The total is not actually pinned while the list scrolls
  *
- * about: patch ui-001-sticky-total.css
+ * about: requirement R-003
  * on: 3f9a1c2e
  * status: open
  * claim: The summary row is not on screen once the list is longer than the viewport.
- * evidence: verify — check: selector [data-cart-total] did not match
  *
- * `position: sticky` needs a scroll container that is not the page…
+ * The requirement does not say what happens when the line is gone…
  * ```
  *
  * Why it is a file rather than a line in the run log: an objection that lives only in the
@@ -22,41 +21,44 @@
  * work nobody ever disagreed with. A verdict asks the reader to trust the transcript; a review is
  * something they can read and judge.
  *
- * Three properties, the same three `research.ts` insists on:
+ * Three properties, the same ones `research.ts` insists on:
  *
- * - **`about:`** — what is being disputed: a patch, a page, an endpoint, or a requirement. A
- *   dispute that names nothing is an opinion, and it is reported as one.
+ * - **`about:`** — what is being disputed: a requirement. A dispute that
+ *   names nothing is an opinion, and it is reported as one.
  * - **`status:`** — `open` (it stands), `fixed` (the thing was changed), `rebutted` (judged
  *   unfounded, with the reason in the body) or `accepted` (judged valid, and the cost was taken).
- * - **`on:`** — the fingerprint of the disputed patch when the review was filed. This is what
- *   makes the record checkable: a patch dispute is reported **stale** when the file no longer
- *   hashes to it, so "argued about a version that no longer exists" cannot pass for a live
- *   objection — the same distinction `anchors/` draws for selectors (plan §21.2). It is required
- *   for a patch dispute, because a patch is one file and its fingerprint is free; the other
- *   targets span several files, so there is nothing single to fingerprint and they carry none.
+ * - **`on:`** — the fingerprint of the disputed requirement *as it was written* when the review was
+ *   filed ({@link requirementFingerprint}). This is what makes the record checkable: a dispute is
+ *   reported **stale** when the requirement no longer hashes to it, so "argued about a wording that
+ *   no longer exists" cannot pass for a live objection. Required for every dispute, because a
+ *   requirement is one entry of one file and its fingerprint is free.
  *
- * The status is checked against the disk, never trusted on its own: `open` on a patch that has
- * changed is stale, and `fixed` on a patch that has *not* changed is stale too. A record that
+ * The status is checked against the disk, never trusted on its own: `open` on a requirement that has
+ * been rewritten is stale, and `fixed` on one that has *not* changed is stale too. A record that
  * disagrees with the files is exactly the failure this module exists to name.
  *
- * Nothing here is packaged for delivery: the receiver gets the requirements and the change spec,
- * and `dev-spec.md` carries the outstanding disputes into it (`export.ts`).
+ * Nothing here is delivered as a separate artifact: what still stands against the specification is
+ * read from `reviews/`.
  */
 
 import { existsSync, readdirSync, readFileSync } from 'fs'
 import { join } from 'path'
-import { normalizeRequirementId } from './requirements.ts'
-import { getPrototypePatchesPath, getPrototypeReviewsPath, patchFingerprint } from './storage.ts'
+import {
+  normalizeRequirementId,
+  readPrototypeRequirements,
+  requirementFingerprint,
+} from './requirements.ts'
+import { getPrototypeReviewsPath } from './storage.ts'
 import { PROTOTYPE_REVIEWS_DIRNAME } from './types.ts'
 
 export { PROTOTYPE_REVIEWS_DIRNAME, getPrototypeReviewsPath }
 
-/** What can be disputed. Deliberately the same set a check can point at (plan §20.7). */
-export type PrototypeReviewTargetKind = 'patch' | 'page' | 'endpoint' | 'requirement'
+/** What can be disputed: the requirement. */
+export type PrototypeReviewTargetKind = 'requirement'
 
 export interface PrototypeReviewTarget {
   kind: PrototypeReviewTargetKind
-  /** `patches/ui-001-x.css` · a page name · `GET /api/cart` · `R-003` — as written. */
+  /** `R-003` — as written. */
   ref: string
 }
 
@@ -72,15 +74,16 @@ export interface PrototypeReview {
   title: string
   target: PrototypeReviewTarget | null
   status: PrototypeReviewStatus | null
-  /** The fingerprint of the disputed patch when this was filed, or null. */
+  /** The fingerprint of the disputed requirement when this was filed, or null. */
   on: string | null
   /** The one sentence being argued. Null when the file has no `claim:` line. */
   claim: string | null
-  /** As written — a `verify` line, a match count, a file. */
+  /** As written — a count, a file. */
   evidence: string[]
   /**
-   * The record disagrees with the files: an `open` dispute whose patch has changed since it was
-   * filed, or a `fixed` one whose patch has not. Always false when no fingerprint was recorded.
+   * The record disagrees with the files: an `open` dispute whose requirement has been rewritten
+   * since it was filed, or a `fixed` one whose requirement has not. Always false when no
+   * fingerprint was recorded.
    */
   stale: boolean
   /** Why it is stale, in the words a reader needs. Null when it is not. */
@@ -99,7 +102,7 @@ export interface PrototypeReviews {
 
 /** `# D-001 The total is not pinned` — the file's own id, at the top. */
 const REVIEW_HEADING_RE = /^#\s+(D-\d{1,4})\b[\s:—–-]*(.*)$/i
-/** `status: open`, `about: patch x` — one labelled line. */
+/** `status: open`, `about: requirement R-003` — one labelled line. */
 const LABEL_RE = /^([A-Za-z][A-Za-z-]*)\s*:\s*(.*)$/
 
 function splitList(value: string): string[] {
@@ -112,10 +115,9 @@ function splitList(value: string): string[] {
 /**
  * Read an `about:` value.
  *
- * The four shapes are the four things a check or a patch can point at, and each is written the way
- * it is written elsewhere in the workbench — `patch <path>` the way `dev-spec.md` names a file,
- * `endpoint GET /api/cart` the way `check:` names one. Anything else is not recognised, and
- * `null` says so rather than guessing at an interpretation.
+ * The one shape a disagreement can be acted on is a requirement the PRD defines, written the way
+ * it is written elsewhere in the workbench (`requirement R-003`). Anything else is not recognised,
+ * and `null` says so rather than guessing at an interpretation.
  */
 export function parseReviewTarget(value: string): PrototypeReviewTarget | null {
   const trimmed = value.trim()
@@ -124,14 +126,6 @@ export function parseReviewTarget(value: string): PrototypeReviewTarget | null {
   const ref = rest.join(' ').trim()
   if (ref.length === 0) return null
 
-  if (kind === 'patch') {
-    // Stored the way the rest of the workbench points at a patch (`patches/…`), whether or not the
-    // author wrote the prefix: a review is read next to the spec that lists files that way.
-    const path = ref.replace(/^\.?\//, '')
-    return { kind: 'patch', ref: path.startsWith('patches/') ? path : `patches/${path}` }
-  }
-  if (kind === 'page') return { kind: 'page', ref }
-  if (kind === 'endpoint') return { kind: 'endpoint', ref }
   if (kind === 'requirement') {
     const id = normalizeRequirementId(ref)
     return id ? { kind: 'requirement', ref: id } : null
@@ -139,7 +133,7 @@ export function parseReviewTarget(value: string): PrototypeReviewTarget | null {
   return null
 }
 
-/** How a target is written back out — one spelling, used by the report, the prompt and the spec. */
+/** How a target is written back out — one spelling, used by the report and the prompt. */
 export function formatReviewTarget(target: PrototypeReviewTarget): string {
   return `${target.kind} ${target.ref}`
 }
@@ -209,40 +203,36 @@ export function parsePrototypeReview(source: string, file: string): PrototypeRev
 /**
  * The status checked against the disk.
  *
- * Two expectations, and only two: an `open` dispute expects the file to still be the one it names,
- * and a `fixed` one expects it to have changed. `rebutted` and `accepted` are adjudications about
- * the argument rather than about the file, so nothing on disk can contradict them.
+ * Two expectations, and only two: an `open` dispute expects the requirement to still be the one it
+ * names, and a `fixed` one expects it to have changed. `rebutted` and `accepted` are adjudications
+ * about the argument rather than about the text, so nothing on disk can contradict them.
  */
 function judgeAgainstDisk(
   review: PrototypeReview,
-  patchesDir: string,
+  fingerprints: Map<string, { fingerprint: string; file: string }>,
 ): { stale: boolean; staleReason: string | null; missing: boolean } {
   const target = review.target
-  if (!target || target.kind !== 'patch') return { stale: false, staleReason: null, missing: false }
+  if (!target) return { stale: false, staleReason: null, missing: false }
 
-  let source: string
-  try {
-    source = readFileSync(join(patchesDir, target.ref.slice('patches/'.length)), 'utf-8')
-  } catch {
-    // Reported by the caller as its own issue: a dispute about a file that is gone is not a stale
-    // argument, it is an argument about nothing.
-    return { stale: false, staleReason: null, missing: true }
-  }
+  const current = fingerprints.get(target.ref)
+  // Reported by the caller as its own issue: a dispute about a requirement no document defines
+  // is not a stale argument, it is an argument about nothing.
+  if (!current) return { stale: false, staleReason: null, missing: true }
 
-  const current = patchFingerprint(source)
   if (!review.on) return { stale: false, staleReason: null, missing: false }
 
-  if (review.status === 'open' && current !== review.on) {
+  const where = `${target.ref} in ${current.file}`
+  if (review.status === 'open' && current.fingerprint !== review.on) {
     return {
       stale: true,
-      staleReason: `${target.ref} has changed since this was filed (${review.on} → ${current}) — check that it still says what you meant`,
+      staleReason: `${where} has changed since this was filed (${review.on} → ${current.fingerprint}) — check that it still says what you meant`,
       missing: false,
     }
   }
-  if (review.status === 'fixed' && current === review.on) {
+  if (review.status === 'fixed' && current.fingerprint === review.on) {
     return {
       stale: true,
-      staleReason: `marked fixed, but ${target.ref} has not changed since this was filed (${current})`,
+      staleReason: `marked fixed, but ${where} has not changed since this was filed (${current.fingerprint})`,
       missing: false,
     }
   }
@@ -254,8 +244,8 @@ function judgeAgainstDisk(
  *
  * Every `*.md` directly under `reviews/` is read; a file with no `# D-xxx` heading is a note and is
  * skipped. What the module will not do is accept a dispute it cannot act on: one that names nothing,
- * one with no status, one with no claim, or a patch dispute with no fingerprint is reported with the
- * line to add — because each of those reads as "someone objected" while being unanswerable.
+ * one with no status, one with no claim, or a requirement dispute with no fingerprint is reported
+ * with the line to add — because each of those reads as "someone objected" while being unanswerable.
  */
 export function readPrototypeReviews(workspaceRootPath: string, slug: string): PrototypeReviews {
   const dir = getPrototypeReviewsPath(workspaceRootPath, slug)
@@ -271,7 +261,15 @@ export function readPrototypeReviews(workspaceRootPath: string, slug: string): P
     return { reviews: [], issues: [] }
   }
 
-  const patchesDir = getPrototypePatchesPath(workspaceRootPath, slug)
+  // The current text of every requirement a document defines, so a dispute can be judged against it.
+  const fingerprints = new Map<string, { fingerprint: string; file: string }>()
+  for (const requirement of readPrototypeRequirements(workspaceRootPath, slug).requirements) {
+    fingerprints.set(requirement.id, {
+      fingerprint: requirementFingerprint(requirement),
+      file: requirement.file,
+    })
+  }
+
   const reviews: PrototypeReview[] = []
   const issues: string[] = []
   const seen = new Set<string>()
@@ -295,9 +293,8 @@ export function readPrototypeReviews(workspaceRootPath: string, slug: string): P
 
     if (!review.target) {
       issues.push(
-        `${review.file}: no usable "about:" line — write "about: patch <file>", "about: page <name>", ` +
-          `"about: endpoint <METHOD> <path>" or "about: requirement <R-00x>". A dispute that names nothing ` +
-          `is an opinion, and nothing downstream can answer it.`,
+        `${review.file}: no usable "about:" line — write "about: requirement <R-00x>". ` +
+          `A dispute that names nothing is an opinion, and nothing downstream can answer it.`,
       )
     }
     if (!review.status) {
@@ -310,23 +307,17 @@ export function readPrototypeReviews(workspaceRootPath: string, slug: string): P
       issues.push(`${review.file}: no "claim:" line — a review without a claim cannot be agreed or refuted.`)
     }
 
-    if (review.target?.kind === 'patch' && !review.on) {
+    if (review.target && !review.on) {
       issues.push(
-        `${review.file}: a patch dispute needs "on:" — the fingerprint of ${review.target.ref} as you are ` +
+        `${review.file}: a dispute needs "on:" — the fingerprint of ${review.target.ref} as you are ` +
           `looking at it (printed by 'status'). Without it nothing can tell an objection about the ` +
-          `current file from one about a version that no longer exists.`,
-      )
-    }
-    if (review.target && review.target.kind !== 'patch' && review.on) {
-      issues.push(
-        `${review.file}: "on:" applies to a patch dispute only — a ${review.target.kind} spans several files, ` +
-          `so there is no single thing to fingerprint.`,
+          `current wording from one about a wording that no longer exists.`,
       )
     }
 
-    const judged = judgeAgainstDisk(review, patchesDir)
+    const judged = judgeAgainstDisk(review, fingerprints)
     if (judged.missing) {
-      issues.push(`${review.file}: disputes ${review.target!.ref}, which is not in this prototype.`)
+      issues.push(`${review.file}: disputes ${review.target!.ref}, which no document here defines.`)
     }
 
     reviews.push({ ...review, stale: judged.stale, staleReason: judged.staleReason })

@@ -1,12 +1,15 @@
 /**
  * Website thumbnail capture (Electron main).
  *
- * Renders a website in an offscreen, opaque-sandboxed window exactly like
- * WebsiteFrame (see website-thumbnail-host.ts), captures a poster with
- * `webContents.capturePage`, and writes websites/{slug}/thumbnail.jpg + stamps
- * `WebsiteConfig.thumbnail` via `recordWebsiteThumbnail`. Captures run one-at-a-time
- * through a queue that coalesces duplicate slugs; every failure is swallowed
- * (the website just stays posterless and the grid falls back to the placeholder).
+ * Renders a website in an offscreen, opaque-sandboxed window **at its own origin** —
+ * the same address the browser window opens, `http://<label>.localhost/` — captures a
+ * poster with `webContents.capturePage`, and writes websites/{slug}/thumbnail.jpg +
+ * stamps `WebsiteConfig.thumbnail` via `recordWebsiteThumbnail`. Loading the address
+ * (rather than a host document that frames it) is what makes the poster the site as it
+ * really renders: its own files resolve by root-absolute path and its own scripts run.
+ * Captures run one-at-a-time through a queue that coalesces duplicate slugs; every
+ * failure is swallowed (the website just stays posterless and the grid falls back to
+ * the placeholder).
  *
  * This is the only capture surface in the stack — it exists in Electron main
  * only. Headless/WebUI hosts never construct it; SessionManager's
@@ -20,17 +23,9 @@ import {
   getWebsiteThumbnailPath,
   loadWebsiteConfig,
   loadWebsiteContent,
-  readWebsiteDataSnapshot,
   recordWebsiteThumbnail,
 } from '@craft-agent/shared/websites'
-import {
-  THUMB_JPEG_QUALITY,
-  THUMB_LOGICAL_HEIGHT,
-  THUMB_LOGICAL_WIDTH,
-  THUMB_OUTPUT_HEIGHT,
-  THUMB_OUTPUT_WIDTH,
-  buildThumbnailHostHtml,
-} from './website-thumbnail-host'
+import { websiteOriginUrl } from './website-host'
 
 export interface ThumbnailRequest {
   workspaceId: string
@@ -44,7 +39,16 @@ export interface WebsiteThumbnailerOptions {
   log?: (message: string) => void
 }
 
-/** How long to let the iframe load + paint + apply its snapshot before capturing. */
+/** Logical render viewport (16:10) the offscreen window uses. */
+const THUMB_LOGICAL_WIDTH = 1000
+const THUMB_LOGICAL_HEIGHT = 625
+/** Stored poster width (height derived 16:10); keeps some retina crispness. */
+const THUMB_OUTPUT_WIDTH = 800
+const THUMB_OUTPUT_HEIGHT = 500
+/** JPEG quality for the stored poster. */
+const THUMB_JPEG_QUALITY = 82
+
+/** How long to let the page load + paint + run its scripts before capturing. */
 const RENDER_SETTLE_MS = 550
 /** Capture retries when the first frame comes back empty (hidden-window paint race). */
 const CAPTURE_RETRIES = 3
@@ -99,15 +103,19 @@ export class WebsiteThumbnailer {
     const config = loadWebsiteConfig(workspaceRootPath, slug)
     if (!config) return // website deleted between enqueue and run
 
+    // Registering is what makes the address answer, so a poster is only ever
+    // captured for a site this run has been asked to show — and the origin it hands
+    // back is what the offscreen window loads (an unregistered label would be
+    // answered by Chromium, not by us). Null means the directory is gone.
+    const origin = websiteOriginUrl(workspaceRootPath, slug)
+    if (!origin) return
+
     const content = loadWebsiteContent(workspaceRootPath, slug)
     if (content === null || content.trim() === '') return // nothing to render
 
     const digest = config.contentDigest ?? computeWebsiteContentDigest(content)
     // Already have a fresh poster (e.g. duplicate enqueue) — skip the work.
     if (config.thumbnail?.digest === digest) return
-
-    const snapshot = readWebsiteDataSnapshot(workspaceRootPath, slug)
-    const html = buildThumbnailHostHtml({ content, slug, kind: config.kind, snapshot })
 
     const win = new BrowserWindow({
       show: false,
@@ -124,7 +132,7 @@ export class WebsiteThumbnailer {
     })
 
     try {
-      const buffer = await this.withTimeout(this.renderAndCapture(win, html), CAPTURE_TIMEOUT_MS)
+      const buffer = await this.withTimeout(this.renderAndCapture(win, origin), CAPTURE_TIMEOUT_MS)
       if (!buffer) {
         this.options.log?.(`[website-thumbnailer] empty capture for ${slug}; leaving posterless`)
         return
@@ -150,10 +158,10 @@ export class WebsiteThumbnailer {
     }
   }
 
-  private async renderAndCapture(win: BrowserWindow, html: string): Promise<Buffer | null> {
-    await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
-    // did-finish-load (awaited above) only covers the host doc; give the
-    // sandboxed iframe + its scripts + the snapshot render time to settle.
+  private async renderAndCapture(win: BrowserWindow, origin: string): Promise<Buffer | null> {
+    await win.loadURL(origin)
+    // did-finish-load (awaited above) covers the document; give its scripts and the
+    // paint that follows time to settle before reading the frame.
     await delay(RENDER_SETTLE_MS)
 
     for (let attempt = 0; attempt < CAPTURE_RETRIES; attempt++) {

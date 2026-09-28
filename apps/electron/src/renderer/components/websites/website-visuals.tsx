@@ -1,46 +1,19 @@
 /**
  * Shared visual helpers for Websites surfaces (tiles + detail header):
- * kind glyphs/badges and the freshness indicator derived from WebsiteConfig.
+ * the freshness indicator derived from WebsiteConfig.
  */
 
-import * as React from 'react'
-import { Activity, FileText, MousePointerClick, type LucideIcon } from 'lucide-react'
 import { formatDistanceToNowStrict, type Locale } from 'date-fns'
 import { useTranslation } from 'react-i18next'
 import { cn } from '@/lib/utils'
 import { shortTimeLocale } from '@/utils/session'
-import type { WebsiteConfig, WebsiteKind } from '@craft-agent/shared/websites/types'
-
-export const WEBSITE_KIND_ICONS: Record<WebsiteKind, LucideIcon> = {
-  static: FileText,
-  interactive: MousePointerClick,
-  live: Activity,
-}
+import type { WebsiteConfig } from '@craft-agent/shared/websites/types'
 
 export function relativeTime(epochMs: number): string {
   return formatDistanceToNowStrict(new Date(epochMs), {
     locale: shortTimeLocale as Locale,
     roundingMethod: 'floor',
   })
-}
-
-/** Compact "icon + label" pill for the website kind (text + icon, never color-only). */
-export function WebsiteKindBadge({ kind, className }: { kind: WebsiteKind; className?: string }) {
-  const { t } = useTranslation()
-  const Icon = WEBSITE_KIND_ICONS[kind]
-  return (
-    <span
-      className={cn(
-        'inline-flex shrink-0 items-center gap-1 rounded-md border border-border/60 bg-foreground/[0.02] px-1.5 py-0.5 text-[10.5px] font-medium text-foreground/60',
-        kind === 'live' && 'text-emerald-600 dark:text-emerald-400',
-        kind === 'interactive' && 'text-sky-600 dark:text-sky-400',
-        className,
-      )}
-    >
-      <Icon className="h-3 w-3" strokeWidth={2} aria-hidden />
-      {t(`websites.kind.${kind}`)}
-    </span>
-  )
 }
 
 /**

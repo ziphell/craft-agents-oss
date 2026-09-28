@@ -1,26 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import {
   createPrototype,
   duplicatePrototype,
   getPrototypeDirPath,
-  getPrototypeDistPath,
-  getPrototypePagePatchesPath,
-  getPrototypePatchesPath,
-  readPrototypeConfig,
-  readPrototypePage,
-  writePrototypeConfig,
-  writePrototypePage,
 } from '..'
-
-const PAGE = '<!doctype html><html><body><h1>Orders</h1></body></html>'
-
-/** Write a patch using a name the injector will actually replay. */
-function writePatch(workspaceRoot: string, slug: string, file: string, body = '/* x */'): void {
-  writeFileSync(join(getPrototypePatchesPath(workspaceRoot, slug), file), body, 'utf-8')
-}
 
 describe('duplicatePrototype', () => {
   let workspaceRoot = ''
@@ -33,60 +19,26 @@ describe('duplicatePrototype', () => {
     rmSync(workspaceRoot, { recursive: true, force: true })
   })
 
-  /** A prototype with a page and two patches — something worth copying. */
+  /** A prototype with a brief and some material — something worth copying. */
   function makeSource(slug = 'orders'): string {
     createPrototype(workspaceRoot, { name: slug })
-    writePrototypePage(workspaceRoot, slug, 'orders', PAGE)
-    writePatch(workspaceRoot, slug, 'A-001-heading.css', 'h1 { color: red; }')
-    writePatch(workspaceRoot, slug, 'B-002-total.js', 'console.log(1)')
+    const dir = getPrototypeDirPath(workspaceRoot, slug)
+    writeFileSync(join(dir, 'personas.md'), '# who this is for\n', 'utf-8')
+    writeFileSync(join(dir, 'mock.png'), 'not really a png')
     return slug
   }
 
-  it('brings the pages and every replayable patch over, under a new slug', () => {
+  it('brings the whole folder over, under a new slug', () => {
     makeSource()
 
     const copied = duplicatePrototype(workspaceRoot, 'orders')
+    const dir = getPrototypeDirPath(workspaceRoot, copied.slug)
 
     expect(copied.sourceSlug).toBe('orders')
     expect(copied.slug).toBe('orders-copy')
-    expect(copied.copiedPages).toEqual(['orders'])
-    expect(copied.copiedPatches).toEqual(['A-001-heading.css', 'B-002-total.js'])
-    expect(readPrototypePage(workspaceRoot, 'orders-copy', 'orders.html')).toBe(PAGE)
-    // Not asked for, so nothing was folded.
-    expect(copied.folded).toBeNull()
-  })
-
-  /**
-   * Folding is an option of copying (plan §21.3, revised): the **copy** is the one
-   * that gets converged, so asking for a copy never destroys anything in the
-   * prototype the copy came from.
-   */
-  it('folds the copy when asked, and leaves the source exactly as it was', () => {
-    // A page's own patches, so the fold has somewhere of the page's own to put them.
-    createPrototype(workspaceRoot, { name: 'orders' })
-    writePrototypePage(workspaceRoot, 'orders', 'orders', PAGE)
-    const ownPatches = getPrototypePagePatchesPath(workspaceRoot, 'orders', 'orders')
-    mkdirSync(ownPatches, { recursive: true })
-    writeFileSync(join(ownPatches, 'A-001-heading.css'), 'h1 { color: red; }', 'utf-8')
-    writeFileSync(join(ownPatches, 'B-002-total.js'), 'console.log(1)', 'utf-8')
-
-    const copied = duplicatePrototype(workspaceRoot, 'orders', { fold: true })
-
-    expect(copied.folded?.nothingToFold).toBe(false)
-    // The copy's page took its own changes into itself, so no patch file is left.
-    expect(copied.copiedPatches).toEqual([])
-    expect(existsSync(join(getPrototypePagePatchesPath(workspaceRoot, 'orders-copy', 'orders'), 'A-001-heading.css'))).toBe(false)
-    expect(readPrototypePage(workspaceRoot, 'orders-copy', 'orders.html')).toContain(
-      'href="/assets/orders/committed.css"',
-    )
-    expect(readPrototypePage(workspaceRoot, 'orders-copy', 'orders.html')).toContain(
-      'src="/assets/orders/committed.js"',
-    )
-
-    // The source is untouched: same patches, same document.
-    expect(existsSync(join(ownPatches, 'A-001-heading.css'))).toBe(true)
-    expect(readPrototypePage(workspaceRoot, 'orders', 'orders.html')).toBe(PAGE)
-    expect(readFileSync(join(ownPatches, 'B-002-total.js'), 'utf-8')).toBe('console.log(1)')
+    expect(readFileSync(join(dir, 'PRD.md'), 'utf-8')).toContain('## R-001')
+    expect(readFileSync(join(dir, 'personas.md'), 'utf-8')).toBe('# who this is for\n')
+    expect(readFileSync(join(dir, 'mock.png'), 'utf-8')).toBe('not really a png')
   })
 
   // The two prototypes stop sharing anything the moment the copy exists: a copy
@@ -95,74 +47,23 @@ describe('duplicatePrototype', () => {
     const source = makeSource()
     duplicatePrototype(workspaceRoot, source)
 
-    writePatch(workspaceRoot, source, 'A-001-heading.css', 'h1 { color: blue; }')
-    writePrototypePage(workspaceRoot, source, 'orders', '<!doctype html><html><body>changed</body></html>')
+    writeFileSync(join(getPrototypeDirPath(workspaceRoot, source), 'personas.md'), '# changed\n', 'utf-8')
 
-    const copyPatches = getPrototypePatchesPath(workspaceRoot, 'orders-copy')
-    expect(readFileSync(join(copyPatches, 'A-001-heading.css'), 'utf-8')).toBe('h1 { color: red; }')
-    expect(readPrototypePage(workspaceRoot, 'orders-copy', 'orders.html')).toBe(PAGE)
+    expect(readFileSync(join(getPrototypeDirPath(workspaceRoot, 'orders-copy'), 'personas.md'), 'utf-8')).toBe(
+      '# who this is for\n',
+    )
   })
 
-  // A page's own patches are named by the directory they sit in, so they travel
-  // with the page they belong to and keep their scope in the copy (plan §19.4).
-  it('brings each page’s own patches along, under the same page name', () => {
-    makeSource()
-    mkdirSync(getPrototypePagePatchesPath(workspaceRoot, 'orders', 'orders'), { recursive: true })
-    writeFileSync(join(getPrototypePagePatchesPath(workspaceRoot, 'orders', 'orders'), 'A-002-page.css'), '.page{}')
-
-    const copied = duplicatePrototype(workspaceRoot, 'orders')
-
-    // Replay order is declared order, then path — the writer prefix is an identity, not a
-    // sort key, so a page's patch no longer sorts next to the patches of the writer that
-    // happens to share its first character.
-    expect(copied.copiedPatches).toEqual(['A-001-heading.css', 'B-002-total.js', 'orders/A-002-page.css'])
-  })
-
-  // The page table is a fact about the flow, not about which prototype owns it, so
-  // the copy is the same flow under a different name.
-  it('keeps the source’s page table, whole', () => {
-    createPrototype(workspaceRoot, { name: 'Rival' })
-    writePrototypeConfig(workspaceRoot, 'rival', {
-      pages: [
-        { name: 'entry', kind: 'overlay', url: 'https://rival.example.com/cart', entry: true },
-        { name: 'pay', kind: 'overlay', url: 'https://rival.example.com/pay' },
-      ],
-    })
-    writePatch(workspaceRoot, 'rival', 'A-001-banner.css', '.banner { display: none; }')
-
-    const copied = duplicatePrototype(workspaceRoot, 'rival')
-
-    expect(copied.copiedPages).toEqual(['entry', 'pay'])
-    expect(readPrototypeConfig(workspaceRoot, copied.slug).pages).toEqual([
-      { name: 'entry', kind: 'overlay', url: 'https://rival.example.com/cart', entry: true },
-      { name: 'pay', kind: 'overlay', url: 'https://rival.example.com/pay' },
-    ])
-    expect(readPrototypePage(workspaceRoot, copied.slug, 'cart.html')).toBeNull()
-  })
-
-  it('carries contract services and other files along', () => {
+  it('carries a nested directory along', () => {
     const source = makeSource()
-    const serviceDir = join(getPrototypeDirPath(workspaceRoot, source), 'services', 'checkout-api')
-    mkdirSync(serviceDir, { recursive: true })
-    writeFileSync(join(serviceDir, 'openapi.yaml'), 'openapi: 3.0.0\n', 'utf-8')
+    const assetsDir = join(getPrototypeDirPath(workspaceRoot, source), 'assets', 'pages')
+    mkdirSync(assetsDir, { recursive: true })
+    writeFileSync(join(assetsDir, 'cart.js'), 'export const x = 1\n', 'utf-8')
 
     const copied = duplicatePrototype(workspaceRoot, source)
 
-    expect(readFileSync(join(getPrototypeDirPath(workspaceRoot, copied.slug), 'services', 'checkout-api', 'openapi.yaml'), 'utf-8'))
-      .toBe('openapi: 3.0.0\n')
-  })
-
-  // Deliverables are derived (export rebuilds them), so a copied dist/ would be a
-  // second, stale source of truth.
-  it('leaves dist/ behind', () => {
-    const source = makeSource()
-    const distDir = getPrototypeDistPath(workspaceRoot, source)
-    mkdirSync(distDir, { recursive: true })
-    writeFileSync(join(distDir, 'dev-spec.md'), 'spec', 'utf-8')
-
-    const copied = duplicatePrototype(workspaceRoot, source)
-
-    expect(existsSync(getPrototypeDistPath(workspaceRoot, copied.slug))).toBe(false)
+    expect(readFileSync(join(getPrototypeDirPath(workspaceRoot, copied.slug), 'assets', 'pages', 'cart.js'), 'utf-8'))
+      .toBe('export const x = 1\n')
   })
 
   it('names the second copy differently, so copying twice in a row does not collide', () => {
@@ -185,17 +86,5 @@ describe('duplicatePrototype', () => {
 
   it('refuses an unknown prototype rather than creating one', () => {
     expect(() => duplicatePrototype(workspaceRoot, 'nope')).toThrow(/does not exist/)
-  })
-
-  // The copy's config is written from the source's page table, so the flow is the
-  // same flow at a new slug — and nothing but the table travels.
-  it('writes the copy a page table of its own', () => {
-    makeSource()
-
-    const copied = duplicatePrototype(workspaceRoot, 'orders')
-
-    expect(readPrototypeConfig(workspaceRoot, copied.slug).pages).toEqual(
-      readPrototypeConfig(workspaceRoot, 'orders').pages,
-    )
   })
 })

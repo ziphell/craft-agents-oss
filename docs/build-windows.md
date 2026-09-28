@@ -10,7 +10,6 @@ electron-builder 的 `files` / `extraResources` 相对路径**都以配置文件
 | --- | --- | --- |
 | `dist/**/*` | main.cjs / preload / renderer | `electron:build` |
 | `resources/pi-agent-server/index.js` | Pi 子进程（win 段 extraResources） | 只有 `build-win.ps1` |
-| `resources/session-mcp-server/index.js` | Codex 子进程（win 段 extraResources） | 只有 `build-win.ps1` |
 | `vendor/bun/bun.exe` | bun 运行时（extraResources，Pi 子进程依赖） | 只有 `build-win.ps1`（固定下载 bun-v1.3.9 baseline） |
 | `packages/shared/src/unified-network-interceptor.ts` 等 4 个 ts | interceptor（`files` 段） | 只有 `build-win.ps1` |
 
@@ -43,7 +42,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-win.ps1
 5. stage SDK：core + `claude-agent-sdk-win32-x64` → `apps/electron\node_modules\@anthropic-ai\`，并建 `claude-agent-sdk-binary` alias（缺包时自动 `npm pack` 跨架构拉取）
 6. 拷贝 ripgrep、interceptor 4 个 ts → `apps/electron\packages\shared\src\`
 7. 构建 subprocess servers（`bun run server:build:subprocess`）、main（esbuild）、preload、renderer（vite）、copy-assets
-8. 拷贝 `pi-agent-server/index.js`、`session-mcp-server/index.js` → `apps/electron\resources\`
+8. 拷贝 `pi-agent-server/index.js` → `apps/electron\resources\`
 9. 在 `apps/electron` 下执行带 EBUSY 重试的 `electron-builder --win --x64`
 10. 校验打包产物：SDK 原生 binary（~210MB）在 `release\win-unpacked` 中
 
@@ -73,7 +72,6 @@ cd apps/electron && electron-builder --config electron-builder.yml --win
 - `apps\electron\vendor\bun\bun.exe`
 - `apps\electron\node_modules\@anthropic-ai\claude-agent-sdk-binary\claude.exe`
 - `apps\electron\resources\pi-agent-server\index.js`
-- `apps\electron\resources\session-mcp-server\index.js`
 - `apps\electron\packages\shared\src\unified-network-interceptor.ts`（及另外 3 个依赖 ts）
 
 若缺 `vendor\bun` 或 `resources\pi-agent-server`，electron-builder 要么直接报路径错误，要么打出缺件的包 —— **运行时 Pi agent 无法启动**（见第 5 节）。

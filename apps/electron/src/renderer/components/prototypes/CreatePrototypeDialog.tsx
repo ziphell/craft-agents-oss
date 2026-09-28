@@ -1,13 +1,10 @@
 /**
  * CreatePrototypeDialog — a name, and nothing else.
  *
- * A prototype is a **container for pages**, and a new one has none: the kind and
- * the address are facts about a *page*, not about the flow that holds it (plan
- * §19). So creation asks for a name and writes no page — "this prototype has no
- * pages yet" is a true statement, and a seeded one would assert a screen that is
- * not there. The kind is asked for where a page is added (CreatePageDialog),
- * which is also where it can be honoured: an address for a live page, a document
- * for a page of ours.
+ * A prototype is a **folder** holding a requirements document, and a new one is
+ * empty: there is nothing to decide beyond the name, because everything else is a
+ * file somebody writes into it afterwards. Creation writes the folder and its
+ * `PRD.md`, and the agent fills it from the conversation.
  *
  * `createPrototype` rejects when the derived slug is taken or the name yields no
  * usable slug, so the submit handler is awaited and the RPC's own message is
@@ -107,10 +104,10 @@ export function CreatePrototypeDialog({ open, onCancel, onSubmit }: CreateProtot
               }
             }}
           />
-          {/* Says out loud what the new prototype is: a flow with no pages, whose
-              pages are added afterwards — one of ours, or a live one. */}
+          {/* Says out loud what the new prototype is: a folder holding a
+              specification, which is all the creator has to know. */}
           <p className="text-[11px] leading-snug text-muted-foreground">
-            {t('prototypeCreate.noPagesHint')}
+            {t('prototypeCreate.hint')}
           </p>
         </div>
 

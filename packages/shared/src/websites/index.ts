@@ -1,8 +1,8 @@
 /**
  * Websites - Public API
  *
- * Workspace-scoped single-file sites: storage/CRUD, refresh-hook matchers, and
- * the mediated source-action bridge.
+ * Workspace-scoped sites: storage/CRUD, refresh-hook matchers, and what their own
+ * origin serves (`./host.ts`).
  *
  * NOT exported here: ./data-store.ts (bun:sqlite) — Bun-only by design, import
  * it via the '@craft-agent/shared/websites/data-store' subpath from Bun scripts.
@@ -10,26 +10,16 @@
 
 // Types (core website types re-exported plus storage-layer shapes)
 export type {
-  WebsiteKind,
   WebsiteScriptRuntime,
   WebsiteRefreshSpec,
   WebsiteRefreshStatus,
   WebsiteSeriesPoint,
   WebsiteDataSnapshot,
-  WebsiteActionHttpMethod,
-  WebsiteActionDescriptor,
-  WebsiteActionGrant,
-  WebsiteRenderLease,
-  WebsiteActionInvocation,
-  WebsiteActionRequest,
-  WebsiteActionResult,
-  WebsiteShareInfo,
   WebsiteThumbnailInfo,
   WebsiteConfig,
   CreateWebsiteInput,
   LoadedWebsite,
 } from './types.ts';
-export { isWebsiteGrantUsable } from './types.ts';
 
 // Storage
 export {
@@ -66,12 +56,6 @@ export {
   // Data
   readWebsiteDataSnapshot,
   recordWebsiteRefresh,
-  // Grants
-  addWebsiteGrant,
-  revokeWebsiteGrant,
-  type AddWebsiteGrantInput,
-  // Share state
-  setWebsiteShareState,
   // Thumbnail (cached poster)
   recordWebsiteThumbnail,
   isThumbnailFresh,
@@ -81,18 +65,13 @@ export {
   WEBSITE_SNAPSHOT_FILENAME,
   WEBSITE_STORE_FILENAME,
   WEBSITE_THUMBNAIL_FILENAME,
-  DEFAULT_WEBSITE_GRANT_TTL_MS,
 } from './storage.ts';
 
 // Validation
 export {
   validateWebsiteConfig,
   WebsiteConfigSchema,
-  WebsiteKindSchema,
   WebsiteRefreshSpecSchema,
-  WebsiteActionDescriptorSchema,
-  WebsiteActionGrantSchema,
-  WebsiteShareInfoSchema,
   WebsiteThumbnailInfoSchema,
   WEBSITE_SLUG_REGEX,
   WEBSITE_REFRESH_MIN_INTERVAL_MS,
@@ -125,41 +104,21 @@ export {
   WEBSITE_DATA_MAX_SERIES,
 } from './data-store-constants.ts';
 
-// Mediated source-action bridge
+// What a website's own origin serves
 export {
-  WebsiteActionBroker,
-  type WebsiteActionBrokerOptions,
-  type WebsiteActionExecutors,
-  type WebsiteActionValidationErrorCode,
-  type CreateLeaseInput,
-} from './action-bridge.ts';
+  resolveWebsiteRequest,
+  isWebsiteHostOwned,
+  WEBSITE_INDEX_FILE,
+  type ServedWebsite,
+  type WebsiteResolution,
+} from './host.ts';
 
-// Sharing (Cloudflare publication)
+// Handing one to someone else: the directory is the artifact
 export {
-  buildWebsiteShareBundle,
-  getShareSnapshotSizeBytes,
-  scanSnapshotForSecretCandidates,
-  scanWebsiteShareData,
-  type WebsiteShareDataScan,
-  websiteShareErrorCode,
-  WebsiteShareError,
-  WEBSITE_SHARE_MAX_BUNDLE_BYTES,
-  WEBSITE_SHARE_MAX_CONTENT_BYTES,
-  WEBSITE_SHARE_MAX_SNAPSHOT_BYTES,
-  type WebsiteShareErrorCode,
-  type WebsitePublicManifest,
-  type WebsiteShareBundle,
-  type BuildWebsiteShareBundleOptions,
-} from './share-bundle.ts';
-export {
-  WebsitePublisher,
-  createCredentialWebsitePublishTokenStore,
-  resolveWebsitesShareApiBaseUrl,
-  deleteWebsiteWithUnpublish,
-  DEFAULT_PAGES_SHARE_API_BASE_URL,
-  type WebsitePublisherOptions,
-  type WebsitePublishTokenStore,
-  type PublishWebsiteOptions,
-  type UnpublishResult,
-  type DeleteWebsiteOutcome,
-} from './publisher.ts';
+  buildWebsiteExportReadme,
+  EXPORT_README_FILENAME,
+  exportWebsite,
+  isWebsiteExportPath,
+  listWebsiteExportFiles,
+  type WebsiteExportResult,
+} from './export.ts';

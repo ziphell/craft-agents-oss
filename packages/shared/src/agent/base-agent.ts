@@ -40,11 +40,9 @@ import type {
   SdkMcpServerConfig,
   BackendConfig,
   PostInitResult,
-  BridgeUpdateContext,
   RecoveryMessage,
 } from './backend/types.ts';
 import { AbortReason } from './backend/types.ts';
-import type { AuthRequest } from './session-scoped-tools.ts';
 import type { Workspace } from '../config/storage.ts';
 
 // Core modules
@@ -312,10 +310,15 @@ export abstract class BaseAgent implements AgentBackend {
       onDebug: (msg) => this.debug(msg),
     });
 
-    // PrerequisiteManager: blocks source tool calls until guide.md is read
+    // PrerequisiteManager: blocks source tool calls until guide.md is read.
+    // The read set is persisted in the session folder: an app restart rebuilds this manager, but the
+    // resumed conversation still holds the guides, so the gate should not re-ask for them.
     this.prerequisiteManager = new PrerequisiteManager({
       workspaceRootPath: config.workspace.rootPath,
       onDebug: (msg) => this.debug(msg),
+      readStatePath: config.session?.id
+        ? join(getSessionPath(config.workspace.rootPath, config.session.id), 'prerequisite-reads.json')
+        : undefined,
     });
 
     // AutomationSystem: workspace-level automations from automations.json
@@ -401,80 +404,6 @@ export abstract class BaseAgent implements AgentBackend {
       await this.automationSystem?.executeAgentEvent(event, input, signal);
     } catch (err) {
       this.debug(`Automation event ${event} failed: ${err}`);
-    }
-  }
-
-  // ============================================================
-  // Session MCP Tool Completion Handling
-  // ============================================================
-
-  /**
-   * Handle successful completion of a session MCP tool (SubmitPlan, auth tools).
-   *
-   * WHY THIS IS ON BaseAgent:
-   * -------------------------
-   * Session-scoped tools (SubmitPlan, source_oauth_trigger, etc.) run in an
-   * EXTERNAL MCP server subprocess (packages/session-mcp-server). That subprocess
-   * has its own process memory, so when it calls getSessionScopedToolCallbacks(),
-   * the callback registry is empty — it was populated in THIS process, not the subprocess.
-   *
-   * Instead, PiAgent detects session MCP tool completions from its own event
-   * stream and calls THIS shared method to fire the appropriate callback.
-   *
-   * ClaudeAgent doesn't need this — its session-scoped tools run in-process
-   * via Claude Agent SDK, so the callback registry works directly.
-   *
-   * CALLBACKS FIRED:
-   * - SubmitPlan → this.onPlanSubmitted(planPath)
-   *   → Electron reads plan file, shows plan card, calls interruptForHandoff(PlanSubmitted)
-   * - Auth tools → this.onAuthRequest(authRequest)
-   *   → Electron shows auth dialog, calls interruptForHandoff(AuthRequest)
-   */
-  protected handleSessionMcpToolCompletion(
-    toolName: string,
-    args: Record<string, unknown>
-  ): void {
-    // SubmitPlan — trigger plan view in the UI.
-    // The Electron SessionManager's onPlanSubmitted callback will:
-    //   1. Read the plan file content
-    //   2. Create a plan message (role: 'plan')
-    //   3. Send plan_submitted event to renderer
-    //   4. Call interruptForHandoff(AbortReason.PlanSubmitted) → turn terminates
-    if (toolName === 'SubmitPlan' && args.planPath) {
-      this.debug(`SubmitPlan completed: ${args.planPath}`);
-      this.onPlanSubmitted?.(args.planPath as string);
-      return;
-    }
-
-    // Auth tools — trigger auth request in the UI.
-    // Maps MCP tool names to auth request types.
-    const authToolTypes: Record<string, string> = {
-      'source_oauth_trigger': 'oauth',
-      'source_google_oauth_trigger': 'oauth-google',
-      'source_slack_oauth_trigger': 'oauth-slack',
-      'source_microsoft_oauth_trigger': 'oauth-microsoft',
-      'source_credential_prompt': 'credential',
-    };
-
-    const authType = authToolTypes[toolName];
-    if (authType && args.sourceSlug && this.onAuthRequest) {
-      const sourceSlug = args.sourceSlug as string;
-      const source = this.sourceManager.getAllSources().find(s => s.config.slug === sourceSlug);
-      const sourceName = source?.config.name || sourceSlug;
-      this.debug(`Auth tool completed: ${toolName} for ${sourceSlug}`);
-      this.onAuthRequest({
-        type: authType,
-        requestId: `${Date.now()}-auth`,
-        sessionId: this.config.session?.id || '',
-        sourceSlug,
-        sourceName,
-        ...(authType === 'credential' && {
-          mode: (args.mode as string) || 'bearer',
-          labels: args.labels as Record<string, string> | undefined,
-          description: args.description as string | undefined,
-          hint: args.hint as string | undefined,
-        }),
-      } as AuthRequest);
     }
   }
 
@@ -854,7 +783,7 @@ ${formattedMessages}
   }
 
   // ============================================================
-  // Lifecycle (postInit, applyBridgeUpdates)
+  // Lifecycle (postInit)
   // ============================================================
 
   /**
@@ -864,15 +793,6 @@ ${formattedMessages}
    */
   async postInit(): Promise<PostInitResult> {
     return { authInjected: true };
-  }
-
-  /**
-   * Apply bridge/config updates mid-session.
-   * Default: no-op for backends that don't use bridge-mcp-server (Claude, Pi).
-   * Override in Codex/Copilot to regenerate config or write bridge files.
-   */
-  async applyBridgeUpdates(_context: BridgeUpdateContext): Promise<void> {
-    // No-op by default
   }
 
   /**

@@ -21,6 +21,8 @@ import type { NavigationState } from '../../shared/types'
  * - sources / skills / automations: a detail item is selected
  * - websites: always — both the library grid and a website render in the content
  *   panel (websites has no navigator list to fall back to)
+ * - tweaks: always, for the same reason (the library list and one tweak both
+ *   render in the content panel; the sidebar is where the tweaks are listed)
  */
 export function isDetailNavState(navState: NavigationState | null): boolean {
   if (!navState) return false
@@ -36,6 +38,7 @@ export function isDetailNavState(navState: NavigationState | null): boolean {
     case 'prototypes':
       return navState.details !== null
     case 'websites':
+    case 'tweaks':
       return true
   }
 }

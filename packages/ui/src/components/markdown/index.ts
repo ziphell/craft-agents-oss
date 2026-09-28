@@ -11,6 +11,7 @@ export { MarkdownDatatableBlock, type MarkdownDatatableBlockProps } from './Mark
 export { MarkdownSpreadsheetBlock, type MarkdownSpreadsheetBlockProps } from './MarkdownSpreadsheetBlock'
 export { MarkdownImageBlock, type MarkdownImageBlockProps } from './MarkdownImageBlock'
 export { MarkdownDocBlock, type MarkdownDocBlockProps } from './MarkdownDocBlock'
+export { MarkdownEditorPane, type MarkdownEditorPaneProps } from './MarkdownEditorPane'
 export {
   parseMarkdownPreviewSpec,
   normalizePreviewItems,

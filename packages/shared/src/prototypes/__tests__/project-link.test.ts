@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { loadProjectConfig, saveProjectConfig } from '../../projects/storage'
 import {
+  createPrototype,
   getProjectPrototypes,
   getPrototypeDirPath,
   setProjectPrototypes,
-  writePrototypeConfig,
 } from '..'
 
 let workspaceRoot = ''
@@ -30,13 +30,12 @@ function makeWorkspace(): string {
     updatedAt: Date.now(),
   })
   for (const slug of ['checkout-flow', 'search-flow']) {
-    mkdirSync(getPrototypeDirPath(workspaceRoot, slug), { recursive: true })
-    writePrototypeConfig(workspaceRoot, slug, { pages: [{ name: 'cart', kind: 'scratch', entry: true }] })
+    createPrototype(workspaceRoot, { name: slug })
   }
   return workspaceRoot
 }
 
-describe('the prototypes a project is worked on with (§15.1.3)', () => {
+describe('the prototypes a project is worked on with', () => {
   it('records the set, reads it back, and clears it by leaving no key', () => {
     const root = makeWorkspace()
     expect(getProjectPrototypes(root, 'acme-redesign')).toEqual([])
@@ -53,7 +52,7 @@ describe('the prototypes a project is worked on with (§15.1.3)', () => {
   })
 
   // A set, not a choice of one: a project works on several prototypes at once, and
-  // nothing in the record says which is in front (§15.1.3).
+  // nothing in the record says which is in front.
   it('holds several prototypes at once', () => {
     const root = makeWorkspace()
 
@@ -65,7 +64,7 @@ describe('the prototypes a project is worked on with (§15.1.3)', () => {
     expect(getProjectPrototypes(root, 'acme-redesign')).toEqual(['search-flow'])
   })
 
-  // No membership to satisfy: a prototype belongs to no project (§15.1.4), so any
+  // No membership to satisfy: a prototype belongs to no project, so any
   // prototype of the workspace can be in the set. The two prototypes here were
   // created without ever naming a project, and both are recordable.
   it('records any prototype of the workspace, with no ownership to check', () => {

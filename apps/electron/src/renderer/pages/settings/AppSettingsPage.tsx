@@ -5,6 +5,7 @@
  *
  * Settings:
  * - Notifications
+ * - Links (where a clicked link opens)
  * - Network (proxy)
  * - About (version, updates)
  *
@@ -14,6 +15,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 import { PanelHeader } from '@/components/app-shell/PanelHeader'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Button } from '@/components/ui/button'
@@ -22,6 +24,7 @@ import { routes } from '@/lib/navigate'
 import { Spinner } from '@craft-agent/ui'
 import type { DetailsPageMeta } from '@/lib/navigation-registry'
 import type { NetworkProxyMode, NetworkProxySettings } from '../../../shared/types'
+import { readOpenInAppBrowserFrom, writeOpenInAppBrowser } from '@/lib/open-in-app-browser'
 
 import {
   SettingsSection,
@@ -107,6 +110,9 @@ export default function AppSettingsPage() {
   // Tools state
   const [browserToolEnabled, setBrowserToolEnabled] = useState(true)
 
+  // Links and pages state
+  const [openInAppBrowser, setOpenInAppBrowser] = useState(true)
+
   // Proxy state
   const [proxyForm, setProxyForm] = useState<ProxyFormState>(EMPTY_PROXY_FORM)
   const [savedProxyForm, setSavedProxyForm] = useState<ProxyFormState>(EMPTY_PROXY_FORM)
@@ -131,15 +137,17 @@ export default function AppSettingsPage() {
   const loadSettings = useCallback(async () => {
     if (!window.electronAPI) return
     try {
-      const [notificationsOn, keepAwakeOn, browserToolOn, proxySettings] = await Promise.all([
+      const [notificationsOn, keepAwakeOn, browserToolOn, proxySettings, preferencesFile] = await Promise.all([
         window.electronAPI.getNotificationsEnabled(),
         window.electronAPI.getKeepAwakeWhileRunning(),
         window.electronAPI.getBrowserToolEnabled(),
         window.electronAPI.getNetworkProxySettings(),
+        window.electronAPI.readPreferences(),
       ])
       setNotificationsEnabled(notificationsOn)
       setKeepAwakeEnabled(keepAwakeOn)
       setBrowserToolEnabled(browserToolOn)
+      setOpenInAppBrowser(readOpenInAppBrowserFrom(preferencesFile.content))
       const form = toProxyFormState(proxySettings)
       setProxyForm(form)
       setSavedProxyForm(form)
@@ -166,6 +174,20 @@ export default function AppSettingsPage() {
     setBrowserToolEnabled(enabled)
     await window.electronAPI.setBrowserToolEnabled(enabled)
   }, [])
+
+  const handleOpenInAppBrowserChange = useCallback(async (enabled: boolean) => {
+    setOpenInAppBrowser(enabled)
+    try {
+      await writeOpenInAppBrowser(enabled)
+    } catch (error) {
+      // Back where it was: this switch says where a page opens, so it must not show a change
+      // that never reached the disk.
+      setOpenInAppBrowser(!enabled)
+      toast.error(t('toast.failedToSaveSetting', { setting: t('settings.links.title') }), {
+        description: error instanceof Error ? error.message : undefined,
+      })
+    }
+  }, [t])
 
   // Proxy handlers
   const isProxyDirty = useMemo(() => {
@@ -247,6 +269,22 @@ export default function AppSettingsPage() {
                   />
                 </SettingsCard>
               </SettingsSection>
+
+              {/* Links — where a page the person clicks goes, a link or an `.html` file.
+                  Electron only: a browser client has no window of ours to open, so there the
+                  page is a tab of their own. */}
+              {isElectron && (
+                <SettingsSection title={t("settings.links.title")}>
+                  <SettingsCard>
+                    <SettingsToggle
+                      label={t("settings.links.openInAppBrowser")}
+                      description={t("settings.links.openInAppBrowserDesc")}
+                      checked={openInAppBrowser}
+                      onCheckedChange={handleOpenInAppBrowserChange}
+                    />
+                  </SettingsCard>
+                </SettingsSection>
+              )}
 
               {/* Network */}
               <SettingsSection title={t("settings.network.title")}>

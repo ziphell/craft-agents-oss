@@ -22,12 +22,9 @@ import {
 import { basename, join } from 'path';
 import { createHash, randomUUID } from 'crypto';
 import type {
-  WebsiteActionDescriptor,
-  WebsiteActionGrant,
   WebsiteConfig,
   WebsiteDataSnapshot,
   WebsiteRefreshStatus,
-  WebsiteShareInfo,
   WebsiteThumbnailInfo,
 } from '@craft-agent/core';
 import { atomicWriteFileSync, readJsonFileSync } from '../utils/files.ts';
@@ -50,9 +47,6 @@ export const WEBSITE_STORE_FILENAME = 'store.sqlite';
  * encoder dependency isn't worth it for a tile poster.
  */
 export const WEBSITE_THUMBNAIL_FILENAME = 'thumbnail.jpg';
-
-/** Default grant lifetime: 30 days (grants are re-approved, never auto-renewed) */
-export const DEFAULT_WEBSITE_GRANT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** Max stored length for lastRefresh.error */
 const REFRESH_ERROR_MAX_LENGTH = 2000;
@@ -291,7 +285,6 @@ export function createWebsite(
     slug,
     name: input.name,
     description: input.description,
-    kind: input.kind ?? 'interactive',
     projectId: input.projectId,
     originSessionId: input.originSessionId,
     refresh: input.refresh,
@@ -321,7 +314,7 @@ export type UpdateWebsitePatch = Partial<
   // (string | null) = string) and silently forbid the null again.
   Omit<
     WebsiteConfig,
-    'schemaVersion' | 'id' | 'slug' | 'createdAt' | 'contentDigest' | 'lastRefresh' | 'grants' | 'share' | 'thumbnail' | 'projectId' | 'description' | 'refresh' | 'originSessionId'
+    'schemaVersion' | 'id' | 'slug' | 'createdAt' | 'contentDigest' | 'lastRefresh' | 'thumbnail' | 'projectId' | 'description' | 'refresh' | 'originSessionId'
   >
 > & {
   projectId?: string | null;
@@ -335,9 +328,8 @@ const NULL_CLEARABLE_WEBSITE_FIELDS = ['projectId', 'description', 'refresh'] as
 /**
  * Update a website's config with a partial patch.
  * `id`, `slug`, and the managed fields (`contentDigest`, `lastRefresh`,
- * `grants`, `share`, `thumbnail`) cannot be changed here — use saveWebsiteContent /
- * recordWebsiteRefresh / the grant operations / setWebsiteShareState /
- * recordWebsiteThumbnail instead.
+ * `thumbnail`) cannot be changed here — use saveWebsiteContent /
+ * recordWebsiteRefresh / recordWebsiteThumbnail instead.
  *
  * This is the single normalization point for null-clears — the websites:update
  * RPC and the update_website session tool both pass their patches through
@@ -370,8 +362,6 @@ export function updateWebsite(
     createdAt: existing.createdAt,
     contentDigest: existing.contentDigest,
     lastRefresh: existing.lastRefresh,
-    grants: existing.grants,
-    share: existing.share,
     thumbnail: existing.thumbnail,
     originSessionId: existing.originSessionId,
     updatedAt: Date.now(),
@@ -414,7 +404,7 @@ export function unbindProjectFromWebsites(workspaceRootPath: string, projectId: 
 
 /**
  * Compute the sha256 hex digest of website content.
- * Grants and render leases are bound to this digest.
+ * Render leases are bound to this digest.
  */
 export function computeWebsiteContentDigest(content: string): string {
   return createHash('sha256').update(content, 'utf-8').digest('hex');
@@ -439,10 +429,6 @@ export function loadWebsiteContent(workspaceRootPath: string, websiteSlug: strin
 
 /**
  * Save a website's index.html content (atomic) and update contentDigest.
- *
- * Existing grants stay persisted but are bound to the previous digest, so
- * they stop validating until re-approved — that is the security model, not
- * an oversight.
  */
 export function saveWebsiteContent(
   workspaceRootPath: string,
@@ -470,11 +456,10 @@ export function saveWebsiteContent(
  *
  * The website's files are the user's (and the agent's) — a website is edited with
  * file tools as often as through the session tools. The digest is not a second
- * copy of the content, it is what makes the content's *consequences* work:
- * render leases, grants and the cached poster are all keyed by it, and
- * `WebsiteActionBroker.validate` re-checks it against the live config on every
- * request. So an out-of-band edit has to be noticed here, or a lease issued
- * before the edit would keep executing against content that no longer exists.
+ * copy of the content, it is what makes the content's *consequences* work: the
+ * render lease and the cached poster are keyed by it. So an out-of-band edit has
+ * to be noticed here, or a poster captured before the edit would keep claiming to
+ * be the website's preview.
  *
  * Returns null when the website does not exist. `contentChanged` is true only when
  * the digest actually moved — callers use it to decide whether the poster needs
@@ -552,55 +537,7 @@ export function recordWebsiteRefresh(
 }
 
 // ============================================================
-// Grant Operations
-// ============================================================
-
-export interface AddWebsiteGrantInput {
-  action: WebsiteActionDescriptor;
-  description?: string;
-  /** Grant lifetime in ms (default DEFAULT_WEBSITE_GRANT_TTL_MS) */
-  ttlMs?: number;
-}
-
-/**
- * Persist a user-approved grant on a website, bound to the current content
- * digest. Approval UX happens upstream — by the time this is called the
- * user has already consented.
- *
- * @throws Error if the website is missing or has no content yet (nothing to bind to)
- */
-export function addWebsiteGrant(
-  workspaceRootPath: string,
-  websiteSlug: string,
-  input: AddWebsiteGrantInput,
-): WebsiteActionGrant {
-  const existing = loadWebsiteConfig(workspaceRootPath, websiteSlug);
-  if (!existing) {
-    throw new Error(`Website not found: ${websiteSlug}`);
-  }
-  if (!existing.contentDigest) {
-    throw new Error(`Website "${websiteSlug}" has no content yet, so access can't be approved. Add content to the website first.`);
-  }
-
-  const now = Date.now();
-  const grant: WebsiteActionGrant = {
-    id: `grant_${randomUUID().slice(0, 8)}`,
-    description: input.description,
-    action: input.action,
-    contentDigest: existing.contentDigest,
-    createdAt: now,
-    expiresAt: now + (input.ttlMs ?? DEFAULT_WEBSITE_GRANT_TTL_MS),
-  };
-
-  saveWebsiteConfig(workspaceRootPath, {
-    ...existing,
-    grants: [...(existing.grants ?? []), grant],
-  });
-  return grant;
-}
-
-// ============================================================
-// Share State
+// Thumbnail (cached poster)
 // ============================================================
 
 /**
@@ -643,51 +580,4 @@ export function recordWebsiteThumbnail(
   };
   saveWebsiteConfig(workspaceRootPath, updated);
   return updated;
-}
-
-/**
- * Set or clear a website's publication pointer (the managed `share` field).
- *
- * Written only by the publish/unpublish flow — the remote Cloudflare record
- * stays authoritative and the admin token never passes through here.
- */
-export function setWebsiteShareState(
-  workspaceRootPath: string,
-  websiteSlug: string,
-  share: WebsiteShareInfo | undefined,
-): WebsiteConfig {
-  const existing = loadWebsiteConfig(workspaceRootPath, websiteSlug);
-  if (!existing) {
-    throw new Error(`Website not found: ${websiteSlug}`);
-  }
-
-  const { share: _previous, ...rest } = existing;
-  const updated: WebsiteConfig = {
-    ...rest,
-    ...(share ? { share } : {}),
-    updatedAt: Date.now(),
-  };
-  saveWebsiteConfig(workspaceRootPath, updated);
-  return updated;
-}
-
-/**
- * Remove a grant from a website. Returns false if the grant was not present.
- */
-export function revokeWebsiteGrant(
-  workspaceRootPath: string,
-  websiteSlug: string,
-  grantId: string,
-): boolean {
-  const existing = loadWebsiteConfig(workspaceRootPath, websiteSlug);
-  if (!existing) {
-    throw new Error(`Website not found: ${websiteSlug}`);
-  }
-
-  const grants = existing.grants ?? [];
-  const remaining = grants.filter((g) => g.id !== grantId);
-  if (remaining.length === grants.length) return false;
-
-  saveWebsiteConfig(workspaceRootPath, { ...existing, grants: remaining });
-  return true;
 }

@@ -1,21 +1,16 @@
 /**
  * The browser pane's capability surface.
  *
- * `BrowserPaneFns` is what the main process implements and what every command on both doors calls
- * (`browser_tool` for the window itself, `prototype_tool` for a prototype's own files and flow).
- * Keeping it in its own module is what lets those two tools be separate files without either of
- * them owning the interface the other depends on.
+ * `BrowserPaneFns` is what the main process implements and what every command on every door calls
+ * (`browser_tool` for the window itself, `prototype_tool` for a prototype's own files and flow,
+ * `video_tool` for frames out of a recording). Keeping it in its own module is what lets those
+ * tools be separate files without any of them owning the interface the others depend on.
  */
 
 import type { BrowserTabSummary, PickedElement } from '../protocol/dto.ts';
-import type { PrototypeEntry, PrototypeExportResult } from '../prototypes/export.ts';
+import type { DrawioPage } from '../drawio/types.ts';
 import type { CreatedPrototype } from '../prototypes/create.ts';
-import type { PrototypeConfig } from '../prototypes/config.ts';
-import type { PrototypeWindowDescriptor } from '../prototypes/types.ts';
-import type { PrototypePagesChange, PrototypePagesResult } from '../prototypes/pages.ts';
-import type { ContractExportResult } from '../prototypes/contract.ts';
 import type { PrototypeStatus } from '../prototypes/status.ts';
-import type { AcceptanceDiff, AcceptanceSummary } from '../prototypes/acceptance.ts';
 
 // ============================================================================
 // Browser Pane Function Interface
@@ -60,7 +55,7 @@ export interface BrowserScreenshotRegionArgs {
   jpegQuality?: number
 }
 
-export interface BrowserWindowResizeArgs {
+export interface BrowserViewportResizeArgs {
   width: number
   height: number
 }
@@ -94,7 +89,7 @@ export interface BrowserDownloadsArgs {
 export interface BrowserLifecycleActionResult {
   /**
    * What happened. `pages-closed` is the workspace's-window case: a conversation may
-   * not close that window, but it may close the tabs it opened in it (plan §22).
+   * not close that window, but it may close the tabs it opened in it.
    */
   action: 'closed' | 'pages-closed' | 'hidden' | 'released' | 'noop'
   requestedInstanceId?: string
@@ -103,7 +98,7 @@ export interface BrowserLifecycleActionResult {
   reason?: string
 }
 
-/** One tab of this session's window, as `tabs` reports it (plan §22). */
+/** One tab of this session's window, as `tabs` reports it. */
 export type BrowserTabInfo = BrowserTabSummary
 
 export interface BrowserTabOpenOptions {
@@ -111,20 +106,57 @@ export interface BrowserTabOpenOptions {
   url?: string
   /** Whether the tab comes to the front. Default true. */
   activate?: boolean
-  /**
-   * The prototype this tab is for, when it is one.
-   *
-   * The prototype's **own** origin, not the tab's address: an overlay page's
-   * document is someone else's, so once it loads there is nothing left in the URL
-   * to say which prototype the tab is working on.
-   */
-  prototype?: { slug: string; origin: string } | null
+}
+
+/** One sampled frame: where it is in the recording, its pixels, and the file when it was written. */
+export interface SampledVideoFrame {
+  /** Position in the recording, ms. */
+  offsetMs: number
+  /** The frame as JPEG bytes. */
+  bytes: Uint8Array
+  /** The file it was written to, or null when nothing was written. */
+  path: string | null
+}
+
+/** A rendered drawio document: the bytes, and what they are. */
+export interface RenderedDrawioFile {
+  bytes: Uint8Array
+  mimeType: string
+  /** The suffix the format is written under, `.svg` and friends. */
+  extension: string
+}
+
+/**
+ * What a drawio document can be turned into — **in drawio's own names**, which they keep here on
+ * purpose: `xmlsvg` is drawio's *editable* SVG (the drawing with its document inside it), and `xml`
+ * is the document itself, written out with its pages uncompressed.
+ *
+ * The command line an agent speaks is a different vocabulary on purpose — the formats it names are
+ * `svg`, `png`, `html` and `drawio`, and the first of those takes `--editable` for what drawio calls
+ * an `xmlsvg`. `drawio-commands.ts` is the one place the two are translated (see `drawio-tools.md`).
+ */
+export type DrawioFormat = 'svg' | 'xmlsvg' | 'png' | 'html' | 'xml'
+
+/**
+ * The suffix a format is written under — one table, because three things name these files: the
+ * bytes come back with their metadata, a `--to` path that names no suffix gets one from here, and
+ * the reply says what was written.
+ *
+ * `xml` is `.drawio` rather than `.xml`: the app opens a diagram by that suffix and by nothing else,
+ * so the same document under a `.xml` name is only an XML file to it.
+ */
+export const DRAWIO_EXTENSIONS: Record<DrawioFormat, string> = {
+  svg: '.svg',
+  xmlsvg: '.svg',
+  png: '.png',
+  html: '.html',
+  xml: '.drawio',
 }
 
 export interface BrowserPaneFns {
   openPanel: (options?: { background?: boolean }) => Promise<{ instanceId: string }>;
   navigate: (url: string) => Promise<{ url: string; title: string }>;
-  snapshot: () => Promise<{ url: string; title: string; nodes: Array<{ ref: string; role: string; name: string; value?: string; description?: string; focused?: boolean; checked?: boolean; disabled?: boolean }>; prototype?: PrototypeWindowDescriptor | null }>;
+  snapshot: () => Promise<{ url: string; title: string; nodes: Array<{ ref: string; role: string; name: string; value?: string; description?: string; focused?: boolean; checked?: boolean; disabled?: boolean }> }>;
   click: (ref: string, options?: { waitFor?: 'none' | 'navigation' | 'network-idle'; timeoutMs?: number }) => Promise<void>;
   clickAt: (x: number, y: number) => Promise<void>;
   drag: (x1: number, y1: number, x2: number, y2: number) => Promise<void>;
@@ -136,7 +168,14 @@ export interface BrowserPaneFns {
   screenshot: (args?: BrowserScreenshotArgs) => Promise<BrowserScreenshotResult>;
   screenshotRegion: (args: BrowserScreenshotRegionArgs) => Promise<BrowserScreenshotResult>;
   getConsoleLogs: (args?: BrowserConsoleArgs) => Promise<Array<{ timestamp: number; level: 'log' | 'info' | 'warn' | 'error'; message: string }>>;
-  windowResize: (args: BrowserWindowResizeArgs) => Promise<{ width: number; height: number }>;
+  /**
+   * Give the tab this command acts on a viewport — `viewport-resize`.
+   *
+   * The unit is the **view**, not the window: the tab on screen gets it by sizing the window (its
+   * viewport *is* the window's page area), a tab behind the person by sizing its own view where it
+   * lives. The answer is the viewport the tab actually ended up with.
+   */
+  resizeViewport: (args: BrowserViewportResizeArgs) => Promise<{ width: number; height: number }>;
   getNetworkLogs: (args?: BrowserNetworkArgs) => Promise<Array<{ timestamp: number; method: string; url: string; status: number; resourceType: string; ok: boolean }>>;
   waitFor: (args: BrowserWaitArgs) => Promise<{ ok: true; kind: string; elapsedMs: number; detail: string }>;
   sendKey: (args: BrowserKeyArgs) => Promise<void>;
@@ -149,8 +188,7 @@ export interface BrowserPaneFns {
    * Reload the page this conversation works from — `reload`.
    *
    * Fire-and-forget, like the browser's own reload button: nothing waits for the document
-   * to load. It is the other half of "that patch is already inlined here" — a page of ours
-   * is rendered from disk, so an edit to it or to a patch it carries shows up on the next
+   * to load. A page of ours is rendered from disk, so an edit to it shows up on the next
    * render, and a render is what this asks for.
    */
   reload: () => Promise<void>;
@@ -166,195 +204,84 @@ export interface BrowserPaneFns {
   getBoundPrototypeSlug?: () => string | null;
   /** Every prototype in the workspace, with its derived status. */
   listPrototypes: () => Promise<PrototypeStatus[]>;
-  /** Create a prototype: a container for pages. It gets no page — writing one is how a page exists. */
+  /** Create a prototype: a folder plus a starter `PRD.md`. The files written into it are the prototype. */
   createPrototype: (input: {
     name: string;
   }) => Promise<CreatedPrototype>;
-  /**
-   * Point one overlay page at a different address — the same page in another
-   * environment, usually. `page` defaults to the entry page when it is an overlay
-   * page, otherwise the first one. Only the page's own rules are enforced; whether
-   * the patches still fit the new page is the caller's risk, and saying so is part
-   * of the command's output (see target.ts).
-   */
-  setPrototypePageUrl: (slug: string, url: string, page?: string) => Promise<PrototypeConfig>;
-  /**
-   * Read, add, remove, rename or re-point one page of a prototype's table, and
-   * mark which page `/` opens. Same data behind `prototype_tool status`,
-   * `prototype_tool open --page`, the page name in `browser_tool snapshot`, and the
-   * extension's match patterns.
-   */
-  setPrototypePages: (slug: string, change: PrototypePagesChange) => Promise<PrototypePagesResult>;
   /** Bind (or unbind, with null) this session's prototype. */
   bindPrototype: (slug: string | null) => Promise<void>;
   /**
-   * Replay a prototype's patches in this session's browser and register
-   * them for future documents (so they survive a reload).
+   * Sample frames out of a recording — `video_tool sample`.
    *
-   * Patches the page already carries — a page opened from the workbench arrives
-   * with them inlined — are left alone and reported in `skipped`, so a JS patch
-   * cannot run a second time over a document that already has its effect.
+   * The decoding is Chromium's: a hidden window loads the file and copies each sample to a
+   * canvas, so the only decoder needed is the browser the app already ships — nothing here
+   * expects the person to have installed ffmpeg. A codec Chromium does not implement is
+   * reported by name rather than half-read.
    *
-   * `options.file` (absolute) replays one patch instead of the whole set — the
-   * file just written. The other registrations are left alone in that case, so
-   * the page keeps the patches it was already given.
+   * `out` is the whole difference between looking and keeping. Omitted, the frames are the
+   * reply and nothing touches the disk; given, each is written as a numbered JPEG under it
+   * and `path` comes back on every frame.
    */
-  applyPrototype: (slug: string, options?: { file?: string }) => Promise<{
-    slug: string;
-    applied: number;
-    files: string[];
-    skipped: string[];
-    /**
-     * Which page's patches were replayed: the one the window is on, or the entry
-     * page when the window is elsewhere. Null means only the shared patches
-     * (`patches/*`) were applied, because no page of this flow was on screen — a
-     * page-scoped patch that did nothing is otherwise indistinguishable from one
-     * that belongs to another page.
-     */
-    page?: string | null;
-    /**
-     * The one file this apply was narrowed to (`--file`), with the page that brings it
-     * (null = every page); null when the whole set was replayed. The page here is the
-     * patch's own scope, which is what says whether naming it while another page is open
-     * explains targets that matched nothing.
-     */
-    file?: { name: string; page: string | null } | null;
-    /**
-     * What each declared `@target` matched (plan §21.1). Every patch that carries
-     * a marker is checked, so "matched nothing" can no longer be confused with
-     * "changed nothing".
-     */
-    targets?: Array<{ file: string; target: string; matched: number | null; recorded: boolean }>;
-    /** Declared targets that matched nothing and had never matched — a wrong selector. */
-    unmatched?: string[];
-    /**
-     * Targets that matched before and do not now: the page moved. Each carries
-     * when it last matched and selectors that resolve to one element now, so the
-     * fix is a re-anchor rather than a guess.
-     */
-    drifted?: Array<{ target: string; lastMatchedAt: string; suggestions: string[] }>;
-    /** Patches with no `@target`, so nothing about them could be checked. */
-    untargeted?: string[];
-  }>;
-  /** Remove a prototype's patches from this session's browser. */
-  clearPrototype: (slug: string) => Promise<{ slug: string; removed: string[] }>;
-  /**
-   * Run the acceptance checks the PRD puts under its requirements (plan §20.7):
-   * `check: selector <css>` against the page this session's window is on, and
-   * `check: endpoint <METHOD> <path>` against the contract.
-   *
-   * Page checks are `skip` when there is no page to look at — "could not look" is
-   * not "not there". Writes `dist/acceptance.md`.
-   */
-  verifyPrototype: (slug: string) => Promise<{
-    slug: string;
-    page: string | null;
-    /** The page *name* the checks ran against, for `about: page <name>`. */
-    pageName: string | null;
-    passed: number;
-    failed: number;
-    skipped: number;
-    /** Which run this is; the record lives under `acceptance/` (plan §3.7). */
-    round: number;
-    /** What changed against the round before. */
-    diff: AcceptanceDiff;
-    previous: AcceptanceSummary | null;
-    reportPath: string;
-    statePath: string;
-    results: Array<{
-      requirementId: string;
-      requirementTitle: string;
-      kind: string;
-      target: string;
-      status: string;
-      detail: string;
-    }>;
-  }>;
-  /**
-   * Sample frames out of a video the user recorded elsewhere, and write them under
-   * `research/frames/` (plan §20.5).
-   *
-   * The video is copied into `research/videos/` first: a capture whose source has
-   * since been cleaned up cannot be re-sampled, and re-reading it is most of what
-   * having a source is for. Decoding happens in Chromium — no ffmpeg — so a codec
-   * Chromium does not implement is reported rather than half-read.
-   */
-  importPrototypeVideo: (args: {
-    slug: string;
+  sampleVideo: (args: {
     /** The recording to sample. */
     path: string;
+    /** Where to write the frames; omitted means "hand them back and write nothing". */
+    out?: string;
     /** `timeline` samples on an interval; `changes` keeps only what moved. */
     mode?: 'timeline' | 'changes';
     /** Sampling interval for `timeline`, ms. */
     everyMs?: number;
     /** Ceiling on frames. */
     maxFrames?: number;
-  }) => Promise<{
-    session: string;
-    video: string;
-    frames: number;
-    files: string[];
-    truncated: boolean;
-    durationMs: number;
-    /** The frames themselves, in order — the files are the record, these are the reply. */
-    images: Array<{ path: string; bytes: Uint8Array }>;
-  }>;
+  }) => Promise<{ durationMs: number; truncated: boolean; frames: SampledVideoFrame[] }>;
   /**
-   * Build a prototype's deliverable: one loadable Chrome extension covering the
-   * whole flow (our documents shipped in the package, the patches applied to the
-   * live pages) plus a change spec.
-   * Does not need a browser window — it is a pure file export.
+   * A `.drawio` document → SVG, an editable SVG, a PNG or a standalone page — `drawio_tool
+   * export` and `render`.
+   *
+   * Drawing is drawio's too (a hidden window again), so a caller that has never opened a window
+   * can still be handed a picture. `out` is the whole difference between looking and keeping:
+   * omitted, the bytes are the reply and nothing touches the disk.
    */
-  exportPrototype: (slug: string) => Promise<PrototypeExportResult>;
+  exportDrawio: (args: {
+    /** The document to draw: the path of a `.drawio` file. */
+    path: string;
+    format: DrawioFormat;
+    /** Where to write it; omitted means "hand the bytes back and write nothing". */
+    out?: string;
+    /**
+     * Draw this page, by the name the document gives it. Omitted, its first page.
+     *
+     * A name, not a number, and a name that matches no page — or two — is refused rather than
+     * drawn: the drawing is the whole point of the call, so a different diagram than the caller
+     * asked for must not come back as a success.
+     */
+    page?: string;
+    /** Pixels per unit in the output. Omitted, drawio's own 1. */
+    scale?: number;
+    /** Draw it for a dark background, the way the app's own previews do. */
+    dark?: boolean;
+  }) => Promise<RenderedDrawioFile & { path: string | null }>;
   /**
-   * Compose `services/{svc}/paths/*.yaml` fragments into `services/{svc}/openapi.yaml`.
-   * `service` may be omitted when the prototype has exactly one service.
+   * The pages of a `.drawio` document, in order — `drawio_tool pages`.
+   *
+   * File work and nothing else: no window, no engine, nothing drawn. It is here because the
+   * workspace is here — the side that has the disk reads the document, as it does for
+   * `exportDrawio` — and because a page's **name** has to be findable before it can be asked for:
+   * the pages of a file are otherwise only visible to whoever reads its XML.
    */
-  composeContract: (options: { slug: string; service?: string }) => Promise<{
-    service: string;
-    endpoints: number;
-    conflicts: string[];
-    missingFixtures: string[];
-  }>;
-  /** Write the backend deliverables (`dist/openapi.yaml` + `dist/contract.md` + fixtures). */
-  exportContract: (options: { slug: string; service?: string }) => Promise<ContractExportResult>;
+  listDrawioPages: (args: { path: string }) => Promise<DrawioPage[]>;
   /**
-   * Serve the service's `x-mock` responses at the browser's network layer, so
-   * the prototype runs before the backend exists.
-   */
-  applyMock: (options: { slug: string; service?: string }) => Promise<{
-    service: string;
-    routes: number;
-    missingFixtures: string[];
-    unmocked: string[];
-    /** How many of those routes read or change the contract's state. */
-    stateful: number;
-    /** Operations the stateful vocabulary cannot express (see `mock-engine.ts`). */
-    stateIssues: string[];
-    /** Why `state.json` could not be used, when it is there but broken. */
-    stateProblem: string | null;
-  }>;
-  /** Stop serving the mock; requests fall through to the real network. */
-  clearMock: () => Promise<void>;
-  /**
-   * Inspect a prototype: patches, services, contract coverage, exports
-   * and ownership violations. Pure file inspection — no browser needed.
+   * Inspect a prototype: its requirements and the files that implement them, findings and reviews.
+   * Pure file inspection — no browser needed.
    */
   prototypeStatus: (slug: string) => Promise<PrototypeStatus>;
-  /**
-   * Where a prototype is shown, and whether its patches still have to be
-   * replayed: the address of a live page, a document of ours the host renders with
-   * its patches already in it, or the generated page index when no page is marked
-   * as the entry (plan §19.3).
-   */
-  prototypeEntry: (options: { slug: string }) => Promise<PrototypeEntry>;
   focusWindow: (instanceId?: string) => Promise<{ instanceId: string; title: string; url: string }>;
   releaseControl: (instanceId?: string) => Promise<BrowserLifecycleActionResult>;
   closeWindow: (instanceId?: string) => Promise<BrowserLifecycleActionResult>;
   hideWindow: (instanceId?: string) => Promise<BrowserLifecycleActionResult>;
   /**
    * Add a tab to this session's window — what makes several prototypes workable
-   * at once, since the window is one and its tabs are many (plan §22). Returns
+   * at once, since the window is one and its tabs are many. Returns
    * the new tab's id.
    *
    * Opening something into a window that has no tab of its own yet opens *into*
@@ -367,7 +294,7 @@ export interface BrowserPaneFns {
    * This is what `--tab` names. The tab becomes the one the rest of the command, the
    * next command, and the command after the person clicks around all land on, and the
    * window does not move: it is shared with the person, and the tab they are reading is
-   * theirs to keep (plan §22, 第十轮/第十二轮). An unknown id throws — running somewhere
+   * theirs to keep. An unknown id throws — running somewhere
    * else is the one outcome a named target exists to prevent.
    */
   targetTab: (tabId: string) => Promise<void>;
@@ -376,14 +303,14 @@ export interface BrowserPaneFns {
    * from, because a tab brought up is one it is about to work on with them.
    *
    * `movedView` is false for a child session: it takes the tab as its own but does not move what
-   * the person is looking at (plan §22, Conductor). An unknown id throws.
+   * the person is looking at. An unknown id throws.
    */
   activateTab: (tabId: string) => Promise<{ movedView: boolean }>;
   /** Close one tab. Closing a window's last tab closes the window. */
   closeTab: (tabId: string) => Promise<{ remaining: number }>;
   /**
-   * Hand one of this conversation's tabs to another conversation — the orchestrator's verb
-   * (plan §22, Conductor): a parent gives each of its child sessions a tab of its own.
+   * Hand one of this conversation's tabs to another conversation — the orchestrator's verb:
+   * a parent gives each of its child sessions a tab of its own.
    */
   assignTab: (tabId: string, targetSessionId: string) => Promise<void>;
   /** This session's window's tabs, in the order they were opened. */
@@ -392,7 +319,7 @@ export interface BrowserPaneFns {
    * The windows this session can reach, with whether each is visible and who is driving it.
    *
    * Not a listing an agent reads — there is **one window per workspace**, shared by every
-   * conversation in it and by the person, so "which window" is not a question (plan §22).
+   * conversation in it and by the person, so "which window" is not a question.
    * The app-side flows use it as a *read of the window's state*: `open` waits for a
    * foregrounded window to become visible, `close`/`hide`/`focus` report what changed, and
    * a tab-level question ("which tabs does this window have") is `listTabs`.
@@ -400,16 +327,8 @@ export interface BrowserPaneFns {
   listWindows: () => Promise<Array<{
     id: string;
     title: string;
-    /**
-     * The tab this window is actually showing. For an overlay that is the live
-     * site's own address, never the prototype's.
-     */
+    /** The tab this window is actually showing. */
     url: string;
-    /**
-     * The prototype this window is working on, when it is one — with its kind
-     * (which decides whether the document is ours to edit) and its own address.
-     */
-    prototype?: PrototypeWindowDescriptor | null;
     isVisible: boolean;
     /**
      * Which conversation is working in it right now, when one is — the window-level
@@ -440,10 +359,9 @@ export interface BrowserPaneToolOptions {
    */
   getBrowserPaneFns: () => BrowserPaneFns | undefined;
   /**
-   * The workspace root, for the commands that name a file of the agent's own — `evaluate --file`
-   * on the browser door, `apply --file` on the prototype one. A relative path counts from here;
-   * absent means such a path has to be absolute, because a file named relative to nothing is a
-   * file nobody can find.
+   * The workspace root, for commands that name a file of the agent's own — `evaluate --file`
+   * on the browser door. A relative path counts from here; absent means such a path has to be
+   * absolute, because a file named relative to nothing is a file nobody can find.
    */
   workspaceRootPath?: string;
 }

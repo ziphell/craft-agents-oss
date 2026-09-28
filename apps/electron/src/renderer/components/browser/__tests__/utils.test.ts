@@ -32,10 +32,10 @@ describe('getHostname', () => {
 function tab(fields: {
   active?: boolean
   lockedBy?: string | null
-  cursorOf?: string | null
+  cursorOf?: string[]
   belongsTo?: TabBelongsTo | null
 }) {
-  return { active: false, lockedBy: null, cursorOf: null, belongsTo: null, ...fields }
+  return { active: false, lockedBy: null, cursorOf: [], belongsTo: null, ...fields }
 }
 
 /** Sessions as the rule reads them: which task each carries, and whether something spawned it. */
@@ -68,7 +68,7 @@ describe('openTargetOfActiveTab', () => {
 
   it('falls back to the conversation that works from the tab', () => {
     const target = openTargetOfActiveTab(
-      [tab({ active: true, cursorOf: 'session-a' })],
+      [tab({ active: true, cursorOf: ['session-a'] })],
       sessions({ 'session-a': {} }),
     )
 

@@ -126,9 +126,9 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
 
   /**
    * Tick a prototype this project works on, or untick it. The project carries the set
-   * (plan §15.1.3); it is background for conversations here, not a binding — a
-   * prototype belongs to no project (plan §15.1.4), and a conversation is bound
-   * explicitly, if at all (plan §15.1.2).
+   *; it is background for conversations here, not a binding — a
+   * prototype belongs to no project, and a conversation is bound
+   * explicitly, if at all.
    *
    * The whole set travels, in the order the prototypes are listed, so ticking one off
    * sends the rest and unticking the last one sends an empty set — which is the clear,
@@ -169,7 +169,7 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
    * A conversation on one prototype, chosen explicitly rather than left to the
    * agent to work out from the background it is given. It *binds that
    * conversation* and nothing else: the prototypes the project is worked on with
-   * (§15.1.3) are told to the conversation, never applied to it (plan §15.1.2).
+   * are told to the conversation, never applied to it.
    */
   const handleStartSessionForPrototype = useCallback(async (prototypeSlug: string) => {
     if (!workspaceId || !project) return
@@ -325,10 +325,10 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
 
           {/* Prototypes tab — the prototypes in the workspace. A prototype belongs
               to no project: the same one is worked on from conversations of
-              different projects (plan §15.1.4). Any of them can be ticked as one
-              this project works on (plan §15.1.3); that is background for
+              different projects. Any of them can be ticked as one
+              this project works on; that is background for
               conversations here, not a binding — a conversation is bound
-              explicitly, if at all (plan §15.1.2). */}
+              explicitly, if at all. */}
           {tab === 'prototypes' && (
             <Info_Section
               title={t('projectInfo.tabPrototypes')}
@@ -342,7 +342,7 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
                 <ul className="divide-y divide-border/50">
                   {prototypes.map((prototype) => (
                     <li key={prototype.slug} className="px-4 py-2 flex items-center gap-3">
-                      {/* Which ones this project works on (plan §15.1.3): the
+                      {/* Which ones this project works on: the
                           project's own set, ticked here. A set, not a choice of
                           one — several can be ticked at once. */}
                       <input
@@ -361,7 +361,7 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
                       </button>
                       {/* The explicit choice, in the one place a choice is needed: a
                           conversation is bound to a prototype or it is not, and this
-                          binds the new one (plan §15.1.2). Unrelated to which
+                          binds the new one. Unrelated to which
                           prototypes the project is worked on with. */}
                       <Button
                         size="sm"

@@ -28,7 +28,7 @@
  *   every section still read in the order `tabs` reports.
  * - **Grouping is a view, not an owner.** Nothing here changes what a tab is or who
  *   may touch it: `belongsTo` is read, never written, and the model's rules
- *   (reach, close, the lease in `driverSessionId`) are untouched. That is the line
+ *   (reach, close, the driven-by mark in `drivenBy`) are untouched. That is the line
  *   between this and the "tab group" that would give a group an owner of its own.
  */
 
@@ -95,7 +95,7 @@ export function groupTabsByWork(tabs: BrowserTabSummary[]): TabGroup[] {
  *
  * The single agent section is also the case that has to keep its header for another reason:
  * the header is where its `+` lives, and a window holding only a conversation's tabs is
- * exactly where somebody would want to open one more for it (plan §22).
+ * exactly where somebody would want to open one more for it.
  */
 export function shouldShowGroupHeaders(groups: TabGroup[]): boolean {
   if (groups.length > 1) return true

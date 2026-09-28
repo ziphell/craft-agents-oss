@@ -37,6 +37,23 @@ export interface PlatformActions {
   onOpenUrl?: (url: string) => void
 
   /**
+   * Open this HTML in a browser — as a tab, at the file's own address.
+   *
+   * What a preview draws is a document, not a browsing context: its frame was handed the text, so
+   * it has no address, and nothing that needs one — a relative reference, a script, a `fetch` —
+   * works inside it. This is the same file opened for real, in a browser, where a tab shows a page
+   * at an address and all of that does.
+   *
+   * *Which* browser is not this component's question: the host answers it from the person's own
+   * setting (the app's own browser window by default, their system browser when they asked for
+   * that), which is why this takes a path and nothing else.
+   *
+   * Absent where there is no such window to open (a browser client: a tab there is already the
+   * person's own browser).
+   */
+  onOpenFileInBrowser?: (path: string) => void
+
+  /**
    * Open a code preview in a new window (Electron: opens Monaco window)
    * Web: Could show inline modal with syntax highlighting
    */
@@ -84,11 +101,48 @@ export interface PlatformActions {
 
   /**
    * Write a file's contents as UTF-8 string (Electron: fs.writeFile via IPC).
-   * Restricted to the workspace prototypes folder — used by the prototype
-   * workbench to persist patches / contract fragments produced by direct edits.
    * Resolves with the absolute path that was written.
+   *
+   * The host's boundary is **the one that let it show the file**: whatever it can read out to
+   * this component, it can save back — a file shown and then refused would be the one case this
+   * exists for. That is deliberately not the agent's write policy (tools are bounded
+   * separately, and this does not widen them). Refusals come back as refusals; do not pre-check
+   * the boundary, or the check becomes a second description of it.
    */
   onWriteFile?: (path: string, content: string) => Promise<{ path: string }>
+
+  /**
+   * Hand part of a file over to the conversation.
+   *
+   * Deliberately data rather than a finished sentence: the host owns the input and
+   * knows how this app quotes things into it, and a shared component inventing that
+   * phrasing would be a second answer to a question the host already answers.
+   *
+   * Absent on hosts with no conversation to hand anything to.
+   */
+  onSendToChat?: (payload: { path: string; html: string }) => void
+
+  /**
+   * The origin the app's bundled drawio editor is served at.
+   *
+   * Rejects when the bundle is not installed or the host cannot serve an origin at
+   * all — both of which are things the reader needs told, so the message is shown
+   * rather than swallowed. Used by `drawio-preview` blocks, which put their frame
+   * there and speak the bridge in `@craft-agent/shared/drawio/types` to it.
+   */
+  onGetDrawioOrigin?: () => Promise<string>
+
+  /**
+   * Something in the workspace's prototypes tree changed on disk, whoever wrote it.
+   *
+   * The event's own payload — which file `fs.watch` happened to name — is deliberately not
+   * passed through: it is relative, sometimes spelled with the platform's separator, and
+   * null when the watcher does not know. A component that wants to know *what* changed reads
+   * the file, which is the authority this workbench is built on; this only says to look.
+   *
+   * Absent on a host with no watcher, where a component reads once and stays.
+   */
+  onPrototypesChanged?: (callback: () => void) => () => void
 
   /**
    * Read a file as data URL (Electron: fs.readFile via IPC + base64 encode)

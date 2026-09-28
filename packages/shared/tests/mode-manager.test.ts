@@ -1598,7 +1598,7 @@ describe('shouldAllowToolInMode - Bash plans folder exception', () => {
     });
   });
 
-  describe('should allow writes to the workspace prototypes folder', () => {
+  describe('should treat the workspace prototypes folder like any other path', () => {
     const prototypesFolderPath = join(testRoot, 'prototypes');
     const patchesPath = join(prototypesFolderPath, 'checkout-flow', 'patches');
     const pathsFragmentPath = join(prototypesFolderPath, 'checkout-flow', 'services', 'checkout-api', 'paths');
@@ -1608,37 +1608,40 @@ describe('shouldAllowToolInMode - Bash plans folder exception', () => {
       mkdirSync(pathsFragmentPath, { recursive: true });
     });
 
-    it('should allow Write to a prototype patch file', () => {
+    // The prototype folder is the *user's* material, not the mode's own plumbing: Explore mode
+    // may write plans and data because the app needs them written, and it may not write here.
+    // Whoever wants an artifact changed switches the mode (or the person changes it by hand).
+    it('should block Write to a prototype patch file', () => {
       const result = shouldAllowToolInMode(
         'Write',
         { file_path: join(patchesPath, 'A-001-btn.css'), content: '.btn{}' },
         'safe',
         { prototypesFolderPath }
       );
-      expect(result.allowed).toBe(true);
+      expect(result.allowed).toBe(false);
     });
 
-    it('should allow Edit to an API contract fragment', () => {
+    it('should block Edit to an API contract fragment', () => {
       const result = shouldAllowToolInMode(
         'Edit',
         { file_path: join(pathsFragmentPath, 'list-orders.yaml'), old_string: 'a', new_string: 'b' },
         'safe',
         { prototypesFolderPath }
       );
-      expect(result.allowed).toBe(true);
+      expect(result.allowed).toBe(false);
     });
 
-    it('should allow a bash redirect into the prototypes folder', () => {
+    it('should block a bash redirect into the prototypes folder', () => {
       const result = shouldAllowToolInMode(
         'Bash',
         { command: `echo '{}' > "${join(patchesPath, 'A-002-fixture.json')}"` },
         'safe',
         { prototypesFolderPath }
       );
-      expect(result.allowed).toBe(true);
+      expect(result.allowed).toBe(false);
     });
 
-    it('should block Write outside the prototypes folder', () => {
+    it('should still block Write outside the prototypes folder', () => {
       const result = shouldAllowToolInMode(
         'Write',
         { file_path: join(testRoot, 'outside.txt'), content: 'x' },
@@ -1648,22 +1651,14 @@ describe('shouldAllowToolInMode - Bash plans folder exception', () => {
       expect(result.allowed).toBe(false);
     });
 
-    it('should not treat a sibling prefix as inside the prototypes folder', () => {
-      const result = shouldAllowToolInMode(
-        'Write',
-        { file_path: join(`${prototypesFolderPath}-evil`, 'x.css'), content: 'x' },
-        'safe',
-        { prototypesFolderPath }
-      );
-      expect(result.allowed).toBe(false);
-    });
-
-    it('should still block writes when no prototypes folder is provided', () => {
+    // The path is still carried for the prompt (it says where prototype artifacts go), so it
+    // must not become a permission by being present.
+    it('should not allow writes just because the folder path was provided', () => {
       const result = shouldAllowToolInMode(
         'Write',
         { file_path: join(patchesPath, 'A-003.css'), content: 'x' },
         'safe',
-        {}
+        { prototypesFolderPath }
       );
       expect(result.allowed).toBe(false);
     });

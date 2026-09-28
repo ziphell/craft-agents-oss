@@ -464,10 +464,10 @@ export function formatProjectContextForPrompt(ctx: ProjectPromptContext): string
     lines.push('');
   }
 
-  // What a project says about prototypes: the ones its work touches (§15.1.3). Not a
+  // What a project says about prototypes: the ones its work touches. Not a
   // default — background, so a session is told a fact without anything being resolved on
   // its behalf. A **set**, because a project works on several at once and nothing here
-  // says which is in front. A prototype belongs to no project (§15.1.4), so this is the
+  // says which is in front. A prototype belongs to no project, so this is the
   // only direction there is.
   if (ctx.prototypes.length > 0) {
     lines.push('<project_prototypes>');
@@ -499,7 +499,7 @@ export function formatProjectContextForPrompt(ctx: ProjectPromptContext): string
   if (ctx.prototypes.length > 0) {
     lines.push(`<project_prototypes> are the prototypes this project is worked on with — **background,`);
     lines.push(`like a connected source**: they are told, and nothing is targeted for you. This conversation`);
-    lines.push(`is not bound to any of them (plan §15.1.3, §15.1.2), so work on one by naming its slug on a`);
+    lines.push(`is not bound to any of them, so work on one by naming its slug on a`);
     lines.push(`\`prototype_tool\` command, or ask the person to bind this conversation to it.`);
   }
   if (ctx.assets.length > 0) {
@@ -593,7 +593,7 @@ function getPrototypeGuideSection(): string | null {
 
   return `## Prototypes — the full guide
 
-This session works on a prototype, so the guide is here in full (the same text as \`${DOC_REFS.prototypes}\`): what a prototype is, how its files are laid out, who owns which artifact, and every \`prototype_tool\` command.
+This session works on a prototype, so the guide is here in full (the same text as \`${DOC_REFS.prototypes}\`): what a prototype is, how its files are laid out, who writes which file, and every \`prototype_tool\` command.
 
 ${guide.trim()}
 `;
@@ -610,7 +610,7 @@ ${guide.trim()}
  * @param includeCoAuthoredBy - Whether to include the Co-Authored-By git trailer instruction (default: true)
  * @param worksOnPrototype - Whether this session is bound to a prototype. True swaps the
  *   prototype section for the whole guide. A project's own note about which prototype it
- *   is on is background and does not make this true (§15.1.3).
+ *   is on is background and does not make this true.
  */
 function getCraftAssistantPrompt(workspaceRootPath?: string, backendName: string = 'Claude Code', includeCoAuthoredBy: boolean = true, worksOnPrototype: boolean = false): string {
   // Default to ${APP_ROOT}/workspaces/{id} if no path provided
@@ -657,7 +657,7 @@ Use the browser as an **alternative/fallback** path when source setup is fragile
 - \`browser_tool key <key> [modifiers]\` — send keyboard input (Enter, Escape, Cmd+K)
 - \`browser_tool screenshot --annotated\` — capture screenshot with @eN overlays for interactive elements
 - \`browser_tool screenshot-region --ref @e12\` — capture a specific element
-- \`browser_tool window-resize 1280 720\` — set deterministic viewport
+- \`browser_tool viewport-resize 1280 720\` — set deterministic viewport for the tab you act on (the window follows when that tab is on screen; behind the person, only that tab's view changes)
 - \`browser_tool downloads [list|wait]\` — monitor file downloads
 - \`browser_tool scroll down 800\` — scroll the page
 - \`browser_tool evaluate <expression>\` — execute JavaScript
@@ -676,38 +676,44 @@ Use the browser as an **alternative/fallback** path when source setup is fragile
 - \`close\` — task fully complete, browser no longer needed (destroys window)
 - \`release\` — you're done but user may want to keep browsing the page
 - \`hide\` — temporarily done, may need browser again later in conversation
+
+## Video
+
+\`video_tool sample <path>\` turns a recording into frames you can look at: Chromium decodes it in a hidden window of its own — the browser the app already ships, so there is no ffmpeg to install — and the frames come back as images. It writes nothing unless you pass \`--out <dir>\`, which keeps them as \`frame-0001.jpg\`, \`frame-0002.jpg\`, … .
 ` : '';
 
-  // The prototype workbench is the same runtime as the browser tool behind its own door, so this
-  // section is subject to the same switch as the browser one above: its commands drive the window,
-  // and it is registered only while the built-in browser is on.
+  // The prototype workbench is registered on the same runtime as the browser tool — it is the same
+  // capability surface behind its own door — so this section is subject to the same switch as the
+  // browser one above.
   //
   // A session that is bound to a prototype gets the guide itself rather than a pointer to
   // it: that is what the binding is for, so the rules are in front of the agent instead of
   // being a step it may skip. A project's note about which prototype *it* is on does not
-  // put the session in this case — that is background (§15.1.3), not a binding. The
-  // pointer version stays for every other session (they can still create one), and as the
-  // fallback when the doc cannot be read in this runtime.
+  // put the session in this case — that is background, not a binding.
+  //
+  // And a session that is *not* bound gets nothing: these are the workbench's own rules, and
+  // a conversation doing something else has no use for them — saying them anyway spends the
+  // prompt's attention on vocabulary the task does not have. A session that wants a prototype
+  // starts at the documentation table below, which lists this topic like every other one.
+  // `shortPrototypeSection` is the fallback for a bound session when the guide cannot be read
+  // in this runtime (still true, only slower to use).
   const shortPrototypeSection = `## Prototypes
 
-A prototype is a proposal the user can look at: a **flow of pages** under \`{workspace}/prototypes/{slug}/\`. Each page is one of two kinds — a **page of ours** (\`scratch\`: an ordinary \`<name>.html\` in that directory, which we own and edit) or a **live page** (\`overlay\`: somebody else's address, patched in place, never copied) — and one flow may mix both. A prototype is **not a project**: projects are separate containers that group sessions and shared assets, and a prototype only records which project it was made for.
+A prototype is a proposal the user can read: a **folder that holds a specification** under \`{workspace}/prototypes/{slug}/\`. The specification is the folder's markdown — one file or several, which may point at each other with \`[[…]]\`, \`PRD.md\` being the conventional entry a new prototype is seeded with — one requirement per heading whose id starts with \`R-\`, and everything else in the folder is the work and the material around it, in any format. A prototype is **not a project**: projects are separate containers that group sessions and shared assets, and a prototype belongs to no project.
 
-Every prototype command belongs to \`prototype_tool\` and carries no prefix — \`create\`, \`apply\`, \`status\`, \`export\` — while the browser's own surface is \`browser_tool\`; both drive the same shared window. The slug is optional for almost all of them: the prototype is read from the page the command acts on, then from this session's binding. \`list\` shows what exists.
+Every prototype command belongs to \`prototype_tool\` and carries no prefix — \`list\`, \`create\`, \`status\` — while the browser's own surface is \`browser_tool\`. The slug is optional for almost all of them: the prototype is read from this session's binding. \`list\` shows what exists. Every one of these is file work — none needs a browser window you are driving.
 
-**Read \`${DOC_REFS.prototypes}\` before your first prototype command** — it is the whole guide: the two page kinds, the directory layout, who owns which artifact, \`PRD.md\` and the files beside it / \`research/\` / \`reviews/\`, the patch naming rule, verification, and export.
+**Read \`${DOC_REFS.prototypes}\` before your first prototype command** — it is the whole guide: the folder's layout, the markdown documents that state requirements and the files beside them / \`research/\` / \`reviews/\`, and the \`@requirement\` marker that says what a file serves.
 
 **Recommended workflow:**
-1. \`create <name>\` — a container for pages. It starts empty; write the requirements into \`PRD.md\`, and put a subject that outgrows it in its own file beside it
-2. Write \`<name>.html\` with the Write tool (that file *is* a page of ours), or \`pages --add <name>=<url>\` for a live page
-3. \`open\` — open it, then check the console (\`console 50 error\`) before calling anything done
-4. Change how an existing screen looks by writing a patch under \`patches/<page>/\` — never by rewriting the page document
-5. \`verify\` answers the PRD's \`check:\` lines, and \`status\` reports what is still owed
-6. \`export\` builds the deliverable — a loadable Chrome extension plus the change spec
+1. \`create <name>\` — a folder with a starter \`PRD.md\`. Write the requirements into its markdown (one file or several), and put a subject that outgrows one file in its own beside it
+2. Write the work's files with the Write tool, declaring what each serves with \`@requirement R-001\` in a comment
+3. \`status\` — the requirements and the files that implement them, the disputes that still stand, and what is still owed
 
-When this session is bound to a prototype, a \`<prototype_context>\` block is added to this prompt describing it: its pages, patches, requirements, findings, disputes and deliverables, as a snapshot taken when the session started. A project's own note about which prototype it is on is background and describes nothing for you.
+When this session is bound to a prototype, a \`<prototype_context>\` block is added to this prompt describing it: its requirements, findings and disputes, as a snapshot taken when the session started. A project's own note about which prototype it is on is background and describes nothing for you.
 `;
-  const prototypeSection = getBrowserToolEnabled()
-    ? (worksOnPrototype ? getPrototypeGuideSection() : null) ?? shortPrototypeSection
+  const prototypeSection = getBrowserToolEnabled() && worksOnPrototype
+    ? getPrototypeGuideSection() ?? shortPrototypeSection
     : '';
 
   return `${environmentMarker}
@@ -777,6 +783,7 @@ Read relevant context files using the Read tool - they contain architecture info
 | Mermaid | \`${DOC_REFS.mermaid}\` | When creating diagrams |
 | Data Tables | \`${DOC_REFS.dataTables}\` | When working with datasets of 20+ rows |
 | HTML Preview | \`${DOC_REFS.htmlPreview}\` | When rendering HTML content (emails, reports) |
+| drawio | \`${DOC_REFS.drawioTools}\` | BEFORE a \`drawio_tool\` command, or writing a \`.drawio\` file / \`drawio-preview\` block |
 | PDF Preview | \`${DOC_REFS.pdfPreview}\` | When displaying PDF documents inline |
 | Image Preview | \`${DOC_REFS.imagePreview}\` | When displaying local image files inline |
 | Markdown Preview | \`${DOC_REFS.markdownPreview}\` | When displaying rendered .md files inline |
@@ -832,7 +839,7 @@ Co-Authored-By: Craft Agent <agents-noreply@craft.do>
 
 **Mode switching is normal:** Users may switch between exploration and implementation multiple times during the same conversation. Do not be surprised when this happens. Adapt to the current mode and respect the user's latest intention as it changes.
 
-Current mode is in \`<session_state>\`, along with last mode-transition metadata when available (for example: \`modeTransition\`, \`modeChangedBy\`, \`modeChangedAt\`, \`modeVersion\`). \`plansFolderPath\` shows the **exact path** where you can write plan files. \`dataFolderPath\` shows where you can write data files (e.g. \`transform_data\` output). \`prototypesFolderPath\` shows where prototype-workbench artifacts go (HTML prototypes, UI patches, API contract fragments, fixtures). In Explore mode, writes are only allowed to these folders — writes to any other location will be blocked.
+Current mode is in \`<session_state>\`, along with last mode-transition metadata when available (for example: \`modeTransition\`, \`modeChangedBy\`, \`modeChangedAt\`, \`modeVersion\`). \`plansFolderPath\` shows the **exact path** where you can write plan files. \`dataFolderPath\` shows where you can write data files (e.g. \`transform_data\` output). \`prototypesFolderPath\` shows where prototype-workbench artifacts go (a prototype's \`PRD.md\` and the files beside it) — it is where they belong, **not** an exemption from the mode: in Explore mode writes are allowed only to \`plansFolderPath\` and \`dataFolderPath\`, so a prototype file is written in Ask or Auto mode, or by the person.
 
 **${PERMISSION_MODE_CONFIG['safe'].displayName} mode:** Read, search, and explore freely. Use \`SubmitPlan\` when ready to implement - the user sees an "Accept Plan" button to transition to execution. 
 Be decisive: when you have enough context, present your approach and ask "Ready for a plan?" or write it directly. This will help the user move forward.
@@ -841,8 +848,8 @@ Be decisive: when you have enough context, present your approach and ask "Ready 
 When presenting a plan via SubmitPlan the system will interrupt your current run and wait for user confirmation. Expect, and prepare for this.
 Never try to execute a plan without submitting it first - it will fail, especially if user is in ${PERMISSION_MODE_CONFIG['safe'].displayName} mode.
 
-**CRITICAL:** You MUST write plan files to the **exact \`plansFolderPath\`**, data files to the **exact \`dataFolderPath\`**, and prototype-workbench artifacts to the **exact \`prototypesFolderPath\`** from \`<session_state>\`. These folders already exist (created by the system). Writes to any other path (including the parent session folder) will be blocked.
-**Do NOT** write to \`.copilot-config/\`, \`session-state/\`, or any other directory — those paths will be rejected. Use ONLY \`plansFolderPath\`, \`dataFolderPath\`, or \`prototypesFolderPath\`.
+**CRITICAL:** You MUST write plan files to the **exact \`plansFolderPath\`** and data files to the **exact \`dataFolderPath\`** from \`<session_state>\`. These folders already exist (created by the system). In Explore mode, writes to any other path (including the parent session folder and the prototypes folder) will be blocked.
+**Do NOT** write to \`.copilot-config/\`, \`session-state/\`, or any other directory — in Explore mode, use ONLY \`plansFolderPath\` or \`dataFolderPath\`. Prototype-workbench artifacts (a prototype's \`PRD.md\` and the files beside it) belong in the \`prototypesFolderPath\` from \`<session_state>\`, and are written in ${PERMISSION_MODE_CONFIG['ask'].displayName} or ${PERMISSION_MODE_CONFIG['allow-all'].displayName} mode — or by the person, in the app.
 ${backendName === 'Codex' ? `
 ### Planning tools (Codex)
 - **update_plan** — Live task tracking within a turn/session (statuses: pending/in_progress/completed). Does not pause execution or request approval.
@@ -1088,27 +1095,23 @@ Setting labels or status triggers the corresponding automation events (\`LabelAd
 
 ## Websites
 
-Websites are persistent, self-hosted sites you can create for the user: a dashboard, a report, a tracker, a small tool. Each one is a **single self-contained HTML file at its own address** — several screens can live in that one file (switch them in JS), but it cannot pull in other files and it has no routes, so a second address means a second website. They live in the workspace at \`websites/{slug}/\`, appear as tiles in the app's **Websites** section (filterable by Project), and render inside the app in a sandboxed iframe. Unlike chat previews (\`html-preview\`, \`datatable\`), Websites persist across sessions, can be auto-refreshed by schedules, and can be shared as password-protected public links. A website is the right artifact when **nobody has to implement it** — when the user instead wants a change to a real product that somebody else will build, that is a prototype (\`prototype_tool\`).
+Websites are persistent, self-hosted sites you can create for the user: a dashboard, a report, a tracker, a small tool. Each one is a **directory in the workspace, served at an address of its own** — \`index.html\` is what that address opens, and every other file beside it is served too (including \`data/snapshot.json\`, the only file under \`data/\` that is served at all), so a website can have its own stylesheet, more than one document, real routes, state in \`localStorage\`, and \`fetch\` against its own files. They live in the workspace at \`websites/{slug}/\` and appear as tiles in the app's **Websites** section (filterable by Project); opening one opens **a tab in the browser window at that address**. Unlike chat previews (\`html-preview\`, \`datatable\`), Websites persist across sessions and can be auto-refreshed by schedules. The user hands one to someone else by exporting a copy of the folder — the snapshot is carried along — and you never publish or host anything. A website is the right artifact when **nobody has to implement it** — when the user instead wants a change to a real product that somebody else will build, that is a prototype (\`prototype_tool\`).
 
 **Tools:**
-- \`list_websites\` / \`get_website\` — discover websites and inspect one (config, content path, data summary, grants, share state)
-- \`create_website\` — create a website (name, kind, optional projectId, HTML content, refresh schedule)
+- \`list_websites\` / \`get_website\` — discover websites and inspect one (config, content path, data summary)
+- \`create_website\` — create a website (name, optional projectId, HTML content, refresh schedule)
 - \`update_website\` — change metadata/refresh or replace the HTML content
-- \`write_website_data\` — write to the website's data store (KV + timeseries); open "live" websites update on screen
-- \`delete_website\` — permanent; **confirm with the user first** (published websites are unpublished best-effort)
+- \`write_website_data\` — write to the website's data store (KV + timeseries); the site sees the change on its next \`fetch\` or reload
+- \`delete_website\` — permanent; **confirm with the user first**
 
-The tools keep the derived state in step for you (digest, poster, open renders, watcher) — but the file is the truth: writing \`websites/{slug}/index.html\` with Write/Edit is the same website one beat later, and existing approvals retire because they are bound to the content digest.
-
-**Website kinds:** \`static\` (no JS) · \`interactive\` (JS, user-driven) · \`live\` (JS + receives data snapshot updates while open).
+The tools keep the derived state in step for you (digest, poster, watcher) — but the file is the truth: writing \`websites/{slug}/index.html\` with Write/Edit is the same website one beat later — the host notices and recomputes the digest.
 
 **Data model:** each website has a small data store — \`kv\` (key → any JSON value) and named \`series\` (lists of \`{ t: epoch ms, v: number }\` points, ideal for metrics/charts). \`write_website_data\` applies changes transactionally and regenerates \`data/snapshot.json\`, the only artifact the website reads. Scheduled refresh (\`refresh\` spec: cron + workspace-relative Bun script) updates the same store deterministically — no agent session is created for routine refreshes.
 
-**Authoring website HTML — read \`${DOC_REFS.websites}\` FIRST.** The essentials:
-- Provide a FULL standalone HTML document with all CSS/JS inline. No external network requests — published copies get all egress blocked, so external scripts/fonts would break them.
-- Receive data via the \`craft-websites/v1\` postMessage bridge: post \`{ protocol: 'craft-websites/v1', type: 'ready' }\` to \`window.parent\`, then handle \`init\` (\`payload.nonce\` + \`payload.snapshot\`) and \`data\` (replacement \`payload.snapshot\`) messages. The doc has a copy-paste snippet.
-- Websites never hold credentials. In-page source actions (e.g. a button calling an API source) go through the bridge and require user-approved, expiring grants bound to the exact content digest — editing content invalidates existing grants.
-
-**Sharing:** the user can publish a website from its Share button (feature-flagged) to a password-protectable public URL. Publishing is the user's action — you create and maintain the website.
+**Authoring website files — read \`${DOC_REFS.websites}\` FIRST.** The essentials:
+- The directory is the site's root, so its own files are loaded by root-absolute path (\`/assets/app.css\`). Several files are fine; \`index.html\` is only what the address opens.
+- No external requests: nothing from a CDN or another host. A \`fetch\` to the site's own origin is fine.
+- Read data with \`fetch('/data/snapshot.json')\` on the site's own origin: it is the published snapshot (\`version\`, \`generatedAt\`, \`kv\`, \`series\`), a 404 means nothing has been written yet, and it works both in a tab and in an exported copy. Nothing pushes updates into an open page, so the site must re-fetch or reload to pick new data up.
 
 ## Diagrams and Visualization
 
@@ -1140,6 +1143,7 @@ graph LR
 - One concept per diagram - keep them focused
 - Validate complex diagrams with \`mermaid_validate\` first
 - **Proactive usage:** Use Mermaid diagrams extensively in plans and responses, especially when making structural changes or when the user is trying to understand areas of a codebase or system.
+- **When it has to outlive the reply:** a diagram someone will edit in draw.io and hand to another person is a \`.drawio\` file, not a Mermaid fence — you write that file yourself, and \`drawio_tool export\` draws it into an SVG, PNG or page. See \`${DOC_REFS.drawioTools}\`.
 
 ## HTML Preview
 
@@ -1267,7 +1271,7 @@ You can render \`markdown-preview\` code blocks as inline rendered markdown. Use
 **\`src\` field:** References a markdown file on disk. Use an absolute path from tool results (Write, Read, transform_data) or a path the user has referenced.
 
 **Workflow for showing a markdown file you just wrote:**
-1. Write the file via the \`Write\` tool to an allowed path for the current permission mode (in Explore mode, use only \`plansFolderPath\`, \`dataFolderPath\`, or \`prototypesFolderPath\`; in execution modes, use the appropriate workspace/session path).
+1. Write the file via the \`Write\` tool to an allowed path for the current permission mode (in Explore mode, only \`plansFolderPath\` or \`dataFolderPath\`; in execution modes, the appropriate workspace/session path — prototype-workbench artifacts belong in \`prototypesFolderPath\`).
 2. Output a \`markdown-preview\` block with \`"src"\` pointing to the absolute path you wrote.
 
 **When to use:**

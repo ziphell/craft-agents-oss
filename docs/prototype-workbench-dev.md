@@ -1,461 +1,388 @@
 # 产品经理需求生产工作台 — 开发文档
 
-> **定位**：[实施方案](prototype-workbench-plan.md) 写「是什么、为什么这样做」（产品结构、决策、验收）；本文写「实际怎么落地的」——模块地图、实现与初稿的偏差、踩过的坑、删过的机制、以及验证基线。
+> **定位**：[实施方案](prototype-workbench-plan.md) 写「是什么、为什么」。本文写「代码在哪、哪些不能碰、怎么验证」。
+> 读法：改代码前看 §1（模块地图）与 §2（不变量）；想知道「某个概念为什么现在没有了」看 §4（墓园）。
+> 用词与文案的口径（tab / 地址 / page、那个窗口的名字、给用户看的文案）见 [术语与文案规范](vocabulary.md)。
 >
-> 读法：改代码前先看 §1（代码在哪）与 §5（怎么验证）；想知道「某个概念为什么现在没有了」看 §4。
+> **一句话**：把**需求**和**实现它的文件**绑在同一个文件夹里的规格工作台。人写规格（markdown 里 `## R-001 <标题>`，一个文件或几个），agent 用普通文件工具在同一文件夹里实现，工具只回答两句话：**哪个需求没人实现**、**哪个引用指向不存在的需求**。
+>
+> **一个原型 = 一个文件夹，只有四类内容**：规格（一个 markdown 文件或几个）、旁边的材料（任何格式）、`research/`（findings）、`reviews/`（disputes）。**唯一机制**是 `@requirement R-00x`——写在任何文件里即"这个文件服务于那条需求"；需求↔实现不存第二份，读时现算。实现、findings、disputes 全由 agent 用 Write/Edit 写，`create` 只建文件夹与起步 `PRD.md`。
 
 ---
 
 ## 1. 模块地图
 
-### 共享层 `packages/shared/src/prototypes/`
+### 共享层 `packages/shared/src/prototypes/`（16 个模块 / 2572 行）
 
-| 文件 | 负责 |
-|---|---|
-| `types.ts` | **零依赖**的类型与常量（`PageKind`、`DEFAULT_PAGE_KIND`、提升用的页名 `LEGACY_BASE_PAGE_NAME` / `LEGACY_ENTRY_PAGE_NAME`、`_layout.html` 与它的插槽、带 `page` 的 `PrototypePatch` 与 `PrototypeWindowDescriptor`）。**这里的"零依赖"是硬约束**，见 §3.6 |
-| `config.ts` | `config.json`（页表 `pages`）的读写与规范化；旧形状（顶层 `kind` / `targetUrl`）**读时提升**成行（`legacyPageRows`）；读不干净的条目丢弃进 `pageIssues`，该字段永不写回。页行的 `useLayout: false` = 共享布局不套这一页（§19.2）；`true` 是默认、从不落盘，写在 overlay 行上是没有读者可兑现的声明（报进 `pageIssues`） |
-| `storage.ts` | 路径工具（含 `getPrototypeAnchorsPath`）+ `scanPrototypePatches()`（**派生索引**，不落盘；补丁的页域就是目录——根 = 每页都重放、`patches/<页名>/` = 只那一页；顺序 = **`Z` 按规则排最后**，再按序号 → 路径——写入者前缀是身份，不是排序键）+ `scanPrototypePatchesForPage()` / `listPrototypePatchPages()` + `listPrototypeFiles()`（原型自己目录里**有哪些文件**，入口单独挑出来；**不按任何条件过滤**——不按扩展名、也不按所有权，见 §20.1） |
-| `pages.ts` | 页的判定与页表合并（`isPrototypePagePath` / `describePrototypePages` / `listPrototypePages` / `findEntryPage` / `matchPrototypePage`；解析出的页带 `useLayout` —— 共享布局是否套这一页，overlay 恒为 false，因为它不是我们的文档）与页表增删改（`updatePrototypePages`：add / remove / rename / entry / layout，命令面是 `pages --add` / `--remove` / `--rename` / `--change` / `--layout` / `--no-layout` 与 `entry`；行上的 `useLayout` 在每次改写中原样带走） |
-| `page-document.ts` | 生成的**页索引**（`buildPrototypeIndexDocument`：`/` 没有入口时的落点，也是导出包的 options 页）与**共享布局**（`applyPrototypeLayout`：`_layout.html` 的单插槽，纯文本替换第一次出现） |
-| `patch-script.ts` | `buildPatchInitScript()`：patch → init script 的纯变换（live 注入与导出共用，见 §3.4）；外加**每个补丁的自我报告**——css 报 `@target` 命中了几个元素、js 报有没有抛错，写进 `window.__craft_patch_state__`，由 `buildPatchStateProbeScript()` 读回；宿主页的 css 是纯文本内联、没有脚本可报，所以另有一个批量记录脚本（`buildPatchMatchRecorderScript`，只对声明了 `@target` 的补丁生成） |
-| `patch-header.ts` | 标记解析（`@requirement` / `@target`），**零依赖**：`storage.ts`（补丁记录）与 `requirements.ts`（需求线）都要用它，而后者已经依赖 storage |
-| `anchors.ts` | **虚拟 base**（§21.2）：`anchors/<页名\|shared>.json` 的读/合并写、漂移与孤儿判定、`dropPrototypeAnchors`，以及两个页面探针（`buildAnchorProbeScript` 取 fingerprint / `buildAnchorCandidateScript` 取候选选择器） |
-| `fold.ts` | **折叠**（§21.3）：`foldPrototype()` 把差量层折进它该在的地方——scratch 页 → `assets/<页名>/committed.*` + 文档里的引用；overlay 页 → `patches/<页名>/Z-00x-upper.*`。含 provenance 标记、拒绝（文档不在）与"没人检查过"的报告。**唯一调用者是 `duplicate.ts`**：折叠发生在复制出的副本上（`{ fold: true }`），命令面与导出都不折 |
-| `edit-patch.ts` | **一次保存 → 一条差量**（§21.6）：`writePrototypeEdits()` 把窗口里攒下的那批编辑写成 `patches/[<页名>/]ui-<nnn>-<name>.{css\|js}`——写者身份固定为 `ui`（`Z` 是折叠层保留的），序号取**全原型已有最大序号 + 1**（排序只认序号、写者不是排序键，所以一次要盖在已有补丁之上的编辑必须排在它们后面），`@target` 逐条去重写进头部，样式**按编辑顺序**逐条落规则（后写的赢，和会话里看到的一致）；样式 + 文字同时有就是**同号两个文件**（css 先于 js）。**不 apply**：文件才是让改动生效的东西，watcher 会把它重放进每个在显示这个原型的窗口 |
-| `export.ts` | `buildSelfContainedHtml()`（渲染与导出共用的那一个变换，补丁按页取）、`buildDevSpec()`（**按页分节**）、`resolvePrototypeEntry()`（入口页或生成的页索引）、`exportPrototype()`（**四份产物**：`dist/extension/` 一个扩展覆盖整条流程 ＋ `dist/static/` 每页一份自包含文件（§17.8）＋ `dist/bookmarklet.html` live 页的书签（§17.9）＋ `dist/handoff.md` **交付索引**（§20.8），由 `buildHandoff()` **最后**写：表只从写盘时刻的 `dist/` 列表（`listDistNames()`）生成，末节抄 `buildPrototypeStatus().settleBlockers`）。静态那一半的纯变换是 `buildStaticPage()`（补丁按页取 → `buildSelfContainedHtml`，mock 内联在 `<head>` 开头）＋ `inlineLocalReferences()` / `buildStaticAssetResolver()`（本原型目录内的引用 → base64 data URL；**页面文档除外**，它是同目录的兄弟文件）；解析不到的引用点名进 `staticWarnings`，与扩展侧的 `warnings` 分开。`assets/` 走 `collectAssetFiles()` 按字节整份进扩展包。一次导出共用一个 `builtAt` 与一次 `collectMockRoutes()` |
-| `extension.ts` | 交付物打包：manifest / README / 匹配模式 / 版本号 / 页面变换（内联脚本与 `on<event>` 提取）/ mock 编译 / **按页分文件**（每页自己的 css·js 列表与 `assets/<页名>/`；options 页 = 页索引，工具栏图标开入口页）。`ExtensionFile.content` 是 `string \| Uint8Array`：这个文件生成的产物都是文本，原型自己的资源按字节进包（`export.ts:collectAssetFiles`，不做 utf-8 往返）。`patchesForPage()` 是"这一页带哪些补丁"（§19.4）的**唯一**表述，三个读者：扩展的 css 链接、扩展的 js bundle、书签 |
-| `bookmarklet.ts` | **第三种载体**（§17.9）：`buildBookmarkletScript()` = mock 层 + `buildPatchBundle()`（与扩展同一份 bundle，含 css——扩展把 css 交给 Chrome 当样式表，书签没有这一步）；`buildBookmarkletDocument()` 生成 `dist/bookmarklet.html`：**一页一条可拖拽链接**（书签没有被地址作用域的能力，所以按页命名、地址印在旁边，而不是一条通吃后按 URL 挑）＋同一份代码供控制台粘贴（页面策略拒绝书签时的那条路），并在页面里写明这个载体做不到什么 |
-| `status.ts` | 只读全貌（`buildPrototypeStatus` / `listPrototypeStatuses`）：页表 + `entryPage` + `pageIssues` + `pageAvailable` + **需求线**（`requirements` 的引用关系 + `entryDocument` 是哪个文件 / `files` 是旁边的哪些文件，都是**路径**）+ 按页/共享补丁计数 + **每条补丁的标记**（页 / `@target` / 指纹）+ **锚点记录**与它的孤儿点名 + `reviews`（按状态计数与仍站着的那些）+ `acceptance`（上一轮）+ `unresolved`（三类未决）。另有闸门函数 `whyPrototypeIsNotSettled`——一处规则、三个读者（status 输出 / export 点名 / export `--strict` 拒绝） |
-| `notices.ts` | 报告里"哪里不对"的一条：`code` + `params`（渲染侧按 `prototypeNotice.<code>` 翻译）+ `text`（**与 agent 输出逐字相同的那句英文**，由同一份模板从同一组 params 生成）。只有"人能行动、且是结论"的条目编了码（门禁五条 / 页表两条 / 需求两条 / 锚点一条）；文件级诊断（一行配置读不出来、review 没有 `claim:`）走 `rawNotice` 保留原文。`status.ts` 的 `pageIssues` / `briefIssues` / `settleBlockers` 与 `anchors.issues` 都是它的数组，agent 侧与 `dist/handoff.md` 读 `text` |
-| `reviews.ts` | **争论**（§3.7）：`reviews/*.md` 的解析与读取——一条异议一文件，`# D-001 …` 头 + `about:` / `on:` / `status:` / `claim:` / `evidence:`。状态与盘对账：`open` 而补丁已变 → `stale`，`fixed` 而补丁没变 → 同样 `stale`；判据是 `on:`（补丁指纹，`storage.ts:patchFingerprint`）。`about:` 的四种写法由 `parseReviewTarget` 认，其余不猜 |
-| `acceptance.ts` | **跨轮验收**（§3.7）：`acceptance/state.json` 的读写（`tooling`，只有 `verify` 写）+ `compareAcceptance`（一轮 vs 上一轮 → `newRed / stillRed / fixed / notRun / gone`）+ `summarizeAcceptance`。轮次由"真的跑过一次"产生，不是版本号 |
-| `prompt.ts` | `<prototype_context slug writer>` 的构造与渲染：**这个会话以谁的身份写**、页列表（名字 / 类型 / 地址或文件 / 是否入口）、每条补丁的页域 / `@target` / 指纹（异议的 `on:` 就抄它）、写补丁的规矩（前缀 = 你的身份）、**`reviews/` 的写法与仍在站着的异议**、**上一轮验收与它的红**、以及"复制时可以折叠改动"这件事（折的是副本，原件不动、继续照常写补丁） |
-| `ownership.ts` | 所有权是 **路径 → 拥有者** 的函数，但**只登记有规矩的路径**（§3.5）：`patches/`（writer 在文件名里）、`services/`（路径规则）、`anchors/**` 与 `acceptance/**`（工具的记录），**其余一律默认控制面**——原型目录首先是作者自己的文件夹，枚举它的形状等于维护一份必然过期的副本。四个函数：`classifyPrototypePath`（谁拥有）+ `canWriterWrite`（严格原语）+ `whyWriterMayNotWrite`（**执行的那条**：他人的产物、工具记录、服务目录里的杂文件拒；控制面放行）+ `resolvePrototypeArtifactPath`（绝对路径 → `prototypes/<slug>/…`）。`Z` 是保留 token（只有折叠会写），见 §3.6 |
-| `contract.ts` | 契约 fragment 解析与合成、`buildMockRoutes()`；`services/{svc}/state.json` 的读取（`readState`，坏了要**上报**而不是当成"没有"）与 `x-mock-collection` 的解析（集合挂在**路径项**上，一个方法一个 op） |
-| `mock-engine.ts` | **mock 的状态机**（§5.3）：`describeMockOperation`（方法 → op，表达不了就报 problem）、`matchMockRoute`（pathname 匹配 + 尾部回退，**两个载体共用的唯一匹配规则**）、`readMockPath` / `writeMockPath`（点路径读写 store）、`applyMockRequest`（五条 op 的全部语义，**答案必须是快照**）、`parseMockRequestBody`（JSON / 表单 / 读不出）、`mergeMockStores`（多服务的 store 合并与冲突）。**类型 `MockRoute` / `MockProgram` 也住在这里**，`contract.ts` 只 re-export —— 语义与它读的形状放在一起，避免 contract ↔ engine 的运行时环 |
-| `url.ts` | `prototypeOriginUrl` / `prototypeDocumentUrl` / `setPrototypeBaseUrlResolver` |
-| `target.ts` | `requireTargetUrl` / `pickOverlayPage` / `setPrototypePageUrl`（改**某一页** overlay 的地址） |
-| `project-link.ts` | **项目在哪些原型上工作**（`ProjectConfig.prototypeSlugs`，§15.1.3）：`getProjectPrototypes` / `setProjectPrototypes`（**集合**读写；不存在的原型被**过滤掉而不是报错**，读取端对同一种情况也回答"没有"，两端一致；**不**校验归属，因为原型不属于任何项目）。它是**背景信息**：只进 `<project_prototypes>` 那一列，**不产生任何解析**、不注入任何原型的上下文、不进默认 slug。原型侧**没有** `projectSlug` 了（那条边与"成员资格"在 §15.1.4 撤回），所以这个文件里既没有成员列表，也没有"替会话挑一个"的代码 |
-| `requirements.ts` | **需求**（§20.1）：`PROTOTYPE_PRD_FILENAME` = `PRD.md`、`getPrototypePrdPath`、`parsePrototypePrd`、`readPrototypeRequirements`。解析**只读这一个文件**：`## R-001 …` 条目与 `check:` 行（`selector` / `endpoint`，其余 kind 在解析期就报错）；token 与 finding / 异议共用宽容写法。只认大写 `PRD.md`——手写的 `prd.md` 只是文件夹里的一份材料，不是第二个入口。"这个目录里有哪些文件"由 `storage.ts:listPrototypeFiles` 回答，这个文件不管 |
-| `coverage.ts` | **需求线**：`resolveRequirementCoverage()` 把 PRD 与页 / 补丁 / findings / 折入文件对上，产出 `unmet` / 悬空引用 / 每条需求的 `disputes`。`status` 与 `dist/dev-spec.md` 读的是同一份结果 |
-| `research.ts` | `research/*.md` 的 finding（`# F-001` + `claim:` / `source:` / `captured:` / `evidence:` / `requirements:`）与其 `evidence:` 的存在性检查 |
-| `frames.ts` | 帧采集的记录与读回：`research/frames/<session>/frames.json` + 编号 JPEG、`research/videos/` 的来源副本、`listFrameCaptures` |
-| `create.ts` / `duplicate.ts` / `delete.ts` | 创建（只建目录与 `patches/`，不写 `config.json`、不预置页、**不预置布局**）、写页文档（`writePrototypePage`）、读页文档与 `_layout.html`、复制（`config.json` 按源的页表重写；`{ fold: true }` 时连副本一起折）、删除（目录整份删掉，**不**去改别的原型） |
-| `index.ts` | barrel。**渲染层只能对它 `import type`**，见 §3.6 |
+| 文件 | 行 | 负责 |
+|---|---|---|
+| `types.ts` | 40 | `PROTOTYPE_RESEARCH_DIRNAME` / `PROTOTYPE_REVIEWS_DIRNAME` 与共享类型。**零依赖**（§2③） |
+| `wiki-links.ts` | 124 | `[[…]]` 的解析与改写（`extractLinkTargets` / `rewriteWikiLinks`），跳过代码段与 fence。**零依赖叶子**，渲染层从这里取运行时值（§2③、§2⑫） |
+| `storage.ts` | 132 | 目录内路径（目录 / `research` / `reviews`）、`listPrototypeFiles()`（**递归**列出目录内文件，任何格式、不做任何过滤、名字是原型相对路径；跳过 `research/`、`reviews/` 与隐藏项）、`isMarkdownFile()`、`contentFingerprint()` |
+| `requirements.ts` | 250 | 需求解析：`## R-00x` 是唯一机制，读**每个** `.md`/`.mdx`（`parseRequirementDocument` / `readPrototypeRequirements`），每条需求带上**定义它的文件**；跨文件重号被点名。`extractRequirementIds`（`@requirement` 标记）、`requirementFingerprint`。`PROTOTYPE_PRD_FILENAME` = `PRD.md` 只是 `create` 的起步文件名 |
+| `links.ts` | 174 | 文档间的 `[[…]]`：`readPrototypeLinks()`——只扫 markdown，按「本文档目录 → 原型根 → 唯一文件名」解析（`../` 归一化，`[[name]]` 可省 `.md`）；链不到或重名 → issues。**不动"实现"判定**（§2⑫） |
+| `research.ts` | 206 | `research/*.md` 的 finding（`# F-001` + `claim:` / `source:` / `captured:` / `evidence:` / `requirements:`）解析，以及 `evidence:` 的存在性检查 |
+| `reviews.ts` | 332 | `reviews/*.md` 的 dispute 解析（`status` / `about:` / `on:` / `claim:`）、与盘对账判 `stale`（`judgeAgainstDisk`）、`isUnresolved` |
+| `coverage.ts` | 249 | 需求 × 依据（文件 / findings / reviews）→ 每条需求的引用关系、未实现、悬空引用；`research/`、`reviews/` 与**定义需求的文件**都不算实现 |
+| `status.ts` | 308 | 报告（`buildPrototypeStatus` / `listPrototypeStatuses`）+ 门禁 `whyPrototypeIsNotSettled`（两条：有需求没人实现、有 dispute 还立着）。报告把 `specificationFiles`（定义需求的文件）与 `files`（其余材料）分开，并带上 `links`；断链进 `briefIssues` |
+| `notices.ts` | 99 | 可翻译的 notice：`code` + `params` + 由同一组 params 生成的**英文句**（agent 输出与详情页共读） |
+| `prompt.ts` | 243 | 绑定会话的 `<prototype_context>` 块（`buildPrototypePromptContext` / `formatPrototypeContextForPrompt`） |
+| `project-link.ts` | 84 | 项目侧「碰过哪些原型」（`ProjectConfig.prototypeSlugs`，背景记录，不绑定不解析） |
+| `create.ts` | 106 | 建文件夹 + 起步 `PRD.md`（`createPrototype` / `prototypeSlugFromName`） |
+| `duplicate.ts` | 93 | 整份复制成一个新原型（`duplicatePrototype`，**只有界面用**） |
+| `delete.ts` | 43 | 删除整个目录（`deletePrototype`，**只有界面用**） |
+| `index.ts` | 89 | barrel。**渲染层只能对它 `import type`** |
 
-### agent 侧
+### agent 面
 
-- **两个工具各自一份文件**（§2 的 3.6 行）：`browser-pane.ts`（`BrowserPaneFns` 能力接口 + `BrowserPaneToolOptions` + 两个工厂都要的 `requireBrowserPaneFns`）、`browser-tools.ts`（`createBrowserTools` + `BROWSER_TOOL_DESCRIPTION`）、`prototype-tools.ts`（`createPrototypeTools` + `PROTOTYPE_TOOL_DESCRIPTION`）。**一份描述对一个工具**：浏览器那份只讲窗口自己的能力，原型那份讲它怎么用**文件**，窗口只留一句指向 `browser_tool`——窗口与标签页那段一度两份里各写一遍（常驻上下文，重复是双倍代价），已收敛：讲全只留浏览器那份，撞名的澄清也只留浏览器描述与原型 help 各一次。
-- `packages/shared/src/agent/command-cli.ts`：**两门共用的 CLI，不知道任何一扇门**。里面是分词与引号转义、`--tab` 定位、选项解析、`--file` 路径解析、结果形状（`BrowserCommandResult` / `getPageMetrics`）、命令上下文，以及 `createCommandRunner({ help, run, unknownCommand })`——"跑一条命令"的骨架只写一份，门把它自己的三件事（help / 命令表 / 不认领时的措辞）传进来。入口 `executeBrowserToolCommand` / `executePrototypeToolCommand` 都在**各自的门文件里**（批量与"一条一调"的分野也在那里）。依赖因此是单向的：`browser-commands.ts`、`prototype-commands.ts` → `command-cli.ts`，反向没有 import（早先两边互相 import，靠都在函数体内引用才没炸）。**门自己的 runtime 也不在这里**——批量（`splitBatchCommands` / `executeBatchCommands` / 导航后停）、`evaluate --file` 的读取与大小上限、`open` 等的 settle 时长，都归 `browser-commands.ts`（只有这门有）；解析器的报错也不点名某个工具（共享层曾写死 `browser_tool`，原型命令的引号打错会被告知是浏览器的语法错）。
-- `packages/shared/src/agent/browser-commands.ts` / `prototype-commands.ts`：两条门的**命令体**——`runBrowserCommand(ctx)` / `runPrototypeCommand(ctx)`，各自不认领就回 `null`。输出文案（页表命令 `pages`（`--add` / `--rename` / `--remove` / `--change`）/ `entry`、`open` 的落点选择、`apply` 报出"这是哪一页的补丁"）都在各自那份里。**新增命令要同时改对应的命令体 + 那份 help 列表**。
-- `packages/shared/src/prompts/system.ts`：`<project_context>` 的渲染，含 **`<project_prototypes>`**——项目记下的"在哪些原型上工作"（§15.1.3），是**背景**：由它产生的自动行为是零（不注入原型的 `<prototype_context>`、不注入指南、不进默认 slug）。**是一列，不是"当前原型"**：项目同时在几个原型上工作是常态，没有哪一个在前。新块名要加进 `PROJECT_BLOCK_TAGS`，否则 slug 里的字面闭合标签会提前终止这个块。
-- `packages/shared/src/agent/core/pre-tool-use.ts`：写前守卫（第 5d 步）——写工具落在 `prototypes/<slug>/…` 时（`resolvePrototypeArtifactPath`）按会话的写入身份判 `whyWriterMayNotWrite`，越界即拒并**给出理由**。身份由两个 backend 各自从 `resolvePrototypeWriter(config.session)` 传进来（`claude-agent.ts` / `pi-agent.ts`），与 `<prototype_context writer>` 同源，见 §3.6。
+- `packages/shared/src/agent/prototype-commands.ts`（259 行）：命令体 —— `executePrototypeToolCommand` / `runPrototypeCommand`（`list` / `create` / `status`）/ `getPrototypeToolHelp`。解析不出就回 `null`。
+- `packages/shared/src/agent/prototype-tools.ts`（112 行）：`createPrototypeTools` + `PROTOTYPE_TOOL_DESCRIPTION`（工具描述的另一份在 `session-tools-core`，见 §2①）。
+- `packages/shared/src/markers.ts`：`markerIndex`（标记不是词的一部分）/ `cleanMarkerValue`。`@requirement` 的识别靠它。
+- `packages/shared/src/agent/command-cli.ts`：两门共用的 CLI（分词、`--` 选项、结果形状、`createCommandRunner`）。它不知道任何一扇门。
+- `packages/shared/src/prompts/system.ts`：`prototypeContext` 块的位置，以及**原型指南**——`getPrototypeGuideSection()` 把整份 `prototypes.md` 注入系统提示。
+- **两个 backend 各建一次 prompt 上下文**：`packages/shared/src/agent/claude-agent.ts`（首轮 pin `pinnedPrototypeContext`，之后漂移只提示）与 `packages/shared/src/agent/pi-agent.ts`（每轮 `resolvePrototypeContext`；同文件底部的 `PANE_TOOL_EXECUTORS` 是命令分派表）。
+- 工具注册与显示：`packages/session-tools-core/src/tool-defs.ts`（`PrototypeToolSchema` + 描述 + 注册行）、`packages/shared/src/agent/session-scoped-tools.ts`（`CLAUDE_BACKEND_SESSION_TOOL_NAMES`）、`packages/shared/src/agent/mode-manager.ts`（always-allowed 清单 + 写原型目录的放行）、`packages/ui/src/lib/tool-parsers.ts`（命令预览）、`packages/server-core/src/sessions/SessionManager.ts`（显示名 `"Prototype"`，以及 `listPrototypes` / `createPrototype` / `getBoundPrototypeSlug` 的装配）。
+- agent 指南：`apps/electron/resources/docs/prototypes.md`（工具描述与 `--help` 都指向它）。
 
-### 服务端 / 主进程
+### RPC 与渲染层
 
-- `packages/server-core/src/sessions/SessionManager.ts`：把 `BrowserPaneFns` 装配到真实实现；`describePrototypeAtPage` 给 `snapshot` 补原型行（slug、页的类型与页名、原型自己的地址）。
-- `packages/server-core/src/domain/verify-prototype.ts`：跑 PRD 的 `check:` 行——`endpoint` 对契约（**不需要浏览器**），`selector` 对"这次工作所在的那个标签页"，读不到页面时是 `skip` 而不是 `fail`（"没看成"与"不在"是两件事）。每跑一次写一轮 `acceptance/state.json` 与 `dist/acceptance.md`，报告里说**与上一轮的差**（新红 / 仍红 / 不再被看 / 已修 / 不再声明）。测试见 `__tests__/verify-prototype.test.ts`（页面那一半用桩 `evaluate`，不开窗口）。
-- `packages/server-core/src/domain/apply-prototype.ts`：把补丁注入浏览器——只注入**调用方指名的那个标签页**的补丁（`matchPrototypePage` → 入口页 → 只有共享补丁，并把这个页名报回去；标签页由 `PrototypeTargetPage` 传进来，**不读窗口的当前 URL**，那读的是屏幕上前台那个标签页）；先读"已内联"标记再决定注册什么；注入后读回每个补丁的自我报告，算出**命中 / 未命中 / 漂移**并写锚点记录。`replayPrototypeInBrowser()` 是文件变更后的那条路：我们自己的页 → 刷新，别人的页 → 重新 apply（**故意不是"apply 再刷新"**，见 §3.12）。
-- `packages/server-core/src/handlers/rpc/prototypes.ts`：给渲染层用的 RPC（列表 / 导出 / 页表 `SET_PAGES` / 改某一页地址 / 入口解析 / **`prototypes:replay`**（按 slug 找所有在显示它的**标签页**——逐窗口读标签列表，不再看窗口级 `prototypeSlug`）/**`prototypes:duplicate`**（带 `fold` 选项：折的是副本）等）。
-- `apps/electron/src/main/prototype-host.ts`：原型文档的应答——`/` = 入口页（是 overlay 就 302）或生成的页索引、`/_index` 恒可达、`/<页名>` 对 overlay 是 302、**文件优先**、SPA 路由回退到入口文档（`handlePrototypeRequest` 路由、`registerPrototypeProtocolHandler` 在浏览器 session 上拦 `http`、`installPrototypeBaseUrlResolver` 发地址）。
-- `apps/electron/src/main/browser-cdp.ts`：`pickElement`、init script 注册、`setFetchMockRoutes`。
-- `packages/server-core/src/domain/prototype-page.ts`：`describePrototypeAtPage(tab, …, workspaceRootPath)`——`snapshot` / `listWindows` 里那行 `Prototype:` 的唯一来源。**标签页上的身份优先**（开标签页时记的），会话绑定只在标签页说不出话时兜底，再配上页表里的类型与 origin。
-- `packages/server-core/src/domain/tab-access.ts`：标签页的两条边界规则（reach / close）与 `whyTabIsOutOfReach` / `whyTabIsLocked` 的纯函数，被命令入口与 `--tab` 指名处共用。
-- `apps/electron/src/main/browser-pane-manager.ts`：无边框窗口 / 标签栏与地址栏两块 chrome（`railView` + `toolbarView`）/ 每个标签页一个 `BrowserView` / 工具栏状态推送 / 地址→原型的反查；`reload(id, tabId?)` 也在 `IBrowserPaneManager` 上（自动重放要用，远程桥照旧 fire-and-forget）；**每个标签级方法收尾参数 `tabId`**（"命令作用于哪个标签页"由调用方指名，`tabOf` 是唯一的读法），`activateTab`（只换前台）与 `setSessionTab`（只写游标）是两件事。
-
-### 渲染层
-
-- `apps/electron/src/renderer/pages/PrototypeInfoPage.tsx`：原型详情页。页头按钮：**交付**（`Popover`：门禁逐条带去向——跳段 / 交给对话，点完自动收起；每个服务一行结论；`dist/` 清单；导出）、打开、在对话里改 / 开始对话，外加 `…` 菜单（打开位置）。正文顺序：**页面**（页表 + 每页的入口 / 地址 / 改名 / 删除，行上带改动清单与失效选择器点名）→ **页面问题**（有才出现）→ **需求**（渲染 `PRD.md` 原文 + 每条需求的引用标注 + 集合里其它文档可展开阅读）→ **研究**；告警与门禁文案都是 shared 侧 `notices.ts` 的 `code + params`，渲染侧翻译。
-- `apps/electron/src/renderer/pages/ProjectInfoPage.tsx`：项目详情页的"原型"标签页——从工作区里**勾选**"这个项目在做的原型"（复选框多选，写的是 `ProjectConfig.prototypeSlugs`，§15.1.3／§15.1.4），以及每行的"用这个原型开对话"（把它绑到**新会话**上）。页面不显示也不设置"当前原型"：那个概念已撤回（§15.1.2），项目只**记**一组背景信息，不替会话绑定。
-- `apps/electron/src/renderer/hooks/usePrototypes.ts`：原型的读取与 watcher；**自动重放**也在这里（它是对 watcher 的唯一持有者），`prototypeSlugForChangedFile()` 决定哪些变更值得重放（`patches/`、`assets/`、顶层 `.html`）。
-- `apps/electron/src/renderer/atoms/prototypes.ts`：当前工作区原型的列表 atom。自动重放**没有开关**（曾经有过，撤掉的理由见下表 21.4 一行）。
-- `apps/electron/src/renderer/components/app-shell/PrototypesListPanel.tsx`：两级下钻列表（原型 → 它的页）与菜单（新建页 / 设为入口 / 改名 / 删除，以及复制 / **复制并折叠改动** / 删除原型）。
-- `apps/electron/src/renderer/components/prototypes/CreatePrototypeDialog.tsx` / `CreatePageDialog.tsx`：只问名字的创建对话框，与**按页问类型**的"新建页"对话框（一张卡片是"我们自己的一页"，另一张是"一个真实页面"并要地址——类型搬到这里才被问到，它的收益，如引导文案，也一起搬过来）。
-- `apps/electron/src/renderer/components/prototypes/PrototypeBindingMenu.tsx`：会话标题栏的烧瓶图标（切换 / 解绑 / 跳回原型）。
-- `apps/electron/src/renderer/hooks/useBrowserToolbarActions.ts`：面板工具栏动作 → 主窗口的实际调用。
-- `apps/electron/src/renderer/browser-toolbar.tsx`：面板 chrome 本体（**独立渲染进程，没有 workspace / 会话上下文**）；`?view=bar|rail` 决定自己画的是地址栏还是左侧标签栏，标签栏的分段读 `groupTabsByWork`。
+- 通道：定义在 `packages/shared/src/protocol/channels.ts`，分类在 `packages/shared/src/protocol/routing.ts`；handler 在 `packages/server-core/src/handlers/rpc/prototypes.ts`（`list` / `create` / `duplicate` / `delete` / `watch` / `unwatch` / `changed`，watcher 100ms 去抖），注册进 `packages/server-core/src/handlers/rpc/index.ts`；渲染层经 `apps/electron/src/transport/channel-map.ts` 与 `apps/electron/src/shared/types.ts` 的 `window.electronAPI.*` 桥过去（见 §2④）。
+- `apps/electron/src/renderer/pages/PrototypeInfoPage.tsx`：详情页——需求（`PRD.md` + 每条被谁引用）、研究、文件。**文件列表里的"材料"凡是 app 自己能显示的，点名字就是"看"；还有第二种动作（改）的那些，行内多一个铅笔**（详情页自己托管的三种由 `inAppKind()` 判定，**其余一律落回全局的 `classifyFile()`**；行内图标与点击读的是同一条判断，所以图片画的是图片图标、点开就是 app 内置的大图）：
+  - `.drawio`：点名字 = 大弹窗看图（`DrawioOverlay initialMode="view"`；**开之前先在详情页里读文件**，因为查看器要的是文档本身，读不出来就走详情页自己的错误行而不是给一张白画布），行内铅笔 = 编辑器（`initialMode="edit"`，编辑器自己读文件，它还要知道"从哪一版开始改"）。**大窗头部的铅笔在两面之间切**（`headerActions` 里，编辑器那面显示眼睛；只在 `onWriteFile` 在时画），所以看图那条路也有编辑入口；切回看图时画的是**本次窗口里写过的最新文档**（`written ?? xml`），不是开窗时那份。看图期间 `status` 每次刷新会重读一次，agent 改完图会重画。
+  - `.html`/`.htm`：点名字 = **大窗里画这份 HTML**（`HTMLPreviewOverlay`，与 `html-preview` 块同一个窗口；走的是 app 那条通用开路 `onOpenFile` → `useLinkInterceptor` → `classifyFile` 判成 `html` → 读文件 → 大窗）。**这一跳不由详情页自己决定**：这一行 HTML 和聊天里的一条 `.html` 链接走的是同一个判断，详情页只是又一次点击。**它是一个文档，不是一个浏览上下文**：frame 是 `srcDoc`，没有自己的地址，所以相对引用、脚本、`fetch` 都不成立（相对链接会解析到 app 自己的地址——这条路的已知粗糙边，见 `HTMLPreviewOverlay` 头上的说明）。**要让这份 HTML 真的在浏览器里跑起来，用大窗头部右上角的「在浏览器中打开」**（`preview.openInBrowser`）：它在工作区的浏览器窗口里以 `file://` 开这个文件，成为一个有自己地址的 tab——那里相对引用、脚本、链接全对，而且那是 agent 接得上的面（`browser_tool` 驱动的是窗口里的 tab，驱动不了渲染层里的 frame）。**那颗按钮走哪个浏览器由应用偏好决定**（`UserPreferences.openInAppBrowser`，缺省应用内；关掉即系统默认程序），与链接同一个开关，见下一条。行内铅笔 = 大窗直接开在 `initialMode="edit"`（`HtmlDesignEditor`，写回文件）；**点名字这一档是纯查看**（HTML 以 `__single__` 一项交给大窗，没有写回目标，所以头部那颗看 / 改开关不出现——"改"是行内铅笔的事）。**这一档没有"看源码"的面**：读 markup 是编辑器的事，一行之遥。读不出来时退回代码大窗报那行错误，跟 json / drawio 两个分支同一个做法。
+  - `.md`/`.mdx`：点名字 = 大弹窗**读**这份文档（`MarkdownFileOverlay`，里面是 `MarkdownEditorPane` 的渲染面；`initialMode` 缺省就是 `'view'`）。**行内没有铅笔**：大窗头部自带"看 / 改"那个铅笔（`headerActions`），行内再来一个只是同一个开关的第二个位置（见 §7.4）。
+  - **`html-preview` 块还是"消息里的画面"**：无脚本、无 `base` 的静态 HTML（`HTMLPreviewOverlay` + `srcDoc`）——但它的**大窗与上面那条是同一个窗口**，所以也有同一颗「在浏览器中打开」：块经 `PlatformContext.onOpenFileInBrowser` 把"屏幕上是哪一个"（`src`）交给宿主，宿主持着 `openFileInBrowser`，按偏好决定去内置窗口还是系统浏览器。**块自己（消息里那张卡片）只有入口**：页签、铅笔（开编辑器）、放大（开大窗）——那颗按钮是"对这份 HTML 做的事"，属于窗口，不属于卡片。
+  - **一条 http/https 链接（对话里、md 里都是同一条）默认也进那个浏览器窗口**：`App.tsx` 的 `openUrl` 先问 `isBrowserUrl`（只有 http/https 是浏览器装得下的地址），再问用户偏好——是就 `browserPane.openUrl(url)`，否则交给 `shell:openUrl`（`mailto:` / `tel:` / 别人的 scheme / `craftagents:` 全走那条，deep link 也归它，那行"URL blocked"的报错也在那里）。**偏好管两处**：一条链接（点击时，`shouldOpenLinkInAppBrowser`）和 HTML 大窗里那颗「在浏览器中打开」（按下时，`shouldOpenFileInAppBrowser`）——同一个开关，因为"用哪个浏览器"是一个问题；两个函数都在 `apps/electron/src/renderer/lib/open-in-app-browser.ts`，答案存在 `preferences.json` 的 `UserPreferences.openInAppBrowser`（Settings → Links，缺省为开），**每次现读、不缓存**（点击不是热路径，而设置是人随时会改的）。它只管**人的点击与按钮**——agent 用 `browser_tool` 开什么都不受它影响。关掉时：链接交给 `shell:openUrl`，那颗按钮交给系统默认程序（`.html` 的默认程序就是浏览器）。两条通道在 main 侧各自把关，因为"渲染层已经判过"不是边界：`open-file` 过 `validateFilePath`（绝对路径，且在 home / tmp / workspace 根 / 工作目录之内，非敏感文件——`.ssh/`、`.env`、`*.pem` 这类在哪儿都拒；并且必须是**文件**而不是目录，顺带把 `..` 与软链解析掉），`open-url` 再问一次 `isBrowserUrl`（只有浏览器装得下的地址能进窗口）。两个 handler 共享一个 `openInWindow`（新 tab → 前置 → 加载）。
+  - **详情页自己托管的三种是 `inAppKind()` 说的，聊天里的链接是全局的 `classifyFile()` 说的——这三种谁跟谁一样是逐个定的**：`.md` 两边都进同一个 `MarkdownFileOverlay`（聊天那条是 `FilePreviewRenderer` 的 markdown 分支）；`.drawio` 两边都进同一个 `DrawioOverlay`（看图那一支，路径要在开窗前先读出来，因为查看器画的是递给它的文档——图没有"源码"那一面可看，把 `<mxfile>` 摆出来不如把图画出来）；`.html` 两边都进同一个 `HTMLPreviewOverlay`（大窗）。链接认得出这些后缀，靠的是同一份扩展名表喂给 `linkify.ts`（`FILE_EXTENSIONS_PATTERN`）——`drawio` 是加进那张表之后才成链接的，在那之前这种路径根本不成链接，而是交给系统程序。**其余格式没有第二份判断**：`inAppKind()` 返回 `null`，页面就把路径交给同一个 `onOpenFile`（= `classifyFile()` 那条路），所以图片 / PDF / json / 代码在两边必然一致。
+  - **两份判断现在没有对不上的地方**：html 曾经是唯一被点名的有意不一致（`classifyFile` 把 html/htm 归成 `code`，所以聊天里的 `.html` 链接看到的是**源码**——"聊天里给一个 html 链接时想要的通常是源码"），现在两边都进同一个 `HTMLPreviewOverlay`（大窗，看那一面）。"这份 HTML 要真在浏览器里跑"不在这次点击里决定：大窗头部那颗「在浏览器中打开」用应用偏好决定去内置窗口还是系统浏览器——判据是"**这个面 agent 接不接得上**"，而不是"聊天里想要什么"。源码要读就在编辑器里打开。图片曾被记成"方向相反"（聊天里开内置大图，文件夹里那一行交给系统程序）——**那条笔记是错的**：文件夹里那一行走的是同一个 `onOpenFile` → `classifyFile()`，点开一直是 app 内置的大图，两边同一条路。
+  - **分类器说它不能预览的那些**（xlsx / docx / zip / 视频 / HEIC…，`canPreview: false`）才交给系统的默认程序。**门禁只在"还差着什么"时出现**，而且是两件东西：徽章（一句"还不能交出去（N）"）**加上紧接其下的逐条 notice**——每行是读者语言的句子 + agent 原句，右边**一个「交给对话」**。没有"交付"按钮：`交付`是结论的名字，不是动作的名字；把清单藏在按钮后面，等于"看欠了什么"要经过一次点击，而只留一个计数则等于知道欠两条却既看不到也处理不了（这两版都被用户否掉了）。notice 翻译走 `t('prototypeNotice.' + code, params)`；动作走 `usePrototypeAskAgent`（把 agent 原句放进草稿、不发送）。
+- 行内菜单的**打开文件夹**走 `shell:openFile`（= Electron `shell.openPath`，**进入**这个目录），不是 `shell:showInFolder`（那个是在父目录里选中它）。
+- `apps/electron/src/renderer/components/app-shell/PrototypesListPanel.tsx`：原型列表 + 行菜单（复制 / 删除）。状态点是"有话说才画"：没有"可以交出去"的绿点。
+- `apps/electron/src/renderer/components/prototypes/CreatePrototypeDialog.tsx`：创建对话框，只问名字。复制 / 删除没有对话框——删除走 `window.confirm`，都在 `apps/electron/src/renderer/components/app-shell/AppShell.tsx` 的 handler 里。
+- `apps/electron/src/renderer/hooks/usePrototypes.ts`（读取 + `prototypes:changed` watcher）、`apps/electron/src/renderer/atoms/prototypes.ts`（列表 atom）、`apps/electron/src/renderer/hooks/usePrototypeAskAgent.ts`（门禁行的「交给对话」：哪一次对话、追加而不是替换草稿、不代发，理由在那个文件的头上）。
+- `apps/electron/src/renderer/components/app-shell/input/use-working-directory-state.ts`：**绑定选择器**——一个对话要么在一个文件夹里，要么在一个原型的目录里。
 
 ---
 
-## 2. 阶段实现要点与初稿的偏差
+## 2. 不变量（改代码前先看）
 
-初稿写在实施方案里，落地时改掉的地方都在这里；**结论已回写实施方案**，本文只留"当时为什么改"。
+只有「破了会静默出错」的那几条；每条都在代码里核实过。
 
-| 阶段 | 初稿 | 实际 | 原因 |
-|---|---|---|---|
-| 2 拾取器 | `startPicker()` / `stopPicker()` 两个方法，返回"用户点击时才 resolve 的 Promise" | 单一 `pickElement()`：注入一次 + 200ms 短轮询，结果写进 `window.__craft_agent_picker_state__`；**第五轮**起工具栏要的是常驻模式，于是拆成 `armPicker()`（注入并留在那里）+ `drainPicker()`（读走并清空，页内 `picks[]` 队列），一次性的 `pickElement()` 退化成两者之上的循环（agent 的 `pick` 仍然一次一个） | 长挂起的 `Runtime.evaluate` 会被 `CDP_IDLE_DETACH_MS = 5s` 的空闲 detach 打断；短轮询天然重置计时器，不必改既有 detach 逻辑。常驻之所以仍用"轮询 + 读走"而不是"长挂起 + 事件"，还是这条：一次调用不能等一整段时间，否则会被 detach 打断 |
-| 3 注入 | css 走 `injectStyle`、js 走 init script（两条路径） | 两者统一走 init script（css 补丁由脚本自己创建/更新 `<style>`） | 注入的 `<style>` 元素**不随 reload 保留**，init script 会。统一后"reload 重放"只有一条机制，live 与 reload 也不会分叉。因此没有 `injectStyle` |
-| 4 预览 | 新开一条受控渲染通道（现有 HTML 预览 iframe 禁脚本） | 复用浏览器面板打开产物 | 面板本来就是真实引擎、能跑 JS、已沙箱隔离；零新增 UI、渲染环境与工作台一致。产物地址先由回环 HTTP 提供，后来换成 §16 的 `protocol.handle` |
-| 5 mock | 复用 MSW + Prism，或起一个 Node mock server 注册成 Source | CDP `Fetch` 拦截，在网络层 `fulfillRequest` | 前两条分别要引两个新依赖、且覆盖不到 axios 用的 XHR / 要应用改指向；CDP 版本零新依赖、覆盖 fetch+XHR+任意资源、应用一行不改 |
-| 6.4 并线 | 工作台任务 = 一个 `TaskSpec`、一个平面 = 一个 node | **先推迟，后按触发条件落地**（结论见实施方案 §6.4） | 推迟的理由：写冲突已由"派生索引 + append-only patch + fragment 契约 + 所有权矩阵"消除；单用户单 agent 下接 DAG 只多一层生命周期；且当时的结构化输出（`params`）尚未实现，接上也传不了产物。触发条件到齐（结构化输出、Conductor、浏览器侧标签级归属）后按原形状落地 |
-| 7 放开面 | 新增 `PROTOTYPE_PARTITION` 并只对它允许 `webSecurity:false` | **决定不做**（结论见实施方案 §6 阶段 7） | `webSecurity:false` 买到的是"页面脚本自己跨域"，而同一批能力用 CDP 也能做（`Fetch` 兑现、`Runtime.evaluate` 指定 frame）；代价是不可回退的真实安全弱化 |
-| 16 载体 | 原型文档以 `file://` 打开 | 先做了一次回环服务器，**后来换成**在浏览器 session 上拦 `http`（`protocol.handle`），origin 无端口、跨重启稳定 | opaque origin 缺 cookie 域、相对 `fetch`/XHR 与 ES module——mock 层因此永远看不到请求（实施方案 §16）。换载体是因为回环的端口每次启动都变 ⇒ origin 变 ⇒ cookie 与 localStorage 不跨重启；代价（我们站在真实浏览的 http 路径上）与边界见 §3.11 |
-| 19 kind 的位置 | `kind` 在**原型**上（§13）：一条流程要么整条 overlay、要么整条 scratch | **下沉到页**：`config.json` 的 `pages` 每行各自 `overlay` / `scratch`，一条流程可以混 | 类型描述的是**一份文档**的性质（我们自己写的 vs 别人的活页面），不是容器的性质；三个"想做却无处放"的证据见实施方案 §19 |
-| 19 布局 | scratch 页各自是完整文档，共享部分靠复制 | 可选 `_layout.html`，单插槽 `<slot name="page"></slot>`（读时兼容旧拼写 `<!-- @page -->`），宿主渲染与导出都套（`applyPrototypeLayout`） | 复用停在"共享布局 + 页自己的资源引用"。**不引模板引擎**：作者面必须仍是最终产物，否则 agent 要学一套我们自己的语法，导出还得反过来还原它。插槽用 HTML 自己的拼写，就是为了不再多造一个只有本工程懂的标记 |
-| 19.2 布局的默认与作用域（实施时修订） | 创建时预置一个示例布局；布局存在就套住每一页 | 创建**不写布局**（两页要重复同一段标记时才写）；页行 `"useLayout": false` = 共享布局不套这一页，该页按原样送出，宿主与导出走同一条判断，命令面是 `pages --layout/--no-layout <页名>` | "共用一个布局"是**页之间**的事实，不是原型级的默认：不同页可以是完全不同的设计，套上就是替它做决定。示例布局随之删掉——它本来只是"给第一页抄的形状"，而布局现在只在真需要时出现。没有多插槽、没有按页命名布局文件、没有继承链，作者面仍是完整 HTML 文档 |
-| 19.4 补丁页域 | 补丁没有页域，整原型全量重放 | **目录即归属**：`patches/*` 每页重放、`patches/<页名>/*` 只那一页；`patches/<页名>/` 对不上任何页 → `status.pageIssues` 点名 | 只影响 dev-spec 与状态报告的**分组**，不影响注入正确性（补丁本来就要防御式书写，不匹配即静默无害）；旧数据全在根，语义一模一样 |
-| 19.3 `/` | `/` 恒等于 `base.html`（§18），而文件名同时是导出路径与页间链接的锚 | `/` = **入口页**（行上的 `entry` 标记）；没有行标它时 = 宿主生成的**页索引** | 一张表里没有哪一页天然是第一页；换入口不该改文件名。"还没做出这个决定"应当看得见，而不是被一个文件名假装掉 |
-| 19.3 `/_index` | 只有 `/` 一个地址 | `/_index` 恒可达（真文件优先，§16.3 的老规矩）；配入口只是换掉 `/` 的落点 | 索引谁也没有被顶掉：配入口是可逆的一步，不是把这个列表拿走 |
-| 19.5 options 页 | options 页就是原型页（§17） | options 页 = 生成的**页索引**；工具栏图标开入口页（没有入口就开索引） | 表里可能有多页、也可能混着别人的页面，一个"页面"已经不足以代表它 |
-| 19.7 旧数据 | 写迁移脚本 | **读时提升**（`legacyPageRows`）：`kind: "scratch"` → 页 `base`；`kind: "overlay"` + `targetUrl` → 页 `entry`；盘上一个字节不动 | 旧原型零动作可用，新写的数据里没有"旧字段"这回事。控制面下一次写入（只写页表）顺手把形状落成新的 |
-| 19.8 声明页 | `pages --add <name>` 会造一个页 | 不带 url 的 `--add` 只把**已存在**的文档放进流程顺序（文件不在就报错）；overlay 页仍由 `--add <name>=<url>` 建 | **文件管存在、表管顺序与入口**："写个文件就生效"是这套模型最值钱的性子；预置一个空文档只是把死胡同伪装成一条路（§13.2 不变） |
-| 19.8 创建 | 创建时问类型，overlay 还要问地址 | `create` 只要一个名字，建出来的原型**没有页**（连 `config.json` 都不写：没有东西可声明） | 类型与地址都是**页**的事实；"还没有页"是一句真话，不是错误状态 |
-| 19.4 重放范围 | `apply` 整原型全量重放 | 按**窗口所在页**取补丁（`matchPrototypePage`），没有所在页就落到入口页，再落到"只有共享补丁"，并把这个页名报出来 | `patches/<页名>/…` 只落那一页，否则"补丁没生效"和"补丁属于另一页"从结果上分辨不出来 |
-| 19.9 面板 | 一级列表 + 右键菜单（复制 / 删除） | 两级下钻（原型 → 页）；类型改由**新建页**对话框问；详情页有 Pages 区块 | 粒度现在真是项目的粒度：原型是一条流程、一个交付单位（config / patches / services / dist 都在它下面），页是文件与地址的粒度 |
-| 21 标记 | `@requirement` 只在 `coverage.ts` 里解析；补丁没有 `@target` | 两个标记一起收进 `patch-header.ts`（**零依赖**），`@target` 解析成**列表** | `storage.ts` 要读 `@target`，而 `requirements.ts` 已经依赖 storage——放在 requirements 会成环。列表是因为折叠会把多条补丁的标记写进一个文件（§21.1） |
-| 21 锚点 | 无（S4 只写了"命中报告"） | `anchors/<scope>.json`：**只记命中过的**（加上已有记录的），不匹配时**保留**旧 fingerprint 并把 `matched` 置 0 | 一条没有 `lastMatchedAt` 的锚点读起来像证据，而它不是；而保留旧 fingerprint 才能说"页面变了"而不是"没匹配"（§21.2） |
-| 21 收敛 | 无（差量层只会变长） | scratch → `assets/<页名>/committed.*` + 文档引用；overlay → `patches/<页名>/Z-00x-upper.*`；折完删原文件。**触发点是复制**：`{ fold: true }` 折副本，原件不动 | base 归谁决定能不能合：我们自己的文档能重写，别人的活地址不能（§21.3）。JS 是**升格**不是折入——折进去等于"执行后序列化 DOM"，那是 §14.1 删掉的方案 |
-| 21 自动重放 | 无（只有显式 apply / 手动刷新） | 文件变更 → 宿主页**刷新**、活页面**重新 apply**；300ms 合并、**常开**（开关后来撤掉，见下表 21.4 一行） | 对已内联的补丁求值会跑第二遍 JS，而那正是内联标记存在的意义；重放活页面会丢掉窗口里正在填的东西，决定权在知道那窗口在干什么的人 |
-| 21 状态与面板 | 补丁只报总数与按前缀分组 | 逐条列出文件名 / 页 / `@target`；新增锚点区块（命中数 / 上次命中）/ 提交按钮 / 自动重放开关（这批后来撤掉：锚点区块与细节组见下面「21.5 详情页的『细节』组」一行，提交按钮见「21.3 折叠的入口」一行，开关见「21.4 手动应用与开关」一行） | "这条对着什么、有没有人检查过"是读补丁清单时最先要回答的问题，而原来一个都答不上 |
-| 19.9 详情页 与 报告措辞 | 十四个区块平铺，按数据来源排；门禁 / 页面问题 / 需求问题都是 shared 侧拼好的英文句子，原样贴在中文界面上 | 按**打开动机**分四层：页头状态 + **交付**（门禁条目带去向 + 产物 + 导出 / 整理成一份）+ **流程**（页索引 / 参考 / 页面问题）+ **证据**（需求 / 研究 / 帧，空态一行）+ **细节**（改动 / 锚点 / 服务 / 归属，默认收起——这一组后来整组撤掉，见最后一行）；报告改走 `notices.ts`，渲染侧翻译、原文留作记录。异议与验收后来也撤出详情页，见下一行 | 交出去之前"能不能交"必须在第一屏独立回答，而它原来靠"没有告警"表达；同一件事说了四遍（打开会到哪在 hero、按钮下、页索引里各一份）；空态比有内容时更占地方（5 张空卡片 + 4 段"还没有"）。措辞上，"与 agent 同一句话"这条不能丢，所以 `code + params` 与 `text` 一起走 |
-| 19.9 新建页 | 侧栏一级行的 `…` 菜单 | 详情页的**页索引**标题右侧 | 加一页是"加进这条流程"的决定，流程显示在详情页；侧栏只承载"我在哪个原型上"，两级下钻已撤销（实施方案 §19.9） |
-| 20.4 详情页的「异议」/「上一轮验收」 | 各成一个区块 | **两段撤掉**；门禁里 `gate.disputeStanding` / `gate.checkFailed` / `gate.checksNeverRun` 三类的去向从"跳到该段"改为 **「交给对话」**——`usePrototypeAskAgent`（预填草稿、追加不覆盖、不自动发送；优先焦点会话，其次该原型绑定的会话，都没有才新建） | 两者都是"某一轮的过程"，且**只在对话里被解决**：异议要人回应、验收要 agent 跑一次，页面上给不出动作。未解决的异议与红的检查本来就在门禁里逐条点名，页面上再列一份就是第二份表示（§19.9／§23.5）。Requirements / Research 保留——它们是沉淀与依据，不是某一轮的过程（Frames 后来也撤出，见下面第二行） |
-| 21.5 详情页的「细节」组 | 改动 / 锚点 / 服务 / 归属四段（可折叠） | **整组撤掉**；「改动自动重放」挪进页头 `…` 菜单（该项后来也撤掉，见下表 21.4 一行）；`anchor.orphaned` 的门禁去向改为「交给对话」；页索引那一行仍带改动数与失效标记（交付层那个「整理成一份」后来也撤了——折叠成了复制的一个选项，见下面第二行） | 判据推进一步：**页面上的每一段都要回答一个人会问的问题**；回答"系统内部怎么样"的段落，位置是 agent 的报告（`status`）。同批事实的可行动版本已经在了（失效选择器 = 页索引红字、缺响应 = 「交付」里服务那一行 + 门禁、能不能交 = 交付层）。归属违规完全退出人的界面（人无动作可做） |
-| 20.3 详情页的「帧采集」 | 一个区块列出每次采集（会话 / 帧数 / 是否抽样）+「导入录制视频」按钮 | **区块撤掉**；「导入录制视频」暂挪进页头 `…` 菜单 | 帧是**给模型的材料**：出了几张、是不是抽样，权威读者是 agent（`research/frames/*`）。人在这里唯一会做的是"把别处录的一段带进来"——一个动作，不值得一个区块。当时以为 `importPrototypeVideo` 只有渲染侧入口、没有 agent 通路，所以留在菜单里；**这个判断是错的**（见下一行） |
-| 20.3／20.5 导入录制的入口 | 详情页页头 `…` 菜单的「导入录制视频」，经 `prototypes:importVideo` RPC 落到 domain 的 `importPrototypeVideo`，采样参数**写死**（`timeline` / 2000ms / 40 帧）；文件选择器是 browser pane 的一项能力（`pickVideoFile`：Electron 主进程弹窗、远程侧转发、能力白名单里的一条） | **菜单项撤掉**，`prototypes:importVideo` 通道整条删除（`channels.ts` / `routing.ts` / `channel-map.ts` / `shared/types.ts` / `server-core` handler / `ipc-channels.test.ts` 白名单），三条 i18n 键随之删除；**`pickVideoFile` 能力整条删除**（`video-frames.ts` 的弹窗、`browser-pane-manager` 的方法与能力分支、`browser-capability` 白名单、`RemoteBrowserPaneManager` 转发、空实现、接口声明）；domain 的 `importPrototypeVideo` **保留**，`path` 变必填、不再返回 `null`（"用户改主意"这个答案没有了），唯一调用者是会话的 browser 工具 | 那条 agent 通路一直都在：`record import <path>`（今天的 `sample-video <path>`，见 §2 的 20.5 行；当时在 `browser-tool-runtime.ts`），带 `--every` / `--changes` / `--max`——比菜单里写死的那个**更强**。所以正确的做法不是给它加一条命令，而是**撤掉第二处入口**：抽帧是给模型的材料（要抽多少、抽哪段、之后写进哪条 finding），整件事都在对话里发生，人在这页上点一下只完成了前半段。选择器随之成为没人调用的能力——它是为那条 RPC 存在的，留着就是一段"渲染层能拿到的文件路径"，与"面板永远看不到路径"的说法正好相反 |
-| 21.5 服务的位置 | 详情页的 Services 区块（fragments / fixtures / endpoints / mocked / stateful / missing 六个计数），随「细节」组一起撤掉 | **不进独立区块**：详情页「交付」区块里每个服务一行结论（全部假响应 → 不依赖后端 / N 个请求打真后端 / 契约里还没接口，缺响应标红），并且 `missingFixtures` 升进 `whyPrototypeIsNotSettled`（`gate.serviceUncovered`，7 语言 + 测试） | 服务是**交付**的事实，不是机制明细：人在这屏上问的是"交出去以后跑得起来吗"——所以它与产物、门禁同一层，同一个事实两处表示（一红一列，不会对不上）。计数（fragments / fixtures / stateful / endpoints）仍旧只属于 agent 的报告；而"声明了假响应却没有那个文件"的后果落在收件人那边（那条路由被跳过，请求打向他没有的后端），所以它是"还不能交"的一种 |
-| 21.3 折叠的入口 | 详情页交付区的「整理成一份」按钮 → 即时折叠**当前这个**原型（先 `window.confirm` 写明不可逆）；命令面有 `prototype-commit [slug] [--page <name>]`；RPC `prototypes:commit` | **两处都撤**：按钮、`handleCommit`、`prototype-commit` 命令与它的帮助/示例、`fns.commitPrototype`（agent 侧没有折叠动作）、`prototypes:commit` 通道（channels / routing / channel-map / types / handler / ipc 快照）、7 语言的 6 个 commit 文案。**折叠改为复制的一个选项**：`duplicatePrototype(root, slug, { fold: true })` → 折的是**副本**（`foldPrototype`，原 `commit.ts` → `fold.ts`，`--page` 去掉）；列表行菜单多一项「复制并折叠改动」 | 折叠是**不可逆**的（删被折的补丁文件、**改写 scratch 页的文档**），而"工作停下来了吗"是作者心里的判断——把它做成交付区一个随手可按的按钮，代价与收益不成比例。放到复制上以后这两点同时消掉：原件一个字节不动，需要收敛的人拿到的正是一份新东西。过程上还走过一步"导出时先折叠"，回退了：导出是**打包**，不该顺手改作者的产物；`export --strict` 本来就会先拒绝，折叠在它之后就更没意义 |
-| 19.9／20.4 详情页的顺序 | 交付区是页面**第一段**（门禁逐条 + 产物 + 服务 + 导出）；正文顺序：交付 → 页面 → 页面问题 → 参考资料 → 需求 → 研究 | **交付上到页头按钮**：`Popover` 触发，卡里是门禁逐条（每条的去向：跳段 / 交给对话，点完自动收起）、服务那一行、`dist/` 清单、导出按钮；页头徽章仍是"能不能交"的一句话答案。正文改为 **页面 → 页面问题 → 需求 → 研究 → 参考资料**（参考资料块整段搬到末尾；这一档后来整条撤掉，见下面第二行） | 交付是**结论与动作**（"能不能交"一句话 + 一个导出），不是要先读的一段——它之前占着第一屏，把"这份活是什么"推到下面。顺序上把证据（需求 → 研究）排在一起、参考资料收尾：参考是"看谁"的清单，读它的时机是准备动手时，不是回顾成果时 |
-| 14 参考：撤掉这一档 | `references` 是**原型 slug 的数组**（后放宽为 slug / 网址 / 路径），写入校验"那个原型必须存在"；详情页有一列「参考资料」（带"打开"），`list` 印 `references:` / `referenced by:`，prompt 里列一遍 | **整条删除**：`references.ts` 与它的测试、`config.json` 的 `references` 与 `normalizePrototypeReferences`、`status.references`、`prototype-reference` 命令（含 help / 示例）、`link/unlinkPrototypeReference`（`BrowserPaneFns` + SessionManager 接线）、`list` 与 `status` 的那几行、`deletePrototype` 的 `referencedBy`、详情页那一整段、7 语言的 7 个文案。**"在看什么"改由 agent 写进需求文件夹**（§20.1：`PRD.md` 旁边的一份材料），详情页只渲染 `PRD.md` 并列出同目录的文件 | 判据是这一档**没有任何东西指向它**：需求能被回答"这条没人实现"，是因为补丁与 finding 指着它；参考资料只有"盘上在不在"这一个失败态，本质是一次拼写检查。而它记的"我在看什么"，finding 的 `source:` / `evidence:` 已经记了、还多记了结果；唯一不可替代的是"从页面点进另一个原型"，而侧栏本来就有那个入口。另一个诱因是它住在 `config.json` 里，让那份文件同时是"页表"和"关系表"。**最值钱的护栏没丢**：prompt 与研究块里写死"另一个原型的补丁永远不许抄进 `patches/`"（§14.3 的结构性一半——每份补丁只住在自己原型的目录里——本来就不依赖这条关系） |
-| 20.1 需求：一个文件 → 只认 `PRD.md` | `prd.md` 一个文件，形状固定；详情页把需求渲染成 id / 标题 / 覆盖字符串的列表 | 需求**只从 `PRD.md` 读**（大写，原型根目录下），它旁边那个文件夹是作者的材料、**什么格式都行**：页面上不解析、不过滤、不读第二份文本，只按名字列出、点开交给应用内预览或系统默认程序（`listPrototypeFiles` → `status.entryDocument` / `status.files`，都是路径）。覆盖标注退成文档下方的一行列表（没人引用标红）。旧的小写 `prd.md` 只是文件夹里的一份材料 | 一条需求往往要人物、现状流程、术语这些支撑文档，全塞进一个文件就没人读得下去；而页面把散文改写成 id 列表，读的人拿不到论证本身。**只解析入口**是硬要求——否则"哪条需求没人实现"要跨文件回答。中途走过一步"集合 = 根目录的 `.md`"，撤了：作者放进来的是截图、表格、设计稿的场合比散文多，按扩展名过滤是替作者猜他的材料该长什么样 |
-| 3.5 所有权：不枚举文件夹 | 一张 文件 → owner 的矩阵，未列出的路径一律 `unowned path` 违规 | `classifyPrototypePath` **只登记有规矩的路径**（`patches/`、`services/`、`anchors/`、`acceptance/`），**其余默认控制面**；违规也只剩"破坏了自己那条规矩"（补丁名不合格、服务目录里的杂文件） | 矩阵是**对文件夹形状的第二份描述**，而文件夹本身才是事实——副本从写下的一刻就开始过期：漏列一个形状就让一整类正常原型都在报违规（`prd.md` 那次：**任何写过 PRD 的原型都在报违规**），而报告说的唯一一件事就是"这个原型哪里不对"。所有权真正的正当性只有一条：**两个写者不互相覆盖**（§3.3），那与"文件夹里有什么"无关 |
-| 3.6 工具面：原型命令提升为 `prototype_tool` | 17 条 `prototype-*` 是 `browser_tool` 的子命令（一张命令表、一个工具描述、一份 help） | **同一张命令表、同一个 `fns`，两个入口**：`executePrototypeToolCommand` / `executeBrowserToolCommand`，各自不认领就回 `null`（未知命令的措辞点名另一个工具，因为两门都收**不带前缀**的命令名）；`--help`、未知命令措辞、工具描述都分两份；`createPrototypeTools` 与 `createBrowserTools` 并列注册（`session-scoped-tools.ts`、`session-tools-core` 的 `tool-defs`、Claude/Pi 两个 backend 的白名单、覆盖层判定、工具显示名同步） | 一个工具的名字该是它的**主题**：`browser_tool` 的主题是那扇窗口的页，原型命令的主题是**文件 + 流程**（17 条里只有 4 条真需要窗口：open / apply / record / mock-apply），而它一半命令根本不碰浏览器。混在一起的代价是具体的：描述里出现了**第二份原型散文**（旧 `browser-tools.ts` 里那段，且已经漂了一处——"`PRD.md` 和它旁边的 `.md` 集合"）；而"让 agent 先读指南"这件事挂不上——前一问的答案就是"browser tool 不必对原型特殊处理"，因为不再是它的子命令。代价认了：跨主题批量没了（`apply; snapshot` 变两次调用），工具清单多一项。**收尾**：两张命令表随后按门拆成 `browser-commands.ts` / `prototype-commands.ts`，工厂拆成 `browser-tools.ts` / `prototype-tools.ts`，能力接口留在 `browser-pane.ts`；命令名同时去掉了 `prototype-` 前缀（`prototype-apply` → `apply`）——两门靠"你调的是哪个工具"区分，撞名的（`open`）也一样，所以门禁不再按前缀判断，前缀判断也没有了。之后又分了两刀：门自己的 runtime（批量 / `evaluate --file` / settle 时长）从共享模块搬回 `browser-commands.ts`，共享的那份改名 `command-cli.ts` 并改成 `createCommandRunner` 注入门的三件事——两次都是为了让依赖单向，不再有两门互相 import |
-| 21.4 手动应用与开关 | 面板工具栏有「应用原型的改动」按钮（`browser-toolbar:apply-prototype` → 工具栏动作 `apply-requested`），详情页 `…` 菜单里有「改动自动重放」开关（偏好存 `~/.craft-agent/preferences.json`） | **两处都撤**。按钮整条删除：preload 通道、`browser-pane-manager` 的 handler 与 `TOOLBAR_CHANNELS` 项、`BrowserToolbarAction` 的 `apply-requested` 分支、`useBrowserToolbarActions` 里那段 toast、`handleApplyPrototype` / `hasPrototype` / 渲染层 `ToolbarState` 里的 `prototypeSlug`（它只为这个按钮的可用性而读；主进程照旧推这个字段，窗口的绑定仍由它描述）、6 个文案（`browser.applyPrototype` + 5 个 `browserEdit.*`）。开关整条删除：两个 atom、`lib/prototypeAutoReplayPreference.ts`、`UserPreferences.prototypeAutoReplay`、1 个文案；重放**常开** | 手动 apply 是同一件事的**第二个入口**，而且在正常路径上永远无事可做：我们自己的一页从宿主拿到时就**内联**了补丁（`apply` 只会报 `skipped`，toast 是"Applied 0 patch(es)"），活页面在"打开"那一步就已经注入过（`entry.injectPatches`），改文件由 watcher 重放、刷新又让宿主从盘上重渲染——四条路都通向同一份页面，按钮只是把它们重说一遍。开关同理：它拦不住任何副作用（真正会丢输入的是重放本身，而关掉它只是让改动不再到达窗口），却把"保存了却没反应"——这条特性本来要消灭的失败——又请了回来 |
-| 21.6 窗口里的直接编辑（新增） | 无。窗口只有两种手势：准星选中 → 交给对话；在地址栏输入 → 打开。改页面只能由 agent 写补丁 | **一个门、一个模式、一个脚本**。工具栏仍是那一个准星按钮，进去之后**点选一个元素，或拖出一个框选住几个**，条子出现，两块都钉在页面顶部：`B · I ｜ 添加到对话` 居中，`↶ · ↷ · ✓` 在左上角。页面侧一个 `buildOverlayScript`（`browser-cdp.ts`）同时服务两个人——窗口自己的模式（`resident` + `bar`）与 agent 的 `browser_tool pick`（一次性、无条子、答完即拆）。**点选**取光标下的元素（inline 也算，所以点段落里的链接就是链接），**框选**取矩形内最深的**非 inline** 块（所以框住一段就是那段，而不是里面的 span）。草稿在页面里：样式进我们自己的一层 `<style>`（由草稿**按顺序生成**，"撤销"= 少一条后重画，"重做"= 把刚撤掉的那条放回去，文字则要把元素的原文字写回），**保存前不写任何文件**。条子分成两块、**都钉在页面顶部**（不挡选区、也不随选区跑）：主体居中（`B · I ｜ 添加到对话`），**撤销/重做/保存单独一块钉在左上角**（`✓` 在 `↷` 右边）——撤销/重做是人常按、也走键盘的，分开之后主体可以随选区变而这块位置不动；保存放进这一块是因为它关于**整份草稿**而不是当前选区，而且它正是"要不要保存"这个问题的答案。配色用应用的**菜单色**（`popoverSolid / popover → background` + `foreground`，由主进程解析）：它是我们放在别人页面上的一张菜单，主题色留给应用画在页面上的记号（选区框与名字）。名字是**一个 chip、固定钉在页面左下角**（`left:8px;bottom:8px`），不挂在框上：跟着框走的名字会随页面滚动换地方，而且在人正盯着那个元素的那一刻压在它上面——chip 里显示的是"光标下是什么"（也就是点一下会拿到什么），没有悬停对象时显示选中的那些（多个用 `·` 连起来，各自有自己的框指认）。按钮是字形（说明走 `title`，随 `pickElement` 传入；`labels` 里因此有 `save` 一词；**没有放弃按钮**，丢弃 = 离开模式，而 `✓` 和撤销/重做一样在没东西可写时变暗），撤销/重做另有快捷键 `Ctrl/Cmd+Z`、`Ctrl/Cmd+Shift+Z`、`Ctrl/Cmd+Y`——正在改文字时让给浏览器（那段文字的撤销是它自己的）；没东西可撤销时也照样吞掉，因为模式持有页面期间，页面自己执行的撤销是应用看不见也记不下的改动。**页面在模式期间收不到鼠标**：`pointerdown` 之外，`mousedown` / `mouseup` / `click` / `dblclick` 按同一条规则吞掉（`browserOwnsIt`）——页面监听鼠标事件和监听指针事件一样常见，而它们是各自独立的事件，少这一层双击就会去选页面自己的文字、跟着链接走。例外只有两处：条子自己的控件，和**正在改文字的那个元素**（里面的光标与选词属于浏览器）；在它之外按一下就是那次编辑的结束，由我们自己提交（`endText(true)`），而不是让页面的 focus 把它 blur 掉。文字编辑：Enter 提交、Shift+Enter 归页面（换行）。离开是一次提问：有未保存时模式不结束（`confirming`），`drainOverlay` 因此报 `leavingWithEdits`，窗口那条 chip 改说"有未保存的改动，要先保存吗？"（主进程只在它变化时推一次状态），而且**回答在窗口那侧**：准星左边这时多出一个 `✓`（`SAVE_EDITS` → 页面里的 `__craft_agent_overlay_save__`，走的就是同一个 `save()`，所以存完模式也结束），准星**再按一次**就是"不"——直接拆除、草稿一起丢（Esc 在页面里说的是同一句话；主进程靠 `leavingWithEdits` 区分"问一次"与"拆"，chip 与 `✓` 也都是它画的）。因此出口有两条：`askOverlayToLeave`（工具栏按钮走的软请求，页面可以拒绝并继续持有模式）与 `teardownOverlay`（关标签页 / 换页重新 arm / 一次性 pick 收尾——那些场合没人可问）。保存 → 工具栏动作 `edit-requested`（一批编辑）→ 渲染层用**标签页的** `prototype` / `prototypePage` 解析出 slug 与页 → RPC `prototypes:edit` → `writePrototypeEdits()` 写**一条**差量；「添加到对话」→ `add-to-conversation`，与原来同一条路。条上的文案由工具栏渲染层随 `pickElement` 传入（页面没有 i18n） | 直接编辑的价值全在"它被记下来了"：不落盘则刷新即失、别的窗口看不见、交付里也没有——所以落点只能是补丁，而补丁一旦是落点，`@target`、锚点、漂移、折叠、`dist/` 全都自动接上（§21 那一整套本来就在等一个写入者）。**最初做成了第二个模式（准星旁边一个铅笔），被否掉**：两种手势都已经建立在同一个东西上——一个选区——却要人先猜"这次进哪个门"、进门才发现两边能做的事是一回事，而"框选本来就只能发生在模式里"是前提；于是两个 overlay、两个模式标志、两个轮询循环、两种互斥关系合成一个，地址栏也少一个按钮。写盘时机同理：**"一次编辑一条补丁"也做过，被否掉**——人一次会话要改好几处，粒度太碎会让撤销变成"删文件的历史"；而且**写盘就会触发重放**，重放会让 scratch 页重渲染，于是会话自己的状态（选区、草稿）每点一次就被冲掉，连改几个元素都做不到。所以写入推迟到"保存"这一个时刻：撤销在草稿里是免费的（重画那层样式 / 把元素文字放回去），会话期间页面不被打断。**代价是保存前页面显示的是草稿**——没有任何补丁声明过的值，正是这个仓库认定最坏的那种第二份描述；它由模式与条子明确承担：按钮的可用与变暗状态（`✓` 同上）、以及"离开即放弃"这一条出口——离开或拆除前未保存的一律还原（`cleanup()` 里也走同一条 `discard()`）。文字只做**整块替换**：段内富文本要把元素的标记存进补丁，那就是 §14.1 否掉的"执行后序列化 DOM" |
-
-**"`*.localhost` 能不能当 origin"是一次探针实测，不是推断**（实施方案 §16.2 引用的就是它）：一个一次性 Electron 探针在 `http://probe.localhost:8420/` 上确认了四条，全部成立——
-
-```
-origin:  "http://probe.localhost:8420"            ← 真实 origin，不是 null
-cookie:  "probe=1"                                 ← document.cookie 可读可写
-fetch:   {"ok":true,"host":"probe.localhost:8420"} ← 相对路径 fetch 打到了服务器
-storage: true        moduleRan: true               ← localStorage 与 <script type=module> 正常
-```
-
-`*.localhost` 在 Chromium 里解析到回环，所以不需要 DNS 或 hosts 条目。探针当时跑在回环服务器上，但这四条是**主机名**的性质、与端口无关，所以现在换成拦截、地址里没有端口，结论照旧成立。顺带一条给人踩过的坑：**HTTP 层的测试不能按字面拨号**，要覆盖 `Host` 头打到 `127.0.0.1`（Node 的解析器不认 `*.localhost`，Chromium 认）——现在的测试改成直接调 `handlePrototypeRequest`，连 socket 都不用起了。
-
-### 2.1 交付物与多页的落点（改了哪些文件）
-
-| 动作 | 落点 |
-|---|---|
-| 新增 | `packages/shared/src/prototypes/extension.ts`：manifest / README / 匹配模式（URL → pattern）/ 版本号 + **页面变换**（内联 `<script>` 提取、内联 `on<event>` 提成生成函数 + MutationObserver 运行时、`type="module"` 与内联脚本一起提取）+ mock 编译 + 多页打包（共享产物 vs 每页产物） |
-| 迁移 | `buildPatchBundle` 搬进 `extension.ts`（它正是 content script 的 JS 体）；书签那一份产物由 `bookmarklet.ts` 生成（`dist/bookmarklet.html`：一页一条可拖拽链接 + 控制台那条路，§17.9） |
-| 改 | `export.ts`：写四份产物——`dist/extension/`、`dist/static/`（§17.8）、`dist/bookmarklet.html`（§17.9）、`dist/handoff.md`（§20.8）；结果类型是 `extensionDir` / `pagePath` / `pageUrl` / `staticPath` / `staticWarnings` / `bookmarkletPath` / `specPath` / `handoffPath` / `version` / `warnings`（旧的 `htmlPath` / `htmlUrl` 不再有；两份交付物的改写理由不同，所以警告也分两栏） |
-| 改 | `config.ts` / `pages.ts` / `status.ts` / `prompt.ts`：页表（`pages`）读写、规范化与 `pageIssues` 上报；顺序 = 表序，没人声明的文档按名字接在后面 |
-| 改 | `prototype-commands.ts`（`runPrototypeCommand`）+ `browser-pane.ts` + `SessionManager`：`pages`（list／`--add`／`--remove`／`--rename`）与 `setPrototypePages`；`export` 的输出（每份产物的路径——extension / spec / handoff，有才印的 static / bookmarklet——+ Load unpacked 三步 + 未决项与警告） |
-| 改 | `apps/electron/src/main/prototype-host.ts`（原 `prototype-server.ts`）：回环监听器 → 浏览器 session 上的 `http` 处理器 + `net.fetch` pass-through；origin 去掉端口、地址稳定 |
-| 改 | 窗口身份：`PrototypeEntry.origin`（共享层）+ `browserPane.create({ prototype })` + `prototypeBindingFor`（标签页绑定优先、会话链兜底）+ `BrowserInstanceInfo.prototypeSlug`。修的是"刚创建的原型点「打开」得到普通标签页"——见实施方案 §7。（当时还用了 `bindPrototype` 事后绑定；标签页的身份改为"创建时定"之后它已删除，见实施方案 §22） |
-| 改 | `apps/electron/resources/docs/browser-tools.md`、`release-notes/next.md`、7 个语种的 `prototypeInfo.distEmpty` |
-| 验收 | 实施方案 §10 的 M 组（63–70）与 Q 组（86–93） |
+1. **工具描述只有一处**：`packages/session-tools-core/src/tool-defs.ts` 的 `TOOL_DESCRIPTIONS` 是唯一真源，四个 pane 工具的工厂（`browser-tools.ts` / `prototype-tools.ts` / `video-tools.ts` / `drawio-tools.ts`）只写 `const X = TOOL_DESCRIPTIONS.<name>;`。两条路读的是同一份文本：Claude 走工厂，Pi 走 `getToolDefsAsJsonSchema()` → `def.description`。**这条不变量原本是反的，而且已经出过事**：描述以前在工厂和注册表各存一份，实测 `browser_tool` 那份**已经漂了**（注册表缺 `reload` / `pick` / `evaluate --file`），而 Pi 读的正是注册表那份——也就是说 Pi 那侧的 agent 不知道这几条命令存在，且没有任何东西会报错。收敛后 `TOOL_DESCRIPTIONS` 里四个键（`browser_tool` / `prototype_tool` / `video_tool` / `drawio_tool`）取的是原来工厂那份（准确的那份）。
+2. **locale key 集合一致**：`packages/shared/src/i18n/locales/*.json` 共 7 份（`en` + `de` / `es` / `hu` / `ja` / `pl` / `zh-Hans`），parity 逐个非 en 对 `en` 比对。加过 key 必须跑 `bun run lint:i18n:parity` 与 `bun scripts/sort-locales.ts`（排序也被强制）。
+3. **渲染层不能从共享包 barrel 取运行时值**（只能取类型）：值只能来自 `*/types` 这类零依赖模块或浏览器安全叶子模块，`@craft-agent/shared/prototypes` 这类 barrel 会把 workspace / config storage 拉进浏览器包并连带 node-only SDK。规矩与事故见 `docs/renderer-imports.md`；`packages/shared/src/prototypes/types.ts` 一个 import 都没有是刻意的，`wiki-links.ts` 是第二个这样的叶子（同样零 import），渲染层经子路径 `@craft-agent/shared/prototypes/wiki-links` 取 `rewriteWikiLinks`。
+4. **新增 RPC 通道要同时改注册表与 routing**：注册表在 `packages/server-core/src/handlers/rpc/index.ts`（拼各 handler 的 `HANDLED_CHANNELS`），通道分类在 `packages/shared/src/protocol/routing.ts` 二选一（`LOCAL_ONLY_CHANNELS` / `REMOTE_ELIGIBLE_CHANNELS`）。只补一处，`routing.test.ts` 或 `ipc-channels.test.ts` 立刻红。
+5. **需求来自任何 markdown 文件的 `## R-00x` 标题，不是某个文件名**：`readPrototypeRequirements` 递归读每个 `.md`/`.mdx`（子目录也算），文件名不决定是不是规格——`PRD.md` 只是 `create` 的起步名。**定义需求的文件不算实现**：`coverage.ts` 跳过所有 `definingFiles`，否则规格会把自己写下的需求标成"已实现"（起步 `PRD.md` 正文里的 `@requirement R-001` 正是靠这条才无害）。
+6. **`@requirement` 必须是「标记」，不能是词的一部分**：`markers.ts` 的 `markerIndex` 认「前面不是 `[\w-]`」的标记（`not-a-@requirement` 是散文），`requirements.ts` 的 `extractRequirementIds` 取标记之后到行尾的所有 id。定义需求的文件自己不算实现（`coverage.ts` 跳过 `definingFiles`，见 §2⑤）。
+7. **指纹只有一处定义**：`storage.ts` 的 `contentFingerprint`（sha256 前 8 位）→ `requirements.ts` 的 `requirementFingerprint`。status 打印的 `on:` 与 `reviews.ts` 判 stale 读的是同一个函数；写第二份实现会让「针对旧措辞的异议」看起来仍然成立。
+8. **`research/` / `reviews/` 的目录名只有一处**：`types.ts` 的两个常量，`storage.ts` 的路径构造与 `research.ts` / `reviews.ts` 两个 reader 都用它。改名只改一处就会静默读空。
+9. **原子写的临时文件名不能固定**：`packages/shared/src/utils/files.ts` 的 `atomicWriteFileSync` 用 `pid + random` 命名临时文件；同一个目标的两个并发写者连临时文件都不该争用（写项目配置 `prototypeSlugs` 经它）。
+10. **原型目录不是 agent 的写权限豁免**：Explore（safe）模式下 agent 只能写 `plansFolderPath` 与 `dataFolderPath`（外加 `allowedWritePaths` 授权），**`prototypesFolderPath` 不在其中**——原型是用户的材料，不是模式自己的管道；要改就在 Ask/Auto 模式下改，或者由人在 app 里改。`prototypesFolderPath` 仍然传给 agent，但它只是**告知位置**（prompt 里那行），不构成许可。这条有两个地方会静默失守：`mode-manager.ts` 的 Write/Edit 分支与 **bash/PowerShell 重定向**分支（后者只有 `likelyWriteAttempt` 时才查），以及 `prompts/system.ts` 里那几句"允许写哪里"的话——改一处就会让 agent 以为可以写。
+11. **人手动保存的边界 = 能把这个文件给你看的那条边界**：`file:write`（`onWriteFile` → `HtmlDesignEditor` / `DrawioEditorPane` / `MarkdownEditorPane`）走 `validateFilePath(path, getWorkspaceAllowedDirs(workspaceId))`，**和读同一句**——凡是读得出来给你看的文件，就存得回去。**故意不是** agent 的写策略（plans/data + 授权）：那条管工具，放宽这里不会放宽它。敏感路径（`.env`、`.key`、`credentials.json`…）读写两侧都拒，因为那条规则在 `validateFilePath` 里而不在调用方。写者**不预检**边界（`PlatformContext` 的注释），拒绝原样回给界面。**"何时写 / 谁赢"只有一份实现，而它现在只是一个钩子**：`useFileWriter`（`packages/ui/src/components/editors/useFileWriter.ts`）——**只有链路，没有界面**：去抖、写前重读并比对、外部改动"没改过就跟上、改过就停下问人"、卸载时把待写的补上——`DrawioEditorPane`、`MarkdownEditorPane`、`HtmlDesignEditor` 三个编辑器共用它。**界面各是各的，这是有意的**：占位、工具栏、`layout` 都归各自的编辑器画——页面编辑器的工具栏是 h-10 那一条，markdown 在对话块里根本不要它；**只有"文件和它怎么了"这一句是共用的**（`FileSaveStatus`：标题栏里一句纯文案 + 正中那个要人决定的胶囊，见 §7.4）。**曾经有过一个连行一起渲染的 `FileEditorPane` 组件**（drawio 与 markdown 用），因为"页面编辑器接不进来"而降到只留链路：它要求所有编辑器共用同一行，而那行正是三者差别最大的地方——共用一次飘出来的提示可以，共用一行不行。**新的文件编辑器接着用 `useFileWriter`，别再写第二份链路。**
+12. **`[[…]]` 只负责导航，不参与"哪条需求实现了"**：`links.ts` 解析并解析到文件（只扫 markdown——代码里的 `[[i]]` 是数组，不是链接），`status` 只把「链到不存在的文件 / 名字被两个文件共用」放进 `briefIssues`；需求是否实现仍只看 `@requirement`（`coverage.ts`）。**解析与改写是一份实现**：语法在零依赖的 `wiki-links.ts`，`links.ts`（读）与渲染层（画）都从它取；两边各写一遍正则，会出现"报告说这里没链、页面却把它画成链接"。代码段 / fence 内的 `[[…]]` 一律是文本（与 §3.4 同一类坑，这里靠跳代码段兜住）。
 
 ---
 
-## 3. 踩坑记录（症状 → 根因 → 修法）
+## 3. 踩坑记录（只留仍然适用的）
 
-### 3.1 reload 后补丁静默失效
-
-- **症状**：打上补丁 → 页面刷新 → 什么都没了，没有报错。
-- **根因**：CDP 的 init script 注册（`Page.addScriptToEvaluateOnNewDocument`）**随 debugger 分离而失效**，而 `CDP_IDLE_DETACH_MS = 5s` 空闲即分离——所以"reload 保留"会在 5 秒后静默失效。
-- **修法**：`resetIdleDetachTimer()` 在 `initScriptIds` 非空时直接返回（持有连接），最后一个脚本移除后恢复计时；`detach()` 同步清空键表（CDP 那边也一起没了）。同样的判据后来扩到 `Fetch.enable`（开着 mock 也算持有连接）。
-- **2026-09-21 真窗口实测补正**：上面那条只解释了"5 秒后失效"，**不是**这个症状的全部——真正让"刷新一下什么都没有"的是**Page 域没开**。`Page.addScriptToEvaluateOnNewDocument` 在域关着时**照样返回 identifier**，但那个注册是**惰性的**：新文档里一次都不跑（实测 Electron 39：注册 → reload → 脚本设的标记仍然不存在，debugger 全程 attached、`isAttached()` 为 true）。症状因此长成"**地址栏敲一遍地址能看见补丁**（那条路是显式 apply 的 `evaluate`，作用于当前文档）、**刷新就没了**（只走 init script）"。**修法**：`enablePageDomain()` 在第一次注册前发一次 `Page.enable`，每会话一次；它和注册一样是会话状态，所以 `detach()` 里跟 `initScriptIds` 一起清。补上之后 reload、后续导航、以及重复注册（替换语义）都实测生效。
-- **这条只有真窗口能验**：单元测试用的是假 debugger，只记下调用，"注册返回了"和"脚本真跑了"不在同一个地方——判据是 §5.4 那一行（在真窗口里敲一遍刷新）。
-
-### 3.2 拾取器被空闲 detach 打断
-
-见 §2 阶段 2 那行。要点：不要把一次 `evaluate` 挂太久——**空闲 detach 是 5 秒级的**，任何"等用户操作"的注入都会踩到。
-
-### 3.3 `ERR_FAILED (-2) loading 'about:blank'` 报错归错人
-
-- **症状**：详情页点「预览」偶发报 `about:blank` 加载失败，但页面其实已经打开了。
-- **根因**：详情页每个打开动作都是「先 `create`（它立刻发起空态页加载），紧接着 `navigate`」。后发的导航把空态加载 abort 掉——**这是正常且预期**；坏在空态加载的 `catch` 里**无条件**回退到 `about:blank`，于是又插进一条导航，失败被记在 `about:blank` 上、顺着 `navigate` 的 promise 弹回 UI（日志里 `did-navigate` 显示真实导航 50ms 前就成功了）。
-- **修法**：给回退加前提——`ERR_ABORTED` 时直接放弃回退，只有空态因别的原因失败才加载 `about:blank`（`code` 与 message 两处都匹配，不依赖单一字段）。两个方向都有测试固定。
-- **2026-09-15 实测补正**：真实日志里这次 abort **没有**走到空态的 `catch`，而是落到了 `navigate()` 的 promise 上（Electron 把 abort 交给"当前"那个 `loadURL` promise，而不是被顶掉的那个），字段是 `{"errno":-3,"code":"","url":"file:///…/browser-empty-state.html"}`——`code` 与 message **都是空的**，所以上面那两处匹配**从来没生效过**；终端于是每次都留一条 `navigate failed …` 的 ERROR，而 `did-navigate` 显示那次导航其实成功了。现在统一按 `abortedLoad()` 判定（认 `errno === -3`／`code === 'ERR_ABORTED'`／message），两处都用它：空态那侧不抢导航，`navigate()` 那侧只在「失败的 URL 不是我们要去的地址」时视为"被顶掉"（要去的地址自己被 abort 仍是真失败）。
-
-### 3.4 两条以上 js 补丁只有第一条执行
-
-- **症状**：一个原型里有两条 js 补丁，第二条从不执行，**没有任何报错**。scratch 的自包含 HTML 一直如此。
-- **根因**：`buildPatchInitScript` 返回的是**表达式**（`…})()`）。两条补丁连排时（同一个 `<script>` 里、或同一个 bundle 里）被解析成"对第一个补丁返回值的调用链"：第一个跑完，其余全部静默不跑。
-- **修法**：变换自己带 `;`（语句而不是表达式），并在两处测试钉住（变换层 `prototypes.test.ts`、HTML 层 `export.test.ts`）。
-
-### 3.5 已内联的补丁被重复应用
-
-- **症状**：渲染页到手时补丁**已经在文档里**，再注入一遍会让 JS 补丁跑第二遍——**页面看起来一模一样，改动却是错的**。
-- **修法**：让文档自己说明它带了什么（`<script type="application/json" id="__craft_prototype_inlined__">`），注入前 `buildInlinedPatchProbeScript()` 读回来，**跳过列出来的那些**；init script 是 window 级的，所以每次 apply 都是「清掉本原型的全部注册 → 只注册缺的那些」，与页面上缺的东西严格对齐。读不到 / 不是 JSON / 不是字符串数组一律当作"这份文档什么都没有"——反过来（默认已应用）会让该做的活被静默跳过。
-- **留下的一处妥协**：判别只认文件名、不认内容，所以改了已有补丁的**内容**要刷新页面才看得到（实施方案 §16.6 有说明）。
-
-### 3.6 渲染层不能从共享包 barrel 取运行时值
+### 3.1 渲染层从共享包 barrel 取运行时值
 
 - **症状**：`bun run electron:build` 在 `@anthropic-ai/claude-agent-sdk/sdk.mjs` 上解析失败（`__vitePreload` 被注入到 shebang 之前）。
-- **根因**：一条真实链路被拖了进来——`prototypes/index.ts → prototypes/storage.ts → workspaces/storage.ts → config/storage.ts → (惰性) agent/session-scoped-tools.ts → SDK`。`config/storage.ts` 里那个 `import(...)` 是为了破循环依赖才写成动态的，但打包器照样跟着走。触发点是详情页从 barrel 里取了一个**运行时值**（当时的 `DEFAULT_PROTOTYPE_KIND`，现在叫 `DEFAULT_PAGE_KIND`）；其余导入都是 `import type`，编译期即被擦除。
-- **修法**：类型与默认值下沉到零依赖的 `prototypes/types.ts`，并新增导出子路径 `@craft-agent/shared/prototypes/types`（与既有的 `./config/types`、`./projects/types`、`./sources/types` 同一约定）。
-- **规矩已单独成文**：[渲染层的导入边界](renderer-imports.md)（渲染层要共享包的值只能从 `*/types` 这类零依赖模块取，barrel 只可用于 `import type`；含自查命令）。
+- **根因**：一条真实链路被拖了进来——`prototypes/index.ts → storage.ts → workspaces/storage.ts → config/storage.ts →（惰性）agent/session-scoped-tools.ts → SDK`。`config/storage.ts` 那句动态 `import()` 是为破循环依赖，不是可选依赖；打包器照样跟着走。触发点是从 barrel 取了一个**运行时值**，而其余导入都是 `import type`（编译期擦除）。
+- **为什么仍然适用**：规矩没变，只是现在把它按在了 `prototypes/types.ts`（零依赖）+ `@craft-agent/shared/prototypes/types` 导出子路径上。dev 看不出来，只有生产构建那条 rollup 路径会炸；规矩与自查命令见 `docs/renderer-imports.md`。
 
-### 3.7 新增 handler 会打破注册表测试
+### 3.2 新增 handler 会打破注册表测试
 
-`registration.test.ts` / `registration-profiles.test.ts` 用各 handler 模块的 `HANDLED_CHANNELS` 拼期望集合，新增 handler 必须同步把 `...prototypes.HANDLED_CHANNELS` 加进去。
+- `packages/server-core/src/handlers/rpc` 的注册表测试用各 handler 模块的 `HANDLED_CHANNELS` 拼期望集合，新增 handler 必须同步加进去。
+- **同一个新通道还要在 `packages/shared/src/protocol/routing.ts` 里二选一**：「注册表补齐了、routing 忘了」是**另一条**独立失败（`routing.test.ts` 要求每个通道恰好被分类一次）。参见 §2④。
 
-**同一个新通道还要在 `packages/shared/src/protocol/routing.ts` 里二选一**（`LOCAL_ONLY_CHANNELS` / `REMOTE_ELIGIBLE_CHANNELS`）：`routing.test.ts` 要求每个通道**恰好**被分类一次，"注册表补齐了、routing 忘了"是**另一条**独立的失败。曾经红着的几个通道（`prototypes:replay` / `setPages` 等）已经补进分类（§5.2；`prototypes:commit` 随折叠改到复制上整条删掉，`setProject` 随 §15.1.4 删掉了）。
+### 3.3 原子写的固定临时文件名
 
-### 3.8 原子写的固定临时文件名
+- 曾经 `atomicWriteFileSync` 用的是固定的 `<path>.tmp`，同一目标的两个并发写者**连临时文件都在争用**（撕裂 / 空文件 / ENOENT）。
+- 现在改成 `pid + random`（`packages/shared/src/utils/files.ts`），注释里写明了原因。规则是通用的：临时名不能是目标的确定函数。
 
-`atomicWriteFileSync` 用固定的 `<path>.tmp`（`packages/shared/src/utils/files.ts`），两个写者并发写同一路径时**连临时文件都在争用**。当前单写者模型下不会触发；真要做并发写（§6.4）就得改成每个写者唯一的 `.tmp` 名，或经控制面串行化。
+### 3.4 生成的文本里出现标记**字面**，就会被当成标记
 
-### 3.9 `tsconfig.base.json` 曾缺失（**已解决**，留档）
+- 解析器按行扫，把标记之后到行尾都算它的值——**它分不清「标记」和「谈论标记」**。所以在任何会被 `coverage.ts` 扫到的文件里写 `@requirement` 字面（哪怕是在注释里解释它），都会多出一条声明。同一个坑的边界由 `markers.ts` 的 `markerIndex` 兜住一半：`x-@requirement` 不是标记。
+- 受此约束的还有 `create.ts` 的起步 `PRD.md`：它正文里写了 `@requirement R-001`，之所以无害，正是因为 `coverage.ts` 跳过所有**定义需求的文件**（起步 `PRD.md` 定义了 `R-001`，于是整份被跳过）。
+- **`[[…]]` 是同一类坑，但这里兜住了**：一份**解释**双链的文档会写出 `[[docs/checkout.md]]` 字面，若被当成真链接就会报假断链。`wiki-links.ts` 的解析先圈出代码段与 fence（与渲染面的 linkifier 同一读法），只认代码之外的 `[[…]]`——所以讲解写在反引号或 fence 里是安全的，写进正文就是真链接。
 
-当时 `typecheck:all` 在 `session-tools-core` 处中断：四个包引用 `tsconfig.base.json`，而它不在本分支的祖先链上（只存在于上游历史 `0e84b1cd`）。按历史原文恢复后 `session-tools-core` 与 `pi-agent-server` 的 typecheck 归零，**文件现在在盘上**。顺带暴露一处遗留：`session-mcp-server` 的 tsconfig 缺 `allowImportingTsExtensions`（对 `*.ts` 后缀导入报一堆 TS5097），而该包**没有任何 typecheck 脚本**，所以从来没人跑到——与本工作台无关。
+### 3.5 窗口与标签那批坑（相邻子系统，只给指针）
 
-### 3.10 本 checkout 缺上游脚手架脚本
+焦点交接、停车窗、`WebContentsView` 的销毁语义、真实窗口尺寸那批，都属于浏览器面板，不属于本工作台：见 `apps/electron/src/main/browser-pane-manager.ts` 与其测试 `apps/electron/src/main/__tests__/browser-pane-manager.test.ts`，以及 `apps/electron/resources/docs/browser-tools.md`。
 
-根 `package.json` 里引用的 `scripts/*` 有一部分不存在，都是上游的 CI / 发布 / 本地脚手架（`build.ts`、`release.ts`、`check-version.ts`、`fresh-start.ts`、`check-raw-sends.sh`、`check-task-tool-checks.sh`、`sync-secrets.sh`、`typecheck-staged.sh`、`electron-dev.sh` 等），与本工作台无关。`check-i18n-coverage.ts` **仍然缺**，所以 `lint:i18n:coverage` 在这个 checkout 跑不了（§5.1）；`apps/electron` 自己的 `build` 脚本引用的 `validate-assets.ts` 也缺。**注意 `electron:start` 走的根链（main → preload → renderer → resources → assets）不依赖它们**。
+### 3.6 要等"节点出现"才做的事：节点存进 state，别拿 ref 读一次
 
-### 3.11 `protocol.handle('http')` 的范围与代价（换载体时记下的）
-
-- **范围是 scheme + session，不是 host**：handler 注册在 `persist:browser-pane` 上，所以该 session 里**每一个** http 请求都先经过 `handlePrototypeRequest`；host 判断只决定"谁来答"，不决定"谁来经手"。
-- **为什么还是换了**：回环监听器的端口是临时的 ⇒ origin 每次启动都变 ⇒ cookie 与 `localStorage` 不跨重启——而这个工作台正要"模拟登录态"，稳定 origin 是**功能**，范围是可接受的代价。
-- **把代价钉死的三条约定**（都在 `prototype-host.ts` 的模块注释里）：① 只拦 `http`，`https` 一个字不碰；② 不属于我们的 label 一律 `net.fetch(req, { bypassCustomProtocolHandlers: true })` 原样交回——**这里不是 404**，`*.localhost` 上跑着真实 dev server，把人家的页面 404 掉是最糟的失败；③ handler 不抛异常，我们这一侧的失败答 500 并记日志。
-- **待实测**（只有真实窗口里能看，清单见 §5.4）：pass-through 对分块上传 / 流式响应 / 下载 / HTTP 缓存是否无损；以及我们 host 上 `document.cookie` 写入后能否在后续请求里带回来。
-- **别再走的一次弯路**：`interceptHttpProtocol` 那一族是**废弃 API**（`register*Protocol` / `intercept*Protocol` → `protocol.handle`），网上搜到的例子多半还是旧的。
-
-### 3.12 旧配置靠读时提升，不靠迁移脚本
-
-- **背景**：`kind` 从原型下沉到页之后，"已经存在的原型"在代码眼里就是"页表为空"——而状态、面板、命令全走**只读**路径，没有任何一处会替它写盘。
-- **修法**：提升放在**读**这一侧（`readPrototypeConfig` 认顶层 `kind` → `legacyPageRows`）：`scratch` → 页 `base`（`base.html`，entry）；`overlay` + `targetUrl` → 页 `entry`（url = targetUrl，entry）；`overlay` + `pages` → 入口页 + 其余按声明序（旧原型只有一种 kind，所以都算 overlay）。读不到 `kind` 的坏配置同样落到 `scratch` 那一支（§13.3 不变）。
-- **要点**：① 提升出来的行照走 `normalizePrototypePages`，重名 / 重地址规则与手写配置完全一样，所以不存在"旧数据规规矩矩、新数据才严格"的裂缝；② 盘上一个字节不动，直到下一次控制面写入——而 `writePrototypeConfig` 只写页表，所以**一次写入就把旧形状退休了**（没有顶层 `kind` 的配置只会按新形状读）；③ `base` / `entry` 是提升的**产物**，不是保留名（保留的是 `_` 开头），改名照普通页处理（文件 + 它的补丁目录 + `entry` 标记一起动，由控制面一次做完）。
-
-### 3.13 "文件管存在、表管顺序与入口"这条不变式，第一版在名字检查上写反了
-
-- **症状**：文档已经写好（`cart.html` 在目录里，`describePrototypePages` 也把它当页），但 `pages --add cart` 报 `already has a page "cart"`——于是**没有办法把一页放进流程顺序**，而"文件管存在"这条性子也就落不了地。
-- **根因**：判重用了"合并后的页表"（未声明的文档自动算页），而 `--add` 要回答的是"这一行**声明过**没有"。同一条不变式在这里需要两个集合：页表（谁存在）与 `rows`（谁被声明过）。
-- **修法**：不带 url 的 `add` 只对**已声明的行**判重（`rows.some(...)`），"文档在不在"交给文件系统（`existsSync(join(dir, pageFileName(name)))`，不在就报错并让人先写文件）。反过来，`entry` 那一支遇到"没人声明的文档"要**顺手补一行**：`entry` 是行上的标记，而只有行能带它。`pages.test.ts` 的两条用例钉的就是这一对（`refuses to declare a page of ours…` / `declares a document nobody listed, because only a row can carry the flag`）。
-
-### 3.14 补丁的页名要在"相对 `patches/` 的路径"上取，不能在绝对路径上切
-
-- **症状（会踩到的形态）**：`patches/cart/A-001.css` 的页归属在 Windows 上读不出来——页名成了整条绝对路径（或为空），于是它被当成共享补丁，页域等于没生效。
-- **根因**：`status.patches.files` 给的是**绝对路径**，而"哪一页"只存在于"相对 `patches/` 的第一段"里。在绝对路径上做字符串手术（找最后一个分隔符、找 `/`）在 Windows 上必然错：`\` 不是 `/`，路径里还有盘符。
-- **修法**：先归一成 `/` 分隔的**相对**路径，再取第一段——`prompt.ts` 里是 `relative(patchesDir, absolute).split(sep).join('/')`，页名 = 第一个 `/` 之前的部分，没有 `/` 就是共享。`storage.ts` 那一侧本来就在 `patches/` 相对路径上工作（`readPatch` 自己拼 `page/file`），两边同一条约定。**别用绝对路径去拼展示用的相对路径**，那是同一类坑的入口。
-
-### 3.15 `pageAvailable` 与 `resolvePrototypeEntry` 必须是同一个判断
-
-- **症状**：面板的「打开」亮着、点下去报错；或者反过来，明明有页可看却是灰的。差异都出在边界上：没有宿主（单测里没装 resolver）、入口是 overlay 但行里没有 url、声明的页文档被删了。
-- **根因**：一个判断被写了两次——`status.ts` 要它来决定按钮的可用性，`export.ts` 要它来决定"到底能不能打开"——两次的条件一旦不完全一样，面板就会提供一个必然失败的按钮，或者藏起一个能用的。
-- **修法**：`pageAvailable` 就是 `resolvePrototypeEntry` 的判据，逐支对齐：有页 **且**（入口是 overlay → 它自己有地址；否则 → 有宿主，且入口页的文档在）；没有入口时同样要求有宿主（`/` 要给出生成的页索引）。用例走遍 entry / 页 / 宿主 的组合（`ownership.test.ts` 的 `agrees with resolvePrototypeEntry about what can be opened`），两处的注释也互相指认。
-
-### 3.16 自动重放：刷新还是注入，取决于**文档自己**
-
-- **症状**（写之前就能预见，测试把它钉住了）：文件一变就"重放"，活页面上的 JS 补丁跑了两遍——而页面看起来完全正常。
-- **根因**：`apply` 会跳过"文档已经内联的补丁"，所以"内容改过的那条补丁"在 apply 时是被**当作已应用**跳过的（这是 §3.5 那条不变式的代价）。于是两种天真的做法都错：**只 apply 不刷新** → 改过的补丁不会被重新执行；**apply 再刷新** → 对已经内联的那批补丁求值一次，JS 跑了两遍。
-- **修法**：`replayPrototypeInBrowser()` 先读内联标记，**按结果二选一**——文档带标记（我们自己的页，宿主按请求现渲染）→ 只 `reload()`；没标记（别人的活页面）→ 走完整的 apply（重建注册 + 立即求值）。判据来自文档本身而不是地址或页类型，所以存到别处再打开的文档也一样成立。
-
-### 3.17 生成的文本里出现标记**字面**，就会被当成标记
-
-- **症状**：折叠折出来的文件，`scanPrototypePatches` 读到的 `@target` 除了真的选择器，还多了一条 `markers, which the workbench reads).`——`fold.test.ts` 当场抓到。
-- **根因**：banner 里写了一句"每个来源都保留它自己的 provenance 头（以及它的 `@target` 标记…）"。解析器按行扫、把标记之后到行尾都当成它的值——**它没法区分"标记"和"谈论标记"**。
-- **修法**：生成的文本里不写标记字面（那句改成"它携带的标记"，不点名字）。同一条规矩也约束 provenance 注释：**每个标记各占一行**，`@requirement` 在前、`@target` 在后，因为同一行上的第二个标记会被第一个吞掉。
-
-### 3.18 测试桩不能靠"包含某个字符串"来认探针
-
-- **症状**：加了"每个补丁自报命中"之后，`apply-prototype.test.ts` 里 4 个用例的 `evaluated` 突然变成空数组——补丁脚本压根没被执行到。
-- **根因**：测试桩用 `expression.includes('__craft_patch_state__')` 认状态探针，而**每个补丁脚本现在也含这个 key**（它要往里写）——于是补丁脚本被当成探针"答完就走"。
-- **修法**：按探针特有的一行来认（`const measured = (entry.matches`、`const entries =`、`out[target] = el ?`）。教训是通用的：**当被测代码开始包含某个 key，用 key 认它就不成立了**，要认形状。
-
-### 3.19 收敛会把 scratch 页的需求线剪断（读的一端漏了写的一端）
-
-- **症状**：给一个 scratch 页的补丁折叠之后，`status` 把它服务的需求列进 `unresolved.unmet`，交付闸门报 `R-001 is in PRD.md but no page or patch refers to it`，`dist/dev-spec.md` 的需求表把它印成 `**nothing**`——而那个改动**还在页面上**（真浏览器里对照过：折入前后计算样式逐字段一致）。
-- **根因**：折入的落点与读者找的地方不一致。折叠按 §21.3 把 provenance 头（含 `@requirement` / `@target`）**有意**写进折入文件 `assets/<页名>/committed.*`，但 `resolveRequirementCoverage` 只扫 `patches/`（`scanPrototypePatches`）与页文档，**从不读 `assets/**`**。overlay 页不受影响——那里的折入落在 `patches/<页名>/Z-*`，扫得到。于是这是只在 scratch 上出现、且方向相反的偏差：工作台自己把"有实现"改成了"没人做"。
-- **修法**：读的一端补上折入文件；`COMMITTED_CSS` / `COMMITTED_JS` 由 `fold.ts` 导出，**写者与读者对"折到哪去了"只有一个权威**，不再各写一个字面量。页文档不在时仍然什么都不声明，不让折入文件替一个打不开的页面说话。回归测试在 `__tests__/coverage.test.ts`（`follows a requirement into the file a page folded its own delta into`），把折入后的 `pages`、`unmet` 与 dev-spec 需求表一起钉住，并覆盖"文档被删则不认"这条边界。
-- **教训**：写入者与读者之间的**路径**是一份隐含契约。凡"写去 A、只从 B 读"的配对，都要有一处共享的名字，并且要有一条端到端用例**跨过那次折叠**——否则每个单元测试都绿，合起来却是断的。
-
-### 3.20 状态化 mock 的响应体交出了 store 的对象引用
-
-- **症状**：`mock-engine.test.ts` 里第一次 `GET` 的断言失败，收到的却是**第三次** `GET` 的答案——而且是"当时的" currency 配"后来的" items 这种自相矛盾的值。
-- **根因**：`answer` 里直接 `readMockPath(store, collection)`，把 store 里的**活对象**交了出去。workbench 的网络层和页面载体都在拿到它之后立刻 `JSON.stringify`，所以生产上一直看不出来；但"已经发出的响应"在语义上就是**快照**，而它却是个窗口——后一次请求一改，前面那条答案跟着变。（`PATCH` 的浅合并又让旧对象与新对象共享同一个 `items` 数组，于是出现了跨版本拼接的那种值。）
-- **修法**：状态化路由的答案一律**复制**（`snapshot()`，TS 与页面版各一份），并在两边都写明"答案不是 store 的窗口"。测试不改——是它把这个陷阱抓出来的。
-- **教训**：解释器/响应构造这类"返回**活对象**还是快照"的选择，只有在有人**持有**返回值时才暴露。**测试持有它**，所以这条只有在有断言的地方才会被发现。
-
-### 3.21 一份规则两处实现：mock 的状态机
-
-- **症状**：没有立刻看得见的症状——这正是它危险的地方。工作台在网络层用 TypeScript 兑现 mock，交付载体（扩展的 `mocks.js`、静态单文件、书签）只能在页面里兑现，于是同一份契约有两套代码。历史上两者连**匹配**都不一样（`endsWith(path)` vs `=== path`），而这个差异在文档里写着"两边不可能行为分叉"。
-- **修法**（这次一起做掉）：匹配与状态机都只留一处描述——`mock-engine.ts` 是权威，`extension.ts` 的 `buildMockEngineScript()` 是它的页面镜像（名字、顺序刻意对齐，便于逐行对照），两者靠 `__tests__/mock-engine.test.ts` 里**同一张流程表**（13 步：读、追加、再读、并入、删、404、替换、fixture 路由、不匹配、`baseUrl` 前缀、超长路径）跑过两边再 `toEqual` 比对答案。`buildMockEngineScript` 保持**纯**（不碰 `window` / `document` / `location`），就是为了让测试能在没有页面的情况下跑它。
-- **同时统一的行为**：尾部回退匹配（见实施方案 §5.3）——此前页面载体连 `baseUrl` 前缀都命中不了。
-- **教训**：这个仓库里"两份实现"是有先例的（`onboarding.ts` 的两份 handler），所以规则不是"永不重复"，而是**重复必须有对照测试**。没有对照的那一份，等于没有实现。
-
-### 3.22 画面切了，键盘没跟（焦点在错误的标签页上）
-
-- **症状**：光标停在屏幕上那个标签页的输入框里（页面收到 `blur`），agent 在后台开一个标签页 → 光标没了；切到别的标签页再**切回来** → 还是不回来，键盘留在已经不在屏幕上的那个标签页上；关掉屏幕上那个标签页 → 也没有交接。`document.hasFocus()` 在两边的答案与肉眼所见相反。
-- **根因**：**Chromium 在页面 commit 时把焦点给那个 webContents，且不问它是不是屏幕上那个**（量出来的：裸 `WebContentsView` 创建时、挂进窗口后都不给焦点，第一次**加载**才给；同一个窗口里第二支 view 加载完，焦点就从第一支转过去）。而 manager 这一侧**从没有一处向标签页要过焦点**：`activateTab` 只改 `activeTabId`、重排 view、推状态。于是一旦 agent 的标签页（它总是最新那个）加载完，键盘就归它，直到有别人再来要。
-- **修法**：`focusTheTabOnScreen(instance, tab)` 一处，三个调用点——`activateTab`（放在"已经是当前标签页"的提前返回**之前**）、标签页的 `did-navigate`（页面 commit 就是移交时刻）、`closeTab` 的接替分支（`activeTabId` 全库只有两处直接赋值，这是另一处）。两条守门别丢：**只在 `window.isFocused()` 时**动（`webContents.focus()` 会把窗口拉到前台，后台干活的 agent 绝不能翻窗口），**只从"另一个标签页"手里拿回**（地址栏与 rail 是人打字的地方）。**顺序也是它的一部分**：这句话必须排在"把 view 搬进窗口"（`layoutAllViews` / `raiseActiveTab`）**之后**——搬动本身会丢掉键盘，先给后搬等于没给（A/B 实测：先给再搬 → 两个 view 都 `hasFocus: false`；先搬再给 → `true`；用户实测"从标签栏切回来焦点没还给网页"就是这一条，见实施方案 §22 第十六轮末尾的修正）。
-- **教训**：这类"两个独立状态跟着一个动作走"的地方（这里是"显示"与"键盘"），要成对地找一遍：**直接写 `activeTabId` 的地方就是候选**（当时全库只有 `activateTab` 与 `closeTab` 两处）。每个标签页的文档自己记着聚焦的元素，所以只要把键盘交给正确的标签页，光标就回到原处——不需要自己存"上次焦点在哪"。
-- **验收**：`browser-pane-manager.test.ts` 四条（后台加载交还 / 地址栏不动 / 激活交给上屏者 + 窗口不在人手里不动 / 关闭交接）；真 Electron 读数在 `apps/electron/spike/screenshot-e2e.ts` phase 8 / 10（实施方案 §22 第十六轮）。
-
-### 3.23 探针里 `destroy()` 一扇窗，下一扇窗的 `loadURL` 会报 `ERR_FAILED (-2)`
-
-- **症状**：一支 spike 顺序跑四段，每段自己建窗、跑完 `window.destroy()`；第二段的 `loadURL(data:…)` 抛 `ERR_FAILED (-2)`，而**第一段同样写法的加载完全正常**，且报错 URL 与它自己要去的地方一字不差。
-- **根因**（同一族：报错归错人，机制与 §3.3 相同）：Teardown 的 abort 会被交给**随后**那个 `loadURL` 的 promise——这一点是 §3.3 实测出来的（Electron 把 abort 归给"当前"那个，不给被顶掉的那个）。本机只量到"中途销毁 → 下一段加载失败 / 不中途销毁 → 四段全正常"，没有单独复现机制本身。
-- **修法**：spike 里**不要中途销毁**——把窗口收进一个数组，全部跑完再一起 `destroy()`。（报错归错人这件事在应用侧也一样：看到 `loadURL` 失败，先确认它是不是被别人的导航/销毁顶掉的。）
-- **教训**：`ERR_FAILED (-2)` 与 URL 对不上上下文时，先怀疑"是谁在同时拆东西"，不要怀疑 URL。
-
-### 3.24 兜底值会把"没有尺寸"伪装成一个尺寸（页面变成 193×93）
-
-- **症状**：用着用着，浏览器窗口里的页面变成一个很小的方块 —— 具体是 **193×93**；**切换标签就恢复**。
-- **根因**：`tabAreaBounds` 用 `Math.max(200, width - TAB_RAIL_WIDTH)`、`Math.max(100, height - TOOLBAR_HEIGHT)` 防负值；而**被最小化的窗口在 Windows 上 `getContentSize()` 报 0×0**（实测；**隐藏**的窗口照旧报真实尺寸，两者不能混）。于是这个兜底把 0×0 产成 200-7 × 100-7 = **193×93** —— 一个"看着像尺寸"的数字。最小化那一刻窗口的 `resize` 触发一次布局，把这个尺寸写进了页面的 view；而**恢复窗口不会再触发一次布局**，所以页面停在 193×93，直到下一次布局（用户能做的最近一件事就是切标签）。
-- **修法**：`windowHasSize(instance)`（销毁 / 最小化 / 内容尺寸非正 → 没有几何可交付），挡住"从没有尺寸的窗口布局"——`layoutTabView`、`updateNativeOverlayState`，以及 `captureWhileParked` 交回屏幕上那个标签页时（改交回它自己的 viewport）；并给窗口的 `restore` / `maximize` / `unmaximize` 加一次 `layoutAllViews`（回来这件事必须自己布局）。
-- **教训**：**clamp / max / min 这类兜底会把"输入不可信"变成"输出看着合理"**，比直接报错更难发现（0×0 一眼就知道坏了，193×93 不会）。凡是几何，先问一句"这个窗口现在有尺寸吗"。测量见实施方案 §22 第十八轮。
-- **验收**：`browser-pane-manager.test.ts` 的「lays nothing out from a window that has no size, and lays out again when it comes back」；真机看 `SPIKE_STEP minimized window`（`apps/electron/spike/screenshot-e2e.ts`）。
-
-### 3.25 停车窗的两条"关系"都要有人守：不在显示器上、并且一直"被显示"
-
-- **症状（潜在）**：停车窗被挪到屏幕上（显示器一变就露出来，用户已遇到），或者停车窗自己**被最小化/隐藏**（shell 级的"最小化所有窗口"、或我们自己一次 `hide()`）——后者更隐蔽：里面的 view 会连**视口**一起丢掉（`innerWidth` 0、CDP 输入落空），截图与"冻结"随之失效。
-- **根因**：把窗口放到屏幕外、`showInactive()` 各只有一次，是**动作**；而这两件事都是**关系**——显示器会变、桌面会把够不着的窗口搬回来、别的东西会最小化它。应用侧还实测到一条有用的边界：**最小化人自己的窗口不会波及停车窗**（两扇独立顶层窗、无 owner）。
-- **修法**：`keepOffEveryDisplay`（创建后、`move`/`resize`、`display-added`/`display-removed`/`display-metrics-changed` 三种时刻核对实际 bounds；挪不动就记 `parkingStuck` 停止反复试）+ `keepShowing`（`minimize`/`hide` 时 `restore()` + `showInactive()` 再来一遍）。两者都只在真正需要时才动手。
-- **教训**：凡是"某扇窗必须处于某个状态"（离屏、可见、置顶…），都要问一句**谁来维持它**；一次性设置必然会被环境改掉。
-- **验收**：`browser-pane-manager.test.ts` 的「keeps a window nobody may see off every display, through screen changes and being moved onto one」（显示器变化 / 被挪到 (0,0) / 被最小化 / 被隐藏）；真机 `SPIKE_STEP minimized window` 与 `background-viewport.ts` section E。
-
-### 3.26 terminate 窗口漏页面：销毁窗口**不会**关掉 `WebContentsView` 的 webContents
-
-- **症状**：terminate 一个浏览器窗口后，窗口和它的停车窗都没了，但**标签页的页面还在跑**（前台那个、以及停在停车窗里的那个），进程/内存不回收；反复开关窗口越积越多。
-- **根因**：**视图类型不同，销毁语义不同**。chrome 用的是 `BrowserView`（窗口自己拥有，随窗口一起关）；标签页用的是 `WebContentsView`，**销毁承载它的窗口并不会关掉它的 webContents**（实测：`destroyInstance` 后窗口数回基线、停车窗 `isDestroyed: true`、三个 chrome 面都关了，但两个页面 2.5s 后仍在 `webContents.getAllWebContents()` 里，且手动 `close()` 能关掉 —— 活渲染器，不是残影）。修前 vs 修后，同一串"建了又销毁"的实例，webContents 基线 **45 → 17**。
-- **修法**：在 `finalizeDestroyedInstance` 里**逐页关闭**（`clearInPageThemeTimer` + `tab.tabView.webContents?.close()`），**再**销毁停车窗——停车窗的销毁是"它已经空了"的后果，不是手段；所有销毁路径（`destroyInstance`、窗口 `closed`、过期实例清理）都汇到这里。
-- **教训**：①"销毁容器 = 销毁内容"要**按类型核对**，别假设；②`webContents.close()` 之后 `view.webContents` 是 **`undefined`**（不是 destroyed 的同一个对象），清理代码不能盲读；③验证"有没有泄漏"要**按 id 核对 `webContents.getAllWebContents()`**，不要读视图上的 flag（那条 flag 在页面已经消失后仍可能说 `false`）。
-- **验收**：`browser-pane-manager.test.ts` 的「closes every tab's page when the window goes, the parked ones included」（钉的是顺序：屏幕上的页面 → 停车窗里的页面 → 停车窗）；真机 `SPIKE_STEP terminate`（`apps/electron/spike/screenshot-e2e.ts` phase 12）。
-
-### 3.27 善后代码自己也会被抛错打断：实例必须无条件离开 `instances`
-
-- **症状**：`still destroys instance when cleanup throws`（很早就写下的用例）一直红。它把 `updateNativeOverlayState` 换成会抛错的 mock，要求实例照样离场。
-- **根因**：`destroyInstance` 给自己的清理步骤都套了 `runCleanup`，但 `finalizeDestroyedInstance` 里**又调了一次** `updateNativeOverlayState`，而且是裸调——异常直接穿出 `finally`，后面的"逐页关闭 → 销毁停车窗 → `instances.delete` → `removedCallback`"**全部被跳过**。表现是：窗口已经没了，实例还留在表里（调用方继续看到一个不存在的窗口），`removedCallback` 不响，页面与停车窗都留在原地。
-- **修法**：`finalizeDestroyedInstance` 里放一个局部 `step(label, action)`（try/catch + warn 日志），**每个**可能失败的动作都走它（overlay、CDP detach、逐页 close、停车窗 destroy）；`instances.delete` 与 `removedCallback` 放在这些之后、**无条件**执行。
-- **教训**：①"这一步已经包了 try/catch"要看**调用点有几个**——同一个动作从两处被调用、只有一处有兜，等于没兜；②最终化函数的硬承诺要写在**无条件路径**上（不在 `try` 里、也不在 `if` 里）；③"哪个依赖坏了会怎样"值得专门 mock 一条用例，但红着的用例要能说清它是**真 bug** 还是**测试过时**（§5.2、§3.28），否则真 bug 会一直在"已知失败"里躺着。
-- **验收**：`browser-pane-manager.test.ts` 的「still destroys instance when cleanup throws」（不抛 + `window.destroy` 恰好一次 + `listInstances()` 为空）。
-
-### 3.28 四条过时用例：契约搬走了，断言还停在旧事件上
-
-- **症状**：`focus brings the instance window to front`、`dedupes repeated focus calls before ready-to-show`、`retries toolbar load and recovers`、`loads toolbar fallback page after retry exhaustion` 一直红，但四条都**不是**产品的错。
-- **三处真变化**：① 窗口的显示时机从**窗口**的 `ready-to-show` 挪到**地址栏真的载入完**（`markToolbarReady`）——没有地址栏的窗口不值得先显示出来，于是那个事件已经什么都不驱动；② 地址栏与标签栏不再是窗口 webContents 里的文档，而是各自一个 `BrowserView`——`createdWindows[0].webContents` 永远看不到那些 `loadFile`/`loadURL`，只能数到 0；③ 测试的失败旋钮 `toolbarLoadFailuresRemaining` 本意只作用于地址栏，可**标签栏加载的是同一个 `browser-toolbar.html`**（`view=rail`），谁先调用谁吃掉失败，最后连期望的 3 / 5 到底该算哪一面都说不清。
-- **修法**：用例走真契约——`finishLoadingTheBar(instance)`（把地址栏 `getURL` 指向 `browser-toolbar.html` 再 `_emit('did-finish-load')`）；计数改成数 `instance.toolbarView.webContents`；mock 按 `view=bar` / `opts.query.view === 'bar'` 认面，把旋钮钉在地址栏上。
-- **教训**：①"测试红了"先问**契约是不是搬走了**，不要直接改断言去迁就现状（那会把真 bug 一起固化）；②mock 里的"全局开关"会**跨面泄漏**，开关必须钉在它真正针对的那一个东西上；③`cancels deferred focus when hide happens first` 原来也发 `ready-to-show`（空转，只是"恰好绿"），一并改到地址栏就绪后，它才真的在测"hide 取消待显示"。
-- **验收**：`cd apps/electron && bun test src/main/__tests__/browser-pane-manager.test.ts` → **162 pass / 0 fail**。
+- **症状**：mermaid 大窗预览里滚轮毫无反应，而缩放按钮一切正常（用户报了两次；第一次我按"effect 早退"改，改完仍然没反应）。
+- **根因**：滚轮 effect 在 `isOpen` 变 true 时跑，但**那一刻容器还没进 DOM**——`PreviewOverlay` 的 children 由 Radix 的 Portal 挂着，Portal 按自己的 presence state 决定何时渲染，比 `isOpen` 晚一个 commit。于是 `containerRef.current` 还是 null，监听器从来没装上；之后也没有任何依赖再变化，effect 不会重跑。**把 `isOpen` 加进依赖救不了**——问题不是"没重跑"，而是"跑的时候节点还没有"。
+- **实测证据**：playground 的 `RichBlockInteractionParity` fixture 里对容器派发一次 `wheel`，`defaultPrevented` 是 `false`（handler 第一句就是 `preventDefault()`）——监听器不在那个元素上。修好后同一次派发为 `true`，头部百分比 100% → 128%（`2^(120×0.003)`）。
+- **规矩**：把节点存进 **state**（callback ref → `setContainer`），让 effect 依赖那个 state——节点什么时候到就什么时候跑，对"为什么晚到"不做假设。`useRichBlockInteractions` 与 `useDrawioView` 现在都是这个写法。同一个 hook 也供 image 大窗用，所以那个的滚轮以前一起坏着。
 
 ---
 
-## 4. 已删除的机制（墓园）
+## 4. 墓园（已整份删除的机制）
 
-这些概念**现在不存在**，别再按它们讨论设计；列在这里只为回答"当初为什么删"。
+这些概念**现在不存在**，别再按它们讨论设计；只回答「当初为什么删」。
 
 | 机制 | 曾经为了什么 | 为什么删 | 现在怎么做 |
 |---|---|---|---|
-| **Capture**（`prototype-capture --url`，把在线页冻成 `base.html`） | "总得有个页面才能打补丁" | 它回应的是一个**不存在的需求**：overlay 的补丁打在活页面上，不需要 `base.html`；冻出来的副本跑不了自己的 JS、也带不来会话，只是**看起来像**那个页面 | overlay 的页面**就是**那个在线地址 |
-| `prototype-import --from <slug>` | 从另一个原型拿一份起点 | 它把**材料**与**身份**混在一个动作里（搬完 kind/targetUrl 不变，界面上看不出来），而且人真正想要的是"一份能接着改的副本" | 列表右键**复制**：整份复制成一个**新原型**（`duplicatePrototype`） |
-| MSW + Prism（D8 原方案）、`dist/mock-server/`、`dist/msw-handlers/` | 用现成 mock 工具跑契约 | 要引两个新依赖，且页面级 mock 覆盖不到 axios 用的 XHR | CDP `Fetch` 拦截（fetch/XHR/任意资源全覆盖，零新依赖） |
-| `file://` 作为原型文档载体 | 最省事地打开本地 HTML | origin 是 opaque：没有 cookie 域、**相对 `fetch`/XHR 发不出去**（mock 层永远看不到请求）、ES module 被 CORS 拦 | Electron 应答的 `http`（`protocol.handle`）：一个原型一个 host、目录即 origin 根（实施方案 §16） |
-| 放开面 partition（`webSecurity:false`） | 让页面脚本自己跨域 | 代价是不可回退的安全弱化，而收益只是"省掉一层 CDP 封装"；能力用 CDP 同样能拿到 | 安全姿态未变：`sandbox` / `contextIsolation` / `nodeIntegration:false` / `webSecurity` 默认开 |
-| 落盘的 `manifest.json` 补丁索引 | 记录有哪些补丁 | 多个写者并发写一个共享索引是最大争用点 | 派生索引：每次从 `patches/` 重算（`scanPrototypePatches`） |
-| 「起手形态：本地 dev server」（原 D6） | 区分 dev server 与线上 URL | 它不是一条决策：patch 对任何源页面都是覆盖层，两者在**产出**上没有区别 | 分野改按**产物性质**（overlay / scratch） |
-| 创建时预置空 `base.html` | 避免"新原型每个动作都是灰的" | 灰按钮的成因是"没有页面就不能打开"，该由**入口**解决；空文档只是把死胡同伪装成一条路 | 不预置；首稿由 agent 写或复制而来 |
-| 面板「保存为补丁」与详情页源码编辑器 | 点一下就能改文案 / 直接改产物文件 | 前者让补丁数量由**点击次数**决定，后者把工程侧界面摆到工作台正面 | 补丁只有一个来源：**agent 写**（实施方案 §12.4） |
-| 详情页那四个入口（打开目标页面 / 打开浏览器窗口 / 捕获为底稿 / 导入其他原型） | 让用户手动准备环境 | 每一个回答的都是**机器需要什么**，不是用户想要什么；「打开浏览器窗口」尤其是实现约束漏到界面上的产物 | 由 agent 用 `browser_tool` 承担；详情页只有「预览 / 在对话里改 / 导出」 |
-| **项目指定"当前原型"**（`ProjectConfig.defaultPrototypeSlug` + `projects:setDefaultPrototype` + agent 的 `prototype-default` + 会话继承"恰好一个"） | 多原型项目的对话开箱就用某一个：`会话绑定 ?? 项目当前原型 ?? 唯一成员` | 它回答的是"**项目替会话挑一个**"，而挑就是猜——为这一个答案要多一个配置字段、一个受校验的写入者、一条 RPC 通道、一条命令，以及"声明的那个被移走了怎么办"的悬空故事；而"恰好一个"也是同一个机制的另一副面孔 | 项目只**记**自己的工作在哪些原型上（`ProjectConfig.prototypeSlugs` → `<project_prototypes>` 的一列，§15.1.3）：背景信息，不绑定、不继承、不解析、不注入原型上下文，会话要么自己绑，要么按名调用。**是集合不是"当前原型"**：项目同时在几个原型上工作，挑一个就是猜 |
-| **原型属于某个项目**（`PrototypeConfig.projectSlug` 那条边 + `listPrototypesForProject` 的成员列表 + `prototype-project` 命令 + `prototypes:setProject`） | 项目详情页列出"这个项目的原型"，会话的 `<prototype_context>` 说"哪边放新文件" | 一个原型会被**多个对话**绑定，而那些对话可以属于不同项目——"它属于项目 A"不是事实，"这个项目有哪些原型"也不是该问的问题（§15.1.4） | 原型**不记**自己属于谁；项目侧只留一条背景记录；要找原型用 `list` |
+| **补丁层**（`patches/`、`@target`、锚点、折叠、回放、窗口里的编辑覆盖层） | 在不改源产品的前提下给页面叠一层差量改动 | 那是「在看真实产品时改它」的能力，属于浏览器工具；长在规格的文件夹里就要求一份索引、一套锚点与折叠，全是第二份描述 | 规格里只写文件；页面的事归 `browser_tool` |
+| **页**（页表 `config.json`、`_layout.html`、overlay / scratch 类型、入口页、页索引、片段） | 把一条流程拆成多页并声明谁是谁 | 类型描述的是「一份文档的性质」，本工作台现在没有文档产物；类型/地址/入口是一次猜，而作者面必须仍是最终产物 | 一个原型一个文件夹，没有页表、没有布局、没有入口 |
+| **原型宿主**（`http://<slug>-<hash>.localhost/`、Electron 应答 `http`） | 给原型文档一个稳定 origin，好让 mock 与 cookie 生效 | mock 删了，载体就没有存在理由；`protocol.handle('http')` 让每个 http 请求都先经我们一手，是要还的代价 | 不碰浏览器；文件直接打开 |
+| **mock**（`x-mock` / fixtures / `state.json` / `buildMockRoutes` / CDP `Fetch` 拦截） | 让原型在没有后端时也能跑通请求 | 它服务的是「可运行物」，而交付物现在是规格本身；契约、fixtures、状态机是给机器和后端的 | 不做 mock |
+| **契约**（`services/`、`paths/*.yaml`、openapi、`contract.md`） | 声明并兑现后端接口 | 回答的是「后端怎么实现」，不是「这条需求做完了没有」 | 需求写在 `PRD.md`，依据写在 `research/` |
+| **验收**（`check:`、`verify`、`acceptance/`、轮次与 diff、`dist/`） | 跑 PRD 里的检查并对比上一轮 | 没有任何东西在跑检查；记不住历史的运行报告只会让人以为它记得 | `check:` 现在只是正文，解析器不认识它；不记历史 |
+| **交付物**（扩展包 / 自包含 HTML / 书签 / `dev-spec` / `handoff`） | 把原型打包成能交给别人跑的东西 | 交付物**就是这份规格**，产物是给收件人看的、不是给浏览器装的 | 文件夹整份交出去 |
+| **帧记录**（`research/frames`、`research/videos`） | 把录屏抽成帧写进原型，供 agent 读 | 「让 agent 看一眼录像」与原型无关，是独立能力 | 已提为顶级工具 `video_tool sample <path>`（`sample-video` 随之改名） |
+| **写归属与写守卫**（`ownership.ts`、`resolvePrototypeWriter`、`PROTOTYPE_DEFAULT_WRITER`、会话的 `taskWrites`、task YAML 的 `writes:`、`pre-tool-use` 的写守卫分支） | 让多个写者并线不互相覆盖 | 它要防的冲突源（契约片段、状态文件、补丁索引、页表）全被删光了；剩下的「两个对话改同一个文件」是文件系统的问题，不该由这个工具发明机制 | 原型就是一个文件夹，谁都写 |
+| **项目指定「当前原型」**（`ProjectConfig.defaultPrototypeSlug` + `projects:setDefaultPrototype` + agent 的 `prototype-default` + 会话继承「恰好一个」） | 多原型项目的对话开箱就用某一个 | 它回答的是「项目替会话挑一个」，而挑就是猜；为这一个答案要多一个配置字段、一个受校验的写入者、一条 RPC、一条命令，以及悬空故事 | 项目只**记**自己在哪些原型上工作（`prototypeSlugs` → `<project_prototypes>` 一列）：背景信息，不绑定、不继承、不解析。会话要么自己绑，要么按名调用 |
+| **原型属于某个项目**（`PrototypeConfig.projectSlug` + `listPrototypesForProject` + `prototype-project` 命令 + `prototypes:setProject`） | 项目详情页列出「这个项目的原型」，`<prototype_context>` 说「新文件放哪边」 | 一个原型会被多个对话绑定，而那些对话可以属于不同项目——「它属于项目 A」不是事实，「这个项目有哪些原型」也不是该问的问题 | 原型**不记**自己属于谁；项目侧只留一条背景记录；要找原型用 `list` |
 
 ---
 
 ## 5. 验证与基线
 
-### 5.1 常用命令
+### 5.1 常用命令（数字为**实测日期 2026-09-25**）
 
 ```bash
-# 类型检查（逐包跑，便于定位是哪一层坏了）
-# 前两条从仓库根跑；其余在各自包里
-bun run typecheck:shared
-bun run typecheck:electron
-cd packages/server-core && bun run tsc --noEmit
+# 类型检查：四个包全 0 错误
+cd packages/shared            && bun run tsc --noEmit    # 或根目录 bun run typecheck:shared
+cd packages/session-tools-core && bun run tsc --noEmit
+cd packages/server-core       && bun run tsc --noEmit
+cd apps/electron              && bun run typecheck
 
-# 测试（原型相关的四个；前两条合计 566 pass；把路径换成任意文件即可单跑一个）
-cd packages/shared      && bun test src/prototypes                              # 376 pass
-cd packages/shared      && bun test src/agent/__tests__/tool-commands.test.ts   # 190 pass
-cd packages/server-core && bun test src/domain/__tests__/apply-prototype.test.ts  # 17 pass
-cd apps/electron        && bun test src/main/__tests__/prototype-host.test.ts   # 38 pass
+# 原型 + 相关接缝（1242 pass / 1 skip / 9 fail；9 条全是既有环境失败，见 §5.2）
+bun test packages/shared/src/prototypes packages/shared/src/agent packages/shared/src/tasks \
+         packages/server-core/src/domain packages/server-core/src/sessions packages/server-core/src/tasks
+# 单跑：packages/shared 的 prototypes 91 pass；server-core 的 domain+sessions 145 pass
 
-# 全量（失败基线见 §5.2）
-cd packages/shared      && bun test
-
-# i18n（改到 strings/locales 时）
-bun run lint:i18n:parity                    # i18n parity OK (6 locales, 1879 keys each)
-bun scripts/sort-locales.ts                 # 加过 key 之后跑一次，排序是 lint 强制的
-# lint:i18n:coverage 在这个 checkout 跑不了：scripts/check-i18n-coverage.ts 不存在（§3.10）
-
-# 渲染层构建（改到 renderer 或共享包导出时务必跑，见 §3.6）
-cd apps/electron && bun run build:renderer
+# 界面侧全量 + 构建 + i18n
+cd apps/electron && bun test                     # 1109 pass / 0 fail
+cd apps/electron && bun run build:renderer       # 成功（改到 renderer 或共享包导出时务必跑，见 §2③）
+bun run lint:i18n:parity                         # i18n parity OK (6 locales, 1810 keys each)
+bun scripts/sort-locales.ts                      # 加过 key 之后跑一次，排序是强制的
 ```
 
-### 5.2 既有失败基线（**改代码前先跑一遍**）
+### 5.2 既有失败基线（**别算到新改动头上**）
 
-这些失败**与原型工作台无关**，别算到新改动头上：
+上面那次全量跑的 9 条失败全是**既有环境失败**，与原型工作台无关：
 
-- `packages/shared` 全量：本机（Windows）有一批**环境相关**的既有失败（最近一次实跑约 38 个，数量随 checkout 变化，以实跑为准），集中在：plans 目录/PowerShell 写入判定、session 路径与路径穿越、`sdk-bridge` 环境变量、`buildCallLlmRequest` 附件、`ensureDefaultPermissions`、`uiLanguage` 幂等、`validateStdioMcpConnection` ENOENT、`sanitizeAssetFilename`、`serializeSession`、plan 执行持久化。都别算到新改动头上。
-- **`routing.test.ts` 那两条已经绿了**（实测 `cd packages/shared && bun test src/protocol` 全过）：`prototypes:replay` / `setPages` 已经补进分类（§3.7；`prototypes:commit` 随折叠改到复制上整条删掉，`setProject` 随 §15.1.4 删掉了）。但**加通道时仍然要同时改注册表与 routing**，否则这两条会立刻红。
-- **typecheck 这条线已经干净**：页的归属改名（`BrowserTabSummary.belongsTo: TabBelongsTo`、`BrowserCapabilityRequest.work`、`assignTab(instanceId, tabId, to, by)`）早已完成，`packages/shared/src/tasks/outputs.ts` 那处 `ParsedOutputs.problems` 也已修，实测 `bun run typecheck:shared` 无报错。（`outputs.ts` 仍是**未跟踪**文件——判断自己有没有引入类型错误时，按包单独跑 `bun run tsc --noEmit` 比 `typecheck:all` 更快定位。）
-- **"哪一段"只有一处定义**：`tabSectionOf`（`packages/shared/src/protocol/dto.ts`——`person` / `session:<id>` / `task:<slug>`）。rail 与徽章画段读它，主进程决定"关掉一个标签页之后谁接替"也读它。**别在 rail 之外再写一遍"按会话/任务分段"**：画出来的段与交接用的段一旦不一致，表现是"接替跳到了别的分组"，从现象看不出是哪一边错。它是 `sameWork` 的粗版（任务的不同节点算同一段），所以**不能当权限判据用**，reach 只认 `sameWork`。
-- `apps/electron` 的 `browser-pane-manager.test.ts`：源码树里**已 0 失败**（162 pass，2026-09-21 实测）。曾经挂着的 5 条窗口生命周期用例已清理：`focus brings the instance window to front`、`dedupes repeated focus calls before the bar has loaded`、`retries toolbar load and recovers`、`loads toolbar fallback page after retry exhaustion` 是**契约搬走了**（显示时机改到 `markToolbarReady`、地址栏/标签栏各是 `BrowserView`，§3.28）；`still destroys instance when cleanup throws` 是**真 bug**（`finalizeDestroyedInstance` 的清理步骤没有兜，§3.27）。（`destroys child popups…` 曾在这份名单里：它是 CDP mock 缺 overlay 方法导致的 `teardownOverlay is not a function`，补上 mock 后已绿；element picker 那批用例的失败来自旧桩名 `armPicker`/`cancelPicker`，同期改成 `armOverlay`/`teardownOverlay` 后也绿了。）
-- 同一次全量跑里还有 **4 个路径相关**的失败：`use-working-directory-state.test.ts` 的 `deriveSortedRecent` 1 条与 `deriveSelectionFlags` 3 条（自定义目录 / `folderName` 回退）。它们在 renderer 的工作目录状态里，按 basename 判路径——**Windows 上本机既有**，与浏览器窗口无关（最近一次全量：1183 pass / 4 fail = 只剩这 4 条）。
-- **测试路径会连带跑 `release/win-unpacked/resources/app/...` 下的旧副本**：`bun test <路径>` 会把打包目录里那份同名测试也收进来，于是失败数与通过数**翻倍**；而且那份旧拷贝会多出 2 个**源码树里已经通过**的失败（`replays toolbar state with theme color when window is shown`、`replays full toolbar state when toolbar renderer finishes loading`）。判断"是不是我引入的"时先排除这些重复项。
+- `build-call-llm-request` 附件（1）
+- `permissions-config-migration`（1）
+- `read-patterns` PowerShell validator（4）
+- `mode-manager-path-boundary` Windows 路径（2）
+- `spawn-session-tilde-expansion`（1）
+
+另有一条与本工作台无关、但同样**别算到新改动头上**的既有失败：`bun test packages/shared/src/websites` → **50 pass / 7 fail**，7 条全部是 `website data write (spawned Bun one-shot)`。原因是本机环境：测试经 `resolveScriptRuntime('bun')` 直接 spawn（`data-write.ts:274`），而本机 PATH 上只有 `bun.exe`，于是 `uv_spawn 'C:\nvm4w\nodejs\bun' ENOENT`；真实运行走 `CRAFT_BUN` 全路径，不受影响。（要修就在测试里给 `CRAFT_BUN`，或让 `resolveScriptRuntime` 在 Windows 上补 `.exe`。）
 
 ### 5.3 测试落点
 
-| 模块 | 测试 |
-|---|---|
-| 补丁变换 | `packages/shared/src/prototypes/__tests__/prototypes.test.ts` |
-| 标记解析（`@target` / `@requirement`，含"写成词就不算"与"一行一个"） | `__tests__/patch-header.test.ts` |
-| 锚点记录（合并写、fingerprint 保留、漂移 / 孤儿判定、坏 JSON 容错、两个探针可编译） | `__tests__/anchors.test.ts` |
-| 折叠（两类页各自的落点、provenance 标记存活、幂等、拒绝、锚点清理、Z 排最后；以及"折的是副本、原件一个字节不动"） | `__tests__/fold.test.ts`、`__tests__/duplicate.test.ts` |
-| 索引扫描 / 命名过滤 / 补丁的页域（`scanPrototypePatchesForPage`、`listPrototypePatchPages`） | `__tests__/prototypes.test.ts` |
-| 配置与页表规范化、旧配置的读时提升（`legacyPageRows`） | `__tests__/config.test.ts` |
-| 页的判定与页表合并、页表增删改（add / remove / rename / entry） | `__tests__/pages.test.ts` |
-| 渲染与导出（按页取补丁、dev-spec 按页分节、入口 / 页索引、提升后的旧配置逐页一致） | `__tests__/export.test.ts` |
-| 扩展包（manifest / README / 页面变换 / mock / 按页分文件 / options 页 = 页索引） | `__tests__/extension.test.ts` |
-| 所有权（有规矩的路径 + 作者自己的文件夹默认放行） | `__tests__/ownership.test.ts` |
-| 契约合成与 mock 路由 | `__tests__/contract.test.ts` |
-| **mock 状态机**（方法 → op 的推导与拒绝、`state.json` 的读与上报、多服务 store 的合并与冲突、13 步流程的答案、**同一张表跑过 TS 与页面两套实现**） | `__tests__/mock-engine.test.ts` |
-| **网络层兑现**（匹配/前缀回退、请求体读取、store 跨请求可见、每次 apply 重置、body 读不出时 500） | `apps/electron/src/main/__tests__/browser-cdp-fetch-mock.test.ts` |
-| prompt 块（页列表与每条补丁的页域） | `__tests__/prompt.test.ts` |
-| 需求线（PRD → 页 / 补丁 / findings；折入 `assets/<页名>/committed.*` 后仍接得上、dev-spec 需求表、异议挂在需求行上） | `__tests__/coverage.test.ts` |
-| 命令层（runtime，两条门的分发、help、互不认领的措辞） | `src/agent/__tests__/tool-commands.test.ts` |
-| 注入时跳过已内联；命中 / 未命中 / 漂移的报告与锚点记录；`replayPrototypeInBrowser` 的两种含义 | `packages/server-core/src/domain/__tests__/apply-prototype.test.ts` |
-| **验收执行器**（`endpoint` 断言的命中与不命中、无窗口时 `skip` 而非 `fail`、页面读不到时的 `skip`、轮次与 diff 的五类、`skip` 不算红、页面名回填、失败该怎么辩、"没有 check" 与"check 被删光"分开） | `packages/server-core/src/domain/__tests__/verify-prototype.test.ts` |
-| 原型的应答（入口页 / `/_index` / 页名 302 / 文件优先 / 入口文档不在 / 越界 / pass-through / SPA 回退） | `apps/electron/src/main/__tests__/prototype-host.test.ts` |
-| 窗口与地址栏 | `apps/electron/src/main/__tests__/browser-pane-manager.test.ts`（含关闭标签页的接替：同段优先、段内没有才按位置，§22 第十四轮） |
-| 标签页的归属与两条边界（reach / close、`tab-assign`、重跑节点接管旧标签页、兄弟节点不放行、锁在指名的那个标签页上） | `packages/server-core/src/domain/__tests__/tab-access.test.ts` |
-| 标签栏 / 徽章的分段（按"谁的活"分段、**人的段钉在最前**、任务节点不拆段、**只有"你"一组时不画段头**、段内缩进与引导线、段头的 `+` 建出的标签页归属该段且落在段尾、从当前标签页找"跳回哪个对话/任务"） | `apps/electron/src/renderer/components/browser/__tests__/tab-groups.test.ts`、`.../utils.test.ts` |
-| **并线的两张接缝**（`writes:` 的三条拒绝：不可用 / 保留 `Z` / 同 run 重复；派发时盖章到子会话 `taskWrites`，不声明就不盖；**两个写者同时在飞、各自带自己的身份**） | `packages/shared/src/tasks/schema.test.ts`、`packages/server-core/src/tasks/TaskRunner.test.ts` |
+`packages/shared/src/prototypes/__tests__/`（10 个文件 / 1295 行）：
 
-### 5.4 只能在真实窗口里验的项（跑起 Electron 之后）
-
-| 项 | 怎么验 | 不对时看哪 |
+| 文件 | 行 | 管什么 |
 |---|---|---|
-| 改完即见 | 用外部编辑器改一条补丁 → 该原型**已打开的窗口** 1 秒内自己跟上（我们自己的页刷新、活页面重新打补丁）；连存三个文件只跟上一次 | `usePrototypes` 里的 `prototypeSlugForChangedFile`（路径是不是落在 `patches/`、`assets/`、顶层 `.html`）；`prototypes:replay` 有没有找到那些标签页（它逐窗口读标签列表，找 `tab.prototype.slug === slug` 的**每个标签页**——同一个窗口里两个标签页同一原型也要各重放一次，§22 第十三轮） |
-| 收敛之后效果不变 | 复制一个原型并选「复制并折叠改动」→ 打开**副本**那一页，改动**还在**且和折入前一样；原件与它的补丁文件都还在 | 副本里折进去的文件（`patches/<页名>/Z-00x-upper.*` 或 `assets/<页名>/committed.*`）；Z 是不是真的排在最后（`status` 的补丁清单按重放序列出） |
-| 原型页在无端口地址上打开 | 打开一个页是我们自己的原型 → 地址栏是 `http://<label>.localhost/`，页面带着**这一页**的补丁 | 主进程日志里有没有 `[prototype-host] answering prototypes at …`；handler 是不是装在了 `persist:browser-pane` 上 |
-| **补丁在刷新后仍在（活页面）** | 打开一个 overlay 页的原型（视图停在真实站点）→ 页面带补丁 → **点刷新** → 补丁还在；再点一个站内链接 → 也在（持久注入不是一次性动作）。我们自己的页不走这条路：它每次请求都由宿主按盘重渲染（§16.6） | `addInitScript` 有没有开 Page 域（`enablePageDomain`）——域关着时注册照样返回 identifier 而新文档里不跑（§3.1）；日志里有没有 `[browser-cdp] idle detach`（那说明注册已经丢了） |
-| 页名与入口在真窗口里对得上 | 开根地址 → 落在入口页；没配入口时落在**页索引**，点一页进得去；`snapshot` 的 `Prototype:` 行带 `page "<名字>"` | `status` 的 `pages:` / `root:` 两行；`matchPrototypePage` 认不认得出窗口的真实 URL（overlay 的跳转、SPA 路由都算） |
-| 地址栏写着"哪一页"，而且敲得回去 | 在一个 overlay 页上（视图停在真实站点）→ 地址栏是 `http://<label>.localhost/<页名>`；把它敲一遍回车 → 回到**同一页**（不是入口页），地址栏照旧 | `main/index.ts` 注入的 `pageOfPrototypeUrl`（认地址）与 `pageResolver`（认窗口在哪一页）；页名对不上时只写原型域名 |
-| 敲普通网址 = 交出这个标签页 | 从原型打开的窗口里敲 `https://example.com` 回车 → 地址栏写目标地址，标签栏那一行不再标原型/页名，「应用补丁」变灰；按 Back 回来仍然如此（粘性）。敲自己域名上的 `/dist/…` 或某一页的真实地址 → 标签页还是它的 | `browser-toolbar:navigate` 处理器里那一段（`prototypeReleased`）；`__tests__/browser-pane-manager.test.ts` 的「gives the tab up…」「keeps the tab…」 |
-| **键盘跟着屏幕走** | 在屏幕上那个标签页的输入框里点一下（页面自报"光标在框里"）→ agent 在后台开一个标签页并等它加载完 → 那个输入框**不该**收到 `blur`；切到别的标签页再切回来 → 光标回到原处；关掉当前标签页 → 接手的标签页拿到键盘。全程 `BrowserWindow.getFocusedWindow()` 不变 | `focusTheTabOnScreen`（`browser-pane-manager.ts`）与它的三个调用点（`activateTab` / 标签页的 `did-navigate` / `closeTab` 的接替分支）；真 Electron 读数在 `apps/electron/spike/screenshot-e2e.ts` 的 phase 8 / 10，看 `afterTheAgentOpenedATabBehindIt`、`afterSwitchingBackToThePersonsTab`、`afterClosingTheTabOnScreen` 三处（§3.22、实施方案 §22 第十六轮） |
-| **后台标签页不被人的 resize 打扰** | 在屏幕上那个标签页里把窗口拖大、再拖小：屏幕上那个的 `innerWidth` 跟着变，**后台那个的 `innerWidth` 与 `resize` 次数都不动**，而且它**不在人的窗口里**（在停车窗，所以再小的窗口也露不出它）；截后台那张图，图片尺寸是**它自己的视口**；切到它才跟着窗口变一次。另外看一眼停车窗**不在任何显示器上**（它是"关系"，不是一次摆放：把窗口坐标挪到 `0,0`，600ms 内应自己回到屏外） | `parkingWindowFor` / `parkTab`（`browser-pane-manager.ts`）：不在屏幕上的标签页出生就在离屏停车窗，`layoutTabView` 只给屏幕上那个 `setBounds`；`keepOffEveryDisplay` 负责"确实不在任何显示器上"（放远只是请求：桌面会钳到 16383，显示器变化与窗口被挪回屏幕都靠它兜）。**别把 view 移到窗口外或 0×0**：那样 Chromium 给它的视口是空的（`innerWidth` 0、CDP 输入落空、截图 0×0），测量见 `apps/electron/spike/screenshot-e2e.ts` phase 11 与 `background-viewport.ts`（§22 第十七轮） |
-| **真实站点的 pass-through 无损** | 在同一个窗口打开一个真实站点：上传一张图（分块）、播一段视频（流式）、下载一个文件、来回导航看缓存 | `net.fetch` 那一行；必要时把 handler 临时换成只打日志的版本做二分（见 §3.11） |
-| 我们的 host 上 cookie 能回写 | 在原型页里 `document.cookie='a=1'`，刷新后读回 | 同上；回环时代这条是通的 |
-| 真实浏览没变慢 | 同一个站点，装/不装 handler 各开一次，比首屏与资源加载 | 那一跳 `net.fetch` |
-| 重启后 origin 不变 | 重启应用 → 同一个原型的地址与上次一致，cookie / localStorage 还在 | 这正是换载体要拿到的结果 |
+| `coverage.test.ts` | 333 | 需求 id 与标记（含「写成词就不算」）、markdown 解析（多文件 / 子目录 / 跨文件重号）、findings、需求→实现的整条线 |
+| `links.test.ts` | 144 | `[[…]]` 的提取与改写（跳过代码段 / fence、label 与 anchor）、路径/名字/`../` 解析、断链与重名的报告 |
+| `reviews.test.ts` | 194 | dispute 解析、`about:` 的四种写法、`status` / `on:` 与盘对账 |
+| `settlement.test.ts` | 198 | 门禁 `whyPrototypeIsNotSettled`、报告携带异议、规格/材料切分与文档间链接 |
+| `prompt.test.ts` | 137 | `<prototype_context>` 的渲染与构造（含转义） |
+| `project-link.test.ts` | 93 | 项目侧的原型集合（存在性过滤） |
+| `prototypes.test.ts` | 103 | 路径、递归 `listPrototypeFiles`、`contentFingerprint` |
+| `create.test.ts` | 76 | slug 派生、建文件夹与起步 `PRD.md` |
+| `duplicate.test.ts` | 72 | 整份复制、命名与冲突 |
+| `delete.test.ts` | 41 | 整目录删除、不存在时报错 |
+
+agent 命令层：`packages/shared/src/agent/__tests__/tool-commands.test.ts`（两条门的分发、help、互不认领的措辞）。
+
+### 5.4 只能在真实窗口里验的项
+
+所有命令都是文件读写，测试里覆盖得到。跑起 Electron 之后才需要看的只剩界面：
+
+| 项 | 不对时看哪 |
+|---|---|
+| 详情页渲染（需求 / 文件 / findings / reviews / 门禁徽章与逐条文案） | `PrototypeInfoPage.tsx`；文案是 `packages/shared/src/prototypes/notices.ts` 的 `code + params`，翻译 missing 时先看 locale |
+| 原型列表（计数、选中、行菜单） | `PrototypesListPanel.tsx`、`atoms/prototypes.ts`、`usePrototypes.ts` |
+| 创建对话框 | `CreatePrototypeDialog.tsx`（名字非法时错误就地渲染） |
+| 复制 / 删除 | `AppShell.tsx` 的 `handleDuplicatePrototype` / `handleDeletePrototype`（删除是 `window.confirm`） |
+| 绑定选择器 | `use-working-directory-state.ts`（文件夹与原型二选一） |
 
 ---
 
 ## 6. 调试入口
 
-- **地址栏语法**：敲原型的**根地址** = 打开这个原型（主进程用 `resolveServedPrototype` 反查 label，并把窗口绑到这个原型上）；敲原型内部的路径（`/cart.html`、`/dist/extension/cart.html`、SPA 路由）= 普通导航。**不经面板的加载器**（agent 的 `navigate`、任何直接请求）取根地址 = **入口页**：是 overlay 就 `302` 到它自己的地址，是我们自己的页就渲染（文档 + **该页**的补丁 + `_layout.html` 共享布局；该页的行写了 `useLayout: false` 时不套布局，按文档原样送出，§19.2）；**没有行带 `entry` 时给的是生成的页索引**。`/_index` 恒给索引，`/<页名>` 对 overlay 是 `302`，而且**文件优先于页名**。
-- **原型优先于对话**：原型可以先存在，`prototypes/<slug>` 目录建好就有地址与页面；对话是来访者——`handleOpenChat` 在没有对话时新建一个（`prototypeSlug` 落在会话头上），有对话时复用；同一个 `prototypeSlug` 可以挂在多个会话上，`prototype_tool` 命令按会话解析。窗口的身份则与对话无关（见上一条）。
-- **面板工具栏为什么不亮**：工具栏在独立渲染进程里，拿不到 workspace / 会话——它只显示主进程推来的地址与 `prototypeSlug`；两个按钮的可用性完全由那个 slug 决定（没有原型就置灰）。slug 有两条来路，主进程按这个顺序答（`prototypeBindingFor`）：**窗口被打开时声明的原型** → **会话链**（窗口所属会话在做哪个原型）。只留后者时，"刚创建、还没有对话"的原型点「打开」会得到地址栏写着真实 URL、按钮全灰的普通窗口——这是 §3.3 同一族的身份缺失，已修。
-- **"补丁没生效"还是"页面不是这一页"**：先看 `status` 的 `pages:`（每页带类型、地址或文件、`[entry]`）与 `root:` 两行，再看 `page issues:`——`patches/<页名>/` 对不上任何页、声明的页文档不在、行读不干净都在这里点名（§19.4 / §19.8）。`apply` 的输出也会说这次重放的是**哪一页**的补丁（没有页就是"只有共享补丁"），所以"改错了页"和"补丁没生效"分得开。
-- **"这个文件为什么没人管"看哪一段**：解析不出名字的补丁文件（`patches/oops.css`）**不在** `page issues:` 里——它在 `ownership:` 那一段逐条点名（`status.ownership.violations`；这一档已不在详情页上——它对人是没有动作可做的）。`page issues:` 管的是页表本身与"对不上任何页的 `patches/<页名>/`"。查"某个文件没生效"时别只搜前者，**验证"某某会不会被点名"先确认它归哪一段**（本工作台把这两类事实分开放，是有意的：一个关于页表，一个关于所有权）。
-- **"补丁没生效"还是"选择器不对"还是"页面变了"**（§21.1／§21.2）：`apply` 的输出把三种情形分开了——没写 `@target` → "nothing could check these"；写了但从来没命中过 → "matched nothing"（选择器错，或页不对）；写过且**记录过命中**、现在 0 命中 → "the page moved"，并给出页面上现在的候选选择器。第三种要靠 `anchors/<scope>.json` 里的旧 fingerprint 才判得出来，所以那个文件**别手删**（删了下次 apply 只能重新从零开始记）。
-- **收敛之后效果变了**（§21.3）：折叠是文本折叠，它不知道"语义等价"。先按 §5.4 那两条在真窗口里对照一次；`status` 的补丁清单按重放序列出，`Z-*` 必须排在最后——不是最后就说明顺序规则被改坏了（`storage.ts` 的 `byReplayOrder`）。
-- **交付物**：`dist/extension/` 在 `chrome://extensions` Load unpacked；**options 页是生成的页索引**（点一页就过去），工具栏图标开入口页；改完补丁要重新导出并在该页点 **Reload**（快照语义，见实施方案 §17.4）。`dist/dev-spec.md` 按页分节。另两份载体：`dist/static/` 每页一份自包含 HTML（双击即看，只覆盖我们自己写的页）、`dist/bookmarklet.html` 是 live 页的书签（页面策略拒绝时粘控制台，同一份代码）——三份的取舍见 §17.8／§17.9。
-- **契约 mock 不生效**：先看路径是否只按 pathname 匹配、以及请求是否由页面自己发出（PWA 的 service worker 请求不经过页面）。
-- **原型页打不开**：先看主进程日志有没有 `[prototype-host] answering prototypes at …`；地址形如 `http://<label>.localhost/`（无端口），而且**只有被打开/导出过的原型才注册过**——没注册过的地址答 404 是对的。根地址答 404 并点名一个页名时，是**入口页的文档不在**（不会退回索引，§19.3）。
-- **真实站点行为异常**（上传、流式、下载、缓存）：先怀疑 pass-through，按 §3.11 的三条约定对一遍，必要时把 handler 换成只打日志的版本二分。
+### 6.1 三个命令怎么读
+
+| 命令 | 输出 |
+|---|---|
+| `list` | 每个原型一行：需求数、文件数（含规格文件）、本会话绑定的是哪个（若有） |
+| `create <name> [--no-bind]` | 建文件夹 + 起步 `PRD.md`；默认顺手绑定本会话，`--no-bind` 不抢绑定 |
+| `status [slug]` | 下面那几段；无 slug 时取会话绑定 |
+
+### 6.2 `status` 各段的含义
+
+| 段 | 含义 |
+|---|---|
+| `dir:` | 原型目录的绝对路径 |
+| `spec:` | 定义需求的文件（一个或几个）+ 需求条数；没有时写 `not written yet` |
+| `requirements:` | 每条需求一行：id + 标题 — **谁引用了它**（文件名、`F-00x (finding)`；都没有时 `nothing refers to it yet`）· `disputed by D-00x` · `on: <指纹>` |
+| `files:` | 目录里**定义需求的文件之外的文件**（递归；不含定义需求的 markdown、`research/`、`reviews/`） |
+| `findings:` | 有才出现：条数与路径 |
+| `issues:` | 读不干净的地方（悬空引用、断链 / 重名链接、`evidence:` 不在盘上、缺字段、同一 id 被两个文档定义、未实现的需求），每条一句 |
+| `reviews:` | `N standing of M filed`（standing = `open` 或 stale） |
+| `unresolved:` | **最后一段、行动项**：空则 `nothing — every requirement is implemented and no dispute stands`，否则逐条列出（未实现的需求 / 还立着的异议） |
+
+### 6.3 「为什么没生效」的排查路径
+
+| 症状 | 看哪一段 / 哪个文件 |
+|---|---|
+| 目录不对（不在本 workspace 的 `prototypes/` 下） | `list` 只列当前 workspace；看 `status` 的 `dir:`。`status.ts:listPrototypeStatuses` 读 `getWorkspacePrototypesPath` |
+| 需求写在了非 markdown 文件里（如 `.txt`）或位置不对 | 不被读为需求（`requirements.ts:isMarkdownFile` 只认 `.md`/`.mdx`），该文件出现在 `files:` 里当材料。真源 `requirements.ts` 的 `isMarkdownFile` 与 `listPrototypeFiles` 的递归 |
+| 标记写成了词的一部分（`x-@requirement`）或值不合法（`@requirement TBD`） | `issues:` 为空、需求仍是 `nothing refers to it yet`。`requirements.ts:extractRequirementIds` + `markers.ts:markerIndex` |
+| 引用了不存在的 id | `issues:` 的 `requirement.undefined`（`… refers to R-099, which no file in this prototype defines`）。`coverage.ts` |
+| 链接链不到（`[[gone.md]]`）或名字被两个文件共用 | `issues:` 的一句原文（`PRD.md links to gone.md, which is not in this prototype` / `… matches more than one file (…)`）；详情页把它按原样显示，不画成链接。`links.ts:readPrototypeLinks` |
+| finding 的 `evidence:` 不在盘上 | `issues:` 的一句原文（`evidence "…" is not in research/.`）。`research.ts:readPrototypeFindings` |
+| dispute 的 `status:` 值不认识 | `issues:` 的一句原文（`no usable "status:" line — use one of open, fixed, rebutted, accepted`），且该 dispute 不计入 `reviews:`。`reviews.ts` |
+| dispute 缺 `about:` / `claim:` / `on:` | `issues:` 里逐条点名（每条都告诉你要补哪一行）。`reviews.ts:readPrototypeReviews` |
+| 需求被改写，`on:` 对不上 | `requirements[].disputes` / `reviews:` 里标 `stale` + `staleReason`（`R-00x in <定义它的文件> has changed since this was filed (旧 → 新)`），并且它仍在 `unresolved:`。`reviews.ts:judgeAgainstDisk` |
+
+---
+
+## 7. 相邻子系统（这一轮一起改的）
+
+不属于本工作台，但这一轮一起动了。改动落点记在这里，免得下次从本工作台的文档里找不到它们。
+
+### 7.1 网站：站点能读到自己的数据
+
+- **规则只有一处**：`packages/shared/src/websites/host.ts` 的 `isWebsiteHostOwned(relativePath)`（"这个路径是站点自己的，还是 app 自己的"）。**服务**（`host.ts` 的应答）与**导出**（`export.ts` 的 `isWebsiteExportPath` 直接调它）读同一个函数——各写一遍就会漂，表现是"导出的副本缺了站点自己在用的文件"。
+- **唯一跨进程数据契约**是 `websites/<slug>/data/snapshot.json`（类型在 `packages/core/src/types/website.ts`）：写入方是 `data-write.ts` 与定时 refresh 脚本（原子写，临时名不能固定），读取方是所有 host；`store.sqlite` 只有脚本碰。
+- 文档与描述同步改了：`apps/electron/resources/docs/websites.md`（数据通道、404 语义、副本带走快照、starter 用 fetch、**没有 kind / 没有 live 推送 / 站点的数据靠 fetch**）、`packages/shared/src/prompts/system.ts` 的 Websites 段、`packages/session-tools-core/src/tool-defs.ts` 的 `create_website` / `write_website_data` 描述。**`kind`（`static`/`interactive`/`live`）已整份删除**——它的强制力全部来自那个被删掉的 iframe（`static` = 不给脚本、`live` = 父文档推快照）。
+- 测试：`packages/shared/src/websites/{host,export,data-write,storage,data-store}.test.ts`（基线见 §5.2）。
+- **只能在真机验的一项**：在站点自己的标签页里看 `fetch('/data/snapshot.json')` 的真实返回（没数据 → 404；写一次数据 → 200 且形状对）。
+- **网站不再内嵌渲染**：站点以前用 `<iframe>` 显示在应用内容区里（`WebsiteFrame` + `craft-websites/v1` postMessage 桥 + `kind`（`static`/`interactive`/`live`）那套 sandbox 分级），现在**整份删掉了**。打开网站 = 在**浏览器窗口里开一个真实标签页**：`browserPane.create({ show: true, newTab: true })` → `browserPane.navigate(instanceId, origin)` → `browserPane.focus(instanceId)`（`origin` 来自 `websites:getOrigin`，它同时完成注册；这是当年原型"打开"用的同一条路）。于是也没有 `frame-src` 那条 CSP 规则了（`index.html` 已删回 `default-src 'self'`）——**`frame-src` 与 `img-src` 两条后来都为 drawio 装回来了（§7.3）**，站点数据只靠站点自己 `fetch('/data/snapshot.json')`——**没有任何东西会往打开的页面里推数据**。缩略图顺势简化：隐藏窗口**直接 `loadURL(origin)`**（先调 `websiteOriginUrl` 完成注册），不再套 `data:` 宿主 + iframe。
+
+### 7.2 浏览器与 `video_tool`
+
+- **`video_tool` 的注册面就是"新增一个顶级工具要碰的地方"的清单**，漏一处会表现成"Explore 模式被拦"或界面显示原始名：
+
+| 落点 | 文件 |
+|---|---|
+| 工具 schema + 描述 + 注册行 | `packages/session-tools-core/src/tool-defs.ts` |
+| 工具定义 + **描述的第二份**（必须与上面逐字一致） | `packages/shared/src/agent/video-tools.ts` |
+| 命令体（`sample`、`--help`、未知命令） | `packages/shared/src/agent/video-commands.ts` |
+| 会话工具集 + Claude 后端的 backend 工具清单（有漂移守卫） | `packages/shared/src/agent/session-scoped-tools.ts` |
+| 分派表（按工具名挑 executor） | `packages/shared/src/agent/pi-agent.ts` |
+| 任意模式下放行 | `packages/shared/src/agent/mode-manager.ts`（`ALWAYS_ALLOWED_TOOLS`） |
+| 界面显示名 | `packages/server-core/src/sessions/SessionManager.ts`（`'video_tool': 'Video'`） |
+| 命令预览解析 | `packages/ui/src/lib/tool-parsers.ts` |
+| 系统提示里的一句能力说明 | `packages/shared/src/prompts/system.ts` |
+
+- **解码在 Chromium**：`apps/electron/src/main/video-frames.ts`（隐藏窗口 + `<video>` + canvas）；`IBrowserPaneManager.extractVideoFrames` 是底层能力，`BrowserPaneFns.sampleVideo` 是 agent 面，**按 `--out` 写盘的那一段在 server-core**（`SessionManager` 的实现里）。
+- **录制是人的入口**：`apps/electron/src/renderer/browser-toolbar.tsx` → `preload/browser-toolbar.ts`（`startRecording` / `stopRecording`）→ 主进程 `TOOLBAR_CHANNELS.RECORD` → `apps/electron/src/main/tab-recorder.ts`。**没有 agent 侧命令**，这是有意的（理由见实施方案 §8.1）。
+- **窗口 chrome 的 state 是"推"的，推早于订阅就丢**：地址栏与标签栏画的是主进程推来的 state（`TOOLBAR_CHANNELS.STATE_UPDATE`），而 `did-finish-load` 那一次 replay 可能早于这个文档的 React 挂载（`onStateUpdate` 是在 mount effect 里订阅的；dev 下模块图大，挂载比 load 慢得多）——表现是**刚开出来的窗口标签栏一个 tab 都没有**（rail 的规则是"没被告知有哪些 tab 就不画"，所以空推送与没推送看起来一样）。修在预加载层：`preload/browser-toolbar.ts` 缓存最后一次 state，`onStateUpdate` 订阅时立即补发（它在任何文档脚本之前就开始听，所以不会漏）。以后再加 chrome 面时照这个来，别只靠推。
+- 浏览器工具的文档（`apps/electron/resources/docs/browser-tools.md`）现在**不提原型**；窗口与标签那批坑见 §3.5 的指针。
+
+### 7.3 drawio：本工作台里第一个被宿主的 frame
+
+原型文件夹里的 `.drawio` 由 app 自带的 drawio 渲染：一份**裁剪过的 drawio webapp**（`resources/drawio/`，由 `scripts/fetch-drawio-assets.ts` 按 tag 取、不入 git）在 `http://drawio-<hash>.localhost/` 上被服务（复用 `local-origin.ts` + `local-host.ts` 那条链，落点是 `drawio-host.ts`），前端用两个 iframe 接它：viewer 打 app 自己的壳页（`/__craft/viewer.html`），editor 打 drawio 自己的 embed mode。桥的协议在 `packages/shared/src/drawio/types.ts`（外层是我们的信封，内层是 drawio 的裸 JSON）。
+
+**两个 iframe 的地位不一样，这是这一版的结构分界线。** 编辑器**就是**那个界面（人要在里面画图）；查看器只是一个**引擎**——drawio 的 viewer 脚本只能活在它自己的文档里，所以要有一个 frame 让它跑，但它跑完把画出来的 SVG 交回来，**显示这件事由 app 自己做**（`frame.tsx`：引擎 frame `visibility: hidden` 且在视口外，`svg.outerHTML` 通过 `postMessage` 回来，由 `DrawioDiagram` 用 `dangerouslySetInnerHTML` 放进我们自己的文档）。理由很简单：**SVG 本来就是浏览器能渲染的东西，不需要再套一层 HTML 壳**。早先让 frame 自己当显示面，等于把滚动条、尺寸、光标三件事交给一个跨 origin、量不到的盒子去决定；现在这三件都回到 app 手里。
+
+以下几条**破了会静默出错**的事实，都是从 bundle 的源码里查出来的，不要重新推：
+
+1. **CSP 在三处各咬一口，而且每一处都会静默失败**（前两处是渲染层那份 CSP 的两条指令）。
+   - **渲染层的 `index.html` 必须留 `frame-src 'self' http://*.localhost`。** `frame-src` 一出现就**覆盖** `default-src`，所以漏掉 `'self'` 会把 `html-preview` 那些 `srcDoc` frame 一起挡掉。这条规则是网站不再内嵌时删掉的，为 drawio 又装回来——这是"不碰浏览器"的第一处、也是目前唯一一处例外。漏了它的表现是 `ERR_BLOCKED_BY_CSP`，而 CSP 报错只说"被挡住了"，不说"是哪条规则少了一个 origin"。
+   - **同一份 CSP 的 `img-src` 也要带 `http://*.localhost`，因为图现在是内联在我们自己的文档里。** drawio 画出来的 SVG 里可能有 `<image>`（图标、clipart），它的 `href` 原本是相对路径、相对**壳页**解析；桥把它们绝对化成壳页 origin 的地址（`absolutizeImages`）——而那正是 `img-src` 要放行的地方（`'self'` 只等于渲染层自己的 origin）。**这是"显示面从 frame 挪到自己文档"的直接代价**：在 frame 里那些图由 frame 自己的文档策略管，搬出来就归我们管了。漏了这条的表现是**图缺图标但布局正常**——同样不报错。
+   - **壳页自己的 `script-src 'self'` 不许内联脚本**，所以桥是**独立文件**（`/__craft/viewer.js`，由 `drawio-host.ts` 合成并服务），不是内联的。把它改回内联**不会报任何错**，只会让页面永远不说 `ready`：表现是卡片一直"加载中"、日志里什么都没有。这条现在有测试盯着（`drawio-host.test.ts` 的 "loads its bridge as a file, and never inline"）。
+2. **`stencils/` 默认不装，代价是静默降级。** `STENCIL_PATH` 默认就是 `"stencils"`，`mxStencilRegistry.getStencil()` 对**未注册**的集合会 `loadStencilSet(STENCIL_PATH+'/'+name+'.xml')`；而 `js/stencils.min.js` 只内置 **204** 个集合。不在其中的（`azure2`、`android`、`network`、`rack`…）会去拉那个目录，404 之后**静默降级成灰方块**——不报错、不提示，正好打掉"app 把图显示出来"这条承诺。所以这是个**有意的取舍**：默认省掉 41 MB，要完整就跑 `bun scripts/fetch-drawio-assets.ts --force --full-stencils`；脚本每次运行都会把这条代价和取回它的办法打出来，`--full-stencils` 这个变体也记在 stamp 里（否则切开关不会重取）。
+3. **压缩由文件自己的 `compressed` 属性决定，不是编辑器的偏好。** `isCompressed()` 先读属性，没有属性才看 `Editor.defaultCompressed`（默认 `false`）。所以 agent 写的明文文件不会被编辑器改成压缩；反过来，一个带 `compressed="true"` 的文件（drawio 自己保存过的）会一直是压缩的——**它的 `<diagram>` 正文不是文本，agent 与人（以及任何按文本读这个文件的工具）都读不出里面的内容**；`pages` 会报哪一页是压缩的，`export <file> --to <plain>.drawio --format drawio` 写出明文。这是目前唯一能让文件夹里出现"不可直接读"文件的路径。
+4. **`viewer-static.min.js` 的资源路径默认指向 `viewer.diagrams.net`，所以要在它之前改掉。** `window.STENCIL_PATH` / `SHAPES_PATH` / `STYLE_PATH` / `IMAGE_PATH` / `GRAPH_IMAGE_PATH` / `mxBasePath` / `DRAW_MATH_URL` 全是 `window.X = window.X || "https://viewer.diagrams.net/…"`——因为静态 viewer 本来就是给"从别处嵌"用的。我们的壳页由自己的 origin 服务，所以这些要在**加载 viewer 之前**认领：**桥文件是壳页里的第一个 script**，`ready` 也改成等 `load` 事件（`announceReady`）。不改的表现是图缺样式、缺图标，而且"离线"只是被 CSP 挡住，不是事实。
+5. **frame 不许离开。** viewer 自带会指向 `viewer.diagrams.net` 的链接，一点就导航出去——既离开 app 又出网。壳页里因此让 `window.open` 返回 null。**这不是防点击**（引擎 frame 隐形且 `pointer-events: none`，没人点得到它），而是防"不点也会发生"的那些路径：viewer 的脚本自己就能开窗口。没有可靠的 CSP 指令能拦 iframe 自身的导航（`navigate-to` Chromium 未实现），所以这是 JS 的活。
+
+   **但图里的 `<a>`（作者给某个形状加的链接）现在是一条 app 里的链接，不是 frame 里的。** SVG 内联进渲染层之后，点它走的是 `window-manager.ts` 的 `will-navigate`：非 app 地址被 `preventDefault` 掉，再交给 OPEN_URL 那套安全分类器（也就是"在浏览器窗口里打开"）。这是**和 markdown 里的链接一致**的行为，所以不必另加拦截——只是别再以为"点图不出 app"是靠 CSP 保证的。
+
+6. **原始尺寸是读 viewer 自己写的那两个数，缩放与抓取拖动是我们自己做的，drawio 的查看器两样都没有。** `grab` 在 `viewer-static.min.js` 里出现 **0 次**，它只在 lightbox 模式下移动图。所以 `data-mxgraph` 里没有尺寸选项（唯一要传的那个不是尺寸，是"别按你的盒子缩"，见下第四条），也别指望 markup 里有尺寸——**viewer 交回来的 `<svg>` 既没有 `viewBox` 也没有 `width`/`height` 属性**，`style` 是 `width: 100%; height: 100%;` 加 **`min-width: 185px; min-height: 105px`**，而后者（图的边界 + 边距，**再乘以 viewer 作画时的 `view.scale`**）就是这张图的尺寸。四条实测（临时静态服务 + 宿主页把 `js/viewer-static.min.js` 单独跑起来，再把回传的 markup 塞进 app 那套结构里量）：
+   - `viewBox.baseVal` 是 `{0,0}`；元素在 auto 宽度的父级里落到 **CSS 替换元素默认的 300×150**（`width: 100%` 对不定宽父级解不出来）——所以**不能拿元素自己的盒子当尺寸**；
+   - `getBBox()` 是 **w=300 h=201，而原点是 `(-112,-112)`**——它把画布上不可见的那部分也算进去，**同样不能当尺寸**；
+   - 按 `min-width`/`min-height` 钉住并 `scale(1.5)`：布局盒与 SVG 都是 278×158，四边与文字都在视口内、基本居中（左右留白 162/162，上下 122/122）。
+   - **而那两个数未必等于"作者尺寸"：viewer 会先把装不下的图缩到它自己的容器宽。** `allowZoomOut` 默认 `true`，于是 `addSizeHandler` 里那条"宽出容器 → `fitGraph`"的分支会开火；而 `min-width`/`min-height` 是 `mxGraph.sizeDidChange` 写的 `bounds × view.scale`，**缩放比例也被算进去了**。引擎 frame 只有 1024×768，所以同一份文档（2218×1304）交回来是 **1030×611，画布 `g` 上带 `scale(0.46,0.46)`**——app 的"100%"实际是 46%，字看不清；同一个文件在官方 drawio 里正常，就是这个差别。**修法是 `data-mxgraph` 带 `'allow-zoom-out': false`**：它关掉的正好是那条 fit 分支（整个 bundle 里 `allowZoomOut` 只有这一处行为），于是 `view.scale` 留在 1，交回来是 2218×1304 / `scale(1,1)`。实测数据与测试都在（`drawio-host.test.ts` 的 "draws a diagram and hands back its SVG"）。
+
+   这条决定了后面所有事：**没有 `viewBox` 的 SVG 不是分辨率无关的**，拉伸它的盒子只会露出"同一张图的更大窗口"，字和图都不会变大——所以曾在 SVG 上写 `width`/`height` 的那版**从来没生效过**（用户报的"点了数字、图不变"、以及"大窗里滚轮改了比例图不动"都是它）。桥那边原来还有个按 `viewBox` 设尺寸的 `sizeToAuthored`，它的守卫就是 `viewBox`，因此对这条路永远早退，已删除（`drawio-host.ts`）。`resize` 那个键是 drawio 导出 HTML 时用的（`getHtml2` 里 `resize:!0`，含义是"缩到给定宽度"），我们**不传**；`nav` 是折叠导航（不是平移）；**drawio 查看器自己的缩放按钮来自 `toolbar:"pages zoom layers lightbox"`，我们也不传**——我们不用它的，用的是 app 自己的 `ZoomControls`（同 mermaid / 图片预览那套），所以不要给 `data-mxgraph` 加 `toolbar`。**唯一传的是 `'allow-zoom-out': false`**，它管的是上一条第四条那件事（不是尺寸，是让 viewer 别按自己的盒子缩），删掉它大图会静默变回 46%。
+
+   **一块图有两个面，两面各有各的机制，这不是重复而是两种看法**（用户定的口径）：
+
+   - **对话里的图 = `InlineDiagram`**（`components/markdown/InlineDiagram.tsx`）：**原生滚动盒**，图按 mermaid 那套尺寸规则显示（装得下居中、只宽出不到 200px 就直接缩到容器宽、宽出自己的滚动、宽到缩了会读不清就不缩），**点击出大图**、拖动平移、有溢出时边缘有渐隐。**mermaid 块和 drawio 块走的是同一个组件**——这是"和 mermaid 一致"这句话的实现方式，不是把两套规则写得像。两侧都**没有缩放控件、也没有滚轮缩放**：对话里滚轮是页面的，缩放属于大窗（mermaid 块一直如此）。
+   - **大窗 = `useDrawioView` + `DrawioDiagram`**（`view.tsx` / `frame.tsx`）：`zoom` + `translate` 两个状态，**平移是 transform、没有滚动条**，滚轮就是缩放（钉住指针），按钮 / 预设 / 快捷键钉住中心，"适应"顺带回到中心，`⌘0/⌘+/⌘−`。
+
+   大窗那面的规则明细，以及"别改回去"的四条，见下。**引擎与显示是分开的**：`DrawioViewerShell`（`frame.tsx`）只负责 off-screen 引擎 + 握手 + 拿到 markup，**怎么显示由调用方给**——`DrawioViewer` 给大窗（transform），对话块给 `InlineDiagram`。`DrawioViewerShell` 的 `minHeight` 只在"还没图可显示"时生效，它是给等待期占位的，不是给图定尺寸的。
+
+   - **大窗里 100% = 图自己的尺寸（作者尺寸），可读性优先，没有例外。** 比窗口大就拖动看，**不缩到容器宽**。曾经有过一条"只宽出不到 200px 就直接缩到容器宽"——那条的理由**是省掉一条滚动条**，而大窗已经没有滚动条可省，所以连同 `startZoom()` 一起删掉了（对话里的图仍然有这条规则，因为它真的有一条滚动条要省：见 `InlineDiagram`）。
+   - **平移是 transform，不是滚动**（`translate`，单位是"离盒子中心多少像素"）。`translate: 0` 就是**居中**，也就是装得下的图的落点和 `reset` 的落点；图可以推到任何地方（一条边拉到对面、一个角拖出边框），没有滚动范围挡着、也没有滚动条告诉你"还有多少"。这就是 mermaid 大窗与图片预览的做法，**算式也是同一份**（`cursorAnchoredTranslate`）——**但那算式的前提是"图的圆心恒在盒子中心"**，所以"居中"这件事有讲究，见下面第三条"别改回去"。
+   - **拖动平移常开**；**点击出大图**（`onActivate`）、**双击复位**（**只在大窗里**：块里的第一次点击已经被"开窗"用掉了，没有第二次可给）。手势判定——4px 阈值、点击与拖动的区分、"手势与有没有溢出无关"——都在 `lib/pan-gesture.ts`，两面共用；它只**报位移**，由调用方决定这个位移加到滚动偏移上（对话里的图）还是 transform 上（大窗）。
+   - **大窗里滚轮就是缩放**：整个滚轮都是（同 mermaid 大窗）——窗口里它没有别的意思。**一手 pinch 一手 mouse notch**（`ctrlKey ? trackpadPinch : mouse`，跟 `useRichBlockInteractions` 同一条规则）：一手捏合的 deltaY 是小步流，鼠标一格是大步，拿 pinch 的灵敏度读鼠标一格等于每格把图砍一半。
+   - **缩放时钉住一个点**：滚轮钉住指针下那一点（坐标按"离盒子中心"算，正是 `cursorAnchoredTranslate` 要的形式），按钮 / 预设 / 快捷键钉住盒子中心——把 translate 按比值缩放即可。所以任何一次缩放都读作"缩放"，而不是"图滑走了"。
+   - **"适应"除了算比例还会回到中心**：transform 下"重新居中"就是 fit 的样子（`setTranslate({x:0,y:0})`）。阶梯用 app 现成的（`RICH_BLOCK_DEFAULTS`）：25%–400%、步进 1.25、预设 25/50/75/100/150/200/400、"适应" = 占满 90% 空间且不放大（`min(1, computeFitScale)`）、大窗里 `⌘0` / `⌘+` / `⌘−`（对话里**不拦**这三个键，它们是 app 自己的）。
+   - **`interactive={false}` 用在编辑器里**：mermaid 的节点视图，以及 `PreviewBlock` 里的 `drawio-preview` 节点——那里鼠标归 ProseMirror，点击要放光标。对话里和大窗里都是 `true`。两条行为都被实测钉过（用户明确要求）：**装得下的图拖一下也算拖动、不会变成开窗**（fixture 791=791 不溢出，拖 40px 不开窗），**原地按一下出大图**（1 秒后窗口在）。
+
+   实现上有四条别改回去（`frame.tsx` 的 `DrawioDiagram`）：
+   - **尺寸从 markup 上读（`parseDrawioSvgSize`），只读一次、且和读它的那份 markup 绑在一起**（`measured.current = { svg, width, height }`）；元素自己的盒子只做兜底。**这条知识只有一份**，在 `packages/shared/src/drawio/types.ts` 里——大窗和对话里的图都调它，谁也不自己解析（曾经有三份：大窗 `getComputedStyle` 量 DOM、对话块正则解析字符串、协议注释里再写一遍）。读第二次读到的是**被缩放过**的盒子（transform 落在同一个元素上），等于每次缩放都把"原始尺寸"再乘一遍 zoom，图会自己滚雪球。
+   - **居中用 `left/top: 50%` + `translate(-50%, -50%)`，绝不用 flex 居中。** 实测（临时页面，同一份 DOM 结构 + 同一份算式，只换居中方式）：flex（`justify-content: center`）在子元素比容器大时会钉住子元素的**起始边**，元素长大后圆心跟着移动，单步 1.25× 就漂 **100px**——用户报的"drawio 缩放时鼠标指的位置会跳变"就是它；`left/top: 50%` + `translate(-50%, -50%)` 同一步漂 **0.0**。再强调一次：`cursorAnchoredTranslate` 的前提正是"圆心恒在盒子中心"。
+   - **缩放状态必须走更新器**（`setZoom(prev => …)` 里再 `setTranslate(current => …)`），不要用 ref 读上一次渲染的值：一手 pinch 是一串 wheel 事件，几个可能赶在一次 re-render 之前，用"上一次渲染的值"会让每一步都从同一个地方重来——手感是跳，不是缩放。`useRichBlockInteractions` 就是这么写的，这也是两条路能一致的原因。
+   - **缩放与平移都是元素上的 CSS transform**：SVG 本身 `scale(zoom)`（`transform-origin: top left`）并被钉在原始尺寸上（`style.width/height` 覆盖 viewer 自带的 `width: 100%`），外面那层盒子的布局尺寸按 `图 × zoom` 给，平移 `translate(x, y)` 落在同一个盒子上（和居中那两个 translate 连写）。**注意别把 translate 写到 SVG 上**：SVG 上的 transform 已经被 scale 占着，写两次会互相覆盖。（曾用 `[&>svg]:w-full` 那种 CSS 子选择器拉尺寸，选择器不生效时 `zoom` 变了、画出来的却没变；后来改成写 SVG 的 `width`/`height` 属性——但如上，这条路对没有 `viewBox` 的 markup 本来就不可能生效。）
+
+   这套算术里**自己写的部分薄到几乎没有**（"把 translate 按比值缩放"、"fit 后回到中心"），需要盯的三条共享算式都有测试：`cursorAnchoredTranslate`（钉住一个点缩放）、`computeFitScale`（90% 适配）、`clampScale`——都在 `packages/ui/src/components/overlay/__tests__/useRichBlockInteractions.test.ts`；点击与拖动的判定在 `src/lib/__tests__/pan-gesture.test.ts`。`drawio/__tests__/view.test.ts` 随滚动盒那套（`startZoom` / `roomAround` / `restScroll` / `anchoredScroll`）一起删了——它盯的规则已经不存在，不是把测过的规则改成没测。
+
+   图里的每个形状都带 `data-cell-id`（drawio 的 `visitStatesRecursive` 补丁盖的，导出时移除），**"人在预览里点一个框 → 我们拿到它的 id"仍然可行**，那是后续让 agent 精确定位某个形状的路。
+
+   **图自己不再产生任何滚动条**（平移是 transform，盒子 `overflow: hidden`），所以在 overlay 里只可能有一条滚动条：父层那个遮罩滚动区。要做到这点靠的是**盒子绝对定位铺满**（`absolute inset-0`），图再大也不撑高父层。**不要再把引擎 frame 的尺寸当布局用**：它 `visibility: hidden` 且在视口外，只负责出图。早先那版把 frame 当显示面，于是"高度写 `100%` 还是 `calc(100vh - …)`"变成一道必须猜对 overlay chrome 的算术题（公共 chrome 占掉 header 与 gutter，见 `FullscreenOverlayBase` 的 `HEADER_HEIGHT` 与 `CONTENT_GUTTER`：内容**紧贴标题栏**、四周 16px，那条 24px 的"空白行"和底部 24px 一起被用户否掉了），猜错哪一边都会在 overlay 上多出一条父窗口的滚动条——而鼠标能拖的只有 frame 内部那条。现在没有这个二义性了。
+
+7. **编辑器说的是 drawio 自己的 embed 协议，双向都是 JSON 字符串——发对象等于什么都没发。** `proto=json` 让编辑器对**收到的任何 data 跑 `JSON.parse`**：发一个结构化克隆的对象过去，`JSON.parse` 抛错，它把消息当成不可解析直接 `return`——表现是**编辑器界面完整、画布空白、任何日志里都没有一行**（它第一次上线就是这样：`buildDrawioLoadAction` 老老实实返回了对象）。反向也一样：它发出来的是 `JSON.stringify({event:'init'})`，所以 `parseDrawioEmbedEvent` 只吃字符串。两个方向各有测试盯着（`drawio-types.test.ts` 的 "speaks to the editor in strings, not objects"），别再"宽容"回对象——宽容它就等于两个方向各错一次。
+
+   同一条链上还有两件**实测**出来的事（起一个临时静态服务把 bundle 单独跑起来，套一层宿主页验的）：
+   - **编辑器只有在 iframe 里才装消息处理器**（`initializeEmbedMode` 的条件是 `(embedMessageSource || window.opener || window.parent) != window`）。顶层标签页直接打开同一个 URL，它刻意什么都不听——所以"单独开个页面测编辑器"这条路不通。
+   - **启动加载链是 `PreConfig.js → app.min.js → PostConfig.js`**（域名不是 `*.draw.io` / `*.diagrams.net`、且非桌面模式时）。`mxIsElectron` 要求 UA 里**同时**有 `electron/` 和 `draw.io/`，所以我们在 Electron 里跑不会误进桌面分支（那条分支要 `mxElectron` IPC，我们没有）。顺带一条无害噪声：service worker 注册会失败（500），与画图无关。
+
+   **编辑器有两个入口，都是同一份 `DrawioEditorPane`**（用户定的，都是开在编辑模式的那两个）：对话块的**铅笔把大弹窗直接开在编辑模式**——块本身永远是"图"，不把 10 MB 的编辑器塞进消息流（那是"块只读"这条决定的真实含义）；另一个是原型详情页的 `.drawio` 行（那是去改东西的地方）。聊天里点 `.drawio` 链接开出来的那个大窗走的是同一个窗口、只是开在看图那一面，头部的铅笔照样能切过去（那是这个窗口自己的开关，不是第三个入口）。块从弹窗拿回最新文档（`onSaved`），即便没有它，文件监视也会让它跟上。
+
+裁掉是安全的那些，依据写在脚本自己的排除表里：`js/integrate.min.js`（22.7 MB）在两个 `.min.js` 里**零引用**；`js/orgchart.min.js` 只在向导自己的惰性链里；`export.js` / `embed.dev.js` 全文不存在；`templates/` 只有一处管理面板的 placeholder 文案；service worker 由 `Editor.enableServiceWorker` 决定，而它由 URL 参数决定（我们都不传 → 从不注册）。
+
+**`js/extensions.min.js` 不在这张表里，这就是教训**：它出现在 `app.min.js` **唯一的启动加载**里——
+
+```js
+App.loadScripts(["js/shapes-14-6-5.min.js", "js/stencils.min.js", "js/extensions.min.js"], …)
+```
+
+我按"只在导入 Visio/GraphML/Gliffy 时按需 `mxscript`"裁掉了它（那条依据只来自 `viewer-static.min.js`），代价是**编辑器一打开就 404、起不来**。判据是"**启动加载点了谁的名**"，不是"这个名字出现过几次"，也不是"另一个文件里它怎么用"——**查看器从不需要它，编辑器一直需要它**。`PRUNE_RULES_VERSION` 记在 stamp 里，就是为了让"改了规则却没重取"不成立。
+
+8. **语言只能从地址上给，两个 iframe 都要给，而且应用的语言码不是 drawio 的语言码。** 编辑器读 `urlParams['lang']`（drawio 自己的 embed 就是这么被嵌的），查看器则是在**脚本加载的那一刻**算 `window.mxLanguage = window.mxLanguage || f(urlParams.lang)`——所以语言必须写在 iframe 的 `src` 上（`drawioEditorUrl(origin, dark, appLanguage)` 与 `drawioViewerUrl(origin, appLanguage)`），事后发消息已经晚了；bundle 里那段"跟随浏览器语言"还只对 `*.diagrams.net` 这类 drawio 自己的域名生效，我们这个 origin 不在其中（所以它一直是英文）。**code 也不通用**：drawio 用小写裸子标签（`zh`、`zh-tw`、`pt-br`），app 用的是 `zh-Hans` 这种（`i18n/registry.ts` 的 7 种），所以 `drawioLanguage()` 取主子标签转小写——`zh-Hans → zh`，`en`/`ja`/`hu`/`de`/`es`/`pl` 原样。给一个 bundle 没有词典的码**不会报错**（`App.js` 里资源加载失败会回落英文），所以这个映射错了的表现是"语言不对"，不是"编辑器坏了"。**编辑器那份只在打开时取一次**（`frame.tsx` 用 ref 捕获地址，理由和 `dark` 一样：改 `src` 会重载那个 10 MB 的界面、丢掉正在画的东西）——所以换语言后**已经开着**的窗口还是旧语言，重开就是新语言。
+
+9. **`drawio_tool` 的词汇与引擎的词汇是两层，中间只有一个翻译点。** agent 说的是 `--format svg|png|html|drawio`（外加 `--editable`）；引擎（drawio 的 embed 协议）说的是它自己那套 `svg`/`png`/`html`/`xmlsvg`/`xml`——`--editable` 就是 `xmlsvg`，`drawio` 就是 `xml`。翻译只在 `drawio-commands.ts` 的 `engineFormat()` 一处，`DrawioFormat`（`browser-pane.ts`）保留 drawio 的名字并在注释里点明。所以**别把 `xmlsvg`/`xml` 改成 agent 的词**（那会把翻译摊到引擎侧每一处），也**别把 `xml` 加回 `--format`**：这一版要消掉的概念正是"xml 也是一种格式"——它不是格式，是一份文档，一个不能画的东西不该出现在画图的选项里。`--editable` 只对 `svg` 有效，用在别处**拒绝而不是忽略**（理由同"按名字找不到页就拒绝"：让人以为拿到了一份能改的文件，比报错更糟）。后缀来自 `DRAWIO_EXTENSIONS` 一张表（命令层补名、electron 侧写文件、回执三者共用），`--to` 没写后缀时按格式补——`drawio` 尤其需要，因为 app 认图只看 `.drawio` 这个名字。
+
+### 7.4 markdown：一个渲染面 + 一个源码面
+
+`.md` 有三处入口，三处都是同一个 `MarkdownEditorPane`：对话里的 `markdown-preview` 块（`MarkdownDocBlock`，**只读**；块的标题栏 / 标签页 / 那个固定高度 / 角上那两个按钮是它自己的事）、链接打开的文档大预览（`FilePreviewRenderer` 的 markdown 分支 → `MarkdownFileOverlay`）、原型详情页文件列表里的 `.md` 行。
+
+**两个面，两回事**（用户定的口径："不用 Tiptap 了，改为 markdown 渲染，编辑模式直接编辑源码文本"）：
+
+1. **看是渲染**：文档交给 `Markdown`（消息那套渲染器，`mode="minimal"`、`hideFirstMermaidExpand={false}`），所以 `.md` 里写的 `drawio-preview` / `html-preview` / 表格 / diff 就是 app 自己那些块，不是副本。**嵌套守卫在这里**：`disablePreviewBlocks={new Set(['markdown-preview'])}` —— 一份文档可以指名另一份文档，把它画进来没有下限，所以那个围栏退回代码块。这套机制本来就是为渲染面写的（`MarkdownProps` 的注释直接点名 `MarkdownDocBlock`），Tiptap 那阵子没有调用方，现在回来了。
+2. **改是源码**：文件正文直接进 `ShikiCodeEditor`（`packages/ui/src/components/code-viewer/`，textarea 叠 Shiki 高亮），**写回去的就是屏幕上那些字符** —— 中间没有文档模型，所以 app 不认识的写法不可能被解析器在保存时悄悄丢掉（这正是富编辑器"先解析再保存"每次都在冒的险）。主题走 app 自己的规矩：`useShikiTheme()` 优先、否则读 DOM 的 `dark`；底色字色是 CSS 变量，不用这里自己的明暗判断。这份组件是**从 electron 侧搬进来的**（那边当初就是为"markdown 源码编辑、替掉 Monaco"写的，写好之后一直没人用），搬来时按 `code-viewer/` 兄弟们的做法去掉了对 electron `useTheme` 的依赖。
+
+**文档里的图片按文档自己的目录解析**（`packages/ui/src/components/markdown/image-path.ts` + `MarkdownImage.tsx`）：`![](shots/cart.png)` 这种相对目的地会被浏览器拿去相对**渲染层的 origin** 解析，永远到不了文件；`file:` 与绝对路径又会在 `url-transform.ts` 的 `markdownUrlTransform` 那层被清洗成空——所以本地图片在正文里原来**没有可用的写法**（唯一写法是 `image-preview` 块）。现在 `Markdown` 多一个 `baseDir`（渲染的是一份盘上的文档时由调用方给：`MarkdownEditorPane` 用 `documentDir(src)`，原型详情页的 `PRD.md` 用 `status.dir`；`Info_Markdown` / `DocumentFormattedMarkdownOverlay` 只透传；对话消息没有这个值，行为不变），`img` 交给 `MarkdownImage`：**只有相对目的地**被拼成绝对路径、经 `onReadFileDataUrl` 读回 data URL 才显示——因此图片始终是 `<img>` 的静态图模式（脚本不跑、外链不取）。**解析不绕过边界**：`validateFilePath` 仍是门，`../` 逃逸由它拒。**别改成内联 SVG 的 `dangerouslySetInnerHTML`**：那才是脚本会跑的地方，全库只有 drawio 引擎交回来的 markup 这么内联，且过桥的校验。
+
+`MarkdownEditorPane` 自己只做这几件事：
+
+- **哪个面由调用方给**（`mode`，默认 `'view'`）：对话里的块永远只看；大窗用头部那个铅笔在两面间切（`MarkdownFileOverlay` 的 `initialMode` + 自己的 mode state + `headerActions` 里的铅笔/眼睛，照 `HTMLPreviewOverlay` 那套）。**`initialMode` 每次打开都按当次给的值重置**：overlay 关着时也还挂载着，一个记着上次的 mode 会答错这次的问题。
+- **宿主不能写就不给编辑**：大窗头部那个铅笔只在 `onWriteFile` 在时画；源码面在不能写的宿主里 `readOnly`。
+- **何时写 / 能不能写 / 文件被外部改了怎么办**全交给 `useFileWriter`（见 §2⑪）。
+- **文件的事说两处：保存是标题栏里的一句文案，要人决定的那个在正中**（`FileSaveStatus`；文案由 `FileSaveStateWord` 画）：**"正在保存 / 已保存 / 写失败"在标题栏里、操作按钮的左边**——那是 chrome，压不到内容，也不会把内容推来推去（标题栏左右两侧都是 `flex-1`、徽章在中间，往右边加东西徽章不动）；"已保存"**3 秒后自己消失**，计时挂在"状态变成 saved 那一刻"、不被别的重渲染重置；**"文件被改了"仍在编辑面正中**（那是决定不是通知，只有它接点击，两个按钮就是它存在的理由）。**位置是量出来的，别改回"编辑面的角"**：三个面的右上角各自压着东西——源码的前几行、页面的右上角、drawio 自己的工具栏。走过的四步：一行（每次保存开始时把正文按下去）→ 左下角胶囊（和 HTML 自己的选中提示抢同一个角）→ 编辑面右上角纯文案（就是上面那个遮挡）→ 现在这样。**状态是"报上去"的**：`PreviewOverlay` 提供 `FileSaveSlotProvider`（它是唯一同时渲染标题栏与内容的地方），`FileSaveStatus` 用 `useReportFileSaveState` 往上报，`FileSaveStateWord` 在 headerActions 前面画——**没有 provider 的宿主（对话里的 `.md` 块）就什么都不说**，那句话属于显示文件名的 chrome。**另一头是页面自己的角落**：`HtmlDesignEditor` 里那枚左下角胶囊只说关于*页面*的话——选中的是哪个元素、点一下会怎样、以及编辑器自己的提示与加载——**它只属于页面编辑器**（`MarkdownEditorPane` / `DrawioEditorPane` 没有选中这回事）。`layout` 只管**加载占位的高度**（`'pane'` 400px / `'inline'` 80px），跟这些无关。
+
+另外几条是用户定的口径，别再"修"回去：
+
+- **块只读，而且没有展开功能**（曾经有过上下箭头把 `max-h-400px` 拉到 `max-h-80vh`，已移除）：它是固定高度、溢出自带滚动的"看一眼"，要改或者要看全都去大窗。底部那条渐隐已经去掉（用户："效果很差"），别再加回来——它画的是一条压在文字上的灰带，而滚动条本来就说清了"下面还有"。块头**两个按钮都是开大窗**：铅笔（`Pencil`）开**源码面**（光标已经在正文里），四角（`Maximize2`）开**渲染面**，与 drawio / html / mermaid 三类块同位置同含义；铅笔**只在该宿主能写时才画**。
+- **链接还是由我们路由**：渲染面用 `Markdown` 现成的 `onUrlClick` / `onFileClick`，回调缺省时有意什么都不做（`FilePreviewRenderer` 传 app 自己的 `handleOpenFile` / `handleOpenUrl`）。源码面里链接就是文本，没有可点的东西——这是"改是源码"的直接代价。
+- **源码面的 `value` 必须是屏幕上那一份，不是"文件最后一次被读到的样子"**（`MarkdownEditorPane` 的 `draft`）：`react-simple-code-editor` 的 textarea 是**受控**的（`lib/index.js` 的 render 里 `value: value` 直接来自 props，而它**没有任何**"把 props 同步进 DOM"的逻辑），所以每敲一个键 `report()` 让 pane 重渲染时，若喂回去的是 `useFileWriter` 的 `document`（那东西的语义就是"文件最后一次被读到的样子"，`report` **有意**不更新它），React 会把 textarea 改回旧正文——实测表现正是用户报的**打字进不去、光标跳到末尾**。修法是 pane 自己持有工作副本（`draft`，read 之后重新播种），两个面都读它。
+- **上色必须同步：先把 highlighter 做出来，再画**（`ShikiCodeEditor` 的 `highlighterFor`）。**"异步上色"这条路走过，是错的**：`codeToHtml`（简写）给的是 Promise，于是每次按键都会画两遍——先无色、下一帧才上色。用户先后报了两次同一个东西（"重新上色有抖动感"、"打字会掉色"，判据是"市面上没有编辑器打字会掉色"），我先用去抖（收手才上色）绕，那是把闪烁换成"打字时没颜色"，同样不对。正解是 `createHighlighter({ themes, langs })` **建一次**（按主题名缓存），建好之后 `codeToHtml` 是**同步**的，一次按键一次绘制、颜色就在里面。实测：连打 16 个字符，高亮层每帧都有颜色（styled span 计数恒为 2、最小值为 2，从不掉到 0）。三条附带事实：① highlighter 在编辑器出现时就预建（几百毫秒，早于人开始打字），建成之前那一帧是**当前文本、无色**——**不能拿上一次的高亮结果顶上**，那会让透明 textarea 上面那层显示上一版文字，看着像"字没进去"（这个坑也踩过）；② 主题名要能被 Shiki 认识，用户预设可能给一个不在 bundle 里的名字（实测 `ShikiError: Theme ... not found`），所以失败时回落到 github-light/dark；③ 只有 `HIGHLIGHT_LANGS` 里那几个语言是加载过的，别的按 `text` 画。
+- **窗口写完，块要自己重读**（`MarkdownDocBlock` 的 `wroteRef` + `revision` 当 `key`）：**块和大窗是同一个文件的两个读者**，大窗写的是磁盘，块这边没有任何人告诉它——`usePrototypeFileWatch` 挂的是 prototypes 那棵树的 watcher，所以原型目录以外的 `.md`（plans、项目文档）永远不会跟上。修法不是把文本搬过去，而是**关闭时重读**（`onSaved` 只记一个"写过"的标记，`key={src:revision}` 触发重新挂载 → 重新读盘）：盘本来就是权威，顺带还能带上别的写者的改动。**这也是"两个 `useFileWriter` 实例"的代价**，别再指望 watcher 兜住它。
+- **"边看边跟"只对原型目录里的文件有效**：`usePrototypeFileWatch` 挂的是 prototypes 那棵树的 watcher，所以 plans 里的 `.md` 在编辑期间不会自动跟上别人的写。**保存始终是安全的**——写之前一定重读并与"我见过的那一版"比对，不一致就停下来问人（`useFileWriter`），这条不依赖 watcher。
+- **⌘S / Ctrl+S 是"现在写"，不是"开始写"**（`useFileWriter` 里挂在 window 上的 keydown）：写本来就是**停手约 1.2 秒后自动发生**的（`SAVE_DEBOUNCE_MS`），这个键只是跳过那次停顿。三条都是决定：① **没变就不写，判断只有一处**：`save` 本来就要**写之前重读**，读回来和手里这份一样就**不写**、只说"已保存"（磁盘是权威，所以判据是**刚读到的内容**，不是我们的记忆）——打回原样、⌘S 在没欠着的时候按、写完又按，都走这一条。**上一版我把这个判断也抄进了 `report`**（不安排那次写），那是多余的：两处判断要互相保持一致，还砍掉了"停顿一次就重读一次盘"这条性质（那是树外文件发现外部改动的唯一途径），所以撤掉了。顺带的三件事也是它：**写失败后按 ⌘S 是重试**（盘上确实不是我们这份）、**冲突判断在它之前**（我们有改动 + 盘上被人改了，照样停下来问人）、**只读宿主**（没有 `onWriteFile`）在更前面早退。**补丁那一层同理**（`HtmlDesignEditor` 的 `commitPatch`）：产生的源码和手里那份一样就**不入撤销栈也不上报** —— 同一个样式点两下、或者按 ⌘S 时没人动过文字，撤销栈上不该多出"按了没变化"的一步；三条补丁路径（文字/样式/删除）现在都走这一个判断，不再各答一遍（那三句"pushUndo + draft + report"原来是抄了三份的）。② **无论有没有可写都 `preventDefault`**：一个文件开在窗口里的时候，这个键在这儿没有别的意思。③ **iframe 里的键只能自己转发**：frame 是**独立文档**，在它里面按的键不会冒泡到宿主文档（同源也一样，与进程无关），所以"绑在宿主 window 上"对里面天然无效。页面编辑器的探针因此自己转（`post('save')` → 编辑面调 `flush()`）：**两个入口，一个决定**（`flush` 是 `useFileWriter` 暴露出来的那一个）。**正在双击改文字时按 ⌘S**（用户问的正是这个）：探针把元素里**此刻的文字**先 `post('text-committed')` 上去（父页面补源码 + `report`，**不重建 frame**），再 `post('save')` —— **不失焦、编辑不中断**（保存不是把光标从正在打字的地方拿走的理由），而**不是**先 `commitEdit()`（那等于回车，会把光标赶走）。代价是 `cancelEdit` 必须学会这件事：那次中途上报之后源码里已经是这段文字了，所以**按 Escape 要把它一并恢复成编辑前的那份**（`editReported` 这个标记就是为它存在的）——少了这一步，Escape 会让页面显示原文、文件里留着半截文字。drawio 不是我们的文档，它自己应答 ⌘S 并上报文档（同一次写晚一拍）——那条**没实测过**。别把它改成"绑在编辑盒上"——那就只覆盖了 markdown；也别为此去主进程加 `before-input-event`，那会变成第二个快捷键系统（Windows/Linux 上这个 app 连原生菜单都删了，macOS 上菜单项还刻意 `registerAccelerator: false` 把键让给渲染进程）。
+- **源码面的盒子必须是"确定高度"，而在这条链上只有绝对定位做得到**（`MarkdownEditorPane` 里 `relative` 的 keyed div + `<div className="absolute inset-0 flex flex-col">` 里装 `ShikiCodeEditor`）：overlay 那层 `min-h-full` 是**最小值不是一个尺寸**，所以挂在它下面的 flex 项会被它本该滚动的内容撑大——实测（3000px 源码、同一套类名、只看编辑器那一种尺寸写法）：`h-full` 与 `flex-1 min-h-0` **都是 3000px 的编辑器 + 页面出现滚动条**（内容按下去时正好滑过透明的标题栏，就是用户报的"顶部位置会移动、内容穿上去"），只有 `absolute inset-0` 得到 **232px 的编辑器 + 页面不滚、`scrollHeight` 3000**。同一个原语 `DrawioEditorFrame` 早就用了（它的注释里就是那次实测），这里只是补上。**别把它"简化"回 flex-1 / h-full**：判据不是"看起来等价"，是 `pageScrolls` 这个布尔值。渲染面（只读那个列）仍是 `flex-1 min-h-0 overflow-auto`，所以**长文档在只读面依然会滚整个窗口**（那是这套公共 chrome 的"纸滚动"模型），要不要一起改成固定盒是另一个决定。
+- **Tiptap 那一套现在没有任何调用方**（`TiptapMarkdownEditor` 及其 `extensions/`、`TiptapBubbleMenus`、`TiptapSlashMenu`、`TiptapCodeBlockView`、`tiptap-editor.css`，以及只测它的 `official-markdown-math-foundation.test.ts`），是**有意先留着**的（用户定的"先只换面，Tiptap 文件留着"），`@tiptap/*`、`tiptap-markdown`、`katex` 依赖也没动。要点是：**代码里已经没有任何一条路会走到它**，别把它当成"另一条还在用的路"；要清就整块清。

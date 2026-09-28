@@ -1,28 +1,28 @@
 /**
- * Tests for the two pane tool factories.
+ * Tests for the three pane tool factories.
  *
- * `browser_tool` and `prototype_tool` are two doors onto one command table, and the suite drives
- * each command through the door that owns it. Both delegate to `BrowserPaneFns` via CLI commands.
+ * `browser_tool`, `prototype_tool` and `video_tool` are doors onto one command table, and the
+ * suite drives each command through the door that owns it. All three delegate to `BrowserPaneFns`
+ * via CLI commands.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { describe, it, expect, afterEach, beforeEach } from 'bun:test'
 import { createBrowserTools } from '../browser-tools'
 import { createPrototypeTools } from '../prototype-tools'
+import { createVideoTools } from '../video-tools'
+import { createDrawioTools } from '../drawio-tools'
 import type { BrowserPaneFns } from '../browser-pane'
-import type { PrototypeStatus } from '../../prototypes/status'
+import type { PrototypeStatus, PrototypeStatusRequirement } from '../../prototypes/status'
 import { notice } from '../../prototypes/notices'
-import type { PrototypePage, PrototypePagesChange, PrototypePagesResult } from '../../prototypes/pages'
-import type { PrototypeExportResult } from '../../prototypes/export'
-import type { PageKind } from '../../prototypes/types'
 import type { BrowserTabSummary } from '../../protocol/dto'
 
 /**
  * One page as `tabs` reports it: what the page reports, plus what its opener said.
- * Every field the test does not care about gets the value a plain, user-opened,
- * prototype-less page would have.
+ * Every field the test does not care about gets the value a plain, user-opened page
+ * would have.
  */
 function tabRow(overrides: Partial<BrowserTabSummary> & { id: string }): BrowserTabSummary {
   return {
@@ -31,12 +31,10 @@ function tabRow(overrides: Partial<BrowserTabSummary> & { id: string }): Browser
     favicon: null,
     isLoading: false,
     active: false,
-    prototype: null,
-    prototypePage: null,
     disposition: null,
     belongsTo: null,
-    driverSessionId: null,
-    cursorOf: null,
+    drivenBy: null,
+    cursorOf: [],
     lockedBy: null,
     ...overrides,
   }
@@ -71,7 +69,7 @@ function createMockFns(): BrowserPaneFns {
     getConsoleLogs: async () => ([
       { timestamp: Date.now(), level: 'warn', message: 'Test warning' },
     ]),
-    windowResize: async (args) => ({ width: args.width, height: args.height }),
+    resizeViewport: async (args) => ({ width: args.width, height: args.height }),
     getNetworkLogs: async () => ([
       { timestamp: Date.now(), method: 'GET', url: 'https://example.com/api', status: 500, resourceType: 'xhr', ok: false },
     ]),
@@ -92,142 +90,30 @@ function createMockFns(): BrowserPaneFns {
       text: 'Pay now',
       rect: { x: 10, y: 20, width: 120, height: 40 },
     }),
-    applyPrototype: async (slug: string) => ({ slug, applied: 2, files: ['A-001-btn.css', 'A-002-guard.js'], skipped: [] }),
-    clearPrototype: async (slug: string) => ({ slug, removed: [`prototype:${slug}:A-001-btn.css`] }),
-    verifyPrototype: async (slug: string) => ({
-      slug,
-      page: 'http://x.localhost/cart',
-      pageName: 'cart',
-      passed: 1,
-      failed: 1,
-      skipped: 0,
-      round: 2,
-      diff: {
-        round: 2,
-        newRed: ['endpoint: GET /api/cart'],
-        stillRed: [],
-        notRun: [],
-        fixed: [],
-        gone: [],
-      },
-      previous: { round: 1, at: '2026-09-16T10:00:00.000Z', passed: 2, failed: 0, skipped: 0, red: [] },
-      reportPath: `/tmp/prototypes/${slug}/dist/acceptance.md`,
-      statePath: `/tmp/prototypes/${slug}/acceptance/state.json`,
-      results: [
-        {
-          requirementId: 'R-001',
-          requirementTitle: 'A cart holds its line',
-          kind: 'selector',
-          target: '[data-total]',
-          status: 'pass',
-          detail: 'found on the page',
-        },
-        {
-          requirementId: 'R-002',
-          requirementTitle: 'The cart is priced by the service',
-          kind: 'endpoint',
-          target: 'GET /api/cart',
-          status: 'fail',
-          detail: 'not declared',
-        },
-      ],
-    }),
-    importPrototypeVideo: async () => ({
-      session: 'import-demo-20260915-000000',
-      video: 'videos/demo.mp4',
-      frames: 3,
-      files: ['frame-0001.jpg', 'frame-0002.jpg', 'frame-0003.jpg', 'frames.json', 'index.md'],
-      truncated: false,
+    sampleVideo: async () => ({
       durationMs: 6000,
-      images: [
-        { path: '/tmp/prototypes/checkout-flow/research/frames/import-demo-20260915-000000/frame-0001.jpg', bytes: new Uint8Array([1]) },
+      truncated: false,
+      frames: [
+        { offsetMs: 0, bytes: new Uint8Array([1]), path: null },
+        { offsetMs: 2000, bytes: new Uint8Array([2]), path: null },
+        { offsetMs: 4000, bytes: new Uint8Array([3]), path: null },
       ],
     }),
-    exportPrototype: async (slug: string) => exported(slug),
-    composeContract: async ({ slug, service }: { slug: string; service?: string }) => ({
-      service: service ?? 'checkout-api',
-      endpoints: 3,
-      conflicts: [],
-      missingFixtures: [],
+    exportDrawio: async () => ({
+      bytes: new Uint8Array([1]),
+      mimeType: 'image/svg+xml',
+      extension: '.svg',
+      path: null,
     }),
-    exportContract: async ({ slug, service }: { slug: string; service?: string }) => ({
-      service: service ?? 'checkout-api',
-      openapiPath: `/tmp/prototypes/${slug}/dist/openapi.yaml`,
-      docPath: `/tmp/prototypes/${slug}/dist/contract.md`,
-      fixturesDir: `/tmp/prototypes/${slug}/dist/fixtures`,
-      endpoints: 3,
-      fixtures: 2,
-      missingFixtures: [],
-      conflicts: [],
-    }),
-    applyMock: async ({ slug, service }: { slug: string; service?: string }) => ({
-      service: service ?? 'checkout-api',
-      routes: 3,
-      missingFixtures: [],
-      unmocked: [],
-      stateful: 2,
-      stateIssues: [],
-      stateProblem: null,
-    }),
-    clearMock: async () => {},
-    prototypeStatus: async (slug: string) => ({
-      slug,
-      dir: `/tmp/prototypes/${slug}`,
-      pages: [
-        {
-          name: 'entry',
-          kind: 'overlay' as const,
-          file: null,
-          url: 'https://app.example.com/checkout',
-          entry: true,
-          useLayout: false,
-        },
-      ],
-      entryPage: 'entry',
-      pageIssues: [],
-      requirements: [],
-      entryDocument: null,
-      files: [],
-      findings: [],
-      briefIssues: [],
-      frameCaptures: [],
-      pageAvailable: true,
-      patches: { total: 2, byWriter: { A: 2 }, scoped: 1, files: [], entries: [] },
-      anchors: { files: [], issues: [] },
-      services: [
-        { slug: 'checkout-api', fragments: 1, fixtures: 1, endpoints: 2, mockedEndpoints: 1, statefulEndpoints: 1, missingFixtures: [] },
-      ],
-      distFiles: ['prototype.html', 'dev-spec.md'],
-      ownership: { inspected: 4, violations: [] },
-      reviews: { total: 0, byStatus: { open: 0, fixed: 0, rebutted: 0, accepted: 0 }, unresolved: [] },
-      acceptance: null,
-      unresolved: { unmet: [], disputes: [], redChecks: [] },
-      settleBlockers: [],
-    }),
-    prototypeEntry: async ({ slug }: { slug: string }) => ({
-      page: 'entry',
-      path: `/tmp/prototypes/${slug}/entry.html`,
-      url: `http://${slug}.localhost:41234/`,
-      origin: `http://${slug}.localhost:41234`,
-      injectPatches: false,
-    }),
+    listDrawioPages: async () => [{ id: 'p1', name: 'Checkout', compressed: false }],
+    prototypeStatus: async (slug: string) => prototypeStatus(slug),
     // Unbound by default; tests that exercise the no-slug fallback override it.
     getBoundPrototypeSlug: () => null,
     listPrototypes: async () => [],
     createPrototype: async ({ name }: { name: string }) => ({
       slug: name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
       dir: `/tmp/prototypes/${name}`,
-      patchesPath: `/tmp/prototypes/${name}/patches`,
-    }),
-    setPrototypePageUrl: async (_slug: string, url: string, page?: string) => ({
-      pages: [{ name: page ?? 'entry', kind: 'overlay' as const, url, entry: page === undefined }],
-    }),
-    setPrototypePages: async (slug: string, change: PrototypePagesChange): Promise<PrototypePagesResult> => ({
-      slug,
-      pages: change.op === 'remove'
-        ? []
-        : [{ name: 'payment', kind: 'overlay' as const, url: 'https://app.example.com/checkout/payment' }],
-      note: `${change.op} page`,
+      prdPath: `/tmp/prototypes/${name}/PRD.md`,
     }),
     bindPrototype: async (_slug: string | null) => {},
     focusWindow: async (instanceId?: string) => ({ instanceId: instanceId ?? 'browser-1', title: 'Example Domain', url: 'https://example.com' }),
@@ -264,73 +150,26 @@ function prototypeStatus(slug: string, overrides: Partial<PrototypeStatus> = {})
   return {
     slug,
     dir: `/tmp/prototypes/${slug}`,
-    pages: [],
-    entryPage: null,
-    pageIssues: [],
     requirements: [],
-    entryDocument: null,
+    specificationFiles: [],
     files: [],
+    links: [],
     findings: [],
-    briefIssues: [],
-    frameCaptures: [],
-    pageAvailable: true,
-    patches: { total: 1, byWriter: { A: 1 }, scoped: 0, files: [], entries: [] },
-    anchors: { files: [], issues: [] },
-    services: [],
-    distFiles: [],
-    ownership: { inspected: 1, violations: [] },
     reviews: { total: 0, byStatus: { open: 0, fixed: 0, rebutted: 0, accepted: 0 }, unresolved: [] },
-    acceptance: null,
-    unresolved: { unmet: [], disputes: [], redChecks: [] },
+    unresolved: { unmet: [], disputes: [] },
     settleBlockers: [],
+    briefIssues: [],
     ...overrides,
   }
 }
 
-/**
- * One row of a page table. The kind is what decides how the page is changed, and
- * where it lives follows from it: an overlay records an address, a page of ours
- * a document in the prototype directory.
- */
-function page(
-  name: string,
-  kind: PageKind,
-  where: { file?: string; url?: string },
-  entry = false,
-): PrototypePage {
-  return {
-    name,
-    kind,
-    file: where.file ?? null,
-    url: where.url ?? null,
-    entry,
-    // Only a document of ours can be wrapped by the layout (plan §19.2).
-    useLayout: kind === 'scratch',
-  }
-}
-
-/**
- * An export result as the runtime reads it. An overlay's package is the default
- * because it is the one with no document of ours inside it.
- */
-function exported(slug: string, overrides: Partial<PrototypeExportResult> = {}): PrototypeExportResult {
-  return {
-    slug,
-    extensionDir: `/tmp/prototypes/${slug}/dist/extension`,
-    pagePath: null,
-    pageUrl: null,
-    version: '1.20000.630',
-    specPath: `/tmp/prototypes/${slug}/dist/dev-spec.md`,
-    handoffPath: `/tmp/prototypes/${slug}/dist/handoff.md`,
-    staticDir: null,
-    staticPath: null,
-    staticWarnings: [],
-    bookmarkletPath: null,
-    applied: 2,
-    pageCount: 1,
-    warnings: [],
-    ...overrides,
-  }
+/** One requirement row, with what refers to it. The fingerprint is what a review of it cites as `on:`. */
+function requirement(
+  id: string,
+  title: string,
+  overrides: Partial<PrototypeStatusRequirement> = {},
+): PrototypeStatusRequirement {
+  return { id, title, file: 'PRD.md', fingerprint: `fp-${id}`, files: [], findings: [], disputes: [], ...overrides }
 }
 
 // ============================================================================
@@ -376,7 +215,7 @@ describe('the pane tools', () => {
 
   beforeEach(() => {
     mockFns = createMockFns()
-    // Both doors: one command table, and the suite drives commands through the one that owns
+    // Every door: one command table each, and the suite drives commands through the one that owns
     // them — a prototype command named at `browser_tool` is refused (there is a test for that).
     tools = [
       ...createBrowserTools({
@@ -384,6 +223,14 @@ describe('the pane tools', () => {
         getBrowserPaneFns: () => mockFns,
       }),
       ...createPrototypeTools({
+        sessionId: 'test-session',
+        getBrowserPaneFns: () => mockFns,
+      }),
+      ...createVideoTools({
+        sessionId: 'test-session',
+        getBrowserPaneFns: () => mockFns,
+      }),
+      ...createDrawioTools({
         sessionId: 'test-session',
         getBrowserPaneFns: () => mockFns,
       }),
@@ -419,7 +266,8 @@ describe('the pane tools', () => {
 
     it('documents every prototype command the runtime implements', async () => {
       const prototypeCommands = await runtimeCommands('prototype-commands')
-      expect(prototypeCommands.length).toBeGreaterThan(10)
+      // list / create / status
+      expect(prototypeCommands.length).toBe(3)
 
       const help = (await executeTool(tools, 'prototype_tool', { command: '--help' })).content[0].text
       expect(prototypeCommands.filter((cmd) => !help.includes(cmd))).toEqual([])
@@ -428,31 +276,50 @@ describe('the pane tools', () => {
     // The two doors answer "--help" with their own list: an agent that asked the prototype tool
     // what exists is not asking about the browser. The commands carry no prefix — the tool's
     // name is the subject, the way `browser_tool snapshot` reads.
-    it('answers --help with the prototype commands, and the layout they write into', async () => {
+    it('answers --help with the prototype commands, and the folder they act on', async () => {
       const help = (await executeTool(tools, 'prototype_tool', { command: '--help' })).content[0].text
 
       expect(help).toContain('prototype_tool command help')
-      expect(help).toContain('  apply [slug] [--file <path>]')
-      expect(help).toContain('  contract-compose [slug] [--service <svc>]')
+      expect(help).toContain('  status [slug]')
       expect(help).toContain('PRD.md')
-      expect(help).toContain('patches/')
+      expect(help).toContain('research/')
+      expect(help).toContain('reviews/')
+      expect(help).toContain('@requirement R-001')
+      // None of the removed mechanisms may be briefed: no pages, patches, entry page or fragment —
+      // and no contract, verification or deliverables.
+      expect(help).not.toContain('patches/')
+      expect(help).not.toContain('--page')
+      expect(help).not.toContain('entry page')
+      expect(help).not.toContain('/_index')
       expect(help).not.toContain('browser_tool command help')
       expect(help).not.toContain('navigate <url>')
+      expect(help).not.toContain('verify')
+      expect(help).not.toContain('contract')
+      expect(help).not.toContain('openapi')
+      expect(help).not.toContain('acceptance')
+      expect(help).not.toContain('dist/')
+      // Nor the mock and dev-spec machinery that left with them.
+      expect(help).not.toContain('mock')
+      expect(help).not.toContain('dev-spec')
+      expect(help).not.toContain('handoff')
+      expect(help).not.toContain('fixtures')
     })
 
     // The description is the whole model-facing brief for this door: what the commands act on
-    // (the files) and what they drive (the shared window).
-    it('describes how it uses the files and the window', () => {
+    // (a prototype's folder) and where the rules are — the layout is the guide's, read once,
+    // rather than a second copy of it in front of every session.
+    it('describes the folder it acts on, and points at the guide for the rest', () => {
       const tool = findTool(tools, 'prototype_tool') as any
 
-      expect(tool.description).toContain('**The files**')
       expect(tool.description).toContain('**The window**')
+      expect(tool.description).toContain('docs/prototypes.md')
       expect(tool.description).toContain('PRD.md')
+      expect(tool.description).toContain('@requirement R-001')
       expect(tool.description).toContain('browser_tool')
     })
 
-    // `browser_tool apply` reads plausible, so the refusal has to say where the other subject's
-    // commands live rather than just "unknown".
+    // `browser_tool snapshot` reads plausible here, so the refusal has to say where the other
+    // subject's commands live rather than just "unknown".
     it('refuses a browser command, and names the tool that takes it', async () => {
       const result = await executeTool(tools, 'prototype_tool', { command: 'snapshot' })
 
@@ -470,1034 +337,45 @@ describe('the pane tools', () => {
       expect(result.content[0].text).toContain('One command per call')
     })
 
-    it('routes apply and reports the applied patches', async () => {
-      const result = await executeTool(tools, 'prototype_tool', { command: 'apply checkout-flow' })
-      expect(result.content[0].text).toContain('Prototype "checkout-flow": applied 2 patches')
-      expect(result.content[0].text).toContain('A-001-btn.css')
-    })
-
-    /**
-     * `apply --file` is the loop for a patch being iterated on: the file is named,
-     * so it is never spelled out in the command, and the patches already registered stay
-     * registered — which is only visible in what the command asks the browser for.
-     */
-    describe('apply --file', () => {
-      let workspaceRoot: string
-      let fileTools: any[]
-
-      beforeEach(() => {
-        workspaceRoot = mkdtempSync(join(tmpdir(), 'browser-apply-file-'))
-        fileTools = [
-          ...createBrowserTools({
-            sessionId: 'test-session',
-            getBrowserPaneFns: () => mockFns,
-            workspaceRootPath: workspaceRoot,
-          }),
-          ...createPrototypeTools({
-            sessionId: 'test-session',
-            getBrowserPaneFns: () => mockFns,
-            workspaceRootPath: workspaceRoot,
-          }),
-        ]
-      })
-
-      afterEach(() => {
-        rmSync(workspaceRoot, { recursive: true, force: true })
-      })
-
-      it('resolves the named path and asks for that one file', async () => {
-        let received: { file?: string } | undefined
-        mockFns.applyPrototype = async (slug, options) => {
-          received = options
-          return {
-            slug,
-            applied: 1,
-            files: ['cart/ui-002-total.js'],
-            skipped: [],
-            page: 'cart',
-            file: { name: 'cart/ui-002-total.js', page: 'cart' },
-          }
-        }
-
-        const result = await executeTool(fileTools, 'prototype_tool', {
-          command: 'apply checkout-flow --file prototypes/cart/patches/ui-002-total.js',
-        })
-
-        expect(received?.file).toBe(join(workspaceRoot, 'prototypes/cart/patches/ui-002-total.js'))
-        expect(result.content[0].text).toContain('applied patches/cart/ui-002-total.js')
-        expect(result.content[0].text).toContain('the page "cart" brings it')
-      })
-
-      /**
-       * Naming a file cannot move the DOM it belongs to: with another page open, every target
-       * that matched nothing has to be readable as "the wrong page is open" rather than as a
-       * wrong selector.
-       */
-      it('says when the file belongs to a page other than the one it acted on', async () => {
-        mockFns.applyPrototype = async (slug) => ({
-          slug,
-          applied: 1,
-          files: ['cart/ui-002-total.js'],
-          skipped: [],
-          page: 'orders',
-          file: { name: 'cart/ui-002-total.js', page: 'cart' },
-        })
-
-        const result = await executeTool(fileTools, 'prototype_tool', {
-          command: 'apply checkout-flow --file prototypes/cart/patches/ui-002-total.js',
-        })
-
-        expect(result.content[0].text).toContain('acted on the page "orders"')
-        expect(result.content[0].text).toContain('wrong page being open')
-      })
-
-      it('names the file it could not put on the page', async () => {
-        mockFns.applyPrototype = async (slug) => ({
-          slug,
-          applied: 0,
-          files: [],
-          skipped: ['cart/ui-002-total.js'],
-          page: 'cart',
-          file: { name: 'cart/ui-002-total.js', page: 'cart' },
-        })
-
-        const result = await executeTool(fileTools, 'prototype_tool', {
-          command: 'apply checkout-flow --file prototypes/cart/patches/ui-002-total.js',
-        })
-
-        expect(result.content[0].text).toContain('already carries patches/cart/ui-002-total.js')
-        expect(result.content[0].text).toContain('run "reload"')
-      })
-
-      it('refuses --file with no path', async () => {
-        const result = await executeTool(fileTools, 'prototype_tool', {
-          command: 'apply checkout-flow --file',
-        })
-
-        expect(result.isError).toBe(true)
-        expect(result.content[0].text).toContain('--file needs a path')
-      })
-    })
-
-    it('reports when apply finds no patch files', async () => {
-      mockFns.applyPrototype = async (slug) => ({ slug, applied: 0, files: [], skipped: [] })
-      const result = await executeTool(tools, 'prototype_tool', { command: 'apply empty-flow' })
-      expect(result.content[0].text).toContain('no patch files found')
-    })
-
-    /**
-     * The rendered page arrives with its patches inlined, so there is nothing to
-     * inject — and saying "applied 0 patches" would read as a failure.
-     */
-    it('distinguishes "already on the page" from "no patches exist"', async () => {
-      mockFns.applyPrototype = async (slug) => ({
-        slug,
-        applied: 0,
-        files: [],
-        skipped: ['A-001-btn.css'],
-      })
-      const result = await executeTool(tools, 'prototype_tool', { command: 'apply checkout-flow' })
-
-      expect(result.content[0].text).toContain('already carries all 1 patch')
-      // Named, not described: the reload it asks for is a command now.
-      expect(result.content[0].text).toContain('run "reload"')
-      expect(result.content[0].text).not.toContain('no patch files found')
-    })
-
-    it('requires a slug for apply', async () => {
-      const result = await executeTool(tools, 'prototype_tool', { command: 'apply' })
-      expect(result.content[0].text).toContain('needs a prototype')
-    })
-
-    /**
-     * What the patches made of the page (§21.1): the two failures that used to be
-     * invisible — a selector that matched nothing, and one that matched before —
-     * plus the patches nobody could check at all.
-     */
-    it('names what the patches matched, and what they did not', async () => {
-      mockFns.applyPrototype = async (slug) => ({
-        slug,
-        applied: 2,
-        files: ['A-001-btn.css', 'A-002-guard.js'],
-        skipped: [],
-        targets: [{ file: 'A-001-btn.css', target: '.btn', matched: 0, recorded: true }],
-        unmatched: ['.typo'],
-        drifted: [{ target: '.btn', lastMatchedAt: '2026-09-15T10:00:00.000Z', suggestions: ['#pay'] }],
-        untargeted: ['A-002-guard.js'],
-      })
-      const result = await executeTool(tools, 'prototype_tool', { command: 'apply checkout-flow' })
-      const text = result.content[0].text
-
-      expect(text).toContain('matched nothing (and have never matched): .typo')
-      expect(text).toContain('the page moved rather than the patch being wrong')
-      expect(text).toContain('#pay')
-      expect(text).toContain('No "@target" declared, so nothing could check these: A-002-guard.js')
-    })
-
-    it('routes clear and lists the removed keys', async () => {
-      const result = await executeTool(tools, 'prototype_tool', { command: 'clear checkout-flow' })
-      expect(result.content[0].text).toContain('removed 1 patch')
-      expect(result.content[0].text).toContain('prototype:checkout-flow:A-001-btn.css')
-    })
-
-    it('routes export and points at the deliverable', async () => {
-      const result = await executeTool(tools, 'prototype_tool', { command: 'export checkout-flow' })
-      expect(result.content[0].text).toContain('exported 1 page(s) and 2 patches')
-      expect(result.content[0].text).toContain('/dist/extension')
-      expect(result.content[0].text).toContain('/dist/dev-spec.md')
-    })
-
-    // The gate (plan §3.7). Without `--strict` the deliverable is still built — being able to look
-    // at an unfinished prototype is the point of building one — but what is outstanding is said out
-    // loud rather than left for the recipient to discover. With it, an unattended run stops instead
-    // of handing over something nobody checked.
-    it('refuses to export an unsettled prototype under --strict, naming what is outstanding', async () => {
-      let calls = 0
-      mockFns.prototypeStatus = async (slug) =>
-        prototypeStatus(slug, {
-          unresolved: { unmet: ['R-003'], disputes: [], redChecks: ['selector: [data-cart-total]'] },
-        })
-      mockFns.exportPrototype = async (slug) => {
-        calls += 1
-        return exported(slug)
-      }
-
-      const result = await executeTool(tools, 'prototype_tool', {
-        command: 'export checkout-flow --strict',
-      })
-
-      expect(result.isError).toBe(true)
-      expect(result.content[0].text).toContain('is not settled')
-      expect(result.content[0].text).toContain('R-003 is in PRD.md but no page or patch refers to it')
-      expect(result.content[0].text).toContain('`selector: [data-cart-total]` failed')
-      // Nothing was written: refusing is the whole point of the flag.
-      expect(calls).toBe(0)
-    })
-
-    it('exports an unsettled prototype without --strict, and says what is outstanding', async () => {
-      mockFns.prototypeStatus = async (slug) =>
-        prototypeStatus(slug, { unresolved: { unmet: ['R-003'], disputes: [], redChecks: [] } })
-
-      const result = await executeTool(tools, 'prototype_tool', { command: 'export checkout-flow' })
-
-      expect(result.isError).toBeUndefined()
-      expect(result.content[0].text).toContain('exported 1 page(s)')
-      expect(result.content[0].text).toContain('not settled — 1 thing(s) still outstanding')
-      expect(result.content[0].text).toContain('R-003 is in PRD.md')
-    })
-
-    // The folder is one deliverable either way, but what it *does* differs by the
-    // pages it covers: a live page gets patched in a real browser, a page of ours
-    // is shipped inside the package. So the next step cannot be the same sentence.
-    it('separates the live pages it patches from the documents of ours it ships', async () => {
-      mockFns.prototypeStatus = async (slug) =>
-        prototypeStatus(slug, {
-          pages: [page('entry', 'overlay', { url: 'https://app.example.com/checkout' }, true)],
-          entryPage: 'entry',
-        })
-      mockFns.exportPrototype = async (slug) => exported(slug, { pageCount: 1 })
-
-      const live = await executeTool(tools, 'prototype_tool', { command: 'export checkout-flow' })
-      expect(live.content[0].text).toContain('exported 1 page(s)')
-      expect(live.content[0].text).toContain('puts its patches on the 1 live')
-      // No page of ours in the package, so there is nothing to open here.
-      expect(live.content[0].text).not.toContain('page(s) of ours ship inside')
-      expect(live.content[0].text).not.toContain('browser_tool navigate')
-      // …and no static half either: a live page is not ours to freeze.
-      expect(live.content[0].text).not.toContain('  Static:')
-
-      // A flow may mix both kinds, and then the package says both things.
-      mockFns.prototypeStatus = async (slug) =>
-        prototypeStatus(slug, {
-          pages: [
-            page('entry', 'overlay', { url: 'https://app.example.com/checkout' }),
-            page('cart', 'scratch', { file: 'cart.html', url: 'http://checkout-flow.localhost:41234/cart.html' }, true),
-          ],
-          entryPage: 'cart',
-        })
-      mockFns.exportPrototype = async (slug) =>
-        exported(slug, {
-          pageCount: 2,
-          pagePath: `/tmp/prototypes/${slug}/dist/extension/cart.html`,
-          pageUrl: 'http://checkout-flow.localhost:41234/dist/extension/cart.html',
-        })
-
-      const mixed = await executeTool(tools, 'prototype_tool', { command: 'export checkout-flow' })
-      expect(mixed.content[0].text).toContain('exported 2 page(s)')
-      expect(mixed.content[0].text).toContain('puts its patches on the 1 live')
-      expect(mixed.content[0].text).toContain('The 1 page(s) of ours ship inside the package')
-      // The packaged page can be opened here first, and it is named as it is
-      // served — the one inside the package, not the prototype root.
-      expect(mixed.content[0].text).toContain(
-        'browser_tool navigate http://checkout-flow.localhost:41234/dist/extension/cart.html',
-      )
-    })
-
-    // The live pages' half in the carrier that needs nothing installed (plan §17.9):
-    // printed only when there is one, like the static half — a path for a file that
-    // is not there would read as a broken export.
-    it('names the bookmarklet file for the live pages, and only when there is one', async () => {
-      mockFns.prototypeStatus = async (slug) =>
-        prototypeStatus(slug, {
-          pages: [page('entry', 'overlay', { url: 'https://app.example.com/checkout' }, true)],
-          entryPage: 'entry',
-        })
-      mockFns.exportPrototype = async (slug) =>
-        exported(slug, {
-          bookmarkletPath: `/tmp/prototypes/${slug}/dist/bookmarklet.html`,
-        })
-
-      const withLive = await executeTool(tools, 'prototype_tool', { command: 'export checkout-flow' })
-
-      expect(withLive.content[0].text).toContain('  Bookmarklet: /tmp/prototypes/checkout-flow/dist/bookmarklet.html')
-      expect(withLive.content[0].text).toContain('links to drag onto the bookmarks bar')
-
-      // No live page, no bookmarklet, and nothing said about one: the export result
-      // is what decides, so a stale file cannot be advertised either.
-      mockFns.exportPrototype = async (slug) => exported(slug)
-
-      const scratchOnly = await executeTool(tools, 'prototype_tool', { command: 'export checkout-flow' })
-
-      expect(scratchOnly.content[0].text).not.toContain('Bookmarklet:')
-    })
-
-    // A package that had to rewrite part of the document has to say so, or the
-    // author reads a clean export and never learns what moved.
-    it('passes on what the package had to change about the document', async () => {
-      mockFns.exportPrototype = async (slug) =>
-        exported(slug, { warnings: ['2 inline <script> block(s) were moved into files.'] })
-
-      const result = await executeTool(tools, 'prototype_tool', { command: 'export checkout-flow' })
-
-      expect(result.content[0].text).toContain('adapted for the extension')
-      expect(result.content[0].text).toContain('2 inline <script> block(s) were moved into files.')
-    })
-
-    // The second deliverable (plan §17.8): the same pages as files a reader can
-    // open with nothing installed — and the one thing such a file cannot carry.
-    it('names the static files the pages of ours were written to', async () => {
-      mockFns.exportPrototype = async (slug) =>
-        exported(slug, {
-          pagePath: `/tmp/prototypes/${slug}/dist/extension/cart.html`,
-          staticDir: `/tmp/prototypes/${slug}/dist/static`,
-          staticPath: `/tmp/prototypes/${slug}/dist/static/cart.html`,
-          staticWarnings: [
-            'cart.html: the page references `/missing/app.css`, which is not a file of this prototype.',
-          ],
-        })
-
-      const result = await executeTool(tools, 'prototype_tool', { command: 'export checkout-flow' })
-
-      expect(result.content[0].text).toContain('  Static: /tmp/prototypes/checkout-flow/dist/static')
-      expect(result.content[0].text).toContain('double-click /tmp/prototypes/checkout-flow/dist/static/cart.html')
-      // A broken reference is not an extension adaptation, so it is not under that
-      // heading — an author who reads only one of the two blocks would fix the
-      // wrong thing.
-      expect(result.content[0].text).toContain('could not carry everything the document asks for')
-      expect(result.content[0].text).not.toContain('adapted for the extension')
-    })
-
-    it('requires a slug for export', async () => {
-      const result = await executeTool(tools, 'prototype_tool', { command: 'export' })
-      expect(result.content[0].text).toContain('needs a prototype')
-    })
-
-    // A page's kind decides how it is changed and where it lives, so both are
-    // said for every row — otherwise an overlay and a page of ours read alike.
-    it('lists a prototype’s pages in flow order, each with its kind and where it lives', async () => {
-      mockFns.prototypeStatus = async (slug) =>
-        prototypeStatus(slug, {
-          pages: [
-            page('entry', 'overlay', { url: 'https://app.example.com/cart' }, true),
-            page('payment', 'overlay', { url: 'https://app.example.com/checkout/payment' }),
-          ],
-          entryPage: 'entry',
-        })
-
-      const result = await executeTool(tools, 'prototype_tool', { command: 'pages checkout-flow' })
-
-      expect(result.content[0].text).toContain('2 page(s), in flow order')
-      expect(result.content[0].text).toContain('entry (overlay) [entry] — https://app.example.com/cart')
-      expect(result.content[0].text).toContain('payment (overlay) — https://app.example.com/checkout/payment')
-      expect(result.content[0].text).toContain('pages --add <name>=<url>')
-      // Removing a page is the one change that reaches the filesystem, so the
-      // listing has to say so before the agent runs it.
-      expect(result.content[0].text).toContain('removing a page of ours deletes its document')
-    })
-
-    // A page of ours *is* its document, so the listing names the file rather than
-    // an address — and a declared page whose file is gone is a screen that is not
-    // there, which is a page issue worth printing.
-    it('lists the documents of ours, and the page issues that go with them', async () => {
-      mockFns.prototypeStatus = async (slug) =>
-        prototypeStatus(slug, {
-          pages: [
-            page('cart', 'scratch', { file: 'cart.html', url: 'http://checkout-flow.localhost:41234/cart.html' }, true),
-            page('orders', 'scratch', {}),
-          ],
-          entryPage: 'cart',
-          pageIssues: [notice('page.documentMissing', { name: 'orders', file: 'orders.html' })],
-        })
-
-      const result = await executeTool(tools, 'prototype_tool', { command: 'pages checkout-flow' })
-
-      expect(result.content[0].text).toContain('cart (scratch) [entry] — cart.html')
-      expect(result.content[0].text).toContain('orders (scratch) — document missing')
-      expect(result.content[0].text).toContain('Issues (fix or acknowledge these')
-      expect(result.content[0].text).toContain('orders.html is not in the prototype directory')
-    })
-
-    it('says how to make a first page when the table is empty', async () => {
-      mockFns.prototypeStatus = async (slug) =>
-        prototypeStatus(slug, { pages: [], pageAvailable: false })
-
-      const result = await executeTool(tools, 'prototype_tool', { command: 'pages checkout-flow' })
-
-      expect(result.content[0].text).toContain('no pages yet')
-      expect(result.content[0].text).toContain('a top-level <name>.html')
-      expect(result.content[0].text).toContain('pages --add <name>=<url>')
-    })
-
-    it('adds a live page and says the delivered extension has to be rebuilt', async () => {
-      let received: { slug: string; change: unknown } | undefined
-      mockFns.setPrototypePages = async (slug, change) => {
-        received = { slug, change }
-        return {
-          slug,
-          pages: [{ name: 'payment', kind: 'overlay', url: 'https://app.example.com/checkout/payment' }],
-          note: 'added overlay page "payment" → https://app.example.com/checkout/payment',
-        }
-      }
-
-      const result = await executeTool(tools, 'prototype_tool', {
-        command: 'pages checkout-flow --add payment=https://app.example.com/checkout/payment',
-      })
-
-      expect(received).toEqual({
-        slug: 'checkout-flow',
-        change: { op: 'add', name: 'payment', url: 'https://app.example.com/checkout/payment' },
-      })
-      expect(result.content[0].text).toContain('added overlay page "payment"')
-      expect(result.content[0].text).toContain('payment (overlay) — https://app.example.com/checkout/payment')
-      // The package is a snapshot (§17.4), and nothing else would say so.
-      expect(result.content[0].text).toContain('Re-export')
-    })
-
-    // A bare `--add <name>` is not a second way to create a page: the document is
-    // what makes one, and placing it in the flow is all the table can do about it.
-    it('places an existing document with a bare --add, and says what that did', async () => {
-      const changes: unknown[] = []
-      mockFns.setPrototypePages = async (slug, change) => {
-        changes.push(change)
-        return {
-          slug,
-          pages: [{ name: 'cart', kind: 'scratch', entry: true }],
-          note: 'declared page "cart" (cart.html was already a page; this puts it in the flow order)',
-        }
-      }
-
-      const result = await executeTool(tools, 'prototype_tool', { command: 'pages checkout-flow --add cart' })
-
-      expect(changes).toEqual([{ op: 'add', name: 'cart' }])
-      expect(result.content[0].text).toContain('declared page "cart"')
-      expect(result.content[0].text).toContain('cart (scratch) [entry] — a document of ours')
-    })
-
-    it('names the file to write when --add <name> has no document yet', async () => {
-      mockFns.setPrototypePages = async () => {
-        throw new Error(
-          'A scratch page is a document of ours, so orders.html has to exist before it can be placed in the flow. ' +
-            'Write /tmp/prototypes/checkout-flow/orders.html first — that alone makes it a page.',
-        )
-      }
-
-      const result = await executeTool(tools, 'prototype_tool', { command: 'pages checkout-flow --add orders' })
-
-      expect(result.content[0].text).toContain('orders.html has to exist')
-      expect(result.content[0].text).toContain('/tmp/prototypes/checkout-flow/orders.html')
-    })
-
-    // The other flag a row can carry, and the two spellings are one operation on the
-    // table: a page that is a design of its own is not wrapped by the shared layout,
-    // and --layout puts it back (plan §19.2).
-    it('sets and clears a page that stands on its own', async () => {
-      const changes: unknown[] = []
-      mockFns.setPrototypePages = async (slug, change) => {
-        changes.push(change)
-        return {
-          slug,
-          pages: [{ name: 'landing', kind: 'scratch', useLayout: false }],
-          note: '"landing" is served as written from now on',
-        }
-      }
-
-      const off = await executeTool(tools, 'prototype_tool', { command: 'pages checkout-flow --no-layout landing' })
-      const on = await executeTool(tools, 'prototype_tool', { command: 'pages checkout-flow --layout landing' })
-
-      expect(changes).toEqual([
-        { op: 'layout', name: 'landing', useLayout: false },
-        { op: 'layout', name: 'landing', useLayout: true },
-      ])
-      expect(off.content[0].text).toContain('"landing" is served as written')
-      expect(off.content[0].text).toContain('landing (scratch) — a document of ours')
-      expect(on.content[0].text).toContain('landing (scratch)')
-    })
-
-    it('asks which page when --layout is given no name', async () => {
-      const result = await executeTool(tools, 'prototype_tool', { command: 'pages checkout-flow --no-layout' })
-      expect(result.content[0].text).toContain('pages --no-layout needs a page name')
-    })
-
-    it('removes and renames pages', async () => {
-      const changes: unknown[] = []
-      mockFns.setPrototypePages = async (slug, change) => {
-        changes.push(change)
-        return { slug, pages: [], note: `${change.op} page` }
-      }
-
-      await executeTool(tools, 'prototype_tool', { command: 'pages checkout-flow --remove payment' })
-      await executeTool(tools, 'prototype_tool', { command: 'pages checkout-flow --rename cart=basket' })
-
-      expect(changes).toEqual([
-        { op: 'remove', name: 'payment' },
-        { op: 'rename', from: 'cart', to: 'basket' },
-      ])
-    })
-
-    it('asks for the value it needs instead of guessing', async () => {
-      const malformed = [
-        ['pages checkout-flow --add', /--add needs a page name/],
-        ['pages checkout-flow --rename cart', /--rename needs old=new/],
-        ['pages checkout-flow --remove', /--remove needs a page name/],
-        ['pages checkout-flow --add a=b --remove c', /one change at a time/],
-      ] as const
-
-      for (const [command, expected] of malformed) {
-        const result = await executeTool(tools, 'prototype_tool', { command })
-        expect(result.content[0].text).toMatch(expected)
-      }
-    })
-
-    it('routes contract-compose with a service flag', async () => {
-      let received: { slug: string; service?: string } | undefined
-      mockFns.composeContract = async (options) => {
-        received = options
-        return { service: 'checkout-api', endpoints: 5, conflicts: ['/orders'], missingFixtures: ['x-200'] }
-      }
-
-      const result = await executeTool(tools, 'prototype_tool', {
-        command: 'contract-compose checkout-flow --service checkout-api',
-      })
-
-      expect(received).toEqual({ slug: 'checkout-flow', service: 'checkout-api' })
-      expect(result.content[0].text).toContain('composed 5 endpoints')
-      expect(result.content[0].text).toContain('Duplicate path')
-      expect(result.content[0].text).toContain('x-200')
-    })
-
-    it('routes contract-export and reports the deliverables', async () => {
-      const result = await executeTool(tools, 'prototype_tool', {
-        command: 'contract-export checkout-flow',
-      })
-
-      expect(result.content[0].text).toContain('exported contract with 3 endpoints')
-      expect(result.content[0].text).toContain('/dist/openapi.yaml')
-      expect(result.content[0].text).toContain('/dist/contract.md')
-      expect(result.content[0].text).toContain('/dist/fixtures')
-    })
-
-    it('routes mock-apply and reports skipped/unmocked endpoints', async () => {
-      mockFns.applyMock = async (_options) => ({
-        service: 'checkout-api',
-        routes: 2,
-        missingFixtures: ['nope-200'],
-        unmocked: ['GET /health'],
-        stateful: 1,
-        stateIssues: [],
-        stateProblem: null,
-      })
-
-      const result = await executeTool(tools, 'prototype_tool', {
-        command: 'mock-apply checkout-flow --service checkout-api',
-      })
-
-      expect(result.content[0].text).toContain('serving 2 mock routes')
-      expect(result.content[0].text).toContain('GET /health')
-      expect(result.content[0].text).toContain('nope-200')
-    })
-
-    it('routes mock-clear', async () => {
-      let cleared = false
-      mockFns.clearMock = async () => {
-        cleared = true
-      }
-
-      const result = await executeTool(tools, 'prototype_tool', { command: 'mock-clear' })
-
-      expect(cleared).toBe(true)
-      expect(result.content[0].text).toContain('Mock cleared')
-    })
-
-    // The two things a reader has to know before calling a prototype finished, and the line that
-    // says it is not: what was argued, and what the last verification answered. Both come from the
-    // same report the gate reads, so the command cannot look calmer than the export would be.
-    it('reports what the last round answered, what stands disputed, and what is still owed', async () => {
-      const dispute = {
-        id: 'D-001',
-        file: 'reviews/D-001-total.md',
-        status: 'open' as const,
-        stale: true,
-        staleReason: 'patches/main-001-total.css has changed since this was filed (a1b2c3d4 → e5f6a7b8)',
-        about: 'patch patches/main-001-total.css',
-        claim: 'the total scrolls off screen',
-      }
-      mockFns.prototypeStatus = async (slug) =>
-        prototypeStatus(slug, {
-          reviews: { total: 2, byStatus: { open: 1, fixed: 1, rebutted: 0, accepted: 0 }, unresolved: [dispute] },
-          acceptance: { round: 3, at: '2026-09-16T10:00:00.000Z', passed: 1, failed: 1, skipped: 0, red: ['selector: [data-cart-total]'] },
-          unresolved: { unmet: [], disputes: [dispute], redChecks: ['selector: [data-cart-total]'] },
-        })
-
-      const result = await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })
-      const text = result.content[0].text
-
-      expect(text).toContain('reviews:    1 standing of 2 filed')
-      expect(text).toContain('acceptance: round 3 — 1 passed, 1 failed, 0 skipped')
-      expect(text).toContain('unresolved: 2')
-      expect(text).toContain('reviews/D-001-total.md disputes patch patches/main-001-total.css')
-      expect(text).toContain('`selector: [data-cart-total]` failed in the last verification round')
-    })
-
-    it('says so when nothing is owed, rather than staying quiet', async () => {
-      const result = await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })
-
-      expect(result.content[0].text).toContain('unresolved: nothing')
-      expect(result.content[0].text).toContain('acceptance: never run here')
-    })
-
-    it('reports the round it ran and what moved, and hands over how to argue with a failure', async () => {
-      const result = await executeTool(tools, 'prototype_tool', { command: 'verify checkout-flow' })
-      const text = result.content[0].text
-
-      expect(text).toContain('Acceptance — round 2: 1 passed, 1 failed, 0 skipped')
-      expect(text).toContain('Since round 1:')
-      expect(text).toContain('NEWLY RED   endpoint: GET /api/cart')
-      expect(text).toContain('about: endpoint GET /api/cart · status: open')
-      expect(text).toContain('acceptance/state.json')
-    })
-
-    it('requires a slug for mock-apply', async () => {
-      const result = await executeTool(tools, 'prototype_tool', { command: 'mock-apply' })
-      expect(result.content[0].text).toContain('needs a prototype')
-    })
-
-    it('routes status and reports the summary plus ownership violations', async () => {
-      mockFns.prototypeStatus = async (slug) => ({
-        slug,
-        dir: `/tmp/prototypes/${slug}`,
-        pages: [
-          page('entry', 'overlay', { url: 'https://app.example.com/checkout' }, true),
-          page('login', 'overlay', { url: 'https://app.example.com/login' }),
-        ],
-        entryPage: 'entry',
-        pageAvailable: true,
-        pageIssues: [],
-        requirements: [],
-        entryDocument: null,
-        files: [],
-        findings: [],
-        briefIssues: [],
-        frameCaptures: [],
-        patches: { total: 2, byWriter: { A: 2 }, scoped: 1, files: [], entries: [] },
-        anchors: { files: [], issues: [] },
-        services: [
-          { slug: 'checkout-api', fragments: 1, fixtures: 1, endpoints: 2, mockedEndpoints: 1, statefulEndpoints: 0, missingFixtures: ['nope-200'] },
-        ],
-        distFiles: ['prototype.html'],
-        ownership: { inspected: 5, violations: [{ path: 'patches/oops.css', reason: 'misnamed patch' }] },
-        reviews: { total: 0, byStatus: { open: 0, fixed: 0, rebutted: 0, accepted: 0 }, unresolved: [] },
-        acceptance: null,
-        unresolved: { unmet: [], disputes: [], redChecks: [] },
-        settleBlockers: [],
-      })
-
-      const result = await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })
-
-      expect(result.content[0].text).toContain('patches:    2 (A: 2) — 1 page-scoped, 1 shared')
-      expect(result.content[0].text).toContain('entry (overlay) [entry] — https://app.example.com/checkout')
-      expect(result.content[0].text).toContain('login (overlay) — https://app.example.com/login')
-      expect(result.content[0].text).toContain('2 endpoints, 1 mocked')
-      expect(result.content[0].text).toContain('missing fixtures: nope-200')
-      expect(result.content[0].text).toContain('dist:       prototype.html')
-      expect(result.content[0].text).toContain('ownership:  1 violation(s)')
-      expect(result.content[0].text).toContain('patches/oops.css')
-    })
-
-    it('reports a clean ownership check when there are no violations', async () => {
-      const result = await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })
-      expect(result.content[0].text).toContain('ownership:  OK (4 files)')
-    })
-
-    // `/` is a page of the flow only when one carries the entry flag; without it
-    // the root is the generated index, and the two read nothing alike.
-    it('says which page the address root opens, or that it shows the index', async () => {
-      const withEntry = await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })
-      expect(withEntry.content[0].text).toContain('root:       opens "entry"')
-
-      mockFns.prototypeStatus = async (slug) =>
-        prototypeStatus(slug, {
-          pages: [page('cart', 'scratch', { file: 'cart.html' })],
-          entryPage: null,
-        })
-      const withoutEntry = await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })
-      expect(withoutEntry.content[0].text).toContain('root:       shows the generated page index')
-    })
-
-    // A page issue is a screen that is not there (or a patch nothing replays), and
-    // the status is the only place that says which.
-    it('lists the page issues, which a clean prototype does not have', async () => {
-      const clean = await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })
-      expect(clean.content[0].text).not.toContain('page issues:')
-
-      mockFns.prototypeStatus = async (slug) =>
-        prototypeStatus(slug, {
-          pages: [page('cart', 'scratch', {}, true)],
-          entryPage: 'cart',
-          pageIssues: [
-            notice('page.documentMissing', { name: 'cart', file: 'cart.html' }),
-            notice('page.patchScopeUnmatched', { name: 'orders', pages: 'cart' }),
-          ],
-        })
-
-      const issues = await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })
-      expect(issues.content[0].text).toContain('page issues: 2')
-      expect(issues.content[0].text).toContain('cart.html is not in the prototype directory')
-      expect(issues.content[0].text).toContain('patches/orders/ belongs to no page')
-    })
-
-    // One window, many pages. Opening used to mean "navigate this window", which
-    // is what made a second prototype replace the first; now the prototype gets a
-    // page of its own, and that page is told whose it is — the only place it can be
-    // recorded, since an overlay's document is a third-party address (plan §22).
-    it('opens the prototype in a page of its own', async () => {
-      const opened: Array<{ url?: string; activate?: boolean; prototype?: { slug: string; origin: string } | null }> = []
-      mockFns.createTab = async (options) => {
-        opened.push(options ?? {})
-        return 'tab-7'
-      }
-      mockFns.navigate = async (url) => ({ url, title: 'Checkout' })
-      mockFns.listTabs = async () => ([
-        tabRow({ id: 'tab-1', url: 'https://app.example.com/checkout', title: 'Checkout' }),
-        tabRow({
-          id: 'tab-7',
-          url: 'http://checkout-flow.localhost:41234/',
-          title: 'Checkout',
-          active: true,
-          prototype: { slug: 'checkout-flow', origin: 'http://checkout-flow.localhost:41234' },
-          belongsTo: { kind: 'session', sessionId: 'session-a' },
-          driverSessionId: 'session-a',
-        }),
-      ])
-
-      const result = await executeTool(tools, 'prototype_tool', { command: 'open checkout-flow' })
-
-      expect(opened).toEqual([
-        { activate: false, prototype: { slug: 'checkout-flow', origin: 'http://checkout-flow.localhost:41234' } },
-      ])
-      // Which tab it is, and that there is another one — the only place a reader
-      // can learn it until the window has a tab strip.
-      expect(result.content[0].text).toContain('Tab: tab-7')
-      expect(result.content[0].text).toContain('1 other tab')
-    })
-
-    it('routes open to the entry page', async () => {
-      let navigated = ''
-      mockFns.navigate = async (url) => {
-        navigated = url
-        return { url, title: 'Checkout' }
-      }
-
-      const result = await executeTool(tools, 'prototype_tool', { command: 'open checkout-flow' })
-
-      // The address is the prototype's origin — the entry page rendered with every
-      // patch applied — not a file path.
-      expect(navigated).toBe('http://checkout-flow.localhost:41234/')
-      expect(result.content[0].text).toContain('opened entry page "entry" with every patch applied')
-      expect(result.content[0].text).toContain('base: /tmp/prototypes/checkout-flow/entry.html')
-      expect(result.content[0].text).toContain('Checkout')
-    })
-
-    // "Open the prototype" has no single meaning once a flow has several pages, so
-    // an unqualified open continues where the window already is rather than
-    // jumping back to the front door.
-    it('prefers the page the bound window is already on', async () => {
-      let navigated = ''
-      mockFns.snapshot = async () => ({
-        url: 'http://checkout-flow.localhost:41234/orders.html',
-        title: 'Orders',
-        nodes: [],
-        prototype: {
-          slug: 'checkout-flow',
-          kind: 'scratch',
-          origin: 'http://checkout-flow.localhost:41234',
-          page: 'orders',
-        },
-      })
-      mockFns.prototypeStatus = async (slug) =>
-        prototypeStatus(slug, {
-          pages: [
-            page('entry', 'scratch', { file: 'entry.html', url: 'http://checkout-flow.localhost:41234/' }, true),
-            page('orders', 'scratch', { file: 'orders.html', url: 'http://checkout-flow.localhost:41234/orders.html' }),
-          ],
-          entryPage: 'entry',
-        })
-      mockFns.navigate = async (url) => {
-        navigated = url
-        return { url, title: 'Orders' }
-      }
-
-      const result = await executeTool(tools, 'prototype_tool', { command: 'open checkout-flow' })
-
-      expect(navigated).toBe('http://checkout-flow.localhost:41234/orders.html')
-      expect(result.content[0].text).toContain('opened page "orders" (scratch)')
-    })
-
-    // A window that cannot be read is not a reason to refuse the open: it only
-    // means there is no current page to prefer.
-    it('falls back to the entry page when the window cannot be read', async () => {
-      let navigated = ''
-      mockFns.snapshot = async () => {
-        throw new Error('No browser window controls are available.')
-      }
-      mockFns.navigate = async (url) => {
-        navigated = url
-        return { url, title: 'Checkout' }
-      }
-
-      const result = await executeTool(tools, 'prototype_tool', { command: 'open checkout-flow' })
-
-      expect(navigated).toBe('http://checkout-flow.localhost:41234/')
-      expect(result.content[0].text).toContain('opened entry page "entry"')
-    })
-
-    it('requires a slug for open', async () => {
-      const result = await executeTool(tools, 'prototype_tool', { command: 'open' })
-      expect(result.content[0].text).toContain('needs a prototype')
-    })
-
-    // A prototype is a flow, so `--page` names one screen of it. The names come
-    // from the prototype's own status — which is also what makes the failure
-    // below actionable.
-    it('opens a named page of a multi-page prototype', async () => {
-      let navigated = ''
-      mockFns.prototypeEntry = async () => ({
-        page: 'entry',
-        path: '/tmp/prototypes/checkout-flow/entry.html',
-        url: 'http://checkout-flow.localhost:41234',
-        origin: 'http://checkout-flow.localhost:41234',
-        injectPatches: false,
-      })
-      mockFns.prototypeStatus = async (slug: string) =>
-        prototypeStatus(slug, {
-          pages: [
-            page('entry', 'scratch', { file: 'entry.html', url: 'http://checkout-flow.localhost:41234' }, true),
-            page('orders', 'scratch', { file: 'orders.html', url: 'http://checkout-flow.localhost:41234/orders.html' }),
-          ],
-          entryPage: 'entry',
-        })
-      mockFns.navigate = async (url) => {
-        navigated = url
-        return { url, title: 'Orders' }
-      }
-
-      const result = await executeTool(tools, 'prototype_tool', {
-        command: 'open checkout-flow --page orders',
-      })
-
-      expect(navigated).toBe('http://checkout-flow.localhost:41234/orders.html')
-      expect(result.content[0].text).toContain('opened page "orders" (scratch)')
-      // The entry's document is not the one opened here.
-      expect(result.content[0].text).not.toContain('base: ')
-    })
-
-    it('lists the pages when --page names one that does not exist', async () => {
-      mockFns.prototypeStatus = async (slug: string) =>
-        prototypeStatus(slug, {
-          pages: [
-            page('entry', 'scratch', { file: 'entry.html', url: 'http://checkout-flow.localhost:41234' }, true),
-            page('orders', 'scratch', { file: 'orders.html', url: 'http://checkout-flow.localhost:41234/orders.html' }),
-          ],
-          entryPage: 'entry',
-        })
-
-      const result = await executeTool(tools, 'prototype_tool', {
-        command: 'open checkout-flow --page nope',
-      })
-
-      expect(result.content[0].text).toContain('has no page "nope"')
-      expect(result.content[0].text).toContain('entry, orders')
-    })
-
-    // A live page has no address of its own until something serves it, and a
-    // document that is gone is a screen that is not there: both are refusals that
-    // name which page, not navigations to an empty address.
-    it('refuses to open a page that has no address', async () => {
-      mockFns.prototypeStatus = async (slug: string) =>
-        prototypeStatus(slug, {
-          pages: [page('orders', 'scratch', {})],
-          entryPage: 'orders',
-        })
-
-      const result = await executeTool(tools, 'prototype_tool', {
-        command: 'open checkout-flow --page orders',
-      })
-
-      expect(result.content[0].text).toContain('has no address')
-      expect(result.content[0].text).toContain('its document is missing')
-    })
-
-    // An overlay's page is the site's own page, which knows nothing about the
-    // prototype — navigating and stopping there would show the *target* page.
-    // The replay is what makes the address the prototype.
-    it('replays the patches when it opens an overlay', async () => {
-      const applied: string[] = []
-      mockFns.prototypeEntry = async () => ({
-        page: 'entry',
-        path: null,
-        url: 'https://app.example.com/checkout',
-        origin: 'http://checkout-flow.localhost:41234',
-        injectPatches: true,
-      })
-      mockFns.navigate = async (url) => ({ url, title: 'Checkout' })
-      mockFns.applyPrototype = async (slug) => {
-        applied.push(slug)
-        return { slug, applied: 2, files: ['A-001-btn.css', 'A-002-guard.js'], skipped: [] }
-      }
-
-      const result = await executeTool(tools, 'prototype_tool', { command: 'open checkout-flow' })
-
-      expect(applied).toEqual(['checkout-flow'])
-      expect(result.content[0].text).toContain('live page it changes')
-      expect(result.content[0].text).toContain('Replayed 2 patches')
-    })
-
-    // The address recorded on the prototype is what we *asked* for; the page the
-    // patches landed on is whatever the site served (sign-in walls redirect).
-    // Reporting the request as the result would name a page that is not on screen.
-    it('reports where an overlay actually landed when the site redirected', async () => {
-      mockFns.prototypeEntry = async () => ({
-        page: 'entry',
-        path: null,
-        url: 'https://app.example.com/checkout',
-        origin: 'http://checkout-flow.localhost:41234',
-        injectPatches: true,
-      })
-      mockFns.navigate = async (url) => ({ url, title: 'Sign in' })
-      mockFns.evaluate = async () =>
-        ({
-          url: 'https://app.example.com/login?next=%2Fcheckout',
-          title: 'Sign in',
-          viewportWidth: 1280,
-          viewportHeight: 800,
-          documentWidth: 1280,
-          documentHeight: 800,
-          scrollX: 0,
-          scrollY: 0,
-          maxScrollX: 0,
-          maxScrollY: 0,
-          activeElementTag: 'input',
-          activeElementRole: '',
-          activeElementId: 'email',
-          activeElementName: '',
-        }) as never
-
-      const result = await executeTool(tools, 'prototype_tool', { command: 'open checkout-flow' })
-
-      expect(result.content[0].text).toContain('landed on: https://app.example.com/login?next=%2Fcheckout')
-    })
-
     // ========================================================================
-    // Prototype binding — a bound session drives the prototype without slugs.
+    // list
     // ========================================================================
 
-    it('falls back to the bound prototype when no slug is passed', async () => {
-      mockFns.getBoundPrototypeSlug = () => 'bound-flow'
-      const result = await executeTool(tools, 'prototype_tool', { command: 'apply' })
-      expect(result.content[0].text).toContain('Prototype "bound-flow": applied 2 patches')
-    })
-
-    it('lets an explicit slug win over the binding', async () => {
-      mockFns.getBoundPrototypeSlug = () => 'bound-flow'
-      const result = await executeTool(tools, 'prototype_tool', { command: 'apply other-flow' })
-      expect(result.content[0].text).toContain('Prototype "other-flow"')
-    })
-
-    it('treats a leading flag as "no slug" so options can follow the command directly', async () => {
-      mockFns.getBoundPrototypeSlug = () => 'bound-flow'
-      const result = await executeTool(tools, 'prototype_tool', {
-        command: 'contract-compose --service checkout-api',
-      })
-      // The bound slug was used, not the literal "--service".
-      expect(result.content[0].text).toContain('Prototype "bound-flow" service "checkout-api"')
-    })
-
-    // Neither the page nor a binding says which prototype is meant, so the answer has to be
-    // actionable without one: name one, or open it (which is what makes the page say whose it is).
-    it('names both ways out when there is no slug, no page and no binding', async () => {
-      const result = await executeTool(tools, 'prototype_tool', { command: 'apply' })
-      expect(result.content[0].text).toContain('apply <slug>')
-      expect(result.content[0].text).toContain('open <slug>')
-      expect(result.content[0].text).toContain('list')
-    })
-
-    it('lists prototypes, marks the bound one, and says which have no pages', async () => {
+    it('lists prototypes with their requirement and file counts, and marks the bound one', async () => {
       mockFns.getBoundPrototypeSlug = () => 'checkout-flow'
       mockFns.listPrototypes = async () => [
-        prototypeStatus('checkout-flow'),
-        prototypeStatus('draft', {
-          pageAvailable: false,
-          patches: { total: 0, byWriter: {}, scoped: 0, files: [], entries: [] },
-          anchors: { files: [], issues: [] },
+        prototypeStatus('checkout-flow', {
+          requirements: [
+            requirement('R-001', 'A cart holds its line'),
+            requirement('R-002', 'The cart is priced by the service'),
+          ],
+          specificationFiles: [{ name: 'PRD.md', path: '/tmp/prototypes/checkout-flow/PRD.md' }],
+          files: [{ name: 'cart.html', path: '/tmp/prototypes/checkout-flow/cart.html' }],
         }),
-        prototypeStatus('no-target', { pageAvailable: false }),
+        prototypeStatus('draft'),
       ]
 
-      const result = await executeTool(tools, 'prototype_tool', { command: 'list' })
-      const text = result.content[0].text
+      const text = (await executeTool(tools, 'prototype_tool', { command: 'list' })).content[0].text
+
       expect(text).toContain('bound to "checkout-flow"')
       expect(text).toContain('BOUND')
-      // No pages is the normal state of a new prototype, not a broken one — so it
-      // is said the way the panel says it, as the thing that decides openability.
-      expect(text).toContain('draft — no pages yet')
-      expect(text).toContain('no-target — no pages yet')
+      expect(text).toContain('checkout-flow — BOUND, 2 requirements, 2 files')
+      // A prototype with nothing in it yet is a normal state, not a broken one.
+      expect(text).toContain('draft — 0 requirements, 0 files')
     })
 
-    // A prototype is a table of pages that may mix both kinds, so the listing
-    // prints every row with its kind and where it lives — otherwise an overlay and
-    // a document of ours read alike, and they behave nothing alike.
-    it('lists each prototype’s pages with their kinds and where they live', async () => {
-      mockFns.listPrototypes = async () => [
-        prototypeStatus('checkout-flow', {
-          pages: [
-            page('cart', 'scratch', { file: 'cart.html', url: 'http://checkout-flow.localhost:41234/cart.html' }, true),
-            page('pay', 'overlay', { url: 'https://app.example.com/pay' }),
-          ],
-          entryPage: 'cart',
-        }),
-        prototypeStatus('rival-cart', {
-          pages: [page('cart', 'overlay', { url: 'https://rival.example.com/cart' }, true)],
-          entryPage: 'cart',
-        }),
-      ]
+    it('says how to start one when the workspace has none', async () => {
+      mockFns.listPrototypes = async () => []
 
-      const result = await executeTool(tools, 'prototype_tool', { command: 'list' })
-      const text = result.content[0].text
+      const text = (await executeTool(tools, 'prototype_tool', { command: 'list' })).content[0].text
 
-      expect(text).toContain('cart (scratch) [entry] — cart.html')
-      expect(text).toContain('pay (overlay) — https://app.example.com/pay')
-      expect(text).toContain('cart (overlay) [entry] — https://rival.example.com/cart')
-      expect(text).toContain('entry: cart')
+      expect(text).toContain('No prototypes in this workspace yet')
+      expect(text).toContain('PRD.md')
     })
+
+    // ========================================================================
+    // create
+    // ========================================================================
 
     it('creates a prototype and binds the session in the same step', async () => {
       const bound: Array<string | null> = []
@@ -1511,31 +389,28 @@ describe('the pane tools', () => {
       expect(bound).toEqual(['checkout-flow'])
     })
 
-    // Creation is the container, and nothing about the pages is decided here: a
-    // page's kind is a fact about that page, so there is no kind and no address to
-    // pass — and the output has to say how the first page comes to exist instead.
-    it('creates a container with no pages, and says how a page comes to exist', async () => {
+    // Creation makes a folder and a starter brief, and nothing else: the folder *is* the
+    // prototype, so the output has to say how the work comes to exist rather than describing a
+    // form to fill in.
+    it('creates a folder with a starter PRD, and says how the work is written into it', async () => {
       const seen: Array<{ name: string }> = []
       mockFns.createPrototype = async (input) => {
         seen.push(input)
         return {
           slug: 'landing-page',
           dir: '/tmp/prototypes/landing-page',
-          patchesPath: '/tmp/prototypes/landing-page/patches',
+          prdPath: '/tmp/prototypes/landing-page/PRD.md',
         }
       }
 
       const result = await executeTool(tools, 'prototype_tool', { command: 'create Landing page' })
+      const text = result.content[0].text
 
       expect(seen).toEqual([{ name: 'Landing page' }])
-
-      const text = result.content[0].text
-      expect(text).toContain('It has no pages yet')
-      // Both kinds are named, with the move that places each one.
-      expect(text).toContain('a document of ours')
-      expect(text).toContain('pages --add pay=https://app.example.com/pay')
-      expect(text).toContain('entry cart')
-      expect(text).toContain('open')
+      expect(text).toContain('dir: /tmp/prototypes/landing-page')
+      expect(text).toContain('PRD: /tmp/prototypes/landing-page/PRD.md')
+      expect(text).toContain('Write the requirements into its')
+      expect(text).toContain('@requirement R-001')
     })
 
     it('asks for a name, which is all creation needs', async () => {
@@ -1543,177 +418,13 @@ describe('the pane tools', () => {
       expect(result.content[0].text).toContain('needs a name')
     })
 
-    /**
-     * The same page lives in a dev, a staging and a production environment, and the
-     * same patches are meant to be looked at in each of them — so the address is not
-     * a rule to be fixed but a fact about where the page is. Changing it is a table
-     * edit like the others (`pages --change`), and what quietly goes stale with it is
-     * what the command has to say.
-     */
-    it('repoints a live page, naming what goes stale with it', async () => {
-      const seen: Array<[string, string, string | undefined]> = []
-      mockFns.getBoundPrototypeSlug = () => 'checkout-flow'
-      mockFns.prototypeStatus = async (slug) =>
-        prototypeStatus(slug, {
-          pages: [page('entry', 'overlay', { url: 'https://app.example.com/checkout' }, true)],
-          entryPage: 'entry',
-        })
-      mockFns.setPrototypePageUrl = async (slug, url, page) => {
-        seen.push([slug, url, page])
-        return { pages: [{ name: 'entry', kind: 'overlay', url }] }
-      }
+    // A leftover flag from when creation asked about pages would otherwise be swallowed by the
+    // name — and a flag silently folded into a slug is not a mistake anyone would find later.
+    it('refuses a flag creation does not take', async () => {
+      const result = await executeTool(tools, 'prototype_tool', { command: 'create Cart --page cart' })
 
-      const result = await executeTool(tools, 'prototype_tool', {
-        command: 'pages --change entry=https://staging.example.com/checkout',
-      })
-
-      // The page is named in the flag, and its name is passed through rather than left for
-      // the other side to work out a second time — the table is the list of names.
-      expect(seen).toEqual([['checkout-flow', 'https://staging.example.com/checkout', 'entry']])
-      const text = result.content[0].text
-      expect(text).toContain('page "entry" pointed somewhere else')
-      expect(text).toContain('from: https://app.example.com/checkout')
-      expect(text).toContain('to:   https://staging.example.com/checkout')
-      // The two failures that raise no error at all are the reason to say anything.
-      expect(text).toContain('already showing the old page')
-      expect(text).toContain('written against the old page')
-      // The kind is not what moved, and saying so stops the address from reading
-      // as "this page is now a different kind of page".
-      expect(text).toContain("The page's kind is still fixed")
-    })
-
-    it('moves only the page named, and lists the pages when the name is unknown', async () => {
-      const seen: Array<[string, string, string | undefined]> = []
-      mockFns.getBoundPrototypeSlug = () => 'checkout-flow'
-      mockFns.prototypeStatus = async (slug) =>
-        prototypeStatus(slug, {
-          pages: [
-            page('cart', 'scratch', { file: 'cart.html' }, true),
-            page('pay', 'overlay', { url: 'https://app.example.com/pay' }),
-          ],
-          entryPage: 'cart',
-        })
-      mockFns.setPrototypePageUrl = async (slug, url, page) => {
-        seen.push([slug, url, page])
-        return { pages: [{ name: 'pay', kind: 'overlay', url }] }
-      }
-
-      // The entry page here is a document of ours, so there is nothing to fall back to:
-      // the flag says which page moves, and only that one is touched.
-      const moved = await executeTool(tools, 'prototype_tool', {
-        command: 'pages --change pay=https://staging.example.com/pay',
-      })
-      expect(seen).toEqual([['checkout-flow', 'https://staging.example.com/pay', 'pay']])
-      expect(moved.content[0].text).toContain('page "pay" pointed somewhere else')
-
-      const unknown = await executeTool(tools, 'prototype_tool', {
-        command: 'pages --change nope=https://staging.example.com/nope',
-      })
-      expect(unknown.content[0].text).toContain('has no page "nope"')
-      expect(unknown.content[0].text).toContain('cart')
-    })
-
-    // A document of ours has no external page for an address to mean, and that refusal comes
-    // from the same function the app's own address dialog uses — the command reports it
-    // rather than swallowing it.
-    it('reports the refusal when the address belongs to a page of ours', async () => {
-      mockFns.getBoundPrototypeSlug = () => 'checkout-flow'
-      mockFns.prototypeStatus = async (slug) =>
-        prototypeStatus(slug, {
-          pages: [page('cart', 'scratch', { file: 'cart.html' }, true)],
-          entryPage: 'cart',
-        })
-      mockFns.setPrototypePageUrl = async () => {
-        throw new Error('"cart" is a document of ours — its file is the page, so it has no address to change.')
-      }
-
-      const result = await executeTool(tools, 'prototype_tool', {
-        command: 'pages --change cart=https://staging.example.com/cart',
-      })
-
-      expect(result.content[0].text).toContain('is a document of ours')
-    })
-
-    it('needs <name>=<url>, and a prototype in view to change it on', async () => {
-      // Which prototype it means is settled first, as for every other flag on this command:
-      // a session with nothing in view is told that, not told its flag is malformed.
-      mockFns.getBoundPrototypeSlug = () => 'checkout-flow'
-
-      const noValue = await executeTool(tools, 'prototype_tool', { command: 'pages --change' })
-      expect(noValue.content[0].text).toContain('pages --change needs <name>=<url>')
-
-      const noName = await executeTool(tools, 'prototype_tool', {
-        command: 'pages --change https://staging.example.com/checkout',
-      })
-      expect(noName.content[0].text).toContain('pages --change needs <name>=<url>')
-
-      // Unlike the flag it grew out of, this one resolves a slug — so with nothing in view
-      // the refusal is the shared one, and it names both ways to answer it.
-      mockFns.getBoundPrototypeSlug = () => null
-      const unbound = await executeTool(tools, 'prototype_tool', {
-        command: 'pages --change pay=https://staging.example.com/pay',
-      })
-      expect(unbound.content[0].text).toContain('pages needs a prototype')
-      expect(unbound.content[0].text).toContain('open <slug>')
-    })
-
-    // `entry` is the only change to the table about the front door
-    // rather than about the flow, so it is its own command.
-    it('makes a page the entry the address root opens', async () => {
-      const seen: Array<{ slug: string; change: PrototypePagesChange }> = []
-      mockFns.getBoundPrototypeSlug = () => 'checkout-flow'
-      mockFns.setPrototypePages = async (slug, change) => {
-        seen.push({ slug, change })
-        return {
-          slug,
-          pages: [
-            { name: 'cart', kind: 'scratch', entry: true },
-            { name: 'pay', kind: 'overlay', url: 'https://app.example.com/pay' },
-          ],
-          note: '"cart" is the entry page now',
-        }
-      }
-
-      const result = await executeTool(tools, 'prototype_tool', { command: 'entry cart' })
-
-      expect(seen).toEqual([{ slug: 'checkout-flow', change: { op: 'entry', name: 'cart' } }])
-      const text = result.content[0].text
-      expect(text).toContain('"cart" is the entry page now')
-      expect(text).toContain('cart (scratch) [entry] — a document of ours')
-      expect(text).toContain('pay (overlay) — https://app.example.com/pay')
-      // Taking the entry never takes the index away.
-      expect(text).toContain('/_index')
-    })
-
-    it('goes back to the generated page index with "none"', async () => {
-      const seen: Array<{ slug: string; change: PrototypePagesChange }> = []
-      mockFns.getBoundPrototypeSlug = () => 'checkout-flow'
-      mockFns.setPrototypePages = async (slug, change) => {
-        seen.push({ slug, change })
-        return {
-          slug,
-          pages: [{ name: 'cart', kind: 'scratch' }],
-          note: 'the address root shows the page index again',
-        }
-      }
-
-      const result = await executeTool(tools, 'prototype_tool', { command: 'entry none' })
-
-      expect(seen).toEqual([{ slug: 'checkout-flow', change: { op: 'entry', name: null } }])
-      expect(result.content[0].text).toContain('shows the page index again')
-      expect(result.content[0].text).toContain('cart (scratch) — a document of ours')
-    })
-
-    it('says where to go when entry runs with no prototype in view', async () => {
-      const result = await executeTool(tools, 'prototype_tool', { command: 'entry cart' })
-
-      expect(result.content[0].text).toContain('none is in view')
-      expect(result.content[0].text).toContain('open <slug>')
-    })
-
-    it('asks which page when entry is given none', async () => {
-      const result = await executeTool(tools, 'prototype_tool', { command: 'entry' })
-      expect(result.content[0].text).toContain('needs a page name, or "none"')
+      expect(result.isError).toBe(true)
+      expect(result.content[0].text).toContain('create does not take "--page"')
     })
 
     // Without this, creating a prototype you only mean to study would rebind the
@@ -1738,7 +449,366 @@ describe('the pane tools', () => {
 
       expect(bound).toEqual(['checkout-flow'])
     })
+
+    // ========================================================================
+    // status
+    // ========================================================================
+
+    // The requirements and what implements each one: the answer a reader of files cannot
+    // assemble, and the reason this report exists.
+    it('reports the requirements and the files that implement them', async () => {
+      mockFns.prototypeStatus = async (slug) =>
+        prototypeStatus(slug, {
+          specificationFiles: [{ name: 'PRD.md', path: `/tmp/prototypes/${slug}/PRD.md` }],
+          files: [
+            { name: 'cart.html', path: `/tmp/prototypes/${slug}/cart.html` },
+            { name: 'notes.md', path: `/tmp/prototypes/${slug}/notes.md` },
+          ],
+          requirements: [
+            requirement('R-001', 'A cart holds its line', { files: ['cart.html'] }),
+            requirement('R-002', 'The cart is priced by the service', { findings: ['F-001'] }),
+            requirement('R-003', 'Nothing here yet'),
+          ],
+        })
+
+      const text = (await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })).content[0].text
+
+      expect(text).toContain('spec:       PRD.md — 3 requirements')
+      expect(text).toContain('R-001 A cart holds its line — cart.html · on: fp-R-001')
+      expect(text).toContain('R-002 The cart is priced by the service — F-001 (finding) · on: fp-R-002')
+      // A requirement nothing refers to is the failure this report exists to name.
+      expect(text).toContain('R-003 Nothing here yet — nothing refers to it yet')
+      expect(text).toContain('files:      cart.html, notes.md')
+      // The removed sections are gone from the report.
+      expect(text).not.toContain('services:')
+      expect(text).not.toContain('dist:')
+      expect(text).not.toContain('checks:')
+    })
+
+    // A brief issue is a file that cannot be read as written — a marker naming an id the PRD does
+    // not define, a finding with no claim — and the status is the only place that says which.
+    it('prints the brief issues, which a clean prototype does not have', async () => {
+      const clean = await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })
+      expect(clean.content[0].text).not.toContain('issues:')
+
+      mockFns.prototypeStatus = async (slug) =>
+        prototypeStatus(slug, {
+          briefIssues: [notice('requirement.unimplemented', { id: 'R-003', file: 'PRD.md' })],
+        })
+
+      const issues = await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })
+      expect(issues.content[0].text).toContain('issues:     1')
+      expect(issues.content[0].text).toContain('R-003 is in PRD.md but no file refers to it')
+    })
+
+    // The two things a reader has to know before calling a prototype finished, and the line that
+    // says it is not: what was argued, and what is still owed. Both come from the same report the
+    // gate reads, so the command cannot look calmer than the export would be.
+    it('reports what stands disputed and what is still owed', async () => {
+      const dispute = {
+        id: 'D-001',
+        file: 'reviews/D-001-price.md',
+        status: 'open' as const,
+        stale: true,
+        staleReason: 'the requirement was reworded since this was filed (a1b2c3d4 → e5f6a7b8)',
+        about: 'requirement R-002',
+        claim: 'the price should come from the cart, not a second call',
+      }
+      mockFns.prototypeStatus = async (slug) =>
+        prototypeStatus(slug, {
+          specificationFiles: [{ name: 'PRD.md', path: `/tmp/prototypes/${slug}/PRD.md` }],
+          requirements: [requirement('R-002', 'The cart is priced by the service', { disputes: [dispute] })],
+          reviews: { total: 2, byStatus: { open: 1, fixed: 1, rebutted: 0, accepted: 0 }, unresolved: [dispute] },
+          unresolved: { unmet: [], disputes: [dispute] },
+        })
+
+      const result = await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })
+      const text = result.content[0].text
+
+      expect(text).toContain('R-002 The cart is priced by the service — nothing refers to it yet · disputed by D-001')
+      expect(text).toContain('reviews:    1 standing of 2 filed')
+      expect(text).not.toContain('acceptance:')
+      expect(text).toContain('unresolved: 1')
+      // The standing dispute is quoted with why it is stale, so the reader can tell an argument
+      // about the current wording from one about a wording that no longer exists.
+      expect(text).toContain('reviews/D-001-price.md disputes requirement R-002')
+      expect(text).toContain('the requirement was reworded since this was filed')
+      expect(text).toContain('and it still stands (open).')
+    })
+
+    it('says so when nothing is owed, rather than staying quiet', async () => {
+      const result = await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })
+
+      expect(result.content[0].text).toContain('unresolved: nothing')
+      expect(result.content[0].text).not.toContain('acceptance:')
+    })
+
+    // ========================================================================
+    // Prototype binding — a bound session drives the prototype without slugs.
+    // ========================================================================
+
+    it('falls back to the bound prototype when no slug is passed', async () => {
+      mockFns.getBoundPrototypeSlug = () => 'bound-flow'
+      const result = await executeTool(tools, 'prototype_tool', { command: 'status' })
+      expect(result.content[0].text).toContain('Prototype "bound-flow"')
+    })
+
+    it('lets an explicit slug win over the binding', async () => {
+      mockFns.getBoundPrototypeSlug = () => 'bound-flow'
+      const result = await executeTool(tools, 'prototype_tool', { command: 'status other-flow' })
+      expect(result.content[0].text).toContain('Prototype "other-flow"')
+    })
+
+    it('treats a leading flag as "no slug" so options can follow the command directly', async () => {
+      mockFns.getBoundPrototypeSlug = () => 'bound-flow'
+      const result = await executeTool(tools, 'prototype_tool', {
+        command: 'status --verbose',
+      })
+      // The bound slug was used, not the literal "--verbose".
+      expect(result.content[0].text).toContain('Prototype "bound-flow"')
+    })
+
+    // Nothing says which prototype is meant, so the answer has to be actionable without a
+    // binding: name one, or bind this conversation to one.
+    it('names both ways out when there is no slug and no binding', async () => {
+      const result = await executeTool(tools, 'prototype_tool', { command: 'status' })
+      expect(result.content[0].text).toContain('status <slug>')
+      expect(result.content[0].text).toContain('bind this conversation')
+      expect(result.content[0].text).toContain('list')
+    })
   })
+
+
+  describe('drawio_tool', () => {
+    it('returns exactly 1 tool (drawio_tool only)', () => {
+      const diagramOnly = createDrawioTools({
+        sessionId: 'test-session',
+        getBrowserPaneFns: () => mockFns,
+      })
+      expect(diagramOnly.length).toBe(1)
+      expect(diagramOnly.map((t: any) => t.name)).toEqual(['drawio_tool'])
+    })
+
+    it('answers --help with the commands, and where a relative path is counted from', async () => {
+      const help = (await executeTool(tools, 'drawio_tool', { command: '--help' })).content[0].text
+
+      expect(help).toContain('drawio_tool command help')
+      expect(help).toContain('pages <diagram-file>')
+      expect(help).toContain('export <diagram-file> --to <path>')
+      expect(help).toContain('render <diagram-file>')
+      expect(help).toContain('workspace root')
+    })
+
+    // A rendering is a picture in the reply — that is the whole of `render` — and this door is
+    // where the picture becomes a content block rather than something described in words.
+    it('puts a rendering in the reply as an image', async () => {
+      mockFns.exportDrawio = async () => ({
+        bytes: new Uint8Array([137, 80, 78, 71]),
+        mimeType: 'image/png',
+        extension: '.png',
+        path: null,
+      })
+
+      const result = await executeTool(tools, 'drawio_tool', { command: 'render /tmp/flow.drawio' })
+
+      expect(result.content[0].text).toContain('Rendered /tmp/flow.drawio')
+      expect(result.content[1]).toMatchObject({ type: 'image', mimeType: 'image/png' })
+    })
+
+    it('reports an engine failure as an error rather than as an empty result', async () => {
+      mockFns.exportDrawio = async () => {
+        throw new Error('The diagram engine did not answer in time.')
+      }
+
+      const result = await executeTool(tools, 'drawio_tool', { command: 'render /tmp/flow.drawio' })
+
+      expect(result.isError).toBe(true)
+      expect(result.content[0].text).toContain('Error: The diagram engine did not answer in time.')
+    })
+  })
+
+  describe('video_tool', () => {
+    const tempDirs: string[] = []
+
+    beforeEach(() => {
+      tempDirs.length = 0
+    })
+
+    afterEach(() => {
+      for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+    })
+
+    it('returns exactly 1 tool (video_tool only)', () => {
+      const videoOnly = createVideoTools({
+        sessionId: 'test-session',
+        getBrowserPaneFns: () => mockFns,
+      })
+      expect(videoOnly.length).toBe(1)
+      expect(videoOnly.map((t: any) => t.name)).toEqual(['video_tool'])
+    })
+
+    it('answers --help with the one command, its flags, and where the frames go', async () => {
+      const help = (await executeTool(tools, 'video_tool', { command: '--help' })).content[0].text
+
+      expect(help).toContain('video_tool command help')
+      expect(help).toContain('sample <path> [--out <dir>] [--every <dur>] [--changes] [--max <n>]')
+      expect(help).toContain('--out <dir>')
+      expect(help).toContain('Chromium')
+      expect(help).toContain('workspace root')
+    })
+
+    it('samples on a timeline every 2000 ms, at most 40 frames, writing nothing, by default', async () => {
+      const seen: Array<Record<string, unknown>> = []
+      mockFns.sampleVideo = async (args) => {
+        seen.push(args)
+        return { durationMs: 6000, truncated: false, frames: [{ offsetMs: 0, bytes: new Uint8Array([1]), path: null }] }
+      }
+
+      const result = await executeTool(tools, 'video_tool', { command: 'sample /tmp/demo.mp4' })
+      const text = result.content[0].text
+
+      expect(seen[0]).toMatchObject({ mode: 'timeline', everyMs: 2000, maxFrames: 40 })
+      expect(seen[0]!.out).toBeUndefined()
+      expect(text).toContain('Sampled 1 frame out of /tmp/demo.mp4 (6s long)')
+      expect(text).toContain('• frame-0001.jpg  @ 0ms')
+      expect(text).toContain('no files written')
+    })
+
+    it('writes the frames under --out, once each, and reports the files', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'craft-video-out-'))
+      tempDirs.push(dir)
+      let receivedOut: string | undefined
+      mockFns.sampleVideo = async ({ out }) => {
+        receivedOut = out
+        const frames = [
+          { offsetMs: 0, bytes: new Uint8Array([1]) },
+          { offsetMs: 2000, bytes: new Uint8Array([2]) },
+        ]
+        // The pane writes them when it is told where — the contract the command reports on.
+        frames.forEach((frame, index) => {
+          writeFileSync(join(out!, `frame-${String(index + 1).padStart(4, '0')}.jpg`), frame.bytes)
+        })
+        return {
+          durationMs: 4000,
+          truncated: false,
+          frames: frames.map((frame, index) => ({
+            ...frame,
+            path: join(out!, `frame-${String(index + 1).padStart(4, '0')}.jpg`),
+          })),
+        }
+      }
+
+      const result = await executeTool(tools, 'video_tool', {
+        command: ['sample', '/tmp/demo.mp4', '--out', dir],
+      })
+      const text = result.content[0].text
+
+      expect(receivedOut).toBe(dir)
+      expect(existsSync(join(dir, 'frame-0001.jpg'))).toBe(true)
+      expect(existsSync(join(dir, 'frame-0002.jpg'))).toBe(true)
+      expect(text).toContain(`into ${dir}, as:`)
+      expect(text).toContain('• frame-0001.jpg  @ 0ms')
+      expect(text).toContain('• frame-0002.jpg  @ 2000ms')
+      expect(text).not.toContain('Nothing was written to disk')
+    })
+
+    it('keeps only the frames that moved with --changes', async () => {
+      let receivedMode: string | undefined
+      mockFns.sampleVideo = async ({ mode }) => {
+        receivedMode = mode
+        return { durationMs: 6000, truncated: false, frames: [{ offsetMs: 3000, bytes: new Uint8Array([1]), path: null }] }
+      }
+
+      await executeTool(tools, 'video_tool', { command: 'sample /tmp/demo.mp4 --changes' })
+
+      expect(receivedMode).toBe('changes')
+    })
+
+    it('reports a sample when the frame ceiling truncated it', async () => {
+      let receivedMax: number | undefined
+      mockFns.sampleVideo = async ({ maxFrames }) => {
+        receivedMax = maxFrames
+        return {
+          durationMs: 120_000,
+          truncated: true,
+          frames: Array.from({ length: maxFrames! }, (_unused, i) => ({
+            offsetMs: i * 3000,
+            bytes: new Uint8Array([i]),
+            path: null,
+          })),
+        }
+      }
+
+      const result = await executeTool(tools, 'video_tool', { command: 'sample /tmp/demo.mp4 --max 12' })
+      const text = result.content[0].text
+
+      expect(receivedMax).toBe(12)
+      expect(text).toContain('Sampled 12 frames')
+      expect(text).toContain('hit its frame ceiling')
+    })
+
+    it('writes nothing without --out, and says how to get files instead', async () => {
+      const result = await executeTool(tools, 'video_tool', { command: 'sample /tmp/demo.mp4' })
+      const text = result.content[0].text
+
+      expect(text).toContain('no files written')
+      expect(text).toContain('Nothing was written to disk')
+      expect(text).toContain('--out <dir>')
+      expect(text).toContain('keep them as files')
+    })
+
+    it('hands every frame back as an image, whether or not it was written', async () => {
+      const result = await executeTool(tools, 'video_tool', { command: 'sample /tmp/demo.mp4' })
+      const images = result.content.filter((block: any) => block.type === 'image')
+
+      expect(images.length).toBe(3)
+      expect(images[0].mimeType).toBe('image/jpeg')
+      expect(images[0].data).toBe(Buffer.from(new Uint8Array([1])).toString('base64'))
+    })
+
+    it('passes a decode failure through unchanged', async () => {
+      const message =
+        'Could not read the recording: this browser cannot decode the recording (media error 4). ' +
+        'Chromium decodes mp4 (H.264), webm and most mov files; a HEVC, ProRes or otherwise ' +
+        'unsupported recording has to be converted first.'
+      mockFns.sampleVideo = async () => { throw new Error(message) }
+
+      const result = await executeTool(tools, 'video_tool', { command: 'sample /tmp/demo.mov' })
+
+      expect(result.isError).toBe(true)
+      expect(result.content[0].text).toContain(message)
+    })
+
+    it('refuses a browser command, and names the tool that takes it', async () => {
+      const result = await executeTool(tools, 'video_tool', { command: 'navigate example.com' })
+
+      expect(result.isError).toBe(true)
+      expect(result.content[0].text).toContain('Unknown video_tool command "navigate"')
+      expect(result.content[0].text).toContain('browser_tool')
+    })
+
+    // A relative path counts from the workspace root, the same rule a prototype command follows.
+    it('counts a relative path from the workspace root', async () => {
+      const workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-video-ws-'))
+      tempDirs.push(workspaceRoot)
+      let received: { path?: string; out?: string } = {}
+      mockFns.sampleVideo = async (args) => {
+        received = args
+        return { durationMs: 1000, truncated: false, frames: [] }
+      }
+
+      const scoped = createVideoTools({
+        sessionId: 'test-session',
+        workspaceRootPath: workspaceRoot,
+        getBrowserPaneFns: () => mockFns,
+      })
+      await executeTool(scoped, 'video_tool', { command: 'sample clips/demo.mp4 --out frames/here' })
+
+      expect(received.path).toBe(resolve(workspaceRoot, 'clips/demo.mp4'))
+      expect(received.out).toBe(resolve(workspaceRoot, 'frames/here'))
+    })
+  })
+
 
   describe('browser_tool', () => {
     it('documents every browser command the runtime implements', async () => {
@@ -1749,14 +819,15 @@ describe('the pane tools', () => {
       expect(browserCommands.filter((cmd) => !help.includes(cmd))).toEqual([])
     })
 
-    // The mirror of the prototype door's refusal: `browser_tool apply` is a plausible thing to
-    // ask for, and the answer has to point at the tool that takes it.
-    it('refuses a prototype command, and names the tool that takes it', async () => {
+    // A command of another tool's is refused with a pointer to the help and nothing else: the doors
+    // are told apart by which tool was called, not by this message doing the routing.
+    it('refuses a command that is not ours, and points at the help', async () => {
       const result = await executeTool(tools, 'browser_tool', { command: 'list' })
 
       expect(result.isError).toBe(true)
       expect(result.content[0].text).toContain('Unknown browser_tool command "list"')
-      expect(result.content[0].text).toContain('prototype_tool')
+      expect(result.content[0].text).toContain('--help')
+      expect(result.content[0].text).not.toContain('prototype')
     })
 
     it('returns help text for --help without release hint', async () => {
@@ -1906,75 +977,9 @@ describe('the pane tools', () => {
       expect(text).toContain('[button]')
       expect(text).toContain('"Click me"')
       expect(text).toContain('(focused)')
-      // A window that is not a prototype's says nothing about prototypes: the
-      // context appears only where it is true.
+      // A window says nothing about a prototype: the tab's document is the whole answer, and
+      // nothing here claims to know which prototype it belongs to.
       expect(text).not.toContain('Prototype:')
-    })
-
-    // The URL alone cannot tell whether the document in front of the agent is ours
-    // to edit or a real site's to patch — and both addresses matter, because for an
-    // overlay the page's URL and the prototype's own address are different pages.
-    it('names the prototype, the page and the page kind alongside the page URL', async () => {
-      mockFns.snapshot = async () => ({
-        url: 'https://app.example.com/checkout',
-        title: 'Checkout',
-        prototype: {
-          slug: 'checkout-flow',
-          kind: 'overlay',
-          origin: 'http://checkout-flow-abc123ab.localhost:41234',
-          page: 'entry',
-        },
-        nodes: [{ ref: '@e1', role: 'button', name: 'Pay' }],
-      })
-
-      const text = (await executeTool(tools, 'browser_tool', { command: 'snapshot' })).content[0].text
-
-      expect(text).toContain('URL: https://app.example.com/checkout')
-      expect(text).toContain(
-        'Prototype: checkout-flow — page "entry" (overlay), its own address http://checkout-flow-abc123ab.localhost:41234',
-      )
-      expect(text).toContain("the live site's own page")
-    })
-
-    it('says a from-scratch prototype document is ours to change', async () => {
-      mockFns.snapshot = async () => ({
-        url: 'http://quotes-flow-def456.localhost:41234/',
-        title: 'Quotes',
-        prototype: {
-          slug: 'quotes-flow',
-          kind: 'scratch',
-          origin: 'http://quotes-flow-def456.localhost:41234',
-          page: 'entry',
-        },
-        nodes: [{ ref: '@e1', role: 'button', name: 'New quote' }],
-      })
-
-      const text = (await executeTool(tools, 'browser_tool', { command: 'snapshot' })).content[0].text
-
-      expect(text).toContain('Prototype: quotes-flow — page "entry" (scratch)')
-      expect(text).toContain('the document above is ours')
-    })
-
-    // A window on the prototype's own address but on no described page (the page
-    // index, or a route the table does not name) has no kind — and saying so is
-    // what stops the agent from reading "no kind" as "a page of ours".
-    it('says a window on no described page is on the page index', async () => {
-      mockFns.snapshot = async () => ({
-        url: 'http://checkout-flow-abc123ab.localhost:41234/_index',
-        title: 'Pages',
-        prototype: {
-          slug: 'checkout-flow',
-          kind: null,
-          origin: 'http://checkout-flow-abc123ab.localhost:41234',
-          page: null,
-        },
-        nodes: [{ ref: '@e1', role: 'link', name: 'cart' }],
-      })
-
-      const text = (await executeTool(tools, 'browser_tool', { command: 'snapshot' })).content[0].text
-
-      expect(text).toContain('Prototype: checkout-flow — the page index, its own address')
-      expect(text).toContain("not on one of its pages")
     })
 
     it('treats near-zero actionable snapshot as challenge state and attaches screenshot', async () => {
@@ -2505,9 +1510,9 @@ describe('the pane tools', () => {
       expect(result.content[0].text).toContain('Console entries')
     })
 
-    it('routes window-resize command', async () => {
-      const result = await executeTool(tools, 'browser_tool', { command: 'window-resize 1024 768' })
-      expect(result.content[0].text).toContain('Window resized to 1024x768')
+    it('routes viewport-resize command', async () => {
+      const result = await executeTool(tools, 'browser_tool', { command: 'viewport-resize 1024 768' })
+      expect(result.content[0].text).toContain("Your tab's viewport is now 1024x768")
     })
 
     it('routes network command', async () => {
@@ -2601,7 +1606,7 @@ describe('the pane tools', () => {
     })
 
     /**
-     * `evaluate --file` exists so a script the agent already wrote (a patch, usually) can be
+     * `evaluate --file` exists so a script the agent already wrote (a probe, usually) can be
      * injected without being spelled out again inside the command. What it runs has to be
      * the file's bytes as they are — a re-encoded copy is the thing the flag is for avoiding.
      */
@@ -2630,7 +1635,7 @@ describe('the pane tools', () => {
       }
 
       it('runs a script named by a workspace-relative path, and says which file it ran', async () => {
-        const absolute = writeScript('prototypes/cart/patches/ui-002-total.js', 'document.title + "!"\n')
+        const absolute = writeScript('scripts/cart-total.js', 'document.title + "!"\n')
 
         let evaluatedExpression = ''
         mockFns.evaluate = async (expression) => {
@@ -2639,7 +1644,7 @@ describe('the pane tools', () => {
         }
 
         const result = await executeTool(fileTools, 'browser_tool', {
-          command: 'evaluate --file prototypes/cart/patches/ui-002-total.js',
+          command: 'evaluate --file scripts/cart-total.js',
         })
 
         expect(evaluatedExpression).toBe('document.title + "!"\n')
@@ -2691,7 +1696,7 @@ describe('the pane tools', () => {
 
       it('names a file that is not there', async () => {
         const result = await executeTool(fileTools, 'browser_tool', {
-          command: 'evaluate --file prototypes/cart/patches/missing.js',
+          command: 'evaluate --file scripts/missing.js',
         })
 
         expect(result.isError).toBe(true)
@@ -2735,7 +1740,7 @@ describe('the pane tools', () => {
 
 
     // A window is one and its tabs are many, so a tab is the unit of work and a
-    // command can name one (plan §22). The list is what makes naming possible.
+    // command can name one. The list is what makes naming possible.
     it('lists this window\'s tabs with the one on screen marked', async () => {
       mockFns.listTabs = async () => ([
         tabRow({
@@ -2743,10 +1748,8 @@ describe('the pane tools', () => {
           url: 'https://app.example.com/checkout',
           title: 'Checkout',
           active: true,
-          prototype: { slug: 'checkout-flow', origin: 'http://checkout-flow-1a2b.localhost:41234' },
-          prototypePage: 'cart',
           belongsTo: { kind: 'session', sessionId: 'session-a' },
-          driverSessionId: 'session-b',
+          drivenBy: 'session-b',
         }),
         tabRow({ id: 'tab-2', url: 'https://docs.example.com', title: 'Docs', isLoading: true }),
       ])
@@ -2755,10 +1758,8 @@ describe('the pane tools', () => {
 
       expect(text).toContain('has 2 tabs')
       expect(text).toContain('* tab-1  Checkout')
-      expect(text).toContain('prototype:  checkout-flow')
-      expect(text).toContain('page:       cart')
-      // Whose page it is, and who is on it: the first decides what may be closed,
-      // the second is who is mid-work (plan §22).
+      // Whose tab it is, and who is on it: the first decides what may be closed,
+      // the second is who is mid-work.
       expect(text).toContain('belongs to: agent (session-a)')
       expect(text).toContain('driven by:  session-b')
       expect(text).toContain('tab-2  Docs')
@@ -2780,7 +1781,7 @@ describe('the pane tools', () => {
           title: 'Checkout',
           active: true,
           belongsTo: { kind: 'session', sessionId: 'session-a' },
-          driverSessionId: 'session-b',
+          drivenBy: 'session-b',
           lockedBy: 'session-b',
         }),
         tabRow({ id: 'tab-2', url: 'https://docs.example.com', title: 'Docs' }),
@@ -2795,14 +1796,14 @@ describe('the pane tools', () => {
     })
 
     // Where an unnamed command lands is stated, because it is *not* "the tab on screen":
-    // the person clicking around moves their own view, and this must not move with it
-    // (plan §22, 第十轮). Only the reader's own tab is marked — another conversation's is
+    // the person clicking around moves their own view, and this must not move with it.
+    // Only the reader's own tab is marked — another conversation's is
     // not this reader's business.
     it('marks the page this conversation works from, and only its own', async () => {
       mockFns.listTabs = async () => ([
         tabRow({ id: 'tab-1', url: 'https://app.example.com/checkout', title: 'Checkout', active: true }),
-        tabRow({ id: 'tab-2', url: 'https://docs.example.com', title: 'Docs', cursorOf: 'test-session' }),
-        tabRow({ id: 'tab-3', url: 'https://other.example.com', title: 'Other', cursorOf: 'session-b' }),
+        tabRow({ id: 'tab-2', url: 'https://docs.example.com', title: 'Docs', cursorOf: ['test-session'] }),
+        tabRow({ id: 'tab-3', url: 'https://other.example.com', title: 'Other', cursorOf: ['session-b'] }),
       ])
 
       const text = (await executeTool(tools, 'browser_tool', { command: 'tabs' })).content[0].text
@@ -2815,25 +1816,6 @@ describe('the pane tools', () => {
       expect(text).toContain('the person switching tabs does not move it')
     })
 
-    // A page the prototype's own table does not describe is said so, rather than
-    // being handed the nearest page name.
-    it('says when a page is not one of the prototype\'s pages', async () => {
-      mockFns.listTabs = async () => ([
-        tabRow({
-          id: 'tab-1',
-          url: 'https://app.example.com/somewhere-else',
-          title: 'Somewhere else',
-          active: true,
-          prototype: { slug: 'checkout-flow', origin: 'http://checkout-flow-1a2b.localhost:41234' },
-        }),
-      ])
-
-      const text = (await executeTool(tools, 'browser_tool', { command: 'tabs' })).content[0].text
-
-      expect(text).toContain('prototype:  checkout-flow')
-      expect(text).toContain('none of the prototype\'s pages')
-    })
-
     it('says so when there is no window whose pages could be listed', async () => {
       mockFns.listTabs = async () => []
 
@@ -2843,7 +1825,7 @@ describe('the pane tools', () => {
     })
 
     // Naming a page targets it: the command runs against that page — and the window is not
-    // moved, because the person may be reading another one of its pages (plan §22, 第十二轮).
+    // moved, because the person may be reading another one of its pages.
     it('targets a named page, and keeps it out of the command itself', async () => {
       const targeted: string[] = []
       const activated: string[] = []
@@ -2881,7 +1863,7 @@ describe('the pane tools', () => {
       const result = await executeTool(tools, 'browser_tool', { command: 'tab-new https://docs.example.com' })
 
       // Behind whatever the person is reading: opening a page for the agent is not a reason to
-      // take their page away (plan §22, 第十二轮), and "tab-show" is how one is brought up.
+      // take their page away, and "tab-show" is how one is brought up.
       expect(opened).toEqual([{ url: 'https://docs.example.com', activate: false }])
       expect(result.content[0].text).toContain('tab-3')
     })

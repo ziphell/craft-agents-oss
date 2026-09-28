@@ -7,8 +7,9 @@ dist
 *.tgz
 .build
 apps/electron/release
-apps/electron/resources/session-mcp-server/
 apps/electron/resources/pi-agent-server/
+# Fetched and pruned by scripts/fetch-drawio-assets.ts — see that file for why.
+apps/electron/resources/drawio/
 
 # code coverage
 coverage

@@ -7,6 +7,7 @@ import TaskItem from './extensions/AnimatedTaskItem'
 import { Mathematics } from '@tiptap/extension-mathematics'
 import Image from '@tiptap/extension-image'
 import FileHandler from '@tiptap/extension-file-handler'
+import { Table, TableRow, TableHeader, TableCell } from '@tiptap/extension-table'
 import { Markdown as OfficialMarkdown } from '@tiptap/markdown'
 import { Markdown as LegacyMarkdown } from 'tiptap-markdown'
 import { tiptapCodeBlock } from './TiptapCodeBlockView'
@@ -15,7 +16,9 @@ import { TiptapSlashMenu } from './TiptapSlashMenu'
 import { MermaidBlock } from './extensions/MermaidBlock'
 import { looksLikeMermaidSource } from './mermaid-source'
 import { LatexBlock } from './extensions/LatexBlock'
+import { PreviewBlock } from './extensions/PreviewBlock'
 import { RichBlockInteractions } from './extensions/RichBlockInteractions'
+import { resolveMarkdownLinkTarget } from './link-target'
 import { cn } from '../../lib/utils'
 import 'katex/dist/katex.min.css'
 import './tiptap-editor.css'
@@ -204,11 +207,31 @@ export interface TiptapMarkdownEditorProps {
   /** Whether the editor is editable */
   editable?: boolean
   /**
+   * Whether the caret goes into the document when this editor appears.
+   *
+   * For the case where the document was opened *to be typed in* rather than to be read — the
+   * full-size window a block's pencil opens, as against the same window opened by its full-screen
+   * button. It is an event and not a state: the caret goes in once, on the mount that opened it,
+   * because a later render taking the caret back would be fighting whoever is typing. It goes to
+   * the start, which is where a document being edited is read from.
+   */
+  autoFocus?: boolean
+  /**
    * Migration flag for markdown engine foundations.
    * - `legacy`: tiptap-markdown (default for safe rollout)
    * - `official`: @tiptap/markdown + mathematics extension
    */
   markdownEngine?: MarkdownEngine
+  /**
+   * Where a click on a link goes.
+   *
+   * A link in these documents is usually a path — to a diagram, a sibling document — and the
+   * app, not the browser, is what can open one. Whatever these do not claim is left to the
+   * editor, and there is deliberately no fallback: a document that opened a random address
+   * because nobody said what a link meant would be worse than a link that does nothing.
+   */
+  onUrlClick?: (url: string) => void
+  onFileClick?: (path: string) => void
 }
 
 export function TiptapMarkdownEditor({
@@ -217,10 +240,17 @@ export function TiptapMarkdownEditor({
   placeholder = 'Write something...',
   className,
   editable = true,
+  autoFocus = false,
   markdownEngine = 'legacy',
+  onUrlClick,
+  onFileClick,
 }: TiptapMarkdownEditorProps) {
   const onUpdateRef = React.useRef(onUpdate)
   onUpdateRef.current = onUpdate
+  const onUrlClickRef = React.useRef(onUrlClick)
+  const onFileClickRef = React.useRef(onFileClick)
+  onUrlClickRef.current = onUrlClick
+  onFileClickRef.current = onFileClick
 
   // Ref for the editor instance — used by the Mathematics onClick callback
   // which is created at extension-configure time (before useEditor returns).
@@ -233,16 +263,30 @@ export function TiptapMarkdownEditor({
       StarterKit.configure({
         codeBlock: false,
         heading: { levels: [1, 2, 3] },
+        // Links are followed by this component rather than by the browser: an `<a>` inside a
+        // document here is a path in the workspace, and the app is what knows how to open one.
+        link: { openOnClick: false },
       }),
       TaskList,
       TaskItem.configure({
         nested: true,
       }),
+      // Tables are how these documents are argued — a requirement and what covers it, side by
+      // side. Without a table node the parser has nowhere to put one, and it is not the display
+      // that suffers: the rows are gone from the document, so saving the file would delete them.
+      Table,
+      TableRow,
+      TableHeader,
+      TableCell,
       tiptapCodeBlock.configure({
         themes: { light: 'github-light', dark: 'github-dark' },
       }),
       MermaidBlock,
       LatexBlock,
+      // The fences the app draws as something other than code — a diagram, a page, a table —
+      // which `Markdown` has always drawn this way, and which an editor that saves the file has
+      // to keep as fences rather than flat text.
+      PreviewBlock,
       Placeholder.configure({ placeholder }),
       Image.configure({
         inline: false,
@@ -311,6 +355,27 @@ export function TiptapMarkdownEditor({
       attributes: {
         class: 'tiptap-prose outline-none',
       },
+      /**
+       * Following a link, without taking the click away from the text.
+       *
+       * In an editable document a plain click on a link is how the caret gets into it, so that
+       * is what it stays: the link is followed with the modifier every other editor uses, and
+       * only a document nobody can type in follows one on a plain click. The `<a href>` is left
+       * alone by the Link extension (`openOnClick: false`) so this is the only thing that
+       * decides.
+       */
+      handleClick: (view, _pos, event) => {
+        const anchor = (event.target as HTMLElement | null)?.closest('a')
+        const href = anchor?.getAttribute('href')?.trim()
+        if (!href) return false
+        if (view.editable && !event.metaKey && !event.ctrlKey) return false
+
+        event.preventDefault()
+        const target = resolveMarkdownLinkTarget(href)
+        if (target.kind === 'file') onFileClickRef.current?.(target.path)
+        else onUrlClickRef.current?.(target.url)
+        return true
+      },
       handlePaste: (_view, event) => {
         if (!editable) return false
         if (event.clipboardData?.files?.length) return false
@@ -362,6 +427,19 @@ export function TiptapMarkdownEditor({
       editor.setEditable(editable)
     }
   }, [editor, editable])
+
+  /**
+   * The caret, once, for a document that was opened to be typed in — see `autoFocus`.
+   *
+   * Only into an editable document: a host with nothing to save puts a read-only document on
+   * screen, and a caret in one would promise typing that cannot land anywhere.
+   */
+  const autoFocusedRef = React.useRef(false)
+  React.useEffect(() => {
+    if (!editor || !autoFocus || !editable || autoFocusedRef.current) return
+    autoFocusedRef.current = true
+    editor.commands.focus('start')
+  }, [editor, autoFocus, editable])
 
   // Sync content when the selected task changes (key prop handles this,
   // but as a safety net for direct content prop changes)

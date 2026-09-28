@@ -1,8 +1,8 @@
 /**
- * The prototypes a **project** is worked on with (§15.1.3).
+ * The prototypes a **project** is worked on with.
  *
- * §15 kept the two containers unrelated — a prototype is not nested in a project, and
- * nothing of one lives inside the other — and §15.1.2 settled that a project does not
+ * The two containers are kept unrelated — a prototype is not nested in a project, and
+ * nothing of one lives inside the other — and a project does not
  * name a prototype *for* its conversations. What is left is the one direction that is
  * true: a project may record which prototypes its work touches.
  *
@@ -22,9 +22,7 @@
  * it — *which prototypes does this project have?* — and both were withdrawn: the same
  * prototype is worked on from conversations of different projects, so "belongs to a
  * project" was never true, and the list it produced answered a question nothing should
- * ask (§15.1.4). Nothing on the prototype side records a project now.
- *
- * @see docs/prototype-workbench-plan.md §15.1, §15.1.2, §15.1.3, §15.1.4
+ * ask. Nothing on the prototype side records a project now.
  */
 
 import { existsSync } from 'fs'
@@ -64,13 +62,13 @@ export function getProjectPrototypes(workspaceRootPath: string, projectSlug: str
  * Record the prototypes a project is worked on with, replacing the set.
  *
  * An empty list (or a list where nothing survives {@link existingPrototypeSlugs}) leaves
- * no key at all — the same "absent means none" rule the page table follows.
+ * no key at all — the same "absent means none" rule the rest of the config follows.
  *
  * The project has to exist, and only the storage layer says so (`updateProject`) — it is
  * the one that would have to write the record, and nothing here creates a project. A
  * conversation never has to care: a project that is gone is not in its context at all.
  *
- * There is no ownership to check either: a prototype belongs to no project (§15.1.4), so
+ * There is no ownership to check either: a prototype belongs to no project, so
  * any prototype of the workspace can be in the set.
  */
 export function setProjectPrototypes(

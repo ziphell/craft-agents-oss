@@ -2,7 +2,6 @@ import { describe, expect, it } from 'bun:test'
 import {
   buildElementMention,
   elementLabel,
-  elementOriginText,
   expandElementMentions,
   findElementMentions,
   parseElementMention,
@@ -48,29 +47,42 @@ describe('buildElementMention / parseElementMention', () => {
       selector: '[data-testid="pay"]',
       text: 'Pay now',
       url: 'https://shop.example.com/cart?step=2',
-      prototypeSlug: 'checkout',
-      prototypePage: 'cart',
     })
 
     expect(parseElementMention(marker.slice('[element:'.length, -1))).toEqual({
       selector: '[data-testid="pay"]',
       text: 'Pay now',
       url: 'https://shop.example.com/cart?step=2',
-      prototypeSlug: 'checkout',
-      prototypePage: 'cart',
+    })
+  })
+
+  it('round-trips the folder of a page this app serves', () => {
+    // A pick on a website of ours carries the folder it is served from: those are the
+    // files to edit, and the address alone does not say which ones they are.
+    const marker = buildElementMention({
+      selector: '#total',
+      text: 'Total',
+      url: 'http://dash-1a2b3c4d.localhost/',
+      dir: '/ws/websites/dash',
+    })
+
+    expect(parseElementMention(marker.slice('[element:'.length, -1))).toEqual({
+      selector: '#total',
+      text: 'Total',
+      url: 'http://dash-1a2b3c4d.localhost/',
+      dir: '/ws/websites/dash',
     })
   })
 
   it('drops the parts a pick did not carry', () => {
-    // The agent's own `browser_tool pick` knows a page but not a prototype: the
-    // marker is shorter, and reading it back leaves nothing empty behind.
-    const marker = buildElementMention({ selector: '.a', text: 'A', url: 'https://example.com/' })
+    // The agent's own `browser_tool pick` carries no page: the marker is shorter,
+    // and reading it back leaves nothing empty behind.
+    const marker = buildElementMention({ selector: '.a', text: 'A' })
 
-    expect(marker).toBe('[element:.a|A|https%3A%2F%2Fexample.com%2F]')
-    expect(parseElementMention('.a|A|https%3A%2F%2Fexample.com%2F')).toEqual({
+    expect(marker).toBe('[element:.a|A]')
+    expect(parseElementMention('.a|A')).toEqual({
       selector: '.a',
       text: 'A',
-      url: 'https://example.com/',
     })
   })
 
@@ -81,25 +93,6 @@ describe('buildElementMention / parseElementMention', () => {
   it('rejects payloads that are not ours', () => {
     expect(parseElementMention('no-separator')).toBeNull()
     expect(parseElementMention('%E0%A4%A|text')).toBeNull()
-  })
-})
-
-describe('elementOriginText', () => {
-  it('names the prototype and its page, then the address', () => {
-    expect(elementOriginText({ selector: '.a', text: 'A', url: 'https://example.com/', prototypeSlug: 'demo', prototypePage: 'cart' }))
-      .toBe('demo / cart (https://example.com/)')
-  })
-
-  it('names the prototype alone when the page is unknown', () => {
-    expect(elementOriginText({ selector: '.a', text: 'A', prototypeSlug: 'demo' })).toBe('demo')
-  })
-
-  it('falls back to the address for a page nobody owns', () => {
-    expect(elementOriginText({ selector: '.a', text: 'A', url: 'https://example.com/' })).toBe('https://example.com/')
-  })
-
-  it('is empty when the pick carried nothing about where it came from', () => {
-    expect(elementOriginText({ selector: '.a', text: 'A' })).toBe('')
   })
 })
 

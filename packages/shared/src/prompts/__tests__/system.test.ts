@@ -155,7 +155,7 @@ describe('formatProjectContextForPrompt', () => {
   })
 
   // What a project says about prototypes is a **set** — it works on several at once, and
-  // nothing in the block ranks them (§15.1.3). It is *background*, the same shape a
+  // nothing in the block ranks them. It is *background*, the same shape a
   // connected source has: the conversation is told, nothing is targeted for it, and it is
   // still not bound to any of them. The block has to say all three, or the agent reads a
   // project's note as its own binding and runs `prototype_tool` commands with no slug.

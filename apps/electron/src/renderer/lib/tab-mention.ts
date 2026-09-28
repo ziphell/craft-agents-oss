@@ -3,18 +3,15 @@
  * text.
  *
  * The sibling of `element-mention`, and the same mechanism: the composer's value is
- * a plain string (see `rich-text-input`), so a tab travels as
- * `[tab:<url>|<title>|<prototype>|<prototypePage>]` with every part percent-encoded —
- * the payload must contain no `]`, and a URL may.
+ * a plain string (see `rich-text-input`), so a tab travels as `[tab:<url>|<title>]`
+ * with every part percent-encoded — the payload must contain no `]`, and a URL may.
  *
  * A tab is what the window's own `tabs` are (`BrowserTabSummary`, `tabAction`,
  * `tab-show`): the noun is the window's, and this is that noun as a reference.
  *
  * It exists because a tab is a thing to talk about in its own right, not only a place
- * an element was picked on: "look at this page", "what is wrong with this screen". The
- * two trailing parts are the tab's identity as a **prototype's page**, and they are
- * left off entirely for a tab that is nobody's prototype — reading the shorter marker
- * back leaves nothing empty behind.
+ * an element was picked on: "look at this page", "what is wrong with this screen".
+ * The address is the identity, and the title is what makes the chip readable.
  *
  * The marker is what the composer renders as a chip and what the draft stores. It
  * never reaches the model — `expandTabMentions` rewrites it into a readable reference
@@ -26,10 +23,6 @@ export interface TabRef {
   url: string
   /** The tab's own title, shown as the chip's label. May be empty. */
   title: string
-  /** The prototype this tab belongs to, when it is one's. */
-  prototypeSlug?: string
-  /** Which page of that prototype, when its page table knew. */
-  prototypePage?: string
 }
 
 export interface TabMention {
@@ -43,14 +36,9 @@ export interface TabMention {
 
 const MARKER_RE = /\[tab:([^\]]+)\]/g
 
-/**
- * Build the marker a tab is inserted as.
- *
- * Absent parts are dropped rather than encoded as empty ones, so a tab that is
- * nobody's prototype produces the shorter marker.
- */
+/** Build the marker a tab is inserted as. */
 export function buildTabMention(ref: TabRef): string {
-  const parts = [ref.url, ref.title, ref.prototypeSlug, ref.prototypePage]
+  const parts = [ref.url, ref.title]
   while (parts.length > 2 && !parts[parts.length - 1]) parts.pop()
 
   return `[tab:${parts.map((part) => encodeURIComponent(part ?? '')).join('|')}]`
@@ -74,25 +62,11 @@ export function parseTabMention(payload: string): TabRef | null {
     return null
   }
 
-  const [url, title, prototypeSlug, prototypePage] = decoded
+  const [url, title] = decoded
   return {
     url: url ?? '',
     title: title ?? '',
-    ...(prototypeSlug ? { prototypeSlug } : {}),
-    ...(prototypePage ? { prototypePage } : {}),
   }
-}
-
-/**
- * The tab as a prototype page, in one phrase: `demo / cart`, or empty for a tab
- * nobody owns.
- *
- * Not prose and not translated — a prototype slug and a page name read the same in
- * every language.
- */
-export function tabOriginText(ref: TabRef): string {
-  if (!ref.prototypeSlug) return ''
-  return `${ref.prototypeSlug}${ref.prototypePage ? ` / ${ref.prototypePage}` : ''}`
 }
 
 /**

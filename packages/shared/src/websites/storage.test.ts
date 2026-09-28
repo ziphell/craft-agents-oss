@@ -3,10 +3,9 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { chmodSync, mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { deleteWebsiteWithUnpublish } from './publisher.ts';
 import {
   createWebsite,
   updateWebsite,
@@ -25,15 +24,12 @@ import {
   syncWebsiteContentDigest,
   readWebsiteDataSnapshot,
   recordWebsiteRefresh,
-  addWebsiteGrant,
-  revokeWebsiteGrant,
   getWebsiteSnapshotPath,
   ensureWebsiteDataDir,
   recordWebsiteThumbnail,
   isThumbnailFresh,
 } from './storage.ts';
-import { isValidWebsiteSlug, InvalidWebsiteSlugError } from './validation.ts';
-import { isWebsiteGrantUsable } from './types.ts';
+import { isValidWebsiteSlug, InvalidWebsiteSlugError, validateWebsiteConfig } from './validation.ts';
 import { atomicWriteFileSync } from '../utils/files.ts';
 
 describe('websites/storage', () => {
@@ -87,7 +83,7 @@ describe('websites/storage', () => {
 
   describe('thumbnail pointer (cached poster)', () => {
     it('records the pointer, freshness tracks contentDigest, and updateWebsite cannot touch it', () => {
-      const website = createWebsite(workspaceDir, { name: 'Poster', kind: 'static', content: '<p>a</p>' });
+      const website = createWebsite(workspaceDir, { name: 'Poster', content: '<p>a</p>' });
       expect(website.contentDigest).toBeDefined();
       expect(isThumbnailFresh(website)).toBe(false); // none captured yet
 
@@ -165,7 +161,6 @@ describe('websites/storage', () => {
     it('updateWebsite: explicit null clears optional fields; absent keys leave them unchanged', () => {
       const created = createWebsite(workspaceDir, {
         name: 'Null Clears',
-        kind: 'live',
         description: 'desc',
         projectId: 'proj_1',
         refresh: { cron: '*/10 * * * *', script: 'scripts/refresh.ts' },
@@ -202,11 +197,43 @@ describe('websites/storage', () => {
           id: 'website_x',
           slug: 'Bad Slug!',
           name: 'x',
-          kind: 'interactive',
           createdAt: 1,
           updatedAt: 1,
         }),
       ).toThrow(/Invalid website config/);
+    });
+
+    it('loads an existing website.json that still carries the removed `kind` field', () => {
+      const dir = join(workspaceDir, 'websites', 'legacy');
+      mkdirSync(dir, { recursive: true });
+      const configPath = join(dir, 'website.json');
+      atomicWriteFileSync(
+        configPath,
+        JSON.stringify({
+          schemaVersion: 1,
+          id: 'website_legacy1',
+          slug: 'legacy',
+          name: 'Legacy Site',
+          description: 'written before kind was removed',
+          kind: 'live',
+          createdAt: 1,
+          updatedAt: 1,
+        }),
+      );
+
+      // The old config still loads, with every typed field intact.
+      const loaded = loadWebsite(workspaceDir, 'legacy');
+      expect(loaded?.config.name).toBe('Legacy Site');
+      expect(loaded?.config.description).toBe('written before kind was removed');
+      expect(loaded?.config.id).toBe('website_legacy1');
+      expect(loaded?.config.schemaVersion).toBe(1);
+
+      // Not treated as invalid on write, and not silently stripped either.
+      expect(validateWebsiteConfig(loaded!.config).valid).toBe(true);
+      saveWebsiteConfig(workspaceDir, loaded!.config);
+      const persisted = JSON.parse(readFileSync(configPath, 'utf-8'));
+      expect(persisted.kind).toBe('live');
+      expect(persisted.name).toBe('Legacy Site');
     });
 
     it('deletes the whole website folder', () => {
@@ -217,55 +244,13 @@ describe('websites/storage', () => {
     });
   });
 
-  describe('deleteWebsiteWithUnpublish local-delete failure', () => {
-    // Fault injection via a read-only parent dir: meaningless as root (rm
-    // succeeds anyway) and different semantics on win32 — skip there so the
-    // test cannot false-fail in CI (it verifies the error message contract,
-    // not platform chmod behavior).
-    const canInjectFsFailure =
-      process.platform !== 'win32' && typeof process.getuid === 'function' && process.getuid() !== 0;
-
-    (canInjectFsFailure ? it : it.skip)(
-      'surfaces a contextual error when the local folder cannot be removed, then succeeds once it can',
-      async () => {
-        const created = createWebsite(workspaceDir, { name: 'Sticky', kind: 'static', content: '<p>x</p>' });
-        const websitesDir = join(workspaceDir, 'websites');
-
-        chmodSync(websitesDir, 0o555); // removing an entry needs write perm on the parent
-        try {
-          await expect(deleteWebsiteWithUnpublish(workspaceDir, 'ws-test', created.slug)).rejects.toThrow(
-            /Deleting the local website folder failed/,
-          );
-        } finally {
-          chmodSync(websitesDir, 0o755);
-        }
-
-        // Unshared website → no publisher involved; delete now completes cleanly.
-        const outcome = await deleteWebsiteWithUnpublish(workspaceDir, 'ws-test', created.slug);
-        expect(outcome.publicCopyMayRemain).toBe(false);
-        expect(websiteExists(workspaceDir, created.slug)).toBe(false);
-      },
-    );
-
-    it('is a clean no-op outcome for a website that does not exist', async () => {
-      const outcome = await deleteWebsiteWithUnpublish(workspaceDir, 'ws-test', 'never-existed');
-      expect(outcome.publicCopyMayRemain).toBe(false);
-    });
-  });
-
   describe('content and digest', () => {
-    it('saveWebsiteContent updates the digest (staling grants)', () => {
+    it('saveWebsiteContent updates the digest', () => {
       const created = createWebsite(workspaceDir, { name: 'Dash', content: 'v1' });
-      const grant = addWebsiteGrant(workspaceDir, created.slug, {
-        action: { kind: 'api', sourceSlug: 'github', method: 'GET', pathPattern: '/repos/.*' },
-      });
       const updated = saveWebsiteContent(workspaceDir, created.slug, 'v2');
 
       expect(updated.contentDigest).toBe(computeWebsiteContentDigest('v2'));
-      // Grant persists but is bound to the v1 digest — stale by design
-      const persisted = loadWebsiteConfig(workspaceDir, created.slug)!;
-      expect(persisted.grants?.[0]?.id).toBe(grant.id);
-      expect(persisted.grants?.[0]?.contentDigest).toBe(computeWebsiteContentDigest('v1'));
+      expect(loadWebsiteConfig(workspaceDir, created.slug)!.contentDigest).toBe(computeWebsiteContentDigest('v2'));
     });
   });
 
@@ -281,23 +266,8 @@ describe('websites/storage', () => {
 
       expect(synced.contentChanged).toBe(true);
       expect(synced.config.contentDigest).toBe(computeWebsiteContentDigest('v2'));
-      // Persisted, not only returned: WebsiteActionBroker reads the config from disk.
+      // Persisted, not only returned: the host reads the config from disk.
       expect(loadWebsiteConfig(workspaceDir, created.slug)!.contentDigest).toBe(computeWebsiteContentDigest('v2'));
-    });
-
-    it('retires the previous version approvals (grants are digest-bound)', () => {
-      const created = createWebsite(workspaceDir, { name: 'Dash', content: 'v1' });
-      const grant = addWebsiteGrant(workspaceDir, created.slug, {
-        action: { kind: 'api', sourceSlug: 'github', method: 'GET', pathPattern: '/repos/.*' },
-      });
-      writeWebsiteFile(created.slug, 'v2');
-      syncWebsiteContentDigest(workspaceDir, created.slug);
-
-      const persisted = loadWebsiteConfig(workspaceDir, created.slug)!;
-      // The approval survives on disk but stops validating — the security model,
-      // now enforced by the facts rather than by who was allowed to write.
-      expect(persisted.grants?.[0]?.id).toBe(grant.id);
-      expect(isWebsiteGrantUsable(persisted.grants![0]!, persisted.contentDigest, Date.now())).toBe(false);
     });
 
     it('is a no-op when the file still matches, so nothing re-renders', () => {
@@ -349,32 +319,6 @@ describe('websites/storage', () => {
       const config = loadWebsiteConfig(workspaceDir, created.slug)!;
       expect(config.lastRefresh?.ok).toBe(false);
       expect(config.lastRefresh?.error?.length).toBe(2000);
-    });
-  });
-
-  describe('grants', () => {
-    it('requires content before issuing a grant', () => {
-      const created = createWebsite(workspaceDir, { name: 'NoContent' });
-      expect(() =>
-        addWebsiteGrant(workspaceDir, created.slug, {
-          action: { kind: 'mcp', sourceSlug: 'linear', toolName: 'create_issue' },
-        }),
-      ).toThrow(/no content/);
-    });
-
-    it('issues digest-bound expiring grants and revokes them', () => {
-      const created = createWebsite(workspaceDir, { name: 'Dash', content: 'v1' });
-      const grant = addWebsiteGrant(workspaceDir, created.slug, {
-        action: { kind: 'api', sourceSlug: 'github', method: 'POST', pathPattern: '/issues' },
-        description: 'File issues',
-        ttlMs: 60_000,
-      });
-      expect(grant.contentDigest).toBe(computeWebsiteContentDigest('v1'));
-      expect(grant.expiresAt - grant.createdAt).toBe(60_000);
-
-      expect(revokeWebsiteGrant(workspaceDir, created.slug, grant.id)).toBe(true);
-      expect(revokeWebsiteGrant(workspaceDir, created.slug, grant.id)).toBe(false);
-      expect(loadWebsiteConfig(workspaceDir, created.slug)?.grants).toEqual([]);
     });
   });
 

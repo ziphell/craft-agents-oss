@@ -2,7 +2,7 @@
  * Recording a tab, the way a person records it: press the button, drive the page, press
  * it again.
  *
- * This is the human half of what the agent could never do on its own (plan §20.3's
+ * This is the human half of what the agent could never do on its own:
  * revision): a recording is only worth anything if somebody can say "now" from outside
  * the thing being recorded, and the person is the one who can. So the act is a button on
  * the window's chrome, and the file lands in their **downloads folder** — not in a

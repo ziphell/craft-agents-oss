@@ -29,7 +29,7 @@ import { NavigationProvider } from '@/contexts/NavigationContext'
 import { navigate, routes } from './lib/navigate'
 import { attachmentFromContentRef, toDraftRef } from './lib/drafts'
 import { stripMarkdown } from './utils/text'
-import { coerceInputText } from './lib/input-text'
+import { coerceInputText, appendRestoredInput } from './lib/input-text'
 import { getSessionsToRefreshAfterStaleReconnect } from './lib/reconnect-recovery'
 import { formatSessionLoadFailure, shouldTreatSessionLoadFailureAsTransportFallback } from './lib/session-load'
 import { extractWorkspaceSlugFromPath } from '@craft-agent/shared/utils/workspace-slug'
@@ -62,6 +62,7 @@ import {
 import { visibleSessionIdsAtom } from '@/atoms/panel-stack'
 import { getSessionTitle } from '@/utils/session'
 import { extractBadges } from '@/lib/mentions'
+import { dispatchFocusInputEvent, dispatchRestoreInput } from '@/components/app-shell/input/focus-input-events'
 import { getDefaultStore } from 'jotai'
 import {
   ShikiThemeProvider,
@@ -69,10 +70,13 @@ import {
   ImagePreviewOverlay,
   PDFPreviewOverlay,
   CodePreviewOverlay,
-  DocumentFormattedMarkdownOverlay,
+  MarkdownFileOverlay,
   JSONPreviewOverlay,
+  DrawioOverlay,
+  HTMLPreviewOverlay,
 } from '@craft-agent/ui'
 import { useLinkInterceptor, type FilePreviewState } from '@/hooks/useLinkInterceptor'
+import { shouldOpenLinkInAppBrowser, shouldOpenFileInAppBrowser } from '@/lib/open-in-app-browser'
 import { useTransportConnectionState } from '@/hooks/useTransportConnectionState'
 import { useStaleSessionRecovery } from '@/hooks/useStaleSessionRecovery'
 import { TransportConnectionBanner, shouldShowTransportConnectionBanner } from '@/components/app-shell/TransportConnectionBanner'
@@ -1690,6 +1694,25 @@ export default function App() {
       }
     },
     openUrl: async (url) => {
+      // An address a browser window can hold goes to the app's own window unless the person
+      // asked for their system browser (Settings → Links) — that window is the one the agent can
+      // keep working on, which is why it is the default. Everything else — `mailto:`, someone
+      // else's app scheme, `craftagents:`, and what cannot go anywhere at all — is the shell
+      // opener's business: those answers, and their wording, live there.
+      if (await shouldOpenLinkInAppBrowser(url)) {
+        try {
+          await window.electronAPI.browserPane.openUrl(url)
+          return
+        } catch (error) {
+          // Falling through would put the link in the system browser, which is not what was
+          // asked for — say what happened and stop.
+          const message = error instanceof Error ? error.message : 'Unknown error'
+          console.error('Failed to open URL in the browser window:', error)
+          toast.error(t('toast.failedToCreateBrowser'), { description: message })
+          return
+        }
+      }
+
       try {
         await window.electronAPI.openUrl(url)
       } catch (error) {
@@ -1721,6 +1744,39 @@ export default function App() {
     readFileDataUrl: (path) => window.electronAPI.readFileDataUrl(path),
     readFileBinary: (path) => window.electronAPI.readFileBinary(path),
   })
+
+  /**
+   * The preview window's "open in browser" — the one way out of an HTML preview that is not
+   * another preview, and where the person's own setting decides *which* browser: the app's window
+   * (the surface the agent can keep working on) or the one they use for everything else.
+   *
+   * What it opens is a file, and HTML drawn in a frame has no address to give it — a `srcDoc`
+   * frame has no origin, no base and no scripts — so this is how the file becomes a page in a
+   * browser, at its own address, where all of that works.
+   */
+  const openFileInBrowser = useCallback(async (path: string) => {
+    if (await shouldOpenFileInAppBrowser()) {
+      try {
+        await window.electronAPI.browserPane.openFile(path)
+        return
+      } catch (error) {
+        // Falling through would put the page in the system browser, which is not what was
+        // asked for — say what happened and stop.
+        const message = error instanceof Error ? error.message : 'Unknown error'
+        console.error('Failed to open file in the browser window:', error)
+        toast.error(t('toast.failedToCreateBrowser'), { description: message })
+        return
+      }
+    }
+
+    try {
+      await window.electronAPI.openFile(path)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      console.error('Failed to open file:', error)
+      toast.error(t('toast.failedToOpenFile'), { description: message })
+    }
+  }, [t])
 
   const connectionState = useTransportConnectionState()
   const showTransportConnectionBanner = shouldShowTransportConnectionBanner(connectionState)
@@ -1941,6 +1997,28 @@ export default function App() {
     openNewChat,
   ])
 
+  /**
+   * Hand an element picked in the HTML editor to the conversation.
+   *
+   * What goes in is the element's own markup — that is what has to change — plus the file
+   * it came from, so the agent edits the file instead of answering about a copy of a
+   * snippet. It is *appended* to the draft, the way a picked element chip is: the person
+   * was writing a request, and a reference is added to it rather than replacing it.
+   *
+   * The draft is written through `handleInputChange` (which is what a composer reads on
+   * mount) *and* announced with the restore event (which is what one already open reads),
+   * then the caret is put there so the request can be finished.
+   */
+  const sendHtmlSelectionToChat = useCallback(({ path, html }: { path: string; html: string }) => {
+    const sessionId = sessionSelection.selected
+    if (!sessionId) return
+    const reference = `${path}\n\n\`\`\`html\n${html}\n\`\`\`\n`
+    const next = appendRestoredInput(getDraft(sessionId), reference)
+    handleInputChange(sessionId, next)
+    dispatchRestoreInput(sessionId, next)
+    dispatchFocusInputEvent({ sessionId })
+  }, [sessionSelection.selected, getDraft, handleInputChange])
+
   // Platform actions for @craft-agent/ui components (overlays, etc.)
   // Memoized to prevent re-renders when these callbacks don't change
   // NOTE: Must be defined before early returns to maintain consistent hook order
@@ -1956,8 +2034,21 @@ export default function App() {
     onReadFileDataUrl: (path: string) => window.electronAPI.readFileDataUrl(path),
     // Read file as binary Uint8Array (used by PDF preview blocks)
     onReadFileBinary: (path: string) => window.electronAPI.readFileBinary(path),
-    // Write file contents as UTF-8 string (prototype workbench: patches/contract fragments)
+    // Write file contents as UTF-8 string (a file the person is editing in place)
     onWriteFile: (path: string, content: string) => window.electronAPI.writeFile(path, content),
+    // Open the HTML a preview window is showing in a browser (used by html-preview blocks and
+    // the file preview window). Which browser is the person's setting — see openFileInBrowser.
+    onOpenFileInBrowser: (path: string) => {
+      void openFileInBrowser(path)
+    },
+    // Hand an element from the visual HTML editor to the conversation's composer
+    onSendToChat: sendHtmlSelectionToChat,
+    // The origin the bundled drawio editor is served at (used by drawio-preview blocks)
+    onGetDrawioOrigin: () => window.electronAPI.getDrawioOrigin(),
+    // The prototypes tree changed on disk. The event's payload is dropped on purpose: what a
+    // listener does with this is re-read the file (see PlatformActions).
+    onPrototypesChanged: (callback: () => void) =>
+      window.electronAPI.onPrototypesChanged(() => callback()),
     // Reveal a file in the system file manager (Finder on macOS, Explorer on Windows, etc.)
     onRevealInFinder: (path: string) => {
       window.electronAPI.showInFolder(path).catch(() => {})
@@ -1968,7 +2059,7 @@ export default function App() {
     onSetTrafficLightsVisible: (visible: boolean) => {
       window.electronAPI.setTrafficLightsVisible(visible)
     },
-  }), [handleOpenFile, handleOpenUrl, linkInterceptor.openFileExternal])
+  }), [handleOpenFile, handleOpenUrl, openFileInBrowser, linkInterceptor.openFileExternal, sendHtmlSelectionToChat])
 
   // Loading state - show splash screen
   if (appState === 'loading') {
@@ -2123,6 +2214,9 @@ export default function App() {
               loadDataUrl={linkInterceptor.readFileDataUrl}
               loadPdfData={linkInterceptor.readFileBinary}
               isDark={isDark}
+              onOpenFile={handleOpenFile}
+              onOpenUrl={handleOpenUrl}
+              onOpenFileInBrowser={openFileInBrowser}
             />
           )}
         </NavigationProvider>
@@ -2152,8 +2246,10 @@ function WindowCloseHandler() {
  * - image → ImagePreviewOverlay (binary, loaded via data URL)
  * - pdf → PDFPreviewOverlay (binary, embedded via Chromium viewer)
  * - code/text → CodePreviewOverlay (syntax highlighted)
- * - markdown → DocumentFormattedMarkdownOverlay
+ * - markdown → MarkdownFileOverlay (the document itself, editable, saved back to the file)
  * - json → JSONPreviewOverlay
+ * - drawio → DrawioOverlay (the diagram, drawn by the same window a `drawio-preview` block opens)
+ * - html → HTMLPreviewOverlay (the page, drawn by the same window an `html-preview` block opens)
  *
  * File path badges with "Open" / "Reveal in {file manager}" menus are provided
  * automatically by PlatformContext — no per-overlay callback props needed.
@@ -2164,12 +2260,20 @@ function FilePreviewRenderer({
   loadDataUrl,
   loadPdfData,
   isDark,
+  onOpenFile,
+  onOpenUrl,
+  onOpenFileInBrowser,
 }: {
   state: FilePreviewState
   onClose: () => void
   loadDataUrl: (path: string) => Promise<string>
   loadPdfData: (path: string) => Promise<Uint8Array>
   isDark: boolean
+  /** Where a link inside a previewed document goes — the app's own file and URL routing. */
+  onOpenFile: (path: string) => void
+  onOpenUrl: (url: string) => void
+  /** Send the HTML being previewed to a browser — the app's window or the person's own (their setting). */
+  onOpenFileInBrowser: (path: string) => void
 }) {
   const theme = isDark ? 'dark' : 'light' as const
 
@@ -2217,12 +2321,14 @@ function FilePreviewRenderer({
         (state.filePath.includes('/plans/') || state.filePath.startsWith('plans/')) &&
         state.filePath.endsWith('.md')
       return (
-        <DocumentFormattedMarkdownOverlay
+        <MarkdownFileOverlay
           isOpen
           onClose={onClose}
-          content={state.content ?? ''}
           filePath={state.filePath}
           variant={isPlanFile ? 'plan' : 'response'}
+          theme={theme}
+          onOpenFile={onOpenFile}
+          onOpenUrl={onOpenUrl}
         />
       )
     }
@@ -2276,7 +2382,95 @@ function FilePreviewRenderer({
       )
     }
 
+    case 'drawio':
+      /* A diagram that could not be read has nothing to draw, so the read error is shown as the
+         document — the same fallback the JSON case makes. Hit by a file that is gone or not readable. */
+      if ((!state.content || !state.content.trim()) && state.error) {
+        return (
+          <CodePreviewOverlay
+            isOpen
+            onClose={onClose}
+            filePath={state.filePath}
+            content=""
+            language="xml"
+            mode="read"
+            theme={theme}
+            error={state.error}
+          />
+        )
+      }
+      return (
+        <DrawioPreviewOverlay
+          key={state.filePath}
+          filePath={state.filePath}
+          xml={state.content}
+          onClose={onClose}
+        />
+      )
+
+    case 'html': {
+      /* Same fallback as the two above: HTML that could not be read is an error, not an empty box. */
+      if ((!state.content || !state.content.trim()) && state.error) {
+        return (
+          <CodePreviewOverlay
+            isOpen
+            onClose={onClose}
+            filePath={state.filePath}
+            content=""
+            language="html"
+            mode="read"
+            theme={theme}
+            error={state.error}
+          />
+        )
+      }
+      /* Keyed by path: a different file is different HTML, and the window holds which surface
+         (view or edit) and which item is showing — neither should be inherited. */
+      return (
+        <HTMLPreviewOverlay
+          key={state.filePath}
+          isOpen
+          onClose={onClose}
+          html={state.content ?? ''}
+          title={state.filePath.split('/').pop() ?? 'HTML'}
+          theme={theme}
+          onOpenInBrowser={() => onOpenFileInBrowser(state.filePath)}
+        />
+      )
+    }
+
     default:
       return null
   }
+}
+
+/**
+ * The draw.io window a `.drawio` link opens — the same `DrawioOverlay` a `drawio-preview` block
+ * and the prototype page open, on the drawing rather than in the editor.
+ *
+ * It holds which page is showing, because the window does not: a page picked from the window's
+ * own row is reported back to whoever is showing the file, and here that is nobody else. `key` on
+ * the file path gives a newly opened file a fresh page instead of the last file's.
+ */
+function DrawioPreviewOverlay({
+  filePath,
+  xml,
+  onClose,
+}: {
+  filePath: string
+  xml: string | null
+  onClose: () => void
+}) {
+  const [pageId, setPageId] = useState<string | null>(null)
+  return (
+    <DrawioOverlay
+      isOpen
+      onClose={onClose}
+      filePath={filePath}
+      initialMode="view"
+      xml={xml}
+      pageId={pageId ?? undefined}
+      onSelectPage={setPageId}
+    />
+  )
 }

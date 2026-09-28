@@ -1,6 +1,5 @@
 export * from './title-sanitizer'
 export * from './tool-detection'
-export * from './prototype-page'
 export * from './tab-access'
 export * from './init-gate'
 export * from './session-branch-cleanup'

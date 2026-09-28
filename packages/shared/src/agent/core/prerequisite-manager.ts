@@ -2,7 +2,11 @@
  * PrerequisiteManager - Prerequisite Reading System
  *
  * Blocks tool calls until specified files have been read in the current context window.
- * State resets on compaction since the LLM loses the guide content.
+ *
+ * The set of reads is persisted per session and restored when a fresh agent instance picks the
+ * session back up (an app restart): the conversation is resumed with its history intact, so the
+ * guide's text is still in context and the gate has nothing left to ask for. It is cleared only
+ * when the model really loses that text — on context compaction, and when the history is cleared.
  *
  * Key responsibilities:
  * - Track which files have been read via the Read tool
@@ -10,9 +14,9 @@
  * - Reset state on context compaction
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { resolve, join } from 'node:path';
+import { dirname, resolve, join } from 'node:path';
 import { expandPath } from './path-processor.ts';
 import { getBrowserToolEnabled } from '../../config/storage.ts';
 
@@ -39,6 +43,11 @@ export interface PrerequisiteCheckResult {
 export interface PrerequisiteManagerConfig {
   workspaceRootPath: string;
   onDebug?: (message: string) => void;
+  /**
+   * File to persist the set of reads in, so a restarted agent picks the session back up without
+   * re-asking for guides the conversation already holds. Omitted keeps the state in memory only.
+   */
+  readStatePath?: string;
 }
 
 // ============================================================
@@ -48,8 +57,14 @@ export interface PrerequisiteManagerConfig {
 /** Slugs that are exempt from prerequisite checks (internal sources) */
 const EXEMPT_SLUGS = new Set(['session']);
 
+/** The synced guides, as the system prompt names them: `~/.craft-agent/docs/<name>.md`. */
+const DOCS_DIR_PATH = resolve(join(homedir(), '.craft-agent', 'docs'));
+
 /** Global browser tools docs path required before browser tool usage. */
-const BROWSER_TOOLS_DOC_PATH = resolve(join(homedir(), '.craft-agent', 'docs', 'browser-tools.md'));
+const BROWSER_TOOLS_DOC_PATH = join(DOCS_DIR_PATH, 'browser-tools.md');
+
+/** Global drawio docs path required before `drawio_tool` usage. */
+const DRAWIO_TOOLS_DOC_PATH = join(DOCS_DIR_PATH, 'drawio-tools.md');
 
 // ============================================================
 // Rules
@@ -109,6 +124,28 @@ const RULES: PrerequisiteRule[] = [
       'You must read the browser tools guide before using browser automation. Please read the file at {filePath} first, then retry.',
     strict: true,
   },
+
+  // Built-in drawio tool: require drawio-tools.md first.
+  //
+  // What is behind the gate is a file format whose failures are silent — a compressed `.drawio`
+  // is unreadable to everything but draw.io, a shape outside the bundled sets draws as a plain
+  // box, and neither says anything at the time. Reading the guide is the difference between
+  // a diagram that is right and one that merely looks plausible, so this is strict, like the
+  // browser's: the guide is not a suggestion. Under the same switch as the tool itself, because a
+  // disabled tool needs no prerequisite.
+  {
+    // The tool name first: the config is read only for the two spellings that can match, not for
+    // every tool call in the session.
+    toolMatcher: (toolName: string) =>
+      (toolName === 'drawio_tool' || toolName === 'mcp__session__drawio_tool') &&
+      getBrowserToolEnabled(),
+    resolveRequiredPath: () => {
+      return existsSync(DRAWIO_TOOLS_DOC_PATH) ? DRAWIO_TOOLS_DOC_PATH : null;
+    },
+    blockMessage:
+      'You must read the drawio guide before using drawio_tool. Please read the file at {filePath} first, then retry.',
+    strict: true,
+  },
 ];
 
 // ============================================================
@@ -123,11 +160,47 @@ export class PrerequisiteManager {
   private rejectionCounts: Map<string, number> = new Map();
   private pendingSkillPaths: Set<string> = new Set();
   private workspaceRootPath: string;
+  private readStatePath?: string;
   private onDebug?: (message: string) => void;
 
   constructor(config: PrerequisiteManagerConfig) {
     this.workspaceRootPath = config.workspaceRootPath;
+    this.readStatePath = config.readStatePath;
     this.onDebug = config.onDebug;
+    this.loadReadState();
+  }
+
+  /**
+   * Restore the reads an earlier agent instance recorded for this session. A missing or unreadable
+   * file is not an error: it just means the session has not been through here before, and the
+   * guides will be asked for again.
+   */
+  private loadReadState(): void {
+    if (!this.readStatePath) return;
+    try {
+      if (!existsSync(this.readStatePath)) return;
+      const raw = JSON.parse(readFileSync(this.readStatePath, 'utf-8')) as { reads?: unknown };
+      if (!Array.isArray(raw.reads)) return;
+      for (const path of raw.reads) {
+        if (typeof path === 'string' && path.length > 0) this.readFiles.add(path);
+      }
+      this.onDebug?.(`Prerequisite: restored ${this.readFiles.size} read(s) from session state`);
+    } catch (error) {
+      this.onDebug?.(`Prerequisite: could not restore read state — ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /** Write the current reads out so the next agent instance for this session starts where this one left off. */
+  private persistReadState(): void {
+    if (!this.readStatePath) return;
+    try {
+      // A session with no folder of its own is a temporary agent (title, summary), not a conversation
+      // whose memory is worth keeping — and writing would put a stray session folder on disk.
+      if (!existsSync(dirname(this.readStatePath))) return;
+      writeFileSync(this.readStatePath, JSON.stringify({ reads: [...this.readFiles] }), 'utf-8');
+    } catch (error) {
+      this.onDebug?.(`Prerequisite: could not persist read state — ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   /**
@@ -219,6 +292,7 @@ export class PrerequisiteManager {
     if (!filePath) return;
 
     const expanded = expandPath(filePath);
+    const isNew = !this.readFiles.has(expanded);
     this.readFiles.add(expanded);
 
     // Clear matching pending skill path
@@ -227,6 +301,7 @@ export class PrerequisiteManager {
       this.onDebug?.(`Prerequisite: cleared skill prerequisite ${expanded}`);
     }
 
+    if (isNew) this.persistReadState();
     this.onDebug?.(`Prerequisite: tracked read of ${expanded}`);
   }
 
@@ -244,6 +319,7 @@ export class PrerequisiteManager {
       if (command.includes(path)) {
         this.pendingSkillPaths.delete(path);
         this.readFiles.add(path);
+        this.persistReadState();
         this.onDebug?.(`Prerequisite: cleared skill prerequisite via Bash: ${path}`);
         matched = true;
       }
@@ -255,6 +331,9 @@ export class PrerequisiteManager {
    * Reset read state. Called on context compaction since the LLM
    * loses the guide content and needs to re-read.
    * Also clears pending skill paths (model lost the directive).
+   *
+   * The persisted copy is emptied too, so a restart afterwards starts from nothing as well —
+   * what the session remembers has to match what the conversation still holds.
    */
   resetReadState(): void {
     const count = this.readFiles.size;
@@ -262,6 +341,7 @@ export class PrerequisiteManager {
     this.readFiles.clear();
     this.rejectionCounts.clear();
     this.pendingSkillPaths.clear();
+    this.persistReadState();
     this.onDebug?.(`Prerequisite: reset read state (cleared ${count} reads, ${skillCount} skill prerequisites)`);
   }
 

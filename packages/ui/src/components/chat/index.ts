@@ -8,6 +8,7 @@ export * from './follow-up-helpers'
 
 // Components
 export { TurnCard, ResponseCard, SIZE_CONFIG, ActivityStatusIcon, type TurnCardProps, type ResponseCardProps, type ActivityItem, type ActivityStatus, type ResponseContent, type TodoItem } from './TurnCard'
+export { TurnRail, buildTurnRailItems, type TurnRailProps, type TurnRailItem, type TurnRailRole } from './TurnRail'
 export { InlineExecution, mapToolEventToActivity, type InlineExecutionProps, type InlineExecutionStatus, type InlineActivityItem } from './InlineExecution'
 export { TurnCardActionsMenu, type TurnCardActionsMenuProps } from './TurnCardActionsMenu'
 export { SessionViewer, type SessionViewerProps, type SessionViewerMode } from './SessionViewer'

@@ -52,15 +52,18 @@ type ActiveTab = Pick<BrowserTabSummary, 'active' | 'lockedBy' | 'cursorOf' | 'b
  * Where the menu's "open …" item goes: the **tab on screen**'s answer, never the window's.
  *
  * One window is shared by the whole workspace, so "the conversation using this window" is not a
- * fact that exists (plan §22) — what exists is that a tab is somebody's work, and the person is
- * looking at one of them. Who is working on that tab right now, else who works from it, else
- * whose work it is:
+ * fact that exists — what exists is that a tab is somebody's work, and the person is
+ * looking at one of them. Who is working on that tab right now, else one of the conversations that
+ * works from it, else whose work it is:
  *
  * - a conversation's tab opens that conversation;
  * - a **Task's** tab opens the **task** — the session carrying that slug that nothing spawned —
  *   and not the session that happened to open the tab: that one is provenance, and once its node
  *   has been re-run it has usually stopped, so opening it would land on a dead conversation. A
  *   generate-time draft carries the slug too and is off the board, so it does not count either.
+ *
+ * A tab several conversations work from opens the first of them (第二十四轮) — there is no
+ * "the" conversation for it, and the item is a convenience rather than a claim about the tab.
  *
  * `null` when there is nothing to open (no tab on screen, a person's tab, or a task whose
  * session is gone) — the caller greys the item out rather than opening something arbitrary.
@@ -72,7 +75,7 @@ export function openTargetOfActiveTab(
   const activeTab = tabs?.find((tab) => tab.active)
   if (!activeTab) return null
 
-  const worker = activeTab.lockedBy ?? activeTab.cursorOf
+  const worker = activeTab.lockedBy ?? activeTab.cursorOf[0]
   if (worker) return { kind: 'session', sessionId: worker }
 
   const work = activeTab.belongsTo
@@ -94,15 +97,10 @@ export function openTargetOfActiveTab(
  * has none yet), so the chip reads like the tab the person picked.
  */
 export function tabRefOf(
-  tab: Pick<BrowserTabSummary, 'url' | 'title' | 'prototype' | 'prototypePage'>,
+  tab: Pick<BrowserTabSummary, 'url' | 'title'>,
 ): TabRef {
   const title = tab.title.trim() || getHostname(tab.url)
-  return {
-    url: tab.url,
-    title,
-    ...(tab.prototype ? { prototypeSlug: tab.prototype.slug } : {}),
-    ...(tab.prototypePage ? { prototypePage: tab.prototypePage } : {}),
-  }
+  return { url: tab.url, title }
 }
 
 /**

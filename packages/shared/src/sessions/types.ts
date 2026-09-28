@@ -66,7 +66,6 @@ export const SESSION_PERSISTENT_FIELDS = [
   'taskNodeId',
   'taskNodeCount',
   'taskAwaitingApproval',
-  'taskWrites',
   'taskDraft',
 ] as const;
 
@@ -220,7 +219,7 @@ export interface SessionConfig {
    * resolve `prototype_tool` commands without being told a slug every turn.
    *
    * It is the session's own binding and nothing else writes one here: a project tells
-   * its conversations what prototypes exist, and what it is on (plan §15.1.3) — as
+   * its conversations what prototypes exist, and what it is on — as
    * background, like a connected source — but names none of them *for* a conversation,
    * so the persisted header and what a conversation works on are the same thing.
    */
@@ -239,14 +238,6 @@ export interface SessionConfig {
   taskNodeCount?: number;
   /** Tasks Conductor: how many `kind: approval` gates of the active run are waiting on a person. */
   taskAwaitingApproval?: number;
-  /**
-   * The writer identity this session writes prototype artifacts as (plan §3.6).
-   *
-   * Declared per node (`writes:` in task.yaml) and stamped onto the child at dispatch; absent
-   * means "the single-writer default" (`PROTOTYPE_DEFAULT_WRITER`), never "no identity" — the
-   * agent is told which prefix is its own, and the write guard checks it against the same value.
-   */
-  taskWrites?: string;
   /** Tasks Conductor: generate-time draft orchestrator. Hidden from the board until adopted (promoted) by createTask. */
   taskDraft?: boolean;
 }
@@ -362,14 +353,6 @@ export interface SessionHeader {
   taskNodeCount?: number;
   /** Tasks Conductor: how many `kind: approval` gates of the active run are waiting on a person. */
   taskAwaitingApproval?: number;
-  /**
-   * The writer identity this session writes prototype artifacts as (plan §3.6).
-   *
-   * Declared per node (`writes:` in task.yaml) and stamped onto the child at dispatch; absent
-   * means "the single-writer default" (`PROTOTYPE_DEFAULT_WRITER`), never "no identity" — the
-   * agent is told which prefix is its own, and the write guard checks it against the same value.
-   */
-  taskWrites?: string;
   /** Tasks Conductor: generate-time draft orchestrator. Hidden from the board until adopted (promoted) by createTask. */
   taskDraft?: boolean;
   // Pre-computed fields for fast list loading
@@ -474,14 +457,6 @@ export interface SessionMetadata {
   taskNodeCount?: number;
   /** Tasks Conductor: how many `kind: approval` gates of the active run are waiting on a person. */
   taskAwaitingApproval?: number;
-  /**
-   * The writer identity this session writes prototype artifacts as (plan §3.6).
-   *
-   * Declared per node (`writes:` in task.yaml) and stamped onto the child at dispatch; absent
-   * means "the single-writer default" (`PROTOTYPE_DEFAULT_WRITER`), never "no identity" — the
-   * agent is told which prefix is its own, and the write guard checks it against the same value.
-   */
-  taskWrites?: string;
   /** Tasks Conductor: generate-time draft orchestrator. Hidden from the board until adopted (promoted) by createTask. */
   taskDraft?: boolean;
 }

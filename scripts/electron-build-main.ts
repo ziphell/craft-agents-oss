@@ -13,8 +13,6 @@ const OUTPUT_FILE = join(DIST_DIR, "main.cjs");
 const INTERCEPTOR_SOURCE = join(ROOT_DIR, "packages/shared/src/unified-network-interceptor.ts");
 const INTERCEPTOR_OUTPUT = join(DIST_DIR, "interceptor.cjs");
 const SESSION_TOOLS_CORE_DIR = join(ROOT_DIR, "packages/session-tools-core");
-const SESSION_SERVER_DIR = join(ROOT_DIR, "packages/session-mcp-server");
-const SESSION_SERVER_OUTPUT = join(SESSION_SERVER_DIR, "dist/index.js");
 const PI_AGENT_SERVER_DIR = join(ROOT_DIR, "packages/pi-agent-server");
 const PI_AGENT_SERVER_OUTPUT = join(PI_AGENT_SERVER_DIR, "dist/index.js");
 const WA_WORKER_DIR = join(ROOT_DIR, "packages/messaging-whatsapp-worker");
@@ -169,45 +167,6 @@ async function buildInterceptor(): Promise<void> {
   console.log("✅ Interceptor built successfully");
 }
 
-// Build the Session MCP Server (provides session-scoped tools like SubmitPlan for Codex sessions)
-async function buildSessionServer(): Promise<void> {
-  console.log("📋 Building Session MCP Server...");
-
-  // Ensure dist directory exists
-  const distDir = join(SESSION_SERVER_DIR, "dist");
-  if (!existsSync(distDir)) {
-    mkdirSync(distDir, { recursive: true });
-  }
-
-  const proc = spawn({
-    cmd: [
-      "bun", "build",
-      join(SESSION_SERVER_DIR, "src/index.ts"),
-      "--outfile", SESSION_SERVER_OUTPUT,
-      "--target", "node",
-      "--format", "cjs",
-    ],
-    cwd: ROOT_DIR,
-    stdout: "inherit",
-    stderr: "inherit",
-  });
-
-  const exitCode = await proc.exited;
-
-  if (exitCode !== 0) {
-    console.error("❌ Session server build failed with exit code", exitCode);
-    process.exit(exitCode);
-  }
-
-  // Verify output exists
-  if (!existsSync(SESSION_SERVER_OUTPUT)) {
-    console.error("❌ Session server output not found at", SESSION_SERVER_OUTPUT);
-    process.exit(1);
-  }
-
-  console.log("✅ Session server built successfully");
-}
-
 // Build the Pi Agent Server (subprocess for Pi SDK sessions)
 // Optional: skips if package directory is missing (e.g., not synced to OSS).
 async function buildPiAgentServer(): Promise<void> {
@@ -320,10 +279,6 @@ async function main(): Promise<void> {
 
   // Verify session tools core exists (shared utilities for session-scoped tools)
   verifySessionToolsCore();
-
-  // Build session server (provides session-scoped tools like SubmitPlan)
-  // Depends on session-tools-core being built first
-  await buildSessionServer();
 
   // Build Pi agent server (subprocess for Pi SDK sessions)
   await buildPiAgentServer();

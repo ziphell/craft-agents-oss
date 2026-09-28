@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { AlertTriangle, ArrowLeft, Check, FolderKanban, FolderOpen, Globe2, KeyRound, MessageSquare, MoreHorizontal, Pencil, RefreshCw, Sparkles, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Check, Download, ExternalLink, FolderKanban, FolderOpen, MessageSquare, MoreHorizontal, Pencil, RefreshCw, Sparkles, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useAtomValue } from 'jotai'
 import { useTranslation } from 'react-i18next'
@@ -21,35 +21,28 @@ import {
   StyledDropdownMenuSubTrigger,
 } from '@/components/ui/styled-dropdown'
 import { useProjects } from '@/hooks/useProjects'
-import type { LoadedWebsite, WebsiteDataSnapshot, WebsiteRenderLease } from '@craft-agent/shared/websites/types'
-import { WebsiteFrame } from './WebsiteFrame'
-import { WebsiteFreshness, WebsiteKindBadge } from './website-visuals'
+import { useDirectoryPicker } from '@/hooks/useDirectoryPicker'
+import { ServerDirectoryBrowser } from '@/components/ServerDirectoryBrowser'
+import type { LoadedWebsite } from '@craft-agent/shared/websites/types'
+import { WebsiteFreshness } from './website-visuals'
 import { DeleteWebsiteDialog } from './DeleteWebsiteDialog'
-import { WebsiteGrantsDialog } from './WebsiteGrantsDialog'
-import { WebsiteSourceAuthBanner } from './WebsiteSourceAuthBanner'
-import { ShareWebsiteDialog, useWebsiteShareCapabilities } from './ShareWebsiteDialog'
 
 interface WebsiteViewProps {
   websiteSlug: string
 }
 
-interface LeaseState {
-  lease: WebsiteRenderLease
-  content: string
-}
-
 /**
- * One website, rendered embedded in the main content area.
+ * One website: its header and actions, and a plain note that the site itself lives
+ * in the browser window rather than in this page.
  *
- * Owns the render-lease lifecycle: a lease is created per (website, content
- * digest) and released on unmount or when the digest changes — a content
- * change (agent edit, refresh script rewriting index.html) re-leases and
- * remounts the frame with the new exact content. The data snapshot is
- * re-read whenever website.json is stamped (refresh completion), which for
- * live websites flows into the frame as a replacement snapshot.
+ * A website is a real page at an **origin of its own** (`http://<label>.localhost/`,
+ * answered from disk by the app), so the app opens it where a page belongs — a tab of
+ * the browser window — and this screen keeps everything that is *about* the website:
+ * its name, freshness, and the actions on its folder. Entering it opens the tab once
+ * (see the effect below); the header carries a button to bring it up again.
  */
 export function WebsiteView({ websiteSlug }: WebsiteViewProps) {
-  const { activeWorkspaceId, onOpenFile, enabledSources } = useAppShellContext()
+  const { activeWorkspaceId, onOpenFile } = useAppShellContext()
   const { t } = useTranslation()
   const { navigate } = useNavigation()
   const websites = useAtomValue(websitesAtom)
@@ -76,72 +69,91 @@ export function WebsiteView({ websiteSlug }: WebsiteViewProps) {
   }, [activeWorkspaceId, websiteSlug, websiteFromAtom])
 
   // ------------------------------------------------------------------
-  // Render lease (keyed by content digest; released on cleanup)
+  // Open in the browser window
+  //
+  // A website is a page at its own origin, so it is shown in a tab of the browser
+  // window rather than framed inside this one: register (and read) the origin, ask
+  // for a tab, then point it there and bring it up. `newTab` is the one addition —
+  // a window that is already up gets a real new tab, while one that is not yet up
+  // opens *into* the blank tab it already holds, so nothing is opened beside a
+  // blank tab and what someone is reading is never replaced.
   // ------------------------------------------------------------------
-  const contentDigest = website?.config.contentDigest
-  const hasContent = Boolean(contentDigest)
-  const websiteLoaded = Boolean(website)
-  const [leaseState, setLeaseState] = React.useState<LeaseState | null>(null)
-  const [leaseError, setLeaseError] = React.useState<string | null>(null)
-  const [leaseRetry, setLeaseRetry] = React.useState(0)
-
-  React.useEffect(() => {
-    if (!activeWorkspaceId || !websiteLoaded || !hasContent) return
-    let stale = false
-    let heldLeaseId: string | null = null
-    setLeaseState(null)
-    setLeaseError(null)
-
-    window.electronAPI
-      .createWebsiteLease(activeWorkspaceId, websiteSlug)
-      .then(result => {
-        if (stale) {
-          void window.electronAPI.releaseWebsiteLease(activeWorkspaceId, result.lease.leaseId)
-          return
-        }
-        heldLeaseId = result.lease.leaseId
-        setLeaseState(result)
+  const openInWindow = React.useCallback(async () => {
+    if (!activeWorkspaceId || !website) return
+    try {
+      const origin = await window.electronAPI.getWebsiteOrigin(activeWorkspaceId, website.config.slug)
+      const instanceId = await window.electronAPI.browserPane.create({ show: true, newTab: true })
+      await window.electronAPI.browserPane.navigate(instanceId, origin)
+      await window.electronAPI.browserPane.focus(instanceId)
+    } catch (err) {
+      toast.error(t('toast.failedToCreateBrowser'), {
+        description: err instanceof Error ? err.message : String(err),
       })
-      .catch(err => {
-        if (!stale) setLeaseError(err instanceof Error ? err.message : String(err))
-      })
-
-    return () => {
-      stale = true
-      if (heldLeaseId) void window.electronAPI.releaseWebsiteLease(activeWorkspaceId, heldLeaseId)
     }
-  }, [activeWorkspaceId, websiteSlug, contentDigest, hasContent, websiteLoaded, leaseRetry])
+  }, [activeWorkspaceId, website, t])
 
-  // ------------------------------------------------------------------
-  // Data snapshot (re-read when a refresh stamps website.json)
-  // ------------------------------------------------------------------
-  const refreshStamp = website?.config.lastRefresh?.at ?? 0
-  const updatedStamp = website?.config.updatedAt ?? 0
-  const [snapshotState, setSnapshotState] = React.useState<{
-    slug: string
-    loaded: boolean
-    data: WebsiteDataSnapshot | null
-  }>({ slug: websiteSlug, loaded: false, data: null })
-
+  // Entering the detail view opens the site, once per website.
+  //
+  // The ref, not the dependency array, is what makes it once: `openInWindow` changes
+  // identity on every render (it closes over the website atom), so an effect keyed on
+  // it would fire again on each re-render — after a rename, a refresh stamp, any atom
+  // update — and open a tab every time. The ref records the website already opened
+  // (workspace + slug, so the same slug in another workspace still opens), so a
+  // re-render is a no-op while a different website (a fresh mount, or moving from one
+  // detail to another) opens again. A website with no content yet is left alone: it
+  // has no page to open, and the empty state offers to have one written.
+  const openedRef = React.useRef<string | null>(null)
   React.useEffect(() => {
-    if (!activeWorkspaceId || !websiteLoaded) return
-    let stale = false
-    window.electronAPI
-      .getWebsiteData(activeWorkspaceId, websiteSlug)
-      .then(data => { if (!stale) setSnapshotState({ slug: websiteSlug, loaded: true, data }) })
-      .catch(() => { if (!stale) setSnapshotState({ slug: websiteSlug, loaded: true, data: null }) })
-    return () => { stale = true }
-  }, [activeWorkspaceId, websiteSlug, websiteLoaded, refreshStamp, updatedStamp])
+    if (!activeWorkspaceId || !website || !website.config.contentDigest) return
+    const key = `${activeWorkspaceId}::${websiteSlug}`
+    if (openedRef.current === key) return
+    openedRef.current = key
+    void openInWindow()
+  }, [activeWorkspaceId, website, websiteSlug, openInWindow])
 
-  const snapshotReady = snapshotState.slug === websiteSlug && snapshotState.loaded
+  // ------------------------------------------------------------------
+  // Export — hand a copy of the folder to someone else
+  //
+  // A website is a directory, so this copies it out rather than compiling it: the
+  // person picking a folder is the whole of the decision, and where it lands is on the
+  // host that holds the website (which in remote mode is not this machine).
+  // ------------------------------------------------------------------
+  const exportTo = React.useCallback(
+    async (destParent: string) => {
+      if (!activeWorkspaceId || !website) return
+      try {
+        const result = await window.electronAPI.exportWebsite(
+          activeWorkspaceId,
+          website.config.slug,
+          destParent,
+        )
+        toast.success(t('toast.websiteExported', { files: result.files }), { description: result.dir })
+      } catch (err) {
+        toast.error(t('toast.websiteExportFailed'), {
+          description: err instanceof Error ? err.message : String(err),
+        })
+      }
+    },
+    [activeWorkspaceId, website, t],
+  )
+
+  const onExportFolderPicked = React.useCallback(
+    (destParent: string) => void exportTo(destParent),
+    [exportTo],
+  )
+
+  const {
+    pickDirectory: pickExportFolder,
+    showServerBrowser,
+    serverBrowserMode,
+    cancelServerBrowser,
+    confirmServerBrowser,
+  } = useDirectoryPicker(onExportFolderPicked)
 
   // ------------------------------------------------------------------
   // Actions
   // ------------------------------------------------------------------
   const [confirmingDelete, setConfirmingDelete] = React.useState(false)
-  const [shareOpen, setShareOpen] = React.useState(false)
-  const [grantsOpen, setGrantsOpen] = React.useState(false)
-  const { sharingEnabled } = useWebsiteShareCapabilities()
   const { projects } = useProjects(activeWorkspaceId)
 
   // Inline rename: null = display mode, string = the draft being edited.
@@ -201,14 +213,8 @@ export function WebsiteView({ websiteSlug }: WebsiteViewProps) {
     if (!activeWorkspaceId || !website) return
     setConfirmingDelete(false)
     try {
-      const result = await window.electronAPI.deleteWebsite(activeWorkspaceId, website.config.slug)
-      if (result?.publicCopyMayRemain) {
-        toast.warning(t('toast.websiteDeleted', { name: website.config.name }), {
-          description: t('toast.websitePublicCopyMayRemain'),
-        })
-      } else {
-        toast.success(t('toast.websiteDeleted', { name: website.config.name }))
-      }
+      await window.electronAPI.deleteWebsite(activeWorkspaceId, website.config.slug)
+      toast.success(t('toast.websiteDeleted', { name: website.config.name }))
       navigate(routes.view.websites())
     } catch (err) {
       toast.error(t('toast.websiteDeleteFailed'), {
@@ -242,13 +248,14 @@ export function WebsiteView({ websiteSlug }: WebsiteViewProps) {
 
   const { config } = website
   const refreshFailed = config.lastRefresh && !config.lastRefresh.ok
+  const hasContent = Boolean(config.contentDigest)
   // Why this website exists: the conversation that asked for it. A weak reference —
   // the row appears only while that conversation is still around.
   const originSession = config.originSessionId ? sessionMetaMap.get(config.originSessionId) : undefined
 
   return (
     <div className="flex h-full flex-col bg-background">
-      {/* Header: back, title, kind, freshness, overflow */}
+      {/* Header: back, title, freshness, open, overflow */}
       <div className="flex items-center gap-2 border-b border-border/50 px-3 py-2">
         <button
           type="button"
@@ -280,7 +287,6 @@ export function WebsiteView({ websiteSlug }: WebsiteViewProps) {
             {config.name}
           </span>
         )}
-        <WebsiteKindBadge kind={config.kind} />
         <WebsiteFreshness config={config} className="hidden @[28rem]/panel:inline-flex" />
         {originSession && (
           <button
@@ -297,20 +303,14 @@ export function WebsiteView({ websiteSlug }: WebsiteViewProps) {
           </button>
         )}
         <div className="ml-auto flex items-center gap-1">
-          {(sharingEnabled || config.share) && (
-            <button
-              type="button"
-              onClick={() => setShareOpen(true)}
-              aria-label={t('websites.share.title')}
-              title={config.share ? t('websites.shared') : t('websites.share.title')}
-              className="flex h-7 items-center gap-1.5 rounded-md px-2 text-foreground/60 transition-colors hover:bg-foreground/5 hover:text-foreground"
-            >
-              <Globe2 className={config.share ? 'h-4 w-4 text-sky-600 dark:text-sky-400' : 'h-4 w-4'} />
-              {config.share && (
-                <span className="hidden text-xs @[28rem]/panel:inline">{t('websites.shared')}</span>
-              )}
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => void openInWindow()}
+            className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-foreground/60 transition-colors hover:bg-foreground/5 hover:text-foreground"
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+            {t('websites.openInWindow')}
+          </button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
@@ -356,16 +356,14 @@ export function WebsiteView({ websiteSlug }: WebsiteViewProps) {
                 <FolderOpen />
                 {t('websites.openFolder')}
               </StyledDropdownMenuItem>
+              <StyledDropdownMenuItem onClick={() => pickExportFolder()}>
+                <Download />
+                {t('websites.exportCopy')}
+              </StyledDropdownMenuItem>
               <StyledDropdownMenuItem onClick={handleRefreshPreview}>
                 <RefreshCw />
                 {t('websites.refreshPreview')}
               </StyledDropdownMenuItem>
-              {(config.grants?.length ?? 0) > 0 && (
-                <StyledDropdownMenuItem onClick={() => setGrantsOpen(true)}>
-                  <KeyRound />
-                  {t('websites.grants.manage')}
-                </StyledDropdownMenuItem>
-              )}
               <StyledDropdownMenuItem variant="destructive" onClick={() => setConfirmingDelete(true)}>
                 <Trash2 />
                 {t('websites.deleteWebsite')}
@@ -375,17 +373,7 @@ export function WebsiteView({ websiteSlug }: WebsiteViewProps) {
         </div>
       </div>
 
-      {/* Granted sources that lost auth get a reconnect row above the frame */}
-      {activeWorkspaceId && (
-        <WebsiteSourceAuthBanner
-          workspaceId={activeWorkspaceId}
-          website={website}
-          sources={enabledSources ?? []}
-          className="mx-3 mt-2"
-        />
-      )}
-
-      {/* Last-refresh failure surfaces above the frame, not inside it */}
+      {/* Last-refresh failure surfaces above the body */}
       {refreshFailed && (
         <Info_Alert
           variant="error"
@@ -402,10 +390,25 @@ export function WebsiteView({ websiteSlug }: WebsiteViewProps) {
         </Info_Alert>
       )}
 
-      {/* Body: edge-to-edge sandboxed frame on a neutral canvas */}
-      <div className="relative min-h-0 flex-1 p-3">
-        {!hasContent ? (
-          <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
+      {/* Body: the site is a tab in the browser window, not a frame in here */}
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
+        {hasContent ? (
+          <>
+            <ExternalLink className="h-5 w-5 text-foreground/40" aria-hidden />
+            <span className="max-w-md text-xs text-foreground/50">
+              {t('websites.openInWindowDescription')}
+            </span>
+            <button
+              type="button"
+              onClick={() => void openInWindow()}
+              className="mt-1 inline-flex h-7 items-center gap-1.5 rounded-[8px] bg-foreground/[0.02] px-3 text-xs font-medium shadow-minimal transition-colors hover:bg-foreground/[0.05]"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+              {t('websites.openInWindow')}
+            </button>
+          </>
+        ) : (
+          <>
             <span className="text-sm font-medium text-foreground/70">{t('websites.noContentTitle')}</span>
             <span className="max-w-md text-xs text-foreground/50">{t('websites.noContentDescription')}</span>
             <div className="mt-2 flex items-center gap-2">
@@ -426,62 +429,21 @@ export function WebsiteView({ websiteSlug }: WebsiteViewProps) {
                 {t('websites.openFolder')}
               </button>
             </div>
-          </div>
-        ) : leaseError ? (
-          <div className="mx-auto max-w-xl pt-8">
-            <Info_Alert variant="error" icon={<AlertTriangle className="h-4 w-4" />}>
-              <Info_Alert.Title>{t('websites.loadFailed')}</Info_Alert.Title>
-              <Info_Alert.Description className="break-all">{leaseError}</Info_Alert.Description>
-            </Info_Alert>
-            <button
-              onClick={() => setLeaseRetry(n => n + 1)}
-              className="mt-3 inline-flex h-7 items-center rounded-[8px] bg-foreground/[0.02] px-3 text-xs font-medium shadow-minimal transition-colors hover:bg-foreground/[0.05]"
-            >
-              {t('common.retry')}
-            </button>
-          </div>
-        ) : !leaseState || !snapshotReady || !activeWorkspaceId ? (
-          <div className="flex h-full items-center justify-center">
-            <LoadingIndicator label={t('common.loading')} />
-          </div>
-        ) : (
-          <div className="h-full w-full overflow-hidden rounded-lg border border-border/60 shadow-minimal">
-            <WebsiteFrame
-              key={leaseState.lease.leaseId}
-              workspaceId={activeWorkspaceId}
-              website={website}
-              lease={leaseState.lease}
-              content={leaseState.content}
-              snapshot={snapshotState.data}
-            />
-          </div>
+          </>
         )}
       </div>
 
       <DeleteWebsiteDialog
         websiteName={confirmingDelete ? config.name : null}
-        shared={Boolean(config.share)}
         onConfirm={handleConfirmDelete}
         onCancel={() => setConfirmingDelete(false)}
       />
-
       {activeWorkspaceId && (
-        <ShareWebsiteDialog
-          workspaceId={activeWorkspaceId}
-          website={website}
-          hasSnapshot={snapshotState.data !== null}
-          sharingEnabled={sharingEnabled}
-          open={shareOpen}
-          onOpenChange={setShareOpen}
-        />
-      )}
-
-      {activeWorkspaceId && (
-        <WebsiteGrantsDialog
-          workspaceId={activeWorkspaceId}
-          website={website}
-          open={grantsOpen}
-          onOpenChange={setGrantsOpen}
+        <ServerDirectoryBrowser
+          open={showServerBrowser}
+          mode={serverBrowserMode}
+          onSelect={confirmServerBrowser}
+          onCancel={cancelServerBrowser}
         />
       )}
     </div>

@@ -10,8 +10,6 @@
 
 import type { TabBelongsTo } from '@craft-agent/shared/protocol'
 
-export const BROWSER_CAPABILITY_VERSION = 1
-
 /**
  * Names map 1:1 to `IBrowserPaneManager` methods.
  * Positional `args` carry the method's arguments in declaration order.
@@ -62,9 +60,8 @@ export type BrowserCapabilityMethod =
   | 'clearInitScripts'
   // Video frames
   | 'extractVideoFrames'
-  // Network-level mock
-  | 'setFetchMock'
-  | 'clearFetchMock'
+  // Diagrams
+  | 'renderDrawio'
   // Clipboard
   | 'setClipboard'
   | 'getClipboard'
@@ -73,7 +70,7 @@ export type BrowserCapabilityMethod =
   | 'screenshotRegion'
   | 'getConsoleLogs'
   | 'getNetworkLogs'
-  | 'windowResize'
+  | 'resizeViewport'
   | 'getDownloads'
   | 'uploadFile'
   | 'detectSecurityChallenge'
@@ -84,12 +81,12 @@ export interface BrowserCapabilityRequest {
   method: BrowserCapabilityMethod
   /** Positional args matching `IBrowserPaneManager[method]` signature. */
   args: unknown[]
-  /** Owning session — who is asking, and whose cursor and lease a tab is written under. */
+  /** Owning session — who is asking, and whose cursor and driven-by mark a tab is written under. */
   sessionId: string
   /** Owning workspace — the boundary a call may act inside. */
   workspaceId: string
   /**
-   * The **work** the asking session is part of (plan §22).
+   * The **work** the asking session is part of.
    *
    * Identity next to `sessionId` rather than in `args`, for the same reason `createTab`'s
    * `by` is stamped by the dispatcher rather than read from the wire: a tab's
@@ -106,7 +103,7 @@ export interface BrowserCapabilityRequest {
    * it says the same kind of thing: not *what* to do but *where*. The caller resolves it
    * with `pickCommandTarget` — the conversation's own tab, and only the tab on screen
    * when it has none — and passes it here, so the dispatcher never has to guess from what
-   * the person happens to be looking at (plan §22, 第十轮/第十二轮). Absent means the tab
+   * the person happens to be looking at. Absent means the tab
    * on screen: a caller with no routing (the person's own toolbar calls never come through
    * here at all) and the commands that are about a window rather than a tab.
    */

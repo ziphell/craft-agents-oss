@@ -35,6 +35,8 @@ import { createLLMTool, type LLMQueryRequest, type LLMQueryResult } from './llm-
 import { createSpawnSessionTool, type SpawnSessionFn } from './spawn-session-tool.ts';
 import { createBrowserTools } from './browser-tools.ts';
 import { createPrototypeTools } from './prototype-tools.ts';
+import { createVideoTools } from './video-tools.ts';
+import { createDrawioTools } from './drawio-tools.ts';
 import type { BrowserPaneFns } from './browser-pane.ts';
 import { FEATURE_FLAGS } from '../feature-flags.ts';
 import { getBrowserToolEnabled } from '../config/storage.ts';
@@ -81,6 +83,8 @@ export const CLAUDE_BACKEND_SESSION_TOOL_NAMES = new Set<string>([
   'spawn_session',
   'browser_tool',
   'prototype_tool',
+  'video_tool',
+  'drawio_tool',
 ]);
 
 /**
@@ -308,6 +312,27 @@ export function getSessionScopedTools(
         // The prototype workbench is the same runtime behind its own door: its commands drive
         // this window too, so it is under the same switch.
         ...createPrototypeTools({
+          sessionId,
+          workspaceRootPath,
+          getBrowserPaneFns: () => {
+            const callbacks = getSessionScopedToolCallbacks(sessionId);
+            return callbacks?.browserPaneFns;
+          },
+        }),
+        // Video frames are decoded by the app's browser (a hidden window of its own), so the
+        // video tool is on this runtime too, and under the same switch.
+        ...createVideoTools({
+          sessionId,
+          workspaceRootPath,
+          getBrowserPaneFns: () => {
+            const callbacks = getSessionScopedToolCallbacks(sessionId);
+            return callbacks?.browserPaneFns;
+          },
+        }),
+        // Diagrams are converted and drawn by the app's own drawio (a hidden window again), so
+        // the drawio tool is on this runtime too — and under the same switch, because the
+        // drawio webapp ships with the same browser build.
+        ...createDrawioTools({
           sessionId,
           workspaceRootPath,
           getBrowserPaneFns: () => {

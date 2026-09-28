@@ -1,14 +1,12 @@
 import { afterEach, describe, expect, it } from 'bun:test'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import {
   buildPrototypePromptContext,
   createPrototype,
   formatPrototypeContextForPrompt,
-  writePrototypeConfig,
-  writePrototypePage,
-  PROTOTYPE_DEFAULT_WRITER,
+  getPrototypeDirPath,
   type PrototypePromptContext,
 } from '..'
 
@@ -16,19 +14,10 @@ import {
 function makeContext(overrides: Partial<PrototypePromptContext> = {}): PrototypePromptContext {
   return {
     slug: 'checkout-flow',
-    writer: PROTOTYPE_DEFAULT_WRITER,
     dir: '/tmp/prototypes/checkout-flow',
-    pages: [],
-    entryPage: null,
-    layoutPath: null,
     requirements: [],
     findings: [],
     reviews: { total: 0, unresolved: [] },
-    acceptance: null,
-    patches: [],
-    services: [],
-    distFiles: [],
-    violations: [],
     ...overrides,
   }
 }
@@ -44,138 +33,21 @@ describe('formatPrototypeContextForPrompt', () => {
     expect(text).toContain('target it by default')
   })
 
-  // A live page is an address on someone else's site, and a copy of it would run
-  // none of that page's own JavaScript. So the block must not send the agent
-  // looking for a document that is never going to exist.
-  it('tells the agent a live page is an address, not a copy of it', () => {
-    const text = formatPrototypeContextForPrompt(
-      makeContext({
-        pages: [{ name: 'pay', kind: 'overlay', url: 'https://app.example.com/cart', file: null, entry: true }],
-        entryPage: 'pay',
-      }),
-    )
-
-    expect(text).toContain('**overlay**')
-    expect(text).toContain('- pay (overlay) — https://app.example.com/cart (entry)')
-    expect(text).toContain('never copied')
-    expect(text).toContain("The address root (/) opens 'pay'.")
-    expect(text).not.toContain('prototype-capture')
-  })
-
-  // A page of ours is a document we own, so changing it is editing that file.
-  it('tells the agent a page of ours is a document we own', () => {
-    const text = formatPrototypeContextForPrompt(
-      makeContext({
-        pages: [{ name: 'cart', kind: 'scratch', url: 'http://x/cart.html', file: 'cart.html', entry: true }],
-        entryPage: 'cart',
-      }),
-    )
-
-    expect(text).toContain('**scratch**')
-    expect(text).toContain('- cart (scratch) — cart.html (entry)')
-    expect(text).toContain('a document of ours')
-    expect(text).toContain('Pages of ours live in the directory above as ordinary .html files')
-  })
-
-  // The default, and the one no page has to earn: the index lists every page, so
-  // the agent can always say what the prototype is made of.
-  it('says the root shows the generated index when no page is the entry', () => {
-    const text = formatPrototypeContextForPrompt(
-      makeContext({
-        pages: [{ name: 'orders', kind: 'scratch', url: 'http://x/orders.html', file: 'orders.html', entry: false }],
-        entryPage: null,
-      }),
-    )
-
-    expect(text).toContain('The address root (/) shows the generated page index')
-  })
-
-  it('says which page each patch changes', () => {
-    const text = formatPrototypeContextForPrompt(
-      makeContext({
-        pages: [{ name: 'cart', kind: 'scratch', url: 'http://x/cart.html', file: 'cart.html', entry: true }],
-        entryPage: 'cart',
-        patches: [
-          { file: 'A-001-btn.css', writer: 'A', kind: 'css', page: null, targets: [], fingerprint: 'a1b2c3d4' },
-          { file: 'cart/B-002-total.js', writer: 'B', kind: 'js', page: 'cart', targets: [], fingerprint: 'e5f6a7b8' },
-        ],
-      }),
-    )
-
-    expect(text).toContain('- A-001-btn.css [a1b2c3d4] (writer A, css, every page)')
-    expect(text).toContain('- cart/B-002-total.js [e5f6a7b8] (writer B, js, page cart)')
-    expect(text).toContain('patches/<page>/… applies to that page only')
-    // The bracketed fingerprint is what a patch dispute records as `on:`, so the block has to say
-    // what it is for — otherwise it is eight characters of noise on every line.
-    expect(text).toContain("that is what a dispute's 'on:' records")
-  })
-
-  // Nothing is seeded at creation, so "no pages" is the state every new prototype
-  // is in — and the block has to say how to leave it. That is the agent's own file
-  // tools now: there is no command that copies material in.
-  it('names how a first page arrives', () => {
+  // The model in one line: a folder with a specification in it. There is no page layer and no
+  // change layer any more, so nothing in the block may send the agent looking for one.
+  it('says what a prototype is: a folder with a specification', () => {
     const text = formatPrototypeContextForPrompt(makeContext())
 
-    expect(text).toContain('no pages yet')
-    expect(text).toContain('<name>.html with the Write tool for a page of ours')
-    expect(text).toContain('Pages: none yet, so patches have nothing to apply to.')
-    expect(text).not.toContain('prototype-import')
+    expect(text).toContain('a **folder that holds a specification**')
+    expect(text).toContain('The specification is the markdown files in')
+    expect(text).toContain('Everything else in that folder is yours, in any format')
   })
 
-  /**
-   * A page of ours is a document the agent writes, so the block has to say what a
-   * good one looks like — and where the shared layout already is, since that is the only
-   * reuse mechanism this model has (no template engine, by design).
-   */
-  it('tells the agent how to write a page, and where the shared layout already is', () => {
-    const withLayout = formatPrototypeContextForPrompt(
-      makeContext({
-        pages: [{ name: 'cart', kind: 'scratch', url: 'http://x/cart.html', file: 'cart.html', entry: true }],
-        entryPage: 'cart',
-        layoutPath: '/w/prototypes/checkout-flow/_layout.html',
-      }),
-    )
-
-    expect(withLayout).toContain('Writing a page of ours')
-    expect(withLayout).toContain('no build step')
-    expect(withLayout).toContain('/w/prototypes/checkout-flow/_layout.html')
-    expect(withLayout).toContain('Do not copy the layout into a page')
-    expect(withLayout).toContain('No eval and no new Function')
-    expect(withLayout).toContain('no external host')
-    // Standard HTML first: the page-level answer to "do I need a library for this?"
-    expect(withLayout).toContain('Reach for standard HTML before writing any JS')
-    expect(withLayout).toContain('<details>')
-    // Where a change belongs is the rule the model turns on most often.
-    expect(withLayout).toContain('Add a screen by writing a page')
-
-    // No layout yet: say how to make one rather than naming a file that is not there.
-    const withoutLayout = formatPrototypeContextForPrompt(
-      makeContext({
-        pages: [{ name: 'cart', kind: 'scratch', url: 'http://x/cart.html', file: 'cart.html', entry: true }],
-        entryPage: 'cart',
-      }),
-    )
-    expect(withoutLayout).toContain('write _layout.html')
-
-    // All pages are live ones: there is no document of ours to write, so the
-    // guidance would be noise.
-    const liveOnly = formatPrototypeContextForPrompt(
-      makeContext({
-        pages: [{ name: 'pay', kind: 'overlay', url: 'https://app.example.com/pay', file: null, entry: true }],
-        entryPage: 'pay',
-      }),
-    )
-    expect(liveOnly).not.toContain('Writing a page of ours')
-  })
-
-  // Reading 14-B: this is the rule that keeps another prototype's selectors out of the
-  // reader's deliverable. Without it an agent will copy the patch files across. It has no
-  // per-reference listing to hang off any more, so it is stated once and unconditionally.
-  it('says where what you study is written down, and forbids copying another prototype’s patches', () => {
+  it('says there is no requirement yet, and asks for one', () => {
     const text = formatPrototypeContextForPrompt(makeContext())
 
-    expect(text).toContain('is yours to write down')
-    expect(text).toContain("another prototype's patch files are NEVER copied")
+    expect(text).toContain('No requirement has been written yet')
+    expect(text).toContain('is a picture, not a proposal')
   })
 
   // The one thing the workbench cannot check about a requirement is whether it was worth
@@ -186,6 +58,82 @@ describe('formatPrototypeContextForPrompt', () => {
     expect(text).toContain('think from first principles about the value')
     expect(text).toContain('never that it was worth writing')
   })
+
+  it('lists the requirements written so far, and what refers to each', () => {
+    const text = formatPrototypeContextForPrompt(
+      makeContext({
+        requirements: [
+          { id: 'R-001', title: 'A cart holds its line', files: [], findings: [] },
+          { id: 'R-002', title: 'Checking out takes one step', files: ['cart.html'], findings: ['F-001'] },
+        ],
+      }),
+    )
+
+    expect(text).toContain('- R-001 A cart holds its line — **nothing refers to it yet**')
+    expect(text).toContain('- R-002 Checking out takes one step — referred to by cart.html, F-001 (finding)')
+  })
+
+  it('says how to declare what a file serves, and where research goes', () => {
+    const text = formatPrototypeContextForPrompt(makeContext())
+
+    expect(text).toContain("'@requirement R-001' in a comment in the file")
+    expect(text).toContain('/research/ holds what you learned from other products')
+    expect(text).toContain("'claim:', 'source:', 'captured:', 'evidence:'")
+    expect(text).toContain('research/ is **not** delivered')
+  })
+
+  it('says where a finding’s evidence can come from', () => {
+    const text = formatPrototypeContextForPrompt(makeContext())
+
+    expect(text).toContain('a screenshot you took')
+    expect(text).toContain('evidence:')
+  })
+
+  it('says what a review is about, and that a dispute needs a fingerprint', () => {
+    const text = formatPrototypeContextForPrompt(makeContext())
+
+    expect(text).toContain("'about:', 'status:', 'claim:', 'evidence:'")
+    expect(text).toContain("'about:' names one thing: 'requirement R-001'")
+    expect(text).toContain("A dispute also needs 'on:'")
+  })
+
+  it('lists the disputes that still stand', () => {
+    const text = formatPrototypeContextForPrompt(
+      makeContext({
+        reviews: {
+          total: 3,
+          unresolved: [
+            {
+              id: 'D-001',
+              file: 'reviews/D-001-x.md',
+              about: 'requirement R-001',
+              status: 'open',
+              stale: true,
+              staleReason: 'R-001 in PRD.md has changed since this was filed',
+              claim: 'it scrolls off screen',
+            },
+          ],
+        },
+      }),
+    )
+
+    expect(text).toContain('Still standing (3 filed so far)')
+    expect(text).toContain('- D-001 (open, **stale**: R-001 in PRD.md has changed since this was filed) about requirement R-001 — it scrolls off screen (reviews/D-001-x.md)')
+  })
+
+  // Nothing in the block may mention the machinery that was removed: an agent told about a patch
+  // layer or a mock will go looking for one.
+  it('says nothing about pages, patches, anchors, a host or a mock', () => {
+    const text = formatPrototypeContextForPrompt(
+      makeContext({
+        requirements: [{ id: 'R-001', title: 'x', files: ['cart.html'], findings: [] }],
+      }),
+    )
+
+    for (const gone of ['@target', 'patches/', 'anchors/', '_layout.html', 'overlay', 'entry page', 'folded', 'fragments/', 'x-mock', 'fixtures', 'state.json', 'mock'])
+      expect(text).not.toContain(gone)
+    expect(text).toContain('Workflow: write the files above')
+  })
 })
 
 describe('buildPrototypePromptContext', () => {
@@ -195,42 +143,22 @@ describe('buildPrototypePromptContext', () => {
     rmSync(workspaceRoot, { recursive: true, force: true })
   })
 
-  it('lists the pages of the bound prototype, with each page’s own kind', () => {
+  it('lists the requirements of the bound prototype', () => {
     workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-prototype-prompt-'))
     createPrototype(workspaceRoot, { name: 'Checkout flow' })
-    writePrototypePage(workspaceRoot, 'checkout-flow', 'cart', '<!doctype html><html><body>cart</body></html>')
-    writePrototypeConfig(workspaceRoot, 'checkout-flow', {
-      pages: [
-        { name: 'cart', kind: 'scratch', entry: true },
-        { name: 'pay', kind: 'overlay', url: 'https://app.example.com/pay' },
-      ],
-    })
+    const dir = getPrototypeDirPath(workspaceRoot, 'checkout-flow')
+    writeFileSync(join(dir, 'PRD.md'), '## R-001 A cart holds its line\n', 'utf-8')
+    writeFileSync(join(dir, 'cart.html'), '<!doctype html><!-- @requirement R-001 --><html><body>cart</body></html>', 'utf-8')
 
-    const context = buildPrototypePromptContext(workspaceRoot, 'checkout-flow', PROTOTYPE_DEFAULT_WRITER)
+    const context = buildPrototypePromptContext(workspaceRoot, 'checkout-flow')
 
-    expect(context?.pages.map((page) => `${page.name}:${page.kind}:${page.entry}`)).toEqual([
-      'cart:scratch:true',
-      'pay:overlay:false',
+    expect(context?.requirements.map((requirement) => `${requirement.id}:${requirement.files.join(',')}`)).toEqual([
+      'R-001:cart.html',
     ])
-    expect(context?.entryPage).toBe('cart')
-  })
-
-  it('carries the writer identity into the block and its naming rule', () => {
-    workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-prototype-prompt-'))
-    createPrototype(workspaceRoot, { name: 'Checkout flow' })
-
-    const context = buildPrototypePromptContext(workspaceRoot, 'checkout-flow', 'checkout-ui')
-    const text = formatPrototypeContextForPrompt(context!)
-
-    expect(context?.writer).toBe('checkout-ui')
-    expect(text).toContain('writer="checkout-ui"')
-    // The rule is stated in terms of the identity — not as a list of codes to pick from.
-    expect(text).toContain("this conversation writes as 'checkout-ui'")
-    expect(text).toContain('checkout-ui-<nnn>-<name>.{css,js}')
   })
 
   it('returns null for a prototype that does not exist', () => {
     workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-prototype-prompt-'))
-    expect(buildPrototypePromptContext(workspaceRoot, 'nope', PROTOTYPE_DEFAULT_WRITER)).toBeNull()
+    expect(buildPrototypePromptContext(workspaceRoot, 'nope')).toBeNull()
   })
 })

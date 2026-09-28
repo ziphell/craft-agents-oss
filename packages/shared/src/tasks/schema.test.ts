@@ -181,53 +181,6 @@ describe('validate', () => {
     expect(res.warnings.some((w) => w.message.includes('does not list it in depends_on'))).toBe(true);
   });
 
-  /**
-   * A node's `writes:` is the prefix its patches will claim (plan §3.6), and the whole reason to
-   * declare it is that two nodes in one run must not claim the same one: "who owns this file" is
-   * what the write guard answers, and it cannot answer for an identity two nodes share.
-   */
-  it('accepts distinct writer identities, and refuses one that would make a patch name ambiguous', () => {
-    const distinct = validateTaskInput({
-      id: 'x', title: 'X', goal: 'g',
-      nodes: [
-        { id: 'ui', prompt: 'p', writes: 'checkout-ui' },
-        { id: 'api', prompt: 'p', writes: 'checkout-api' },
-      ],
-    });
-    expect(distinct.errors).toHaveLength(0);
-
-    // `ui-2` reads as writer `ui` plus a second patch with order 2: a name nobody can parse back.
-    const ambiguous = validateTaskInput({
-      id: 'x', title: 'X', goal: 'g',
-      nodes: [{ id: 'ui', prompt: 'p', writes: 'ui-2' }],
-    });
-    expect(ambiguous.valid).toBe(false);
-    expect(ambiguous.errors.some((e) => e.message.includes('not usable as a writer identity'))).toBe(true);
-  });
-
-  it('refuses the consolidator identity, which only a folded change layer writes', () => {
-    const res = validateTaskInput({
-      id: 'x', title: 'X', goal: 'g',
-      nodes: [{ id: 'ui', prompt: 'p', writes: 'z' }],
-    });
-    expect(res.valid).toBe(false);
-    expect(res.errors.some((e) => e.message.includes("reserved for a prototype's folded changes"))).toBe(true);
-  });
-
-  it('refuses two nodes claiming one identity, however it is spelled', () => {
-    const res = validateTaskInput({
-      id: 'x', title: 'X', goal: 'g',
-      nodes: [
-        { id: 'ui', prompt: 'p', writes: 'checkout-ui' },
-        { id: 'ui-again', prompt: 'p', writes: 'Checkout-UI' },
-      ],
-    });
-    expect(res.valid).toBe(false);
-    expect(
-      res.errors.some((e) => e.message.includes('declares the same writer identity as node "ui"')),
-    ).toBe(true);
-  });
-
   it('errors on an undeclared param reference but accepts a declared one', () => {
     const bad = validateTaskInput({
       id: 'x', title: 'X', goal: 'g',
@@ -440,13 +393,6 @@ describe('generator-prompt', () => {
     expect(prompt).toContain('${nodes.<id>.output} reference MUST point to an `id` that you actually declare');
     expect(prompt).toContain('Goal: Decompose the goal');
     expect(prompt).toContain('Working title: My task');
-  });
-
-  it('tells the generator to give concurrent prototype writers distinct identities', () => {
-    const prompt = buildGeneratorPrompt('Build two prototypes at once');
-
-    expect(prompt).toContain('distinct `writes:` slug');
-    expect(prompt).toContain('writes: checkout-ui');
   });
 
   it('points the critic at the brief, not only at the prototype checks', () => {

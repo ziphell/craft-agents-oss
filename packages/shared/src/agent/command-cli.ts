@@ -43,7 +43,7 @@ export interface BrowserCommandResult {
    *
    * Only a frame capture does: `screenshot` is a single picture, while a recording is
    * a session of them and the point of the session is that the model can look at what
-   * happened (plan §20.3).
+   * happened.
    */
   images?: BrowserCommandImage[];
 }
@@ -122,9 +122,8 @@ function decodeEscapes(input: string): string {
 /**
  * Split a command string into tokens, honouring quotes and escapes.
  *
- * Shared because both doors take the same command line — `--tab <id>`, `--page <name>`, a quoted
- * value with spaces in it. The error names no tool: it is this parser's, whichever door the
- * command came through.
+ * Shared because both doors take the same command line — `--tab <id>`, a quoted value with spaces
+ * in it. The error names no tool: it is this parser's, whichever door the command came through.
  */
 export function tokenizeCommand(input: string): string[] {
   const tokens: string[] = [];
@@ -197,6 +196,25 @@ export function numberOption(parts: string[], flag: string, fallback: number, mi
   return Math.min(max, Math.max(min, value));
 }
 
+/**
+ * A byte count in the units a person reads, for the replies that report a file's size.
+ *
+ * Shared between the doors because both report sizes — a screenshot on the window's side, the
+ * frames a capture writes on the prototype's — and a second copy is how the two would start
+ * disagreeing about what "KB" means.
+ */
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value >= 10 || unit === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`;
+}
+
 /** Read a ratio option, accepting `2%` and `0.02` alike. */
 export function ratioOption(parts: string[], flag: string, fallback: number): number {
   const at = parts.indexOf(flag);
@@ -245,9 +263,8 @@ function extractTabTarget(parts: string[]): { parts: string[]; tabId: string | n
 /**
  * The absolute path a command's `--file` names.
  *
- * A relative path is counted from the **workspace root**, which is where the prototype
- * documents and `patches/` live and what a path like `prototypes/<slug>/patches/cart/
- * ui-002-total.js` is counted from. Deliberately not a second base: the same string
+ * A relative path is counted from the **workspace root**, which is what a path like
+ * `scripts/probe.js` is counted from. Deliberately not a second base: the same string
  * meaning two different files is how the wrong script gets injected. `~/…` is expanded;
  * an absolute path is used as it is.
  */
@@ -337,7 +354,7 @@ export function createCommandRunner(
 
     // Naming a tab targets it: it becomes the tab this conversation works from — so the rest
     // of the command, and the next one, and the one after the person clicks around, all stay
-    // here (plan §22, 第十轮). It does *not* bring the tab forward (第十二轮): the window is
+    // here. It does *not* bring the tab forward (第十二轮): the window is
     // shared with the person, who may be reading another one of its tabs, and a target is not
     // a request to move them. "tab-show <id>" is how a tab is deliberately brought up.
     if (tabId) await fns.targetTab(tabId);

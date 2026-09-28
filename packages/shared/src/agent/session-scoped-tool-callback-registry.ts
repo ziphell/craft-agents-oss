@@ -93,6 +93,12 @@ export interface SessionScopedToolCallbacks {
    * SessionManager to the invoking session's workspace.
    */
   websites?: import('@craft-agent/session-tools-core').WebsiteToolCallbacks;
+
+  /**
+   * Tweaks tools (list/get/create/update/delete/export) — the standing edits that run on
+   * pages nobody here owns. Grouped like the websites ones, and wired the same way.
+   */
+  tweaks?: import('@craft-agent/session-tools-core').TweakToolCallbacks;
 }
 
 // Registry of callbacks keyed by sessionId

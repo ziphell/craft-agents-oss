@@ -23,6 +23,8 @@ export {
   getWorkspaceSkillsPath,
   getWorkspacePrototypesPath,
   ensureWorkspacePrototypesPath,
+  getWorkspaceTweaksPath,
+  TWEAKS_DIRNAME,
   // Config operations
   loadWorkspaceConfig,
   saveWorkspaceConfig,

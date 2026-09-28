@@ -10,12 +10,10 @@ function tab(id: string, belongsTo: TabBelongsTo | null): BrowserTabSummary {
     favicon: null,
     isLoading: false,
     active: false,
-    prototype: null,
-    prototypePage: null,
     disposition: null,
     belongsTo,
-    driverSessionId: belongsTo?.sessionId ?? null,
-    cursorOf: null,
+    drivenBy: belongsTo?.sessionId ?? null,
+    cursorOf: [],
     lockedBy: null,
   }
 }
@@ -60,7 +58,7 @@ describe('groupTabsByWork', () => {
 
   // One task is one section, its nodes included: a DAG running four nodes in parallel is one
   // piece of work, and four sections would read as four unrelated things in the rail — which
-  // is exactly what a person reading a board expects *not* to see (plan §22).
+  // is exactly what a person reading a board expects *not* to see.
   it('keeps a task\'s nodes in one section, under the task', () => {
     const groups = groupTabsByWork([
       tab('a', node('checkout-flow', 'cart', 'child-1')),

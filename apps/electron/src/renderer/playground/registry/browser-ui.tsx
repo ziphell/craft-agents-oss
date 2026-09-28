@@ -523,7 +523,7 @@ type BrowserTabStripMockPreset = 'default' | 'long-names' | 'many-running' | 'st
  * One mock tab, for mocks written as window-level data.
  *
  * Which conversation a window belongs to is per **tab** now — one window holds several
- * conversations' tabs (plan §22) — so a mock window gets a tab, or the badge's ordering and
+ * conversations' tabs — so a mock window gets a tab, or the badge's ordering and
  * its "open the conversation" item would have nothing to read.
  */
 function tabOf(sessionId: string | null): Pick<BrowserInstanceInfo, 'tabs'> {
@@ -535,12 +535,10 @@ function tabOf(sessionId: string | null): Pick<BrowserInstanceInfo, 'tabs'> {
       favicon: null,
       isLoading: false,
       active: true,
-      prototype: null,
-      prototypePage: null,
       disposition: null,
       belongsTo: sessionId ? { kind: 'session', sessionId } : null,
-      driverSessionId: null,
-      cursorOf: null,
+      drivenBy: null,
+      cursorOf: [],
       lockedBy: null,
     }],
   }
@@ -838,7 +836,7 @@ function BrowserTabStripPlayground({
     if (!activeSessionId) return items
 
     // The same rule the strip uses: the window holding this conversation's tabs comes first
-    // — and "this conversation's" is a tab's answer, not the window's (plan §22).
+    // — and "this conversation's" is a tab's answer, not the window's.
     items.sort((a, b) => {
       const aInActiveSession = a.tabs?.some(tab => tab.belongsTo?.sessionId === activeSessionId) ? 0 : 1
       const bInActiveSession = b.tabs?.some(tab => tab.belongsTo?.sessionId === activeSessionId) ? 0 : 1

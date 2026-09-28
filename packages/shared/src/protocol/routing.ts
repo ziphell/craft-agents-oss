@@ -169,6 +169,8 @@ export const LOCAL_ONLY_CHANNELS = new Set<string>([
   RPC_CHANNELS.browserPane.DESTROY,
   RPC_CHANNELS.browserPane.LIST,
   RPC_CHANNELS.browserPane.NAVIGATE,
+  RPC_CHANNELS.browserPane.OPEN_FILE,
+  RPC_CHANNELS.browserPane.OPEN_URL,
   RPC_CHANNELS.browserPane.GO_BACK,
   RPC_CHANNELS.browserPane.GO_FORWARD,
   RPC_CHANNELS.browserPane.RELOAD,
@@ -256,16 +258,9 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.prototypes.UNWATCH,
   RPC_CHANNELS.prototypes.CHANGED,
   RPC_CHANNELS.prototypes.LIST,
-  RPC_CHANNELS.prototypes.ENTRY,
-  RPC_CHANNELS.prototypes.EXPORT,
   RPC_CHANNELS.prototypes.CREATE,
   RPC_CHANNELS.prototypes.DUPLICATE,
   RPC_CHANNELS.prototypes.DELETE,
-  RPC_CHANNELS.prototypes.APPLY,
-  RPC_CHANNELS.prototypes.EDIT,
-  RPC_CHANNELS.prototypes.REPLAY,
-  RPC_CHANNELS.prototypes.SET_PAGES,
-  RPC_CHANNELS.prototypes.SET_TARGET,
   RPC_CHANNELS.sessions.SEARCH_CONTENT,
   RPC_CHANNELS.sessions.EXPORT,
   RPC_CHANNELS.sessions.IMPORT,
@@ -442,7 +437,7 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.projects.DELETE_ASSET,
   RPC_CHANNELS.projects.CHANGED,
 
-  // websites — workspace single-file sites
+  // websites — workspace directories served at an origin of their own
   RPC_CHANNELS.websites.GET,
   RPC_CHANNELS.websites.GET_ONE,
   RPC_CHANNELS.websites.CREATE,
@@ -451,25 +446,28 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.websites.GET_CONTENT,
   RPC_CHANNELS.websites.SET_CONTENT,
   RPC_CHANNELS.websites.GET_DATA,
-  RPC_CHANNELS.websites.LIST_GRANTS,
-  RPC_CHANNELS.websites.ISSUE_GRANT,
-  RPC_CHANNELS.websites.REVOKE_GRANT,
-  RPC_CHANNELS.websites.CREATE_LEASE,
-  RPC_CHANNELS.websites.RELEASE_LEASE,
-  RPC_CHANNELS.websites.EXECUTE_ACTION,
-  RPC_CHANNELS.websites.CANCEL_ACTION,
-  // Sharing runs on the workspace server: it holds the page files, the vault
-  // token, and evaluates the CRAFT_FEATURE_WEBSITES_SHARING flag.
-  RPC_CHANNELS.websites.GET_SHARE_CAPABILITIES,
-  RPC_CHANNELS.websites.GET_SHARE_DATA_SCAN,
-  RPC_CHANNELS.websites.PUBLISH,
-  RPC_CHANNELS.websites.SET_PUBLICATION_PASSWORD,
-  RPC_CHANNELS.websites.UNPUBLISH,
+  RPC_CHANNELS.websites.GET_ORIGIN,
+  // An export writes where the person pointed the picker, which for a remote host is
+  // a folder on that host — so the copy happens beside the website, not here.
+  RPC_CHANNELS.websites.EXPORT,
   // Thumbnails: the poster file lives on the workspace server; regeneration is
   // a no-op unless that host injected a capturer (Electron main).
   RPC_CHANNELS.websites.GET_THUMBNAIL,
   RPC_CHANNELS.websites.REGENERATE_THUMBNAIL,
   RPC_CHANNELS.websites.CHANGED,
+
+  // drawio — the app's own bundled editor, at an origin a host hands out
+  RPC_CHANNELS.drawio.GET_ORIGIN,
+
+  // tweaks — standing edits, stored as a folder per tweak in the workspace
+  RPC_CHANNELS.tweaks.GET,
+  RPC_CHANNELS.tweaks.GET_ONE,
+  RPC_CHANNELS.tweaks.UPDATE,
+  RPC_CHANNELS.tweaks.DELETE,
+  // An export writes the extension where the person pointed the picker, so on a remote
+  // host the build happens beside the tweaks rather than here.
+  RPC_CHANNELS.tweaks.EXPORT,
+  RPC_CHANNELS.tweaks.CHANGED,
 
   // git — workspace filesystem
   RPC_CHANNELS.git.GET_BRANCH,

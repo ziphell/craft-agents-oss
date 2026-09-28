@@ -11,7 +11,7 @@ import ReactDOM from 'react-dom/client'
 import { useTranslation, initReactI18next } from 'react-i18next'
 import LanguageDetector from 'i18next-browser-languagedetector'
 import { setupI18n } from '@craft-agent/shared/i18n'
-import { Check, Circle, Code, EyeOff, Globe, Lock, MessageSquare, MousePointerClick, Plus, Square, X, XCircle } from 'lucide-react'
+import { Circle, Code, EyeOff, Globe, Lock, MessageSquare, MousePointerClick, Plus, Square, X, XCircle } from 'lucide-react'
 import { BrowserControls, Spinner } from '@craft-agent/ui'
 import { HeaderIconButton } from '@/components/ui/HeaderIconButton'
 import { cn } from '@/lib/utils'
@@ -35,33 +35,20 @@ setupI18n([LanguageDetector, initReactI18next])
 /* ------------------------------------------------------------------ */
 
 interface ToolbarState {
-  /**
-   * What the URL bar shows. For a window that is working on a prototype this is
-   * the prototype's **own** address, never the third-party page an overlay is
-   * rendering — the window belongs to the prototype, and the bar says so.
-   */
+  /** What the URL bar shows: the address of the tab on screen. */
   url: string
   title: string
   isLoading: boolean
   canGoBack: boolean
   canGoForward: boolean
   /**
-   * Whether the window's element picker is on (plan §12.7).
+   * Whether the window's element picker is on.
    *
    * The window's mode, reported rather than guessed: it can also end from inside
    * the page (Escape), which this renderer never sees otherwise. `undefined` = no
    * state yet, which reads as "off" — the picker is not something to flash on.
    */
   picking?: boolean
-  /**
-   * Whether the page's draft is why the mode is still on: the person tried to leave and
-   * has not answered "save before leaving?" — and the answer is the bar's own save
-   * button, which is drawn in the page.
-   *
-   * Reported, not remembered: the draft lives in the page, and this side only ever
-   * knows what it was last told.
-   */
-  leavingWithEdits?: boolean
   /**
    * Whether the tab on screen has its developer tools up.
    *
@@ -71,7 +58,7 @@ interface ToolbarState {
    */
   devTools?: boolean
   /**
-   * The window's tabs, in the order they were opened (plan §22).
+   * The window's tabs, in the order they were opened.
    *
    * `undefined` for a window that has not pushed state yet — the rail draws no
    * tabs until it is told which ones exist, because an empty list would be chrome
@@ -81,7 +68,7 @@ interface ToolbarState {
   /**
    * What to call each conversation whose tabs are in `tabs`, by opener id.
    *
-   * The rail groups tabs by who opened them (plan §22, 第八轮), and a session id is
+   * The rail groups tabs by who opened them, and a session id is
    * not a name. A missing entry is a conversation with no name yet — the rail says
    * something generic rather than printing an id.
    */
@@ -116,13 +103,10 @@ declare global {
       hideWindow: () => Promise<void>
       closeWindowEntirely: () => Promise<void>
       /**
-       * The labels are the caller's: the bar is drawn in the page, which has no i18n.
-       * All of them travel together because they are one bar.
+       * The label is the caller's: the bar is drawn in the page, which has no i18n.
        */
-      pickElement: (labels?: { add: string; undo: string; redo: string; save: string; bold: string; italic: string }) => Promise<void>
+      pickElement: (labels?: { add: string }) => Promise<void>
       cancelPick: () => Promise<void>
-      /** Write the page's draft down and leave — the ✓ that answers "save before leaving?". */
-      saveEdits: () => Promise<void>
       /** Switch to one of this window's tabs, close one, add one, or unlock one. */
       tabAction: (
         action: 'activate' | 'close' | 'new' | 'release',
@@ -130,7 +114,7 @@ declare global {
         /**
          * For `new` alone: the work the tab is being opened **for**, when a section's
          * header asked for it rather than the rail's own `+` — see `createTab`'s
-         * `openedByPerson` on the host side (plan §22).
+         * `openedByPerson` on the host side.
          */
         work?: TabBelongsTo | null,
       ) => Promise<void>
@@ -240,7 +224,7 @@ function TabIcon({ src, loading }: { src: string | null; loading: boolean }) {
 }
 
 /**
- * The window's tabs, down the window's left edge (plan §22).
+ * The window's tabs, down the window's left edge.
  *
  * Tabs are a list that grows with use, and a window has height to spare rather
  * than width: as a row across the top the list had to share its room with the
@@ -269,7 +253,7 @@ function TabRail({
   onNew: () => void
   /**
    * One more tab **for this work** — the `+` on a section's header, rather than the rail's
-   * own `+` above it. The tab is the work's and joins its section (plan §22).
+   * own `+` above it. The tab is the work's and joins its section.
    */
   onNewFor: (work: TabBelongsTo) => void
   onRelease: (tabId: string) => void
@@ -294,7 +278,7 @@ function TabRail({
 
   /**
    * The tabs, sectioned by whose work they are — a person's, one of the conversations this
-   * window is shared with, or a task of the Tasks DAG (plan §22, 第八轮).
+   * window is shared with, or a task of the Tasks DAG.
    *
    * The rule lives in `groupTabsByWork` because the badge's tab list in the top bar
    * draws the same list and the two must not disagree about it. Headers only appear
@@ -423,17 +407,11 @@ function TabRail({
 
             {group.tabs.map((tab) => {
               const label = tab.title.trim() || getHostname(tab.url) || t('browser.untitledTab')
-              // Which prototype, and which of its pages — the two facts the address bar
-              // names for the tab on screen, here for every tab, since a column of
-              // titles cannot tell one prototype's page from another's.
-              const where = tab.prototype
-                ? `${tab.prototype.slug}${tab.prototypePage ? ` / ${tab.prototypePage}` : ''}`
-                : null
-              // Everything the row is too narrow to say: the title it truncates, the
-              // prototype and page its second line shortens, and the address behind both.
-              // The rail is 200px wide and a popup of ours would be clipped by its own
-              // view, so this is the browser's own tooltip rather than the app's.
-              const tooltip = [label, where, tab.url].filter(Boolean).join('\n')
+              // Everything the row is too narrow to say: the title it truncates and the
+              // address behind it. The rail is 200px wide and a popup of ours would be
+              // clipped by its own view, so this is the browser's own tooltip rather than
+              // the app's.
+              const tooltip = [label, tab.url].filter(Boolean).join('\n')
 
               return (
                 <div
@@ -475,10 +453,7 @@ function TabRail({
                     >
                       <TabIcon src={tab.favicon} loading={tab.isLoading} />
                     </span>
-                    <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                      <span className="truncate text-[11px]">{label}</span>
-                      {where && <span className="truncate text-[10px] text-foreground/45">{where}</span>}
-                    </span>
+                    <span className="min-w-0 flex-1 truncate text-[11px]">{label}</span>
                   </button>
 
                   {/*
@@ -488,11 +463,11 @@ function TabRail({
                     Two strengths, one mark. The lock is a **button** — a click there does
                     nothing, so taking the tab back has to be possible from outside it, since
                     the agent's overlay is what holds the tab and letting go of the overlay is
-                    the unlock (plan §22, 第九轮修正). It is an escape hatch rather than a
+                    the unlock. It is an escape hatch rather than a
                     setting: the agent's next action may take the tab again. The plain dot is
                     the weaker fact, a tab somebody has driven but is not holding.
                   */}
-                  {tab.lockedBy === null && tab.driverSessionId !== null && (
+                  {tab.lockedBy === null && tab.drivenBy !== null && (
                     <span
                       aria-label={t('browser.tabInUse')}
                       title={t('browser.tabInUse')}
@@ -564,7 +539,7 @@ function BrowserToolbarApp() {
    *
    * Not this renderer's own state: the mode outlives a single pick and can also
    * end in the page (Escape), so the toolbar that drew it has to be told what it
-   * is rather than remember what it asked for (plan §12.7).
+   * is rather than remember what it asked for.
    */
   const picking = state.picking === true
   /**
@@ -578,7 +553,7 @@ function BrowserToolbarApp() {
   const api = window.browserToolbar
 
   /**
-   * The recording, as the window reports it (plan §20.3, revised).
+   * The recording, as the window reports it.
    *
    * The person's own recording of the tab in front of them: they press the button, drive
    * the page, press it again. It is here rather than in the agent's tool set because
@@ -692,10 +667,10 @@ function BrowserToolbarApp() {
   }, [api])
 
   /**
-   * Turn the window's overlay on or off.
+   * Turn the window's element picker on or off.
    *
    * Neither call is awaited for its outcome: the mode is the window's, and it arrives
-   * back as state. The bar's words go with the call — it is drawn inside the page,
+   * back as state. The bar's word goes with the call — it is drawn inside the page,
    * which has no i18n, and this is the side that does.
    */
   const handleTogglePick = useCallback(() => {
@@ -704,24 +679,8 @@ function BrowserToolbarApp() {
       void api.cancelPick()
       return
     }
-    void api.pickElement({
-      add: t('browser.addToConversation'),
-      undo: t('browserEdit.editorUndo'),
-      redo: t('browserEdit.editorRedo'),
-      save: t('browserEdit.editorSave'),
-      bold: t('browserEdit.editorBold'),
-      italic: t('browserEdit.editorItalic'),
-    })
+    void api.pickElement({ add: t('browser.addToConversation') })
   }, [api, picking, t])
-
-  /**
-   * Answer "save before leaving?" with yes: the page writes the draft down and the mode
-   * ends with it. Nothing is awaited for an outcome, like the mode toggle — the state
-   * that comes back is the answer.
-   */
-  const handleSaveEdits = useCallback(() => {
-    void api?.saveEdits()
-  }, [api])
 
   const handleToggleDevTools = useCallback(() => {
     void api?.toggleDevTools()
@@ -835,7 +794,7 @@ function BrowserToolbarApp() {
    * Take a locked tab back.
    *
    * The agent's overlay is what holds the tab, so this drops the overlay for whoever is
-   * working there (plan §22, 第九轮修正) — the escape hatch for "I am stuck behind
+   * working there — the escape hatch for "I am stuck behind
    * somebody's running turn". Not awaited for its outcome: whether it released anything
    * comes back as state, and this renderer drawing its own idea of that is the thing the
    * state push exists to prevent.
@@ -895,32 +854,12 @@ function BrowserToolbarApp() {
         trailingContent={(
           <div className="ml-2 flex items-center gap-1.5 titlebar-no-drag">
             {/*
-              What the mode is doing, in the window's own chrome: how to use it, or —
-              when the person tried to leave with edits still unwritten — that the draft
-              is what is holding it open.
+              What the mode is doing, in the window's own chrome: how to use it.
             */}
             {picking && (
               <span className="inline-flex select-none items-center whitespace-nowrap rounded-[6px] bg-accent/15 px-2 py-1 text-[11px] text-accent">
-                {state.leavingWithEdits ? t('browserEdit.leavingWithEdits') : t('browser.pickHint')}
+                {t('browser.pickHint')}
               </span>
-            )}
-
-            {/*
-              The question's "yes", and only while the question is up: save the draft and
-              leave. Beside the crosshair because that is where the question is asked —
-              the page's own ✓ does the same thing, but a page cannot be sure its bar is
-              visible, and this is one press either way.
-
-              Named by `aria-label` alone, like every other button on this bar: this
-              document has no `TooltipProvider` (the app shell mounts one), and radix
-              throws without it — which takes the whole chrome down with it.
-            */}
-            {picking && state.leavingWithEdits && (
-              <HeaderIconButton
-                icon={<Check className="h-3.5 w-3.5" />}
-                aria-label={t('browserEdit.editorSaveAndLeave')}
-                onClick={handleSaveEdits}
-              />
             )}
 
             <HeaderIconButton
@@ -930,16 +869,15 @@ function BrowserToolbarApp() {
               aria-label={picking ? t('browser.cancelPick') : t('browser.pickElement')}
               className={picking ? 'bg-accent/15 text-accent' : undefined}
               // One door for everything done *with* the page: click an element, or box
-              // several, and the toolbar above the page is where the work is — styling,
-              // back and forward, and handing it to the conversation (plan §12.7).
-              // Pressed while the question is up it is the "no": leave, draft and all
-              // (the host reads the same state this chip does).
+              // several, and the bar on the page is where the selection is handed to the
+              // conversation. Pressed again it turns the mode off (the host
+              // reads the same state this chip does).
               onClick={handleTogglePick}
             />
 
             {/*
               The current tab's developer tools. Available whatever the tab is: they
-              are about the page, not about a prototype.
+              are about the page.
             */}
             <HeaderIconButton
               icon={<Code className="h-3.5 w-3.5" />}

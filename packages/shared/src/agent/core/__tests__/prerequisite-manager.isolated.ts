@@ -5,19 +5,24 @@
  * until required files (like guide.md) have been read.
  */
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
-import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { resolve, join } from 'node:path';
+import { dirname, resolve, join } from 'node:path';
 import { PrerequisiteManager } from '../prerequisite-manager.ts';
 
-// Mock existsSync to control guide.md existence
-const originalExistsSync = existsSync;
+// Mock fs to control guide.md existence and to stand in for the session's state file
 let mockExistsPaths: Set<string> = new Set();
+const mockFiles = new Map<string, string>();
 
 mock.module('node:fs', () => ({
-  existsSync: (path: string) => mockExistsPaths.has(path),
-  // Re-export anything else the module needs
-  readFileSync: originalExistsSync,
+  existsSync: (path: string) => mockExistsPaths.has(path) || mockFiles.has(path),
+  readFileSync: (path: string) => {
+    const content = mockFiles.get(path);
+    if (content === undefined) throw new Error(`ENOENT: ${path}`);
+    return content;
+  },
+  writeFileSync: (path: string, data: string) => {
+    mockFiles.set(path, String(data));
+  },
 }));
 
 const WORKSPACE_ROOT = '/test/workspace';
@@ -30,6 +35,10 @@ function browserDocPath(): string {
   return resolve(join(homedir(), '.craft-agent', 'docs', 'browser-tools.md'));
 }
 
+function drawioDocPath(): string {
+  return resolve(join(homedir(), '.craft-agent', 'docs', 'drawio-tools.md'));
+}
+
 describe('PrerequisiteManager', () => {
   let manager: PrerequisiteManager;
   let debugMessages: string[];
@@ -37,6 +46,7 @@ describe('PrerequisiteManager', () => {
   beforeEach(() => {
     debugMessages = [];
     mockExistsPaths = new Set();
+    mockFiles.clear();
     manager = new PrerequisiteManager({
       workspaceRootPath: WORKSPACE_ROOT,
       onDebug: (msg) => debugMessages.push(msg),
@@ -104,6 +114,38 @@ describe('PrerequisiteManager', () => {
       const result = manager.checkPrerequisites('mcp__session__browser_tool');
       expect(result.allowed).toBe(false);
       expect(result.blockReason).toContain(docsPath);
+    });
+
+    it('matches drawio_tool and blocks until the diagrams guide is read', () => {
+      const docsPath = drawioDocPath();
+      mockExistsPaths.add(docsPath);
+
+      const result = manager.checkPrerequisites('drawio_tool');
+      expect(result.allowed).toBe(false);
+      expect(result.blockReason).toContain('diagrams guide');
+      expect(result.blockReason).toContain(docsPath);
+    });
+
+    it('matches the session spelling of drawio_tool', () => {
+      const docsPath = drawioDocPath();
+      mockExistsPaths.add(docsPath);
+
+      expect(manager.checkPrerequisites('mcp__session__drawio_tool').allowed).toBe(false);
+    });
+
+    // The other doors on the same runtime are not gated: `video_tool` reads a recording off a
+    // hidden window and `prototype_tool` is file work, and neither has silent failure modes.
+    it('does not gate the neighbouring doors', () => {
+      mockExistsPaths.add(drawioDocPath());
+
+      expect(manager.checkPrerequisites('video_tool').allowed).toBe(true);
+      expect(manager.checkPrerequisites('prototype_tool').allowed).toBe(true);
+    });
+
+    it('allows drawio_tool when the guide is not installed', () => {
+      // Nothing in mockExistsPaths: a checkout that never ran the asset sync has no docs, and a
+      // prerequisite that cannot be satisfied is not a prerequisite.
+      expect(manager.checkPrerequisites('drawio_tool').allowed).toBe(true);
     });
   });
 
@@ -298,6 +340,34 @@ describe('PrerequisiteManager', () => {
       manager.trackReadTool({ file_path: docsPath });
       expect(manager.checkPrerequisites('browser_open').allowed).toBe(true);
     });
+
+    // Strict, like the browser's: the diagrams guide carries rules whose failure is silent (a
+    // compressed `.drawio` is unreadable to everything but draw.io; an unbundled shape draws as a
+    // plain box), so repeated attempts must not wear the block down.
+    it('does not bypass the diagrams guide after repeated rejections', () => {
+      const docsPath = drawioDocPath();
+      mockExistsPaths.add(docsPath);
+
+      expect(manager.checkPrerequisites('drawio_tool').allowed).toBe(false);
+      expect(manager.checkPrerequisites('drawio_tool').allowed).toBe(false);
+      expect(manager.checkPrerequisites('drawio_tool').allowed).toBe(false);
+
+      manager.trackReadTool({ file_path: docsPath });
+      expect(manager.checkPrerequisites('drawio_tool').allowed).toBe(true);
+    });
+
+    // The state is per context window, so a compaction puts the gate back: the model no longer
+    // holds the rules it read.
+    it('blocks drawio_tool again after a context reset', () => {
+      const docsPath = drawioDocPath();
+      mockExistsPaths.add(docsPath);
+
+      manager.trackReadTool({ file_path: docsPath });
+      expect(manager.checkPrerequisites('drawio_tool').allowed).toBe(true);
+
+      manager.resetReadState();
+      expect(manager.checkPrerequisites('drawio_tool').allowed).toBe(false);
+    });
   });
 
   // ============================================================
@@ -364,6 +434,65 @@ describe('PrerequisiteManager', () => {
 
       manager.trackBashSkillRead({ command: `cat ${skillPath}` });
       expect(debugMessages.some(m => m.includes('cleared skill prerequisite via Bash'))).toBe(true);
+    });
+  });
+
+  // ============================================================
+  // Session Persistence
+  // ============================================================
+
+  // A restart rebuilds the manager but resumes the same conversation, whose history still holds the
+  // guide. The reads therefore outlive the instance — until the conversation itself drops them.
+  describe('read state persistence', () => {
+    const readStatePath = '/test/session/prerequisite-reads.json';
+    const guide = guidePath('linear');
+
+    // The state is written beside an existing session folder; without one there is nothing to remember.
+    function withSessionDir(): void {
+      mockExistsPaths.add(dirname(readStatePath));
+    }
+
+    function makeManager(): PrerequisiteManager {
+      return new PrerequisiteManager({
+        workspaceRootPath: WORKSPACE_ROOT,
+        onDebug: (msg) => debugMessages.push(msg),
+        readStatePath,
+      });
+    }
+
+    it('restores the reads an earlier instance of the session recorded', () => {
+      withSessionDir();
+      const before = makeManager();
+      before.trackReadTool({ file_path: guide });
+
+      const after = makeManager();
+      expect(after.hasRead(guide)).toBe(true);
+    });
+
+    it('clears the persisted reads on reset, so a restart asks for the guide again', () => {
+      withSessionDir();
+      const before = makeManager();
+      before.trackReadTool({ file_path: guide });
+      before.resetReadState(); // compaction: the model lost the guide
+
+      const after = makeManager();
+      expect(after.hasRead(guide)).toBe(false);
+    });
+
+    it('writes nothing when the session has no folder of its own', () => {
+      const before = makeManager();
+      before.trackReadTool({ file_path: guide });
+
+      expect(mockFiles.has(readStatePath)).toBe(false);
+    });
+
+    it('keeps the state in memory only when no state path is configured', () => {
+      const before = new PrerequisiteManager({ workspaceRootPath: WORKSPACE_ROOT });
+      before.trackReadTool({ file_path: guide });
+      expect(before.hasRead(guide)).toBe(true);
+
+      const after = new PrerequisiteManager({ workspaceRootPath: WORKSPACE_ROOT });
+      expect(after.hasRead(guide)).toBe(false);
     });
   });
 

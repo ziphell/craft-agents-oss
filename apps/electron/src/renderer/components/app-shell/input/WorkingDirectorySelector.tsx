@@ -1,14 +1,15 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { Command as CommandPrimitive } from 'cmdk'
-import { Check, X } from 'lucide-react'
+import { Check, FlaskConical, X } from 'lucide-react'
 import { Icon_Folder } from '@craft-agent/ui'
 
 import { ServerDirectoryBrowser } from '@/components/ServerDirectoryBrowser'
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
 import { PATH_SEP, getPathBasename } from '@/lib/platform'
-import { useWorkingDirectoryState } from './use-working-directory-state'
+import { navigate, routes } from '@/lib/navigate'
+import { useWorkingDirectoryState, derivePrototypeChoices } from './use-working-directory-state'
 
 /**
  * Format a path for display with the home directory shortened, e.g.
@@ -35,6 +36,10 @@ export interface WorkingDirectoryTriggerState {
   hasFolder: boolean
   /** Basename of the selected folder, or undefined when nothing is selected. */
   folderName: string | undefined
+  /** Whether this conversation works in a prototype rather than in a folder. */
+  hasPrototype: boolean
+  /** Prototype this conversation works in, when it does. */
+  prototypeSlug: string | undefined
   /** The raw selected path (for tooltips / path display). */
   workingDirectory: string | undefined
   /** Home directory, for shortening displayed paths. */
@@ -49,6 +54,10 @@ export interface WorkingDirectorySelectorProps {
   /** Session root, offered as the "Reset" target. Undefined disables reset. */
   sessionFolderPath?: string
   workspaceId?: string
+  /** Prototype this conversation works in, when it works in one. */
+  prototypeSlug?: string
+  /** Called when a prototype is picked. Absent hides the prototype list. */
+  onPrototypeChange?: (slug: string | null) => void
   /**
    * Renders the popover trigger. The returned element is wrapped in
    * `<PopoverTrigger asChild>`, so it must forward a ref (a DOM element or a
@@ -62,18 +71,22 @@ export interface WorkingDirectorySelectorProps {
 }
 
 /**
- * WorkingDirectorySelector — trigger-agnostic working-directory picker.
+ * WorkingDirectorySelector — trigger-agnostic picker for **where a conversation
+ * works**: a folder, or a prototype's own folder — the two are one choice, so they
+ * share one list.
  *
- * Owns the folder state machine ({@link useWorkingDirectoryState}), the Radix
- * popover with its cmdk recent-folders list, and the ServerDirectoryBrowser.
- * The trigger itself is supplied by the consumer via `renderTrigger` so the same
- * picker backs both the chat input badge and the Tasks editor field.
+ * Owns the state machine ({@link useWorkingDirectoryState}), the Radix popover with
+ * its cmdk list, and the ServerDirectoryBrowser. The trigger itself is supplied by the
+ * consumer via `renderTrigger` so the same picker backs both the chat input badge and
+ * the Tasks editor field.
  */
 export function WorkingDirectorySelector({
   workingDirectory,
   onWorkingDirectoryChange,
   sessionFolderPath,
   workspaceId,
+  prototypeSlug,
+  onPrototypeChange,
   renderTrigger,
   side = 'top',
   align = 'start',
@@ -90,6 +103,8 @@ export function WorkingDirectorySelector({
     filter,
     setFilter,
     sortedRecent: filteredRecent,
+    prototypes: allPrototypes,
+    hasPrototype,
     hasFolder,
     folderName,
     showReset,
@@ -98,6 +113,7 @@ export function WorkingDirectorySelector({
     handleReset,
     handleRemoveRecent,
     handleChooseFolder,
+    handleSelectPrototype,
     serverBrowser: {
       showServerBrowser,
       serverBrowserMode,
@@ -109,9 +125,17 @@ export function WorkingDirectorySelector({
     onWorkingDirectoryChange,
     sessionFolderPath,
     workspaceId,
+    prototypeSlug,
+    onPrototypeChange,
     isOpen: popoverOpen,
     onClose: closePopover,
   })
+
+  // The bound one is already pinned above with its check, so it is not offered twice.
+  const otherPrototypes = React.useMemo(
+    () => derivePrototypeChoices(allPrototypes, prototypeSlug, filter),
+    [allPrototypes, prototypeSlug, filter],
+  )
 
   // Autofocus the filter input on popover open. Lives in the consumer (not
   // the hook) because the compact drawer surface has no autofocus.
@@ -133,7 +157,7 @@ export function WorkingDirectorySelector({
     <>
       <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
         <PopoverTrigger asChild>
-          {renderTrigger({ open: popoverOpen, hasFolder, folderName, workingDirectory, homeDir, gitBranch })}
+          {renderTrigger({ open: popoverOpen, hasFolder, folderName, hasPrototype, prototypeSlug, workingDirectory, homeDir, gitBranch })}
         </PopoverTrigger>
         <PopoverContent side={side} align={align} sideOffset={sideOffset} className={MENU_CONTAINER_STYLE}>
           <CommandPrimitive shouldFilter={showFilter}>
@@ -151,8 +175,21 @@ export function WorkingDirectorySelector({
             )}
 
             <CommandPrimitive.List className={MENU_LIST_STYLE}>
-              {/* Current Folder Display - shown at top with checkmark */}
-              {hasFolder && (
+              {/* Where the conversation works now — one row, whichever kind it is. */}
+              {hasPrototype ? (
+                <CommandPrimitive.Item
+                  value={`current-prototype-${prototypeSlug}`}
+                  className={cn(MENU_ITEM_STYLE, 'pointer-events-none bg-foreground/5')}
+                  disabled
+                >
+                  <FlaskConical className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  <span className="flex-1 min-w-0 truncate">
+                    <span className="font-mono text-xs">{prototypeSlug}</span>
+                    <span className="text-muted-foreground ml-1.5">{formatPathForDisplay(workingDirectory, homeDir)}</span>
+                  </span>
+                  <Check className="h-4 w-4 shrink-0" />
+                </CommandPrimitive.Item>
+              ) : hasFolder && (
                 <CommandPrimitive.Item
                   value={`current-${workingDirectory}`}
                   className={cn(MENU_ITEM_STYLE, 'pointer-events-none bg-foreground/5')}
@@ -167,8 +204,32 @@ export function WorkingDirectorySelector({
                 </CommandPrimitive.Item>
               )}
 
-              {/* Separator after current folder */}
-              {hasFolder && filteredRecent.length > 0 && (
+              {/* The other prototypes: the same choice's other kind, so picking one
+                  replaces the folder the conversation is in. The label is dropped while
+                  a filter is typed, when the rows that survive are already the answer. */}
+              {otherPrototypes.length > 0 && (
+                <>
+                  {!filter && (
+                    <div className="px-3 pt-2 pb-1 text-[11px] font-medium text-muted-foreground">
+                      {t('chat.prototypes')}
+                    </div>
+                  )}
+                  {otherPrototypes.map((prototype) => (
+                    <CommandPrimitive.Item
+                      key={prototype.slug}
+                      value={`${prototype.slug} prototype`}
+                      onSelect={() => handleSelectPrototype(prototype.slug)}
+                      className={cn(MENU_ITEM_STYLE, 'group/item data-[selected=true]:bg-foreground/5')}
+                    >
+                      <FlaskConical className="h-4 w-4 shrink-0 text-muted-foreground" />
+                      <span className="flex-1 min-w-0 truncate font-mono text-xs">{prototype.slug}</span>
+                    </CommandPrimitive.Item>
+                  ))}
+                </>
+              )}
+
+              {/* Separator before the folders */}
+              {(hasFolder || otherPrototypes.length > 0) && filteredRecent.length > 0 && (
                 <div className="h-px bg-border my-1 mx-1" />
               )}
 
@@ -202,7 +263,7 @@ export function WorkingDirectorySelector({
               {/* Empty state when filtering */}
               {showFilter && (
                 <CommandPrimitive.Empty className="py-3 text-center text-sm text-muted-foreground">
-                  {t('chat.noFoldersFound')}
+                  {t('chat.noWorkingDirMatch')}
                 </CommandPrimitive.Empty>
               )}
             </CommandPrimitive.List>
@@ -223,6 +284,20 @@ export function WorkingDirectorySelector({
                   className={cn(MENU_ITEM_STYLE, 'w-full hover:bg-foreground/5')}
                 >
                   {t('common.reset')}
+                </button>
+              )}
+              {hasPrototype && prototypeSlug && (
+                // The one thing the prototype half still needs a door to: the prototype
+                // itself. Binding already happened by picking it in the list above.
+                <button
+                  type="button"
+                  onClick={() => {
+                    closePopover()
+                    navigate(routes.view.prototypes(prototypeSlug))
+                  }}
+                  className={cn(MENU_ITEM_STYLE, 'w-full hover:bg-foreground/5')}
+                >
+                  {t('prototypeBind.openPanel')}
                 </button>
               )}
             </div>

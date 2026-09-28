@@ -6,7 +6,7 @@ import { SkillAvatar } from '@/components/ui/skill-avatar'
 import { SourceAvatar } from '@/components/ui/source-avatar'
 import type { LoadedSkill, LoadedSource, FileSearchResult } from '../../../shared/types'
 import { AGENTS_PLUGIN_NAME } from '@craft-agent/shared/skills/types'
-import { buildTabMention, tabLabel, tabOriginText, type TabRef } from '@/lib/tab-mention'
+import { buildTabMention, tabLabel, type TabRef } from '@/lib/tab-mention'
 
 // ============================================================================
 // Types
@@ -358,11 +358,10 @@ export function InlineMentionMenu({
                   <span className="shrink-0">{item.label}</span>
                   {item.type === 'tab'
                     ? item.tab && (
-                        // A tab: what it is a page *of* when it belongs to a prototype,
-                        // else its address — either way, what tells two similar tabs
-                        // apart (two blank ones can only be told apart this way).
+                        // A tab: its address — what tells two similar tabs apart
+                        // (two blank ones can only be told apart this way).
                         <FadingText className="text-[11px] text-muted-foreground min-w-0 opacity-50" fadeWidth={20}>
-                          {tabOriginText(item.tab) || item.tab.url}
+                          {item.tab.url}
                         </FadingText>
                       )
                     : item.file?.relativePath && getParentDir(item.file.relativePath) && (
@@ -588,7 +587,7 @@ export function useInlineMention({
           id: `${index}:${tab.url}`,
           type: 'tab' as const,
           label: tabLabel(tab),
-          description: tabOriginText(tab) || tab.url,
+          description: tab.url,
           tab,
         })),
       })

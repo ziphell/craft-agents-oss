@@ -11,6 +11,7 @@ import {
   ChevronDown,
   ChevronUp,
   AlertCircle,
+  FlaskConical,
   Image as ImageIcon,
 } from 'lucide-react'
 import { Icon_Home, Spinner } from '@craft-agent/ui'
@@ -34,8 +35,8 @@ import {
 } from '@/components/ui/label-menu'
 import type { LabelConfig } from '@craft-agent/shared/labels'
 import { parseMentions } from '@/lib/mentions'
-import { expandElementMentions, elementOriginText, type ElementRef } from '@/lib/element-mention'
-import { expandTabMentions, tabLabel, tabOriginText, type TabRef } from '@/lib/tab-mention'
+import { expandElementMentions, type ElementRef } from '@/lib/element-mention'
+import { expandTabMentions, tabLabel, type TabRef } from '@/lib/tab-mention'
 import { browserInstancesAtom, filterInstancesForWorkspace } from '@/atoms/browser-pane'
 import { tabRefOf } from '@/components/browser/utils'
 import { RichTextInput, type RichTextInputHandle } from '@/components/ui/rich-text-input'
@@ -202,6 +203,10 @@ export interface FreeFormInputProps {
   onWorkingDirectoryChange?: (path: string) => void
   /** Session folder path (for "Reset to Session Root" option) */
   sessionFolderPath?: string
+  /** Prototype this conversation works in, when it works in one */
+  prototypeSlug?: string
+  /** Callback when a prototype is picked in the working-directory picker */
+  onPrototypeChange?: (slug: string | null) => void
   /** Session ID for scoping events like approve-plan */
   sessionId?: string
   /** Current session status of the session (for # menu state selection) */
@@ -298,6 +303,8 @@ export function FreeFormInput({
   workingDirectory,
   onWorkingDirectoryChange,
   sessionFolderPath,
+  prototypeSlug,
+  onPrototypeChange,
   sessionId,
   currentSessionStatus,
   disableSend = false,
@@ -686,11 +693,21 @@ export function FreeFormInput({
    *
    * The page it was picked on is part of the sentence: the picker stays on across
    * the window's tabs, so the same element can be picked from two of them, and
-   * "which page" is the one thing the agent cannot work out from the element.
+   * "which page" is the one thing the agent cannot work out from the element. When that
+   * page is a website of ours, the folder it is served from is in the sentence too —
+   * those are the files to edit, and saying so saves the agent the search.
    */
   const formatElementReference = React.useCallback((ref: ElementRef) => {
-    const where = elementOriginText(ref)
+    const where = ref.url ?? ''
     if (!where) return t('browserEdit.elementReference', { selector: ref.selector, text: ref.text })
+    if (ref.dir) {
+      return t('browserEdit.elementReferenceOnSite', {
+        selector: ref.selector,
+        text: ref.text,
+        where,
+        dir: ref.dir,
+      })
+    }
     return t('browserEdit.elementReferenceFrom', { selector: ref.selector, text: ref.text, where })
   }, [t])
 
@@ -698,13 +715,10 @@ export function FreeFormInput({
    * The same, for a whole tab added from the window's tab list.
    *
    * The address is always in the sentence — a title alone does not say which tab it
-   * is — and the prototype, with the page of it, is named when the tab is one's.
+   * is.
    */
   const formatTabReference = React.useCallback((ref: TabRef) => {
-    const title = tabLabel(ref)
-    const where = tabOriginText(ref)
-    if (!where) return t('browserEdit.tabReference', { title, url: ref.url })
-    return t('browserEdit.tabReferenceFrom', { title, url: ref.url, where })
+    return t('browserEdit.tabReference', { title: tabLabel(ref), url: ref.url })
   }, [t])
 
   /** Outgoing text: every reference the composer holds, written out as prose. */
@@ -1961,6 +1975,8 @@ export function FreeFormInput({
               sessionFolderPath={sessionFolderPath}
               isEmptySession={false}
               workspaceId={workspaceId}
+              prototypeSlug={prototypeSlug}
+              onPrototypeChange={onPrototypeChange}
             />
           )}
           </div>
@@ -2069,6 +2085,8 @@ export function FreeFormInput({
               sessionFolderPath={sessionFolderPath}
               isEmptySession={isEmptySession}
               workspaceId={workspaceId}
+              prototypeSlug={prototypeSlug}
+              onPrototypeChange={onPrototypeChange}
             />
           )}
           </div>
@@ -2540,9 +2558,10 @@ export function FreeFormInput({
 /**
  * WorkingDirectoryBadge - chat-input trigger for the shared WorkingDirectorySelector.
  *
- * Renders the context-badge trigger; the picker popover + folder state machine
- * live in {@link WorkingDirectorySelector} so the Tasks editor reuses the same
- * picker (and can supply its own trigger).
+ * Renders the context-badge trigger; the picker popover + its state machine live in
+ * {@link WorkingDirectorySelector} so the Tasks editor reuses the same picker (and can
+ * supply its own trigger). Where this conversation works is one choice of two kinds, so
+ * the badge says which kind it is: a prototype, or a folder.
  */
 function WorkingDirectoryBadge({
   workingDirectory,
@@ -2550,12 +2569,16 @@ function WorkingDirectoryBadge({
   sessionFolderPath,
   isEmptySession = false,
   workspaceId,
+  prototypeSlug,
+  onPrototypeChange,
 }: {
   workingDirectory?: string
   onWorkingDirectoryChange: (path: string) => void
   sessionFolderPath?: string
   isEmptySession?: boolean
   workspaceId?: string
+  prototypeSlug?: string
+  onPrototypeChange?: (slug: string | null) => void
 }) {
   const { t } = useTranslation()
   return (
@@ -2564,17 +2587,24 @@ function WorkingDirectoryBadge({
       onWorkingDirectoryChange={onWorkingDirectoryChange}
       sessionFolderPath={sessionFolderPath}
       workspaceId={workspaceId}
-      renderTrigger={({ open, hasFolder, folderName, workingDirectory: wd, homeDir, gitBranch }) => (
+      prototypeSlug={prototypeSlug}
+      onPrototypeChange={onPrototypeChange}
+      renderTrigger={({ open, hasFolder, folderName, hasPrototype, prototypeSlug: boundSlug, workingDirectory: wd, homeDir, gitBranch }) => (
         <span className="shrink min-w-0 overflow-hidden">
           <FreeFormInputContextBadge
-            icon={<Icon_Home className="h-4 w-4" />}
-            label={folderName ?? t('chat.workInFolder')}
+            icon={hasPrototype ? <FlaskConical className="h-4 w-4" /> : <Icon_Home className="h-4 w-4" />}
+            label={hasPrototype ? boundSlug! : folderName ?? t('chat.workInFolder')}
             isExpanded={isEmptySession}
-            hasSelection={hasFolder}
+            hasSelection={hasPrototype || hasFolder}
             showChevron={true}
             isOpen={open}
             tooltip={
-              hasFolder ? (
+              hasPrototype ? (
+                <span className="flex flex-col gap-0.5">
+                  <span className="font-medium">{t("prototypeBind.current", { slug: boundSlug })}</span>
+                  <span className="text-xs opacity-70">{formatPathForDisplay(wd, homeDir)}</span>
+                </span>
+              ) : hasFolder ? (
                 <span className="flex flex-col gap-0.5">
                   <span className="font-medium">{t("chat.workingDirectory")}</span>
                   <span className="text-xs opacity-70">{formatPathForDisplay(wd, homeDir)}</span>

@@ -35,6 +35,7 @@ import {
   FolderKanban,
   FlaskConical,
   PanelsTopLeft,
+  Wand2,
 } from "lucide-react"
 // SessionStatusIcons no longer used - icons come from dynamic sessionStatuses
 import { SourceAvatar } from "@/components/ui/source-avatar"
@@ -122,6 +123,7 @@ import {
   isProjectsNavigation,
   isPrototypesNavigation,
   isWebsitesNavigation,
+  isTweaksNavigation,
   type NavigationState,
 } from "@/contexts/NavigationContext"
 import type { SettingsSubpage } from "../../../shared/types"
@@ -135,13 +137,14 @@ import { useAutomations } from "@/hooks/useAutomations"
 import { useProjects } from "@/hooks/useProjects"
 import { usePrototypes } from "@/hooks/usePrototypes"
 import { useWebsites } from "@/hooks/useWebsites"
+import { useTweaks } from "@/hooks/useTweaks"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { PanelHeader } from "./PanelHeader"
 import { FabNewChat } from "./FabNewChat"
 import { SendToWorkspaceDialog } from "./SendToWorkspaceDialog"
 import { CreateProjectDialog } from "../projects/CreateProjectDialog"
 import { CreatePrototypeDialog, type CreatePrototypeValues } from "../prototypes/CreatePrototypeDialog"
-import { useBrowserToolbarActions, type AddElementRequest, type EditElementRequest } from "@/hooks/useBrowserToolbarActions"
+import { useBrowserToolbarActions, type AddElementRequest } from "@/hooks/useBrowserToolbarActions"
 import { MessagingDialogHost } from "@/components/messaging/MessagingDialogHost"
 import { EditPopover, getEditConfig, type EditContextKey } from "@/components/ui/EditPopover"
 import SettingsNavigator from "@/pages/settings/SettingsNavigator"
@@ -650,6 +653,10 @@ function AppShellContent({
   // render full-width in the content area — there is no websites navigator list.
   const isWebsitesView = isWebsitesNavigation(navState)
 
+  // Tweaks likewise: the sidebar lists the tweaks, so the middle navigator has
+  // nothing of its own to show and collapses.
+  const isTweaksView = isTweaksNavigation(navState)
+
   // Derive source filter from navigation state (only when in sources navigator)
   const sourceFilter: SourceFilter | null = isSourcesNavigation(navState) ? navState.filter ?? null : null
 
@@ -954,42 +961,6 @@ function AppShellContent({
   const { prototypes, refresh: refreshPrototypes } = usePrototypes(activeWorkspaceId)
 
   /**
-   * A picked element goes straight into the conversation.
-   *
-   * The panel's edit mode answers *which* element; the message says what should
-   * change, and the agent writes the patch. There is deliberately nothing in
-   * between — an editor card here meant one hand-written patch per pick, and the
-   * point of this workbench is that changes are described rather than typed
-   * straight into the DOM.
-   *
-   * The prompt is a sentence ending in a colon that the user completes, so it is
-   * *prepended*: their draft reads on as the answer instead of following a dangling
-   * colon. Nothing they wrote is dropped.
-   *
-   * The panel has no workspace or session context, so it forwards the pick here
-   * and this decides what it means.
-   */
-  const handleElementPicked = useCallback((request: EditElementRequest) => {
-    if (!request.sessionId) {
-      toast.error(t('browserEdit.noSession'))
-      return
-    }
-
-    const prompt = t('browserEdit.promptTemplate', {
-      selector: request.element.selector,
-      text: request.element.text,
-    })
-
-    // Write the draft (read on mount) *and* dispatch (applies immediately when
-    // the session is already open), then navigate — one of the two always lands.
-    // Both carry the whole text, so the second cannot drop what the first wrote.
-    const next = appendRestoredInput(prompt, getDraft(request.sessionId))
-    onInputChange(request.sessionId, next)
-    dispatchRestoreInput(request.sessionId, next)
-    navigate(routes.view.allSessions(request.sessionId))
-  }, [getDraft, onInputChange, t])
-
-  /**
    * Put a chip in a conversation's draft, and bring the composer up on it.
    *
    * The two-step write both reference flows share — the draft for when the session is
@@ -1029,7 +1000,7 @@ function AppShellContent({
   }, [activeWorkspaceId, contextValue.onCreateSession, getDraft, onInputChange, navigate, t])
 
   /**
-   * Hand an element to a conversation (plan §12.7).
+   * Hand an element to a conversation.
    *
    * The element is inserted as a chip — a marker in the composer's text that the
    * input renders as an inline badge and that `FreeFormInput` expands into a
@@ -1044,15 +1015,17 @@ function AppShellContent({
       selector: request.element.selector,
       text: request.element.text,
       ...(origin.url ? { url: origin.url } : {}),
-      ...(origin.prototype ? { prototypeSlug: origin.prototype.slug } : {}),
-      ...(origin.prototypePage ? { prototypePage: origin.prototypePage } : {}),
+      // A website's pages are files in the workspace, so a pick on one carries the
+      // folder too: what the agent reads then names the files to change instead of an
+      // address it would have to decode.
+      ...(origin.website?.dir ? { dir: origin.website.dir } : {}),
     })} `
 
     void appendChipToConversation(chip, request.sessionId)
   }, [appendChipToConversation])
 
   /**
-   * Hand a whole tab to a conversation (plan §12.7).
+   * Hand a whole tab to a conversation.
    *
    * The same chip machinery, for a tab instead of an element: "look at this screen"
    * is a thing to say about a window somebody else may be driving, and the reference
@@ -1066,20 +1039,18 @@ function AppShellContent({
   }, [appendChipToConversation, focusedSessionId, session.selected])
 
   useBrowserToolbarActions({
-    workspaceId: activeWorkspaceId,
     /**
      * Where a pick goes: the conversation the user is looking at.
      *
-     * Not the window's own binding — that is whoever is driving the window, and the
-     * window is shared. The prototype flow above keeps resolving through the window,
-     * because what it is about (a patch) belongs to the window's prototype.
+     * Not the window's own owner — that is whoever is driving the window, and the
+     * window is shared.
      */
     activeSessionId: focusedSessionId ?? session.selected,
-    onEditElement: handleElementPicked,
     onAddElementToConversation: handleAddElementToConversation,
   })
 
   const { websites } = useWebsites(activeWorkspaceId)
+  const { tweaks } = useTweaks(activeWorkspaceId)
 
   const projectMenuOptions = useMemo(
     () => projects.map(p => ({ id: p.config.id, slug: p.config.slug, name: p.config.name, color: p.config.color })),
@@ -1987,6 +1958,11 @@ function AppShellContent({
     navigate(routes.view.websites())
   }, [])
 
+  // Handler for tweaks view
+  const handleTweaksClick = useCallback(() => {
+    navigate(routes.view.tweaks())
+  }, [])
+
   const handleAutomationsScheduledClick = useCallback(() => {
     navigate(routes.view.automationsScheduled())
   }, [])
@@ -2177,7 +2153,7 @@ function AppShellContent({
     // Deliberately does NOT catch: createPrototype rejects on a taken slug or
     // an unusable name, and CreatePrototypeDialog renders that message inline.
     // A new prototype has no pages — a page is added afterwards, and its kind
-    // (a live address, or a document of ours) is asked for there (plan §19.8).
+    // (a live address, or a document of ours) is asked for there.
     const created = (await window.electronAPI.createPrototype(
       activeWorkspace.id,
       { name: values.name }
@@ -2193,26 +2169,16 @@ function AppShellContent({
   //
   // Duplicate opens the copy: taking a variant somewhere else is the whole point
   // of the action, so landing on it is the expected next screen. The copy brings
-  // its pages and patches along (`copiedPages` / `copiedPatches`) — a flow, not a
-  // container with one kind. `foldChanges` collapses the copy's change layer on the
-  // way out (plan §21.3): the new one starts converged, and this one is untouched.
-  const handleDuplicatePrototype = useCallback(async (slug: string, foldChanges = false) => {
+  // the prototype's own files along; the two are independent afterwards.
+  const handleDuplicatePrototype = useCallback(async (slug: string) => {
     if (!activeWorkspace?.id) return
     try {
       const copied = (await window.electronAPI.duplicatePrototype(
         activeWorkspace.id,
         slug,
-        { fold: foldChanges },
       )) as DuplicatedPrototype
       await refreshPrototypes()
-      const folded = copied.folded
-        ? copied.folded.scopes.reduce((total, scope) => total + scope.folded.length + scope.promoted.length, 0)
-        : 0
-      toast.success(
-        folded > 0
-          ? t('prototypesList.duplicatedFolded', { name: copied.slug, count: folded })
-          : t('prototypesList.duplicated', { name: copied.slug }),
-      )
+      toast.success(t('prototypesList.duplicated', { name: copied.slug }))
       navigate(routes.view.prototypes(copied.slug))
     } catch (err) {
       console.error('[AppShell] Failed to duplicate prototype:', err)
@@ -2275,12 +2241,12 @@ function AppShellContent({
   // Open a tab in the browser.
   //
   // This used to make a window of its own. There is one browser window now — the
-  // workspace's, used by every conversation and by the user (plan §22) — so "a new
+  // workspace's, used by every conversation and by the user — so "a new
   // browser" means a tab in it, and the window comes up if it was not open yet.
   //
   // `newTab` is one request rather than "create the window, then add a tab to it":
   // a window that was not up yet already holds the blank tab being asked for, so
-  // adding beside it would open two of them (plan §22). The host decides, because it
+  // adding beside it would open two of them. The host decides, because it
   // is the only side that knows whether the window it just handed back is new.
   const handleNewBrowserWindow = useCallback(async () => {
     try {
@@ -2365,12 +2331,13 @@ function AppShellContent({
     result.push({ id: 'nav:projects', type: 'nav', action: handleProjectsClick })
     result.push({ id: 'nav:prototypes', type: 'nav', action: handlePrototypesClick })
     result.push({ id: 'nav:websites', type: 'nav', action: handleWebsitesClick })
+    result.push({ id: 'nav:tweaks', type: 'nav', action: handleTweaksClick })
     result.push({ id: 'nav:automations', type: 'nav', action: handleAutomationsClick })
     result.push({ id: 'nav:settings', type: 'nav', action: () => handleSettingsClick() })
     result.push({ id: 'nav:whats-new', type: 'nav', action: handleWhatsNewClick })
 
     return result
-  }, [handleAllSessionsClick, handleFlaggedClick, handleArchivedClick, handleSessionStatusClick, effectiveSessionStatuses, handleLabelClick, labelConfigs, labelTree, viewConfigs, handleViewClick, handleSourcesClick, handleSkillsClick, handleProjectsClick, handleAutomationsClick, handlePrototypesClick, handleWebsitesClick, handleSettingsClick, handleWhatsNewClick])
+  }, [handleAllSessionsClick, handleFlaggedClick, handleArchivedClick, handleSessionStatusClick, effectiveSessionStatuses, handleLabelClick, labelConfigs, labelTree, viewConfigs, handleViewClick, handleSourcesClick, handleSkillsClick, handleProjectsClick, handleAutomationsClick, handlePrototypesClick, handleWebsitesClick, handleTweaksClick, handleSettingsClick, handleWhatsNewClick])
 
   // Toggle folder expanded state
   const handleToggleFolder = React.useCallback((path: string) => {
@@ -2502,6 +2469,11 @@ function AppShellContent({
     // Websites navigator
     if (isWebsitesNavigation(navState)) {
       return t("sidebar.allWebsites")
+    }
+
+    // Tweaks navigator
+    if (isTweaksNavigation(navState)) {
+      return t("sidebar.allTweaks")
     }
 
     // Automations navigator
@@ -2898,6 +2870,25 @@ function AppShellContent({
                       })),
                     },
                     {
+                      id: "nav:tweaks",
+                      title: t("sidebar.tweaks"),
+                      label: String(tweaks.length),
+                      icon: Wand2,
+                      // Highlight on the library list only, not when one tweak is open (mirrors Websites)
+                      variant: (isTweaksNavigation(navState) && !navState.details) ? "default" : "ghost",
+                      onClick: handleTweaksClick,
+                      expandable: tweaks.length > 0,
+                      expanded: isExpanded('nav:tweaks'),
+                      onToggle: () => toggleExpanded('nav:tweaks'),
+                      items: tweaks.map(tweak => ({
+                        id: `nav:tweaks:${tweak.slug}`,
+                        title: tweak.name,
+                        icon: Wand2,
+                        variant: (isTweaksNavigation(navState) && navState.details?.tweakSlug === tweak.slug) ? "default" as const : "ghost" as const,
+                        onClick: () => navigate(routes.view.tweaks(tweak.slug)),
+                      })),
+                    },
+                    {
                       id: "nav:automations",
                       title: t("sidebar.automations"),
                       label: String(automations.length),
@@ -2952,18 +2943,18 @@ function AppShellContent({
                       onClick: () => handleSettingsClick(),
                     },
                     // --- What's New ---
-                    {
-                      id: "nav:whats-new",
-                      title: t("sidebar.whatsNew"),
-                      icon: hasUnseenReleaseNotes ? (
-                        <span className="relative">
-                          <Cake className="h-3.5 w-3.5" />
-                          <span className="absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full bg-accent" />
-                        </span>
-                      ) : Cake,
-                      variant: "ghost" as const,
-                      onClick: handleWhatsNewClick,
-                    },
+                    // {
+                    //   id: "nav:whats-new",
+                    //   title: t("sidebar.whatsNew"),
+                    //   icon: hasUnseenReleaseNotes ? (
+                    //     <span className="relative">
+                    //       <Cake className="h-3.5 w-3.5" />
+                    //       <span className="absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full bg-accent" />
+                    //     </span>
+                    //   ) : Cake,
+                    //   variant: "ghost" as const,
+                    //   onClick: handleWhatsNewClick,
+                    // },
                   ]}
                 />
                 {/* Agent Tree: Hierarchical list of agents */}
@@ -3888,7 +3879,7 @@ function AppShellContent({
             )}
             </div>
           }
-          navigatorWidth={isAutoCompact ? sessionListWidth : (effectiveSidebarAndNavigatorHidden || isBoardView || isWebsitesView ? 0 : sessionListWidth)}
+          navigatorWidth={isAutoCompact ? sessionListWidth : (effectiveSidebarAndNavigatorHidden || isBoardView || isWebsitesView || isTweaksView ? 0 : sessionListWidth)}
           isSidebarAndNavigatorHidden={effectiveSidebarAndNavigatorHidden}
           isRightSidebarVisible={false}
           isCompact={isAutoCompact}
@@ -3929,7 +3920,7 @@ function AppShellContent({
         )}
 
         {/* Session List Resize Handle (absolute, hidden in focused mode, board view, and websites) */}
-        {!effectiveSidebarAndNavigatorHidden && !isBoardView && !isWebsitesView && (
+        {!effectiveSidebarAndNavigatorHidden && !isBoardView && !isWebsitesView && !isTweaksView && (
         <div
           ref={sessionListHandleRef}
           onMouseDown={(e) => { e.preventDefault(); setIsResizing('session-list') }}

@@ -165,7 +165,6 @@ describe('script-executor', () => {
         id: 'page_test0001',
         slug: 'dash',
         name: 'Dash',
-        kind: 'interactive',
         createdAt: Date.now(),
         updatedAt: Date.now(),
       });
@@ -190,7 +189,6 @@ describe('script-executor', () => {
         id: 'page_test0002',
         slug: 'dash',
         name: 'Dash',
-        kind: 'interactive',
         createdAt: Date.now(),
         updatedAt: Date.now(),
       });

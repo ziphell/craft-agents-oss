@@ -96,3 +96,20 @@ export type {
   WriteWebsiteDataArgs,
   DeleteWebsiteArgs,
 } from './websites.ts';
+
+// Tweaks
+export {
+  handleListTweaks,
+  handleGetTweak,
+  handleCreateTweak,
+  handleUpdateTweak,
+  handleDeleteTweak,
+  handleExportTweaks,
+} from './tweaks.ts';
+export type {
+  GetTweakArgs,
+  CreateTweakArgs,
+  UpdateTweakArgs,
+  DeleteTweakArgs,
+  ExportTweaksArgs,
+} from './tweaks.ts';

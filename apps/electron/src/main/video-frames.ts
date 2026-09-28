@@ -14,8 +14,6 @@
  * - **seeking is not free**. A long recording sampled every second is thousands of
  *   seeks, so the step is widened until the number of samples is bounded — the
  *   ceiling on frames decides how much work the import is allowed to be.
- *
- * @see docs/prototype-workbench-plan.md §20.5
  */
 
 import { BrowserWindow } from 'electron'

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type RefObject } from 'react'
+import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { RICH_BLOCK_DEFAULTS, type RichBlockInteractionOptions } from './rich-block-interaction-spec'
 
 export function clampScale(value: number, min: number, max: number): number {
@@ -33,12 +33,11 @@ export function computeFitScale(
 }
 
 interface UseRichBlockInteractionsOptions extends RichBlockInteractionOptions {
-  containerRef: RefObject<HTMLDivElement | null>
+  isOpen: boolean
 }
 
 export function useRichBlockInteractions({
   isOpen,
-  containerRef,
   minScale = RICH_BLOCK_DEFAULTS.minScale,
   maxScale = RICH_BLOCK_DEFAULTS.maxScale,
   zoomStepFactor = RICH_BLOCK_DEFAULTS.zoomStepFactor,
@@ -49,6 +48,21 @@ export function useRichBlockInteractions({
   const [translate, setTranslate] = useState({ x: 0, y: 0 })
   const [isDragging, setIsDragging] = useState(false)
   const [isAnimating, setIsAnimating] = useState(false)
+
+  /**
+   * The element the wheel is read on, as **state** filled by a callback ref.
+   *
+   * Not a `RefObject` read at effect time: the overlay's contents are mounted by Radix's portal,
+   * which decides when to render them from its own presence state — a commit *after* `isOpen`
+   * flips. An effect keyed on `isOpen` therefore runs while the ref is still empty, and since
+   * nothing else changes afterwards the listener was never attached at all: the wheel did nothing
+   * while the zoom buttons worked (measured — `defaultPrevented` stayed false on the container).
+   * A node in state re-runs the effect when the node actually arrives, whenever that is.
+   * `useDrawioView` reads its box the same way, for the same reason.
+   *
+   * Callers attach it as `ref={containerRef}`.
+   */
+  const [container, setContainer] = useState<HTMLDivElement | null>(null)
 
   const isDraggingRef = useRef(false)
   const dragStartRef = useRef({ x: 0, y: 0 })
@@ -77,7 +91,6 @@ export function useRichBlockInteractions({
   }, [minScale, maxScale])
 
   const zoomToFit = useCallback((content: { width: number; height: number } | null) => {
-    const container = containerRef.current
     if (!container || !content) {
       reset()
       return
@@ -88,7 +101,7 @@ export function useRichBlockInteractions({
     setIsAnimating(true)
     setScale(fit)
     setTranslate({ x: 0, y: 0 })
-  }, [containerRef, minScale, maxScale, reset])
+  }, [container, minScale, maxScale, reset])
 
   const onMouseDown = useCallback((e: ReactMouseEvent) => {
     if (e.button !== 0) return
@@ -131,8 +144,12 @@ export function useRichBlockInteractions({
     }
   }, [])
 
+  /**
+   * The wheel is read on the container — see `container` above for why this waits for the node
+   * rather than for the overlay to open. It is attached to whatever element that state holds, so
+   * it is attached whenever that element exists.
+   */
   useEffect(() => {
-    const container = containerRef.current
     if (!container) return
 
     const handleWheel = (e: WheelEvent) => {
@@ -159,7 +176,7 @@ export function useRichBlockInteractions({
 
     container.addEventListener('wheel', handleWheel, { passive: false })
     return () => container.removeEventListener('wheel', handleWheel)
-  }, [containerRef, minScale, maxScale, wheelSensitivity])
+  }, [container, minScale, maxScale, wheelSensitivity])
 
   useEffect(() => {
     if (!isOpen || !keyboardShortcuts) return
@@ -193,6 +210,8 @@ export function useRichBlockInteractions({
   }, [isOpen])
 
   return {
+    /** Attach this to the element the wheel is read on. */
+    containerRef: setContainer,
     scale,
     translate,
     isDragging,

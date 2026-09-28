@@ -55,7 +55,7 @@ export const WebsiteScriptRuntimeSchema = z.enum(['bun', 'node', 'python3']);
 /**
  * A workspace-relative script path: no absolute paths, no ".." escape. The
  * executor re-validates with symlink resolution at run time; this is the
- * static gate shared by refresh specs and script-action grants.
+ * static gate shared by refresh specs.
  */
 export const WorkspaceRelativeScriptPathSchema = z
   .string()
@@ -144,51 +144,6 @@ export const WebsiteRefreshStatusSchema = z.object({
   error: z.string().optional(),
 });
 
-export const WebsiteActionHttpMethodSchema = z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
-
-export const WebsiteActionDescriptorSchema = z.discriminatedUnion('kind', [
-  z.object({
-    kind: z.literal('api'),
-    sourceSlug: z.string().min(1),
-    method: WebsiteActionHttpMethodSchema,
-    pathPattern: z.string().min(1, 'Path pattern cannot be empty'),
-  }),
-  z.object({
-    kind: z.literal('mcp'),
-    sourceSlug: z.string().min(1),
-    toolName: z.string().min(1),
-  }),
-  z.object({
-    kind: z.literal('script'),
-    script: WorkspaceRelativeScriptPathSchema,
-    runtime: WebsiteScriptRuntimeSchema.optional(),
-    args: z.array(z.string()).optional(),
-  }),
-]);
-
-export const WebsiteActionGrantSchema = z.object({
-  id: z.string().min(1),
-  description: z.string().optional(),
-  action: WebsiteActionDescriptorSchema,
-  contentDigest: z.string().regex(SHA256_HEX_REGEX, 'Must be a sha256 hex digest'),
-  createdAt: z.number(),
-  expiresAt: z.number(),
-});
-
-export const WebsiteKindSchema = z.enum(['static', 'interactive', 'live']);
-
-export const WebsiteShareInfoSchema = z.object({
-  publicationId: z.string().min(1),
-  url: z.string().url(),
-  publishedRevision: z.string().min(1),
-  publishedContentDigest: z.string().regex(SHA256_HEX_REGEX, 'Must be a sha256 hex digest'),
-  includesData: z.boolean(),
-  publishedAt: z.number(),
-  updatedAt: z.number(),
-  passwordProtected: z.boolean(),
-  lastPublishError: z.string().max(2000).optional(),
-});
-
 export const WebsiteThumbnailInfoSchema = z.object({
   digest: z.string().regex(SHA256_HEX_REGEX, 'Must be a sha256 hex digest'),
   capturedAt: z.number(),
@@ -202,7 +157,6 @@ export const WebsiteConfigSchema = z.object({
   slug: z.string().regex(WEBSITE_SLUG_REGEX, 'Slug must be lowercase alphanumeric with hyphens'),
   name: z.string().min(1, 'Name cannot be empty'),
   description: z.string().optional(),
-  kind: WebsiteKindSchema,
   projectId: z.string().min(1).optional(),
   originSessionId: z.string().min(1).optional(),
   createdAt: z.number(),
@@ -210,8 +164,6 @@ export const WebsiteConfigSchema = z.object({
   refresh: WebsiteRefreshSpecSchema.optional(),
   lastRefresh: WebsiteRefreshStatusSchema.optional(),
   contentDigest: z.string().regex(SHA256_HEX_REGEX, 'Must be a sha256 hex digest').optional(),
-  grants: z.array(WebsiteActionGrantSchema).optional(),
-  share: WebsiteShareInfoSchema.optional(),
   thumbnail: WebsiteThumbnailInfoSchema.optional(),
 });
 

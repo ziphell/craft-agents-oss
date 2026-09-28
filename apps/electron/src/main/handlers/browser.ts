@@ -1,6 +1,11 @@
+import { statSync } from 'node:fs'
+import { pathToFileURL } from 'node:url'
 import { RPC_CHANNELS, type BrowserPaneCreateOptions, type BrowserPaneTabAction, type BrowserEmptyStateLaunchPayload } from '../../shared/types'
 import type { BrowserScreenshotOptions } from '../browser-pane-manager'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
+import { validateFilePath, getWorkspaceAllowedDirs } from '@craft-agent/server-core/handlers'
+import { isBrowserUrl } from '@craft-agent/shared/utils/url-safety'
+import { attachTweaksInjector } from '../tweaks-injector'
 import type { HandlerDeps } from './handler-deps'
 
 export const HANDLED_CHANNELS = [
@@ -8,6 +13,8 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.browserPane.DESTROY,
   RPC_CHANNELS.browserPane.LIST,
   RPC_CHANNELS.browserPane.NAVIGATE,
+  RPC_CHANNELS.browserPane.OPEN_FILE,
+  RPC_CHANNELS.browserPane.OPEN_URL,
   RPC_CHANNELS.browserPane.GO_BACK,
   RPC_CHANNELS.browserPane.GO_FORWARD,
   RPC_CHANNELS.browserPane.RELOAD,
@@ -25,35 +32,48 @@ export const HANDLED_CHANNELS = [
 ] as const
 
 export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): void {
-  const { browserPaneManager, platform } = deps
+  const { browserPaneManager, windowManager, platform } = deps
   if (!browserPaneManager) return
 
-  server.handle(RPC_CHANNELS.browserPane.CREATE, (ctx, input?: string | BrowserPaneCreateOptions) => {
+  // Tweaks ride the browser window this app already has: a tweak runs only in it, and only
+  // while this app is running (the exported extension is the other carrier). Attached here
+  // because this is where the workspace's window is created and where the pane manager's one
+  // state-change callback already lives.
+  const tweaksInjector = attachTweaksInjector(browserPaneManager)
+
+  /**
+   * The workspace's browser window, with a tab in it to work from.
+   *
+   * One place for the two rules a tab request carries, because three requests now ask for a
+   * tab (create, a file opened as a page, and whatever comes next):
+   *
+   * - an **explicit id** pins the instance id (internal machinery and tests) — the window it
+   *   makes is the same kind as any other, carrying the caller's workspace;
+   * - everything else lands in the workspace's **browser window** — the one window every
+   *   conversation and the user work in. Opening "a new browser" adds a tab to it rather than
+   *   making a second window, and `bindToSessionId` only says which conversation is driving;
+   * - **`newTab` means another tab** as soon as the window is already up. A window somebody
+   *   has is not the blank one it was constructed with, however empty its one tab still looks —
+   *   reading it as untouched swallowed the request and nothing at all happened. A request that
+   *   *is* what opens the window still lands in that tab, which is what keeps a fresh window
+   *   from coming up with two blank ones.
+   */
+  const windowWithTab = (
+    ctx: { workspaceId?: string | null },
+    input?: BrowserPaneCreateOptions,
+  ): string => {
     // Stamp the window with the requester's workspace so manual UI-opened
     // tabs stay scoped to the workspace where the user clicked. If
     // ctx.workspaceId is null (no workspace context — e.g. CLI / agent
     // harness), the window stays globally visible (legacy behavior).
     const workspaceId = ctx.workspaceId ?? null
 
-    if (typeof input === 'string') {
-      return browserPaneManager.createInstance(input, { workspaceId })
-    }
-
-    // Which window the caller gets:
-    //
-    // - an **explicit id** pins the instance id (internal machinery and tests) —
-    //   the window it makes is the same kind as any other, carrying the caller's
-    //   workspace;
-    // - everything else lands in the workspace's **browser window** — the one
-    //   window every conversation and the user work in (plan §22). Opening
-    //   "a new browser" adds a tab to it rather than making a second window, and
-    //   `bindToSessionId` only says which conversation is driving.
     // A window the caller pinned by id, as opposed to the workspace's own window.
     const pinnedWindowId = input?.id && !input?.bindToSessionId ? input.id : null
 
     // Was the window already up? Asked **before** it is resolved, because afterwards the
     // answer is always "yes" — including for the window this very call brings up.
-    const windowWasOpen = input?.newTab
+    const windowWasOpen = Boolean(input?.newTab)
       && browserPaneManager.listInstances().some((info) =>
         pinnedWindowId ? info.id === pinnedWindowId : info.workspaceId === workspaceId,
       )
@@ -65,34 +85,94 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
           workspaceId,
         })
 
-    // A tab is wanted, and the opener may know which prototype it is for: an overlay's
-    // page is somebody else's address, so once the view loads it no URL says whose it
-    // is, and only the caller can.
-    //
-    // Which tab the request is answered by depends on the intent:
-    //
-    // - **a prototype** lands *in* the window's own blank tab when this request is what
-    //   brings the window up, so opening a prototype into a fresh window does not leave a
-    //   tab behind that nobody asked for (第六轮修正);
-    // - **"New tab"** means **another** tab as soon as the window is already up. A window
-    //   somebody has is not the blank one it was constructed with, however empty its one
-    //   tab still looks — reading it as untouched swallowed the request and nothing at all
-    //   happened (plan §22, 用户报告). A request that *is* what opens the window still lands
-    //   in that tab, which is what keeps a fresh window from coming up with two blank ones.
-    if (input?.prototype) {
-      browserPaneManager.createTab(instanceId, {
-        prototype: input.prototype,
-        activate: true,
-        reuseUntouchedWindow: true,
-      })
-    } else if (input?.newTab) {
+    if (input?.newTab) {
       browserPaneManager.createTab(instanceId, {
         activate: true,
         ...(windowWasOpen ? {} : { reuseUntouchedWindow: true }),
       })
     }
 
+    // The workspace's window now exists, so this is the moment to give it the workspace's
+    // tweaks. Everything after this rides state changes (navigations), inside the injector.
+    tweaksInjector.request(instanceId)
+
     return instanceId
+  }
+
+  server.handle(RPC_CHANNELS.browserPane.CREATE, (ctx, input?: string | BrowserPaneCreateOptions) => {
+    if (typeof input === 'string') {
+      return browserPaneManager.createInstance(input, { workspaceId: ctx.workspaceId ?? null })
+    }
+
+    return windowWithTab(ctx, input)
+  })
+
+  /**
+   * The workspace's window, at this address, with a fresh tab brought to the front.
+   *
+   * One function because "open a file" and "open a link" are one gesture with two kinds of
+   * address, and both must land the same way: a new tab, the window up, the person looking
+   * at it. Brought up **before** the load, so an address that never arrives is still a tab the
+   * person can see and reload rather than a failure that happened behind their back.
+   */
+  const openInWindow = async (ctx: { workspaceId?: string | null }, url: string) => {
+    const instanceId = windowWithTab(ctx, { show: true, newTab: true })
+    browserPaneManager.focus(instanceId)
+    await browserPaneManager.navigate(instanceId, url)
+  }
+
+  /**
+   * A local file, opened in the workspace's browser window.
+   *
+   * Reached from the preview window's own "open in browser" button, not from a click on the file:
+   * a click draws the HTML (the app shows it), and this is what opens the same file in a browser,
+   * as a tab at its own address — an origin, relative references, scripts, all of it.
+   *
+   * A path rather than a URL, because turning one into the other is the part no renderer can
+   * get right: a drive letter, a space, a `#` and a non-ASCII name each have their own way of
+   * coming out wrong from a hand-built `file://` string, and none of them is reported when it
+   * does. `pathToFileURL` is the one that knows, and it lives here.
+   *
+   * The path is put through the same gate every other way in (`validateFilePath`: absolute, and
+   * inside the home directory, the temp directory, the workspace root or its working directory
+   * — with sensitive names like `.ssh/`, `.env` and `*.pem` refused everywhere) — one click must
+   * not be able to reach more than another. It is also what resolves `..` and symlinks, so the
+   * tab's address is the file's real one, and it refuses a path that is not a **file**: a
+   * directory has nothing to draw but a listing of somebody's disk.
+   *
+   * Said out loud, since this is where the answer is: the file opens **in the browser window**,
+   * not in a frame inside this app. That is what makes it something the agent can keep working
+   * on — `browser_tool` drives tabs (snapshot, click, screenshot, recording), and it cannot drive
+   * a frame in our own renderer at all. Drawing HTML inside a message is `html-preview`'s job and
+   * stays that way.
+   */
+  server.handle(RPC_CHANNELS.browserPane.OPEN_FILE, async (ctx, path: string) => {
+    const workspaceId = ctx.workspaceId ?? windowManager?.getWorkspaceForWindow(ctx.webContentsId!)
+    const filePath = await validateFilePath(path, getWorkspaceAllowedDirs(workspaceId))
+    const info = statSync(filePath, { throwIfNoEntry: false })
+    if (!info?.isFile()) {
+      throw new Error(`Not a file: ${path}`)
+    }
+
+    await openInWindow(ctx, pathToFileURL(filePath).href)
+  })
+
+  /**
+   * An address, opened in the workspace's browser window.
+   *
+   * This is where a clicked link lands by default, and the choice was made in the renderer
+   * against the person's own setting (`openInAppBrowser`) — one decision, at the click, rather
+   * than a second one here. What that setting cannot be allowed to mean is "put anything in a
+   * window": only an address a browser can load is, so `isBrowserUrl` is asked here too rather
+   * than trusted to the caller. `craftagents://` never arrives — deep links are the shell
+   * opener's, which knows what they mean.
+   */
+  server.handle(RPC_CHANNELS.browserPane.OPEN_URL, async (ctx, url: string) => {
+    if (!isBrowserUrl(url)) {
+      throw new Error(`Only http and https links open in the browser window: ${url}`)
+    }
+
+    await openInWindow(ctx, url.trim())
   })
 
   server.handle(RPC_CHANNELS.browserPane.DESTROY, (_ctx, id: string) => {
@@ -172,7 +252,7 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
 
       if (input.action === 'release') {
         // Taking a locked tab back: the overlay is what holds it, so dropping the
-        // overlay is the unlock (plan §22, 第九轮修正). No session named — whoever is
+        // overlay is the unlock. No session named — whoever is
         // working there lets go.
         browserPaneManager.clearAgentControlForInstance(input.instanceId)
         return
@@ -281,6 +361,9 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
   // remote-mirror deployments.
   browserPaneManager.onStateChange((info) => {
     pushTyped(server, RPC_CHANNELS.browserPane.STATE_CHANGED, { to: 'all' }, info)
+    // The tweaks carrier listens on the same subscription: the pane manager holds exactly
+    // one callback, and this is the call site that owns it (see tweaks-injector.ts).
+    tweaksInjector.handleStateChange(info)
   })
 
   browserPaneManager.onRemoved((id) => {

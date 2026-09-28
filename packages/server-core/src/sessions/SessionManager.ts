@@ -1,10 +1,10 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿import type { EventSink, RpcServer } from '@craft-agent/server-core/transport'
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿import type { EventSink, RpcServer } from '@craft-agent/server-core/transport'
 import { CLIENT_BROWSER_INVOKE } from '@craft-agent/server-core/transport'
 import type { ISessionManager, IBrowserPaneManager, ExecutePromptAutomationInput } from '@craft-agent/server-core/handlers'
 import { RemoteBrowserPaneManager } from './RemoteBrowserPaneManager'
 import { validateFilePath, getWorkspaceAllowedDirs } from '@craft-agent/server-core/handlers'
 import { createScopedLogger, CONSOLE_LOGGER, type PlatformServices, type Logger } from '@craft-agent/server-core/runtime'
-import { basename, dirname, join } from 'path'
+import { basename, dirname, join, resolve } from 'path'
 import { existsSync } from 'fs'
 import { readFile, writeFile, mkdir } from 'fs/promises'
 import { randomUUID } from 'node:crypto'
@@ -12,23 +12,12 @@ import { type AgentEvent, setPermissionMode, hydratePreviousPermissionMode, getP
 import type { BrowserInstanceInfo, BrowserTabSummary, TabBelongsTo } from '@craft-agent/shared/protocol'
 import { sameTask, sameWork, workOfSession } from '@craft-agent/shared/protocol'
 import {
-  exportPrototype as exportPrototypeArtifacts,
-  resolveContractServiceSlug,
-  writeComposedContract,
-  exportContractDeliverable,
-  loadContractService,
-  buildMockRoutes,
   buildPrototypeStatus,
-  resolvePrototypeEntry,
   listPrototypeStatuses,
   createPrototype as createNewPrototype,
-  setPrototypePageUrl as setPrototypePageUrlImpl,
-  updatePrototypePages,
+  getPrototypeDirPath,
 } from '@craft-agent/shared/prototypes'
-import { applyPrototypeToBrowser, clearPrototypeFromBrowser } from '../domain/apply-prototype'
-import { importPrototypeVideo as importPrototypeVideoArtifacts } from '../domain/import-prototype-video'
-import { verifyPrototype as verifyPrototypeArtifacts } from '../domain/verify-prototype'
-import { describePrototypeAtPage } from '../domain/prototype-page'
+import { drawioDocument, drawioPages } from '@craft-agent/shared/drawio/types'
 import {
   pickCommandTarget,
   whyTabIsLocked,
@@ -104,6 +93,7 @@ import { loadWorkspaceSources, loadAllSources, getSourcesBySlugs, isSourceUsable
 import { listTaskSlugs, parseTaskSpec, uniqueTaskSlug } from '@craft-agent/shared/tasks'
 import { createTaskFromSpec, resolveCreateTaskProjectId } from '../tasks'
 import { buildWebsitesToolCallbacks } from '../websites/tool-callbacks'
+import { buildTweaksToolCallbacks } from '../tweaks/tool-callbacks'
 import { buildServersFromSources as buildServersFromSourcesShared } from '../sources/build-servers'
 import { ConfigWatcher, type ConfigWatcherCallbacks } from '@craft-agent/shared/config'
 import { getValidClaudeOAuthToken } from '@craft-agent/shared/auth'
@@ -115,7 +105,7 @@ import { getCredentialManager } from '@craft-agent/shared/credentials'
 import { CraftMcpClient, McpClientPool, McpPoolServer } from '@craft-agent/shared/mcp'
 import { type Session, type SessionEvent, type FileAttachment, type SendMessageOptions, type UnreadSummary, type RemoteSessionTransferPayload, type ImportRemoteSessionTransferResult, RPC_CHANNELS, generateMessageId } from '@craft-agent/shared/protocol'
 import { messageToStored, storedToMessage, type Message, type StoredAttachment, type ToolDisplayMeta, type TokenUsage } from '@craft-agent/core/types'
-import { formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrlAsync, getEmojiIcon, resetSummarizationClient, resolveToolIcon, readFileAttachment, selectSpreadMessages, normalizePath } from '@craft-agent/shared/utils'
+import { formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrlAsync, getEmojiIcon, resetSummarizationClient, resolveToolIcon, readFileAttachment, selectSpreadMessages, normalizePath, normalizePathForComparison } from '@craft-agent/shared/utils'
 import { loadAllSkills, loadSkillBySlug, invalidateSkillsCache, type LoadedSkill } from '@craft-agent/shared/skills'
 import { invalidateContextFileCache } from '@craft-agent/shared/prompts/system'
 import { getToolIconsDir, getMiniModel } from '@craft-agent/shared/config'
@@ -457,32 +447,6 @@ async function refreshExpiredCredentials(
 }
 
 /**
- * Apply bridge-mcp-server updates for backends that use it.
- * Delegates to the backend's own applyBridgeUpdates() method.
- * Each backend handles its own strategy via applyBridgeUpdates().
- */
-async function applyBridgeUpdates(
-  agent: AgentInstance,
-  sessionPath: string,
-  enabledSources: LoadedSource[],
-  mcpServers: Record<string, import('@craft-agent/shared/agent/backend').SdkMcpServerConfig>,
-  sessionId: string,
-  workspaceRootPath: string,
-  context: string,
-  poolServerUrl?: string
-): Promise<void> {
-  await agent.applyBridgeUpdates({
-    sessionPath,
-    enabledSources,
-    mcpServers,
-    sessionId,
-    workspaceRootPath,
-    context,
-    poolServerUrl,
-  })
-}
-
-/**
  * Resolve tool display metadata for a tool call.
  * Returns metadata with base64-encoded icon for viewer compatibility.
  *
@@ -680,6 +644,10 @@ async function resolveToolDisplayMeta(
     'TaskOutput': 'Task Output',
     // The prototype workbench: it drives the same window, but it is not the browser (no Chrome icon).
     'prototype_tool': 'Prototype',
+    // Frames out of a recording — the window is the decoder, not the subject.
+    'video_tool': 'Video',
+    // Drawn by the app's own drawio — no window of the person's involved.
+    'drawio_tool': 'Draw.io',
   }
 
   const nativeDisplayName = nativeToolNames[toolName]
@@ -815,8 +783,6 @@ interface ManagedSession {
   // Tasks Conductor: gates of the active run waiting on a person (orchestrator only) — drives the
   // board's "needs you" badge and the one notification about work *stopping* rather than arriving
   taskAwaitingApproval?: number
-  // The writer identity this session writes prototype artifacts as (task.yaml `writes:`, plan §3.6)
-  taskWrites?: string
   // Tasks Conductor: hidden generate-time orchestrator awaiting validated adoption (off the board)
   taskDraft?: boolean
   // Working directory for this session (used by agent for bash commands)
@@ -1333,7 +1299,7 @@ export class SessionManager implements ISessionManager {
       rpcServer: this.rpcServer,
       getHostClient: () => this.getBrowserHostClient(sid),
       // Read per call rather than captured: a session can be bound to a task after it exists
-      // (`bindExistingSessionToTask`), and its tabs follow it (plan §22).
+      // (`bindExistingSessionToTask`), and its tabs follow it.
       getWork: () => {
         const live = this.sessions.get(sid)
         return live ? workOfSession(live) : null
@@ -1614,6 +1580,12 @@ export class SessionManager implements ISessionManager {
         // refresh never reaches this callback).
         this.enqueueWebsiteThumbnail(workspaceId, workspaceRootPath, websiteSlug)
       },
+      onTweaksListChange: (tweaks) => {
+        // tweak.json changed outside the RPC handlers (the agent's tools, or a hand
+        // edit). The list pages show is derived from the config, so re-broadcast it.
+        sessionLog.info(`Tweaks changed in ${workspaceId} (${tweaks.length} tweaks)`)
+        this.broadcastTweaksChanged(workspaceId, tweaks)
+      },
       onLlmConnectionsChange: () => {
         sessionLog.info(`LLM connections changed in ${workspaceId}`)
         this.broadcastLlmConnectionsChanged()
@@ -1822,6 +1794,12 @@ export class SessionManager implements ISessionManager {
     this.eventSink(RPC_CHANNELS.websites.CHANGED, { to: 'workspace', workspaceId }, workspaceId, websites)
   }
 
+  private broadcastTweaksChanged(workspaceId: string, tweaks: import('@craft-agent/shared/tweaks').TweakSummary[]): void {
+    if (!this.eventSink) return
+    sessionLog.info(`Broadcasting tweaks changed (${tweaks.length} tweaks)`)
+    this.eventSink(RPC_CHANNELS.tweaks.CHANGED, { to: 'workspace', workspaceId }, workspaceId, tweaks)
+  }
+
   private broadcastDefaultPermissionsChanged(): void {
     if (!this.eventSink) return
     sessionLog.info('Broadcasting default permissions changed')
@@ -1852,9 +1830,6 @@ export class SessionManager implements ISessionManager {
     const sessionPath = getSessionStoragePath(workspaceRootPath, managed.id)
     const { mcpServers, apiServers } = await buildServersFromSources(enabledSources, sessionPath, managed.tokenRefreshManager, managed.agent?.getSummarizeCallback())
     const intendedSlugs = enabledSources.map(s => s.config.slug)
-
-    // Update bridge-mcp-server config/credentials for backends that need it
-    await applyBridgeUpdates(managed.agent, sessionPath, enabledSources, mcpServers, managed.id, workspaceRootPath, 'source reload', managed.poolServer?.url)
 
     await managed.agent.setSourceServers(mcpServers, apiServers, intendedSlugs)
 
@@ -2233,21 +2208,6 @@ export class SessionManager implements ISessionManager {
 
     // Persist session with updated auth message and enabled sources
     this.persistSession(managed)
-
-    // Update bridge-mcp-server config/credentials for backends that need it
-    if (result.success && result.sourceSlug && managed.agent) {
-      const workspaceRootPath = managed.workspace.rootPath
-      const sessionPath = getSessionStoragePath(workspaceRootPath, managed.id)
-      const enabledSlugs = managed.enabledSourceSlugs || []
-      const allSources = loadAllSources(workspaceRootPath)
-      const enabledSources = allSources.filter(s =>
-        enabledSlugs.includes(s.config.slug) && isSourceUsable(s)
-      )
-      const { mcpServers } = await buildServersFromSources(
-        enabledSources, sessionPath, managed.tokenRefreshManager
-      )
-      await applyBridgeUpdates(managed.agent, sessionPath, enabledSources, mcpServers, managed.id, workspaceRootPath, 'source auth', managed.poolServer?.url)
-    }
 
     // Send the result as a new message to resume conversation
     // Use empty arrays for attachments since this is a system-generated message
@@ -2698,6 +2658,16 @@ export class SessionManager implements ISessionManager {
       }
     }
 
+    // A session created for a prototype starts in the prototype's own folder: binding is
+    // the choice of where the conversation works, and a session that says it is on a
+    // prototype while bash runs somewhere else is exactly the disagreement the picker
+    // rules out. Guarded by existence for the same reason the bind path is: the slug is
+    // not validated, and a cwd that is not there would break the shell, not report it.
+    const prototypeDir = options?.prototypeSlug
+      ? getPrototypeDirPath(workspaceRootPath, options.prototypeSlug)
+      : null
+    if (prototypeDir && existsSync(prototypeDir)) resolvedWorkingDir = prototypeDir
+
     // Validate branch request up-front so branch metadata is only set for valid branches.
     // This prevents creating sessions that claim to be branched but don't have copied history.
     let validatedBranch: {
@@ -2902,7 +2872,6 @@ export class SessionManager implements ISessionManager {
       taskSlug: options?.taskSlug,
       taskRunId: options?.taskRunId,
       taskNodeId: options?.taskNodeId,
-      taskWrites: options?.taskWrites,
       taskDraft: options?.taskDraft,
       // Persist only an EXPLICIT selection (e.g. a task's spec.sources on its subtasks).
       // The workspace-default fallback stays dynamic — freezing it into the header would
@@ -3440,7 +3409,7 @@ export class SessionManager implements ISessionManager {
         projectId: managed.projectId,
         // The same resolution the window and the commands use, so the prompt
         // describes the prototype the conversation actually works on — which, now
-        // that a project contributes none (plan §15.1.2), is its own binding.
+        // that a project contributes none, is its own binding.
         prototypeSlug: this.effectivePrototypeSlug(managed),
       }
 
@@ -3558,7 +3527,7 @@ export class SessionManager implements ISessionManager {
         markBranchSeedApplied,
         // Asked live rather than read off the session snapshot, so the agent can
         // tell when this conversation's prototype moved on since its prompt was
-        // pinned (plan §15.1) — and so a Pi turn, which rebuilds its prompt, is
+        // pinned — and so a Pi turn, which rebuilds its prompt, is
         // rebuilding it from the current answer.
         getPrototypeSlug: () => this.effectivePrototypeSlug(managed) ?? null,
         getTransferredSessionSummary,
@@ -3691,7 +3660,7 @@ export class SessionManager implements ISessionManager {
          * Whether this conversation was spawned by another one — a DAG node, or a session an
          * agent delegated to.
          *
-         * Its browser side is deliberately narrower (plan §22, Conductor): a child works in the
+         * Its browser side is deliberately narrower: a child works in the
          * tab it was given rather than in whatever the person has in front of them, and it does
          * not move the person's view. A parent and its children share one window, so those are
          * the two behaviours that would otherwise make them interfere.
@@ -3700,7 +3669,7 @@ export class SessionManager implements ISessionManager {
 
         /**
          * The **work** this conversation is part of — what its tabs say they are for, and what
-         * its commands are judged against (plan §22).
+         * its commands are judged against.
          *
          * A Conductor child is a node of a task, and says so: its tabs belong to that node, so a
          * re-run of the node (repair — a *new* child session for the *same* node) inherits the
@@ -3714,7 +3683,7 @@ export class SessionManager implements ISessionManager {
 
         /**
          * The tab a command is about, refused when it is not this conversation's to
-         * touch (plan §22) or is held by another one at this moment (第九轮).
+         * touch or is held by another one at this moment (第九轮).
          *
          * Two rules, in this order. `whyTabIsOutOfReach` is the standing one — a tab is
          * this conversation's work, or nobody's, and anything else is another conversation's or
@@ -3728,7 +3697,7 @@ export class SessionManager implements ISessionManager {
         }
 
         /**
-         * Closing is housekeeping, and housekeeping is the whole **task**'s (plan §22): a node
+         * Closing is housekeeping, and housekeeping is the whole **task**'s: a node
          * opens its own tabs and stops, so a rule that only let the opener close them would
          * leave every finished run's tabs in the window with nobody left to tidy them.
          */
@@ -3764,7 +3733,7 @@ export class SessionManager implements ISessionManager {
          *
          * Split out from the tab resolution below because one command needs a window and not a
          * tab: `tab-new` is how a conversation with no tab gets one, so it cannot require a
-         * tab first (plan §22, Conductor).
+         * tab first.
          */
         const resolveWorkspaceWindow = async (options?: { show?: boolean }): Promise<string> => {
           const instanceId = await bpm.createForSessionAsync(sid, {
@@ -3781,7 +3750,7 @@ export class SessionManager implements ISessionManager {
          *
          * The tab is settled here, once, and handed on to the command — the conversation's
          * own tab when it has one, and the tab on screen only when it has none, which is
-         * the takeover (plan §22, 第十轮). Naming it once and passing it is what keeps the
+         * the takeover. Naming it once and passing it is what keeps the
          * decision in one place: every browser method below takes the tab it acts on, and
          * none of them has to read `activeTabId` and hope it is the right one.
          *
@@ -3808,7 +3777,7 @@ export class SessionManager implements ISessionManager {
             // the cursor here is what makes it the conversation's tab from now on, so the
             // person's next click cannot pull the work away.
             //
-            // A **child session** does not get this move (plan §22, Conductor): it works in the
+            // A **child session** does not get this move: it works in the
             // tab it was given, and a parent's and siblings' tabs are lined up in this window —
             // taking whatever is in front would walk into them, or take the person's tab.
             if (isChildSession) {
@@ -3826,30 +3795,10 @@ export class SessionManager implements ISessionManager {
         }
 
         /**
-         * One tab of the window as the browser side describes it — its id and its address.
-         *
-         * What the prototype apply and the verification need, because both decide *which page
-         * of the prototype* they are about by reading the address (`matchPrototypePage`), and
-         * both must decide it about **their** tab: the window's own address is the tab on
-         * screen, which is the person's (plan §22, 第十二轮). `null` when the tab is gone —
-         * "no tab to judge by", which the callers already know how to handle, rather than a
-         * fallback that would silently judge the wrong one.
-         */
-        const sessionPage = async (
-          instanceId: string,
-          tabId: string | undefined,
-        ): Promise<{ id: string; url: string } | null> => {
-          if (!tabId) return null
-          const tabs = await bpm.listTabsAsync(instanceId).catch(() => [])
-          const tab = tabs.find((candidate) => candidate.id === tabId)
-          return tab ? { id: tab.id, url: tab.url } : null
-        }
-
-        /**
          * The windows this session may act on: its workspace's.
          *
          * Worked out in one place because "which windows are mine" stopped being a
-         * question about ownership (plan §22). A workspace's browser window is shared, so
+         * question about ownership. A workspace's browser window is shared, so
          * every conversation in it may act on it; another workspace's window is
          * outside the boundary and stays invisible, which is the one part of the old
          * model that is still true and still has to be.
@@ -3869,7 +3818,7 @@ export class SessionManager implements ISessionManager {
          * window, so a workspace with no window has none, and creating an empty one
          * to report that would be the tool inventing the state it was asked about.
          *
-         * Found by what it is rather than by who is asking (plan §22): it belongs to
+         * Found by what it is rather than by who is asking: it belongs to
          * the workspace, and nothing on the window names a conversation — which
          * conversation is where is a fact about its tabs. The workspace is what keeps
          * two of them apart.
@@ -3889,10 +3838,10 @@ export class SessionManager implements ISessionManager {
           /**
            * The window it means, or why there is none.
            *
-           * Anything in `windows` is already this workspace's, and the workspace's
-           * window is never locked: the lease on it is what "someone is using it right
-           * now" means, not a lock (plan §22). So there is nothing left to refuse
-           * once the target exists — the only failure is naming one that does not.
+           * Anything in `windows` is already this workspace's, and a window is never
+           * locked — what "someone is using it right now" describes is a **tab** (a held
+           * tab refuses input; the window does not), so there is nothing left to refuse
+           * once the target exists. The only failure is naming one that does not.
            */
           const resolveTarget = (target: (typeof windows)[number] | undefined) => {
             if (target) return { ok: true as const, target }
@@ -3905,7 +3854,7 @@ export class SessionManager implements ISessionManager {
           }
 
           // Which window it means when none is named: the workspace's, which is the
-          // only one there is (plan §22).
+          // only one there is.
           const resolved = requestedInstanceId
             ? resolveTarget(windows.find((w) => w.id === requestedInstanceId))
             : resolveTarget(windows[0])
@@ -3918,8 +3867,8 @@ export class SessionManager implements ISessionManager {
           browserPaneFns: {
             openPanel: async (options) => {
               // A child session never brings the window up: the person may be working in it, and
-              // a DAG's nodes starting in parallel would take turns stealing their view (plan
-              // §22, Conductor). It still gets the window and its tab.
+              // a DAG's nodes starting in parallel would take turns stealing their view.
+              // It still gets the window and its tab.
               const foreground = !isChildSession && !options?.background
               const instanceId = foreground
                 ? await bpm.focusBoundForSessionAsync(sid, { workspaceId })
@@ -3934,25 +3883,7 @@ export class SessionManager implements ISessionManager {
             },
             snapshot: async () => {
               const { instanceId, tabId } = await resolveCommandTarget('browser_snapshot')
-              const snapshot = await bpm.getAccessibilitySnapshot(instanceId, tabId)
-              // Which prototype this is, told from *the tab* rather than from the
-              // conversation (plan §22): a window holds tabs of several prototypes
-              // now, so the conversation's binding is only what to fall back to when
-              // the tab belongs to none. And "the tab" is the one the snapshot is of —
-              // the conversation's, not the one the person happens to be reading
-              // (第十二轮). The kind comes from the prototype's own page table, which the
-              // browser side cannot read.
-              const tabs = await bpm.listTabsAsync(instanceId).catch(() => [])
-              const page = tabs.find((tab) => tab.id === tabId) ?? tabs.find((tab) => tab.active)
-              return {
-                ...snapshot,
-                prototype: describePrototypeAtPage(
-                  page,
-                  this.effectivePrototypeSlug(managed),
-                  snapshot.url,
-                  managed.workspace.rootPath,
-                ),
-              }
+              return bpm.getAccessibilitySnapshot(instanceId, tabId)
             },
             click: async (ref, options) => {
               const { instanceId, tabId } = await resolveCommandTarget('browser_click')
@@ -3998,11 +3929,13 @@ export class SessionManager implements ISessionManager {
               const { instanceId, tabId } = await resolveCommandTarget('browser_console')
               return bpm.getConsoleLogs(instanceId, options, tabId)
             },
-            // A window's viewport is the window's, not a tab's: resizing it is felt by every
-            // tab in it, which is why this one command names no tab.
-            windowResize: async (options) => {
-              const { instanceId } = await resolveCommandTarget('browser_window_resize')
-              return bpm.windowResize(instanceId, options.width, options.height)
+            // The size is the **view's**, so it is the named tab's — `--tab`, or this conversation's
+            // own tab. When that tab is the one on screen the window has to follow (its viewport *is*
+            // the window's page area); when it is not, only that view is resized and the window the
+            // person is reading is left alone (`resizeViewport`).
+            resizeViewport: async (options) => {
+              const { instanceId, tabId } = await resolveCommandTarget('browser_viewport_resize')
+              return bpm.resizeViewport(instanceId, options.width, options.height, tabId)
             },
             getNetworkLogs: async (options) => {
               const { instanceId, tabId } = await resolveCommandTarget('browser_network')
@@ -4037,7 +3970,7 @@ export class SessionManager implements ISessionManager {
               return bpm.goForward(instanceId, tabId)
             },
             // Fire-and-forget on the browser side (the toolbar's own reload is the same
-            // call): the answer to "this patch is inlined, reload to pick the change up".
+            // call): nothing waits for a document to load.
             reload: async () => {
               const { instanceId, tabId } = await resolveCommandTarget('browser_reload')
               bpm.reload(instanceId, tabId)
@@ -4050,14 +3983,11 @@ export class SessionManager implements ISessionManager {
               const { instanceId, tabId } = await resolveCommandTarget('browser_pick')
               return bpm.pickElement(instanceId, options, tabId)
             },
-            // The tab on screen decides before the conversation does (plan §22): a
-            // window holds tabs of several prototypes now, so a command that names
-            // no prototype means the one the tab in front is for. The conversation's
-            // binding stays as the fallback — for a tab that belongs to no
-            // prototype, and for the remote bridge, whose sync accessors answer
-            // nothing (which is what made the binding the answer in the first place).
-            getBoundPrototypeSlug: () =>
-              this.currentPagePrototypeSlug(managed, bpm) ?? this.effectivePrototypeSlug(managed) ?? null,
+            // The prototype a command that names none means: this conversation's own
+            // binding. A window holds tabs of several conversations now, and the remote
+            // bridge's sync accessors answer nothing — so the session binding is the one
+            // answer both the local and the remote path can give.
+            getBoundPrototypeSlug: () => this.effectivePrototypeSlug(managed) ?? null,
             listPrototypes: async () => {
               return listPrototypeStatuses(managed.workspace.rootPath)
             },
@@ -4070,116 +4000,85 @@ export class SessionManager implements ISessionManager {
             bindPrototype: async (prototypeSlug) => {
               await this.setSessionPrototypeSlug(managed.id, prototypeSlug)
             },
-            applyPrototype: async (prototypeSlug, options) => {
-              const { instanceId, tabId } = await resolveCommandTarget('browser_prototype_apply')
-              // The tab is named, not looked up: the apply reads *which page of the prototype*
-              // this is off the address, and the window's own answer is the tab on screen —
-              // the person's, who may be reading something else (plan §22, 第十二轮).
-              return applyPrototypeToBrowser(bpm, instanceId, managed.workspace.rootPath, prototypeSlug, await sessionPage(instanceId, tabId), options)
-            },
-            clearPrototype: async (prototypeSlug) => {
-              const { instanceId, tabId } = await resolveCommandTarget('browser_prototype_clear')
-              return clearPrototypeFromBrowser(bpm, instanceId, prototypeSlug, tabId)
-            },
             // No browser instance: a recording is decoded by a hidden window, not
             // by the one the session is driving, so this works in a session that
-            // has never opened a tab (plan §20.5).
-            importPrototypeVideo: async ({ slug: prototypeSlug, path, mode, everyMs, maxFrames }) => {
-              return importPrototypeVideoArtifacts(bpm, managed.workspace.rootPath, prototypeSlug, {
-                path,
-                mode,
-                everyMs,
-                maxFrames,
+            // has never opened a tab.
+            sampleVideo: async ({ path, out, mode, everyMs, maxFrames }) => {
+              const extracted = await bpm.extractVideoFrames(path, {
+                mode: mode ?? 'timeline',
+                everyMs: Math.max(100, everyMs ?? 2_000),
+                maxFrames: Math.max(1, Math.min(400, maxFrames ?? 40)),
               })
-            },
-            // Reads a window rather than creating one: a verification should not
-            // open a browser, and with none the page checks come back as skipped —
-            // a true answer, not a failure (plan §20.7).
-            verifyPrototype: async (prototypeSlug) => {
-              // That window, not "this session's" (plan §22) — but the tab it checks is
-              // this conversation's, resolved the way every command's is: the person may be
-              // reading another tab of the window, and which requirements are on *our* tab
-              // is not something their next click gets to change (第十二轮).
-              const instanceId = await resolveWorkspaceWindowId()
-              const tabId = instanceId
-                ? pickCommandTarget(await bpm.listTabsAsync(instanceId).catch(() => []), sid)?.tab.id
-                : undefined
-              return verifyPrototypeArtifacts(
-                bpm,
-                instanceId,
-                managed.workspace.rootPath,
-                prototypeSlug,
-                instanceId ? await sessionPage(instanceId, tabId) : null,
-              )
-            },
-            // File work only, and deliberately no confirmation step: a page's
-            // address is not a rule of its kind, it is a fact about where the page
-            // is (the same page lives in a dev, a staging and a production
-            // environment). `page` names which page moves — an overlay one, since a
-            // document of ours has no address to record. What *is* worth saying —
-            // that open windows keep the old page and that selectors were written
-            // against the old DOM — is said by the command that calls this.
-            setPrototypePageUrl: async (prototypeSlug, url, page) => {
-              return setPrototypePageUrlImpl(managed.workspace.rootPath, prototypeSlug, url, page)
-            },
-            // The same file, the other fact in it: which pages this flow is made
-            // of, in what order, and which one the address root opens. A page table
-            // is not a rule about a page, it is the flow itself, so nothing here
-            // needs confirming.
-            setPrototypePages: async (prototypeSlug, change) => {
-              return updatePrototypePages(managed.workspace.rootPath, prototypeSlug, change)
-            },
-            // Pure file export — deliberately does not resolve a browser instance.
-            exportPrototype: async (prototypeSlug) => {
-              return exportPrototypeArtifacts(managed.workspace.rootPath, prototypeSlug)
-            },
-            composeContract: async ({ slug: prototypeSlug, service }) => {
-              const serviceSlug = resolveContractServiceSlug(managed.workspace.rootPath, prototypeSlug, service)
-              const composed = writeComposedContract(managed.workspace.rootPath, prototypeSlug, serviceSlug)
-              return {
-                service: serviceSlug,
-                endpoints: composed.endpoints.length,
-                conflicts: composed.conflicts,
-                missingFixtures: composed.missingFixtures,
+
+              // No `out` means the frames are the reply: hand them back and write nothing.
+              if (!out) {
+                return {
+                  durationMs: extracted.durationMs,
+                  truncated: extracted.truncated,
+                  frames: extracted.frames.map((frame) => ({
+                    offsetMs: frame.offsetMs,
+                    bytes: frame.bytes,
+                    path: null,
+                  })),
+                }
               }
-            },
-            exportContract: async ({ slug: prototypeSlug, service }) => {
-              const serviceSlug = resolveContractServiceSlug(managed.workspace.rootPath, prototypeSlug, service)
-              return exportContractDeliverable(managed.workspace.rootPath, prototypeSlug, serviceSlug)
-            },
-            applyMock: async ({ slug: prototypeSlug, service }) => {
-              const { instanceId, tabId } = await resolveCommandTarget('browser_mock_apply')
-              const serviceSlug = resolveContractServiceSlug(managed.workspace.rootPath, prototypeSlug, service)
-              const loaded = loadContractService(managed.workspace.rootPath, prototypeSlug, serviceSlug)
-              const { routes, missingFixtures, unmocked, stateIssues, stateProblem } = buildMockRoutes(loaded)
-              // The store travels with the routes, and applying again starts it over:
-              // one apply is one run of the flow, which is also how a demo is reset.
-              const applied = await bpm.setFetchMock(instanceId, { routes, store: loaded.state ?? {} }, tabId)
-              return {
-                service: serviceSlug,
-                routes: applied,
-                missingFixtures,
-                unmocked,
-                stateIssues,
-                stateProblem,
-                stateful: routes.filter((route) => route.state !== undefined).length,
+
+              // Written under the caller's directory, named the same way a capture names
+              // its frames (`frame-0001.jpg`) so a caller has one naming to learn.
+              const dir = resolve(out)
+              await mkdir(dir, { recursive: true })
+
+              const frames: Array<{ offsetMs: number; bytes: Uint8Array; path: string }> = []
+              for (const [index, frame] of extracted.frames.entries()) {
+                const framePath = join(dir, `frame-${String(index + 1).padStart(4, '0')}.jpg`)
+                await writeFile(framePath, frame.bytes)
+                frames.push({ offsetMs: frame.offsetMs, bytes: frame.bytes, path: framePath })
               }
+
+              return { durationMs: extracted.durationMs, truncated: extracted.truncated, frames }
             },
-            clearMock: async () => {
-              const { instanceId, tabId } = await resolveCommandTarget('browser_mock_clear')
-              await bpm.clearFetchMock(instanceId, tabId)
+            // A `.drawio` document → SVG, an editable SVG, a PNG or a page. The document is read
+            // here — the workspace is where this runs, and only its text has to travel to the
+            // engine — and drawn by the pane side. `out` is the whole difference between looking
+            // and keeping, exactly as it is for a recording's frames.
+            //
+            // The read goes through `drawioDocument`, so what travels is the *document*: a file that
+            // is an exported SVG (a drawing with its document inside) is read back out of it, and the
+            // engine is never handed a wrapper it would have to unwrap itself.
+            exportDrawio: async ({ path, format, out, page, scale, dark }) => {
+              if (!existsSync(path)) {
+                throw new Error(`No diagram at ${path}.`)
+              }
+              const rendered = await bpm.renderDrawio({
+                xml: drawioDocument(await readFile(path, 'utf-8')),
+                format,
+                ...(page !== undefined ? { page } : {}),
+                ...(scale !== undefined ? { scale } : {}),
+                dark: dark === true,
+              })
+
+              if (!out) return { ...rendered, path: null }
+
+              const target = resolve(out)
+              await mkdir(dirname(target), { recursive: true })
+              await writeFile(target, rendered.bytes)
+              return { ...rendered, path: target }
+            },
+            // The same read as `exportDrawio`, and nothing else: `drawio_tool pages` lists what a
+            // document holds, which is a question about the file and no reason to involve a window.
+            listDrawioPages: async ({ path }) => {
+              if (!existsSync(path)) {
+                throw new Error(`No diagram at ${path}.`)
+              }
+              return drawioPages(await readFile(path, 'utf-8'))
             },
             // Pure file inspection — deliberately does not resolve a browser instance.
             prototypeStatus: async (prototypeSlug) => {
               return buildPrototypeStatus(managed.workspace.rootPath, prototypeSlug)
             },
-            // Pure path resolution; the caller navigates to the returned URL.
-            prototypeEntry: async ({ slug: prototypeSlug }) => {
-              return resolvePrototypeEntry(managed.workspace.rootPath, prototypeSlug)
-            },
             focusWindow: async (targetInstanceId) => {
               // Bringing the window up is about the person's view: a child session does not do it
-              // (plan §22, Conductor) — the window is theirs and it shows their tab.
+              // — the window is theirs and it shows their tab.
               if (isChildSession) {
                 throw new Error(
                   'Bringing the browser window to the front is not a child session\'s to do: the person may be working in it. ' +
@@ -4193,14 +4092,14 @@ export class SessionManager implements ISessionManager {
               }
 
               // A named window has to exist, and that is the only refusal left: every
-              // window in this workspace is the workspace's one window, and its lease
-              // is not a lock (plan §22).
+              // window in this workspace is the workspace's one window, and a window is
+              // never locked — a *tab* is what a session holds.
               if (targetInstanceId && !windows.some((w) => w.id === targetInstanceId)) {
                 throw new Error(`Browser window "${targetInstanceId}" not found. Use "windows" to list available windows.`)
               }
 
-              // Focusing it is how this conversation comes to drive it, so the lease is
-              // renewed by the same call that brings the window forward.
+              // Focusing brings the workspace's window forward and writes nothing about
+              // this conversation: which conversations are working in it is per tab.
               const instanceId = await bpm.focusBoundForSessionAsync(sid, { workspaceId })
               const focused = await bpm.getInstanceAsync(instanceId)
               const info = windows.find((w) => w.id === instanceId)
@@ -4264,13 +4163,13 @@ export class SessionManager implements ISessionManager {
                 }
               }
 
-              // The window is never closed on a conversation's say-so (plan §22's third
-              // rule) — but the tabs it opened in it are its own to clean up, and with
+              // The window is never closed on a conversation's say-so —
+              // but the tabs it opened in it are its own to clean up, and with
               // tab-level occupation `close` means exactly that instead of refusing
-              // everything (plan §22, 第六轮). There is no window kind this could
+              // everything. There is no window kind this could
               // destroy instead: it is the workspace's, the only one there is.
               const tabs = await bpm.listTabsAsync(resolution.target.id).catch(() => [])
-              // The task's tabs, not just this session's (plan §22): a node opened its tabs and
+              // The task's tabs, not just this session's: a node opened its tabs and
               // has stopped by now, and the orchestrator that ran the whole DAG is the one that
               // gets to tidy them away. Same task = same housekeeping.
               const mine = tabs.filter((tab) => sameTask(tab.belongsTo, work) || sameWork(tab.belongsTo, work))
@@ -4304,8 +4203,7 @@ export class SessionManager implements ISessionManager {
               }
             },
             hideWindow: async (requestedInstanceId) => {
-              // Hiding it takes the person's view away, which a child session does not do
-              // (plan §22, Conductor).
+              // Hiding it takes the person's view away, which a child session does not do.
               if (isChildSession) {
                 return {
                   action: 'noop',
@@ -4337,8 +4235,8 @@ export class SessionManager implements ISessionManager {
               }
             },
             // Tabs, not windows: this session's window holds them, and a command
-            // acts on the tab that is on screen unless it names one with `--tab`
-            // (plan §22). Creating a tab is the one tab operation that may open a
+            // acts on the tab that is on screen unless it names one with `--tab`.
+            // Creating a tab is the one tab operation that may open a
             // window — there is nothing to add a tab to otherwise — so it goes
             // through the same resolver every browser command uses.
             //
@@ -4349,13 +4247,13 @@ export class SessionManager implements ISessionManager {
             // people's tabs alone" is decided from that field.
             createTab: async (options) => {
               // A window, not a tab: this is the one command a conversation with no tab of its
-              // own can still run (plan §22, Conductor).
+              // own can still run.
               const instanceId = await resolveWorkspaceWindow()
               return await bpm.createTabAsync(instanceId, { ...options, belongsTo: work })
             },
             /**
              * Hand a tab to another conversation — the orchestrator's half of "a DAG's nodes each
-             * get their own tab" (plan §22, Conductor).
+             * get their own tab".
              *
              * Checked here rather than in the browser because only this side knows the sessions:
              * the tab has to be one this conversation may give away (nobody's, or its own), and
@@ -4364,7 +4262,7 @@ export class SessionManager implements ISessionManager {
              *
              * The receiver's **work** is resolved here too, and passed whole: whether the new tab
              * belongs to a conversation or to a DAG node is a fact about the session being handed
-             * to, which the browser side has no way to look up (plan §22).
+             * to, which the browser side has no way to look up.
              */
             assignTab: async (tabId, targetSessionId) => {
               const instanceId = await resolveWorkspaceWindowId()
@@ -4390,7 +4288,7 @@ export class SessionManager implements ISessionManager {
               assertTabUsable(await requireTab(instanceId, tabId))
               // Naming a tab is how a conversation says "this is where I work from" — the cursor
               // moves with it, so the rest of the command (and the next one, and the one after the
-              // person clicks around) stays on this tab (plan §22, 第十轮). Nothing is shown:
+              // person clicks around) stays on this tab. Nothing is shown:
               // the window is shared, and the person reading another of its tabs is not the
               // command's to move (第十二轮).
               bpm.setSessionTab(instanceId, tabId, sid)
@@ -4409,7 +4307,7 @@ export class SessionManager implements ISessionManager {
               // be worked on, so the cursor goes with it too.
               bpm.setSessionTab(instanceId, tabId, sid)
               // …except for a child session, which takes the tab as its own without moving what
-              // the person sees (plan §22, Conductor). Said out loud rather than done quietly:
+              // the person sees. Said out loud rather than done quietly:
               // the answer to "show it to them" is about the person's view.
               if (isChildSession) return { movedView: false }
               bpm.activateTab(instanceId, tabId)
@@ -4436,33 +4334,9 @@ export class SessionManager implements ISessionManager {
               return await bpm.listTabsAsync(instanceId)
             },
             listWindows: async () => {
-              const windows = await sessionWindows()
-              // Each window carries the prototype of the tab **on screen** in it —
-              // which page of which flow, and of which kind — because the URL alone
-              // cannot tell an overlay page (a live site's page) from a scratch one
-              // (our own rendered document), and a window no longer holds one
-              // prototype's tabs only (plan §22).
-              //
-              // The conversation's own binding is offered as a fallback for **its own tab**
-              // on screen — the same rule the browser side reads a tab's prototype by, so the
-              // two cannot disagree. A tab another conversation opened, works from or holds is
-              // left to speak for itself rather than being told what it is by a conversation
-              // that has nothing to do with it (plan §22, Conductor).
-              const mine = (window: BrowserInstanceInfo) => {
-                const page = window.tabs?.find((tab) => tab.active)
-                if (!page) return false
-                return sameWork(page.belongsTo, work) || page.cursorOf === sid || page.lockedBy === sid
-              }
-
-              return windows.map((window) => ({
-                ...window,
-                prototype: describePrototypeAtPage(
-                  window.tabs?.find((tab) => tab.active),
-                  mine(window) ? this.effectivePrototypeSlug(managed) : undefined,
-                  window.url,
-                  managed.workspace.rootPath,
-                ),
-              }))
+              // The windows as the browser side reports them: what each holds is a fact about
+              // its tabs (`listTabs`), so there is nothing for the session layer to add here.
+              return sessionWindows()
             },
             detectChallenge: async () => {
               const { instanceId, tabId } = await resolveCommandTarget('browser_detect_challenge')
@@ -4633,7 +4507,7 @@ export class SessionManager implements ISessionManager {
             managed.agent.interruptForHandoff(AbortReason.PlanSubmitted)
             this.setProcessing(managed, false)
 
-            // Release browser overlay + lease because the agent is no longer running.
+            // Release browser overlay + driven-by marks because the agent is no longer running.
             // Plan submission pauses execution until user review, so the window should not be held.
             await releaseBrowserOnForcedStop(
               (sid) => this.getBrowserPaneManagerForSession(sid),
@@ -4692,7 +4566,7 @@ export class SessionManager implements ISessionManager {
           managed.agent.interruptForHandoff(AbortReason.AuthRequest)
           this.setProcessing(managed, false)
 
-          // Release browser overlay + lease because the agent is paused awaiting user auth.
+          // Release browser overlay + driven-by marks because the agent is paused awaiting user auth.
           void releaseBrowserOnForcedStop(
             (sid) => this.getBrowserPaneManagerForSession(sid),
             managed.id,
@@ -4874,6 +4748,18 @@ export class SessionManager implements ISessionManager {
           },
           onContentChanged: (websiteSlug: string) => {
             this.enqueueWebsiteThumbnail(managed.workspace.id, managed.workspace.rootPath, websiteSlug)
+          },
+        }),
+        // Tweaks tools (list_tweaks/get_tweak/create_tweak/update_tweak/delete_tweak/
+        // export_tweaks) — the standing edits that run on pages nobody here owns. A
+        // mutation writes files in the workspace, so it is an out-of-band edit as far as
+        // the watcher is concerned: same poke as the websites callbacks, and the same
+        // reason (files are the truth, and the watcher is how the app hears about them).
+        tweaks: buildTweaksToolCallbacks({
+          workspaceRootPath: managed.workspace.rootPath,
+          log: (message: string) => sessionLog.info(message),
+          onTweaksMutated: async (tweakSlug: string) => {
+            this.notifyConfigFileChange(managed.workspace.rootPath, `tweaks/${tweakSlug}/tweak.json`)
           },
         }),
         getSessionInfoFn: (sessionId?: string) => {
@@ -5114,9 +5000,6 @@ export class SessionManager implements ISessionManager {
         const intendedSlugs = allEnabledSources
           .filter(isSourceUsable)
           .map(s => s.config.slug)
-
-        // Update bridge-mcp-server config/credentials for backends that need it
-        await applyBridgeUpdates(managed.agent!, sessionPath, allEnabledSources, mcpServers, managed.id, workspaceRootPath, 'source enable', managed.poolServer?.url)
 
         await managed.agent!.setSourceServers(mcpServers, apiServers, intendedSlugs)
 
@@ -5633,10 +5516,6 @@ export class SessionManager implements ISessionManager {
       // Set active source servers (tools are only available from these)
       const intendedSlugs = sources.filter(isSourceUsable).map(s => s.config.slug)
 
-      // Update bridge-mcp-server config/credentials for backends that need it
-      const usableSources = sources.filter(isSourceUsable)
-      await applyBridgeUpdates(managed.agent, sessionPath, usableSources, mcpServers, managed.id, workspaceRootPath, 'source config change', managed.poolServer?.url)
-
       await managed.agent.setSourceServers(mcpServers, apiServers, intendedSlugs)
 
       sessionLog.info(`Applied ${Object.keys(mcpServers).length} MCP + ${Object.keys(apiServers).length} API sources to active agent (${allSources.length} total)`)
@@ -5944,6 +5823,18 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
+   * The folder a bound prototype claims, or null when nothing is bound.
+   *
+   * The one reader of "a conversation works either in a folder or in a prototype's own
+   * folder": binding, unbinding-by-folder and session creation all go through it, so the
+   * badge, the picker and bash's cwd cannot disagree about where the work is.
+   */
+  private prototypeWorkingDirectory(managed: ManagedSession): string | null {
+    if (!managed.prototypeSlug) return null
+    return getPrototypeDirPath(managed.workspace.rootPath, managed.prototypeSlug)
+  }
+
+  /**
    * Update the working directory for a session.
    *
    * If no messages have been sent yet (no SDK interaction), also updates sdkCwd
@@ -5966,6 +5857,16 @@ export class SessionManager implements ISessionManager {
       }
 
       managed.workingDirectory = path
+
+      // A conversation works in one place: a folder, or a prototype's own folder. A
+      // directory that is not the bound prototype's own means the binding no longer
+      // holds, so it goes — keeping both would leave the badge and the picker
+      // disagreeing about where this conversation works.
+      const boundDir = this.prototypeWorkingDirectory(managed)
+      if (boundDir && normalizePathForComparison(boundDir) !== normalizePathForComparison(path)) {
+        managed.prototypeSlug = undefined
+        this.sendEvent({ type: 'prototype_slug_changed', sessionId, prototypeSlug: null }, managed.workspace.id)
+      }
 
       // Invalidate filesystem caches that depend on working directory
       invalidateContextFileCache(path)
@@ -6714,7 +6615,6 @@ export class SessionManager implements ISessionManager {
         const usableSources = sources.filter(isSourceUsable)
         const intendedSlugs = usableSources.map(s => s.config.slug)
         await agent.setSourceServers(mcpServers, apiServers, intendedSlugs)
-        await applyBridgeUpdates(agent, sessionPath, usableSources, mcpServers, sessionId, workspaceRootPath, 'send message', managed.poolServer?.url)
         sessionLog.info(`Applied ${mcpCount} MCP + ${apiCount} API sources to session ${sessionId} (${allSources.length} total)`)
       }
       sendSpan.mark('servers.applied')
@@ -7249,9 +7149,9 @@ export class SessionManager implements ISessionManager {
       // Has queued messages - process next
       this.processNextQueuedMessage(sessionId)
     } else {
-      // Session is truly done — let go of the browser (the lease, not the window).
-      // The window stays alive (hidden) and becomes reusable by future sessions.
-      // On the next turn, getOrCreateForSession() will take the lease again.
+      // Session is truly done — let go of the browser (what it drove and held, not the
+      // window). The window stays alive (hidden) and becomes reusable by future sessions,
+      // and the next command of this conversation writes its marks again.
       const doneBpm = this.getBrowserPaneManagerForSession(sessionId)
       if (doneBpm) {
         // Teardown must never block completion. On a headless/WebUI server the BPM is
@@ -7841,10 +7741,10 @@ export class SessionManager implements ISessionManager {
    * Which prototype a session is working on, and the workspace that owns it.
    *
    * Read by the browser toolbar (through the pane manager's injected resolver),
-   * which needs both: the workspace to build the prototype's own address, and the
+   * which needs both: the workspace the prototype belongs to, and the
    * slug to say which prototype the window is. A window whose conversation has no
    * prototype shows the tab it is actually on and offers no prototype actions —
-   * see plan §7: an entry point's precondition is shown before the click, not
+   * an entry point's precondition is shown before the click, not
    * answered after it.
    */
   getSessionPrototypeBinding(sessionId: string): { slug: string; workspaceRootPath: string } | null {
@@ -7877,11 +7777,11 @@ export class SessionManager implements ISessionManager {
    *
    * **Its own binding, and nothing else.** A project used to provide one: first the
    * single prototype claiming it, then a stored "current" one. Both were withdrawn
-   * (plan §15.1.2) — a conversation that is *told* what exists can name one itself,
+   * — a conversation that is *told* what exists can name one itself,
    * while a project picking one for it was a guess that cost a config field, a
    * validated writer and a story for the value going stale.
    *
-   * A project may note which prototype it is on (§15.1.3) — and that is deliberately
+   * A project may note which prototype it is on — and that is deliberately
    * not here. It is background information for its conversations, told in
    * `<project_prototype>`: it binds no conversation, injects no prototype context or
    * guide, and never becomes a command's default target. So this stays one line, and
@@ -7889,33 +7789,6 @@ export class SessionManager implements ISessionManager {
    */
   private effectivePrototypeSlug(managed: ManagedSession): string | undefined {
     return managed.prototypeSlug
-  }
-
-  /**
-   * The prototype the tab this conversation works from is for, from the browser side's own
-   * answer — falling back to the tab on screen, which is all there is before it has one.
-   *
-   * Read **synchronously**, which is why it deliberately reaches for the sync
-   * accessors: `listInstances`/`listTabs` answer for real only on a local browser
-   * pane manager, and a remote bridge returns nothing here. That is not a hole —
-   * the caller falls back to the conversation's binding, which is what answered
-   * before a window could hold several prototypes' tabs at once (plan §22).
-   */
-  private currentPagePrototypeSlug(managed: ManagedSession, bpm: IBrowserPaneManager): string | null {
-    const windows = bpm.listInstances()
-    // The workspace has one window, so anywhere with tabs will do — but a workspace with no
-    // window at all is not something to invent here (plan §22).
-    const window = windows.find((candidate) => (candidate.workspaceId ?? null) === (managed.workspace.id ?? null))
-
-    if (!window) return null
-    const tabs = bpm.listTabs(window.id)
-    // The tab this conversation works from, and only then the one on screen: they stopped
-    // being the same tab when a window got several of them, and a command that names no
-    // prototype means the prototype of *our* tab (plan §22, 第十二轮).
-    return (
-      tabs.find((tab) => tab.cursorOf === managed.id)
-      ?? tabs.find((tab) => tab.active)
-    )?.prototype?.slug ?? null
   }
 
   /**
@@ -7941,6 +7814,15 @@ export class SessionManager implements ISessionManager {
         sessionId: managed.id,
         prototypeSlug: managed.prototypeSlug ?? null,
       }, managed.workspace.id)
+
+      // Binding is also the choice of where the conversation works, so the prototype's own
+      // folder becomes the working directory — bash and every relative path follow it.
+      // Guarded by existence because binding deliberately does not validate the slug: a
+      // session pointed at a folder that is not there would break the shell instead of
+      // reporting anything. Unbinding leaves the directory alone — it is a plain folder
+      // then, and nothing here knows where the person wants to be next.
+      const dir = this.prototypeWorkingDirectory(managed)
+      if (dir && existsSync(dir)) this.updateWorkingDirectory(sessionId, dir)
 
       this.persistSession(managed)
       await this.flushSession(managed.id)

@@ -26,10 +26,19 @@
  * Security: iframe uses `sandbox` attribute without `allow-scripts`,
  * blocking all JavaScript execution. `allow-same-origin` is included
  * so CSS and images resolve correctly.
+ *
+ * The block does not edit. Its pencil opens the overlay on the visual editor, the same
+ * way the diagram block's does — and that editor's frame has a different sandbox on
+ * purpose, because editing needs a probe script and the preview must not gain scripts.
+ *
+ * That window is the same one a `.html` file's preview opens, so it carries the same actions:
+ * the editor's pencil, and **open in browser** — the way out of a document drawn in a frame that
+ * has no address of its own. Which browser that is (the app's own window or the person's) is the
+ * host's answer, from their setting; the block only says which item is on screen.
  */
 
 import * as React from 'react'
-import { Globe, Maximize2 } from 'lucide-react'
+import { Globe, Maximize2, Pencil } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { CodeBlock } from './CodeBlock'
 import { HTMLPreviewOverlay } from '../overlay/HTMLPreviewOverlay'
@@ -95,7 +104,7 @@ export interface MarkdownHtmlBlockProps {
 
 export function MarkdownHtmlBlock({ code, className }: MarkdownHtmlBlockProps) {
   const { t } = useTranslation()
-  const { onReadFile } = usePlatform()
+  const { onReadFile, onWriteFile, onOpenFileInBrowser } = usePlatform()
 
   // Parse the JSON spec — supports single src or items array
   const spec = React.useMemo<HtmlPreviewSpec | null>(() => {
@@ -122,7 +131,8 @@ export function MarkdownHtmlBlock({ code, className }: MarkdownHtmlBlockProps) {
   }, [spec])
 
   const [activeIndex, setActiveIndex] = React.useState(0)
-  const [isFullscreen, setIsFullscreen] = React.useState(false)
+  /** Which way the overlay was opened, or that it is closed — one state, so it cannot disagree. */
+  const [overlay, setOverlay] = React.useState<'closed' | 'view' | 'edit'>('closed')
 
   // Content cache: src path → loaded HTML string
   const [contentCache, setContentCache] = React.useState<Record<string, string>>({})
@@ -179,6 +189,11 @@ export function MarkdownHtmlBlock({ code, className }: MarkdownHtmlBlockProps) {
 
   const fallback = <CodeBlock code={code} language="json" mode="full" className={className} />
 
+  // Editing happens elsewhere, so the pencil is offered only where a write could land:
+  // a real path that loaded, on a host with a write action. A host without one would
+  // open an editor with nowhere to save, which is worse than not offering it.
+  const canEdit = Boolean(activeItem?.src && activeHtml && onWriteFile)
+
   return (
     <HtmlBlockErrorBoundary fallback={fallback}>
       <div className={cn('relative group rounded-[8px] overflow-hidden border bg-muted/10', className)}>
@@ -190,8 +205,29 @@ export function MarkdownHtmlBlock({ code, className }: MarkdownHtmlBlockProps) {
           </span>
           <div className="flex items-center gap-1">
             <ItemNavigator items={items} activeIndex={activeIndex} onSelect={setActiveIndex} />
+
+            {/* Editing is not done here: the pencil opens the overlay on the editor, and
+                the block stays a picture. A page editor in a message would take the page
+                out of the conversation — the same call the diagram block makes. */}
+            {canEdit && (
+              <button
+                onClick={() => setOverlay('edit')}
+                className={cn(
+                  "p-1 rounded-[6px] transition-all select-none",
+                  "bg-background shadow-minimal",
+                  "text-muted-foreground/50 hover:text-foreground",
+                  "opacity-0 group-hover:opacity-100 focus:opacity-100",
+                  "focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                )}
+                title={t('common.edit')}
+                aria-label={t('common.edit')}
+              >
+                <Pencil className="w-3.5 h-3.5" />
+              </button>
+            )}
+
             <button
-              onClick={() => setIsFullscreen(true)}
+              onClick={() => setOverlay('view')}
               className={cn(
                 "p-1 rounded-[6px] transition-all select-none",
                 "bg-background shadow-minimal",
@@ -249,15 +285,22 @@ export function MarkdownHtmlBlock({ code, className }: MarkdownHtmlBlockProps) {
         </div>
       </div>
 
-      {/* Fullscreen overlay — passes items for multi-item navigation */}
+      {/* A sibling of the block rather than a child, the way the diagram block opens its
+          own overlay: the block's overflow and hover styling then cannot clip or trap it.
+          One way in is the editor and one is the same page at window size, which is why
+          the mode is part of the state that opened it. The window's own "open in browser"
+          is the host's to answer — this block passes on which page is on screen. */}
       <HTMLPreviewOverlay
-        isOpen={isFullscreen}
-        onClose={() => setIsFullscreen(false)}
+        isOpen={overlay !== 'closed'}
+        onClose={() => setOverlay('closed')}
         items={items}
         contentCache={contentCache}
         onLoadContent={handleLoadContent}
         initialIndex={activeIndex}
         title={spec.title}
+        initialMode={overlay === 'edit' ? 'edit' : 'view'}
+        onSaved={(src, html) => setContentCache((prev) => ({ ...prev, [src]: html }))}
+        onOpenInBrowser={onOpenFileInBrowser}
       />
     </HtmlBlockErrorBoundary>
   )

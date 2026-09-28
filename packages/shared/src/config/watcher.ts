@@ -44,6 +44,9 @@ import { permissionsConfigCache, getAppPermissionsDir } from '../agent/permissio
 import { getWorkspacePath, getWorkspaceSourcesPath, getWorkspaceSkillsPath } from '../workspaces/storage.ts';
 import type { LoadedSkill } from '../skills/types.ts';
 import { loadWorkspaceWebsites, WEBSITE_CONFIG_FILENAME, WEBSITE_CONTENT_FILENAME, syncWebsiteContentDigest } from '../websites/storage.ts';
+import { loadWorkspaceTweaks } from '../tweaks/storage.ts';
+import { toTweakSummary } from '../tweaks/summary.ts';
+import { TWEAK_CONFIG_FILENAME } from '../tweaks/types.ts';
 import { loadSkill, loadAllSkills, invalidateSkillsCache, skillNeedsIconDownload, downloadSkillIcon } from '../skills/storage.ts';
 import {
   loadStatusConfig,
@@ -168,6 +171,15 @@ export interface ConfigWatcherCallbacks {
    * called for website.json writes or data-only refreshes.
    */
   onWebsitesContentChange?: (websiteSlug: string) => void;
+
+  // Tweak callbacks
+  /**
+   * Called when any tweaks/{slug}/tweak.json changes (created, edited, deleted) — the
+   * file the tweak list is derived from. The code files beside it (tweak.css/tweak.js)
+   * and the applier's hits.json do not change which tweaks exist or whether they are on,
+   * so they are deliberately not watched.
+   */
+  onTweaksListChange?: (tweaks: import('../tweaks/summary.ts').TweakSummary[]) => void;
 
   // Session callbacks
   /** Called when a session's JSONL header is modified externally (labels, name, flags, etc.) */
@@ -499,6 +511,17 @@ export class ConfigWatcher {
       if (parts.length === 2 || file === WEBSITE_CONFIG_FILENAME || file === WEBSITE_CONTENT_FILENAME) {
         const contentEdited = file === WEBSITE_CONTENT_FILENAME;
         this.debounce('websites-dir', () => this.handleWebsitesChange(contentEdited ? slug : undefined));
+      }
+      return;
+    }
+
+    // Tweaks changes: tweaks/{slug}/tweak.json is the record the list is built from,
+    // so an out-of-band edit to it (the agent's own tools, or a hand edit) is what the
+    // pages showing tweaks have to follow. Slug-dir add/remove fires too.
+    if (parts[0] === 'tweaks' && parts.length >= 2) {
+      const file = parts[2];
+      if (parts.length === 2 || file === TWEAK_CONFIG_FILENAME) {
+        this.debounce('tweaks-dir', () => this.handleTweaksChange());
       }
       return;
     }
@@ -1011,6 +1034,26 @@ export class ConfigWatcher {
       this.callbacks.onWebsitesListChange(websites);
     } catch (error) {
       debug('[ConfigWatcher] Failed to reload websites:', error);
+    }
+  }
+
+  // ============================================================
+  // Tweak Handlers
+  // ============================================================
+
+  /**
+   * A tweak's `tweak.json` changed on disk. The list is derived from the config, so the
+   * reload is the whole answer — the code files beside it are read by whoever applies
+   * the tweak, not here.
+   */
+  private handleTweaksChange(): void {
+    if (!this.callbacks.onTweaksListChange) return;
+    try {
+      const tweaks = loadWorkspaceTweaks(this.workspaceDir).map(toTweakSummary);
+      debug('[ConfigWatcher] tweaks changed:', this.workspaceId, `(${tweaks.length} tweaks)`);
+      this.callbacks.onTweaksListChange(tweaks);
+    } catch (error) {
+      debug('[ConfigWatcher] Failed to reload tweaks:', error);
     }
   }
 

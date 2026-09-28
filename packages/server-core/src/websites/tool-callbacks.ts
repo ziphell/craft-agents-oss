@@ -7,8 +7,8 @@
  * invoking session's workspace, into the session-scoped tool callback registry.
  *
  * Storage flows are the SAME primitives the websites RPC handlers use
- * (@craft-agent/shared/websites) — including deleteWebsiteWithUnpublish, shared
- * verbatim with the websites:delete RPC so the two delete paths cannot drift.
+ * (@craft-agent/shared/websites) — including deleteWebsite, shared verbatim with
+ * the websites:delete RPC so the two delete paths cannot drift.
  * Every mutation calls deps.onWebsitesMutated so the host can poke the config
  * watcher and broadcast `websites:changed`, exactly like the RPC handlers do.
  */
@@ -23,8 +23,7 @@ import type {
   UpdateWebsiteToolPatch,
   WebsiteDataToolPatch,
 } from '@craft-agent/session-tools-core'
-import type { LoadedWebsite, WebsiteConfig, WebsiteDataSnapshot, WebsiteKind, WebsiteRefreshSpec, UpdateWebsitePatch } from '@craft-agent/shared/websites'
-import { isWebsiteGrantUsable } from '@craft-agent/shared/websites/types'
+import type { LoadedWebsite, WebsiteConfig, WebsiteDataSnapshot, WebsiteRefreshSpec, UpdateWebsitePatch } from '@craft-agent/shared/websites'
 
 export interface WebsitesToolCallbacksDeps {
   workspaceId: string
@@ -44,23 +43,12 @@ export interface WebsitesToolCallbacksDeps {
   onContentChanged?: (websiteSlug: string) => void
 }
 
-const WEBSITE_KINDS: readonly string[] = ['static', 'interactive', 'live']
-
-function assertKind(kind: string | undefined): WebsiteKind | undefined {
-  if (kind === undefined) return undefined
-  if (!WEBSITE_KINDS.includes(kind)) {
-    throw new Error(`Invalid website kind "${kind}" — expected static | interactive | live`)
-  }
-  return kind as WebsiteKind
-}
-
 function toSummary(website: LoadedWebsite): WebsiteToolSummary {
   const config = website.config
   return {
     slug: config.slug,
     name: config.name,
     description: config.description,
-    kind: config.kind,
     projectId: config.projectId,
     originSessionId: config.originSessionId,
     createdAt: config.createdAt,
@@ -68,7 +56,6 @@ function toSummary(website: LoadedWebsite): WebsiteToolSummary {
     hasContent: existsSync(website.contentPath),
     refresh: config.refresh,
     lastRefresh: config.lastRefresh,
-    shared: config.share !== undefined,
     folderPath: website.folderPath,
   }
 }
@@ -108,18 +95,6 @@ function toDetails(
     }
   }
 
-  const now = Date.now()
-  const grants = (config.grants ?? []).map((grant) => ({
-    id: grant.id,
-    kind: grant.action.kind,
-    ...(grant.action.kind === 'script'
-      ? { script: grant.action.script }
-      : { sourceSlug: grant.action.sourceSlug }),
-    description: grant.description,
-    expiresAt: grant.expiresAt,
-    stale: !isWebsiteGrantUsable(grant, config.contentDigest, now),
-  }))
-
   return {
     ...summary,
     id: config.id,
@@ -127,8 +102,6 @@ function toDetails(
     contentLength,
     contentPath: website.contentPath,
     data: toDataSummary(website, helpers.readSnapshot()),
-    grants,
-    shareUrl: config.share?.url,
     ...(options.includeContent ? { content: helpers.loadContent() ?? undefined } : {}),
   }
 }
@@ -169,7 +142,6 @@ export function buildWebsitesToolCallbacks(deps: WebsitesToolCallbacksDeps): Web
       const config = createWebsite(workspaceRootPath, {
         name: input.name.trim(),
         description: input.description,
-        kind: assertKind(input.kind),
         projectId: input.projectId,
         content: input.content,
         refresh: input.refresh as WebsiteRefreshSpec | undefined,
@@ -192,7 +164,6 @@ export function buildWebsitesToolCallbacks(deps: WebsitesToolCallbacksDeps): Web
       // so this path and the websites:update RPC cannot drift.
       const configPatch: UpdateWebsitePatch = {}
       if (patch.name !== undefined) configPatch.name = patch.name.trim()
-      if (patch.kind !== undefined) configPatch.kind = assertKind(patch.kind)
       if (patch.description !== undefined) configPatch.description = patch.description
       if (patch.projectId !== undefined) configPatch.projectId = patch.projectId
       if (patch.refresh !== undefined) configPatch.refresh = patch.refresh as WebsiteRefreshSpec | null
@@ -226,13 +197,13 @@ export function buildWebsitesToolCallbacks(deps: WebsitesToolCallbacksDeps): Web
     },
 
     async deleteWebsite(slug: string) {
-      const { deleteWebsiteWithUnpublish, loadWebsite } = await import('@craft-agent/shared/websites')
+      const { deleteWebsite, loadWebsite } = await import('@craft-agent/shared/websites')
       const existing = loadWebsite(workspaceRootPath, slug)
       if (!existing) throw new Error(`Website not found: ${slug}`)
-      const outcome = await deleteWebsiteWithUnpublish(workspaceRootPath, workspaceId, existing.config.slug, { log: deps.log })
+      deleteWebsite(workspaceRootPath, existing.config.slug)
       await mutated(existing.config.slug)
       deps.log?.(`websites tool: deleted website ${existing.config.slug}`)
-      return { deleted: true as const, publicCopyMayRemain: outcome.publicCopyMayRemain }
+      return { deleted: true as const }
     },
   }
 }

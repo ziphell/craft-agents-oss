@@ -51,7 +51,7 @@ export function ToolbarStatusSlot({
 
   // Find the visible browser window this session is working in: one of its tabs is held by
   // the session — the tab lock, per tab, so a parent and its children each get their own
-  // banner while they work in parallel (plan §22, Conductor). Hidden instances are
+  // banner while they work in parallel. Hidden instances are
   // intentionally excluded so the status slot mirrors actual visibility.
   const browserInstance = React.useMemo(() => {
     if (!sessionId) return null

@@ -17,12 +17,10 @@ import type {
 const SUMMARY: WebsiteToolSummary = {
   slug: 'build-health',
   name: 'Build Health',
-  kind: 'live',
   projectId: 'proj_1',
   createdAt: 1,
   updatedAt: 2,
   hasContent: true,
-  shared: false,
   folderPath: '/ws/websites/build-health',
 };
 
@@ -33,7 +31,6 @@ const DETAILS: WebsiteToolDetails = {
   contentLength: 128,
   contentPath: '/ws/websites/build-health/index.html',
   data: null,
-  grants: [],
 };
 
 function createCtx(overrides?: Partial<WebsiteToolCallbacks>): {
@@ -51,7 +48,7 @@ function createCtx(overrides?: Partial<WebsiteToolCallbacks>): {
       record('writeWebsiteData', slug, patch);
       return { slug, kvCount: 2, seriesCount: 1, generatedAt: 3, snapshotPath: '/ws/websites/build-health/data/snapshot.json', durationMs: 42 };
     },
-    deleteWebsite: async (slug) => { record('deleteWebsite', slug); return { deleted: true, publicCopyMayRemain: false }; },
+    deleteWebsite: async (slug) => { record('deleteWebsite', slug); return { deleted: true }; },
     ...overrides,
   };
   return { ctx: { websites } as unknown as SessionToolContext, calls };
@@ -100,7 +97,7 @@ describe('websites handlers', () => {
     expect(noName.isError).toBe(true);
     expect(calls).toHaveLength(0);
 
-    const created = await handleCreateWebsite(ctx, { name: 'Build Health', kind: 'live', content: '<!doctype html>' });
+    const created = await handleCreateWebsite(ctx, { name: 'Build Health', content: '<!doctype html>' });
     expect(created.isError).toBeFalsy();
     expect(JSON.parse(created.content[0].text).slug).toBe('build-health');
   });
@@ -129,10 +126,10 @@ describe('websites handlers', () => {
     expect(JSON.parse(result.content[0].text).kvCount).toBe(2);
   });
 
-  it('delete_website reports the unpublish outcome and wraps backend failures', async () => {
+  it('delete_website reports the deleted result and wraps backend failures', async () => {
     const { ctx } = createCtx();
     const ok = await handleDeleteWebsite(ctx, { slug: 'build-health' });
-    expect(JSON.parse(ok.content[0].text)).toEqual({ deleted: true, publicCopyMayRemain: false });
+    expect(JSON.parse(ok.content[0].text)).toEqual({ deleted: true });
 
     const { ctx: failingCtx } = createCtx({
       deleteWebsite: async () => { throw new Error('Website not found: nope'); },

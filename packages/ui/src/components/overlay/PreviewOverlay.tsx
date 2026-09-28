@@ -22,6 +22,7 @@ import { useOverlayMode, OVERLAY_LAYOUT } from '../../lib/layout'
 import { FullscreenOverlayBase } from './FullscreenOverlayBase'
 import { FullscreenOverlayBaseHeader } from './FullscreenOverlayBaseHeader'
 import { OverlayErrorBanner } from './OverlayErrorBanner'
+import { FileSaveSlotProvider, FileSaveStateWord } from '../editors/FileSaveStatus'
 import type { PreviewBadgeVariant } from '../ui/PreviewHeader'
 
 /** Badge color variants - re-export for backwards compatibility */
@@ -109,6 +110,23 @@ export function PreviewOverlay({
 
   if (!isOpen && !embedded) return null
 
+  /**
+   * The header's actions with the file's save word in front of them.
+   *
+   * The word is chrome, so it goes where the chrome is: to the left of the actions, which is the one
+   * place in this window that covers no content and moves nothing — the header's two sides are both
+   * `flex-1` with the badges between them, so anything added here leaves the badges where they are.
+   * This component renders the header *and* the content, which is what makes it the only place a
+   * writer's state can be said in the header at all: the writer reports up through
+   * `FileSaveSlotProvider` (see `FileSaveStatus`).
+   */
+  const headerActionsWithFileState = (
+    <>
+      <FileSaveStateWord />
+      {headerActions}
+    </>
+  )
+
   // Header rendered in modal/embedded mode (fullscreen delegates to FullscreenOverlayBase)
   const header = (
     <FullscreenOverlayBaseHeader
@@ -118,7 +136,7 @@ export function PreviewOverlay({
       title={title}
       onTitleClick={onTitleClick}
       subtitle={subtitle}
-      headerActions={headerActions}
+      headerActions={headerActionsWithFileState}
     />
   )
 
@@ -157,10 +175,12 @@ export function PreviewOverlay({
   // Embedded mode — renders inline without dialog/portal, for design system playground
   if (embedded) {
     return (
-      <div className={`flex flex-col ${bgClass} h-full w-full overflow-hidden rounded-lg border border-foreground/5`}>
-        {header}
-        {contentArea}
-      </div>
+      <FileSaveSlotProvider>
+        <div className={`flex flex-col ${bgClass} h-full w-full overflow-hidden rounded-lg border border-foreground/5`}>
+          {header}
+          {contentArea}
+        </div>
+      </FileSaveSlotProvider>
     )
   }
 
@@ -168,43 +188,47 @@ export function PreviewOverlay({
   // and owns the masked scroll container. Children are rendered directly inside it.
   if (!isModal) {
     return (
-      <FullscreenOverlayBase
-        isOpen={isOpen}
-        onClose={onClose}
-        typeBadge={typeBadge}
-        filePath={filePath}
-        title={title}
-        onTitleClick={onTitleClick}
-        subtitle={subtitle}
-        headerActions={headerActions}
-        error={error}
-      >
-        {children}
-      </FullscreenOverlayBase>
+      <FileSaveSlotProvider>
+        <FullscreenOverlayBase
+          isOpen={isOpen}
+          onClose={onClose}
+          typeBadge={typeBadge}
+          filePath={filePath}
+          title={title}
+          onTitleClick={onTitleClick}
+          subtitle={subtitle}
+          headerActions={headerActionsWithFileState}
+          error={error}
+        >
+          {children}
+        </FullscreenOverlayBase>
+      </FileSaveSlotProvider>
     )
   }
 
   // Modal mode - uses its own portal with backdrop click to close
   return ReactDOM.createPortal(
-    <div
-      className={`fixed inset-0 z-50 flex items-center justify-center ${OVERLAY_LAYOUT.modalBackdropClass}`}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose()
-      }}
-    >
+    <FileSaveSlotProvider>
       <div
-        className={`flex flex-col ${bgClass} shadow-3xl overflow-hidden smooth-corners`}
-        style={{
-          width: '90vw',
-          maxWidth: OVERLAY_LAYOUT.modalMaxWidth,
-          height: `${OVERLAY_LAYOUT.modalMaxHeightPercent}vh`,
-          borderRadius: 16,
+        className={`fixed inset-0 z-50 flex items-center justify-center ${OVERLAY_LAYOUT.modalBackdropClass}`}
+        onClick={(e) => {
+          if (e.target === e.currentTarget) onClose()
         }}
       >
-        {header}
-        {contentArea}
+        <div
+          className={`flex flex-col ${bgClass} shadow-3xl overflow-hidden smooth-corners`}
+          style={{
+            width: '90vw',
+            maxWidth: OVERLAY_LAYOUT.modalMaxWidth,
+            height: `${OVERLAY_LAYOUT.modalMaxHeightPercent}vh`,
+            borderRadius: 16,
+          }}
+        >
+          {header}
+          {contentArea}
+        </div>
       </div>
-    </div>,
+    </FileSaveSlotProvider>,
     document.body
   )
 }

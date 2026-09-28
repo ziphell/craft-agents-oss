@@ -21,35 +21,25 @@
  * message, the English line is the record — shown in full where a person hands
  * work over, and as the tooltip where a diagnostic is being read.)
  *
- * Codes are added for the things a **person acts on**: the gate, and the page
- * problems that come from the flow's own table. File-level diagnostics (a review
- * file without a `claim:`, two requirements sharing an id, a config line that
- * cannot be read) deliberately stay in their own words through {@link rawNotice}:
- * they name files, line contents and ids that translation would only obscure.
+ * Codes are added for the things a **person acts on**: the gate. File-level
+ * diagnostics (a review file without a `claim:`, two requirements sharing an id,
+ * a finding whose evidence is not on disk) deliberately stay in their own words
+ * through {@link rawNotice}: they name files, line contents and ids that
+ * translation would only obscure.
  */
 
 /** What a notice is about, as a stable code a reader can translate. */
 export type PrototypeNoticeCode =
-  /** `pageIssues`: a row in the table whose document is not in the directory. */
-  | 'page.documentMissing'
-  /** `pageIssues`: `patches/<page>/` that matches no page, so nothing replays. */
-  | 'page.patchScopeUnmatched'
-  /** `briefIssues`: a requirement in the PRD that nothing refers to. */
+  /** `briefIssues`: a requirement in a document that nothing refers to. */
   | 'requirement.unimplemented'
-  /** `briefIssues`: a `@requirement` marker naming an id the PRD does not define. */
+  /** `briefIssues`: a `@requirement` marker naming an id no document defines. */
   | 'requirement.undefined'
-  /** `anchors.issues`: a record nothing declares any more. */
-  | 'anchor.orphaned'
+  /** `briefIssues`: a picture in the brief drawn from an earlier state of the diagram beside it. */
+  | 'diagram.stale'
   /** `settleBlockers`: a requirement nothing implements. */
   | 'gate.requirementUnmet'
   /** `settleBlockers`: an objection that still stands. */
   | 'gate.disputeStanding'
-  /** `settleBlockers`: a check the last round failed. */
-  | 'gate.checkFailed'
-  /** `settleBlockers`: the PRD declares checks that have never been run. */
-  | 'gate.checksNeverRun'
-  /** `settleBlockers`: a service's contract declares a faked response that is not on disk. */
-  | 'gate.serviceUncovered'
   /** A diagnostic that stays in its own words. */
   | 'raw'
 
@@ -77,28 +67,16 @@ export interface PrototypeNotice {
  * conversation, and what a dispute in `reviews/` is written against.
  */
 const ENGLISH: Record<PrototypeNoticeCode, (params: PrototypeNoticeParams) => string> = {
-  'page.documentMissing': ({ name, file }) =>
-    `the page table lists "${name}", but ${file} is not in the prototype directory.`,
-  'page.patchScopeUnmatched': ({ name, pages }) =>
-    `patches/${name}/ belongs to no page of this prototype, so nothing there is replayed. Pages: ${pages}`,
-  'requirement.unimplemented': ({ id, prd }) =>
-    `${id} is in ${prd} but no page or patch refers to it, so nothing in this prototype implements it.`,
-  'requirement.undefined': ({ where, id, prd }) =>
-    `${where} refers to ${id}, which ${prd} does not define.`,
-  'anchor.orphaned': ({ target }) =>
-    `anchors/${target} was recorded but no patch declares it any more — the patch was edited or removed, and ` +
-    `the record outlived it.`,
-  'gate.requirementUnmet': ({ id, prd }) =>
-    `${id} is in ${prd} but no page or patch refers to it, so nothing implements it.`,
+  'requirement.unimplemented': ({ id, file }) =>
+    `${id} is in ${file} but no file refers to it, so nothing in this prototype implements it.`,
+  'requirement.undefined': ({ where, id }) =>
+    `${where} refers to ${id}, which no file in this prototype defines.`,
+  'diagram.stale': ({ svg, source }) =>
+    `${svg} is not what ${source} draws any more — it was exported before the diagram changed.`,
+  'gate.requirementUnmet': ({ id, file }) =>
+    `${id} is in ${file} but no file refers to it, so nothing implements it.`,
   'gate.disputeStanding': ({ file, about, status }) =>
     `${file} disputes ${about}, and it still stands (${status}).`,
-  'gate.checkFailed': ({ check }) => `\`${check}\` failed in the last verification round.`,
-  'gate.checksNeverRun': ({ prd }) =>
-    `${prd} declares acceptance checks and they have never been run here — \`prototype_tool verify\` is what turns ` +
-    `them into an answer.`,
-  'gate.serviceUncovered': ({ service, fixtures }) =>
-    `${service} declares responses that are not on disk: ${fixtures} — those requests are not faked, so they go ` +
-    `to the real backend.`,
   raw: ({ text }) => String(text),
 }
 

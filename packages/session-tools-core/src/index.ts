@@ -147,6 +147,15 @@ export type {
   WebsiteDataToolPatch,
   WebsiteDataWriteSummary,
   DeleteWebsiteToolResult,
+  // Tweaks types
+  TweakToolCallbacks,
+  TweakToolSummary,
+  TweakToolDetails,
+  TweakToolTarget,
+  CreateTweakToolInput,
+  UpdateTweakToolPatch,
+  DeleteTweakToolResult,
+  ExportTweaksToolResult,
 } from './context.ts';
 
 export { createNodeFileSystem } from './context.ts';
@@ -187,6 +196,12 @@ export {
   handleUpdateWebsite,
   handleWriteWebsiteData,
   handleDeleteWebsite,
+  handleListTweaks,
+  handleGetTweak,
+  handleCreateTweak,
+  handleUpdateTweak,
+  handleDeleteTweak,
+  handleExportTweaks,
 } from './handlers/index.ts';
 
 export type {
@@ -211,6 +226,11 @@ export type {
   UpdateWebsiteArgs,
   WriteWebsiteDataArgs,
   DeleteWebsiteArgs,
+  GetTweakArgs,
+  CreateTweakArgs,
+  UpdateTweakArgs,
+  DeleteTweakArgs,
+  ExportTweaksArgs,
 } from './handlers/index.ts';
 
 // Tool definitions — single source of truth
@@ -239,6 +259,12 @@ export {
   UpdateWebsiteSchema,
   WriteWebsiteDataSchema,
   DeleteWebsiteSchema,
+  ListTweaksSchema,
+  GetTweakSchema,
+  CreateTweakSchema,
+  UpdateTweakSchema,
+  DeleteTweakSchema,
+  ExportTweaksSchema,
   // Descriptions
   TOOL_DESCRIPTIONS,
   // Registry

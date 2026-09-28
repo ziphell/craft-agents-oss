@@ -49,7 +49,6 @@ import { getCoAuthorPreference } from '../config/preferences.ts';
 import { loadProjectById, getProjectAssetsPath, listProjectAssets, getProjectMemoryPath, loadProjectMemory } from '../projects/storage.ts';
 import type { ProjectPromptContext } from '../projects/types.ts';
 import { buildPrototypePromptContext } from '../prototypes/prompt.ts';
-import { resolvePrototypeWriter } from '../prototypes/types.ts';
 import { getProjectPrototypes } from '../prototypes/project-link.ts';
 import type { PrototypePromptContext } from '../prototypes/prompt.ts';
 
@@ -110,6 +109,8 @@ import { extractWorkspaceSlug } from '../utils/workspace.ts';
 import { LLM_QUERY_TIMEOUT_MS, type LLMQueryRequest, type LLMQueryResult } from './llm-tool.ts';
 import { executeBrowserToolCommand } from './browser-commands.ts';
 import { executePrototypeToolCommand } from './prototype-commands.ts';
+import { executeVideoToolCommand } from './video-commands.ts';
+import { executeDrawioToolCommand } from './drawio-commands.ts';
 import { saveBinaryResponse } from '../utils/binary-detection.ts';
 
 // ============================================================
@@ -122,7 +123,23 @@ export const PI_BACKEND_SESSION_TOOL_NAMES = new Set<string>([
   'spawn_session',
   'browser_tool',
   'prototype_tool',
+  'video_tool',
+  'drawio_tool',
 ]);
+
+/**
+ * Which command table a pane tool name runs — the doors, in one place.
+ *
+ * One command table per door: `browser_tool` for the window itself, `prototype_tool` for a
+ * prototype's own files and flow, `video_tool` for frames out of a recording. A name not in here
+ * is not a pane tool at all, and falls through to the registry below.
+ */
+const PANE_TOOL_EXECUTORS: Record<string, typeof executeBrowserToolCommand> = {
+  browser_tool: executeBrowserToolCommand,
+  prototype_tool: executePrototypeToolCommand,
+  video_tool: executeVideoToolCommand,
+  drawio_tool: executeDrawioToolCommand,
+};
 
 /**
  * Map a transport `err.code` to an agent-facing string for `browser_tool` failures.
@@ -222,9 +239,9 @@ export class PiAgent extends BaseAgent {
         name: project.config.name,
         description: project.config.description,
         details: project.config.details,
-        // What a project says about prototypes: the ones its work touches (§15.1.3) — told
+        // What a project says about prototypes: the ones its work touches — told
         // as background, not given: a set, with nothing targeted for the session. A
-        // prototype belongs to no project (§15.1.4), so this is the only direction there is.
+        // prototype belongs to no project, so this is the only direction there is.
         prototypes: getProjectPrototypes(root, slug),
         assetsPath: getProjectAssetsPath(root, slug),
         assets: listProjectAssets(root, slug).map((a) => ({
@@ -247,8 +264,7 @@ export class PiAgent extends BaseAgent {
    *
    * Only this conversation's own binding counts. A project's note about which
    * prototype it is on is background — it reaches the session through
-   * `<project_prototype>` and nothing is targeted for the conversation because of it
-   * (plan §15.1.2, §15.1.3).
+   * `<project_prototype>` and nothing is targeted for the conversation because of it.
    *
    * Resolved per turn (unlike ClaudeAgent, which pins on the first chat) because
    * this backend rebuilds its prompt each time anyway — and asked of the host
@@ -261,11 +277,9 @@ export class PiAgent extends BaseAgent {
     if (!slug) return null;
 
     try {
-      // Same identity the prompt states and the write guard enforces (§3.6).
       return buildPrototypePromptContext(
         this.config.workspace.rootPath,
         slug,
-        resolvePrototypeWriter(this.config.session),
       );
     } catch (error) {
       this.debug(`[resolvePrototypeContext] Failed to load prototype ${slug}: ${error instanceof Error ? error.message : error}`);
@@ -1295,7 +1309,6 @@ export class PiAgent extends BaseAgent {
       plansFolderPath,
       dataFolderPath,
       prototypesFolderPath,
-      prototypeWriter: resolvePrototypeWriter(this.config.session),
       workingDirectory: this.config.session?.workingDirectory,
       activeSourceSlugs: Array.from(this.sourceManager.getActiveSlugs()),
       allSourceSlugs: this.sourceManager.getAllSources().map(s => s.config.slug),
@@ -1589,9 +1602,11 @@ export class PiAgent extends BaseAgent {
         }
       }
 
-      // The pane tools — one command table, two doors: `browser_tool` for the window
-      // itself, `prototype_tool` for a prototype's own files and flow.
-      if (toolName === 'browser_tool' || toolName === 'prototype_tool') {
+      // The pane tools — one command table per door, reached by name: `browser_tool` for the
+      // window itself, `prototype_tool` for a prototype's own files and flow, `video_tool` for
+      // frames out of a recording.
+      const paneExecute = PANE_TOOL_EXECUTORS[toolName];
+      if (paneExecute) {
         const callbacks = getSessionScopedToolCallbacks(this._sessionId);
         const browserFns = callbacks?.browserPaneFns;
         if (!browserFns) {
@@ -1599,10 +1614,7 @@ export class PiAgent extends BaseAgent {
         }
 
         try {
-          const execute = toolName === 'prototype_tool'
-            ? executePrototypeToolCommand
-            : executeBrowserToolCommand;
-          const result = await execute({
+          const result = await paneExecute({
             command: (args.command as string | string[]) ?? '',
             fns: browserFns,
             sessionId: this._sessionId,
@@ -1633,18 +1645,29 @@ export class PiAgent extends BaseAgent {
             }
           }
 
-          // Frames are already files: a capture writes them into the prototype's `research/`,
-          // which is the copy a finding cites. So they are shown from there rather than saved
-          // again — a second copy would be a second record of the same moment, and the reader
-          // would have to guess which one the rest of the work refers to.
-          for (const frame of result.images ?? []) {
-            if (!frame.path) continue;
+          // A frame that came back as a file is shown from that file — the file is the record,
+          // and saving a second copy would be a second record of the same moment. A frame that
+          // did not (`video_tool sample` without `--out`) has no file of its own, so it is saved
+          // here for the person to look at, the same way a screenshot is.
+          for (const [index, frame] of (result.images ?? []).entries()) {
+            let src = frame.path;
+            if (!src) {
+              const ext = frame.mimeType === 'image/jpeg' ? 'jpg' : 'png';
+              const saved = saveBinaryResponse(
+                getSessionPath(this.config.workspace.rootPath, this._sessionId),
+                `video-frame-${index + 1}.${ext}`,
+                Buffer.from(frame.data, 'base64'),
+                frame.mimeType,
+              );
+              if (saved.type !== 'file_download') continue;
+              src = saved.path;
+            }
             content += [
               '',
               '```image-preview',
               JSON.stringify({
-                src: frame.path,
-                title: frame.path.split(/[/\\]/).pop() ?? 'Frame',
+                src,
+                title: src.split(/[/\\]/).pop() ?? 'Frame',
               }, null, 2),
               '```',
             ].join('\n');

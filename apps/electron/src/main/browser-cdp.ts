@@ -10,16 +10,7 @@
  */
 
 import type { WebContents } from 'electron'
-import type { BrowserEdit, PickedElement } from '@craft-agent/shared/protocol'
-import {
-  applyMockRequest,
-  matchMockRoute,
-  parseMockRequestBody,
-  type MockMatch,
-  type MockProgram,
-  type MockRoute,
-  type MockStore,
-} from '@craft-agent/shared/prototypes'
+import type { PickedElement } from '@craft-agent/shared/protocol'
 import { mainLog } from './logger'
 
 export interface AccessibilityNode {
@@ -100,45 +91,14 @@ function summarizeTopCounts(map: Map<string, number>, maxEntries = 8): string {
 
 const CDP_IDLE_DETACH_MS = 5_000
 
-/** Subset of the `Fetch.requestPaused` payload we act on. */
-interface CdpPausedRequest {
-  requestId?: string
-  request?: {
-    url?: string
-    method?: string
-    /** The request body, when CDP captured one — what a mutating mock acts on. */
-    postData?: string
-  }
-}
-
 // ---------------------------------------------------------------------------
 // The overlay a page gets while elements are being chosen on it
 // ---------------------------------------------------------------------------
 
 /** Window key the injected overlay publishes its state into. */
 const OVERLAY_STATE_KEY = '__craft_agent_overlay_state__'
-/** Window key exposing the overlay's teardown handle — leave now, dropping the draft. */
+/** Window key exposing the overlay's teardown handle — take it down now. */
 const OVERLAY_CANCEL_KEY = '__craft_agent_overlay_cancel__'
-/**
- * Window key asking the overlay to leave *if it has nothing unsaved*.
- *
- * A second handle rather than a flag on the first, because the two are asked by
- * different callers for different reasons: the toolbar's button asks (the person may
- * have work in the draft, and that is a decision, not a teardown), while closing a
- * tab, re-arming the overlay or finishing a one-shot pick tears down (there is
- * nobody left to ask, and the overlay must not outlive the mode).
- */
-const OVERLAY_ASK_KEY = '__craft_agent_overlay_ask_leave__'
-/**
- * Window key the window's own ✓ presses to write the draft down.
- *
- * One caller, one moment: while the bar is asking "save before leaving?", the ✓ beside
- * the crosshair is the "yes" — save the draft and end the mode. Saving in the ordinary
- * way is the ✓ on the page's own bar and needs no handle out here; this exists because
- * the question is *asked* in the window's chrome (a page cannot be sure its own bar is
- * visible), and the answer still has to reach the page's draft.
- */
-const OVERLAY_SAVE_KEY = '__craft_agent_overlay_save__'
 const OVERLAY_ID = '__craft_agent_overlay__'
 
 /** What the injected overlay has reported since the last read. */
@@ -152,37 +112,23 @@ export interface OverlayReport {
   status: 'pending' | 'picked' | 'cancelled' | 'missing'
   /** Elements picked since the last read — cleared as they are read. */
   picks: PickedElement[]
-  /** Saves made since the last read, in order — cleared as they are read. */
-  saves: BrowserEdit[][]
-  /**
-   * Whether the draft is what is keeping the mode open: the person tried to leave and
-   * was asked to save or drop, and has not answered yet.
-   */
-  leavingWithEdits: boolean
 }
 
-/** The bar's words when the caller brings none (the toolbar renderer brings its own). */
+/** The bar's word when the caller brings none (the toolbar renderer brings its own). */
 const DEFAULT_OVERLAY_LABELS: OverlayLabels = {
   add: 'Add to conversation',
-  undo: 'Undo',
-  redo: 'Redo',
-  save: 'Save',
-  bold: 'Bold',
-  italic: 'Italic',
 }
 
-/** The bar's colours when the caller brings none — the bar is not drawn then anyway. */
-const DEFAULT_OVERLAY_MENU = { surface: '#ffffff', text: '#111111' }
-
 /**
- * How a selection is drawn: a solid frame around it, and its name on a chip of the
- * app's accent.
+ * How a selection is drawn: a solid frame around it, its name on a chip of the app's
+ * accent, and the one control at the frame's **bottom-left corner**.
  *
- * The frame and the chip are the app's marks *about* the page, which is why they keep
- * the accent while the bar wears the menu's colours. The chip is **fixed to the page's
- * bottom-left corner** rather than hung off the frame it describes: a name that moves
- * with the page covers the very thing the person is looking at, at the one moment they
- * are looking at it, and it changes place every time the page scrolls.
+ * All three wear the accent, because all three are the app's marks *about* the page
+ * rather than a piece of the page: one colour says "this is ours", and the accent is
+ * the colour the window's own chrome already uses. The name chip is the one exception
+ * to sitting on the frame — it stays at the page's bottom-left corner, because a name
+ * that moves with what it names covers the very thing the person is looking at, at the
+ * one moment they are looking at it.
  */
 function selectionFrameStyle(accent: string): string {
   return `position:fixed;display:none;border:2px solid ${accent};border-radius:4px;pointer-events:none;`
@@ -195,10 +141,10 @@ function selectionLabelStyle(accent: string): string {
 /**
  * `buildStableSelector`, as source, for the scripts injected into a page.
  *
- * One copy for both of the overlay's users on purpose: the window's mode and the
- * agent's one-shot pick describe an element the same way — the selector the agent, a
- * patch's `@target` and the anchor record all agree on. A second copy would be a
- * second description of one thing, and the two would drift.
+ * One copy on purpose: the window's own mode and the agent's one-shot pick describe an
+ * element the same way — the selector the agent reads back out of a pick, and the one
+ * a mention carries. A second copy would be a second description of one thing, and the
+ * two would drift.
  */
 const STABLE_SELECTOR_FN = `  const buildStableSelector = (el) => {
     if (!el || el.nodeType !== 1) return '';
@@ -233,12 +179,6 @@ const STABLE_SELECTOR_FN = `  const buildStableSelector = (el) => {
  * the selection, draws its bar above it and stays mounted; a one-shot pick reports
  * the element and tears itself down before anything else can happen.
  *
- * Two scripts for that difference would be two descriptions of one gesture, and they
- * would drift — which is what the mode looked like before this: a picker and an
- * editor, each with its own overlay, its own bar and its own idea of what a click
- * means, and a person had to know which one to enter before they knew what they
- * would find (plan §12.7).
- *
  * It reports into `OVERLAY_STATE_KEY` rather than resolving a long-lived promise, so
  * the caller can poll with short CDP calls and the idle-detach timer never fires
  * mid-selection.
@@ -256,28 +196,15 @@ function buildOverlayScript(options: {
    */
   accent: string
   /**
-   * What the bar is drawn in: the app's *menu* surface and text.
+   * Draw the bar.
    *
-   * The bar is a menu of ours sitting on somebody else's page — the same job a
-   * dropdown in the app does — so it wears what a dropdown wears. The accent stays
-   * for the marks the app draws *about* the page (the selection's frames and its
-   * name), which are not part of the menu.
-   */
-  menu: { surface: string; text: string }
-  /**
-   * Draw the bar, and keep what the person makes as a draft.
-   *
-   * The window's own mode does. A one-shot pick does not — the agent asked for one
-   * element, and a bar nobody asked for is chrome drawn over somebody's page.
+   * The window's own mode does: the bar is where the selection is handed to the
+   * conversation. A one-shot pick does not — the agent asked for one element, and a
+   * bar nobody asked for is chrome drawn over somebody's page.
    */
   bar: boolean
-  /**
-   * The bar's words, in the caller's language — the toolbar owns the i18n, not this.
-   *
-   * They are titles rather than labels: the buttons carry glyphs, and what each one
-   * means is said on hover (and to a screen reader).
-   */
-  labels: { add: string; undo: string; redo: string; save: string; bold: string; italic: string }
+  /** The bar's word, in the caller's language — the toolbar owns the i18n, not this. */
+  labels: { add: string }
   /**
    * Stay armed after a selection.
    *
@@ -298,14 +225,15 @@ function buildOverlayScript(options: {
   const frameStyle = selectionFrameStyle(accent)
   const nameStyle = selectionLabelStyle(accent)
   const layerStyle = `position:fixed;inset:0;pointer-events:none;`
-  // One surface for both clusters of the bar — the selection's work at the top of the
-  // page, and the draft's back-and-forward at its top-left — so the two read as one
-  // thing that happens to be in two places.
-  const barSurfaceStyle = `position:fixed;display:none;align-items:center;gap:2px;padding:4px;border-radius:10px;background:${options.menu.surface};border:1px solid color-mix(in oklab, ${options.menu.text} 14%, transparent);box-shadow:0 6px 20px rgba(0,0,0,0.18);pointer-events:auto;`
-  const barStyle = barSurfaceStyle + 'left:50%;top:8px;transform:translateX(-50%);'
-  const undoBarStyle = barSurfaceStyle + 'left:8px;top:8px;'
-  const barButtonStyle = `all:unset;cursor:pointer;min-width:24px;height:24px;line-height:24px;padding:0 6px;text-align:center;border-radius:6px;color:${options.menu.text};font:400 13px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;white-space:nowrap;`
-  const spacerStyle = `width:1px;height:16px;background:color-mix(in oklab, ${options.menu.text} 20%, transparent);margin:0 3px;`
+  // The bar sits at the selection frame's bottom-left corner — positioned in `paint`,
+  // because it belongs to that frame rather than to the page — and wears the accent,
+  // like the frame and the name chip: one colour for everything the app draws here.
+  // Compact on purpose: it is one short word on somebody else's page, and every pixel
+  // of it is pixels of their page.
+  const barStyle = `position:fixed;display:none;align-items:center;padding:2px;border-radius:7px;background:${accent};box-shadow:0 4px 14px rgba(0,0,0,0.18);pointer-events:auto;`
+  // A button on a bar this small is a glyph or a short word: what it does is said on
+  // hover (and to a screen reader) as well.
+  const barButtonStyle = `all:unset;cursor:pointer;min-width:20px;height:20px;line-height:20px;padding:0 8px;text-align:center;border-radius:5px;color:#fff;font:400 12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;white-space:nowrap;`
 
   return `(() => {
   try { window.${OVERLAY_CANCEL_KEY} && window.${OVERLAY_CANCEL_KEY}(); } catch (e) {}
@@ -335,58 +263,31 @@ function buildOverlayScript(options: {
   layer.setAttribute('style', ${JSON.stringify(layerStyle)});
   root.appendChild(layer);
 
-  // The draft, drawn: the rules the session has made so far, in the order they were
-  // made, so a later edit wins exactly as it will once it is written. It is our own
-  // stylesheet and it lives and dies with the overlay — the patch that follows is
-  // what keeps the page looking like this afterwards.
-  const preview = document.createElement('style');
-  root.appendChild(preview);
+  // What a live box is covering right now: the same dashed box the hover draws, one per
+  // element, on a layer above the frames — during a drag these are the thing being
+  // decided, and the release settles them into solid frames in their place.
+  const previewLayer = document.createElement('div');
+  previewLayer.setAttribute('style', ${JSON.stringify(layerStyle)});
+  root.appendChild(previewLayer);
 
-  // The bar, which is the whole of what a person acts with on the page: two styles,
-  // back and forward through the draft, write it down, and hand it to the conversation.
-  // It is built even for a one-shot pick (where nothing shows it) rather than spliced
-  // in conditionally — one script, one shape, and no second description to drift.
+  // The bar: the one thing a person acts with on the page — hand the selection to the
+  // conversation. It is built even for a one-shot pick (where nothing shows it) rather
+  // than spliced in conditionally — one script, one shape, and no second description to
+  // drift.
   const bar = document.createElement('div');
   bar.setAttribute('style', ${JSON.stringify(barStyle)});
-  // Back, forward and save live on their own, at the page's top-left: the first two
-  // are the ones the person reaches for constantly (and by keyboard), and keeping them
-  // apart lets the rest of the bar change with the selection while these stay where
-  // they are. Save belongs with them for the same reason — it is about the draft as a
-  // whole, not about what is selected, and it is the answer to "save before leaving?".
-  const undoBar = document.createElement('div');
-  undoBar.setAttribute('style', ${JSON.stringify(undoBarStyle)});
-  // A button is a glyph with a title: on a bar this small, what each one does is said
-  // on hover (and to a screen reader) rather than written out.
-  const makeButton = (glyph, title, extra) => {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.textContent = glyph;
-    button.title = title;
-    button.setAttribute('aria-label', title);
-    button.setAttribute('style', ${JSON.stringify(barButtonStyle)} + extra);
-    // Menus here have no room for a pressed state: a hover tint is what says the
-    // pointer is on a control rather than on the page behind it.
-    button.addEventListener('mouseenter', () => {
-      button.style.background = 'color-mix(in oklab, ' + ${JSON.stringify(options.menu.text)} + ' 12%, transparent)';
-    });
-    button.addEventListener('mouseleave', () => { button.style.background = ''; });
-    return button;
-  };
-  const boldButton = makeButton('B', ${JSON.stringify(options.labels.bold)}, 'font-weight:700;');
-  const italicButton = makeButton('I', ${JSON.stringify(options.labels.italic)}, 'font-style:italic;');
-  const undoButton = makeButton('\\u21b6', ${JSON.stringify(options.labels.undo)}, '');
-  const redoButton = makeButton('\\u21b7', ${JSON.stringify(options.labels.redo)}, '');
-  const saveButton = makeButton('\\u2713', ${JSON.stringify(options.labels.save)}, '');
-  const addSpacer = document.createElement('div');
-  addSpacer.setAttribute('style', ${JSON.stringify(spacerStyle)});
-  const addButton = makeButton(${JSON.stringify(options.labels.add)}, ${JSON.stringify(options.labels.add)}, 'padding:0 10px;');
-  for (const node of [undoButton, redoButton, saveButton]) {
-    undoBar.appendChild(node);
-  }
-  for (const node of [boldButton, italicButton, addSpacer, addButton]) {
-    bar.appendChild(node);
-  }
-  root.appendChild(undoBar);
+  const addButton = document.createElement('button');
+  addButton.type = 'button';
+  addButton.textContent = ${JSON.stringify(options.labels.add)};
+  addButton.title = ${JSON.stringify(options.labels.add)};
+  addButton.setAttribute('aria-label', ${JSON.stringify(options.labels.add)});
+  addButton.setAttribute('style', ${JSON.stringify(barButtonStyle)} + 'padding:0 10px;');
+  // A hover tint is what says the pointer is on a control rather than on the page
+  // behind it — brightness on the accent fill rather than a second colour, so the
+  // button reads as the same control in both states.
+  addButton.addEventListener('mouseenter', () => { addButton.style.filter = 'brightness(1.12)'; });
+  addButton.addEventListener('mouseleave', () => { addButton.style.filter = ''; });
+  bar.appendChild(addButton);
   root.appendChild(bar);
 
   document.documentElement.appendChild(root);
@@ -395,35 +296,22 @@ ${STABLE_SELECTOR_FN}
 
   const WITH_BAR = ${options.bar};
 
-  // The overlay's whole outward state: what it has picked, what it has been told to
-  // write down, and whether the draft is holding the mode open. Written into the
-  // window key at the end of this script, where the caller polls it — and kept out of
-  // cleanup(), so the final status is still readable after the overlay is gone. The
-  // last one is read through a getter: it is a fact about now, and the caller has to
-  // see it as it is at the moment it asks — that is what the window's chip says the
-  // question is, while the bar's own save button is the answer.
+  // The overlay's whole outward state: what it has picked. Written into the window key
+  // at the end of this script, where the caller polls it — and kept out of cleanup(), so
+  // the final status is still readable after the overlay is gone.
   const state = {
     status: 'pending',
     picks: [],
-    saves: [],
-    get leavingWithEdits() { return confirming; },
   };
 
-  // The draft, and where the last save left it: the draft is appended to and popped
-  // from the end, so one boundary is all the history this needs. What was taken back
-  // is kept aside, in the order it was taken back, so forward is possible too.
-  let draft = [];
-  let savedCount = 0;
-  let undone = [];
-  let confirming = false;   // the bar is asking save-or-drop; the mode stays until it is answered
   let selected = [];
   let current = null;       // what the cursor is over
-  let editing = null;       // { el, before, onBlur } — the element being typed into
   let drag = null;
+  // What a box being drawn covers right now — the chip's answer while the hand is still
+  // down, before the release decides the selection.
+  let preview = null;
 
   const inOverlay = (el) => !!el && root.contains(el);
-  const targetOf = (el) => ({ selector: buildStableSelector(el), tag: el.tagName ? el.tagName.toLowerCase() : '' });
-  const unsaved = () => draft.length - savedCount;
 
   /** What a pick reports: the element, and where it is. */
   const elementPayload = (el) => {
@@ -471,22 +359,30 @@ ${STABLE_SELECTOR_FN}
   /**
    * What the name chip says — one chip, one place (the page's bottom-left).
    *
-   * What the cursor is over comes first, because it is what a click would take;
-   * otherwise it is what is selected. Several selected read one after another — each
-   * has its own frame to point at it, and the chip is what says which is which.
+   * Three sources, in the order a hand moves: the box being drawn (what it is covering
+   * right now), else what the cursor is over — what a click would take — else what is
+   * selected. So the chip answers "what am I choosing" at every moment, including while
+   * a button is held. Several read one after another — each has its own frame to point
+   * at it, and the chip is what says which is which.
    */
   const paintName = () => {
     const hovered = current && !inOverlay(current) && selected.indexOf(current) === -1 ? current : null;
-    const names = hovered ? [buildStableSelector(hovered)] : selected.map(buildStableSelector);
+    const names = preview
+      ? preview.map(buildStableSelector)
+      : hovered ? [buildStableSelector(hovered)] : selected.map(buildStableSelector);
     nameLabel.textContent = names.join('  ·  ');
     nameLabel.style.display = names.length > 0 ? 'block' : 'none';
   };
 
   const paintHover = (el) => {
-    // Nothing to preview while dragging (the marquee says it), on the overlay's own
-    // chrome, or on something already selected — it has a marker of its own, and a
-    // second frame there would only say the same thing twice.
-    if (drag || !el || inOverlay(el) || selected.indexOf(el) !== -1) {
+    // The dashed box follows the hand: what a click would take, and — while a press has
+    // not moved yet — what a release would take, which is the same element either way, so
+    // pressing must not make it disappear. It steps aside once the press has become a box
+    // (the covered elements are outlined instead), on the overlay's own chrome, and on
+    // something already selected — that one has a solid frame, and a second box there
+    // would only say the same thing twice.
+    const taken = el && !inOverlay(el) && selected.indexOf(el) === -1 && !(drag && drag.moved);
+    if (!taken) {
       hoverBox.style.display = 'none';
       paintName();
       return;
@@ -507,230 +403,78 @@ ${STABLE_SELECTOR_FN}
       + 'display:block;left:' + r.left + 'px;top:' + r.top + 'px;width:' + (r.right - r.left) + 'px;height:' + (r.bottom - r.top) + 'px;');
   };
 
-  /** The draft as CSS: every style edit so far, in the order it was made. */
-  const renderPreview = () => {
-    const chunks = [];
-    for (const entry of draft) {
-      if (entry.kind !== 'style') continue;
-      const body = Object.keys(entry.declarations).map((property) => '  ' + property + ': ' + entry.declarations[property] + ';').join('\\n');
-      for (const target of entry.targets) chunks.push(target.selector + ' {\\n' + body + '\\n}');
+  /**
+   * Outline what a live box covers — the same dashed box the hover draws, one per
+   * element, so a drag reads as "these are being taken" while it is still happening
+   * rather than only once the hand comes up.
+   */
+  const drawPreview = (elements) => {
+    previewLayer.textContent = '';
+    for (const el of elements) {
+      const r = el.getBoundingClientRect();
+      const box = document.createElement('div');
+      box.setAttribute('style', ${JSON.stringify(hoverBoxStyle)}
+        + 'display:block;left:' + r.left + 'px;top:' + r.top + 'px;width:' + r.width + 'px;height:' + r.height + 'px;');
+      previewLayer.appendChild(box);
     }
-    preview.textContent = chunks.join('\\n\\n');
-  };
-
-  /** What each button can do right now — which is the only thing the bar says about the draft. */
-  const paintBar = () => {
-    // Nothing unsaved means the "save or drop?" question has nothing left to ask.
-    if (unsaved() === 0) confirming = false;
-    undoButton.style.opacity = unsaved() === 0 ? '0.45' : '1';
-    redoButton.style.opacity = undone.length === 0 ? '0.45' : '1';
-    // Dimmed rather than hidden, like the two above: the bar says what it can do by
-    // what is lit, and save is the one whose availability the person is asking about.
-    saveButton.style.opacity = unsaved() === 0 ? '0.45' : '1';
   };
 
   /**
-   * Draw the selection, and put the bar where it cannot cover the work.
+   * Draw the selection, and put the bar at the corner it belongs to.
    *
-   * The bar is pinned to the top of the page rather than hung off the selection: it
-   * belongs to the window, it stays put while the person moves between elements, and
-   * above the page's own content is the one place that is never over the thing being
-   * changed. Each selected element gets a frame, and the name of what is selected is
-   * on the one chip at the page's bottom-left — out of the way of everything.
+   * Each selected element gets a frame, the one control sits at the **union's
+   * bottom-left corner** (so it reads as that selection's own button rather than as
+   * chrome belonging to the page), and the name of what is selected is on the one chip
+   * at the page's bottom-left — out of the way of everything.
    */
   const paint = () => {
     layer.textContent = '';
     hoverBox.style.display = 'none';
     selected = selected.filter((el) => el.isConnected && !inOverlay(el));
 
-    // Both clusters are where the draft lives — save among them — so they stay while
-    // there is something to decide or something to take back, even with nothing
-    // selected to point at.
-    const working = selected.length > 0 || unsaved() > 0 || undone.length > 0;
-    bar.style.display = WITH_BAR && working ? 'flex' : 'none';
-    undoBar.style.display = WITH_BAR && working ? 'flex' : 'none';
-    paintBar();
+    // The bar is where the selection is handed to the conversation, so it exists
+    // exactly while there is a selection to hand over.
+    bar.style.display = WITH_BAR && selected.length > 0 ? 'flex' : 'none';
     paintName();
     if (selected.length === 0) return;
 
+    // A box selection can hold several elements, so the bar hangs off the **union** of
+    // what is selected — its bottom-left corner, just below the lowest frame when there
+    // is room and just inside its bottom edge when there is not (a selection near the
+    // foot of the page must not push the one control off screen). Never past the left
+    // edge either.
+    let union = null;
     for (const el of selected) {
       const r = el.getBoundingClientRect();
+      union = union
+        ? {
+            left: Math.min(union.left, r.left),
+            top: Math.min(union.top, r.top),
+            right: Math.max(union.right, r.right),
+            bottom: Math.max(union.bottom, r.bottom),
+          }
+        : { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
       const frame = document.createElement('div');
       frame.setAttribute('style', ${JSON.stringify(frameStyle)}
         + 'display:block;left:' + r.left + 'px;top:' + r.top + 'px;width:' + r.width + 'px;height:' + r.height + 'px;');
       layer.appendChild(frame);
     }
-  };
 
-  /**
-   * The two style toggles, read from the page rather than remembered here.
-   *
-   * What is on an element *now* is a fact only the page has — a patch may have set
-   * it, and so may an edit made earlier in this same session (the preview is what
-   * makes the second one read right) — and a mixed selection means "make them all
-   * bold", which is what boxing several elements and pressing B means.
-   */
-  const isBold = (el) => {
-    const weight = window.getComputedStyle(el).fontWeight;
-    return weight === 'bold' || weight === 'bolder' || parseInt(weight, 10) >= 600;
-  };
-  const isItalic = (el) => window.getComputedStyle(el).fontStyle === 'italic';
-
-  const applyStyle = (property, on, off, isOn) => {
-    const elements = selected.filter((el) => el.isConnected);
-    if (elements.length === 0) return;
-    const turnOff = elements.every((el) => isOn(el));
-    const declarations = {};
-    declarations[property] = turnOff ? off : on;
-    // A new edit forks the draft: what was taken back is no longer ahead of us, and the
-    // person working on rather than answering is the answer to "save or drop?".
-    undone = [];
-    confirming = false;
-    draft.push({ kind: 'style', targets: elements.map(targetOf), declarations: declarations });
-    renderPreview();
-    paintBar();
-  };
-
-  /** Type into one element: the whole of its text, replaced by what is typed. */
-  const beginText = (el) => {
-    if (editing) endText(true);
-    const onBlur = () => endText(true);
-    editing = { el: el, before: el.textContent, onBlur: onBlur };
-    el.setAttribute('contenteditable', 'true');
-    el.addEventListener('blur', onBlur, true);
-    try { el.focus(); } catch (e) {}
-    const range = document.createRange();
-    range.selectNodeContents(el);
-    const selectionApi = window.getSelection();
-    if (selectionApi) { selectionApi.removeAllRanges(); selectionApi.addRange(range); }
-    selected = [el];
-    paint();
-  };
-
-  /**
-   * Leave the text edit. Committing records what the element now says as a draft
-   * entry; Escape puts the original text back — "not this" must not leave the page
-   * saying something nobody asked for.
-   *
-   * What is read back is the element's own text, so the patch ends up asserting the
-   * value the page is showing; typing nothing is not an edit and is dropped.
-   */
-  const endText = (commit) => {
-    const inFlight = editing;
-    if (!inFlight) return;
-    editing = null;
-    inFlight.el.removeEventListener('blur', inFlight.onBlur, true);
-    inFlight.el.removeAttribute('contenteditable');
-    if (!commit) { inFlight.el.textContent = inFlight.before; return; }
-    const text = inFlight.el.textContent || '';
-    if (text === inFlight.before) return;
-    // The element, not just its selector: taking this edit back has to put the old
-    // text back, and that needs the node the person typed into. It forks the draft,
-    // like any other new edit — and it, too, is the person working on rather than
-    // answering the save-or-drop question.
-    undone = [];
-    confirming = false;
-    draft.push({ kind: 'text', targets: [targetOf(inFlight.el)], text: text, el: inFlight.el, before: inFlight.before });
-    paintBar();
-  };
-
-  /**
-   * Put one entry's change on the page, or take it back off.
-   *
-   * Styles need nothing here — they are drawn by regenerating the preview from the
-   * draft — so this is about the text a retype left in an element. The element may be
-   * gone (the page re-rendered it away), and then there is nothing to move.
-   */
-  const applyEntry = (entry, forward) => {
-    if (entry.kind !== 'text' || !entry.el || !entry.el.isConnected) return;
-    entry.el.textContent = forward ? entry.text : entry.before;
-  };
-
-  /** Take the last unsaved edit back — and with it, whatever it did to the page. */
-  const undo = () => {
-    if (unsaved() === 0) return;
-    const entry = draft.pop();
-    applyEntry(entry, false);
-    undone.unshift(entry);
-    renderPreview();
-    paintBar();
-  };
-
-  /**
-   * Put the last edit taken back on again.
-   *
-   * Only ever forward within the unsaved part of the draft: undo refuses once it
-   * reaches the line the last save drew, so nothing that came back can cross it.
-   */
-  const redo = () => {
-    const entry = undone.shift();
-    if (!entry) return;
-    applyEntry(entry, true);
-    draft.push(entry);
-    renderPreview();
-    paintBar();
-  };
-
-  /** Drop everything unsaved, the same way taking each one back would. */
-  const discard = () => {
-    while (unsaved() > 0) {
-      const entry = draft.pop();
-      applyEntry(entry, false);
+    if (WITH_BAR && union) {
+      const barHeight = bar.offsetHeight || 32;
+      const below = union.bottom + 6;
+      bar.style.left = Math.max(8, union.left) + 'px';
+      bar.style.top =
+        (below + barHeight <= window.innerHeight ? below : Math.max(8, union.bottom - barHeight - 6)) + 'px';
     }
-    undone = [];
-    renderPreview();
-    paintBar();
-  };
-
-  /**
-   * Write the session down: what crosses to the caller is this moment, not the
-   * individual edits — one save is one entry in the change layer.
-   */
-  const save = () => {
-    if (unsaved() === 0) return;
-    const batch = draft.slice(savedCount).map((entry) => entry.kind === 'text'
-      ? { kind: 'text', targets: entry.targets, text: entry.text }
-      : { kind: 'style', targets: entry.targets, declarations: entry.declarations });
-    state.saves.push(batch);
-    savedCount = draft.length;
-    // A save is a new baseline: what was taken back before it is not "behind" the
-    // line any more, and offering to put it forward again would be a second history.
-    undone = [];
-    // Saving while the bar is asking "save or drop?" is the answer: the work is
-    // written, so the mode has nothing left to hold open.
-    if (confirming) { confirming = false; finish('cancelled'); return; }
-    paintBar();
-  };
-
-  /**
-   * Leave the mode — or, when there is a draft to lose, ask which it is.
-   *
-   * Leaving is the only way a session's work disappears without anyone deciding, so
-   * it is the one moment the mode asks instead of acting: the bar becomes save or
-   * drop, the mode stays, and nothing else is answerable until one of them is chosen
-   * (Escape is the "no"). An immediate request is the caller saying there is nobody
-   * left to ask — the tab is closing, or the mode is being re-armed on another page.
-   *
-   * A text edit in flight counts as an edit: what was typed is a change the person
-   * made, so it goes into the draft rather than being thrown away with the mode.
-   */
-  const requestLeave = (immediate) => {
-    if (editing) endText(true);
-    if (!immediate && unsaved() > 0) {
-      confirming = true;
-      paint();
-      return;
-    }
-    discard();
-    finish('cancelled');
   };
 
   /**
    * Hand the selection to the conversation.
    *
-   * Every selected element, because the selection is the unit here — the same one a
-   * style applies to. A click selects one, so the ordinary "talk about this" case is
-   * one reference; boxing several and adding them says "look at these".
+   * Every selected element, because the selection is the unit here. A click selects
+   * one, so the ordinary "talk about this" case is one reference; boxing several and
+   * adding them says "look at these".
    */
   const addToConversation = () => {
     const elements = selected.filter((el) => el.isConnected);
@@ -738,8 +482,17 @@ ${STABLE_SELECTOR_FN}
     for (const el of elements) state.picks.push(elementPayload(el));
   };
 
+  /**
+   * What the cursor is over, for the chip that previews "what a click would take".
+   *
+   * Never while a button is held: a press is the start of a selection, and naming
+   * whatever the cursor passes over during one would replace the selection in the
+   * person's reading with a trail of elements — and if the press itself was missed (a
+   * page's own handler ran first), drag would be null and that is exactly what this
+   * guard prevents.
+   */
   const onMove = (e) => {
-    if (drag) return;
+    if (drag || e.buttons) return;
     const el = document.elementFromPoint(e.clientX, e.clientY);
     if (el === current) return;
     current = el;
@@ -749,12 +502,10 @@ ${STABLE_SELECTOR_FN}
   /**
    * Whether an event belongs to the browser rather than to the mode.
    *
-   * Two places, and both are where the browser's own behaviour is the point: the
-   * overlay's own chrome (its buttons are clicked, not selected), and the element
-   * being typed into (placing the caret and selecting a word inside it is what makes
-   * typing in it possible at all). Everything else is the mode's.
+   * One place, and it is where the browser's own behaviour is the point: the overlay's
+   * own chrome — its button is clicked, not selected. Everything else is the mode's.
    */
-  const browserOwnsIt = (e) => inOverlay(e.target) || !!(editing && editing.el.contains(e.target));
+  const browserOwnsIt = (e) => inOverlay(e.target);
 
   /**
    * The mouse events behind the pointer events, refused the same way.
@@ -763,7 +514,7 @@ ${STABLE_SELECTOR_FN}
    * those are separate events with separate listeners: a press the mode does not take
    * is a press the page still gets, and a double-click the page still gets selects its
    * text or follows its link. Nothing is acted on here — the pointer handlers do the
-   * work — so this is only the refusal, with the same two exceptions.
+   * work — so this is only the refusal, with the same exception.
    */
   const swallowMouse = (e) => {
     if (e.button !== 0 || browserOwnsIt(e)) return;
@@ -772,18 +523,21 @@ ${STABLE_SELECTOR_FN}
   };
 
   const onPointerDown = (e) => {
-    // A press outside what is being typed into ends that edit — and the mode keeps the
-    // press: committing here rather than letting the page blur the element means the
-    // typed text goes into the draft and the press itself is still ours.
-    if (editing && !editing.el.contains(e.target)) endText(true);
     if (e.button !== 0 || browserOwnsIt(e)) return;
     e.preventDefault();
     e.stopPropagation();
+
+    // A press is "this one": the chip keeps naming what it landed on and the dashed box
+    // stays around it, because that is what a release without a drag will take and taking
+    // either away at the moment of pressing says the wrong thing. They step aside only
+    // when the press becomes a box. A press on an empty patch targets nothing (the same
+    // rule a click follows), so the chip stays on the selection and no box is drawn.
+    const target = document.elementFromPoint(e.clientX, e.clientY);
+    current = target && !inOverlay(target) && target !== document.body && target !== document.documentElement ? target : null;
     drag = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY, moved: false };
-    // Nothing is hovering anything while a box is being drawn, so the chip falls back
-    // to what is selected rather than naming whatever the drag started over.
-    current = null;
-    paintHover(null);
+    preview = null;
+    drawPreview([]);
+    paintHover(current);
     drawMarquee();
   };
 
@@ -792,6 +546,17 @@ ${STABLE_SELECTOR_FN}
     drag.x1 = e.clientX;
     drag.y1 = e.clientY;
     if (Math.abs(drag.x1 - drag.x0) > 3 || Math.abs(drag.y1 - drag.y0) > 3) drag.moved = true;
+    // A drag is a box from here on: the dashed hover goes away (it would be one element
+    // out of several) and what the box is covering is outlined instead. The chip says the
+    // same thing in words, while the hand is still down.
+    if (drag.moved) {
+      preview = within(rectOf(drag));
+      hoverBox.style.display = 'none';
+    } else {
+      preview = null;
+    }
+    drawPreview(preview || []);
+    paintName();
     drawMarquee();
   };
 
@@ -800,6 +565,8 @@ ${STABLE_SELECTOR_FN}
     const box = rectOf(drag);
     const moved = drag.moved;
     drag = null;
+    preview = null;
+    drawPreview([]);
     marquee.style.display = 'none';
 
     // A one-shot pick (the agent's browser_tool pick) has no second step and no
@@ -813,9 +580,18 @@ ${STABLE_SELECTOR_FN}
       return;
     }
 
-    // A drag is a box — the blocks it covers. A press that did not move is a click,
-    // and a click asks about the element under the cursor, inline or not.
-    selected = moved ? within(box) : [document.elementFromPoint(e.clientX, e.clientY)].filter((el) => el && !inOverlay(el));
+    // A drag is a box — the blocks it covers. A press that did not move is a click, and
+    // a click asks about the element under the cursor, inline or not.
+    //
+    // With one exception: an empty patch of page resolves to body (or html), and taking
+    // that would frame the whole document for what the person meant as "nothing here" —
+    // so a click that lands on nothing clears the selection instead.
+    if (moved) {
+      selected = within(box);
+    } else {
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      selected = el && !inOverlay(el) && el !== document.body && el !== document.documentElement ? [el] : [];
+    }
     paint();
   };
 
@@ -828,94 +604,42 @@ ${STABLE_SELECTOR_FN}
   };
 
   const onDblClick = (e) => {
-    if (!WITH_BAR || browserOwnsIt(e)) return;
+    if (browserOwnsIt(e)) return;
     e.preventDefault();
     e.stopPropagation();
-    const el = e.target;
-    if (!el || el.nodeType !== 1 || el === document.body || el === document.documentElement) return;
-    // A form control keeps its own editing: contenteditable does nothing on it, and
-    // its value is not its textContent — an edit read back here would report nothing
-    // and be dropped, so it is not offered at all.
-    const tag = el.tagName ? el.tagName.toUpperCase() : '';
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-    beginText(el);
   };
 
   const onKey = (e) => {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      e.stopPropagation();
-      // Escape answers whatever the mode is currently asking: an open text edit
-      // ("not this"), then the save-or-drop question ("no"), and only then "leave".
-      if (editing) { endText(false); paint(); return; }
-      if (confirming) { confirming = false; discard(); finish('cancelled'); return; }
-      if (WITH_BAR) { requestLeave(false); return; }
-      finish('cancelled');
-      return;
-    }
-
-    // Enter finishes a retype: what was typed is a change the person made, so it goes
-    // into the draft. Shift+Enter is a line break, and belongs to the page.
-    if (editing && e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      e.stopPropagation();
-      endText(true);
-      paint();
-      return;
-    }
-
-    // Back and forward, spelled the way every editor spells them: Ctrl/Cmd+Z, and
-    // either Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y for forward. Not while typing: there the
-    // browser's own undo belongs to the text being typed.
-    //
-    // Swallowed even when there is nothing to move: while this mode holds the page, an
-    // undo the page performs on its own is a change neither the person nor the app sees
-    // or can record.
-    if ((e.ctrlKey || e.metaKey) && !e.altKey && !editing) {
-      const key = (e.key || '').toLowerCase();
-      if (key === 'z' && !e.shiftKey) {
-        e.preventDefault();
-        e.stopPropagation();
-        undo();
-        return;
-      }
-      if ((key === 'z' && e.shiftKey) || key === 'y') {
-        e.preventDefault();
-        e.stopPropagation();
-        redo();
-        return;
-      }
-    }
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    e.stopPropagation();
+    finish('cancelled');
   };
 
   const onViewportChange = () => {
+    // Everything is drawn in viewport coordinates, so a scroll moves what a live box is
+    // covering: the previews are recomputed along with the frames.
+    if (drag && drag.moved) {
+      preview = within(rectOf(drag));
+      drawPreview(preview);
+    }
     paintHover(current);
     paint();
   };
 
   function cleanup() {
-    document.removeEventListener('mousemove', onMove, true);
-    document.removeEventListener('pointerdown', onPointerDown, true);
-    document.removeEventListener('pointermove', onPointerMove, true);
-    document.removeEventListener('pointerup', onPointerUp, true);
-    document.removeEventListener('mousedown', swallowMouse, true);
-    document.removeEventListener('mouseup', swallowMouse, true);
-    document.removeEventListener('click', swallowClick, true);
-    document.removeEventListener('dblclick', onDblClick, true);
-    document.removeEventListener('keydown', onKey, true);
+    window.removeEventListener('mousemove', onMove, true);
+    window.removeEventListener('pointerdown', onPointerDown, true);
+    window.removeEventListener('pointermove', onPointerMove, true);
+    window.removeEventListener('pointerup', onPointerUp, true);
+    window.removeEventListener('mousedown', swallowMouse, true);
+    window.removeEventListener('mouseup', swallowMouse, true);
+    window.removeEventListener('click', swallowClick, true);
+    window.removeEventListener('dblclick', onDblClick, true);
+    window.removeEventListener('keydown', onKey, true);
     window.removeEventListener('scroll', onViewportChange, true);
     window.removeEventListener('resize', onViewportChange, true);
-    // Leave nothing of ours on the page. The text being typed goes back, and so does
-    // every unsaved entry: this teardown is a mode ending, not an edit being saved,
-    // and a change no patch states is the one thing this mode may not leave behind.
-    if (editing) {
-      const inFlight = editing;
-      editing = null;
-      inFlight.el.removeEventListener('blur', inFlight.onBlur, true);
-      inFlight.el.removeAttribute('contenteditable');
-      inFlight.el.textContent = inFlight.before;
-    }
-    discard();
+    // Leave nothing of ours on the page.
     const existing = document.getElementById('${OVERLAY_ID}');
     if (existing) existing.remove();
     try { delete window.${OVERLAY_CANCEL_KEY}; } catch (e) { window.${OVERLAY_CANCEL_KEY} = undefined; }
@@ -926,61 +650,34 @@ ${STABLE_SELECTOR_FN}
     state.status = status;
   }
 
-  boldButton.addEventListener('click', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    applyStyle('font-weight', '700', '400', isBold);
-  });
-  italicButton.addEventListener('click', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    applyStyle('font-style', 'italic', 'normal', isItalic);
-  });
-  undoButton.addEventListener('click', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    undo();
-  });
-  redoButton.addEventListener('click', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    redo();
-  });
-  saveButton.addEventListener('click', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    save();
-  });
   addButton.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
     addToConversation();
   });
 
-  // The window's chrome has two handles on the question "save before leaving?" — the ✓
-  // beside the crosshair is the "yes" (and the same save as the bar's own button, which
-  // is why it runs through save()), and the crosshair pressed a second time is the "no"
-  // (leave, draft and all). The two ways out still ask different things: the crosshair
-  // asks (there may be a draft, and that is the person's call), while a teardown — the
-  // tab closing, the overlay being re-armed on a new page, a one-shot pick being
-  // finished — takes the draft with it, because there is nobody left to ask.
-  window.${OVERLAY_SAVE_KEY} = () => save();
-  window.${OVERLAY_CANCEL_KEY} = () => requestLeave(true);
-  window.${OVERLAY_ASK_KEY} = () => requestLeave(false);
+  // One way out, and it is the same one the window's crosshair asks for: the overlay
+  // holds nothing of its own on the page, so leaving is leaving.
+  window.${OVERLAY_CANCEL_KEY} = () => finish('cancelled');
   window.${OVERLAY_STATE_KEY} = state;
 
-  document.addEventListener('mousemove', onMove, true);
-  document.addEventListener('pointerdown', onPointerDown, true);
-  document.addEventListener('pointermove', onPointerMove, true);
-  document.addEventListener('pointerup', onPointerUp, true);
-  document.addEventListener('mousedown', swallowMouse, true);
-  document.addEventListener('mouseup', swallowMouse, true);
-  document.addEventListener('click', swallowClick, true);
-  document.addEventListener('dblclick', onDblClick, true);
-  document.addEventListener('keydown', onKey, true);
+  // On **window**, in the capture phase, so the mode sees a gesture before the page
+  // can: a page with its own pointerdown on window capture runs before anything on
+  // document, and one that stops propagation there would otherwise swallow the press
+  // whole — the overlay would draw no marquee, the page would act on the click, and the
+  // chip would start naming whatever the held cursor passed over.
+  window.addEventListener('mousemove', onMove, true);
+  window.addEventListener('pointerdown', onPointerDown, true);
+  window.addEventListener('pointermove', onPointerMove, true);
+  window.addEventListener('pointerup', onPointerUp, true);
+  window.addEventListener('mousedown', swallowMouse, true);
+  window.addEventListener('mouseup', swallowMouse, true);
+  window.addEventListener('click', swallowClick, true);
+  window.addEventListener('dblclick', onDblClick, true);
+  window.addEventListener('keydown', onKey, true);
   window.addEventListener('scroll', onViewportChange, true);
   window.addEventListener('resize', onViewportChange, true);
-  paintBar();
+  paint();
 
   return true;
 })()`
@@ -995,48 +692,26 @@ ${STABLE_SELECTOR_FN}
  */
 const OVERLAY_DRAIN_EXPRESSION = `(() => {
   const state = window.${OVERLAY_STATE_KEY};
-  if (!state) return JSON.stringify({ status: 'missing', picks: [], saves: [] });
+  if (!state) return JSON.stringify({ status: 'missing', picks: [] });
   const picks = state.picks || [];
-  const saves = state.saves || [];
   state.picks = [];
-  state.saves = [];
   return JSON.stringify({
     status: state.status,
     picks: picks,
-    saves: saves,
-    leavingWithEdits: state.leavingWithEdits === true,
   });
 })()`
 
 const OVERLAY_CANCEL_EXPRESSION = `(() => { try { window.${OVERLAY_CANCEL_KEY} && window.${OVERLAY_CANCEL_KEY}(); } catch (e) {} })()`
 
-/** Ask the overlay to leave — it answers by leaving, or by asking which it is. */
-const OVERLAY_ASK_EXPRESSION = `(() => { try { window.${OVERLAY_ASK_KEY} && window.${OVERLAY_ASK_KEY}(); } catch (e) {} })()`
-
-/** Write the draft down and end the mode — the window's ✓ answering "save before leaving?". */
-const OVERLAY_SAVE_EXPRESSION = `(() => { try { window.${OVERLAY_SAVE_KEY} && window.${OVERLAY_SAVE_KEY}(); } catch (e) {} })()`
-
 /**
- * The bar's own words, in the window's language — the page has no i18n.
+ * The bar's own word, in the window's language — the page has no i18n.
  *
- * Titles, not labels: the buttons carry glyphs (B, I, ↶, ↷, ✓), and these are what
- * hover and a screen reader say about them. `add` is the one word actually written on
- * the bar — handing the selection to the conversation, the odd one out among the
- * draft's own actions.
+ * Written on the button as well as used for hover and a screen reader: it is the one
+ * thing the bar does.
  */
 export interface OverlayLabels {
   /** Hand the selection to the conversation. */
   add: string
-  /** Take the last unsaved edit back. */
-  undo: string
-  /** Put the last edit taken back on again. */
-  redo: string
-  /** Write the draft down. */
-  save: string
-  /** Make the selection bold. */
-  bold: string
-  /** Make the selection italic. */
-  italic: string
 }
 
 export class BrowserCDP {
@@ -1055,6 +730,16 @@ export class BrowserCDP {
   // CDP drops `addScriptToEvaluateOnNewDocument` registrations on detach.
   private initScriptIds: Map<string, string> = new Map()
   /**
+   * Whether the page is being told it is focused — the active page, in an active window.
+   *
+   * Session state like the init scripts: detaching drops it, which is why asking for it holds
+   * the session ({@link holdsSessionState}). Asked for only while a conversation holds a tab
+   * (`BrowserPaneManager.setHeldBy`), so a page is told this for no longer than the work: a
+   * browser that is focused forever is not what a person's browser does, and it is the reading
+   * a site takes when it wants to know whether somebody is actually there.
+   */
+  private focusEmulated = false
+  /**
    * Whether `Page.enable` has been sent on this session.
    *
    * `Page.addScriptToEvaluateOnNewDocument` is answered without it — an identifier
@@ -1066,12 +751,6 @@ export class BrowserCDP {
    * registrations it is what makes live.
    */
   private pageDomainEnabled = false
-  // CDP `Fetch.enable` state plus the mock served while it is on: the routes, and
-  // the store they remember between requests (one apply = one run of the flow).
-  private fetchMockEnabled = false
-  private fetchMockRoutes: MockRoute[] = []
-  private fetchMockStore: MockStore = {}
-  private debuggerMessageListenerRegistered = false
 
   constructor(webContents: WebContents) {
     this.webContents = webContents
@@ -1095,26 +774,22 @@ export class BrowserCDP {
       this.detachListenerRegistered = true
       this.webContents.debugger.on('detach', () => {
         this.attached = false
-      })
-    }
-
-    if (!this.debuggerMessageListenerRegistered) {
-      this.debuggerMessageListenerRegistered = true
-      this.webContents.debugger.on('message', (_event, method, params) => {
-        if (method === 'Fetch.requestPaused') {
-          void this.handlePausedRequest(params as CdpPausedRequest)
-        }
+        // Not always our own `detach()`: a session can end because the page's renderer died.
+        // (Opening DevTools does **not** end it on Electron 39 — measure in
+        // `spike/anti-bot-fingerprint.ts` round 5.) Whoever ended it, everything registered
+        // on it went with it, and this is the half of that which used to be forgotten.
+        this.forgetSessionState()
       })
     }
   }
 
   /**
-   * Both persistent injections and network interception live in the CDP session:
-   * detaching silently drops them. Hold the attachment while either is active;
-   * the idle timer resumes once both are off.
+   * Persistent injections and focus emulation live in the CDP session: detaching
+   * silently drops them. Hold the attachment while any is active; the idle timer
+   * resumes once all are off.
    */
   private holdsSessionState(): boolean {
-    return this.initScriptIds.size > 0 || this.fetchMockEnabled
+    return this.initScriptIds.size > 0 || this.focusEmulated
   }
 
   private resetIdleDetachTimer(): void {
@@ -1144,12 +819,23 @@ export class BrowserCDP {
       } catch { /* ignore */ }
       this.attached = false
     }
-    // CDP registrations die with the session, so our bookkeeping must too.
+    this.forgetSessionState()
+  }
+
+  /**
+   * Everything the session was holding — registrations, the domain that makes them live, the
+   * focus the page was told about — went with it.
+   *
+   * One place, because both ends need it: our own {@link detach}, and a session ended from
+   * outside (the renderer dying), which is the half that used to be forgotten. A flag left
+   * standing is a reader answering for a page that has never heard of it, and the failures
+   * that produces are all silent — a stale `pageDomainEnabled` makes the next
+   * `addInitScript` skip `Page.enable`, so the registration is accepted and then never run.
+   */
+  private forgetSessionState(): void {
     this.initScriptIds.clear()
     this.pageDomainEnabled = false
-    this.fetchMockEnabled = false
-    this.fetchMockRoutes = []
-    this.fetchMockStore = {}
+    this.focusEmulated = false
   }
 
   private async send(method: string, params?: Record<string, unknown>): Promise<any> {
@@ -1160,6 +846,40 @@ export class BrowserCDP {
       // Keep detach countdown tied to completed calls so we do not detach mid-flight.
       this.resetIdleDetachTimer()
     }
+  }
+
+  /**
+   * Make the page read `document.hasFocus()` as `true` — and `visibilityState` as `visible` —
+   * without moving or activating any window.
+   *
+   * A tab being driven from the background is exactly the case a site's own "is somebody
+   * there?" check catches, and the honest answer to it here is `false`: the parking window a
+   * background tab lives in is never activated (that is its whole job — see
+   * `BrowserPaneManager.parkingWindowFor`), so the page is visible and unfocused. Measured
+   * what the two ways of changing that cost (`spike/anti-bot-fingerprint.ts` round 2): this
+   * one leaves the person's own window the focused one and the page reads `hasFocus: true`;
+   * `webContents.focus()` reaches the same reading only by activating the window holding the
+   * tab — which for a parked tab means handing the keyboard to a window nobody can see.
+   *
+   * Emulation, not a fact: it is set while a conversation holds the tab and cleared when it
+   * lets go, so a page that stops being worked on goes back to answering for the window it is
+   * really in.
+   */
+  async setFocusEmulation(enabled: boolean): Promise<void> {
+    if (this.focusEmulated === enabled) return
+    try {
+      await this.send('Emulation.setFocusEmulationEnabled', { enabled })
+    } catch (err) {
+      // Turning it *off* and failing means the session is already gone, and the emulation went
+      // with it — holding the session for a page that will never be told would hold it forever.
+      if (!enabled) this.focusEmulated = false
+      mainLog.warn(`[browser-cdp] focus emulation ${enabled ? 'on' : 'off'} ignored: ${String(err)}`)
+      return
+    }
+    this.focusEmulated = enabled
+    // `send` has just restarted the countdown against the value from *before* this call, so
+    // this is the line that turns "one more command" into "for as long as it is on".
+    this.resetIdleDetachTimer()
   }
 
   private allocateRef(backendDOMNodeId?: number): string {
@@ -1569,7 +1289,7 @@ export class BrowserCDP {
   }
 
   // ---------------------------------------------------------------------------
-  // Element picker (prototype workbench)
+  // Element picker
   // ---------------------------------------------------------------------------
 
   /**
@@ -1582,12 +1302,10 @@ export class BrowserCDP {
   async armOverlay(options: {
     /** The app's accent, as a concrete CSS colour — see `buildOverlayScript`. */
     accent: string
-    /** The bar's colours: the app's menu surface and text — see `buildOverlayScript`. */
-    menu?: { surface: string; text: string }
-    /** The bar's words, in the caller's language — the toolbar renderer has i18n. */
+    /** The bar's word, in the caller's language — the toolbar renderer has i18n. */
     labels?: Partial<OverlayLabels>
     /**
-     * Draw the bar, and keep what the person makes as a draft.
+     * Draw the bar.
      *
      * The window's own mode does; a one-shot pick does not — the agent asked for one
      * element, and a bar nobody asked for is chrome over somebody's page.
@@ -1598,7 +1316,6 @@ export class BrowserCDP {
   }): Promise<void> {
     const script = buildOverlayScript({
       accent: options.accent,
-      menu: options.menu ?? DEFAULT_OVERLAY_MENU,
       bar: options.bar === true,
       labels: { ...DEFAULT_OVERLAY_LABELS, ...options.labels },
       resident: options.resident === true,
@@ -1619,23 +1336,19 @@ export class BrowserCDP {
     })
 
     const raw = res?.result?.value
-    if (typeof raw !== 'string') return { status: 'missing', picks: [], saves: [], leavingWithEdits: false }
+    if (typeof raw !== 'string') return { status: 'missing', picks: [] }
 
     try {
       const parsed = JSON.parse(raw) as {
         status?: string
         picks?: PickedElement[]
-        saves?: BrowserEdit[][]
-        leavingWithEdits?: boolean
       }
       return {
         status: (parsed.status as OverlayReport['status']) ?? 'missing',
         picks: Array.isArray(parsed.picks) ? parsed.picks : [],
-        saves: Array.isArray(parsed.saves) ? parsed.saves.filter((save) => Array.isArray(save)) : [],
-        leavingWithEdits: parsed.leavingWithEdits === true,
       }
     } catch {
-      return { status: 'missing', picks: [], saves: [], leavingWithEdits: false }
+      return { status: 'missing', picks: [] }
     }
   }
 
@@ -1656,13 +1369,11 @@ export class BrowserCDP {
     pollMs?: number
     /** The app's accent, as a concrete CSS colour — see `buildOverlayScript`. */
     accent: string
-    /** The bar's colours — never drawn for a one-shot pick, but the script is one script. */
-    menu?: { surface: string; text: string }
   }): Promise<PickedElement | null> {
     const timeoutMs = Math.max(1_000, options.timeoutMs ?? 120_000)
     const pollMs = Math.max(50, options.pollMs ?? 200)
 
-    await this.armOverlay({ accent: options.accent, menu: options.menu, bar: false, resident: false })
+    await this.armOverlay({ accent: options.accent, bar: false, resident: false })
 
     const deadline = Date.now() + timeoutMs
     try {
@@ -1682,47 +1393,12 @@ export class BrowserCDP {
     }
   }
 
-  /**
-   * Ask the overlay to leave.
-   *
-   * It ends only if there is nothing unsaved to lose — otherwise the mode stays and
-   * says so (`leavingWithEdits`), which is what puts "save before leaving?" in the
-   * window's chip. The answers are `saveEdits` (the ✓ beside the crosshair, and the
-   * bar's own button), a second request (the crosshair again, or Escape — leave, draft
-   * and all), so there is nothing to await: the caller learns the outcome the way it
-   * learns everything else, and the next `drainOverlay` says `cancelled` once the
-   * overlay has really gone.
-   */
-  async askOverlayToLeave(): Promise<void> {
-    try {
-      await this.send('Runtime.evaluate', { expression: OVERLAY_ASK_EXPRESSION })
-    } catch (err) {
-      mainLog.debug(`[browser-cdp] askOverlayToLeave ignored: ${String(err)}`)
-    }
-  }
-
-  /** Take the overlay down, draft and all. Safe to call when none is mounted. */
+  /** Take the overlay down. Safe to call when none is mounted. */
   async teardownOverlay(): Promise<void> {
     try {
       await this.send('Runtime.evaluate', { expression: OVERLAY_CANCEL_EXPRESSION })
     } catch (err) {
       mainLog.debug(`[browser-cdp] teardownOverlay ignored: ${String(err)}`)
-    }
-  }
-
-  /**
-   * Write the draft down, and end the mode — the window's ✓ answering the question.
-   *
-   * The same save the page's own bar performs, reached from the window's chrome because
-   * that is where the question is asked (`leavingWithEdits`); nothing is awaited for an
-   * outcome, as ever: what the save *is* comes back through the next `drainOverlay` as
-   * one `saves` entry.
-   */
-  async saveEdits(): Promise<void> {
-    try {
-      await this.send('Runtime.evaluate', { expression: OVERLAY_SAVE_EXPRESSION })
-    } catch (err) {
-      mainLog.debug(`[browser-cdp] saveEdits ignored: ${String(err)}`)
     }
   }
 
@@ -1732,10 +1408,10 @@ export class BrowserCDP {
 
   /**
    * Register a script that runs in every new document, before the page's own
-   * scripts. This is the mechanism behind "reload keeps my changes".
+   * scripts — the mechanism behind "an injection outlives a reload".
    *
    * `key` is caller-chosen and re-registering the same key replaces the previous
-   * script, so re-applying an edited patch is idempotent.
+   * script, so re-applying the same injection is idempotent.
    *
    * While any init script is registered the debugger is held attached, because
    * CDP drops these registrations when the session detaches — and the Page domain
@@ -1787,128 +1463,6 @@ export class BrowserCDP {
     if (this.pageDomainEnabled) return
     await this.send('Page.enable')
     this.pageDomainEnabled = true
-  }
-
-  // ---------------------------------------------------------------------------
-  // Network-level mock (CDP Fetch interception)
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Serve `program` for matching requests.
-   *
-   * Interception happens in the browser's network stack, so it covers `fetch`,
-   * `XMLHttpRequest` (axios) and every other resource type, without patching any
-   * page globals and without the app having to point at a mock server.
-   *
-   * The store is **copied** here, which is what makes one apply one run of the
-   * flow: a second `prototype_tool mock-apply` starts the prototype's state over rather
-   * than continuing whatever the last round of clicking left behind.
-   *
-   * Like init scripts this is CDP session state, so the debugger is held
-   * attached while it is active.
-   */
-  async setFetchMockRoutes(program: MockProgram): Promise<number> {
-    this.fetchMockRoutes = program.routes.map((route) => ({ ...route, method: route.method.toUpperCase() }))
-    this.fetchMockStore = JSON.parse(JSON.stringify(program.store ?? {}))
-
-    if (!this.fetchMockEnabled) {
-      await this.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] })
-      this.fetchMockEnabled = true
-    }
-
-    this.resetIdleDetachTimer()
-    return this.fetchMockRoutes.length
-  }
-
-  /** Stop intercepting. Requests fall through to the real network again. */
-  async clearFetchMock(): Promise<void> {
-    this.fetchMockRoutes = []
-    this.fetchMockStore = {}
-
-    if (this.fetchMockEnabled) {
-      this.fetchMockEnabled = false
-      try {
-        await this.send('Fetch.disable')
-      } catch (err) {
-        mainLog.debug(`[browser-cdp] Fetch.disable ignored: ${String(err)}`)
-      }
-    }
-
-    this.resetIdleDetachTimer()
-  }
-
-  /** Routes currently being served. */
-  listFetchMockRoutes(): MockRoute[] {
-    return [...this.fetchMockRoutes]
-  }
-
-  /** The store as it stands — for a caller that wants to see where the flow got to. */
-  listFetchMockStore(): MockStore {
-    return JSON.parse(JSON.stringify(this.fetchMockStore))
-  }
-
-  /**
-   * Match on pathname only, so it works whether the app calls the mock with an
-   * absolute URL, a baseUrl-prefixed URL, or a same-origin relative path. The
-   * matching rule itself lives in the shared engine, because the delivered
-   * carriers have to answer exactly as this layer does.
-   */
-  private matchFetchMockRoute(method: string, url: string): MockMatch | null {
-    let pathname = url
-    try {
-      pathname = new URL(url).pathname
-    } catch {
-      // Not an absolute URL — fall back to the raw value.
-    }
-
-    return matchMockRoute(this.fetchMockRoutes, method, pathname)
-  }
-
-  private async handlePausedRequest(params: CdpPausedRequest): Promise<void> {
-    const requestId = params.requestId
-    if (!requestId) return
-
-    const url = String(params.request?.url ?? '')
-    const method = String(params.request?.method ?? 'GET').toUpperCase()
-    const matched = this.matchFetchMockRoute(method, url)
-
-    try {
-      if (!matched) {
-        await this.send('Fetch.continueRequest', { requestId })
-        return
-      }
-
-      const read = parseMockRequestBody(params.request?.postData)
-      // A mutating request whose body could not be read changes nothing, and saying
-      // so is the only alternative to appending `null` and calling it state.
-      const answer = !read.readable && matched.route.state
-        ? { status: 500, body: { error: 'mock could not read the request body' } }
-        : applyMockRequest({
-            store: this.fetchMockStore,
-            route: matched.route,
-            params: matched.params,
-            body: read.body,
-          })
-
-      await this.send('Fetch.fulfillRequest', {
-        requestId,
-        responseCode: answer.status,
-        responseHeaders: [
-          { name: 'content-type', value: 'application/json' },
-          // Cross-origin API calls would otherwise be blocked by CORS even
-          // though we are the ones answering them.
-          { name: 'access-control-allow-origin', value: '*' },
-          { name: 'x-craft-mock', value: '1' },
-        ],
-        body: Buffer.from(JSON.stringify(answer.body ?? null)).toString('base64'),
-      })
-    } catch (err) {
-      mainLog.debug(`[browser-cdp] fetch mock failed for ${method} ${url}: ${String(err)}`)
-      // A paused request with no disposition freezes the page, so always release it.
-      try {
-        await this.send('Fetch.continueRequest', { requestId })
-      } catch { /* the request is already gone */ }
-    }
   }
 
   // ---------------------------------------------------------------------------

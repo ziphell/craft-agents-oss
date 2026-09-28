@@ -1,35 +1,23 @@
 /**
- * Prototype creation, and writing a page document.
+ * Prototype creation.
  *
- * A prototype is a directory with a `patches/` folder and — later — its page
- * documents. Creation writes **no** page: the absence is a *true* statement,
- * "this prototype has no pages yet", and a seeded empty document would assert a
- * state that does not exist (it would make the page table list a screen that is
- * not there, hide the guidance that says how to write the first one, and hand
- * Export an empty document to write). The earlier worry — a brand-new prototype
- * with every action greyed out — is answered by the entry points instead of by a
- * fake file: Open is disabled until there is a page to show.
+ * A prototype is a **folder** — its specification (markdown, one file or several) plus whatever
+ * material the author keeps beside it. Creation makes the folder and writes a
+ * starter brief into it, and nothing else: the spec *is* the deliverable now, so
+ * starting from an empty document would leave the agent with a form to discover
+ * rather than a document to fill in.
  *
- * Creation asks for a name and nothing else (plan §19.8). It used to ask for a
- * kind and, for an overlay, the address it changes; both of those are facts about
- * a **page**, so both moved to {@link updatePrototypePages} in pages.ts, where a
- * page is added. A prototype is a container either way.
+ * Creation asks for a name and nothing else. There is no kind, no address and no
+ * layout to ask about any more — those were facts about a page, and a prototype no
+ * longer has pages.
  *
- * Pages arrive one of two ways: written with the file tools
- * ({@link writePrototypePage}), or copied from another prototype
- * ({@link duplicatePrototype} in duplicate.ts), which makes a second prototype
- * rather than filling this one in.
- *
- * Whether the product page is reached through a local dev server, a test
- * environment, or production is not a distinction this model cares about: an
- * overlay page's patches are an overlay on someone else's page either way, and
- * never flow back into that source. See docs/prototype-workbench-plan.md §1.
+ * Whether the work is studied through a local dev server, a test environment, or
+ * production is not a distinction this model cares about.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
-import { join } from 'path'
-import { getPrototypeDirPath, getPrototypeLayoutPath, getPrototypePatchesPath } from './storage.ts'
-import { pageFileName } from './pages.ts'
+import { existsSync, mkdirSync, writeFileSync } from 'fs'
+import { getPrototypeDirPath } from './storage.ts'
+import { getPrototypePrdPath } from './requirements.ts'
 
 /** Slug characters that cannot escape the prototypes directory. */
 const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/
@@ -43,8 +31,8 @@ export interface CreatedPrototype {
   slug: string
   /** Absolute path to the prototype's directory. */
   dir: string
-  /** Absolute path to the (empty) patches directory. The shared patches live here. */
-  patchesPath: string
+  /** Absolute path to the starter `PRD.md` written into it. */
+  prdPath: string
 }
 
 /**
@@ -64,17 +52,38 @@ export function prototypeSlugFromName(name: string): string {
 }
 
 /**
- * Create a prototype directory.
+ * The starter brief.
  *
- * Writes an empty `patches/` and nothing else — no page, no `config.json`, and no
- * `_layout.html` either: with no pages there is nothing to declare, and a layout now
- * appears the moment there is something to share (two pages that would repeat the
- * same shared markup), which is the rule the prompt states. Seeding one up front would be a
- * layout around screens that may not want it at all — a page can be a design of its
- * own (plan §19.2).
+ * A requirement's shape is the one thing an author has to get right for anything else to work — the
+ * id is what every file refers back to — so the template demonstrates it rather than describing it
+ * from a distance.
+ */
+function starterPrd(title: string): string {
+  return [
+    `# ${title}`,
+    '',
+    'The specification. Every requirement is a heading whose id starts with `R-`, and that id is',
+    'what the rest of this folder refers back to: any file declares what it serves with',
+    '`@requirement R-001` in a comment.',
+    '',
+    'One file is enough to start. When a subject outgrows it, give that subject its own markdown',
+    'file — every markdown file here is read the same way.',
+    '',
+    '## R-001 <what the requirement is>',
+    '',
+    'Say what a person cannot do today, and what changes for them once this exists. Keep it about',
+    'the problem rather than about a screen or a feature.',
+    '',
+    'Add more the same way — `## R-002 …`.',
+    '',
+  ].join('\n')
+}
+
+/**
+ * Create a prototype directory and its starter brief.
  *
  * @throws when the name produces an empty slug, or when the prototype already
- *   exists (silently reusing a directory would mix two prototypes' patches).
+ *   exists (silently reusing a directory would mix two prototypes' files).
  */
 export function createPrototype(workspaceRootPath: string, input: CreatePrototypeInput): CreatedPrototype {
   const title = input.name.trim()
@@ -90,85 +99,8 @@ export function createPrototype(workspaceRootPath: string, input: CreatePrototyp
   }
 
   mkdirSync(dir, { recursive: true })
-  const patchesPath = getPrototypePatchesPath(workspaceRootPath, slug)
-  mkdirSync(patchesPath, { recursive: true })
+  const prdPath = getPrototypePrdPath(workspaceRootPath, slug)
+  writeFileSync(prdPath, starterPrd(title), 'utf-8')
 
-  return { slug, dir, patchesPath }
-}
-
-export interface WrittenPage {
-  slug: string
-  /** Page name, as the table and the address know it. */
-  page: string
-  /** Absolute path to the written document. */
-  path: string
-  /** Size of the written markup, in bytes. */
-  bytes: number
-}
-
-/**
- * Write (or replace) one page of a prototype.
- *
- * This is the way a scratch page gets its document: written by hand or by the
- * agent's file tools. The write is unconditional — a caller that would discard
- * edits is responsible for asking first.
- *
- * @throws when the prototype does not exist, when the name cannot be a page, or
- *   when the markup is not a whole document.
- */
-export function writePrototypePage(
-  workspaceRootPath: string,
-  slug: string,
-  page: string,
-  html: string,
-): WrittenPage {
-  const dir = getPrototypeDirPath(workspaceRootPath, slug)
-  if (!existsSync(dir)) {
-    throw new Error(`Prototype "${slug}" does not exist. Create it first.`)
-  }
-
-  const name = page.trim()
-  if (!name || /[\\/]/.test(name) || name.startsWith('_')) {
-    throw new Error(`"${page}" cannot be a page name: it becomes a file name and an address segment.`)
-  }
-
-  const markup = html.trim()
-  // A partial fragment would produce a page that patches cannot be applied to,
-  // and the failure would only show up later at export time.
-  if (!/^<html[\s>]/i.test(markup) && !/^<!doctype html/i.test(markup)) {
-    throw new Error(
-      `Page "${name}" is not a complete HTML document (expected <html> or <!doctype html>). ` +
-        `Use ${pageFileName(name)} for the file name.`,
-    )
-  }
-
-  const path = join(dir, pageFileName(name))
-  writeFileSync(path, markup, 'utf-8')
-
-  return { slug, page: name, path, bytes: Buffer.byteLength(markup, 'utf-8') }
-}
-
-/** Read one of a prototype's page documents, or null when it is not there. */
-export function readPrototypePage(
-  workspaceRootPath: string,
-  slug: string,
-  file: string,
-): string | null {
-  const path = join(getPrototypeDirPath(workspaceRootPath, slug), file)
-  if (!existsSync(path)) return null
-  return readFileSync(path, 'utf-8')
-}
-
-/**
- * Read the optional layout a page of ours is rendered inside, or null when there is
- * none (plan §19.2).
- *
- * The layout is applied wherever a page is turned into a document — the host on
- * every request, and export when it writes the package — so the delivered page is
- * the page that was previewed, layout and all.
- */
-export function readPrototypeLayout(workspaceRootPath: string, slug: string): string | null {
-  const path = getPrototypeLayoutPath(workspaceRootPath, slug)
-  if (!existsSync(path)) return null
-  return readFileSync(path, 'utf-8')
+  return { slug, dir, prdPath }
 }

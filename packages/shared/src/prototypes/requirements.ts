@@ -1,82 +1,105 @@
 /**
- * Prototype requirements — the PRD, and the thread back to it.
+ * Prototype requirements — the specification, and the thread back to it.
  *
- * Every other artifact this workbench derives says **what changed**: a page is a
- * screen, a patch is an edit, `dev-spec.md` lists both, a contract is an
- * interface. None of them says *what problem was being solved* — which is the one
- * thing the person handed the package has to judge. A delivery without that is
+ * Every other artifact this workbench derives is a fact about one file: a finding is a claim, a
+ * review is an objection. None of them says *what problem was being solved* — which is the one
+ * thing the person handed the work has to judge. A delivery without that is
  * something to copy rather than something to agree with, so this module is the
- * difference between a prototype tool and a requirement workbench (plan §20.1).
+ * difference between a prototype tool and a requirement workbench.
  *
- * The brief is **one file among the prototype's own files**, not a container: `PRD.md` at
- * the prototype's root is the one requirements are read from, and everything beside it is
- * material — in whatever format the author put there (`listPrototypeFiles` in `storage.ts`).
- * Nothing else is parsed. Letting a file beside it define `R-…` ids too
- * would make "which requirement has nothing implementing it" depend on files nobody
- * listed, and a requirement nobody lists is the one failure this module exists to catch.
- *
- * A requirement is a **heading with a stable id** in `PRD.md`:
- *
- * ```md
- * ## R-001 A cart holds its line until stock runs out
- *
- * Given a line is in the cart, when another shopper takes the last unit…
- * ```
+ * The specification is **one file or several among the prototype's own files**, not a container.
+ * A requirement is a heading with a stable id — `## R-001 <title>` — in **any markdown file** of
+ * the folder (`PRD.md`, `docs/features.md`, wherever the author put it), and the file it is written
+ * in is carried with it: the report names it, the detail page groups by it. `PRD.md` is the
+ * conventional entry — what `create` seeds — but it is not the only file requirements are read
+ * from, because real work is organized into as many documents as it takes.
  *
  * The id is the entire mechanism. It is short, survives rewriting the prose
- * around it, and — the point — is **referable**: a patch says `@requirement
- * R-001` in its header, a page document says it in a comment, and the status
- * report can then answer the two questions nobody can answer by reading files:
- * which requirement has nothing implementing it, and which change belongs to no
- * requirement at all.
+ * around it, and — the point — is **referable**: any file in the prototype may say
+ * `@requirement R-001` in a comment (`coverage.ts`), a finding says it with
+ * `requirements:`, and the status report can then answer the two questions nobody
+ * can answer by reading files: which requirement has nothing implementing it, and
+ * which marker names an id the specification does not define.
  *
- * The PRD is deliberately **not** in `config.json`. It is prose that the agent
- * writes as a file, and parsing it here is what keeps it a document people can
- * read rather than a form they have to fill in. The prototype's own files are the control
- * plane's (`ownership.ts`), so no writer identity gates the brief.
+ * The documents are deliberately **not** in a stored index. They are prose the agent
+ * writes as files, and parsing them here is what keeps them documents people can
+ * read rather than a form they have to fill in.
+ *
+ * What this module deliberately does **not** do any more is read acceptance out of the documents:
+ * `check:` is not a concept here, so a line that says `check: …` is ordinary prose under its
+ * requirement — nothing parses it, nothing reports it, and there is no kind to give it.
  */
 
-import { existsSync, readFileSync } from 'fs'
+import { readFileSync } from 'fs'
 import { join } from 'path'
-import { getPrototypeDirPath } from './storage.ts'
-import { normalizeRequirementId } from './patch-header.ts'
+import { markerIndex } from '../markers.ts'
+import { contentFingerprint, getPrototypeDirPath, isMarkdownFile, listPrototypeFiles } from './storage.ts'
 
-// The marker parser lives in `patch-header.ts` (which imports nothing) because
-// `storage.ts` needs it too, and it already imports this module — see the note
-// there. Re-exported so a caller that reads requirements never needs a second
-// import, and so the public surface of this workbench is unchanged.
-export { extractRequirementIds, normalizeRequirementId } from './patch-header.ts'
+const REQUIREMENT_MARKER = '@requirement'
 
 /**
- * The brief's file name. Case matters here the way `SKILL.md` does: this exact name is
- * the one file requirements are read from, so a `prd.md` written by hand is material
- * beside the brief rather than a second entry.
+ * Normalize a requirement id written by hand.
+ *
+ * `r1`, `R-1`, `R-001` and `R-0001` are the same requirement: ids are written by
+ * hand in more than one kind of file, so this tolerance is what keeps a typo in a
+ * reference from silently meaning "no such requirement".
+ */
+export function normalizeRequirementId(value: string): string | null {
+  const match = /^R-?(\d{1,4})$/i.exec(value.trim())
+  if (!match) return null
+  return `R-${String(Number(match[1])).padStart(3, '0')}`
+}
+
+/**
+ * The requirement ids a file declares with `@requirement`.
+ *
+ * A declaration is `@requirement R-001`, optionally with more ids on the same
+ * line (`@requirement R-001 R-002` or `…, R-002`). Everything after the marker on
+ * that line is read, so the marker can be followed by a reason: writing why a
+ * requirement exists next to the id it serves is the behaviour this is meant to
+ * encourage, not to reject.
+ *
+ * Any file of the prototype may carry it — a document, a stylesheet, a script —
+ * which is what makes the thread independent of any one artifact type
+ * (`coverage.ts`).
+ *
+ * Unknown spellings are ignored rather than guessed at: a line that says
+ * `@requirement TBD` is a note to self, and treating it as a reference to a
+ * requirement would invent an id.
+ */
+export function extractRequirementIds(source: string): string[] {
+  const ids: string[] = []
+  const seen = new Set<string>()
+
+  for (const line of source.split('\n')) {
+    const marker = markerIndex(line, REQUIREMENT_MARKER)
+    if (marker === -1) continue
+
+    for (const match of line.slice(marker + REQUIREMENT_MARKER.length).matchAll(/R-?\d{1,4}/gi)) {
+      const id = normalizeRequirementId(match[0])
+      if (!id || seen.has(id)) continue
+      seen.add(id)
+      ids.push(id)
+    }
+  }
+
+  return ids
+}
+
+/**
+ * The conventional entry document's file name — what `create` seeds and what `getPrototypePrdPath`
+ * names. Not a rule about where requirements live any more: an author who splits the specification
+ * into `docs/features.md` and `docs/personas.md` has simply organized their work, and every one of
+ * those files is read the same way.
  */
 export const PROTOTYPE_PRD_FILENAME = 'PRD.md'
 
-/** Absolute path to a prototype's `PRD.md`. */
+/** Absolute path to the prototype's conventional entry document (`PRD.md`). */
 export function getPrototypePrdPath(workspaceRootPath: string, slug: string): string {
   return join(getPrototypeDirPath(workspaceRootPath, slug), PROTOTYPE_PRD_FILENAME)
 }
 
-/** The kinds of acceptance check a requirement can carry (plan §20.7). */
-export type PrototypeCheckKind = 'selector' | 'endpoint'
-
-/**
- * One acceptance check, as the PRD states it.
- *
- * `selector` is asserted against the page on screen, `endpoint` against the
- * contract. Both are deliberately mechanical: an acceptance criterion that only a
- * person can judge is a criterion nobody runs, and the point of these lines is
- * that `verify` can answer pass or fail without an opinion.
- */
-export interface PrototypeCheck {
-  kind: PrototypeCheckKind
-  /** `[data-cart-total]` for a selector, `GET /api/cart` for an endpoint. */
-  target: string
-}
-
-/** One requirement of the PRD, as the document states it. */
+/** One requirement of the specification, as its document states it. */
 export interface PrototypeRequirement {
   /** `R-001`. Stable, and what every reference is written against. */
   id: string
@@ -84,42 +107,53 @@ export interface PrototypeRequirement {
   title: string
   /**
    * The prose under the heading, trimmed. An empty body is a requirement whose
-   * acceptance criteria have not been written yet — reported, not hidden.
+   * prose has not been written yet — reported, not hidden.
    */
   body: string
-  /** The `check:` lines under it, in the order written. */
-  checks: PrototypeCheck[]
+  /**
+   * The prototype-relative path of the markdown file whose heading defines it — `PRD.md`,
+   * `docs/features.md`. Carried so the report and the page can say where a requirement is written,
+   * which file no longer implies anything on its own.
+   */
+  file: string
 }
 
 export interface PrototypeRequirements {
-  /** In the order the PRD states them: the document's order is part of its argument. */
+  /** In reading order: file path order, and the document's own order within each file. */
   requirements: PrototypeRequirement[]
-  /** Read problems — a duplicate id, a PRD with no entries at all. */
+  /** Read problems — a duplicate id across files, an unreadable document. */
   issues: string[]
+}
+
+/**
+ * The fingerprint of what a requirement *says* — its heading and its prose.
+ *
+ * A review records it (`on:`) when it is filed, and is reported **stale** when the
+ * requirement has been rewritten since (`reviews.ts`). Here rather than in either
+ * reader because two implementations of one fingerprint would drift, and a drift
+ * would show up as an argument that looks live when it is not.
+ */
+export function requirementFingerprint(requirement: PrototypeRequirement): string {
+  return contentFingerprint(`${requirement.title}\n\n${requirement.body}`)
 }
 
 /** `## R-001 A cart holds its line` — any heading depth, id first. */
 const REQUIREMENT_HEADING_RE = /^#{1,6}\s+(R-\d{1,4})\b[\s:—–-]*(.*)$/i
 
 /**
- * `check: selector [data-cart-total]` — an acceptance check under a requirement.
+ * Read the requirement headings out of one markdown document.
  *
- * A line the parser does not recognise as a check is reported rather than
- * ignored: `check: expression …` would otherwise look like a criterion that is
- * being verified, when nothing is looking at it at all.
- */
-const CHECK_RE = /^check\s*:\s*(\S+)\s*(.*)$/i
-
-/**
- * Read a PRD into requirements.
+ * The document does exactly one thing here: `## R-00x <title>` opens a requirement and the prose
+ * under it is that requirement's body, up to the next heading. There is no acceptance to read —
+ * a `check: …` line is prose like any other (`verify` and the checks it ran are gone).
  *
- * Tolerant in the same way `readPrototypeConfig` is: a missing file is "no PRD
- * yet" (the honest state of a prototype that has just been created), and an
- * unreadable one must not make the prototype unusable. What it will not do is
- * drop an entry quietly — a requirement that vanished from the report is a
- * requirement nobody implements.
+ * Tolerant of ordinary prose: a heading that is not a requirement ends the current entry and is
+ * otherwise ignored, so a document that merely *mentions* `R-001` in a sentence is not read as
+ * defining it. What it will not do is drop an entry quietly — a requirement that vanished from the
+ * report is a requirement nobody implements — so a repeated id within the document is reported
+ * rather than the second one being folded silently into the first (`file` names it).
  */
-export function parsePrototypePrd(source: string): PrototypeRequirements {
+export function parseRequirementDocument(source: string, file: string): PrototypeRequirements {
   const requirements: PrototypeRequirement[] = []
   const issues: string[] = []
   const seen = new Set<string>()
@@ -143,11 +177,11 @@ export function parsePrototypePrd(source: string): PrototypeRequirements {
       if (!id) continue
       flush()
       if (seen.has(id)) {
-        issues.push(`${PROTOTYPE_PRD_FILENAME}: two entries share the id ${id}; a reference to it is ambiguous.`)
+        issues.push(`${file}: two entries share the id ${id}; a reference to it is ambiguous.`)
         continue
       }
       seen.add(id)
-      current = { id, title: (heading[2] ?? '').trim(), body: '', checks: [] }
+      current = { id, file, title: (heading[2] ?? '').trim(), body: '' }
       continue
     }
 
@@ -158,54 +192,59 @@ export function parsePrototypePrd(source: string): PrototypeRequirements {
       continue
     }
 
-    if (current) {
-      const check = CHECK_RE.exec(line.trim())
-      if (check) {
-        const kind = (check[1] ?? '').toLowerCase()
-        const target = (check[2] ?? '').trim()
-
-        if (kind !== 'selector' && kind !== 'endpoint') {
-          issues.push(
-            `${PROTOTYPE_PRD_FILENAME}: "${kind}" is not a check this can run — use ` +
-              `"check: selector <css>" or "check: endpoint <METHOD> <path>".`,
-          )
-        } else if (target.length === 0) {
-          issues.push(`${PROTOTYPE_PRD_FILENAME}: the "${kind}" check under ${current.id} has no target.`)
-        } else {
-          current.checks.push({ kind, target })
-        }
-        continue
-      }
-      body.push(line)
-    }
+    if (current) body.push(line)
   }
   flush()
-
-  if (requirements.length === 0) {
-    issues.push(
-      `${PROTOTYPE_PRD_FILENAME} has no "## R-001 <title>" entries, so there is nothing for a patch to refer to. ` +
-        `Give every requirement a heading whose id starts with R-.`,
-    )
-  }
 
   return { requirements, issues }
 }
 
 /**
- * Read a prototype's requirements — the entry document of the collection, and the
- * only one.
+ * Read a prototype's requirements — every markdown file of the folder, in path order.
  *
- * A prototype with no `PRD.md` is a prototype whose requirements have not been
- * written yet — not an error, and the status report says so in those words. The
- * documents beside it are not read here: they are material the entry points at.
+ * A prototype with no requirement headings anywhere is a prototype whose requirements have not
+ * been written yet — not an error, and the status report says so in those words. The documents
+ * that carry no `## R-00x` heading are material the specification points at, and read as nothing
+ * here.
+ *
+ * A file that is read twice (two documents claiming one id) is reported rather than resolved: which
+ * of the two a reference meant is not something this can know, and guessing would make "which
+ * requirement nothing implements" depend on the guess.
  */
-export function readPrototypeRequirements(workspaceRootPath: string, slug: string): PrototypeRequirements {
-  const path = getPrototypePrdPath(workspaceRootPath, slug)
-  if (!existsSync(path)) return { requirements: [], issues: [] }
+export function readPrototypeRequirements(
+  workspaceRootPath: string,
+  slug: string,
+): PrototypeRequirements {
+  const files = listPrototypeFiles(workspaceRootPath, slug).filter((file) => isMarkdownFile(file.name))
+  const requirements: PrototypeRequirement[] = []
+  const issues: string[] = []
+  const definedIn = new Map<string, string>()
 
-  try {
-    return parsePrototypePrd(readFileSync(path, 'utf-8'))
-  } catch {
-    return { requirements: [], issues: [] }
+  for (const file of files) {
+    let source: string
+    try {
+      source = readFileSync(file.path, 'utf-8')
+    } catch {
+      // An unreadable document must not make the prototype unusable. Its absence from the report is
+      // a fact about the disk, and the next read states it again.
+      continue
+    }
+
+    const parsed = parseRequirementDocument(source, file.name)
+    issues.push(...parsed.issues)
+
+    for (const requirement of parsed.requirements) {
+      const existing = definedIn.get(requirement.id)
+      if (existing) {
+        issues.push(
+          `${requirement.id} is defined in both ${existing} and ${requirement.file}; a reference to it is ambiguous.`,
+        )
+        continue
+      }
+      definedIn.set(requirement.id, requirement.file)
+      requirements.push(requirement)
+    }
   }
+
+  return { requirements, issues }
 }

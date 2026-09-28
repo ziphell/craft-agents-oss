@@ -6,12 +6,13 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pickCommandTarget, whyTabIsLocked, whyTabIsOutOfReach } from '@craft-agent/server-core/domain'
 import { BACKGROUND_HEX } from '@craft-agent/shared/config'
 import type { BrowserTabSummary, TabBelongsTo } from '@craft-agent/shared/protocol'
+import { websiteOriginUrl } from '../website-host'
 
 const createdWindows: any[] = []
 let toolbarLoadFailuresRemaining = 0
@@ -340,6 +341,11 @@ function createMockWindow(opts?: { width?: number; height?: number; minWidth?: n
 mock.module('electron', () => ({
   app: {
     getPath: mock((name: string) => name === 'downloads' ? downloadsDir : `/tmp/mock-${name}`),
+    /**
+     * The name `index.ts` sets before anything else runs, and the source of the product token a
+     * tab's user agent drops — the real `app` always answers this, so the mock has to as well.
+     */
+    getName: mock(() => 'Craft Agents'),
   },
   // One display, so "off screen" has a definite meaning in a test: past its right edge.
   screen: mockScreen,
@@ -421,6 +427,12 @@ mock.module('../logger', () => {
 mock.module('../browser-cdp', () => ({
   BrowserCDP: class MockBrowserCDP {
     detach = mock(() => {})
+    /**
+     * What the page is told about being focused while a tab is held — the emulation, in order.
+     * Nothing here moves a window: that is the whole reason this is a CDP call and not
+     * `webContents.focus()` (`spike/anti-bot-fingerprint.ts` round 2 measures both).
+     */
+    setFocusEmulation = mock(async (_enabled: boolean) => {})
     getAccessibilitySnapshot = mock(async () => ({
       url: 'https://example.com',
       title: 'Example',
@@ -455,24 +467,20 @@ mock.module('../browser-cdp', () => ({
       clickPoint: { x: 15, y: 15 },
     }))
     /**
-     * The element overlay (plan §12.7).
+     * The element overlay.
      *
      * One script serves two callers, so these are the calls the manager makes on it:
-     * arm a tab, read what it has reported, ask it to leave, write the draft down, and
-     * take it down. A test that is about the picker replaces this whole object with its
-     * own stub (`stubPicker`); the ones that only need the manager not to crash — closing
-     * a tab that was being picked, say — get this and nothing happens.
+     * arm a tab, read what it has reported, and take it down. A test that is about the
+     * picker replaces this whole object with its own stub (`stubPicker`); the ones that
+     * only need the manager not to crash — closing a tab that was being picked, say —
+     * get this and nothing happens.
      */
     armOverlay = mock(async (_options: unknown) => {})
     drainOverlay = mock(async () => ({
       status: 'pending' as const,
       picks: [],
-      saves: [],
-      leavingWithEdits: false,
     }))
-    askOverlayToLeave = mock(async () => {})
     teardownOverlay = mock(async () => {})
-    saveEdits = mock(async () => {})
   },
 }))
 
@@ -481,7 +489,7 @@ const { BrowserPaneManager } = await import('../browser-pane-manager')
 /**
  * The tab a window is showing.
  *
- * A window's address, title, view, CDP session and prototype belong to its *tabs*
+ * A window's address, title, view and CDP session belong to its *tabs*
  * now, so a test that used to say `instance.tabView` says `tab(instance).tabView`:
  * exactly the migration the manager itself went through. These tests drive a
  * single-tab window, so "the tab" is its first tab.
@@ -516,23 +524,21 @@ function tabSummary(overrides: Partial<BrowserTabSummary> & { id: string }): Bro
     favicon: null,
     isLoading: false,
     active: false,
-    prototype: null,
-    prototypePage: null,
     disposition: null,
     belongsTo: null,
-    driverSessionId: null,
-    cursorOf: null,
+    drivenBy: null,
+    cursorOf: [],
     lockedBy: null,
     ...overrides,
   }
 }
 
-/** A conversation's own work — what a tab it opened says it belongs to (plan §22). */
+/** A conversation's own work — what a tab it opened says it belongs to. */
 function work(sessionId: string): TabBelongsTo {
   return { kind: 'session', sessionId }
 }
 
-/** A DAG node's work: the task, the run, and which node of it (plan §22). */
+/** A DAG node's work: the task, the run, and which node of it. */
 function nodeWork(taskSlug: string, nodeId: string | null, sessionId: string): TabBelongsTo {
   return { kind: 'task', taskSlug, runId: 'r1', nodeId, sessionId }
 }
@@ -554,15 +560,15 @@ describe('BrowserPaneManager', () => {
   /**
    * Put a session to work on a window's tab.
    *
-   * There is no window lease to write any more: which conversation is where is a fact about
-   * **tabs** (plan §22, Conductor), so this writes the tab's own facts — the tab is the one
-   * that session works from, and is held by it while the window has its overlay up.
+   * There is no window-level driver to write any more: which conversation is where is a fact
+   * about **tabs**, so this writes the tab's own facts — the tab is the
+   * one that session works from, and is held by it while the window has its overlay up.
    */
   function drive(id: string, sessionId: string): void {
     const instance = (manager as any).instances.get(id)
     if (!instance) throw new Error(`no instance ${id}`)
     const tab = instance.tabs.find((candidate: any) => candidate.id === instance.activeTabId) ?? instance.tabs[0]
-    tab.cursorOf = sessionId
+    if (!tab.cursorOf.includes(sessionId)) tab.cursorOf = [...tab.cursorOf, sessionId]
     if (instance.controlBy?.has(sessionId)) tab.heldBy = sessionId
   }
 
@@ -615,8 +621,8 @@ describe('BrowserPaneManager', () => {
   })
 
   // Every request for a window of its own becomes a tab beside the one that asked,
-  // whatever asked: a link, a scripted popup, a link on a prototype's own document
-  // (plan §22). There is no second-window path left.
+  // whatever asked: a link, a scripted popup, a link on a prototype's own document.
+  // There is no second-window path left.
   it('opens a window request as a tab beside the one that asked for it', () => {
     manager.createInstance('window-open-link')
     const instance = (manager as any).instances.get('window-open-link')
@@ -639,17 +645,17 @@ describe('BrowserPaneManager', () => {
     expect(instance.activeTabId).toBe(instance.tabs[1].id)
     expect(manager.listTabs('window-open-link')[1]!.id).not.toBe(origin)
     // Nobody owned the tab it came from, so nobody owns this one: no owner is invented
-    // for a tab that merely appeared (plan §22, 第十一轮).
+    // for a tab that merely appeared.
     expect(instance.tabs[1].belongsTo).toBeNull()
-    expect(instance.tabs[1].cursorOf).toBeNull()
-    expect(instance.tabs[1].driverSessionId).toBeNull()
+    expect(instance.tabs[1].cursorOf).toEqual([])
+    expect(instance.tabs[1].drivenBy).toBeNull()
   })
 
-  // A tab derived from a task's tab joins that task (plan §22, 第十一轮). It inherits the
+  // A tab derived from a task's tab joins that task. It inherits the
   // group and nothing else: the person following a link inside the agent's tab must not
   // retarget the agent's next command, and must not make the window claim the agent is
   // driving the new tab.
-  it('gives a derived tab its parent task, but not its cursor or lease', () => {
+  it('gives a derived tab its parent task, but not its cursor or driven-by mark', () => {
     manager.createInstance('window-open-inherit')
     drive('window-open-inherit', 'session-a')
     const instance = (manager as any).instances.get('window-open-inherit')
@@ -664,10 +670,10 @@ describe('BrowserPaneManager', () => {
 
     const derived = instance.tabs.find((tab: any) => tab.id !== parentId)
     expect(derived?.belongsTo).toEqual({ kind: 'session', sessionId: 'session-a' })
-    expect(derived?.cursorOf).toBeNull()
-    expect(derived?.driverSessionId).toBeNull()
+    expect(derived?.cursorOf).toEqual([])
+    expect(derived?.drivenBy).toBeNull()
     // The parent is still the tab that conversation works from.
-    expect(parent.cursorOf).toBe('session-a')
+    expect(parent.cursorOf).toEqual(['session-a'])
   })
 
   it('puts the new tab right after the tab it came from', () => {
@@ -791,12 +797,37 @@ describe('BrowserPaneManager', () => {
 
     manager.unbindAllForSession('session-abc')
 
-    expect(tab.driverSessionId).toBeNull()
+    expect(tab.drivenBy).toBeNull()
     expect(tab.heldBy).toBeNull()
-    // The cursor is not a lease: this conversation still works from the tab it chose.
-    expect(tab.cursorOf).toBe('session-abc')
+    // The cursor is not the driven-by mark: this conversation still works from the tab it chose.
+    expect(tab.cursorOf).toEqual(['session-abc'])
     // Letting go is not closing: the window is still there for the next turn.
     expect(manager.listInstances()).toHaveLength(1)
+  })
+
+  it('tells the page it is focused while a session holds the tab, and stops when it lets go', async () => {
+    // A tab being driven from the background is what this is for: the page is visible and
+    // unfocused, and a site's "is somebody there?" check reads exactly that. What changes here
+    // is only what the page is told — no window is activated and none is moved
+    // (`spike/anti-bot-fingerprint.ts` round 2 measures both).
+    manager.createInstance('focus-hold')
+    const instance = (manager as any).instances.get('focus-hold')
+    const tab = instance.tabs[0]
+    const told = (): unknown[] => tab.cdp.setFocusEmulation.mock.calls.map((call: unknown[]) => call[0])
+
+    // Nothing is held yet, so the page is told nothing.
+    expect(told()).toEqual([])
+
+    manager.setAgentControl('sess-hold', { displayName: 'Click' })
+    manager.setSessionTab('focus-hold', instance.activeTabId, 'sess-hold')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(told()).toEqual([true])
+
+    // The work is over: the page goes back to answering for the window it is really in, because
+    // focus that outlives the work is a reading no person's browser ever gives.
+    manager.unbindAllForSession('sess-hold')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(told()).toEqual([true, false])
   })
 
   it('createForSession resolves the same window, and writes nothing about who asked', () => {
@@ -806,7 +837,7 @@ describe('BrowserPaneManager', () => {
 
     expect(id1).toBe(id2)
     expect(manager.listInstances()).toHaveLength(1)
-    // The window is its workspace's (plan §22), and which conversation is working in it is a
+    // The window is its workspace's, and which conversation is working in it is a
     // fact about its *tabs* — so asking for the window leaves no mark on the window itself.
     expect(info.workspaceId).toBeNull()
     expect(info.agentControlActive).toBe(false)
@@ -821,7 +852,7 @@ describe('BrowserPaneManager', () => {
   })
 
   it('hands back the window of that workspace rather than opening a second one', () => {
-    // One window per workspace (plan §22). A window already stamped with a workspace
+    // One window per workspace. A window already stamped with a workspace
     // *is* that workspace's window — `workspaceId` is the whole of a window's
     // identity — so a conversation joining the workspace lands in it, and the window
     // keeps its id.
@@ -874,7 +905,7 @@ describe('BrowserPaneManager', () => {
 
     it('finds the window by workspace, so an overlay lands where the tool is working', () => {
       // The overlay is put on the window of the workspace the session is working in — that is
-      // the only thing that picks it now (plan §22); a window of another workspace is not it.
+      // the only thing that picks it now; a window of another workspace is not it.
       manager.createInstance('overlay-scoped', { workspaceId: 'ws-delta' })
       manager.createInstance('overlay-other', { workspaceId: 'ws-other' })
 
@@ -892,8 +923,8 @@ describe('BrowserPaneManager', () => {
     })
 
     /**
-     * One window per workspace, shared by every conversation in it and by the user
-     * (plan §22). Nothing on the window says who is using it — that is a fact about its
+     * One window per workspace, shared by every conversation in it and by the user.
+     * Nothing on the window says who is using it — that is a fact about its
      * **tabs**, which is what lets a parent and its children work in it at once
      * (Conductor).
      */
@@ -908,7 +939,7 @@ describe('BrowserPaneManager', () => {
       })
 
       /**
-       * The point of the whole tab-level model (plan §22, Conductor): several conversations
+       * The point of the whole tab-level model: several conversations
        * work in one window at the same time, each on its own tab, and one starting or
        * finishing does not touch another's tab.
        */
@@ -961,7 +992,7 @@ describe('BrowserPaneManager', () => {
       it('opens a hand-opened tab in the same window without disturbing anyone', () => {
         const shared = manager.createForSession('sess-a', { workspaceId: 'ws-a' })
         drive(shared, 'sess-a')
-        const tabStates = () => manager.listTabs(shared).map((tab) => `${tab.id}:${tab.cursorOf ?? '-'}:${tab.lockedBy ?? '-'}`)
+        const tabStates = () => manager.listTabs(shared).map((tab) => `${tab.id}:${tab.cursorOf.join(',') || '-'}:${tab.lockedBy ?? '-'}`)
         const before = tabStates()
 
         // The user's own "+": the person clicking around did not stop a conversation, and
@@ -970,18 +1001,24 @@ describe('BrowserPaneManager', () => {
         expect(tabStates()).toEqual(before)
       })
 
-      it('is never destroyed by a session being torn down', () => {
+      it('is never destroyed by a session being torn down, but stops claiming a tab for it', () => {
         const shared = manager.createForSession('sess-a', { workspaceId: 'ws-a' })
         drive(shared, 'sess-a')
 
         manager.destroyForSession('sess-a')
 
+        // The window, the tab and the page it has loaded all stay: tearing a session down is
+        // not closing anything.
         expect(manager.listInstances().map((item) => item.id)).toEqual([shared])
         const tab = manager.listTabs(shared)[0]
-        expect(tab.driverSessionId).toBeNull()
-        // The tab is still the one this conversation works from: tearing a session down ends
-        // its lease, not the window, and not where it was working.
-        expect(tab.cursorOf).toBe('sess-a')
+        expect(tab.drivenBy).toBeNull()
+        // Its **cursor** goes, though, and this is the only moment one is dropped (a turn
+        // ending keeps it — see "holds a tab for a session, and lets go without touching the
+        // window or the cursor"). A deleted conversation cannot work anywhere again, so the id
+        // would be state about nothing — read by the toolbar for the tab's label, and by the
+        // prototype and downloads fallbacks.
+        expect(tab.cursorOf).toEqual([])
+        expect(whyTabIsOutOfReach(tab, work('sess-b'))).toBeNull()
       })
 
       it('belongs to its workspace rather than to whoever opened it', () => {
@@ -995,13 +1032,13 @@ describe('BrowserPaneManager', () => {
       })
     })
     // Two facts live here and they are not the same one: the **cursor** (`cursorOf`) is the
-    // tab a conversation works from — sticky, named, where its unnamed commands go — and
-    // the **lease** (`driverSessionId`) is the last tab a command actually reached, which
-    // the turn ending sweeps away (plan §22, 第九轮修正 / 第十轮).
+    // tab a conversation works from — sticky, named, where its unnamed commands go — and the
+    // **driven-by mark** (`drivenBy`) is the last tab a command actually reached,
+    // which being done with the browser sweeps away.
     describe('which tab is being driven', () => {
       const tabsOf = (id: string) => manager.listTabs(id)
       const driverOf = (id: string, tabId: string) =>
-        tabsOf(id).find((tab) => tab.id === tabId)?.driverSessionId
+        tabsOf(id).find((tab) => tab.id === tabId)?.drivenBy
       const cursorOf = (id: string, tabId: string) =>
         tabsOf(id).find((tab) => tab.id === tabId)?.cursorOf
 
@@ -1017,8 +1054,8 @@ describe('BrowserPaneManager', () => {
        * One command, as `SessionManager` runs it: resolve the window, resolve the tab it
        * acts on (the same rule — `pickCommandTarget`), then record that tab as the one
        * this conversation works from. Two steps, because resolving a window no longer says
-       * which tab the command is about — and recording it does **not** move the window
-       * (plan §22, 第十二轮): the target is what the next command is told, not what the
+       * which tab the command is about — and recording it does **not** move the window:
+       * the target is what the next command is told, not what the
        * person is shown.
        */
       function command(sessionId: string, tabId?: string): { instanceId: string; tabId?: string } {
@@ -1028,31 +1065,30 @@ describe('BrowserPaneManager', () => {
         return { instanceId, tabId: target }
       }
 
-      it('records the driver on the tab a command reached, and releases it when the turn ends', () => {
+      it('records the driver on the tab a command reached, and releases the mark when the turn ends', () => {
         const { instanceId } = command('sess-a')
         const first = tabsOf(instanceId)[0]!.id
 
         // A command: the conversation resolves its window, then the tab it works from —
         // with none yet, that is the tab on screen.
-        command('sess-b')
-        expect(driverOf(instanceId, first)).toBe('sess-b')
-        expect(cursorOf(instanceId, first)).toBe('sess-b')
+        expect(driverOf(instanceId, first)).toBe('sess-a')
+        expect(cursorOf(instanceId, first)).toEqual(['sess-a'])
 
-        manager.unbindAllForSession('sess-b')
+        manager.unbindAllForSession('sess-a')
         expect(driverOf(instanceId, first)).toBeNull()
-        // A lease, not a cursor: the turn ending takes the lease and leaves the tab as the
+        // The mark, not the cursor: the turn ending takes the mark and leaves the tab as the
         // one this conversation works from.
-        expect(cursorOf(instanceId, first)).toBe('sess-b')
+        expect(cursorOf(instanceId, first)).toEqual(['sess-a'])
       })
 
       // The rule the cursor exists for: a command lands on the conversation's own tab, not
-      // on whatever the person is looking at (plan §22, 第十轮).
+      // on whatever the person is looking at.
       it('lands on the tab the conversation works from, not the one on screen', () => {
         const instance = usedWindow('first', 'sess-a')
         const instanceId = instance.id
         const first = instance.tabs[0].id
         command('sess-a')
-        expect(cursorOf(instanceId, first)).toBe('sess-a')
+        expect(cursorOf(instanceId, first)).toEqual(['sess-a'])
 
         // The person switches to a tab of their own, and the conversation runs a command.
         const other = manager.createTab(instanceId, { url: 'https://other.example.com/' })
@@ -1063,13 +1099,35 @@ describe('BrowserPaneManager', () => {
         // shown (第十二轮).
         expect(instance.activeTabId).toBe(other)
         expect(driverOf(instanceId, first)).toBe('sess-a')
-        expect(cursorOf(instanceId, first)).toBe('sess-a')
+        expect(cursorOf(instanceId, first)).toEqual(['sess-a'])
         expect(driverOf(instanceId, other)).toBeNull()
-        expect(cursorOf(instanceId, other)).toBeNull()
+        expect(cursorOf(instanceId, other)).toEqual([])
+      })
+
+      // The case that used to be a wall (第二十四轮): a tab two conversations work from keeps
+      // **both** cursors, so the second one to take the person's tab does not send the first
+      // one's next command off to whatever the person happens to be looking at.
+      it('lets two conversations work from one tab, each keeping its own cursor', () => {
+        const instance = usedWindow('first', 'sess-a')
+        const instanceId = instance.id
+        const first = instance.tabs[0].id
+
+        command('sess-a')
+        command('sess-b')
+
+        expect(cursorOf(instanceId, first)).toEqual(['sess-a', 'sess-b'])
+        expect(driverOf(instanceId, first)).toBe('sess-b')
+
+        // And a command of the first conversation still lands there — its cursor was not
+        // overwritten by the second one.
+        const persons = manager.createTab(instanceId, { url: 'https://person.example.com/' })
+        expect(instance.activeTabId).toBe(persons)
+
+        expect(command('sess-a').tabId).toBe(first)
       })
 
       // …and it *acts* there: the tab is named to the manager, so a command works on the
-      // conversation's tab and the window does not move (plan §22, 第十二轮).
+      // conversation's tab and the window does not move.
       it('acts on the tab it is given, without moving the window', async () => {
         const instance = usedWindow('first', 'sess-a')
         const instanceId = instance.id
@@ -1090,7 +1148,7 @@ describe('BrowserPaneManager', () => {
       /**
        * A capability call as the remote bridge sends it — the wire the routing has to survive,
        * because the manager on the other end is one shared instance and the tab is not in the
-       * arguments (plan §22, 第十二轮).
+       * arguments.
        */
       async function invoke(req: {
         method: string
@@ -1139,7 +1197,7 @@ describe('BrowserPaneManager', () => {
        * The bridge is where that can go wrong: the manager writes down whatever identity
        * the request carries, and the agent reads `lockedBy` back and compares it with its
        * own session id — two spellings of one conversation would make it refuse its own
-       * tab as somebody else's (plan §22, 第九轮).
+       * tab as somebody else's.
        */
       it('locks the tab for the bridge caller, under the id that caller uses', async () => {
         const instance = usedWindow('lock', 'sess-a')
@@ -1193,7 +1251,7 @@ describe('BrowserPaneManager', () => {
         command('sess-a')
 
         expect(driverOf(instance.id, idle)).toBeNull()
-        expect(cursorOf(instance.id, idle)).toBeNull()
+        expect(cursorOf(instance.id, idle)).toEqual([])
       })
     })
   })
@@ -1502,15 +1560,9 @@ describe('BrowserPaneManager', () => {
         isLoading: false,
         canGoBack: true,
         canGoForward: false,
-        // No resolver is installed here, and nothing is bound: the toolbar's
-        // prototype actions have nothing to act on.
-        prototypeSlug: null,
         // The picker is off, and the window has one tab — which the rail draws and
         // the bar leaves alone.
         picking: false,
-        // Nothing is holding the mode open, so the chip says how the mode works rather
-        // than asking whether to save.
-        leavingWithEdits: false,
         // …and so are the tab's developer tools, which the bar's own button toggles.
         devTools: false,
         tabs: [
@@ -1550,9 +1602,7 @@ describe('BrowserPaneManager', () => {
         isLoading: true,
         canGoBack: true,
         canGoForward: true,
-        prototypeSlug: null,
         picking: false,
-        leavingWithEdits: false,
         devTools: false,
         tabs: [
           tabSummary({ id: instance.tabs[0].id, url: 'https://craft.do', title: 'Craft', isLoading: true, active: true }),
@@ -1562,356 +1612,6 @@ describe('BrowserPaneManager', () => {
         recording: null,
       },
     ])
-  })
-
-  /**
-   * The window is an app surface: what it is working on is the prototype, and
-   * the address bar is where that is said. An overlay renders a third-party page,
-   * so without this the bar would describe the site instead of the work.
-   */
-  describe('the address bar names the prototype', () => {
-    const ORIGIN = 'http://checkout-flow-abc123ab.localhost:41234'
-
-    /** The last toolbar state pushed to a window. */
-    function lastToolbarState(instance: any): { url: string; prototypeSlug: string | null } {
-      const calls = instance.toolbarView.webContents.send.mock.calls.filter(
-        (call: unknown[]) => call[0] === 'browser-toolbar:state-update',
-      )
-      return calls[calls.length - 1]?.[1]
-    }
-
-    /**
-     * Stands in for the server's own label→prototype map plus `pageOfPrototypeUrl`:
-     * the root names the prototype (`page: null`), `/<name>` names one of its pages
-     * when that page exists, and anything else on that host — a file, an SPA route
-     * — is not ours to resolve (`null`), so it stays an ordinary navigation.
-     */
-    function addressResolverFor(pages: string[] = []) {
-      return (url: string): { binding: { slug: string; origin: string }; page: string | null } | null => {
-        let parsed: URL
-        try {
-          parsed = new URL(url)
-        } catch {
-          return null
-        }
-        if (parsed.host !== new URL(ORIGIN).host) return null
-
-        const segment = parsed.pathname.replace(/^\/+/, '').replace(/\/+$/, '')
-        const binding = { slug: 'checkout-flow', origin: ORIGIN }
-        if (!segment) return { binding, page: null }
-        return segment.includes('/') || !pages.includes(segment) ? null : { binding, page: segment }
-      }
-    }
-
-    /** The registered `browser-toolbar:navigate` handler. */
-    function navigateHandler(): (_event: unknown, instanceId: string, url: string) => Promise<void> {
-      const registration = (
-        mockIpcMainHandle.mock.calls as unknown as Array<
-          [string, (_event: unknown, instanceId: string, url: string) => Promise<void>]
-        >
-      ).find(([channel]) => channel === 'browser-toolbar:navigate')
-      if (!registration) throw new Error('Expected browser-toolbar:navigate IPC registration')
-      return registration[1]
-    }
-
-    /** Replaces the navigation itself, so the test can see whether it happened. */
-    function spyOnNavigate(): ReturnType<typeof mock> {
-      const spy = mock(async (_id: string, _url: string) => ({ url: '', title: '' }))
-      manager.navigate = spy as unknown as typeof manager.navigate
-      return spy
-    }
-
-    /** A window whose tab is the one a session works on `checkout-flow` from. */
-    function boundWindow(id: string): any {
-      manager.setPrototypeWindowResolver((sessionId) =>
-        sessionId === 'session-1' ? { slug: 'checkout-flow', origin: ORIGIN } : null,
-      )
-      manager.createInstance(id)
-      const instance = (manager as any).instances.get(id)
-      // What the tab's prototype is borrowed from: the conversation that works from it (plan
-      // §22) — there is no window-level session to ask any more.
-      instance.tabs[0].cursorOf = 'session-1'
-      return instance
-    }
-
-    it('shows the prototype for an overlay, whose page is a third-party site', () => {
-      const instance = boundWindow('overlay-window')
-      tab(instance).currentUrl = 'https://app.example.com/checkout'
-
-      instance.window._emit('show')
-
-      expect(lastToolbarState(instance)).toMatchObject({ url: ORIGIN, prototypeSlug: 'checkout-flow' })
-    })
-
-    /**
-     * Which page belongs in the bar as much as which prototype: the root alone
-     * hides the page you are on and — since typing it opens the entry page — loses
-     * it. The page's own address is what survives being typed back.
-     */
-    it('shows which page an overlay window is on, not just the prototype', () => {
-      const instance = boundWindow('overlay-page-window')
-      tab(instance).currentUrl = 'https://app.example.com/checkout/pay'
-      // Stands in for the page table: that address is the page called `pay`.
-      manager.setPrototypePageResolver((slug, _origin, url) =>
-        slug === 'checkout-flow' && url === 'https://app.example.com/checkout/pay' ? 'pay' : null,
-      )
-
-      instance.window._emit('show')
-
-      expect(lastToolbarState(instance)).toMatchObject({
-        url: `${ORIGIN}/pay`,
-        prototypeSlug: 'checkout-flow',
-      })
-    })
-
-    // And when the window is somewhere the flow does not describe, the bar falls
-    // back to the root rather than inventing a page.
-    it('falls back to the prototype root when the window is on none of its pages', () => {
-      const instance = boundWindow('overlay-stray-window')
-      tab(instance).currentUrl = 'https://elsewhere.example.com/'
-      manager.setPrototypePageResolver(() => null)
-
-      instance.window._emit('show')
-
-      expect(lastToolbarState(instance)).toMatchObject({ url: ORIGIN, prototypeSlug: 'checkout-flow' })
-    })
-
-    it('keeps the real URL while the document is already served by the prototype', () => {
-      const instance = boundWindow('scratch-window')
-      tab(instance).currentUrl = `${ORIGIN}/dist/prototype.html`
-
-      instance.window._emit('show')
-
-      expect(lastToolbarState(instance)).toMatchObject({
-        url: `${ORIGIN}/dist/prototype.html`,
-        prototypeSlug: 'checkout-flow',
-      })
-    })
-
-    // Typing an address that names a prototype asks for *the prototype*: an
-    // overlay has no page of its own at that address, so fetching it would 404 on
-    // a perfectly valid request. It goes to the workbench instead, which resolves
-    // per kind and replays the patches (the path the panel's preview takes).
-    it('routes a typed prototype address to the workbench instead of fetching it', async () => {
-      const actions: Array<{ kind: string; instanceId: string; slug?: string; page?: string | null }> = []
-      manager.setWindowManager({
-        getRpcEventSink: () => (_channel: string, _routing: unknown, payload: unknown) => {
-          actions.push(payload as { kind: string; instanceId: string; slug?: string })
-        },
-      } as any)
-      manager.setPrototypeAddressResolver(addressResolverFor())
-      const instance = boundWindow('typed-window')
-      tab(instance).currentUrl = 'https://app.example.com/checkout'
-      const navigate = spyOnNavigate()
-      manager.registerToolbarIpc()
-
-      await navigateHandler()({}, 'typed-window', `${ORIGIN}/`)
-
-      expect(actions).toContainEqual({
-        kind: 'open-prototype',
-        instanceId: 'typed-window',
-        slug: 'checkout-flow',
-        page: null,
-      })
-      expect(navigate).not.toHaveBeenCalled()
-      // Naming a prototype asks for *it*, so it gets a page of its own: the page
-      // the window was on is still there, and the prototype is beside it rather
-      // than in place of it (plan §22).
-      expect(tab(instance).boundPrototype).toBeNull()
-      expect(instance.tabs).toHaveLength(2)
-      expect(instance.tabs[1].boundPrototype).toEqual({ slug: 'checkout-flow', origin: ORIGIN })
-    })
-
-    // A path below the root is a file, not a page (§16.3) — that stays an ordinary
-    // navigation, so `/dist/prototype.html` still works from the bar.
-    it('navigates normally to a path inside a prototype', async () => {
-      manager.setPrototypeAddressResolver(addressResolverFor(['pay']))
-      boundWindow('file-window')
-      const navigate = spyOnNavigate()
-      manager.registerToolbarIpc()
-
-      await navigateHandler()({}, 'file-window', `${ORIGIN}/dist/prototype.html`)
-
-      expect(navigate).toHaveBeenCalledWith('file-window', `${ORIGIN}/dist/prototype.html`)
-    })
-
-    /**
-     * A page's own address looks like the root but is not it: it names one page, and
-     * the answer is where that page actually is. The view then loads that real
-     * address (a live page's own, or the host's rendering of one of ours) — nothing
-     * is redirected through the prototype — while the bar keeps saying which page
-     * this is.
-     */
-    it('resolves a page address to that page, rather than fetching the address', async () => {
-      const actions: Array<{ kind: string; instanceId: string; slug?: string; page?: string | null }> = []
-      manager.setWindowManager({
-        getRpcEventSink: () => (_channel: string, _routing: unknown, payload: unknown) => {
-          actions.push(payload as { kind: string; instanceId: string; slug?: string; page?: string | null })
-        },
-      } as any)
-      manager.setPrototypeAddressResolver(addressResolverFor(['pay']))
-      boundWindow('page-address-window')
-      const navigate = spyOnNavigate()
-      manager.registerToolbarIpc()
-
-      await navigateHandler()({}, 'page-address-window', `${ORIGIN}/pay`)
-
-      expect(actions).toContainEqual({
-        kind: 'open-prototype',
-        instanceId: 'page-address-window',
-        slug: 'checkout-flow',
-        page: 'pay',
-      })
-      expect(navigate).not.toHaveBeenCalled()
-    })
-
-    it('shows the page itself for a window that has no prototype', () => {
-      manager.createInstance('plain-window')
-      const instance = (manager as any).instances.get('plain-window')
-      tab(instance).currentUrl = 'https://example.com/'
-
-      instance.window._emit('show')
-
-      expect(lastToolbarState(instance)).toMatchObject({ url: 'https://example.com/', prototypeSlug: null })
-    })
-
-    /**
-     * The case that matters most, and the one that was broken: create a prototype,
-     * press Open — and there is no conversation yet, so the session chain has
-     * nothing to say. The bar read the third-party address and the prototype
-     * actions were greyed out, i.e. the window did not know it was the prototype's.
-     * Identity is stated by the opener (the entry's `origin`) instead of deduced.
-     */
-    it('is told which prototype it was opened for, with no conversation in sight', () => {
-      manager.createInstance('opened-window')
-      const instance = (manager as any).instances.get('opened-window')
-      manager.createTab('opened-window', { prototype: { slug: 'checkout-flow', origin: ORIGIN } })
-      tab(instance).currentUrl = 'https://app.example.com/checkout'
-
-      instance.window._emit('show')
-
-      expect(instance.tabs[0].belongsTo).toBeNull()
-      expect(instance.tabs[0].cursorOf).toBeNull()
-      expect(lastToolbarState(instance)).toMatchObject({ url: ORIGIN, prototypeSlug: 'checkout-flow' })
-    })
-
-    // Typing the address is the other explicit instruction that says so, and it
-    // has to stick: the view immediately navigates on to the live page, which
-    // would otherwise leave the bar describing that page again.
-    it('is bound to the prototype whose address was typed into it', async () => {
-      manager.setPrototypeAddressResolver(addressResolverFor())
-      manager.createInstance('typed-unbound')
-      const instance = (manager as any).instances.get('typed-unbound')
-      manager.registerToolbarIpc()
-      spyOnNavigate()
-
-      await navigateHandler()({}, 'typed-unbound', `${ORIGIN}/`)
-      tab(instance).currentUrl = 'https://app.example.com/checkout'
-      instance.window._emit('show')
-
-      expect(lastToolbarState(instance)).toMatchObject({ url: ORIGIN, prototypeSlug: 'checkout-flow' })
-    })
-
-    /**
-     * Typing an address is the person speaking for the tab, and this is what saying
-     * "somewhere else" does: the tab stops being the prototype's — the bar mirrors
-     * where the view actually is, the rail's second line stops naming it, and the two
-     * prototype actions go with the binding (plan §12.6).
-     *
-     * It has to outrank the session chain, which still knows this conversation works
-     * on `checkout-flow`: the address was about *this tab*, not about the work.
-     */
-    it('gives the tab up when the person types an address of their own', async () => {
-      manager.setPrototypeAddressResolver(addressResolverFor(['pay']))
-      const instance = boundWindow('steered-window')
-      tab(instance).currentUrl = 'https://app.example.com/checkout'
-      const navigate = spyOnNavigate()
-      manager.registerToolbarIpc()
-
-      await navigateHandler()({}, 'steered-window', 'https://example.com/')
-
-      expect(navigate).toHaveBeenCalledWith('steered-window', 'https://example.com/')
-      expect(tab(instance).boundPrototype).toBeNull()
-      expect(tab(instance).prototypeReleased).toBe(true)
-      // Still true on the next push, not just the one made while answering the keystroke.
-      instance.window._emit('show')
-      expect(lastToolbarState(instance)).toMatchObject({
-        url: 'https://app.example.com/checkout',
-        prototypeSlug: null,
-      })
-    })
-
-    // What the window was *opened* for is given up the same way — the address speaks
-    // for the tab on screen, and a tab is what carries the identity (plan §22).
-    it('gives up the prototype it was opened for when the person types elsewhere', async () => {
-      manager.setPrototypeAddressResolver(addressResolverFor())
-      manager.createInstance('opened-then-steered')
-      const instance = (manager as any).instances.get('opened-then-steered')
-      manager.createTab('opened-then-steered', { prototype: { slug: 'checkout-flow', origin: ORIGIN } })
-      spyOnNavigate()
-      manager.registerToolbarIpc()
-
-      await navigateHandler()({}, 'opened-then-steered', 'https://example.com/')
-
-      expect(tab(instance).boundPrototype).toBeNull()
-      instance.window._emit('show')
-      expect(lastToolbarState(instance)).toMatchObject({ prototypeSlug: null })
-    })
-
-    /**
-     * Not every typed address is somewhere else. The prototype's own host serves files
-     * and its own routes (§16.3), and a page of the flow has a live address of its own:
-     * typing either is still this prototype's business, and giving the tab up there
-     * would take the two actions off a document they belong on.
-     */
-    it('keeps the tab when the address typed is still the prototype\'s', async () => {
-      manager.setPrototypeAddressResolver(addressResolverFor(['pay']))
-      manager.setPrototypePageResolver((slug, _origin, url) =>
-        slug === 'checkout-flow' && url === 'https://app.example.com/checkout/pay' ? 'pay' : null,
-      )
-      const instance = boundWindow('kept-window')
-      spyOnNavigate()
-      manager.registerToolbarIpc()
-
-      // A file on the prototype's own host.
-      tab(instance).currentUrl = `${ORIGIN}/dist/prototype.html`
-      await navigateHandler()({}, 'kept-window', `${ORIGIN}/dist/other.html`)
-      expect(tab(instance).prototypeReleased).toBe(false)
-
-      // The live address of one of its pages.
-      tab(instance).currentUrl = 'https://app.example.com/checkout/pay'
-      await navigateHandler()({}, 'kept-window', 'https://app.example.com/checkout/pay')
-      expect(tab(instance).prototypeReleased).toBe(false)
-
-      instance.window._emit('show')
-      expect(lastToolbarState(instance)).toMatchObject({ url: `${ORIGIN}/pay`, prototypeSlug: 'checkout-flow' })
-    })
-
-    // A window opened for a prototype outranks what the tab's conversation is working on:
-    // the tab's own declaration is the more specific fact, and it is the one the user is
-    // looking at.
-    it('prefers the tab own binding over the session one', () => {
-      manager.setPrototypeWindowResolver(() => ({ slug: 'another-prototype', origin: 'http://another-1a2b3c4d.localhost' }))
-      manager.createInstance('both-bindings')
-      const instance = (manager as any).instances.get('both-bindings')
-      instance.tabs[0].cursorOf = 'session-1'
-      manager.createTab('both-bindings', { prototype: { slug: 'checkout-flow', origin: ORIGIN } })
-      tab(instance).currentUrl = 'https://app.example.com/checkout'
-
-      instance.window._emit('show')
-
-      expect(lastToolbarState(instance)).toMatchObject({ url: ORIGIN, prototypeSlug: 'checkout-flow' })
-    })
-
-    // The panel resolves the same fact out of the window list (its actions need
-    // the slug), so the list has to carry it — a slug only the toolbar knew would
-    // mean the bar named the prototype while the buttons stayed greyed out.
-    it('reports the prototype in the window list', () => {
-      manager.createInstance('listed-window')
-      manager.createTab('listed-window', { prototype: { slug: 'checkout-flow', origin: ORIGIN } })
-
-      expect(manager.listInstances().find((item) => item.id === 'listed-window')?.prototypeSlug).toBe('checkout-flow')
-    })
   })
 
   it('does not mark toolbar ready for about:blank did-finish-load', () => {
@@ -2240,7 +1940,7 @@ describe('BrowserPaneManager', () => {
 
   it('resizes browser window viewport and returns effective applied size', () => {
     manager.createInstance('resize-1')
-    const resized = manager.windowResize('resize-1', 1280, 720)
+    const resized = manager.resizeViewport('resize-1', 1280, 720)
 
     const instance = (manager as any).instances.get('resize-1')
     // 720 of page + everything the page does not get: the 48 address bar, the 200 tab rail, the
@@ -2254,7 +1954,7 @@ describe('BrowserPaneManager', () => {
 
   it('returns effective viewport size when min window constraints apply', () => {
     manager.createInstance('resize-min')
-    const resized = manager.windowResize('resize-min', 200, 200)
+    const resized = manager.resizeViewport('resize-min', 200, 200)
 
     // BrowserWindow minWidth/minHeight is 700x500, and the chrome plus the panel's gutter takes
     // 200 + 7 of the width and 48 + 7 of the height, so the effective viewport is 493x445.
@@ -2452,6 +2152,54 @@ describe('BrowserPaneManager', () => {
     expect(instance.parkingWindow.contentView.children).not.toContain(behind.tabView)
   })
 
+  /**
+   * The unit of a resize is the **view**, so a tab working behind the person can be given a viewport
+   * without the person's window moving.
+   *
+   * Before this, every resize resized the window: an agent asking for a deterministic viewport for
+   * its own tab moved what the person was reading — and its own tab, parked, kept the size it had.
+   * The parking window is the other half of it: it holds the views, so it follows them both ways.
+   */
+  it("resizes the view of a tab that is not on screen, and leaves the person's window alone", () => {
+    manager.createInstance('resize-behind')
+    const instance = (manager as any).instances.get('resize-behind')
+    // The window's own tab has to be in use first: opening a tab into the untouched tab of a fresh
+    // window opens *into* it rather than beside it, and then there would be no tab behind to size.
+    instance.tabs[0].currentUrl = 'https://front.example.com/'
+    const behindId = manager.createTab('resize-behind', { url: 'https://behind.example.com/', activate: false })
+    const behind = instance.tabs.find((tab: any) => tab.id === behindId)
+    const parking = instance.parkingWindow
+    instance.window.setContentSize.mockClear()
+
+    // Born in the parking window, which is the size of what it holds.
+    expect(parking.getContentSize()).toEqual([993, 845])
+
+    const resized = manager.resizeViewport('resize-behind', 1280, 720, behindId)
+
+    // The view is what got the size…
+    expect(behind.tabView.getBounds()).toEqual({ x: 0, y: 0, width: 1280, height: 720 })
+    expect(resized).toEqual({ width: 1280, height: 720 })
+    // …the person's window is not touched — not even told a size — and the view still lives where a
+    // tab that is not on screen lives.
+    expect(instance.window.setContentSize).not.toHaveBeenCalled()
+    expect(instance.window.contentView.children).not.toContain(behind.tabView)
+    expect(parking.contentView.children).toContain(behind.tabView)
+    // …and the window holding it grows to fit it.
+    expect(parking.getContentSize()).toEqual([1280, 720])
+
+    // Smaller gives the space back rather than leaving the window at the largest size it ever held:
+    // a window bigger than its views is space on a desktop nobody sees.
+    expect(manager.resizeViewport('resize-behind', 800, 600, behindId)).toEqual({ width: 800, height: 600 })
+    expect(parking.getContentSize()).toEqual([800, 600])
+
+    // And the size is the tab's until it comes forward: laying the window out again parks it at the
+    // viewport it now has, not at the one it was born with.
+    instance.window.setContentSize(1010, 900)
+    instance.window._emit('resize')
+    expect(behind.tabView.getBounds()).toEqual({ x: 0, y: 0, width: 800, height: 600 })
+    expect(parking.getContentSize()).toEqual([800, 600])
+  })
+
   describe('agent control overlay', () => {
     /**
      * The script the **window's** overlay was last told to run.
@@ -2466,7 +2214,7 @@ describe('BrowserPaneManager', () => {
 
     /**
      * The other half of "the agent is working in here": a command landing on the tab on
-     * screen, which is what holds it (plan §22). The panel being up is not enough — the lock,
+     * screen, which is what holds it. The panel being up is not enough — the lock,
      * the dim and the shield are the held tab's.
      */
     const holdActiveTab = (id: string, sessionId: string): void => {
@@ -2476,7 +2224,6 @@ describe('BrowserPaneManager', () => {
 
     it('setAgentControl notes the session and its label on the window', async () => {
       manager.createInstance('ac-1')
-      drive('ac-1', 'sess-1')
 
       manager.setAgentControl('sess-1', { displayName: 'Navigate Page', intent: 'Loading example.com' })
       await Promise.resolve()
@@ -2486,7 +2233,7 @@ describe('BrowserPaneManager', () => {
         displayName: 'Navigate Page',
         intent: 'Loading example.com',
       })
-      // No command has resolved a tab yet, so the overlay holds nothing — and a hold is what
+      // The session works from no tab yet, so the overlay holds nothing — and a hold is what
       // the agent's markings are drawn for. The panel's own line is up either way (the page's
       // corner comes from the page's view, not from this document).
       expect(tab(instance).heldBy ?? null).toBeNull()
@@ -2497,7 +2244,7 @@ describe('BrowserPaneManager', () => {
       expect(manager.listInstances().find(i => i.id === 'ac-1')?.agentControlActive).toBe(true)
     })
 
-    // The lock is drawn on the tab, not the window (plan §22, 第九轮修正 / 第十三轮): the
+    // The lock is drawn on the tab, not the window: the
     // shield covers the tab the working session holds, and switching away hands the mouse and
     // keyboard back without releasing anything — the agent is still on *its* tab. What the
     // person switched to keeps its panel and nothing else: a tab nobody holds is not an
@@ -2509,11 +2256,11 @@ describe('BrowserPaneManager', () => {
       }
 
       manager.createInstance('ac-lock')
-      drive('ac-lock', 'sess-lock')
       const instance = (manager as any).instances.get('ac-lock')
       instance.tabs[0].currentUrl = 'https://first.example.com/'
-      // The tab the session is working on is the one on screen — commands act on the
-      // tab in front, which is what the lock follows.
+      // A tab this session opened, and it is the one on screen: opening it is what made it the tab
+      // this conversation works from (`createTab` records the cursor), and a command acts on the tab
+      // it works from.
       const heldId = manager.createTab('ac-lock', {
         url: 'https://held.example.com/',
         belongsTo: work('sess-lock'),
@@ -2522,23 +2269,18 @@ describe('BrowserPaneManager', () => {
       manager.activateTab('ac-lock', heldId)
       await settle()
 
-      // The overlay alone holds nothing: it takes a command to resolve to a tab, and until then
-      // the tab in front is a panel with no lock on it.
+      // The overlay takes the tab this session works from — and that tab is the one on screen here,
+      // so the shield goes up with the work itself rather than with the first command. It used to
+      // wait for a command to resolve a tab, which is how a turn's first command came to take a tab
+      // without locking it: the two facts travel different paths, and the command often wins.
       manager.setAgentControl('sess-lock', { displayName: 'Click', intent: 'Pressing Buy' })
-      await settle()
-      expect(overlayScript(instance)).toContain('const locked = false;')
-      expect(overlayScript(instance)).toContain('const shieldActive = false;')
-
-      // "Held" is about the tab the command works on, and since 第十二轮 that is only the tab
-      // on screen when the conversation has no tab of its own — so the test holds the tab the
-      // *person* is looking at, which is the case the shield exists for.
-      manager.setSessionTab('ac-lock', heldId, 'sess-lock')
       await settle()
 
       // The held tab is on screen: covered, locked, and the pointer says so.
       expect(instance.nativeOverlayView.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 48, width: 1000, height: 852 })
       expect(overlayScript(instance)).toContain('const shieldActive = true;')
       expect(overlayScript(instance)).toContain('const locked = true;')
+      expect(manager.listTabs('ac-lock').find((tab) => tab.id === heldId)?.lockedBy).toBe('sess-lock')
 
       manager.activateTab('ac-lock', otherId)
       await settle()
@@ -2558,12 +2300,12 @@ describe('BrowserPaneManager', () => {
     })
 
     // A conversation can be working in this window with no tab held yet — its overlay is up for
-    // the turn before its first command resolves a tab. That does not put a lock on the page:
-    // the window being in use is said by the chrome (the rail's marks), because the lock, the
-    // dim and the shield belong to the held tab (plan §22, 第十三轮修正).
+    // the turn before its first command resolves a tab, and a conversation that has never worked
+    // anywhere has none to hold. That does not put a lock on the page: the window being in use is
+    // said by the chrome (the rail's marks), because the lock, the dim and the shield belong to the
+    // held tab.
     it('draws the panel without a lock while no tab is held', async () => {
       manager.createInstance('ac-idle')
-      drive('ac-idle', 'sess-idle')
 
       manager.setAgentControl('sess-idle', {
         displayName: 'Browser',
@@ -2578,6 +2320,37 @@ describe('BrowserPaneManager', () => {
       expect(overlayScript(instance)).toContain('const shieldActive = false;')
       expect(instance.nativeOverlayView.webContents.focus).not.toHaveBeenCalled()
       expect(manager.listInstances().find(i => i.id === 'ac-idle')?.agentControlActive).toBe(true)
+    })
+
+    /**
+     * The takeover case, and the order it usually arrives in: the person opens a tab and the
+     * conversation carries on in it, so the command resolves the tab **before** the overlay's own
+     * event reaches the window (the two travel different paths — the tool's body and the tool's
+     * start event). The tab has to end up locked either way; before the hold was taken when the
+     * overlay comes up, this order left the person's tab with the "driven" dot and no lock, and they
+     * could still click into the page the agent was working on.
+     */
+    it("locks a tab the person opened, whichever of the two facts arrives first", async () => {
+      const settle = async (): Promise<void> => {
+        for (let i = 0; i < 4; i += 1) await Promise.resolve()
+      }
+      manager.createInstance('takeover-lock')
+      const instance = (manager as any).instances.get('takeover-lock')
+      const personTab = instance.tabs[0].id
+
+      // The command first: with no tab of its own, the conversation works from the tab in front.
+      manager.setSessionTab('takeover-lock', personTab, 'sess-takeover')
+      await settle()
+      expect(manager.listTabs('takeover-lock')[0]?.lockedBy).toBeNull()
+
+      // …then its overlay lights up. It takes the tab this session works from.
+      manager.setAgentControl('sess-takeover', { displayName: 'Click', intent: 'Pressing Buy' })
+      await settle()
+
+      expect(manager.listTabs('takeover-lock')[0]?.lockedBy).toBe('sess-takeover')
+      expect(instance.window.setTopBrowserView).toHaveBeenCalledWith(instance.nativeOverlayView)
+      expect(overlayScript(instance)).toContain('const locked = true;')
+      expect(overlayScript(instance)).toContain('const shieldActive = true;')
     })
 
     it('emits state change when agent control is set and cleared', () => {
@@ -2696,7 +2469,7 @@ describe('BrowserPaneManager', () => {
       manager.createInstance('ac-7', { workspaceId: 'ws-quiet' })
 
       // No window in the workspace the tool is working in: there is nothing to put an overlay
-      // on, and the window of another workspace is not it (plan §22).
+      // on, and the window of another workspace is not it.
       manager.setAgentControl('some-session', { displayName: 'Test' }, { workspaceId: 'ws-elsewhere' })
 
       const instance = (manager as any).instances.get('ac-7')
@@ -2763,7 +2536,7 @@ describe('BrowserPaneManager', () => {
   })
 
   // ---------------------------------------------------------------------------
-  // Tabs — one window, several tabs (plan §22)
+  // Tabs — one window, several tabs
   // ---------------------------------------------------------------------------
 
   describe('tabs', () => {
@@ -2820,7 +2593,7 @@ describe('BrowserPaneManager', () => {
     // A window is created holding one blank tab. That tab is what a window is
     // made of rather than something a person put there, so opening into a fresh
     // window opens *into* it: without this, a session that has just opened a
-    // prototype would carry its own blank tab beside it — a tab nobody made and
+    // page would carry its own blank tab beside it — a tab nobody made and
     // nobody can name.
     it('opens into a window\'s untouched tab instead of beside it', () => {
       manager.createInstance('tabs-fresh')
@@ -2829,18 +2602,11 @@ describe('BrowserPaneManager', () => {
 
       const tabId = manager.createTab('tabs-fresh', {
         url: 'https://fresh.example.com/',
-        prototype: { slug: 'checkout-flow', origin: 'http://checkout-flow-ab12cd34.localhost' },
       })
 
       expect(tabId).toBe(only.id)
       expect(instance.tabs).toHaveLength(1)
       expect(instance.activeTabId).toBe(only.id)
-      // The identity is the point of naming it: an overlay's document is a
-      // third-party address, so the tab has to be told whose it is.
-      expect(only.boundPrototype).toEqual({
-        slug: 'checkout-flow',
-        origin: 'http://checkout-flow-ab12cd34.localhost',
-      })
       expect(only.tabView.webContents.loadURL).toHaveBeenCalledWith('https://fresh.example.com/')
     })
 
@@ -2893,7 +2659,7 @@ describe('BrowserPaneManager', () => {
       // A tab that is not on screen is **created in the parking window** — the window shown off
       // screen where every tab that is not showing lives — at the size the page area had when it was
       // opened. That is its viewport until it comes forward, and it is what keeps the person's window
-      // free of pages nobody asked to see (plan §22 第十七轮).
+      // free of pages nobody asked to see.
       expect(second.tabView.setBounds).toHaveBeenCalledWith({ x: 0, y: 0, width: 993, height: 845 })
       expect(instance.window.contentView.children).not.toContain(second.tabView)
       expect(instance.parkingWindow.contentView.children).toContain(second.tabView)
@@ -2914,7 +2680,7 @@ describe('BrowserPaneManager', () => {
       manager.activateTab('tabs-switch', first.id)
       expect(instance.currentUrl).toBe('https://first.example.com/')
       // Switching is a stack change, not a resize: every tab is laid out the same way, and
-      // the one that came forward is the one raised above the others (plan §22, 第十二轮).
+      // the one that came forward is the one raised above the others.
       // The page is raised through `contentView` — it is a `WebContentsView` — while the
       // overlays and the chrome are still raised through `setTopBrowserView`.
       const pageRaises = instance.window.contentView.addChildView.mock.calls.map((call: unknown[]) => call[0])
@@ -3149,7 +2915,7 @@ describe('BrowserPaneManager', () => {
     // A tab created and left empty is not an empty tab: a view that has never painted
     // contributes no pixels, and every tab of the window sits at the same bounds — so the
     // new tab showed the tab underneath it, i.e. switching to a new tab looked like the
-    // old one still being there (plan §22, 用户报告). Every entry point that adds a tab
+    // old one still being there. Every entry point that adds a tab
     // therefore leaves a document in it, and the agent's `tab-new` and the app's "New tab"
     // are the ones that used to leave about:blank behind.
     it('gives a document to a tab that was not given an address', () => {
@@ -3228,10 +2994,7 @@ describe('BrowserPaneManager', () => {
       const instance = (manager as any).instances.get('tabs-meta')
       instance.tabs[0].currentUrl = 'https://first.example.com/'
 
-      manager.createTab('tabs-meta', {
-        prototype: { slug: 'checkout-flow', origin: 'http://checkout-flow-ab12cd34.localhost' },
-        belongsTo: work('session-a'),
-      })
+      manager.createTab('tabs-meta', { belongsTo: work('session-a') })
       const second = instance.tabs[1]
       second.title = 'Cart'
       second.isLoading = true
@@ -3245,14 +3008,13 @@ describe('BrowserPaneManager', () => {
           isLoading: true,
           favicon: 'https://first.example.com/favicon.ico',
           active: true,
-          prototype: { slug: 'checkout-flow', origin: 'http://checkout-flow-ab12cd34.localhost' },
           belongsTo: work('session-a'),
           // Whoever opened a tab is working on it: the lease starts where the tab
           // does.
-          driverSessionId: 'session-a',
+          drivenBy: 'session-a',
           // …and so does the cursor: a tab a conversation opened is the tab its next
-          // unnamed command means (plan §22, 第十轮).
-          cursorOf: 'session-a',
+          // unnamed command means.
+          cursorOf: ['session-a'],
         }),
       ])
 
@@ -3280,7 +3042,7 @@ describe('BrowserPaneManager', () => {
     })
 
     // The lock names the tab a session *holds* — the one its command resolved to — and only
-    // that tab (plan §22, 第九轮修正): reading it off "whichever tab the lease is on" put
+    // that tab: reading it off "whichever tab the lease is on" put
     // it on the tab a command fell back to, usually the one the person was looking at.
     it('reports which tab a working session has locked, and only that one', () => {
       manager.createInstance('tabs-lock')
@@ -3297,15 +3059,18 @@ describe('BrowserPaneManager', () => {
       expect(manager.listTabs('tabs-lock').map((tab) => tab.lockedBy)).toEqual([null, null, null])
 
       manager.setAgentControl('session-a', { displayName: 'Click', intent: 'Pressing Buy' })
-      // …and an overlay with no command behind it yet holds nothing either.
-      expect(manager.listTabs('tabs-lock').map((tab) => tab.lockedBy)).toEqual([null, null, null])
+      // The overlay takes the tab this session works from — the last tab it opened, which is its
+      // cursor — because that tab is the one the overlay is about. Waiting for a command to say so
+      // again is what used to let a turn's *first* command take a tab without locking it (the
+      // person's tab, with the "driven" dot instead of the lock).
+      expect(manager.listTabs('tabs-lock').map((tab) => tab.lockedBy)).toEqual([null, null, 'session-a'])
 
-      // A command resolving to a tab is what takes it — and it takes exactly that one.
+      // A command resolving to another tab moves the hold to it — and it holds exactly that one.
       manager.setSessionTab('tabs-lock', heldId, 'session-a')
 
       expect(manager.listTabs('tabs-lock').map((tab) => tab.lockedBy)).toEqual([null, 'session-a', null])
       // The tab the window came with, and the other tab of the same session, stay free.
-      expect(manager.listTabs('tabs-lock')[0].driverSessionId).toBeNull()
+      expect(manager.listTabs('tabs-lock')[0].drivenBy).toBeNull()
 
       manager.clearAgentControl('session-a')
 
@@ -3313,7 +3078,7 @@ describe('BrowserPaneManager', () => {
     })
 
     // A lock never outlives what it locks: closing the held tab lets go of it, instead of
-    // leaving the window claiming a tab that is gone (plan §22, 第九轮修正).
+    // leaving the window claiming a tab that is gone.
     it('lets go of a tab when the tab is closed', () => {
       manager.createInstance('tabs-lock-closed')
       drive('tabs-lock-closed', 'session-a')
@@ -3331,7 +3096,7 @@ describe('BrowserPaneManager', () => {
     })
 
     // The cursor is where a conversation's unnamed commands go, so a tab it opened is its
-    // tab — and moving to another tab of its own leaves exactly one behind (plan §22).
+    // tab — and moving to another tab of its own leaves exactly one behind.
     it('keeps one tab per conversation as the tab it works from', () => {
       manager.createInstance('tabs-cursor')
       const instance = (manager as any).instances.get('tabs-cursor')
@@ -3342,22 +3107,22 @@ describe('BrowserPaneManager', () => {
       // per conversation is the whole point.
       manager.createTab('tabs-cursor', { belongsTo: work('session-a') })
 
-      expect(manager.listTabs('tabs-cursor').map((tab) => tab.cursorOf)).toEqual([null, null, 'session-a'])
+      expect(manager.listTabs('tabs-cursor').map((tab) => tab.cursorOf)).toEqual([[], [], ['session-a']])
 
       manager.setSessionTab('tabs-cursor', first, 'session-a')
 
-      expect(manager.listTabs('tabs-cursor').map((tab) => tab.cursorOf)).toEqual([null, 'session-a', null])
+      expect(manager.listTabs('tabs-cursor').map((tab) => tab.cursorOf)).toEqual([[], ['session-a'], []])
 
       // The person switching tabs moves the display and nothing else.
       manager.activateTab('tabs-cursor', instance.tabs[0].id)
 
       expect(instance.activeTabId).toBe(instance.tabs[0].id)
-      expect(manager.listTabs('tabs-cursor').map((tab) => tab.cursorOf)).toEqual([null, 'session-a', null])
+      expect(manager.listTabs('tabs-cursor').map((tab) => tab.cursorOf)).toEqual([[], ['session-a'], []])
     })
 
     /**
-     * Handing a tab over: the orchestrator's half of "a DAG's nodes each get their own tab"
-     * (plan §22, Conductor). Who may give a tab away is decided here, because only the tab
+     * Handing a tab over: the orchestrator's half of "a DAG's nodes each get their own tab".
+     * Who may give a tab away is decided here, because only the tab
      * knows whose task it is — and the receiver has to be able to start working without naming
      * anything, or the handover would hand over a tab it cannot reach.
      */
@@ -3372,7 +3137,7 @@ describe('BrowserPaneManager', () => {
       const tab = () => manager.listTabs('tabs-assign').find((candidate) => candidate.id === handedTab)!
       expect(tab().belongsTo).toEqual({ kind: 'session', sessionId: 'child-1' })
       // The tab is the receiver's to work from: it can start without naming one.
-      expect(tab().cursorOf).toBe('child-1')
+      expect(tab().cursorOf).toEqual(['child-1'])
       expect(whyTabIsOutOfReach(tab(), work('child-1'))).toBeNull()
 
       // The giver is out of it: it can neither work there any more nor pass it on again.
@@ -3380,7 +3145,7 @@ describe('BrowserPaneManager', () => {
       expect(() => manager.assignTab('tabs-assign', handedTab, work('child-2'), work('parent'))).toThrow(/child-1/)
     })
 
-    // What a DAG needs of a tab's owner (plan §22): a tab handed to a node belongs to that
+    // What a DAG needs of a tab's owner: a tab handed to a node belongs to that
     // *node*, so the session repair spawns to re-run the same node finds it again instead of
     // opening a second one — while a sibling node, and the next run of the same task, do not.
     it('stamps a node\'s work on the tab, so a re-run of that node inherits it', () => {
@@ -3433,27 +3198,6 @@ describe('BrowserPaneManager', () => {
       const before = narrowed()
       manager.setSessionTab('tabs-throttle', nobodys, 'session-a')
       expect(narrowed()).toEqual(before)
-    })
-
-    // Which page of the prototype it is on is the page table's answer, and it is
-    // only asked when there is a prototype at all.
-    it('asks the prototype which of its pages each one is on', () => {
-      manager.setPrototypePageResolver((_slug, _origin, url) =>
-        url.includes('/cart') ? 'cart' : null,
-      )
-      manager.createInstance('tabs-page')
-      const instance = (manager as any).instances.get('tabs-page')
-      instance.tabs[0].currentUrl = 'https://first.example.com/'
-
-      manager.createTab('tabs-page', {
-        prototype: { slug: 'checkout-flow', origin: 'http://checkout-flow-ab12cd34.localhost' },
-      })
-      instance.tabs[1].currentUrl = 'http://checkout-flow-ab12cd34.localhost/cart'
-
-      const summaries = manager.listTabs('tabs-page')
-      expect(summaries[0].prototypePage).toBeNull()
-      expect(summaries[0].prototype).toBeNull()
-      expect(summaries[1].prototypePage).toBe('cart')
     })
 
     /** The registered `browser-toolbar:tabs` handler. */
@@ -3641,16 +3385,14 @@ describe('BrowserPaneManager', () => {
       const armOverlay = mock(async (_options: unknown) => {})
       const drainOverlay = mock(async () => {
         const report = reports[Math.min(reads++, reports.length - 1)]
-        // The same shape the CDP session answers with: a status, whatever elements it
-        // has to hand over (usually none), and whether a draft is holding the mode open.
-        const empty = { status: 'pending', picks: [], saves: [], leavingWithEdits: false }
+        // The same shape the CDP session answers with: a status, and whatever elements
+        // it has to hand over (usually none).
+        const empty = { status: 'pending', picks: [] }
         return report ? { ...empty, status: report.status, picks: report.picks ?? [] } : empty
       })
-      const askOverlayToLeave = mock(async () => {})
       const teardownOverlay = mock(async () => {})
-      const saveEdits = mock(async () => {})
-      tab.cdp = { armOverlay, drainOverlay, askOverlayToLeave, teardownOverlay, saveEdits }
-      return { armOverlay, drainOverlay, askOverlayToLeave, teardownOverlay, saveEdits }
+      tab.cdp = { armOverlay, drainOverlay, teardownOverlay }
+      return { armOverlay, drainOverlay, teardownOverlay }
     }
 
     /**
@@ -3662,13 +3404,9 @@ describe('BrowserPaneManager', () => {
      */
     const PICKER_POLL_WAIT = 350
 
-    /** The toolbar's words, as the panel sends them down (the page has no i18n). */
+    /** The bar's word, as the panel sends it down (the page has no i18n). */
     const PICK_LABELS = {
       add: 'Add to conversation',
-      undo: 'Undo',
-      redo: 'Redo',
-      bold: 'Bold',
-      italic: 'Italic',
     }
 
     /** An element as the page reports it. */
@@ -3685,7 +3423,7 @@ describe('BrowserPaneManager', () => {
     it('stays on until it is turned off, and reports the mode to the toolbar', async () => {
       manager.createInstance('pick-mode')
       const instance = (manager as any).instances.get('pick-mode')
-      const { armOverlay, askOverlayToLeave, teardownOverlay } = stubPicker(instance.tabs[0], [
+      const { armOverlay, teardownOverlay } = stubPicker(instance.tabs[0], [
         { status: 'pending', picks: [] },
         { status: 'cancelled' },
       ])
@@ -3699,70 +3437,30 @@ describe('BrowserPaneManager', () => {
           // The window's own mode: it stays mounted, and it draws the bar.
           resident: true,
           bar: true,
-          // The bar's words travel down with the call: the page has no i18n.
+          // The bar's word travels down with the call: the page has no i18n.
           labels: PICK_LABELS,
           // The app's own accent: a concrete colour, because a page cannot see the
-          // app's variables and the overlay has to be drawn in it. The bar's *own*
-          // colours come down beside it, resolved the same way (the menu's, not the
-          // accent — the bar is our menu on their page).
+          // app's variables and everything the overlay draws here — the frame, the
+          // name, the bar — is drawn in it.
           accent: expect.stringMatching(/^(#|oklch|rgb|hsl)/),
-          menu: { surface: expect.any(String), text: expect.any(String) },
         }),
       )
       expect(lastToolbarState(instance).picking).toBe(true)
-      // Nothing is holding the mode open: the chip says how the mode works rather than
-      // asking the save question.
-      expect(lastToolbarState(instance).leavingWithEdits).toBe(false)
       // Picking is a mode, not a pick: arming leaves the page's overlay in place.
       expect(teardownOverlay).not.toHaveBeenCalled()
 
+      // Turning it off takes it down — there is nothing to save, so leaving is leaving.
       await toolbarHandler('browser-toolbar:cancel-pick')({}, 'pick-mode')
 
-      // Asking, not tearing down: the page may be holding a draft, so leaving is a
-      // question — and the answer comes back on the next poll, not from this call.
-      expect(askOverlayToLeave).toHaveBeenCalled()
-      expect(teardownOverlay).not.toHaveBeenCalled()
-      expect(lastToolbarState(instance).picking).toBe(true)
-
-      await new Promise((resolve) => setTimeout(resolve, PICKER_POLL_WAIT))
-
-      expect(lastToolbarState(instance).picking).toBe(false)
-    })
-
-    // The question "save before leaving?" is asked in the window's chrome, and answered
-    // there: the ✓ writes the draft down and leaves, and the crosshair pressed again is
-    // the "no" — the draft goes, and the mode with it.
-    it('carries the question, and takes both answers from the window’s chrome', async () => {
-      manager.createInstance('pick-save')
-      const instance = (manager as any).instances.get('pick-save')
-      const { drainOverlay, saveEdits, teardownOverlay } = stubPicker(instance.tabs[0], [{ status: 'pending' }])
-      drainOverlay.mockImplementation(async () => ({
-        status: 'pending',
-        picks: [],
-        saves: [],
-        leavingWithEdits: true,
-      }))
-      manager.registerToolbarIpc()
-
-      await toolbarHandler('browser-toolbar:pick-element')({}, 'pick-save', PICK_LABELS)
-      await tick()
-
-      // What the chip says ("unsaved edits — save before leaving?") comes from the page.
-      expect(lastToolbarState(instance).leavingWithEdits).toBe(true)
-
-      // The ✓: the page writes it down, and nothing here pretends to know what a save is.
-      await toolbarHandler('browser-toolbar:save-edits')({}, 'pick-save')
-      expect(saveEdits).toHaveBeenCalled()
-
-      // The crosshair, pressed again while the question is up: no second ask, it leaves.
-      await toolbarHandler('browser-toolbar:cancel-pick')({}, 'pick-save')
       expect(teardownOverlay).toHaveBeenCalled()
       expect(instance.picking).toBe(false)
       expect(lastToolbarState(instance).picking).toBe(false)
+
+      await new Promise((resolve) => setTimeout(resolve, PICKER_POLL_WAIT))
     })
 
     // The element alone cannot say which tab it came from, and the picker is the
-    // window's — so the tab travels with the pick (plan §12.7).
+    // window's — so the tab travels with the pick.
     it('reports a pick with the tab it came from', async () => {
       const actions: any[] = []
       manager.setWindowManager({
@@ -3770,12 +3468,10 @@ describe('BrowserPaneManager', () => {
           actions.push(payload)
         },
       } as any)
-      manager.setPrototypePageResolver((_slug, _origin, url) => (url.includes('/cart') ? 'cart' : null))
       manager.createInstance('pick-origin')
       const instance = (manager as any).instances.get('pick-origin')
       const tab = instance.tabs[0]
-      tab.boundPrototype = { slug: 'checkout-flow', origin: 'http://checkout-flow-ab12cd34.localhost' }
-      tab.currentUrl = 'http://checkout-flow-ab12cd34.localhost/cart'
+      tab.currentUrl = 'https://shop.example.com/cart'
       tab.title = 'Cart'
       stubPicker(tab, [{ status: 'pending', picks: [ELEMENT] }])
       manager.registerToolbarIpc()
@@ -3788,14 +3484,56 @@ describe('BrowserPaneManager', () => {
         instanceId: 'pick-origin',
         element: ELEMENT,
         origin: {
-          url: 'http://checkout-flow-ab12cd34.localhost/cart',
+          url: 'https://shop.example.com/cart',
           title: 'Cart',
-          prototype: { slug: 'checkout-flow', origin: 'http://checkout-flow-ab12cd34.localhost' },
-          prototypePage: 'cart',
         },
       })
 
       await toolbarHandler('browser-toolbar:cancel-pick')({}, 'pick-origin')
+    })
+
+    // A page this app serves is a website whose files are in the workspace, and a pick
+    // on it says so: the folder is what has to be edited, and the address alone would
+    // leave that to be guessed.
+    it('names the website a pick happened in, when the page is one of ours', async () => {
+      const actions: any[] = []
+      manager.setWindowManager({
+        getRpcEventSink: () => (_channel: string, _routing: unknown, payload: unknown) => {
+          actions.push(payload)
+        },
+      } as any)
+
+      const workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-pick-site-'))
+      mkdirSync(join(workspaceRoot, 'websites', 'dash'), { recursive: true })
+      const siteDir = join(workspaceRoot, 'websites', 'dash')
+      // Handing the address out is also what registers it: an address nobody registered
+      // answers from Chromium, not from us.
+      const siteOrigin = websiteOriginUrl(workspaceRoot, 'dash')!
+
+      manager.createInstance('pick-site')
+      const instance = (manager as any).instances.get('pick-site')
+      const tab = instance.tabs[0]
+      tab.currentUrl = `${siteOrigin}/`
+      tab.title = 'Dashboard'
+      stubPicker(tab, [{ status: 'pending', picks: [ELEMENT] }])
+      manager.registerToolbarIpc()
+
+      await toolbarHandler('browser-toolbar:pick-element')({}, 'pick-site', PICK_LABELS)
+      await tick()
+
+      expect(actions).toContainEqual({
+        kind: 'add-to-conversation',
+        instanceId: 'pick-site',
+        element: ELEMENT,
+        origin: {
+          url: `${siteOrigin}/`,
+          title: 'Dashboard',
+          website: { slug: 'dash', dir: siteDir },
+        },
+      })
+
+      await toolbarHandler('browser-toolbar:cancel-pick')({}, 'pick-site')
+      rmSync(workspaceRoot, { recursive: true, force: true })
     })
 
     // Escape is the page saying stop. The toolbar would never hear about it
@@ -3857,7 +3595,7 @@ describe('BrowserPaneManager', () => {
   })
 
   /**
-   * The person's recording of the tab on screen (plan §20.3's revision).
+   * The person's recording of the tab on screen.
    *
    * What is pinned here is where the file goes: the **downloads folder**, the same place a
    * download from this window goes, whatever the tab belongs to — the window is one per

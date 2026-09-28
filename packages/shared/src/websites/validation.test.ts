@@ -60,7 +60,6 @@ describe('WebsiteRefreshSpecSchema cron validation', () => {
       id: 'website_1',
       slug: 'dash',
       name: 'Dash',
-      kind: 'live',
       createdAt: 1,
       updatedAt: 1,
       refresh: refreshSpec('* * * * *'),

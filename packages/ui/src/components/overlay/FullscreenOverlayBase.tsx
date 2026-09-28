@@ -17,12 +17,13 @@
  *   The scroll area covers the entire viewport — content scrolls behind the floating header.
  *   A CSS mask gradient fades content at both edges (top and bottom, starting from y=0).
  *   The header floats on top and covers content behind it.
- *   Content padding clears the header at rest so nothing is clipped initially.
+ *   Content clears the header at rest (`paddingTop = header` — directly under it, no empty row) and
+ *   keeps `CONTENT_GUTTER` from the other three edges.
  *
  * Layout:
  *   Dialog.Content (fixed inset-0, relative)
  *   ├── Masked area (absolute inset-0, CSS mask gradient)
- *   │   └── Scroll container (h-full, overflow-y-auto, paddingTop = header + fade)
+ *   │   └── Scroll container (h-full, overflow-y-auto, paddingTop = header, bottom = gutter)
  *   │       └── {error banner}
  *   │       └── {children}
  *   └── Header (absolute top-0, z-10, floating on top of scroll content)
@@ -43,13 +44,17 @@ import { OverlayErrorBanner, type OverlayErrorBannerProps } from './OverlayError
 const Z_FULLSCREEN = 'var(--z-fullscreen, 350)'
 
 // HEADER_HEIGHT must match PreviewHeader's height prop (48px).
-// FADE_SIZE is the transition zone where content fades in/out at edges.
+// CONTENT_GUTTER is the room the content keeps from the window's edges — the same on all three
+// sides, and the width of the mask's fade as well, so content never begins inside the fade (a card
+// whose own edge is half-faded reads as a rendering fault). The header is not part of it: content
+// starts directly under the header, which already carries the gap (its badges are 26px in a 48px
+// bar). It used to keep another 24px there — an empty row between the title and what it titled.
 const HEADER_HEIGHT = 48
-const FADE_SIZE = 24
+const CONTENT_GUTTER = 16
 
-// Edge-to-edge gradient fade mask — starts at y=0, fades over FADE_SIZE at both edges.
+// Edge-to-edge gradient fade mask — starts at y=0, fades over CONTENT_GUTTER at both edges.
 // The floating header covers content behind it; the mask just provides the smooth fade.
-const FADE_MASK = `linear-gradient(to bottom, transparent 0px, black ${FADE_SIZE}px, black calc(100% - ${FADE_SIZE}px), transparent 100%)`
+const FADE_MASK = `linear-gradient(to bottom, transparent 0px, black ${CONTENT_GUTTER}px, black calc(100% - ${CONTENT_GUTTER}px), transparent 100%)`
 
 export interface FullscreenOverlayBaseProps {
   /** Whether the overlay is visible */
@@ -136,9 +141,9 @@ export function FullscreenOverlayBase({
     return () => onSetTrafficLightsVisible?.(true)
   }, [isOpen, onSetTrafficLightsVisible])
 
-  // Content padding clears the floating header at rest (when present).
-  // Without a header, just the fade zone inset.
-  const contentPaddingTop = hasHeader ? HEADER_HEIGHT + FADE_SIZE : FADE_SIZE
+  // Content padding clears the floating header at rest (when present), and keeps the gutter below.
+  // Without a header the gutter is all there is.
+  const contentPaddingTop = hasHeader ? HEADER_HEIGHT : CONTENT_GUTTER
 
   return (
     <Dialog.Root open={isOpen} onOpenChange={(open) => !open && onClose()}>
@@ -171,7 +176,7 @@ export function FullscreenOverlayBase({
           >
             <div
               className="h-full overflow-y-auto"
-              style={{ paddingTop: contentPaddingTop, paddingBottom: FADE_SIZE, scrollPaddingTop: contentPaddingTop }}
+              style={{ paddingTop: contentPaddingTop, paddingBottom: CONTENT_GUTTER, scrollPaddingTop: contentPaddingTop }}
             >
               {/* Centering wrapper — error + content move together as a unit.
                   min-h-full ensures centering when content is small; content can grow beyond. */}

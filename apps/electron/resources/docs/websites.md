@@ -1,31 +1,28 @@
 # Websites
 
-A website is one self-contained HTML file in the workspace, rendered inside the app (the **Websites** section, reached from the conversation that made it). One file is one address — it can hold as many screens as its JS switches between, but it cannot pull in other files and it has no routes, so wanting a second address means making a second website. Use it for dashboards, reports, trackers, and small tools that should outlive the conversation — optionally auto-refreshed on a schedule, and shareable as a password-protected public link.
+A website is a **directory** in the workspace, served at an address of its own and opened as an ordinary page — a tab of the browser window. The **Websites** section lists them; opening one (from the conversation that made it, or from the library) brings the tab up, and so does the agent pointing `browser_tool` at the address. One directory is one address: `index.html` is what the address opens, and every other file in the directory is served beside it — so a website can have its own stylesheet, its own scripts, a `data.json`, another document it links to. Its address is stable, so it can keep `localStorage`, fetch its own files and its own data (`/data/snapshot.json`) as ordinary same-origin requests, and use real routes. Use it for dashboards, reports, trackers, and small tools that should outlive the conversation — optionally auto-refreshed on a schedule.
 
-A website is the right artifact when **nobody has to implement it**: it is meant to be used as it stands, here. If instead the thing is a change to a real product — a flow you want someone else to build, judged against the pages that exist today — that is a **prototype**, and the deliverable there is the change, not a document you keep. The same question decides it every time: *does this have to run somewhere other than this app?* If yes, it belongs in a prototype (its pages get packaged and shipped). If no, it belongs here.
+A website is the right artifact when **nobody has to implement it**: it is meant to be used as it stands, here. If instead the thing is a change to a real product — something somebody else has to build — that is a **prototype**: a folder holding the specification (`PRD.md`, numbered requirements, research, reviews), and the specification is what leaves the workbench rather than a running site.
 
 ## Folder layout (the files are the truth)
 
 ```
 {workspace}/websites/{slug}/
-├── index.html         # the website itself — yours to write, edit or replace
+├── index.html         # what the address opens — yours to write, edit or replace
+├── ...                # anything else here is served too: /assets/app.css, /about.html
 ├── website.json       # config + values derived from the files (digest, refresh
-│                      # outcome, grants, share, poster); never a second copy of
-│                      # the content, and written LAST by a refresh run
+│                      # outcome); never a second copy of the content, and written
+│                      # LAST by a refresh run
+├── thumbnail.jpg      # the cached poster (the app's, not the site's)
 └── data/
     ├── store.sqlite   # internal store (scripts only — never read this)
-    └── snapshot.json  # the ONLY data artifact websites/hosts read
+    └── snapshot.json  # the published data — what the site itself fetches at
+                       # /data/snapshot.json, and the only artifact any host reads
 ```
 
-Edit `index.html` however you like — including with `Write`/`Edit`. Nothing here is off limits to file tools; the session tools (`create_website`, `update_website`, `write_website_data`, `delete_website`, `list_websites`, `get_website`) exist because they keep the *derived* state in step for you (digest, poster, open renders, watcher). Editing the file directly is the same website, one beat later: the host notices, recomputes the digest, and because grants and render leases are bound to that digest, an edit retires the approvals from the previous version — you will be asked again before an edited website can call a source.
+`website.json`, `thumbnail.jpg` and `store.sqlite` are the app's own bookkeeping about the website: they are **not** served on its address, and they do not travel in a copy. The one file in `data/` that is the site's own is `snapshot.json`, and it is served — that is how the site's scripts get their data.
 
-## Choosing a kind
-
-| Kind | Sandbox | Use for |
-|------|---------|---------|
-| `static` | no JS | fixed documents, formatted reports |
-| `interactive` | JS + forms | calculators, explorers, tools |
-| `live` | JS + receives snapshot updates while open | dashboards fed by refresh scripts or `write_website_data` |
+Edit any of these files however you like — including with `Write`/`Edit`. Nothing here is off limits to file tools; the session tools (`create_website`, `update_website`, `write_website_data`, `delete_website`, `list_websites`, `get_website`) exist because they keep the *derived* state in step for you (digest, poster, watcher). Editing the files directly is the same website, one beat later: the host notices, recomputes the digest, and refreshes the poster.
 
 ## Data model
 
@@ -59,140 +56,16 @@ The snapshot the website receives looks like:
 
 Series are ascending by `t`, capped at the newest 1000 points per series. The store itself is bounded too: at most **1000 kv keys** and **100 distinct series** per website — a write that would exceed either limit fails whole (rolled back) with a clear error. Design keys/series as stable names you update, not as ever-growing sets (put lists inside one kv value; don't mint `item-<id>` keys or per-day series names).
 
-## Authoring website HTML
+## Authoring website files
 
-Rules that make websites work everywhere (local sandbox AND published copies):
+Rules that make websites work in the app:
 
-1. **One full standalone HTML document.** Inline ALL CSS and JS. No external requests of any kind — published copies are served with `connect-src 'none'` (all network egress blocked), so CDN scripts, fonts, or fetch() calls would break them. Render charts with inline SVG/canvas you draw yourself.
-2. **Data arrives via the bridge, not fetch.** The host injects the data snapshot through `postMessage`; `live` websites get replacement snapshots automatically whenever the data changes.
-3. **The iframe is opaque-origin** (`sandbox` without `allow-same-origin`): no cookies, no localStorage, no parent DOM access. Keep state in JS variables.
-4. **Nothing navigates.** Views inside the one document are welcome — switch them in JS, or with `location.hash`, which is the only URL facility this sandbox keeps (`history.pushState` / `replaceState` throw here, so a History-API router fails on load). There is no second address and no link to another file, and the share link has no fragment, so it always opens the file's initial state — a view worth sharing has to be reachable from a hash on load.
-
-### Bridge snippet (copy-paste)
-
-```html
-<script>
-  let nonce = null;
-
-  function render(snapshot) {
-    // snapshot = { version, generatedAt, kv, series } or null (no data yet)
-    // ... update the DOM ...
-  }
-
-  window.addEventListener('message', (event) => {
-    const msg = event.data;
-    if (!msg || msg.protocol !== 'craft-websites/v1') return;
-    if (msg.type === 'init') {           // { website: {slug, kind}, nonce, snapshot, grants }
-      nonce = msg.payload.nonce;
-      handleGrants(msg.payload.grants);  // [{ id, action, expiresAt }] — usable grants
-      render(msg.payload.snapshot);
-    } else if (msg.type === 'data') {    // live websites: replacement snapshot
-      render(msg.payload.snapshot);
-    } else if (msg.type === 'action-result') {
-      handleActionResult(msg.payload.result);  // { requestId, ok, status?, body?, error?, durationMs }
-    } else if (msg.type === 'grants') {  // reply to 'grant-request' + pushed on grant changes
-      handleGrants(msg.payload.grants);
-    }
-  });
-
-  // Ask the host for init (also delivered automatically after load)
-  window.parent.postMessage({ protocol: 'craft-websites/v1', type: 'ready' }, '*');
-</script>
-```
-
-### Opening external links
-
-Sandboxed websites cannot navigate. Ask the host (only http/https URLs, requires a user gesture):
-
-```js
-window.parent.postMessage({ protocol: 'craft-websites/v1', type: 'open-url', nonce, url: 'https://example.com' }, '*');
-```
-
-## Source actions (grants)
-
-Interactive websites can trigger calls against the workspace's sources (e.g. a "Send email" button using a connected Google source) — **without ever seeing credentials**. The website posts an action request; the host validates it against a **grant** and executes server-side.
-
-```js
-window.parent.postMessage({
-  protocol: 'craft-websites/v1',
-  type: 'action',
-  requestId: crypto.randomUUID(),
-  nonce,                                   // from init — required
-  grantId: 'grant_1a2b3c4d',               // an approved grant on this website
-  invocation: { kind: 'api', method: 'GET', path: '/health' }  // must match the grant
-}, '*');
-// Result arrives as an 'action-result' message (match by requestId).
-```
-
-### Requesting grants from inside the website
-
-A website asks for the grants it needs with a `grant-request` message; the host shows the user
-an approval dialog and answers with a `grants` message (the full list of currently usable
-grants). Match grants to needs by comparing `action` descriptors — do NOT hardcode grant ids.
-
-```js
-let grants = [];                            // [{ id, action, expiresAt }]
-function grantFor(action) {                 // find by descriptor, never by id
-  return grants.find(g => g.action.kind === action.kind
-    && g.action.sourceSlug === action.sourceSlug
-    && (action.kind === 'mcp' ? g.action.toolName === action.toolName
-        : g.action.method === action.method && g.action.pathPattern === action.pathPattern));
-}
-function handleGrants(list) { grants = list || []; /* enable/disable buttons */ }
-
-const NEEDS = [
-  { key: 'read',  description: 'Refresh the task list',
-    action: { kind: 'mcp', sourceSlug: 'craft-private', toolName: 'craft_read' } },
-  { key: 'write', description: 'Add and complete tasks',
-    action: { kind: 'mcp', sourceSlug: 'craft-private', toolName: 'craft_write' } },
-];
-// After init: request anything still missing (max 8 entries per request).
-if (NEEDS.some(n => !grantFor(n.action))) {
-  window.parent.postMessage({ protocol: 'craft-websites/v1', type: 'grant-request', nonce, requests: NEEDS }, '*');
-}
-```
-
-Denied descriptors are remembered for the rest of the render — re-requesting them is answered
-with the current grant list instead of another dialog, so websites cannot nag. Design for denial:
-keep the website useful with buttons disabled and show what approval would unlock.
-
-What you must know about grants:
-
-- Grants are **user-approved capabilities** persisted in the website config: `{ kind: 'api', sourceSlug, method, pathPattern }` (anchored regex), `{ kind: 'mcp', sourceSlug, toolName }`, or `{ kind: 'script', script, runtime?, args? }` (see below). You cannot mint them with a session tool — the website requests them (`grant-request`) and the user approves them in the host dialog.
-- Grants are bound to the **exact content digest** at approval time and have a hard expiry (30 days). Editing the website's HTML invalidates all grants by design — the website should simply re-request on next open.
-- The user can **remove any approval at any time** (website ⋯ menu → Approved actions, or inline in the Share dialog). Open renders receive an updated `grants` message when that happens, so drive button state from `handleGrants` instead of caching the init-time list.
-- If a granted source **loses authentication**, actions fail fast with an error starting with `source-auth-required` (e.g. `source-auth-required: reconnect "gmail" in the app`). The host shows a reconnect banner above the website. Treat it as retryable: show a "reconnect in the app" hint and let the user simply click again after reconnecting — do not permanently disable the button.
-- Only **api GET** actions may run without a user gesture. Everything else — api non-GET, **every mcp tool** (opaque: it may write), and **every script** — requires a fresh user gesture inside the website (button click): fire the action directly from the click handler, never from a timer or on load. For data that should be visible on open, render from the snapshot and make live calls button-driven.
-- Per-frame caps: 5 requests in flight, 1 mutating at a time, 30/minute. Cancel with `{ type: 'action-cancel', requestId, nonce }`.
-- Published (shared) copies never execute actions — viewers get `public-actions-disabled`.
-
-`get_website` lists existing grants with a `stale` flag (digest mismatch or expired).
-
-### Running a host script (script grants)
-
-A `script` grant lets a **local** website run a workspace-relative script on the host machine — the highest-privilege action a website can take. It reuses the same runner as scheduled refreshes: **argv spawn (never a shell)**, path confined to the workspace (symlink-aware), a `CRAFT_*`-only environment (no `PATH`, no credentials), and a 60s default timeout (15min max).
-
-```js
-// Descriptor requested via grant-request:
-//   { kind: 'script', script: 'websites/<slug>/build.sh', runtime: 'bun'|'node'|'python3'?, args?: string[] }
-// The invocation is a BARE TRIGGER — script/runtime/args all come from the grant:
-window.parent.postMessage({
-  protocol: 'craft-websites/v1', type: 'action',
-  requestId: crypto.randomUUID(), nonce,
-  grantId: scriptGrant.id,
-  invocation: { kind: 'script' }              // nothing else — the website cannot pass args
-}, '*');
-// action-result body → { exitCode, stdout, stderr }. ok === (exitCode === 0),
-// but stdout/stderr are returned even on a non-zero exit.
-```
-
-Rules specific to script grants:
-
-- **Args are pinned at approval time.** The website cannot supply or change `script`/`runtime`/`args` at call time — approving a grant approves one exact command, not a family of them. To vary behavior, approve a wrapper script (e.g. `run.sh`) and let it decide.
-- **Match by descriptor** the same way as other kinds, but on `script` + `runtime` (defaulting to `bun`) + ordered `args` — there is no `sourceSlug`/`toolName`.
-- **Always mutating** — only fire from a real click handler; it will be rejected without fresh user activation.
-- **Not shareable.** A website that holds a script grant **cannot be published** at all (publish fails with `WEBSITE_SHARE_SCRIPT_GRANT`) — even the inert view-only path is refused, and stale/expired script grants count too. The user can remove the approval (⋯ → Approved actions, or inline in the Share dialog) and then publish; you cannot revoke grants with a tool. Mention this trade-off when adding a script action to a website the user may want to share.
-- The script's working directory is the workspace root; `CRAFT_WEBSITE_DIR` / `CRAFT_WEBSITE_DATA_DIR` / `CRAFT_WORKSPACE_PATH` point it at the website's own data. Running a script does **not** touch the website's scheduled-refresh status.
+1. **Load your own files with root-absolute paths.** The directory is the site's root, so `href="/assets/app.css"` and `src="/app.js"` mean what they say on the app's address. Several files are fine; `index.html` is only what the address opens.
+2. **Prefer self-contained documents.** A CDN script, a web font or a cross-host `fetch()` adds a dependency the website does not carry with it; render charts with inline SVG/canvas you draw yourself, and keep any `fetch` to your own origin.
+3. **Read your data with `fetch`.** `GET /data/snapshot.json` on the site's own origin returns the published snapshot — the same shape the store has (`version`, `generatedAt`, `kv`, `series`). It is the one path under `data/` that is served, and it works wherever the site runs: in the browser window or from an exported copy. Before anything has been written the file does not exist and the answer is **404** — treat a non-OK response as "no data yet", not as an error. A page reads it when it loads, so a refresh that writes new data shows up on the next load.
+4. **State belongs to the site's own origin.** The page runs at its own address, not the app's, so `localStorage`/`sessionStorage` and cookies are yours to use and survive reloads. It cannot reach the app's own document or storage.
+5. **Routes work.** `history.pushState` is fine, and reloading `/orders` falls back to `index.html` (a navigation with no file behind it opens your document). What it is *not* is a second address: a `fetch('/missing.json')` is a 404, so a view worth reopening has to be reachable from a hash on load.
+6. **A pick tells you which folder to edit.** When someone selects an element on the page and hands it to a conversation, the reference names the page **and** — because that page is served from this workspace — the folder it comes from (`websites/<slug>/`). Edit there; a reload shows the change. What a pick does *not* say is which line it is in: find it by the selector, the text, or what the element is. A page whose markup is built by its own JavaScript cannot be traced back this way at all — the file holds the template, not that element.
 
 ## Scheduled refresh
 
@@ -204,7 +77,7 @@ refresh: { cron: "*/15 * * * *", script: "scripts/refresh-build-health.ts" }
 
 The cron expression is validated on write: it must parse, must actually fire, and must not run more often than **every 5 minutes** (`*/5 * * * *` is the fastest accepted schedule) — an invalid spec makes `create_website`/`update_website` fail with the reason.
 
-The script must live **inside the workspace** and runs under **Bun** with a minimal environment: `CRAFT_WORKSPACE_PATH`, `CRAFT_WEBSITE_SLUG`, `CRAFT_WEBSITE_DIR`, `CRAFT_WEBSITE_DATA_DIR` (plus other `CRAFT_*` vars). Flow: update the store → export the snapshot → exit 0. The executor stamps `website.json` afterwards, which pushes the new snapshot to open renders.
+The script must live **inside the workspace** and runs under **Bun** with a minimal environment: `CRAFT_WORKSPACE_PATH`, `CRAFT_WEBSITE_SLUG`, `CRAFT_WEBSITE_DIR`, `CRAFT_WEBSITE_DATA_DIR` (plus other `CRAFT_*` vars). Flow: update the store → export the snapshot → exit 0. The executor stamps `website.json` afterwards, which the app notices; a page already open in a tab picks the new data up the next time it loads.
 
 ```ts
 // scripts/refresh-build-health.ts  (Bun)
@@ -228,9 +101,11 @@ CREATE TABLE IF NOT EXISTS timeseries (series TEXT NOT NULL, t INTEGER NOT NULL,
 
 (kv `value` is JSON-encoded; snapshot shape as shown above. Simpler alternative: skip the script and update the website yourself with `write_website_data`.)
 
-## Sharing
+## Exporting
 
-Users publish websites from the website's **Share** button (feature-flagged): password-protectable public URL, opt-in data snapshot, instant revocation. You don't publish websites yourself — but remember: published copies block all network egress and disable source actions, which is why inline-everything authoring matters. `delete_website` unpublishes first (best effort) and reports `publicCopyMayRemain` if that could not be confirmed.
+A website is a directory, so handing one to someone else is a **copy**, not a build: the website's own menu has **Export a copy…**, which asks for a folder and writes `<slug>/` into it — every file of the site **including `data/snapshot.json`**, and nothing the app keeps about it (`website.json`, the poster, `store.sqlite`). The data travels because the site's own scripts read it there: a copy without it would be a site with nothing to show. It is the data as it stood at export time — nothing in the copy updates it.
+
+The copy comes with a short `README.md` saying the one thing that otherwise looks broken: **serve the folder, don't open the file.** The site's paths are root-absolute (`/assets/app.css`), so opening `index.html` from disk resolves them against the hard drive instead of the site. Any static server is enough, and a History-API route needs that server told to fall back to `index.html`.
 
 ## Starter template
 
@@ -254,8 +129,6 @@ Users publish websites from the website's **Share** button (feature-flagged): pa
   <svg id="chart" viewBox="0 0 600 160" preserveAspectRatio="none"></svg>
 
 <script>
-  let nonce = null;
-
   function render(snapshot) {
     if (!snapshot) return;
     const summary = snapshot.kv.summary || {};
@@ -270,13 +143,11 @@ Users publish websites from the website's **Share** button (feature-flagged): pa
       .join('');
   }
 
-  window.addEventListener('message', (event) => {
-    const msg = event.data;
-    if (!msg || msg.protocol !== 'craft-websites/v1') return;
-    if (msg.type === 'init') { nonce = msg.payload.nonce; render(msg.payload.snapshot); }
-    else if (msg.type === 'data') { render(msg.payload.snapshot); }
-  });
-  window.parent.postMessage({ protocol: 'craft-websites/v1', type: 'ready' }, '*');
+  // The data comes from the site's own origin, as an ordinary same-origin request.
+  fetch('/data/snapshot.json')
+    .then((res) => (res.ok ? res.json() : null))   // 404 = nothing written yet
+    .then(render)
+    .catch(() => render(null));
 </script>
 </body>
 </html>
@@ -284,7 +155,6 @@ Users publish websites from the website's **Share** button (feature-flagged): pa
 
 ## Recipes
 
-- **"Make me a dashboard of X that updates every N minutes"** → `create_website` (kind `live`, content + `refresh` spec) → write the refresh script into the workspace → seed initial data with `write_website_data` so it isn't empty before the first tick.
+- **"Make me a dashboard of X that updates every N minutes"** → `create_website` (content + `refresh` spec) → write the refresh script into the workspace → seed initial data with `write_website_data` so it isn't empty before the first tick.
 - **"Track this number over time"** → website with a series chart; append points with `write_website_data` whenever you learn a new value (idempotent by timestamp).
-- **"Turn this report into something I can share"** → `create_website` (kind `static`, fully inline HTML) → tell the user to use the Share button for a password-protected link.
-- **Iterating on a website** → `update_website` with new `content`; warn the user that existing grants go stale on content changes.
+- **Iterating on a website** → **edit the files** with `Write`/`Edit` (that is the normal way — the app syncs the digest and re-renders the poster for you, and it works for every file, not just `index.html`). `update_website` is for the config fields (`name`, `description`, `projectId`, `refresh`); its `content` replaces the whole `index.html` in one go, which is worth it only when the document is being rewritten rather than changed.

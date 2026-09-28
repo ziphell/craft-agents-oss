@@ -1479,7 +1479,7 @@ app.whenReady().then(async () => {
       }
 
       // The person drags the window bigger, through the same call the app's own resize uses.
-      frozen.promised = manager.windowResize(id, 1200, 900)
+      frozen.promised = manager.resizeViewport(id, 1200, 900)
       await sleep(700)
       frozen.afterTheWindowGrew = { theTabOnScreen: await sizeOf(personWc), theAgentTab: await sizeOf(agentWc) }
 
@@ -1507,13 +1507,43 @@ app.whenReady().then(async () => {
       // empty viewport: `background-viewport.ts` section E).
       manager.activateTab(id, personTab)
       await sleep(500)
-      manager.windowResize(id, 700, 500)
+      manager.resizeViewport(id, 700, 500)
       await sleep(700)
       frozen.afterTheWindowShrank = {
         theTabOnScreen: await sizeOf(personWc),
         theAgentTab: await sizeOf(agentWc),
         thePersonsWindowDoesNotHoldTheAgentTab: !instance.window.contentView.children.includes(tabOf(agentTab).tabView),
       }
+
+      // **The agent sets the size of its own tab**. The tab that is not on
+      // screen is the agent's, and it lives in the parking window — so the person's window must not
+      // move for it, while the window housing it follows the view **both ways**: bigger gives it room
+      // (a window clips its children, and a clipped view is a view with a smaller viewport), and
+      // smaller gives the space back.
+      const theAgentsResize: Record<string, any> = {
+        asked: { width: 1440, height: 1000 },
+        thePersonsWindowWas: instance.window.getContentSize(),
+        theParkingWindowWas: instance.parkingWindow?.getContentSize() ?? null,
+        theTabOnScreenWas: await sizeOf(personWc),
+        answered: manager.resizeViewport(id, 1440, 1000, agentTab),
+      }
+      await sleep(700)
+      theAgentsResize.afterGrowing = {
+        theAgentTab: await sizeOf(agentWc),
+        theTabOnScreen: await sizeOf(personWc),
+        thePersonsWindow: instance.window.getContentSize(),
+        theParkingWindow: instance.parkingWindow?.getContentSize() ?? null,
+      }
+      theAgentsResize.askedToShrink = { width: 640, height: 480 }
+      theAgentsResize.answeredToShrink = manager.resizeViewport(id, 640, 480, agentTab)
+      await sleep(700)
+      theAgentsResize.afterShrinking = {
+        theAgentTab: await sizeOf(agentWc),
+        theTabOnScreen: await sizeOf(personWc),
+        thePersonsWindow: instance.window.getContentSize(),
+        theParkingWindow: instance.parkingWindow?.getContentSize() ?? null,
+      }
+      frozen.theAgentSizesItsOwnTab = theAgentsResize
 
       console.log('SPIKE_STEP frozen viewport ' + JSON.stringify(frozen, null, 1))
 
@@ -1528,6 +1558,25 @@ app.whenReady().then(async () => {
       }
       if (parkedOnADisplay.theParkedTabStillHasItsViewport === 0) {
         failures.push('moving a parking window off a display cost the tab in it its viewport')
+      }
+      const sameSize = (a: number[], b: number[]) => Array.isArray(a) && Array.isArray(b) && a[0] === b[0] && a[1] === b[1]
+      const grew = theAgentsResize.afterGrowing
+      const shrank = theAgentsResize.afterShrinking
+      if (grew.theAgentTab.innerWidth !== 1440 || grew.theAgentTab.innerHeight !== 1000) {
+        failures.push(`sizing a tab that is not on screen did not give it that viewport (${grew.theAgentTab.innerWidth}×${grew.theAgentTab.innerHeight})`)
+      }
+      if (shrank.theAgentTab.innerWidth !== 640 || shrank.theAgentTab.innerHeight !== 480) {
+        failures.push(`sizing a parked tab smaller did not give it that viewport (${shrank.theAgentTab.innerWidth}×${shrank.theAgentTab.innerHeight})`)
+      }
+      if (!sameSize(grew.thePersonsWindow, theAgentsResize.thePersonsWindowWas)
+        || !sameSize(shrank.thePersonsWindow, theAgentsResize.thePersonsWindowWas)) {
+        failures.push("sizing a tab that is not on screen moved the person's window")
+      }
+      if (grew.theTabOnScreen.innerWidth !== theAgentsResize.theTabOnScreenWas.innerWidth) {
+        failures.push('sizing a tab that is not on screen changed the tab on screen')
+      }
+      if (!sameSize(grew.theParkingWindow, [1440, 1000]) || !sameSize(shrank.theParkingWindow, [640, 480])) {
+        failures.push(`the parking window did not follow the view in it (${JSON.stringify(grew.theParkingWindow)} → ${JSON.stringify(shrank.theParkingWindow)})`)
       }
       manager.destroyInstance(id)
     }

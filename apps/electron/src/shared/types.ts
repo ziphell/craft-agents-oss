@@ -3,8 +3,6 @@
 // =============================================================================
 export * from '@craft-agent/shared/protocol'
 
-import type { PageKind } from '@craft-agent/shared/prototypes'
-
 // =============================================================================
 // Package re-exports (convenience for renderer imports)
 // =============================================================================
@@ -113,21 +111,12 @@ export interface BrowserPaneCreateOptions {
   show?: boolean
   bindToSessionId?: string
   /**
-   * The prototype this window is being opened for: its slug and its own origin
-   * (`http://<slug>-<hash>.localhost/`), which is what the address bar reads.
-   *
-   * Needed because the opener knows something the window cannot find out later:
-   * an overlay's page is a third-party address, so once the view loads it, no
-   * URL says which prototype the window is working on (see `PrototypeEntry.origin`).
-   */
-  prototype?: { slug: string; origin: string }
-  /**
    * Give me a tab to use, opening the window if it is not up yet.
    *
    * *A* tab, not *another* tab: a window that has never been used already holds the
    * blank tab this is asking for, so its own tab is the answer and nothing is added
    * beside it — otherwise "New tab" on a browser that was not open yet would come up
-   * with two identical blank tabs (plan §22). A window that is in use gets a real new
+   * with two identical blank tabs. A window that is in use gets a real new
    * tab. The rail's own `+` is the other intent and does not come through here: there
    * a person is looking at the window and asking for one more tab.
    */
@@ -146,7 +135,7 @@ export interface BrowserPaneTabAction {
   /**
    * `activate` / `close` / `new` manage the tabs. `release` is the person taking a locked
    * tab back: it drops the agent overlay that is holding it, so they are not stuck behind
-   * somebody else's running turn (plan §22, 第九轮修正) — the agent's next action may take
+   * somebody else's running turn — the agent's next action may take
    * the tab again, which is why the button is an escape hatch and not a setting.
    */
   action: 'activate' | 'close' | 'new' | 'release'
@@ -384,7 +373,7 @@ export interface ElectronAPI {
   readFileDataUrl(path: string): Promise<string>
   /** Read an image file as a size-bounded preview data URL for lightweight thumbnail rendering. */
   readFilePreviewDataUrl(path: string, maxSize?: number): Promise<string>
-  /** Write UTF-8 content to a file. Restricted to the workspace prototypes folder. */
+  /** Write UTF-8 content to a file. Bounded by this workspace's own folders. */
   writeFile(path: string, content: string): Promise<{ path: string }>
   openFileDialog(): Promise<string[]>
   readFileAttachment(path: string): Promise<FileAttachment | null>
@@ -535,85 +524,26 @@ export interface ElectronAPI {
   /** Every prototype in the workspace, each with its derived status. */
   listPrototypes(workspaceId: string): Promise<unknown>
   /**
-   * Where to open a prototype — its entry page, the generated page index when no
-   * page is the entry, or one named page (`page`). A live page's answer is its own
-   * real address; a page of ours resolves to the host's address for that document.
-   * Either way the caller loads the answer rather than being redirected to it.
-   */
-  getPrototypeEntry(workspaceId: string, slug: string, page?: string | null): Promise<unknown>
-  /** Write `dist/*` for a prototype so it can be handed to developers. */
-  exportPrototype(workspaceId: string, slug: string): Promise<unknown>
-  /**
-   * Create a prototype: a container for pages. It has none to begin with — a page
-   * is either a document of ours (something writes `<name>.html`) or a live page
-   * added afterwards — so creation asks for nothing but a name (plan §19.8).
+   * Create a prototype: a folder with a requirements document in it. The files
+   * written into it afterwards are the prototype, so creation asks for nothing but
+   * a name.
    */
   createPrototype(workspaceId: string, input: { name: string }): Promise<unknown>
-  /** Replay a prototype's patches into a live browser instance. */
-  applyPrototype(workspaceId: string, instanceId: string, slug: string): Promise<unknown>
   /**
-   * Write one save from the browser window's editor as a patch of `slug`, scoped to
-   * `page` (null = the whole flow).
-   *
-   * The edits travel as plain data (`PrototypeEdit`): what was boxed and what to set
-   * on it, or the elements whose text was retyped — everything accumulated before
-   * save, because that is one moment of intent and one entry in the change layer.
-   * The patch is what carries it from there — the watcher replays it, and this call
-   * applies nothing.
-   */
-  editPrototype(
-    workspaceId: string,
-    slug: string,
-    page: string | null,
-    edits: import('@craft-agent/shared/prototypes').PrototypeEdit[],
-  ): Promise<unknown>
-  /**
-   * Replay one prototype into every window showing it, after its files changed
-   * (plan §21.4). The window decides what that means: a page of ours is reloaded
-   * (the host re-renders from disk), someone else's page is re-applied.
-   */
-  replayPrototype(workspaceId: string, slug: string): Promise<unknown>
-  /**
-   * Copy a prototype into a new one (the list's "Duplicate"). Same page and same
-   * patches, its own slug and `config.json`; the two are independent afterwards.
-   * `name` only derives the new slug — omitted, the copy is `<slug> copy` — and
-   * `fold` collapses the *copy's* change layer as part of copying it (plan §21.3),
-   * leaving the prototype it came from untouched.
+   * Copy a prototype into a new one (the list's "Duplicate"): the same files, its
+   * own slug. The two are independent afterwards. `name` only derives the new slug —
+   * omitted, the copy is `<slug> copy`.
    */
   duplicatePrototype(
     workspaceId: string,
     slug: string,
-    options?: { name?: string; fold?: boolean },
+    options?: { name?: string },
   ): Promise<unknown>
   /**
    * Remove a prototype and everything in it. Irreversible — the caller asks the
-   * user first. Returns the slugs of prototypes still referencing it, which are
-   * now dangling.
+   * user first.
    */
   deletePrototype(workspaceId: string, slug: string): Promise<unknown>
-  /**
-   * Change one prototype's page table (plan §19): add a page, remove one, rename
-   * one, or mark which page the address root opens. The same data the agent
-   * reaches through `prototype_tool pages` / `prototype_tool entry`.
-   */
-  setPrototypePages(
-    workspaceId: string,
-    slug: string,
-    change:
-      | { op: 'add'; name: string; url?: string }
-      | { op: 'remove'; name: string }
-      | { op: 'rename'; from: string; to: string }
-      | { op: 'entry'; name: string | null },
-  ): Promise<unknown>
-  /**
-   * Point one live page at the same page in another environment (plan §13.2.1).
-   * Only the page's own rules are enforced; the caller is expected to say what
-   * goes stale with it (windows open on the old page, selectors written against
-   * the old DOM) — that is what the panel's warning next to the field is for.
-   * `page` names which page moves; without it the entry page moves when it is a
-   * live one, otherwise the first live page.
-   */
-  setPrototypeTarget(workspaceId: string, slug: string, targetUrl: string, page?: string): Promise<unknown>
 
   // Sources
   getSources(workspaceId: string): Promise<LoadedSource[]>
@@ -775,6 +705,22 @@ export interface ElectronAPI {
     destroy(id: string): Promise<void>
     list(): Promise<BrowserInstanceInfo[]>
     navigate(id: string, url: string): Promise<{ url: string; title: string }>
+    /**
+     * Open a local file as a page, in a new tab of the workspace's browser window.
+     *
+     * A path, not a URL: main turns it into the file's own address (see the channel).
+     * A page belongs in that window because that is the surface the agent can keep
+     * working on — `browser_tool` drives tabs, not frames inside this app.
+     */
+    openFile(path: string): Promise<void>
+    /**
+     * Open a link as a page, in a new tab of the workspace's browser window.
+     *
+     * Where a link the person clicked goes by default — see `openInAppBrowser` in their
+     * preferences, which is what the caller reads before choosing this over `openUrl`. Its
+     * sibling for a file is `openFile`.
+     */
+    openUrl(url: string): Promise<void>
     goBack(id: string): Promise<void>
     goForward(id: string): Promise<void>
     reload(id: string): Promise<void>
@@ -809,7 +755,7 @@ export interface ElectronAPI {
   createProject(workspaceId: string, input: import('@craft-agent/shared/projects/types').CreateProjectInput): Promise<import('@craft-agent/shared/projects/types').ProjectConfig>
   /**
    * Patch a project. `prototypeSlugs` is the set of prototypes the project is worked on
-   * with (§15.1.3) and is carried as a whole set: an empty list is the clear.
+   * with and is carried as a whole set: an empty list is the clear.
    */
   updateProject(workspaceId: string, projectSlug: string, patch: Partial<Omit<import('@craft-agent/shared/projects/types').ProjectConfig, 'id' | 'slug' | 'createdAt' | 'prototypeSlugs'>> & { prototypeSlugs?: string[] }): Promise<import('@craft-agent/shared/projects/types').ProjectConfig>
   deleteProject(workspaceId: string, projectSlug: string): Promise<void>
@@ -823,29 +769,37 @@ export interface ElectronAPI {
   getWebsite(workspaceId: string, websiteIdOrSlug: string): Promise<import('@craft-agent/shared/websites/types').LoadedWebsite | null>
   createWebsite(workspaceId: string, input: import('@craft-agent/shared/websites/types').CreateWebsiteInput): Promise<import('@craft-agent/shared/websites/types').WebsiteConfig>
   /** Optional fields (projectId, description, refresh) accept explicit null = clear (undefined is dropped by the JSON transport). */
-  updateWebsite(workspaceId: string, websiteSlug: string, patch: Partial<Omit<import('@craft-agent/shared/websites/types').WebsiteConfig, 'id' | 'slug' | 'createdAt' | 'contentDigest' | 'lastRefresh' | 'grants' | 'share' | 'projectId' | 'description' | 'refresh'>> & { projectId?: string | null; description?: string | null; refresh?: import('@craft-agent/shared/websites/types').WebsiteRefreshSpec | null }): Promise<import('@craft-agent/shared/websites/types').WebsiteConfig>
-  deleteWebsite(workspaceId: string, websiteSlug: string): Promise<{ publicCopyMayRemain: boolean }>
+  updateWebsite(workspaceId: string, websiteSlug: string, patch: Partial<Omit<import('@craft-agent/shared/websites/types').WebsiteConfig, 'id' | 'slug' | 'createdAt' | 'contentDigest' | 'lastRefresh' | 'thumbnail' | 'projectId' | 'description' | 'refresh'>> & { projectId?: string | null; description?: string | null; refresh?: import('@craft-agent/shared/websites/types').WebsiteRefreshSpec | null }): Promise<import('@craft-agent/shared/websites/types').WebsiteConfig>
+  deleteWebsite(workspaceId: string, websiteSlug: string): Promise<void>
   getWebsiteContent(workspaceId: string, websiteSlug: string): Promise<{ content: string | null; contentDigest?: string }>
   setWebsiteContent(workspaceId: string, websiteSlug: string, content: string): Promise<import('@craft-agent/shared/websites/types').WebsiteConfig>
   getWebsiteData(workspaceId: string, websiteSlug: string): Promise<import('@craft-agent/shared/websites/types').WebsiteDataSnapshot | null>
-  listWebsiteGrants(workspaceId: string, websiteSlug: string): Promise<import('@craft-agent/shared/websites/types').WebsiteActionGrant[]>
-  issueWebsiteGrant(workspaceId: string, websiteSlug: string, input: { action: import('@craft-agent/shared/websites/types').WebsiteActionDescriptor; description?: string; ttlMs?: number }): Promise<import('@craft-agent/shared/websites/types').WebsiteActionGrant>
-  revokeWebsiteGrant(workspaceId: string, websiteSlug: string, grantId: string): Promise<boolean>
-  createWebsiteLease(workspaceId: string, websiteSlug: string): Promise<{ lease: import('@craft-agent/shared/websites/types').WebsiteRenderLease; content: string }>
-  releaseWebsiteLease(workspaceId: string, leaseId: string): Promise<void>
-  executeWebsiteAction(workspaceId: string, request: import('@craft-agent/shared/websites/types').WebsiteActionRequest): Promise<import('@craft-agent/shared/websites/types').WebsiteActionResult>
-  cancelWebsiteAction(workspaceId: string, requestId: string): Promise<boolean>
-  getWebsiteShareCapabilities(): Promise<{ sharingEnabled: boolean }>
-  /** What `includeData` would publish + key paths that look credential-bearing (warn-only). */
-  getWebsiteShareDataScan(workspaceId: string, websiteSlug: string): Promise<{ snapshotBytes: number | null; secretCandidates: string[] }>
-  publishWebsite(workspaceId: string, websiteSlug: string, options: { includeData: boolean; password?: string; viewOnlyAcknowledged?: boolean }): Promise<import('@craft-agent/shared/websites/types').WebsiteConfig>
-  setWebsitePublicationPassword(workspaceId: string, websiteSlug: string, password: string | null): Promise<import('@craft-agent/shared/websites/types').WebsiteConfig>
-  unpublishWebsite(workspaceId: string, websiteSlug: string): Promise<{ config: import('@craft-agent/shared/websites/types').WebsiteConfig; warning?: 'remote-copy-may-remain' }>
+  /** The website's own origin. Rejects when this host cannot serve one. */
+  getWebsiteOrigin(workspaceId: string, websiteSlug: string): Promise<string>
+  /** Copy the website's files into a folder the person picked. */
+  exportWebsite(workspaceId: string, websiteSlug: string, destParent: string): Promise<{ dir: string; files: number }>
   /** Read a page's cached poster as a data URL — only returns when fresh (digest matches current content). */
   getWebsiteThumbnail(workspaceId: string, websiteSlug: string): Promise<{ dataUrl: string; digest: string } | null>
   /** Request a (re)capture of a page's poster (no-op on hosts without a capturer). */
   regenerateWebsiteThumbnail(workspaceId: string, websiteSlug: string): Promise<boolean>
   onWebsitesChanged(callback: (workspaceId: string, websites: import('@craft-agent/shared/websites/types').LoadedWebsite[]) => void): () => void
+
+  // drawio (the app's own bundled editor, served at an origin of its own)
+  /**
+   * The origin the bundled editor is served at. Rejects when the bundle is not
+   * installed, or when this host cannot serve an origin at all.
+   */
+  getDrawioOrigin(): Promise<string>
+
+  // Tweaks (standing edits, authored by the agent — the UI only reads and toggles)
+  getTweaks(workspaceId: string): Promise<import('@craft-agent/shared/tweaks').TweakSummary[]>
+  getTweak(workspaceId: string, tweakSlug: string): Promise<import('@craft-agent/shared/tweaks').TweakDetails | null>
+  /** The switch, plus name/description/patterns. Returns the updated details. */
+  updateTweak(workspaceId: string, tweakSlug: string, patch: import('@craft-agent/shared/tweaks').UpdateTweakPatch): Promise<import('@craft-agent/shared/tweaks').TweakDetails | null>
+  deleteTweak(workspaceId: string, tweakSlug: string): Promise<void>
+  /** Build the loadable extension into a folder the person picked. */
+  exportTweaks(workspaceId: string, destParent: string): Promise<import('@craft-agent/shared/tweaks').TweaksExportResult>
+  onTweaksChanged(callback: (workspaceId: string, tweaks: import('@craft-agent/shared/tweaks').TweakSummary[]) => void): () => void
 
   // Automations
   getAutomations(workspaceId: string): Promise<unknown>
@@ -1102,6 +1056,18 @@ export interface WebsitesNavigationState {
 }
 
 /**
+ * Tweaks navigation state
+ *
+ * Bare `tweaks` (details: null) shows the library list — like websites, it never
+ * auto-selects one, and the middle navigator collapses while a tweaks route is active.
+ */
+export interface TweaksNavigationState {
+  navigator: 'tweaks'
+  details: { type: 'tweak'; tweakSlug: string } | null
+  rightSidebar?: RightSidebarPanel
+}
+
+/**
  * Unified navigation state
  */
 export type NavigationState =
@@ -1113,6 +1079,7 @@ export type NavigationState =
   | ProjectsNavigationState
   | PrototypesNavigationState
   | WebsitesNavigationState
+  | TweaksNavigationState
 
 export const isSessionsNavigation = (
   state: NavigationState
@@ -1145,6 +1112,10 @@ export const isPrototypesNavigation = (
 export const isWebsitesNavigation = (
   state: NavigationState
 ): state is WebsitesNavigationState => state.navigator === 'websites'
+
+export const isTweaksNavigation = (
+  state: NavigationState
+): state is TweaksNavigationState => state.navigator === 'tweaks'
 
 export const DEFAULT_NAVIGATION_STATE: NavigationState = {
   navigator: 'sessions',
@@ -1188,6 +1159,12 @@ export const getNavigationStateKey = (state: NavigationState): string => {
       return `websites/website/${state.details.websiteSlug}`
     }
     return 'websites'
+  }
+  if (state.navigator === 'tweaks') {
+    if (state.details?.type === 'tweak') {
+      return `tweaks/tweak/${state.details.tweakSlug}`
+    }
+    return 'tweaks'
   }
   if (state.navigator === 'settings') {
     if (state.subpage === null) return 'settings'
@@ -1265,6 +1242,16 @@ export const parseNavigationStateKey = (key: string): NavigationState | null => 
       return { navigator: 'websites', details: { type: 'website', websiteSlug } }
     }
     return { navigator: 'websites', details: null }
+  }
+
+  // Handle tweaks
+  if (key === 'tweaks') return { navigator: 'tweaks', details: null }
+  if (key.startsWith('tweaks/tweak/')) {
+    const tweakSlug = key.slice(13)
+    if (tweakSlug) {
+      return { navigator: 'tweaks', details: { type: 'tweak', tweakSlug } }
+    }
+    return { navigator: 'tweaks', details: null }
   }
 
   // Handle settings

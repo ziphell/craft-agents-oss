@@ -1,23 +1,28 @@
 import { afterEach, describe, expect, it } from 'bun:test'
-import { mkdirSync, mkdtempSync, writeFileSync, existsSync, readFileSync, rmSync } from 'fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import {
-  buildPrototypeStatus,
-  foldPrototype,
-  exportPrototype,
   extractRequirementIds,
   getPrototypeDirPath,
-  getPrototypeDistPath,
-  getPrototypePatchesPath,
   getPrototypeResearchPath,
+  getPrototypeReviewsPath,
   normalizeRequirementId,
   parsePrototypeFinding,
-  parsePrototypePrd,
+  parseRequirementDocument,
   readPrototypeFindings,
   readPrototypeRequirements,
-  writePrototypeConfig,
+  requirementFingerprint,
+  resolveRequirementCoverage,
+  type RequirementCoverage,
 } from '..'
+
+/** The requirements nothing implements, as `status.unresolved.unmet` derives them. */
+function unmet(requirements: RequirementCoverage[]): string[] {
+  return requirements
+    .filter((requirement) => requirement.files.length === 0)
+    .map((requirement) => requirement.id)
+}
 
 let workspaceRoot = ''
 
@@ -26,22 +31,15 @@ afterEach(() => {
   workspaceRoot = ''
 })
 
-/** A prototype with a page table and a document, ready for markers to be added. */
+/** A prototype with nothing but its folder, ready for files to be written into it. */
 function makePrototype(slug = 'checkout-flow'): string {
   workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-prototype-coverage-'))
-  const dir = getPrototypeDirPath(workspaceRoot, slug)
-  mkdirSync(join(dir, 'patches'), { recursive: true })
-  writePrototypeConfig(workspaceRoot, slug, { pages: [{ name: 'cart', kind: 'scratch', entry: true }] })
-  writeFileSync(join(dir, 'cart.html'), '<!doctype html><html><body>cart</body></html>', 'utf-8')
+  mkdirSync(getPrototypeDirPath(workspaceRoot, slug), { recursive: true })
   return slug
 }
 
-function writePrd(slug: string, source: string): void {
-  writeFileSync(join(getPrototypeDirPath(workspaceRoot, slug), 'PRD.md'), source, 'utf-8')
-}
-
-function writePatch(slug: string, name: string, source: string): void {
-  writeFileSync(join(getPrototypePatchesPath(workspaceRoot, slug), name), source, 'utf-8')
+function writeFile(slug: string, name: string, source: string): void {
+  writeFileSync(join(getPrototypeDirPath(workspaceRoot, slug), name), source, 'utf-8')
 }
 
 function writeFinding(slug: string, name: string, source: string): void {
@@ -50,8 +48,14 @@ function writeFinding(slug: string, name: string, source: string): void {
   writeFileSync(join(dir, name), source, 'utf-8')
 }
 
+function writeReview(slug: string, name: string, source: string): void {
+  const dir = getPrototypeReviewsPath(workspaceRoot, slug)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, name), source, 'utf-8')
+}
+
 describe('requirement ids', () => {
-  // Ids are written by hand in three kinds of file, so the spellings have to
+  // Ids are written by hand in more than one kind of file, so the spellings have to
   // converge — otherwise a typo reads as "no such requirement" rather than as a
   // typo, and the thread breaks without saying anything.
   it('accepts the spellings a person actually writes', () => {
@@ -63,20 +67,20 @@ describe('requirement ids', () => {
 
   it('reads a marker with several ids, and stops inventing them where it cannot', () => {
     const source = [
-      '/* A-001-sticky-total.css',
-      ' * @requirement R-3 — the total stays visible',
-      ' * @requirement R-003, R-4',
-      ' * @requirement TBD: ask the user',
-      ' */',
+      '<!-- cart.html',
+      '  @requirement R-3 — the total stays visible',
+      '  @requirement R-003, R-4',
+      '  @requirement TBD: ask the user',
+      '-->',
     ].join('\n')
 
     expect(extractRequirementIds(source)).toEqual(['R-003', 'R-004'])
   })
 })
 
-describe('parsePrototypePrd', () => {
+describe('parseRequirementDocument', () => {
   it('reads one requirement per heading, with the prose under it', () => {
-    const { requirements, issues } = parsePrototypePrd(
+    const { requirements, issues } = parseRequirementDocument(
       [
         '# Requirements — checkout',
         '',
@@ -88,50 +92,46 @@ describe('parsePrototypePrd', () => {
         '',
         'No account is required.',
       ].join('\n'),
+      'PRD.md',
     )
 
     expect(issues).toEqual([])
     expect(requirements.map((requirement) => requirement.id)).toEqual(['R-001', 'R-002'])
     expect(requirements[0]?.title).toBe('A cart holds its line until stock runs out')
     expect(requirements[0]?.body).toContain('Given a line is in the cart')
+    // The carrier document travels with the entry.
+    expect(requirements[0]?.file).toBe('PRD.md')
     // The body ends at the next heading: it is what is *under* the requirement.
     expect(requirements[0]?.body).not.toContain('No account is required')
   })
 
   it('reports a duplicate id rather than letting a reference be ambiguous', () => {
-    const { issues } = parsePrototypePrd(['## R-001 One', '## R-1 Two'].join('\n'))
+    const { issues } = parseRequirementDocument(['## R-001 One', '## R-1 Two'].join('\n'), 'PRD.md')
     expect(issues.join('\n')).toContain('two entries share the id R-001')
   })
 
-  it('says so when a PRD has no entries at all', () => {
-    const { requirements, issues } = parsePrototypePrd('# Requirements\n\nNothing yet.\n')
+  it('reads no requirements out of a document that states none', () => {
+    const { requirements, issues } = parseRequirementDocument('# Requirements\n\nNothing yet.\n', 'PRD.md')
     expect(requirements).toEqual([])
-    expect(issues.join('\n')).toContain('no "## R-001 <title>" entries')
+    expect(issues).toEqual([])
   })
 
-  // A criterion only a person can judge is a criterion nobody runs, which is why
-  // the supported kinds are exactly the mechanical ones — and why an unsupported
-  // one has to be reported rather than left looking like a check that passed.
-  it('reads acceptance checks, and refuses the kinds it cannot run', () => {
-    const { requirements, issues } = parsePrototypePrd(
+  // `check:` is not a concept any more: a line that says it is prose under the requirement, read
+  // like the rest of the body, and nothing parses or reports it.
+  it('treats a check: line as ordinary prose', () => {
+    const { requirements, issues } = parseRequirementDocument(
       [
         '## R-001 A cart holds its line',
-        'check: selector [data-cart-total]',
         'check: endpoint GET /api/cart',
-        'check: expression alert(1)',
         '',
         'The prose.',
       ].join('\n'),
+      'PRD.md',
     )
 
-    expect(requirements[0]?.checks).toEqual([
-      { kind: 'selector', target: '[data-cart-total]' },
-      { kind: 'endpoint', target: 'GET /api/cart' },
-    ])
-    expect(issues.join('\n')).toContain('"expression" is not a check this can run')
-    // The check lines are not prose: they are instructions, and leaving them in
-    // the body would print them twice.
-    expect(requirements[0]?.body).toBe('The prose.')
+    expect(issues).toEqual([])
+    expect(requirements[0]?.body).toContain('check: endpoint GET /api/cart')
+    expect(requirements[0]?.body).toContain('The prose.')
   })
 })
 
@@ -168,6 +168,7 @@ describe('findings', () => {
   // unfalsifiable, which is worse than not recording it at all.
   it('reports a finding with no claim, and evidence that is not on disk', () => {
     const slug = makePrototype()
+    writeFile(slug, 'PRD.md', '## R-001 A cart holds its line\n')
     writeFinding(slug, 'F-001-sticky.md', '# F-001 Sticky total\n\nsource: https://shop.example.com/cart\n')
     writeFinding(
       slug,
@@ -186,109 +187,147 @@ describe('findings', () => {
 describe('the thread from a requirement to what implements it', () => {
   /**
    * The two answers nobody can get by reading files one at a time: a requirement
-   * nothing implements, and a change whose reason was never written down.
+   * nothing implements, and a marker whose reason was never written down.
    */
-  it('collects the pages, patches and findings behind each requirement', () => {
+  it('collects the files and findings behind each requirement', () => {
     const slug = makePrototype()
-    writePrd(
+    writeFile(
       slug,
-      [
-        '## R-001 A cart holds its line until stock runs out',
-        '',
-        '## R-002 Checking out takes one step',
-        '',
-        '## R-003 Nobody built this one',
-      ].join('\n'),
+      'PRD.md',
+      ['## R-001 A cart holds its line until stock runs out', '', '## R-002 Checking out takes one step', '', '## R-003 Nobody built this one'].join('\n'),
     )
-    writePatch(slug, 'A-001-sticky.css', '/* @requirement R-001 */\n.total { position: sticky }')
-    writePatch(slug, 'A-002-unknown.css', '/* @requirement R-009 */\n.btn { color: red }')
-    writePatch(slug, 'B-001-note.css', '.muted { color: gray }')
-    writeFinding(
-      slug,
-      'F-001-sticky.md',
-      '# F-001 Sticky total\n\nclaim: The total stays on screen.\nrequirements: R-001\n',
-    )
+    // Any file of the folder may say what it serves — a document, a stylesheet, a script.
+    writeFile(slug, 'cart.html', '<!doctype html><!-- @requirement R-002 --><html><body>cart</body></html>')
+    writeFile(slug, 'notes.md', 'Some notes.\n\n@requirement R-003 and R-009, which the PRD does not define.\n')
+    writeFinding(slug, 'F-001-sticky.md', '# F-001 Sticky total\n\nclaim: The total stays on screen.\nrequirements: R-001\n')
 
-    const status = buildPrototypeStatus(workspaceRoot, slug)
-    const cartDocument = join(getPrototypeDirPath(workspaceRoot, slug), 'cart.html')
-    writeFileSync(cartDocument, '<!doctype html><!-- @requirement R-002 --><html><body>cart</body></html>', 'utf-8')
+    const report = resolveRequirementCoverage(workspaceRoot, slug)
+    const byId = new Map(report.requirements.map((requirement) => [requirement.id, requirement]))
 
-    const repaired = buildPrototypeStatus(workspaceRoot, slug)
-    const first = repaired.requirements.find((requirement) => requirement.id === 'R-001')
-    const second = repaired.requirements.find((requirement) => requirement.id === 'R-002')
-
-    expect(first?.patches).toEqual(['patches/A-001-sticky.css'])
-    expect(first?.findings).toEqual(['F-001'])
-    expect(second?.pages).toEqual(['cart'])
+    expect(byId.get('R-001')?.files).toEqual([])
+    expect(byId.get('R-001')?.findings).toEqual(['F-001'])
+    expect(byId.get('R-002')?.files).toEqual(['cart.html'])
+    expect(byId.get('R-003')?.files).toEqual(['notes.md'])
     // PRD order, not discovery order: the document's order is part of its argument.
-    expect(repaired.requirements.map((requirement) => requirement.id)).toEqual(['R-001', 'R-002', 'R-003'])
+    expect(report.requirements.map((requirement) => requirement.id)).toEqual(['R-001', 'R-002', 'R-003'])
 
-    // The notices are codes plus params; `text` is the sentence the agent prints.
-    const briefIssues = repaired.briefIssues.map((issue) => issue.text).join('\n')
-    expect(briefIssues).toContain('R-003 is in PRD.md but no page or patch refers to it')
-    expect(briefIssues).toContain('patches/A-002-unknown.css refers to R-009')
-    // The requirement has a patch before the page marker is added — the first
-    // report is what a prototype looks like while it is being built.
-    expect(status.briefIssues.map((issue) => issue.text).join('\n')).not.toContain('R-001 is in PRD.md')
-    expect(repaired.briefIssues.map((issue) => issue.code)).toEqual([
+    const issues = report.issues.map((issue) => issue.text).join('\n')
+    expect(issues).toContain('R-001 is in PRD.md but no file refers to it')
+    // A finding is evidence, not implementation: R-001 has one and is still unmet.
+    expect(unmet(report.requirements)).toEqual(['R-001'])
+    expect(issues).toContain('notes.md refers to R-009')
+    expect(report.issues.map((issue) => issue.code)).toEqual([
       'requirement.unimplemented',
       'requirement.undefined',
     ])
   })
 
-  it('ships the thread inside the dev spec, and keeps research out of the package', () => {
+  /**
+   * The brief defines requirements; it does not implement them. Counting a marker
+   * written in `PRD.md` would make every requirement look built.
+   */
+  it('does not read the brief as an implementation of what it defines', () => {
     const slug = makePrototype()
-    writePrd(slug, '## R-001 A cart holds its line\n')
-    writePatch(slug, 'A-001-sticky.css', '/* @requirement R-001 */\n.total { position: sticky }')
-    writeFinding(slug, 'F-001-sticky.md', '# F-001 Sticky total\n\nclaim: It stays on screen.\nrequirements: R-001\n')
+    writeFile(slug, 'PRD.md', '## R-001 A cart holds its line\n\n@requirement R-001 — see the section above.\n')
 
-    const result = exportPrototype(workspaceRoot, slug)
-    const spec = readFileSync(join(getPrototypeDistPath(workspaceRoot, slug), 'dev-spec.md'), 'utf-8')
+    const report = resolveRequirementCoverage(workspaceRoot, slug)
 
-    expect(spec).toContain('## Requirements')
-    expect(spec).toContain('| 1 | `R-001` | A cart holds its line | `patches/A-001-sticky.css`, `F-001 (finding)` |')
-
-    // The reader gets the requirements, not the author's notes (plan §20.2).
-    expect(existsSync(join(result.extensionDir, 'research'))).toBe(false)
+    expect(report.requirements[0]?.files).toEqual([])
+    expect(report.issues.map((issue) => issue.code)).toEqual(['requirement.unimplemented'])
   })
 
   /**
-   * Convergence moves a page's own delta out of `patches/` and into files that page owns
-   * (`assets/<page>/committed.*`), and the fold carries the markers forward on purpose so the thread
-   * survives (plan §21.3). A reader that stopped at `patches/` would therefore report the requirement
-   * as implemented by **nothing** at exactly the moment the work converged — while the change is still
-   * on the page — and the delivered spec would say so to the person receiving it.
+   * The record directories are how the author got to the requirements and what was argued about
+   * them. Reading their `requirements:` lines as implementation would make "nothing implements
+   * this" say something untrue.
    */
-  it('follows a requirement into the file a page folded its own delta into', () => {
+  it('does not count a record directory as an implementation', () => {
     const slug = makePrototype()
-    writePrd(slug, '## R-001 The total stays on screen\n')
-    const pagePatches = join(getPrototypePatchesPath(workspaceRoot, slug), 'cart')
-    mkdirSync(pagePatches, { recursive: true })
-    writeFileSync(join(pagePatches, 'A-001-sticky.css'), '/* @requirement R-001 */\n.total { position: sticky }', 'utf-8')
+    const prd = '## R-001 A cart holds its line\n'
+    writeFile(slug, 'PRD.md', prd)
+    writeFinding(slug, 'F-001-sticky.md', '# F-001 Sticky\n\nclaim: x\nrequirements: R-001\n')
+    const requirement = parseRequirementDocument(prd, 'PRD.md').requirements[0]!
+    writeReview(
+      slug,
+      'D-001-x.md',
+      [
+        '# D-001 the total is not pinned',
+        '',
+        'about: requirement R-001',
+        `on: ${requirementFingerprint(requirement)}`,
+        'status: open',
+        'claim: x',
+      ].join('\n'),
+    )
 
-    const before = buildPrototypeStatus(workspaceRoot, slug)
-    expect(before.requirements[0]?.patches).toEqual(['patches/cart/A-001-sticky.css'])
-    expect(before.unresolved.unmet).toEqual([])
+    const report = resolveRequirementCoverage(workspaceRoot, slug)
 
-    foldPrototype(workspaceRoot, slug)
+    expect(report.requirements[0]?.files).toEqual([])
+    // A review is an argument, not an implementation — so it lands as a dispute…
+    expect(report.requirements[0]?.disputes.map((dispute) => dispute.id)).toEqual(['D-001'])
+    // …and the requirement is still the one the gate names.
+    expect(report.issues.map((issue) => issue.code)).toEqual(['requirement.unimplemented'])
+  })
 
-    // The change is in the page's own stylesheet now, with its markers kept.
-    const folded = readFileSync(join(getPrototypeDirPath(workspaceRoot, slug), 'assets', 'cart', 'committed.css'), 'utf-8')
-    expect(folded).toContain('@requirement R-001')
-    expect(existsSync(join(pagePatches, 'A-001-sticky.css'))).toBe(false)
+  it('reads the requirements it was given', () => {
+    const slug = makePrototype()
+    writeFile(slug, 'PRD.md', '## R-001 x\n\n## R-002 y\n')
 
-    const after = buildPrototypeStatus(workspaceRoot, slug)
-    expect(after.requirements[0]?.patches).toEqual([])
-    expect(after.requirements[0]?.pages).toEqual(['cart'])
-    expect(after.unresolved.unmet).toEqual([])
+    expect(readPrototypeRequirements(workspaceRoot, slug).requirements.map((r) => r.id)).toEqual(['R-001', 'R-002'])
+  })
 
-    exportPrototype(workspaceRoot, slug)
-    const spec = readFileSync(join(getPrototypeDistPath(workspaceRoot, slug), 'dev-spec.md'), 'utf-8')
-    expect(spec).toContain('| 1 | `R-001` | The total stays on screen | `cart` |')
+  // The specification is one file or several: a requirement is found wherever an author wrote it —
+  // a subfolder included — and the file it was written in travels with it.
+  it('reads requirements from every markdown file, wherever the author put them', () => {
+    const slug = makePrototype()
+    writeFile(slug, 'PRD.md', '## R-001 A cart holds its line\n')
+    mkdirSync(join(getPrototypeDirPath(workspaceRoot, slug), 'docs'), { recursive: true })
+    writeFile(slug, 'docs/features.md', '## R-002 Checking out takes one step\n')
+    writeFile(slug, 'cart.html', '<!doctype html><!-- @requirement R-002 --><html></html>')
 
-    // A page with no document declares nothing: the folded file does not outvote the page it belongs
-    // to, for the same reason a page that cannot be read is skipped.
-    rmSync(join(getPrototypeDirPath(workspaceRoot, slug), 'cart.html'))
-    expect(buildPrototypeStatus(workspaceRoot, slug).unresolved.unmet).toEqual(['R-001'])
+    const read = readPrototypeRequirements(workspaceRoot, slug)
+    expect(read.issues).toEqual([])
+    expect(read.requirements.map((r) => `${r.id}:${r.file}`)).toEqual([
+      'R-001:PRD.md',
+      'R-002:docs/features.md',
+    ])
+
+    const report = resolveRequirementCoverage(workspaceRoot, slug)
+    const byId = new Map(report.requirements.map((requirement) => [requirement.id, requirement]))
+    expect(byId.get('R-001')?.file).toBe('PRD.md')
+    expect(byId.get('R-002')?.file).toBe('docs/features.md')
+    expect(byId.get('R-002')?.files).toEqual(['cart.html'])
+    // The unimplemented notice names the document the requirement is written in, not a fixed one.
+    expect(report.issues.map((issue) => issue.text).join('\n')).toContain(
+      'R-001 is in PRD.md but no file refers to it',
+    )
+  })
+
+  /**
+   * The old rule ("the brief defines requirements; it does not implement them") generalizes to any
+   * document that defines one — so a `@requirement` line written inside a spec document still does
+   * not count as building what it specifies.
+   */
+  it('treats any document that defines a requirement as specification, not implementation', () => {
+    const slug = makePrototype()
+    mkdirSync(join(getPrototypeDirPath(workspaceRoot, slug), 'docs'), { recursive: true })
+    writeFile(slug, 'docs/features.md', '## R-001 A cart holds its line\n\n@requirement R-001 — see above.\n')
+
+    const report = resolveRequirementCoverage(workspaceRoot, slug)
+
+    expect(report.requirements[0]?.files).toEqual([])
+    expect(report.issues.map((issue) => issue.code)).toEqual(['requirement.unimplemented'])
+  })
+
+  it('reports one id defined in two documents rather than guessing which a reference meant', () => {
+    const slug = makePrototype()
+    writeFile(slug, 'PRD.md', '## R-001 A cart holds its line\n')
+    mkdirSync(join(getPrototypeDirPath(workspaceRoot, slug), 'docs'), { recursive: true })
+    writeFile(slug, 'docs/features.md', '## R-001 A second claim on the same id\n')
+
+    const read = readPrototypeRequirements(workspaceRoot, slug)
+
+    expect(read.requirements.map((r) => r.id)).toEqual(['R-001'])
+    expect(read.issues.join('\n')).toContain('R-001 is defined in both PRD.md and docs/features.md')
   })
 })

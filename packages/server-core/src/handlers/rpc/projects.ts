@@ -66,7 +66,7 @@ export function registerProjectsHandlers(server: RpcServer, deps: HandlerDeps): 
     workspaceId: string,
     projectSlug: string,
     patch: Partial<Omit<import('@craft-agent/shared/projects').ProjectConfig, 'id' | 'slug' | 'createdAt' | 'prototypeSlugs'>> & {
-      /** The whole new set of prototypes this project is worked on with (§15.1.3); the field is routed to its validated writer. */
+      /** The whole new set of prototypes this project is worked on with; the field is routed to its validated writer. */
       prototypeSlugs?: string[];
     },
   ) => {
@@ -74,7 +74,7 @@ export function registerProjectsHandlers(server: RpcServer, deps: HandlerDeps): 
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     const { updateProject } = await import('@craft-agent/shared/projects')
 
-    // `prototypeSlugs` is the set of prototypes a project is worked on with (§15.1.3), and
+    // `prototypeSlugs` is the set of prototypes a project is worked on with, and
     // it is not a plain field: only one thing may write it and it drops the slugs that no
     // longer resolve, so the field is routed to that writer instead of being merged like
     // the rest. The caller sends the whole set — ticking the last prototype off sends an

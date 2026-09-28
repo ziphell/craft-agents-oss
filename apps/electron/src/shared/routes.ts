@@ -202,6 +202,12 @@ export const routes = {
         ? `websites/website/${websiteSlug}` as const
         : 'websites' as const,
 
+    /** Tweaks view (library list, or one tweak's detail page) */
+    tweaks: (tweakSlug?: string) =>
+      tweakSlug
+        ? `tweaks/tweak/${tweakSlug}` as const
+        : 'tweaks' as const,
+
     /** Kanban board view (sessions navigator, board view mode, all sessions) */
     board: () => 'board' as const,
   },

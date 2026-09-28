@@ -276,9 +276,25 @@ export function hasLinks(text: string): boolean {
 }
 
 /**
+ * A Windows path is not a URL, however much `C:` looks like a scheme.
+ *
+ * The character classes in the regexes above hold `/` but not `\` and not `:`, so
+ * `C:\Users\tester\flow.drawio` matched no branch at all and fell through to `onUrlClick` —
+ * where a file path met the URL opener and came back as "the system cannot find the file
+ * specified", because what it tried to open was a path-shaped string with a `c:` scheme.
+ *
+ * A drive letter followed by a separator is a path, and nothing else looks like one. The
+ * separator is accepted percent-encoded too: a path that went through a link destination
+ * arrives as `C:%5CUsers%5C…`, which is the same path and no more a URL than the raw one.
+ * Decoding it is `decodeFilePath`'s job, further up this pipeline.
+ */
+const WINDOWS_PATH_REGEX = /^[A-Za-z]:(?:[\\/]|%5c)/i
+
+/**
  * Check whether a markdown anchor target should be treated as a local file path.
  * Used by click handlers to route local paths to onFileClick instead of onUrlClick.
  */
 export function isFilePathTarget(target: string): boolean {
-  return FILE_PATH_TARGET_REGEX.test(target.trim())
+  const trimmed = target.trim()
+  return WINDOWS_PATH_REGEX.test(trimmed) || FILE_PATH_TARGET_REGEX.test(trimmed)
 }

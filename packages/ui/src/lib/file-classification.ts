@@ -1,13 +1,19 @@
 /**
  * File type classification for the link interceptor.
  *
- * Classifies file paths by extension to determine whether the app can show
- * an in-app preview overlay, and if so, which type of preview to use.
- * Used by useLinkInterceptor to decide between in-app preview vs. opening externally.
+ * Classifies file paths by extension to determine what the app does with a click on one:
+ * an in-app preview overlay, the workspace's browser window (a page), or the system's own
+ * program. Used by useLinkInterceptor to decide between them.
  */
 
-/** Preview types that map to specific overlay components */
-export type FilePreviewType = 'image' | 'code' | 'markdown' | 'json' | 'text' | 'pdf'
+/**
+ * How the app opens a file the person clicked, by extension.
+ *
+ * Most of these name the in-app overlay that shows the file. `html` is the one that does
+ * not: a page belongs in the workspace's browser window, opened from its own path — see
+ * `useLinkInterceptor`, which is the only thing that reads this.
+ */
+export type FilePreviewType = 'image' | 'code' | 'markdown' | 'json' | 'text' | 'pdf' | 'drawio' | 'html'
 
 export interface FileClassification {
   /** The preview type, or null if no in-app preview is available */
@@ -35,7 +41,7 @@ const CODE_EXTENSIONS = new Set([
   'py', 'rb', 'rs', 'go', 'java', 'kt', 'swift',
   'c', 'cpp', 'h', 'hpp', 'cs',
   'css', 'scss', 'less',
-  'html', 'htm', 'xml', 'svg',  // SVG is also code-viewable, but image takes priority
+  'xml', 'svg',  // SVG is also code-viewable, but image takes priority
   'yaml', 'yml', 'toml',
   'sh', 'bash', 'zsh', 'fish',
   'sql', 'graphql',
@@ -65,6 +71,22 @@ const TEXT_EXTENSIONS = new Set([
 const PDF_EXTENSIONS = new Set(['pdf'])
 
 /**
+ * HTML files — rendered in HTMLPreviewOverlay, the same window an `html-preview` block opens:
+ * the file drawn as a document, with a button in its header to open it in a browser.
+ *
+ * An HTML file the person clicks is *drawn*, which is why it is not source: reading markup is
+ * what an editor is for, and that is one action away. Opening it in a browser is the other.
+ */
+const HTML_EXTENSIONS = new Set(['html', 'htm'])
+
+/**
+ * drawio diagrams — opened in the app's own draw.io window, which draws the document
+ * and offers the file's pages. Its own type rather than `text` or `code`, because the
+ * window is what the format is for: the XML is how it is stored, not what it is.
+ */
+const DRAWIO_EXTENSIONS = new Set(['drawio'])
+
+/**
  * External-only file extensions — recognized as file links but opened externally.
  * These are included in FILE_EXTENSIONS_PATTERN so linkify.ts detects them as file paths,
  * but classifyFile() returns canPreview: false so they route to the system opener.
@@ -92,10 +114,13 @@ function getExtension(filePath: string): string {
 }
 
 /**
- * Classify a file path by extension to determine preview capability.
+ * Classify a file path by extension to determine how clicking it is opened.
  *
  * Priority order when an extension matches multiple sets (e.g. svg):
- * image > code > markdown > json > text > pdf
+ * image > markdown > json > code > text > pdf > drawio > html
+ *
+ * `canPreview` means "the app opens this itself" — for every type but `html` that is an
+ * overlay here, and for `html` it is the browser window (`useLinkInterceptor` decides).
  */
 export function classifyFile(filePath: string): FileClassification {
   const ext = getExtension(filePath)
@@ -107,6 +132,8 @@ export function classifyFile(filePath: string): FileClassification {
   if (CODE_EXTENSIONS.has(ext))     return { type: 'code', canPreview: true }
   if (TEXT_EXTENSIONS.has(ext))     return { type: 'text', canPreview: true }
   if (PDF_EXTENSIONS.has(ext))      return { type: 'pdf', canPreview: true }
+  if (DRAWIO_EXTENSIONS.has(ext))   return { type: 'drawio', canPreview: true }
+  if (HTML_EXTENSIONS.has(ext))     return { type: 'html', canPreview: true }
 
   return { type: null, canPreview: false }
 }
@@ -123,5 +150,7 @@ export const FILE_EXTENSIONS_PATTERN = [
   ...JSON_EXTENSIONS,
   ...TEXT_EXTENSIONS,
   ...PDF_EXTENSIONS,
+  ...DRAWIO_EXTENSIONS,
+  ...HTML_EXTENSIONS,
   ...EXTERNAL_EXTENSIONS,
 ].join('|')

@@ -4,12 +4,12 @@
  * Covers all 46 methods SessionManager calls on BrowserPaneManager.
  * The concrete BrowserPaneManager in apps/electron implements this.
  *
- * Structurally compatible with BrowserLeaseReleaser (domain layer)
+ * Structurally compatible with BrowserReleaser (domain layer)
  * so releaseBrowserOnForcedStop() accepts IBrowserPaneManager.
  */
 
-import type { BrowserInstanceInfo, BrowserTabPrototype, BrowserTabSummary, PickedElement, TabBelongsTo } from '@craft-agent/shared/protocol'
-import type { MockProgram } from '@craft-agent/shared/prototypes'
+import type { BrowserInstanceInfo, BrowserTabSummary, PickedElement, TabBelongsTo } from '@craft-agent/shared/protocol'
+import type { DrawioFormat } from '@craft-agent/shared/agent/browser-pane'
 
 // ---------------------------------------------------------------------------
 // Supporting types — minimal subsets of BPM's internal types
@@ -23,19 +23,17 @@ export interface BrowserInstanceSnapshot {
 }
 
 /**
- * One tab of a window: what it is (observation), what its opener said about it
- * (declaration), and where it sits in a prototype. Defined with the rest of the
- * wire shapes so the toolbar, the panel and the agent all read the same one.
+ * One tab of a window: what it is (observation) and what its opener said about it
+ * (declaration). Defined with the rest of the wire shapes so the toolbar, the panel
+ * and the agent all read the same one.
  */
-export type { BrowserTabSummary, BrowserTabPrototype }
+export type { BrowserTabSummary }
 
 export interface BrowserTabCreateOptions {
   /** Where the tab starts. Omitted → `about:blank`, for a caller that navigates. */
   url?: string
   /** Whether the new tab comes to the front. Default true. */
   activate?: boolean
-  /** The prototype this tab is for, when it is one. */
-  prototype?: BrowserTabPrototype | null
   /**
    * The work this tab is opened *for*, when a conversation opened it — omitted means a
    * person did.
@@ -44,17 +42,17 @@ export interface BrowserTabCreateOptions {
    * field is knowing which tabs are not ours to close, and calling somebody else's tab
    * ours is the mistake that loses work.
    *
-   * The **work**, not the session (plan §22): a tab outlives the session that opened it, so
+   * The **work**, not the session: a tab outlives the session that opened it, so
    * a DAG node's tab says which task and node it is for, and the node's re-run inherits it
    * instead of orphaning it. `belongsTo.sessionId` is who opened it — the conversation whose
-   * cursor and lease the new tab also starts with.
+   * cursor the new tab also starts with.
    */
   belongsTo?: TabBelongsTo | null
   /**
    * Where it goes in the strip: right after this tab instead of at the end.
    *
    * Used by the browser's own window-open channel, where the tab that asked for it is
-   * the one it belongs beside (plan §22).
+   * the one it belongs beside.
    */
   afterTabId?: string
   /** How the browser asked for it, when it was the browser — see `BrowserTabSummary.disposition`. */
@@ -63,7 +61,7 @@ export interface BrowserTabCreateOptions {
    * The caller wants *a* tab to use rather than one more tab.
    *
    * A window that has never been used already holds the blank tab such a caller is
-   * asking for, so its own tab is the answer (plan §22). Only the caller can say
+   * asking for, so its own tab is the answer. Only the caller can say
    * which of the two it means: "New page" from the app opens the window if it is not
    * up, while the rail's `+` is a person asking for one *more* tab in a window they
    * are looking at.
@@ -185,7 +183,7 @@ export interface AccessibilitySnapshot {
 // Interface
 // ---------------------------------------------------------------------------
 
-/** How a video is sampled (plan §20.5). */
+/** How a video is sampled. */
 export interface VideoFrameOptions {
   /** `timeline` samples on an interval; `changes` keeps only what moved. */
   mode: 'timeline' | 'changes'
@@ -210,19 +208,55 @@ export interface VideoFrameExtractionResult {
   frames: ExtractedVideoFrame[]
 }
 
+/**
+ * What a drawio document can be turned into — see `renderDrawio`.
+ *
+ * The capability surface's own list rather than a second copy of it: a format added there has to reach
+ * this side of the wire or the two disagree at the call that crosses (which is how `xml` was caught).
+ */
+export type DrawioRenderFormat = DrawioFormat
+
+export interface DrawioRenderOptions {
+  /** The document itself: what a `.drawio` file holds. */
+  xml: string
+  format: DrawioRenderFormat
+  /** Draw this page, by the name the document gives it. Omitted, its first page. */
+  page?: string
+  /** Pixels per unit in the output. Omitted, drawio's own 1. */
+  scale?: number
+  /** Draw it for a dark background, the way the app's own previews do. */
+  dark?: boolean
+}
+
+export interface RenderedDrawioFile {
+  bytes: Uint8Array
+  mimeType: string
+  /** The suffix the format is written under, `.svg` and friends. */
+  extension: string
+}
+
 export interface IBrowserPaneManager {
   // -- Session lifecycle ---------------------------------------------------
 
   /** Register a callback that resolves session IDs to file paths */
   setSessionPathResolver(fn: (sessionId: string) => string | null): void
 
-  /** Destroy all browser instances bound to a session */
+  /**
+   * Let go of a session's marks, holds **and cursors**; nothing is destroyed (the window is
+   * its workspace's, not the session's). Called when the session itself is gone, which is the
+   * only moment its cursor may be dropped: the tab it worked from goes back to being nobody's,
+   * so the next conversation can take it over.
+   */
   destroyForSession(sessionId: string): void
 
   /** Clear agent control overlay and native overlay state for a session */
   clearVisualsForSession(sessionId: string): Promise<void>
 
-  /** Unbind all browser instances from a session (non-destructive) */
+  /**
+   * Let go of a session's marks and holds, keeping its cursors — the between-turns version of
+   * {@link destroyForSession}: the session is still around, so the tab it works from stays its
+   * answer to "where does my next unnamed command go".
+   */
   unbindAllForSession(sessionId: string): void
 
   /** Get or create a browser instance for a session, returning the instance ID */
@@ -244,15 +278,14 @@ export interface IBrowserPaneManager {
   // -- Instance management -------------------------------------------------
 
   /**
-   * The window a session works in — its **workspace's browser window** (plan §22).
+   * The window a session works in — its **workspace's browser window**.
    *
-   * One window per workspace, used by every conversation in it and by the user,
-   * whatever the work is, so this is no longer "make my window": the caller becomes
-   * the window's *driver* for now (a lease, renewed by every call) and gets back the
-   * same id whichever session asked.
+   * One window per workspace, used by every conversation in it and by the user, whatever the
+   * work is, so this is no longer "make my window": the same id comes back whichever session
+   * asks, and **nothing about the window is written from the caller** — which conversations
+   * are working in it is a fact about its tabs (`BrowserTabSummary.cursorOf` / `lockedBy`).
    *
-   * `sessionId` may be null when nothing is driving it yet — opening a browser by
-   * hand is the same window with nobody at the wheel.
+   * `sessionId` may be null: opening a browser by hand is the same window.
    */
   createForSession(sessionId: string | null, options?: { show?: boolean; workspaceId?: string | null }): string
 
@@ -305,12 +338,9 @@ export interface IBrowserPaneManager {
   /**
    * Add a tab to a window, and return its id.
    *
-   * A window is a container and a tab is the thing in it (plan §22): several
-   * prototypes are worked on at once by being several tabs of one window, rather
-   * than by being several windows. `prototype` is a tab's identity — the only
-   * place it can be recorded for an overlay, whose document is a third-party
-   * address, and the reason the address bar keeps naming the prototype after the
-   * view has navigated away from it.
+   * A window is a container and a tab is the thing in it: several
+   * pages are worked on at once by being several tabs of one window, rather
+   * than by being several windows.
    *
    * A window that holds only its own untouched tab — what a freshly created
    * window is made of — has nothing to preserve, so the tab is created *there*
@@ -328,7 +358,7 @@ export interface IBrowserPaneManager {
   /**
    * Put one tab of a window on screen.
    *
-   * Everything a window reports — address, title, prototype, console, what its
+   * Everything a window reports — address, title, console, what its
    * toolbar actions would act on — is read through the tab that is on screen, so
    * this is what "show that tab" means. An unknown tab id throws: the tab was
    * named, so a silent no-op would leave the person looking somewhere else.
@@ -346,7 +376,7 @@ export interface IBrowserPaneManager {
    * holds while it works. Written rather than
    * inferred because the tab on screen is the person's, and a command acting on it
    * because they happened to be looking at it is exactly the bug the cursor exists to
-   * prevent (plan §22, 第十轮/第十二轮).
+   * prevent.
    */
   setSessionTab(instanceId: string, tabId: string, sessionId: string): void
 
@@ -355,7 +385,7 @@ export interface IBrowserPaneManager {
 
   /**
    * Hand one tab to another conversation: it becomes **that conversation's work**, and the tab
-   * it works from (plan §22, Conductor). Only a tab that is the caller's own work or nobody's
+   * it works from. Only a tab that is the caller's own work or nobody's
    * can be handed on; whether the receiver is a session worth handing to is the session layer's
    * call, which is also where the receiver's work is resolved (`to` carries it).
    */
@@ -374,7 +404,7 @@ export interface IBrowserPaneManager {
   //
   // Named rather than looked up, because the two are no longer the same thing: a window
   // holds several tabs and the person is free to read one while a conversation works on
-  // another (plan §22, 第十轮/第十二轮). The caller resolves it once, with
+  // another. The caller resolves it once, with
   // `pickCommandTarget` — the conversation's own tab, and only the tab on screen when it
   // has none — and passes it, so there is one decision and one place it is made. The
   // person's own calls (the toolbar) name nothing and get the tab they are looking at.
@@ -387,8 +417,7 @@ export interface IBrowserPaneManager {
    *
    * Fire-and-forget, like the toolbar's own reload: nothing waits for a document
    * to finish loading, and a caller that needs to act on the reloaded document
-   * reads it afterwards (which is what the auto-replay after a file change does —
-   * plan §21.4).
+   * reads it afterwards.
    */
   reload(id: string, tabId?: string): void
 
@@ -418,10 +447,10 @@ export interface IBrowserPaneManager {
 
   /**
    * Register `source` to run in every new document of this instance, before the
-   * page's own scripts. This is what makes prototype patches survive a reload.
+   * page's own scripts. This is what makes an injected script survive a reload.
    *
    * `key` is caller-chosen; re-registering the same key replaces the previous
-   * script so re-applying an edited patch is idempotent.
+   * script so re-applying an edited script is idempotent.
    *
    * @returns the underlying CDP identifier
    */
@@ -436,7 +465,7 @@ export interface IBrowserPaneManager {
   // -- Video frames ---------------------------------------------------------
 
   /**
-   * Sample frames out of a video the user recorded elsewhere (plan §20.5).
+   * Sample frames out of a video the user recorded elsewhere.
    *
    * Decoding is Chromium's, so nothing here depends on ffmpeg being installed —
    * and a codec Chromium does not implement (HEVC, ProRes, some `.mov`) fails with
@@ -447,23 +476,15 @@ export interface IBrowserPaneManager {
    */
   extractVideoFrames(filePath: string, options: VideoFrameOptions): Promise<VideoFrameExtractionResult>
 
-  // -- Network-level mock ---------------------------------------------------
+  // -- Diagrams -------------------------------------------------------------
 
   /**
-   * Serve the contract's mock for matching requests at the browser's network
-   * layer (CDP Fetch interception), so `fetch`, XHR and every other resource type
-   * are covered without patching page globals.
+   * A `.drawio` document → SVG, an editable SVG, a PNG or a standalone page.
    *
-   * The program carries the store as well as the routes: a prototype whose
-   * contract declares a collection answers from it, and each apply starts that
-   * state over.
-   *
-   * @returns the number of routes now being served
+   * Drawing is drawio's, in a hidden window of its own — so this works in a session that has
+   * never opened a window, and nothing here reimplements an exporter.
    */
-  setFetchMock(id: string, program: MockProgram, tabId?: string): Promise<number>
-
-  /** Stop intercepting; requests fall through to the real network again. */
-  clearFetchMock(id: string, tabId?: string): Promise<void>
+  renderDrawio(options: DrawioRenderOptions): Promise<RenderedDrawioFile>
 
   // -- Screenshot ----------------------------------------------------------
 
@@ -473,7 +494,12 @@ export interface IBrowserPaneManager {
   // -- Monitoring ----------------------------------------------------------
 
   getConsoleLogs(id: string, options?: BrowserConsoleOptions, tabId?: string): BrowserConsoleEntry[]
-  windowResize(id: string, width: number, height: number): { width: number; height: number }
+  /**
+   * Give one tab's view a viewport. When that tab is the one on screen the window follows (it has to
+   * — that tab's viewport *is* the window's page area); when it is not, only the view is resized and
+   * the person's window is left alone.
+   */
+  resizeViewport(id: string, width: number, height: number, tabId?: string): { width: number; height: number }
   getNetworkLogs(id: string, options?: BrowserNetworkOptions, tabId?: string): BrowserNetworkEntry[]
   waitFor(id: string, args: BrowserWaitArgs, tabId?: string): Promise<BrowserWaitResult>
   getDownloads(id: string, options?: BrowserDownloadOptions, tabId?: string): Promise<BrowserDownloadEntry[]>

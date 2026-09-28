@@ -51,9 +51,8 @@ export function ImagePreviewOverlay({
   const [error, setError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
 
-  const containerRef = React.useRef<HTMLDivElement>(null)
-
   const {
+    containerRef,
     scale,
     translate,
     isDragging,
@@ -65,10 +64,7 @@ export function ImagePreviewOverlay({
     reset,
     onMouseDown,
     onDoubleClick,
-  } = useRichBlockInteractions({
-    isOpen,
-    containerRef,
-  })
+  } = useRichBlockInteractions({ isOpen })
 
   const activeItem = resolvedItems[activeIdx]
   const activeDataUrl = activeItem ? contentCache[activeItem.src] : null

@@ -1,0 +1,765 @@
+{
+  "phase": "done",
+  "onscreenDefaults": {
+    "probe": {
+      "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) CraftAgents/39.2.7 Chrome/142.0.7444.235 Electron/39.2.7 Safari/537.36",
+      "webdriver": false,
+      "webdriverType": "boolean",
+      "brands": [
+        "Not_A Brand/99",
+        "Chromium/142"
+      ],
+      "uaDataPlatform": "Windows",
+      "uaDataMobile": false,
+      "fullVersionList": [
+        "Not_A Brand/99.0.0.0",
+        "Chromium/142.0.7444.235"
+      ],
+      "chromeType": "object",
+      "chromeKeys": [],
+      "chromeRuntime": "undefined",
+      "plugins": 5,
+      "mimeTypes": 2,
+      "pdfViewerEnabled": true,
+      "languages": "zh-CN,zh-Hans-CN",
+      "hardwareConcurrency": 16,
+      "deviceMemory": 8,
+      "notificationPermission": "granted",
+      "hasFocus": true,
+      "visibility": "visible",
+      "hidden": false,
+      "innerWidth": 900,
+      "innerHeight": 620,
+      "outerWidth": 900,
+      "outerHeight": 620,
+      "screenX": 40,
+      "screenY": 40,
+      "screen": "1440x960",
+      "avail": "1440x912",
+      "devicePixelRatio": 2,
+      "webglVendor": "Google Inc. (NVIDIA)",
+      "webglRenderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4090 (0x00002684) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "permissionsState": "granted",
+      "hev": {
+        "platform": "Windows",
+        "platformVersion": "19.0.0",
+        "architecture": "x86",
+        "bitness": "64",
+        "model": ""
+      }
+    },
+    "windowIsFocused": true
+  },
+  "onscreenSanitizedUa": {
+    "rawUa": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) CraftAgents/39.2.7 Chrome/142.0.7444.235 Electron/39.2.7 Safari/537.36",
+    "sanitized": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) CraftAgents/39.2.7 Chrome/142.0.7444.235 Safari/537.36",
+    "probe": {
+      "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) CraftAgents/39.2.7 Chrome/142.0.7444.235 Safari/537.36",
+      "webdriver": false,
+      "webdriverType": "boolean",
+      "brands": [
+        "Not_A Brand/99",
+        "Chromium/142"
+      ],
+      "uaDataPlatform": "Windows",
+      "uaDataMobile": false,
+      "fullVersionList": [
+        "Not_A Brand/99.0.0.0",
+        "Chromium/142.0.7444.235"
+      ],
+      "chromeType": "object",
+      "chromeKeys": [],
+      "chromeRuntime": "undefined",
+      "plugins": 5,
+      "mimeTypes": 2,
+      "pdfViewerEnabled": true,
+      "languages": "zh-CN,zh-Hans-CN",
+      "hardwareConcurrency": 16,
+      "deviceMemory": 8,
+      "notificationPermission": "granted",
+      "hasFocus": true,
+      "visibility": "visible",
+      "hidden": false,
+      "innerWidth": 900,
+      "innerHeight": 620,
+      "outerWidth": 900,
+      "outerHeight": 620,
+      "screenX": 40,
+      "screenY": 40,
+      "screen": "1440x960",
+      "avail": "1440x912",
+      "devicePixelRatio": 2,
+      "webglVendor": "Google Inc. (NVIDIA)",
+      "webglRenderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4090 (0x00002684) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "permissionsState": "granted",
+      "hev": {
+        "platform": "Windows",
+        "platformVersion": "19.0.0",
+        "architecture": "x86",
+        "bitness": "64",
+        "model": ""
+      }
+    },
+    "windowIsFocused": true
+  },
+  "parked": {
+    "probe": {
+      "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) CraftAgents/39.2.7 Chrome/142.0.7444.235 Electron/39.2.7 Safari/537.36",
+      "webdriver": false,
+      "webdriverType": "boolean",
+      "brands": [
+        "Not_A Brand/99",
+        "Chromium/142"
+      ],
+      "uaDataPlatform": "Windows",
+      "uaDataMobile": false,
+      "fullVersionList": [
+        "Not_A Brand/99.0.0.0",
+        "Chromium/142.0.7444.235"
+      ],
+      "chromeType": "object",
+      "chromeKeys": [],
+      "chromeRuntime": "undefined",
+      "plugins": 5,
+      "mimeTypes": 2,
+      "pdfViewerEnabled": true,
+      "languages": "zh-CN,zh-Hans-CN",
+      "hardwareConcurrency": 16,
+      "deviceMemory": 8,
+      "notificationPermission": "granted",
+      "hasFocus": false,
+      "visibility": "visible",
+      "hidden": false,
+      "innerWidth": 900,
+      "innerHeight": 620,
+      "outerWidth": 902,
+      "outerHeight": 622,
+      "screenX": 16383,
+      "screenY": 16383,
+      "screen": "1440x960",
+      "avail": "1440x912",
+      "devicePixelRatio": 2,
+      "webglVendor": "Google Inc. (NVIDIA)",
+      "webglRenderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4090 (0x00002684) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "permissionsState": "granted",
+      "hev": {
+        "platform": "Windows",
+        "platformVersion": "19.0.0",
+        "architecture": "x86",
+        "bitness": "64",
+        "model": ""
+      }
+    },
+    "parkingVisible": true,
+    "parkingFocused": false,
+    "parkingBounds": {
+      "x": 16383,
+      "y": 16383,
+      "width": 902,
+      "height": 622
+    },
+    "focusedWindow": "onscreen",
+    "onscreenIsFocused": true
+  },
+  "parkedAfterWebContentsFocus": {
+    "probe": {
+      "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) CraftAgents/39.2.7 Chrome/142.0.7444.235 Electron/39.2.7 Safari/537.36",
+      "webdriver": false,
+      "webdriverType": "boolean",
+      "brands": [
+        "Not_A Brand/99",
+        "Chromium/142"
+      ],
+      "uaDataPlatform": "Windows",
+      "uaDataMobile": false,
+      "fullVersionList": [
+        "Not_A Brand/99.0.0.0",
+        "Chromium/142.0.7444.235"
+      ],
+      "chromeType": "object",
+      "chromeKeys": [],
+      "chromeRuntime": "undefined",
+      "plugins": 5,
+      "mimeTypes": 2,
+      "pdfViewerEnabled": true,
+      "languages": "zh-CN,zh-Hans-CN",
+      "hardwareConcurrency": 16,
+      "deviceMemory": 8,
+      "notificationPermission": "granted",
+      "hasFocus": true,
+      "visibility": "visible",
+      "hidden": false,
+      "innerWidth": 900,
+      "innerHeight": 620,
+      "outerWidth": 902,
+      "outerHeight": 622,
+      "screenX": 16383,
+      "screenY": 16383,
+      "screen": "1440x960",
+      "avail": "1440x912",
+      "devicePixelRatio": 2,
+      "webglVendor": "Google Inc. (NVIDIA)",
+      "webglRenderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4090 (0x00002684) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "permissionsState": "granted",
+      "hev": {
+        "platform": "Windows",
+        "platformVersion": "19.0.0",
+        "architecture": "x86",
+        "bitness": "64",
+        "model": ""
+      }
+    },
+    "parkingFocused": true,
+    "onscreenIsFocused": false,
+    "focusedWindow": "parking"
+  },
+  "parkedAfterWindowFocus": {
+    "probe": {
+      "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) CraftAgents/39.2.7 Chrome/142.0.7444.235 Electron/39.2.7 Safari/537.36",
+      "webdriver": false,
+      "webdriverType": "boolean",
+      "brands": [
+        "Not_A Brand/99",
+        "Chromium/142"
+      ],
+      "uaDataPlatform": "Windows",
+      "uaDataMobile": false,
+      "fullVersionList": [
+        "Not_A Brand/99.0.0.0",
+        "Chromium/142.0.7444.235"
+      ],
+      "chromeType": "object",
+      "chromeKeys": [],
+      "chromeRuntime": "undefined",
+      "plugins": 5,
+      "mimeTypes": 2,
+      "pdfViewerEnabled": true,
+      "languages": "zh-CN,zh-Hans-CN",
+      "hardwareConcurrency": 16,
+      "deviceMemory": 8,
+      "notificationPermission": "granted",
+      "hasFocus": true,
+      "visibility": "visible",
+      "hidden": false,
+      "innerWidth": 900,
+      "innerHeight": 620,
+      "outerWidth": 902,
+      "outerHeight": 622,
+      "screenX": 16383,
+      "screenY": 16383,
+      "screen": "1440x960",
+      "avail": "1440x912",
+      "devicePixelRatio": 2,
+      "webglVendor": "Google Inc. (NVIDIA)",
+      "webglRenderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4090 (0x00002684) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "permissionsState": "granted",
+      "hev": {
+        "platform": "Windows",
+        "platformVersion": "19.0.0",
+        "architecture": "x86",
+        "bitness": "64",
+        "model": ""
+      }
+    },
+    "parkingFocused": true,
+    "onscreenIsFocused": false,
+    "focusedWindow": "parking"
+  },
+  "onscreenAgain": {
+    "probe": {
+      "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) CraftAgents/39.2.7 Chrome/142.0.7444.235 Safari/537.36",
+      "webdriver": false,
+      "webdriverType": "boolean",
+      "brands": [
+        "Not_A Brand/99",
+        "Chromium/142"
+      ],
+      "uaDataPlatform": "Windows",
+      "uaDataMobile": false,
+      "fullVersionList": [
+        "Not_A Brand/99.0.0.0",
+        "Chromium/142.0.7444.235"
+      ],
+      "chromeType": "object",
+      "chromeKeys": [],
+      "chromeRuntime": "undefined",
+      "plugins": 5,
+      "mimeTypes": 2,
+      "pdfViewerEnabled": true,
+      "languages": "zh-CN,zh-Hans-CN",
+      "hardwareConcurrency": 16,
+      "deviceMemory": 8,
+      "notificationPermission": "granted",
+      "hasFocus": true,
+      "visibility": "visible",
+      "hidden": false,
+      "innerWidth": 900,
+      "innerHeight": 620,
+      "outerWidth": 900,
+      "outerHeight": 620,
+      "screenX": 40,
+      "screenY": 40,
+      "screen": "1440x960",
+      "avail": "1440x912",
+      "devicePixelRatio": 2,
+      "webglVendor": "Google Inc. (NVIDIA)",
+      "webglRenderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4090 (0x00002684) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "permissionsState": "granted",
+      "hev": {
+        "platform": "Windows",
+        "platformVersion": "19.0.0",
+        "architecture": "x86",
+        "bitness": "64",
+        "model": ""
+      }
+    },
+    "parked": {
+      "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) CraftAgents/39.2.7 Chrome/142.0.7444.235 Electron/39.2.7 Safari/537.36",
+      "webdriver": false,
+      "webdriverType": "boolean",
+      "brands": [
+        "Not_A Brand/99",
+        "Chromium/142"
+      ],
+      "uaDataPlatform": "Windows",
+      "uaDataMobile": false,
+      "fullVersionList": [
+        "Not_A Brand/99.0.0.0",
+        "Chromium/142.0.7444.235"
+      ],
+      "chromeType": "object",
+      "chromeKeys": [],
+      "chromeRuntime": "undefined",
+      "plugins": 5,
+      "mimeTypes": 2,
+      "pdfViewerEnabled": true,
+      "languages": "zh-CN,zh-Hans-CN",
+      "hardwareConcurrency": 16,
+      "deviceMemory": 8,
+      "notificationPermission": "granted",
+      "hasFocus": false,
+      "visibility": "visible",
+      "hidden": false,
+      "innerWidth": 900,
+      "innerHeight": 620,
+      "outerWidth": 902,
+      "outerHeight": 622,
+      "screenX": 16383,
+      "screenY": 16383,
+      "screen": "1440x960",
+      "avail": "1440x912",
+      "devicePixelRatio": 2,
+      "webglVendor": "Google Inc. (NVIDIA)",
+      "webglRenderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4090 (0x00002684) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "permissionsState": "granted",
+      "hev": {
+        "platform": "Windows",
+        "platformVersion": "19.0.0",
+        "architecture": "x86",
+        "bitness": "64",
+        "model": ""
+      }
+    },
+    "onscreenIsFocused": true
+  },
+  "round2": {
+    "attachedBefore": false,
+    "attached": true,
+    "focusEmulationOn": {
+      "probe": {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) CraftAgents/39.2.7 Chrome/142.0.7444.235 Electron/39.2.7 Safari/537.36",
+        "webdriver": false,
+        "webdriverType": "boolean",
+        "brands": [
+          "Not_A Brand/99",
+          "Chromium/142"
+        ],
+        "uaDataPlatform": "Windows",
+        "uaDataMobile": false,
+        "fullVersionList": [
+          "Not_A Brand/99.0.0.0",
+          "Chromium/142.0.7444.235"
+        ],
+        "chromeType": "object",
+        "chromeKeys": [],
+        "chromeRuntime": "undefined",
+        "plugins": 5,
+        "mimeTypes": 2,
+        "pdfViewerEnabled": true,
+        "languages": "zh-CN,zh-Hans-CN",
+        "hardwareConcurrency": 16,
+        "deviceMemory": 8,
+        "notificationPermission": "granted",
+        "hasFocus": true,
+        "visibility": "visible",
+        "hidden": false,
+        "innerWidth": 900,
+        "innerHeight": 620,
+        "outerWidth": 902,
+        "outerHeight": 622,
+        "screenX": 16383,
+        "screenY": 16383,
+        "screen": "1440x960",
+        "avail": "1440x912",
+        "devicePixelRatio": 2,
+        "webglVendor": "Google Inc. (NVIDIA)",
+        "webglRenderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4090 (0x00002684) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "permissionsState": "granted",
+        "hev": {
+          "platform": "Windows",
+          "platformVersion": "19.0.0",
+          "architecture": "x86",
+          "bitness": "64",
+          "model": ""
+        }
+      },
+      "parkingFocused": false,
+      "onscreenIsFocused": true,
+      "focusedWindow": "onscreen"
+    },
+    "uaOverride": {
+      "probe": {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.7444.235 Safari/537.36",
+        "webdriver": false,
+        "webdriverType": "boolean",
+        "brands": [
+          "Not_A Brand/99",
+          "Chromium/142",
+          "Google Chrome/142"
+        ],
+        "uaDataPlatform": "Windows",
+        "uaDataMobile": false,
+        "fullVersionList": [
+          "Not_A Brand/99.0.0.0",
+          "Chromium/142.0.7444.235",
+          "Google Chrome/142.0.7444.235"
+        ],
+        "chromeType": "object",
+        "chromeKeys": [],
+        "chromeRuntime": "undefined",
+        "plugins": 5,
+        "mimeTypes": 2,
+        "pdfViewerEnabled": true,
+        "languages": "zh-CN,zh;q=0.9,en;q=0.8",
+        "hardwareConcurrency": 16,
+        "deviceMemory": 8,
+        "notificationPermission": "granted",
+        "hasFocus": true,
+        "visibility": "visible",
+        "hidden": false,
+        "innerWidth": 900,
+        "innerHeight": 620,
+        "outerWidth": 902,
+        "outerHeight": 622,
+        "screenX": 16383,
+        "screenY": 16383,
+        "screen": "1440x960",
+        "avail": "1440x912",
+        "devicePixelRatio": 2,
+        "webglVendor": "Google Inc. (NVIDIA)",
+        "webglRenderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4090 (0x00002684) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "permissionsState": "granted",
+        "hev": {
+          "platform": "Windows",
+          "platformVersion": "19.0.0",
+          "architecture": "x86",
+          "bitness": "64",
+          "model": ""
+        }
+      },
+      "parkingFocused": false
+    },
+    "afterDetach": {
+      "probe": {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) CraftAgents/39.2.7 Chrome/142.0.7444.235 Electron/39.2.7 Safari/537.36",
+        "webdriver": false,
+        "webdriverType": "boolean",
+        "brands": [
+          "Not_A Brand/99",
+          "Chromium/142"
+        ],
+        "uaDataPlatform": "Windows",
+        "uaDataMobile": false,
+        "fullVersionList": [
+          "Not_A Brand/99.0.0.0",
+          "Chromium/142.0.7444.235"
+        ],
+        "chromeType": "object",
+        "chromeKeys": [],
+        "chromeRuntime": "undefined",
+        "plugins": 5,
+        "mimeTypes": 2,
+        "pdfViewerEnabled": true,
+        "languages": "zh-CN,zh-Hans-CN",
+        "hardwareConcurrency": 16,
+        "deviceMemory": 8,
+        "notificationPermission": "granted",
+        "hasFocus": false,
+        "visibility": "visible",
+        "hidden": false,
+        "innerWidth": 900,
+        "innerHeight": 620,
+        "outerWidth": 902,
+        "outerHeight": 622,
+        "screenX": 16383,
+        "screenY": 16383,
+        "screen": "1440x960",
+        "avail": "1440x912",
+        "devicePixelRatio": 2,
+        "webglVendor": "Google Inc. (NVIDIA)",
+        "webglRenderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4090 (0x00002684) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "permissionsState": "granted",
+        "hev": {
+          "platform": "Windows",
+          "platformVersion": "19.0.0",
+          "architecture": "x86",
+          "bitness": "64",
+          "model": ""
+        }
+      },
+      "parkingFocused": false,
+      "onscreenIsFocused": true,
+      "focusedWindow": "onscreen"
+    }
+  },
+  "round3": {
+    "before": {
+      "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) CraftAgents/39.2.7 Chrome/142.0.7444.235 Electron/39.2.7 Safari/537.36",
+      "webdriver": false,
+      "webdriverType": "boolean",
+      "brands": [
+        "Not_A Brand/99",
+        "Chromium/142"
+      ],
+      "uaDataPlatform": "Windows",
+      "uaDataMobile": false,
+      "fullVersionList": [
+        "Not_A Brand/99.0.0.0",
+        "Chromium/142.0.7444.235"
+      ],
+      "chromeType": "object",
+      "chromeKeys": [],
+      "chromeRuntime": "undefined",
+      "plugins": 5,
+      "mimeTypes": 2,
+      "pdfViewerEnabled": true,
+      "languages": "zh-CN,zh-Hans-CN",
+      "hardwareConcurrency": 16,
+      "deviceMemory": 8,
+      "notificationPermission": "granted",
+      "hasFocus": false,
+      "visibility": "visible",
+      "hidden": false,
+      "innerWidth": 900,
+      "innerHeight": 620,
+      "outerWidth": 902,
+      "outerHeight": 622,
+      "screenX": 16383,
+      "screenY": 16383,
+      "screen": "1440x960",
+      "avail": "1440x912",
+      "devicePixelRatio": 2,
+      "webglVendor": "Google Inc. (NVIDIA)",
+      "webglRenderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4090 (0x00002684) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "permissionsState": "granted",
+      "hev": {
+        "platform": "Windows",
+        "platformVersion": "19.0.0",
+        "architecture": "x86",
+        "bitness": "64",
+        "model": ""
+      }
+    },
+    "denied": {
+      "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) CraftAgents/39.2.7 Chrome/142.0.7444.235 Electron/39.2.7 Safari/537.36",
+      "webdriver": false,
+      "webdriverType": "boolean",
+      "brands": [
+        "Not_A Brand/99",
+        "Chromium/142"
+      ],
+      "uaDataPlatform": "Windows",
+      "uaDataMobile": false,
+      "fullVersionList": [
+        "Not_A Brand/99.0.0.0",
+        "Chromium/142.0.7444.235"
+      ],
+      "chromeType": "object",
+      "chromeKeys": [],
+      "chromeRuntime": "undefined",
+      "plugins": 5,
+      "mimeTypes": 2,
+      "pdfViewerEnabled": true,
+      "languages": "zh-CN,zh-Hans-CN",
+      "hardwareConcurrency": 16,
+      "deviceMemory": 8,
+      "notificationPermission": "denied",
+      "hasFocus": false,
+      "visibility": "visible",
+      "hidden": false,
+      "innerWidth": 900,
+      "innerHeight": 620,
+      "outerWidth": 902,
+      "outerHeight": 622,
+      "screenX": 16383,
+      "screenY": 16383,
+      "screen": "1440x960",
+      "avail": "1440x912",
+      "devicePixelRatio": 2,
+      "webglVendor": "Google Inc. (NVIDIA)",
+      "webglRenderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4090 (0x00002684) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "permissionsState": "denied",
+      "hev": {
+        "platform": "Windows",
+        "platformVersion": "19.0.0",
+        "architecture": "x86",
+        "bitness": "64",
+        "model": ""
+      }
+    }
+  },
+  "round4": {
+    "todayOverHttps": {
+      "url": "https://httpbin.org/headers",
+      "headers": [
+        "Accept-Language\": \"zh-CN",
+        "Sec-Fetch-Dest\": \"document",
+        "Sec-Fetch-Mode\": \"navigate",
+        "Sec-Fetch-Site\": \"none",
+        "Sec-Fetch-User\": \"?1",
+        "User-Agent\": \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) CraftAgents/39.2.7 Chrome/142.0.7444.235 Safari/537.36"
+      ]
+    },
+    "sessionSetUserAgent": {
+      "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) CraftAgents/39.2.7 Chrome/142.0.7444.235 Safari/537.36",
+      "languages": "zh-CN,zh-Hans-CN",
+      "brands": [
+        "Not_A Brand/99",
+        "Chromium/142"
+      ],
+      "fullVersionList": [
+        "Not_A Brand/99.0.0.0",
+        "Chromium/142.0.7444.235"
+      ],
+      "localHeaders": [
+        {
+          "path": "/session-ua",
+          "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) CraftAgents/39.2.7 Chrome/142.0.7444.235 Safari/537.36",
+          "acceptLanguage": "zh-CN,zh;q=0.9;q=0.9,en;q=0.8;q=0.8",
+          "secFetchSite": "none",
+          "secFetchMode": "navigate"
+        }
+      ]
+    },
+    "ourHeadersOnHttp": [
+      {
+        "path": "/session-ua-plus-headers",
+        "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) CraftAgents/39.2.7 Chrome/142.0.7444.235 Safari/537.36",
+        "secChUa": "\"Not_A Brand\";v=\"99\", \"Chromium\";v=\"142\", \"Google Chrome\";v=\"142\"",
+        "secChUaMobile": "?0",
+        "secChUaPlatform": "\"Windows\"",
+        "secChUaFullVersionList": "\"Not_A Brand\";v=\"99.0.0.0\", \"Chromium\";v=\"142.0.7444.235\", \"Google Chrome\";v=\"142.0.7444.235\"",
+        "acceptLanguage": "zh-CN,zh;q=0.9;q=0.9,en;q=0.8;q=0.8",
+        "secFetchSite": "none",
+        "secFetchMode": "navigate"
+      }
+    ],
+    "afterWeAddHeader": {
+      "url": "https://httpbin.org/headers",
+      "headers": [
+        "Accept-Language\": \"zh-CN,zh;q=0.9;q=0.9,en;q=0.8;q=0.8",
+        "Sec-Ch-Ua\": \"\\\"Not_A Brand\\\";v=\\\"99\\\", \\\"Chromium\\\";v=\\\"142\\\", \\\"Google Chrome\\\";v=\\\"142\\\"",
+        "Sec-Ch-Ua-Full-Version-List\": \"\\\"Not_A Brand\\\";v=\\\"99.0.0.0\\\", \\\"Chromium\\\";v=\\\"142.0.7444.235\\\", \\\"Google Chrome\\\";v=\\\"142.0.7444.235\\\"",
+        "Sec-Ch-Ua-Mobile\": \"?0",
+        "Sec-Ch-Ua-Platform\": \"\\\"Windows\\\"",
+        "Sec-Fetch-Dest\": \"document",
+        "Sec-Fetch-Mode\": \"navigate",
+        "Sec-Fetch-Site\": \"none",
+        "Sec-Fetch-User\": \"?1",
+        "User-Agent\": \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) CraftAgents/39.2.7 Chrome/142.0.7444.235 Safari/537.36"
+      ]
+    }
+  },
+  "round5": {
+    "attachedByUs": true,
+    "afterOpeningDevTools": {
+      "stillAttached": true,
+      "detachEvents": 0,
+      "devToolsOpen": true
+    },
+    "afterReattachingWhileDevToolsOpen": {
+      "attached": true,
+      "reattachError": "Debugger is already attached to the target",
+      "devToolsStillOpen": true,
+      "detachEvents": 0
+    }
+  },
+  "headers": [
+    {
+      "path": "/baseline",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) CraftAgents/39.2.7 Chrome/142.0.7444.235 Electron/39.2.7 Safari/537.36",
+      "acceptLanguage": "zh-CN",
+      "secFetchSite": "none",
+      "secFetchMode": "navigate"
+    },
+    {
+      "path": "/sanitized",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) CraftAgents/39.2.7 Chrome/142.0.7444.235 Safari/537.36",
+      "acceptLanguage": "zh-CN",
+      "secFetchSite": "none",
+      "secFetchMode": "navigate"
+    },
+    {
+      "path": "/parked",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) CraftAgents/39.2.7 Chrome/142.0.7444.235 Electron/39.2.7 Safari/537.36",
+      "acceptLanguage": "zh-CN",
+      "secFetchSite": "none",
+      "secFetchMode": "navigate"
+    },
+    {
+      "path": "/cdp-ua-override",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.7444.235 Safari/537.36",
+      "acceptLanguage": "zh-CN,zh;q=0.9;q=0.9,en;q=0.8;q=0.8",
+      "secFetchSite": "none",
+      "secFetchMode": "navigate"
+    },
+    {
+      "path": "/after-detach",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) CraftAgents/39.2.7 Chrome/142.0.7444.235 Electron/39.2.7 Safari/537.36",
+      "acceptLanguage": "zh-CN",
+      "secFetchSite": "none",
+      "secFetchMode": "navigate"
+    },
+    {
+      "path": "/permission-denied",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) CraftAgents/39.2.7 Chrome/142.0.7444.235 Electron/39.2.7 Safari/537.36",
+      "acceptLanguage": "zh-CN",
+      "secFetchSite": "none",
+      "secFetchMode": "navigate"
+    },
+    {
+      "path": "/session-ua",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) CraftAgents/39.2.7 Chrome/142.0.7444.235 Safari/537.36",
+      "acceptLanguage": "zh-CN,zh;q=0.9;q=0.9,en;q=0.8;q=0.8",
+      "secFetchSite": "none",
+      "secFetchMode": "navigate"
+    },
+    {
+      "path": "/session-ua-plus-headers",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) CraftAgents/39.2.7 Chrome/142.0.7444.235 Safari/537.36",
+      "secChUa": "\"Not_A Brand\";v=\"99\", \"Chromium\";v=\"142\", \"Google Chrome\";v=\"142\"",
+      "secChUaMobile": "?0",
+      "secChUaPlatform": "\"Windows\"",
+      "secChUaFullVersionList": "\"Not_A Brand\";v=\"99.0.0.0\", \"Chromium\";v=\"142.0.7444.235\", \"Google Chrome\";v=\"142.0.7444.235\"",
+      "acceptLanguage": "zh-CN,zh;q=0.9;q=0.9,en;q=0.8;q=0.8",
+      "secFetchSite": "none",
+      "secFetchMode": "navigate"
+    }
+  ],
+  "electron": {
+    "electron": "39.2.7",
+    "chrome": "142.0.7444.235",
+    "appName": "Craft Agents"
+  },
+  "defaultUserAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) CraftAgents/39.2.7 Chrome/142.0.7444.235 Electron/39.2.7 Safari/537.36"
+}

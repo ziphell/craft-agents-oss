@@ -166,49 +166,13 @@ describe('browser handler — workspace filtering', () => {
     })
   })
 
-  describe('CREATE for a prototype', () => {
+  describe('CREATE adds a tab when the caller asks for one', () => {
     function callCreate(input: unknown): unknown {
       const createChannel = Array.from(recorder.handlers.keys())
         .find((ch) => ch.endsWith(':create') && ch.includes('browser'))
       if (!createChannel) throw new Error('CREATE handler not registered')
       return recorder.handlers.get(createChannel)!({ clientId: 'c1', workspaceId: null, webContentsId: null }, input)
     }
-
-    /**
-     * The panel's Open and the prototype page's Open both come through here. They
-     * used to re-point whatever tab the session's window was showing; now they
-     * add a tab, so opening a second prototype does not replace the first
-     * (plan §22). Which tab it lands in — a fresh window's own blank tab, or a
-     * new one — is the manager's rule, not this handler's, which is what
-     * `reuseUntouchedWindow` says out loud.
-     */
-    it('adds a tab for the prototype instead of re-pointing the tab on screen', async () => {
-      const calls: string[] = []
-      const { registerBrowserHandlers } = await import('../browser')
-      const deps = makeDeps({ instances: [] })
-      const manager = deps.browserPaneManager as unknown as Record<string, unknown>
-      manager.createForSession = (sessionId: string) => {
-        calls.push(`window:${sessionId}`)
-        return 'browser-1'
-      }
-      manager.createTab = (id: string, options: unknown) => {
-        calls.push(`tab:${id}:${JSON.stringify(options)}`)
-        return 'tab-1'
-      }
-      registerBrowserHandlers(recorder.server, deps)
-
-      const returned = callCreate({
-        show: true,
-        bindToSessionId: 'session-1',
-        prototype: { slug: 'checkout-flow', origin: 'http://checkout-flow-1a2b.localhost' },
-      })
-
-      expect(returned).toBe('browser-1')
-      expect(calls).toEqual([
-        'window:session-1',
-        'tab:browser-1:{"prototype":{"slug":"checkout-flow","origin":"http://checkout-flow-1a2b.localhost"},"activate":true,"reuseUntouchedWindow":true}',
-      ])
-    })
 
     // "New tab" from the app's menu: no url and no identity to give a tab, so it has
     // nothing to say except that it wants one — and it is *a* tab, not one more tab,
@@ -238,7 +202,7 @@ describe('browser handler — workspace filtering', () => {
     // The other half of the same rule, and the bug a person found: a window that is already
     // up is one somebody has, so "New tab" there means one **more** tab. Reading its single
     // untouched blank tab as "untouched" reused it, and since there was nothing to load, the
-    // click did nothing at all (plan §22, 用户报告).
+    // click did nothing at all.
     it('asks for one more tab when the window is already up', async () => {
       const calls: string[] = []
       const { registerBrowserHandlers } = await import('../browser')

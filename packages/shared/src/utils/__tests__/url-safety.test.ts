@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test'
-import { classifyExternalUrl, isSafeExternalUrl, formatBlockedUrlError } from '../url-safety.ts'
+import { classifyExternalUrl, isSafeExternalUrl, isBrowserUrl, formatBlockedUrlError } from '../url-safety.ts'
 
 describe('classifyExternalUrl — safe external (standard web schemes)', () => {
   it('classifies http:// as safe-external', () => {
@@ -155,5 +155,30 @@ describe('isSafeExternalUrl', () => {
   it('returns false for malformed input', () => {
     expect(isSafeExternalUrl('')).toBe(false)
     expect(isSafeExternalUrl('not a url')).toBe(false)
+  })
+})
+
+describe('isBrowserUrl — an address a browser window can hold', () => {
+  it('is true for http and https, whatever the case', () => {
+    expect(isBrowserUrl('https://example.com')).toBe(true)
+    expect(isBrowserUrl('http://example.com/a?b=1#c')).toBe(true)
+    expect(isBrowserUrl('  HTTPS://example.com  ')).toBe(true)
+  })
+
+  it('is false for everything the OS should have instead', () => {
+    // Safe to hand out, and none of it is a browser address: mail and phone go to their own
+    // apps, and someone else's scheme goes to whoever registered it.
+    expect(isBrowserUrl('mailto:user@example.com')).toBe(false)
+    expect(isBrowserUrl('tel:+15551234567')).toBe(false)
+    expect(isBrowserUrl('obsidian://open?vault=mine')).toBe(false)
+    expect(isBrowserUrl('craftagents://settings')).toBe(false)
+  })
+
+  it('is false for what cannot go anywhere, and for junk', () => {
+    expect(isBrowserUrl('javascript:alert(1)')).toBe(false)
+    expect(isBrowserUrl('data:text/html,<b>x</b>')).toBe(false)
+    expect(isBrowserUrl('file:///tmp/x.html')).toBe(false)
+    expect(isBrowserUrl('')).toBe(false)
+    expect(isBrowserUrl('not a url')).toBe(false)
   })
 })
