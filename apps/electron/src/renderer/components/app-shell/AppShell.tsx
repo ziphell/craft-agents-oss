@@ -2858,16 +2858,6 @@ function AppShellContent({
                       // Highlight on the library grid only, not when a website is open (mirrors Projects)
                       variant: (isWebsitesNavigation(navState) && !navState.details) ? "default" : "ghost",
                       onClick: handleWebsitesClick,
-                      expandable: websites.length > 0,
-                      expanded: isExpanded('nav:websites'),
-                      onToggle: () => toggleExpanded('nav:websites'),
-                      items: websites.map(website => ({
-                        id: `nav:websites:${website.config.slug}`,
-                        title: website.config.name,
-                        icon: PanelsTopLeft,
-                        variant: (isWebsitesNavigation(navState) && navState.details?.websiteSlug === website.config.slug) ? "default" as const : "ghost" as const,
-                        onClick: () => navigate(routes.view.websites(website.config.slug)),
-                      })),
                     },
                     {
                       id: "nav:tweaks",

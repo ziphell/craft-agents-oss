@@ -8,6 +8,7 @@
  */
 
 export {
+  PROTOTYPE_PRD_FILENAME,
   PROTOTYPE_RESEARCH_DIRNAME,
   PROTOTYPE_REVIEWS_DIRNAME,
 } from './types.ts'
@@ -29,7 +30,6 @@ export {
   parseRequirementDocument,
   readPrototypeRequirements,
   requirementFingerprint,
-  PROTOTYPE_PRD_FILENAME,
 } from './requirements.ts'
 export type {
   PrototypeRequirement,

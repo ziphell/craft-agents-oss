@@ -12,18 +12,18 @@
 
 ## 1. 模块地图
 
-### 共享层 `packages/shared/src/prototypes/`（15 个模块 / 2497 行）
+### 共享层 `packages/shared/src/prototypes/`（15 个模块 / 2515 行）
 
 | 文件 | 行 | 负责 |
 |---|---|---|
-| `types.ts` | 40 | `PROTOTYPE_RESEARCH_DIRNAME` / `PROTOTYPE_REVIEWS_DIRNAME` 与共享类型。**零依赖**（§2③） |
+| `types.ts` | 52 | `PROTOTYPE_PRD_FILENAME` / `PROTOTYPE_RESEARCH_DIRNAME` / `PROTOTYPE_REVIEWS_DIRNAME` 与共享类型。**零依赖**（§2③）——所以任何渲染层要的常量都放这儿，从这里取值不会把 barrel 拖进打包 |
 | `storage.ts` | 132 | 目录内路径（目录 / `research` / `reviews`）、`listPrototypeFiles()`（**递归**列出目录内文件，任何格式、不做任何过滤、名字是原型相对路径；跳过 `research/`、`reviews/` 与隐藏项）、`isMarkdownFile()`、`contentFingerprint()` |
-| `requirements.ts` | 250 | 需求解析：`## R-00x` 是唯一机制，读**每个** `.md`/`.mdx`（`parseRequirementDocument` / `readPrototypeRequirements`），每条需求带上**定义它的文件**；跨文件重号被点名。`extractRequirementIds`（`@requirement` 标记）、`requirementFingerprint`。`PROTOTYPE_PRD_FILENAME` = `PRD.md` 只是 `create` 的起步文件名 |
-| `links.ts` | 223 | 文档间的链接：`readPrototypeLinks()`——只扫 markdown 里**普通 markdown 链接**的相对、带扩展名的目标（跳代码段 / fence），按「本文档目录 → 原型根」解析（`../` 归一化）；链不到 → issues。**不动"实现"判定**（§2⑫） |
+| `requirements.ts` | 243 | 需求解析：`## R-00x` 是唯一机制，读**每个** `.md`/`.mdx`（`parseRequirementDocument` / `readPrototypeRequirements`），每条需求带上**定义它的文件**；跨文件重号被点名。`extractRequirementIds`（`@requirement` 标记）、`requirementFingerprint`。起步文件名 `PROTOTYPE_PRD_FILENAME` = `PRD.md` 住在 `types.ts` |
+| `links.ts` | 228 | 文档间的链接：`readPrototypeLinks()`——只扫 markdown 里**普通 markdown 链接**的相对、带扩展名的目标（跳代码段 / fence），按「本文档目录 → 原型根」解析（`../` 归一化）；链不到 → issues。**不动"实现"判定**（§2⑫） |
 | `research.ts` | 206 | `research/*.md` 的 finding（`# F-001` + `claim:` / `source:` / `captured:` / `evidence:` / `requirements:`）解析，以及 `evidence:` 的存在性检查 |
 | `reviews.ts` | 332 | `reviews/*.md` 的 dispute 解析（`status` / `about:` / `on:` / `claim:`）、与盘对账判 `stale`（`judgeAgainstDisk`）、`isUnresolved` |
 | `coverage.ts` | 249 | 需求 × 依据（文件 / findings / reviews）→ 每条需求的引用关系、未实现、悬空引用；`research/`、`reviews/` 与**定义需求的文件**都不算实现 |
-| `status.ts` | 308 | 报告（`buildPrototypeStatus` / `listPrototypeStatuses`）+ 门禁 `whyPrototypeIsNotSettled`（**只数事实**：有需求没人实现、有链接指向不存在的文件；异议不进门禁，见 §2⑬）。报告把 `specificationFiles`（定义需求的文件）与 `files`（其余材料）分开，并带上 `links`；断链同时进 `briefIssues` 与门禁 |
+| `status.ts` | 316 | 报告（`buildPrototypeStatus` / `listPrototypeStatuses`）+ 门禁 `whyPrototypeIsNotSettled`（**只数事实**：有需求没人实现、有链接指向不存在的文件；异议不进门禁，见 §2⑬）。报告把 `specificationFiles`（定义需求的文件）与 `files`（其余材料）分开，并带上 `links`；断链同时进 `briefIssues` 与门禁 |
 | `notices.ts` | 99 | 可翻译的 notice：`code` + `params` + 由同一组 params 生成的**英文句**（agent 输出与详情页共读） |
 | `prompt.ts` | 244 | 绑定会话的 `<prototype_context>` 块（`buildPrototypePromptContext` / `formatPrototypeContextForPrompt`） |
 | `project-link.ts` | 84 | 项目侧「碰过哪些原型」（`ProjectConfig.prototypeSlugs`，背景记录，不绑定不解析） |
@@ -46,7 +46,10 @@
 ### RPC 与渲染层
 
 - 通道：定义在 `packages/shared/src/protocol/channels.ts`，分类在 `packages/shared/src/protocol/routing.ts`；handler 在 `packages/server-core/src/handlers/rpc/prototypes.ts`（`list` / `create` / `duplicate` / `delete` / `watch` / `unwatch` / `changed`，watcher 100ms 去抖），注册进 `packages/server-core/src/handlers/rpc/index.ts`；渲染层经 `apps/electron/src/transport/channel-map.ts` 与 `apps/electron/src/shared/types.ts` 的 `window.electronAPI.*` 桥过去（见 §2④）。
-- `apps/electron/src/renderer/pages/PrototypeInfoPage.tsx`：详情页——需求（`PRD.md` + 每条被谁引用）、研究、文件。**文件列表里的"材料"凡是 app 自己能显示的，点名字就是"看"；还有第二种动作（改）的那些，行内多一个铅笔**（详情页自己托管的三种由 `inAppKind()` 判定，**其余一律落回全局的 `classifyFile()`**；行内图标与点击读的是同一条判断，所以图片画的是图片图标、点开就是 app 内置的大图）：
+- `apps/electron/src/renderer/pages/PrototypeInfoPage.tsx`：详情页——**规格**、**每条需求被谁引用**、**这个目录里的其它文件**，三段各自一个 `Info_Section`。**一段一个问题**，边界是照 Skill / Source / Automation 那一族定的：不上页内 tabs（全库只有 `ProjectInfoPage` 用 tabs），也不引子路由——子项要么跳顶层路由，要么就地开 overlay。
+  - **规格**：`PRD.md`（`PROTOTYPE_PRD_FILENAME`，约定的入口）是**唯一被预览的一篇**，且**加了帽**（`maxHeight={540}` + `fullscreen`，与 Skill 的 Instructions、Source 的 Documentation 同一对）——没有帽时一份长 PRD 会把下面所有段推走，「乱」有一半来自这里。预览上方是**文档索引**（`specDocuments` = 入口 + 其它定义了需求的 md，每行可点、右侧列出它定义了哪些 id）：那是这些文档**唯一被点名的地方**——「定义了需求的文件」不在「其它文件」段里（status 把目录切成两份，互不重叠），所以没有索引就没有浏览路径。「指向 / 被指向」只读入口文档的边，留着是为了知道这个目录还有哪些文档。
+  - **每条需求被谁引用**：一张覆盖**所有**需求的表（不只入口文档定义的那些）。**引用它的文件名可点**，走 `openFolderEntry()`——与「其它文件」段**同一套判定**（`inAppKind` → 各自的 overlay，其余交系统），所以一条引用**可以被查**，而不是只能被信；这是「工作台」与「文件夹浏览器」的分界线。洞察仍是带标签的纯文本（证据不是实现）。某条需求写在哪个文档不再逐行重念，由上面的索引给。
+  - **findings 与异议都不单独成段**。findings：它已经在它支持的那条需求上（覆盖表里的 `F-00x (洞察)`），`research/` 也不交付。异议：`reviews/` 唯一的写者就是做这份工作的 agent（指南的工作流第 5 步就是 "argue with it"），所以那段会是**作者在回答自己**、给自述套一个第二声音；`status.reviews.unresolved` 现在只被 prompt 与 CLI 读，页面不读。**它也不进徽章**（异议是主张不是事实缺口）—— 一条异议要么在它那条需求行上（`异议: D-001`，**只是指针**：`requirements[].disputes` 装的是指向该需求的**全部** review，含已答复的 `fixed` / `rebutted` / `accepted`，所以标签不写"未答复"），要么在不合格时进页脚 `briefIssues`（`reviews.ts` 对"没有可用 `about:`"与"指向一个没有文档定义的 id"各报一条）。**「文件」与「规格」是两段，不是一段**：它列的是"需求之外、这个目录里剩下的一切"，所以规格那段没有内容时它照样列（只有目录本身是空的才显示空态）。**文件列表里的"材料"凡是 app 自己能显示的，点名字就是"看"；还有第二种动作（改）的那些，行内多一个铅笔**（详情页自己托管的三种由 `inAppKind()` 判定，**其余一律落回全局的 `classifyFile()`**；行内图标与点击读的是同一条判断，所以图片画的是图片图标、点开就是 app 内置的大图）：
   - `.drawio`：点名字 = 大弹窗看图（`DrawioOverlay initialMode="view"`；**开之前先在详情页里读文件**，因为查看器要的是文档本身，读不出来就走详情页自己的错误行而不是给一张白画布），行内铅笔 = 编辑器（`initialMode="edit"`，编辑器自己读文件，它还要知道"从哪一版开始改"）。**大窗头部的铅笔在两面之间切**（`headerActions` 里，编辑器那面显示眼睛；只在 `onWriteFile` 在时画），所以看图那条路也有编辑入口；切回看图时画的是**本次窗口里写过的最新文档**（`written ?? xml`），不是开窗时那份。看图期间 `status` 每次刷新会重读一次，agent 改完图会重画。
   - `.html`/`.htm`：点名字 = **大窗里画这份 HTML**（`HTMLPreviewOverlay`，与 `html-preview` 块同一个窗口；走的是 app 那条通用开路 `onOpenFile` → `useLinkInterceptor` → `classifyFile` 判成 `html` → 读文件 → 大窗）。**这一跳不由详情页自己决定**：这一行 HTML 和聊天里的一条 `.html` 链接走的是同一个判断，详情页只是又一次点击。**它是一个文档，不是一个浏览上下文**：frame 是 `srcDoc`，没有自己的地址，所以相对引用、脚本、`fetch` 都不成立（相对链接会解析到 app 自己的地址——这条路的已知粗糙边，见 `HTMLPreviewOverlay` 头上的说明）。**要让这份 HTML 真的在浏览器里跑起来，用大窗头部右上角的「在浏览器中打开」**（`preview.openInBrowser`）：它在工作区的浏览器窗口里以 `file://` 开这个文件，成为一个有自己地址的 tab——那里相对引用、脚本、链接全对，而且那是 agent 接得上的面（`browser_tool` 驱动的是窗口里的 tab，驱动不了渲染层里的 frame）。**那颗按钮走哪个浏览器由应用偏好决定**（`UserPreferences.openInAppBrowser`，缺省应用内；关掉即系统默认程序），与链接同一个开关，见下一条。行内铅笔 = 大窗直接开在 `initialMode="edit"`（`HtmlDesignEditor`，写回文件）；**点名字这一档是纯查看**（HTML 以 `__single__` 一项交给大窗，没有写回目标，所以头部那颗看 / 改开关不出现——"改"是行内铅笔的事）。**这一档没有"看源码"的面**：读 markup 是编辑器的事，一行之遥。读不出来时退回代码大窗报那行错误，跟 json / drawio 两个分支同一个做法。
   - `.md`/`.mdx`：点名字 = 大弹窗**读**这份文档（`MarkdownFileOverlay`，里面是 `MarkdownEditorPane` 的渲染面；`initialMode` 缺省就是 `'view'`）。**行内没有铅笔**：大窗头部自带"看 / 改"那个铅笔（`headerActions`），行内再来一个只是同一个开关的第二个位置（见 §7.4）。
@@ -201,7 +204,7 @@ agent 命令层：`packages/shared/src/agent/__tests__/tool-commands.test.ts`（
 
 | 项 | 不对时看哪 |
 |---|---|
-| 详情页渲染（需求 / 文件 / findings / reviews / 门禁徽章与逐条文案） | `PrototypeInfoPage.tsx`；文案是 `packages/shared/src/prototypes/notices.ts` 的 `code + params`，翻译 missing 时先看 locale |
+| 详情页渲染（规格 / 每条需求被谁引用 / 文件 / 门禁徽章与逐条文案） | `PrototypeInfoPage.tsx`；文案是 `packages/shared/src/prototypes/notices.ts` 的 `code + params`，翻译 missing 时先看 locale |
 | 原型列表（计数、选中、行菜单） | `PrototypesListPanel.tsx`、`atoms/prototypes.ts`、`usePrototypes.ts` |
 | 创建对话框 | `CreatePrototypeDialog.tsx`（名字非法时错误就地渲染） |
 | 复制 / 删除 | `AppShell.tsx` 的 `handleDuplicatePrototype` / `handleDeletePrototype`（删除是 `window.confirm`） |

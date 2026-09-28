@@ -38,3 +38,15 @@ export const PROTOTYPE_RESEARCH_DIRNAME = 'research'
  * disagreed with.
  */
 export const PROTOTYPE_REVIEWS_DIRNAME = 'reviews'
+
+/**
+ * The conventional entry document's file name — what `create` seeds, and the index the detail page
+ * reads the specification through.
+ *
+ * Here, with the directory names, rather than in `requirements.ts` where it was born: the renderer
+ * needs the value, and a value import from any other module of this family drags the barrel behind
+ * it into the renderer build (see the header). It says nothing about where requirements live — an
+ * author who splits the specification into `docs/features.md` and `docs/personas.md` has simply
+ * organized their work, and every one of those files is read the same way.
+ */
+export const PROTOTYPE_PRD_FILENAME = 'PRD.md'

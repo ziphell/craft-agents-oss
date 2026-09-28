@@ -14,13 +14,23 @@
  *    **facts only** — a requirement nothing implements, a link that points at nothing
  *    — each spelled out, one line per notice, with **one action per line: "hand it to
  *    the conversation"**, because that is what settles either one.
- * 2. **The work itself**, in this order: the **requirements** (each defining document, and what
- *    refers to each of its requirements) and the **research** behind them.
+ * 2. **The work itself**, in this order: the **specification** — every document it is made of, each
+ *    named and openable, with `PRD.md` (the entry) read whole under them — then **what refers to
+ *    each requirement** (the thread this is a workbench for), then the **rest of the folder** (the
+ *    material the work is made of, listed by name).
  *
- * What is deliberately **not** here: objections as a section of their own. An objection is a
- * claim, not a missing fact, so it neither gets a section nor holds the work back — it is shown
- * where it is *about* something, on the requirement its `about:` names, and settled in the
- * conversation like everything else a run produces.
+ * What is deliberately **not** a section: objections and research.
+ *
+ * An objection gets no list of its own because the only writer is the agent that did the work — the
+ * guide's own workflow ends with "argue with it" — so a dispute is the author answering its own
+ * position, and a list of them would be a self-critique wearing a second voice. It is not in the
+ * gate either: an objection is somebody's claim, not a fact about the files, so it never counts as
+ * unfinished work (`status.ts`). Nothing is hidden by that: a dispute is named where it stands — as
+ * a pointer on the requirement its `about:` names, and, for one that names nothing or names an id
+ * no document defines, as a file-level line in the brief issues.
+ *
+ * A finding gets no section because it is already shown where it matters, on the requirement it
+ * argues for, and the notes in `research/` are not part of what is handed over.
  *
  * Each section costs one line while it is empty, so an untouched prototype is a
  * short screen instead of a stack of "nothing here yet".
@@ -42,7 +52,6 @@ import { File, FileText, FlaskConical, FolderOpen, Globe, Image, MessageSquare, 
 import { classifyFile, DrawioOverlay, HTMLPreviewOverlay, MarkdownFileOverlay } from '@craft-agent/ui'
 import { useActiveWorkspace, useAppShellContext } from '@/context/AppShellContext'
 import { navigate, routes } from '@/lib/navigate'
-import { cn } from '@/lib/utils'
 import { usePrototypeAskAgent } from '@/hooks/usePrototypeAskAgent'
 import { sessionMetaMapAtom } from '@/atoms/sessions'
 import { Info_Page, Info_Section, Info_Badge, Info_Alert, Info_Markdown } from '@/components/info'
@@ -53,6 +62,9 @@ import {
 } from '@/components/ui/styled-dropdown'
 import { Button } from '@/components/ui/button'
 import type { PrototypeStatus } from '@craft-agent/shared/prototypes'
+// A value rather than a type, and from `types.ts` rather than the barrel: the barrel reaches the
+// Claude Agent SDK, which cannot be bundled for the renderer (see that module's header).
+import { PROTOTYPE_PRD_FILENAME } from '@craft-agent/shared/prototypes/types'
 
 interface PrototypeInfoPageProps {
   prototypeSlug: string
@@ -133,13 +145,55 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
   /** Failure from an action this page runs — it surfaces the throwing call's message verbatim. */
   const [actionError, setActionError] = useState<string | null>(null)
   /**
-   * The specification, as the page shows it: each defining document's text, keyed by absolute path.
+   * `PRD.md`'s text — the entry document, shown whole as the index the specification is read from.
    *
-   * The status carries paths rather than text (`status.ts`), so every document is re-read on every
-   * status load — an edit has to show up. `null` marks a document that exists but could not be read,
-   * which is said out loud rather than shown as blank; a missing key is a read still in flight.
+   * The status carries paths rather than text (`status.ts`), so it is re-read on every status load
+   * — an edit has to show up. `null` marks a document that exists but could not be read, which is
+   * said out loud rather than shown as blank; `undefined` is a read still in flight.
    */
-  const [specDocs, setSpecDocs] = useState<Record<string, string | null>>({})
+  const [prdDoc, setPrdDoc] = useState<string | null | undefined>(undefined)
+  /**
+   * The prototype's entry document — `PRD.md`, the index (`requirements.ts`).
+   *
+   * It is one of the folder's own files, so it arrives in whichever of the two lists the status
+   * splits the folder into: `specificationFiles` while it states a requirement, `files` while it is
+   * prose that states none. Both are the same file on disk, and the page shows it the same way.
+   * Matched without case: a filesystem that cannot tell `PRD.md` from `prd.md` should not hide the
+   * index over a capital letter.
+   */
+  const prdFile = useMemo(() => {
+    if (!status) return null
+    return (
+      [...status.specificationFiles, ...status.files].find(
+        (file) => file.name.toLowerCase() === PROTOTYPE_PRD_FILENAME.toLowerCase(),
+      ) ?? null
+    )
+  }, [status])
+  /**
+   * The documents the specification is made of, in the order they are read: the entry document
+   * first, then every other document that states a requirement, in the order the folder has them.
+   *
+   * The entry is listed even when it states nothing — it is where the specification begins, and a
+   * page that read a document out without naming it would leave the reader to guess which it was.
+   * Every other document here is one the folder list below cannot name: a document that states a
+   * requirement is not one of "the rest of the folder".
+   */
+  const specDocuments = useMemo(() => {
+    if (!status) return []
+    const others = status.specificationFiles.filter((file) => file.name !== prdFile?.name)
+    return prdFile ? [prdFile, ...others] : others
+  }, [status, prdFile])
+  /**
+   * The entry document's edges, read from both ends: what it points at, and what points back at it.
+   * Navigation only — where to read next, never whether a requirement is done.
+   */
+  const prdLinks = useMemo(() => {
+    if (!status || !prdFile) return { outgoing: [], incoming: [] }
+    return {
+      outgoing: status.links.filter((link) => link.from === prdFile.name && link.to !== null),
+      incoming: status.links.filter((link) => link.to === prdFile.name && link.from !== prdFile.name),
+    }
+  }, [status, prdFile])
 
   // Load the status report for this prototype. `listPrototypes` is the only
   // read path for a single prototype's status, so pick our slug out of it.
@@ -174,36 +228,32 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
   // A different prototype is a different piece of work: what is on screen belongs to
   // the one you were looking at.
   useEffect(() => {
-    setSpecDocs({})
+    setPrdDoc(undefined)
   }, [prototypeSlug])
 
-  // The documents the specification is made of — one file or several. Re-read on every status
-  // load (the status is what says which files define requirements, and an edit arrives as a status
-  // change) and kept while re-reading, so a reload does not blank the section for a frame.
-  // Guarded on the slug because a status from the prototype we just left is still in state for a
-  // render: reading it would show the wrong documents for that frame.
+  // The entry document. Re-read on every status load (an edit arrives as a status change) and kept
+  // while re-reading, so a reload does not blank the section for a frame. Guarded on the slug
+  // because a status from the prototype we just left is still in state for a render: reading it
+  // would show another prototype's document for that frame.
   useEffect(() => {
-    const files = status && status.slug === prototypeSlug ? status.specificationFiles : []
-    if (files.length === 0) {
-      setSpecDocs({})
+    const file = status && status.slug === prototypeSlug ? prdFile : null
+    if (!file) {
+      setPrdDoc(undefined)
       return
     }
     let cancelled = false
-    Promise.all(
-      files.map(async (file): Promise<[string, string | null]> => {
-        try {
-          return [file.path, await window.electronAPI.readFile(file.path)]
-        } catch {
-          return [file.path, null]
-        }
-      }),
-    ).then((entries) => {
-      if (!cancelled) setSpecDocs(Object.fromEntries(entries))
-    })
+    window.electronAPI
+      .readFile(file.path)
+      .then((content) => {
+        if (!cancelled) setPrdDoc(content)
+      })
+      .catch(() => {
+        if (!cancelled) setPrdDoc(null)
+      })
     return () => {
       cancelled = true
     }
-  }, [status, prototypeSlug])
+  }, [status, prototypeSlug, prdFile])
 
   // Re-read on artifact changes (event carries only the changed file name).
   // Silent so a burst of writes doesn't flash the spinner.
@@ -329,6 +379,25 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
       setHtmlFile(path)
     },
     [openDiagram, onOpenFile],
+  )
+
+  /**
+   * Open one of the prototype's files by the name the folder list shows it under.
+   *
+   * The same judgement that list makes — the app can show three formats itself, everything else is
+   * handed to whatever the person has — because a name reached from the requirement table and the
+   * identical row in the folder list must not open two different ways. That is what makes a
+   * reference checkable rather than something to be believed.
+   */
+  const openFolderEntry = useCallback(
+    (name: string, mode: 'view' | 'edit' = 'view') => {
+      if (!status) return
+      const path = absolutePath(status.dir, name)
+      const kind = inAppKind(name)
+      if (kind) openInApp(kind, path, mode)
+      else onOpenFile(path)
+    },
+    [status, openInApp, onOpenFile],
   )
 
   /**
@@ -474,265 +543,268 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
             </Info_Alert>
           )}
 
-          {/* Requirements — what the work is *for*, before how it is done.
-              The specification is one markdown file or several, so each document that defines
-              requirements is shown as itself rather than a paraphrase of it — prose written to be
-              read, and a list of ids is not the argument — with the requirements it defines listed
-              under it. What a document cannot say about itself is which requirement nothing
-              implements: that is read off `@requirement R-00x` markers in the prototype's files,
-              and the findings appear as evidence, never as implementation — "argued for, never
-              built" must not read as done. The rest of the folder is the author's, in any format,
-              so those files are only listed by name and opened with whatever program the OS has
-              for them. */}
+          {/* The specification — what the work is *for*, before how it is done.
+              It is a set of documents, not one: `PRD.md` is the entry (`requirements.ts`) and any
+              other markdown file that states a requirement is part of it, so all of them are named
+              in one place and each is a way in. This list is the only place the documents other
+              than the entry are named at all — the folder list below cannot name them, because a
+              document that states a requirement is not one of "the rest of the folder".
+              The entry is the one read here whole, under that list, because it is where the
+              specification begins; any other document opens the way documents open everywhere else
+              in the app, in the reader.
+              One thing no document can say about itself is which requirement nothing implements:
+              that is read off `@requirement R-00x` markers in the prototype's files, and the
+              findings appear as evidence, never as implementation — "argued for, never built" must
+              not read as done. It is said in the section below, over **all** requirements rather
+              than one document's share of them, because the question it answers ("what refers to
+              this?") does not depend on which document states the requirement. */}
           <Info_Section
             id="requirements"
-            title={t('prototypeInfo.requirements')}
+            title={t('prototypeInfo.specification')}
             description={
-              status.specificationFiles.length > 0 ? t('prototypeInfo.requirementsHint') : undefined
+              status.requirements.length > 0 ? t('prototypeInfo.requirementsHint') : undefined
             }
-            bare={status.specificationFiles.length === 0}
+            bare={specDocuments.length === 0}
           >
-            {status.specificationFiles.length === 0 ? (
+            {specDocuments.length === 0 ? (
               <p className="pl-1 text-sm text-muted-foreground">
                 {t('prototypeInfo.requirementsEmpty')}
               </p>
             ) : (
               <>
-                {status.specificationFiles.map((file) => {
-                  const content = specDocs[file.path]
-                  // A picture named in a document is read from that document's own folder
-                  // (`baseDir`), so a relative destination resolves the way the author wrote it —
-                  // true for a document at the root and for one in a subfolder alike.
-                  const baseDir = file.path.replace(/[\\/][^\\/]*$/, '')
-                  const defined = status.requirements.filter(
-                    (requirement) => requirement.file === file.name,
-                  )
-                  // Documents point at each other with ordinary markdown links — the renderer draws
-                  // them, and the app opens a relative destination from the document's own folder —
-                  // so all that is read here is the two lists below.
-                  const outgoing = status.links.filter(
-                    (link) => link.from === file.name && link.to !== null,
-                  )
-                  const incoming = status.links.filter(
-                    (link) => link.to === file.name && link.from !== file.name,
-                  )
-                  return (
-                    <div key={file.path}>
-                      <div className="px-6 pt-2 pb-1 font-mono text-xs text-muted-foreground">
-                        {file.name}
-                      </div>
-                      {content === null ? (
-                        <p className="px-6 pb-3 text-sm text-destructive">
-                          {t('prototypeInfo.documentUnreadable')}
-                        </p>
-                      ) : typeof content === 'string' ? (
-                        <Info_Markdown
-                          fullscreen
-                          baseDir={baseDir}
-                          onFileClick={onOpenFile}
-                          onUrlClick={onOpenUrl}
+                <div className="px-6 pt-3 pb-3">
+                  <div className="pb-1 text-xs font-medium text-muted-foreground">
+                    {t('prototypeInfo.specificationDocuments')}
+                  </div>
+                  <ul className="divide-y divide-border/30">
+                    {specDocuments.map((file) => (
+                      <li key={file.path} className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => openFolderEntry(file.name)}
+                          className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-left"
                         >
-                          {content}
-                        </Info_Markdown>
-                      ) : null}
+                          <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          <span className="min-w-0 flex-1 truncate font-mono text-xs">
+                            {file.name}
+                          </span>
+                        </button>
+                        {/* What this document states, so the table below can be read without
+                            having to guess which document to open for a given id. */}
+                        <span className="shrink-0 font-mono text-xs text-muted-foreground">
+                          {status.requirements
+                            .filter((requirement) => requirement.file === file.name)
+                            .map((requirement) => requirement.id)
+                            .join(' ')}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
 
-                      {defined.length > 0 && (
-                        <div className="px-6 pb-3">
-                          <div className="pb-1 text-xs font-medium text-muted-foreground">
-                            {t('prototypeInfo.requirementsCoverage')}
-                          </div>
-                          <ul className="divide-y divide-border/30">
-                            {defined.map((requirement) => {
-                              const covered = [
-                                ...requirement.files,
-                                ...requirement.findings.map((id) => `${id} (${t('prototypeInfo.findingsShort')})`),
-                              ]
-                              return (
-                                <li key={requirement.id} className="flex items-start gap-3 py-1.5">
-                                  <span className="shrink-0 pt-0.5 font-mono text-xs text-foreground/70">
-                                    {requirement.id}
-                                  </span>
-                                  <div
-                                    className={cn(
-                                      'min-w-0 flex-1 font-mono text-xs break-words',
-                                      covered.length > 0 ? 'text-foreground/60' : 'text-destructive',
-                                    )}
-                                  >
-                                    {covered.length > 0
-                                      ? covered.join(', ')
-                                      : t('prototypeInfo.requirementUncovered')}
-                                  </div>
-                                  {/* An objection that still stands: reported here, on the requirement
-                                      it is about, and deliberately **not** what the badge counts — a
-                                      claim is not a missing fact, so it does not hold the work back. */}
-                                  {requirement.disputes.length > 0 && (
-                                    <span className="shrink-0 pt-0.5 text-xs text-warning">
-                                      {t('prototypeInfo.requirementDisputed', {
-                                        ids: requirement.disputes.map((dispute) => dispute.id).join(', '),
-                                      })}
-                                    </span>
-                                  )}
-                                </li>
-                              )
-                            })}
-                          </ul>
-                        </div>
-                      )}
+                {prdFile && (
+                  <div>
+                    {/* No name above the preview: the list above names this document — the entry is
+                        its first row — and a document that reads at all names itself in its own
+                        first heading, so a label here would be the same words a third time. */}
+                    {prdDoc === null ? (
+                      <p className="px-6 pb-3 text-sm text-destructive">
+                        {t('prototypeInfo.documentUnreadable')}
+                      </p>
+                    ) : typeof prdDoc === 'string' ? (
+                      <Info_Markdown
+                        // Long prose is a section, not the page: the cap is what keeps the sections
+                        // below it reachable, and the header's own button is the way to read it
+                        // whole — the pair Skill's Instructions and Source's Documentation use.
+                        maxHeight={540}
+                        fullscreen
+                        // A picture named in the document is read from the document's own folder
+                        // (`baseDir`), so a relative destination resolves the way the author wrote
+                        // it — true for a document at the root and for one in a subfolder alike.
+                        baseDir={prdFile.path.replace(/[\\/][^\\/]*$/, '')}
+                        onFileClick={onOpenFile}
+                        onUrlClick={onOpenUrl}
+                      >
+                        {prdDoc}
+                      </Info_Markdown>
+                    ) : null}
 
-                      {/* The edges between documents, read from both ends: what this one points at,
-                          and what points back at it. Navigation only — it says where to read next,
-                          never whether a requirement is done. */}
-                      {(outgoing.length > 0 || incoming.length > 0) && (
-                        <div className="px-6 pb-3 font-mono text-xs text-foreground/60">
-                          {outgoing.length > 0 && (
-                            <div className="flex flex-wrap items-baseline gap-x-1.5 py-0.5">
-                              <span className="text-muted-foreground">
-                                {t('prototypeInfo.linksTo')}
-                              </span>
-                              {outgoing.map((link) => (
-                                <button
-                                  key={link.target}
-                                  type="button"
-                                  onClick={() => openPrototypeFile(link.to as string)}
-                                  className="text-accent hover:underline"
-                                >
-                                  {link.target}
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                          {incoming.length > 0 && (
-                            <div className="flex flex-wrap items-baseline gap-x-1.5 py-0.5">
-                              <span className="text-muted-foreground">
-                                {t('prototypeInfo.linkedFrom')}
-                              </span>
-                              {incoming.map((link) => (
-                                <button
-                                  key={link.from}
-                                  type="button"
-                                  onClick={() => openPrototypeFile(link.from)}
-                                  className="text-accent hover:underline"
-                                >
-                                  {link.from}
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )
-                })}
-
-                {status.files.length > 0 && (
-                  <div className="px-6 pb-3">
-                    <div className="pb-1 text-xs font-medium text-muted-foreground">
-                      {t('prototypeInfo.requirementsFiles')}
-                    </div>
-                    <ul className="divide-y divide-border/30">
-                      {status.files.map((file) => {
-                        // A material the app can show is something to *look at* first: the row
-                        // opens it — in an overlay here, or in the browser window for a page —
-                        // and where there is a second surface, the pencil beside it is the way
-                        // in. A document is the exception: it has one surface, and the row opens
-                        // it — which is also why there is no pencil on that row. Everything else
-                        // is handed to whatever the person has for it. The icon says which is
-                        // which before the click.
-                        const kind = inAppKind(file.name)
-                        // What the rest of the folder opens as. The icon is read off the same
-                        // classifier the click itself goes by, so it cannot promise a different
-                        // answer than the one the row gives — an image shows a picture here and
-                        // opens as one (`ImagePreviewOverlay`, like any image link in the app).
-                        const isImage = !kind && classifyFile(file.name).type === 'image'
-                        return (
-                          <li key={file.name} className="flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() =>
-                                kind ? openInApp(kind, file.path, 'view') : onOpenFile(file.path)
-                              }
-                              className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-left"
-                            >
-                              {kind === 'drawio' ? (
-                                <Workflow className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                              ) : kind === 'html' ? (
-                                <Globe className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                              ) : kind === 'markdown' ? (
-                                <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                              ) : isImage ? (
-                                <Image className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                              ) : (
-                                <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                              )}
-                              <span className="min-w-0 flex-1 truncate font-mono text-xs">
-                                {file.name}
-                              </span>
-                            </button>
-                            {(kind === 'drawio' || kind === 'html') && (
+                    {/* The edges between documents, read from both ends: what the entry points at,
+                        and what points back at it. Navigation only — it says where to read next,
+                        never whether a requirement is done. */}
+                    {(prdLinks.outgoing.length > 0 || prdLinks.incoming.length > 0) && (
+                      <div className="px-6 pb-3 font-mono text-xs text-foreground/60">
+                        {prdLinks.outgoing.length > 0 && (
+                          <div className="flex flex-wrap items-baseline gap-x-1.5 py-0.5">
+                            <span className="text-muted-foreground">
+                              {t('prototypeInfo.linksTo')}
+                            </span>
+                            {prdLinks.outgoing.map((link) => (
                               <button
+                                key={link.target}
                                 type="button"
-                                onClick={() => openInApp(kind, file.path, 'edit')}
-                                title={t('common.edit')}
-                                aria-label={t('common.edit')}
-                                className="shrink-0 p-1 text-muted-foreground/40 transition-colors hover:text-foreground"
+                                onClick={() => openPrototypeFile(link.to as string)}
+                                className="text-accent hover:underline"
                               >
-                                <Pencil className="h-3.5 w-3.5" />
+                                {link.target}
                               </button>
-                            )}
-                          </li>
-                        )
-                      })}
-                    </ul>
+                            ))}
+                          </div>
+                        )}
+                        {prdLinks.incoming.length > 0 && (
+                          <div className="flex flex-wrap items-baseline gap-x-1.5 py-0.5">
+                            <span className="text-muted-foreground">
+                              {t('prototypeInfo.linkedFrom')}
+                            </span>
+                            {prdLinks.incoming.map((link) => (
+                              <button
+                                key={link.from}
+                                type="button"
+                                onClick={() => openPrototypeFile(link.from)}
+                                className="text-accent hover:underline"
+                              >
+                                {link.from}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </>
             )}
           </Info_Section>
 
-          {/* Objections are **not** shown here.
-              They are what a run produced, and they are settled in the conversation:
-              somebody has to answer the objection — so a section for them could only
-              offer a jump into an empty room. Nothing is lost: the objections that still
-              stand are named one by one in the gate above, and their entry is "hand it
-              to the conversation". */}
+          {/* What refers to each requirement — the thread this is a workbench for, and the one
+              answer no document can give about itself. Every name is a way *in*: opening one is the
+              same judgement the folder list below makes, so a reference can be checked rather than
+              believed. A finding is evidence and stays labelled, so a requirement argued for never
+              reads as one that was built. An objection that still stands is reported here, on the
+              requirement it is about, and deliberately **not** what the badge counts — a claim is
+              not a missing fact, so it does not hold the work back. */}
+          {status.requirements.length > 0 && (
+            <Info_Section title={t('prototypeInfo.requirementsCoverage')}>
+              <ul className="divide-y divide-border/30 px-6 py-3">
+                {status.requirements.map((requirement) => {
+                  const covered = requirement.files.length > 0 || requirement.findings.length > 0
+                  return (
+                    <li key={requirement.id} className="flex items-start gap-3 py-1.5">
+                      <span className="shrink-0 pt-0.5 font-mono text-xs text-foreground/70">
+                        {requirement.id}
+                      </span>
+                      <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5 font-mono text-xs">
+                        {!covered && (
+                          <span className="text-destructive">
+                            {t('prototypeInfo.requirementUncovered')}
+                          </span>
+                        )}
+                        {requirement.files.map((name) => (
+                          <button
+                            key={name}
+                            type="button"
+                            onClick={() => openFolderEntry(name)}
+                            className="text-accent hover:underline"
+                          >
+                            {name}
+                          </button>
+                        ))}
+                        {requirement.findings.map((id) => (
+                          <span key={id} className="text-foreground/60">
+                            {`${id} (${t('prototypeInfo.findingsShort')})`}
+                          </span>
+                        ))}
+                      </div>
+                      {requirement.disputes.length > 0 && (
+                        <span className="shrink-0 pt-0.5 text-xs text-warning">
+                          {t('prototypeInfo.requirementDisputed', {
+                            ids: requirement.disputes.map((dispute) => dispute.id).join(', '),
+                          })}
+                        </span>
+                      )}
+                    </li>
+                  )
+                })}
+              </ul>
+            </Info_Section>
+          )}
 
-          {/* Research — what was learned about other products. Source and
-              requirements are the two edges that make a finding more than a
-              bookmark, and neither is part of the handover. */}
+          {/* The rest of the folder: everything that is not a document defining a requirement, in
+              any format, listed by name and opened with whatever program the OS has for it. It sits
+              *beside* the specification rather than under it — these files belong to the folder,
+              not to the requirements — and so it does not depend on the section above having
+              anything in it: a prototype whose markdown states no requirement still has its files,
+              and they are listed all the same. */}
           <Info_Section
-            title={t('prototypeInfo.research')}
-            description={t('prototypeInfo.researchHint')}
-            bare={status.findings.length === 0}
+            title={t('prototypeInfo.requirementsFiles')}
+            bare={status.files.length === 0}
           >
-            {status.findings.length === 0 ? (
+            {status.files.length === 0 ? (
               <p className="pl-1 text-sm text-muted-foreground">
-                {t('prototypeInfo.researchEmpty')}
+                {t('prototypeInfo.filesEmpty')}
               </p>
             ) : (
-              <ul className="divide-y divide-border/30">
-                {status.findings.map((finding) => (
-                  <li key={finding.id} className="flex items-start gap-3 px-4 py-2">
-                    <span className="shrink-0 pt-0.5 font-mono text-xs text-foreground/70">
-                      {finding.id}
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm">{finding.claim ?? t('prototypeInfo.findingNoClaim')}</div>
-                      <div className="mt-0.5 font-mono text-xs break-words text-foreground/60">
-                        {finding.source ?? finding.file}
-                        {finding.requirements.length > 0
-                          ? ` · ${t('prototypeInfo.findingArguesFor')} ${finding.requirements.join(', ')}`
-                          : ''}
-                      </div>
-                    </div>
-                  </li>
-                ))}
+              <ul className="divide-y divide-border/30 px-6 py-3">
+                {status.files.map((file) => {
+                  // A material the app can show is something to *look at* first: the row
+                  // opens it — in an overlay here, or in the browser window for a page —
+                  // and where there is a second surface, the pencil beside it is the way
+                  // in. A document is the exception: it has one surface, and the row opens
+                  // it — which is also why there is no pencil on that row. Everything else
+                  // is handed to whatever the person has for it. The icon says which is
+                  // which before the click.
+                  const kind = inAppKind(file.name)
+                  // What the rest of the folder opens as. The icon is read off the same
+                  // classifier the click itself goes by, so it cannot promise a different
+                  // answer than the one the row gives — an image shows a picture here and
+                  // opens as one (`ImagePreviewOverlay`, like any image link in the app).
+                  const isImage = !kind && classifyFile(file.name).type === 'image'
+                  return (
+                    <li key={file.name} className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => openFolderEntry(file.name)}
+                        className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-left"
+                      >
+                        {kind === 'drawio' ? (
+                          <Workflow className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        ) : kind === 'html' ? (
+                          <Globe className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        ) : kind === 'markdown' ? (
+                          <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        ) : isImage ? (
+                          <Image className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        ) : (
+                          <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        )}
+                        <span className="min-w-0 flex-1 truncate font-mono text-xs">
+                          {file.name}
+                        </span>
+                      </button>
+                      {(kind === 'drawio' || kind === 'html') && (
+                        <button
+                          type="button"
+                          onClick={() => openFolderEntry(file.name, 'edit')}
+                          title={t('common.edit')}
+                          aria-label={t('common.edit')}
+                          className="shrink-0 p-1 text-muted-foreground/40 transition-colors hover:text-foreground"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </li>
+                  )
+                })}
               </ul>
             )}
           </Info_Section>
 
           {/* The silent failures of the layer above — a requirement nothing
               implements, a marker naming an id the PRD does not define, a finding
-              with no claim or with evidence that is not there. */}
+              with no claim or with evidence that is not there. A finding's own
+              problems are reported here rather than in a section of their own: the
+              finding itself is already shown on the requirement it argues for, and
+              `research/` is not part of what is handed over. */}
           {status.briefIssues.length > 0 && (
             <Info_Alert variant="warning" icon={<TriangleAlert className="h-4 w-4" />}>
               <Info_Alert.Title>{t('prototypeInfo.briefIssues')}</Info_Alert.Title>

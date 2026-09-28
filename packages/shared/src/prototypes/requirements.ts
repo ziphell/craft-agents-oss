@@ -34,6 +34,7 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 import { markerIndex } from '../markers.ts'
 import { contentFingerprint, getPrototypeDirPath, isMarkdownFile, listPrototypeFiles } from './storage.ts'
+import { PROTOTYPE_PRD_FILENAME } from './types.ts'
 
 const REQUIREMENT_MARKER = '@requirement'
 
@@ -85,14 +86,6 @@ export function extractRequirementIds(source: string): string[] {
 
   return ids
 }
-
-/**
- * The conventional entry document's file name — what `create` seeds and what `getPrototypePrdPath`
- * names. Not a rule about where requirements live any more: an author who splits the specification
- * into `docs/features.md` and `docs/personas.md` has simply organized their work, and every one of
- * those files is read the same way.
- */
-export const PROTOTYPE_PRD_FILENAME = 'PRD.md'
 
 /** Absolute path to the prototype's conventional entry document (`PRD.md`). */
 export function getPrototypePrdPath(workspaceRootPath: string, slug: string): string {
