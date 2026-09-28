@@ -156,7 +156,7 @@ function prototypeStatus(slug: string, overrides: Partial<PrototypeStatus> = {})
     links: [],
     findings: [],
     reviews: { total: 0, byStatus: { open: 0, fixed: 0, rebutted: 0, accepted: 0 }, unresolved: [] },
-    unresolved: { unmet: [], disputes: [] },
+    unresolved: { unmet: [], brokenLinks: [] },
     settleBlockers: [],
     briefIssues: [],
     ...overrides,
@@ -501,10 +501,10 @@ describe('the pane tools', () => {
       expect(issues.content[0].text).toContain('R-003 is in PRD.md but no file refers to it')
     })
 
-    // The two things a reader has to know before calling a prototype finished, and the line that
-    // says it is not: what was argued, and what is still owed. Both come from the same report the
-    // gate reads, so the command cannot look calmer than the export would be.
-    it('reports what stands disputed and what is still owed', async () => {
+    // What was argued and what is still owed are two different lists. An objection is reported —
+    // named on the requirement it is about and quoted under `reviews:` — while `unresolved:` holds
+    // only the facts the gate counts. A claim is not a missing fact, so it does not hold the work back.
+    it('reports what stands disputed separately from what is still owed', async () => {
       const dispute = {
         id: 'D-001',
         file: 'reviews/D-001-price.md',
@@ -519,7 +519,7 @@ describe('the pane tools', () => {
           specificationFiles: [{ name: 'PRD.md', path: `/tmp/prototypes/${slug}/PRD.md` }],
           requirements: [requirement('R-002', 'The cart is priced by the service', { disputes: [dispute] })],
           reviews: { total: 2, byStatus: { open: 1, fixed: 1, rebutted: 0, accepted: 0 }, unresolved: [dispute] },
-          unresolved: { unmet: [], disputes: [dispute] },
+          unresolved: { unmet: [], brokenLinks: [] },
         })
 
       const result = await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })
@@ -528,12 +528,26 @@ describe('the pane tools', () => {
       expect(text).toContain('R-002 The cart is priced by the service — nothing refers to it yet · disputed by D-001')
       expect(text).toContain('reviews:    1 standing of 2 filed')
       expect(text).not.toContain('acceptance:')
-      expect(text).toContain('unresolved: 1')
       // The standing dispute is quoted with why it is stale, so the reader can tell an argument
       // about the current wording from one about a wording that no longer exists.
       expect(text).toContain('reviews/D-001-price.md disputes requirement R-002')
       expect(text).toContain('the requirement was reworded since this was filed')
       expect(text).toContain('and it still stands (open).')
+      // …and it is not what the gate counts.
+      expect(text).toContain('unresolved: nothing')
+    })
+
+    it('names a broken link among what is still owed', async () => {
+      mockFns.prototypeStatus = async (slug) =>
+        prototypeStatus(slug, {
+          unresolved: { unmet: [], brokenLinks: [{ from: 'PRD.md', target: 'docs/flow.md' }] },
+        })
+
+      const text = (await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })).content[0]
+        .text
+
+      expect(text).toContain('unresolved: 1')
+      expect(text).toContain('PRD.md links to docs/flow.md, which is not in this prototype.')
     })
 
     it('says so when nothing is owed, rather than staying quiet', async () => {

@@ -117,17 +117,20 @@ export interface PrototypeStatus {
     unresolved: RequirementDispute[]
   }
   /**
-   * What this prototype still owes, in one place, because "is it done?" is one question: a
-   * requirement nothing implements, an objection nobody answered.
+   * What this prototype still owes **as a matter of fact** — the gate's own input
+   * (`whyPrototypeIsNotSettled`): a requirement nothing implements, a link that points at nothing.
    *
-   * The two are deliberately *not* folded into one number — each is a different action — but they
-   * share a field because a gate has to see them together (`whyPrototypeIsNotSettled`).
+   * Both are read off the files and can be checked by anyone, which is what makes them a gate. What
+   * is deliberately **not** here is the argument against the work: an objection that still stands is
+   * somebody's claim, not a fact about the files, so it is reported (`reviews.unresolved`, and per
+   * requirement) without being counted as unfinished work. A tool that cannot judge an objection must
+   * not let one — least of all one the agent wrote itself — veto the handover.
    */
   unresolved: {
     /** Requirement ids nothing implements — the proposal claims what the delivery does not do. */
     unmet: string[]
-    /** Disputes that still stand: open, or a record that disagrees with the files. */
-    disputes: RequirementDispute[]
+    /** Links whose target is not in the prototype — a reader following one arrives nowhere. */
+    brokenLinks: Array<{ from: string; target: string }>
   }
   /**
    * {@link whyPrototypeIsNotSettled} of this very report — the gate in its own words, carried as
@@ -214,7 +217,9 @@ export function buildPrototypeStatus(workspaceRootPath: string, slug: string): P
       unmet: coverage.requirements
         .filter((requirement) => requirement.files.length === 0)
         .map((requirement) => requirement.id),
-      disputes: coverage.reviews.unresolved,
+      brokenLinks: linkReport.links
+        .filter((link) => link.to === null)
+        .map((link) => ({ from: link.from, target: link.target })),
     },
     briefIssues,
   }
@@ -280,14 +285,20 @@ function sourceNameOf(name: string): string {
 /**
  * What this prototype still owes — empty when there is nothing outstanding.
  *
- * This is the **gate**, expressed once: the status output prints it, and a task graph branches on
- * it. Reason-first, for the same reader — an agent that has to decide whether to keep working, or
- * whether what it has is finished.
+ * This is the **gate**, expressed once: the status output prints it, a task graph branches on it,
+ * and the panel's badge counts it. Reason-first, for the same reader — an agent that has to decide
+ * whether to keep working, or whether what it has is finished.
  *
- * Two things count, and they are deliberately not summed into one number: a requirement nothing
- * implements, an objection nobody answered. Each is a different action — and each is a
- * {@link PrototypeNotice}, so the panel can name the action in the reader's language while the
- * sentence the agent prints stays the one above.
+ * **Only facts count**, because a gate has to be answerable: a requirement nothing implements, a
+ * link that points at nothing. Both are read off the files, either can be checked by anyone, and
+ * there is work to do about each.
+ *
+ * The argument against the work is deliberately **not** here. An objection that still stands is a
+ * claim — usually the agent's own, about its own output — and nothing in this workbench can judge
+ * it. A gate that counted one would let the instrument veto its own delivery, and would turn a
+ * sentence somebody wrote into a debt the person pays off by editing a field. So an objection is
+ * *reported* — `reviews.unresolved`, and on the requirement it is about — without blocking the
+ * handover, and the specification carries it honestly to whoever reads it next.
  */
 export function whyPrototypeIsNotSettled(status: PrototypeStatus): PrototypeNotice[] {
   const reasons: PrototypeNotice[] = []
@@ -297,11 +308,8 @@ export function whyPrototypeIsNotSettled(status: PrototypeStatus): PrototypeNoti
     reasons.push(notice('gate.requirementUnmet', { id, file }))
   }
 
-  for (const dispute of status.unresolved.disputes) {
-    const about = dispute.stale && dispute.staleReason ? `${dispute.about} — ${dispute.staleReason}` : dispute.about
-    reasons.push(
-      notice('gate.disputeStanding', { file: dispute.file, about, status: dispute.status }),
-    )
+  for (const link of status.unresolved.brokenLinks) {
+    reasons.push(notice('gate.linkBroken', { from: link.from, target: link.target }))
   }
 
   return reasons

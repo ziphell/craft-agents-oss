@@ -55,6 +55,12 @@ describe('extractLinkTargets', () => {
     expect(extractLinkTargets(source)).toEqual(['docs/page.html'])
   })
 
+  // A picture is a destination too, but it is not a document pointing at another one.
+  it('does not read a picture as a link', () => {
+    expect(extractLinkTargets('![a link in prose](images/links.drawio.svg)')).toEqual([])
+    expect(extractLinkTargets('![diagram](images/a.svg) and [doc](docs/b.md)')).toEqual(['docs/b.md'])
+  })
+
   // A document that explains the convention writes a link inside code, and describing a link must
   // not create one.
   it('leaves `[text](dest)` inside code spans and fenced blocks alone', () => {

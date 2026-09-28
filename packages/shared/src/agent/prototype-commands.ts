@@ -273,12 +273,24 @@ export async function runPrototypeCommand(ctx: ToolCommandContext): Promise<Brow
       `  reviews:    ${status.reviews.unresolved.length} standing of ${status.reviews.total} filed`,
     );
 
-    // What is still owed, last, because it is the thing to act on. One line per reason, each
-    // already a sentence — the gate and this output read the same function, so the report cannot
-    // look calmer than `whyPrototypeIsNotSettled` says the work is.
+    // What still stands is reported here — named, with why it is stale — because it is part of what
+    // a reader of the specification is owed. It is deliberately **not** in `unresolved:` below: that
+    // list is the gate's, and a claim nothing here can judge is not a gate.
+    for (const dispute of status.reviews.unresolved) {
+      const stale = dispute.stale && dispute.staleReason ? ` · stale: ${dispute.staleReason}` : '';
+      lines.push(
+        `      ${dispute.file} disputes ${dispute.about}, and it still stands (${dispute.status ?? 'no status'}).${stale}`,
+      );
+    }
+
+    // What is still owed, last, because it is the thing to act on — the facts only: a requirement
+    // nothing implements, a link that points at nothing. One line per reason, each already a
+    // sentence; the gate and this output read the same function, so the report cannot look calmer
+    // than `whyPrototypeIsNotSettled` says the work is. An objection that still stands is reported
+    // above (`reviews:`) and does not hold the work back — it is a position, not a missing fact.
     const outstanding = whyPrototypeIsNotSettled(status);
     if (outstanding.length === 0) {
-      lines.push('  unresolved: nothing — every requirement is implemented and no dispute stands');
+      lines.push('  unresolved: nothing — every requirement is implemented and every link resolves');
     } else {
       lines.push(`  unresolved: ${outstanding.length}`);
       for (const reason of outstanding) {

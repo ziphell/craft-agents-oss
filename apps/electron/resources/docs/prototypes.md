@@ -128,7 +128,7 @@ The requirement does not say what happens when the line is gone…
 - **`about:`** names one thing: `requirement R-00x`. A dispute that names nothing is an opinion, and the report says so. A dispute is threaded onto the requirement it names, so a review never restates the thread and copies cannot drift.
 - **`status:`** is `open` (it stands), `fixed` (the thing was changed), `rebutted` (you judged it unfounded, reason in the body) or `accepted` (valid, and the cost was taken deliberately).
 - **`on:`** is the **fingerprint of the disputed requirement** as it was written when the review was filed — `status` prints it beside every requirement. It is required, and it is what makes the record checkable: a dispute is reported **stale** when the requirement no longer hashes to that value, so "argued about a wording that no longer exists" cannot pass for a live objection. `fixed` on a requirement that has *not* changed is stale in the same way.
-- An objection that still stands is reported by `status` (and by the app's gate) and stays reported until somebody answers it. Nothing hides it: a specification that lists only what was built hands over a claim rather than a position.
+- An objection that still stands is reported by `status` and shown on the requirement it is about, and it **does not hold the work back**: an argument is a position, not a fact about the files, and nothing here can judge one. Nothing hides it either — a specification that lists only what was built hands over a claim rather than a position.
 
 ---
 
@@ -169,15 +169,17 @@ Prototype "checkout-flow"
   issues:     1
     • R-002 is in PRD.md but no file refers to it, so nothing in this prototype implements it.
   reviews:    1 standing of 2 filed
+      reviews/D-001-total.md disputes requirement R-003, and it still stands (open).
   unresolved: 2
     • R-002 is in PRD.md but no file refers to it, so nothing implements it.
-    • reviews/D-001-total.md disputes requirement R-003, and it still stands (open).
+    • PRD.md links to docs/pricing.md, which is not in this prototype.
 ```
 
 - A row with `nothing refers to it yet` is a requirement nothing implements — the failure this report exists to name.
 - `spec:` names the markdown files that state requirements — one or several; the message about a requirement always names the file it was written in.
 - `issues:` are the silent failures: a reference to an id no document defines, a link that points at nothing, a finding whose `evidence:` is not on disk, a duplicate id.
-- `unresolved:` is what is still **owed** — last, because it is the thing to act on. It is the same list the app's gate reads, so a report cannot look calmer here than the work is.
+- `reviews:` names the arguments that still stand, each with why it is stale when it is. An objection is a position, not a missing fact: it is reported here and on the requirement it is about, and it never holds the work back.
+- `unresolved:` is what is still **owed as a fact** — last, because it is the thing to act on: a requirement nothing implements, a link that points at nothing. It is the list the app's gate reads, so a report cannot look calmer here than the work is.
 - `on:` beside each requirement is the value a review of it writes as `on:` (see `reviews/` above).
 
 ---

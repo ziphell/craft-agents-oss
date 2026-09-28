@@ -38,8 +38,8 @@ export type PrototypeNoticeCode =
   | 'diagram.stale'
   /** `settleBlockers`: a requirement nothing implements. */
   | 'gate.requirementUnmet'
-  /** `settleBlockers`: an objection that still stands. */
-  | 'gate.disputeStanding'
+  /** `settleBlockers`: a link whose target is not in the prototype. */
+  | 'gate.linkBroken'
   /** A diagnostic that stays in its own words. */
   | 'raw'
 
@@ -75,8 +75,8 @@ const ENGLISH: Record<PrototypeNoticeCode, (params: PrototypeNoticeParams) => st
     `${svg} is not what ${source} draws any more — it was exported before the diagram changed.`,
   'gate.requirementUnmet': ({ id, file }) =>
     `${id} is in ${file} but no file refers to it, so nothing implements it.`,
-  'gate.disputeStanding': ({ file, about, status }) =>
-    `${file} disputes ${about}, and it still stands (${status}).`,
+  'gate.linkBroken': ({ from, target }) =>
+    `${from} links to ${target}, which is not in this prototype.`,
   raw: ({ text }) => String(text),
 }
 

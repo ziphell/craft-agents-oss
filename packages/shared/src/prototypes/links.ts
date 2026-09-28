@@ -128,7 +128,12 @@ export function extractLinkTargets(source: string): string[] {
   const seen = new Set<string>()
 
   for (const match of source.matchAll(MARKDOWN_LINK_RE)) {
-    if (ranges.some(([from, to]) => (match.index ?? 0) >= from && (match.index ?? 0) < to)) continue
+    const at = match.index ?? 0
+    if (ranges.some(([from, to]) => at >= from && at < to)) continue
+    // `![alt](src)` is a picture, not a link: the `!` makes it an image, and an image is not a
+    // document pointing at another one. Without this, every diagram in a specification would be
+    // read as a reference to itself.
+    if (source[at - 1] === '!') continue
 
     const raw = match[1] ?? ''
     const destination = (raw.startsWith('<') && raw.endsWith('>') ? raw.slice(1, -1) : raw).split('#')[0] ?? ''

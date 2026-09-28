@@ -10,18 +10,17 @@
  *    the way**: a prototype with nothing outstanding says nothing about it. ("Ready
  *    to hand over" is not a state anybody opened the page to read — and an untouched
  *    prototype, one with no requirements at all, passed that gate too, so the badge
- *    used to announce as ready work that did not exist yet.) The second half is that
- *    count spelled out: one line per outstanding notice, in the reader's language
- *    with the agent's own sentence under it, and **one action per line — "hand it to
- *    the conversation"**. Both kinds of notice end there (a requirement nobody
- *    implemented has to be asked for; an objection has to be answered), so the action
- *    says what it does rather than naming the verdict it belongs to.
+ *    used to announce as ready work that did not exist yet.) What it counts is
+ *    **facts only** — a requirement nothing implements, a link that points at nothing
+ *    — each spelled out, one line per notice, with **one action per line: "hand it to
+ *    the conversation"**, because that is what settles either one.
  * 2. **The work itself**, in this order: the **requirements** (each defining document, and what
  *    refers to each of its requirements) and the **research** behind them.
  *
- * What is deliberately **not** here: objections as a section of their own. They are
- * what a run produced and they are settled in the conversation — the same reason the
- * page does not recount them.
+ * What is deliberately **not** here: objections as a section of their own. An objection is a
+ * claim, not a missing fact, so it neither gets a section nor holds the work back — it is shown
+ * where it is *about* something, on the requirement its `about:` names, and settled in the
+ * conversation like everything else a run produces.
  *
  * Each section costs one line while it is empty, so an untouched prototype is a
  * short screen instead of a stack of "nothing here yet".
@@ -362,9 +361,10 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
    * about work that does not exist yet, and one nobody opened the page to hear. What stands in
    * the way is worth saying; nothing standing in the way is said by saying nothing.
    *
-   * The badge is the one-line state. What it *counts* is listed under it, one notice per line,
-   * because "you owe two things" without them is a dead end — and each line carries the action
-   * that settles it, in the words of that action rather than of the verdict.
+   * What it counts is `settleBlockers` — **facts**: a requirement nothing implements, a link that
+   * points at nothing. An objection that still stands is deliberately not among them: it is a
+   * claim, nothing here can judge it, and counting it would let an agent hold its own delivery
+   * back by writing a file. It is shown per requirement instead.
    */
   const blockers = status?.settleBlockers ?? []
   const notSettled = blockers.length > 0
@@ -372,10 +372,10 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
    * The one way a blocker is settled from here.
    *
    * Both kinds end in the conversation — a requirement nobody implemented has to be asked
-   * for, and an objection has to be answered — so there is one action, not a per-notice
-   * table of destinations. It puts the agent's own sentence into the draft and sends nothing
-   * (`usePrototypeAskAgent`), which is what "hand it over" means: the person still writes
-   * what they want done with it.
+   * for, a link that points at nothing has to be fixed — so there is one action, not a
+   * per-notice table of destinations. It puts the agent's own sentence into the draft and
+   * sends nothing (`usePrototypeAskAgent`), which is what "hand it over" means: the person
+   * still writes what they want done with it.
    */
   const askAgent = usePrototypeAskAgent(prototypeSlug)
 
@@ -562,6 +562,16 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
                                       ? covered.join(', ')
                                       : t('prototypeInfo.requirementUncovered')}
                                   </div>
+                                  {/* An objection that still stands: reported here, on the requirement
+                                      it is about, and deliberately **not** what the badge counts — a
+                                      claim is not a missing fact, so it does not hold the work back. */}
+                                  {requirement.disputes.length > 0 && (
+                                    <span className="shrink-0 pt-0.5 text-xs text-warning">
+                                      {t('prototypeInfo.requirementDisputed', {
+                                        ids: requirement.disputes.map((dispute) => dispute.id).join(', '),
+                                      })}
+                                    </span>
+                                  )}
                                 </li>
                               )
                             })}

@@ -110,7 +110,27 @@ describe('whyPrototypeIsNotSettled', () => {
     )
   })
 
-  it('names an objection nobody answered, and a stale one with its reason', () => {
+  it('names a link that points at nothing, because that is a fact about the files', () => {
+    implementR003()
+    writeFileSync(
+      join(getPrototypeDirPath(workspaceRoot, slug), 'PRD.md'),
+      `${PRD}\nSee [the flow](docs/flow.md).\n`,
+      'utf-8',
+    )
+
+    const reasons = whyPrototypeIsNotSettled(buildPrototypeStatus(workspaceRoot, slug))
+
+    expect(reasons.map((reason) => reason.code)).toEqual(['gate.linkBroken'])
+    expect(reasons[0]?.text).toBe('PRD.md links to docs/flow.md, which is not in this prototype.')
+  })
+
+  /**
+   * An objection is not a fact about the files: nothing here can judge one, so a standing (or stale)
+   * dispute is reported and never counted as unfinished work. Otherwise the agent that wrote the
+   * specification could hold its own delivery back by writing a file about it — and the person would
+   * settle it by editing a field rather than by doing anything.
+   */
+  it('reports an objection nobody answered without counting it against the work', () => {
     implementR003()
     const staleFingerprint = fingerprintOf('R-001', PRD)
     writeReview('D-001-line.md', [
@@ -128,13 +148,16 @@ describe('whyPrototypeIsNotSettled', () => {
       'utf-8',
     )
 
-    const reasons = whyPrototypeIsNotSettled(buildPrototypeStatus(workspaceRoot, slug))
+    const status = buildPrototypeStatus(workspaceRoot, slug)
 
-    expect(reasons).toHaveLength(1)
-    expect(reasons[0]?.code).toBe('gate.disputeStanding')
-    expect(reasons[0]?.text).toContain('reviews/D-001-line.md disputes requirement R-001')
-    expect(reasons[0]?.text).toContain('still stands (open)')
-    expect(reasons[0]?.text).toContain('has changed since this was filed')
+    expect(whyPrototypeIsNotSettled(status)).toEqual([])
+    // …and it is still visible: in the reviews report, with the reason it is stale, and on the
+    // requirement it is about.
+    expect(status.reviews.unresolved.map((dispute) => dispute.id)).toEqual(['D-001'])
+    expect(status.reviews.unresolved[0]?.staleReason).toContain('has changed since this was filed')
+    expect(
+      status.requirements.find((requirement) => requirement.id === 'R-001')?.disputes.map((dispute) => dispute.id),
+    ).toEqual(['D-001'])
   })
 })
 
@@ -178,7 +201,8 @@ describe('the status report carries the argument', () => {
     expect(status.reviews.total).toBe(2)
     expect(status.reviews.byStatus).toEqual({ open: 1, fixed: 0, rebutted: 1, accepted: 0 })
     expect(status.reviews.unresolved.map((dispute) => dispute.id)).toEqual(['D-001'])
-    expect(status.unresolved.disputes).toHaveLength(1)
+    // The gate's own input holds facts only — nothing here is a dispute.
+    expect(status.unresolved.brokenLinks).toEqual([])
   })
 
   it('hangs a dispute on the requirement it names', () => {
