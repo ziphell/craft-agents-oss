@@ -8,7 +8,9 @@ import { FILE_EXTENSIONS_PATTERN } from '../../lib/file-classification'
  * plus custom regex for local file paths.
  */
 
-// Initialize linkify-it with default settings (fuzzy URLs, emails enabled)
+// Initialize linkify-it with default settings. Its fuzzy matching (bare domains) is kept
+// on so `www.` hosts are found, but every fuzzy hit is filtered through isRealUrl() below —
+// only a scheme or a `www.` prefix makes a URL, never a TLD alone.
 const linkify = new LinkifyIt()
 
 // File path regex - detects absolute/home/explicit-relative/bare-relative paths with common extensions
@@ -31,6 +33,23 @@ interface DetectedLink {
   url: string
   start: number
   end: number
+}
+
+/**
+ * Whether a linkify match is an actual URL, rather than a bare domain that only
+ * happens to end in a known TLD.
+ *
+ * A scheme (`https://…`, `mailto:…`) or a `www.` prefix is the author saying "this is a
+ * link". Without one, linkify matches on the TLD list alone — and that list is a poor
+ * witness, because its entries double as file extensions and product names: `README.md`,
+ * `deploy.sh` and `draw.io` all end in a valid TLD and none is an address. Those stay text
+ * (or, when the tail is a known file extension, become file paths via FILE_PATH_REGEX).
+ */
+const SCHEME_REGEX = /^[a-z][a-z0-9+.-]*:\/\//i
+const WWW_REGEX = /^www\./i
+
+function isRealUrl(text: string, schema: string): boolean {
+  return schema === 'mailto:' || SCHEME_REGEX.test(text) || WWW_REGEX.test(text)
 }
 
 interface CodeRange {
@@ -141,6 +160,9 @@ export function detectLinks(text: string): DetectedLink[] {
       matchUrl = matchUrl.replace(trailingMarkdownRe, '')
       matchEnd -= diff
     }
+
+    // Skip bare domains — see isRealUrl().
+    if (!isRealUrl(matchText, match.schema)) continue
 
     links.push({
       type: match.schema === 'mailto:' ? 'email' : 'url',

@@ -57,9 +57,23 @@ describe('preprocessLinks', () => {
       expect(preprocessLinks(input)).toBe('See [apps/electron/resources/docs/browser-tools.md](apps/electron/resources/docs/browser-tools.md) for details')
     })
 
-    it('wraps a bare domain', () => {
+    it('leaves a bare domain as text', () => {
       const input = 'Check out example.com for details'
-      expect(preprocessLinks(input)).toBe('Check out [example.com](http://example.com) for details')
+      expect(preprocessLinks(input)).toBe(input)
+    })
+
+    it('wraps a www. host', () => {
+      const input = 'Check out www.example.com for details'
+      expect(preprocessLinks(input)).toBe('Check out [www.example.com](http://www.example.com) for details')
+    })
+
+    it('leaves a name that ends in a TLD but is not an address', () => {
+      // `.io` is a TLD, so linkify matches `draw.io` — but nothing here says it is a URL.
+      expect(preprocessLinks('Draw it in draw.io')).toBe('Draw it in draw.io')
+    })
+
+    it('leaves a bare file name to the file-path pass', () => {
+      expect(preprocessLinks('See README.md for details')).toBe('See [README.md](README.md) for details')
     })
 
     it('wraps bare URL but preserves adjacent markdown link', () => {
@@ -210,11 +224,19 @@ describe('detectLinks', () => {
     expect(links[0]!.type).toBe('url')
   })
 
-  it('detects a bare domain', () => {
-    const links = detectLinks('Check example.com')
+  it('does not detect a bare domain', () => {
+    expect(detectLinks('Check example.com')).toHaveLength(0)
+  })
+
+  it('detects a www. host', () => {
+    const links = detectLinks('Check www.example.com')
     expect(links).toHaveLength(1)
-    expect(links[0]).toBeDefined()
+    expect(links[0]!.url).toBe('http://www.example.com')
     expect(links[0]!.type).toBe('url')
+  })
+
+  it('reads names with file-extension TLDs as file paths, not domains', () => {
+    expect(detectLinks('The file is deploy.sh and the doc is README.md').map(l => l.type)).toEqual(['file', 'file'])
   })
 
   it('strips trailing ** from bold-wrapped URL', () => {
