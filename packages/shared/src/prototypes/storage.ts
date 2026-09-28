@@ -1,20 +1,16 @@
 /**
  * Prototype workbench storage.
  *
- * The paths inside a prototype's own directory, plus the two small readers that go
- * with them: the listing of the author's own files, and a content fingerprint.
- * Nothing here is an index — a prototype's derived facts are recomputed from disk
- * on every call, so nobody ever contends on a shared hand-written file.
+ * The paths inside a prototype's own directory, plus the one small reader that goes
+ * with them: the listing of the author's own files. Nothing here is an index — a
+ * prototype's derived facts are recomputed from disk on every call, so nobody ever
+ * contends on a shared hand-written file.
  */
 
 import { readdirSync } from 'fs'
-import { createHash } from 'crypto'
 import { join } from 'path'
 import { getWorkspacePrototypesPath } from '../workspaces/storage.ts'
-import {
-  PROTOTYPE_RESEARCH_DIRNAME,
-  PROTOTYPE_REVIEWS_DIRNAME,
-} from './types.ts'
+import { PROTOTYPE_RESEARCH_DIRNAME } from './types.ts'
 
 /**
  * Paths inside a prototype's own directory.
@@ -43,11 +39,6 @@ export function getPrototypeResearchPath(workspaceRootPath: string, slug: string
   return join(getPrototypeDirPath(workspaceRootPath, slug), PROTOTYPE_RESEARCH_DIRNAME)
 }
 
-/** Absolute path to a prototype's reviews — the arguments against the work. */
-export function getPrototypeReviewsPath(workspaceRootPath: string, slug: string): string {
-  return join(getPrototypeDirPath(workspaceRootPath, slug), PROTOTYPE_REVIEWS_DIRNAME)
-}
-
 /**
  * One file of a prototype's own directory: a name to show, and the absolute path to open.
  *
@@ -67,9 +58,10 @@ export interface PrototypeFileEntry {
  * nested in folders. The folder is theirs, so nothing here filters by extension or by anything
  * else — what the author put there is what is listed.
  *
- * Two directories are not the prototype's own files and have readers of their own, so they are
- * not walked: `research/` (findings) and `reviews/` (disputes). Hidden files and directories are
- * skipped — an editor's swap file is not something the author put there.
+ * `research/` is not set aside: its findings have a reader of their own (`research.ts`), but that is
+ * a reader, not a rule about the folder — the files in it are listed here like any other, and
+ * opened from here like any other. Hidden files and directories are skipped — an editor's swap
+ * file is not something the author put there.
  *
  * No file is singled out: with requirements readable from any markdown file, there is no one
  * "brief" to separate (which files define requirements is a fact `requirements.ts` derives).
@@ -95,7 +87,6 @@ export function listPrototypeFiles(workspaceRootPath: string, slug: string): Pro
       const path = join(current, item.name)
 
       if (item.isDirectory()) {
-        if (item.name === PROTOTYPE_RESEARCH_DIRNAME || item.name === PROTOTYPE_REVIEWS_DIRNAME) continue
         walk(path, name)
       } else if (item.isFile()) {
         files.push({ name, path })
@@ -118,15 +109,4 @@ export function listPrototypeFiles(workspaceRootPath: string, slug: string): Pro
 export function isMarkdownFile(name: string): boolean {
   const lower = name.toLowerCase()
   return lower.endsWith('.md') || lower.endsWith('.mdx')
-}
-
-/**
- * A short content fingerprint of a source — the one thing a fingerprint is for here: telling
- * "this file changed" from "this file is as it was" without keeping a copy of it.
- *
- * Used by `reviews/`: a dispute records the fingerprint of what it disputes, and is reported as
- * **stale** if that thing no longer hashes to it.
- */
-export function contentFingerprint(source: string): string {
-  return createHash('sha256').update(source, 'utf-8').digest('hex').slice(0, 8)
 }

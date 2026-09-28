@@ -836,7 +836,6 @@
   "prototypeInfo.notFound": "Prototyp nicht gefunden",
   "prototypeInfo.openChat": "Unterhaltung öffnen",
   "prototypeInfo.openFolder": "Ordner öffnen",
-  "prototypeInfo.requirementDisputed": "Einwand: {{ids}}",
   "prototypeInfo.requirementUncovered": "Noch verweist nichts darauf",
   "prototypeInfo.requirementsCoverage": "Was auf die einzelnen Anforderungen verweist",
   "prototypeInfo.requirementsEmpty": "Noch keine Anforderungen – sie entstehen im Gespräch, der Agent schreibt sie in eine Markdown-Datei.",

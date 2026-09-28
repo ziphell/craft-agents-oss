@@ -6,10 +6,6 @@ import {
   buildPrototypeStatus,
   createPrototype,
   getPrototypeDirPath,
-  getPrototypeReviewsPath,
-  parseRequirementDocument,
-  requirementFingerprint,
-  resolveRequirementCoverage,
   whyPrototypeIsNotSettled,
 } from '..'
 
@@ -21,13 +17,6 @@ const PRD = [
   '## R-003 An order can be cancelled',
   '',
 ].join('\n')
-
-/** The fingerprint a dispute must record for a requirement as the PRD above states it. */
-function fingerprintOf(id: string, prd = PRD): string {
-  const requirement = parseRequirementDocument(prd, 'PRD.md').requirements.find((entry) => entry.id === id)
-  if (!requirement) throw new Error(`fixture PRD has no ${id}`)
-  return requirementFingerprint(requirement)
-}
 
 describe('whyPrototypeIsNotSettled', () => {
   const slug = 'checkout-flow'
@@ -51,11 +40,6 @@ describe('whyPrototypeIsNotSettled', () => {
   /** Write the change that implements R-003, the requirement the fixture leaves open. */
   function implementR003(): void {
     writeFileSync(join(getPrototypeDirPath(workspaceRoot, slug), 'notes.md'), 'Cancellation. @requirement R-003\n', 'utf-8')
-  }
-
-  function writeReview(file: string, lines: string[]): void {
-    mkdirSync(getPrototypeReviewsPath(workspaceRoot, slug), { recursive: true })
-    writeFileSync(join(getPrototypeReviewsPath(workspaceRoot, slug), file), `${lines.join('\n')}\n`, 'utf-8')
   }
 
   it('says nothing when there is nothing owed', () => {
@@ -122,101 +106,5 @@ describe('whyPrototypeIsNotSettled', () => {
 
     expect(reasons.map((reason) => reason.code)).toEqual(['gate.linkBroken'])
     expect(reasons[0]?.text).toBe('PRD.md links to docs/flow.md, which is not in this prototype.')
-  })
-
-  /**
-   * An objection is not a fact about the files: nothing here can judge one, so a standing (or stale)
-   * dispute is reported and never counted as unfinished work. Otherwise the agent that wrote the
-   * specification could hold its own delivery back by writing a file about it — and the person would
-   * settle it by editing a field rather than by doing anything.
-   */
-  it('reports an objection nobody answered without counting it against the work', () => {
-    implementR003()
-    const staleFingerprint = fingerprintOf('R-001', PRD)
-    writeReview('D-001-line.md', [
-      '# D-001 the line is not held',
-      '',
-      'about: requirement R-001',
-      `on: ${staleFingerprint}`,
-      'status: open',
-      'claim: it goes negative',
-    ])
-    // The requirement is rewritten: the argument is now about a wording that no longer exists.
-    writeFileSync(
-      join(getPrototypeDirPath(workspaceRoot, slug), 'PRD.md'),
-      PRD.replace('A cart holds its line', 'A cart holds its line until stock runs out'),
-      'utf-8',
-    )
-
-    const status = buildPrototypeStatus(workspaceRoot, slug)
-
-    expect(whyPrototypeIsNotSettled(status)).toEqual([])
-    // …and it is still visible: in the reviews report, with the reason it is stale, and on the
-    // requirement it is about.
-    expect(status.reviews.unresolved.map((dispute) => dispute.id)).toEqual(['D-001'])
-    expect(status.reviews.unresolved[0]?.staleReason).toContain('has changed since this was filed')
-    expect(
-      status.requirements.find((requirement) => requirement.id === 'R-001')?.disputes.map((dispute) => dispute.id),
-    ).toEqual(['D-001'])
-  })
-})
-
-describe('the status report carries the argument', () => {
-  const slug = 'checkout-flow'
-  let workspaceRoot = ''
-
-  beforeEach(() => {
-    workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-settlement-status-'))
-    createPrototype(workspaceRoot, { name: slug })
-    const dir = getPrototypeDirPath(workspaceRoot, slug)
-    writeFileSync(join(dir, 'PRD.md'), PRD, 'utf-8')
-    mkdirSync(getPrototypeReviewsPath(workspaceRoot, slug), { recursive: true })
-    // One dispute per file, both read the same way — the id at the top of the file is the review.
-    writeFileSync(
-      join(getPrototypeReviewsPath(workspaceRoot, slug), 'D-001-line.md'),
-      [
-        '# D-001 the line is not held',
-        '',
-        'about: requirement R-001',
-        `on: ${fingerprintOf('R-001')}`,
-        'status: open',
-        'claim: it goes negative',
-      ].join('\n'),
-      'utf-8',
-    )
-    writeFileSync(
-      join(getPrototypeReviewsPath(workspaceRoot, slug), 'D-002-price.md'),
-      ['# D-002 the price comes from the client', '', 'about: requirement R-002', `on: ${fingerprintOf('R-002')}`, 'status: rebutted', 'claim: x'].join('\n'),
-      'utf-8',
-    )
-  })
-
-  afterEach(() => {
-    rmSync(workspaceRoot, { recursive: true, force: true })
-  })
-
-  it('counts the disputes by status and lists the ones that stand', () => {
-    const status = buildPrototypeStatus(workspaceRoot, slug)
-
-    expect(status.reviews.total).toBe(2)
-    expect(status.reviews.byStatus).toEqual({ open: 1, fixed: 0, rebutted: 1, accepted: 0 })
-    expect(status.reviews.unresolved.map((dispute) => dispute.id)).toEqual(['D-001'])
-    // The gate's own input holds facts only — nothing here is a dispute.
-    expect(status.unresolved.brokenLinks).toEqual([])
-  })
-
-  it('hangs a dispute on the requirement it names', () => {
-    const status = buildPrototypeStatus(workspaceRoot, slug)
-    const row = status.requirements.find((requirement) => requirement.id === 'R-001')
-
-    expect(row?.disputes.map((dispute) => dispute.id)).toEqual(['D-001'])
-  })
-
-  it('reads the PRD it was given, so the fixtures above are the real thing', () => {
-    expect(resolveRequirementCoverage(workspaceRoot, slug).requirements.map((r) => r.id)).toEqual([
-      'R-001',
-      'R-002',
-      'R-003',
-    ])
   })
 })

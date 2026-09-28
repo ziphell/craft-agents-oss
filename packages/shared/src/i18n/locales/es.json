@@ -836,7 +836,6 @@
   "prototypeInfo.notFound": "Prototipo no encontrado",
   "prototypeInfo.openChat": "Abrir conversación",
   "prototypeInfo.openFolder": "Abrir carpeta",
-  "prototypeInfo.requirementDisputed": "Objeción: {{ids}}",
   "prototypeInfo.requirementUncovered": "Nada lo referencia todavía",
   "prototypeInfo.requirementsCoverage": "Qué referencia cada requisito",
   "prototypeInfo.requirementsEmpty": "Aún no hay requisitos: se escriben en la conversación y el agente los redacta en un archivo markdown.",

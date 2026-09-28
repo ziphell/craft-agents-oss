@@ -117,7 +117,7 @@ export class NullBrowserPaneManager implements IBrowserPaneManager {
     xml: string
     format: 'svg' | 'xmlsvg' | 'png' | 'html'
     scale?: number
-    dark?: boolean
+    theme?: 'auto' | 'light' | 'dark'
   }): Promise<{ bytes: Uint8Array; mimeType: string; extension: string }> {
     return unavailable('renderDrawio')
   }

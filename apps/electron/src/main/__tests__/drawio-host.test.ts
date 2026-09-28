@@ -204,6 +204,11 @@ describe('drawio at its own origin', () => {
       // size attributes (measured against the vendored bundle), so the app measures what it was
       // given — a size written on this side would be one nothing reads.
       expect(bridge).toContain('absolutizeImages')
+      // And which scheme it was drawn for, stated on the drawing itself: the viewer keeps its own
+      // on a container the app never sees, and `light-dark()` with no color-scheme is always the
+      // light value — which is how a preview came to sit in a dark app looking light.
+      expect(bridge).toContain('declareColorScheme(svg, dark)')
+      expect(bridge).toContain("color-scheme: ' + (dark ? 'dark' : 'light')")
       expect(bridge).not.toMatch(/setAttribute\(\s*['"]width/)
       expect(bridge).toContain("setAttributeNS('http://www.w3.org/1999/xlink'")
       // Gone with the frame: it was the display surface that made these necessary.
@@ -446,6 +451,44 @@ describe('the engine document', () => {
 
       engine.announce('export', { format: 'svg', data: '<svg><g/></svg>' })
       expect(await rendering).toBe('<svg><g/></svg>')
+    } finally {
+      host.close()
+    }
+  })
+
+  // The theme is one axis with two halves, and both have to reach the editor: the export carries it
+  // (an SVG states it in the file), and the load carries `dark` (the editor's own dark mode, which is
+  // what a raster is drawn by). A theme that arrived at neither would be a file that quietly kept
+  // adapting — or a picture drawn light when dark was asked for.
+  it('carries the theme onto the export, and its dark half onto the load', async () => {
+    const host = hostFor()
+    try {
+      const engine = runEngine(await (await host.serve('/__craft/engine.js')).text())
+
+      const light = engine.render({ xml: '<mxfile/>', format: 'svg', theme: 'light' })
+
+      engine.announce('init')
+      await nextMicrotask()
+      engine.announce('load')
+      await nextMicrotask()
+      expect(engine.posted[0]).toEqual({ action: 'load', xml: '<mxfile/>', dark: false })
+      expect(engine.posted[1]).toMatchObject({ action: 'export', theme: 'light' })
+
+      engine.announce('export', { format: 'svg', data: '<svg><g/></svg>' })
+      expect(await light).toBe('<svg><g/></svg>')
+
+      // The same flag, asked for dark: the editor goes dark, which is what draws a picture dark — and
+      // the export still names the scheme, for the formats that have somewhere to state it.
+      const dark = engine.render({ xml: '<mxfile/>', format: 'png', theme: 'dark' })
+      engine.announce('init')
+      await nextMicrotask()
+      engine.announce('load')
+      await nextMicrotask()
+      expect(engine.posted[2]).toEqual({ action: 'load', xml: '<mxfile/>', dark: true })
+      expect(engine.posted[3]).toMatchObject({ action: 'export', format: 'png', theme: 'dark' })
+
+      engine.announce('export', { format: 'png', data: 'data:image/png;base64,AAAA' })
+      expect(await dark).toBe('data:image/png;base64,AAAA')
     } finally {
       host.close()
     }

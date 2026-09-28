@@ -6,13 +6,11 @@ import {
   extractRequirementIds,
   getPrototypeDirPath,
   getPrototypeResearchPath,
-  getPrototypeReviewsPath,
   normalizeRequirementId,
   parsePrototypeFinding,
   parseRequirementDocument,
   readPrototypeFindings,
   readPrototypeRequirements,
-  requirementFingerprint,
   resolveRequirementCoverage,
   type RequirementCoverage,
 } from '..'
@@ -44,12 +42,6 @@ function writeFile(slug: string, name: string, source: string): void {
 
 function writeFinding(slug: string, name: string, source: string): void {
   const dir = getPrototypeResearchPath(workspaceRoot, slug)
-  mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, name), source, 'utf-8')
-}
-
-function writeReview(slug: string, name: string, source: string): void {
-  const dir = getPrototypeReviewsPath(workspaceRoot, slug)
   mkdirSync(dir, { recursive: true })
   writeFileSync(join(dir, name), source, 'utf-8')
 }
@@ -237,35 +229,19 @@ describe('the thread from a requirement to what implements it', () => {
   })
 
   /**
-   * The record directories are how the author got to the requirements and what was argued about
-   * them. Reading their `requirements:` lines as implementation would make "nothing implements
-   * this" say something untrue.
+   * A finding argues for a requirement; it does not implement it. The line that says so
+   * (`requirements:`) is not the marker that claims implementation (`@requirement`), so the
+   * requirement is still one the gate names.
    */
-  it('does not count a record directory as an implementation', () => {
+  it('does not count a finding as an implementation', () => {
     const slug = makePrototype()
-    const prd = '## R-001 A cart holds its line\n'
-    writeFile(slug, 'PRD.md', prd)
+    writeFile(slug, 'PRD.md', '## R-001 A cart holds its line\n')
     writeFinding(slug, 'F-001-sticky.md', '# F-001 Sticky\n\nclaim: x\nrequirements: R-001\n')
-    const requirement = parseRequirementDocument(prd, 'PRD.md').requirements[0]!
-    writeReview(
-      slug,
-      'D-001-x.md',
-      [
-        '# D-001 the total is not pinned',
-        '',
-        'about: requirement R-001',
-        `on: ${requirementFingerprint(requirement)}`,
-        'status: open',
-        'claim: x',
-      ].join('\n'),
-    )
 
     const report = resolveRequirementCoverage(workspaceRoot, slug)
 
     expect(report.requirements[0]?.files).toEqual([])
-    // A review is an argument, not an implementation — so it lands as a dispute…
-    expect(report.requirements[0]?.disputes.map((dispute) => dispute.id)).toEqual(['D-001'])
-    // …and the requirement is still the one the gate names.
+    // A finding is evidence, not an implementation — so the requirement stays one the gate names.
     expect(report.issues.map((issue) => issue.code)).toEqual(['requirement.unimplemented'])
   })
 

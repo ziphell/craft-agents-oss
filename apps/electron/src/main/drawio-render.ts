@@ -21,7 +21,7 @@ import {
   findDrawioPage,
   projectDrawioPage,
 } from '@craft-agent/shared/drawio/types'
-import { DRAWIO_EXTENSIONS, type DrawioFormat } from '@craft-agent/shared/agent/browser-pane'
+import { DRAWIO_EXTENSIONS, type DrawioFormat, type DrawioTheme } from '@craft-agent/shared/agent/browser-pane'
 import { DRAWIO_ENGINE_PATH, DRAWIO_ENGINE_SURFACE, drawioOriginUrl } from './drawio-host'
 
 /**
@@ -144,8 +144,11 @@ export async function renderDrawio(input: {
   page?: string
   /** Pixels per unit in the output. Omitted, drawio's own 1. */
   scale?: number
-  /** Draw it for a dark background, the way the app's own previews do. */
-  dark?: boolean
+  /**
+   * What the drawing is made for — the one axis there is, and the same one for every format (see
+   * `DrawioTheme`). Omitted, `auto`: an SVG carries both of its colors and a PNG is drawn light.
+   */
+  theme?: DrawioTheme
 }): Promise<RenderedDrawio> {
   // One string comes back, and it is the *payload*: the engine has already been through the one
   // branch that differs by format — a document arrives in the editor's `xml`, a picture in its
@@ -160,7 +163,7 @@ export async function renderDrawio(input: {
       xml: documentToDraw(input.xml, input.page),
       format: input.format,
       ...(input.scale !== undefined ? { scale: input.scale } : {}),
-      dark: input.dark === true,
+      theme: input.theme ?? 'auto',
     })})`,
   )
 

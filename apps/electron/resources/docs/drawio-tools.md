@@ -13,8 +13,8 @@ write.
 
 ```
 pages <diagram-file>                                                    the pages it holds
-export <diagram-file> --to <path> [--format svg|png|html|drawio] [--editable] [--page <name>] [--scale <n>] [--dark]
-render <diagram-file> [--page <name>] [--scale <n>] [--dark]              the picture, in the reply
+export <diagram-file> --to <path> [--format svg|png|html|drawio] [--editable] [--page <name>] [--scale <n>] [--theme <t>]
+render <diagram-file> [--page <name>] [--scale <n>] [--theme <t>]        the picture, in the reply
 ```
 
 - **`pages`** lists the pages a file holds, in the order the document has them — a `.drawio` file, or an
@@ -27,8 +27,13 @@ render <diagram-file> [--page <name>] [--scale <n>] [--dark]              the pi
   `svg` (the default), `png`, `html` (one file, no folder), or `drawio` — which is not a drawing at all
   but the document itself, written out with every page uncompressed; that is also how the document comes
   **back out** of a file that is an exported SVG. `--editable` adds the drawing's document to an SVG (see
-  below). `--scale 2` is a crisp PNG for a slide; `--dark` draws for a dark background; `--page <name>`
-  draws one page of a multi-page file — see "More than one page" below.
+  below). `--scale 2` is a crisp PNG for a slide; `--page <name>` draws one page of a multi-page
+  file — see "More than one page" below.
+- **`--theme`** says what the drawing is **made for** — `auto` (the default), `light`, or `dark`. An
+  SVG *states* it: `auto` has the file carry both of its colors and follow whoever shows it, while
+  `light` or `dark` pins it, so it looks the same in a dark app and a light one. A PNG is *drawn* that
+  way — a picture has no reader to follow, so there `auto` and `light` are the same picture. Only `svg`
+  and `png` take the flag; `html` and `drawio` have no scheme to state.
 - **`render`** draws the diagram as a picture and puts the picture in the reply, writing nothing.
   Reach for it to check what you drew: XML that is well-formed is not a diagram that reads well,
   and a wall of overlapping boxes can only be seen.

@@ -9,7 +9,7 @@
  */
 
 import type { BrowserInstanceInfo, BrowserTabSummary, PickedElement, TabBelongsTo } from '@craft-agent/shared/protocol'
-import type { DrawioFormat } from '@craft-agent/shared/agent/browser-pane'
+import type { DrawioFormat, DrawioTheme } from '@craft-agent/shared/agent/browser-pane'
 
 // ---------------------------------------------------------------------------
 // Supporting types — minimal subsets of BPM's internal types
@@ -224,8 +224,8 @@ export interface DrawioRenderOptions {
   page?: string
   /** Pixels per unit in the output. Omitted, drawio's own 1. */
   scale?: number
-  /** Draw it for a dark background, the way the app's own previews do. */
-  dark?: boolean
+  /** What the drawing is made for — an SVG states it, a PNG is drawn by it. */
+  theme?: DrawioTheme
 }
 
 export interface RenderedDrawioFile {

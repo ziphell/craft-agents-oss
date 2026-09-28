@@ -19,25 +19,13 @@
  * The directory a prototype's **findings** live in — what was learned about
  * someone else's product, with the source and the evidence for it.
  *
- * Here, next to the other directory names that several modules have to agree on,
- * because the distinction it draws is a rule rather than a preference: `assets/`
- * is a file the prototype itself loads, while `research/` is how the author got
- * to the requirements and is therefore not an implementation of them.
+ * Here, with the other names several modules have to agree on, because the reader
+ * (`research.ts`) and the path builder (`storage.ts`) have to mean the same folder.
+ * That is the whole of what this name decides: the folder itself is the author's like
+ * any other one — listed with the rest of them, opened from there — and a note kept
+ * in it is only a note.
  */
 export const PROTOTYPE_RESEARCH_DIRNAME = 'research'
-
-/**
- * The directory a prototype's **reviews** live in: one dispute per file — what is
- * argued against, why, and what was decided (`reviews.ts`).
- *
- * The other half of `research/`, deliberately shaped like it. `research/` is the
- * *for* (a claim, its source, its evidence) and this is the *against*, because a
- * workbench that only records what was learned records half of the argument: an
- * objection that lives only in the conversation is gone the moment the window is
- * closed, and the person reading the prototype sees a piece of work nobody ever
- * disagreed with.
- */
-export const PROTOTYPE_REVIEWS_DIRNAME = 'reviews'
 
 /**
  * The conventional entry document's file name — what `create` seeds, and the index the detail page

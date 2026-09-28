@@ -138,6 +138,22 @@ export interface RenderedDrawioFile {
 export type DrawioFormat = 'svg' | 'xmlsvg' | 'png' | 'html' | 'xml'
 
 /**
+ * The color scheme a drawing is made for — drawio's own export parameter, and the one thing
+ * `drawio_tool` lets a caller say about it (`--theme`).
+ *
+ * `auto` is the honest default: the drawing keeps both of its colors (`light-dark(...)`) and states
+ * `color-scheme: light dark`, so it follows whoever shows it. `light` and `dark` pin it — drawio
+ * writes that one scheme on the SVG's root, and every consumer that honours the declaration draws
+ * it that way.
+ *
+ * **A picture has no reader to follow**, so on a PNG `auto` and `light` come out as the same
+ * drawing: a raster is drawn *for* a scheme, and this is the scheme named. Only the SVG formats
+ * state one in the file, and the two the export cannot state it for (`html`, and the `.drawio`
+ * document itself) are refused by the command line rather than quietly given nothing.
+ */
+export type DrawioTheme = 'auto' | 'light' | 'dark'
+
+/**
  * The suffix a format is written under — one table, because three things name these files: the
  * bytes come back with their metadata, a `--to` path that names no suffix gets one from here, and
  * the reply says what was written.
@@ -258,8 +274,12 @@ export interface BrowserPaneFns {
     page?: string;
     /** Pixels per unit in the output. Omitted, drawio's own 1. */
     scale?: number;
-    /** Draw it for a dark background, the way the app's own previews do. */
-    dark?: boolean;
+    /**
+     * What the drawing is made for — see {@link DrawioTheme}. Omitted, `auto`.
+     *
+     * One axis, and the same one for every format: an SVG *states* it, a PNG is drawn by it.
+     */
+    theme?: DrawioTheme;
   }) => Promise<RenderedDrawioFile & { path: string | null }>;
   /**
    * The pages of a `.drawio` document, in order — `drawio_tool pages`.
@@ -271,7 +291,7 @@ export interface BrowserPaneFns {
    */
   listDrawioPages: (args: { path: string }) => Promise<DrawioPage[]>;
   /**
-   * Inspect a prototype: its requirements and the files that implement them, findings and reviews.
+   * Inspect a prototype: its requirements and the files that implement them, and the findings.
    * Pure file inspection — no browser needed.
    */
   prototypeStatus: (slug: string) => Promise<PrototypeStatus>;

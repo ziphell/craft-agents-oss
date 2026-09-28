@@ -634,7 +634,7 @@ shared assets, and a prototype is never nested inside one.
 
 Everything in the folder is written with the Write/Edit tools: the specification and the material
 beside it (personas, a glossary, a screenshot, a spreadsheet — any format, no rule about what may sit
-there), the findings under \`research/\` and the disputes under \`reviews/\`. Documents point at each
+there) and the findings under \`research/\`. Documents point at each
 other with an ordinary markdown link — \`[the flow](docs/checkout.md)\`, resolved from the linking
 document's folder and then the folder root — so one entry document can index several; that is
 navigation, and what implements a requirement is still only \`@requirement R-00x\`. What the commands
@@ -692,7 +692,7 @@ copy of its document inside (\`--editable\`). What it prints is what \`--page\` 
 document has them; read it before naming a page, because the name is the document's own and cannot be
 guessed.
 
-\`export <diagram-file> --to <path> [--format svg|png|html|drawio] [--editable] [--page <name>] [--scale <n>] [--dark]\`
+\`export <diagram-file> --to <path> [--format svg|png|html|drawio] [--editable] [--page <name>] [--scale <n>] [--theme <t>]\`
 draws a \`.drawio\` file into a file that travels. \`svg\` (the default) is the picture and nothing else —
 what you show someone. Add \`--editable\` and the picture carries the drawing's own document as well, so
 whoever might have to change it opens that file in draw.io as the real diagram — its pages and shapes,
@@ -700,9 +700,11 @@ not a picture of one — and hands it back; it is the bigger file, because the d
 \`drawio\` is not a drawing at all: the document itself, written out with every page uncompressed — how
 a file someone else saved compressed is made readable again (\`pages\` says when that is the case), and
 the one format whose suffix matters, because a diagram is opened by its \`.drawio\` name. A \`--to\` path
-that names no suffix gets the format's.
+that names no suffix gets the format's. \`--theme\` (svg and png) says what the drawing is made for:
+\`auto\` (the default), \`light\`, or \`dark\` — an svg states it in the file, so it follows whoever shows
+it or is pinned; a png is drawn that way.
 
-\`render <diagram-file> [--page <name>] [--scale <n>] [--dark]\` draws it as a picture and puts the
+\`render <diagram-file> [--page <name>] [--scale <n>] [--theme <t>]\` draws it as a picture and puts the
 picture in the reply, writing nothing. Reach for it to check what you drew: XML that is well-formed
 is not a diagram that reads well, and a wall of overlapping boxes can only be seen.
 

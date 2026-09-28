@@ -4045,7 +4045,7 @@ export class SessionManager implements ISessionManager {
             // The read goes through `drawioDocument`, so what travels is the *document*: a file that
             // is an exported SVG (a drawing with its document inside) is read back out of it, and the
             // engine is never handed a wrapper it would have to unwrap itself.
-            exportDrawio: async ({ path, format, out, page, scale, dark }) => {
+            exportDrawio: async ({ path, format, out, page, scale, theme }) => {
               if (!existsSync(path)) {
                 throw new Error(`No diagram at ${path}.`)
               }
@@ -4054,7 +4054,7 @@ export class SessionManager implements ISessionManager {
                 format,
                 ...(page !== undefined ? { page } : {}),
                 ...(scale !== undefined ? { scale } : {}),
-                dark: dark === true,
+                theme: theme ?? 'auto',
               })
 
               if (!out) return { ...rendered, path: null }

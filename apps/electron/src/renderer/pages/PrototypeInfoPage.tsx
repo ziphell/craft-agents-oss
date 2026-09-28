@@ -19,18 +19,8 @@
  *    each requirement** (the thread this is a workbench for), then the **rest of the folder** (the
  *    material the work is made of, listed by name).
  *
- * What is deliberately **not** a section: objections and research.
- *
- * An objection gets no list of its own because the only writer is the agent that did the work — the
- * guide's own workflow ends with "argue with it" — so a dispute is the author answering its own
- * position, and a list of them would be a self-critique wearing a second voice. It is not in the
- * gate either: an objection is somebody's claim, not a fact about the files, so it never counts as
- * unfinished work (`status.ts`). Nothing is hidden by that: a dispute is named where it stands — as
- * a pointer on the requirement its `about:` names, and, for one that names nothing or names an id
- * no document defines, as a file-level line in the brief issues.
- *
- * A finding gets no section because it is already shown where it matters, on the requirement it
- * argues for, and the notes in `research/` are not part of what is handed over.
+ * What is deliberately **not** a section: research. A finding is already shown where it matters, on
+ * the requirement it argues for, and the notes in `research/` are not part of what is handed over.
  *
  * Each section costs one line while it is empty, so an untouched prototype is a
  * short screen instead of a stack of "nothing here yet".
@@ -715,13 +705,6 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
                           </span>
                         ))}
                       </div>
-                      {requirement.disputes.length > 0 && (
-                        <span className="shrink-0 pt-0.5 text-xs text-warning">
-                          {t('prototypeInfo.requirementDisputed', {
-                            ids: requirement.disputes.map((dispute) => dispute.id).join(', '),
-                          })}
-                        </span>
-                      )}
                     </li>
                   )
                 })}

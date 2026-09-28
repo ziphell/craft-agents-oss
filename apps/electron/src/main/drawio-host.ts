@@ -364,6 +364,7 @@ function viewerBridgeScript(): string {
       // relative to the app instead. Its *size* is not decided here: this viewer hands back an
       // SVG with no viewBox and no size attributes (measured against the vendored bundle), and
       // the app measures what it was given — one place, and the place that also has to scale it.
+      declareColorScheme(svg, dark)
       absolutizeImages(svg)
       post({ protocol: PROTOCOL, type: 'rendered', ok: true, svg: svg.outerHTML })
     } catch (error) {
@@ -380,6 +381,23 @@ function viewerBridgeScript(): string {
       images[i].setAttributeNS('http://www.w3.org/1999/xlink', 'xlink:href', absolute)
       images[i].setAttribute('href', absolute)
     }
+  }
+
+  /**
+   * Say on the drawing itself which scheme it was drawn for.
+   *
+   * The viewer states the scheme on its own container — \`GraphViewer.darkModeChanged\` writes
+   * color-scheme there, not on the drawing — and the app takes only the drawing: \`svg.outerHTML\`
+   * leaves that container behind. What travels is markup full of \`light-dark(...)\` with nothing
+   * to resolve it, and \`light-dark()\` with no color-scheme stated is always the *light* value, so
+   * the diagram ignored the app's dark mode while an exported SVG — which states color-scheme on
+   * its root, because drawio's own export writes it there — followed it. Written here for the same
+   * reason the images are addressed here: this is the last place that knows, and the markup has to
+   * speak for itself once it is inlined into the app's document.
+   */
+  function declareColorScheme(svg, dark) {
+    var style = svg.getAttribute('style') || ''
+    svg.setAttribute('style', style + ' color-scheme: ' + (dark ? 'dark' : 'light') + ';')
   }
 
   // Nothing clicks in here any more: this document is an engine, kept out of sight, and the
@@ -561,12 +579,20 @@ function engineBridgeScript(): string {
     ensureEditor()
     // No action: the editor announces itself, and there is nothing to ask it for.
     await request('init', 60000)
-    await request('load', 60000, { action: 'load', xml: options.xml, dark: !!options.dark })
+    // One axis, and this is the half of it a *picture* needs: dark mode on the editor is what a
+    // canvas resolves its light-dark() colors by, so a PNG comes out drawn for the scheme named
+    // (\`auto\` leaves the editor as it is, which is light). An SVG never looks at this — the export
+    // below states the scheme in the file instead.
+    await request('load', 60000, { action: 'load', xml: options.xml, dark: options.theme === 'dark' })
 
     var reply = await request('export', 60000, {
       action: 'export',
       format: options.format,
       scale: options.scale,
+      // The scheme the *file* states, which only an SVG has somewhere to put: drawio writes it onto
+      // the SVG's root, where it decides whether the drawing follows whoever shows it (\`auto\`) or is
+      // pinned. Every other format ignores it — \`exportDrawio\` is where the two are one axis.
+      theme: options.theme,
       // SVG comes back as markup rather than as a data URI: what is written to disk is the
       // drawing itself, and a caller that wants \`xmlsvg\` (an SVG that reopens in drawio) asks
       // for that format instead.

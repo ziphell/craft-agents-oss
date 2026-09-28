@@ -33,7 +33,7 @@
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import { markerIndex } from '../markers.ts'
-import { contentFingerprint, getPrototypeDirPath, isMarkdownFile, listPrototypeFiles } from './storage.ts'
+import { getPrototypeDirPath, isMarkdownFile, listPrototypeFiles } from './storage.ts'
 import { PROTOTYPE_PRD_FILENAME } from './types.ts'
 
 const REQUIREMENT_MARKER = '@requirement'
@@ -116,18 +116,6 @@ export interface PrototypeRequirements {
   requirements: PrototypeRequirement[]
   /** Read problems — a duplicate id across files, an unreadable document. */
   issues: string[]
-}
-
-/**
- * The fingerprint of what a requirement *says* — its heading and its prose.
- *
- * A review records it (`on:`) when it is filed, and is reported **stale** when the
- * requirement has been rewritten since (`reviews.ts`). Here rather than in either
- * reader because two implementations of one fingerprint would drift, and a drift
- * would show up as an argument that looks live when it is not.
- */
-export function requirementFingerprint(requirement: PrototypeRequirement): string {
-  return contentFingerprint(`${requirement.title}\n\n${requirement.body}`)
 }
 
 /** `## R-001 A cart holds its line` — any heading depth, id first. */

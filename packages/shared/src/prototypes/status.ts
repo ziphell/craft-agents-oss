@@ -1,7 +1,7 @@
 /**
  * Prototype status — one report of a prototype, derived from its files.
  *
- * Composes the derived facts (requirements, findings, reviews) into one report, so the state of
+ * Composes the derived facts (requirements, findings) into one report, so the state of
  * a prototype can be inspected without opening the filesystem by hand.
  *
  * All facts are recomputed from disk; nothing here is cached or persisted.
@@ -11,10 +11,9 @@ import { readFileSync, readdirSync } from 'fs'
 import { getWorkspacePrototypesPath } from '../workspaces/storage.ts'
 import { pictureStanding } from '../drawio/picture.ts'
 import { notice, rawNotice, type PrototypeNotice } from './notices.ts'
-import { resolveRequirementCoverage, type RequirementDispute } from './coverage.ts'
+import { resolveRequirementCoverage } from './coverage.ts'
 import { readPrototypeFindings } from './research.ts'
 import { readPrototypeLinks, type PrototypeLink } from './links.ts'
-import type { PrototypeReviewStatus } from './reviews.ts'
 import {
   getPrototypeDirPath,
   listPrototypeFiles,
@@ -36,20 +35,10 @@ export interface PrototypeStatusRequirement {
    * file carries a requirement is no longer implied by the file name, so it travels with the row.
    */
   file: string
-  /**
-   * The fingerprint of this requirement's heading and prose as its document states them
-   * ({@link requirementFingerprint}). It is the value a review of this requirement writes as
-   * `on:`, and what `reviews.ts` judges an existing dispute's `on:` against — the same
-   * function computes both, so the report can never print a value the stale check disagrees
-   * with.
-   */
-  fingerprint: string
   /** Files of the prototype folder that declare it (`@requirement R-001`). */
   files: string[]
   /** Findings in `research/` that argue for it. */
   findings: string[]
-  /** Arguments against it — filed against it. */
-  disputes: RequirementDispute[]
 }
 
 /** A finding from `research/` — what was learned, and about whose product. */
@@ -104,27 +93,10 @@ export interface PrototypeStatus {
   /** Findings under `research/` — what was learned about other products. */
   findings: PrototypeStatusFinding[]
   /**
-   * The argument against the work (`reviews/`).
-   *
-   * Read from the files, like every other fact here — and derived *once*: the per-requirement
-   * disputes in `requirements[].disputes` and this list are the same `RequirementDispute` objects,
-   * so the panel cannot show a requirement as settled while the summary says otherwise.
-   */
-  reviews: {
-    total: number
-    byStatus: Record<PrototypeReviewStatus, number>
-    /** Every dispute that still stands, in id order. */
-    unresolved: RequirementDispute[]
-  }
-  /**
    * What this prototype still owes **as a matter of fact** — the gate's own input
    * (`whyPrototypeIsNotSettled`): a requirement nothing implements, a link that points at nothing.
    *
-   * Both are read off the files and can be checked by anyone, which is what makes them a gate. What
-   * is deliberately **not** here is the argument against the work: an objection that still stands is
-   * somebody's claim, not a fact about the files, so it is reported (`reviews.unresolved`, and per
-   * requirement) without being counted as unfinished work. A tool that cannot judge an objection must
-   * not let one — least of all one the agent wrote itself — veto the handover.
+   * Both are read off the files and can be checked by anyone, which is what makes them a gate.
    */
   unresolved: {
     /** Requirement ids nothing implements — the proposal claims what the delivery does not do. */
@@ -212,7 +184,6 @@ export function buildPrototypeStatus(workspaceRootPath: string, slug: string): P
       requirements: finding.requirements,
       file: finding.file,
     })),
-    reviews: coverage.reviews,
     unresolved: {
       unmet: coverage.requirements
         .filter((requirement) => requirement.files.length === 0)
@@ -292,13 +263,6 @@ function sourceNameOf(name: string): string {
  * **Only facts count**, because a gate has to be answerable: a requirement nothing implements, a
  * link that points at nothing. Both are read off the files, either can be checked by anyone, and
  * there is work to do about each.
- *
- * The argument against the work is deliberately **not** here. An objection that still stands is a
- * claim — usually the agent's own, about its own output — and nothing in this workbench can judge
- * it. A gate that counted one would let the instrument veto its own delivery, and would turn a
- * sentence somebody wrote into a debt the person pays off by editing a field. So an objection is
- * *reported* — `reviews.unresolved`, and on the requirement it is about — without blocking the
- * handover, and the specification carries it honestly to whoever reads it next.
  */
 export function whyPrototypeIsNotSettled(status: PrototypeStatus): PrototypeNotice[] {
   const reasons: PrototypeNotice[] = []

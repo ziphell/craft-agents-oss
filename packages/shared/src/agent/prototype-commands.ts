@@ -2,7 +2,7 @@
  * `prototype_tool`'s commands.
  *
  * A prototype's own workflow: the folder it *is* — its `PRD.md`, the requirements and the files that
- * implement them, the findings, the disputes. The window's own surface is `browser-commands.ts`;
+ * implement them, the findings. The window's own surface is `browser-commands.ts`;
  * the CLI both doors read their command line with is `command-cli.ts`.
  */
 
@@ -19,7 +19,7 @@ import {
  * `prototype_tool --help`.
  *
  * Written the way the tool's own description is: what it acts on (a prototype's **folder**) and what
- * it reads from it (the requirements, the findings, the disputes), because that is what a
+ * it reads from it (the requirements, the findings), because that is what a
  * session has to understand before a single one of these commands means anything.
  */
 export function getPrototypeToolHelp(): string {
@@ -32,7 +32,7 @@ export function getPrototypeToolHelp(): string {
     '                                                 counts, and which one is bound',
     '  create <name> [--no-bind]                      create a prototype — a folder with a starter PRD.md',
     '  status [slug]                                  the report: the requirements and the files that',
-    '                                                 implement them, the findings, the reviews, and what',
+    '                                                 implement them, the findings, and what',
     '                                                 is still owed',
     '',
     'A prototype is a **folder**, and the work lives in it — it is yours to organize,',
@@ -42,7 +42,6 @@ export function getPrototypeToolHelp(): string {
     '                     included). Beside it: material in any format (personas, a glossary, a',
     '                     screenshot) and whatever files the work is made of.',
     '  research/          what you learned, one finding per file.',
-    '  reviews/           the argument against the work, one dispute per file.',
     'Nothing here writes those files for you: the specification, the material beside it and the work\'s',
     'own files are written with the Write/Edit tools.',
     'A file declares what it serves with "@requirement R-001" in a comment. That marker is what turns a',
@@ -111,7 +110,7 @@ const runOneCommand = createCommandRunner({
  * Run a `prototype_tool` command.
  *
  * Same CLI, same `fns`, other door: these commands act on a prototype's own folder — its brief, the
- * files that implement it, the findings, the disputes — and none of them is a browser primitive.
+ * files that implement it, the findings — and none of them is a browser primitive.
  *
  * **One command per call, no batches.** A batch exists so that one *action* made of several steps
  * — filling a form, then clicking submit — is one call. A prototype command is already such a
@@ -235,19 +234,12 @@ export async function runPrototypeCommand(ctx: ToolCommandContext): Promise<Brow
           ...requirement.files,
           ...requirement.findings.map((id) => `${id} (finding)`),
         ];
-        const disputed =
-          requirement.disputes.length > 0
-            ? ` · disputed by ${requirement.disputes.map((dispute) => dispute.id).join(', ')}`
-            : '';
         lines.push(
           `      ${requirement.id} ${requirement.title || '(no title)'} — ${
             covered.length > 0 ? covered.join(', ') : 'nothing refers to it yet'
-          }${disputed} · on: ${requirement.fingerprint}`,
+          }`,
         );
       }
-      lines.push(
-        '      ("on:" is the fingerprint of a requirement — write it in a review about that requirement; it changes when the requirement is rewritten.)',
-      );
     }
 
     lines.push(
@@ -269,25 +261,10 @@ export async function runPrototypeCommand(ctx: ToolCommandContext): Promise<Brow
       }
     }
 
-    lines.push(
-      `  reviews:    ${status.reviews.unresolved.length} standing of ${status.reviews.total} filed`,
-    );
-
-    // What still stands is reported here — named, with why it is stale — because it is part of what
-    // a reader of the specification is owed. It is deliberately **not** in `unresolved:` below: that
-    // list is the gate's, and a claim nothing here can judge is not a gate.
-    for (const dispute of status.reviews.unresolved) {
-      const stale = dispute.stale && dispute.staleReason ? ` · stale: ${dispute.staleReason}` : '';
-      lines.push(
-        `      ${dispute.file} disputes ${dispute.about}, and it still stands (${dispute.status ?? 'no status'}).${stale}`,
-      );
-    }
-
     // What is still owed, last, because it is the thing to act on — the facts only: a requirement
     // nothing implements, a link that points at nothing. One line per reason, each already a
     // sentence; the gate and this output read the same function, so the report cannot look calmer
-    // than `whyPrototypeIsNotSettled` says the work is. An objection that still stands is reported
-    // above (`reviews:`) and does not hold the work back — it is a position, not a missing fact.
+    // than `whyPrototypeIsNotSettled` says the work is.
     const outstanding = whyPrototypeIsNotSettled(status);
     if (outstanding.length === 0) {
       lines.push('  unresolved: nothing — every requirement is implemented and every link resolves');

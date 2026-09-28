@@ -25,7 +25,7 @@ import {
   numberOption,
   resolveLocalPath,
 } from './command-cli.ts';
-import { DRAWIO_EXTENSIONS, type DrawioFormat } from './browser-pane.ts';
+import { DRAWIO_EXTENSIONS, type DrawioFormat, type DrawioTheme } from './browser-pane.ts';
 import type { DrawioPage } from '../drawio/types.ts';
 
 /**
@@ -94,8 +94,8 @@ export function getDrawioToolHelp(): string {
     'Usage (one command per call — no batching):',
     '  --help',
     '  pages <diagram-file>',
-    '  export <diagram-file> --to <path> [--format svg|png|html|drawio] [--editable] [--page <name>] [--scale <n>] [--dark]',
-    '  render <diagram-file> [--page <name>] [--scale <n>] [--dark]',
+    '  export <diagram-file> --to <path> [--format svg|png|html|drawio] [--editable] [--page <name>] [--scale <n>] [--theme auto|light|dark]',
+    '  render <diagram-file> [--page <name>] [--scale <n>] [--theme auto|light|dark]',
     '',
     'A diagram that has to outlive the reply is a `.drawio` file: the form a person can open in',
     'draw.io, edit, and hand to someone else. You write that file with `Write`/`Edit` — the format',
@@ -115,7 +115,9 @@ export function getDrawioToolHelp(): string {
     '                   in draw.io as the real diagram and can be changed and handed back',
     '  --page <name>    one page of a multi-page file, by the name the document gives it',
     '  --scale <n>      pixels per unit; 2 is a crisp PNG for a slide',
-    '  --dark           draw it for a dark background',
+    '  --theme <t>      auto (the default), light, or dark — what the drawing is made for. An svg',
+    '                   states it in the file (auto has it carry both and follow whoever shows it;',
+    '                   light or dark pins it), a png is drawn that way. Only svg and png take it',
     '',
     'svg is the picture and nothing else — what you show someone. Add --editable and the picture',
     'carries the document it was drawn from: that is what you give to whoever might have to change',
@@ -206,6 +208,35 @@ function scaleOption(parts: string[]): number | undefined {
 function pageOption(parts: string[]): string | undefined {
   if (!parts.includes('--page')) return undefined;
   return flagValue(parts, '--page', 'export flow.drawio --to flow.svg --page "v2 split payment"');
+}
+
+/** What `--theme` takes — the three answers drawio's own export has for a drawing's scheme. */
+const DRAWIO_THEMES = ['auto', 'light', 'dark'] as const;
+
+/**
+ * `--theme` — what the drawing is made for, and the one axis there is.
+ *
+ * One value, honoured two ways, which is why this is not "belongs to svg" the way `--editable` is:
+ * an **SVG** *states* it in the file (drawio writes `color-scheme` onto its root, so `auto` leaves
+ * the drawing following whoever shows it and `light`/`dark` pin it), while a **PNG** is simply
+ * *drawn* that way — a picture has no reader to follow, so `auto` and `light` are the same picture.
+ *
+ * `html` and `drawio` are refused rather than ignored: neither is a drawing this export can state a
+ * scheme for, and a caller who believes otherwise is a caller about to be surprised by it — the same
+ * rule `--editable` follows.
+ */
+function themeOption(parts: string[], format: ExportFormat): DrawioTheme {
+  if (!parts.includes('--theme')) return 'auto';
+
+  const named = flagValue(parts, '--theme', 'export flow.drawio --to flow.svg --theme light');
+  if (!(DRAWIO_THEMES as readonly string[]).includes(named)) {
+    throw new Error(`--theme takes one of ${DRAWIO_THEMES.join(', ')} — not "${named}".`);
+  }
+  if (format === 'svg' || format === 'png') return named as DrawioTheme;
+
+  throw new Error(
+    `--theme is for svg and png: an svg states the scheme and a png is drawn by it — a ${format} is neither.`,
+  );
 }
 
 /** `--format`, checked against the list rather than passed through: the engine's answer to an
@@ -323,20 +354,23 @@ export async function runDrawioCommand(ctx: ToolCommandContext): Promise<Browser
     const path = resolveLocalPath(named, workspaceRootPath);
     const scale = scaleOption(parts);
     const page = pageOption(parts);
-    const dark = parts.includes('--dark');
     // Naming the page back is how a caller knows the one it asked for is the one drawn — the name is
     // resolved against the document, so it is the document's answer, not an echo of the command.
     const ofPage = page !== undefined ? `, page "${page}"` : '';
 
     if (cmd === 'render') {
+      // A render is a PNG, which is a drawing `--theme` is honoured for — read as one rather than as
+      // the absent file a render has nothing to write it into.
+      const theme = themeOption(parts, 'png');
       // A picture in the reply and nothing on disk: the point is that a model can look at what it
-      // drew, and a path it cannot see is not that.
+      // drew, and a path it cannot see is not that. Nothing in the sentence names the scheme: the
+      // picture is right there, and a PNG cannot carry one to be said.
       const rendered = await fns.exportDrawio({
         path,
         format: 'png',
         ...(page !== undefined ? { page } : {}),
         ...(scale !== undefined ? { scale } : {}),
-        dark,
+        theme,
       });
       const image: BrowserCommandImage = {
         data: Buffer.from(rendered.bytes).toString('base64'),
@@ -358,6 +392,7 @@ export async function runDrawioCommand(ctx: ToolCommandContext): Promise<Browser
 
     const format = formatOption(parts);
     const editable = editableOption(parts, format);
+    const theme = themeOption(parts, format);
     const engine = engineFormat(format, editable);
     const extension = DRAWIO_EXTENSIONS[engine];
     const out = withFormatSuffix(
@@ -370,13 +405,21 @@ export async function runDrawioCommand(ctx: ToolCommandContext): Promise<Browser
       out,
       ...(page !== undefined ? { page } : {}),
       ...(scale !== undefined ? { scale } : {}),
-      dark,
+      theme,
     });
+
+    // What the file *is* travels with the answer: whether it carries its document, and whether it
+    // follows whoever shows it or was pinned to one scheme. Only a *svg* says what it is drawn for —
+    // a png is drawn that way and says nothing, so the reply does not either.
+    const qualifiers = [
+      ...(editable ? ['editable'] : []),
+      ...(theme !== 'auto' && format === 'svg' ? [`fixed ${theme}`] : []),
+    ];
 
     return {
       output: [
-        `Wrote ${rendered.path ?? out} from ${named}${ofPage} — ${format}${editable ? ' (editable)' : ''}, ` +
-          `${rendered.bytes.length} bytes.`,
+        `Wrote ${rendered.path ?? out} from ${named}${ofPage} — ${format}` +
+          `${qualifiers.length > 0 ? ` (${qualifiers.join(', ')})` : ''}, ${rendered.bytes.length} bytes.`,
         ...(CARRIES_THE_DOCUMENT.has(engine)
           ? []
           : ['Nothing in the file points back at the app, or at the document it came from.']),

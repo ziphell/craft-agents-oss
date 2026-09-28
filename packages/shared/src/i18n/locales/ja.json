@@ -836,7 +836,6 @@
   "prototypeInfo.notFound": "プロトタイプが見つかりません",
   "prototypeInfo.openChat": "会話を開く",
   "prototypeInfo.openFolder": "フォルダを開く",
-  "prototypeInfo.requirementDisputed": "異議:{{ids}}",
   "prototypeInfo.requirementUncovered": "まだ何も参照していません",
   "prototypeInfo.requirementsCoverage": "各要件を参照しているもの",
   "prototypeInfo.requirementsEmpty": "まだ要件がありません — 会話で伝えると、エージェントが markdown ファイルに書きます。",

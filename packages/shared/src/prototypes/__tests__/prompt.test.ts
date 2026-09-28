@@ -17,7 +17,6 @@ function makeContext(overrides: Partial<PrototypePromptContext> = {}): Prototype
     dir: '/tmp/prototypes/checkout-flow',
     requirements: [],
     findings: [],
-    reviews: { total: 0, unresolved: [] },
     ...overrides,
   }
 }
@@ -87,38 +86,6 @@ describe('formatPrototypeContextForPrompt', () => {
 
     expect(text).toContain('a screenshot you took')
     expect(text).toContain('evidence:')
-  })
-
-  it('says what a review is about, and that a dispute needs a fingerprint', () => {
-    const text = formatPrototypeContextForPrompt(makeContext())
-
-    expect(text).toContain("'about:', 'status:', 'claim:', 'evidence:'")
-    expect(text).toContain("'about:' names one thing: 'requirement R-001'")
-    expect(text).toContain("A dispute also needs 'on:'")
-  })
-
-  it('lists the disputes that still stand', () => {
-    const text = formatPrototypeContextForPrompt(
-      makeContext({
-        reviews: {
-          total: 3,
-          unresolved: [
-            {
-              id: 'D-001',
-              file: 'reviews/D-001-x.md',
-              about: 'requirement R-001',
-              status: 'open',
-              stale: true,
-              staleReason: 'R-001 in PRD.md has changed since this was filed',
-              claim: 'it scrolls off screen',
-            },
-          ],
-        },
-      }),
-    )
-
-    expect(text).toContain('Still standing (3 filed so far)')
-    expect(text).toContain('- D-001 (open, **stale**: R-001 in PRD.md has changed since this was filed) about requirement R-001 — it scrolls off screen (reviews/D-001-x.md)')
   })
 
   // Nothing in the block may mention the machinery that was removed: an agent told about a patch

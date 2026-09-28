@@ -35,23 +35,6 @@ export interface PrototypePromptContext {
    * reads what it learned last time instead of studying the same product again.
    */
   findings: Array<{ id: string; claim: string | null; source: string | null; file: string }>
-  /**
-   * The argument against the work (`reviews/`): what still stands, and how many were
-   * settled. Carried for the same reason the findings are — an agent that cannot see the objection
-   * will keep building the thing somebody already argued about.
-   */
-  reviews: {
-    total: number
-    unresolved: Array<{
-      id: string
-      file: string
-      about: string
-      status: string | null
-      stale: boolean
-      staleReason: string | null
-      claim: string | null
-    }>
-  }
 }
 
 /**
@@ -87,18 +70,6 @@ export function buildPrototypePromptContext(
       source: finding.source,
       file: finding.file,
     })),
-    reviews: {
-      total: status.reviews.total,
-      unresolved: status.reviews.unresolved.map((dispute) => ({
-        id: dispute.id,
-        file: dispute.file,
-        about: dispute.about,
-        status: dispute.status,
-        stale: dispute.stale,
-        staleReason: dispute.staleReason,
-        claim: dispute.claim,
-      })),
-    },
   }
 }
 
@@ -201,32 +172,6 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
     }
   }
   lines.push(`- research/ is **not** delivered: the reader receives the specification, not your notes.`)
-  lines.push('')
-
-  lines.push(`The argument *against* the work lives in ${sanitize(ctx.dir)}/reviews/ — one dispute per file. It is`)
-  lines.push(`how you disagree with something without the disagreement dying with this conversation, and it is`)
-  lines.push(`the point a task's critic writes to instead of a paragraph nobody can find later:`)
-  lines.push(`- '# D-001 <what is disputed>', then labelled lines: 'about:', 'status:', 'claim:', 'evidence:'`)
-  lines.push(`  (and 'on:' for a requirement dispute).`)
-  lines.push(`- 'about:' names one thing: 'requirement R-001'.`)
-  lines.push(`- A dispute also needs 'on:' — the fingerprint printed beside that requirement by 'status'. It is`)
-  lines.push(`  what lets a later reader tell an argument about the current wording from one about a wording`)
-  lines.push(`  that no longer exists; without it the objection cannot be checked, and the report says so.`)
-  lines.push(`- 'status:' is one of open (it stands), fixed (the thing was changed), rebutted (you judged it`)
-  lines.push(`  unfounded, reason in the body) or accepted (valid, and the cost was taken deliberately). 'fixed'`)
-  lines.push(`  on a requirement that has not changed is reported as a record that disagrees with the files.`)
-  if (ctx.reviews.unresolved.length > 0) {
-    lines.push(`  Still standing (${ctx.reviews.total} filed so far) — reading these is part of the work, not a`)
-    lines.push(`  formality: an objection nobody answered is the one thing a "finished" prototype must not hide.`)
-    for (const dispute of ctx.reviews.unresolved) {
-      const stale = dispute.stale ? `, **stale**: ${sanitize(dispute.staleReason ?? '')}` : ''
-      lines.push(
-        `  - ${sanitize(dispute.id)} (${sanitize(dispute.status ?? 'no status')}${stale}) about ${sanitize(dispute.about)} — ${sanitize(dispute.claim ?? '(no claim)')} (${sanitize(dispute.file)})`,
-      )
-    }
-  } else if (ctx.reviews.total > 0) {
-    lines.push(`  Nothing is standing: all ${ctx.reviews.total} filed so far were answered.`)
-  }
   lines.push('')
 
   lines.push(`This session is bound to the prototype above. Commands below target it by default —`)

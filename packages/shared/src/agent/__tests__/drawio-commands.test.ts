@@ -256,6 +256,76 @@ describe('drawio_tool command line', () => {
       .rejects.toThrow('drawio *is* the document')
   })
 
+  // `--theme` is what the drawing is *made for* — one axis, honoured two ways: an SVG states it in
+  // the file, a PNG is drawn by it. Unsaid it is `auto`, and what the file is has to travel with the
+  // answer, because a file that follows the reader and one that is pinned are different files.
+  it('passes --theme through for svg, and says which of the two the file is', async () => {
+    diagram()
+
+    const seen: Array<Record<string, unknown>> = []
+    const fns = stubFns({
+      exportDrawio: async (args) => {
+        seen.push(args)
+        return {
+          bytes: new Uint8Array([1]),
+          mimeType: 'image/svg+xml',
+          extension: '.svg',
+          path: args.out ?? null,
+        }
+      },
+    })
+
+    const pinned = await run('export flow.drawio --to out/flow.svg --theme light', fns)
+    expect(seen[0]).toMatchObject({ format: 'svg', theme: 'light' })
+    expect(pinned.output).toContain('svg (fixed light)')
+
+    // Unsaid, it is `auto` — and the reply must not say a file is pinned when it is not.
+    const following = await run('export flow.drawio --to out/flow.svg', fns)
+    expect(seen[1]).toMatchObject({ format: 'svg', theme: 'auto' })
+    expect(following.output).not.toContain('fixed')
+
+    // The one file that carries its document takes it too: the two are separate facts, and both
+    // travel in the answer.
+    const editable = await run('export flow.drawio --to out/editable.svg --editable --theme dark', fns)
+    expect(seen[2]).toMatchObject({ format: 'xmlsvg', theme: 'dark' })
+    expect(editable.output).toContain('svg (editable, fixed dark)')
+  })
+
+  // A render is a PNG, and a PNG is a drawing `--theme` is honoured for — the other half of the same
+  // axis: there is no file to state a scheme in, so the picture is simply drawn that way.
+  it('draws a render for the theme it was given', async () => {
+    diagram()
+
+    const seen: Array<Record<string, unknown>> = []
+    const fns = stubFns({
+      exportDrawio: async (args) => {
+        seen.push(args)
+        return { bytes: new Uint8Array([137, 80]), mimeType: 'image/png', extension: '.png', path: null }
+      },
+    })
+
+    const dark = await run('render flow.drawio --theme dark', fns)
+    expect(seen[0]).toMatchObject({ format: 'png', theme: 'dark' })
+    // Nothing in the sentence claims a scheme: a PNG carries none, and the picture is right there.
+    expect(dark.output).not.toContain('fixed')
+
+    await run('render flow.drawio', fns)
+    expect(seen[1]).toMatchObject({ format: 'png', theme: 'auto' })
+  })
+
+  // Refused rather than ignored where the export cannot honour it, like `--editable` where it means
+  // nothing: a caller who believes their page states a scheme is a caller about to be surprised.
+  it('refuses --theme for the formats that state none, and a theme it does not have', async () => {
+    await expect(run('export flow.drawio --to out/flow.html --format html --theme dark', stubFns()))
+      .rejects.toThrow('--theme is for svg and png')
+
+    await expect(run('export flow.drawio --to out/plain.drawio --format drawio --theme dark', stubFns()))
+      .rejects.toThrow('--theme is for svg and png')
+
+    await expect(run('export flow.drawio --to out/flow.svg --theme sepia', stubFns()))
+      .rejects.toThrow('--theme takes one of auto, light, dark')
+  })
+
   // A path that names no suffix gets the format's, which for a diagram matters more than for a
   // picture: the app opens one by its `.drawio` name and by nothing else.
   it('completes a --to path that names no suffix', async () => {
@@ -303,13 +373,13 @@ describe('drawio_tool command line', () => {
 
     await run('export flows/../flow.drawio --to out/flow.svg', fns)
 
-    expect(seen[0]).toMatchObject({ format: 'svg', dark: false })
+    expect(seen[0]).toMatchObject({ format: 'svg', theme: 'auto' })
     expect(seen[0]!.path).toBe(resolve(workspace, 'flow.drawio'))
     expect(seen[0]!.out).toBe(resolve(workspace, 'out', 'flow.svg'))
     expect(seen[0]!.scale).toBeUndefined()
   })
 
-  it('passes --format, --scale and --dark through, and names the file it wrote', async () => {
+  it('passes --format, --scale and --theme through, and names the file it wrote', async () => {
     diagram()
 
     const seen: Array<Record<string, unknown>> = []
@@ -320,9 +390,9 @@ describe('drawio_tool command line', () => {
       },
     })
 
-    const result = await run('export flow.drawio --to out/flow.png --format png --scale 2 --dark', fns)
+    const result = await run('export flow.drawio --to out/flow.png --format png --scale 2 --theme dark', fns)
 
-    expect(seen[0]).toMatchObject({ format: 'png', scale: 2, dark: true })
+    expect(seen[0]).toMatchObject({ format: 'png', scale: 2, theme: 'dark' })
     expect(result.output).toContain('png, 2 bytes')
   })
 

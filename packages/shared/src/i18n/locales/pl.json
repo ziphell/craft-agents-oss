@@ -836,7 +836,6 @@
   "prototypeInfo.notFound": "Nie znaleziono prototypu",
   "prototypeInfo.openChat": "Otwórz rozmowę",
   "prototypeInfo.openFolder": "Otwórz folder",
-  "prototypeInfo.requirementDisputed": "Zastrzeżenie: {{ids}}",
   "prototypeInfo.requirementUncovered": "Nic jeszcze na to nie wskazuje",
   "prototypeInfo.requirementsCoverage": "Co odwołuje się do poszczególnych wymagań",
   "prototypeInfo.requirementsEmpty": "Nie ma jeszcze wymagań — powstają w rozmowie, a agent zapisuje je w pliku markdown.",

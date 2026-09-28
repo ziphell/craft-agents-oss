@@ -836,7 +836,6 @@
   "prototypeInfo.notFound": "未找到原型",
   "prototypeInfo.openChat": "打开对话",
   "prototypeInfo.openFolder": "打开文件夹",
-  "prototypeInfo.requirementDisputed": "异议:{{ids}}",
   "prototypeInfo.requirementUncovered": "还没有任何引用",
   "prototypeInfo.requirementsCoverage": "每条需求被谁引用",
   "prototypeInfo.requirementsEmpty": "还没有需求——在对话里说出需求，agent 会把它写成 markdown 文件。",

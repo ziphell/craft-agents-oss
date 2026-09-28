@@ -88,6 +88,12 @@
 
 /* Light Mode */
 :root {
+  /* The scheme this document says it is drawn for. Anything inlined into it that carries
+     `light-dark(...)` — drawio's diagrams do, all over — resolves against this: with no
+     `color-scheme` declared, `light-dark()` is *always* the light value, whatever the OS says.
+     The app's own theme is what an inlined diagram should follow. */
+  color-scheme: light;
+
   /* === 6 BASE COLORS === */
   --background: oklch(0.98 0.003 265);
   --background-elevated: color-mix(in srgb, var(--foreground) 1.5%, var(--background));
@@ -255,6 +261,10 @@
 
 /* Dark Mode */
 .dark {
+  /* See the note on `:root`: this is the other half of it — a diagram inlined into a dark app
+     resolves its `light-dark(...)` colors dark because this document says it is dark. */
+  color-scheme: dark;
+
   /* === 6 BASE COLORS (must match DEFAULT_THEME.dark in theme.ts) === */
   --background: oklch(0.145 0.015 270);
   --background-elevated: color-mix(in srgb, var(--foreground) 1.5%, var(--background));

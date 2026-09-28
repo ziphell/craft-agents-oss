@@ -396,11 +396,11 @@ describe('generator-prompt', () => {
   });
 
   it('points the critic at the brief, not only at the prototype checks', () => {
-    const prompt = buildGeneratorPrompt('Produce the requirements for a checkout redesign');
+    const prompt = buildGeneratorPrompt('Produce the requirements for a checkout redesign')
 
-    expect(prompt).toContain('reads the brief for itself');
-    expect(prompt).toContain('about: requirement R-003');
-    expect(prompt).toContain('no objection to the brief is left standing');
+    expect(prompt).toContain('reads the specification for itself')
+    expect(prompt).toContain('a requirement has nothing implementing it')
+    expect(prompt).toContain('nothing is left outstanding')
   });
 
   it('repair prompt lists each validation error and re-asserts the YAML-only contract', () => {

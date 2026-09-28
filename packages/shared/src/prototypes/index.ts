@@ -2,7 +2,7 @@
  * Prototype workbench module.
  *
  * A prototype is a **folder**: a specification (its markdown — one file or several) holding its
- * requirements, the research and reviews that argue around them, and whatever material the author
+ * requirements, the research that argues around them, and whatever material the author
  * keeps beside them. This barrel is the surface the workbench, the agent and the panel
  * read it through.
  */
@@ -10,14 +10,11 @@
 export {
   PROTOTYPE_PRD_FILENAME,
   PROTOTYPE_RESEARCH_DIRNAME,
-  PROTOTYPE_REVIEWS_DIRNAME,
 } from './types.ts'
 
 export {
-  contentFingerprint,
   getPrototypeDirPath,
   getPrototypeResearchPath,
-  getPrototypeReviewsPath,
   isMarkdownFile,
   listPrototypeFiles,
 } from './storage.ts'
@@ -29,7 +26,6 @@ export {
   normalizeRequirementId,
   parseRequirementDocument,
   readPrototypeRequirements,
-  requirementFingerprint,
 } from './requirements.ts'
 export type {
   PrototypeRequirement,
@@ -42,24 +38,8 @@ export type { PrototypeFinding, PrototypeFindings } from './research.ts'
 export { extractLinkTargets, readPrototypeLinks } from './links.ts'
 export type { PrototypeLink, PrototypeLinks } from './links.ts'
 
-export {
-  formatReviewTarget,
-  isUnresolved,
-  parsePrototypeReview,
-  parseReviewTarget,
-  readPrototypeReviews,
-  PROTOTYPE_REVIEW_STATUSES,
-} from './reviews.ts'
-export type {
-  PrototypeReview,
-  PrototypeReviewStatus,
-  PrototypeReviewTarget,
-  PrototypeReviewTargetKind,
-  PrototypeReviews,
-} from './reviews.ts'
-
 export { resolveRequirementCoverage } from './coverage.ts'
-export type { RequirementCoverage, RequirementCoverageReport, RequirementDispute } from './coverage.ts'
+export type { RequirementCoverage, RequirementCoverageReport } from './coverage.ts'
 
 export type {
   PrototypeStatus,

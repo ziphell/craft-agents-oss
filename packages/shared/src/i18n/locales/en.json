@@ -836,7 +836,6 @@
   "prototypeInfo.notFound": "Prototype not found",
   "prototypeInfo.openChat": "Open conversation",
   "prototypeInfo.openFolder": "Open folder",
-  "prototypeInfo.requirementDisputed": "objection: {{ids}}",
   "prototypeInfo.requirementUncovered": "Nothing refers to it yet",
   "prototypeInfo.requirementsCoverage": "What refers to each requirement",
   "prototypeInfo.requirementsEmpty": "No requirements yet — say what you need in the conversation and the agent writes it into a markdown file.",

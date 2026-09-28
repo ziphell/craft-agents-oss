@@ -155,7 +155,6 @@ function prototypeStatus(slug: string, overrides: Partial<PrototypeStatus> = {})
     files: [],
     links: [],
     findings: [],
-    reviews: { total: 0, byStatus: { open: 0, fixed: 0, rebutted: 0, accepted: 0 }, unresolved: [] },
     unresolved: { unmet: [], brokenLinks: [] },
     settleBlockers: [],
     briefIssues: [],
@@ -163,13 +162,13 @@ function prototypeStatus(slug: string, overrides: Partial<PrototypeStatus> = {})
   }
 }
 
-/** One requirement row, with what refers to it. The fingerprint is what a review of it cites as `on:`. */
+/** One requirement row, with what refers to it. */
 function requirement(
   id: string,
   title: string,
   overrides: Partial<PrototypeStatusRequirement> = {},
 ): PrototypeStatusRequirement {
-  return { id, title, file: 'PRD.md', fingerprint: `fp-${id}`, files: [], findings: [], disputes: [], ...overrides }
+  return { id, title, file: 'PRD.md', files: [], findings: [], ...overrides }
 }
 
 // ============================================================================
@@ -283,7 +282,6 @@ describe('the pane tools', () => {
       expect(help).toContain('  status [slug]')
       expect(help).toContain('PRD.md')
       expect(help).toContain('research/')
-      expect(help).toContain('reviews/')
       expect(help).toContain('@requirement R-001')
       // None of the removed mechanisms may be briefed: no pages, patches, entry page or fragment —
       // and no contract, verification or deliverables.
@@ -298,6 +296,7 @@ describe('the pane tools', () => {
       expect(help).not.toContain('openapi')
       expect(help).not.toContain('acceptance')
       expect(help).not.toContain('dist/')
+      expect(help).not.toContain('reviews/')
       // Nor the mock and dev-spec machinery that left with them.
       expect(help).not.toContain('mock')
       expect(help).not.toContain('dev-spec')
@@ -474,8 +473,8 @@ describe('the pane tools', () => {
       const text = (await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })).content[0].text
 
       expect(text).toContain('spec:       PRD.md — 3 requirements')
-      expect(text).toContain('R-001 A cart holds its line — cart.html · on: fp-R-001')
-      expect(text).toContain('R-002 The cart is priced by the service — F-001 (finding) · on: fp-R-002')
+      expect(text).toContain('R-001 A cart holds its line — cart.html')
+      expect(text).toContain('R-002 The cart is priced by the service — F-001 (finding)')
       // A requirement nothing refers to is the failure this report exists to name.
       expect(text).toContain('R-003 Nothing here yet — nothing refers to it yet')
       expect(text).toContain('files:      cart.html, notes.md')
@@ -499,42 +498,6 @@ describe('the pane tools', () => {
       const issues = await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })
       expect(issues.content[0].text).toContain('issues:     1')
       expect(issues.content[0].text).toContain('R-003 is in PRD.md but no file refers to it')
-    })
-
-    // What was argued and what is still owed are two different lists. An objection is reported —
-    // named on the requirement it is about and quoted under `reviews:` — while `unresolved:` holds
-    // only the facts the gate counts. A claim is not a missing fact, so it does not hold the work back.
-    it('reports what stands disputed separately from what is still owed', async () => {
-      const dispute = {
-        id: 'D-001',
-        file: 'reviews/D-001-price.md',
-        status: 'open' as const,
-        stale: true,
-        staleReason: 'the requirement was reworded since this was filed (a1b2c3d4 → e5f6a7b8)',
-        about: 'requirement R-002',
-        claim: 'the price should come from the cart, not a second call',
-      }
-      mockFns.prototypeStatus = async (slug) =>
-        prototypeStatus(slug, {
-          specificationFiles: [{ name: 'PRD.md', path: `/tmp/prototypes/${slug}/PRD.md` }],
-          requirements: [requirement('R-002', 'The cart is priced by the service', { disputes: [dispute] })],
-          reviews: { total: 2, byStatus: { open: 1, fixed: 1, rebutted: 0, accepted: 0 }, unresolved: [dispute] },
-          unresolved: { unmet: [], brokenLinks: [] },
-        })
-
-      const result = await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })
-      const text = result.content[0].text
-
-      expect(text).toContain('R-002 The cart is priced by the service — nothing refers to it yet · disputed by D-001')
-      expect(text).toContain('reviews:    1 standing of 2 filed')
-      expect(text).not.toContain('acceptance:')
-      // The standing dispute is quoted with why it is stale, so the reader can tell an argument
-      // about the current wording from one about a wording that no longer exists.
-      expect(text).toContain('reviews/D-001-price.md disputes requirement R-002')
-      expect(text).toContain('the requirement was reworded since this was filed')
-      expect(text).toContain('and it still stands (open).')
-      // …and it is not what the gate counts.
-      expect(text).toContain('unresolved: nothing')
     })
 
     it('names a broken link among what is still owed', async () => {

@@ -29,11 +29,10 @@ prototypes/{slug}/
 ├── cart.drawio                a diagram's source — a process file, not the brief's picture
 ├── cart.drawio.svg            the diagram itself, drawn from it — see "Diagrams in the brief"
 ├── personas.md                material beside the brief, in any format
-├── research/                  what you learned: findings (F-001-….md)
-└── reviews/                   the argument against the work, one dispute per file
+└── research/                  what you learned: findings (F-001-….md)
 ```
 
-**The filesystem says what exists.** There is no table, no index and nothing to declare: a file is a file, the requirements are the `## R-00x` headings in the folder's markdown — in one document or several, flat or in a subfolder — and what each file serves it says itself with `@requirement R-001`. Directories above are conventions the tooling reads — `research/`, `reviews/` — and everything else is yours.
+**The filesystem says what exists.** There is no table, no index and nothing to declare: a file is a file, the requirements are the `## R-00x` headings in the folder's markdown — in one document or several, flat or in a subfolder — and what each file serves it says itself with `@requirement R-001`. `research/` is a folder like any other — listed with the rest of them, opened from there — and the one thing the tooling reads out of it is the findings (`research/*.md`, below).
 
 ---
 
@@ -81,7 +80,7 @@ drawio_tool export cart.drawio --to cart.drawio.svg --editable
 
 ---
 
-## Requirements, research and reviews
+## Requirements and research
 
 **The specification** is prose you write, not a form you fill in — one markdown file or several. One entry per requirement, headed by a stable id:
 
@@ -111,25 +110,6 @@ The pinned bar is `position: sticky` on the summary row…
 
 `source` is where it was seen (a claim about someone else's product that cannot be re-checked is a rumour). `evidence` names files you keep under `research/`, **checked against the disk** — a citation that is not there is reported, because a broken citation is how a finding becomes unfalsifiable. `requirements:` names the requirements the finding argues for; a finding is **evidence, never implementation**, so it does not count as covering one. `research/` is yours to read, and it is not part of what is handed over.
 
-**`reviews/`** holds the argument *against* the work — one dispute per file:
-
-```md
-# D-001 The total is not actually pinned while the list scrolls
-
-about: requirement R-003
-on: 3f9a1c2e
-status: open
-claim: The summary row is not on screen once the list is longer than the viewport.
-evidence: shots/cart-scrolled.png
-
-The requirement does not say what happens when the line is gone…
-```
-
-- **`about:`** names one thing: `requirement R-00x`. A dispute that names nothing is an opinion, and the report says so. A dispute is threaded onto the requirement it names, so a review never restates the thread and copies cannot drift.
-- **`status:`** is `open` (it stands), `fixed` (the thing was changed), `rebutted` (you judged it unfounded, reason in the body) or `accepted` (valid, and the cost was taken deliberately).
-- **`on:`** is the **fingerprint of the disputed requirement** as it was written when the review was filed — `status` prints it beside every requirement. It is required, and it is what makes the record checkable: a dispute is reported **stale** when the requirement no longer hashes to that value, so "argued about a wording that no longer exists" cannot pass for a live objection. `fixed` on a requirement that has *not* changed is stale in the same way.
-- An objection that still stands is reported by `status` and shown on the requirement it is about, and it **does not hold the work back**: an argument is a position, not a fact about the files, and nothing here can judge one. Nothing hides it either — a specification that lists only what was built hands over a claim rather than a position.
-
 ---
 
 ## The workflow
@@ -138,7 +118,6 @@ The requirement does not say what happens when the line is gone…
 2. **Write the requirements** — into one or more markdown files, before building the work they describe. A prototype nobody can read a requirement out of is a picture, not a proposal.
 3. **Study what you need** — with the browser tool on the real product, and record what you learn as findings under `research/`. Say where you looked (`source`) and keep the evidence (`evidence`).
 4. **Build** — write the work's files with the `Write` tool, and say which requirement each serves with `@requirement R-001` in a comment.
-5. **Argue with it** — file what you disagree with under `reviews/`; `status` reports what is still owed.
 
 ---
 
@@ -161,15 +140,12 @@ Prototype "checkout-flow"
   dir:        /…/prototypes/checkout-flow
   spec:       PRD.md — 3 requirements
   requirements:
-      R-001 A cart holds its line — cart.html · on: 3f9a1c2e
-      R-002 The cart is priced at checkout — nothing refers to it yet · on: 77aa11bb
-      ("on:" is the fingerprint of a requirement — write it in a review about that requirement; it changes when the requirement is rewritten.)
+      R-001 A cart holds its line — cart.html
+      R-002 The cart is priced at checkout — nothing refers to it yet
   files:      cart.html, personas.md
   findings:   2 (research/F-001-sticky.md, research/F-002-copy.md)
   issues:     1
     • R-002 is in PRD.md but no file refers to it, so nothing in this prototype implements it.
-  reviews:    1 standing of 2 filed
-      reviews/D-001-total.md disputes requirement R-003, and it still stands (open).
   unresolved: 2
     • R-002 is in PRD.md but no file refers to it, so nothing implements it.
     • PRD.md links to docs/pricing.md, which is not in this prototype.
@@ -178,9 +154,7 @@ Prototype "checkout-flow"
 - A row with `nothing refers to it yet` is a requirement nothing implements — the failure this report exists to name.
 - `spec:` names the markdown files that state requirements — one or several; the message about a requirement always names the file it was written in.
 - `issues:` are the silent failures: a reference to an id no document defines, a link that points at nothing, a finding whose `evidence:` is not on disk, a duplicate id.
-- `reviews:` names the arguments that still stand, each with why it is stale when it is. An objection is a position, not a missing fact: it is reported here and on the requirement it is about, and it never holds the work back.
 - `unresolved:` is what is still **owed as a fact** — last, because it is the thing to act on: a requirement nothing implements, a link that points at nothing. It is the list the app's gate reads, so a report cannot look calmer here than the work is.
-- `on:` beside each requirement is the value a review of it writes as `on:` (see `reviews/` above).
 
 ---
 

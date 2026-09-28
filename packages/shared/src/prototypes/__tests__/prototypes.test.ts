@@ -3,10 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import {
-  contentFingerprint,
   getPrototypeDirPath,
   getPrototypeResearchPath,
-  getPrototypeReviewsPath,
   listPrototypeFiles,
 } from '../storage'
 
@@ -17,9 +15,6 @@ describe('prototype paths', () => {
     expect(getPrototypeDirPath('/workspace', 'checkout-flow')).toBe(join('/workspace', 'prototypes', 'checkout-flow'))
     expect(getPrototypeResearchPath('/workspace', 'checkout-flow')).toBe(
       join('/workspace', 'prototypes', 'checkout-flow', 'research'),
-    )
-    expect(getPrototypeReviewsPath('/workspace', 'checkout-flow')).toBe(
-      join('/workspace', 'prototypes', 'checkout-flow', 'reviews'),
     )
     // The root is a workspace path, so the helper is what keeps the two apart.
     expect(root).toContain('prototypes')
@@ -68,7 +63,7 @@ describe('listPrototypeFiles', () => {
     )
   })
 
-  it('skips hidden entries, and does not walk the record directories', () => {
+  it('skips hidden entries and lists everything else, the research folder included', () => {
     writeFileSync(join(dir, 'PRD.md'), '## R-001 x\n', 'utf-8')
     writeFileSync(join(dir, '.DS_Store'), '')
     writeFileSync(join(dir, 'notes.txt'), 'scratch')
@@ -78,26 +73,20 @@ describe('listPrototypeFiles', () => {
     writeFileSync(join(dir, '.hidden', 'x.md'), 'nope')
     mkdirSync(join(dir, 'research'), { recursive: true })
     writeFileSync(join(dir, 'research', 'F-001.md'), '# F-001 x\n')
-    mkdirSync(join(dir, 'reviews'), { recursive: true })
-    writeFileSync(join(dir, 'reviews', 'D-001.md'), '# D-001 x\n')
 
     const listed = listPrototypeFiles(workspaceRoot, slug)
 
-    expect(listed.map((file) => file.name)).toEqual(['PRD.md', 'assets/app.css', 'notes.txt'])
+    // A finding has a reader of its own, and that is a reader — not a reason to keep it out of the
+    // folder's own listing.
+    expect(listed.map((file) => file.name)).toEqual([
+      'PRD.md',
+      'assets/app.css',
+      'notes.txt',
+      'research/F-001.md',
+    ])
   })
 
   it('answers an empty list rather than failing when the directory is gone', () => {
     expect(listPrototypeFiles(join(tmpdir(), 'craft-does-not-exist'), 'gone')).toEqual([])
-  })
-})
-
-describe('contentFingerprint', () => {
-  it('is stable for one source and different for another', () => {
-    expect(contentFingerprint('a')).toBe(contentFingerprint('a'))
-    expect(contentFingerprint('a')).not.toBe(contentFingerprint('b'))
-  })
-
-  it('is short enough to print beside a line and copy by hand', () => {
-    expect(contentFingerprint('anything')).toMatch(/^[0-9a-f]{8}$/)
   })
 })

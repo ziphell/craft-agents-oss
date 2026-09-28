@@ -836,7 +836,6 @@
   "prototypeInfo.notFound": "A prototípus nem található",
   "prototypeInfo.openChat": "Beszélgetés megnyitása",
   "prototypeInfo.openFolder": "Mappa megnyitása",
-  "prototypeInfo.requirementDisputed": "Kifogás: {{ids}}",
   "prototypeInfo.requirementUncovered": "Még semmi sem hivatkozik rá",
   "prototypeInfo.requirementsCoverage": "Mi hivatkozik az egyes követelményekre",
   "prototypeInfo.requirementsEmpty": "Még nincsenek követelmények — a beszélgetésben születnek, az agent egy markdown fájlba írja őket.",
