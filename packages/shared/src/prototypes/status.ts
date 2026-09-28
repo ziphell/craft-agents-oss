@@ -10,7 +10,7 @@
 import { readFileSync, readdirSync } from 'fs'
 import { getWorkspacePrototypesPath } from '../workspaces/storage.ts'
 import { pictureStanding } from '../drawio/picture.ts'
-import { notice, rawNotice, type PrototypeNotice } from './notices.ts'
+import { notice, type PrototypeNotice } from './notices.ts'
 import { resolveRequirementCoverage } from './coverage.ts'
 import { readPrototypeFindings } from './research.ts'
 import { readPrototypeLinks, type PrototypeLink } from './links.ts'
@@ -116,10 +116,12 @@ export interface PrototypeStatus {
   settleBlockers: PrototypeNotice[]
   /**
    * Everything worth saying about the specification, the research and the pictures in it: a
-   * requirement nothing implements, a reference to an id no document defines, a link that points at
-   * nothing, a finding with no claim or with evidence that is not on disk, a diagram shown an earlier
-   * drawing of. Each is a silent failure otherwise — precisely the kind this report exists to make
-   * loud.
+   * reference to an id no document defines, a document that cannot be read as written, a finding
+   * with no claim or with evidence that is not on disk, a diagram shown an earlier drawing of.
+   * Each is a silent failure otherwise — precisely the kind this report exists to make loud.
+   *
+   * A requirement nothing implements and a link that points at nothing are **not** here, because
+   * they are what {@link unresolved} — and so the gate — already says.
    */
   briefIssues: PrototypeNotice[]
 }
@@ -164,11 +166,11 @@ export function buildPrototypeStatus(workspaceRootPath: string, slug: string): P
   const findings = readPrototypeFindings(workspaceRootPath, slug)
   const linkReport = readPrototypeLinks(workspaceRootPath, slug)
 
-  const briefIssues = [
-    ...coverage.issues,
-    ...staleDrawings(allFiles),
-    ...linkReport.issues.map(rawNotice),
-  ]
+  // What the *layers* could not read, plus the pictures that disagree with their own source. The
+  // two facts the gate already owns — a requirement nothing implements, a link that points at
+  // nothing — are deliberately **not** here: they are `unresolved`, and this is the page's other
+  // warning box, so repeating them would say one thing twice in two wordings.
+  const briefIssues = [...coverage.issues, ...staleDrawings(allFiles)]
 
   const report: Omit<PrototypeStatus, 'settleBlockers'> = {
     slug,

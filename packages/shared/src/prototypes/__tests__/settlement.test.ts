@@ -78,20 +78,19 @@ describe('whyPrototypeIsNotSettled', () => {
       'docs/checkout.md→docs/checkout.md',
       'gone.md→null',
     ])
-    // A link that goes nowhere is a silent failure of an index — named with the other ones.
-    expect(status.briefIssues.map((issue) => issue.text).join('\n')).toContain(
-      'PRD.md links to gone.md, which is not in this prototype',
-    )
   })
 
   it('names a requirement nothing implements', () => {
-    const reasons = whyPrototypeIsNotSettled(buildPrototypeStatus(workspaceRoot, slug))
+    const status = buildPrototypeStatus(workspaceRoot, slug)
+    const reasons = whyPrototypeIsNotSettled(status)
 
     // The code is the contract with the panel; the sentence is what the agent prints.
     expect(reasons.map((reason) => reason.code)).toEqual(['gate.requirementUnmet'])
     expect(reasons[0]?.text).toBe(
       'R-003 is in PRD.md but no file refers to it, so nothing implements it.',
     )
+    // Said once, and by the gate: the brief issues do not repeat what `unresolved` already says.
+    expect(status.briefIssues).toEqual([])
   })
 
   it('names a link that points at nothing, because that is a fact about the files', () => {
@@ -102,9 +101,11 @@ describe('whyPrototypeIsNotSettled', () => {
       'utf-8',
     )
 
-    const reasons = whyPrototypeIsNotSettled(buildPrototypeStatus(workspaceRoot, slug))
+    const status = buildPrototypeStatus(workspaceRoot, slug)
+    const reasons = whyPrototypeIsNotSettled(status)
 
     expect(reasons.map((reason) => reason.code)).toEqual(['gate.linkBroken'])
     expect(reasons[0]?.text).toBe('PRD.md links to docs/flow.md, which is not in this prototype.')
+    expect(status.briefIssues).toEqual([])
   })
 })

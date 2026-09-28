@@ -203,15 +203,12 @@ describe('the thread from a requirement to what implements it', () => {
     // PRD order, not discovery order: the document's order is part of its argument.
     expect(report.requirements.map((requirement) => requirement.id)).toEqual(['R-001', 'R-002', 'R-003'])
 
-    const issues = report.issues.map((issue) => issue.text).join('\n')
-    expect(issues).toContain('R-001 is in PRD.md but no file refers to it')
-    // A finding is evidence, not implementation: R-001 has one and is still unmet.
+    // A finding is evidence, not implementation: R-001 has one and is still unmet. That is the
+    // empty `files` above — the report's own notices are only for what could not be read.
     expect(unmet(report.requirements)).toEqual(['R-001'])
+    const issues = report.issues.map((issue) => issue.text).join('\n')
     expect(issues).toContain('notes.md refers to R-009')
-    expect(report.issues.map((issue) => issue.code)).toEqual([
-      'requirement.unimplemented',
-      'requirement.undefined',
-    ])
+    expect(report.issues.map((issue) => issue.code)).toEqual(['requirement.undefined'])
   })
 
   /**
@@ -224,8 +221,10 @@ describe('the thread from a requirement to what implements it', () => {
 
     const report = resolveRequirementCoverage(workspaceRoot, slug)
 
+    // The marker sits in the document that states the requirement, so it buys nothing: `files`
+    // stays empty, which is the fact the gate reads.
     expect(report.requirements[0]?.files).toEqual([])
-    expect(report.issues.map((issue) => issue.code)).toEqual(['requirement.unimplemented'])
+    expect(unmet(report.requirements)).toEqual(['R-001'])
   })
 
   /**
@@ -241,8 +240,8 @@ describe('the thread from a requirement to what implements it', () => {
     const report = resolveRequirementCoverage(workspaceRoot, slug)
 
     expect(report.requirements[0]?.files).toEqual([])
-    // A finding is evidence, not an implementation — so the requirement stays one the gate names.
-    expect(report.issues.map((issue) => issue.code)).toEqual(['requirement.unimplemented'])
+    // A finding is evidence, not an implementation.
+    expect(unmet(report.requirements)).toEqual(['R-001'])
   })
 
   it('reads the requirements it was given', () => {
@@ -273,10 +272,9 @@ describe('the thread from a requirement to what implements it', () => {
     expect(byId.get('R-001')?.file).toBe('PRD.md')
     expect(byId.get('R-002')?.file).toBe('docs/features.md')
     expect(byId.get('R-002')?.files).toEqual(['cart.html'])
-    // The unimplemented notice names the document the requirement is written in, not a fixed one.
-    expect(report.issues.map((issue) => issue.text).join('\n')).toContain(
-      'R-001 is in PRD.md but no file refers to it',
-    )
+    // R-001 is written in the entry document and nothing implements it; R-002 is written in a
+    // second document, and the row — which is what a sentence about it names — carries that file.
+    expect(unmet(report.requirements)).toEqual(['R-001'])
   })
 
   /**
@@ -292,7 +290,7 @@ describe('the thread from a requirement to what implements it', () => {
     const report = resolveRequirementCoverage(workspaceRoot, slug)
 
     expect(report.requirements[0]?.files).toEqual([])
-    expect(report.issues.map((issue) => issue.code)).toEqual(['requirement.unimplemented'])
+    expect(unmet(report.requirements)).toEqual(['R-001'])
   })
 
   it('reports one id defined in two documents rather than guessing which a reference meant', () => {

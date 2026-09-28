@@ -90,9 +90,8 @@ describe('readPrototypeLinks', () => {
     // A link between two documents in the same subfolder is relative to that folder.
     writeDoc(slug, 'docs/states.md', 'See also [checkout](checkout.md).\n')
 
-    const { links, issues } = readPrototypeLinks(workspaceRoot, slug)
+    const { links } = readPrototypeLinks(workspaceRoot, slug)
 
-    expect(issues).toEqual([])
     expect(
       links.filter((link) => link.from === 'PRD.md').map((link) => `${link.target}→${link.to}`),
     ).toEqual(['docs/checkout.md→docs/checkout.md', 'docs/states.md→docs/states.md'])
@@ -100,14 +99,15 @@ describe('readPrototypeLinks', () => {
     expect(links.find((link) => link.from === 'docs/states.md')?.to).toBe('docs/checkout.md')
   })
 
-  it('reports a link that points at nothing, in its own words', () => {
+  it('keeps a link that points at nothing, as a target that resolves to nothing', () => {
     const slug = makePrototype()
     writeDoc(slug, 'PRD.md', 'The detail is in [nowhere](docs/nowhere.md).\n')
 
-    const { links, issues } = readPrototypeLinks(workspaceRoot, slug)
+    const { links } = readPrototypeLinks(workspaceRoot, slug)
 
+    // It stays in the list as `to: null` rather than being dropped — what a broken link *means* is
+    // the gate's sentence (`gate.linkBroken`), so this reader does not say it a second time.
     expect(links).toEqual([{ from: 'PRD.md', target: 'docs/nowhere.md', to: null }])
-    expect(issues.join('\n')).toContain('PRD.md links to docs/nowhere.md, which is not in this prototype')
   })
 
   // The app opens the link; the workbench only reads the ones that point inside the folder, and a
@@ -117,9 +117,8 @@ describe('readPrototypeLinks', () => {
     writeDoc(slug, 'PRD.md', '# PRD\n')
     writeDoc(slug, 'cart.js', 'const x = "[a](b.md)"\n')
 
-    const { links, issues } = readPrototypeLinks(workspaceRoot, slug)
+    const { links } = readPrototypeLinks(workspaceRoot, slug)
 
     expect(links).toEqual([])
-    expect(issues).toEqual([])
   })
 })

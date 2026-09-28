@@ -849,7 +849,6 @@
   "prototypeNotice.gate.requirementUnmet": "A(z) {{id}} benne van a(z) {{file}} fájlban, de semmi nem valósítja meg.",
   "prototypeNotice.raw": "{{text}}",
   "prototypeNotice.requirement.undefined": "A(z) {{where}} hivatkozik erre: {{id}}, de ebben a prototípusban egyetlen fájl sem definiálja.",
-  "prototypeNotice.requirement.unimplemented": "A(z) {{id}} benne van a(z) {{file}} fájlban, de ebben a prototípusban semmi nem valósítja meg.",
   "prototypesList.delete": "Törlés",
   "prototypesList.deleteConfirm": "Törlöd a(z) „{{name}}” prototípust a teljes tartalmával együtt? A PRD.md és a fájlok is vele mennek, és ez nem visszavonható.",
   "prototypesList.deleteFailed": "A prototípus törlése nem sikerült",

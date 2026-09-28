@@ -849,7 +849,6 @@
   "prototypeNotice.gate.requirementUnmet": "{{id}} is in {{file}}, but nothing implements it.",
   "prototypeNotice.raw": "{{text}}",
   "prototypeNotice.requirement.undefined": "{{where}} refers to {{id}}, which no file in this prototype defines.",
-  "prototypeNotice.requirement.unimplemented": "{{id}} is in {{file}}, but nothing in this prototype implements it.",
   "prototypesList.delete": "Delete",
   "prototypesList.deleteConfirm": "Delete \"{{name}}\" and everything in it? Its PRD.md and its files go with it, and this cannot be undone.",
   "prototypesList.deleteFailed": "Could not delete the prototype",

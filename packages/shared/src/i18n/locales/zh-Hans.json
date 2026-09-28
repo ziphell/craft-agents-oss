@@ -849,7 +849,6 @@
   "prototypeNotice.gate.requirementUnmet": "{{id}} 写在 {{file}} 里，但没有任何东西实现它。",
   "prototypeNotice.raw": "{{text}}",
   "prototypeNotice.requirement.undefined": "{{where}} 引用了 {{id}}，但这个原型里没有任何文件定义它。",
-  "prototypeNotice.requirement.unimplemented": "{{id}} 写在 {{file}} 里，但这个原型里没有东西实现它。",
   "prototypesList.delete": "删除",
   "prototypesList.deleteConfirm": "删除「{{name}}」及其全部内容？它的 PRD.md 和文件都会一起删除，无法撤销。",
   "prototypesList.deleteFailed": "删除原型失败",

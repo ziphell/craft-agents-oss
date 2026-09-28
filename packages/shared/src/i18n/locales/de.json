@@ -849,7 +849,6 @@
   "prototypeNotice.gate.requirementUnmet": "{{id}} steht in {{file}}, aber nichts setzt es um.",
   "prototypeNotice.raw": "{{text}}",
   "prototypeNotice.requirement.undefined": "{{where}} verweist auf {{id}}, das keine Datei hier definiert.",
-  "prototypeNotice.requirement.unimplemented": "{{id}} steht in {{file}}, aber nichts in diesem Prototyp setzt es um.",
   "prototypesList.delete": "Löschen",
   "prototypesList.deleteConfirm": "„{{name}}“ mit allem Inhalt löschen? PRD.md und Dateien verschwinden mit – das lässt sich nicht rückgängig machen.",
   "prototypesList.deleteFailed": "Prototyp konnte nicht gelöscht werden",

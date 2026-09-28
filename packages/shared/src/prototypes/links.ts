@@ -57,8 +57,6 @@ export interface PrototypeLink {
 export interface PrototypeLinks {
   /** In reading order: file path order, and each document's own order within it. */
   links: PrototypeLink[]
-  /** Read problems, in their own words: a link that points at nothing. */
-  issues: string[]
 }
 
 /**
@@ -203,7 +201,6 @@ export function readPrototypeLinks(workspaceRootPath: string, slug: string): Pro
   const files = listPrototypeFiles(workspaceRootPath, slug)
   const known = new Set(files.map((file) => file.name))
   const links: PrototypeLink[] = []
-  const issues: string[] = []
 
   for (const file of files) {
     if (!isMarkdownFile(file.name)) continue
@@ -216,13 +213,12 @@ export function readPrototypeLinks(workspaceRootPath: string, slug: string): Pro
     }
 
     for (const target of extractLinkTargets(source)) {
-      const to = resolveLink(target, file.name, known)
-      links.push({ from: file.name, target, to })
-      if (!to) {
-        issues.push(`${file.name} links to ${target}, which is not in this prototype.`)
-      }
+      // A target that resolves to nothing is left in the list as it is (`to: null`) rather than
+      // reported here: the gate is where a link that points at nothing becomes a sentence
+      // (`gate.linkBroken`), so naming it a second time here would print one fact twice.
+      links.push({ from: file.name, target, to: resolveLink(target, file.name, known) })
     }
   }
 
-  return { links, issues }
+  return { links }
 }

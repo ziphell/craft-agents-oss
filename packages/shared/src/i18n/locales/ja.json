@@ -849,7 +849,6 @@
   "prototypeNotice.gate.requirementUnmet": "{{id}} は {{file}} にありますが、実装しているものがありません。",
   "prototypeNotice.raw": "{{text}}",
   "prototypeNotice.requirement.undefined": "{{where}} が {{id}} を参照していますが、このプロトタイプのどのファイルにもその定義がありません。",
-  "prototypeNotice.requirement.unimplemented": "{{id}} は {{file}} にありますが、このプロトタイプには実装がありません。",
   "prototypesList.delete": "削除",
   "prototypesList.deleteConfirm": "「{{name}}」とその中身をすべて削除しますか？PRD.md とファイルも一緒に消え、元に戻せません。",
   "prototypesList.deleteFailed": "プロトタイプを削除できませんでした",

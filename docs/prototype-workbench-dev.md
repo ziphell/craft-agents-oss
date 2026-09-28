@@ -12,18 +12,18 @@
 
 ## 1. 模块地图
 
-### 共享层 `packages/shared/src/prototypes/`（14 个模块 / 1937 行）
+### 共享层 `packages/shared/src/prototypes/`（14 个模块 / 1924 行）
 
 | 文件 | 行 | 负责 |
 |---|---|---|
 | `types.ts` | 39 | `PROTOTYPE_PRD_FILENAME` / `PROTOTYPE_RESEARCH_DIRNAME` 与共享类型。**零依赖**（§2③）——所以任何渲染层要的常量都放这儿，从这里取值不会把 barrel 拖进打包 |
 | `storage.ts` | 112 | 目录内路径（目录 / `research`）、`listPrototypeFiles()`（**递归**列出目录内文件，任何格式、不做任何过滤、名字是原型相对路径；只跳过隐藏项）、`isMarkdownFile()` |
 | `requirements.ts` | 231 | 需求解析：`## R-00x` 是唯一机制，读**每个** `.md`/`.mdx`（`parseRequirementDocument` / `readPrototypeRequirements`），每条需求带上**定义它的文件**；跨文件重号被点名。`extractRequirementIds`（`@requirement` 标记）。起步文件名 `PROTOTYPE_PRD_FILENAME` = `PRD.md` 住在 `types.ts` |
-| `links.ts` | 228 | 文档间的链接：`readPrototypeLinks()`——只扫 markdown 里**普通 markdown 链接**的相对、带扩展名的目标（跳代码段 / fence），按「本文档目录 → 原型根」解析（`../` 归一化）；链不到 → issues。**不动"实现"判定**（§2⑪） |
+| `links.ts` | 224 | 文档间的链接：`readPrototypeLinks()`——只扫 markdown 里**普通 markdown 链接**的相对、带扩展名的目标（跳代码段 / fence），按「本文档目录 → 原型根」解析（`../` 归一化）；链不到就留在列表里作 `to: null`，**由门禁去说**（§2⑪） |
 | `research.ts` | 206 | `research/*.md` 的 finding（`# F-001` + `claim:` / `source:` / `captured:` / `evidence:` / `requirements:`）解析，以及 `evidence:` 的存在性检查 |
-| `coverage.ts` | 158 | 需求 × 依据（文件 / findings）→ 每条需求的引用关系、未实现、悬空引用；只有**定义需求的文件**不算实现 |
-| `status.ts` | 280 | 报告（`buildPrototypeStatus` / `listPrototypeStatuses`）+ 门禁 `whyPrototypeIsNotSettled`（**只数事实**：有需求没人实现、有链接指向不存在的文件，见 §2⑫）。报告把 `specificationFiles`（定义需求的文件）与 `files`（其余材料）分开，并带上 `links`；断链同时进 `briefIssues` 与门禁 |
-| `notices.ts` | 99 | 可翻译的 notice：`code` + `params` + 由同一组 params 生成的**英文句**（agent 输出与详情页共读） |
+| `coverage.ts` | 152 | 需求 × 依据（文件 / findings）→ 每条需求的引用关系、未实现、悬空引用；只有**定义需求的文件**不算实现；"没人实现"用 `files` 为空表达，由门禁说成一句话 |
+| `status.ts` | 282 | 报告（`buildPrototypeStatus` / `listPrototypeStatuses`）+ 门禁 `whyPrototypeIsNotSettled`（**只数事实**：有需求没人实现、有链接指向不存在的文件，见 §2⑫）。报告把 `specificationFiles`（定义需求的文件）与 `files`（其余材料）分开，并带上 `links`；这两条事实**只由门禁说**，`briefIssues` 不重复它们 |
+| `notices.ts` | 94 | 可翻译的 notice：`code` + `params` + 由同一组 params 生成的**英文句**（agent 输出与详情页共读） |
 | `prompt.ts` | 189 | 绑定会话的 `<prototype_context>` 块（`buildPrototypePromptContext` / `formatPrototypeContextForPrompt`） |
 | `project-link.ts` | 84 | 项目侧「碰过哪些原型」（`ProjectConfig.prototypeSlugs`，背景记录，不绑定不解析） |
 | `create.ts` | 106 | 建文件夹 + 起步 `PRD.md`（`createPrototype` / `prototypeSlugFromName`） |
@@ -153,7 +153,7 @@ cd packages/session-tools-core && bun run tsc --noEmit
 cd packages/server-core       && bun run tsc --noEmit
 cd apps/electron              && bun run typecheck
 
-# 原型 + 相关接缝（1268 pass / 1 skip / 9 fail；9 条全是既有环境失败，见 §5.2）
+# 原型 + 相关接缝（1270 pass / 1 skip / 9 fail；9 条全是既有环境失败，见 §5.2）
 bun test packages/shared/src/prototypes packages/shared/src/agent packages/shared/src/tasks \
          packages/server-core/src/domain packages/server-core/src/sessions packages/server-core/src/tasks
 # 单跑：packages/shared 的 prototypes 70 pass；server-core 的 domain+sessions 145 pass
@@ -161,7 +161,7 @@ bun test packages/shared/src/prototypes packages/shared/src/agent packages/share
 # 界面侧全量 + 构建 + i18n
 cd apps/electron && bun test                     # 1121 pass / 0 fail
 cd apps/electron && bun run build:renderer       # 成功（改到 renderer 或共享包导出时务必跑，见 §2③）
-bun run lint:i18n:parity                         # i18n parity OK (6 locales, 1825 keys each)
+bun run lint:i18n:parity                         # i18n parity OK (6 locales, 1824 keys each)
 bun scripts/sort-locales.ts                      # 加过 key 之后跑一次，排序是强制的
 ```
 
@@ -179,14 +179,14 @@ bun scripts/sort-locales.ts                      # 加过 key 之后跑一次，
 
 ### 5.3 测试落点
 
-`packages/shared/src/prototypes/__tests__/`（10 个文件 / 1223 行）：
+`packages/shared/src/prototypes/__tests__/`（10 个文件 / 1229 行）：
 
 | 文件 | 行 | 管什么 |
 |---|---|---|
-| `coverage.test.ts` | 308 | 需求 id 与标记（含「写成词就不算」）、markdown 解析（多文件 / 子目录 / 跨文件重号）、findings、需求→实现的整条线 |
-| `settlement.test.ts` | 110 | 门禁只数事实（未实现的需求、断链）、规格/材料切分与文档间链接 |
+| `coverage.test.ts` | 307 | 需求 id 与标记（含「写成词就不算」）、markdown 解析（多文件 / 子目录 / 跨文件重号）、findings、需求→实现的整条线 |
+| `settlement.test.ts` | 111 | 门禁只数事实（未实现的需求、断链）、规格/材料切分与文档间链接 |
 | `prompt.test.ts` | 131 | `<prototype_context>` 的渲染与构造（含转义） |
-| `links.test.ts` | 125 | markdown 链接目标的提取（跳过代码段 / fence、外链与绝对路径、片段、无扩展名、图片）、路径与 `../` 解析、断链的报告 |
+| `links.test.ts` | 124 | markdown 链接目标的提取（跳过代码段 / fence、外链与绝对路径、片段、无扩展名、图片）、路径与 `../` 解析（链不到就留在列表里作 `to: null`） |
 | `stale-diagrams.test.ts` | 119 | 图与它导出的 `.drawio` 对不上时的报告 |
 | `project-link.test.ts` | 112 | 项目侧的原型集合（存在性过滤） |
 | `prototypes.test.ts` | 85 | 路径、递归 `listPrototypeFiles` |
@@ -229,7 +229,7 @@ agent 命令层：`packages/shared/src/agent/__tests__/tool-commands.test.ts`（
 | `requirements:` | 每条需求一行：id + 标题 — **谁引用了它**（文件名、`F-00x (finding)`；都没有时 `nothing refers to it yet`） |
 | `files:` | 目录里的文件（递归；定义需求的那些 markdown 除外，它们在 `spec:` 里） |
 | `findings:` | 有才出现：条数与路径 |
-| `issues:` | 读不干净的地方（悬空引用、断链 / 重名链接、`evidence:` 不在盘上、缺字段、同一 id 被两个文档定义、未实现的需求），每条一句 |
+| `issues:` | 读不干净的地方（悬空引用、`evidence:` 不在盘上、缺字段、同一 id 被两个文档定义），每条一句。**门禁已经说过的不在这里**——一条事实一句话 |
 | `unresolved:` | **最后一段、行动项，只含事实**：空则 `nothing — every requirement is implemented and every link resolves`，否则逐条列出（未实现的需求 / 断链）。 |
 
 ### 6.3 「为什么没生效」的排查路径
@@ -240,7 +240,7 @@ agent 命令层：`packages/shared/src/agent/__tests__/tool-commands.test.ts`（
 | 需求写在了非 markdown 文件里（如 `.txt`）或位置不对 | 不被读为需求（`requirements.ts:isMarkdownFile` 只认 `.md`/`.mdx`），该文件出现在 `files:` 里当材料。真源 `requirements.ts` 的 `isMarkdownFile` 与 `listPrototypeFiles` 的递归 |
 | 标记写成了词的一部分（`x-@requirement`）或值不合法（`@requirement TBD`） | `issues:` 为空、需求仍是 `nothing refers to it yet`。`requirements.ts:extractRequirementIds` + `markers.ts:markerIndex` |
 | 引用了不存在的 id | `issues:` 的 `requirement.undefined`（`… refers to R-099, which no file in this prototype defines`）。`coverage.ts` |
-| 链接链不到（`[x](gone.md)`） | `issues:` 的一句原文（`PRD.md links to gone.md, which is not in this prototype`）；详情页把它按原样显示（markdown 链接照常画，点开由 app 的路由决定）。`links.ts:readPrototypeLinks` |
+| 链接链不到（`[x](gone.md)`） | `unresolved:` 里的 `gate.linkBroken`（`PRD.md links to gone.md, which is not in this prototype`）；`links` 里它照旧是 `to: null`，详情页把它按原样显示（markdown 链接照常画，点开由 app 的路由决定）。`status.ts:whyPrototypeIsNotSettled` |
 | finding 的 `evidence:` 不在盘上 | `issues:` 的一句原文（`evidence "…" is not in research/.`）。`research.ts:readPrototypeFindings` |
 
 ---

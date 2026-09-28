@@ -145,7 +145,7 @@ Prototype "checkout-flow"
   files:      cart.html, personas.md
   findings:   2 (research/F-001-sticky.md, research/F-002-copy.md)
   issues:     1
-    • R-002 is in PRD.md but no file refers to it, so nothing in this prototype implements it.
+    • notes.md refers to R-009, which no file in this prototype defines.
   unresolved: 2
     • R-002 is in PRD.md but no file refers to it, so nothing implements it.
     • PRD.md links to docs/pricing.md, which is not in this prototype.
@@ -153,8 +153,8 @@ Prototype "checkout-flow"
 
 - A row with `nothing refers to it yet` is a requirement nothing implements — the failure this report exists to name.
 - `spec:` names the markdown files that state requirements — one or several; the message about a requirement always names the file it was written in.
-- `issues:` are the silent failures: a reference to an id no document defines, a link that points at nothing, a finding whose `evidence:` is not on disk, a duplicate id.
-- `unresolved:` is what is still **owed as a fact** — last, because it is the thing to act on: a requirement nothing implements, a link that points at nothing. It is the list the app's gate reads, so a report cannot look calmer here than the work is.
+- `issues:` are the things that could not be read as written: a reference to an id no document defines, a finding with no `claim:` or with evidence that is not on disk, one id defined by two documents.
+- `unresolved:` is what is still **owed as a fact** — last, because it is the thing to act on: a requirement nothing implements, a link that points at nothing. It is the list the app's gate reads, so a report cannot look calmer here than the work is. Nothing the gate says appears under `issues:` as well — one fact, one sentence.
 
 ---
 

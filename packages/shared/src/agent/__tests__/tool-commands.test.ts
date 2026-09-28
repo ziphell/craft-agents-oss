@@ -492,12 +492,12 @@ describe('the pane tools', () => {
 
       mockFns.prototypeStatus = async (slug) =>
         prototypeStatus(slug, {
-          briefIssues: [notice('requirement.unimplemented', { id: 'R-003', file: 'PRD.md' })],
+          briefIssues: [notice('requirement.undefined', { where: 'notes.md', id: 'R-009' })],
         })
 
       const issues = await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })
       expect(issues.content[0].text).toContain('issues:     1')
-      expect(issues.content[0].text).toContain('R-003 is in PRD.md but no file refers to it')
+      expect(issues.content[0].text).toContain('notes.md refers to R-009')
     })
 
     it('names a broken link among what is still owed', async () => {

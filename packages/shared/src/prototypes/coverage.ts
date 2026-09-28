@@ -123,16 +123,10 @@ export function resolveRequirementCoverage(
     }
   }
 
-  // A requirement nothing *implements* is the gap this module exists to name. A
-  // finding is evidence, not implementation, so it does not count as covering one:
-  // a requirement argued for and never built is exactly the case that must not
-  // read as done.
-  for (const requirement of documents.requirements) {
-    const entry = declared.get(requirement.id)
-    if (entry && entry.files.length > 0) continue
-    issues.push(notice('requirement.unimplemented', { id: requirement.id, file: requirement.file }))
-  }
-
+  // A requirement nothing *implements* is the gap this module exists to name, and it is said by
+  // `files` staying empty rather than by a notice here: the gate turns that into a sentence
+  // (`gate.requirementUnmet`), and it is the gate's own input. A notice too would print one fact
+  // twice on one screen, in two wordings.
   for (const entry of declared.values()) {
     if (documents.requirements.some((requirement) => requirement.id === entry.id)) continue
     const where = [...entry.files, ...entry.findings].join(', ')

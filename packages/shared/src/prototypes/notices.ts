@@ -30,8 +30,6 @@
 
 /** What a notice is about, as a stable code a reader can translate. */
 export type PrototypeNoticeCode =
-  /** `briefIssues`: a requirement in a document that nothing refers to. */
-  | 'requirement.unimplemented'
   /** `briefIssues`: a `@requirement` marker naming an id no document defines. */
   | 'requirement.undefined'
   /** `briefIssues`: a picture in the brief drawn from an earlier state of the diagram beside it. */
@@ -46,9 +44,8 @@ export type PrototypeNoticeCode =
 /**
  * The values a code's sentence interpolates. See {@link ENGLISH} for which.
  *
- * `null` is allowed because the report has a few such values — a dispute with no
- * `status:` line, for one — and the sentence has always printed them as they were;
- * a reader that translates has to be able to say the rest of the line.
+ * `null` is allowed because a report value can legitimately be missing, and the sentence has always
+ * printed it as it was; a reader that translates has to be able to say the rest of the line.
  */
 export type PrototypeNoticeParams = Record<string, string | number | null>
 
@@ -64,11 +61,9 @@ export interface PrototypeNotice {
  *
  * The strings here are the ones the status output and the handoff document have
  * always printed, kept byte for byte: they are what an agent quotes back in a
- * conversation, and what a dispute in `reviews/` is written against.
+ * conversation.
  */
 const ENGLISH: Record<PrototypeNoticeCode, (params: PrototypeNoticeParams) => string> = {
-  'requirement.unimplemented': ({ id, file }) =>
-    `${id} is in ${file} but no file refers to it, so nothing in this prototype implements it.`,
   'requirement.undefined': ({ where, id }) =>
     `${where} refers to ${id}, which no file in this prototype defines.`,
   'diagram.stale': ({ svg, source }) =>

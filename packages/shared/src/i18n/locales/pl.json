@@ -849,7 +849,6 @@
   "prototypeNotice.gate.requirementUnmet": "{{id}} jest w {{file}}, ale nic tego nie implementuje.",
   "prototypeNotice.raw": "{{text}}",
   "prototypeNotice.requirement.undefined": "{{where}} odnosi się do {{id}}, którego nie definiuje żaden plik w tym prototypie.",
-  "prototypeNotice.requirement.unimplemented": "{{id}} jest w {{file}}, ale w tym prototypie nic tego nie implementuje.",
   "prototypesList.delete": "Usuń",
   "prototypesList.deleteConfirm": "Usunąć „{{name}}” wraz z całą zawartością? Plik PRD.md i pliki znikną razem z nim — tego nie da się cofnąć.",
   "prototypesList.deleteFailed": "Nie udało się usunąć prototypu",

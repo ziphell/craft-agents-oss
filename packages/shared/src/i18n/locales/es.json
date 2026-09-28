@@ -849,7 +849,6 @@
   "prototypeNotice.gate.requirementUnmet": "{{id}} está en {{file}}, pero nada lo implementa.",
   "prototypeNotice.raw": "{{text}}",
   "prototypeNotice.requirement.undefined": "{{where}} se refiere a {{id}}, que ningún archivo de este prototipo define.",
-  "prototypeNotice.requirement.unimplemented": "{{id}} está en {{file}}, pero nada en este prototipo lo implementa.",
   "prototypesList.delete": "Eliminar",
   "prototypesList.deleteConfirm": "¿Eliminar «{{name}}» y todo su contenido? Su PRD.md y sus archivos se van con él, y esto no se puede deshacer.",
   "prototypesList.deleteFailed": "No se pudo eliminar el prototipo",
