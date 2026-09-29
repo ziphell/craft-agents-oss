@@ -50,15 +50,4 @@ export interface HandlerDeps<
    * is a state a checkout can legitimately be in.
    */
   drawioOrigin?: () => string | null
-
-  /**
-   * Told after a workspace's tweaks change: a switch flipped, a tweak deleted.
-   *
-   * The host that runs tweaks in its own browser window
-   * (`apps/electron/src/main/tweaks-injector.ts`) uses this to reach pages that are already
-   * open — without it, flipping a switch would sit in `tweak.json` until the next reload,
-   * which is not what a switch means. Absent on a host with no browser window, where there
-   * is nothing to re-apply.
-   */
-  onTweaksChanged?: (workspaceId: string) => void
 }

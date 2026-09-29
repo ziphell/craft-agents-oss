@@ -1,7 +1,8 @@
 /**
  * Websites route round-trips: route string ⇄ NavigationState ⇄ panel key.
- * Guards the six touchpoints a new navigator must thread through
- * (prefix list, parse, build, convert, key serialization, type guard).
+ *
+ * A website has no second-level page — the library grid is the whole navigator —
+ * so there is exactly one websites route and no detail segment to parse.
  */
 
 import { describe, test, expect } from 'bun:test'
@@ -21,59 +22,40 @@ import {
 import { routes } from '../routes'
 
 describe('websites routes', () => {
-  test('route builders emit the websites prefix', () => {
+  test('route builder emits the websites prefix', () => {
     expect(routes.view.websites()).toBe('websites')
-    expect(routes.view.websites('my-dash')).toBe('websites/website/my-dash')
   })
 
   test('websites is a compound route prefix', () => {
     expect(isCompoundRoute('websites')).toBe(true)
-    expect(isCompoundRoute('websites/website/my-dash')).toBe(true)
   })
 
-  test('parses bare websites route (library grid, no auto-selected detail)', () => {
+  test('parses the bare websites route (library grid)', () => {
     expect(parseCompoundRoute('websites')).toEqual({ navigator: 'websites', details: null })
     const state = parseRouteToNavigationState('websites')
-    expect(state).toEqual({ navigator: 'websites', details: null })
+    expect(state).toEqual({ navigator: 'websites' })
     expect(state && isWebsitesNavigation(state)).toBe(true)
   })
 
-  test('parses website detail route', () => {
-    expect(parseCompoundRoute('websites/website/my-dash')).toEqual({
-      navigator: 'websites',
-      details: { type: 'website', id: 'my-dash' },
-    })
-    expect(parseRouteToNavigationState('websites/website/my-dash')).toEqual({
-      navigator: 'websites',
-      details: { type: 'website', websiteSlug: 'my-dash' },
-    })
-  })
-
-  test('rejects malformed websites routes', () => {
+  test('rejects the removed website detail route', () => {
+    expect(parseCompoundRoute('websites/website/my-dash')).toBeNull()
     expect(parseCompoundRoute('websites/unknown')).toBeNull()
-    expect(parseCompoundRoute('websites/website')).toBeNull()
   })
 
   test('round-trips route ⇄ navigation state', () => {
-    for (const route of ['websites', 'websites/website/my-dash'] as const) {
-      const state = parseRouteToNavigationState(route)
-      expect(state).not.toBeNull()
-      expect(buildRouteFromNavigationState(state!)).toBe(route)
-    }
+    const state = parseRouteToNavigationState('websites')
+    expect(state).not.toBeNull()
+    expect(buildRouteFromNavigationState(state!)).toBe('websites')
   })
 
-  test('buildCompoundRoute emits websites routes', () => {
+  test('buildCompoundRoute emits the websites route', () => {
     expect(buildCompoundRoute({ navigator: 'websites', details: null })).toBe('websites')
-    expect(buildCompoundRoute({ navigator: 'websites', details: { type: 'website', id: 'x' } })).toBe('websites/website/x')
   })
 
   test('round-trips navigation state ⇄ panel key', () => {
-    const grid: NavigationState = { navigator: 'websites', details: null }
-    const detail: NavigationState = { navigator: 'websites', details: { type: 'website', websiteSlug: 'my-dash' } }
+    const grid: NavigationState = { navigator: 'websites' }
     expect(getNavigationStateKey(grid)).toBe('websites')
-    expect(getNavigationStateKey(detail)).toBe('websites/website/my-dash')
     expect(parseNavigationStateKey('websites')).toEqual(grid)
-    expect(parseNavigationStateKey('websites/website/my-dash')).toEqual(detail)
   })
 
   test('automations panel key round-trips (regression: id had a leading slash)', () => {

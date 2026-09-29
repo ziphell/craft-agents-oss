@@ -44,14 +44,30 @@ describe('buildTweaksExtension', () => {
     expect(manifest.manifest_version).toBe(3)
     // `1.<days>.<minutes>` — monotonic, so a reviewer can tell one build from the next.
     expect(manifest.version).toMatch(/^1\.\d+\.\d+$/)
+    // Two entries, because `run_at` governs the javascript: the stylesheet keeps the earliest
+    // moment so the page never flashes the state the tweak is there to change. The javascript
+    // goes in the page's own world, which is where the app puts it.
     expect(manifest.content_scripts).toEqual([
       {
         matches: ['*://*.example.com/admin/*'],
         run_at: 'document_start',
         css: ['tweaks/order-ids.css'],
+      },
+      {
+        matches: ['*://*.example.com/admin/*'],
+        run_at: 'document_end',
+        world: 'MAIN',
         js: ['tweaks/order-ids.js'],
       },
     ])
+  })
+
+  it('delivers the javascript at the moment the tweak declares', () => {
+    withTweak('Late', ['*://a.test/*'], { css: '.x{}', js: '/* @run-at document_idle */\nvoid 0' })
+    const build = buildTweaksExtension(loadWorkspaceTweaks(root), BUILT_AT)
+
+    const scripts = (manifestOf(build.files) as { content_scripts: Array<Record<string, unknown>> }).content_scripts
+    expect(scripts.map((entry) => entry.run_at)).toEqual(['document_start', 'document_idle'])
   })
 
   it('ships the tweak’s own bytes, not a build of them', () => {

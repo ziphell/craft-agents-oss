@@ -19,7 +19,7 @@ import {
   readFileSync,
   rmSync,
 } from 'fs';
-import { basename, join } from 'path';
+import { join } from 'path';
 import { createHash, randomUUID } from 'crypto';
 import type {
   WebsiteConfig,
@@ -163,15 +163,22 @@ export function loadWebsiteConfig(
 }
 
 /**
- * Save website.json (validated, atomic write, bumps updatedAt).
+ * Save website.json (validated, atomic write).
+ *
+ * Bumps `updatedAt` by default: it is what the library orders by and what
+ * "updated" means on a tile. A caller whose write is the app's own bookkeeping
+ * rather than a change to the website passes `touch: false`, so the stamp it
+ * carries is written as-is.
  *
  * @throws Error if the config fails schema validation
  */
-export function saveWebsiteConfig(workspaceRootPath: string, config: WebsiteConfig): void {
-  const storageConfig: WebsiteConfig = {
-    ...config,
-    updatedAt: Date.now(),
-  };
+export function saveWebsiteConfig(
+  workspaceRootPath: string,
+  config: WebsiteConfig,
+  options?: { touch?: boolean },
+): void {
+  const storageConfig: WebsiteConfig =
+    options?.touch === false ? config : { ...config, updatedAt: Date.now() };
 
   const validation = validateWebsiteConfig(storageConfig);
   if (!validation.valid) {
@@ -209,7 +216,6 @@ export function loadWebsite(
     dataPath: getWebsiteDataPath(workspaceRootPath, websiteSlug),
     snapshotPath: getWebsiteSnapshotPath(workspaceRootPath, websiteSlug),
     workspaceRootPath,
-    workspaceId: basename(workspaceRootPath),
   };
 }
 
@@ -561,6 +567,11 @@ export function isThumbnailFresh(
  * stamping website.json last makes the config watcher emit `websites:changed` so open
  * grids pick up the fresh poster. Pass `undefined` to clear (e.g. capture
  * failed or content removed).
+ *
+ * Written without touching `updatedAt`: the poster is the app's own bookkeeping,
+ * and a re-shoot is not a change to the website — a capture (automatic or a
+ * manual refresh) must not make the library look edited or reorder it. The
+ * capture time travels in `thumbnail.capturedAt` for anyone who needs it.
  */
 export function recordWebsiteThumbnail(
   workspaceRootPath: string,
@@ -576,8 +587,7 @@ export function recordWebsiteThumbnail(
   const updated: WebsiteConfig = {
     ...rest,
     ...(thumbnail ? { thumbnail } : {}),
-    updatedAt: Date.now(),
   };
-  saveWebsiteConfig(workspaceRootPath, updated);
+  saveWebsiteConfig(workspaceRootPath, updated, { touch: false });
   return updated;
 }

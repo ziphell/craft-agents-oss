@@ -206,16 +206,11 @@ export function parseCompoundRoute(route: string): ParsedCompoundRoute | null {
     return null
   }
 
-  // Websites navigator
+  // Websites navigator — the library grid is the whole navigator, so there is
+  // no detail segment to parse.
   if (first === 'websites') {
     if (segments.length === 1) {
       return { navigator: 'websites', details: null }
-    }
-    if (segments[1] === 'website' && segments[2]) {
-      return {
-        navigator: 'websites',
-        details: { type: 'website', id: segments[2] },
-      }
     }
     return null
   }
@@ -373,8 +368,7 @@ export function buildCompoundRoute(parsed: ParsedCompoundRoute): string {
   }
 
   if (parsed.navigator === 'websites') {
-    if (!parsed.details) return 'websites'
-    return `websites/website/${parsed.details.id}`
+    return 'websites'
   }
 
   if (parsed.navigator === 'tweaks') {
@@ -526,10 +520,7 @@ function convertCompoundToViewRoute(compound: ParsedCompoundRoute): ParsedRoute 
 
   // Websites
   if (compound.navigator === 'websites') {
-    if (!compound.details) {
-      return { type: 'view', name: 'websites', params: {} }
-    }
-    return { type: 'view', name: 'website-info', id: compound.details.id, params: {} }
+    return { type: 'view', name: 'websites', params: {} }
   }
 
   // Tweaks
@@ -699,13 +690,7 @@ function convertCompoundToNavigationState(compound: ParsedCompoundRoute): Naviga
 
   // Websites
   if (compound.navigator === 'websites') {
-    if (!compound.details) {
-      return { navigator: 'websites', details: null }
-    }
-    return {
-      navigator: 'websites',
-      details: { type: 'website', websiteSlug: compound.details.id },
-    }
+    return { navigator: 'websites' }
   }
 
   // Tweaks
@@ -818,15 +803,7 @@ function convertParsedRouteToNavigationState(parsed: ParsedRoute): NavigationSta
       }
       return { navigator: 'prototypes', details: null }
     case 'websites':
-      return { navigator: 'websites', details: null }
-    case 'website-info':
-      if (parsed.id) {
-        return {
-          navigator: 'websites',
-          details: { type: 'website', websiteSlug: parsed.id },
-        }
-      }
-      return { navigator: 'websites', details: null }
+      return { navigator: 'websites' }
     case 'tweaks':
       return { navigator: 'tweaks', details: null }
     case 'tweak-info':
@@ -962,7 +939,7 @@ function navigationStateToCompoundRoute(state: NavigationState): ParsedCompoundR
   if (state.navigator === 'websites') {
     return {
       navigator: 'websites',
-      details: state.details ? { type: 'website', id: state.details.websiteSlug } : null,
+      details: null,
     }
   }
 

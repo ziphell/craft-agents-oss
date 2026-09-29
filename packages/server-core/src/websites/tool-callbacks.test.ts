@@ -113,4 +113,28 @@ describe('websites tool callbacks (end-to-end against a temp workspace)', () => 
 
     await expect(callbacks.deleteWebsite('build-health')).rejects.toThrow('Website not found')
   })
+
+  it('reports the address the host hands out — and none when this host serves no origins', async () => {
+    const created = await callbacks.createWebsite({ name: 'Address Probe' })
+
+    // No resolver injected (a standalone server): the details carry no address.
+    expect((await callbacks.getWebsite(created.slug))?.origin).toBeUndefined()
+
+    const asked: string[] = []
+    const hosted = buildWebsitesToolCallbacks({
+      workspaceId: 'test-ws',
+      workspaceRootPath: workspace,
+      resolveOrigin: (_rootPath, slug) => {
+        asked.push(slug)
+        return `http://${slug}-1a2b3c4d.localhost`
+      },
+    })
+
+    const details = await hosted.getWebsite(created.slug)
+    expect(details?.origin).toBe(`http://${created.slug}-1a2b3c4d.localhost`)
+    // The address is the host's to hand out: asking for a website's details is
+    // what names it, so the resolver ran for this slug rather than anything being
+    // assembled here.
+    expect(asked).toEqual([created.slug])
+  })
 })

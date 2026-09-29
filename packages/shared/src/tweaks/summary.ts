@@ -13,6 +13,7 @@
 
 import { getTweakCssPath, getTweakHitsPath, getTweakJsPath, readTweakSources } from './storage.ts'
 import { readTweakHits, tweakTargets } from './targets.ts'
+import { tweakRunAt, type TweakRunAt } from './run-at.ts'
 import type { LoadedTweak, TweakHits } from './types.ts'
 
 /** One tweak as it appears in a list. */
@@ -60,6 +61,11 @@ export interface TweakDetails extends TweakSummary {
   hasJs: boolean;
   /** Absolute path to hits.json — written by whatever applies the tweak, never by hand. */
   hitsPath: string;
+  /**
+   * When its javascript runs: what the tweak declares with `@run-at`, or the default
+   * (`document_end`). Derived from the code, because that is where it is declared.
+   */
+  runAt: TweakRunAt;
   targets: TweakTargetInfo[];
   /** When the hit record was last written, or null when nothing has applied it yet. */
   appliedAt: number | null;
@@ -110,6 +116,7 @@ export function toTweakDetails(workspaceRootPath: string, tweak: LoadedTweak): T
     hasCss: tweak.hasCss,
     hasJs: tweak.hasJs,
     hitsPath: getTweakHitsPath(workspaceRootPath, tweak.config.slug),
+    runAt: tweakRunAt(readTweakSources(tweak)),
     targets: toTweakTargets(tweak, hits),
     appliedAt: hits?.updatedAt ?? null,
   }

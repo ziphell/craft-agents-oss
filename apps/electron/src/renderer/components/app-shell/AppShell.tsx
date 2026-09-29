@@ -132,6 +132,7 @@ import { SkillsListPanel } from "./SkillsListPanel"
 import { AutomationsListPanel } from "../automations/AutomationsListPanel"
 import { ProjectsListPanel } from "./ProjectsListPanel"
 import { PrototypesListPanel } from "./PrototypesListPanel"
+import { TweaksListPanel } from "./TweaksListPanel"
 import { APP_EVENTS, AGENT_EVENTS, type AutomationFilterKind, AUTOMATION_TYPE_TO_FILTER_KIND } from "../automations/types"
 import { useAutomations } from "@/hooks/useAutomations"
 import { useProjects } from "@/hooks/useProjects"
@@ -649,13 +650,9 @@ function AppShellContent({
   // so the navigator (and its resize handle) collapse to zero width while it's active.
   const isBoardView = isSessionsNavigation(navState) && navState.viewMode === 'board'
 
-  // Websites behaves the same way: both the library grid and an open website
-  // render full-width in the content area — there is no websites navigator list.
+  // Websites behaves the same way: the library grid renders full-width in the
+  // content area — there is no websites navigator list, and no second-level page.
   const isWebsitesView = isWebsitesNavigation(navState)
-
-  // Tweaks likewise: the sidebar lists the tweaks, so the middle navigator has
-  // nothing of its own to show and collapses.
-  const isTweaksView = isTweaksNavigation(navState)
 
   // Derive source filter from navigation state (only when in sources navigator)
   const sourceFilter: SourceFilter | null = isSourcesNavigation(navState) ? navState.filter ?? null : null
@@ -2855,8 +2852,8 @@ function AppShellContent({
                       title: t("sidebar.websites"),
                       label: String(websites.length),
                       icon: PanelsTopLeft,
-                      // Highlight on the library grid only, not when a website is open (mirrors Projects)
-                      variant: (isWebsitesNavigation(navState) && !navState.details) ? "default" : "ghost",
+                      // Highlight only when on the Websites view itself
+                      variant: isWebsitesNavigation(navState) ? "default" : "ghost",
                       onClick: handleWebsitesClick,
                     },
                     {
@@ -2864,19 +2861,9 @@ function AppShellContent({
                       title: t("sidebar.tweaks"),
                       label: String(tweaks.length),
                       icon: Wand2,
-                      // Highlight on the library list only, not when one tweak is open (mirrors Websites)
-                      variant: (isTweaksNavigation(navState) && !navState.details) ? "default" : "ghost",
+                      // Highlight only when on the Tweaks view itself (its list is the navigator)
+                      variant: isTweaksNavigation(navState) ? "default" : "ghost",
                       onClick: handleTweaksClick,
-                      expandable: tweaks.length > 0,
-                      expanded: isExpanded('nav:tweaks'),
-                      onToggle: () => toggleExpanded('nav:tweaks'),
-                      items: tweaks.map(tweak => ({
-                        id: `nav:tweaks:${tweak.slug}`,
-                        title: tweak.name,
-                        icon: Wand2,
-                        variant: (isTweaksNavigation(navState) && navState.details?.tweakSlug === tweak.slug) ? "default" as const : "ghost" as const,
-                        onClick: () => navigate(routes.view.tweaks(tweak.slug)),
-                      })),
                     },
                     {
                       id: "nav:automations",
@@ -3781,6 +3768,15 @@ function AppShellContent({
                 selectedPrototypeSlug={isPrototypesNavigation(navState) ? navState.details?.prototypeSlug ?? null : null}
               />
             )}
+            {isTweaksNavigation(navState) && (
+              /* Tweaks List — one row per tweak; a tweak's own page is in the content panel */
+              <TweaksListPanel
+                tweaks={tweaks}
+                onTweakClick={(slug) => navigate(routes.view.tweaks(slug))}
+                onAskAgent={() => navigate(routes.action.newSession({ input: t('tweaks.askAgentPrompt') }))}
+                selectedTweakSlug={isTweaksNavigation(navState) ? navState.details?.tweakSlug ?? null : null}
+              />
+            )}
             {isAutomationsNavigation(navState) && (
               /* Automations List - filtered by type if automationFilter is active */
               <AutomationsListPanel
@@ -3869,7 +3865,7 @@ function AppShellContent({
             )}
             </div>
           }
-          navigatorWidth={isAutoCompact ? sessionListWidth : (effectiveSidebarAndNavigatorHidden || isBoardView || isWebsitesView || isTweaksView ? 0 : sessionListWidth)}
+          navigatorWidth={isAutoCompact ? sessionListWidth : (effectiveSidebarAndNavigatorHidden || isBoardView || isWebsitesView ? 0 : sessionListWidth)}
           isSidebarAndNavigatorHidden={effectiveSidebarAndNavigatorHidden}
           isRightSidebarVisible={false}
           isCompact={isAutoCompact}
@@ -3910,7 +3906,7 @@ function AppShellContent({
         )}
 
         {/* Session List Resize Handle (absolute, hidden in focused mode, board view, and websites) */}
-        {!effectiveSidebarAndNavigatorHidden && !isBoardView && !isWebsitesView && !isTweaksView && (
+        {!effectiveSidebarAndNavigatorHidden && !isBoardView && !isWebsitesView && (
         <div
           ref={sessionListHandleRef}
           onMouseDown={(e) => { e.preventDefault(); setIsResizing('session-list') }}

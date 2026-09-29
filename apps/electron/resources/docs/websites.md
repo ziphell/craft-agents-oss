@@ -4,6 +4,12 @@ A website is a **directory** in the workspace, served at an address of its own a
 
 A website is the right artifact when **nobody has to implement it**: it is meant to be used as it stands, here. If instead the thing is a change to a real product — something somebody else has to build — that is a **prototype**: a folder holding the specification (`PRD.md`, numbered requirements, research, reviews), and the specification is what leaves the workbench rather than a running site.
 
+## Working on a website as a page
+
+`get_website <slug>` returns `origin` — the address the website is served at (`http://<label>.localhost`, answered from the website's own directory). Point `browser_tool` at it (`navigate <origin>`, then `snapshot` / `click` / `evaluate` / `screenshot`) to see and drive what actually renders: the files are the truth, but the page is what the reader gets, so this is how to check your own work rather than imagine it.
+
+Use the `origin` you were handed; do not assemble one from the slug. Asking for a website's details is what **names** it to the host for this run, and an address nothing named does not answer (the label's hash is derived, not guessed). On a host with no browser to serve the site (a standalone server), the details carry no `origin` at all.
+
 ## Folder layout (the files are the truth)
 
 ```
@@ -158,3 +164,5 @@ The copy comes with a short `README.md` saying the one thing that otherwise look
 - **"Make me a dashboard of X that updates every N minutes"** → `create_website` (content + `refresh` spec) → write the refresh script into the workspace → seed initial data with `write_website_data` so it isn't empty before the first tick.
 - **"Track this number over time"** → website with a series chart; append points with `write_website_data` whenever you learn a new value (idempotent by timestamp).
 - **Iterating on a website** → **edit the files** with `Write`/`Edit` (that is the normal way — the app syncs the digest and re-renders the poster for you, and it works for every file, not just `index.html`). `update_website` is for the config fields (`name`, `description`, `projectId`, `refresh`); its `content` replaces the whole `index.html` in one go, which is worth it only when the document is being rewritten rather than changed.
+- **Checking a website as it renders** → `get_website` for its `origin`, then `browser_tool` on that address (`navigate`, `wait network-idle`, `snapshot`, `click`, `evaluate`, `screenshot`): the same page the app opens, running its own scripts and reading its own data.
+- **Continuing from a page the user is on** → the website is at that address, not in the app's own document, so its state (`localStorage`, routes) belongs to it: `tabs` names it, and a reload is that tab's own.

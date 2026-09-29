@@ -95,6 +95,17 @@ describe('websites/storage', () => {
       });
       expect(stamped.thumbnail).toEqual({ digest: website.contentDigest!, capturedAt: 123, width: 800, height: 500 });
       expect(isThumbnailFresh(stamped)).toBe(true);
+      // The poster is the app's bookkeeping, not an edit: stamping it (or
+      // re-shooting it) must not move the timestamp the library orders by.
+      expect(stamped.updatedAt).toBe(website.updatedAt);
+      const reshot = recordWebsiteThumbnail(workspaceDir, website.slug, {
+        digest: website.contentDigest!,
+        capturedAt: 456,
+        width: 800,
+        height: 500,
+      });
+      expect(reshot.updatedAt).toBe(website.updatedAt);
+      expect(loadWebsiteConfig(workspaceDir, website.slug)!.updatedAt).toBe(website.updatedAt);
 
       // updateWebsite must not be able to set/clear the managed thumbnail field.
       const afterUpdate = updateWebsite(workspaceDir, website.slug, {
@@ -103,11 +114,11 @@ describe('websites/storage', () => {
         name: 'Renamed',
       });
       expect(afterUpdate.name).toBe('Renamed');
-      expect(afterUpdate.thumbnail).toEqual(stamped.thumbnail);
+      expect(afterUpdate.thumbnail).toEqual(reshot.thumbnail);
 
       // A content change makes the existing poster stale (digest mismatch).
       const afterContent = saveWebsiteContent(workspaceDir, website.slug, '<p>changed</p>');
-      expect(afterContent.thumbnail).toEqual(stamped.thumbnail); // pointer retained…
+      expect(afterContent.thumbnail).toEqual(reshot.thumbnail); // pointer retained…
       expect(isThumbnailFresh(afterContent)).toBe(false); // …but now stale
 
       // Clearing the pointer.

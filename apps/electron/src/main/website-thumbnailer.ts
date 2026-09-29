@@ -31,6 +31,12 @@ export interface ThumbnailRequest {
   workspaceId: string
   workspaceRootPath: string
   slug: string
+  /**
+   * Re-shoot even when a poster for the current content already exists. Set by a
+   * manual refresh: a page can look different without its content changing (a
+   * layout that was captured wrong, a scrollbar that should not be in the shot).
+   */
+  force?: boolean
 }
 
 export interface WebsiteThumbnailerOptions {
@@ -72,7 +78,15 @@ export class WebsiteThumbnailer {
   /** Queue a (re)capture. Coalesces duplicate slugs; the run reads latest from disk. */
   enqueue(req: ThumbnailRequest): void {
     const key = this.key(req)
-    if (this.pending.has(key)) return
+    if (this.pending.has(key)) {
+      // Already waiting: coalesce onto it, but never let an automatic enqueue
+      // swallow a manual refresh that arrived with it.
+      if (req.force) {
+        const waiting = this.queue.find((queued) => this.key(queued) === key)
+        if (waiting) waiting.force = true
+      }
+      return
+    }
     this.pending.add(key)
     this.queue.push(req)
     void this.drain()
@@ -114,8 +128,9 @@ export class WebsiteThumbnailer {
     if (content === null || content.trim() === '') return // nothing to render
 
     const digest = config.contentDigest ?? computeWebsiteContentDigest(content)
-    // Already have a fresh poster (e.g. duplicate enqueue) — skip the work.
-    if (config.thumbnail?.digest === digest) return
+    // Already have a fresh poster (e.g. duplicate enqueue) — skip the work. A
+    // forced capture (a manual refresh) re-shoots regardless.
+    if (!req.force && config.thumbnail?.digest === digest) return
 
     const win = new BrowserWindow({
       show: false,
@@ -160,6 +175,14 @@ export class WebsiteThumbnailer {
 
   private async renderAndCapture(win: BrowserWindow, origin: string): Promise<Buffer | null> {
     await win.loadURL(origin)
+    // A viewport capture includes the page's own scrollbars — a site taller than
+    // the 16:10 box would carry its scrollbar in the poster — so every scrollbar
+    // (the document's and any inner scroller's) is hidden for the shot. `user`
+    // origin so the site's own stylesheet cannot bring one back.
+    await win.webContents.insertCSS(
+      '::-webkit-scrollbar { display: none !important; } html { scrollbar-width: none !important; }',
+      { cssOrigin: 'user' },
+    )
     // did-finish-load (awaited above) covers the document; give its scripts and the
     // paint that follows time to settle before reading the frame.
     await delay(RENDER_SETTLE_MS)

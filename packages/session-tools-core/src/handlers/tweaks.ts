@@ -1,10 +1,14 @@
 /**
  * Tweaks tool handlers — list_tweaks / get_tweak / create_tweak / update_tweak /
- * delete_tweak / export_tweaks.
+ * delete_tweak.
  *
- * All storage logic (slug generation, file writes, the extension build) happens behind
+ * All storage logic (slug generation, file writes) happens behind
  * the injected ctx.tweaks callbacks, where the tweak primitives live — this package must
  * stay free of @craft-agent/shared (same rule as websites and create_task).
+ *
+ * Exporting is deliberately **not** one of these. It writes an extension into a folder a
+ * person chooses, which is a decision of theirs and not something an agent can reason about;
+ * the app's own tweak page has that action (see `apps/electron/resources/docs/tweaks.md`).
  */
 
 import type {
@@ -125,27 +129,5 @@ export async function handleDeleteTweak(ctx: SessionToolContext, args: DeleteTwe
     return successResponse(JSON.stringify(result, null, 2));
   } catch (error) {
     return errorResponse(`Failed to delete tweak: ${toError(error)}`);
-  }
-}
-
-// ============================================================
-// export_tweaks
-// ============================================================
-
-export interface ExportTweaksArgs {
-  destDir: string;
-}
-
-export async function handleExportTweaks(ctx: SessionToolContext, args: ExportTweaksArgs): Promise<ToolResult> {
-  if (!ctx.tweaks) return errorResponse(TWEAKS_UNAVAILABLE);
-  if (!args.destDir?.trim()) {
-    return errorResponse('destDir is required — the folder to write the extension into, as the user named it.');
-  }
-
-  try {
-    const result = await ctx.tweaks.exportTweaks(args.destDir);
-    return successResponse(JSON.stringify(result, null, 2));
-  } catch (error) {
-    return errorResponse(`Failed to export tweaks: ${toError(error)}`);
   }
 }

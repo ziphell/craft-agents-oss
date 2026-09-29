@@ -46,7 +46,7 @@ import type { LoadedSkill } from '../skills/types.ts';
 import { loadWorkspaceWebsites, WEBSITE_CONFIG_FILENAME, WEBSITE_CONTENT_FILENAME, syncWebsiteContentDigest } from '../websites/storage.ts';
 import { loadWorkspaceTweaks } from '../tweaks/storage.ts';
 import { toTweakSummary } from '../tweaks/summary.ts';
-import { TWEAK_CONFIG_FILENAME } from '../tweaks/types.ts';
+import { TWEAK_CONFIG_FILENAME, TWEAK_CSS_FILENAME, TWEAK_JS_FILENAME } from '../tweaks/types.ts';
 import { loadSkill, loadAllSkills, invalidateSkillsCache, skillNeedsIconDownload, downloadSkillIcon } from '../skills/storage.ts';
 import {
   loadStatusConfig,
@@ -174,10 +174,13 @@ export interface ConfigWatcherCallbacks {
 
   // Tweak callbacks
   /**
-   * Called when any tweaks/{slug}/tweak.json changes (created, edited, deleted) — the
-   * file the tweak list is derived from. The code files beside it (tweak.css/tweak.js)
-   * and the applier's hits.json do not change which tweaks exist or whether they are on,
-   * so they are deliberately not watched.
+   * Called when a tweak changes on disk: its record (created, edited, deleted), or the code
+   * beside it. A tweak **is** the record plus the code, so both are what the list and the
+   * installer have to follow — the fresh list is handed over because that is what the app's
+   * own pages show.
+   *
+   * `hits.json` is deliberately not watched: only the applier writes it, and watching it would
+   * have the applier re-install the rules it has just run.
    */
   onTweaksListChange?: (tweaks: import('../tweaks/summary.ts').TweakSummary[]) => void;
 
@@ -515,12 +518,18 @@ export class ConfigWatcher {
       return;
     }
 
-    // Tweaks changes: tweaks/{slug}/tweak.json is the record the list is built from,
-    // so an out-of-band edit to it (the agent's own tools, or a hand edit) is what the
-    // pages showing tweaks have to follow. Slug-dir add/remove fires too.
+    // Tweaks changes: the record and the code beside it are together what a tweak *is*, so an
+    // out-of-band edit to any of them (the agent's own tools, or a hand edit) is what the app
+    // has to follow. Slug-dir add/remove fires too; hits.json does not, or the applier would
+    // re-install the rules it has just run.
     if (parts[0] === 'tweaks' && parts.length >= 2) {
       const file = parts[2];
-      if (parts.length === 2 || file === TWEAK_CONFIG_FILENAME) {
+      const followed =
+        parts.length === 2 ||
+        file === TWEAK_CONFIG_FILENAME ||
+        file === TWEAK_CSS_FILENAME ||
+        file === TWEAK_JS_FILENAME;
+      if (followed) {
         this.debounce('tweaks-dir', () => this.handleTweaksChange());
       }
       return;
@@ -1042,9 +1051,9 @@ export class ConfigWatcher {
   // ============================================================
 
   /**
-   * A tweak's `tweak.json` changed on disk. The list is derived from the config, so the
-   * reload is the whole answer — the code files beside it are read by whoever applies
-   * the tweak, not here.
+   * A tweak changed on disk: its record, or the code beside it. The list is re-derived from the
+   * record and handed to the callback — that is what the app's own pages show — and the code
+   * files are left to whoever installs the tweak, which reads them from disk itself.
    */
   private handleTweaksChange(): void {
     if (!this.callbacks.onTweaksListChange) return;

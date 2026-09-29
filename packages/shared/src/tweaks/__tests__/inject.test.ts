@@ -105,17 +105,19 @@ describe('the generated match-pattern test', () => {
  * A document just real enough to run the generated script against.
  *
  * Not a DOM: the point is to run the *generated* code cheaply and honestly rather than to
- * re-describe the browser. It has what the script touches — `head`, the `style[data-tweak]`
- * lookup and its removal, `createElement`, and `DOMContentLoaded` — and nothing else.
+ * re-describe the browser. It has what the script touches — `head`, `createElement`,
+ * `readyState`, and event listeners — and nothing else.
+ *
+ * The default `readyState` is `loading`, which is what a document-start script actually finds:
+ * the stylesheet goes in at once and the javascript waits for the DOM. `settle()` is that
+ * document finishing — `fire()` on its own is for telling the moments apart.
  */
-function makePage(href: string) {
+function makePage(href: string, readyState = 'loading') {
   interface FakeStyle {
     attrs: Record<string, string>
     textContent: string
-    parentNode: unknown
     setAttribute(key: string, value: string): void
     getAttribute(key: string): string | null
-    remove(): void
   }
 
   const styles = new Map<string, FakeStyle>()
@@ -124,48 +126,41 @@ function makePage(href: string) {
 
   const head = {
     appendChild(child: FakeStyle) {
-      child.parentNode = head
       styles.set(child.attrs['data-tweak'] ?? '', child)
     },
+  }
+
+  const listen = (type: string, fn: () => void) => {
+    listeners.push({ type, fn })
   }
 
   const document = {
     head,
     documentElement: head,
+    readyState,
     createElement(): FakeStyle {
       const element: FakeStyle = {
         attrs: {},
         textContent: '',
-        parentNode: null,
         setAttribute(key: string, value: string) {
           this.attrs[key] = value
         },
         getAttribute(key: string) {
           return this.attrs[key] ?? null
         },
-        // The one element the script removes by itself: a style it no longer owns.
-        remove() {
-          styles.delete(this.attrs['data-tweak'] ?? '')
-          this.parentNode = null
-        },
       }
       return element
     },
-    querySelector(selector: string) {
-      const match = /^style\[data-tweak="(.*)"\]$/.exec(selector)
-      return match ? styles.get(match[1] ?? '') ?? null : null
-    },
-    querySelectorAll(selector: string) {
-      return selector === 'style[data-tweak]' ? [...styles.values()] : []
-    },
-    addEventListener(type: string, fn: () => void) {
-      listeners.push({ type, fn })
-    },
+    addEventListener: listen,
   }
 
-  const window: Record<string, unknown> = {}
+  const window: Record<string, unknown> = { addEventListener: listen }
   const console = { error: (...args: unknown[]) => errors.push(args) }
   const location = { href }
+
+  const fire = (type: string) => {
+    for (const listener of listeners.filter((entry) => entry.type === type)) listener.fn()
+  }
 
   return {
     window,
@@ -175,6 +170,14 @@ function makePage(href: string) {
     styles,
     listeners,
     errors,
+    fire,
+    /** The document finished parsing, then finished loading. */
+    settle() {
+      document.readyState = 'interactive'
+      fire('DOMContentLoaded')
+      document.readyState = 'complete'
+      fire('load')
+    },
     run(script: string) {
       new Function('window', 'document', 'location', 'console', script)(
         window,
@@ -188,7 +191,7 @@ function makePage(href: string) {
 
 /** A tweak as the init script takes it, with only the pieces a case cares about. */
 function tweak(over: Partial<TweaksInitScriptTweak> & { slug: string; matches: string[] }): TweaksInitScriptTweak {
-  return { name: over.slug, css: null, js: null, ...over }
+  return { name: over.slug, css: null, js: null, runAt: 'document_end', ...over }
 }
 
 describe('buildTweaksInitScript', () => {
@@ -198,6 +201,7 @@ describe('buildTweaksInitScript', () => {
     ])
     const page = makePage('https://app.example.com/admin')
     page.run(script)
+    page.settle()
 
     expect(page.styles.size).toBe(0)
     expect(page.window.__craftTweaks).toEqual([])
@@ -212,6 +216,7 @@ describe('buildTweaksInitScript', () => {
     ])
     const page = makePage('https://app.example.com/admin/users')
     page.run(script)
+    page.settle()
 
     expect(page.styles.get('first')?.textContent).toBe('.a{}')
     expect(page.styles.get('second')?.textContent).toBe('.b{}')
@@ -247,6 +252,7 @@ describe('buildTweaksInitScript', () => {
     ])
     const page = makePage('https://example.com/')
     page.run(script)
+    page.settle()
 
     expect(page.errors).toHaveLength(1)
     expect(page.styles.get('fine')?.textContent).toBe('.fine{}')
@@ -263,91 +269,68 @@ describe('buildTweaksInitScript', () => {
     ])
     const page = makePage('https://example.com/')
     page.run(script)
+    page.settle()
 
     expect(page.window.__noted).toBe(1)
     expect(page.window.__craftTweaks).toEqual(['note'])
   })
 
-  it('replaces its stylesheet instead of adding a second one when it runs again', () => {
+  it('inserts the stylesheet at once, and holds the javascript until the DOM is there', () => {
     const script = buildTweaksInitScript([
-      tweak({ slug: 'once', matches: ['*://example.com/*'], css: '.v1{}', js: 'window.__runs = (window.__runs || 0) + 1' }),
+      tweak({ slug: 'styled', matches: ['*://example.com/*'], css: '.a{}', js: 'window.__ran = true' }),
+    ])
+    // A document that is still loading, which is what a document-start script finds.
+    const page = makePage('https://example.com/')
+    page.run(script)
+
+    // The stylesheet is the reason to arrive early: the page must never show the state the
+    // tweak is there to change. The javascript would find no elements at all, so it waits.
+    expect(page.styles.get('styled')?.textContent).toBe('.a{}')
+    expect(page.window.__ran).toBeUndefined()
+
+    page.fire('DOMContentLoaded')
+    expect(page.window.__ran).toBe(true)
+  })
+
+  it('runs a document_start tweak at once and a document_idle one at load', () => {
+    const script = buildTweaksInitScript([
+      tweak({ slug: 'early', matches: ['*://example.com/*'], runAt: 'document_start', js: 'window.__early = true' }),
+      tweak({ slug: 'late', matches: ['*://example.com/*'], runAt: 'document_idle', js: 'window.__late = true' }),
     ])
     const page = makePage('https://example.com/')
     page.run(script)
 
-    // A different address is a route change: the script replays for it.
-    page.location.href = 'https://example.com/next'
-    page.run(buildTweaksInitScript([
-      tweak({ slug: 'once', matches: ['*://example.com/*'], css: '.v2{}', js: 'window.__runs = (window.__runs || 0) + 1' }),
-    ]))
+    expect(page.window.__early).toBe(true)
+    expect(page.window.__late).toBeUndefined()
 
-    expect(page.styles.size).toBe(1)
-    expect(page.styles.get('once')?.textContent).toBe('.v2{}')
-    expect(page.window.__runs).toBe(2)
+    // Parsed is not loaded: `document_idle` waits for the window's own `load`, which is why it
+    // is not the default here — a tweak exists to change a page, not to spare it.
+    page.fire('DOMContentLoaded')
+    expect(page.window.__late).toBeUndefined()
+
+    page.fire('load')
+    expect(page.window.__late).toBe(true)
   })
 
-  it('does nothing the second time it is evaluated against the same address', () => {
+  it('gives every document it lands in the tweak, with no memory carried between them', () => {
     const script = buildTweaksInitScript([
-      tweak({ slug: 'same', matches: ['*://example.com/*'], css: '.a{}', js: 'window.__runs = (window.__runs || 0) + 1' }),
+      tweak({ slug: 'each', matches: ['*://example.com/*'], css: '.a{}', js: 'window.__runs = (window.__runs || 0) + 1' }),
     ])
-    const page = makePage('https://example.com/')
-    // The host registers this for future documents and evaluates it now: the two passes must
-    // not run the tweak's javascript twice.
-    page.run(script)
-    page.run(script)
 
-    expect(page.window.__runs).toBe(1)
-  })
+    // The registration delivers this to each document as it is born. Two of them are two
+    // first passes, not a first and a second: nothing here counts what it has already done,
+    // because there is no second pass to guard against.
+    const first = makePage('https://example.com/')
+    const second = makePage('https://example.com/')
+    first.run(script)
+    second.run(script)
+    first.settle()
+    second.settle()
 
-  it('does not run a tweak’s javascript again when only its css changed', () => {
-    const body = 'window.__runs = (window.__runs || 0) + 1'
-    const page = makePage('https://example.com/')
-    page.run(buildTweaksInitScript([
-      tweak({ slug: 'styled', matches: ['*://example.com/*'], css: '.v1{}', js: body }),
-    ]))
-    // Editing the css is a reason to restyle the page and no reason at all to re-run code that
-    // may have already appended something: the marks are per file, not per tweak.
-    page.run(buildTweaksInitScript([
-      tweak({ slug: 'styled', matches: ['*://example.com/*'], css: '.v2{}', js: body }),
-    ]))
-
-    expect(page.styles.get('styled')?.textContent).toBe('.v2{}')
-    expect(page.window.__runs).toBe(1)
-  })
-
-  it('takes a switched-off tweak off the page it is already on, and can put it back', () => {
-    const over = { slug: 'toggled', matches: ['*://example.com/*'], css: '.on{}', js: 'window.__runs = (window.__runs || 0) + 1' }
-    const page = makePage('https://example.com/')
-    page.run(buildTweaksInitScript([tweak(over)]))
-    expect(page.styles.get('toggled')?.textContent).toBe('.on{}')
-
-    // The switch flipped while the page was open: the host re-evaluates the script, and this
-    // time the tweak is not in the set. Its style goes at once.
-    page.run(buildTweaksInitScript([]))
-    expect(page.styles.size).toBe(0)
-    expect(page.window.__craftTweaks).toEqual([])
-
-    // Back on: the mark was forgotten along with the style, so it runs again rather than
-    // being suppressed as work already done.
-    page.run(buildTweaksInitScript([tweak(over)]))
-    expect(page.styles.get('toggled')?.textContent).toBe('.on{}')
-    expect(page.window.__runs).toBe(2)
-  })
-
-  it('leaves another tweak alone when one is switched off', () => {
-    const page = makePage('https://example.com/')
-    const kept = tweak({ slug: 'kept', matches: ['*://example.com/*'], css: '.kept{}', js: 'window.__keptRuns = (window.__keptRuns || 0) + 1' })
-    page.run(buildTweaksInitScript([
-      tweak({ slug: 'dropped', matches: ['*://example.com/*'], css: '.dropped{}' }),
-      kept,
-    ]))
-
-    page.run(buildTweaksInitScript([kept]))
-
-    expect([...page.styles.keys()]).toEqual(['kept'])
-    expect(page.window.__craftTweaks).toEqual(['kept'])
-    // Untouched, not replayed: turning a *different* tweak off is no reason to re-run this one.
-    expect(page.window.__keptRuns).toBe(1)
+    expect(first.styles.get('each')?.textContent).toBe('.a{}')
+    expect(second.styles.get('each')?.textContent).toBe('.a{}')
+    expect(first.window.__runs).toBe(1)
+    expect(second.window.__runs).toBe(1)
   })
 })
 

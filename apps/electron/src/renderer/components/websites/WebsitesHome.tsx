@@ -15,12 +15,17 @@ import {
 } from '../app-shell/ProjectMultiSelectFilter'
 import { WebsiteTile, type WebsiteTileProject } from './WebsiteTile'
 import { DeleteWebsiteDialog } from './DeleteWebsiteDialog'
+import { openWebsiteInWindow } from './open-website'
+import { useDirectoryPicker } from '@/hooks/useDirectoryPicker'
+import { ServerDirectoryBrowser } from '@/components/ServerDirectoryBrowser'
 import type { LoadedWebsite } from '@craft-agent/shared/websites/types'
 
 /**
  * Websites library — the full-width home grid (mirrors the Kanban board pane).
  * Header carries the controlled Project filter (with an Unassigned sentinel)
- * and the New Website action; tiles open the website's detail screen.
+ * and the New Website action. A website has no second-level page: a tile click
+ * opens the site in the browser window, and the card's own menu carries every
+ * action on it.
  */
 export function WebsitesHome() {
   const { activeWorkspaceId } = useAppShellContext()
@@ -76,10 +81,66 @@ export function WebsitesHome() {
     return [...list].sort((a, b) => b.config.updatedAt - a.config.updatedAt)
   }, [websites, projectFilter])
 
-  const openWebsite = React.useCallback(
-    (slug: string) => navigate(routes.view.websites(slug)),
-    [navigate],
-  )
+  // A website is a page at its own origin, so "open" means a tab of the browser
+  // window — the same thing for every entry point (see open-website.ts). One with
+  // no content yet is left alone: it has no page to open, and the card's menu
+  // offers to have one written.
+  const handleOpenWebsite = React.useCallback(async (website: LoadedWebsite) => {
+    if (!activeWorkspaceId || !website.config.contentDigest) return
+    try {
+      await openWebsiteInWindow(activeWorkspaceId, website.config.slug)
+    } catch (err) {
+      toast.error(t('toast.failedToCreateBrowser'), {
+        description: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }, [activeWorkspaceId, t])
+
+  // ------------------------------------------------------------------
+  // Export — hand a copy of the folder to someone else
+  //
+  // A website is a directory, so this copies it out rather than compiling it:
+  // the person picking a folder is the whole of the decision, and where it lands
+  // is on the host that holds the website (which in remote mode is not this one).
+  // The website to export is held in a ref so the picker's select callback can
+  // stay stable across renders.
+  // ------------------------------------------------------------------
+  const pendingExportRef = React.useRef<LoadedWebsite | null>(null)
+
+  const exportTo = React.useCallback(async (website: LoadedWebsite, destParent: string) => {
+    if (!activeWorkspaceId) return
+    try {
+      const result = await window.electronAPI.exportWebsite(
+        activeWorkspaceId,
+        website.config.slug,
+        destParent,
+      )
+      toast.success(t('toast.websiteExported', { files: result.files }), { description: result.dir })
+    } catch (err) {
+      toast.error(t('toast.websiteExportFailed'), {
+        description: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }, [activeWorkspaceId, t])
+
+  const onExportFolderPicked = React.useCallback((destParent: string) => {
+    const website = pendingExportRef.current
+    pendingExportRef.current = null
+    if (website) void exportTo(website, destParent)
+  }, [exportTo])
+
+  const {
+    pickDirectory: pickExportFolder,
+    showServerBrowser,
+    serverBrowserMode,
+    cancelServerBrowser,
+    confirmServerBrowser,
+  } = useDirectoryPicker(onExportFolderPicked)
+
+  const handleExport = React.useCallback((website: LoadedWebsite) => {
+    pendingExportRef.current = website
+    pickExportFolder()
+  }, [pickExportFolder])
 
   // Blank website, bound to the first selected (real) project so it stays
   // visible under an active filter — mirrors the board's create behavior.
@@ -87,17 +148,16 @@ export function WebsitesHome() {
     if (!activeWorkspaceId) return
     const boundProjectId = projectFilter.find(id => id !== PAGES_UNASSIGNED_PROJECT)
     try {
-      const created = await window.electronAPI.createWebsite(activeWorkspaceId, {
+      await window.electronAPI.createWebsite(activeWorkspaceId, {
         name: t('websites.newWebsite'),
         ...(boundProjectId ? { projectId: boundProjectId } : {}),
       })
-      navigate(routes.view.websites(created.slug))
     } catch (err) {
       toast.error(t('toast.websiteCreateFailed'), {
         description: err instanceof Error ? err.message : String(err),
       })
     }
-  }, [activeWorkspaceId, projectFilter, t, navigate])
+  }, [activeWorkspaceId, projectFilter, t])
 
   const handleAskAgent = React.useCallback(() => {
     navigate(routes.action.newSession({ input: t('websites.askAgentPrompt') }))
@@ -174,7 +234,9 @@ export function WebsitesHome() {
                 key={website.config.id}
                 website={website}
                 project={website.config.projectId ? projectsById.get(website.config.projectId) : undefined}
-                onOpen={() => openWebsite(website.config.slug)}
+                projects={projectOptions}
+                onOpen={() => void handleOpenWebsite(website)}
+                onExport={() => handleExport(website)}
                 onDelete={() => setPendingDelete(website)}
               />
             ))}
@@ -187,6 +249,14 @@ export function WebsitesHome() {
         onConfirm={handleConfirmDelete}
         onCancel={() => setPendingDelete(null)}
       />
+      {activeWorkspaceId && (
+        <ServerDirectoryBrowser
+          open={showServerBrowser}
+          mode={serverBrowserMode}
+          onSelect={confirmServerBrowser}
+          onCancel={cancelServerBrowser}
+        />
+      )}
     </div>
   )
 }

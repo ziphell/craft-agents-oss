@@ -36,7 +36,6 @@ function unavailable(method: string): never {
 
 export class NullBrowserPaneManager implements IBrowserPaneManager {
   // -- Session lifecycle (no-ops) --
-  setSessionPathResolver(_fn: (sessionId: string) => string | null): void {}
   destroyForSession(_sessionId: string): void {}
   async clearVisualsForSession(_sessionId: string): Promise<void> {}
   unbindAllForSession(_sessionId: string): void {}

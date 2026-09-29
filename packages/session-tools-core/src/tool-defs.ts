@@ -54,11 +54,9 @@ import {
   handleCreateTweak,
   handleUpdateTweak,
   handleDeleteTweak,
-  handleExportTweaks,
 } from './handlers/tweaks.ts';
 import { handleArchiveSession } from './handlers/archive-session.ts';
 import { handleSendAgentMessage } from './handlers/send-agent-message.ts';
-import { handleListMessagingChannels, handleUnbindMessagingChannel } from './handlers/messaging.ts';
 
 // ============================================================
 // Canonical Zod Schemas
@@ -344,12 +342,6 @@ export const DeleteTweakSchema = z.object({
   slug: z.string().describe('Slug of the tweak to delete'),
 });
 
-export const ExportTweaksSchema = z.object({
-  destDir: z
-    .string()
-    .describe('Folder the user chose to export into. The extension lands in a craft-tweaks/ folder inside it.'),
-});
-
 export const ListSessionsSchema = z.object({
   status: z.string().optional().describe('Filter by status'),
   label: z.string().optional().describe('Filter by label'),
@@ -371,14 +363,6 @@ export const SendAgentMessageSchema = z.object({
     path: z.string().describe('Absolute file path on disk'),
     name: z.string().optional().describe('Display name (defaults to file basename)'),
   })).optional().describe('Files to include with the message'),
-});
-
-export const ListMessagingChannelsSchema = z.object({
-  sessionId: z.string().optional().describe('Session ID to list bindings for. Defaults to current session.'),
-});
-
-export const UnbindMessagingChannelSchema = z.object({
-  platform: z.enum(['telegram', 'whatsapp']).optional().describe('Platform to unbind. If omitted, unbinds all.'),
 });
 
 // ============================================================
@@ -779,17 +763,19 @@ Returns { slug, orchestratorSessionId, taskLabelId, warnings } — unknown sourc
 
   list_websites: `List the workspace's Websites — persistent sites you author: dashboards, reports, trackers, small tools. Each one is a directory at websites/{slug}/ served at an address of its own, where index.html is what that address opens and every other file beside it is served too. They render in the app's Websites section.
 
-Returns compact summaries: slug, name, project, refresh schedule, last refresh outcome, and folder path. Optionally filter by projectId. Use get_website for full details on one website.`,
+Returns compact summaries: slug, name, project, refresh schedule, last refresh outcome, and folder path. Optionally filter by projectId. Use get_website for full details on one website — including \`origin\`, its address, if you want to open it with browser_tool.`,
 
-  get_website: `Get full details for one Website by slug: config, content digest/length/path, and a data summary (KV keys + per-series point counts and latest values).
+  get_website: `Get full details for one Website by slug: config, content digest/length/path, a data summary (KV keys + per-series point counts and latest values), and origin — the address the website is served at.
 
-The response includes absolute paths (contentPath, data.snapshotPath) — Read those files for the full HTML or the complete data snapshot. Pass includeContent: true only when you need the HTML inline.`,
+origin is the website as a page: point browser_tool at it (navigate <origin>, then snapshot / click / evaluate / screenshot) to work on what actually renders — the file is the truth, the page is what the reader gets. It is the same address the app opens it at. Use the origin you are handed rather than assembling one: asking for these details is what names the website to the host for this run, and an address nothing named does not answer. A host that serves no origins (a standalone server) reports none.
 
-  create_website: `Create a new Website: a directory at websites/{slug}/ in the workspace, served at an address of its own, shown as a tile in the app's Websites section and opened as a tab in the browser window at that address.
+The response also includes absolute paths (contentPath, data.snapshotPath) — Read those files for the full HTML or the complete data snapshot. Pass includeContent: true only when you need the HTML inline.`,
+
+  create_website: `Create a new Website: a directory at websites/{slug}/ in the workspace, served at an address of its own and shown as a tile in the app's Websites section.
 
 IMPORTANT — read ~/.craft-agent/docs/websites.md BEFORE authoring website files. Key rules: the directory is the site's root, so its own files are loaded by root-absolute path (/assets/app.css) and several files are fine; no external requests (nothing from a CDN or another host, though a fetch to the site's own origin is fine); routes work (history.pushState is fine, and reloading a path with no file behind it opens index.html); the website reads its data with fetch('/data/snapshot.json') on its own origin — the published snapshot, where 404 means nothing has been written yet — and nothing pushes updates to it, so reload or re-fetch to see changes.
 
-Use Websites (instead of chat previews) when the user wants something persistent: a dashboard that an automation refreshes, a report they'll revisit, a tracker fed by write_website_data. A website is the right artifact when nobody has to implement it — when the user instead wants a change to a real product that somebody else will build, that is a prototype (prototype_tool), not a website. Returns the created website details including the slug.`,
+Use Websites (instead of chat previews) when the user wants something persistent: a dashboard that an automation refreshes, a report they'll revisit, a tracker fed by write_website_data. A website is the right artifact when nobody has to implement it — when the user instead wants a change to a real product that somebody else will build, that is a prototype (prototype_tool), not a website. Returns the created website details including the slug and — on a host that serves origins — origin, its address.`,
 
   update_website: `Update an existing Website: metadata (name, description, projectId), the scheduled refresh spec, and/or replace its HTML content.
 
@@ -805,25 +791,27 @@ Data model: kv is key → any JSON value; series are named lists of { t: epoch m
 
 Returns compact summaries: slug, name, the match patterns it is for, whether it is on, and whether it has code to inject. Use get_tweak for one in detail, including whether what it is aimed at has stopped matching.`,
 
-  get_tweak: `Get one tweak: its config, the files it has, every selector it declares with a \`@target\` comment, and when each last matched.
+  get_tweak: `Get one tweak: its config, the files it has, when its javascript runs, every selector it declares with a \`@target\` comment, and when each last matched.
 
 A target with \`stale: true\` matched before and did not the last time the tweak ran — the page moved and the selector needs updating. Read \`cssPath\`/\`jsPath\` to see the code itself; nothing here returns it inline.`,
 
   create_tweak: `Create a tweak: the standing edit for the pages you name. Give it the match patterns and the code (\`css\`, \`js\`, or both).
 
+Read \`~/.craft-agent/docs/tweaks.md\` before your first tweak: it is the whole guide — the folder, when a tweak runs and what a reload is for, the \`@target\` markers, and how a tweak reaches a browser this app is not in.
+
 **It is created off.** A tweak injects into pages the user is signed in to, so naming those pages is not the same consent as agreeing to run this code in them. Switch it on (\`update_tweak\` with \`enabled: true\`) when the user asked for the change to take effect, and say plainly that it is off when they have not.
 
-\`matches\` is Chrome's own grammar — \`*://*.example.com/admin/*\` — which is also what the loadable extension needs, so the same tweak works both ways. Write the code for the way it runs: every load of every matching page, in a browser that is not this app, so it must not depend on anything here. Mark what it is aimed at with a \`/* @target <selector> */\` comment: that is what lets "stopped matching" be told from "never matched" later.`,
+**Seeing it.** The code is read on the next load of each matching page, so nothing here reaches a page that is already open — not the code, and not switching it on either. \`browser_tool\`'s \`reload\` is how to look at a change, and it is also the check worth trusting: a reload gives a clean document, where the one already open has been through other things.
+
+\`matches\` is Chrome's own grammar — \`*://*.example.com/admin/*\` — which is also what the loadable extension needs, so the same tweak works both ways. Write the code for the way it runs: every load of every matching page, in a browser that is not this app, so it must not depend on anything here. Its stylesheet is inserted before the DOM exists; its javascript runs at \`document_end\` (the DOM is complete) unless the code declares otherwise with a \`/* @run-at document_start|document_end|document_idle */\` comment — the browser's own three moments, which the exported extension maps straight through. Mark what it is aimed at with a \`/* @target <selector> */\` comment: that is what lets "stopped matching" be told from "never matched" later.`,
 
   update_tweak: `Update an existing tweak: its name, description, the pages it matches, and whether it is on.
 
-Switching it on is the same judgement as creating it on: a tweak runs in pages the user is signed in to, so enable it when they asked for the change to take effect, not by default. Only provided fields change; \`description: null\` clears it.`,
+Switching it on is the same judgement as creating it on: a tweak runs in pages the user is signed in to, so enable it when they asked for the change to take effect, not by default. Only provided fields change; \`description: null\` clears it.
+
+The code is read on the next load of each matching page, so nothing here reaches a page that is already open — not an edit, not a switch-off, and not switching it on either. Use \`browser_tool\`'s \`reload\` to see it (and see \`create_tweak\` for why a reload is the check worth trusting).`,
 
   delete_tweak: `Delete a tweak — its folder, its code and its record. DESTRUCTIVE: confirm with the user first unless they explicitly asked for the deletion.`,
-
-  export_tweaks: `Build the loadable browser extension for the workspace's enabled tweaks and write it into \`destDir\`.
-
-This is how a tweak reaches the browser the person actually works in — inside this app a tweak only ever runs on pages in the app's own browser window. Ask the user where to put it rather than choosing a folder for them; the export lands in a \`craft-tweaks/\` folder inside the one you name, and refuses if that folder already exists. The result names any tweak that was left out and why.`,
 
   get_session_info: `Get metadata about the current session or a specific session by ID.
 
@@ -854,12 +842,6 @@ Use this to coordinate with spawned sessions, send follow-up instructions, or re
 Use list_sessions to find session IDs, or use the sessionId returned by spawn_session.
 
 The target session receives your message with a sender envelope containing your session ID, so it can use send_agent_message to reply.`,
-
-  list_messaging_channels: `List messaging channels (Telegram, WhatsApp) bound to a session.
-Shows which external chat apps are connected and can send/receive messages.`,
-
-  unbind_messaging_channel: `Disconnect a messaging channel from the current session.
-Messages will no longer be forwarded between the chat app and this session.`,
 } as const;
 
 // ============================================================
@@ -948,15 +930,11 @@ export const SESSION_TOOL_DEFS: SessionToolDef[] = [
   { name: 'create_tweak', description: TOOL_DESCRIPTIONS.create_tweak, inputSchema: CreateTweakSchema, executionMode: 'registry', safeMode: 'block', handler: handleCreateTweak },
   { name: 'update_tweak', description: TOOL_DESCRIPTIONS.update_tweak, inputSchema: UpdateTweakSchema, executionMode: 'registry', safeMode: 'block', handler: handleUpdateTweak },
   { name: 'delete_tweak', description: TOOL_DESCRIPTIONS.delete_tweak, inputSchema: DeleteTweakSchema, executionMode: 'registry', safeMode: 'block', handler: handleDeleteTweak },
-  { name: 'export_tweaks', description: TOOL_DESCRIPTIONS.export_tweaks, inputSchema: ExportTweaksSchema, executionMode: 'registry', safeMode: 'block', handler: handleExportTweaks },
   { name: 'get_session_info', description: TOOL_DESCRIPTIONS.get_session_info, inputSchema: GetSessionInfoSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleGetSessionInfo },
   { name: 'list_sessions', description: TOOL_DESCRIPTIONS.list_sessions, inputSchema: ListSessionsSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleListSessions },
   { name: 'list_background_tasks', description: TOOL_DESCRIPTIONS.list_background_tasks, inputSchema: ListBackgroundTasksSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleListBackgroundTasks },
   // Inter-session messaging
   { name: 'send_agent_message', description: TOOL_DESCRIPTIONS.send_agent_message, inputSchema: SendAgentMessageSchema, executionMode: 'registry', safeMode: 'block', handler: handleSendAgentMessage },
-  // Messaging gateway tools
-  { name: 'list_messaging_channels', description: TOOL_DESCRIPTIONS.list_messaging_channels, inputSchema: ListMessagingChannelsSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleListMessagingChannels },
-  { name: 'unbind_messaging_channel', description: TOOL_DESCRIPTIONS.unbind_messaging_channel, inputSchema: UnbindMessagingChannelSchema, executionMode: 'registry', safeMode: 'block', handler: handleUnbindMessagingChannel },
 ];
 
 export interface SessionToolFilterOptions {

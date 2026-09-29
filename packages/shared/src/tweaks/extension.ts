@@ -6,10 +6,12 @@
  * they work in, and that is what this builds: a loadable Chrome extension whose content
  * scripts carry exactly the match patterns the tweaks already declare.
  *
- * That is the reason the patterns are Chrome's grammar and not ours (`./match.ts`): the
- * two carriers are built from the same files, and a tweak that ran in the app but could
- * not be expressed as a `content_scripts` entry would be a tweak that behaves differently
- * depending on how it was delivered.
+ * That is the reason the patterns are Chrome's grammar and not ours (`./match.ts`), the reason
+ * when a tweak's JavaScript runs is the browser's own three moments rather than something of
+ * ours (`./run-at.ts`), and the reason each entry names a `world`: the two carriers are built
+ * from the same files, and a tweak that ran in the app but could not be expressed as a
+ * `content_scripts` entry would be a tweak that behaves differently depending on how it was
+ * delivered.
  *
  * Nothing here is published to a store: the package is static, self-contained and
  * disposable — load it unpacked, delete it when done. It is readable on purpose, and the
@@ -21,6 +23,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 import { extensionVersion } from '../extension-version.ts'
 import { loadWorkspaceTweaks, readTweakSources } from './storage.ts'
+import { tweakRunAt, type TweakRunAt } from './run-at.ts'
 import type { LoadedTweak } from './types.ts'
 
 /** The folder an export lands in, inside whichever folder the person picked. */
@@ -46,22 +49,44 @@ export function tweakExtensionFilePath(slug: string, ext: 'css' | 'js'): string 
   return `tweaks/${slug}.${ext}`
 }
 
-function contentScriptFor(
+/**
+ * The content scripts one tweak becomes: its stylesheet before the DOM exists, its
+ * javascript at the moment the tweak declares (`./run-at.ts`).
+ *
+ * Two entries rather than one, because `run_at` governs the **javascript**: a stylesheet
+ * injected once the DOM is up is a page that flashes the state the tweak is there to change,
+ * so the CSS keeps the earliest moment whatever the tweak says about its JavaScript.
+ */
+function contentScriptsFor(
   tweak: LoadedTweak,
   sources: { css: string | null; js: string | null },
-): Record<string, unknown> | null {
-  const css = sources.css === null ? [] : [tweakExtensionFilePath(tweak.config.slug, 'css')]
-  const js = sources.js === null ? [] : [tweakExtensionFilePath(tweak.config.slug, 'js')]
-  if (css.length === 0 && js.length === 0) return null
+  runAt: TweakRunAt,
+): Record<string, unknown>[] {
+  const matches = [...tweak.config.matches]
+  const entries: Record<string, unknown>[] = []
 
-  return {
-    matches: [...tweak.config.matches],
-    // Before the page's own scripts, for the same reason a stylesheet goes here: the
-    // point of a tweak is that the page never shows the state it is there to change.
-    run_at: 'document_start',
-    ...(css.length > 0 ? { css } : {}),
-    ...(js.length > 0 ? { js } : {}),
+  if (sources.css !== null) {
+    entries.push({
+      matches,
+      run_at: 'document_start',
+      css: [tweakExtensionFilePath(tweak.config.slug, 'css')],
+    })
   }
+  if (sources.js !== null) {
+    entries.push({
+      matches,
+      run_at: runAt,
+      // The page's own JavaScript world, **not** the platform's default. The app injects a
+      // tweak's code into the page itself (its CDP call names no world), so a tweak that gets
+      // in front of the page's own scripts and patches a global works there; `ISOLATED` would
+      // deliver this same file to a separate context and silently lose that. The cost is the
+      // isolation (the page can see this code), which the app's window never had either.
+      world: 'MAIN',
+      js: [tweakExtensionFilePath(tweak.config.slug, 'js')],
+    })
+  }
+
+  return entries
 }
 
 /**
@@ -84,8 +109,8 @@ export function buildTweaksExtension(tweaks: LoadedTweak[], builtAt: Date): Twea
     }
 
     const sources = readTweakSources(tweak)
-    const script = contentScriptFor(tweak, sources)
-    if (!script) {
+    const entries = contentScriptsFor(tweak, sources, tweakRunAt(sources))
+    if (entries.length === 0) {
       skipped.push({ slug: tweak.config.slug, why: 'no tweak.css or tweak.js' })
       continue
     }
@@ -96,7 +121,7 @@ export function buildTweaksExtension(tweaks: LoadedTweak[], builtAt: Date): Twea
     if (sources.js !== null) {
       files.push({ path: tweakExtensionFilePath(tweak.config.slug, 'js'), content: sources.js })
     }
-    contentScripts.push(script)
+    contentScripts.push(...entries)
     included.push(tweak.config.slug)
   }
 
@@ -173,11 +198,11 @@ were written in Craft Agents and built here so they can run in your own browser.
 1. Open \`chrome://extensions\` (or \`edge://extensions\`).
 2. Turn on **Developer mode**.
 3. **Load unpacked**, and choose this folder.
-4. Reload any page you already had open.
+4. Reload any page you already had open — an extension reaches a page when that page loads.
 
 Nothing is published to a store and nothing updates itself: the copy you have is the copy
 you have. Change a tweak in Craft Agents, export again, and press **Reload** on the
-extension's card.
+extension's card — then reload the pages you had open, for the same reason as step 4.
 
 ## What it changes
 
@@ -188,9 +213,9 @@ them. Being able to read this is how you decide whether to run it.
 ${skipped}
 ## Turning it off
 
-Delete the extension from \`chrome://extensions\`. Nothing else on your machine is
-touched, and no tweak leaves anything behind on the pages it runs on except what its own
-CSS and JavaScript do.
+Delete the extension from \`chrome://extensions\`, and reload the pages it was running on.
+Nothing else on your machine is touched, and no tweak leaves anything behind on the pages
+it runs on except what its own CSS and JavaScript do.
 
 Built ${input.builtAt.toISOString()} (version ${input.version}).
 `

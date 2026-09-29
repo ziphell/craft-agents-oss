@@ -48,8 +48,6 @@ import ProjectInfoPage from '@/pages/ProjectInfoPage'
 import PrototypeInfoPage from '@/pages/PrototypeInfoPage'
 import { KanbanBoardContainer } from './kanban/KanbanBoardContainer'
 import { WebsitesHome } from '../websites/WebsitesHome'
-import { WebsiteView } from '../websites/WebsiteView'
-import { TweaksHome } from '../tweaks/TweaksHome'
 import { TweakView } from '../tweaks/TweakView'
 import type { ExecutionEntry } from '../automations/types'
 import { automationsAtom } from '@/atoms/automations'
@@ -366,28 +364,30 @@ export function MainContentPanel({
     )
   }
 
-  // Websites navigator - full-width library grid, or one website's embedded render
+  // Websites navigator - the full-width library grid is the whole navigator
   if (isWebsitesNavigation(navState)) {
     return wrapWithStoplight(
       <Panel variant="grow" className={className}>
-        {navState.details ? (
-          <WebsiteView key={navState.details.websiteSlug} websiteSlug={navState.details.websiteSlug} />
-        ) : (
-          <WebsitesHome />
-        )}
+        <WebsitesHome />
       </Panel>
     )
   }
 
-  // Tweaks navigator - the library list, or one tweak's detail page
+  // Tweaks navigator - show one tweak's detail page, or an empty state
   if (isTweaksNavigation(navState)) {
+    if (navState.details) {
+      return wrapWithStoplight(
+        <Panel variant="grow" className={className}>
+          <TweakView key={navState.details.tweakSlug} tweakSlug={navState.details.tweakSlug} />
+        </Panel>
+      )
+    }
+    // No tweak selected - empty state
     return wrapWithStoplight(
       <Panel variant="grow" className={className}>
-        {navState.details ? (
-          <TweakView key={navState.details.tweakSlug} tweakSlug={navState.details.tweakSlug} />
-        ) : (
-          <TweaksHome />
-        )}
+        <div className="flex items-center justify-center h-full text-muted-foreground">
+          <p className="text-sm">{t("tweaks.noTweakSelected")}</p>
+        </div>
       </Panel>
     )
   }

@@ -41,6 +41,13 @@ export interface WebsitesToolCallbacksDeps {
    * Not fired for data-only writes (those don't change the content digest).
    */
   onContentChanged?: (websiteSlug: string) => void
+  /**
+   * The address a website is served at, or null. Injected by a host that can serve
+   * origins (Electron main); asking *is* what names the website to that host for
+   * this run, which is what makes the address answer. Absent on a host that serves
+   * no origins, and the details then carry no `origin`.
+   */
+  resolveOrigin?: (workspaceRootPath: string, websiteSlug: string) => string | null
 }
 
 function toSummary(website: LoadedWebsite): WebsiteToolSummary {
@@ -81,6 +88,7 @@ function toDetails(
   helpers: {
     readSnapshot: () => WebsiteDataSnapshot | null
     loadContent: () => string | null
+    resolveOrigin: () => string | null
   },
 ): WebsiteToolDetails {
   const config = website.config
@@ -95,9 +103,12 @@ function toDetails(
     }
   }
 
+  const origin = helpers.resolveOrigin()
+
   return {
     ...summary,
     id: config.id,
+    ...(origin ? { origin } : {}),
     contentDigest: config.contentDigest,
     contentLength,
     contentPath: website.contentPath,
@@ -116,6 +127,10 @@ export function buildWebsitesToolCallbacks(deps: WebsitesToolCallbacksDeps): Web
     return toDetails(website, { includeContent }, {
       readSnapshot: () => readWebsiteDataSnapshot(workspaceRootPath, website.config.slug),
       loadContent: () => loadWebsiteContent(workspaceRootPath, website.config.slug),
+      // Reporting the address is also what names the website to the host, so the
+      // address it hands back is one that answers. No resolver (a host that serves
+      // no origins) → no address in the details.
+      resolveOrigin: () => deps.resolveOrigin?.(workspaceRootPath, website.config.slug) ?? null,
     })
   }
 

@@ -181,7 +181,7 @@ Capture full-window or targeted screenshots. `--annotated` overlays `@eN` labels
 ### `console`, `network`, `wait`, `downloads`
 Debug runtime issues, requests, synchronization points, and download progress.
 
-`downloads` output includes the resolved local `savePath` when available so you can reference the downloaded file directly.
+`downloads` lists what the **workspace's browser window** has fetched, oldest first. Not one tab's: a download is not the tab's, it keeps arriving if the window is closed while it runs, and a window opened later in the same workspace is still told what happened. For the same reason `--tab` names nothing here. The output includes the resolved local `savePath` when available so you can reference the downloaded file directly.
 
 ### `pick [--timeout <ms>]`
 Ask the user to click an element on the page. Blocks until they click, press `Escape`, or the timeout elapses (default 120s, min 1s).
@@ -228,7 +228,7 @@ A browser **window** is a container and a **tab** is the thing in it, so several
 - `tab-show <id>` — bring a tab up for the person to look at. This is the **only** command that changes which tab the window shows.
 - `tab-assign <id> <session>` — hand one of **your** tabs to another conversation: it becomes that conversation's task and the tab it works from. This is how a parent gives each child session a tab of its own to work in (see "Sessions that share a window").
 - `tab-close <id>` — close one tab **of your task**. Closing the last tab closes the window, and the output says which of the two happened.
-- `--tab <id>` on **any** command — name the tab it acts on, without moving the window. Without one a command acts on the tab you have been working from (see "Where a command lands" below).
+- `--tab <id>` on **any command that acts on a tab** — name the tab it acts on, without moving the window. Without one a command acts on the tab you have been working from (see "Where a command lands" below). `downloads` is the one that acts on none: it lists the window's, not a tab's.
 
 **What `tabs` prints is in three kinds, and the difference matters:**
 

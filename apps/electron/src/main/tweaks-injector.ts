@@ -10,20 +10,34 @@
  *
  * The pane manager's persistent-injection primitives are the only way a document that has
  * not been created yet can be reached: reads from disk happen on every navigation, and the
- * tab's CDP session is where both the registration and the evaluation land.
+ * tab's CDP session is where the registration lands.
  *
  * 1. read the workspace's tweaks from disk **every time** — a few file reads per navigation
- *    is cheaper than an invalidation bug, and it is the only way "switched off" is noticed;
- * 2. `clearInitScripts(instanceId, 'tweak:')` — so switching a tweak off actually stops it;
- * 3. `addInitScript(instanceId, 'tweak:all', script)` — registered for **future**
- *    documents, before the page's own scripts;
- * 4. `evaluate(instanceId, script)` — the *same* source against the document that is
- *    already open, because a registration does not run retroactively. One code path, so
- *    live and reloaded behaviour cannot diverge.
+ *    is cheaper than an invalidation bug, and re-reading is what makes the folder the truth
+ *    rather than whatever this process last saw;
+ * 2. `clearInitScripts(instanceId, 'tweak:')` — so a tweak switched off is not delivered to
+ *    the next document;
+ * 3. `addInitScript(instanceId, 'tweak:all', script)` — registered for **future** documents,
+ *    before the page's own scripts. Installing is the whole of it: there is no step 4, and no
+ *    `evaluate`, because a document that already exists is never touched (see below).
  *
- * The init script marks itself per address and per content digest, so the registration
- * running at `document-start` and the evaluation that follows it cannot run a tweak's
- * javascript twice.
+ * ## Installed rules, and nothing else
+ *
+ * A tweak is a **rule set**. Installing it decides what each **new** document gets; it says
+ * nothing about a document that already exists, and nothing is ever delivered to one — not by
+ * a switch, not by an edit, and not by an address moving (a SPA route change makes no new
+ * document, so the route it arrives at gets whatever the document was born with).
+ *
+ * That is not a limitation to work around. Taking a tweak back is only half possible: its CSS
+ * could be pulled out again, but its javascript cannot be — what it did to the document is
+ * history nobody here has a record of. Removing the style would leave the page in a state its
+ * author never wrote, and would separate two files that are one tweak. So they stay together,
+ * and a **load** is the reset. `packages/shared/src/tweaks/inject.ts` carries the same rule
+ * into the script, which is why that script has no second-pass bookkeeping at all.
+ *
+ * Two things install: the rules changing (a switch, an agent writing code, a hand edit — see
+ * `HandlerDeps.onTweaksChanged` and the config watcher), and an address moving. Neither is
+ * about the page in front of the person; both are about the next one.
  *
  * ## What is per tab, not per window
  *
@@ -63,6 +77,7 @@ import {
   readTweakHits,
   readTweakSources,
   recordTweakHits,
+  tweakRunAt,
   tweakTargets,
   writeTweakHits,
   type LoadedTweak,
@@ -87,7 +102,7 @@ let manager: IBrowserPaneManager | null = null
 
 /** The last `tab|url` seen per window, so a state change that moved nothing is ignored. */
 const observedByInstance = new Map<string, string>()
-/** Windows with an apply in flight, so a navigation storm cannot queue up N applies. */
+/** Windows with an install in flight, so a navigation storm cannot queue up N installs. */
 const applying = new Set<string>()
 /** Windows that changed while they were busy: at most one more run is queued. */
 const requeued = new Set<string>()
@@ -95,11 +110,11 @@ const requeued = new Set<string>()
 /** What an attached injector offers its host. */
 export interface TweaksInjector {
   /**
-   * React to a pane-manager state change. Applies when the active tab's address moved, and
+   * React to a pane-manager state change. Re-installs when the active tab's address moved, and
    * ignores a change that did not (a title, a loading flag, a favicon).
    */
   handleStateChange(info: BrowserInstanceInfo): void
-  /** Re-evaluate a window's tweaks now — what opening the browser window calls. */
+  /** Install the workspace's tweaks on a window now — what opening the browser window calls. */
   request(instanceId: string): void
 }
 
@@ -119,17 +134,19 @@ function activeTabOf(bpm: IBrowserPaneManager, instanceId: string): { id: string
 }
 
 /**
- * Read a window's tweaks off disk and put them on its active tab.
+ * Read a window's tweaks off disk and install them for its active tab.
  *
- * Deliberately uncached and idempotent: it is called on every navigation, and the cost of
- * re-reading a few small files is what buys "an edit on disk is picked up by the next
- * navigation" without an invalidation mechanism to get wrong.
+ * Deliberately uncached: it is called on every address move and on every change to the rules,
+ * and the cost of re-reading a few small files is what buys "the folder is the truth" without
+ * an invalidation mechanism to get wrong.
  *
- * This is also the call that makes a switch act on the page already open
- * ({@link requestTweaksForWorkspace}), which is why *nothing enabled* still runs the script:
- * the empty set is how a page that is currently wearing a tweak is told to take it off.
+ * Installing is the whole of it — a registration for the documents that do not exist yet. The
+ * document that is open now is not touched (see the module note).
  */
-export async function applyTweaksToInstance(instanceId: string, workspaceRootPath: string): Promise<void> {
+export async function applyTweaksToInstance(
+  instanceId: string,
+  workspaceRootPath: string,
+): Promise<void> {
   const bpm = manager
   if (!bpm) return
 
@@ -140,34 +157,35 @@ export async function applyTweaksToInstance(instanceId: string, workspaceRootPat
   const cleared = await bpm.clearInitScripts(instanceId, INIT_SCRIPT_PREFIX, tabId)
 
   if (tweaks.length === 0) {
-    // Nothing to register for future documents — but the page that is open right now may still
-    // be wearing a tweak that was just switched off, and only running the script says so. It is
-    // the *same* script with an empty set: no second code path for "undo".
-    await evaluateSafely(bpm, instanceId, buildTweaksInitScript([]), tabId)
+    // Nothing to register, so the next document gets nothing. The page that is open right now
+    // keeps whatever it was born with (see the module note).
 
-    // Quiet unless something actually stopped: this runs on every navigation, and most
+    // Quiet unless something was actually cleared: this runs on every address move, and most
     // workspaces have no tweaks at all.
     if (cleared.length > 0) {
-      mainLog.info(`[tweaks] nothing enabled in ${workspaceRootPath} — stopped [${cleared.join(', ')}] on ${instanceId}`)
+      mainLog.info(`[tweaks] nothing enabled in ${workspaceRootPath} — cleared [${cleared.join(', ')}] on ${instanceId}`)
     }
     return
   }
 
   const script = buildTweaksInitScript(
-    tweaks.map((tweak) => ({
-      slug: tweak.config.slug,
-      name: tweak.config.name,
-      ...readTweakSources(tweak),
-      matches: tweak.config.matches,
-    })),
+    tweaks.map((tweak) => {
+      const sources = readTweakSources(tweak)
+      return {
+        slug: tweak.config.slug,
+        name: tweak.config.name,
+        ...sources,
+        runAt: tweakRunAt(sources),
+        matches: tweak.config.matches,
+      }
+    }),
   )
 
-  // Registered for future documents, then evaluated against the open one — see the module note.
+  // The whole of an install: a registration for the documents that do not exist yet.
   await bpm.addInitScript(instanceId, INIT_SCRIPT_KEY, script, tabId)
-  await bpm.evaluate(instanceId, script, tabId)
 
   const slugs = tweaks.map((tweak) => tweak.config.slug).join(', ')
-  mainLog.info(`[tweaks] applied [${slugs}] to ${instanceId}${tab ? ` (${tab.url})` : ''}`)
+  mainLog.info(`[tweaks] installed [${slugs}] for ${instanceId}${tab ? ` (${tab.url})` : ''}`)
 
   await recordTweakHitsForTab(instanceId, workspaceRootPath, tabId, tab?.url)
 }
@@ -279,8 +297,8 @@ async function readSelectorMatches(
 }
 
 /**
- * One apply, with the re-entrancy guard: a window that changes while it is being applied is
- * marked, and re-run **once** afterwards rather than queued N times.
+ * One install, with the re-entrancy guard: a window whose rules change while it is being
+ * installed is marked, and re-run **once** afterwards rather than queued N times.
  */
 async function scheduleApply(instanceId: string): Promise<void> {
   const bpm = manager
@@ -307,7 +325,7 @@ async function scheduleApply(instanceId: string): Promise<void> {
 
     await applyTweaksToInstance(instanceId, workspaceRootPath)
   } catch (err) {
-    mainLog.warn(`[tweaks] apply failed for ${instanceId}: ${err instanceof Error ? err.message : String(err)}`)
+    mainLog.warn(`[tweaks] install failed for ${instanceId}: ${err instanceof Error ? err.message : String(err)}`)
   } finally {
     applying.delete(instanceId)
     if (requeued.delete(instanceId)) void scheduleApply(instanceId)
@@ -315,17 +333,17 @@ async function scheduleApply(instanceId: string): Promise<void> {
 }
 
 /**
- * Re-apply a workspace's tweaks to every window showing it, now.
+ * Re-install a workspace's tweaks on every window showing it — what a change to the rules
+ * calls (`HandlerDeps.onTweaksChanged`, and the config watcher behind every write).
  *
- * What flipping the switch calls (`HandlerDeps.onTweaksChanged`): the page a person is
- * looking at must change when they turn the tweak on, and stop showing it when they turn it
- * off. The address has not moved, so this cannot ride {@link TweaksInjector.handleStateChange}
- * — that one deliberately ignores a state change that moved nothing.
+ * A tweak is a **rule set**, not a page: it decides what each *new* document gets. So this
+ * re-registers the init script and stops there — nothing is delivered to the page a person is
+ * looking at, in either direction. Reloading is what shows a change, because the reload is a
+ * document the new registration applies to.
  *
- * The two carriers' difference shows up here: a tweak switched on reaches the **open page**
- * (its style is inserted, its javascript runs) and a tweak switched off has its style removed
- * from the open page — but javascript it already ran is not undone, so what it changed in the
- * document stays until the next reload. Only the tweak knows how to take that back.
+ * The address has not moved, which is why this cannot ride
+ * {@link TweaksInjector.handleStateChange}: that one deliberately ignores a state change that
+ * moved nothing.
  */
 export function requestTweaksForWorkspace(workspaceId: string): void {
   const bpm = manager

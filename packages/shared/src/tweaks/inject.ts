@@ -2,11 +2,13 @@
  * A tweak, as code a page can run.
  *
  * This is the in-app carrier's payload: one self-contained script that picks, for the
- * document it finds itself in, the tweaks whose `matches` cover the address, injects each
- * one's CSS and runs each one's JavaScript. The host (`apps/electron/src/main/tweaks-injector.ts`)
- * registers it for future documents and evaluates the *same* source against the document
- * that is already open, which is the same shape prototype replay uses — one code path, so
- * live and reloaded behaviour cannot diverge.
+ * document it finds itself in, the tweaks whose `matches` cover the address, inserts each
+ * one's CSS — always before the DOM exists, so a page never flashes the state the tweak is
+ * there to change — and runs each one's JavaScript at the moment that tweak declares
+ * (`./run-at.ts`). The host (`apps/electron/src/main/tweaks-injector.ts`)
+ * registers it for **future documents** and does nothing else with it — a document that
+ * already exists is never evaluated, so this script meets each document exactly once, as it
+ * is being born.
  *
  * ## The match-pattern test exists twice, and a table keeps the two equal
  *
@@ -26,17 +28,20 @@
  * record to "the page this tweak was actually running on" rather than to what the host
  * assumed the page was.
  *
- * Running the same content twice against the same address is a **no-op**, per tweak and per
- * file: the host both registers this for future documents and evaluates it against the open
- * one, and without a mark the second pass would run every tweak's JavaScript twice. The
- * address is part of the mark because a single-page app's route change is the one case that
- * *should* run again, and the digest is per file because editing a tweak's CSS must not run
- * its JavaScript a second time on a document that already has it.
+ * ## One pass per document, and no way back
  *
- * The same pass is what makes a switch take effect on the page already open: a tweak that is
- * no longer in the set loses its `<style>` immediately (and its run mark, so switching it
- * back on replays it). What the tweak's JavaScript already did to the document is not undone
- * — that is the reload's job, and the module that folds the two carriers together says so.
+ * A document keeps what it was born with, for its whole life. Switching a tweak off, editing
+ * it, deleting it, or routing away from the address it matched are all answered by the **next**
+ * document, never by this one — which is why nothing here counts passes or digests: with one
+ * pass per document there is nothing to make idempotent, and a tweak's JavaScript cannot run
+ * twice on a page.
+ *
+ * The rule behind that is that a tweak cannot be taken back completely. Its CSS could be
+ * (removing the `<style>` returns the page to its own cascade), but its JavaScript cannot:
+ * what it did to the document is history nobody here has a record of. Pulling the CSS out from
+ * under it would leave the page in a state its author never wrote, and would separate two
+ * files that are one tweak. So they stay together, and a **load** is the reset —
+ * `tweaks-injector.ts` states the same rule from the host's side.
  *
  * ## Where a hit record does and does not come from
  *
@@ -46,6 +51,8 @@
  * tweak has never run anywhere".
  */
 
+import type { TweakRunAt } from './run-at.ts'
+
 /** One tweak as the init script needs it: identity, the pages, and the two code files. */
 export interface TweaksInitScriptTweak {
   slug: string
@@ -54,6 +61,8 @@ export interface TweaksInitScriptTweak {
   css: string | null
   /** The tweak's `tweak.js`, or null when there is none. */
   js: string | null
+  /** When its javascript runs — what it declares with `@run-at`, or the default. */
+  runAt: TweakRunAt
   /** Chrome match patterns — the pages this tweak is for. */
   matches: string[]
 }
@@ -117,45 +126,21 @@ export function buildTweaksMatcherSource(): string {
 }
 
 /**
- * A short, stable digest of a string.
- *
- * The page keeps the digest it last ran against, per tweak and per file, so re-evaluating
- * identical content on the same address does nothing. Only a "have I already done this"
- * mark — not a security boundary.
- */
-function contentVersion(entries: unknown): string {
-  const json = JSON.stringify(entries)
-  let hash = 5381
-  for (let index = 0; index < json.length; index += 1) {
-    hash = ((hash * 33) ^ json.charCodeAt(index)) >>> 0
-  }
-  return hash.toString(36)
-}
-
-/**
  * The whole carrier as one script: for the current document, every tweak that applies.
  *
  * A **statement**, terminated with `;`, like every other init script in this codebase. It is
  * self-contained (the matcher is generated in, not imported) because an injected script has
  * no module system.
+ *
+ * It runs **once per document**, at `document-start`, and never again — so it has no marks, no
+ * digests and no second-pass bookkeeping: there is nothing to make idempotent (see the module
+ * note).
  */
 export function buildTweaksInitScript(tweaks: TweaksInitScriptTweak[]): string {
   const lines: string[] = [
     '(() => {',
     buildTweaksMatcherSource(),
     '  const HREF = String(location.href);',
-    `  const OURS = ${JSON.stringify(tweaks.map((tweak) => tweak.slug))};`,
-    '  const RUN = (window.__craftTweaksRun ||= {});',
-    // A tweak that is no longer ours — switched off, deleted, or renamed away — loses both
-    // its style and the memory of having run. Without forgetting it, switching a tweak off
-    // and on again would leave the page without it until the next reload. What its
-    // javascript already did to the document is **not** undone: only the tweak knows how to
-    // take that back, and a reload is the honest way to get it.
-    '  for (const element of document.querySelectorAll("style[data-tweak]")) {',
-    '    const slug = element.getAttribute("data-tweak");',
-    '    if (!OURS.includes(slug)) element.remove();',
-    '  }',
-    '  for (const slug of Object.keys(RUN)) { if (!OURS.includes(slug)) delete RUN[slug]; }',
     '  const APPLIED = (window.__craftTweaks = []);',
     '',
     '  const insertStyle = (slug, css) => {',
@@ -163,16 +148,23 @@ export function buildTweaksInitScript(tweaks: TweaksInitScriptTweak[]): string {
     // caller retries on `DOMContentLoaded` when this answers false.
     '    const root = document.head || document.documentElement;',
     '    if (!root) return false;',
-    '    const selector = \'style[data-tweak="\' + slug + \'"]\';',
-    '    let element = document.querySelector(selector);',
-    '    if (!element) {',
-    '      element = document.createElement("style");',
-    '      element.setAttribute("data-tweak", slug);',
-    '    }',
-    // Replace, never append a second one: a re-run must leave one element, not two.
-    '    if (element.parentNode !== root) root.appendChild(element);',
+    '    const element = document.createElement("style");',
+    '    element.setAttribute("data-tweak", slug);',
+    '    root.appendChild(element);',
     '    element.textContent = css;',
     '    return true;',
+    '  };',
+    '',
+    // The browser's own three moments (`content_scripts.run_at`), because the extension
+    // carrier is a content script and the two have to deliver a tweak the same way.
+    '  const whenReady = (at, run) => {',
+    '    if (at === "document_start") { run(); return; }',
+    '    const isReady = () => at === "document_end" ? document.readyState !== "loading" : document.readyState === "complete";',
+    '    if (isReady()) { run(); return; }',
+    // `load` is fired at the window, not at the document, so listening on `document` would
+    // never fire for `document_idle`.
+    '    if (at === "document_end") document.addEventListener("DOMContentLoaded", run, { once: true });',
+    '    else window.addEventListener("load", run, { once: true });',
     '  };',
   ]
 
@@ -182,40 +174,31 @@ export function buildTweaksInitScript(tweaks: TweaksInitScriptTweak[]): string {
   for (const tweak of tweaks) {
     const slug = JSON.stringify(tweak.slug)
     const matches = JSON.stringify([...tweak.matches])
-    // Per file, not per tweak: editing a tweak's CSS is a reason to restyle the page, and
-    // nothing like a reason to run its javascript again on the document it is already on.
-    const cssMark = JSON.stringify(`${contentVersion(tweak.css)}|`)
-    const jsMark = JSON.stringify(`${contentVersion(tweak.js)}|`)
 
     lines.push('')
     lines.push(`  // ${tweak.name} (${tweak.slug})`)
     lines.push(`  if (tweakMatchUrl(HREF, ${matches})) {`)
-    lines.push(`    const run = (RUN[${slug}] ||= {});`)
 
     if (typeof tweak.css === 'string') {
       const css = JSON.stringify(tweak.css)
-      lines.push(`    const cssMark = ${cssMark} + HREF;`)
-      lines.push('    if (run.css !== cssMark) {')
-      lines.push('      run.css = cssMark;')
-      lines.push(`      if (!insertStyle(${slug}, ${css})) {`)
+      lines.push(`    if (!insertStyle(${slug}, ${css})) {`)
       lines.push(
-        `        document.addEventListener("DOMContentLoaded", () => { insertStyle(${slug}, ${css}); }, { once: true });`,
+        `      document.addEventListener("DOMContentLoaded", () => { insertStyle(${slug}, ${css}); }, { once: true });`,
       )
-      lines.push('      }')
       lines.push('    }')
     }
 
     if (typeof tweak.js === 'string') {
-      // Each body in its own IIFE with its own try/catch, so one tweak that throws cannot
-      // stop the ones after it. A body ending in a line comment would swallow the closing
-      // lines, so every body is on its own lines with the closers after a newline — the same
-      // hazard `patch-script.ts` documents. A *parse* error in one body is the honest limit:
-      // the script is one source, so it cannot be caught per tweak (running each body
-      // through a `Function` constructor would, at the cost of `eval`, which a page's CSP
-      // may refuse).
-      lines.push(`    const jsMark = ${jsMark} + HREF;`)
-      lines.push('    if (run.js !== jsMark) {')
-      lines.push('      run.js = jsMark;')
+      const runAt = JSON.stringify(tweak.runAt)
+      // The body runs at the moment the tweak declares, in its own IIFE with its own
+      // try/catch, so one tweak that throws cannot stop the ones after it — and so a body that
+      // throws *when it is deferred* is still contained. A body ending in a line comment would
+      // swallow the closing lines, so every body is on its own lines with the closers after a
+      // newline — the same hazard `patch-script.ts` documents. A *parse* error in one body is
+      // the honest limit: the script is one source, so it cannot be caught per tweak (running
+      // each body through a `Function` constructor would, at the cost of `eval`, which a
+      // page's CSP may refuse).
+      lines.push(`    whenReady(${runAt}, () => {`)
       lines.push('      try {')
       lines.push('        (() => {')
       lines.push(...tweak.js.split('\n').map((line) => `          ${line}`))
@@ -223,11 +206,10 @@ export function buildTweaksInitScript(tweaks: TweaksInitScriptTweak[]): string {
       lines.push('      } catch (err) {')
       lines.push(`        console.error(${JSON.stringify(`[craft tweak ${tweak.slug}]`)}, err);`)
       lines.push('      }')
-      lines.push('    }')
+      lines.push('    });')
     }
 
-    // Still "applied" whether or not this pass injected it: the probe answers what is on the
-    // page, and a tweak this script ran earlier in this document is on the page.
+    // What the page reports back: the tweaks this document was given (see the module note).
     lines.push(`    APPLIED.push(${slug});`)
     lines.push('  }')
   }

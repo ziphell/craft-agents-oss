@@ -1573,6 +1573,8 @@ describe('BrowserPaneManager', () => {
         sessionLabels: {},
         // Nobody pressed the record button.
         recording: null,
+        // And this window has fetched nothing — so the downloads button is not drawn.
+        downloads: [],
       },
     ])
   })
@@ -1610,6 +1612,8 @@ describe('BrowserPaneManager', () => {
         sessionLabels: {},
         // Nobody pressed the record button.
         recording: null,
+        // And this window has fetched nothing — so the downloads button is not drawn.
+        downloads: [],
       },
     ])
   })
@@ -3613,21 +3617,10 @@ describe('BrowserPaneManager', () => {
       return registration[1]
     }
 
-    let root: string
-
-    beforeEach(() => {
-      root = mkdtempSync(join(tmpdir(), 'craft-recording-'))
-    })
-
-    afterEach(() => {
-      rmSync(root, { recursive: true, force: true })
-    })
-
     it('files the recording in the downloads folder, whoever\'s tab it was', async () => {
-      // A conversation's tab, with a session path resolver installed: the recording still
-      // goes to the person's downloads — whose tab it is is not what the file is about.
-      manager.setSessionPathResolver(() => join(root, 'sessions', 'session-a'))
-
+      // A conversation's tab: the recording still goes to the person's downloads — whose
+      // tab it is is not what the file is about. A download is filed the same way, for
+      // the same reason (`will-download`: a download is not the tab's).
       const instanceId = manager.createInstance('record-downloads', { workspaceId: 'workspace-a' })
       manager.createTab(instanceId, { belongsTo: work('session-a') })
       manager.registerToolbarIpc()

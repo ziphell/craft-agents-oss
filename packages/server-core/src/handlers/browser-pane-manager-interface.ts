@@ -238,9 +238,6 @@ export interface RenderedDrawioFile {
 export interface IBrowserPaneManager {
   // -- Session lifecycle ---------------------------------------------------
 
-  /** Register a callback that resolves session IDs to file paths */
-  setSessionPathResolver(fn: (sessionId: string) => string | null): void
-
   /**
    * Let go of a session's marks, holds **and cursors**; nothing is destroyed (the window is
    * its workspace's, not the session's). Called when the session itself is gone, which is the
@@ -502,6 +499,12 @@ export interface IBrowserPaneManager {
   resizeViewport(id: string, width: number, height: number, tabId?: string): { width: number; height: number }
   getNetworkLogs(id: string, options?: BrowserNetworkOptions, tabId?: string): BrowserNetworkEntry[]
   waitFor(id: string, args: BrowserWaitArgs, tabId?: string): Promise<BrowserWaitResult>
-  getDownloads(id: string, options?: BrowserDownloadOptions, tabId?: string): Promise<BrowserDownloadEntry[]>
+  /**
+   * What the window's workspace has downloaded, oldest first.
+   *
+   * No tab: a download is not the tab's — it outlives the window it was started in, and
+   * both readers (the chrome's list and the agent's `downloads`) mean the window.
+   */
+  getDownloads(id: string, options?: BrowserDownloadOptions): Promise<BrowserDownloadEntry[]>
   detectSecurityChallenge(id: string, tabId?: string): Promise<{ detected: boolean; provider: string; signals: string[] }>
 }

@@ -135,21 +135,3 @@ describe('delete_tweak', () => {
     expect(() => callbacks().deleteTweak(tweak.slug)).toThrow(/not found/)
   })
 })
-
-describe('export_tweaks', () => {
-  it('builds the extension for the enabled tweaks into the chosen folder', async () => {
-    await callbacks().createTweak({ name: 'On', matches: ['*://a.test/*'], css: '.x{}', enabled: true })
-    await callbacks().createTweak({ name: 'Paused', matches: ['*://b.test/*'], css: '.y{}' })
-
-    const dest = mkdtempSync(join(tmpdir(), 'craft-tweaks-dest-'))
-    try {
-      const result = await callbacks().exportTweaks(dest)
-
-      expect(result.tweaks).toBe(1)
-      expect(result.skipped).toEqual([{ slug: 'paused', why: 'switched off' }])
-      expect(existsSync(join(result.dir, 'manifest.json'))).toBe(true)
-    } finally {
-      rmSync(dest, { recursive: true, force: true })
-    }
-  })
-})

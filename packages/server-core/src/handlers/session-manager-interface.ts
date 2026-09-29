@@ -254,9 +254,15 @@ export interface ISessionManager {
   /**
    * Request a (re)capture of a page's preview poster. No-op unless a capturer
    * was injected (Electron main only); headless/WebUI hosts fall back to the
-   * placeholder tile.
+   * placeholder tile. `force` re-shoots even when a poster for the current
+   * content already exists (a manual refresh).
    */
-  enqueueWebsiteThumbnail(workspaceId: string, workspaceRootPath: string, slug: string): void
+  enqueueWebsiteThumbnail(
+    workspaceId: string,
+    workspaceRootPath: string,
+    slug: string,
+    options?: { force?: boolean },
+  ): void
 
   // ---------------------------------------------------------------------------
   // Server-level observability

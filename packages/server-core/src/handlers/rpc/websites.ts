@@ -192,11 +192,13 @@ export function registerWebsitesHandlers(server: RpcServer, deps: HandlerDeps): 
     }
   })
 
-  // Manually request a (re)capture (e.g. an agent/user "refresh preview").
+  // Manually request a (re)capture (e.g. an agent/user "refresh preview"). Forced:
+  // the person asked for the poster to be shot again, so an existing fresh one is
+  // not an answer.
   server.handle(RPC_CHANNELS.websites.REGENERATE_THUMBNAIL, async (_ctx, workspaceId: string, websiteSlug: string) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) return false
-    deps.sessionManager.enqueueWebsiteThumbnail(workspaceId, workspace.rootPath, websiteSlug)
+    deps.sessionManager.enqueueWebsiteThumbnail(workspaceId, workspace.rootPath, websiteSlug, { force: true })
     return true
   })
 }

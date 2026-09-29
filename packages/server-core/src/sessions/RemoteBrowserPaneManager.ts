@@ -137,12 +137,6 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
   // IBrowserPaneManager — session lifecycle
   // ---------------------------------------------------------------------------
 
-  setSessionPathResolver(_fn: (sessionId: string) => string | null): void {
-    // No-op: path resolution belongs to the remote server, not the client BPM.
-    // Calls into this method from the server side are still useful locally for
-    // metadata, but the BPM itself doesn't need them on a remote bridge.
-  }
-
   destroyForSession(sessionId: string): void {
     this.invokeSync('destroyForSession', [sessionId])
   }
@@ -419,8 +413,8 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
   async waitFor(id: string, args: BrowserWaitArgs, tabId?: string): Promise<BrowserWaitResult> {
     return await this.invoke('waitFor', [id, args], tabId)
   }
-  async getDownloads(id: string, options?: BrowserDownloadOptions, tabId?: string): Promise<BrowserDownloadEntry[]> {
-    return await this.invoke('getDownloads', [id, options], tabId)
+  async getDownloads(id: string, options?: BrowserDownloadOptions): Promise<BrowserDownloadEntry[]> {
+    return await this.invoke('getDownloads', [id, options])
   }
   async detectSecurityChallenge(id: string, tabId?: string): Promise<{ detected: boolean; provider: string; signals: string[] }> {
     return await this.invoke('detectSecurityChallenge', [id], tabId)

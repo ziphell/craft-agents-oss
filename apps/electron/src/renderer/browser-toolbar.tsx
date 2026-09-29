@@ -11,7 +11,7 @@ import ReactDOM from 'react-dom/client'
 import { useTranslation, initReactI18next } from 'react-i18next'
 import LanguageDetector from 'i18next-browser-languagedetector'
 import { setupI18n } from '@craft-agent/shared/i18n'
-import { Circle, Code, EyeOff, Globe, Lock, MessageSquare, MousePointerClick, Plus, Square, X, XCircle } from 'lucide-react'
+import { Check, Circle, Code, Download, EyeOff, Globe, Lock, MessageSquare, MousePointerClick, Plus, Square, X, XCircle } from 'lucide-react'
 import { BrowserControls, Spinner } from '@craft-agent/ui'
 import { HeaderIconButton } from '@/components/ui/HeaderIconButton'
 import { cn } from '@/lib/utils'
@@ -33,6 +33,24 @@ setupI18n([LanguageDetector, initReactI18next])
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
+
+/**
+ * One file this window has fetched, as the bar reports it.
+ *
+ * The shape the host writes into a tab's download log, minus the tab it came from: the
+ * window's list is what a person asks "where did that go" about, and which tab asked for
+ * a file is not part of that answer.
+ */
+interface ToolbarDownloadEntry {
+  id: string
+  timestamp: number
+  filename: string
+  state: 'started' | 'completed' | 'interrupted' | 'cancelled'
+  bytesReceived: number
+  totalBytes: number
+  /** Where it was saved. Absent while it is still being fetched, and for one that never got that far. */
+  savePath?: string
+}
 
 interface ToolbarState {
   /** What the URL bar shows: the address of the tab on screen. */
@@ -88,6 +106,15 @@ interface ToolbarState {
     startedAt: number
     bytes: number
   } | null
+  /**
+   * The window's recent downloads, newest first.
+   *
+   * `undefined` for a window that has not pushed state yet, and `[]` for one that has
+   * never downloaded anything — the button is drawn for the second and not the first.
+   * The window's rather than the tab on screen's, because the person who clicked moves
+   * on while the file is still arriving.
+   */
+  downloads?: ToolbarDownloadEntry[]
 }
 
 declare global {
@@ -126,6 +153,8 @@ declare global {
       stopRecording: () => Promise<{ file: string; bytes: number; seconds: number } | null>
       /** One encoded chunk, in the order produced. */
       sendRecordingChunk: (chunk: ArrayBuffer) => void
+      /** Show a finished download in its folder, by the `savePath` the state carried. */
+      revealDownload: (savePath: string) => Promise<void>
       onStateUpdate: (callback: (state: ToolbarState) => void) => () => void
       onForceCloseMenu: (callback: (payload: { reason?: string }) => void) => () => void
     }
@@ -151,6 +180,17 @@ function formatElapsed(ms: number): string {
   const minutes = Math.floor(totalSeconds / 60)
   const seconds = totalSeconds % 60
   return `${minutes}:${String(seconds).padStart(2, '0')}`
+}
+
+/**
+ * How far along a download is, or `null` when its size is not known yet.
+ *
+ * `null` rather than 0%: a server that sends no length has a download with no
+ * denominator, and "0%" would be a claim about it rather than a missing number.
+ */
+function downloadPercent(entry: Pick<ToolbarDownloadEntry, 'bytesReceived' | 'totalBytes'>): number | null {
+  if (entry.totalBytes <= 0) return null
+  return Math.max(0, Math.min(100, Math.round((entry.bytesReceived / entry.totalBytes) * 100)))
 }
 
 /**
@@ -532,7 +572,9 @@ function BrowserToolbarApp() {
     canGoForward: false,
   })
   const [windowMenuOpen, setWindowMenuOpen] = useState(false)
+  const [downloadsMenuOpen, setDownloadsMenuOpen] = useState(false)
   const menuContentRef = useRef<HTMLDivElement | null>(null)
+  const downloadsMenuContentRef = useRef<HTMLDivElement | null>(null)
 
   /**
    * Edit mode, as the window reports it.
@@ -565,6 +607,20 @@ function BrowserToolbarApp() {
   const [savedFile, setSavedFile] = useState<string | null>(null)
   const [recordFailed, setRecordFailed] = useState(false)
 
+  /**
+   * The window's recent downloads, and the one the person has already looked at.
+   *
+   * The list is the host's (a download is the window's, not this renderer's); what is
+   * kept here is only whether the newest finished one has been seen, which is what the
+   * button's accent mark means. `downloadsMenuOpen` sets it: opening the list *is*
+   * looking, so the mark has nothing left to say.
+   */
+  const downloads = state.downloads ?? []
+  const [seenDownloadId, setSeenDownloadId] = useState<string | null>(null)
+  const downloading = downloads.find((entry) => entry.state === 'started') ?? null
+  const newestFinished = downloads.find((entry) => entry.state !== 'started') ?? null
+  const unseenDownload = newestFinished !== null && newestFinished.id !== seenDownloadId
+
   useEffect(() => {
     if (!api) return
     return api.onStateUpdate(setState)
@@ -574,15 +630,28 @@ function BrowserToolbarApp() {
     if (!api) return
     return api.onForceCloseMenu(() => {
       setWindowMenuOpen(false)
+      setDownloadsMenuOpen(false)
     })
   }, [api])
 
+  /**
+   * The open menu's geometry, whichever menu it is.
+   *
+   * Both menus are drawn in this same 48-pixel-tall view, so both have to tell the host
+   * how tall their content is or the host cannot grow the region the overlay covers —
+   * one slot, because only one of them can be open at a time. The rail never opens one,
+   * and must not report the bar's menu closed behind its back.
+   */
   useEffect(() => {
-    // The menu belongs to the address bar, and so does its geometry: the rail never
-    // opens one, and it must not report the bar's menu closed behind its back.
     if (!api || IS_RAIL) return
 
-    if (!windowMenuOpen) {
+    const content = windowMenuOpen
+      ? menuContentRef.current
+      : downloadsMenuOpen
+        ? downloadsMenuContentRef.current
+        : null
+
+    if (!content) {
       void api.setMenuGeometry(false, 0)
       return
     }
@@ -591,7 +660,7 @@ function BrowserToolbarApp() {
     void api.setMenuGeometry(true, 120)
 
     const sendGeometry = () => {
-      const height = Math.ceil(menuContentRef.current?.getBoundingClientRect().height ?? 0)
+      const height = Math.ceil(content.getBoundingClientRect().height ?? 0)
       void api.setMenuGeometry(true, height)
     }
 
@@ -600,16 +669,14 @@ function BrowserToolbarApp() {
       sendGeometry()
     })
 
-    if (menuContentRef.current) {
-      observer.observe(menuContentRef.current)
-    }
+    observer.observe(content)
 
     return () => {
       cancelAnimationFrame(frame)
       observer.disconnect()
       void api.setMenuGeometry(false, 0)
     }
-  }, [api, windowMenuOpen])
+  }, [api, windowMenuOpen, downloadsMenuOpen])
 
   /**
    * How long the recording has been running, counted from when it started.
@@ -685,6 +752,41 @@ function BrowserToolbarApp() {
   const handleToggleDevTools = useCallback(() => {
     void api?.toggleDevTools()
   }, [api])
+
+  /**
+   * Show one downloaded file in its folder.
+   *
+   * The path travels back to the host rather than being opened here: revealing is
+   * something only the OS can do, and the host is the side that wrote the file down in
+   * the first place (so this cannot be turned into "open anything").
+   */
+  const handleRevealDownload = useCallback((savePath: string) => {
+    void api?.revealDownload(savePath)
+  }, [api])
+
+  /**
+   * Opening the list is looking at it — which is what takes the button's mark away.
+   */
+  const handleDownloadsMenuOpenChange = useCallback((open: boolean) => {
+    setDownloadsMenuOpen(open)
+    if (open) setSeenDownloadId(newestFinished?.id ?? null)
+  }, [newestFinished])
+
+  /**
+   * What a row says about one download.
+   *
+   * A percentage while it is arriving, the refusal when it did not arrive, and nothing
+   * at all when it simply arrived — the check beside the name is that answer, and a word
+   * there would only be read by somebody already looking at the row.
+   */
+  const downloadStateLabel = useCallback((entry: ToolbarDownloadEntry): string => {
+    if (entry.state === 'started') {
+      const percent = downloadPercent(entry)
+      return percent === null ? t('browser.downloading') : `${percent}%`
+    }
+    if (entry.state === 'completed') return ''
+    return t('browser.downloadFailed')
+  }, [t])
 
   /**
    * Start or stop the person's recording of this tab.
@@ -827,16 +929,18 @@ function BrowserToolbarApp() {
   return (
     <>
       {/*
-        Full-window outside-tap catcher while menu is open.
+        Full-window outside-tap catcher while a menu is open.
         Critical for draggable titlebar windows (Windows) where outside-click
         dismissal can be unreliable if events fall into app-region: drag zones.
+        One catcher for both menus: either way the tap means "put it away".
       */}
-      {windowMenuOpen && (
+      {(windowMenuOpen || downloadsMenuOpen) && (
         <div
           className="fixed inset-0 z-[90] titlebar-no-drag bg-black/[0.0039215686]"
           onPointerDown={(event) => {
             event.preventDefault()
             setWindowMenuOpen(false)
+            setDownloadsMenuOpen(false)
           }}
         />
       )}
@@ -885,6 +989,64 @@ function BrowserToolbarApp() {
               className={devTools ? 'bg-foreground/10 text-foreground' : undefined}
               onClick={handleToggleDevTools}
             />
+
+            {/*
+              The downloads button, and the window's recent downloads behind it.
+
+              It appears when there is something to report — a file being fetched right
+              now, or one fetched a moment ago — because a download used to be answered
+              with nothing at all: the file was saved and the person was told neither that
+              it happened nor where it went. The mark is on the button until the list has
+              been opened, and every row shows the file in its folder when clicked.
+            */}
+            {downloads.length > 0 && (
+              <DropdownMenu open={downloadsMenuOpen} onOpenChange={handleDownloadsMenuOpenChange}>
+                <DropdownMenuTrigger asChild>
+                  <HeaderIconButton
+                    icon={downloading
+                      ? <Spinner className="h-3.5 w-3.5" />
+                      : <Download className="h-3.5 w-3.5" />}
+                    aria-label={t('browser.downloads')}
+                    className={unseenDownload ? 'bg-accent/15 text-accent' : undefined}
+                  />
+                </DropdownMenuTrigger>
+
+                <StyledDropdownMenuContent
+                  ref={downloadsMenuContentRef}
+                  align="end"
+                  side="bottom"
+                  sideOffset={6}
+                  minWidth="min-w-56"
+                  className="titlebar-no-drag z-[110] max-h-none overflow-visible"
+                >
+                  {downloads.map((entry) => (
+                    <StyledDropdownMenuItem
+                      key={entry.id}
+                      // A file still arriving has nowhere to be shown yet.
+                      disabled={!entry.savePath}
+                      title={entry.savePath ?? entry.filename}
+                      onSelect={() => entry.savePath && handleRevealDownload(entry.savePath)}
+                    >
+                      {entry.state === 'completed'
+                        ? <Check className="h-3.5 w-3.5" />
+                        : entry.state === 'started'
+                          ? <Download className="h-3.5 w-3.5 text-muted-foreground" />
+                          : <XCircle className="h-3.5 w-3.5" />}
+                      <span className="max-w-[220px] truncate">{entry.filename}</span>
+                      <span className="ml-auto pl-3 tabular-nums text-muted-foreground">
+                        {downloadStateLabel(entry)}
+                      </span>
+                    </StyledDropdownMenuItem>
+                  ))}
+                </StyledDropdownMenuContent>
+              </DropdownMenu>
+            )}
+
+            {downloading && downloadPercent(downloading) !== null && (
+              <span className="inline-flex select-none items-center whitespace-nowrap rounded-[6px] bg-foreground/5 px-2 py-1 text-[11px] tabular-nums text-muted-foreground">
+                {`${downloadPercent(downloading)}%`}
+              </span>
+            )}
 
             {/*
               The record button: the person's own recording of the tab they are on, which

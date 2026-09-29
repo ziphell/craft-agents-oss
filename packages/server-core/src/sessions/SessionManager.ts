@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿import type { EventSink, RpcServer } from '@craft-agent/server-core/transport'
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿import type { EventSink, RpcServer } from '@craft-agent/server-core/transport'
 import { CLIENT_BROWSER_INVOKE } from '@craft-agent/server-core/transport'
 import type { ISessionManager, IBrowserPaneManager, ExecutePromptAutomationInput } from '@craft-agent/server-core/handlers'
 import { RemoteBrowserPaneManager } from './RemoteBrowserPaneManager'
@@ -1222,7 +1222,12 @@ export class SessionManager implements ISessionManager {
   }
 
   private browserPaneManager: IBrowserPaneManager | null = null
-  private enqueueWebsiteThumbnailFn?: (req: { workspaceId: string; workspaceRootPath: string; slug: string }) => void
+  private enqueueWebsiteThumbnailFn?: (
+    req: { workspaceId: string; workspaceRootPath: string; slug: string },
+    options?: { force?: boolean },
+  ) => void
+  private websiteOriginResolver?: (workspaceRootPath: string, websiteSlug: string) => string | null
+  private installTweaksFn?: (workspaceId: string) => void
   private rpcServer: RpcServer | null = null
   private remoteBpms = new Map<string, RemoteBrowserPaneManager>()
   /** Pinned desktop client per session for `client:browser:invoke` routing. */
@@ -1235,7 +1240,6 @@ export class SessionManager implements ISessionManager {
 
   setBrowserPaneManager(bpm: IBrowserPaneManager): void {
     this.browserPaneManager = bpm
-    bpm.setSessionPathResolver((sessionId) => this.getSessionPath(sessionId))
   }
 
   /**
@@ -1243,17 +1247,58 @@ export class SessionManager implements ISessionManager {
    * BrowserWindow). Headless/WebUI hosts never call this, so
    * {@link enqueueWebsiteThumbnail} no-ops and tiles fall back to the placeholder.
    */
-  setWebsiteThumbnailer(fn: (req: { workspaceId: string; workspaceRootPath: string; slug: string }) => void): void {
+  setWebsiteThumbnailer(
+    fn: (
+      req: { workspaceId: string; workspaceRootPath: string; slug: string },
+      options?: { force?: boolean },
+    ) => void,
+  ): void {
     this.enqueueWebsiteThumbnailFn = fn
+  }
+
+  /**
+   * Inject the website origin resolver (Electron main only — the host that serves
+   * the addresses). It is what the websites tools report as a website's `origin`,
+   * and calling it is also what names the website to that host for this run. Hosts
+   * that serve no origins leave it unset, and the tools then report no address.
+   */
+  setWebsiteOriginResolver(fn: (workspaceRootPath: string, websiteSlug: string) => string | null): void {
+    this.websiteOriginResolver = fn
   }
 
   /**
    * Request a (re)capture of a website's preview poster. Fire-and-forget: the
    * injected capturer queues it, writes thumbnail.jpg, and stamps website.json
    * (which broadcasts websites:changed). No-op when no capturer is injected.
+   *
+   * `force` is a manual refresh: re-shoot even when a poster for the current
+   * content already exists.
    */
-  enqueueWebsiteThumbnail(workspaceId: string, workspaceRootPath: string, slug: string): void {
-    this.enqueueWebsiteThumbnailFn?.({ workspaceId, workspaceRootPath, slug })
+  enqueueWebsiteThumbnail(
+    workspaceId: string,
+    workspaceRootPath: string,
+    slug: string,
+    options?: { force?: boolean },
+  ): void {
+    this.enqueueWebsiteThumbnailFn?.({ workspaceId, workspaceRootPath, slug }, options)
+  }
+
+  /**
+   * Inject the tweaks installer (Electron main only — the browser window that runs them is
+   * there, and the injector lives beside it). Headless/WebUI hosts never call this, so
+   * {@link installTweaks} no-ops: a tweak is only ever written to disk there.
+   */
+  setTweaksInstaller(fn: (workspaceId: string) => void): void {
+    this.installTweaksFn = fn
+  }
+
+  /**
+   * Re-install a workspace's tweaks for the documents to come. Called when a tweak changes on
+   * disk — the agent's tools, a hand edit, or the UI's switch — because the rules changed and
+   * the installed registration is what a new document is given. No-op with no installer.
+   */
+  installTweaks(workspaceId: string): void {
+    this.installTweaksFn?.(workspaceId)
   }
 
   /**
@@ -1581,10 +1626,13 @@ export class SessionManager implements ISessionManager {
         this.enqueueWebsiteThumbnail(workspaceId, workspaceRootPath, websiteSlug)
       },
       onTweaksListChange: (tweaks) => {
-        // tweak.json changed outside the RPC handlers (the agent's tools, or a hand
-        // edit). The list pages show is derived from the config, so re-broadcast it.
+        // A tweak changed outside the RPC handlers (the agent's tools, or a hand edit to the
+        // record or the code). Two things follow: the list pages show, and the registration the
+        // next document is given — a tweak is a rule set, so a code edit is as much a change to
+        // the rules as a switch is.
         sessionLog.info(`Tweaks changed in ${workspaceId} (${tweaks.length} tweaks)`)
         this.broadcastTweaksChanged(workspaceId, tweaks)
+        this.installTweaks(workspaceId)
       },
       onLlmConnectionsChange: () => {
         sessionLog.info(`LLM connections changed in ${workspaceId}`)
@@ -3950,8 +3998,10 @@ export class SessionManager implements ISessionManager {
               return bpm.sendKey(instanceId, options, tabId)
             },
             getDownloads: async (options) => {
-              const { instanceId, tabId } = await resolveCommandTarget('browser_downloads')
-              return bpm.getDownloads(instanceId, options, tabId)
+              // The window is resolved, and no tab is passed on: downloads are the
+              // window's — a `--tab` names nothing here (`getDownloads`).
+              const { instanceId } = await resolveCommandTarget('browser_downloads')
+              return bpm.getDownloads(instanceId, options)
             },
             upload: async (ref, filePaths) => {
               const { instanceId, tabId } = await resolveCommandTarget('browser_upload')
@@ -4749,9 +4799,13 @@ export class SessionManager implements ISessionManager {
           onContentChanged: (websiteSlug: string) => {
             this.enqueueWebsiteThumbnail(managed.workspace.id, managed.workspace.rootPath, websiteSlug)
           },
+          // Read through the field, not a captured value: the resolver is injected
+          // by the host after the SessionManager is built.
+          resolveOrigin: (workspaceRootPath, websiteSlug) =>
+            this.websiteOriginResolver?.(workspaceRootPath, websiteSlug) ?? null,
         }),
-        // Tweaks tools (list_tweaks/get_tweak/create_tweak/update_tweak/delete_tweak/
-        // export_tweaks) — the standing edits that run on pages nobody here owns. A
+        // Tweaks tools (list_tweaks/get_tweak/create_tweak/update_tweak/delete_tweak) —
+        // the standing edits that run on pages nobody here owns. A
         // mutation writes files in the workspace, so it is an out-of-band edit as far as
         // the watcher is concerned: same poke as the websites callbacks, and the same
         // reason (files are the truth, and the watcher is how the app hears about them).

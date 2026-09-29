@@ -790,6 +790,7 @@ Read relevant context files using the Read tool - they contain architecture info
 | Browser Tools | \`${DOC_REFS.browserTools}\` | When using in-app browser tools (\`browser_tool\`) |
 | Prototypes | \`${DOC_REFS.prototypes}\` | BEFORE the first \`prototype_tool\` command |
 | Websites | \`${DOC_REFS.websites}\` | BEFORE creating Websites or authoring website HTML |
+| Tweaks | \`${DOC_REFS.tweaks}\` | BEFORE creating a tweak or changing its code |
 | LLM Tool | \`${DOC_REFS.llmTool}\` | When using \`call_llm\` for subtasks |${FEATURE_FLAGS.craftAgentsCli ? `
 | Craft CLI | \`${DOC_REFS.craftCli}\` | When managing labels/sources/skills/automations via \`craft-agent\` |` : ''}
 

@@ -2,7 +2,7 @@
  * Tweaks Tool Callbacks
  *
  * Backend implementation of the agent-facing tweak tools (list_tweaks, get_tweak,
- * create_tweak, update_tweak, delete_tweak, export_tweaks). SessionManager wires one
+ * create_tweak, update_tweak, delete_tweak). SessionManager wires one
  * instance per session, bound to the invoking session's workspace, into the
  * session-scoped tool callback registry.
  *
@@ -22,12 +22,10 @@ import type {
   CreateTweakToolInput,
   UpdateTweakToolPatch,
   DeleteTweakToolResult,
-  ExportTweaksToolResult,
 } from '@craft-agent/session-tools-core'
 import {
   createTweak,
   deleteTweak,
-  exportTweaksExtension,
   getTweakCssPath,
   getTweakJsPath,
   loadTweak,
@@ -96,11 +94,6 @@ export function buildTweaksToolCallbacks(deps: TweaksToolCallbacksDeps): TweakTo
       deleteTweak(workspaceRootPath, slug)
       await mutated(slug)
       return { deleted: true }
-    },
-
-    async exportTweaks(destParent: string): Promise<ExportTweaksToolResult> {
-      const result = exportTweaksExtension(workspaceRootPath, destParent)
-      return { dir: result.dir, files: result.files, tweaks: result.tweaks, skipped: result.skipped }
     },
   }
 }

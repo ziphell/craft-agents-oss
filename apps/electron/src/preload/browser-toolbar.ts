@@ -26,6 +26,7 @@ const CHANNELS = {
   DEVTOOLS: 'browser-toolbar:devtools',
   RECORD: 'browser-toolbar:record',
   RECORD_CHUNK: 'browser-toolbar:record-chunk',
+  DOWNLOAD_REVEAL: 'browser-toolbar:download-reveal',
 } as const
 
 // Instance ID is passed via query parameter by BrowserPaneManager
@@ -125,6 +126,13 @@ contextBridge.exposeInMainWorld('browserToolbar', {
    * on the same channel, so it cannot overtake it.
    */
   sendRecordingChunk: (chunk: ArrayBuffer) => ipcRenderer.send(CHANNELS.RECORD_CHUNK, instanceId, chunk),
+  /**
+   * Show a finished download in its folder.
+   *
+   * The path is the one the state push carried for that download — the host only reveals
+   * a path it recorded itself, so this cannot be turned into "open anything".
+   */
+  revealDownload: (savePath: string) => ipcRenderer.invoke(CHANNELS.DOWNLOAD_REVEAL, instanceId, savePath),
   onStateUpdate: (callback: (state: unknown) => void) => {
     if (lastState !== undefined) callback(lastState)
     stateListeners.add(callback)

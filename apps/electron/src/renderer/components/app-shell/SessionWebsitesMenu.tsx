@@ -16,6 +16,7 @@ import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { useAtomValue } from 'jotai'
 import { PanelsTopLeft } from 'lucide-react'
+import { toast } from 'sonner'
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -25,7 +26,8 @@ import {
   StyledDropdownMenuItem,
 } from '@/components/ui/styled-dropdown'
 import { PanelHeaderCenterButton } from '@/components/ui/PanelHeaderCenterButton'
-import { navigate, routes } from '@/lib/navigate'
+import { useAppShellContext } from '@/context/AppShellContext'
+import { openWebsiteInWindow } from '../websites/open-website'
 import { websitesAtom } from '@/atoms/websites'
 
 interface SessionWebsitesMenuProps {
@@ -34,12 +36,24 @@ interface SessionWebsitesMenuProps {
 
 export function SessionWebsitesMenu({ sessionId }: SessionWebsitesMenuProps) {
   const { t } = useTranslation()
+  const { activeWorkspaceId } = useAppShellContext()
   const websites = useAtomValue(websitesAtom)
 
   const produced = React.useMemo(
     () => websites.filter(website => website.config.originSessionId === sessionId),
     [websites, sessionId],
   )
+
+  // A website is a page at its own origin, so picking one opens it in the
+  // workspace's browser window rather than a page inside the app.
+  const handleOpen = React.useCallback((slug: string) => {
+    if (!activeWorkspaceId) return
+    void openWebsiteInWindow(activeWorkspaceId, slug).catch(err => {
+      toast.error(t('toast.failedToCreateBrowser'), {
+        description: err instanceof Error ? err.message : String(err),
+      })
+    })
+  }, [activeWorkspaceId, t])
 
   if (produced.length === 0) return null
 
@@ -59,7 +73,7 @@ export function SessionWebsitesMenu({ sessionId }: SessionWebsitesMenuProps) {
         {produced.map(website => (
           <StyledDropdownMenuItem
             key={website.config.slug}
-            onClick={() => navigate(routes.view.websites(website.config.slug))}
+            onClick={() => handleOpen(website.config.slug)}
           >
             <PanelsTopLeft className="h-3.5 w-3.5" />
             <span className="flex-1 truncate">{website.config.name}</span>

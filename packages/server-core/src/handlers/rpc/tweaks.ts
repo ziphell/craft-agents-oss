@@ -7,13 +7,16 @@
  * tweak injects into pages somebody is signed in to, and turning it on is their consent
  * to run that code there, not the agent's.
  *
- * Every mutation broadcasts `tweaks:changed` with the fresh summaries, the same way the
- * websites handlers do, so an open page follows the folder rather than a stale list.
+ * Every mutation writes the file and pokes the config watcher — the path an agent's own write
+ * takes, because a switch is a change to a rule set like any other. The watcher is what follows
+ * it: it re-broadcasts the fresh list (`tweaks:changed`) and re-installs the rules for the next
+ * document (see `SessionManager.setTweaksInstaller`). Nothing here pushes the list itself —
+ * two senders of one event would only be two things to keep in step.
  */
 
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
-import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
+import type { RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
 
 export const HANDLED_CHANNELS = [
@@ -26,15 +29,6 @@ export const HANDLED_CHANNELS = [
 
 export function registerTweaksHandlers(server: RpcServer, deps: HandlerDeps): void {
   const log = deps.platform.logger
-
-  async function broadcastChanged(workspaceId: string, workspaceRootPath: string): Promise<void> {
-    const { loadWorkspaceTweaks, toTweakSummary } = await import('@craft-agent/shared/tweaks')
-    const tweaks = loadWorkspaceTweaks(workspaceRootPath).map(toTweakSummary)
-    pushTyped(server, RPC_CHANNELS.tweaks.CHANGED, { to: 'workspace', workspaceId }, workspaceId, tweaks)
-    // Every path that changes the tweaks also tells whoever is *running* them: a page that is
-    // already open must not wait for a reload to see a switch flip (see `HandlerDeps`).
-    deps.onTweaksChanged?.(workspaceId)
-  }
 
   // List all tweaks for a workspace, as summaries
   server.handle(RPC_CHANNELS.tweaks.GET, async (_ctx, workspaceId: string) => {
@@ -68,10 +62,10 @@ export function registerTweaksHandlers(server: RpcServer, deps: HandlerDeps): vo
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     const { loadTweak, toTweakDetails, updateTweak } = await import('@craft-agent/shared/tweaks')
     updateTweak(workspace.rootPath, slug, patch)
-    // The folder is the truth, so the host has to be told this write happened — the
-    // watcher's own fs events are unreliable for atomic renames on some platforms.
+    // Write, then poke — the same path an agent's own write takes. The watcher re-broadcasts the
+    // list and re-installs the rules, and the poke is explicit because the fs events alone are
+    // unreliable for atomic renames on some platforms.
     deps.sessionManager.notifyConfigFileChange(workspace.rootPath, `tweaks/${slug}/tweak.json`)
-    await broadcastChanged(workspaceId, workspace.rootPath)
     const tweak = loadTweak(workspace.rootPath, slug)
     return tweak ? toTweakDetails(workspace.rootPath, tweak) : null
   })
@@ -82,8 +76,8 @@ export function registerTweaksHandlers(server: RpcServer, deps: HandlerDeps): vo
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     const { deleteTweak } = await import('@craft-agent/shared/tweaks')
     deleteTweak(workspace.rootPath, slug)
+    // Same as the switch: the folder is the truth, so tell the watcher.
     deps.sessionManager.notifyConfigFileChange(workspace.rootPath, `tweaks/${slug}/tweak.json`)
-    await broadcastChanged(workspaceId, workspace.rootPath)
     log.info(`Deleted tweak ${slug}`)
   })
 

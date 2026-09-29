@@ -39,6 +39,10 @@ export interface CreateWebsiteInput {
 
 /**
  * Fully loaded website (config + folder paths)
+ *
+ * No workspace id here on purpose: a website is addressed as
+ * `(workspaceId, slug)` and the workspace is the caller's to name — the path
+ * this record carries is the workspace root, not an identifier for it.
  */
 export interface LoadedWebsite {
   config: WebsiteConfig;
@@ -52,6 +56,4 @@ export interface LoadedWebsite {
   snapshotPath: string;
   /** Absolute path to workspace folder */
   workspaceRootPath: string;
-  /** Workspace this website belongs to (derived from basename of workspaceRootPath) */
-  workspaceId: string;
 }

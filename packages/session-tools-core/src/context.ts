@@ -400,23 +400,6 @@ export interface SessionToolContext {
   }>;
 
   // ============================================================
-  // Messaging Gateway (for list/unbind messaging channels)
-  // ============================================================
-
-  /** Get messaging bindings for a session. Injected by backend when messaging is configured. */
-  getMessagingBindings?(sessionId: string): Array<{
-    platform: string;
-    channelId: string;
-    /** Telegram supergroup forum topic id; undefined for DMs / non-Telegram. */
-    threadId?: number;
-    channelName?: string;
-    enabled: boolean;
-  }>;
-
-  /** Unbind messaging channels from a session. Returns count of removed bindings. */
-  unbindMessagingChannel?(sessionId: string, platform?: string): number;
-
-  // ============================================================
   // Session Paths (for transform_data / render_template)
   // ============================================================
 
@@ -560,6 +543,14 @@ export interface WebsiteToolDataSummary {
 /** Full website details (returned by get_website / create_website / update_website). */
 export interface WebsiteToolDetails extends WebsiteToolSummary {
   id: string;
+  /**
+   * The address this website is served at (`http://<label>.localhost`), when the
+   * host can serve origins. Point `browser_tool` at it to work on the site as a
+   * page — the same address the app opens it at. Asking for it names the website
+   * to the host for this run, which is what makes the address answer at all.
+   * Absent on a host that serves no origins (a standalone server).
+   */
+  origin?: string;
   /** sha256 hex of index.html (render leases bind to it) */
   contentDigest?: string;
   /** Byte length of index.html when present */
@@ -681,6 +672,11 @@ export interface TweakToolDetails extends TweakToolSummary {
   hasJs: boolean;
   /** Absolute path to hits.json — written by whatever applies the tweak, never by hand. */
   hitsPath: string;
+  /**
+   * When its javascript runs: what the tweak declares with `@run-at`, or `document_end`.
+   * Derived from the code, because that is where it is declared.
+   */
+  runAt: 'document_start' | 'document_end' | 'document_idle';
   targets: TweakToolTarget[];
   /** When the hit record was last written, or null when nothing has applied it yet. */
   appliedAt: number | null;
@@ -713,17 +709,6 @@ export interface DeleteTweakToolResult {
   deleted: true;
 }
 
-/** Result of export_tweaks. */
-export interface ExportTweaksToolResult {
-  /** Absolute path of the written extension folder. */
-  dir: string;
-  files: number;
-  /** How many tweaks made it in. */
-  tweaks: number;
-  /** Enabled-or-not is not the only reason to be left out; the reason comes with it. */
-  skipped: Array<{ slug: string; why: string }>;
-}
-
 /**
  * Tweaks tool callbacks, injected by the backend (SessionManager). All storage logic
  * lives behind these — this package never touches tweaks/ directly.
@@ -734,7 +719,6 @@ export interface TweakToolCallbacks {
   createTweak(input: CreateTweakToolInput): Promise<TweakToolDetails>;
   updateTweak(slug: string, patch: UpdateTweakToolPatch): Promise<TweakToolDetails>;
   deleteTweak(slug: string): Promise<DeleteTweakToolResult>;
-  exportTweaks(destParent: string): Promise<ExportTweaksToolResult>;
 }
 
 export interface SessionInfo {

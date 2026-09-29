@@ -2,8 +2,9 @@
  * useTweaks
  *
  * Loads workspace-scoped tweaks into `tweaksAtom` and keeps them in sync via the
- * `tweaks:changed` broadcast (pushed after every mutation — the switch, a delete, or an
- * out-of-band edit to `tweak.json` that the config watcher saw).
+ * `tweaks:changed` broadcast. The config watcher is its one sender: every mutation pokes it —
+ * the switch, a delete, an agent's write — and an edit made outside the app it sees for
+ * itself.
  *
  * Like `useWebsites`, the atom is the ONLY state: consumers read `tweaksAtom` and there
  * is no duplicate local list to drift.

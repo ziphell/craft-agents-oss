@@ -155,7 +155,6 @@ export type {
   CreateTweakToolInput,
   UpdateTweakToolPatch,
   DeleteTweakToolResult,
-  ExportTweaksToolResult,
 } from './context.ts';
 
 export { createNodeFileSystem } from './context.ts';
@@ -201,7 +200,6 @@ export {
   handleCreateTweak,
   handleUpdateTweak,
   handleDeleteTweak,
-  handleExportTweaks,
 } from './handlers/index.ts';
 
 export type {
@@ -230,7 +228,6 @@ export type {
   CreateTweakArgs,
   UpdateTweakArgs,
   DeleteTweakArgs,
-  ExportTweaksArgs,
 } from './handlers/index.ts';
 
 // Tool definitions — single source of truth
@@ -264,7 +261,6 @@ export {
   CreateTweakSchema,
   UpdateTweakSchema,
   DeleteTweakSchema,
-  ExportTweaksSchema,
   // Descriptions
   TOOL_DESCRIPTIONS,
   // Registry

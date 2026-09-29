@@ -681,7 +681,16 @@ app.whenReady().then(async () => {
               sm.notifyConfigFileChange(workspaceRootPath, `websites/${slug}/website.json`)
             },
           })
-          sm.setWebsiteThumbnailer((req) => websiteThumbnailer.enqueue(req))
+          sm.setWebsiteThumbnailer((req, options) => websiteThumbnailer.enqueue({ ...req, force: options?.force }))
+          // The websites tools report a website's address, and asking for it is what
+          // names that website to this host for the run — the same call the app's own
+          // "open this website" path makes.
+          sm.setWebsiteOriginResolver(websiteOriginUrl)
+          // Tweaks are installed from here too: the browser window that runs them belongs to
+          // this process, and the injector lives beside it (see tweaks-injector.ts). The
+          // watcher calls this on every tweak write, so the registration a new document is
+          // given follows the folder rather than whatever was installed last.
+          sm.setTweaksInstaller(requestTweaksForWorkspace)
           return sm
         },
         bindRpcServer: (sm, server) => sm.setRpcServer(server),
@@ -722,9 +731,6 @@ app.whenReady().then(async () => {
             // The editor is a vendored dependency of the app, not of a workspace, so
             // this answer is install-wide and needs no arguments.
             drawioOrigin: drawioOriginUrl,
-            // The app runs tweaks in its own browser window; a switch flipped in the UI has to
-            // reach the page that is already open (see HandlerDeps).
-            onTweaksChanged: requestTweaksForWorkspace,
             oauthFlowStore: ofs,
             messagingRegistry: messagingHandle.registry,
           }

@@ -7,7 +7,7 @@
  */
 
 import { join, parse as parsePath } from 'path'
-import { existsSync, mkdirSync, rmSync } from 'fs'
+import { existsSync, rmSync } from 'fs'
 import {
   validateFilePath,
   getWorkspaceAllowedDirs,
@@ -69,6 +69,22 @@ const TAB_RAIL_WIDTH = 200
 const MAX_CONSOLE_LOG_ENTRIES = 500
 const MAX_NETWORK_LOG_ENTRIES = 500
 const MAX_DOWNLOAD_LOG_ENTRIES = 200
+/**
+ * How many of a window's downloads the chrome lists.
+ *
+ * The list exists to answer "where did that go", which is a question about the last few
+ * minutes, not about everything a workspace has ever downloaded — the whole log is kept
+ * (`downloadsByWorkspace`) and the agent's `downloads` command reads it.
+ */
+const TOOLBAR_DOWNLOAD_LIST_LIMIT = 8
+/**
+ * How often a download in progress may push a toolbar update.
+ *
+ * Electron reports progress on every chunk, and the chrome only draws a percentage: a
+ * push per chunk would serialize the whole toolbar state hundreds of times for a file
+ * nobody is watching. The start and the end push at once; the middle is sampled.
+ */
+const TOOLBAR_DOWNLOAD_PROGRESS_MS = 300
 const DEFAULT_WAIT_TIMEOUT_MS = 10_000
 const DEFAULT_WAIT_POLL_MS = 100
 /** How many goes a capture gets where the tab already has a surface to copy. */
@@ -220,6 +236,13 @@ const TOOLBAR_CHANNELS = {
    * makes that true.
    */
   RECORD_CHUNK: 'browser-toolbar:record-chunk',
+  /**
+   * Show a finished download where it landed.
+   *
+   * The chrome knows a file's name and path from the state push; revealing it is the one
+   * thing it cannot do itself, because a reveal is the OS's.
+   */
+  DOWNLOAD_REVEAL: 'browser-toolbar:download-reveal',
 } as const
 export const BROWSER_PANE_SESSION_PARTITION = 'persist:browser-pane'
 const SESSION_PARTITION = BROWSER_PANE_SESSION_PARTITION
@@ -398,7 +421,6 @@ interface BrowserTab {
   themeObserverToken: string | null
   consoleLogs: BrowserConsoleEntry[]
   networkLogs: BrowserNetworkEntry[]
-  downloads: BrowserDownloadEntry[]
 }
 
 /** The bar's word when the caller brings none — see `armOverlay`'s own default. */
@@ -723,8 +745,27 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   private partitionObserversInitialized = false
   private inFlightRequestsByWebContentsId = new Map<number, number>()
   private lastNetworkActivityByWebContentsId = new Map<number, number>()
+  /**
+   * The downloads of each **workspace**, oldest first.
+   *
+   * Keyed by the workspace rather than kept on a tab, and that is the whole reason this
+   * is not a field of `BrowserTab`: a download does not belong to the tab it was started
+   * from. The person closes the window while a file is still arriving, the file keeps
+   * arriving (the *session* owns a download, not the view that asked for it), and the
+   * next window in this workspace — a new instance, new tabs — still has to be able to say
+   * what happened and where it went. Hung on the tab it would have gone with the tab,
+   * which is exactly the silence the chrome's downloads button exists to end.
+   *
+   * One writer: `will-download`. Two readers of the same list: the chrome
+   * (`pushToolbarState`) and the agent's `downloads` command (`getDownloads`). Neither of
+   * them filters by tab, because neither of them means a tab — a window, and the
+   * workspace behind it, is the unit both are asking about.
+   *
+   * `null` is its own bucket, the same convention windows use: a window with no workspace
+   * context is not a window of anybody's workspace.
+   */
+  private downloadsByWorkspace = new Map<string | null, BrowserDownloadEntry[]>()
   private windowManager: WindowManager | null = null
-  private sessionPathResolver: ((sessionId: string) => string | null) | null = null
   /**
    * What to call a conversation, for the tab rail's group headers. Injected
    * (see main/index.ts).
@@ -774,10 +815,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   setWindowManager(windowManager: WindowManager): void {
     this.windowManager = windowManager
-  }
-
-  setSessionPathResolver(fn: (sessionId: string) => string | null): void {
-    this.sessionPathResolver = fn
   }
 
   setSessionLabelResolver(fn: (sessionId: string) => string | null): void {
@@ -856,7 +893,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       themeObserverToken: null,
       consoleLogs: [],
       networkLogs: [],
-      downloads: [],
     }
   }
 
@@ -3008,9 +3044,17 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     } as any)
   }
 
-  async getDownloads(id: string, options?: BrowserDownloadOptions, tabId?: string): Promise<BrowserDownloadEntry[]> {
+  /**
+   * What this window's workspace has downloaded — `downloads` the command.
+   *
+   * No tab, deliberately: a download is not the tab's (see `downloadsByWorkspace`), so
+   * there is nothing to filter and `--tab` names nothing here. The window is resolved
+   * because a caller reaches downloads through one, and its workspace is what the list
+   * belongs to.
+   */
+  async getDownloads(id: string, options?: BrowserDownloadOptions): Promise<BrowserDownloadEntry[]> {
     const instance = this.requireAliveInstance(id)
-    const downloads = this.tabOf(instance, tabId).downloads
+    const downloads = this.downloadsFor(instance.workspaceId)
 
     const action = options?.action ?? 'list'
     const limit = Math.max(1, Math.min(200, Number(options?.limit ?? 20)))
@@ -4627,6 +4671,20 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     return labels
   }
 
+  /**
+   * The window's downloads, newest first, for the chrome's list.
+   *
+   * Read from the workspace's log — the same list `getDownloads` answers the agent with,
+   * not a copy of it — and reversed for drawing: the log is written oldest-first, and a
+   * person asking "what just happened" reads the top of the list. Which tab any of them
+   * came from is not part of the answer, because a download is not the tab's.
+   */
+  private recentDownloads(instance: BrowserInstance): BrowserDownloadEntry[] {
+    return this.downloadsFor(instance.workspaceId)
+      .slice(-TOOLBAR_DOWNLOAD_LIST_LIMIT)
+      .reverse()
+  }
+
   private pushToolbarState(instance: BrowserInstance): void {
     if (instance.window.isDestroyed() || instance.toolbarView.webContents.isDestroyed()) return
     const state = {
@@ -4678,6 +4736,16 @@ export class BrowserPaneManager implements IBrowserPaneManager {
        * is finished would be worse than no button.
        */
       recording: this.tabRecorder.state(),
+      /**
+       * The window's recent downloads, newest first.
+       *
+       * Here because a download used to be answered with nothing at all: the file was
+       * written and the person was told neither that it happened nor where it went. The
+       * entries are the workspace's, so a window that is opened later in the same
+       * workspace is given what happened while it was away — and the agent reads the very
+       * same list through `getDownloads`.
+       */
+      downloads: this.recentDownloads(instance),
     }
     this.sendToChrome(instance, TOOLBAR_CHANNELS.STATE_UPDATE, state)
   }
@@ -4910,6 +4978,37 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     ipcMain.on(TOOLBAR_CHANNELS.RECORD_CHUNK, (_event, _instanceId: string, chunk: Uint8Array) => {
       if (chunk) this.tabRecorder.append(chunk)
+    })
+
+    /**
+     * Show a finished download where it landed — the row's click.
+     *
+     * Revealed rather than opened: what the person needs to know is **where** it went
+     * (the file may be one of several, or something to hand on rather than to read), and
+     * the file manager answers that without starting an application on it.
+     *
+     * The path is checked against this window's own download log rather than trusted:
+     * the chrome is the only caller, but this ends in a path handed to the OS, so what is
+     * revealable is exactly what this window wrote down.
+     */
+    ipcMain.handle(TOOLBAR_CHANNELS.DOWNLOAD_REVEAL, async (_event, instanceId: string, savePath: string) => {
+      const inst = findInstance(instanceId)
+      if (!inst || typeof savePath !== 'string' || !savePath) return
+
+      const known = this.downloadsFor(inst.workspaceId).some((entry) => entry.savePath === savePath)
+      if (!known) {
+        mainLog.warn(`[browser-pane] download reveal refused id=${inst.id} reason=not_a_recorded_download`)
+        return
+      }
+
+      if (!existsSync(savePath)) {
+        // Moved or deleted since: worth a line, and not worth an error the chrome would
+        // have to draw — the download itself is unchanged by it.
+        mainLog.warn(`[browser-pane] download reveal: nothing at ${savePath}`)
+        return
+      }
+
+      shell.showItemInFolder(savePath)
     })
 
     mainLog.info('[browser-pane] Toolbar IPC handlers registered')
@@ -5346,7 +5445,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       case 'getDownloads': {
         const [instanceId, options] = args as [string, BrowserDownloadOptions | undefined]
         this.requireInstanceInWorkspace(instanceId, workspaceId)
-        return this.getDownloads(instanceId, options, commandTabId)
+        // No tab: downloads belong to the workspace the window is of (`getDownloads`).
+        return this.getDownloads(instanceId, options)
       }
       case 'uploadFile':
         throw new CodedError('BROWSER_REMOTE_UPLOAD_NOT_SUPPORTED',
@@ -5676,35 +5776,33 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
   }
 
-  private pushDownloadLog(tab: BrowserTab, entry: BrowserDownloadEntry): void {
-    tab.downloads.push(entry)
-    if (tab.downloads.length > MAX_DOWNLOAD_LOG_ENTRIES) {
-      tab.downloads.splice(0, tab.downloads.length - MAX_DOWNLOAD_LOG_ENTRIES)
-    }
+  /**
+   * One workspace's downloads, oldest first.
+   *
+   * A fresh array for a workspace that has none, so every reader can take it as a list
+   * without asking whether there is one — the chrome draws nothing for an empty list, and
+   * the agent's `downloads` prints `Downloads (0)`.
+   */
+  private downloadsFor(workspaceId: string | null): BrowserDownloadEntry[] {
+    return this.downloadsByWorkspace.get(workspaceId) ?? []
   }
 
   /**
-   * Where a tab's downloads are filed: the directory of the conversation that tab belongs
-   * to, else the OS downloads folder.
+   * The one place a download is written down.
    *
-   * Asked of **the tab** — whoever works from it (`cursorOf`, sticky) or opened it — because
-   * a download is the tab's, not the window's: two conversations sharing one window file
-   * their downloads apart. A tab several conversations work from files
-   * them by the first of them (第二十四轮) — the alternative is a folder per conversation that
-   * nobody asked to keep apart.
+   * The caller keeps the object it passes and its own `updated`/`done` handlers mutate
+   * **that same object** in place (progress while it arrives, then the final state and
+   * path), so a download has one description and there is no second copy to keep in step.
+   * `MAX_DOWNLOAD_LOG_ENTRIES` is the ceiling: past it the oldest go, which is what keeps
+   * a workspace that browses for weeks bounded.
    */
-  private resolveDownloadsDir(tab: BrowserTab): string {
-    const sessionId = tab.cursorOf[0] ?? tab.belongsTo?.sessionId
-    if (sessionId && this.sessionPathResolver) {
-      const sessionPath = this.sessionPathResolver(sessionId)
-      if (sessionPath) {
-        const dir = join(sessionPath, 'downloads')
-        mkdirSync(dir, { recursive: true })
-        return dir
-      }
+  private pushDownloadLog(workspaceId: string | null, entry: BrowserDownloadEntry): void {
+    const downloads = this.downloadsFor(workspaceId)
+    downloads.push(entry)
+    if (downloads.length > MAX_DOWNLOAD_LOG_ENTRIES) {
+      downloads.splice(0, downloads.length - MAX_DOWNLOAD_LOG_ENTRIES)
     }
-    // Nobody's tab — the person's own browsing — goes to the OS downloads folder.
-    return app.getPath('downloads')
+    this.downloadsByWorkspace.set(workspaceId, downloads)
   }
 
   private uniqueFilename(dir: string, filename: string): string {
@@ -5779,18 +5877,23 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       const located = this.findTabByWebContentsId(wcId)
       if (!located) return
       const instance = located.instance
-      // The tab that started it: a download keeps reporting to the tab it came from,
-      // even after the person has moved to another one.
-      const tab = located.tab
 
-      // Auto-save: set a deterministic path so Electron doesn't show a native dialog
-      const downloadsDir = this.resolveDownloadsDir(tab)
+      // Auto-save: set a deterministic path so Electron doesn't show a native dialog.
+      //
+      // The **person's** downloads folder, whoever's tab asked for the file. A download is
+      // not the tab's (see `downloadsByWorkspace`): it outlives the tab, the window rather
+      // than a tab is what lists it, and the one thing a tab could still say about it —
+      // whose work was on screen when it started — is a fact about a click, not about the
+      // file. The person is standing right there, and a conversation gets the file the way
+      // it gets any other: by being told the path (`savePath`, in the reply and in the
+      // record). This is the rule the record button already follows, for the same reason.
+      const downloadsDir = app.getPath('downloads')
       const filename = this.uniqueFilename(downloadsDir, item.getFilename())
       const savePath = join(downloadsDir, filename)
       item.setSavePath(savePath)
 
       const downloadId = `dl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-      const started: BrowserDownloadEntry = {
+      const entry: BrowserDownloadEntry = {
         id: downloadId,
         timestamp: Date.now(),
         url: item.getURL(),
@@ -5801,26 +5904,41 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         mimeType: item.getMimeType() || 'application/octet-stream',
         savePath,
       }
-      this.pushDownloadLog(tab, started)
+      // The workspace's record, not the tab's: hand this object to the workspace log and
+      // keep the same reference for the handlers below, so progress is written straight
+      // into the entry the chrome and the agent are already reading.
+      this.pushDownloadLog(instance.workspaceId, entry)
+      // The person clicked, so the bar has to answer: the button appears, and it carries
+      // the file that is being fetched while it happens.
+      this.pushToolbarState(instance)
 
+      let lastProgressPush = 0
       const onUpdated = (_e: Electron.Event, state: string) => {
-        const latest = tab.downloads.find((d) => d.id === downloadId)
-        if (!latest) return
-        latest.bytesReceived = item.getReceivedBytes()
-        latest.totalBytes = item.getTotalBytes()
-        if (state === 'interrupted') latest.state = 'interrupted'
+        entry.bytesReceived = item.getReceivedBytes()
+        entry.totalBytes = item.getTotalBytes()
+        if (state === 'interrupted') entry.state = 'interrupted'
+
+        const now = Date.now()
+        if (now - lastProgressPush >= TOOLBAR_DOWNLOAD_PROGRESS_MS) {
+          lastProgressPush = now
+          this.pushToolbarState(instance)
+        }
       }
 
       item.on('updated', onUpdated)
 
       item.once('done', (_e, state) => {
         item.removeListener('updated', onUpdated)
-        const latest = tab.downloads.find((d) => d.id === downloadId)
-        if (!latest) return
-        latest.bytesReceived = item.getReceivedBytes()
-        latest.totalBytes = item.getTotalBytes()
-        latest.savePath = item.getSavePath()
-        latest.state = state === 'completed' ? 'completed' : state === 'cancelled' ? 'cancelled' : 'interrupted'
+        entry.bytesReceived = item.getReceivedBytes()
+        entry.totalBytes = item.getTotalBytes()
+        entry.savePath = item.getSavePath()
+        entry.state = state === 'completed' ? 'completed' : state === 'cancelled' ? 'cancelled' : 'interrupted'
+        // Where it is and whether it arrived — the half a progress bar cannot say. Pushed
+        // for the window that is up, if any: when the person closed it while this was
+        // still arriving the push is dropped (`pushToolbarState` returns early), and the
+        // entry is left in the workspace's log for the next window of that workspace to
+        // report — which is the whole reason the log is not the tab's.
+        this.pushToolbarState(instance)
       })
     })
   }

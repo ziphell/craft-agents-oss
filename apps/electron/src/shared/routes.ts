@@ -196,11 +196,8 @@ export const routes = {
         ? `prototypes/prototype/${prototypeSlug}` as const
         : 'prototypes' as const,
 
-    /** Websites view (full-width library grid, or one website's embedded render) */
-    websites: (websiteSlug?: string) =>
-      websiteSlug
-        ? `websites/website/${websiteSlug}` as const
-        : 'websites' as const,
+    /** Websites view — the full-width library grid is the whole navigator */
+    websites: () => 'websites' as const,
 
     /** Tweaks view (library list, or one tweak's detail page) */
     tweaks: (tweakSlug?: string) =>

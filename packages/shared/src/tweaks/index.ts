@@ -43,6 +43,14 @@ export {
   writeTweakHits,
 } from './targets.ts'
 
+// When a tweak's javascript runs — the browser's own three moments, declared in the file
+export {
+  TWEAK_RUN_AT_VALUES,
+  TWEAK_RUN_AT_DEFAULT,
+  tweakRunAt,
+  type TweakRunAt,
+} from './run-at.ts'
+
 // The shape a tweak is shown in — shared by the agent's tools and the app's own pages
 export {
   toTweakDetails,

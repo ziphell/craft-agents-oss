@@ -1045,13 +1045,13 @@ export interface PrototypesNavigationState {
 /**
  * Websites navigation state
  *
- * Bare `websites` (details: null) shows the full-width library grid — it never
- * auto-selects a website. Like board mode, the middle navigator collapses to
- * zero width while a websites route is active.
+ * The full-width library grid is the whole navigator: a website has no
+ * second-level page (it opens in the browser window), so there is no detail to
+ * select. Like board mode, the middle navigator collapses to zero width while a
+ * websites route is active.
  */
 export interface WebsitesNavigationState {
   navigator: 'websites'
-  details: { type: 'website'; websiteSlug: string } | null
   rightSidebar?: RightSidebarPanel
 }
 
@@ -1155,9 +1155,6 @@ export const getNavigationStateKey = (state: NavigationState): string => {
     return 'prototypes'
   }
   if (state.navigator === 'websites') {
-    if (state.details?.type === 'website') {
-      return `websites/website/${state.details.websiteSlug}`
-    }
     return 'websites'
   }
   if (state.navigator === 'tweaks') {
@@ -1235,14 +1232,7 @@ export const parseNavigationStateKey = (key: string): NavigationState | null => 
   }
 
   // Handle websites
-  if (key === 'websites') return { navigator: 'websites', details: null }
-  if (key.startsWith('websites/website/')) {
-    const websiteSlug = key.slice(17)
-    if (websiteSlug) {
-      return { navigator: 'websites', details: { type: 'website', websiteSlug } }
-    }
-    return { navigator: 'websites', details: null }
-  }
+  if (key === 'websites') return { navigator: 'websites' }
 
   // Handle tweaks
   if (key === 'tweaks') return { navigator: 'tweaks', details: null }
