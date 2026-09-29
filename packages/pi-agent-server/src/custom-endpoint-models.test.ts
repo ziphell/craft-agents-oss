@@ -139,9 +139,25 @@ describe('buildCustomEndpointModelDef – image input', () => {
 
   // Regression: craft-agents-oss#1022 — strict OpenAI-compatible gateways 400 on the
   // `store` param. supportsStore:false makes the pi-ai driver omit it entirely.
-  it('disables the store param for openai-completions endpoints', () => {
+  // The `developer` role gets the same treatment: pi-ai only falls back to `system`
+  // for hosts it recognizes as non-standard, so an arbitrary endpoint needs the flag
+  // or every request fails with "developer is not one of ['system', ...]".
+  it('defaults openai-completions compat to the lowest common denominator', () => {
     const model = buildCustomEndpointModelDef('gpt-model', undefined, 'openai-completions')
-    expect((model as { compat?: { supportsStore?: boolean } }).compat).toEqual({ supportsStore: false })
+    expect((model as { compat?: unknown }).compat).toEqual({
+      supportsStore: false,
+      supportsDeveloperRole: false,
+    })
+  })
+
+  it('lets a user-written developer-role statement win over that default', () => {
+    const model = buildCustomEndpointModelDef(
+      'openai-model',
+      { compat: { supportsDeveloperRole: true } },
+      'openai-completions',
+    )
+    expect((model as { compat?: { supportsDeveloperRole?: boolean } }).compat?.supportsDeveloperRole)
+      .toBe(true)
   })
 
   it('does not set store compat for anthropic-messages endpoints', () => {

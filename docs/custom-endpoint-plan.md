@@ -181,6 +181,7 @@ SDK 实际接受的定义（`node_modules/@earendil-works/pi-coding-agent/dist/c
 - **一个投影点**：`toCustomEndpointModels(connection.models)` 是唯一的"盘上形状 → IPC 形状"转换，Pi driver 与 SessionManager 都调它，`runtime-config.ts:normalizeCustomModels` 也改用它算签名。没有参数的条目仍塌成裸 id，IPC 载荷不变大。
 - **一处合并实现**：`packages/shared/src/config/storage.ts:applyLlmConnectionUpdate`。setup 处理器用它算 pending connection——不能用展开，展开会把 `null` 留进要落盘的对象（schema 拒 `null`）；同时把那 4 处"显式 `undefined` 表示清空"改成了 `null`。
 - provider 级 `headers` 一并落地：`CustomEndpointConfig.headers` + `validators.ts:CustomEndpointSchema` + `registerProvider` 透传。
+- **`openai-completions` 的默认 `compat` 取"格式最小公约数"**：`{ supportsStore: false, supportsDeveloperRole: false }`（`buildCustomEndpointModelDef`）。两者都是 OpenAI 自家平台的东西——`store` 是多余参数，`developer` 是多余 role（pi-ai 只对它认识的非标准 host 降级回 `system`，未知 host 会被当成标准 OpenAI，于是发 `developer`；多数网关直接 400）。与能力位默认 true 的取向相反是有意的：能力猜错只是少个功能，格式猜错是硬 400。用户写 `compat` 仍可覆盖回 `true`。
 
 ### 阶段 3 · 可见性 —— **已落地**
 

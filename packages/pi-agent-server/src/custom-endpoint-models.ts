@@ -92,11 +92,23 @@ export function applyModelOverrides<T extends object>(
  * **true** (permissive) — a custom endpoint is assumed capable until the user
  * says otherwise with an explicit `false`.
  *
- * For `openai-completions` endpoints we set `compat.supportsStore = false` so the
- * pi-ai driver omits the OpenAI-platform-specific `store` param entirely. Third-party
- * OpenAI-compatible gateways gain nothing from `store`, and strict ones reject unknown
- * params with a 400 — which made those connections unusable. See craft-agents-oss#1022.
- * A user-written `compat` still wins over that default.
+ * For `openai-completions` endpoints we turn off the two parts of the wire format
+ * that belong to OpenAI's own platform, because an arbitrary gateway either
+ * ignores them or rejects them outright:
+ *
+ * - `compat.supportsStore = false` omits the OpenAI-platform-only `store` param.
+ *   Third-party gateways gain nothing from `store`, and strict ones reject unknown
+ *   params with a 400 — which made those connections unusable. See craft-agents-oss#1022.
+ * - `compat.supportsDeveloperRole = false` sends the system prompt as a `system`
+ *   message rather than OpenAI's newer `developer` role. pi-ai only downgrades
+ *   the role for hosts it recognizes as non-standard; an arbitrary endpoint is
+ *   assumed OpenAI-like and would receive `developer`, which most gateways reject
+ *   ("developer is not one of ['system', 'assistant', 'user', 'tool', 'function']").
+ *
+ * Both are the **lowest common denominator of the format**, unlike the capability
+ * flags above which default to permissive — a wrong capability guess costs a
+ * feature, a wrong format guess is a hard 400. A user-written `compat` still wins
+ * over either default (see {@link applyModelOverrides}).
  */
 export function buildCustomEndpointModelDef(
   id: string,
@@ -112,7 +124,9 @@ export function buildCustomEndpointModelDef(
       cost: { ...ZERO_COST },
       contextWindow: CUSTOM_ENDPOINT_MODEL_DEFAULTS.contextWindow,
       maxTokens: CUSTOM_ENDPOINT_MODEL_DEFAULTS.maxTokens,
-      ...(api === 'openai-completions' ? { compat: { supportsStore: false } } : {}),
+      ...(api === 'openai-completions'
+        ? { compat: { supportsStore: false, supportsDeveloperRole: false } }
+        : {}),
     },
     overrides,
   )
