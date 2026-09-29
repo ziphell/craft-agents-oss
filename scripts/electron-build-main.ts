@@ -4,17 +4,41 @@
  */
 
 import { spawn } from "bun";
-import { existsSync, readFileSync, statSync, mkdirSync } from "fs";
-import { join } from "path";
+import { existsSync, readFileSync, statSync, mkdirSync, copyFileSync } from "fs";
+import { dirname, join } from "path";
 
 const ROOT_DIR = join(import.meta.dir, "..");
 const DIST_DIR = join(ROOT_DIR, "apps/electron/dist");
 const OUTPUT_FILE = join(DIST_DIR, "main.cjs");
 const INTERCEPTOR_SOURCE = join(ROOT_DIR, "packages/shared/src/unified-network-interceptor.ts");
 const INTERCEPTOR_OUTPUT = join(DIST_DIR, "interceptor.cjs");
+/**
+ * The win `files:` section loads the interceptor (and its sibling modules) from
+ * `apps/electron/packages/shared/src/` — a staged copy, not the workspace
+ * source. Staging keeps `electron:dist:win` self-sufficient; without it the
+ * package only has whatever `build-win.ps1` copied on an earlier run.
+ */
+const INTERCEPTOR_STAGING_DIR = join(ROOT_DIR, "apps/electron/packages/shared/src");
+const INTERCEPTOR_MODULES = [
+  "unified-network-interceptor.ts",
+  "interceptor-common.ts",
+  "feature-flags.ts",
+  "interceptor-request-utils.ts",
+];
 const SESSION_TOOLS_CORE_DIR = join(ROOT_DIR, "packages/session-tools-core");
 const PI_AGENT_SERVER_DIR = join(ROOT_DIR, "packages/pi-agent-server");
 const PI_AGENT_SERVER_OUTPUT = join(PI_AGENT_SERVER_DIR, "dist/index.js");
+/**
+ * Where the packager reads the subprocess from.
+ *
+ * `electron-builder.yml` ships `resources/pi-agent-server/**` (relative to
+ * `apps/electron`) and the packaged app resolves exactly that file
+ * (`runtime-resolver.ts`: `<appRoot>/resources/pi-agent-server/index.js`).
+ * Staging it here — right after the build — means `electron:build` and every
+ * `electron:dist:*` script package the bundle they just produced, instead of
+ * whatever copy happened to be left in `resources/` by an earlier run.
+ */
+const PI_AGENT_SERVER_STAGED = join(ROOT_DIR, "apps/electron/resources/pi-agent-server/index.js");
 const WA_WORKER_DIR = join(ROOT_DIR, "packages/messaging-whatsapp-worker");
 const WA_WORKER_SOURCE = join(WA_WORKER_DIR, "src/worker.ts");
 const WA_WORKER_OUTPUT = join(WA_WORKER_DIR, "dist/worker.cjs");
@@ -164,7 +188,19 @@ async function buildInterceptor(): Promise<void> {
     process.exit(1);
   }
 
-  console.log("✅ Interceptor built successfully");
+  // Stage the TS sources the packaged app loads at runtime (electron-builder's
+  // `files:` list references them under apps/electron/packages/shared/src/).
+  mkdirSync(INTERCEPTOR_STAGING_DIR, { recursive: true });
+  for (const moduleFile of INTERCEPTOR_MODULES) {
+    const source = join(ROOT_DIR, "packages/shared/src", moduleFile);
+    if (!existsSync(source)) {
+      console.error("❌ Interceptor module not found at", source);
+      process.exit(1);
+    }
+    copyFileSync(source, join(INTERCEPTOR_STAGING_DIR, moduleFile));
+  }
+
+  console.log("✅ Interceptor built and staged successfully");
 }
 
 // Build the Pi Agent Server (subprocess for Pi SDK sessions)
@@ -213,7 +249,12 @@ async function buildPiAgentServer(): Promise<void> {
     process.exit(1);
   }
 
-  console.log("✅ Pi agent server built successfully");
+  // Stage it where electron-builder copies it from, so the installer ships this
+  // build. Without this step `electron:dist:win` (which does not run
+  // build-win.ps1) packages a stale copy — or nothing at all.
+  mkdirSync(dirname(PI_AGENT_SERVER_STAGED), { recursive: true });
+  copyFileSync(PI_AGENT_SERVER_OUTPUT, PI_AGENT_SERVER_STAGED);
+  console.log("✅ Pi agent server built and staged to", PI_AGENT_SERVER_STAGED);
 }
 
 // Build the WhatsApp worker (Baileys-backed subprocess spawned by WhatsAppAdapter)

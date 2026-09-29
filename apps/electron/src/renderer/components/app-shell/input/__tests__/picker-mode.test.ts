@@ -19,16 +19,40 @@ function input(overrides: Partial<PickerModeInput> = {}): PickerModeInput {
 
 describe('derivePickerMode', () => {
   // -------------------------------------------------------------------------
-  // Precedence: unavailable wins
+  // connectionUnavailable — the session's connection was deleted. The picker
+  // stays usable while another connection exists (the session is re-pointed by
+  // an explicit pick); it only dead-ends when there is nothing left to pick.
   // -------------------------------------------------------------------------
 
-  test('connectionUnavailable beats every other flag', () => {
+  test('connectionUnavailable + other connections → switcher (re-pick)', () => {
     expect(
       derivePickerMode(
         input({
           connectionUnavailable: true,
           connectionDefaultModel: 'mistral-7b',
           connectionCount: 5,
+        }),
+      ),
+    ).toBe('switcher')
+  })
+
+  test('connectionUnavailable + a single remaining connection → switcher', () => {
+    expect(
+      derivePickerMode(
+        input({
+          connectionUnavailable: true,
+          connectionCount: 1,
+        }),
+      ),
+    ).toBe('switcher')
+  })
+
+  test('connectionUnavailable + no connections configured → unavailable (dead end)', () => {
+    expect(
+      derivePickerMode(
+        input({
+          connectionUnavailable: true,
+          connectionCount: 0,
         }),
       ),
     ).toBe('unavailable')

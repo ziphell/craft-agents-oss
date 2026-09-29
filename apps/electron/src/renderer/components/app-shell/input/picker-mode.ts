@@ -6,13 +6,18 @@
  * branch in agreement, and makes the rule trivially unit-testable.
  *
  * Precedence (highest first):
- *   1. unavailable     — current connection is gone / error state
- *   2. switcher        — more than one connection configured: hierarchical
- *                        provider → connection → models list. Available at any
- *                        point in a session, including after the first message,
- *                        because switching model/connection mid-conversation is
- *                        an explicit user action (the session's connection pin
- *                        only blocks *implicit* rewrites).
+ *   1. switcher        — more than one connection configured, or the session's
+ *                        connection is gone but other connections remain:
+ *                        hierarchical provider → connection → models list.
+ *                        Available at any point in a session, including after
+ *                        the first message, because switching model/connection
+ *                        mid-conversation is an explicit user action (the
+ *                        session's connection pin only blocks *implicit*
+ *                        rewrites). It is also how a session whose connection
+ *                        was deleted is re-pointed — the pin died with the
+ *                        connection, so the user picks the replacement.
+ *   2. unavailable     — the session's connection is gone and there is nothing
+ *                        left to pick (no connections configured): dead end.
  *   3. locked-single   — `pi_compat` connection with ≤1 model and only one
  *                        connection configured: nothing else to pick, so show
  *                        the single disabled row.
@@ -34,7 +39,13 @@ export interface PickerModeInput {
 }
 
 export function derivePickerMode(input: PickerModeInput): PickerMode {
-  if (input.connectionUnavailable) return 'unavailable'
+  // The session's connection was removed. While another connection exists the
+  // picker stays usable: it lists them so the user re-points this session, the
+  // same explicit switch as any mid-session connection change. Only with no
+  // connections configured at all is there nothing to pick.
+  if (input.connectionUnavailable) {
+    return input.connectionCount > 0 ? 'switcher' : 'unavailable'
+  }
   if (input.connectionCount > 1) return 'switcher'
   if (input.connectionDefaultModel != null) return 'locked-single'
   return 'flat'

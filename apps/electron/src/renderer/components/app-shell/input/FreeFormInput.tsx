@@ -358,9 +358,10 @@ export function FreeFormInput({
   // Decide which of the four picker UIs to render. `switcher` wins whenever more
   // than one connection exists — including mid-session, since a conversation can
   // move to another connection's models (the session pin only blocks implicit
-  // rewrites, see SessionManager.setSessionConnection). The `switcher` over
-  // `locked-single` precedence also keeps a single-model pi_compat connection
-  // from being a dead end (#727).
+  // rewrites, see SessionManager.setSessionConnection). It also covers the case
+  // where the session's connection was deleted but others remain: the user picks
+  // the replacement here. The `switcher` over `locked-single` precedence keeps a
+  // single-model pi_compat connection from being a dead end (#727).
   const pickerMode = derivePickerMode({
     connectionUnavailable,
     connectionDefaultModel,
@@ -2140,6 +2141,7 @@ export function FreeFormInput({
                       <>
                         <AlertCircle className="h-3.5 w-3.5 shrink-0" />
                         {t('common.unavailable')}
+                        <ChevronDown className="h-3 w-3 opacity-50 shrink-0" />
                       </>
                     ) : (
                       <>

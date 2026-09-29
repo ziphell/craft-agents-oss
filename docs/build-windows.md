@@ -1,6 +1,6 @@
 # Windows 安装包构建指南（Craft Agents）
 
-> 结论：**正式出包直接用 `build-win.ps1`**（一键完成所有 staging）；`electron:dist:win` 快捷指令只做"构建 + 打包"，**不会**准备前置文件，容易产出缺 bun / 缺 pi 服务的包。
+> 结论：**正式出包直接用 `build-win.ps1`**（一键完成所有 staging）；`electron:dist:win` 快捷指令只做"构建 + 打包"。自 2026-09-29 起，`electron:build:main` 会把刚构建的 pi-agent-server 与 interceptor 源码**自动 stage** 到 electron-builder 读取的位置（见第 1 节表格），所以它不会再打进旧的 pi 子进程；但 `vendor/bun` 与 SDK native binary 仍**只有 `build-win.ps1` 会准备**，缺了会产出起不了 Pi agent 的包。
 
 ## 1. 目录要求（重点）
 
@@ -9,9 +9,9 @@ electron-builder 的 `files` / `extraResources` 相对路径**都以配置文件
 | 路径（相对 `apps/electron/`） | 用途 | 谁准备 |
 | --- | --- | --- |
 | `dist/**/*` | main.cjs / preload / renderer | `electron:build` |
-| `resources/pi-agent-server/index.js` | Pi 子进程（win 段 extraResources） | 只有 `build-win.ps1` |
+| `resources/pi-agent-server/index.js` | Pi 子进程（win 段 extraResources） | `electron:build:main` 自动 stage（同 build-win.ps1） |
 | `vendor/bun/bun.exe` | bun 运行时（extraResources，Pi 子进程依赖） | 只有 `build-win.ps1`（固定下载 bun-v1.3.9 baseline） |
-| `packages/shared/src/unified-network-interceptor.ts` 等 4 个 ts | interceptor（`files` 段） | 只有 `build-win.ps1` |
+| `packages/shared/src/unified-network-interceptor.ts` 等 4 个 ts | interceptor（`files` 段） | `electron:build:main` 自动 stage（同 build-win.ps1） |
 
 另外：
 
@@ -67,14 +67,12 @@ bun run electron:build   # main + preload + renderer + resources + assets（构�
 cd apps/electron && electron-builder --config electron-builder.yml --win
 ```
 
-**前提**：方式 B **不会**执行方式 A 的第 2/4/5/6/8 步。以下文件必须已存在（通常是你成功跑过一次 `build-win.ps1` 之后才满足）：
+**前提**：方式 B **不会**执行方式 A 的第 2/4/5 步（清目录、`bun install`、下载/校验 bun、stage SDK、拷 ripgrep）。pi-agent-server 与 interceptor 源码已由 `electron:build:main` 自动 stage，剩下的前置文件必须已存在（通常是你成功跑过一次 `build-win.ps1` 之后才满足）：
 
 - `apps\electron\vendor\bun\bun.exe`
 - `apps\electron\node_modules\@anthropic-ai\claude-agent-sdk-binary\claude.exe`
-- `apps\electron\resources\pi-agent-server\index.js`
-- `apps\electron\packages\shared\src\unified-network-interceptor.ts`（及另外 3 个依赖 ts）
 
-若缺 `vendor\bun` 或 `resources\pi-agent-server`，electron-builder 要么直接报路径错误，要么打出缺件的包 —— **运行时 Pi agent 无法启动**（见第 5 节）。
+若缺 `vendor\bun` 或 SDK binary，electron-builder 要么直接报路径错误，要么打出缺件的包 —— **运行时 Pi agent / Claude 无法启动**（见第 5 节）。
 
 ## 4. `electron-builder copy.yml`
 

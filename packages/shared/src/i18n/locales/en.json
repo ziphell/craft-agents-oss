@@ -169,7 +169,7 @@
   "chat.clickToOpen": "Click to open {{name}}",
   "chat.connectionDefault": "Connection default",
   "chat.connectionUnavailable": "Connection Unavailable",
-  "chat.connectionUnavailableDescription": "The connection used by this session has been removed. Create a new session to continue.",
+  "chat.connectionUnavailableDescription": "The connection this session used has been removed.",
   "chat.context": "Context",
   "chat.contextBadge": "Context badge",
   "chat.enterSessionName": "Enter session name...",

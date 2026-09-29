@@ -202,6 +202,7 @@ export function CompactModelSelector({
             <>
               <AlertCircle className="h-3.5 w-3.5" />
               <span>{t('common.unavailable')}</span>
+              <ChevronDown className="h-3 w-3 opacity-50 shrink-0" />
             </>
           ) : (
             <>
