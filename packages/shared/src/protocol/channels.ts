@@ -478,22 +478,6 @@ export const RPC_CHANNELS = {
     /** Workspace-scoped push after any mutation, carrying the summaries. */
     CHANGED: 'tweaks:changed',
   },
-  artifacts: {
-    /** Every artifact in a workspace, newest first. */
-    LIST: 'artifacts:list',
-    /** The conversations that wrote one artifact, derived from session history. */
-    ORIGINS: 'artifacts:origins',
-    /**
-     * A small drawn preview of one artifact, or null when none can be made.
-     *
-     * Drawn on the host because only it has the drawio engine, and it is expensive
-     * (a hidden window per call) — so the caller is a list row that shows its icon
-     * either way, and this is a refresh of a bonus, never a thing to block on.
-     */
-    THUMBNAIL: 'artifacts:thumbnail',
-    /** Workspace-scoped push when a `.drawio` changes on disk, carrying the fresh list. */
-    CHANGED: 'artifacts:changed',
-  },
   messaging: {
     // WhatsApp subprocess → Gateway (subprocess invokes on server)
     WA_REGISTER: 'messaging:wa:register',

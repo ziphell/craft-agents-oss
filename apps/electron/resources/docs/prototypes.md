@@ -1,10 +1,10 @@
 # Prototypes
 
-A prototype is a proposal you can read: a **folder** holding a specification — one markdown file or several — plus any material and any files the work is made of. It is not a running app and nothing renders it *for you* — what the workbench produces is a **specification** (the markdown files, each requirement a `## R-00x` heading) beside the files the work is made of, and a report of what the folder holds. An HTML file in the folder can still be opened in a browser: the person does it with the **open in browser** button on the preview its row shows, and you do it with `browser_tool navigate file:///…/cart.html` — it runs as a tab in the workspace's browser window, which is the surface your browser tools can then work on.
+A prototype is a proposal you can read: a **folder** holding a specification — one `*.spec.md` file per spec, plus an entry `spec.md` indexing them — plus any material and any files the work is made of. It is not a running app and nothing renders it *for you* — what the workbench produces is a **specification** (a `*.spec.md` file per spec) beside the files the work is made of, and a report of what the folder holds. An HTML file in the folder can still be opened in a browser: the person does it with the **open in browser** button on the preview its row shows, and you do it with `browser_tool navigate file:///…/cart.html` — it runs as a tab in the workspace's browser window, which is the surface your browser tools can then work on.
 
 Every command belongs to `prototype_tool` and carries no prefix. It acts on the prototype's **files** and drives no browser. Frames out of a recording — one the person made elsewhere, or one this window's own record button wrote to their downloads — are `video_tool sample <path>`'s: Chromium decodes it in a hidden window of its own. The browser surface itself (windows, tabs, refs, snapshots, input, console, network) is `browser_tool`'s and is documented in `~/.craft-agent/docs/browser-tools.md`.
 
-> **Quick start:** `list` shows what exists, `create <name>` makes a folder with a starter `PRD.md`, then write the requirements into its markdown (`## R-001 <what the requirement is>`) and the work's files beside it.
+> **Quick start:** `list` shows what exists, `create <name>` makes a folder with a starter `spec.md` index, then give each spec its own `*.spec.md` file (`cart-line.spec.md`) and put the work's files beside it.
 
 **Read this before your first `prototype_tool` command.** It is the whole guide: what a prototype is, how its files are laid out, and the full command reference.
 
@@ -12,10 +12,10 @@ Every command belongs to `prototype_tool` and carries no prefix. It acts on the 
 
 ## What a prototype is
 
-- **One folder, and the specification is the markdown in it.** The specification is one file or several — `prototypes/{slug}/PRD.md` is the conventional entry, and any other markdown file is read the same way, so a subject that outgrows the first file gets its own (`docs/features.md`). Everything else in the folder is the author's: the documents that make up the work, and material in any format (personas, a glossary, a screenshot, a spreadsheet). There is no rule about what may sit there and nothing enumerates or filters it.
-- **The id is what anything else refers to, and nothing claims an implementation.** A requirement is a heading in a markdown file whose id starts with `R-`, and that id is what a finding writes on its `requirements:` line to say which requirement it argues for. Nothing in the folder records what *implements* a requirement: the files beside the specification are the work, and a report that claimed to know which of them builds which requirement would be a second description of the work, going stale the moment a file changed. What the report answers is what the folder holds — the requirements, the files beside them, the findings — and where a document was renamed out from under a link. Documents point at each other with ordinary markdown links — navigation, and where an index pointing at several documents comes from (see "Linking documents").
+- **One folder, and the specification is one file per spec.** A spec is its own file, named `<name>.spec.md` (`cart-line.spec.md`, `docs/checkout.spec.md`) — one file, one spec, and the file's name is the spec's identity. `prototypes/{slug}/spec.md` is the conventional entry: an **index** whose name does not end in `.spec.md`, so it states no spec itself. Everything else in the folder is the author's: material in any format (personas, a glossary, a screenshot, a spreadsheet), the work's own files, and any other markdown — a research note, a `README.md` — which is material too, because being markdown is not what makes a spec. There is no rule about what may sit there and nothing enumerates or filters it.
+- **The file's name is the spec's stable name, and nothing claims an implementation.** A spec's identity is its path, so there is no id to keep in sync and no two documents can collide over one. Its **first heading** is the title (its name without `.spec.md` when it has none) and the rest of the file is the spec's prose. Nothing in the folder records what *implements* a spec: the files beside the specification are the work, and a report that claimed to know which of them builds which spec would be a second description of the work, going stale the moment a file changed. What the report answers is what the folder holds — the specs, the files beside them — and where a document was renamed out from under a link. Documents point at each other with ordinary markdown links — navigation, and where an index pointing at several documents comes from (see "Linking documents").
 - **Not a project.** Projects are separate containers that group sessions, tasks and shared assets; a prototype is never nested inside one. A prototype also **belongs to no project**: the same prototype can be worked on from conversations of different projects. A project may only note which prototypes its work touches — background information, never a binding.
-- **A bound session is told about its prototype up front.** When a conversation is bound to a prototype, a `<prototype_context>` block is injected into its system prompt describing that prototype's requirements and findings before the user says anything. This guide is the general model; the block is the specific state. **Binding is the person's and there is no command for it**: the prototype panel sets it, `create` binds what it made, and `--no-bind` declines to. A command without a slug uses this session's binding.
+- **A bound session is told about its prototype up front.** When a conversation is bound to a prototype, a `<prototype_context>` block is injected into its system prompt describing that prototype's specs before the user says anything. This guide is the general model; the block is the specific state. **Binding is the person's and there is no command for it**: the prototype panel sets it, `create` binds what it made, and `--no-bind` declines to. A command without a slug uses this session's binding.
 
 ---
 
@@ -23,32 +23,32 @@ Every command belongs to `prototype_tool` and carries no prefix. It acts on the 
 
 ```
 prototypes/{slug}/
-├── PRD.md                     the brief — one markdown file or several, a "## R-00x" heading per requirement
-├── docs/features.md           a subject that outgrew the first document — read the same way
+├── spec.md                    the entry — the index the specification is read from, not a spec
+├── cart-line.spec.md          a spec — one file each, its name its identity
+├── docs/checkout.spec.md      a spec in a subfolder — read the same way
 ├── cart.html                  the work's own files — any format, any number of them
 ├── cart.drawio                a diagram's source — a process file, not the brief's picture
 ├── cart.drawio.svg            the diagram itself, drawn from it — see "Diagrams in the brief"
-├── personas.md                material beside the brief, in any format
-└── research/                  what you learned: findings (F-001-….md)
+└── personas.md                material beside the specification, in any format
 ```
 
-**The filesystem says what exists.** There is no table, no index and nothing to declare: a file is a file, and the requirements are the `## R-00x` headings in the folder's markdown — in one document or several, flat or in a subfolder. `research/` is a folder like any other — listed with the rest of them, opened from there — and the one thing the tooling reads out of it is the findings (`research/*.md`, below).
+**The filesystem says what exists.** There is no table, no index and nothing to declare: a file is a file, and the specs are the `*.spec.md` files in the folder — flat or in a subfolder.
 
 ---
 
 ## Linking documents
 
-One document points at another with an ordinary markdown link, which is how a specification stays readable as it grows: the entry document states a requirement in a line and hands the detail to its own file.
+One document points at another with an ordinary markdown link, which is how a specification stays readable as it grows: the entry document indexes the specs and hands each one's detail to its own file.
 
 ```md
-## R-003 Checkout, in detail
+# Checkout, in detail
 
 The flow, the states and the error cases are in [the checkout document](docs/checkout.md).
 ```
 
 **Ordinary markdown, deliberately.** The link is the same link in every reader — a colleague's editor, GitHub, this app — because it *is* markdown. A syntax of this app's own would be a pair of stray brackets everywhere else, which is the same argument that made a diagram's picture plain `![]()` rather than a fence only this app draws.
 
-- **A relative destination is resolved against the document it is written in, then the folder** — `docs/checkout.md` written in `PRD.md`, or `../PRD.md` written in `docs/checkout.md`. Write the file's own name, extension and all.
+- **A relative destination is resolved against the document it is written in, then the folder** — `docs/checkout.md` written in `spec.md`, or `../spec.md` written in `docs/checkout.md`. Write the file's own name, extension and all.
 - **A link to a document names a file.** A destination the browser fetches on its own (`https:`, `mailto:`, `data:`), an absolute path, a `#section`, or a relative destination that names no file is not a document in this folder — it is left alone.
 - **A link is navigation, never a claim.** It says where to read next, and nothing about what the folder holds.
 - **A link that points at nothing is reported** — a target that stopped existing is exactly the silent failure an index has. A link written inside a code span or a fenced block is an example, not a link.
@@ -65,13 +65,13 @@ drawio_tool export cart.drawio --to cart.drawio.svg --editable
 ```
 
 ```md
-## R-002 The cart is priced at checkout
+# The cart is priced at checkout
 
 ![The cart](cart.drawio.svg)
 ```
 
 - **The brief shows it with ordinary markdown image syntax, never a preview block.** A `drawio-preview` fence is this app's own construct — a JSON spec the app knows how to draw — so a brief carrying one is a document only this app can read: everywhere else (a colleague, GitHub, an editor) the diagram is a block of JSON where the picture should be. `![…](…)` is the same picture in every reader, and it resolves against the brief's own folder, so the file beside the brief is the whole of what the picture needs.
-- **A diagram declares no requirement.** Nothing in the folder claims anything about the work — not a picture, not a script — so which requirement a diagram is about is said by **where it sits in the brief**, and nowhere else. The `.drawio` and its exported `.drawio.svg` therefore need no annotation of ours in them: what they are is a drawing, read where the brief shows it.
+- **A diagram declares no spec.** Nothing in the folder claims anything about the work — not a picture, not a script — so which spec a diagram is about is said by **where it sits in the brief**, and nowhere else. The `.drawio` and its exported `.drawio.svg` therefore need no annotation of ours in them: what they are is a drawing, read where the brief shows it.
 - **`.drawio.svg` is the one name here that means something** — a name you give, not a rule anything enforces. `.svg` is what makes a reader draw it as a picture; `drawio` in front is what tells a render that can be regenerated from a picture somebody drew by hand.
 - **`--editable` rather than a plain `svg`, because that export still carries its own document.** The picture alone opens in draw.io and can be edited, which is what is otherwise lost when the `.drawio` it came from is not what gets handed over.
 - **The `.drawio` is a process file.** It is what you edit — the app's diagram editor, or draw.io itself — and the brief does not name it. It stays in the folder, because nothing here hides a file; it is simply not the artifact the brief is read from.
@@ -80,43 +80,29 @@ drawio_tool export cart.drawio --to cart.drawio.svg --editable
 
 ---
 
-## Requirements and research
+## The specification
 
-**The specification** is prose you write, not a form you fill in — one markdown file or several. One entry per requirement, headed by a stable id:
+**The specification** is prose you write, not a form you fill in — one file per spec. A spec is a file named `<name>.spec.md`, whose **first heading** is the title and the rest of which is the prose:
 
 ```md
-## R-001 A cart holds its line until stock runs out
+# A cart holds its line until stock runs out
 
 Given a line is in the cart, when another shopper takes the last unit…
 ```
 
-- The id is the entire mechanism: short, stable when you rewrite the prose around it, and the thing every reference is written against.
-- Think from first principles about the value — what the person cannot do today, and what actually changes for them. A requirement that restates a screen, a competitor's feature or the user's own phrasing has not been thought about, and nothing here can check that for you: the workbench can say what a requirement is about, never that it was worth writing.
-- A subject that outgrows the first document (personas, a glossary, the flow as it stands today) becomes its own markdown file **in the folder** rather than one document nobody can skim, and the entry points at it. Every markdown file is read for requirements the same way.
+Written as `cart-line.spec.md` (a subfolder works too, e.g. `docs/checkout.spec.md`).
 
-**`research/`** holds what you learned about other products. One finding per file, shaped like a `PRD.md` entry so the two read the same way:
-
-```md
-# F-001 The total stays pinned while the list scrolls
-
-claim: The cart keeps the total visible at all times, so the decision is never off screen.
-source: https://shop.example.com/cart
-captured: 2026-09-15
-evidence: shots/cart-top.png
-requirements: R-003
-
-The pinned bar is `position: sticky` on the summary row…
-```
-
-`source` is where it was seen (a claim about someone else's product that cannot be re-checked is a rumour). `evidence` names files you keep under `research/`, **checked against the disk** — a citation that is not there is reported, because a broken citation is how a finding becomes unfalsifiable. `requirements:` names the requirements the finding argues for; a finding is **evidence, never implementation**, so it does not count as covering one. `research/` is yours to read, and it is not part of what is handed over.
+- The file's **name** is the entire mechanism: it is the spec's identity — short, stable when you rewrite the prose inside it, and travelling with the folder. There is no id to keep in sync, and no two documents can collide over one.
+- Think from first principles about the value — what the person cannot do today, and what actually changes for them. A spec that restates a screen, a competitor's feature or the user's own phrasing has not been thought about, and nothing here can check that for you: the workbench can say what a spec is about, never that it was worth writing.
+- Material that outgrows the entry (personas, a glossary, the flow as it stands today) becomes its own document **in the folder** rather than one file nobody can skim, and the entry points at it. A document is a spec only if its name ends in `.spec.md` — the entry `spec.md` and any other markdown are not.
 
 ---
 
 ## The workflow
 
-1. **Create** — `create <name>` makes a folder with a starter `PRD.md` and nothing else. (`--no-bind` leaves the session's binding alone, which is what studying another prototype needs.)
-2. **Write the requirements** — into one or more markdown files, before building the work they describe. A prototype nobody can read a requirement out of is a picture, not a proposal.
-3. **Study what you need** — with the browser tool on the real product, and record what you learn as findings under `research/`. Say where you looked (`source`) and keep the evidence (`evidence`).
+1. **Create** — `create <name>` makes a folder with a starter `spec.md` index and nothing else. (`--no-bind` leaves the session's binding alone, which is what studying another prototype needs.)
+2. **Write the specs** — each into its own `<name>.spec.md`, before building the work it describes. A prototype nobody can read a spec out of is a picture, not a proposal.
+3. **Study what you need** — with the browser tool on the real product. What you learn shapes the specs you write.
 4. **Build** — write the work's files with the `Write` tool, beside the specification. The folder is the work: nothing in it declares what it serves, and nothing has to.
 
 ---
@@ -125,11 +111,11 @@ The pinned bar is `position: sticky` on the summary row…
 
 ### `list`
 
-Every prototype in this workspace with its requirement and file counts, and which one this session is bound to. Start here when you do not know what exists.
+Every prototype in this workspace with its spec and file counts, and which one this session is bound to. Start here when you do not know what exists.
 
 ### `create <name> [--no-bind]`
 
-Create a prototype: a folder with a starter `PRD.md` and nothing else. It asks for a name only — there is no kind, no address and nothing else to decide, because everything in the folder is a file somebody writes into it afterwards. `--no-bind` creates it **without** stealing this session's binding, which is what you want when you only mean to study it.
+Create a prototype: a folder with a starter `spec.md` and nothing else. It asks for a name only — there is no kind, no address and nothing else to decide, because everything in the folder is a file somebody writes into it afterwards. `--no-bind` creates it **without** stealing this session's binding, which is what you want when you only mean to study it.
 
 ### `status [slug]`
 
@@ -138,21 +124,18 @@ The report, read from disk. Each fact is recomputed, nothing is cached:
 ```
 Prototype "checkout-flow"
   dir:        /…/prototypes/checkout-flow
-  spec:       PRD.md — 3 requirements
-  requirements:
-      R-001 A cart holds its line
-      R-002 The cart is priced at checkout — argued for by F-001 (finding)
+  spec:       spec.md, cart-line.spec.md, pricing.spec.md
+      A cart holds its line (cart-line.spec.md)
+      The cart is priced at checkout (pricing.spec.md)
   files:      cart.html, personas.md
-  findings:   2 (research/F-001-sticky.md, research/F-002-copy.md)
   issues:     1
-    • R-001 is defined in both PRD.md and docs/features.md; a reference to it is ambiguous.
+    • cart.drawio.svg is not what cart.drawio draws any more — it was exported before the diagram changed.
   unresolved: 1
-    • PRD.md links to docs/pricing.md, which is not in this prototype.
+    • spec.md links to docs/pricing.md, which is not in this prototype.
 ```
 
-- `requirements:` is the headings the folder's markdown states, each with the findings that argue for one. There is **no** row saying what implements a requirement: nothing in the folder knows, so the report does not claim it.
-- `spec:` names the markdown files that state requirements — one or several; the message about a requirement always names the file it was written in.
-- `issues:` are the things that could not be read as written: one id defined by two documents, a finding with no `claim:` or with evidence that is not on disk, a picture that no longer matches the diagram beside it.
+- `spec:` names the specification's files — the entry `spec.md` first, then the spec files — and follows them with one row per `*.spec.md` file: the title its first heading states, with the file beside it. There is **no** row saying what implements a spec: nothing in the folder knows, so the report does not claim it.
+- `issues:` are the things that could not be read as written: a picture that no longer matches the diagram beside it.
 - `unresolved:` is what is still **owed as a fact** — last, because it is the thing to act on: a link that points at nothing. It is the list the app's gate reads, so a report cannot look calmer here than the work is. Nothing the gate says appears under `issues:` as well — one fact, one sentence.
 
 ---

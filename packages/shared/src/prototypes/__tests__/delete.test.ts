@@ -19,8 +19,8 @@ describe('deletePrototype', () => {
   function makePrototype(slug: string): string {
     createPrototype(workspaceRoot, { name: slug })
     const dir = getPrototypeDirPath(workspaceRoot, slug)
-    mkdirSync(join(dir, 'research'), { recursive: true })
-    writeFileSync(join(dir, 'research', 'F-001-x.md'), '# F-001 x\n\nclaim: y\n', 'utf-8')
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    writeFileSync(join(dir, 'docs', 'notes.md'), '# notes\n', 'utf-8')
     return slug
   }
 

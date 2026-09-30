@@ -54,7 +54,6 @@ export {
   type TurnCardActionsMenuProps,
   type TurnRailProps,
   type TurnRailItem,
-  type TurnRailRole,
   type ResponseCardProps,
   type UserMessageBubbleProps,
   type SystemMessageProps,

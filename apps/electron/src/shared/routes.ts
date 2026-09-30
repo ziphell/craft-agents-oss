@@ -202,17 +202,6 @@ export const routes = {
         ? `tweaks/tweak/${tweakSlug}` as const
         : 'tweaks' as const,
 
-    /**
-     * Artifacts view (library list, or one artifact's detail page).
-     *
-     * The id is a workspace-relative path, so it is encoded here: its own slashes
-     * would otherwise read as route segments and split the path apart.
-     */
-    artifacts: (relativePath?: string) =>
-      relativePath
-        ? `artifacts/artifact/${encodeURIComponent(relativePath)}` as const
-        : 'artifacts' as const,
-
     /** Kanban board view (sessions navigator, board view mode, all sessions) */
     board: () => 'board' as const,
   },

@@ -53,7 +53,12 @@
 
 ### 渲染层
 
-- 形状和 MCP / 文件夹一样是**两栏**：`components/app-shell/TweaksListPanel.tsx`（中间导航栏的列表）+ `components/tweaks/TweakView.tsx`（详情：开关、匹配、文件路径、`@target` 命中表）。侧边栏只有**一个条目** `nav:tweaks`（不再展开成子项）。
+- 形状和 MCP / 文件夹一样是**两栏**：`components/app-shell/TweaksListPanel.tsx`（中间导航栏的列表）+ `components/tweaks/TweakView.tsx`（详情）。侧边栏只有**一个条目** `nav:tweaks`（不再展开成子项）。
+- 详情页**用 `Info_Page` 那套骨架**（`Info_Page.Header` + `.Content`，和 SkillInfoPage / AutomationInfoPage / ProjectInfoPage 一样）：hero → 分区。别在这里另起一套布局 —— 一个"名字 + 一个状态 + 几条事实"的东西不该有自己的页面形状。
+- 页头三个动作：**让智能体来做 / 导出为扩展 / 删除**。第一个是改一个 tweak 的唯一入口 —— 代码由 agent 写（页面不属于这个应用，没有表单能产出它，也没有该放在这里的编辑器），所以它只做一件事：开一个对话，把「修改「{{name}}」这个 tweak：」填进输入框（`routes.action.newSession({ input })`，**不自动发送**，话还是人说）。没有这个按钮时，页面顶上那句"让智能体来更新这个 tweak"就是一句空话。
+- **开关在 hero 行里，状态在同一行的名字下面用一句话说。** 这两者是同一个控件：`statusLine()` 三态（关闭 / 还没跑过 / 最近跑于何时），**永远一行**。切开关时页面上不能有任何东西移动 —— 之前那条「关闭」提示是插在开关上方的，一点开关整个页面往下跳一格，就是这条规则的反例。分区（Runs on / 它会改动什么）与告警都在开关下面，且都不因开关而增删。
+- 列表**不用芯片报开/关**。每个 tweak 都有自己的开关，"开"是绝大多数行的常态，芯片只会占满每一行；关闭用**整行变淡**（`opacity-50`），和 `AutomationsListPanel` 一致。唯一该上芯片的是例外：没有代码（`tweaks.noCode`）。描述**只在详情**：它是 agent 给代码写的注记，属于展示代码的那一页；列表一行的职责是把几个 tweak 分开。
+- 详情里「它会改动什么」按 **文件 → 时机** 说，不列 `@target` 表：能用的 tweak 的选择器必然都在（不在的正是上面那条告警），列出来只会是一张全绿的废表。每行是「`tweak.css` —— 在页面绘制之前应用」/「`tweak.js` —— 页面的 HTML 就绪之后执行」（文案由 `runAtMessageKey()` 按 `@run-at` 选）。只有**存在**的文件才出这一行 —— 报一个没人写过的文件等于说"它在"，这是文件列表最不能报错的地方。页面变了（`targets` 里有 `stale`）单独用一条 warning 点名那些选择器，提示"让 agent 来更新这个 tweak"。
 - `atoms/tweaks.ts`（唯一状态）+ `hooks/useTweaks.ts`（订阅 `tweaks:changed`）；路由 `shared/routes.ts`（`tweaks` / `tweaks/tweak/{slug}`）+ `route-parser.ts`；`lib/nav-helpers.ts` 的 `isDetailNavState`（tweaks：**选中了某个才**算 detail，和 sources 一样）。
 
 ---
@@ -87,6 +92,7 @@
 
 - **注入器只在地址变了时动。** `observedByInstance` 的标记是 `tabId|url`，相同就 return —— 所以**同 URL 的 reload 不触发任何主机动作**。那次 reload 拿到的是**它出生之前装好的**注册。
 - **导航触发的重装，对新文档来说晚一步。** 地址变化是 `did-navigate`（提交之后），此时新文档已经创建、init script 已经跑过。所以真正让"改完下一次加载就看到"成立的，是**规则一变就重装**那条路：注册在写入那一刻就是新的。没有它，工具写入和手改都要隔一次导航，而且纯 reload 永远不会生效。（这也是 `notifyConfigFileChange` 手动 poke 存在的原因之一。）
+- **安装会写进被监听的目录 —— 所以监听器绝不能跟随那个文件，也不能跟随目录本身。** 每次安装都以 `recordTweakHitsForTab` 收尾，它把 `hits.json` 写进 tweak 自己的文件夹；而原子写在这个平台还会**额外报一次目录**（`tweaks/<slug>`）。两条都跟就是：事件 → 安装 → 写 `hits.json` → 事件 …… 每 100ms（debounce）一轮，日志刷屏、界面被反复广播。所以 tweaks 分支只认 `tweaks/<slug>/` 下那三个文件（`parts.length === 3`），一切目录级事件都不看 —— 文件夹没有那三个文件之外的消息：新建、删除、改名都会带上其中一个文件的事件，而我们自己的写者另外还会 poke `tweak.json`。`__tests__/watcher-tweaks-events.test.ts` 钉住这条。
 - **注册成对操作。** 每次安装都 `clearInitScripts('tweak:')` 再 `addInitScript`。少一步清理，同一个文档就会跑两遍脚本。
 - **后台 tab 不被前移就拿不到注册**；前移本身是一次 state change，所以"人在看的那一个"始终覆盖。
 - **`.js` 的每个 body 各自 IIFE + try/catch，但整段脚本是一个 source** —— 一个 body 的**解析**错误会带走后面的（这是诚实的极限；用 `Function` 构造器可以逐条兜住，代价是 `eval`，页面 CSP 可能拒绝）。

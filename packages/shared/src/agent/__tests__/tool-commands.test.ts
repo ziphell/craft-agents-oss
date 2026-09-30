@@ -15,7 +15,7 @@ import { createPrototypeTools } from '../prototype-tools'
 import { createVideoTools } from '../video-tools'
 import { createDrawioTools } from '../drawio-tools'
 import type { BrowserPaneFns } from '../browser-pane'
-import type { PrototypeStatus, PrototypeStatusRequirement } from '../../prototypes/status'
+import type { PrototypeStatus, PrototypeStatusSpec } from '../../prototypes/status'
 import { notice } from '../../prototypes/notices'
 import type { BrowserTabSummary } from '../../protocol/dto'
 
@@ -113,7 +113,7 @@ function createMockFns(): BrowserPaneFns {
     createPrototype: async ({ name }: { name: string }) => ({
       slug: name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
       dir: `/tmp/prototypes/${name}`,
-      prdPath: `/tmp/prototypes/${name}/PRD.md`,
+      entryPath: `/tmp/prototypes/${name}/spec.md`,
     }),
     bindPrototype: async (_slug: string | null) => {},
     focusWindow: async (instanceId?: string) => ({ instanceId: instanceId ?? 'browser-1', title: 'Example Domain', url: 'https://example.com' }),
@@ -150,11 +150,10 @@ function prototypeStatus(slug: string, overrides: Partial<PrototypeStatus> = {})
   return {
     slug,
     dir: `/tmp/prototypes/${slug}`,
-    requirements: [],
+    specs: [],
     specificationFiles: [],
     files: [],
     links: [],
-    findings: [],
     unresolved: { brokenLinks: [] },
     settleBlockers: [],
     briefIssues: [],
@@ -162,13 +161,13 @@ function prototypeStatus(slug: string, overrides: Partial<PrototypeStatus> = {})
   }
 }
 
-/** One requirement row, with the findings that argue for it. */
-function requirement(
-  id: string,
+/** One spec row — a `*.spec.md` file and the title its first heading states. */
+function spec(
   title: string,
-  overrides: Partial<PrototypeStatusRequirement> = {},
-): PrototypeStatusRequirement {
-  return { id, title, file: 'PRD.md', findings: [], ...overrides }
+  file: string,
+  overrides: Partial<PrototypeStatusSpec> = {},
+): PrototypeStatusSpec {
+  return { title, file, ...overrides }
 }
 
 // ============================================================================
@@ -280,9 +279,10 @@ describe('the pane tools', () => {
 
       expect(help).toContain('prototype_tool command help')
       expect(help).toContain('  status [slug]')
-      expect(help).toContain('PRD.md')
-      expect(help).toContain('research/')
-      expect(help).toContain('## R-001 <title>')
+      // The entry's own name, not merely the suffix: `spec.md` with a character before it that is
+      // not a dot (which is what `*.spec.md` has).
+      expect(help).toMatch(/(?<!\.)spec\.md/)
+      expect(help).toContain('*.spec.md')
       // None of the removed mechanisms may be briefed: no pages, patches, entry page or fragment —
       // and no contract, verification or deliverables.
       expect(help).not.toContain('patches/')
@@ -297,6 +297,7 @@ describe('the pane tools', () => {
       expect(help).not.toContain('acceptance')
       expect(help).not.toContain('dist/')
       expect(help).not.toContain('reviews/')
+      expect(help).not.toContain('research/')
       // Nor the mock and dev-spec machinery that left with them.
       expect(help).not.toContain('mock')
       expect(help).not.toContain('dev-spec')
@@ -312,8 +313,9 @@ describe('the pane tools', () => {
 
       expect(tool.description).toContain('**The window**')
       expect(tool.description).toContain('docs/prototypes.md')
-      expect(tool.description).toContain('PRD.md')
-      expect(tool.description).toContain('requirements:')
+      // The entry's own name, not merely the suffix (see the help case above).
+      expect(tool.description).toMatch(/(?<!\.)spec\.md/)
+      expect(tool.description).toContain('.spec.md')
       expect(tool.description).toContain('browser_tool')
     })
 
@@ -340,15 +342,19 @@ describe('the pane tools', () => {
     // list
     // ========================================================================
 
-    it('lists prototypes with their requirement and file counts, and marks the bound one', async () => {
+    it('lists prototypes with their spec and file counts, and marks the bound one', async () => {
       mockFns.getBoundPrototypeSlug = () => 'checkout-flow'
       mockFns.listPrototypes = async () => [
         prototypeStatus('checkout-flow', {
-          requirements: [
-            requirement('R-001', 'A cart holds its line'),
-            requirement('R-002', 'The cart is priced by the service'),
+          specs: [
+            spec('A cart holds its line', 'cart-line.spec.md'),
+            spec('The cart is priced by the service', 'pricing.spec.md'),
           ],
-          specificationFiles: [{ name: 'PRD.md', path: '/tmp/prototypes/checkout-flow/PRD.md' }],
+          specificationFiles: [
+            { name: 'spec.md', path: '/tmp/prototypes/checkout-flow/spec.md' },
+            { name: 'cart-line.spec.md', path: '/tmp/prototypes/checkout-flow/cart-line.spec.md' },
+            { name: 'pricing.spec.md', path: '/tmp/prototypes/checkout-flow/pricing.spec.md' },
+          ],
           files: [{ name: 'cart.html', path: '/tmp/prototypes/checkout-flow/cart.html' }],
         }),
         prototypeStatus('draft'),
@@ -358,9 +364,9 @@ describe('the pane tools', () => {
 
       expect(text).toContain('bound to "checkout-flow"')
       expect(text).toContain('BOUND')
-      expect(text).toContain('checkout-flow — BOUND, 2 requirements, 2 files')
+      expect(text).toContain('checkout-flow — BOUND, 2 specs, 4 files')
       // A prototype with nothing in it yet is a normal state, not a broken one.
-      expect(text).toContain('draft — 0 requirements, 0 files')
+      expect(text).toContain('draft — 0 specs, 0 files')
     })
 
     it('says how to start one when the workspace has none', async () => {
@@ -369,7 +375,7 @@ describe('the pane tools', () => {
       const text = (await executeTool(tools, 'prototype_tool', { command: 'list' })).content[0].text
 
       expect(text).toContain('No prototypes in this workspace yet')
-      expect(text).toContain('PRD.md')
+      expect(text).toContain('spec.md')
     })
 
     // ========================================================================
@@ -391,14 +397,14 @@ describe('the pane tools', () => {
     // Creation makes a folder and a starter brief, and nothing else: the folder *is* the
     // prototype, so the output has to say how the work comes to exist rather than describing a
     // form to fill in.
-    it('creates a folder with a starter PRD, and says how the work is written into it', async () => {
+    it('creates a folder with a starter spec, and says how the work is written into it', async () => {
       const seen: Array<{ name: string }> = []
       mockFns.createPrototype = async (input) => {
         seen.push(input)
         return {
           slug: 'landing-page',
           dir: '/tmp/prototypes/landing-page',
-          prdPath: '/tmp/prototypes/landing-page/PRD.md',
+          entryPath: '/tmp/prototypes/landing-page/spec.md',
         }
       }
 
@@ -407,9 +413,9 @@ describe('the pane tools', () => {
 
       expect(seen).toEqual([{ name: 'Landing page' }])
       expect(text).toContain('dir: /tmp/prototypes/landing-page')
-      expect(text).toContain('PRD: /tmp/prototypes/landing-page/PRD.md')
-      expect(text).toContain('Write the requirements into its')
-      expect(text).toContain('## R-001 <what the requirement is>')
+      expect(text).toContain('entry: /tmp/prototypes/landing-page/spec.md')
+      expect(text).toContain('Write each spec into its own')
+      expect(text).toContain('.spec.md')
     })
 
     it('asks for a name, which is all creation needs', async () => {
@@ -453,30 +459,38 @@ describe('the pane tools', () => {
     // status
     // ========================================================================
 
-    // The requirements, and the findings that argue for one: what the folder holds, read back
-    // without a claim about what implements anything.
-    it('reports the requirements and the findings that argue for one', async () => {
+    // The specs: what the folder holds, read back without a claim about what implements
+    // anything.
+    it('reports the specs', async () => {
       mockFns.prototypeStatus = async (slug) =>
         prototypeStatus(slug, {
-          specificationFiles: [{ name: 'PRD.md', path: `/tmp/prototypes/${slug}/PRD.md` }],
+          specificationFiles: [
+            { name: 'spec.md', path: `/tmp/prototypes/${slug}/spec.md` },
+            { name: 'cart-line.spec.md', path: `/tmp/prototypes/${slug}/cart-line.spec.md` },
+            { name: 'pricing.spec.md', path: `/tmp/prototypes/${slug}/pricing.spec.md` },
+            { name: 'nothing-yet.spec.md', path: `/tmp/prototypes/${slug}/nothing-yet.spec.md` },
+          ],
           files: [
             { name: 'cart.html', path: `/tmp/prototypes/${slug}/cart.html` },
             { name: 'notes.md', path: `/tmp/prototypes/${slug}/notes.md` },
           ],
-          requirements: [
-            requirement('R-001', 'A cart holds its line'),
-            requirement('R-002', 'The cart is priced by the service', { findings: ['F-001'] }),
-            requirement('R-003', 'Nothing here yet'),
+          specs: [
+            spec('A cart holds its line', 'cart-line.spec.md'),
+            spec('The cart is priced by the service', 'pricing.spec.md'),
+            spec('Nothing here yet', 'nothing-yet.spec.md'),
           ],
         })
 
       const text = (await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })).content[0].text
 
-      expect(text).toContain('spec:       PRD.md — 3 requirements')
-      expect(text).toContain('R-001 A cart holds its line')
-      expect(text).toContain('R-002 The cart is priced by the service — argued for by F-001 (finding)')
-      expect(text).toContain('R-003 Nothing here yet')
-      // Nothing in the report says what implements a requirement — there is no such statement.
+      expect(text).toContain(
+        'spec:       spec.md, cart-line.spec.md, pricing.spec.md, nothing-yet.spec.md',
+      )
+      // Each spec is its file, shown with the title its first heading states.
+      expect(text).toContain('A cart holds its line (cart-line.spec.md)')
+      expect(text).toContain('The cart is priced by the service (pricing.spec.md)')
+      expect(text).toContain('Nothing here yet (nothing-yet.spec.md)')
+      // Nothing in the report says what implements a spec — there is no such statement.
       expect(text).not.toContain('nothing refers to it yet')
       expect(text).toContain('files:      cart.html, notes.md')
       // The removed sections are gone from the report.
@@ -485,34 +499,33 @@ describe('the pane tools', () => {
       expect(text).not.toContain('checks:')
     })
 
-    // A brief issue is a file that cannot be read as written — a finding naming an id the documents
-    // do not define, a finding with no claim, a picture that no longer matches its diagram — and the
-    // status is the only place that says which.
+    // A brief issue is a file that cannot be read as written — a picture that no longer matches its
+    // diagram — and the status is the only place that says which.
     it('prints the brief issues, which a clean prototype does not have', async () => {
       const clean = await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })
       expect(clean.content[0].text).not.toContain('issues:')
 
       mockFns.prototypeStatus = async (slug) =>
         prototypeStatus(slug, {
-          briefIssues: [notice('requirement.undefined', { where: 'research/F-001.md', id: 'R-009' })],
+          briefIssues: [notice('diagram.stale', { svg: 'cart.drawio.svg', source: 'cart.drawio' })],
         })
 
       const issues = await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })
       expect(issues.content[0].text).toContain('issues:     1')
-      expect(issues.content[0].text).toContain('research/F-001.md names R-009')
+      expect(issues.content[0].text).toContain('cart.drawio.svg is not what cart.drawio draws any more')
     })
 
     it('names a broken link among what is still owed', async () => {
       mockFns.prototypeStatus = async (slug) =>
         prototypeStatus(slug, {
-          unresolved: { brokenLinks: [{ from: 'PRD.md', target: 'docs/flow.md' }] },
+          unresolved: { brokenLinks: [{ from: 'spec.md', target: 'docs/flow.md' }] },
         })
 
       const text = (await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })).content[0]
         .text
 
       expect(text).toContain('unresolved: 1')
-      expect(text).toContain('PRD.md links to docs/flow.md, which is not in this prototype.')
+      expect(text).toContain('spec.md links to docs/flow.md, which is not in this prototype.')
     })
 
     it('says so when nothing is owed, rather than staying quiet', async () => {

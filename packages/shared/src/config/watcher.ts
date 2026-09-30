@@ -46,8 +46,6 @@ import type { LoadedSkill } from '../skills/types.ts';
 import { loadWorkspaceTweaks } from '../tweaks/storage.ts';
 import { toTweakSummary } from '../tweaks/summary.ts';
 import { TWEAK_CONFIG_FILENAME, TWEAK_CSS_FILENAME, TWEAK_JS_FILENAME } from '../tweaks/types.ts';
-import { deriveArtifactEntries, isArtifactPath } from '../artifacts/derive.ts';
-import { scanArtifactFiles } from '../artifacts/scan.ts';
 import { loadSkill, loadAllSkills, invalidateSkillsCache, skillNeedsIconDownload, downloadSkillIcon } from '../skills/storage.ts';
 import {
   loadStatusConfig,
@@ -165,18 +163,12 @@ export interface ConfigWatcherCallbacks {
    * installer have to follow — the fresh list is handed over because that is what the app's
    * own pages show.
    *
-   * `hits.json` is deliberately not watched: only the applier writes it, and watching it would
-   * have the applier re-install the rules it has just run.
+   * `hits.json` is deliberately not watched, and neither is the folder itself: only the
+   * applier writes `hits.json`, and it writes it *because* the rules were just installed —
+   * following it (or the folder event an atomic write also raises) would have the applier
+   * re-install the rules it has just run, once per debounce, forever.
    */
   onTweaksListChange?: (tweaks: import('../tweaks/summary.ts').TweakSummary[]) => void;
-
-  // Artifact callbacks
-  /**
-   * Called when an artifact's file changes on disk — a `.drawio` written by the agent's tools, or
-   * edited by hand. The library is a view of the disk, so the fresh list is handed over: the
-   * renderer has no other way to learn that a scan is owed.
-   */
-  onArtifactsListChange?: (artifacts: import('../artifacts/types.ts').ArtifactEntry[]) => void;
 
   // Session callbacks
   /** Called when a session's JSONL header is modified externally (labels, name, flags, etc.) */
@@ -441,14 +433,6 @@ export class ConfigWatcher {
   private handleWorkspaceFileChange(relativePath: string, eventType: string): void {
     const parts = relativePath.split('/');
 
-    // Artifacts: a `.drawio` anywhere in the workspace is a library item, so this is the one rule
-    // keyed on the file rather than on a directory, and it is asked first — the file may sit beside
-    // anything else. `isArtifactPath` is the same rule the scan and the list use.
-    if (isArtifactPath(relativePath)) {
-      this.debounce('artifacts-list', () => this.handleArtifactsChange());
-      return;
-    }
-
     // Workspace-level permissions.json
     if (relativePath === 'permissions.json') {
       this.debounce('workspace-permissions', () => this.handleWorkspacePermissionsChange());
@@ -507,16 +491,21 @@ export class ConfigWatcher {
 
     // Tweaks changes: the record and the code beside it are together what a tweak *is*, so an
     // out-of-band edit to any of them (the agent's own tools, or a hand edit) is what the app
-    // has to follow. Slug-dir add/remove fires too; hits.json does not, or the applier would
-    // re-install the rules it has just run.
+    // has to follow.
+    //
+    // Those three files, and nothing else under `tweaks/` — least of all the folder itself.
+    // The applier writes `hits.json` into a tweak's own folder *because* the rules were just
+    // installed, and an atomic write also reports the slug directory; following either would
+    // re-install the rules that wrote it, once per debounce, forever. The folder carries no
+    // news the files do not: creating, deleting or renaming a tweak moves one of the three
+    // either way, and our own writers poke a `tweak.json` path besides.
     if (parts[0] === 'tweaks' && parts.length >= 2) {
       const file = parts[2];
       const followed =
-        parts.length === 2 ||
-        file === TWEAK_CONFIG_FILENAME ||
-        file === TWEAK_CSS_FILENAME ||
-        file === TWEAK_JS_FILENAME;
+        parts.length === 3 &&
+        (file === TWEAK_CONFIG_FILENAME || file === TWEAK_CSS_FILENAME || file === TWEAK_JS_FILENAME);
       if (followed) {
+        debug('[ConfigWatcher] tweak file changed:', relativePath);
         this.debounce('tweaks-dir', () => this.handleTweaksChange());
       }
       return;
@@ -1013,21 +1002,6 @@ export class ConfigWatcher {
       this.callbacks.onTweaksListChange(tweaks);
     } catch (error) {
       debug('[ConfigWatcher] Failed to reload tweaks:', error);
-    }
-  }
-
-  /**
-   * An artifact changed on disk. The library is a view of the files, so the list is re-derived from
-   * a fresh scan and handed over — `deriveArtifactEntries` is the one rule for what belongs in it.
-   */
-  private handleArtifactsChange(): void {
-    if (!this.callbacks.onArtifactsListChange) return;
-    try {
-      const artifacts = deriveArtifactEntries(scanArtifactFiles(this.workspaceDir));
-      debug('[ConfigWatcher] artifacts changed:', this.workspaceId, `(${artifacts.length} artifacts)`);
-      this.callbacks.onArtifactsListChange(artifacts);
-    } catch (error) {
-      debug('[ConfigWatcher] Failed to reload artifacts:', error);
     }
   }
 

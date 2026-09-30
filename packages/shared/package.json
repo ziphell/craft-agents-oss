@@ -32,8 +32,6 @@
     "./projects/types": "./src/projects/types.ts",
     "./prototypes": "./src/prototypes/index.ts",
     "./prototypes/types": "./src/prototypes/types.ts",
-    "./artifacts": "./src/artifacts/index.ts",
-    "./artifacts/scan": "./src/artifacts/scan.ts",
     "./local-origin": "./src/local-origin.ts",
     "./drawio/types": "./src/drawio/types.ts",
     "./tweaks": "./src/tweaks/index.ts",

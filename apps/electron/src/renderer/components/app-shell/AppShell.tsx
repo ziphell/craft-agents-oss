@@ -35,7 +35,6 @@ import {
   FolderKanban,
   FlaskConical,
   Wand2,
-  Workflow,
 } from "lucide-react"
 // SessionStatusIcons no longer used - icons come from dynamic sessionStatuses
 import { SourceAvatar } from "@/components/ui/source-avatar"
@@ -123,7 +122,6 @@ import {
   isProjectsNavigation,
   isPrototypesNavigation,
   isTweaksNavigation,
-  isArtifactsNavigation,
   type NavigationState,
 } from "@/contexts/NavigationContext"
 import type { SettingsSubpage } from "../../../shared/types"
@@ -133,13 +131,11 @@ import { AutomationsListPanel } from "../automations/AutomationsListPanel"
 import { ProjectsListPanel } from "./ProjectsListPanel"
 import { PrototypesListPanel } from "./PrototypesListPanel"
 import { TweaksListPanel } from "./TweaksListPanel"
-import { ArtifactsHome } from "../artifacts/ArtifactsHome"
 import { APP_EVENTS, AGENT_EVENTS, type AutomationFilterKind, AUTOMATION_TYPE_TO_FILTER_KIND } from "../automations/types"
 import { useAutomations } from "@/hooks/useAutomations"
 import { useProjects } from "@/hooks/useProjects"
 import { usePrototypes } from "@/hooks/usePrototypes"
 import { useTweaks } from "@/hooks/useTweaks"
-import { useArtifacts } from "@/hooks/useArtifacts"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { PanelHeader } from "./PanelHeader"
 import { FabNewChat } from "./FabNewChat"
@@ -1040,8 +1036,6 @@ function AppShellContent({
   })
 
   const { tweaks } = useTweaks(activeWorkspaceId)
-
-  const { artifacts } = useArtifacts(activeWorkspaceId)
 
   const projectMenuOptions = useMemo(
     () => projects.map(p => ({ id: p.config.id, slug: p.config.slug, name: p.config.name, color: p.config.color })),
@@ -1949,11 +1943,6 @@ function AppShellContent({
     navigate(routes.view.tweaks())
   }, [])
 
-  // Handler for artifacts view
-  const handleArtifactsClick = useCallback(() => {
-    navigate(routes.view.artifacts())
-  }, [])
-
   const handleAutomationsScheduledClick = useCallback(() => {
     navigate(routes.view.automationsScheduled())
   }, [])
@@ -2316,19 +2305,18 @@ function AppShellContent({
     }
     flattenTree(labelTree)
 
-    // 3. Sources, Skills, Projects, Prototypes, Artifacts, Tweaks, Automations, Settings (visual order)
+    // 3. Sources, Skills, Projects, Prototypes, Tweaks, Automations, Settings (visual order)
     result.push({ id: 'nav:sources', type: 'nav', action: handleSourcesClick })
     result.push({ id: 'nav:skills', type: 'nav', action: handleSkillsClick })
     result.push({ id: 'nav:projects', type: 'nav', action: handleProjectsClick })
     result.push({ id: 'nav:prototypes', type: 'nav', action: handlePrototypesClick })
-    result.push({ id: 'nav:artifacts', type: 'nav', action: handleArtifactsClick })
     result.push({ id: 'nav:tweaks', type: 'nav', action: handleTweaksClick })
     result.push({ id: 'nav:automations', type: 'nav', action: handleAutomationsClick })
     result.push({ id: 'nav:settings', type: 'nav', action: () => handleSettingsClick() })
     result.push({ id: 'nav:whats-new', type: 'nav', action: handleWhatsNewClick })
 
     return result
-  }, [handleAllSessionsClick, handleFlaggedClick, handleArchivedClick, handleSessionStatusClick, effectiveSessionStatuses, handleLabelClick, labelConfigs, labelTree, viewConfigs, handleViewClick, handleSourcesClick, handleSkillsClick, handleProjectsClick, handleAutomationsClick, handlePrototypesClick, handleTweaksClick, handleArtifactsClick, handleSettingsClick, handleWhatsNewClick])
+  }, [handleAllSessionsClick, handleFlaggedClick, handleArchivedClick, handleSessionStatusClick, effectiveSessionStatuses, handleLabelClick, labelConfigs, labelTree, viewConfigs, handleViewClick, handleSourcesClick, handleSkillsClick, handleProjectsClick, handleAutomationsClick, handlePrototypesClick, handleTweaksClick, handleSettingsClick, handleWhatsNewClick])
 
   // Toggle folder expanded state
   const handleToggleFolder = React.useCallback((path: string) => {
@@ -2460,11 +2448,6 @@ function AppShellContent({
     // Tweaks navigator
     if (isTweaksNavigation(navState)) {
       return t("sidebar.allTweaks")
-    }
-
-    // Artifacts navigator
-    if (isArtifactsNavigation(navState)) {
-      return t("sidebar.allArtifacts")
     }
 
     // Automations navigator
@@ -2840,15 +2823,6 @@ function AppShellContent({
                       // Highlight only when on Prototypes view itself
                       variant: isPrototypesNavigation(navState) ? "default" : "ghost",
                       onClick: handlePrototypesClick,
-                    },
-                    {
-                      id: "nav:artifacts",
-                      title: t("sidebar.artifacts"),
-                      label: String(artifacts.length),
-                      icon: Workflow,
-                      // Highlight only when on the Artifacts view itself (its list is the navigator)
-                      variant: isArtifactsNavigation(navState) ? "default" : "ghost",
-                      onClick: handleArtifactsClick,
                     },
                     {
                       id: "nav:tweaks",
@@ -3769,15 +3743,6 @@ function AppShellContent({
                 onTweakClick={(slug) => navigate(routes.view.tweaks(slug))}
                 onAskAgent={() => navigate(routes.action.newSession({ input: t('tweaks.askAgentPrompt') }))}
                 selectedTweakSlug={isTweaksNavigation(navState) ? navState.details?.tweakSlug ?? null : null}
-              />
-            )}
-            {isArtifactsNavigation(navState) && (
-              /* Artifacts List — one row per artifact; an artifact's own page is in the content panel */
-              <ArtifactsHome
-                artifacts={artifacts}
-                workspaceId={activeWorkspaceId}
-                onArtifactClick={(relativePath) => navigate(routes.view.artifacts(relativePath))}
-                selectedPath={isArtifactsNavigation(navState) ? navState.details?.id ?? null : null}
               />
             )}
             {isAutomationsNavigation(navState) && (

@@ -645,13 +645,13 @@ function BrowserToolbarApp() {
   useEffect(() => {
     if (!api || IS_RAIL) return
 
-    const content = windowMenuOpen
-      ? menuContentRef.current
-      : downloadsMenuOpen
-        ? downloadsMenuContentRef.current
-        : null
-
-    if (!content) {
+    // "A menu is open" is the *state*, never the presence of its content element. The
+    // content mounts a beat after the state flips, and reading that beat as "no menu" is
+    // not a harmless no-op: the host shrinks the bar back to its 48 pixels and sends the
+    // menu the force-close it was just told to open. After that the full-window tap
+    // catcher is up over the bar, so every further click on the button is swallowed by it
+    // and only ever puts the invisible menu away — the button stops working for good.
+    if (!windowMenuOpen && !downloadsMenuOpen) {
       void api.setMenuGeometry(false, 0)
       return
     }
@@ -659,17 +659,32 @@ function BrowserToolbarApp() {
     // Prime expansion immediately to avoid a constrained first measurement.
     void api.setMenuGeometry(true, 120)
 
+    const content = () => (windowMenuOpen ? menuContentRef.current : downloadsMenuContentRef.current)
+
     const sendGeometry = () => {
-      const height = Math.ceil(content.getBoundingClientRect().height ?? 0)
-      void api.setMenuGeometry(true, height)
+      const el = content()
+      if (!el) return
+      void api.setMenuGeometry(true, Math.ceil(el.getBoundingClientRect().height ?? 0))
     }
 
-    let frame = requestAnimationFrame(sendGeometry)
-    const observer = new ResizeObserver(() => {
-      sendGeometry()
-    })
+    const observer = new ResizeObserver(sendGeometry)
 
-    observer.observe(content)
+    // Attached as soon as the content exists, so a menu that mounts late is still
+    // measured — the host is already expanded by then, and nothing else would tell it
+    // how tall the open menu actually is.
+    let frame = 0
+    let attempts = 0
+    const attach = () => {
+      const el = content()
+      if (!el) {
+        if (attempts++ < 2) frame = requestAnimationFrame(attach)
+        return
+      }
+      observer.observe(el)
+      sendGeometry()
+    }
+
+    frame = requestAnimationFrame(attach)
 
     return () => {
       cancelAnimationFrame(frame)

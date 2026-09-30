@@ -524,7 +524,7 @@ export interface ElectronAPI {
   /** Every prototype in the workspace, each with its derived status. */
   listPrototypes(workspaceId: string): Promise<unknown>
   /**
-   * Create a prototype: a folder with a requirements document in it. The files
+   * Create a prototype: a folder with the entry document (`spec.md`) in it. The files
    * written into it afterwards are the prototype, so creation asks for nothing but
    * a name.
    */
@@ -771,10 +771,6 @@ export interface ElectronAPI {
    */
   getDrawioOrigin(): Promise<string>
 
-  // Artifacts (the files a person and an agent co-edit, listed by scanning the workspace)
-  /** Every artifact in a workspace, newest first. A view of the disk — re-read to refresh. */
-  getArtifacts(workspaceId: string): Promise<import('@craft-agent/shared/artifacts').ArtifactEntry[]>
-
   // Tweaks (standing edits, authored by the agent — the UI only reads and toggles)
   getTweaks(workspaceId: string): Promise<import('@craft-agent/shared/tweaks').TweakSummary[]>
   getTweak(workspaceId: string, tweakSlug: string): Promise<import('@craft-agent/shared/tweaks').TweakDetails | null>
@@ -784,14 +780,6 @@ export interface ElectronAPI {
   /** Build the loadable extension into a folder the person picked. */
   exportTweaks(workspaceId: string, destParent: string): Promise<import('@craft-agent/shared/tweaks').TweaksExportResult>
   onTweaksChanged(callback: (workspaceId: string, tweaks: import('@craft-agent/shared/tweaks').TweakSummary[]) => void): () => void
-
-  // Artifacts
-  getArtifacts(workspaceId: string): Promise<import('@craft-agent/shared/artifacts').ArtifactEntry[]>
-  /** The conversations that wrote one artifact, derived from session history. */
-  getArtifactOrigins(workspaceId: string, relativePath: string): Promise<import('@craft-agent/shared/artifacts').ArtifactOrigin[]>
-  /** A small drawn preview of one artifact, or null when the host can make none. */
-  getArtifactThumbnail(workspaceId: string, relativePath: string): Promise<import('@craft-agent/shared/artifacts').ArtifactThumbnail | null>
-  onArtifactsChanged(callback: (workspaceId: string, artifacts: import('@craft-agent/shared/artifacts').ArtifactEntry[]) => void): () => void
 
   // Automations
   getAutomations(workspaceId: string): Promise<unknown>
@@ -1047,19 +1035,6 @@ export interface TweaksNavigationState {
 }
 
 /**
- * Artifacts navigation state
- *
- * Bare `artifacts` (details: null) shows the library list — it never auto-selects
- * one. `id` is the workspace-relative path: the artifact's identity, and what the
- * detail page resolves against the workspace root to open the file.
- */
-export interface ArtifactsNavigationState {
-  navigator: 'artifacts'
-  details: { type: 'artifact'; id: string } | null
-  rightSidebar?: RightSidebarPanel
-}
-
-/**
  * Unified navigation state
  */
 export type NavigationState =
@@ -1071,7 +1046,6 @@ export type NavigationState =
   | ProjectsNavigationState
   | PrototypesNavigationState
   | TweaksNavigationState
-  | ArtifactsNavigationState
 
 export const isSessionsNavigation = (
   state: NavigationState
@@ -1104,10 +1078,6 @@ export const isPrototypesNavigation = (
 export const isTweaksNavigation = (
   state: NavigationState
 ): state is TweaksNavigationState => state.navigator === 'tweaks'
-
-export const isArtifactsNavigation = (
-  state: NavigationState
-): state is ArtifactsNavigationState => state.navigator === 'artifacts'
 
 export const DEFAULT_NAVIGATION_STATE: NavigationState = {
   navigator: 'sessions',
@@ -1151,14 +1121,6 @@ export const getNavigationStateKey = (state: NavigationState): string => {
       return `tweaks/tweak/${state.details.tweakSlug}`
     }
     return 'tweaks'
-  }
-  if (state.navigator === 'artifacts') {
-    if (state.details?.type === 'artifact') {
-      // The id is a workspace-relative path: encoded so its own slashes do not read
-      // as route segments, exactly as the route builder does it.
-      return `artifacts/artifact/${encodeURIComponent(state.details.id)}`
-    }
-    return 'artifacts'
   }
   if (state.navigator === 'settings') {
     if (state.subpage === null) return 'settings'
@@ -1236,16 +1198,6 @@ export const parseNavigationStateKey = (key: string): NavigationState | null => 
       return { navigator: 'tweaks', details: { type: 'tweak', tweakSlug } }
     }
     return { navigator: 'tweaks', details: null }
-  }
-
-  // Handle artifacts
-  if (key === 'artifacts') return { navigator: 'artifacts', details: null }
-  if (key.startsWith('artifacts/artifact/')) {
-    const path = decodeURIComponent(key.slice(19))
-    if (path) {
-      return { navigator: 'artifacts', details: { type: 'artifact', id: path } }
-    }
-    return { navigator: 'artifacts', details: null }
   }
 
   // Handle settings

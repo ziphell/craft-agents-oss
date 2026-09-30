@@ -2,7 +2,7 @@
  * Prototype Workbench RPC handlers.
  *
  * Watches the workspace-level prototypes directory so the app can react to
- * artifact changes (the PRD, contract fragments, the files an author keeps
+ * artifact changes (the entry `spec.md`, contract fragments, the files an author keeps
  * beside them) regardless of who wrote them — the agent, the control plane, or
  * an external editor.
  *
@@ -66,7 +66,7 @@ export function registerPrototypesHandlers(server: RpcServer, deps: HandlerDeps)
   })
 
   // Create a prototype (the panel's "New Prototype"). It is a folder plus a starter
-  // `PRD.md`, so creation asks for nothing but a name — there is no kind, no address
+  // `spec.md`, so creation asks for nothing but a name — there is no kind, no address
   // and no layout to ask about.
   server.handle(
     RPC_CHANNELS.prototypes.CREATE,

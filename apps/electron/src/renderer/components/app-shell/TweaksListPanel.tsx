@@ -2,10 +2,19 @@
  * TweaksListPanel
  *
  * Workspace-scoped tweak list: the navigator slot's content while the Tweaks
- * item is active. One row per tweak — what it is called, whether it is on, and
- * whether it has code. A tweak's own page is the content column beside it, and
- * the pages a tweak runs on are listed there rather than here: a row that grew a
- * chip per match read as a wall of them, and rows stopped being comparable.
+ * item is active. One row per tweak — what it is called, and whether it has
+ * code. A tweak's own page is the content column beside it, and the pages a
+ * tweak runs on are listed there rather than here: a row that grew a chip per
+ * match read as a wall of them, and rows stopped being comparable.
+ *
+ * The description is not here either: it is the note an agent wrote about the
+ * code, and it belongs on the page that shows the code. A row's job is telling
+ * tweaks apart.
+ *
+ * On/off is not a chip here. Every tweak carries a switch on its own page, and a
+ * chip on every row said "on" for most of them — the same reason a running
+ * automation is not chipped: the exception is the news. A tweak that is off is
+ * dimmed, which is how the automations list already says it.
  *
  * There is deliberately no "New tweak" here: a tweak is written by an agent (it
  * is code for a page this app does not own), and a form that produced an empty
@@ -75,6 +84,7 @@ export function TweaksListPanel({
             {ordered.map((tweak, index) => (
               <EntityRow
                 key={tweak.slug}
+                className={cn(!tweak.enabled && 'opacity-50')}
                 showSeparator={index > 0}
                 isSelected={selectedTweakSlug === tweak.slug}
                 onMouseDown={(e: React.MouseEvent) => {
@@ -82,19 +92,11 @@ export function TweaksListPanel({
                 }}
                 icon={<Wand2 className="h-3.5 w-3.5 text-foreground/60" />}
                 title={tweak.name}
-                subtitle={tweak.description}
                 badges={
-                  <>
-                    <TweakChip tone={tweak.enabled ? 'on' : 'muted'}>
-                      {tweak.enabled ? t('tweaks.on') : t('tweaks.off')}
-                    </TweakChip>
-                    {/* Only the exception earns a chip: having code is what a working tweak
-                        always is, so a chip saying so would sit on every row and mean nothing.
-                        Having none is the state worth flagging. */}
-                    {!tweak.hasCode && (
-                      <TweakChip tone="warn">{t('tweaks.noCode')}</TweakChip>
-                    )}
-                  </>
+                  /* Only the exception earns a chip: having code is what a working tweak
+                     always is, so a chip saying so would sit on every row and mean
+                     nothing. Having none is the state worth flagging. */
+                  !tweak.hasCode ? <TweakChip>{t('tweaks.noCode')}</TweakChip> : undefined
                 }
               />
             ))}
@@ -105,22 +107,10 @@ export function TweaksListPanel({
   )
 }
 
-function TweakChip({
-  tone,
-  children,
-}: {
-  tone: 'on' | 'muted' | 'warn'
-  children: React.ReactNode
-}) {
+/** The one chip a row can carry: no code, which is the state worth flagging. */
+function TweakChip({ children }: { children: React.ReactNode }) {
   return (
-    <span
-      className={cn(
-        'inline-flex shrink-0 items-center rounded-full px-1.5 py-0.5 text-[10.5px] font-medium',
-        tone === 'on' && 'bg-success/10 text-success',
-        tone === 'muted' && 'bg-foreground/[0.05] text-foreground/50',
-        tone === 'warn' && 'bg-destructive/10 text-destructive',
-      )}
-    >
+    <span className="inline-flex shrink-0 items-center rounded-full bg-destructive/10 px-1.5 py-0.5 text-[10.5px] font-medium text-destructive">
       {children}
     </span>
   )

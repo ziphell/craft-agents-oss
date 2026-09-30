@@ -1508,9 +1508,10 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   }, [scrollToFollowUpTurn])
 
   // --- Turn rail -----------------------------------------------------------
-  // Lists every turn in the session — including ones older than the reverse
+  // Ticks every question in the session — including ones older than the reverse
   // pagination window — so it can both orient and jump.
   const railItems = useMemo(() => buildTurnRailItems(allTurns, getTurnKey), [allTurns])
+  const railKeys = useMemo(() => new Set(railItems.map((item) => item.key)), [railItems])
 
   const [activeTurnKey, setActiveTurnKey] = React.useState<string | null>(null)
 
@@ -1527,6 +1528,9 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
       let bestKey: string | null = null
       let bestTop = -Infinity
       turnRefs.current.forEach((element, key) => {
+        // Only ticks are candidates — anchoring on an assistant turn would leave
+        // the rail with nothing highlighted while its question is what you read.
+        if (!railKeys.has(key)) return
         const top = element.getBoundingClientRect().top
         if (top <= anchorY && top > bestTop) {
           bestTop = top
@@ -1545,7 +1549,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
       viewport.removeEventListener('scroll', schedule)
       if (frame !== 0) cancelAnimationFrame(frame)
     }
-  }, [session?.id, turns.length, visibleTurnCount])
+  }, [session?.id, turns.length, visibleTurnCount, railKeys])
 
   const handleRailSelect = useCallback((key: string) => {
     const index = allTurns.findIndex((turn) => getTurnKey(turn) === key)

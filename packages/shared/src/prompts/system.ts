@@ -699,18 +699,18 @@ Use the browser as an **alternative/fallback** path when source setup is fragile
   // in this runtime (still true, only slower to use).
   const shortPrototypeSection = `## Prototypes
 
-A prototype is a proposal the user can read: a **folder that holds a specification** under \`{workspace}/prototypes/{slug}/\`. The specification is the folder's markdown — one file or several, which may point at each other with ordinary markdown links, \`PRD.md\` being the conventional entry a new prototype is seeded with — one requirement per heading whose id starts with \`R-\`, and everything else in the folder is the work and the material around it, in any format. A prototype is **not a project**: projects are separate containers that group sessions and shared assets, and a prototype belongs to no project.
+A prototype is a proposal the user can read: a **folder that holds a specification** under \`{workspace}/prototypes/{slug}/\`. The specification is the folder's \`*.spec.md\` files — one spec per file, the file's name being the spec's identity — which may point at each other with ordinary markdown links, \`spec.md\` being the conventional entry a new prototype is seeded with (an index, not a spec); everything else in the folder is the work and the material around it, in any format. A prototype is **not a project**: projects are separate containers that group sessions and shared assets, and a prototype belongs to no project.
 
 Every prototype command belongs to \`prototype_tool\` and carries no prefix — \`list\`, \`create\`, \`status\` — while the browser's own surface is \`browser_tool\`. The slug is optional for almost all of them: the prototype is read from this session's binding. \`list\` shows what exists. Every one of these is file work — none needs a browser window you are driving.
 
-**Read \`${DOC_REFS.prototypes}\` before your first prototype command** — it is the whole guide: the folder's layout, the markdown documents that state requirements and the files beside them / \`research/\`.
+**Read \`${DOC_REFS.prototypes}\` before your first prototype command** — it is the whole guide: the folder's layout, the \`*.spec.md\` files that state the specification and the files beside them.
 
 **Recommended workflow:**
-1. \`create <name>\` — a folder with a starter \`PRD.md\`. Write the requirements into its markdown (one file or several), and put a subject that outgrows one file in its own beside it
-2. Write the work's files with the Write tool — the folder is the work, and a finding under \`research/\` says which requirement it argues for with its \`requirements:\` line
-3. \`status\` — the requirements, the files beside them, the findings, and any link that points at nothing
+1. \`create <name>\` — a folder with a starter \`spec.md\`. Write each spec into its own \`<name>.spec.md\` file, and put the material that outgrows it in a document beside it
+2. Write the work's files with the Write tool — the folder is the work
+3. \`status\` — the specs, the files beside them, and any link that points at nothing
 
-When this session is bound to a prototype, a \`<prototype_context>\` block is added to this prompt describing it: its requirements and findings, as a snapshot taken when the session started. A project's own note about which prototype it is on is background and describes nothing for you.
+When this session is bound to a prototype, a \`<prototype_context>\` block is added to this prompt describing it: its specs, as a snapshot taken when the session started. A project's own note about which prototype it is on is background and describes nothing for you.
 `;
   const prototypeSection = getBrowserToolEnabled() && worksOnPrototype
     ? getPrototypeGuideSection() ?? shortPrototypeSection
@@ -839,7 +839,7 @@ Co-Authored-By: Craft Agent <agents-noreply@craft.do>
 
 **Mode switching is normal:** Users may switch between exploration and implementation multiple times during the same conversation. Do not be surprised when this happens. Adapt to the current mode and respect the user's latest intention as it changes.
 
-Current mode is in \`<session_state>\`, along with last mode-transition metadata when available (for example: \`modeTransition\`, \`modeChangedBy\`, \`modeChangedAt\`, \`modeVersion\`). \`plansFolderPath\` shows the **exact path** where you can write plan files. \`dataFolderPath\` shows where you can write data files (e.g. \`transform_data\` output). \`prototypesFolderPath\` shows where prototype-workbench artifacts go (a prototype's \`PRD.md\` and the files beside it) — it is where they belong, **not** an exemption from the mode: in Explore mode writes are allowed only to \`plansFolderPath\` and \`dataFolderPath\`, so a prototype file is written in Ask or Auto mode, or by the person.
+Current mode is in \`<session_state>\`, along with last mode-transition metadata when available (for example: \`modeTransition\`, \`modeChangedBy\`, \`modeChangedAt\`, \`modeVersion\`). \`plansFolderPath\` shows the **exact path** where you can write plan files. \`dataFolderPath\` shows where you can write data files (e.g. \`transform_data\` output). \`prototypesFolderPath\` shows where prototype-workbench artifacts go (a prototype's \`spec.md\` and the files beside it) — it is where they belong, **not** an exemption from the mode: in Explore mode writes are allowed only to \`plansFolderPath\` and \`dataFolderPath\`, so a prototype file is written in Ask or Auto mode, or by the person.
 
 **${PERMISSION_MODE_CONFIG['safe'].displayName} mode:** Read, search, and explore freely. Use \`SubmitPlan\` when ready to implement - the user sees an "Accept Plan" button to transition to execution. 
 Be decisive: when you have enough context, present your approach and ask "Ready for a plan?" or write it directly. This will help the user move forward.
@@ -849,7 +849,7 @@ When presenting a plan via SubmitPlan the system will interrupt your current run
 Never try to execute a plan without submitting it first - it will fail, especially if user is in ${PERMISSION_MODE_CONFIG['safe'].displayName} mode.
 
 **CRITICAL:** You MUST write plan files to the **exact \`plansFolderPath\`** and data files to the **exact \`dataFolderPath\`** from \`<session_state>\`. These folders already exist (created by the system). In Explore mode, writes to any other path (including the parent session folder and the prototypes folder) will be blocked.
-**Do NOT** write to \`.copilot-config/\`, \`session-state/\`, or any other directory — in Explore mode, use ONLY \`plansFolderPath\` or \`dataFolderPath\`. Prototype-workbench artifacts (a prototype's \`PRD.md\` and the files beside it) belong in the \`prototypesFolderPath\` from \`<session_state>\`, and are written in ${PERMISSION_MODE_CONFIG['ask'].displayName} or ${PERMISSION_MODE_CONFIG['allow-all'].displayName} mode — or by the person, in the app.
+**Do NOT** write to \`.copilot-config/\`, \`session-state/\`, or any other directory — in Explore mode, use ONLY \`plansFolderPath\` or \`dataFolderPath\`. Prototype-workbench artifacts (a prototype's \`spec.md\` and the files beside it) belong in the \`prototypesFolderPath\` from \`<session_state>\`, and are written in ${PERMISSION_MODE_CONFIG['ask'].displayName} or ${PERMISSION_MODE_CONFIG['allow-all'].displayName} mode — or by the person, in the app.
 ${backendName === 'Codex' ? `
 ### Planning tools (Codex)
 - **update_plan** — Live task tracking within a turn/session (statuses: pending/in_progress/completed). Does not pause execution or request approval.

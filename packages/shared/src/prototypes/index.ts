@@ -1,46 +1,36 @@
 /**
  * Prototype workbench module.
  *
- * A prototype is a **folder**: a specification (its markdown — one file or several) holding its
- * requirements, the research that argues around them, and whatever material the author
- * keeps beside them. This barrel is the surface the workbench, the agent and the panel
- * read it through.
+ * A prototype is a **folder**: a specification (one `*.spec.md` file per spec, plus an entry
+ * `spec.md` index) holding its specs, and whatever material the author keeps beside them. This
+ * barrel is the surface the workbench, the agent and the panel read it through.
  */
 
-export {
-  PROTOTYPE_PRD_FILENAME,
-  PROTOTYPE_RESEARCH_DIRNAME,
-} from './types.ts'
+export { PROTOTYPE_ENTRY_FILENAME } from './types.ts'
 
 export {
   getPrototypeDirPath,
-  getPrototypeResearchPath,
   isMarkdownFile,
   listPrototypeFiles,
 } from './storage.ts'
 export type { PrototypeFileEntry } from './storage.ts'
 
 export {
-  getPrototypePrdPath,
-  normalizeRequirementId,
-  parseRequirementDocument,
-  readPrototypeRequirements,
-} from './requirements.ts'
+  getPrototypeEntryPath,
+  parseSpecDocument,
+  readPrototypeSpecs,
+} from './spec.ts'
 export type {
-  PrototypeRequirement,
-  PrototypeRequirements,
-} from './requirements.ts'
-
-export { parsePrototypeFinding, readPrototypeFindings } from './research.ts'
-export type { PrototypeFinding, PrototypeFindings } from './research.ts'
+  PrototypeSpec,
+  PrototypeSpecs,
+} from './spec.ts'
 
 export { extractLinkTargets, readPrototypeLinks } from './links.ts'
 export type { PrototypeLink, PrototypeLinks } from './links.ts'
 
 export type {
   PrototypeStatus,
-  PrototypeStatusFinding,
-  PrototypeStatusRequirement,
+  PrototypeStatusSpec,
 } from './status.ts'
 export { buildPrototypeStatus, listPrototypeStatuses, whyPrototypeIsNotSettled } from './status.ts'
 export { notice, rawNotice } from './notices.ts'

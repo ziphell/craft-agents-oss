@@ -35,7 +35,6 @@ export function isDetailNavState(navState: NavigationState | null): boolean {
     case 'projects':
     case 'prototypes':
     case 'tweaks':
-    case 'artifacts':
       return navState.details !== null
   }
 }

@@ -34,7 +34,6 @@ import {
   isProjectsNavigation,
   isPrototypesNavigation,
   isTweaksNavigation,
-  isArtifactsNavigation,
 } from '@/contexts/NavigationContext'
 import { useSessionSelection, useIsMultiSelectActive, useSelectedIds, useSelectionCount } from '@/hooks/useSession'
 import { sourceSelection, skillSelection, automationSelection } from '@/hooks/useEntitySelection'
@@ -48,7 +47,6 @@ import ProjectInfoPage from '@/pages/ProjectInfoPage'
 import PrototypeInfoPage from '@/pages/PrototypeInfoPage'
 import { KanbanBoardContainer } from './kanban/KanbanBoardContainer'
 import { TweakView } from '../tweaks/TweakView'
-import { ArtifactView } from '../artifacts/ArtifactView'
 import type { ExecutionEntry } from '../automations/types'
 import { automationsAtom } from '@/atoms/automations'
 import { SendResourceToWorkspaceDialog, type SendResourceType } from './SendResourceToWorkspaceDialog'
@@ -378,25 +376,6 @@ export function MainContentPanel({
       <Panel variant="grow" className={className}>
         <div className="flex items-center justify-center h-full text-muted-foreground">
           <p className="text-sm">{t("tweaks.noTweakSelected")}</p>
-        </div>
-      </Panel>
-    )
-  }
-
-  // Artifacts navigator - show one artifact's detail page, or an empty state
-  if (isArtifactsNavigation(navState)) {
-    if (navState.details) {
-      return wrapWithStoplight(
-        <Panel variant="grow" className={className}>
-          <ArtifactView key={navState.details.id} relativePath={navState.details.id} />
-        </Panel>
-      )
-    }
-    // No artifact selected - empty state
-    return wrapWithStoplight(
-      <Panel variant="grow" className={className}>
-        <div className="flex items-center justify-center h-full text-muted-foreground">
-          <p className="text-sm">{t("artifacts.noArtifactSelected")}</p>
         </div>
       </Panel>
     )

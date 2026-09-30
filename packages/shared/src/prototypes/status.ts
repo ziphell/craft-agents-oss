@@ -1,7 +1,7 @@
 /**
  * Prototype status — one report of a prototype, derived from its files.
  *
- * Composes the derived facts (requirements, findings) into one report, so the state of
+ * Composes the derived facts (specs, links, the files) into one report, so the state of
  * a prototype can be inspected without opening the filesystem by hand.
  *
  * All facts are recomputed from disk; nothing here is cached or persisted.
@@ -11,9 +11,9 @@ import { readFileSync, readdirSync } from 'fs'
 import { getWorkspacePrototypesPath } from '../workspaces/storage.ts'
 import { pictureStanding } from '../drawio/picture.ts'
 import { notice, rawNotice, type PrototypeNotice } from './notices.ts'
-import { readPrototypeRequirements } from './requirements.ts'
-import { readPrototypeFindings } from './research.ts'
+import { readPrototypeSpecs } from './spec.ts'
 import { readPrototypeLinks, type PrototypeLink } from './links.ts'
+import { isPrototypeEntryFile, isSpecFile } from './types.ts'
 import {
   getPrototypeDirPath,
   listPrototypeFiles,
@@ -21,35 +21,17 @@ import {
 } from './storage.ts'
 
 /**
- * One requirement, as its document states it.
+ * One spec, as its own document states it.
  *
- * `findings` is what argues for it — evidence about somebody else's product, never a claim that
- * the requirement is built. The workbench keeps no statement of what implements a requirement:
- * that would be a second description of the work, and it would go stale the moment a file changed.
+ * A spec is a file (`<name>.spec.md`), so its **path** is its identity and its title is the
+ * file's first heading (or its own file name). The workbench keeps no statement of what
+ * implements a spec: that would be a second description of the work, and it would go stale
+ * the moment a file changed.
  */
-export interface PrototypeStatusRequirement {
-  id: string
+export interface PrototypeStatusSpec {
+  /** The `.spec.md` file's prototype-relative path — the spec's identity. */
+  file: string
   title: string
-  /**
-   * The markdown file whose heading defines this requirement — `PRD.md`, `docs/features.md`. Which
-   * file carries a requirement is no longer implied by the file name, so it travels with the row.
-   */
-  file: string
-  /** Findings in `research/` that argue for it. */
-  findings: string[]
-}
-
-/** A finding from `research/` — what was learned, and about whose product. */
-export interface PrototypeStatusFinding {
-  id: string
-  /** Null when the file has no `claim:` line — reported in `briefIssues`. */
-  claim: string | null
-  /** The address it was observed at. */
-  source: string | null
-  /** Requirement ids it argues for. */
-  requirements: string[]
-  /** Path relative to the prototype directory, e.g. `research/F-001-sticky.md`. */
-  file: string
 }
 
 export interface PrototypeStatus {
@@ -57,22 +39,22 @@ export interface PrototypeStatus {
   /** Absolute path to the prototype's directory. */
   dir: string
   /**
-   * The specification's requirements, each with the findings that argue for it. Empty when no
-   * markdown file states one — the honest state of a prototype whose requirements have not been
-   * written down yet.
+   * The specification's specs — one per `*.spec.md` file. Empty when the folder holds none:
+   * the honest state of a prototype whose specs have not been written down yet.
    */
-  requirements: PrototypeStatusRequirement[]
+  specs: PrototypeStatusSpec[]
   /**
-   * The markdown files that *define* requirements — one file or several. The page renders these as
-   * the specification; which requirement lives in which of them is on each row (`requirements[].file`).
-   * Empty when nothing has been written down yet.
+   * The specification: the entry (`spec.md`) first, then the `*.spec.md` files that **are** the
+   * specs — one file each. The page renders these as the specification, and each
+   * spec's file is named on its own row (`specs[].file`). The entry is here even when
+   * the folder holds no spec yet, so this is empty only when the folder holds neither.
    */
   specificationFiles: PrototypeFileEntry[]
   /**
    * Everything else in the prototype's own directory, in **any format** and recursively — the
    * material and the work's own files. The folder is the author's and there is no rule about what may
-   * sit in it (`listPrototypeFiles`); the files that define requirements are excluded here only
-   * because they are shown as the specification rather than listed twice.
+   * sit in it (`listPrototypeFiles`); the spec files and the entry are excluded here only
+   * because the report names them elsewhere rather than listing them twice.
    *
    * Paths rather than text: the panel reads what it shows through `file:read`, and a list of
    * status reports is no place to carry every prototype's files.
@@ -84,11 +66,9 @@ export interface PrototypeStatus {
    * backlink for `to`, so the page can say "links to" and "linked from" without a second reading.
    *
    * A link carries nothing about the work — it is navigation, and nothing about a link says a
-   * requirement is done. A link that resolves to nothing is in `unresolved`.
+   * spec is done. A link that resolves to nothing is in `unresolved`.
    */
   links: PrototypeLink[]
-  /** Findings under `research/` — what was learned about other products. */
-  findings: PrototypeStatusFinding[]
   /**
    * What this prototype still owes **as a matter of fact** — the gate's own input
    * (`whyPrototypeIsNotSettled`): a link that points at nothing.
@@ -110,10 +90,9 @@ export interface PrototypeStatus {
    */
   settleBlockers: PrototypeNotice[]
   /**
-   * Everything worth saying about the specification, the research and the pictures in it: a
-   * document that cannot be read as written, a finding with no claim, with evidence that is not on
-   * disk, or arguing for an id no document defines, a diagram shown an earlier drawing of. Each is
-   * a silent failure otherwise — precisely the kind this report exists to make loud.
+   * Everything worth saying about the specification and the pictures in it — a diagram shown an
+   * earlier drawing of. Each is a silent failure otherwise — precisely the kind this report exists
+   * to make loud.
    *
    * A link that points at nothing is **not** here, because that is what {@link unresolved} — and
    * so the gate — already says.
@@ -125,7 +104,7 @@ export interface PrototypeStatus {
  * List every prototype in a workspace, each with its full status.
  *
  * A directory under `prototypes/` counts as a prototype even before anything is written into it —
- * the folder *is* the prototype, and a prototype with no requirements yet is an honest state rather
+ * the folder *is* the prototype, and a prototype with no specs yet is an honest state rather
  * than a broken one.
  */
 export function listPrototypeStatuses(workspaceRootPath: string): PrototypeStatus[] {
@@ -148,67 +127,44 @@ export function listPrototypeStatuses(workspaceRootPath: string): PrototypeStatu
 export function buildPrototypeStatus(workspaceRootPath: string, slug: string): PrototypeStatus {
   const dir = getPrototypeDirPath(workspaceRootPath, slug)
 
-  // The specification: the headings every markdown file of the folder states, in reading order
-  // (`requirements.ts`). Read here rather than through a derived layer, because a requirement is now
-  // only a fact about a document — nothing claims to implement it.
-  const documents = readPrototypeRequirements(workspaceRootPath, slug)
+  // The specification: one spec per `*.spec.md` file of the folder, in path order
+  // (`spec.ts`). Read here rather than through a derived layer, because a spec is now
+  // only a file — nothing claims to implement it.
+  const documents = readPrototypeSpecs(workspaceRootPath, slug)
   // The prototype's own files, recursively, with no filter of any kind: the folder is the author's,
-  // and what sits in it is their business. The files that define requirements are separated out so a
-  // caller that renders them does not list them a second time among the material.
+  // and what sits in it is their business. What a section of the report names is separated out so
+  // nothing is listed twice — which is what the two lists below do between them.
   const allFiles = listPrototypeFiles(workspaceRootPath, slug)
-  const defining = new Set(documents.requirements.map((requirement) => requirement.file))
-  const specificationFiles = allFiles.filter((file) => defining.has(file.name))
-  const files = allFiles.filter((file) => !defining.has(file.name))
-  const findings = readPrototypeFindings(workspaceRootPath, slug)
   const linkReport = readPrototypeLinks(workspaceRootPath, slug)
+  // The entry is the specification's first row whether or not any spec exists yet: it is
+  // where the specification begins, so a reader sent to find it among the material has been told
+  // the wrong thing about the folder. It is therefore in neither of the two lists by the rule the
+  // other files are in them — it is named here, and the rest is what is left once that is done.
+  const entryName = allFiles.find((file) => isPrototypeEntryFile(file.name))?.name ?? null
+  // The spec files are the `*.spec.md` files by name, not by whether they parsed: a
+  // spec file belongs to the specification even in the moment it cannot be read.
+  const defining = new Set(allFiles.filter((file) => isSpecFile(file.name)).map((file) => file.name))
+  const specificationFiles = [
+    ...allFiles.filter((file) => file.name === entryName),
+    ...allFiles.filter((file) => file.name !== entryName && defining.has(file.name)),
+  ]
+  const files = allFiles.filter((file) => file.name !== entryName && !defining.has(file.name))
 
-  // Findings by the requirement they argue for — the only thread left between a requirement and
-  // anything else in the folder, and evidence rather than implementation.
-  const arguedFor = new Map<string, string[]>()
-  for (const finding of findings.findings) {
-    for (const id of finding.requirements) {
-      const ids = arguedFor.get(id)
-      if (ids) ids.push(finding.id)
-      else arguedFor.set(id, [finding.id])
-    }
-  }
-
-  // A finding's `requirements:` line is the only reference the folder still makes, so an id no
-  // document defines is the one dangling reference this report can see. It is a fact about the
-  // files — a citation to something that was never written — so it is named rather than passed over.
-  const defined = new Set(documents.requirements.map((requirement) => requirement.id))
-  const dangling = findings.findings.flatMap((finding) =>
-    finding.requirements
-      .filter((id) => !defined.has(id))
-      .map((id) => notice('requirement.undefined', { where: finding.file, id })),
-  )
-
-  // What the *layers* could not read, plus the pictures that disagree with their own source. The
-  // fact the gate already owns — a link that points at nothing — is deliberately **not** here: it is
+  // What could not be read as written — the pictures that disagree with their own source. The fact
+  // the gate already owns — a link that points at nothing — is deliberately **not** here: it is
   // `unresolved`, and this is the page's other warning box, so repeating it would say one thing twice.
-  const briefIssues = [...documents.issues, ...findings.issues]
-    .map(rawNotice)
-    .concat(dangling, staleDrawings(allFiles))
+  const briefIssues = [...documents.issues].map(rawNotice).concat(staleDrawings(allFiles))
 
   const report: Omit<PrototypeStatus, 'settleBlockers'> = {
     slug,
     dir,
-    requirements: documents.requirements.map((requirement) => ({
-      id: requirement.id,
-      title: requirement.title,
-      file: requirement.file,
-      findings: arguedFor.get(requirement.id) ?? [],
+    specs: documents.specs.map((spec) => ({
+      file: spec.file,
+      title: spec.title,
     })),
     specificationFiles,
     files,
     links: linkReport.links,
-    findings: findings.findings.map((finding) => ({
-      id: finding.id,
-      claim: finding.claim,
-      source: finding.source,
-      requirements: finding.requirements,
-      file: finding.file,
-    })),
     unresolved: {
       brokenLinks: linkReport.links
         .filter((link) => link.to === null)

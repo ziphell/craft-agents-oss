@@ -1,16 +1,15 @@
 /**
  * Deleting a prototype.
  *
- * The directory goes away whole — the specification, the material beside it, the research and the
- * reviews. Nothing is archived and nothing is recoverable from here, which
+ * The directory goes away whole — the specification and the material beside it. Nothing is archived
+ * and nothing is recoverable from here, which
  * is why the panel asks before calling this and why it is not on the agent's
  * command list: the agent may write and rewrite everything inside a prototype,
  * but the decision that a prototype stops existing is the user's.
  *
- * Another prototype's documents may name this one — a slug in someone's set, a
- * finding's `source:`. That is prose, not a relation stored anywhere, so there is
- * nothing here to repair or report: a stale mention reads as a prototype that is
- * not there, which is exactly what it is.
+ * Another prototype's documents may name this one — a slug in someone's set. That is prose, not a
+ * relation stored anywhere, so there is nothing here to repair or report: a stale mention reads as
+ * a prototype that is not there, which is exactly what it is.
  */
 
 import { existsSync, rmSync } from 'fs'

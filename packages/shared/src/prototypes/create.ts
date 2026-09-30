@@ -1,11 +1,10 @@
 /**
  * Prototype creation.
  *
- * A prototype is a **folder** — its specification (markdown, one file or several) plus whatever
- * material the author keeps beside it. Creation makes the folder and writes a
- * starter brief into it, and nothing else: the spec *is* the deliverable now, so
- * starting from an empty document would leave the agent with a form to discover
- * rather than a document to fill in.
+ * A prototype is a **folder** — its specification (one `*.spec.md` file per spec) plus
+ * whatever material the author keeps beside it. Creation makes the folder and writes a starter
+ * `spec.md` into it, and nothing else: the entry is an **index**, and a new prototype therefore
+ * starts with **no specs** — an honest empty state rather than a form to fill in.
  *
  * Creation asks for a name and nothing else. There is no kind, no address and no
  * layout to ask about any more — those were facts about a page, and a prototype no
@@ -17,7 +16,7 @@
 
 import { existsSync, mkdirSync, writeFileSync } from 'fs'
 import { getPrototypeDirPath } from './storage.ts'
-import { getPrototypePrdPath } from './requirements.ts'
+import { getPrototypeEntryPath } from './spec.ts'
 
 /** Slug characters that cannot escape the prototypes directory. */
 const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/
@@ -31,8 +30,8 @@ export interface CreatedPrototype {
   slug: string
   /** Absolute path to the prototype's directory. */
   dir: string
-  /** Absolute path to the starter `PRD.md` written into it. */
-  prdPath: string
+  /** Absolute path to the starter `spec.md` written into it. */
+  entryPath: string
 }
 
 /**
@@ -52,35 +51,32 @@ export function prototypeSlugFromName(name: string): string {
 }
 
 /**
- * The starter brief.
+ * The starter index.
  *
- * A requirement's shape is the one thing an author has to get right for anything else to work — the
- * id is what every file refers back to — so the template demonstrates it rather than describing it
- * from a distance.
+ * The entry is where the specification is read from, not a spec itself: a spec is its
+ * own file, named `<name>.spec.md` (one spec per file, the file's name its identity), so the
+ * template says where specs go rather than seeding an example a new author would have to
+ * unlearn.
  */
-function starterPrd(title: string): string {
+function starterEntry(title: string): string {
   return [
     `# ${title}`,
     '',
-    'The specification. Every requirement is a heading whose id starts with `R-`, and that id is',
-    'what anything else in this folder refers back to — a finding names it on its `requirements:`',
-    'line.',
+    'The specification, read from the folder beside this file. Each spec is its own',
+    'document, named `<name>.spec.md` — one spec per file, and the file\'s name is the',
+    'spec\'s identity — with its first heading as the title and the rest of it as the prose.',
     '',
-    'One file is enough to start. When a subject outgrows it, give that subject its own markdown',
-    'file — every markdown file here is read the same way.',
+    'This entry is the index: point at a spec with an ordinary markdown link,',
+    '`[the cart](cart-total.spec.md)`, and keep that subject\'s detail there rather than here.',
     '',
-    '## R-001 <what the requirement is>',
-    '',
-    'Say what a person cannot do today, and what changes for them once this exists. Keep it about',
-    'the problem rather than about a screen or a feature.',
-    '',
-    'Add more the same way — `## R-002 …`.',
+    'State the problem rather than a solution: say what a person cannot do today, and what changes',
+    'for them once this exists. Keep it about the problem, not about a screen or a feature.',
     '',
   ].join('\n')
 }
 
 /**
- * Create a prototype directory and its starter brief.
+ * Create a prototype directory and its starter index.
  *
  * @throws when the name produces an empty slug, or when the prototype already
  *   exists (silently reusing a directory would mix two prototypes' files).
@@ -99,8 +95,8 @@ export function createPrototype(workspaceRootPath: string, input: CreatePrototyp
   }
 
   mkdirSync(dir, { recursive: true })
-  const prdPath = getPrototypePrdPath(workspaceRootPath, slug)
-  writeFileSync(prdPath, starterPrd(title), 'utf-8')
+  const entryPath = getPrototypeEntryPath(workspaceRootPath, slug)
+  writeFileSync(entryPath, starterEntry(title), 'utf-8')
 
-  return { slug, dir, prdPath }
+  return { slug, dir, entryPath }
 }

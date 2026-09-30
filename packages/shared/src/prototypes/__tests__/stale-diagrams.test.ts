@@ -50,8 +50,8 @@ describe('a drawing the brief shows an earlier state of', () => {
   beforeEach(() => {
     workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-stale-diagram-'))
     createPrototype(workspaceRoot, { name: slug })
-    // A brief of one requirement, so that a diagram notice is the only notice there can be here.
-    write('PRD.md', '## R-001 The cart is priced at checkout\n')
+    // A spec beside the entry, so that a diagram notice is the only notice there can be here.
+    write('cart-total.spec.md', '# The cart is priced at checkout\n')
     write('cart.js', 'export const total = 0\n')
   })
 

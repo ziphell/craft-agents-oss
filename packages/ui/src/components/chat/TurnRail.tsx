@@ -1,35 +1,27 @@
 /**
  * TurnRail.tsx
  *
- * A slim navigator for the conversation's turns, pinned beside the messages area.
- * One tick per turn: hovering previews that turn, clicking scrolls to it.
+ * A slim navigator for the questions asked in the conversation, pinned beside
+ * the messages area. One tick per user turn: hovering previews that question,
+ * clicking scrolls to it.
  *
  * The rail is additive — the conversation itself is unchanged (all turns stay
- * expanded and flat). It is the "where am I / jump there" affordance for long
- * sessions, not a container for content.
+ * expanded and flat). It is the "which question am I reading / jump to it"
+ * affordance for long sessions, not a container for content.
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Bot, CircleAlert, Info, User } from 'lucide-react'
 import type { Message } from '@craft-agent/core'
 import { cn } from '../../lib/utils'
-import { getPreviewText, stripMarkdown } from './TurnCard'
-import { getTurnIntent, hasErrorActivities, type Turn } from './turn-utils'
-
-/** Which side of the conversation a turn came from. Drives the tick's length. */
-export type TurnRailRole = 'user' | 'assistant' | 'system'
+import { stripMarkdown } from './TurnCard'
+import type { Turn } from './turn-utils'
 
 export interface TurnRailItem {
   /** Matches the conversation's turn key, so clicks land on the same element. */
   key: string
-  role: TurnRailRole
   /** One line shown in the hover preview. */
   preview: string
-  /** Tool/step count for assistant turns. */
-  steps?: number
-  /** True when a step in this turn failed. */
-  hasError?: boolean
 }
 
 /** Per-tick vertical pitch bounds. Ticks compress to `MIN` before they overflow. */
@@ -40,12 +32,6 @@ const RAIL_PADDING = 24
 /** Roughly the preview card's height, used to keep it inside the rail. */
 const PREVIEW_ESTIMATED_HEIGHT = 96
 const PREVIEW_MAX_CHARS = 140
-
-const ROLE_ICON: Record<TurnRailRole, typeof User> = {
-  user: User,
-  assistant: Bot,
-  system: Info,
-}
 
 function messageText(message: Message): string {
   const content = message.content as unknown
@@ -71,6 +57,10 @@ function toPreview(text: string): string {
 /**
  * Build the rail's items from the grouped turns.
  *
+ * Only the user's own turns become ticks. The rail answers "which question am I
+ * reading, and how do I get back to it" — assistant and system turns do not add
+ * to that, they are the reply to a question already on the rail.
+ *
  * `getKey` is the caller's turn-key function — the rail must hand back exactly
  * the keys the conversation registered its DOM refs under, otherwise a click
  * has nothing to scroll to.
@@ -79,31 +69,8 @@ export function buildTurnRailItems(turns: Turn[], getKey: (turn: Turn) => string
   const items: TurnRailItem[] = []
 
   for (const turn of turns) {
-    // Credential/OAuth prompts are transient gates, not conversation turns worth navigating.
-    if (turn.type === 'auth-request') continue
-
-    const key = getKey(turn)
-
-    if (turn.type === 'assistant') {
-      const preview =
-        toPreview(turn.response?.text ?? '')
-        || getTurnIntent(turn)
-        || getPreviewText(turn.activities, turn.intent, turn.isStreaming, !!turn.response, turn.isComplete)
-      items.push({
-        key,
-        role: 'assistant',
-        preview,
-        steps: turn.activities.length || undefined,
-        hasError: hasErrorActivities(turn),
-      })
-      continue
-    }
-
-    items.push({
-      key,
-      role: turn.type === 'user' ? 'user' : 'system',
-      preview: toPreview(messageText(turn.message)),
-    })
+    if (turn.type !== 'user') continue
+    items.push({ key: getKey(turn), preview: toPreview(messageText(turn.message)) })
   }
 
   return items
@@ -152,7 +119,6 @@ export function TurnRail({ items, activeKey, onSelect, className }: TurnRailProp
   if (items.length < 2) return null
 
   const hoveredItem = hovered ? items.find((item) => item.key === hovered.key) : undefined
-  const HoveredIcon = hoveredItem ? ROLE_ICON[hoveredItem.role] : null
   const maxPreviewTop = Math.max(0, railHeight - PREVIEW_ESTIMATED_HEIGHT)
 
   return (
@@ -193,11 +159,9 @@ export function TurnRail({ items, activeKey, onSelect, className }: TurnRailProp
                 <span
                   className={cn(
                     'block rounded-full transition-all duration-100',
-                    item.role === 'assistant' ? 'w-2.5' : 'w-1.5',
                     isActive
                       ? 'h-[3px] w-4 bg-foreground'
-                      : 'h-[2px] bg-foreground/25 group-hover/tick:bg-foreground/70 group-focus-visible/tick:bg-foreground/70',
-                    !isActive && item.hasError && 'bg-destructive/60'
+                      : 'h-[2px] w-1.5 bg-foreground/25 group-hover/tick:bg-foreground/70 group-focus-visible/tick:bg-foreground/70'
                   )}
                 />
               </button>
@@ -211,14 +175,7 @@ export function TurnRail({ items, activeKey, onSelect, className }: TurnRailProp
           className="pointer-events-none absolute right-full z-30 mr-2 w-[240px] rounded-[8px] border border-border bg-popover p-2 shadow-md"
           style={{ top: Math.max(0, Math.min(hovered?.top ?? 0, maxPreviewTop)) }}
         >
-          <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-            {HoveredIcon && <HoveredIcon className="h-3 w-3 shrink-0" />}
-            {hoveredItem.steps !== undefined && (
-              <span className="tabular-nums">{hoveredItem.steps}</span>
-            )}
-            {hoveredItem.hasError && <CircleAlert className="h-3 w-3 shrink-0 text-destructive" />}
-          </div>
-          <p className="mt-1 line-clamp-4 text-[12px] leading-snug text-foreground/80">
+          <p className="line-clamp-4 text-[12px] leading-snug text-foreground/80">
             {hoveredItem.preview}
           </p>
         </div>

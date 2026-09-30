@@ -36,7 +36,7 @@ describe('duplicatePrototype', () => {
 
     expect(copied.sourceSlug).toBe('orders')
     expect(copied.slug).toBe('orders-copy')
-    expect(readFileSync(join(dir, 'PRD.md'), 'utf-8')).toContain('## R-001')
+    expect(readFileSync(join(dir, 'spec.md'), 'utf-8')).toContain('.spec.md')
     expect(readFileSync(join(dir, 'personas.md'), 'utf-8')).toBe('# who this is for\n')
     expect(readFileSync(join(dir, 'mock.png'), 'utf-8')).toBe('not really a png')
   })

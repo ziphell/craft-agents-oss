@@ -83,38 +83,38 @@ describe('readPrototypeLinks', () => {
     const slug = makePrototype()
     writeDoc(
       slug,
-      'PRD.md',
+      'spec.md',
       'The detail is in [checkout](docs/checkout.md), the states in [states](docs/states.md).\n',
     )
-    writeDoc(slug, 'docs/checkout.md', 'Back to [the entry](../PRD.md).\n')
+    writeDoc(slug, 'docs/checkout.md', 'Back to [the entry](../spec.md).\n')
     // A link between two documents in the same subfolder is relative to that folder.
     writeDoc(slug, 'docs/states.md', 'See also [checkout](checkout.md).\n')
 
     const { links } = readPrototypeLinks(workspaceRoot, slug)
 
     expect(
-      links.filter((link) => link.from === 'PRD.md').map((link) => `${link.target}→${link.to}`),
+      links.filter((link) => link.from === 'spec.md').map((link) => `${link.target}→${link.to}`),
     ).toEqual(['docs/checkout.md→docs/checkout.md', 'docs/states.md→docs/states.md'])
-    expect(links.find((link) => link.from === 'docs/checkout.md')?.to).toBe('PRD.md')
+    expect(links.find((link) => link.from === 'docs/checkout.md')?.to).toBe('spec.md')
     expect(links.find((link) => link.from === 'docs/states.md')?.to).toBe('docs/checkout.md')
   })
 
   it('keeps a link that points at nothing, as a target that resolves to nothing', () => {
     const slug = makePrototype()
-    writeDoc(slug, 'PRD.md', 'The detail is in [nowhere](docs/nowhere.md).\n')
+    writeDoc(slug, 'spec.md', 'The detail is in [nowhere](docs/nowhere.md).\n')
 
     const { links } = readPrototypeLinks(workspaceRoot, slug)
 
     // It stays in the list as `to: null` rather than being dropped — what a broken link *means* is
     // the gate's sentence (`gate.linkBroken`), so this reader does not say it a second time.
-    expect(links).toEqual([{ from: 'PRD.md', target: 'docs/nowhere.md', to: null }])
+    expect(links).toEqual([{ from: 'spec.md', target: 'docs/nowhere.md', to: null }])
   })
 
   // The app opens the link; the workbench only reads the ones that point inside the folder, and a
   // link written in a script is not one of them.
   it('reads links out of markdown only', () => {
     const slug = makePrototype()
-    writeDoc(slug, 'PRD.md', '# PRD\n')
+    writeDoc(slug, 'spec.md', '# Spec\n')
     writeDoc(slug, 'cart.js', 'const x = "[a](b.md)"\n')
 
     const { links } = readPrototypeLinks(workspaceRoot, slug)

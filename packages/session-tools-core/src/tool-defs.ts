@@ -545,23 +545,21 @@ Examples:
   prototype_tool: `Run a prototype's own commands (one command per call — string or array input, no batching).
 
 A prototype is a **folder** plus a **specification**. The folder is where the work lives; the
-specification is the folder's markdown — one file or several (\`PRD.md\` is the conventional entry a
-new prototype is seeded with, and any other markdown file is read the same way) — and every
-requirement is a heading whose id starts with \`R-\`
-(\`## R-001 <what the requirement is>\`). The id is the only thing anything refers to: a finding
-writes it on its \`requirements:\` line to say which requirement it argues for. Nothing claims that a
-requirement is implemented — the folder *is* the work, and what is in it is read for what it is.
+specification is the folder's \`*.spec.md\` files — one spec per file (\`cart-total.spec.md\`),
+the file's name being the spec's identity — while \`spec.md\` is the conventional entry a new
+prototype is seeded with: an index, not a spec. Nothing claims that a
+spec is implemented — the folder *is* the work, and what is in it is read for what it is.
 
 A prototype is **not a project**: projects are separate containers that group sessions, tasks and
 shared assets, and a prototype is never nested inside one.
 
 Everything in the folder is written with the Write/Edit tools: the specification and the material
 beside it (personas, a glossary, a screenshot, a spreadsheet — any format, no rule about what may sit
-there) and the findings under \`research/\`. Documents point at each
+there). Documents point at each
 other with an ordinary markdown link — \`[the flow](docs/checkout.md)\`, resolved from the linking
 document's folder and then the folder root — so one entry document can index several; that is
 navigation and nothing more. What the commands *derive* from the files is the point: \`status\`
-reports the requirements, the files beside them, the findings, and any link that points at nothing.
+reports the specs, the files beside them, and any link that points at nothing.
 
 **The window** is \`browser_tool\`'s, and **none of these commands needs a browser at all**: every one
 of them is file work on the prototype's folder. Naming tabs, snapshots, clicks and every page
@@ -571,10 +569,10 @@ Read \`docs/prototypes.md\` before your first prototype command: it is the whole
 above is the short version of it. Run \`--help\` for the commands, their flags and examples.
 
 Examples:
-- \`list\` — every prototype with its requirement and file counts, and which one is bound
-- \`create Landing page\` — a folder with a starter \`PRD.md\`. You write everything in it: the requirements into its markdown (one file or several), the work's files beside it
+- \`list\` — every prototype with its spec and file counts, and which one is bound
+- \`create Landing page\` — a folder with a starter \`spec.md\`. You write everything in it: each spec into its own \`<name>.spec.md\` file, the work's files beside it
 - \`create Rival checkout --no-bind\` — create one *without* stealing this session's binding (the one to use when you only mean to study it)
-- \`status\` — the requirements, the files beside them, the findings, and any link that points at nothing
+- \`status\` — the specs, the files beside them, and any link that points at nothing
 
 Which prototype a command means is read from this session's binding. A command that takes no slug
 therefore still works with no window open, as long as this conversation is bound; with no binding,

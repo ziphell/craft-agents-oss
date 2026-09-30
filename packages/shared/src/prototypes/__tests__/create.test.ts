@@ -6,7 +6,7 @@ import {
   createPrototype,
   getPrototypeDirPath,
   prototypeSlugFromName,
-  readPrototypeRequirements,
+  readPrototypeSpecs,
 } from '..'
 
 describe('prototypeSlugFromName', () => {
@@ -44,37 +44,34 @@ describe('createPrototype', () => {
   })
 
   /**
-   * The spec *is* the deliverable now, so creation writes one: the alternative is
-   * an agent that has to discover the shape of a requirement from the documentation
-   * instead of from the file in front of it. Nothing else is seeded — the folder
-   * beside it is the author's.
+   * The entry is an index, and a new prototype starts with **no spec**: the spec *is* the
+   * deliverable now, so creation writes the index that says where a spec goes rather than
+   * seeding an example the author would have to unlearn. Nothing else is seeded — the folder beside
+   * it is the author's.
    */
-  it('creates the directory and a starter PRD.md, and nothing else', () => {
+  it('creates the directory and a starter spec.md, and nothing else', () => {
     const created = createPrototype(workspaceRoot, { name: 'Checkout Flow' })
 
     expect(created.slug).toBe('checkout-flow')
     expect(created.dir).toBe(getPrototypeDirPath(workspaceRoot, 'checkout-flow'))
-    expect(created.prdPath).toBe(join(created.dir, 'PRD.md'))
-    expect(existsSync(created.prdPath)).toBe(true)
+    expect(created.entryPath).toBe(join(created.dir, 'spec.md'))
+    expect(existsSync(created.entryPath)).toBe(true)
 
-    // The whole directory, so the shape of a new prototype is checkable rather than
-    // assumed.
-    expect(readdirSync(created.dir).sort()).toEqual(['PRD.md'])
+    // The whole directory, so the shape of a new prototype is checkable rather than assumed.
+    expect(readdirSync(created.dir).sort()).toEqual(['spec.md'])
   })
 
-  it('writes a brief the parser can read: a titled document with one requirement', () => {
+  it('seeds an index that states no spec: a titled spec.md that names the *.spec.md rule', () => {
     const created = createPrototype(workspaceRoot, { name: 'Checkout Flow' })
-    const prd = readFileSync(created.prdPath, 'utf-8')
+    const entry = readFileSync(created.entryPath, 'utf-8')
 
-    expect(prd).toContain('# Checkout Flow')
-    expect(prd).toContain('## R-001')
+    expect(entry).toContain('# Checkout Flow')
+    expect(entry).toContain('.spec.md')
 
-    const read = readPrototypeRequirements(workspaceRoot, created.slug)
+    // A new prototype starts with zero specs — the empty state the prompt and the page name.
+    const read = readPrototypeSpecs(workspaceRoot, created.slug)
     expect(read.issues).toEqual([])
-    expect(read.requirements.map((requirement) => requirement.id)).toEqual(['R-001'])
-    // The entry is prose under the heading: `check:` is not a concept any more, so there is
-    // nothing to parse out of the body.
-    expect(read.requirements[0]?.body).toContain('what a person cannot do today')
+    expect(read.specs).toEqual([])
   })
 
   it('refuses to reuse an existing prototype rather than mixing two prototypes’ files', () => {

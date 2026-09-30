@@ -2,15 +2,15 @@
  * Prototype links — how the documents point at each other.
  *
  * A specification is rarely one document. The one a `create` seeds is an entry point, and a
- * requirement that outgrows a paragraph gets its own document beside it: a glossary, a flow as it
- * stands today, the detail behind one complex requirement. What was missing was the *edge between
+ * spec that outgrows a paragraph gets its own document beside it: a glossary, a flow as it
+ * stands today, the detail behind one complex spec. What was missing was the *edge between
  * documents* — a note that says "the detail is over there" was a bare filename, unclickable, and
  * naming a document that had been renamed failed in silence.
  *
  * The syntax is **ordinary markdown**, deliberately:
  *
  * ```md
- * ## R-003 Checkout, in detail
+ * # Checkout, in detail
  *
  * The flow, the states and the error cases are in [the checkout document](docs/checkout.md).
  * ```
@@ -24,7 +24,7 @@
  * So what this module adds is only what markdown itself does not say:
  *
  * - **a relative destination is resolved against the document it is written in**, then the
- *   prototype's own folder — so `docs/checkout.md` from `PRD.md` and `../PRD.md` from a document
+ *   prototype's own folder — so `docs/checkout.md` from `spec.md` and `../spec.md` from a document
  *   under `docs/` both resolve;
  * - **a link that resolves to nothing is reported** — a missing target is the silent failure of an
  *   index, and the one thing a reader cannot see for themselves;
@@ -46,7 +46,7 @@ import { isMarkdownFile, listPrototypeFiles } from './storage.ts'
 
 /** One document pointing at another. */
 export interface PrototypeLink {
-  /** The document the link is written in — prototype-relative, e.g. `PRD.md`, `docs/features.md`. */
+  /** The document the link is written in — prototype-relative, e.g. `spec.md`, `docs/features.md`. */
   from: string
   /** What the link points at, as written minus its `#fragment`: `docs/checkout.md`. */
   target: string
@@ -153,7 +153,7 @@ function directoryOf(file: string): string {
 
 /**
  * Collapse `.` and `..` in a prototype-relative path, so a document in a subfolder can point back
- * past its own level (`../PRD.md`) and mean it. Anything above the prototype's own folder is simply
+ * past its own level (`../spec.md`) and mean it. Anything above the prototype's own folder is simply
  * dropped: a link cannot address anything outside the folder, and a path that climbs out is reported
  * as pointing at nothing rather than followed.
  */

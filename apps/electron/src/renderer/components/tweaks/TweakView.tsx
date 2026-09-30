@@ -1,5 +1,22 @@
+/**
+ * TweakView
+ *
+ * One tweak, laid out like the app's other info pages (Info_Page: hero, then
+ * sections) — it is one more thing with a name, a state, and a few facts about
+ * it, so it should not have a page of its own shape.
+ *
+ * The switch is the one mutation this page owns: a tweak injects into pages
+ * somebody is signed in to, so running this code in them is a separate decision
+ * from naming them. It sits in the hero, and the line under the name says the
+ * same state in words. Those two are one control, and the line is one line
+ * either way — flip the switch and nothing on the page moves.
+ *
+ * The details are fetched rather than read from the list atom: `targets` is
+ * derived from the hit record, which moves under the page while it is open.
+ */
+
 import * as React from 'react'
-import { AlertTriangle, ArrowLeft, Download, FolderOpen, Trash2 } from 'lucide-react'
+import { AlertTriangle, Download, FolderOpen, Sparkles, Trash2, Wand2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useAtomValue } from 'jotai'
 import { useTranslation } from 'react-i18next'
@@ -8,29 +25,22 @@ import { useNavigation } from '@/contexts/NavigationContext'
 import { routes } from '@/lib/navigate'
 import { tweaksAtom } from '@/atoms/tweaks'
 import { Switch } from '@/components/ui/switch'
-import { LoadingIndicator } from '@craft-agent/ui'
-import { Info_Alert } from '@/components/info'
+import { Button } from '@/components/ui/button'
+import { HeaderIconButton } from '@/components/ui/HeaderIconButton'
+import { Info_Alert, Info_Page, Info_Section } from '@/components/info'
 import { useDirectoryPicker } from '@/hooks/useDirectoryPicker'
 import { ServerDirectoryBrowser } from '@/components/ServerDirectoryBrowser'
 import { cn } from '@/lib/utils'
-import type { TweakDetails } from '@craft-agent/shared/tweaks'
+import type { TweakDetails, TweakRunAt } from '@craft-agent/shared/tweaks'
 import { DeleteTweakDialog } from './DeleteTweakDialog'
+
+/** The app's own translation signature, so the helpers below can take `t`. */
+type Translate = (key: string, options?: Record<string, unknown>) => string
 
 interface TweakViewProps {
   tweakSlug: string
 }
 
-/**
- * One tweak — chiefly, the switch.
- *
- * A tweak injects into pages somebody is signed in to, so naming those pages (`matches`)
- * is not the same consent as agreeing to run this code in them: that is this page's
- * switch, and it is the one mutation a person owns here. Everything else is a read — the
- * code is written by an agent, and the file column below is what points at it.
- *
- * The details are fetched rather than read from the list atom: the targets table is
- * derived from the hit record, which moves under the page while it is open.
- */
 export function TweakView({ tweakSlug }: TweakViewProps) {
   const { activeWorkspaceId, onOpenFile } = useAppShellContext()
   const { t } = useTranslation()
@@ -63,6 +73,10 @@ export function TweakView({ tweakSlug }: TweakViewProps) {
 
   const resolved = state.slug === tweakSlug && state.loaded
   const details = resolved ? state.details : null
+
+  // The selectors the tweak needs and the last apply did not find. Only the stale ones:
+  // a target that has never matched is the expected state before it has run anywhere.
+  const staleTargets = details?.targets.filter(target => target.stale) ?? []
 
   const [toggling, setToggling] = React.useState(false)
   const [confirmingDelete, setConfirmingDelete] = React.useState(false)
@@ -116,7 +130,17 @@ export function TweakView({ tweakSlug }: TweakViewProps) {
   // ------------------------------------------------------------------
   // Actions
   // ------------------------------------------------------------------
-  const handleBack = React.useCallback(() => navigate(routes.view.tweaks()), [navigate])
+  /**
+   * The way this tweak gets changed. Its code is written by an agent — a tweak
+   * is code for a page this app does not own, so there is no form that could
+   * produce it and no editor here that should. What this does is open a
+   * conversation with the tweak's name already in the draft; nothing is sent,
+   * so the person still says what they want changed.
+   */
+  const handleAskAgent = React.useCallback(() => {
+    if (!details) return
+    navigate(routes.action.newSession({ input: t('tweaks.askAgentChange', { name: details.name }) }))
+  }, [details, navigate, t])
 
   const handleOpenFolder = React.useCallback(() => {
     if (details) onOpenFile(details.folderPath)
@@ -139,89 +163,66 @@ export function TweakView({ tweakSlug }: TweakViewProps) {
   // ------------------------------------------------------------------
   // Render
   // ------------------------------------------------------------------
-  if (!details) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        {resolved ? (
-          <div className="flex flex-col items-center gap-3 text-sm text-foreground/50">
-            <span>{t('tweaks.notFound')}</span>
-            <button
-              onClick={handleBack}
-              className="inline-flex h-7 items-center gap-1.5 rounded-[8px] bg-foreground/[0.02] px-3 text-xs font-medium shadow-minimal transition-colors hover:bg-foreground/[0.05]"
-            >
-              <ArrowLeft className="h-3.5 w-3.5" /> {t('tweaks.backToTweaks')}
-            </button>
-          </div>
-        ) : (
-          <LoadingIndicator label={t('common.loading')} />
-        )}
-      </div>
-    )
-  }
-
   return (
-    <div className="flex h-full flex-col bg-background">
-      {/* Header: back, name, state, actions */}
-      <div className="flex items-center gap-2 border-b border-border/50 px-3 py-2">
-        <button
-          type="button"
-          onClick={handleBack}
-          aria-label={t('tweaks.backToTweaks')}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-foreground/60 transition-colors hover:bg-foreground/5 hover:text-foreground"
-        >
-          <ArrowLeft className="h-4 w-4" />
-        </button>
-        <span className="min-w-0 truncate text-sm font-medium">{details.name}</span>
-        <span className={cn(
-          'shrink-0 rounded-full px-1.5 py-0.5 text-[10.5px] font-medium',
-          details.enabled ? 'bg-success/10 text-success' : 'bg-foreground/[0.05] text-foreground/50',
-        )}>
-          {details.enabled ? t('tweaks.on') : t('tweaks.off')}
-        </span>
-        <div className="ml-auto flex items-center gap-1.5">
-          <button
-            type="button"
-            onClick={() => pickExportFolder()}
-            disabled={!activeWorkspaceId}
-            className="inline-flex h-7 items-center gap-1.5 rounded-[8px] bg-foreground/[0.02] px-2.5 text-xs font-medium shadow-minimal transition-colors hover:bg-foreground/[0.05] disabled:opacity-50"
-          >
-            <Download className="h-3.5 w-3.5" /> {t('tweaks.exportExtension')}
-          </button>
-          <button
-            type="button"
-            onClick={() => setConfirmingDelete(true)}
-            aria-label={t('tweaks.deleteTweak')}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      </div>
+    <Info_Page
+      loading={!resolved}
+      empty={resolved && !details ? t('tweaks.notFound') : undefined}
+    >
+      <Info_Page.Header
+        title={details?.name ?? ''}
+        actions={details ? (
+          <>
+            <HeaderIconButton
+              icon={<Sparkles className="h-4 w-4" />}
+              tooltip={t('tweaks.askAgent')}
+              onClick={handleAskAgent}
+            />
+            <HeaderIconButton
+              icon={<Download className="h-4 w-4" />}
+              tooltip={t('tweaks.exportExtension')}
+              onClick={() => pickExportFolder()}
+              disabled={!activeWorkspaceId}
+            />
+            <HeaderIconButton
+              icon={<Trash2 className="h-4 w-4" />}
+              tooltip={t('tweaks.deleteTweak')}
+              onClick={() => setConfirmingDelete(true)}
+            />
+          </>
+        ) : undefined}
+      />
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-[860px] flex-col gap-4 p-5">
-          {/* Plainly, at the top: nothing to inject, or off. */}
-          {!details.hasCode && (
-            <Info_Alert variant="warning" inline icon={<AlertTriangle className="h-4 w-4" />}>
-              <Info_Alert.Title>{t('tweaks.noCodeTitle')}</Info_Alert.Title>
-              <Info_Alert.Description className="text-foreground/60">
-                {t('tweaks.noCodeDescription')}
-              </Info_Alert.Description>
-            </Info_Alert>
-          )}
-          {!details.enabled && (
-            <Info_Alert variant="info" inline>
-              <Info_Alert.Title>{t('tweaks.offNotice')}</Info_Alert.Title>
-            </Info_Alert>
-          )}
-
-          {/* The switch — the one thing this page is for */}
-          <div className="flex items-start justify-between gap-4 rounded-lg border border-border/60 p-4">
-            <div className="min-w-0">
-              <div className="text-[13px] font-medium">{t('tweaks.runLabel')}</div>
-              <p className="mt-1 text-xs text-foreground/50">{t('tweaks.runHint')}</p>
+      {details && (
+        <Info_Page.Content>
+          {/* Hero: what it is, whether it runs, and the switch. */}
+          <div className="flex items-start gap-3">
+            <div className="mt-[2px] flex h-[32px] w-[32px] shrink-0 items-center justify-center rounded-[4px] ring-1 ring-border/30">
+              <Wand2 className="h-4 w-4 text-foreground/60" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <h2 className="text-base font-semibold leading-tight text-foreground">
+                {details.name}
+              </h2>
+              {details.description && (
+                <p className="mt-0.5 text-sm leading-snug text-foreground/60">
+                  {details.description}
+                </p>
+              )}
+              {/* The switch, said in words. Always exactly one line, on or off —
+                  this is the line that must never grow, or the switch moves when
+                  somebody flips it. */}
+              <p className="mt-1.5 flex items-center gap-1.5 text-xs text-foreground/50">
+                <span
+                  className={cn(
+                    'h-1.5 w-1.5 shrink-0 rounded-full',
+                    details.enabled ? 'bg-success' : 'bg-foreground/25',
+                  )}
+                />
+                {statusLine(t, details)}
+              </p>
             </div>
             <Switch
+              className="mt-1"
               checked={details.enabled}
               disabled={!activeWorkspaceId || toggling}
               onCheckedChange={next => void handleToggle(next)}
@@ -229,98 +230,77 @@ export function TweakView({ tweakSlug }: TweakViewProps) {
             />
           </div>
 
+          {/* The news, and neither piece is about the switch: nothing to inject at
+              all, or a `@target` that was there last time and is not any more. */}
+          {!details.hasCode && (
+            <Info_Alert variant="warning" icon={<AlertTriangle className="h-4 w-4" />}>
+              <Info_Alert.Title>{t('tweaks.noCodeTitle')}</Info_Alert.Title>
+              <Info_Alert.Description>{t('tweaks.noCodeDescription')}</Info_Alert.Description>
+            </Info_Alert>
+          )}
+          {staleTargets.length > 0 && (
+            <Info_Alert variant="warning" icon={<AlertTriangle className="h-4 w-4" />}>
+              <Info_Alert.Title>{t('tweaks.pageChangedTitle')}</Info_Alert.Title>
+              <Info_Alert.Description>
+                <span className="flex flex-wrap items-center gap-1">
+                  {staleTargets.map(target => (
+                    <code
+                      key={`${target.file}:${target.selector}`}
+                      className="rounded bg-foreground/5 px-1.5 py-0.5 font-mono text-[11px]"
+                    >
+                      {target.selector}
+                    </code>
+                  ))}
+                </span>
+                <span className="mt-1 block">{t('tweaks.pageChangedHint')}</span>
+              </Info_Alert.Description>
+            </Info_Alert>
+          )}
+
           {/* Where it runs */}
-          <section>
-            <h3 className="text-[13px] font-medium">{t('tweaks.matchesTitle')}</h3>
-            <div className="mt-2 flex flex-wrap items-center gap-1">
+          <Info_Section title={t('tweaks.matchesTitle')} description={t('tweaks.runHint')}>
+            <div className="flex flex-wrap items-center gap-1.5 px-4 py-3">
               {details.matches.map(pattern => (
                 <code
                   key={pattern}
-                  className="rounded bg-foreground/[0.04] px-1.5 py-0.5 font-mono text-[11px] text-foreground/60"
+                  className="rounded bg-foreground/5 px-1.5 py-0.5 font-mono text-[11px] text-foreground/70"
                 >
                   {pattern}
                 </code>
               ))}
             </div>
-          </section>
+          </Info_Section>
 
-          {/* The code: paths, and a way to open the folder — never an editor */}
-          <section>
-            <div className="flex items-center justify-between gap-3">
-              <h3 className="text-[13px] font-medium">{t('tweaks.filesTitle')}</h3>
-              <button
-                type="button"
-                onClick={handleOpenFolder}
-                className="inline-flex h-7 items-center gap-1.5 rounded-[8px] bg-foreground/[0.02] px-2.5 text-xs font-medium shadow-minimal transition-colors hover:bg-foreground/[0.05]"
-              >
-                <FolderOpen className="h-3.5 w-3.5" /> {t('tweaks.openFolder')}
-              </button>
-            </div>
-            <div className="mt-2 space-y-1">
-              {/* Only the files that are there: naming one nobody wrote reads as "this
-                  exists", which is the one thing a file list must not say wrongly. Just the
-                  name — where it lives is what "Open folder" is for. */}
-              {[
-                ...(details.hasCss ? ['tweak.css'] : []),
-                ...(details.hasJs ? ['tweak.js'] : []),
-              ].map(name => (
-                <div key={name} className="font-mono text-[11px] text-foreground/60">
-                  {name}
-                </div>
-              ))}
-            </div>
-          </section>
-
-          {/* What it changes, and whether it still finds it there */}
-          <section>
-            <h3 className="text-[13px] font-medium">{t('tweaks.targetsTitle')}</h3>
-            <p className="mt-1 text-xs text-foreground/50">
-              {details.appliedAt === null
-                ? t('tweaks.notAppliedYet')
-                : t('tweaks.appliedAt', { when: formatRelativeTime(details.appliedAt, t) })}
-            </p>
-            {details.targets.length === 0 ? (
-              <p className="mt-2 text-xs text-foreground/50">{t('tweaks.targetsEmpty')}</p>
-            ) : (
-              <table className="mt-2 w-full border-collapse text-left">
-                <thead>
-                  <tr className="text-[11px] text-foreground/40">
-                    <th className="py-1 pr-3 font-medium">{t('tweaks.targetColumnSelector')}</th>
-                    <th className="py-1 pr-3 font-medium">{t('tweaks.targetColumnFile')}</th>
-                    <th className="py-1 font-medium">{t('tweaks.targetColumnMatched')}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {details.targets.map(target => (
-                    <tr key={`${target.file}:${target.selector}`} className="border-t border-border/40">
-                      <td className="py-1.5 pr-3">
-                        <code className="font-mono text-[11px] text-foreground/80">{target.selector}</code>
-                      </td>
-                      <td className="py-1.5 pr-3 font-mono text-[11px] text-foreground/50">{target.file}</td>
-                      <td className="py-1.5 text-[11px]">
-                        {target.lastMatchedAt === undefined ? (
-                          <span className="text-foreground/40">{t('tweaks.neverMatched')}</span>
-                        ) : target.stale ? (
-                          <span className="text-destructive">
-                            {t('tweaks.stoppedMatching')} · {t('tweaks.matchedAt', { when: formatRelativeTime(target.lastMatchedAt, t) })}
-                          </span>
-                        ) : (
-                          <span className="text-foreground/60">
-                            {t('tweaks.matchedAt', { when: formatRelativeTime(target.lastMatchedAt, t) })}
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </section>
-        </div>
-      </div>
+          {/* What it changes, and when it does it. The files are the answer to the first
+              half, and `@run-at` — which lives in the tweak's own code — to the second. The
+              selectors it needs are not listed: while it is working they are all there, and
+              the ones that are not are the warning above. */}
+          {details.hasCode && (
+            <Info_Section
+              title={t('tweaks.whatItChanges')}
+              actions={
+                <Button size="sm" variant="ghost" onClick={handleOpenFolder}>
+                  <FolderOpen /> {t('tweaks.openFolder')}
+                </Button>
+              }
+            >
+              <div className="divide-y divide-border/30">
+                {/* Only the files that are there: naming one nobody wrote reads as "this
+                    exists", which is the one thing a file list must not say wrongly. The
+                    moment is the point of the line — code that runs too late looks like
+                    broken code. */}
+                {details.hasCss && <FileLine name="tweak.css" note={t('tweaks.cssTiming')} />}
+                {details.hasJs && (
+                  <FileLine name="tweak.js" note={t(runAtMessageKey(details.runAt))} />
+                )}
+              </div>
+            </Info_Section>
+          )}
+        </Info_Page.Content>
+      )}
 
       <DeleteTweakDialog
-        tweakName={confirmingDelete ? details.name : null}
+        tweakName={confirmingDelete ? details?.name ?? null : null}
         onConfirm={handleConfirmDelete}
         onCancel={() => setConfirmingDelete(false)}
       />
@@ -332,12 +312,36 @@ export function TweakView({ tweakSlug }: TweakViewProps) {
           onCancel={cancelServerBrowser}
         />
       )}
+    </Info_Page>
+  )
+}
+
+/** One code file and the moment it runs — the whole of "what it changes". */
+function FileLine({ name, note }: { name: string; note: string }) {
+  return (
+    <div className="flex items-baseline gap-3 px-4 py-2.5">
+      <code className="w-[68px] shrink-0 font-mono text-xs text-foreground/70">{name}</code>
+      <span className="text-xs text-foreground/60">{note}</span>
     </div>
   )
 }
 
+/** The switch's state, in words — one line whether it is on or off. */
+function statusLine(t: Translate, details: TweakDetails): string {
+  if (!details.enabled) return t('tweaks.offNotice')
+  if (details.appliedAt === null) return t('tweaks.notAppliedYet')
+  return t('tweaks.appliedAt', { when: formatRelativeTime(details.appliedAt, t) })
+}
+
+/** `@run-at`, said the way the person looking at the page would put it. */
+function runAtMessageKey(runAt: TweakRunAt): string {
+  if (runAt === 'document_start') return 'tweaks.jsRunAtStart'
+  if (runAt === 'document_idle') return 'tweaks.jsRunAtIdle'
+  return 'tweaks.jsRunAtEnd'
+}
+
 /** Relative time, reusing the app's own phrasing (never a raw timestamp). */
-function formatRelativeTime(timestamp: number, t: (key: string, options?: Record<string, unknown>) => string): string {
+function formatRelativeTime(timestamp: number, t: Translate): string {
   const diff = Date.now() - timestamp
   const minutes = Math.floor(diff / 60000)
   const hours = Math.floor(diff / 3600000)

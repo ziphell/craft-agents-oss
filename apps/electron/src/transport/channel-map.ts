@@ -417,12 +417,6 @@ export const CHANNEL_MAP = {
   exportTweaks: invoke(RPC_CHANNELS.tweaks.EXPORT),
   onTweaksChanged: listener(RPC_CHANNELS.tweaks.CHANGED),
 
-  // Artifacts
-  getArtifacts: invoke(RPC_CHANNELS.artifacts.LIST),
-  getArtifactOrigins: invoke(RPC_CHANNELS.artifacts.ORIGINS),
-  getArtifactThumbnail: invoke(RPC_CHANNELS.artifacts.THUMBNAIL),
-  onArtifactsChanged: listener(RPC_CHANNELS.artifacts.CHANGED),
-
   // Automations
   getAutomations: invoke(RPC_CHANNELS.automations.GET),
   testAutomation: invoke(RPC_CHANNELS.automations.TEST),

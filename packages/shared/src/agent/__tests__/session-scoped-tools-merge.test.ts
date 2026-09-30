@@ -59,11 +59,10 @@ describe('session-scoped tool callback merge', () => {
       prototypeStatus: async (slug: string) => ({
         slug,
         dir: '/tmp/prototypes',
-        requirements: [],
+        specs: [],
         specificationFiles: [],
         files: [],
         links: [],
-        findings: [],
         reviews: { total: 0, byStatus: { open: 0, fixed: 0, rebutted: 0, accepted: 0 }, unresolved: [] },
         unresolved: { brokenLinks: [] },
         settleBlockers: [],
@@ -74,7 +73,7 @@ describe('session-scoped tool callback merge', () => {
       createPrototype: async ({ name }: { name: string }) => ({
         slug: name,
         dir: `/tmp/prototypes/${name}`,
-        prdPath: `/tmp/prototypes/${name}/PRD.md`,
+        entryPath: `/tmp/prototypes/${name}/spec.md`,
       }),
       bindPrototype: async (_slug: string | null) => {},
       focusWindow: async () => ({ instanceId: 'browser-1', title: 'Example', url: 'https://example.com' }),

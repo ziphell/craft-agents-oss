@@ -6,7 +6,7 @@
  *
  * **One level, on purpose**. This list answers exactly one
  * question — which prototype am I working on — because scope is the whole of what
- * a prototype is to the rest of the app: a folder holding a `PRD.md` and the work
+ * a prototype is to the rest of the app: a folder holding a `spec.md` and the work
  * beside it, that its conversations bind to. What is *inside* it is
  * not a second level here: the files are read on the prototype's own page, and the
  * pages a person works on are the workspace's browser window's tabs.
@@ -103,7 +103,7 @@ export function PrototypesListPanel({
 /**
  * The status dot a row carries.
  *
- * A row carries a dot only when it has something to say: the PRD or the research has
+ * A row carries a dot only when it has something to say: the entry or the research has
  * something wrong with it, or a link in it points at a file that is not there. **Nothing is
  * not a colour** — a prototype that is merely unfinished has nothing to report, and the row
  * used to answer that with a green "ready to hand over": a claim about work that does not

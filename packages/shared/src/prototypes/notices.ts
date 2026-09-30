@@ -22,16 +22,13 @@
  * work over, and as the tooltip where a diagnostic is being read.)
  *
  * Codes are added for the things a **person acts on**: the gate. File-level
- * diagnostics (a review file without a `claim:`, two requirements sharing an id,
- * a finding whose evidence is not on disk) deliberately stay in their own words
+ * diagnostics (two specs sharing an id) deliberately stay in their own words
  * through {@link rawNotice}: they name files, line contents and ids that
  * translation would only obscure.
  */
 
 /** What a notice is about, as a stable code a reader can translate. */
 export type PrototypeNoticeCode =
-  /** `briefIssues`: a finding arguing for an id no document in the prototype defines. */
-  | 'requirement.undefined'
   /** `briefIssues`: a picture in the brief drawn from an earlier state of the diagram beside it. */
   | 'diagram.stale'
   /** `settleBlockers`: a link whose target is not in the prototype. */
@@ -62,8 +59,6 @@ export interface PrototypeNotice {
  * conversation.
  */
 const ENGLISH: Record<PrototypeNoticeCode, (params: PrototypeNoticeParams) => string> = {
-  'requirement.undefined': ({ where, id }) =>
-    `${where} names ${id}, which no document in this prototype defines.`,
   'diagram.stale': ({ svg, source }) =>
     `${svg} is not what ${source} draws any more — it was exported before the diagram changed.`,
   'gate.linkBroken': ({ from, target }) =>

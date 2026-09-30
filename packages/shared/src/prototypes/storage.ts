@@ -10,7 +10,6 @@
 import { readdirSync } from 'fs'
 import { join } from 'path'
 import { getWorkspacePrototypesPath } from '../workspaces/storage.ts'
-import { PROTOTYPE_RESEARCH_DIRNAME } from './types.ts'
 
 /**
  * Paths inside a prototype's own directory.
@@ -27,23 +26,10 @@ export function getPrototypeDirPath(workspaceRootPath: string, slug: string): st
 }
 
 /**
- * Absolute path to a prototype's research directory.
- *
- * Sits with the other path builders because it is the same kind of fact — a
- * directory name that more than one module agrees on — and because the
- * distinction it draws is a rule, not a preference: `assets/` is a file the
- * prototype itself loads, while `research/` is how the author got to the
- * requirements and is therefore not packed.
- */
-export function getPrototypeResearchPath(workspaceRootPath: string, slug: string): string {
-  return join(getPrototypeDirPath(workspaceRootPath, slug), PROTOTYPE_RESEARCH_DIRNAME)
-}
-
-/**
  * One file of a prototype's own directory: a name to show, and the absolute path to open.
  *
  * `name` is the file's path relative to the prototype's directory, with `/` separators
- * (`PRD.md`, `docs/features.md`) — the shape every other relative path here uses, and the
+ * (`spec.md`, `docs/features.md`) — the shape every other relative path here uses, and the
  * name a report can print on one line.
  */
 export interface PrototypeFileEntry {
@@ -56,15 +42,12 @@ export interface PrototypeFileEntry {
  *
  * An author organizes their work the way they organize work: one document or several, flat or
  * nested in folders. The folder is theirs, so nothing here filters by extension or by anything
- * else — what the author put there is what is listed.
+ * else — what the author put there is what is listed. Hidden files and directories are skipped —
+ * an editor's swap file is not something the author put there.
  *
- * `research/` is not set aside: its findings have a reader of their own (`research.ts`), but that is
- * a reader, not a rule about the folder — the files in it are listed here like any other, and
- * opened from here like any other. Hidden files and directories are skipped — an editor's swap
- * file is not something the author put there.
- *
- * No file is singled out: with requirements readable from any markdown file, there is no one
- * "brief" to separate (which files define requirements is a fact `requirements.ts` derives).
+ * No file is singled out: a spec is one `*.spec.md` file among the author's files, so there
+ * is no one "brief" to separate (which files are specs is a fact `spec.ts` derives
+ * by name).
  */
 export function listPrototypeFiles(workspaceRootPath: string, slug: string): PrototypeFileEntry[] {
   const dir = getPrototypeDirPath(workspaceRootPath, slug)
@@ -99,12 +82,12 @@ export function listPrototypeFiles(workspaceRootPath: string, slug: string): Pro
 }
 
 /**
- * Whether a file is markdown — the kind whose text the workbench reads as a *document*: its headings
- * can state a requirement (`requirements.ts`) and its links point at other documents (`links.ts`).
- * `.mdx` reads as markdown too.
+ * Whether a file is markdown — the kind whose text the workbench reads as a *document*: its links
+ * point at other documents (`links.ts`). (A spec is a file too, but it is named `.spec.md`
+ * and found by name — `isSpecFile` — rather than by being markdown.)
  *
- * Here rather than in either reader because both have to agree on it: a file one reads and the other
- * does not is a requirement nothing can link to, or a link nothing can define.
+ * Here, beside the listing, rather than in `links.ts`, because it is a fact about a file's name and
+ * every caller has to read it the same way. `.mdx` counts too.
  */
 export function isMarkdownFile(name: string): boolean {
   const lower = name.toLowerCase()

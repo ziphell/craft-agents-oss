@@ -450,13 +450,6 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.tweaks.EXPORT,
   RPC_CHANNELS.tweaks.CHANGED,
 
-  // artifacts — a scan of the workspace's own files, and the sessions that wrote them,
-  // so both run where those live; a preview also has to read the file it draws
-  RPC_CHANNELS.artifacts.LIST,
-  RPC_CHANNELS.artifacts.ORIGINS,
-  RPC_CHANNELS.artifacts.THUMBNAIL,
-  RPC_CHANNELS.artifacts.CHANGED,
-
   // git — workspace filesystem
   RPC_CHANNELS.git.GET_BRANCH,
 

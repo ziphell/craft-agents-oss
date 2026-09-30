@@ -1,10 +1,10 @@
 /**
  * CreatePrototypeDialog — a name, and nothing else.
  *
- * A prototype is a **folder** holding a requirements document, and a new one is
+ * A prototype is a **folder** holding a specification document, and a new one is
  * empty: there is nothing to decide beyond the name, because everything else is a
  * file somebody writes into it afterwards. Creation writes the folder and its
- * `PRD.md`, and the agent fills it from the conversation.
+ * `spec.md`, and the agent fills it from the conversation.
  *
  * `createPrototype` rejects when the derived slug is taken or the name yields no
  * usable slug, so the submit handler is awaited and the RPC's own message is

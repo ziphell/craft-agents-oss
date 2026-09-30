@@ -15,8 +15,7 @@ function makeContext(overrides: Partial<PrototypePromptContext> = {}): Prototype
   return {
     slug: 'checkout-flow',
     dir: '/tmp/prototypes/checkout-flow',
-    requirements: [],
-    findings: [],
+    specs: [],
     ...overrides,
   }
 }
@@ -38,53 +37,38 @@ describe('formatPrototypeContextForPrompt', () => {
     const text = formatPrototypeContextForPrompt(makeContext())
 
     expect(text).toContain('a **folder that holds a specification**')
-    expect(text).toContain('The specification is the markdown files in')
+    expect(text).toContain("The specification is the folder's '*.spec.md' files in")
     expect(text).toContain('Everything else in that folder is yours, in any format')
   })
 
-  it('says there is no requirement yet, and asks for one', () => {
+  it('says there is no spec yet, and asks for one', () => {
     const text = formatPrototypeContextForPrompt(makeContext())
 
-    expect(text).toContain('No requirement has been written yet')
+    expect(text).toContain('No spec has been written yet')
     expect(text).toContain('is a picture, not a proposal')
   })
 
-  // The one thing the workbench cannot check about a requirement is whether it was worth
+  // The one thing the workbench cannot check about a spec is whether it was worth
   // writing, so the block has to ask for that thinking before the entry is written.
-  it('asks for the value to be thought through before a requirement is written', () => {
+  it('asks for the value to be thought through before a spec is written', () => {
     const text = formatPrototypeContextForPrompt(makeContext())
 
     expect(text).toContain('think from first principles about the value')
     expect(text).toContain('never that it was worth writing')
   })
 
-  it('lists the requirements written so far, with the findings that argue for one', () => {
+  it('lists the specs written so far, as a title and its file', () => {
     const text = formatPrototypeContextForPrompt(
       makeContext({
-        requirements: [
-          { id: 'R-001', title: 'A cart holds its line', findings: [] },
-          { id: 'R-002', title: 'Checking out takes one step', findings: ['F-001'] },
+        specs: [
+          { file: 'cart-line.spec.md', title: 'A cart holds its line' },
+          { file: 'checkout.spec.md', title: 'Checking out takes one step' },
         ],
       }),
     )
 
-    expect(text).toContain('- R-001 A cart holds its line')
-    expect(text).toContain('- R-002 Checking out takes one step — argued for by F-001 (finding)')
-  })
-
-  it('says where research goes, and what a finding carries', () => {
-    const text = formatPrototypeContextForPrompt(makeContext())
-
-    expect(text).toContain('/research/ holds what you learned from other products')
-    expect(text).toContain("'claim:', 'source:', 'captured:', 'evidence:'")
-    expect(text).toContain('research/ is **not** delivered')
-  })
-
-  it('says where a finding’s evidence can come from', () => {
-    const text = formatPrototypeContextForPrompt(makeContext())
-
-    expect(text).toContain('a screenshot you took')
-    expect(text).toContain('evidence:')
+    expect(text).toContain('- A cart holds its line (cart-line.spec.md)')
+    expect(text).toContain('- Checking out takes one step (checkout.spec.md)')
   })
 
   // Nothing in the block may mention the machinery that was removed: an agent told about a patch
@@ -92,7 +76,7 @@ describe('formatPrototypeContextForPrompt', () => {
   it('says nothing about pages, patches, anchors, a host or a mock', () => {
     const text = formatPrototypeContextForPrompt(
       makeContext({
-        requirements: [{ id: 'R-001', title: 'x', findings: [] }],
+        specs: [{ file: 'cart-line.spec.md', title: 'x' }],
       }),
     )
 
@@ -109,18 +93,21 @@ describe('buildPrototypePromptContext', () => {
     rmSync(workspaceRoot, { recursive: true, force: true })
   })
 
-  it('lists the requirements of the bound prototype', () => {
+  it('lists the specs of the bound prototype', () => {
     workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-prototype-prompt-'))
     createPrototype(workspaceRoot, { name: 'Checkout flow' })
     const dir = getPrototypeDirPath(workspaceRoot, 'checkout-flow')
-    writeFileSync(join(dir, 'PRD.md'), '## R-001 A cart holds its line\n', 'utf-8')
+    writeFileSync(join(dir, 'cart-line.spec.md'), '# A cart holds its line\n', 'utf-8')
     writeFileSync(join(dir, 'cart.html'), '<!doctype html><html><body>cart</body></html>', 'utf-8')
 
     const context = buildPrototypePromptContext(workspaceRoot, 'checkout-flow')
 
-    expect(context?.requirements.map((requirement) => requirement.id)).toEqual(['R-001'])
-    // Nothing in the context says a file implements a requirement — there is no such statement.
-    expect(context?.requirements[0]).toEqual({ id: 'R-001', title: 'A cart holds its line', findings: [] })
+    expect(context?.specs.map((spec) => spec.file)).toEqual(['cart-line.spec.md'])
+    // Nothing in the context says a file implements a spec — there is no such statement.
+    expect(context?.specs[0]).toEqual({
+      file: 'cart-line.spec.md',
+      title: 'A cart holds its line',
+    })
   })
 
   it('returns null for a prototype that does not exist', () => {

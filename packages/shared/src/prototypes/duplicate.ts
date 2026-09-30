@@ -10,8 +10,8 @@
  *
  * ## What is copied
  *
- * **The prototype's own directory, whole.** The specification, the material beside it, `research/`
- * and `reviews/` all come along, because they are the prototype.
+ * **The prototype's own directory, whole.** The specification and the material beside it all come
+ * along, because they are the prototype.
  */
 
 import { cpSync, existsSync } from 'fs'

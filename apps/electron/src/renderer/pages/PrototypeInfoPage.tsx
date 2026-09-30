@@ -10,12 +10,9 @@
  *    itself. What it counts is **facts only** — links that point at nothing — spelled out, one
  *    line per notice, with **one action per line: "hand it to the conversation"**.
  * 2. **The work itself**, in this order: the **specification** — every document it is made of, each
- *    named and openable, with `PRD.md` (the entry) read whole under them — then the
- *    **requirements**, with the findings that argue for one, then the **rest of the folder** (the
- *    material the work is made of, listed by name).
- *
- * What is deliberately **not** a section: research. A finding is shown where it matters, on the
- * requirement it argues for, and the notes in `research/` are not part of what is handed over.
+ *    named and openable, with `spec.md` (the entry) read whole under them — then the
+ *    **specs**, then the **rest of the folder** (the material the work is made of, listed by
+ *    name).
  *
  * Each section costs one line while it is empty, so an untouched prototype is a
  * short screen instead of a stack of "nothing here yet".
@@ -33,7 +30,7 @@
 import { useTranslation } from 'react-i18next'
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useAtomValue } from 'jotai'
-import { File, FileText, FlaskConical, FolderOpen, Globe, Image, MessageSquare, MoreHorizontal, Pencil, TriangleAlert, Workflow } from 'lucide-react'
+import { ChevronRight, File, FileText, FlaskConical, FolderOpen, Globe, Image, MessageSquare, MoreHorizontal, Pencil, TriangleAlert, Workflow } from 'lucide-react'
 import { classifyFile, DrawioOverlay, HTMLPreviewOverlay, MarkdownFileOverlay } from '@craft-agent/ui'
 import { useActiveWorkspace, useAppShellContext } from '@/context/AppShellContext'
 import { navigate, routes } from '@/lib/navigate'
@@ -49,7 +46,7 @@ import { Button } from '@/components/ui/button'
 import type { PrototypeStatus } from '@craft-agent/shared/prototypes'
 // A value rather than a type, and from `types.ts` rather than the barrel: the barrel reaches the
 // Claude Agent SDK, which cannot be bundled for the renderer (see that module's header).
-import { PROTOTYPE_PRD_FILENAME } from '@craft-agent/shared/prototypes/types'
+import { isPrototypeEntryFile } from '@craft-agent/shared/prototypes/types'
 
 interface PrototypeInfoPageProps {
   prototypeSlug: string
@@ -130,55 +127,44 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
   /** Failure from an action this page runs — it surfaces the throwing call's message verbatim. */
   const [actionError, setActionError] = useState<string | null>(null)
   /**
-   * `PRD.md`'s text — the entry document, shown whole as the index the specification is read from.
+   * `spec.md`'s text — the entry document, shown whole as the index the specification is read from.
    *
    * The status carries paths rather than text (`status.ts`), so it is re-read on every status load
    * — an edit has to show up. `null` marks a document that exists but could not be read, which is
    * said out loud rather than shown as blank; `undefined` is a read still in flight.
    */
-  const [prdDoc, setPrdDoc] = useState<string | null | undefined>(undefined)
+  const [entryDoc, setEntryDoc] = useState<string | null | undefined>(undefined)
   /**
-   * The prototype's entry document — `PRD.md`, the index (`requirements.ts`).
+   * Whether the entry document is open inside its own row.
    *
-   * It is one of the folder's own files, so it arrives in whichever of the two lists the status
-   * splits the folder into: `specificationFiles` while it states a requirement, `files` while it is
-   * prose that states none. Both are the same file on disk, and the page shows it the same way.
-   * Matched without case: a filesystem that cannot tell `PRD.md` from `prd.md` should not hide the
-   * index over a capital letter.
+   * The document is this page's to show; drawn as a block of its own under the list it was the
+   * same file twice and made the section read as two subjects. It opens from the row naming it,
+   * and starts closed: the section's job is to say what the specification *is*, and the document
+   * is one click behind the name that already says which one it is.
    */
-  const prdFile = useMemo(() => {
+  const [entryOpen, setEntryOpen] = useState(false)
+  /**
+   * The prototype's entry document — `spec.md`, the index (`spec.ts`).
+   *
+   * It is the first row of `specificationFiles` whether or not it states anything (the report puts
+   * it there, and keeps it out of the material list, so the two lists never name the same file),
+   * and the row is only read from here to know which document this page can open in place.
+   */
+  const entryFile = useMemo(() => {
     if (!status) return null
-    return (
-      [...status.specificationFiles, ...status.files].find(
-        (file) => file.name.toLowerCase() === PROTOTYPE_PRD_FILENAME.toLowerCase(),
-      ) ?? null
-    )
+    return status.specificationFiles.find((file) => isPrototypeEntryFile(file.name)) ?? null
   }, [status])
   /**
-   * The documents the specification is made of, in the order they are read: the entry document
-   * first, then every other document that states a requirement, in the order the folder has them.
-   *
-   * The entry is listed even when it states nothing — it is where the specification begins, and a
-   * page that read a document out without naming it would leave the reader to guess which it was.
-   * Every other document here is one the folder list below cannot name: a document that states a
-   * requirement is not one of "the rest of the folder".
-   */
-  const specDocuments = useMemo(() => {
-    if (!status) return []
-    const others = status.specificationFiles.filter((file) => file.name !== prdFile?.name)
-    return prdFile ? [prdFile, ...others] : others
-  }, [status, prdFile])
-  /**
    * The entry document's edges, read from both ends: what it points at, and what points back at it.
-   * Navigation only — where to read next, never whether a requirement is done.
+   * Navigation only — where to read next, never whether a spec is done.
    */
-  const prdLinks = useMemo(() => {
-    if (!status || !prdFile) return { outgoing: [], incoming: [] }
+  const entryLinks = useMemo(() => {
+    if (!status || !entryFile) return { outgoing: [], incoming: [] }
     return {
-      outgoing: status.links.filter((link) => link.from === prdFile.name && link.to !== null),
-      incoming: status.links.filter((link) => link.to === prdFile.name && link.from !== prdFile.name),
+      outgoing: status.links.filter((link) => link.from === entryFile.name && link.to !== null),
+      incoming: status.links.filter((link) => link.to === entryFile.name && link.from !== entryFile.name),
     }
-  }, [status, prdFile])
+  }, [status, entryFile])
 
   // Load the status report for this prototype. `listPrototypes` is the only
   // read path for a single prototype's status, so pick our slug out of it.
@@ -213,7 +199,7 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
   // A different prototype is a different piece of work: what is on screen belongs to
   // the one you were looking at.
   useEffect(() => {
-    setPrdDoc(undefined)
+    setEntryDoc(undefined)
   }, [prototypeSlug])
 
   // The entry document. Re-read on every status load (an edit arrives as a status change) and kept
@@ -221,24 +207,24 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
   // because a status from the prototype we just left is still in state for a render: reading it
   // would show another prototype's document for that frame.
   useEffect(() => {
-    const file = status && status.slug === prototypeSlug ? prdFile : null
+    const file = status && status.slug === prototypeSlug ? entryFile : null
     if (!file) {
-      setPrdDoc(undefined)
+      setEntryDoc(undefined)
       return
     }
     let cancelled = false
     window.electronAPI
       .readFile(file.path)
       .then((content) => {
-        if (!cancelled) setPrdDoc(content)
+        if (!cancelled) setEntryDoc(content)
       })
       .catch(() => {
-        if (!cancelled) setPrdDoc(null)
+        if (!cancelled) setEntryDoc(null)
       })
     return () => {
       cancelled = true
     }
-  }, [status, prototypeSlug, prdFile])
+  }, [status, prototypeSlug, entryFile])
 
   // Re-read on artifact changes (event carries only the changed file name).
   // Silent so a burst of writes doesn't flash the spinner.
@@ -370,7 +356,7 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
    * Open one of the prototype's files by the name the folder list shows it under.
    *
    * The same judgement that list makes — the app can show three formats itself, everything else is
-   * handed to whatever the person has — because a name reached from the requirement table and the
+   * handed to whatever the person has — because a name reached from the spec table and the
    * identical row in the folder list must not open two different ways. That is what makes a
    * reference checkable rather than something to be believed.
    */
@@ -415,7 +401,7 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
    * broken is said by saying nothing.
    *
    * What it counts is `settleBlockers` — **facts**: links that point at nothing. Nothing about the
-   * design is ever one of them: a requirement is prose in a document, and this page does not claim
+   * design is ever one of them: a spec is prose in a document, and this page does not claim
    * to know what implements it.
    */
   const blockers = status?.settleBlockers ?? []
@@ -530,171 +516,174 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
           )}
 
           {/* The specification — what the work is *for*, before how it is done.
-              It is a set of documents, not one: `PRD.md` is the entry (`requirements.ts`) and any
-              other markdown file that states a requirement is part of it, so all of them are named
-              in one place and each is a way in. This list is the only place the documents other
-              than the entry are named at all — the folder list below cannot name them, because a
-              document that states a requirement is not one of "the rest of the folder".
-              The entry is the one read here whole, under that list, because it is where the
-              specification begins; any other document opens the way documents open everywhere else
-              in the app, in the reader.
-              The requirements themselves are said in the section below, over **all** of them rather
-              than one document's share, because which document states a requirement is not what a
-              reader is looking for. A finding that argues for one is shown there too, labelled:
-              evidence about somebody else's product is not a statement about this folder. */}
+              One list, one row per file: `spec.md` is the entry (`spec.ts`) and every
+              `*.spec.md` file is one spec, whose title is the file's first heading and whose
+              identity is the file's own name. Naming them once here is the whole of it — the folder
+              list below cannot name a spec file, because it is not one of "the rest of the
+              folder", and a row per file is why there is no second list of specs to read.
+              The entry is the one read here whole, from its own row: it is where the specification
+              begins, and opening it in place is what keeps the list and the document one thing
+              rather than two. Any other row opens its file the way documents open everywhere else in
+              the app, in the reader. */}
           <Info_Section
-            id="requirements"
+            id="specification"
             title={t('prototypeInfo.specification')}
             description={
-              status.requirements.length > 0 ? t('prototypeInfo.requirementsHint') : undefined
+              status.specs.length > 0 ? t('prototypeInfo.specHint') : undefined
             }
-            bare={specDocuments.length === 0}
+            bare={status.specificationFiles.length === 0}
           >
-            {specDocuments.length === 0 ? (
+            {status.specificationFiles.length === 0 ? (
               <p className="pl-1 text-sm text-muted-foreground">
-                {t('prototypeInfo.requirementsEmpty')}
+                {t('prototypeInfo.specEmpty')}
               </p>
             ) : (
               <>
                 <div className="px-6 pt-3 pb-3">
-                  <div className="pb-1 text-xs font-medium text-muted-foreground">
-                    {t('prototypeInfo.specificationDocuments')}
-                  </div>
                   <ul className="divide-y divide-border/30">
-                    {specDocuments.map((file) => (
-                      <li key={file.path} className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => openFolderEntry(file.name)}
-                          className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-left"
-                        >
-                          <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                          <span className="min-w-0 flex-1 truncate font-mono text-xs">
-                            {file.name}
-                          </span>
-                        </button>
-                        {/* What this document states, so the table below can be read without
-                            having to guess which document to open for a given id. */}
-                        <span className="shrink-0 font-mono text-xs text-muted-foreground">
-                          {status.requirements
-                            .filter((requirement) => requirement.file === file.name)
-                            .map((requirement) => requirement.id)
-                            .join(' ')}
-                        </span>
-                      </li>
-                    ))}
+                    {status.specificationFiles.map((file) => {
+                      // The entry is the one document this page can read, so its row opens the
+                      // document inside itself: a chevron takes the file glyph's place there, and
+                      // every row keeps the same left edge.
+                      const isEntry = entryFile !== null && entryFile.name === file.name
+                      // A spec row reads as its title — the file's first heading — with the
+                      // file's name beside it, because the name is the spec's identity. The
+                      // entry is the index and has no title of its own, so it is named by its file
+                      // name and its prose opens inside its own row.
+                      const spec = isEntry
+                        ? null
+                        : (status.specs.find((candidate) => candidate.file === file.name) ?? null)
+                      return (
+                        <li key={file.path}>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                isEntry ? setEntryOpen((open) => !open) : openFolderEntry(file.name)
+                              }
+                              aria-expanded={isEntry ? entryOpen : undefined}
+                              className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-left"
+                            >
+                              {isEntry ? (
+                                <ChevronRight
+                                  className={`h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform ${entryOpen ? 'rotate-90' : ''}`}
+                                />
+                              ) : (
+                                <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                              )}
+                              {isEntry ? (
+                                <span className="min-w-0 flex-1 truncate font-mono text-xs">
+                                  {file.name}
+                                </span>
+                              ) : (
+                                <span className="min-w-0 flex-1 truncate text-sm">
+                                  {spec?.title ?? file.name}
+                                </span>
+                              )}
+                            </button>
+                            {/* The file's own name is the spec's identity — what a link
+                                points at, and what one opens — so it travels beside the title rather
+                                than being inferred from it. */}
+                            {!isEntry && (
+                              <span
+                                className="max-w-[50%] shrink-0 truncate font-mono text-xs text-foreground/50"
+                                title={file.name}
+                              >
+                                {file.name}
+                              </span>
+                            )}
+                          </div>
+
+                          {/* The document itself, from the row that names it. Indented to the
+                              name it belongs to — the glyph plus the row's own gap — so it reads
+                              as that row's contents rather than as the next thing on the page. */}
+                          {entryFile && isEntry && entryOpen && (
+                            <div className="flex gap-2 pb-2">
+                              <span className="w-3.5 shrink-0" aria-hidden="true" />
+                              <div className="min-w-0 flex-1">
+                                {entryDoc === null ? (
+                                  <p className="text-sm text-destructive">
+                                    {t('prototypeInfo.documentUnreadable')}
+                                  </p>
+                                ) : typeof entryDoc === 'string' ? (
+                                  <Info_Markdown
+                                    // Long prose is a section, not the page: the cap is what keeps the sections
+                                    // below it reachable, and the header's own button is the way to read it
+                                    // whole — the pair Skill's Instructions and Source's Documentation use.
+                                    maxHeight={540}
+                                    fullscreen
+                                    // A picture named in the document is read from the document's own folder
+                                    // (`baseDir`), so a relative destination resolves the way the author wrote
+                                    // it — true for a document at the root and for one in a subfolder alike.
+                                    baseDir={entryFile.path.replace(/[\\/][^\\/]*$/, '')}
+                                    onFileClick={onOpenFile}
+                                    onUrlClick={onOpenUrl}
+                                  >
+                                    {entryDoc}
+                                  </Info_Markdown>
+                                ) : null}
+
+                                {/* The edges between documents, read from both ends: what the entry points at,
+                                    and what points back at it. Navigation only — it says where to read next and
+                                    nothing about what the folder holds. */}
+                                {(entryLinks.outgoing.length > 0 || entryLinks.incoming.length > 0) && (
+                                  <div className="pt-2 font-mono text-xs text-foreground/60">
+                                    {entryLinks.outgoing.length > 0 && (
+                                      <div className="flex flex-wrap items-baseline gap-x-1.5 py-0.5">
+                                        <span className="text-muted-foreground">
+                                          {t('prototypeInfo.linksTo')}
+                                        </span>
+                                        {entryLinks.outgoing.map((link) => (
+                                          <button
+                                            key={link.target}
+                                            type="button"
+                                            onClick={() => openPrototypeFile(link.to as string)}
+                                            className="text-accent hover:underline"
+                                          >
+                                            {link.target}
+                                          </button>
+                                        ))}
+                                      </div>
+                                    )}
+                                    {entryLinks.incoming.length > 0 && (
+                                      <div className="flex flex-wrap items-baseline gap-x-1.5 py-0.5">
+                                        <span className="text-muted-foreground">
+                                          {t('prototypeInfo.linkedFrom')}
+                                        </span>
+                                        {entryLinks.incoming.map((link) => (
+                                          <button
+                                            key={link.from}
+                                            type="button"
+                                            onClick={() => openPrototypeFile(link.from)}
+                                            className="text-accent hover:underline"
+                                          >
+                                            {link.from}
+                                          </button>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </li>
+                      )
+                    })}
                   </ul>
                 </div>
-
-                {prdFile && (
-                  <div>
-                    {/* No name above the preview: the list above names this document — the entry is
-                        its first row — and a document that reads at all names itself in its own
-                        first heading, so a label here would be the same words a third time. */}
-                    {prdDoc === null ? (
-                      <p className="px-6 pb-3 text-sm text-destructive">
-                        {t('prototypeInfo.documentUnreadable')}
-                      </p>
-                    ) : typeof prdDoc === 'string' ? (
-                      <Info_Markdown
-                        // Long prose is a section, not the page: the cap is what keeps the sections
-                        // below it reachable, and the header's own button is the way to read it
-                        // whole — the pair Skill's Instructions and Source's Documentation use.
-                        maxHeight={540}
-                        fullscreen
-                        // A picture named in the document is read from the document's own folder
-                        // (`baseDir`), so a relative destination resolves the way the author wrote
-                        // it — true for a document at the root and for one in a subfolder alike.
-                        baseDir={prdFile.path.replace(/[\\/][^\\/]*$/, '')}
-                        onFileClick={onOpenFile}
-                        onUrlClick={onOpenUrl}
-                      >
-                        {prdDoc}
-                      </Info_Markdown>
-                    ) : null}
-
-                    {/* The edges between documents, read from both ends: what the entry points at,
-                        and what points back at it. Navigation only — it says where to read next and
-                        nothing about what the folder holds. */}
-                    {(prdLinks.outgoing.length > 0 || prdLinks.incoming.length > 0) && (
-                      <div className="px-6 pb-3 font-mono text-xs text-foreground/60">
-                        {prdLinks.outgoing.length > 0 && (
-                          <div className="flex flex-wrap items-baseline gap-x-1.5 py-0.5">
-                            <span className="text-muted-foreground">
-                              {t('prototypeInfo.linksTo')}
-                            </span>
-                            {prdLinks.outgoing.map((link) => (
-                              <button
-                                key={link.target}
-                                type="button"
-                                onClick={() => openPrototypeFile(link.to as string)}
-                                className="text-accent hover:underline"
-                              >
-                                {link.target}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                        {prdLinks.incoming.length > 0 && (
-                          <div className="flex flex-wrap items-baseline gap-x-1.5 py-0.5">
-                            <span className="text-muted-foreground">
-                              {t('prototypeInfo.linkedFrom')}
-                            </span>
-                            {prdLinks.incoming.map((link) => (
-                              <button
-                                key={link.from}
-                                type="button"
-                                onClick={() => openPrototypeFile(link.from)}
-                                className="text-accent hover:underline"
-                              >
-                                {link.from}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
               </>
             )}
           </Info_Section>
 
-          {/* The requirements, each with the findings that argue for one — the only thread this
-              reads between a requirement and the rest of the folder. A finding stays labelled and
-              is never a statement about what exists here: evidence about somebody else's product,
-              argued for and never built. What implements a requirement is not a question this page
-              answers at all, because nothing about a file says it. */}
-          {status.requirements.length > 0 && (
-            <Info_Section title={t('prototypeInfo.requirements')}>
-              <ul className="divide-y divide-border/30 px-6 py-3">
-                {status.requirements.map((requirement) => (
-                  <li key={requirement.id} className="flex items-start gap-3 py-1.5">
-                    <span className="shrink-0 pt-0.5 font-mono text-xs text-foreground/70">
-                      {requirement.id}
-                    </span>
-                    <span className="min-w-0 flex-1 text-sm">{requirement.title}</span>
-                    <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5 font-mono text-xs">
-                      {requirement.findings.map((id) => (
-                        <span key={id} className="text-foreground/60">
-                          {`${id} (${t('prototypeInfo.findingsShort')})`}
-                        </span>
-                      ))}
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </Info_Section>
-          )}
-
-          {/* The rest of the folder: everything that is not a document defining a requirement, in
-              any format, listed by name and opened with whatever program the OS has for it. It sits
+          {/* The rest of the folder: everything that is not a spec file, in any format,
+              listed by name and opened with whatever program the OS has for it. It sits
               *beside* the specification rather than under it — these files belong to the folder,
-              not to the requirements — and so it does not depend on the section above having
-              anything in it: a prototype whose markdown states no requirement still has its files,
+              not to the specs — and so it does not depend on the section above having
+              anything in it: a prototype with no `*.spec.md` file still has its files,
               and they are listed all the same. */}
           <Info_Section
-            title={t('prototypeInfo.requirementsFiles')}
+            title={t('prototypeInfo.otherFiles')}
             bare={status.files.length === 0}
           >
             {status.files.length === 0 ? (
@@ -757,11 +746,8 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
             )}
           </Info_Section>
 
-          {/* The silent failures of the layer above — a requirement id two documents both define,
-              a finding with no claim or with evidence that is not there. A finding's own problems
-              are reported here rather than in a section of their own: the finding itself is already
-              shown on the requirement it argues for, and `research/` is not part of what is handed
-              over. */}
+          {/* The silent failures of the layer above — a picture that no longer matches its
+              diagram. */}
           {status.briefIssues.length > 0 && (
             <Info_Alert variant="warning" icon={<TriangleAlert className="h-4 w-4" />}>
               <Info_Alert.Title>{t('prototypeInfo.briefIssues')}</Info_Alert.Title>

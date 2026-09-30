@@ -1,9 +1,9 @@
 /**
  * `prototype_tool`'s commands.
  *
- * A prototype's own workflow: the folder it *is* — its `PRD.md`, the requirements and the files that
- * implement them, the findings. The window's own surface is `browser-commands.ts`;
- * the CLI both doors read their command line with is `command-cli.ts`.
+ * A prototype's own workflow: the folder it *is* — its `spec.md` (the index), the specs, and
+ * the files beside them. The window's own surface is `browser-commands.ts`; the CLI both doors read
+ * their command line with is `command-cli.ts`.
  */
 
 import type { BrowserPaneFns } from './browser-pane.ts';
@@ -19,7 +19,7 @@ import {
  * `prototype_tool --help`.
  *
  * Written the way the tool's own description is: what it acts on (a prototype's **folder**) and what
- * it reads from it (the requirements, the findings), because that is what a
+ * it reads from it (the specs, the links), because that is what a
  * session has to understand before a single one of these commands means anything.
  */
 export function getPrototypeToolHelp(): string {
@@ -28,24 +28,23 @@ export function getPrototypeToolHelp(): string {
     '',
     'Usage (one command per call — no batching):',
     '  --help',
-    '  list                                           prototypes in this workspace, with their requirement',
+    '  list                                           prototypes in this workspace, with their spec',
     '                                                 counts, and which one is bound',
-    '  create <name> [--no-bind]                      create a prototype — a folder with a starter PRD.md',
-    '  status [slug]                                  the report: the requirements, the files beside',
-    '                                                 them, the findings, and what is still owed',
+    '  create <name> [--no-bind]                      create a prototype — a folder with a starter spec.md',
+    '  status [slug]                                  the report: the specification, the files beside',
+    '                                                 them, and what is still owed',
     '',
     'A prototype is a **folder**, and the work lives in it — it is yours to organize,',
     '"{workspace}/prototypes/{slug}/":',
-    '  *.md               the specification: one "## R-001 <title>" entry per requirement, in one',
-    '                     markdown file or several (any markdown file in the folder, subfolders',
-    '                     included). Beside it: material in any format (personas, a glossary, a',
-    '                     screenshot) and whatever files the work is made of.',
-    '  research/          what you learned, one finding per file.',
+    '  *.spec.md          the specification: one spec per file, the file\'s name its identity,',
+    '                     in the folder or a subfolder. Beside it: material in any format (personas,',
+    '                     a glossary, a screenshot) and whatever files the work is made of.',
+    '  spec.md            the index the specification is read from — the entry document a "create"',
+    '                     seeds, not a spec itself.',
     'Nothing here writes those files for you: the specification, the material beside it and the work\'s',
     'own files are written with the Write/Edit tools.',
-    'A finding names the requirement it argues for on its "requirements:" line. What this report reads',
-    'is the specification itself — the requirements, whatever sits beside them, and any link that points',
-    'at nothing.',
+    'What this report reads is the specification itself — the specs, whatever sits beside them,',
+    'and any link that points at nothing.',
     '',
     'Which prototype a command means is read from this session\'s binding. A command with no slug works',
     'with no window open, as long as this conversation is bound; with no binding, name one. Binding is',
@@ -60,7 +59,7 @@ export function getPrototypeToolHelp(): string {
     '',
     'Examples:',
     '  list',
-    '  create Landing page                  (a folder with a starter PRD.md; you write everything in it)',
+    '  create Landing page                  (a folder with a starter spec.md; you write everything in it)',
     '  create Rival checkout --no-bind',
     '  status',
   ].join('\n');
@@ -108,8 +107,8 @@ const runOneCommand = createCommandRunner({
 /**
  * Run a `prototype_tool` command.
  *
- * Same CLI, same `fns`, other door: these commands act on a prototype's own folder — its brief, the
- * files that implement it, the findings — and none of them is a browser primitive.
+ * Same CLI, same `fns`, other door: these commands act on a prototype's own folder — its brief and
+ * the files beside it — and none of them is a browser primitive.
  *
  * **One command per call, no batches.** A batch exists so that one *action* made of several steps
  * — filling a form, then clicking submit — is one call. A prototype command is already such a
@@ -136,8 +135,8 @@ export async function runPrototypeCommand(ctx: ToolCommandContext): Promise<Brow
       return {
         output: [
           'No prototypes in this workspace yet.',
-          'Create one with "create <name>" — a folder with a starter PRD.md. Write the requirements',
-          'into its markdown ("## R-001 <title>") and the work\'s files beside it.',
+          'Create one with "create <name>" — a folder with a starter spec.md. Write each spec into',
+          'its own "<name>.spec.md" file and the work\'s files beside it.',
         ].join('\n'),
         appendReleaseHint: false,
       };
@@ -150,9 +149,9 @@ export async function runPrototypeCommand(ctx: ToolCommandContext): Promise<Brow
     for (const prototype of prototypes) {
       const notes: string[] = [];
       if (prototype.slug === bound) notes.push('BOUND');
-      // A prototype with no requirements yet is the normal state of a new one, so it is
+      // A prototype with no specs yet is the normal state of a new one, so it is
       // said as a count rather than as a problem.
-      notes.push(`${prototype.requirements.length} requirement${prototype.requirements.length === 1 ? '' : 's'}`);
+      notes.push(`${prototype.specs.length} spec${prototype.specs.length === 1 ? '' : 's'}`);
       const fileCount = prototype.files.length + prototype.specificationFiles.length;
       notes.push(`${fileCount} file${fileCount === 1 ? '' : 's'}`);
       lines.push(`  • ${prototype.slug} — ${notes.join(', ')}`);
@@ -171,7 +170,8 @@ export async function runPrototypeCommand(ctx: ToolCommandContext): Promise<Brow
     if (unknownFlag) {
       throw new Error(
         `create does not take "${unknownFlag}". It only needs a name — the folder is the prototype, ` +
-          `and everything in it is written by hand: the requirements into PRD.md, the work's files beside it.`,
+          `and everything in it is written by hand: each spec into its own "<name>.spec.md" file, ` +
+          `the work's files beside it.`,
       );
     }
 
@@ -193,12 +193,12 @@ export async function runPrototypeCommand(ctx: ToolCommandContext): Promise<Brow
         ? `Created prototype "${created.slug}" (not bound — this session still targets its own prototype).`
         : `Created prototype "${created.slug}" and bound this session to it.`,
       `  dir: ${created.dir}`,
-      `  PRD: ${created.prdPath}`,
+      `  entry: ${created.entryPath}`,
       '',
-      'It is a folder with a starter PRD.md and nothing else yet. Write the requirements into its',
-      'markdown ("## R-001 <what the requirement is>") — one file or several — then whatever files the',
-      'work needs beside it. "status" then reports what the folder holds: the requirements, the files',
-      'beside them, the findings, and any link that points at nothing.',
+      'It is a folder with a starter spec.md and nothing else yet. Write each spec into its own',
+      'file ("<name>.spec.md", one spec per file — the file\'s name is its identity), then',
+      'whatever files the work needs beside it. "status" then reports what the folder holds: the',
+      'specs, the files beside them, and any link that points at nothing.',
     ];
 
     if (!noBind) lines.push('', 'Commands now target it by default.');
@@ -211,29 +211,19 @@ export async function runPrototypeCommand(ctx: ToolCommandContext): Promise<Brow
 
     const status = await fns.prototypeStatus(slug);
 
-    const requirementCount = status.requirements.length
+    const specCount = status.specs.length
     const specFiles = status.specificationFiles.map((file) => file.name).join(', ')
     const lines = [
       `Prototype "${status.slug}"`,
       `  dir:        ${status.dir}`,
-      `  spec:       ${
-        status.specificationFiles.length > 0
-          ? `${specFiles} — ${requirementCount} requirement${requirementCount === 1 ? '' : 's'}`
-          : 'not written yet'
-      }`,
+      `  spec:       ${status.specificationFiles.length > 0 ? specFiles : 'not written yet'}`,
     ];
 
-    // The requirements, and the findings that argue for one. A requirement is a heading in the
-    // folder's markdown and nothing more: the report does not claim to know what implements it.
-    if (requirementCount > 0) {
-      lines.push('  requirements:');
-      for (const requirement of status.requirements) {
-        const argued = requirement.findings.map((id) => `${id} (finding)`);
-        lines.push(
-          `      ${requirement.id} ${requirement.title || '(no title)'}${
-            argued.length > 0 ? ` — argued for by ${argued.join(', ')}` : ''
-          }`,
-        );
+    // The specs. A spec is a file and nothing more: the report does not claim to know
+    // what implements it, and the file's name (its identity) travels with the title.
+    if (specCount > 0) {
+      for (const spec of status.specs) {
+        lines.push(`      ${spec.title || '(no title)'} (${spec.file})`);
       }
     }
 
@@ -241,14 +231,8 @@ export async function runPrototypeCommand(ctx: ToolCommandContext): Promise<Brow
       `  files:      ${status.files.length > 0 ? status.files.map((file) => file.name).join(', ') : 'none yet'}`,
     );
 
-    if (status.findings.length > 0) {
-      lines.push(
-        `  findings:   ${status.findings.length} (${status.findings.map((finding) => finding.file).join(', ')})`,
-      );
-    }
-
-    // What could not be read as written: two documents sharing a requirement id, a finding with no
-    // claim or with evidence that is not on disk. Each is a silent failure otherwise.
+    // What could not be read as written — a picture that no longer matches its diagram. Each is a
+    // silent failure otherwise.
     if (status.briefIssues.length > 0) {
       lines.push(`  issues:     ${status.briefIssues.length}`);
       for (const issue of status.briefIssues) {

@@ -220,7 +220,7 @@ export interface BrowserPaneFns {
   getBoundPrototypeSlug?: () => string | null;
   /** Every prototype in the workspace, with its derived status. */
   listPrototypes: () => Promise<PrototypeStatus[]>;
-  /** Create a prototype: a folder plus a starter `PRD.md`. The files written into it are the prototype. */
+  /** Create a prototype: a folder plus a starter `spec.md`. The files written into it are the prototype. */
   createPrototype: (input: {
     name: string;
   }) => Promise<CreatedPrototype>;
@@ -291,8 +291,8 @@ export interface BrowserPaneFns {
    */
   listDrawioPages: (args: { path: string }) => Promise<DrawioPage[]>;
   /**
-   * Inspect a prototype: its requirements and the files that implement them, and the findings.
-   * Pure file inspection — no browser needed.
+   * Inspect a prototype: its specification, the specs its documents state, and the rest of
+   * the folder. Pure file inspection — no browser needed.
    */
   prototypeStatus: (slug: string) => Promise<PrototypeStatus>;
   focusWindow: (instanceId?: string) => Promise<{ instanceId: string; title: string; url: string }>;
