@@ -14,7 +14,6 @@ import { PanelHeader } from '@/components/app-shell/PanelHeader'
 import { SessionMenu } from '@/components/app-shell/SessionMenu'
 import { CompactSessionMenu } from '@/components/app-shell/CompactSessionMenu'
 import { SessionInfoPopover } from '@/components/app-shell/SessionInfoPopover'
-import { SessionWebsitesMenu } from '@/components/app-shell/SessionWebsitesMenu'
 import { RenameDialog } from '@/components/ui/rename-dialog'
 import { toast } from 'sonner'
 import { PanelHeaderCenterButton } from '@/components/ui/PanelHeaderCenterButton'
@@ -27,6 +26,7 @@ import { navigate, routes } from '@/lib/navigate'
 import { coerceInputText } from '@/lib/input-text'
 import { deriveSessionMessagesLoadState, formatSessionLoadFailure } from '@/lib/session-load'
 import { ensureSessionMessagesLoadedAtom, forceSessionMessagesReloadAtom, loadedSessionsAtom, sessionMetaMapAtom } from '@/atoms/sessions'
+import { projectsAtom } from '@/atoms/projects'
 import { kanbanEditorTargetAtom } from '@/atoms/kanban'
 import { getSessionTitle } from '@/utils/session'
 // Model resolution: connection.defaultModel (no hardcoded defaults)
@@ -332,19 +332,6 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     if (!session) return
     await window.electronAPI.sessionCommand(session.id, { type: 'updateWorkingDirectory', dir: path })
   }, [session])
-
-  // The prototype half of the same choice: binding one makes its folder the working
-  // directory (the session does that), and picking a folder unbinds it. So there is one
-  // handler here, not two, and no local state to keep in step — the events come back.
-  const handlePrototypeChange = React.useCallback(async (slug: string | null) => {
-    if (!session) return
-    try {
-      await window.electronAPI.sessionCommand(session.id, { type: 'setPrototypeSlug', prototypeSlug: slug })
-    } catch (err) {
-      console.error('[ChatPage] Failed to change the prototype binding:', err)
-      toast.error(t('prototypeBind.failed'))
-    }
-  }, [session, t])
 
   const handleOpenFile = React.useCallback(
     async (path: string) => {
@@ -659,15 +646,23 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
   // input, where the folder half already is.
   const headerActions = (
     <div className="flex items-center gap-1.5">
-      {sessionMeta && (
-        // What this conversation produced — the way back to the websites it made,
-        // without a library in the sidebar. Renders nothing until there is one.
-        <SessionWebsitesMenu sessionId={sessionId} />
-      )}
       {editTaskButton}
       {primaryHeaderAction}
     </div>
   )
+
+  // Projects for the title menu's Projects submenu. Read from the atom AppShell already
+  // fills via `useProjects` rather than calling the hook here: a second call would mean a
+  // second fetch and a second `projects:changed` subscription for the same list.
+  const projects = useAtomValue(projectsAtom)
+  const projectMenuOptions = React.useMemo(
+    () => projects.map(p => ({ id: p.config.id, slug: p.config.slug, name: p.config.name })),
+    [projects],
+  )
+  const handleSetProjectId = React.useCallback(async (projectId: string | null) => {
+    if (!session) return
+    await window.electronAPI.sessionCommand(session.id, { type: 'setProjectId', projectId })
+  }, [session])
 
   // Build title menu content for chat sessions using shared SessionMenu.
   // Desktop uses Radix DropdownMenu via PanelHeader; compact mode uses a
@@ -679,6 +674,8 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
       sessionStatuses={sessionStatuses ?? []}
       labels={labels ?? []}
       onLabelsChange={handleLabelsChange}
+      projects={projectMenuOptions}
+      onSetProjectId={handleSetProjectId}
       onRename={handleRename}
       onFlag={handleFlag}
       onUnflag={handleUnflag}
@@ -695,6 +692,8 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     sessionStatuses,
     labels,
     handleLabelsChange,
+    projectMenuOptions,
+    handleSetProjectId,
     handleRename,
     handleFlag,
     handleUnflag,
@@ -714,6 +713,8 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
       sessionStatuses={sessionStatuses ?? []}
       labels={labels ?? []}
       onLabelsChange={handleLabelsChange}
+      projects={projectMenuOptions}
+      onSetProjectId={handleSetProjectId}
       onRename={handleRename}
       onFlag={handleFlag}
       onUnflag={handleUnflag}
@@ -732,6 +733,8 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     sessionStatuses,
     labels,
     handleLabelsChange,
+    projectMenuOptions,
+    handleSetProjectId,
     handleRename,
     handleFlag,
     handleUnflag,
@@ -797,7 +800,6 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
                 onSourcesChange={(slugs) => onSessionSourcesChange?.(sessionId, slugs)}
                 workingDirectory={sessionMeta.workingDirectory}
                 onWorkingDirectoryChange={handleWorkingDirectoryChange}
-                onPrototypeChange={handlePrototypeChange}
                 messagesLoading={messageLoadState.messagesLoading || (messagesRetrying && !messageLoadState.messagesReady)}
                 messagesLoadError={messageLoadState.error}
                 messagesRetrying={messagesRetrying}
@@ -878,7 +880,6 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
             workingDirectory={workingDirectory}
             onWorkingDirectoryChange={handleWorkingDirectoryChange}
             sessionFolderPath={session?.sessionFolderPath}
-            onPrototypeChange={handlePrototypeChange}
             messagesLoading={messageLoadState.messagesLoading || (messagesRetrying && !messageLoadState.messagesReady)}
             messagesLoadError={messageLoadState.error}
             messagesRetrying={messagesRetrying}

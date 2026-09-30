@@ -789,7 +789,6 @@ Read relevant context files using the Read tool - they contain architecture info
 | Markdown Preview | \`${DOC_REFS.markdownPreview}\` | When displaying rendered .md files inline |
 | Browser Tools | \`${DOC_REFS.browserTools}\` | When using in-app browser tools (\`browser_tool\`) |
 | Prototypes | \`${DOC_REFS.prototypes}\` | BEFORE the first \`prototype_tool\` command |
-| Websites | \`${DOC_REFS.websites}\` | BEFORE creating Websites or authoring website HTML |
 | Tweaks | \`${DOC_REFS.tweaks}\` | BEFORE creating a tweak or changing its code |
 | LLM Tool | \`${DOC_REFS.llmTool}\` | When using \`call_llm\` for subtasks |${FEATURE_FLAGS.craftAgentsCli ? `
 | Craft CLI | \`${DOC_REFS.craftCli}\` | When managing labels/sources/skills/automations via \`craft-agent\` |` : ''}
@@ -1093,26 +1092,6 @@ Setting labels or status triggers the corresponding automation events (\`LabelAd
 1. Scheduled automation creates a session
 2. Agent completes work
 3. Agent calls \`set_session_status\` with "needs-review" → triggers downstream webhook/notification (closing the task into "done"/"cancelled" remains the user's call)
-
-## Websites
-
-Websites are persistent, self-hosted sites you can create for the user: a dashboard, a report, a tracker, a small tool. Each one is a **directory in the workspace, served at an address of its own** — \`index.html\` is what that address opens, and every other file beside it is served too (including \`data/snapshot.json\`, the only file under \`data/\` that is served at all), so a website can have its own stylesheet, more than one document, real routes, state in \`localStorage\`, and \`fetch\` against its own files. They live in the workspace at \`websites/{slug}/\` and appear as tiles in the app's **Websites** section (filterable by Project); opening one opens **a tab in the browser window at that address**. Unlike chat previews (\`html-preview\`, \`datatable\`), Websites persist across sessions and can be auto-refreshed by schedules. The user hands one to someone else by exporting a copy of the folder — the snapshot is carried along — and you never publish or host anything. A website is the right artifact when **nobody has to implement it** — when the user instead wants a change to a real product that somebody else will build, that is a prototype (\`prototype_tool\`).
-
-**Tools:**
-- \`list_websites\` / \`get_website\` — discover websites and inspect one (config, content path, data summary)
-- \`create_website\` — create a website (name, optional projectId, HTML content, refresh schedule)
-- \`update_website\` — change metadata/refresh or replace the HTML content
-- \`write_website_data\` — write to the website's data store (KV + timeseries); the site sees the change on its next \`fetch\` or reload
-- \`delete_website\` — permanent; **confirm with the user first**
-
-The tools keep the derived state in step for you (digest, poster, watcher) — but the file is the truth: writing \`websites/{slug}/index.html\` with Write/Edit is the same website one beat later — the host notices and recomputes the digest.
-
-**Data model:** each website has a small data store — \`kv\` (key → any JSON value) and named \`series\` (lists of \`{ t: epoch ms, v: number }\` points, ideal for metrics/charts). \`write_website_data\` applies changes transactionally and regenerates \`data/snapshot.json\`, the only artifact the website reads. Scheduled refresh (\`refresh\` spec: cron + workspace-relative Bun script) updates the same store deterministically — no agent session is created for routine refreshes.
-
-**Authoring website files — read \`${DOC_REFS.websites}\` FIRST.** The essentials:
-- The directory is the site's root, so its own files are loaded by root-absolute path (\`/assets/app.css\`). Several files are fine; \`index.html\` is only what the address opens.
-- No external requests: nothing from a CDN or another host. A \`fetch\` to the site's own origin is fine.
-- Read data with \`fetch('/data/snapshot.json')\` on the site's own origin: it is the published snapshot (\`version\`, \`generatedAt\`, \`kv\`, \`series\`), a 404 means nothing has been written yet, and it works both in a tab and in an exported copy. Nothing pushes updates into an open page, so the site must re-fetch or reload to pick new data up.
 
 ## Diagrams and Visualization
 

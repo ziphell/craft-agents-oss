@@ -31,7 +31,6 @@ import { CodedError, RPC_CHANNELS, describeWork, sameWork, tabSectionOf } from '
 import type { PickedElement, PickedElementOrigin, BrowserToolbarAction, BrowserTabSummary, TabBelongsTo } from '@craft-agent/shared/protocol'
 import { PAGE_PANEL_RING, resolvePagePanelRing } from '../shared/browser-live-fx'
 import { PANEL_EDGE_INSET, PANEL_RADIUS_INNER } from '../shared/panel-geometry'
-import { resolveServedWebsite } from './website-host'
 import type {
   IBrowserPaneManager,
   BrowserInstanceSnapshot,
@@ -1648,9 +1647,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
             instanceId: instance.id,
             element,
             // The tab it came from, read at the moment of the pick: the overlay is
-            // the window's, so the element alone does not say where it was picked —
-            // and if that page is a website of ours, the site's folder rides along.
-            origin: this.describePickOrigin(tab),
+            // the window's, so the element alone does not say where it was picked.
+            origin: this.describeTabLocation(tab),
           })
         }
 
@@ -6478,21 +6476,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       url: tab.currentUrl,
       title: tab.title,
     }
-  }
-
-  /**
-   * The same, for a pick: plus the website it happened in, when the address is ours.
-   *
-   * A website's pages are files in the workspace, so "which page" is only half of what a
-   * pick has to say — the other half is which files to change, and only this process can
-   * answer it (`resolveServedWebsite` reads the host's registry, which is what knows a
-   * `<label>.localhost` is one of ours rather than somebody's dev server). A pick on
-   * anything else keeps the plain location: there is nothing of ours behind it.
-   */
-  private describePickOrigin(tab: BrowserTab): PickedElementOrigin {
-    const origin = this.describeTabLocation(tab)
-    const site = resolveServedWebsite(origin.url)
-    return site ? { ...origin, website: { slug: site.slug, dir: site.dir } } : origin
   }
 
   /**

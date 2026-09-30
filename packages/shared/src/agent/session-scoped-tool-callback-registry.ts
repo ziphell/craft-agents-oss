@@ -84,15 +84,9 @@ export interface SessionScopedToolCallbacks {
     input: import('@craft-agent/session-tools-core').CreateTaskInput
   ) => Promise<import('@craft-agent/session-tools-core').CreateTaskResult>;
   /**
-   * Websites tools (list/get/create/update/write data/delete) — grouped in one
-   * object because the six operations always ship together. Wired by
-   * SessionManager to the invoking session's workspace.
-   */
-  websites?: import('@craft-agent/session-tools-core').WebsiteToolCallbacks;
-
-  /**
    * Tweaks tools (list/get/create/update/delete/export) — the standing edits that run on
-   * pages nobody here owns. Grouped like the websites ones, and wired the same way.
+   * pages nobody here owns. Grouped because the operations ship together, and wired the
+   * same way.
    */
   tweaks?: import('@craft-agent/session-tools-core').TweakToolCallbacks;
 }

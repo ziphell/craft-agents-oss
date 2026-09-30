@@ -137,7 +137,7 @@ export function PanelStackContainer({
             <div
               data-panel-role="navigator"
               className={cn(
-                'h-full w-full overflow-hidden relative',
+                'h-full w-full overflow-clip relative',
                 'bg-background shadow-middle',
               )}
               style={{
@@ -229,7 +229,7 @@ export function PanelStackContainer({
           }}
           transition={transition}
           className={cn(
-            'h-full overflow-hidden relative shrink-0 z-[2]',
+            'h-full overflow-clip relative shrink-0 z-[2]',
             'bg-background shadow-middle',
           )}
           style={{

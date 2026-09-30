@@ -1,8 +1,7 @@
 /**
  * The answers every host in this app gives, so they give them the same way.
  *
- * Two modules serve documents from disk — the website host and the one handler
- * that routes to it — and the responses are the same shape in both: a file with the
+ * A host serves documents from disk, and the responses are the same shape: a file with the
  * content type its extension names, a plain text refusal for the paths nobody can
  * act on, and no caching anywhere, because everything here is edited constantly and
  * a cached document would show an earlier state with no hint that it is stale.

@@ -23,7 +23,6 @@ import { createLogger } from '../utils/debug.ts';
 import { WorkspaceEventBus, type EventPayloadMap } from './event-bus.ts';
 import { PromptHandler, EventLogHandler, WebhookHandler, ScriptHandler, type AutomationsConfigProvider } from './handlers/index.ts';
 import { type AutomationsConfig, type AutomationEvent, type AutomationMatcher, type PendingPrompt, type WebhookActionResult, type ScriptActionResult, type AppEvent, type AgentEvent, type SdkAutomationCallbackMatcher, type SdkAutomationInput } from './types.ts';
-import { buildWebsiteRefreshMatchers } from '../websites/refresh.ts';
 import { validateAutomationsConfig } from './validation.ts';
 import { matcherMatchesSdk } from './utils.ts';
 import { SchedulerService, type SchedulerTickPayload } from '../scheduler/scheduler-service.ts';
@@ -76,8 +75,6 @@ export class AutomationSystem implements AutomationsConfigProvider {
   private eventLogHandler: EventLogHandler | null = null;
   private scheduler: SchedulerService | null = null;
   private disposed = false;
-  /** Synthetic SchedulerTick matchers derived from page refresh specs */
-  private websiteRefreshMatchers: AutomationMatcher[] = [];
 
   // Session metadata tracking (moved from SessionManager)
   private readonly lastKnownMetadata: Map<string, SessionMetadataSnapshot> = new Map();
@@ -88,9 +85,6 @@ export class AutomationSystem implements AutomationsConfigProvider {
 
     // Load configuration
     this.loadConfig();
-
-    // Materialize page refresh specs as synthetic cron matchers
-    this.reloadWebsiteRefreshMatchers();
 
     // Create handlers
     this.createHandlers();
@@ -242,31 +236,7 @@ export class AutomationSystem implements AutomationsConfigProvider {
   }
 
   getMatchersForEvent(event: AutomationEvent): AutomationMatcher[] {
-    const configured = this.config?.automations[event] ?? [];
-    // Page refreshes are cron-driven: synthetic matchers only join SchedulerTick
-    if (event === 'SchedulerTick' && this.websiteRefreshMatchers.length > 0) {
-      return [...configured, ...this.websiteRefreshMatchers];
-    }
-    return configured;
-  }
-
-  /**
-   * Rebuild the synthetic website-refresh matchers from websites/{slug}/website.json.
-   * Called at construction and whenever the config watcher reports a websites
-   * change. Returns the number of scheduled website refreshes.
-   */
-  reloadWebsiteRefreshMatchers(): number {
-    try {
-      this.websiteRefreshMatchers = buildWebsiteRefreshMatchers(this.options.workspaceRootPath);
-    } catch (e) {
-      // Non-critical — a broken website config must never break automations
-      log.debug(`[AutomationSystem] Failed to build website refresh matchers: ${e}`);
-      this.websiteRefreshMatchers = [];
-    }
-    if (this.websiteRefreshMatchers.length > 0) {
-      log.debug(`[AutomationSystem] ${this.websiteRefreshMatchers.length} website refresh matcher(s) active`);
-    }
-    return this.websiteRefreshMatchers.length;
+    return this.config?.automations[event] ?? [];
   }
 
   // ============================================================================

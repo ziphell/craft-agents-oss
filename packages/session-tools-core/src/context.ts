@@ -345,24 +345,10 @@ export interface SessionToolContext {
    */
   createTask?(input: CreateTaskInput): Promise<CreateTaskResult>;
 
-  // ============================================================
-  // Websites (list_websites / get_website / create_website / update_website /
-  //        write_website_data / delete_website)
-  // ============================================================
-
-  /**
-   * Websites tool callbacks — workspace-scoped mini sites. Grouped in one
-   * object (unlike the flat session-management callbacks) because the six
-   * operations always ship together. Injected by the backend (SessionManager);
-   * undefined in backends that don't run alongside it — handlers degrade
-   * gracefully.
-   */
-  websites?: WebsiteToolCallbacks;
-
   /**
    * Tweaks tool callbacks — standing edits to pages nobody here owns, with two carriers
-   * (this app's browser window, and a loadable extension). Grouped for the same reason
-   * the websites ones are: the operations ship together. Injected by the backend
+   * (this app's browser window, and a loadable extension). Grouped because the
+   * operations ship together. Injected by the backend
    * (SessionManager); undefined elsewhere, where the handlers degrade gracefully.
    */
   tweaks?: TweakToolCallbacks;
@@ -484,144 +470,6 @@ export interface CreateTaskResult {
   taskLabelId?: string;
   /** Fail-soft problems (unknown source/skill slugs, label failure, …). */
   warnings: string[];
-}
-
-// ============================================================
-// Websites Types
-// ============================================================
-// Plain JSON shapes mirroring @craft-agent/core website types — duplicated here
-// on purpose so this package stays dependency-free (same rule as
-// CreateTaskInput). The backend maps real WebsiteConfig/LoadedWebsite onto these.
-
-/** Scheduled refresh spec for a website (5-field cron → workspace-relative script). */
-export interface WebsiteToolRefreshSpec {
-  /** 5-field cron expression evaluated once per minute */
-  cron: string;
-  /** Script path relative to the workspace root (must stay within it) */
-  script: string;
-  /** Extra argv appended after the script path */
-  args?: string[];
-  /** IANA timezone for cron evaluation (system local when omitted) */
-  timezone?: string;
-  /** Per-run timeout in ms (default 60_000, clamped to [1_000, 900_000]) */
-  timeoutMs?: number;
-  /** false pauses scheduling without deleting the spec */
-  enabled?: boolean;
-}
-
-/** Compact website entry (returned by list_websites). */
-export interface WebsiteToolSummary {
-  slug: string;
-  name: string;
-  description?: string;
-  projectId?: string;
-  /**
-   * The conversation the website was created from — the website's record of why it
-   * exists. May point at a session that no longer exists (weak reference).
-   */
-  originSessionId?: string;
-  createdAt: number;
-  updatedAt: number;
-  /** Whether index.html exists yet */
-  hasContent: boolean;
-  refresh?: WebsiteToolRefreshSpec;
-  /** Outcome of the most recent data refresh (scheduled or agent write) */
-  lastRefresh?: { at: number; ok: boolean; durationMs: number; error?: string };
-  /** Absolute path to the website folder (websites/{slug}/) */
-  folderPath: string;
-}
-
-/** Summary of a website's data snapshot (kv keys + per-series stats, not full points). */
-export interface WebsiteToolDataSummary {
-  generatedAt: number;
-  kvKeys: string[];
-  series: Array<{ name: string; points: number; latest?: { t: number; v: number } }>;
-  /** Absolute path to data/snapshot.json — Read it for the full contents */
-  snapshotPath: string;
-}
-
-/** Full website details (returned by get_website / create_website / update_website). */
-export interface WebsiteToolDetails extends WebsiteToolSummary {
-  id: string;
-  /**
-   * The address this website is served at (`http://<label>.localhost`), when the
-   * host can serve origins. Point `browser_tool` at it to work on the site as a
-   * page — the same address the app opens it at. Asking for it names the website
-   * to the host for this run, which is what makes the address answer at all.
-   * Absent on a host that serves no origins (a standalone server).
-   */
-  origin?: string;
-  /** sha256 hex of index.html (render leases bind to it) */
-  contentDigest?: string;
-  /** Byte length of index.html when present */
-  contentLength?: number;
-  /** Absolute path to index.html */
-  contentPath: string;
-  /** Data snapshot summary, or null when no data has been written yet */
-  data: WebsiteToolDataSummary | null;
-  /** Full index.html content (only when requested with includeContent) */
-  content?: string;
-}
-
-/** Input for create_website. */
-export interface CreateWebsiteToolInput {
-  name: string;
-  description?: string;
-  /** Stable Project ID to bind the website to */
-  projectId?: string;
-  /** Full self-contained HTML document for index.html */
-  content?: string;
-  refresh?: WebsiteToolRefreshSpec;
-}
-
-/** Patch for update_website — only provided fields change; null clears a field. */
-export interface UpdateWebsiteToolPatch {
-  name?: string;
-  description?: string | null;
-  projectId?: string | null;
-  /** Replaces index.html entirely (re-digests) */
-  content?: string;
-  refresh?: WebsiteToolRefreshSpec | null;
-}
-
-/** Data mutation batch for write_website_data (applied in one transaction). */
-export interface WebsiteDataToolPatch {
-  /** KV upserts: key → any JSON value */
-  set?: Record<string, unknown>;
-  /** KV keys to delete */
-  delete?: string[];
-  /** Timeseries appends: series name → points ({ t? epoch ms, v number }) */
-  appendSeries?: Record<string, Array<{ t?: number; v: number }>>;
-  /** Timeseries prunes: series name → deleteBefore timestamp (t < value removed) */
-  pruneSeries?: Record<string, number>;
-}
-
-/** Result of write_website_data. */
-export interface WebsiteDataWriteSummary {
-  slug: string;
-  kvCount: number;
-  seriesCount: number;
-  generatedAt: number;
-  snapshotPath: string;
-  durationMs: number;
-}
-
-/** Result of delete_website. */
-export interface DeleteWebsiteToolResult {
-  deleted: true;
-}
-
-/**
- * Websites tool callbacks, injected by the backend (SessionManager). All storage
- * logic lives behind these — this package never touches websites/ directly.
- */
-export interface WebsiteToolCallbacks {
-  listWebsites(): WebsiteToolSummary[] | Promise<WebsiteToolSummary[]>;
-  getWebsite(slug: string, options?: { includeContent?: boolean }): WebsiteToolDetails | null | Promise<WebsiteToolDetails | null>;
-  createWebsite(input: CreateWebsiteToolInput): Promise<WebsiteToolDetails>;
-  updateWebsite(slug: string, patch: UpdateWebsiteToolPatch): Promise<WebsiteToolDetails>;
-  writeWebsiteData(slug: string, patch: WebsiteDataToolPatch): Promise<WebsiteDataWriteSummary>;
-  deleteWebsite(slug: string): Promise<DeleteWebsiteToolResult>;
 }
 
 // ============================================================

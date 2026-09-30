@@ -12,7 +12,6 @@ import { join } from 'node:path'
 import { pickCommandTarget, whyTabIsLocked, whyTabIsOutOfReach } from '@craft-agent/server-core/domain'
 import { BACKGROUND_HEX } from '@craft-agent/shared/config'
 import type { BrowserTabSummary, TabBelongsTo } from '@craft-agent/shared/protocol'
-import { websiteOriginUrl } from '../website-host'
 
 const createdWindows: any[] = []
 let toolbarLoadFailuresRemaining = 0
@@ -3494,50 +3493,6 @@ describe('BrowserPaneManager', () => {
       })
 
       await toolbarHandler('browser-toolbar:cancel-pick')({}, 'pick-origin')
-    })
-
-    // A page this app serves is a website whose files are in the workspace, and a pick
-    // on it says so: the folder is what has to be edited, and the address alone would
-    // leave that to be guessed.
-    it('names the website a pick happened in, when the page is one of ours', async () => {
-      const actions: any[] = []
-      manager.setWindowManager({
-        getRpcEventSink: () => (_channel: string, _routing: unknown, payload: unknown) => {
-          actions.push(payload)
-        },
-      } as any)
-
-      const workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-pick-site-'))
-      mkdirSync(join(workspaceRoot, 'websites', 'dash'), { recursive: true })
-      const siteDir = join(workspaceRoot, 'websites', 'dash')
-      // Handing the address out is also what registers it: an address nobody registered
-      // answers from Chromium, not from us.
-      const siteOrigin = websiteOriginUrl(workspaceRoot, 'dash')!
-
-      manager.createInstance('pick-site')
-      const instance = (manager as any).instances.get('pick-site')
-      const tab = instance.tabs[0]
-      tab.currentUrl = `${siteOrigin}/`
-      tab.title = 'Dashboard'
-      stubPicker(tab, [{ status: 'pending', picks: [ELEMENT] }])
-      manager.registerToolbarIpc()
-
-      await toolbarHandler('browser-toolbar:pick-element')({}, 'pick-site', PICK_LABELS)
-      await tick()
-
-      expect(actions).toContainEqual({
-        kind: 'add-to-conversation',
-        instanceId: 'pick-site',
-        element: ELEMENT,
-        origin: {
-          url: `${siteOrigin}/`,
-          title: 'Dashboard',
-          website: { slug: 'dash', dir: siteDir },
-        },
-      })
-
-      await toolbarHandler('browser-toolbar:cancel-pick')({}, 'pick-site')
-      rmSync(workspaceRoot, { recursive: true, force: true })
     })
 
     // Escape is the page saying stop. The toolbar would never hear about it

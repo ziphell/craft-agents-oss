@@ -112,7 +112,6 @@ export const DOC_REFS = {
   automations: `${APP_ROOT}/docs/automations.md`,
   hooks: `${APP_ROOT}/docs/automations.md`,
   tasks: `${APP_ROOT}/docs/automations.md`,
-  websites: `${APP_ROOT}/docs/websites.md`,
   tweaks: `${APP_ROOT}/docs/tweaks.md`,
   mermaid: `${APP_ROOT}/docs/mermaid.md`,
   dataTables: `${APP_ROOT}/docs/data-tables.md`,

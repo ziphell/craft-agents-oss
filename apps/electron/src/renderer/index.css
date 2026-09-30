@@ -509,7 +509,11 @@ html[data-font="inter"] {
 
   html, body, #root {
     height: 100%;
-    overflow: hidden;
+    /* `clip`, not `hidden`: `hidden` still makes a scroll container, so a focus move (an
+       iframe taking focus, say) can scroll it — and scrolling an ancestor that clips the
+       whole app reads as the entire UI shifting a couple of pixels. `clip` is not a scroll
+       container at all, so nothing can scroll it, programmatically or otherwise. */
+    overflow: clip;
   }
 
   body {

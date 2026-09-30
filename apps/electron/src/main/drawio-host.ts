@@ -9,13 +9,13 @@
  * come from the app's own bundle (`resources/drawio/`), never from a workspace.
  *
  * Three consequences follow from "the app's own bundle", and they are why this is a
- * separate host rather than a branch of the website host:
+ * host of its own:
  *
- * - **There is one editor per app, not one per workspace.** The website host keys a
- *   registry by label because two workspaces can hold the same slug; here a single
- *   slot is the honest shape, and its label is derived from the install path.
- * - **Nothing here is authored.** A website's files are a person's work and are
- *   served live off the disk; these are a vendored dependency, fetched and pruned by
+ * - **There is one editor per app, not one per workspace.** A directory served from a
+ *   workspace keys a registry by label because two workspaces can hold the same slug;
+ *   here a single slot is the honest shape, and its label is derived from the install path.
+ * - **Nothing here is authored.** A directory served from a workspace is a person's work
+ *   and is served live off the disk; these are a vendored dependency, fetched and pruned by
  *   `scripts/fetch-drawio-assets.ts`. So there is no write path and no watcher.
  * - **The origin is offline by construction.** A content-security policy on the shell
  *   document allows its own origin and nothing else, so the guarantee that a diagram
@@ -97,10 +97,10 @@ function resolveServedDrawio(url: string): string | null {
 /**
  * The vendored files are the one thing on these origins worth caching.
  *
- * `local-http.ts` answers `no-store` for everything, and that is right for a website —
- * its files are edited constantly and a cached document would show an earlier state
- * without saying so. This directory is the opposite: it is a fetched release that changes
- * only when the fetch script re-runs, and without a cache every open re-reads ~10 MB of
+ * `local-http.ts` answers `no-store` for everything, and that is right for workspace
+ * content — its files are edited constantly and a cached document would show an earlier
+ * state without saying so. This directory is the opposite: it is a fetched release that
+ * changes only when the fetch script re-runs, and without a cache every open re-reads ~10 MB of
  * editor scripts from disk and re-compiles them, which is the difference between a frame
  * appearing and the app feeling broken.
  *

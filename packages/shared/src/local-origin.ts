@@ -1,19 +1,19 @@
 /**
  * The app's own origins: `<label>.localhost`, answered from disk.
  *
- * A website is served this way: its directory is reachable at an origin of its own, so
+ * A directory is served this way: it is reachable at an origin of its own, so
  * its documents can load their own files by root-absolute path, keep state in
  * `localStorage`, and `fetch` their own endpoints. The mechanism lives here rather than
- * inside the feature because the security-relevant half is here: the label a directory is
+ * inside each feature because the security-relevant half is here: the label a directory is
  * reachable at, the suffix that makes that label resolvable, the fence that keeps a
  * request inside the directory it names, and the content types a file is answered with.
- * What a feature *serves* is its own business (`websites/host.ts`).
+ * What a feature *serves* is its own business.
  *
  * ## Why the label carries a hash
  *
  * `<slug>-<8 hex of the resolved directory>`: a slug is unique only within one workspace,
  * so the readable part is for a person reading an address bar and the hash is the
- * identity. Two directories that share a slug — the same website in two workspaces — get
+ * identity. Two directories that share a slug — the same name in two places — get
  * two labels, and neither can answer for the other.
  *
  * ## Why `*.localhost` and not a port

@@ -146,7 +146,7 @@ export function registerAutomationsHandlers(server: RpcServer, deps: HandlerDeps
         const env = buildScriptEnv(
           'SchedulerTick',
           { workspaceId: payload.workspaceId, timestamp: Date.now() },
-          { workspaceRootPath: workspace.rootPath, page: action.page },
+          { workspaceRootPath: workspace.rootPath },
         )
         const result = await executeScriptAction(
           {
@@ -155,7 +155,6 @@ export function registerAutomationsHandlers(server: RpcServer, deps: HandlerDeps
             args: action.args,
             runtime: action.runtime,
             timeoutMs: Math.min(action.timeoutMs ?? 25_000, 25_000),
-            page: action.page,
           },
           { workspaceRootPath: workspace.rootPath, env },
         )

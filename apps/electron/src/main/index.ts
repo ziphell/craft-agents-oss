@@ -30,7 +30,7 @@ Sentry.init({
 
   // Scrub sensitive data before sending to Sentry.
   // Shared logic in @craft-agent/shared/utils redaction.ts (also used by the
-  // renderer hook and the websites action audit log) — keep semantics there.
+  // renderer hook) — keep semantics there.
   beforeSend(event) {
     // Scrub request headers (authorization, cookies)
     if (event.request?.headers) {
@@ -77,7 +77,6 @@ import { join, delimiter } from 'path'
 import { existsSync, readFileSync } from 'fs'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { SessionManager, setSessionPlatform, setSessionRuntimeHooks } from '@craft-agent/server-core/sessions'
-import { WebsiteThumbnailer } from './website-thumbnailer'
 import { registerAllRpcHandlers } from './handlers/index'
 import { registerCoreRpcHandlers, cleanupSessionFileWatchForClient, cleanupPrototypesWatchForClient } from '@craft-agent/server-core/handlers/rpc'
 import type { PlatformServices } from '../runtime/platform'
@@ -105,7 +104,6 @@ import { BrowserPaneManager, BROWSER_PANE_SESSION_PARTITION } from './browser-pa
 import { OAuthFlowStore } from '@craft-agent/shared/auth'
 import { registerThumbnailScheme, registerThumbnailHandler } from './thumbnail-protocol'
 import { registerLocalHostHandler } from './local-host'
-import { websiteOriginUrl } from './website-host'
 import { drawioOriginUrl } from './drawio-host'
 import { requestTweaksForWorkspace } from './tweaks-injector'
 import log, { isDebugMode, mainLog, getLogFilePath, getMessagingGatewayLogFilePath, messagingGatewayLog, autoUpdateLog } from './logger'
@@ -422,14 +420,13 @@ app.whenReady().then(async () => {
   // Register thumbnail:// protocol handler (scheme was registered earlier, before app.whenReady)
   registerThumbnailHandler()
 
-  // Websites need a real origin: file:// is opaque, which costs the cookie jar,
-  // relative fetch and ES modules. They are answered by an http handler — no port,
+  // The drawio editor needs a real origin: file:// is opaque, which costs the cookie jar,
+  // relative fetch and ES modules. It is answered by an http handler — no port,
   // so the address is the same on every start, and anything that is not one of our
   // hosts goes straight back to Chromium's network stack.
   //
   // One handler per session, and the app renders on two: the browser windows' own
-  // session, and the app's (a website renders in an iframe inside the renderer, where
-  // there is no partition to choose). Both get the same router — see `local-host.ts`.
+  // session, and the app's. Both get the same router — see `local-host.ts`.
   const passThrough = (request: Request) =>
     net.fetch(request, { bypassCustomProtocolHandlers: true })
   registerLocalHostHandler(session.fromPartition(BROWSER_PANE_SESSION_PARTITION), passThrough)
@@ -672,20 +669,6 @@ app.whenReady().then(async () => {
         createSessionManager: () => {
           const sm = new SessionManager()
           sm.setBrowserPaneManager(browserPaneManager!)
-          // Website preview posters: offscreen capture is Electron-main-only. On
-          // capture, nudge the watcher so the websites:changed push carries the
-          // fresh thumbnail pointer to open grids.
-          const websiteThumbnailer = new WebsiteThumbnailer({
-            log: (m) => mainLog.info(m),
-            onCaptured: ({ workspaceRootPath, slug }) => {
-              sm.notifyConfigFileChange(workspaceRootPath, `websites/${slug}/website.json`)
-            },
-          })
-          sm.setWebsiteThumbnailer((req, options) => websiteThumbnailer.enqueue({ ...req, force: options?.force }))
-          // The websites tools report a website's address, and asking for it is what
-          // names that website to this host for the run — the same call the app's own
-          // "open this website" path makes.
-          sm.setWebsiteOriginResolver(websiteOriginUrl)
           // Tweaks are installed from here too: the browser window that runs them belongs to
           // this process, and the injector lives beside it (see tweaks-injector.ts). The
           // watcher calls this on every tweak write, so the registration a new document is
@@ -727,7 +710,6 @@ app.whenReady().then(async () => {
             platform: p,
             windowManager: windowManager ?? undefined,
             browserPaneManager: browserPaneManager ?? undefined,
-            websiteOrigin: websiteOriginUrl,
             // The editor is a vendored dependency of the app, not of a workspace, so
             // this answer is install-wide and needs no arguments.
             drawioOrigin: drawioOriginUrl,

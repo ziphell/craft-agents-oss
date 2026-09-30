@@ -50,7 +50,6 @@ interface ParsedHint {
  */
 const HINT_TEMPLATE_KEYS = [
   'hints.summarizeGmail',
-  'hints.screenshotToWebsite',
   'hints.pullIssuesLinear',
   'hints.transcribeVoiceMemo',
   'hints.analyzeSpreadsheet',

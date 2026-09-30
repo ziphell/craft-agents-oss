@@ -437,25 +437,6 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.projects.DELETE_ASSET,
   RPC_CHANNELS.projects.CHANGED,
 
-  // websites — workspace directories served at an origin of their own
-  RPC_CHANNELS.websites.GET,
-  RPC_CHANNELS.websites.GET_ONE,
-  RPC_CHANNELS.websites.CREATE,
-  RPC_CHANNELS.websites.UPDATE,
-  RPC_CHANNELS.websites.DELETE,
-  RPC_CHANNELS.websites.GET_CONTENT,
-  RPC_CHANNELS.websites.SET_CONTENT,
-  RPC_CHANNELS.websites.GET_DATA,
-  RPC_CHANNELS.websites.GET_ORIGIN,
-  // An export writes where the person pointed the picker, which for a remote host is
-  // a folder on that host — so the copy happens beside the website, not here.
-  RPC_CHANNELS.websites.EXPORT,
-  // Thumbnails: the poster file lives on the workspace server; regeneration is
-  // a no-op unless that host injected a capturer (Electron main).
-  RPC_CHANNELS.websites.GET_THUMBNAIL,
-  RPC_CHANNELS.websites.REGENERATE_THUMBNAIL,
-  RPC_CHANNELS.websites.CHANGED,
-
   // drawio — the app's own bundled editor, at an origin a host hands out
   RPC_CHANNELS.drawio.GET_ORIGIN,
 
@@ -468,6 +449,13 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   // host the build happens beside the tweaks rather than here.
   RPC_CHANNELS.tweaks.EXPORT,
   RPC_CHANNELS.tweaks.CHANGED,
+
+  // artifacts — a scan of the workspace's own files, and the sessions that wrote them,
+  // so both run where those live; a preview also has to read the file it draws
+  RPC_CHANNELS.artifacts.LIST,
+  RPC_CHANNELS.artifacts.ORIGINS,
+  RPC_CHANNELS.artifacts.THUMBNAIL,
+  RPC_CHANNELS.artifacts.CHANGED,
 
   // git — workspace filesystem
   RPC_CHANNELS.git.GET_BRANCH,

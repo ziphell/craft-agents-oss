@@ -79,24 +79,6 @@ export type { CreateTaskArgs } from './create-task.ts';
 export { handleArchiveSession } from './archive-session.ts';
 export type { ArchiveSessionArgs } from './archive-session.ts';
 
-// Websites
-export {
-  handleListWebsites,
-  handleGetWebsite,
-  handleCreateWebsite,
-  handleUpdateWebsite,
-  handleWriteWebsiteData,
-  handleDeleteWebsite,
-} from './websites.ts';
-export type {
-  ListWebsitesArgs,
-  GetWebsiteArgs,
-  CreateWebsiteArgs,
-  UpdateWebsiteArgs,
-  WriteWebsiteDataArgs,
-  DeleteWebsiteArgs,
-} from './websites.ts';
-
 // Tweaks
 export {
   handleListTweaks,

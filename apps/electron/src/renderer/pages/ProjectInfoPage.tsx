@@ -453,7 +453,10 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
                     <Input
                       value={editWorkingDir}
                       onChange={(e) => setEditWorkingDir(e.target.value)}
-                      placeholder={t('projectInfo.workingDirectoryPlaceholder')}
+                      // Left empty, a session in this project works in the project's own
+                      // folder — so the folder is what the field falls back to, shown as
+                      // the placeholder rather than written in, which would pin it.
+                      placeholder={project.folderPath}
                       className="flex-1"
                     />
                     <Button size="sm" variant="outline" onClick={handlePickWorkingDirectory}>

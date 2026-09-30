@@ -7,8 +7,8 @@ import type { ThemeOverrides } from '../config/index'
 import type { LoadedSource } from '../sources/types'
 import type { LoadedSkill } from '../skills/types'
 import type { LoadedProject } from '../projects/types'
-import type { LoadedWebsite } from '../websites/types'
 import type { TweakSummary } from '../tweaks/summary'
+import type { ArtifactEntry } from '../artifacts/types'
 import { RPC_CHANNELS } from './channels'
 import type {
   SessionEvent,
@@ -32,8 +32,8 @@ export interface BroadcastEventMap {
   [RPC_CHANNELS.automations.CHANGED]: [workspaceId: string]
   [RPC_CHANNELS.skills.CHANGED]: [workspaceId: string, skills: LoadedSkill[]]
   [RPC_CHANNELS.projects.CHANGED]: [workspaceId: string, projects: LoadedProject[]]
-  [RPC_CHANNELS.websites.CHANGED]: [workspaceId: string, websites: LoadedWebsite[]]
   [RPC_CHANNELS.tweaks.CHANGED]: [workspaceId: string, tweaks: TweakSummary[]]
+  [RPC_CHANNELS.artifacts.CHANGED]: [workspaceId: string, artifacts: ArtifactEntry[]]
   [RPC_CHANNELS.tasks.GENERATED]: [workspaceId: string, result: TaskGenerateResult]
   [RPC_CHANNELS.prototypes.CHANGED]: [workspaceId: string, file: string | null]
   [RPC_CHANNELS.llmConnections.CHANGED]: []

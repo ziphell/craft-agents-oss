@@ -9,7 +9,7 @@ import {
 
 describe('localHostLabel', () => {
   it('is readable (the slug) plus the directory hash', () => {
-    const label = localHostLabel('checkout-flow', '/ws/websites/checkout-flow')
+    const label = localHostLabel('checkout-flow', '/ws/sites/checkout-flow')
 
     expect(label.startsWith('checkout-flow-')).toBe(true)
     expect(label.slice('checkout-flow-'.length)).toMatch(/^[0-9a-f]{8}$/)
@@ -18,15 +18,15 @@ describe('localHostLabel', () => {
   // Why the hash is there at all: a slug is unique only within one workspace, so the
   // directory — not the name — is what a label names.
   it('gives the same slug in two directories two labels', () => {
-    const here = localHostLabel('cart', '/ws/websites/cart')
-    const elsewhere = localHostLabel('cart', '/other/workspace/websites/cart')
+    const here = localHostLabel('cart', '/ws/sites/cart')
+    const elsewhere = localHostLabel('cart', '/other/workspace/sites/cart')
 
     expect(here).not.toBe(elsewhere)
   })
 
   it('sanitises a slug down to a DNS label', () => {
-    expect(localHostLabel('My Cart! 2', '/ws/websites/cart')).toMatch(/^[a-z0-9-]+-[0-9a-f]{8}$/)
-    expect(localHostLabel('x'.repeat(120), '/ws/websites/cart').length).toBeLessThanOrEqual(63)
+    expect(localHostLabel('My Cart! 2', '/ws/sites/cart')).toMatch(/^[a-z0-9-]+-[0-9a-f]{8}$/)
+    expect(localHostLabel('x'.repeat(120), '/ws/sites/cart').length).toBeLessThanOrEqual(63)
   })
 })
 

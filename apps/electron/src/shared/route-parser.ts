@@ -35,7 +35,7 @@ export interface ParsedRoute {
 // Compound Route Types (new format)
 // =============================================================================
 
-export type NavigatorType = 'sessions' | 'sources' | 'skills' | 'automations' | 'projects' | 'prototypes' | 'websites' | 'tweaks' | 'settings'
+export type NavigatorType = 'sessions' | 'sources' | 'skills' | 'automations' | 'projects' | 'prototypes' | 'tweaks' | 'artifacts' | 'settings'
 
 export interface ParsedCompoundRoute {
   /** The navigator type */
@@ -63,7 +63,7 @@ export interface ParsedCompoundRoute {
  * Known prefixes that indicate a compound route
  */
 const COMPOUND_ROUTE_PREFIXES = [
-  'allSessions', 'flagged', 'archived', 'state', 'label', 'view', 'board', 'sources', 'skills', 'automations', 'projects', 'prototypes', 'websites', 'tweaks', 'settings'
+  'allSessions', 'flagged', 'archived', 'state', 'label', 'view', 'board', 'sources', 'skills', 'automations', 'projects', 'prototypes', 'tweaks', 'artifacts', 'settings'
 ]
 
 /**
@@ -206,15 +206,6 @@ export function parseCompoundRoute(route: string): ParsedCompoundRoute | null {
     return null
   }
 
-  // Websites navigator — the library grid is the whole navigator, so there is
-  // no detail segment to parse.
-  if (first === 'websites') {
-    if (segments.length === 1) {
-      return { navigator: 'websites', details: null }
-    }
-    return null
-  }
-
   // Tweaks navigator
   if (first === 'tweaks') {
     if (segments.length === 1) {
@@ -224,6 +215,21 @@ export function parseCompoundRoute(route: string): ParsedCompoundRoute | null {
       return {
         navigator: 'tweaks',
         details: { type: 'tweak', id: segments[2] },
+      }
+    }
+    return null
+  }
+
+  // Artifacts navigator. The detail id is a workspace-relative path, so it is
+  // URL-encoded in the route and decoded here — its own slashes are not segments.
+  if (first === 'artifacts') {
+    if (segments.length === 1) {
+      return { navigator: 'artifacts', details: null }
+    }
+    if (segments[1] === 'artifact' && segments[2]) {
+      return {
+        navigator: 'artifacts',
+        details: { type: 'artifact', id: decodeURIComponent(segments[2]) },
       }
     }
     return null
@@ -367,13 +373,14 @@ export function buildCompoundRoute(parsed: ParsedCompoundRoute): string {
     return `prototypes/prototype/${parsed.details.id}`
   }
 
-  if (parsed.navigator === 'websites') {
-    return 'websites'
-  }
-
   if (parsed.navigator === 'tweaks') {
     if (!parsed.details) return 'tweaks'
     return `tweaks/tweak/${parsed.details.id}`
+  }
+
+  if (parsed.navigator === 'artifacts') {
+    if (!parsed.details) return 'artifacts'
+    return `artifacts/artifact/${encodeURIComponent(parsed.details.id)}`
   }
 
   // Sessions navigator
@@ -518,17 +525,20 @@ function convertCompoundToViewRoute(compound: ParsedCompoundRoute): ParsedRoute 
     return { type: 'view', name: 'prototype-info', id: compound.details.id, params: {} }
   }
 
-  // Websites
-  if (compound.navigator === 'websites') {
-    return { type: 'view', name: 'websites', params: {} }
-  }
-
   // Tweaks
   if (compound.navigator === 'tweaks') {
     if (!compound.details) {
       return { type: 'view', name: 'tweaks', params: {} }
     }
     return { type: 'view', name: 'tweak-info', id: compound.details.id, params: {} }
+  }
+
+  // Artifacts
+  if (compound.navigator === 'artifacts') {
+    if (!compound.details) {
+      return { type: 'view', name: 'artifacts', params: {} }
+    }
+    return { type: 'view', name: 'artifact-info', id: compound.details.id, params: {} }
   }
 
   // Sessions
@@ -688,11 +698,6 @@ function convertCompoundToNavigationState(compound: ParsedCompoundRoute): Naviga
     }
   }
 
-  // Websites
-  if (compound.navigator === 'websites') {
-    return { navigator: 'websites' }
-  }
-
   // Tweaks
   if (compound.navigator === 'tweaks') {
     if (!compound.details) {
@@ -701,6 +706,17 @@ function convertCompoundToNavigationState(compound: ParsedCompoundRoute): Naviga
     return {
       navigator: 'tweaks',
       details: { type: 'tweak', tweakSlug: compound.details.id },
+    }
+  }
+
+  // Artifacts
+  if (compound.navigator === 'artifacts') {
+    if (!compound.details) {
+      return { navigator: 'artifacts', details: null }
+    }
+    return {
+      navigator: 'artifacts',
+      details: { type: 'artifact', id: compound.details.id },
     }
   }
 
@@ -802,8 +818,6 @@ function convertParsedRouteToNavigationState(parsed: ParsedRoute): NavigationSta
         }
       }
       return { navigator: 'prototypes', details: null }
-    case 'websites':
-      return { navigator: 'websites' }
     case 'tweaks':
       return { navigator: 'tweaks', details: null }
     case 'tweak-info':
@@ -814,6 +828,16 @@ function convertParsedRouteToNavigationState(parsed: ParsedRoute): NavigationSta
         }
       }
       return { navigator: 'tweaks', details: null }
+    case 'artifacts':
+      return { navigator: 'artifacts', details: null }
+    case 'artifact-info':
+      if (parsed.id) {
+        return {
+          navigator: 'artifacts',
+          details: { type: 'artifact', id: parsed.id },
+        }
+      }
+      return { navigator: 'artifacts', details: null }
     case 'session':
       if (parsed.id) {
         // Reconstruct filter from params
@@ -936,17 +960,17 @@ function navigationStateToCompoundRoute(state: NavigationState): ParsedCompoundR
     }
   }
 
-  if (state.navigator === 'websites') {
-    return {
-      navigator: 'websites',
-      details: null,
-    }
-  }
-
   if (state.navigator === 'tweaks') {
     return {
       navigator: 'tweaks',
       details: state.details ? { type: 'tweak', id: state.details.tweakSlug } : null,
+    }
+  }
+
+  if (state.navigator === 'artifacts') {
+    return {
+      navigator: 'artifacts',
+      details: state.details ? { type: 'artifact', id: state.details.id } : null,
     }
   }
 

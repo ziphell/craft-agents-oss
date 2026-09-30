@@ -457,25 +457,8 @@ export const RPC_CHANNELS = {
     DELETE_ASSET: 'projects:deleteAsset',
     CHANGED: 'projects:changed',
   },
-  websites: {
-    GET: 'websites:get',
-    GET_ONE: 'websites:getOne',
-    CREATE: 'websites:create',
-    UPDATE: 'websites:update',
-    DELETE: 'websites:delete',
-    GET_CONTENT: 'websites:getContent',
-    SET_CONTENT: 'websites:setContent',
-    GET_DATA: 'websites:getData',
-    /** The website's own origin, handed out by a host that can serve one. */
-    GET_ORIGIN: 'websites:getOrigin',
-    /** Copy the website's files into a folder the person picked. */
-    EXPORT: 'websites:export',
-    GET_THUMBNAIL: 'websites:getThumbnail',
-    REGENERATE_THUMBNAIL: 'websites:regenerateThumbnail',
-    CHANGED: 'websites:changed',
-  },
-  // The app's bundled drawio editor. Unlike a website this is not a workspace
-  // resource — one directory ships with the app and one origin serves it — which is
+  // The app's bundled drawio editor. It is not a workspace resource — one
+  // directory ships with the app and one origin serves it — which is
   // why there is no per-workspace argument to the address below.
   drawio: {
     /** The origin the vendored editor is served at; throws when it is not installed. */
@@ -494,6 +477,22 @@ export const RPC_CHANNELS = {
     EXPORT: 'tweaks:export',
     /** Workspace-scoped push after any mutation, carrying the summaries. */
     CHANGED: 'tweaks:changed',
+  },
+  artifacts: {
+    /** Every artifact in a workspace, newest first. */
+    LIST: 'artifacts:list',
+    /** The conversations that wrote one artifact, derived from session history. */
+    ORIGINS: 'artifacts:origins',
+    /**
+     * A small drawn preview of one artifact, or null when none can be made.
+     *
+     * Drawn on the host because only it has the drawio engine, and it is expensive
+     * (a hidden window per call) — so the caller is a list row that shows its icon
+     * either way, and this is a refresh of a bonus, never a thing to block on.
+     */
+    THUMBNAIL: 'artifacts:thumbnail',
+    /** Workspace-scoped push when a `.drawio` changes on disk, carrying the fresh list. */
+    CHANGED: 'artifacts:changed',
   },
   messaging: {
     // WhatsApp subprocess → Gateway (subprocess invokes on server)

@@ -10,8 +10,6 @@
  * - Child env is CRAFT_*-only (see buildScriptEnv in utils.ts).
  * - SIGTERM on timeout with a SIGKILL fallback so trapped signals can't hang
  *   the host process.
- * - Website refreshes record their outcome on website.json LAST, making it the
- *   completion marker the config watcher turns into `websites:changed`.
  *
  * The per-matcher concurrency lock lives in the ScriptHandler — this module
  * executes exactly one action.
@@ -25,7 +23,6 @@ import {
   isPathWithinDirectory,
 } from '@craft-agent/session-tools-core';
 import { createLogger } from '../utils/debug.ts';
-import { recordWebsiteRefresh } from '../websites/storage.ts';
 import { HISTORY_FIELD_MAX_LENGTH } from './constants.ts';
 import type { ScriptAction, ScriptActionResult } from './types.ts';
 
@@ -71,7 +68,6 @@ function blockedResult(action: ScriptAction, reason: string): ScriptActionResult
     stdout: '',
     stderr: reason,
     durationMs: 0,
-    page: action.page,
   };
 }
 
@@ -177,7 +173,6 @@ export async function executeScriptAction(
         stdout: stdout.trim(),
         stderr: stderr.trim(),
         durationMs: Date.now() - startTime,
-        page: action.page,
         ...partial,
       });
     };
@@ -202,20 +197,6 @@ export async function executeScriptAction(
     });
   });
 
-  // --- Website refresh completion marker (must be the LAST write of the run) ---
-  if (action.page) {
-    try {
-      recordWebsiteRefresh(ctx.workspaceRootPath, action.page, {
-        at: Date.now(),
-        ok: result.success,
-        durationMs: result.durationMs,
-        error: result.success ? undefined : (result.stderr || undefined),
-      });
-    } catch (e) {
-      log.debug(`[ScriptExecutor] Failed to record website refresh for ${action.page}: ${e}`);
-    }
-  }
-
   return result;
 }
 
@@ -236,7 +217,6 @@ export function createScriptHistoryEntry(opts: {
       script: result.script,
       exitCode: result.exitCode,
       durationMs: result.durationMs,
-      ...(result.page ? { page: result.page } : {}),
       ...(result.timedOut ? { timedOut: true } : {}),
       ...(result.blocked ? { blocked: true } : {}),
       ...(result.skipped ? { skipped: true } : {}),

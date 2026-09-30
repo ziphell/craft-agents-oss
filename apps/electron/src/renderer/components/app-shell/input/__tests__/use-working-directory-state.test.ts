@@ -1,9 +1,7 @@
 import { describe, it, expect } from 'bun:test'
-import type { PrototypeStatus } from '@craft-agent/shared/prototypes'
 import { PATH_SEP } from '@/lib/platform'
 import {
   WORKING_DIR_FILTER_THRESHOLD,
-  derivePrototypeChoices,
   deriveSelectionFlags,
   deriveSortedRecent,
 } from '../use-working-directory-state'
@@ -126,39 +124,6 @@ describe('deriveSelectionFlags', () => {
     const flags = deriveSelectionFlags(PATH_SEP, undefined)
     expect(flags.hasFolder).toBe(true)
     expect(flags.folderName).toBeUndefined()
-  })
-})
-
-describe('derivePrototypeChoices', () => {
-  const prototypes = ['checkout-flow', 'landing-page', 'pricing'].map(
-    (slug) => ({ slug }) as PrototypeStatus,
-  )
-
-  it('offers every prototype when nothing is bound and nothing is typed', () => {
-    expect(derivePrototypeChoices(prototypes, undefined, '').map((p) => p.slug)).toEqual([
-      'checkout-flow',
-      'landing-page',
-      'pricing',
-    ])
-  })
-
-  it('leaves out the bound one — it is pinned with its check already', () => {
-    expect(derivePrototypeChoices(prototypes, 'landing-page', '').map((p) => p.slug)).toEqual([
-      'checkout-flow',
-      'pricing',
-    ])
-  })
-
-  it('narrows by what is typed, case-insensitively', () => {
-    expect(derivePrototypeChoices(prototypes, undefined, 'PRIC').map((p) => p.slug)).toEqual(['pricing'])
-  })
-
-  it('still leaves out the bound one while filtering', () => {
-    expect(derivePrototypeChoices(prototypes, 'pricing', 'pric')).toEqual([])
-  })
-
-  it('matches nothing when the query matches nothing', () => {
-    expect(derivePrototypeChoices(prototypes, undefined, 'nope')).toEqual([])
   })
 })
 

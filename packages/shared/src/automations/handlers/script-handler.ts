@@ -112,7 +112,6 @@ export class ScriptHandler implements AutomationHandler {
               stdout: '',
               stderr: 'Skipped: previous run of this automation is still in progress',
               durationMs: 0,
-              page: action.page,
             };
             results.push(skipped);
             await this.appendHistory(matcherId, skipped);
@@ -125,7 +124,6 @@ export class ScriptHandler implements AutomationHandler {
             try {
               const env = buildScriptEnv(event, payload, {
                 workspaceRootPath: this.options.workspaceRootPath,
-                page: action.page,
               });
               const result = await executeScriptAction(action, {
                 workspaceRootPath: this.options.workspaceRootPath,

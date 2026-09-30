@@ -34,8 +34,8 @@ import {
   MailOpen,
   FolderKanban,
   FlaskConical,
-  PanelsTopLeft,
   Wand2,
+  Workflow,
 } from "lucide-react"
 // SessionStatusIcons no longer used - icons come from dynamic sessionStatuses
 import { SourceAvatar } from "@/components/ui/source-avatar"
@@ -122,8 +122,8 @@ import {
   isAutomationsNavigation,
   isProjectsNavigation,
   isPrototypesNavigation,
-  isWebsitesNavigation,
   isTweaksNavigation,
+  isArtifactsNavigation,
   type NavigationState,
 } from "@/contexts/NavigationContext"
 import type { SettingsSubpage } from "../../../shared/types"
@@ -133,12 +133,13 @@ import { AutomationsListPanel } from "../automations/AutomationsListPanel"
 import { ProjectsListPanel } from "./ProjectsListPanel"
 import { PrototypesListPanel } from "./PrototypesListPanel"
 import { TweaksListPanel } from "./TweaksListPanel"
+import { ArtifactsHome } from "../artifacts/ArtifactsHome"
 import { APP_EVENTS, AGENT_EVENTS, type AutomationFilterKind, AUTOMATION_TYPE_TO_FILTER_KIND } from "../automations/types"
 import { useAutomations } from "@/hooks/useAutomations"
 import { useProjects } from "@/hooks/useProjects"
 import { usePrototypes } from "@/hooks/usePrototypes"
-import { useWebsites } from "@/hooks/useWebsites"
 import { useTweaks } from "@/hooks/useTweaks"
+import { useArtifacts } from "@/hooks/useArtifacts"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { PanelHeader } from "./PanelHeader"
 import { FabNewChat } from "./FabNewChat"
@@ -650,10 +651,6 @@ function AppShellContent({
   // so the navigator (and its resize handle) collapse to zero width while it's active.
   const isBoardView = isSessionsNavigation(navState) && navState.viewMode === 'board'
 
-  // Websites behaves the same way: the library grid renders full-width in the
-  // content area — there is no websites navigator list, and no second-level page.
-  const isWebsitesView = isWebsitesNavigation(navState)
-
   // Derive source filter from navigation state (only when in sources navigator)
   const sourceFilter: SourceFilter | null = isSourcesNavigation(navState) ? navState.filter ?? null : null
 
@@ -1012,10 +1009,6 @@ function AppShellContent({
       selector: request.element.selector,
       text: request.element.text,
       ...(origin.url ? { url: origin.url } : {}),
-      // A website's pages are files in the workspace, so a pick on one carries the
-      // folder too: what the agent reads then names the files to change instead of an
-      // address it would have to decode.
-      ...(origin.website?.dir ? { dir: origin.website.dir } : {}),
     })} `
 
     void appendChipToConversation(chip, request.sessionId)
@@ -1046,8 +1039,9 @@ function AppShellContent({
     onAddElementToConversation: handleAddElementToConversation,
   })
 
-  const { websites } = useWebsites(activeWorkspaceId)
   const { tweaks } = useTweaks(activeWorkspaceId)
+
+  const { artifacts } = useArtifacts(activeWorkspaceId)
 
   const projectMenuOptions = useMemo(
     () => projects.map(p => ({ id: p.config.id, slug: p.config.slug, name: p.config.name, color: p.config.color })),
@@ -1950,14 +1944,14 @@ function AppShellContent({
     navigate(routes.view.prototypes())
   }, [])
 
-  // Handler for websites view
-  const handleWebsitesClick = useCallback(() => {
-    navigate(routes.view.websites())
-  }, [])
-
   // Handler for tweaks view
   const handleTweaksClick = useCallback(() => {
     navigate(routes.view.tweaks())
+  }, [])
+
+  // Handler for artifacts view
+  const handleArtifactsClick = useCallback(() => {
+    navigate(routes.view.artifacts())
   }, [])
 
   const handleAutomationsScheduledClick = useCallback(() => {
@@ -2322,19 +2316,19 @@ function AppShellContent({
     }
     flattenTree(labelTree)
 
-    // 3. Sources, Skills, Projects, Prototypes, Websites, Automations, Settings (visual order)
+    // 3. Sources, Skills, Projects, Prototypes, Artifacts, Tweaks, Automations, Settings (visual order)
     result.push({ id: 'nav:sources', type: 'nav', action: handleSourcesClick })
     result.push({ id: 'nav:skills', type: 'nav', action: handleSkillsClick })
     result.push({ id: 'nav:projects', type: 'nav', action: handleProjectsClick })
     result.push({ id: 'nav:prototypes', type: 'nav', action: handlePrototypesClick })
-    result.push({ id: 'nav:websites', type: 'nav', action: handleWebsitesClick })
+    result.push({ id: 'nav:artifacts', type: 'nav', action: handleArtifactsClick })
     result.push({ id: 'nav:tweaks', type: 'nav', action: handleTweaksClick })
     result.push({ id: 'nav:automations', type: 'nav', action: handleAutomationsClick })
     result.push({ id: 'nav:settings', type: 'nav', action: () => handleSettingsClick() })
     result.push({ id: 'nav:whats-new', type: 'nav', action: handleWhatsNewClick })
 
     return result
-  }, [handleAllSessionsClick, handleFlaggedClick, handleArchivedClick, handleSessionStatusClick, effectiveSessionStatuses, handleLabelClick, labelConfigs, labelTree, viewConfigs, handleViewClick, handleSourcesClick, handleSkillsClick, handleProjectsClick, handleAutomationsClick, handlePrototypesClick, handleWebsitesClick, handleTweaksClick, handleSettingsClick, handleWhatsNewClick])
+  }, [handleAllSessionsClick, handleFlaggedClick, handleArchivedClick, handleSessionStatusClick, effectiveSessionStatuses, handleLabelClick, labelConfigs, labelTree, viewConfigs, handleViewClick, handleSourcesClick, handleSkillsClick, handleProjectsClick, handleAutomationsClick, handlePrototypesClick, handleTweaksClick, handleArtifactsClick, handleSettingsClick, handleWhatsNewClick])
 
   // Toggle folder expanded state
   const handleToggleFolder = React.useCallback((path: string) => {
@@ -2463,14 +2457,14 @@ function AppShellContent({
       return t("sidebar.allPrototypes")
     }
 
-    // Websites navigator
-    if (isWebsitesNavigation(navState)) {
-      return t("sidebar.allWebsites")
-    }
-
     // Tweaks navigator
     if (isTweaksNavigation(navState)) {
       return t("sidebar.allTweaks")
+    }
+
+    // Artifacts navigator
+    if (isArtifactsNavigation(navState)) {
+      return t("sidebar.allArtifacts")
     }
 
     // Automations navigator
@@ -2848,13 +2842,13 @@ function AppShellContent({
                       onClick: handlePrototypesClick,
                     },
                     {
-                      id: "nav:websites",
-                      title: t("sidebar.websites"),
-                      label: String(websites.length),
-                      icon: PanelsTopLeft,
-                      // Highlight only when on the Websites view itself
-                      variant: isWebsitesNavigation(navState) ? "default" : "ghost",
-                      onClick: handleWebsitesClick,
+                      id: "nav:artifacts",
+                      title: t("sidebar.artifacts"),
+                      label: String(artifacts.length),
+                      icon: Workflow,
+                      // Highlight only when on the Artifacts view itself (its list is the navigator)
+                      variant: isArtifactsNavigation(navState) ? "default" : "ghost",
+                      onClick: handleArtifactsClick,
                     },
                     {
                       id: "nav:tweaks",
@@ -3777,6 +3771,15 @@ function AppShellContent({
                 selectedTweakSlug={isTweaksNavigation(navState) ? navState.details?.tweakSlug ?? null : null}
               />
             )}
+            {isArtifactsNavigation(navState) && (
+              /* Artifacts List — one row per artifact; an artifact's own page is in the content panel */
+              <ArtifactsHome
+                artifacts={artifacts}
+                workspaceId={activeWorkspaceId}
+                onArtifactClick={(relativePath) => navigate(routes.view.artifacts(relativePath))}
+                selectedPath={isArtifactsNavigation(navState) ? navState.details?.id ?? null : null}
+              />
+            )}
             {isAutomationsNavigation(navState) && (
               /* Automations List - filtered by type if automationFilter is active */
               <AutomationsListPanel
@@ -3865,7 +3868,7 @@ function AppShellContent({
             )}
             </div>
           }
-          navigatorWidth={isAutoCompact ? sessionListWidth : (effectiveSidebarAndNavigatorHidden || isBoardView || isWebsitesView ? 0 : sessionListWidth)}
+          navigatorWidth={isAutoCompact ? sessionListWidth : (effectiveSidebarAndNavigatorHidden || isBoardView ? 0 : sessionListWidth)}
           isSidebarAndNavigatorHidden={effectiveSidebarAndNavigatorHidden}
           isRightSidebarVisible={false}
           isCompact={isAutoCompact}
@@ -3905,8 +3908,8 @@ function AppShellContent({
         </div>
         )}
 
-        {/* Session List Resize Handle (absolute, hidden in focused mode, board view, and websites) */}
-        {!effectiveSidebarAndNavigatorHidden && !isBoardView && !isWebsitesView && (
+        {/* Session List Resize Handle (absolute, hidden in focused mode and board view) */}
+        {!effectiveSidebarAndNavigatorHidden && !isBoardView && (
         <div
           ref={sessionListHandleRef}
           onMouseDown={(e) => { e.preventDefault(); setIsResizing('session-list') }}

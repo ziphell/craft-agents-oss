@@ -5,7 +5,6 @@
  * and the new Event Bus handlers (command-handler.ts, prompt-handler.ts).
  */
 
-import { join } from 'node:path';
 import type { BaseEventPayload } from './event-bus.ts';
 import type { AutomationEvent, AutomationMatcher, PromptReferences, AgentEvent, SdkAutomationInput } from './types.ts';
 import { matchesCron } from './cron-matcher.ts';
@@ -326,8 +325,6 @@ const SCRIPT_ENV_PLATFORM_ESSENTIALS = process.platform === 'win32'
 export interface ScriptEnvOptions {
   /** Workspace root, exposed as CRAFT_WORKSPACE_PATH */
   workspaceRootPath: string;
-  /** Website slug when the script refreshes a website (adds CRAFT_WEBSITE_* vars) */
-  page?: string;
 }
 
 /**
@@ -339,8 +336,7 @@ export interface ScriptEnvOptions {
  *   user-defined CRAFT_* secrets, CRAFT_CONFIG_DIR, ...)
  * - CRAFT_* event context (same base as webhooks; no shell sanitization —
  *   values are argv/env payloads, never interpreted by a shell)
- * - CRAFT_WORKSPACE_PATH and, for website refreshes, CRAFT_WEBSITE_SLUG /
- *   CRAFT_WEBSITE_DIR / CRAFT_WEBSITE_DATA_DIR
+ * - CRAFT_WORKSPACE_PATH
  * - a documented minimal set of non-secret platform essentials (HOME etc.)
  *
  * Notably absent: PATH (runtimes are spawned by absolute path) and every
@@ -359,15 +355,8 @@ function applyPlatformAndCraftEnv(env: Record<string, string>): void {
   }
 }
 
-function applyWorkspaceAndWebsiteEnv(env: Record<string, string>, options: ScriptEnvOptions): void {
+function applyWorkspaceEnv(env: Record<string, string>, options: ScriptEnvOptions): void {
   env.CRAFT_WORKSPACE_PATH = options.workspaceRootPath;
-
-  if (options.page) {
-    const websiteDir = join(options.workspaceRootPath, 'websites', options.page);
-    env.CRAFT_WEBSITE_SLUG = options.page;
-    env.CRAFT_WEBSITE_DIR = websiteDir;
-    env.CRAFT_WEBSITE_DATA_DIR = join(websiteDir, 'data');
-  }
 }
 
 /**
@@ -381,7 +370,7 @@ function applyWorkspaceAndWebsiteEnv(env: Record<string, string>, options: Scrip
 export function buildBaseScriptEnv(options: ScriptEnvOptions): Record<string, string> {
   const env: Record<string, string> = {};
   applyPlatformAndCraftEnv(env);
-  applyWorkspaceAndWebsiteEnv(env, options);
+  applyWorkspaceEnv(env, options);
   return env;
 }
 
@@ -397,9 +386,9 @@ export function buildScriptEnv(
   // Event context wins over any same-named pass-through
   Object.assign(env, buildBaseEventEnv(event, payload));
 
-  // Workspace/website context is applied last so an event payload can never
-  // clobber CRAFT_WORKSPACE_PATH / CRAFT_WEBSITE_* (unchanged ordering).
-  applyWorkspaceAndWebsiteEnv(env, options);
+  // Workspace context is applied last so an event payload can never
+  // clobber CRAFT_WORKSPACE_PATH (unchanged ordering).
+  applyWorkspaceEnv(env, options);
 
   return env;
 }

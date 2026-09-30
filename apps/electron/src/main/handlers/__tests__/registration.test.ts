@@ -108,9 +108,9 @@ async function getExpectedChannels(): Promise<Set<string>> {
     tasks,
     projects,
     prototypes,
-    websites,
     drawio,
     tweaks,
+    artifacts,
   ] = await Promise.all([
     import('@craft-agent/server-core/handlers/rpc/auth'),
     import('@craft-agent/server-core/handlers/rpc/automations'),
@@ -131,9 +131,9 @@ async function getExpectedChannels(): Promise<Set<string>> {
     import('@craft-agent/server-core/handlers/rpc/tasks'),
     import('@craft-agent/server-core/handlers/rpc/projects'),
     import('@craft-agent/server-core/handlers/rpc/prototypes'),
-    import('@craft-agent/server-core/handlers/rpc/websites'),
     import('@craft-agent/server-core/handlers/rpc/drawio'),
     import('@craft-agent/server-core/handlers/rpc/tweaks'),
+    import('@craft-agent/server-core/handlers/rpc/artifacts'),
   ])
 
   // GUI handler channels (remain in electron)
@@ -164,9 +164,9 @@ async function getExpectedChannels(): Promise<Set<string>> {
     ...tasks.HANDLED_CHANNELS,
     ...projects.HANDLED_CHANNELS,
     ...prototypes.HANDLED_CHANNELS,
-    ...websites.HANDLED_CHANNELS,
     ...drawio.HANDLED_CHANNELS,
     ...tweaks.HANDLED_CHANNELS,
+    ...artifacts.HANDLED_CHANNELS,
     ...browser.HANDLED_CHANNELS,
     ...guiSystem.GUI_HANDLED_CHANNELS,
     ...guiWorkspace.GUI_HANDLED_CHANNELS,

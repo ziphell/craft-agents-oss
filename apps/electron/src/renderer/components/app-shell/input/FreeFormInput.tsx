@@ -11,7 +11,6 @@ import {
   ChevronDown,
   ChevronUp,
   AlertCircle,
-  FlaskConical,
   Image as ImageIcon,
 } from 'lucide-react'
 import { Icon_Home, Spinner } from '@craft-agent/ui'
@@ -91,6 +90,7 @@ import {
   addRecentWorkingDir,
 } from './working-directory-history'
 import { WorkingDirectorySelector, formatPathForDisplay } from './WorkingDirectorySelector'
+import { PrototypeBadge, CompactPrototypeSelector } from './PrototypeSelector'
 import { CompactPermissionModeSelector } from './CompactPermissionModeSelector'
 import { CompactModelSelector } from './CompactModelSelector'
 import {
@@ -203,10 +203,6 @@ export interface FreeFormInputProps {
   onWorkingDirectoryChange?: (path: string) => void
   /** Session folder path (for "Reset to Session Root" option) */
   sessionFolderPath?: string
-  /** Prototype this conversation works in, when it works in one */
-  prototypeSlug?: string
-  /** Callback when a prototype is picked in the working-directory picker */
-  onPrototypeChange?: (slug: string | null) => void
   /** Session ID for scoping events like approve-plan */
   sessionId?: string
   /** Current session status of the session (for # menu state selection) */
@@ -303,8 +299,6 @@ export function FreeFormInput({
   workingDirectory,
   onWorkingDirectoryChange,
   sessionFolderPath,
-  prototypeSlug,
-  onPrototypeChange,
   sessionId,
   currentSessionStatus,
   disableSend = false,
@@ -694,21 +688,11 @@ export function FreeFormInput({
    *
    * The page it was picked on is part of the sentence: the picker stays on across
    * the window's tabs, so the same element can be picked from two of them, and
-   * "which page" is the one thing the agent cannot work out from the element. When that
-   * page is a website of ours, the folder it is served from is in the sentence too —
-   * those are the files to edit, and saying so saves the agent the search.
+   * "which page" is the one thing the agent cannot work out from the element.
    */
   const formatElementReference = React.useCallback((ref: ElementRef) => {
     const where = ref.url ?? ''
     if (!where) return t('browserEdit.elementReference', { selector: ref.selector, text: ref.text })
-    if (ref.dir) {
-      return t('browserEdit.elementReferenceOnSite', {
-        selector: ref.selector,
-        text: ref.text,
-        where,
-        dir: ref.dir,
-      })
-    }
     return t('browserEdit.elementReferenceFrom', { selector: ref.selector, text: ref.text, where })
   }, [t])
 
@@ -1976,10 +1960,10 @@ export function FreeFormInput({
               sessionFolderPath={sessionFolderPath}
               isEmptySession={false}
               workspaceId={workspaceId}
-              prototypeSlug={prototypeSlug}
-              onPrototypeChange={onPrototypeChange}
             />
           )}
+          {/* The prototype's own badge, beside the folder's: two questions, two badges. */}
+          <CompactPrototypeSelector sessionId={sessionId} />
           </div>
           )}
 
@@ -2086,10 +2070,11 @@ export function FreeFormInput({
               sessionFolderPath={sessionFolderPath}
               isEmptySession={isEmptySession}
               workspaceId={workspaceId}
-              prototypeSlug={prototypeSlug}
-              onPrototypeChange={onPrototypeChange}
             />
           )}
+
+          {/* 4. Prototype Badge — its own control beside the folder, not a section of it. */}
+          <PrototypeBadge sessionId={sessionId} isEmptySession={isEmptySession} />
           </div>
           )}
 
@@ -2562,8 +2547,8 @@ export function FreeFormInput({
  *
  * Renders the context-badge trigger; the picker popover + its state machine live in
  * {@link WorkingDirectorySelector} so the Tasks editor reuses the same picker (and can
- * supply its own trigger). Where this conversation works is one choice of two kinds, so
- * the badge says which kind it is: a prototype, or a folder.
+ * supply its own trigger). The badge answers one question — which folder this
+ * conversation works in. The prototype it is on is its own badge beside this one.
  */
 function WorkingDirectoryBadge({
   workingDirectory,
@@ -2571,16 +2556,12 @@ function WorkingDirectoryBadge({
   sessionFolderPath,
   isEmptySession = false,
   workspaceId,
-  prototypeSlug,
-  onPrototypeChange,
 }: {
   workingDirectory?: string
   onWorkingDirectoryChange: (path: string) => void
   sessionFolderPath?: string
   isEmptySession?: boolean
   workspaceId?: string
-  prototypeSlug?: string
-  onPrototypeChange?: (slug: string | null) => void
 }) {
   const { t } = useTranslation()
   return (
@@ -2589,24 +2570,17 @@ function WorkingDirectoryBadge({
       onWorkingDirectoryChange={onWorkingDirectoryChange}
       sessionFolderPath={sessionFolderPath}
       workspaceId={workspaceId}
-      prototypeSlug={prototypeSlug}
-      onPrototypeChange={onPrototypeChange}
-      renderTrigger={({ open, hasFolder, folderName, hasPrototype, prototypeSlug: boundSlug, workingDirectory: wd, homeDir, gitBranch }) => (
+      renderTrigger={({ open, hasFolder, folderName, workingDirectory: wd, homeDir, gitBranch }) => (
         <span className="shrink min-w-0 overflow-hidden">
           <FreeFormInputContextBadge
-            icon={hasPrototype ? <FlaskConical className="h-4 w-4" /> : <Icon_Home className="h-4 w-4" />}
-            label={hasPrototype ? boundSlug! : folderName ?? t('chat.workInFolder')}
+            icon={<Icon_Home className="h-4 w-4" />}
+            label={folderName ?? t('chat.workInFolder')}
             isExpanded={isEmptySession}
-            hasSelection={hasPrototype || hasFolder}
+            hasSelection={hasFolder}
             showChevron={true}
             isOpen={open}
             tooltip={
-              hasPrototype ? (
-                <span className="flex flex-col gap-0.5">
-                  <span className="font-medium">{t("prototypeBind.current", { slug: boundSlug })}</span>
-                  <span className="text-xs opacity-70">{formatPathForDisplay(wd, homeDir)}</span>
-                </span>
-              ) : hasFolder ? (
+              hasFolder ? (
                 <span className="flex flex-col gap-0.5">
                   <span className="font-medium">{t("chat.workingDirectory")}</span>
                   <span className="text-xs opacity-70">{formatPathForDisplay(wd, homeDir)}</span>

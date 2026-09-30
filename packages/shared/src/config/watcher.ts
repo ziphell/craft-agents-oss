@@ -43,10 +43,11 @@ import {
 import { permissionsConfigCache, getAppPermissionsDir } from '../agent/permissions-config.ts';
 import { getWorkspacePath, getWorkspaceSourcesPath, getWorkspaceSkillsPath } from '../workspaces/storage.ts';
 import type { LoadedSkill } from '../skills/types.ts';
-import { loadWorkspaceWebsites, WEBSITE_CONFIG_FILENAME, WEBSITE_CONTENT_FILENAME, syncWebsiteContentDigest } from '../websites/storage.ts';
 import { loadWorkspaceTweaks } from '../tweaks/storage.ts';
 import { toTweakSummary } from '../tweaks/summary.ts';
 import { TWEAK_CONFIG_FILENAME, TWEAK_CSS_FILENAME, TWEAK_JS_FILENAME } from '../tweaks/types.ts';
+import { deriveArtifactEntries, isArtifactPath } from '../artifacts/derive.ts';
+import { scanArtifactFiles } from '../artifacts/scan.ts';
 import { loadSkill, loadAllSkills, invalidateSkillsCache, skillNeedsIconDownload, downloadSkillIcon } from '../skills/storage.ts';
 import {
   loadStatusConfig,
@@ -157,21 +158,6 @@ export interface ConfigWatcherCallbacks {
   /** Called when automations.json changes */
   onAutomationsConfigChange?: (workspaceId: string) => void;
 
-  // Website callbacks
-  /**
-   * Called when any websites/{slug}/website.json changes (create/delete/refresh
-   * completion), or when a website's index.html is edited outside the tools.
-   * website.json is the completion marker of a refresh run, so data/ churn
-   * (sqlite, snapshot tmp files) is deliberately NOT watched.
-   */
-  onWebsitesListChange?: (websites: import('../websites/types.ts').LoadedWebsite[]) => void;
-  /**
-   * Called after an out-of-band `index.html` edit moved a website's content
-   * digest (the derived poster is stale by definition at that point). Not
-   * called for website.json writes or data-only refreshes.
-   */
-  onWebsitesContentChange?: (websiteSlug: string) => void;
-
   // Tweak callbacks
   /**
    * Called when a tweak changes on disk: its record (created, edited, deleted), or the code
@@ -183,6 +169,14 @@ export interface ConfigWatcherCallbacks {
    * have the applier re-install the rules it has just run.
    */
   onTweaksListChange?: (tweaks: import('../tweaks/summary.ts').TweakSummary[]) => void;
+
+  // Artifact callbacks
+  /**
+   * Called when an artifact's file changes on disk — a `.drawio` written by the agent's tools, or
+   * edited by hand. The library is a view of the disk, so the fresh list is handed over: the
+   * renderer has no other way to learn that a scan is owed.
+   */
+  onArtifactsListChange?: (artifacts: import('../artifacts/types.ts').ArtifactEntry[]) => void;
 
   // Session callbacks
   /** Called when a session's JSONL header is modified externally (labels, name, flags, etc.) */
@@ -447,6 +441,14 @@ export class ConfigWatcher {
   private handleWorkspaceFileChange(relativePath: string, eventType: string): void {
     const parts = relativePath.split('/');
 
+    // Artifacts: a `.drawio` anywhere in the workspace is a library item, so this is the one rule
+    // keyed on the file rather than on a directory, and it is asked first — the file may sit beside
+    // anything else. `isArtifactPath` is the same rule the scan and the list use.
+    if (isArtifactPath(relativePath)) {
+      this.debounce('artifacts-list', () => this.handleArtifactsChange());
+      return;
+    }
+
     // Workspace-level permissions.json
     if (relativePath === 'permissions.json') {
       this.debounce('workspace-permissions', () => this.handleWorkspacePermissionsChange());
@@ -499,21 +501,6 @@ export class ConfigWatcher {
       } else if (file && /^icon\.(svg|png|jpg|jpeg)$/i.test(file)) {
         // Icon file changes also trigger a skill change (to update iconPath)
         this.debounce(`skill-icon:${slug}`, () => this.handleSkillChange(slug));
-      }
-      return;
-    }
-
-    // Websites changes: website.json (the completion marker of a refresh run, and
-    // the only thing that means "the data/ directory is finished") plus index.html,
-    // which the website's own author may edit directly — the file is the truth, so
-    // an out-of-band edit has to move the derived digest (see the handler).
-    // Slug-dir add/remove also fires (website created/deleted externally).
-    if (parts[0] === 'websites' && parts.length >= 2) {
-      const slug = parts[1]!;
-      const file = parts[2];
-      if (parts.length === 2 || file === WEBSITE_CONFIG_FILENAME || file === WEBSITE_CONTENT_FILENAME) {
-        const contentEdited = file === WEBSITE_CONTENT_FILENAME;
-        this.debounce('websites-dir', () => this.handleWebsitesChange(contentEdited ? slug : undefined));
       }
       return;
     }
@@ -1010,43 +997,6 @@ export class ConfigWatcher {
   }
 
   // ============================================================
-  // Website Handlers
-  // ============================================================
-
-  /**
-   * A website's files changed on disk.
-   *
-   * `contentEditedSlug` is set when the triggering path was that website's
-   * index.html: the digest is derived from the file, so it is realigned here —
-   * before anyone reads the list — and the host is told only if it actually
-   * moved (a re-save of identical content must not re-render the poster).
-   * Saving website.json from inside that realignment re-enters this handler with
-   * no slug, which is why the second pass is cheap and idempotent.
-   */
-  private handleWebsitesChange(contentEditedSlug?: string): void {
-    if (contentEditedSlug) {
-      try {
-        const synced = syncWebsiteContentDigest(this.workspaceDir, contentEditedSlug);
-        if (synced?.contentChanged) {
-          debug('[ConfigWatcher] website content changed:', this.workspaceId, contentEditedSlug);
-          this.callbacks.onWebsitesContentChange?.(contentEditedSlug);
-        }
-      } catch (error) {
-        debug('[ConfigWatcher] Failed to realign website content digest:', error);
-      }
-    }
-
-    if (!this.callbacks.onWebsitesListChange) return;
-    try {
-      const websites = loadWorkspaceWebsites(this.workspaceDir);
-      debug('[ConfigWatcher] websites changed:', this.workspaceId, `(${websites.length} websites)`);
-      this.callbacks.onWebsitesListChange(websites);
-    } catch (error) {
-      debug('[ConfigWatcher] Failed to reload websites:', error);
-    }
-  }
-
-  // ============================================================
   // Tweak Handlers
   // ============================================================
 
@@ -1063,6 +1013,21 @@ export class ConfigWatcher {
       this.callbacks.onTweaksListChange(tweaks);
     } catch (error) {
       debug('[ConfigWatcher] Failed to reload tweaks:', error);
+    }
+  }
+
+  /**
+   * An artifact changed on disk. The library is a view of the files, so the list is re-derived from
+   * a fresh scan and handed over — `deriveArtifactEntries` is the one rule for what belongs in it.
+   */
+  private handleArtifactsChange(): void {
+    if (!this.callbacks.onArtifactsListChange) return;
+    try {
+      const artifacts = deriveArtifactEntries(scanArtifactFiles(this.workspaceDir));
+      debug('[ConfigWatcher] artifacts changed:', this.workspaceId, `(${artifacts.length} artifacts)`);
+      this.callbacks.onArtifactsListChange(artifacts);
+    } catch (error) {
+      debug('[ConfigWatcher] Failed to reload artifacts:', error);
     }
   }
 

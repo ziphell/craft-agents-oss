@@ -215,9 +215,6 @@ interface ChatDisplayProps {
   onWorkingDirectoryChange?: (path: string) => void
   /** Session folder path (for "Reset to Session Root" option) */
   sessionFolderPath?: string
-  /** Callback when the session's prototype binding changes (picked in the
-   *  working-directory picker, whose other half is the folder choice) */
-  onPrototypeChange?: (slug: string | null) => void
   // Lazy loading
   /** When true, messages are still loading - show spinner in messages area */
   messagesLoading?: boolean
@@ -490,7 +487,6 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   workingDirectory,
   onWorkingDirectoryChange,
   sessionFolderPath,
-  onPrototypeChange,
   // Lazy loading
   messagesLoading = false,
   messagesLoadError,
@@ -2043,10 +2039,6 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
               workspaceId,
               workingDirectory,
               onWorkingDirectoryChange,
-              // The prototype the session works in comes off the session itself: binding
-              // is reported by events, so the picker never holds a second copy of it.
-              prototypeSlug: session.prototypeSlug,
-              onPrototypeChange,
               disableSend: disableSend || connectionUnavailable,
               connectionUnavailable,
               isEmptySession: session.messages.length === 0,

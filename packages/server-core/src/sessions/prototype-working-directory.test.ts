@@ -1,9 +1,9 @@
 /**
- * "A conversation works in one place" — the two halves of that one choice, on the session.
- *
- * Binding a prototype moves the working directory into the prototype's own folder; picking
- * any other directory drops the binding. Both directions are asserted here because they are
- * the only thing keeping the picker, the badge and bash's cwd saying the same thing.
+ * Binding a prototype records *which body of work* a conversation is on. Where it works
+ * is a different fact, owned by the project (or the session's own fallback) — so neither
+ * mutator may touch the other. Both directions are asserted here because they are the only
+ * thing keeping the binding badge and the working-directory picker from claiming to be one
+ * choice: they used to be, and binding used to move you into the prototype's folder.
  */
 import { describe, expect, it, beforeEach, afterEach } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync } from 'fs'
@@ -50,63 +50,48 @@ describe('prototype binding and working directory', () => {
     return dir
   }
 
-  it('binding a prototype moves the working directory into the prototype folder', async () => {
-    const dir = makePrototypeFolder('checkout-flow')
-    const { sm, events, session } = harness({ workingDirectory: join(root, 'sessions', 's') })
+  it('binding a prototype leaves the working directory alone', async () => {
+    // The prototype's folder exists — binding still does not adopt it.
+    makePrototypeFolder('checkout-flow')
+    const here = join(root, 'sessions', 's')
+    mkdirSync(here, { recursive: true })
+    const { sm, events, session } = harness({ workingDirectory: here })
 
     await sm.setSessionPrototypeSlug('s', 'checkout-flow')
 
     expect(session.prototypeSlug).toBe('checkout-flow')
-    expect(session.workingDirectory).toBe(dir)
+    expect(session.workingDirectory).toBe(here)
     expect(events).toContain('prototype_slug_changed')
-    expect(events).toContain('working_directory_changed')
+    expect(events).not.toContain('working_directory_changed')
   })
 
-  it('picking a different folder drops the binding', () => {
-    const prototypeDir = makePrototypeFolder('checkout-flow')
+  it('unbinding leaves the working directory alone', async () => {
+    const here = join(root, 'sessions', 's')
+    mkdirSync(here, { recursive: true })
+    const { sm, events, session } = harness({ prototypeSlug: 'checkout-flow', workingDirectory: here })
+
+    await sm.setSessionPrototypeSlug('s', null)
+
+    expect(session.prototypeSlug).toBeUndefined()
+    expect(session.workingDirectory).toBe(here)
+    expect(events).toContain('prototype_slug_changed')
+    expect(events).not.toContain('working_directory_changed')
+  })
+
+  it('picking a different folder keeps the binding', () => {
     const otherDir = join(root, 'code', 'shop')
     mkdirSync(otherDir, { recursive: true })
     const { sm, events, session } = harness({
       prototypeSlug: 'checkout-flow',
-      workingDirectory: prototypeDir,
+      workingDirectory: join(root, 'sessions', 's'),
       messages: [{ id: 'm1' }],
     })
 
     sm.updateWorkingDirectory('s', otherDir)
 
     expect(session.workingDirectory).toBe(otherDir)
-    expect(session.prototypeSlug).toBeUndefined()
-    expect(events).toContain('prototype_slug_changed')
-  })
-
-  it('picking the prototype folder again keeps the binding', () => {
-    const prototypeDir = makePrototypeFolder('checkout-flow')
-    const { sm, events, session } = harness({
-      prototypeSlug: 'checkout-flow',
-      workingDirectory: prototypeDir,
-      messages: [{ id: 'm1' }],
-    })
-
-    // The same folder, as a person would hand it back: a trailing separator typed or
-    // pasted, which must not read as "somewhere else".
-    sm.updateWorkingDirectory('s', prototypeDir + '/')
-
     expect(session.prototypeSlug).toBe('checkout-flow')
-    expect(session.workingDirectory).toBe(prototypeDir + '/')
     expect(events).not.toContain('prototype_slug_changed')
-  })
-
-  it('binds a prototype whose folder is not there yet, without moving the session', async () => {
-    const here = join(root, 'sessions', 's')
-    mkdirSync(here, { recursive: true })
-    const { sm, events, session } = harness({ workingDirectory: here })
-
-    await sm.setSessionPrototypeSlug('s', 'never-written')
-
-    expect(session.prototypeSlug).toBe('never-written')
-    expect(session.workingDirectory).toBe(here)
-    expect(events).toContain('prototype_slug_changed')
-    expect(events).not.toContain('working_directory_changed')
-    expect(events).not.toContain('working_directory_error')
+    expect(events).toContain('working_directory_changed')
   })
 })

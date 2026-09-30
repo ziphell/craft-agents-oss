@@ -56,24 +56,6 @@ describe('buildElementMention / parseElementMention', () => {
     })
   })
 
-  it('round-trips the folder of a page this app serves', () => {
-    // A pick on a website of ours carries the folder it is served from: those are the
-    // files to edit, and the address alone does not say which ones they are.
-    const marker = buildElementMention({
-      selector: '#total',
-      text: 'Total',
-      url: 'http://dash-1a2b3c4d.localhost/',
-      dir: '/ws/websites/dash',
-    })
-
-    expect(parseElementMention(marker.slice('[element:'.length, -1))).toEqual({
-      selector: '#total',
-      text: 'Total',
-      url: 'http://dash-1a2b3c4d.localhost/',
-      dir: '/ws/websites/dash',
-    })
-  })
-
   it('drops the parts a pick did not carry', () => {
     // The agent's own `browser_tool pick` carries no page: the marker is shorter,
     // and reading it back leaves nothing empty behind.

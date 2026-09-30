@@ -65,14 +65,4 @@ export type {
   ActiveSessionInfo,
 } from './server.ts';
 
-// Website types (workspace-scoped single-file sites)
-export type {
-  WebsiteScriptRuntime,
-  WebsiteRefreshSpec,
-  WebsiteRefreshStatus,
-  WebsiteSeriesPoint,
-  WebsiteDataSnapshot,
-  WebsiteThumbnailInfo,
-  WebsiteConfig,
-} from './website.ts';
 

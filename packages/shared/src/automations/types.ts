@@ -123,12 +123,6 @@ export interface ScriptAction {
   runtime?: ScriptActionRuntime;
   /** Per-run timeout in ms (default 60_000, clamped to [1_000, 900_000]) */
   timeoutMs?: number;
-  /**
-   * Website slug this script refreshes. When set, the executor injects
-   * CRAFT_WEBSITE_* env vars and records the outcome on the website's website.json
-   * (the completion marker the config watcher turns into `websites:changed`).
-   */
-  page?: string;
 }
 
 export type AutomationAction = PromptAction | WebhookAction | ScriptAction;
@@ -281,8 +275,6 @@ export interface ScriptActionResult {
   /** Captured stderr, or the block/spawn error (capped) */
   stderr: string;
   durationMs: number;
-  /** Website slug when this run refreshed a website */
-  page?: string;
 }
 
 export type ActionExecutionResult = PromptActionResult | WebhookActionResult | ScriptActionResult;

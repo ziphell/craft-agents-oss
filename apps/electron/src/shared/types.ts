@@ -764,32 +764,16 @@ export interface ElectronAPI {
   deleteProjectAsset(workspaceId: string, projectSlug: string, filename: string): Promise<void>
   onProjectsChanged(callback: (workspaceId: string, projects: unknown) => void): () => void
 
-  // Websites (workspace-scoped mini sites)
-  getWebsites(workspaceId: string): Promise<import('@craft-agent/shared/websites/types').LoadedWebsite[]>
-  getWebsite(workspaceId: string, websiteIdOrSlug: string): Promise<import('@craft-agent/shared/websites/types').LoadedWebsite | null>
-  createWebsite(workspaceId: string, input: import('@craft-agent/shared/websites/types').CreateWebsiteInput): Promise<import('@craft-agent/shared/websites/types').WebsiteConfig>
-  /** Optional fields (projectId, description, refresh) accept explicit null = clear (undefined is dropped by the JSON transport). */
-  updateWebsite(workspaceId: string, websiteSlug: string, patch: Partial<Omit<import('@craft-agent/shared/websites/types').WebsiteConfig, 'id' | 'slug' | 'createdAt' | 'contentDigest' | 'lastRefresh' | 'thumbnail' | 'projectId' | 'description' | 'refresh'>> & { projectId?: string | null; description?: string | null; refresh?: import('@craft-agent/shared/websites/types').WebsiteRefreshSpec | null }): Promise<import('@craft-agent/shared/websites/types').WebsiteConfig>
-  deleteWebsite(workspaceId: string, websiteSlug: string): Promise<void>
-  getWebsiteContent(workspaceId: string, websiteSlug: string): Promise<{ content: string | null; contentDigest?: string }>
-  setWebsiteContent(workspaceId: string, websiteSlug: string, content: string): Promise<import('@craft-agent/shared/websites/types').WebsiteConfig>
-  getWebsiteData(workspaceId: string, websiteSlug: string): Promise<import('@craft-agent/shared/websites/types').WebsiteDataSnapshot | null>
-  /** The website's own origin. Rejects when this host cannot serve one. */
-  getWebsiteOrigin(workspaceId: string, websiteSlug: string): Promise<string>
-  /** Copy the website's files into a folder the person picked. */
-  exportWebsite(workspaceId: string, websiteSlug: string, destParent: string): Promise<{ dir: string; files: number }>
-  /** Read a page's cached poster as a data URL — only returns when fresh (digest matches current content). */
-  getWebsiteThumbnail(workspaceId: string, websiteSlug: string): Promise<{ dataUrl: string; digest: string } | null>
-  /** Request a (re)capture of a page's poster (no-op on hosts without a capturer). */
-  regenerateWebsiteThumbnail(workspaceId: string, websiteSlug: string): Promise<boolean>
-  onWebsitesChanged(callback: (workspaceId: string, websites: import('@craft-agent/shared/websites/types').LoadedWebsite[]) => void): () => void
-
   // drawio (the app's own bundled editor, served at an origin of its own)
   /**
    * The origin the bundled editor is served at. Rejects when the bundle is not
    * installed, or when this host cannot serve an origin at all.
    */
   getDrawioOrigin(): Promise<string>
+
+  // Artifacts (the files a person and an agent co-edit, listed by scanning the workspace)
+  /** Every artifact in a workspace, newest first. A view of the disk — re-read to refresh. */
+  getArtifacts(workspaceId: string): Promise<import('@craft-agent/shared/artifacts').ArtifactEntry[]>
 
   // Tweaks (standing edits, authored by the agent — the UI only reads and toggles)
   getTweaks(workspaceId: string): Promise<import('@craft-agent/shared/tweaks').TweakSummary[]>
@@ -800,6 +784,14 @@ export interface ElectronAPI {
   /** Build the loadable extension into a folder the person picked. */
   exportTweaks(workspaceId: string, destParent: string): Promise<import('@craft-agent/shared/tweaks').TweaksExportResult>
   onTweaksChanged(callback: (workspaceId: string, tweaks: import('@craft-agent/shared/tweaks').TweakSummary[]) => void): () => void
+
+  // Artifacts
+  getArtifacts(workspaceId: string): Promise<import('@craft-agent/shared/artifacts').ArtifactEntry[]>
+  /** The conversations that wrote one artifact, derived from session history. */
+  getArtifactOrigins(workspaceId: string, relativePath: string): Promise<import('@craft-agent/shared/artifacts').ArtifactOrigin[]>
+  /** A small drawn preview of one artifact, or null when the host can make none. */
+  getArtifactThumbnail(workspaceId: string, relativePath: string): Promise<import('@craft-agent/shared/artifacts').ArtifactThumbnail | null>
+  onArtifactsChanged(callback: (workspaceId: string, artifacts: import('@craft-agent/shared/artifacts').ArtifactEntry[]) => void): () => void
 
   // Automations
   getAutomations(workspaceId: string): Promise<unknown>
@@ -1043,27 +1035,27 @@ export interface PrototypesNavigationState {
 }
 
 /**
- * Websites navigation state
- *
- * The full-width library grid is the whole navigator: a website has no
- * second-level page (it opens in the browser window), so there is no detail to
- * select. Like board mode, the middle navigator collapses to zero width while a
- * websites route is active.
- */
-export interface WebsitesNavigationState {
-  navigator: 'websites'
-  rightSidebar?: RightSidebarPanel
-}
-
-/**
  * Tweaks navigation state
  *
- * Bare `tweaks` (details: null) shows the library list — like websites, it never
+ * Bare `tweaks` (details: null) shows the library list — it never
  * auto-selects one, and the middle navigator collapses while a tweaks route is active.
  */
 export interface TweaksNavigationState {
   navigator: 'tweaks'
   details: { type: 'tweak'; tweakSlug: string } | null
+  rightSidebar?: RightSidebarPanel
+}
+
+/**
+ * Artifacts navigation state
+ *
+ * Bare `artifacts` (details: null) shows the library list — it never auto-selects
+ * one. `id` is the workspace-relative path: the artifact's identity, and what the
+ * detail page resolves against the workspace root to open the file.
+ */
+export interface ArtifactsNavigationState {
+  navigator: 'artifacts'
+  details: { type: 'artifact'; id: string } | null
   rightSidebar?: RightSidebarPanel
 }
 
@@ -1078,8 +1070,8 @@ export type NavigationState =
   | AutomationsNavigationState
   | ProjectsNavigationState
   | PrototypesNavigationState
-  | WebsitesNavigationState
   | TweaksNavigationState
+  | ArtifactsNavigationState
 
 export const isSessionsNavigation = (
   state: NavigationState
@@ -1109,13 +1101,13 @@ export const isPrototypesNavigation = (
   state: NavigationState
 ): state is PrototypesNavigationState => state.navigator === 'prototypes'
 
-export const isWebsitesNavigation = (
-  state: NavigationState
-): state is WebsitesNavigationState => state.navigator === 'websites'
-
 export const isTweaksNavigation = (
   state: NavigationState
 ): state is TweaksNavigationState => state.navigator === 'tweaks'
+
+export const isArtifactsNavigation = (
+  state: NavigationState
+): state is ArtifactsNavigationState => state.navigator === 'artifacts'
 
 export const DEFAULT_NAVIGATION_STATE: NavigationState = {
   navigator: 'sessions',
@@ -1154,14 +1146,19 @@ export const getNavigationStateKey = (state: NavigationState): string => {
     }
     return 'prototypes'
   }
-  if (state.navigator === 'websites') {
-    return 'websites'
-  }
   if (state.navigator === 'tweaks') {
     if (state.details?.type === 'tweak') {
       return `tweaks/tweak/${state.details.tweakSlug}`
     }
     return 'tweaks'
+  }
+  if (state.navigator === 'artifacts') {
+    if (state.details?.type === 'artifact') {
+      // The id is a workspace-relative path: encoded so its own slashes do not read
+      // as route segments, exactly as the route builder does it.
+      return `artifacts/artifact/${encodeURIComponent(state.details.id)}`
+    }
+    return 'artifacts'
   }
   if (state.navigator === 'settings') {
     if (state.subpage === null) return 'settings'
@@ -1231,9 +1228,6 @@ export const parseNavigationStateKey = (key: string): NavigationState | null => 
     return { navigator: 'prototypes', details: null }
   }
 
-  // Handle websites
-  if (key === 'websites') return { navigator: 'websites' }
-
   // Handle tweaks
   if (key === 'tweaks') return { navigator: 'tweaks', details: null }
   if (key.startsWith('tweaks/tweak/')) {
@@ -1242,6 +1236,16 @@ export const parseNavigationStateKey = (key: string): NavigationState | null => 
       return { navigator: 'tweaks', details: { type: 'tweak', tweakSlug } }
     }
     return { navigator: 'tweaks', details: null }
+  }
+
+  // Handle artifacts
+  if (key === 'artifacts') return { navigator: 'artifacts', details: null }
+  if (key.startsWith('artifacts/artifact/')) {
+    const path = decodeURIComponent(key.slice(19))
+    if (path) {
+      return { navigator: 'artifacts', details: { type: 'artifact', id: path } }
+    }
+    return { navigator: 'artifacts', details: null }
   }
 
   // Handle settings

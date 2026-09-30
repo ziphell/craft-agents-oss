@@ -48,7 +48,7 @@ export function resolvePagePanelRing(isDark: boolean): string {
 /**
  * Return border color + boxShadow with a concrete accent color value.
  * Use this when injecting styles into a foreign DOM (e.g. CDP overlay)
- * where `var(--accent)` would resolve against the website's stylesheet.
+ * where `var(--accent)` would resolve against the page's stylesheet.
  */
 export function resolveBrowserLiveFxBorder(accentColor: string): { color: string; boxShadow: string } {
   return {

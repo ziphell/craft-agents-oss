@@ -407,20 +407,6 @@ export const CHANNEL_MAP = {
   deleteProjectAsset: invoke(RPC_CHANNELS.projects.DELETE_ASSET),
   onProjectsChanged: listener(RPC_CHANNELS.projects.CHANGED),
 
-  // Websites
-  getWebsites: invoke(RPC_CHANNELS.websites.GET),
-  getWebsite: invoke(RPC_CHANNELS.websites.GET_ONE),
-  createWebsite: invoke(RPC_CHANNELS.websites.CREATE),
-  updateWebsite: invoke(RPC_CHANNELS.websites.UPDATE),
-  deleteWebsite: invoke(RPC_CHANNELS.websites.DELETE),
-  getWebsiteContent: invoke(RPC_CHANNELS.websites.GET_CONTENT),
-  setWebsiteContent: invoke(RPC_CHANNELS.websites.SET_CONTENT),
-  getWebsiteData: invoke(RPC_CHANNELS.websites.GET_DATA),
-  getWebsiteOrigin: invoke(RPC_CHANNELS.websites.GET_ORIGIN),
-  exportWebsite: invoke(RPC_CHANNELS.websites.EXPORT),
-  getWebsiteThumbnail: invoke(RPC_CHANNELS.websites.GET_THUMBNAIL),
-  regenerateWebsiteThumbnail: invoke(RPC_CHANNELS.websites.REGENERATE_THUMBNAIL),
-  onWebsitesChanged: listener(RPC_CHANNELS.websites.CHANGED),
   getDrawioOrigin: invoke(RPC_CHANNELS.drawio.GET_ORIGIN),
 
   // Tweaks
@@ -430,6 +416,12 @@ export const CHANNEL_MAP = {
   deleteTweak: invoke(RPC_CHANNELS.tweaks.DELETE),
   exportTweaks: invoke(RPC_CHANNELS.tweaks.EXPORT),
   onTweaksChanged: listener(RPC_CHANNELS.tweaks.CHANGED),
+
+  // Artifacts
+  getArtifacts: invoke(RPC_CHANNELS.artifacts.LIST),
+  getArtifactOrigins: invoke(RPC_CHANNELS.artifacts.ORIGINS),
+  getArtifactThumbnail: invoke(RPC_CHANNELS.artifacts.THUMBNAIL),
+  onArtifactsChanged: listener(RPC_CHANNELS.artifacts.CHANGED),
 
   // Automations
   getAutomations: invoke(RPC_CHANNELS.automations.GET),

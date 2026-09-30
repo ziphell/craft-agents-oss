@@ -196,14 +196,22 @@ export const routes = {
         ? `prototypes/prototype/${prototypeSlug}` as const
         : 'prototypes' as const,
 
-    /** Websites view — the full-width library grid is the whole navigator */
-    websites: () => 'websites' as const,
-
     /** Tweaks view (library list, or one tweak's detail page) */
     tweaks: (tweakSlug?: string) =>
       tweakSlug
         ? `tweaks/tweak/${tweakSlug}` as const
         : 'tweaks' as const,
+
+    /**
+     * Artifacts view (library list, or one artifact's detail page).
+     *
+     * The id is a workspace-relative path, so it is encoded here: its own slashes
+     * would otherwise read as route segments and split the path apart.
+     */
+    artifacts: (relativePath?: string) =>
+      relativePath
+        ? `artifacts/artifact/${encodeURIComponent(relativePath)}` as const
+        : 'artifacts' as const,
 
     /** Kanban board view (sessions navigator, board view mode, all sessions) */
     board: () => 'board' as const,

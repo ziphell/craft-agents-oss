@@ -231,7 +231,7 @@ export interface TweaksExportResult {
 /**
  * Write the extension into the folder the person picked.
  *
- * Landing in its own folder, like a website export, because the destination is usually a
+ * Landing in its own folder, because the destination is usually a
  * place with other things in it — and refusing an existing one rather than merging, since
  * a half-overwritten extension is a build nobody has.
  */

@@ -166,7 +166,7 @@ export function ActiveOptionBadges({
       )}
 
     <div className={cn("flex items-start gap-2 mb-2 px-px pt-px pb-0.5", className)}>
-      {/* Left side: mode → state → labels stack */}
+      {/* Left side: mode → prototype → state → labels stack */}
       <div className="flex items-start gap-2 min-w-0 flex-1">
         {/* Permission Mode Badge */}
         {permissionMode && (
@@ -179,7 +179,7 @@ export function ActiveOptionBadges({
           </div>
         )}
 
-        {/* State Badge — standalone on the left, after Mode */}
+        {/* State Badge — standalone on the left */}
         {hasState && resolvedState && (
           <div className="shrink-0">
             <StateBadge

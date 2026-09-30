@@ -6,10 +6,10 @@
  * origin the vendored directory is served at. Its label carries a hash of the install
  * path (`local-origin.ts`), so a renderer cannot work it out and has to ask.
  *
- * Unlike the website handlers there is no workspace argument and no lookup — one
- * editor ships with the app. Both ways of having no address are errors rather than
- * null, for the same reason as a website's: the renderer has nothing to show either
- * way, and a blank frame says less than a sentence naming which of the two it is.
+ * There is no workspace argument and no lookup — one editor ships with the app.
+ * Both ways of having no address are errors rather than null: the renderer has
+ * nothing to show either way, and a blank frame says less than a sentence naming
+ * which of the two it is.
  */
 
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'

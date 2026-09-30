@@ -86,7 +86,7 @@ export function TweakView({ tweakSlug }: TweakViewProps) {
   }, [activeWorkspaceId, details, toggling, tweakSlug, t])
 
   // ------------------------------------------------------------------
-  // Export — the same folder picker a website export uses
+  // Export — the same folder picker an export uses
   // ------------------------------------------------------------------
   const exportTo = React.useCallback(async (destParent: string) => {
     if (!activeWorkspaceId || !details) return

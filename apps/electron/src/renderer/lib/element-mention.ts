@@ -4,19 +4,15 @@
  *
  * The composer's value is a plain string (see `rich-text-input`), so anything that
  * survives a round-trip through it has to *be* text. An element therefore travels as
- * `[element:<selector>|<text>|<url>|<folder>]` with every part percent-encoded: the
+ * `[element:<selector>|<text>|<url>]` with every part percent-encoded: the
  * payload has to contain no `]`, and selectors do contain brackets
- * (`[data-testid="x"]`). The last two are optional and dropped when absent.
+ * (`[data-testid="x"]`). The last part is optional and dropped when absent.
  *
  * The third part is where it was picked, and it is why the marker grew: the picker
  * belongs to the window and stays on while the user moves between its tabs, so the
  * element alone does not say which page it came from. It is left off entirely when a
  * pick carries no origin (the agent's own `browser_tool pick`), which is also why the
  * two-part form is still read back.
- *
- * The fourth is the folder, when the page was one this app serves: a website's pages are
- * files in the workspace, so a pick on one is a statement about files as much as about a
- * page. Also optional, and also read back from markers that never had it.
  *
  * The marker is what the composer renders as a chip and what the draft stores. It
  * never reaches the model — `expandElementMentions` rewrites it into a readable
@@ -31,11 +27,6 @@ export interface ElementRef {
   text: string
   /** The address of the page it was picked on, when the pick carried it. */
   url?: string
-  /**
-   * The folder the page is served from, when it is a website of this app's
-   * (`websites/<slug>/`). What the agent has to edit, rather than guess at.
-   */
-  dir?: string
 }
 
 export interface ElementMention {
@@ -56,7 +47,7 @@ const MARKER_RE = /\[element:([^\]]+)\]/g
  * carries no origin produces the shorter marker it did before this grew.
  */
 export function buildElementMention(ref: ElementRef): string {
-  const parts = [ref.selector, ref.text, ref.url, ref.dir]
+  const parts = [ref.selector, ref.text, ref.url]
   while (parts.length > 2 && !parts[parts.length - 1]) parts.pop()
 
   return `[element:${parts.map((part) => encodeURIComponent(part ?? '')).join('|')}]`
@@ -80,12 +71,11 @@ export function parseElementMention(payload: string): ElementRef | null {
     return null
   }
 
-  const [selector, text, url, dir] = decoded
+  const [selector, text, url] = decoded
   return {
     selector: selector ?? '',
     text: text ?? '',
     ...(url ? { url } : {}),
-    ...(dir ? { dir } : {}),
   }
 }
 

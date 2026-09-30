@@ -869,15 +869,6 @@ export interface PickedElementOrigin {
   url: string
   /** That tab's title. */
   title: string
-  /**
-   * The website this page is, when the address is one this app serves.
-   *
-   * A website's pages are files in the workspace (`websites/<slug>/`), so a pick on one
-   * of them names both the page *and* the files it is made of. Resolved here rather than
-   * left as an addressing puzzle for whoever reads it: the host's registry is the only
-   * thing that knows a label is ours, and it is in this process.
-   */
-  website?: { slug: string; dir: string }
 }
 
 /**

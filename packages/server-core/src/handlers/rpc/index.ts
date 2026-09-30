@@ -19,9 +19,9 @@ export type { ServerHandlerContext } from '../../bootstrap/headless-start'
 export { getHealthCheck } from './server'
 import { registerSettingsHandlers } from './settings'
 import { registerProjectsHandlers } from './projects'
-import { registerWebsitesHandlers } from './websites'
 import { registerDrawioHandlers } from './drawio'
 import { registerTweaksHandlers } from './tweaks'
+import { registerArtifactsHandlers } from './artifacts'
 import { registerSkillsHandlers } from './skills'
 import { registerSourcesHandlers } from './sources'
 import { registerStatusesHandlers } from './statuses'
@@ -49,9 +49,9 @@ export function registerCoreRpcHandlers(
   if (serverCtx) registerServerHandlers(server, deps, serverCtx)
   registerSettingsHandlers(server, deps)
   registerProjectsHandlers(server, deps)
-  registerWebsitesHandlers(server, deps)
   registerDrawioHandlers(server, deps)
   registerTweaksHandlers(server, deps)
+  registerArtifactsHandlers(server, deps)
   registerSkillsHandlers(server, deps)
   registerSourcesHandlers(server, deps)
   registerStatusesHandlers(server, deps)

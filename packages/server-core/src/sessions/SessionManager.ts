@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿import type { EventSink, RpcServer } from '@craft-agent/server-core/transport'
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿import type { EventSink, RpcServer } from '@craft-agent/server-core/transport'
 import { CLIENT_BROWSER_INVOKE } from '@craft-agent/server-core/transport'
 import type { ISessionManager, IBrowserPaneManager, ExecutePromptAutomationInput } from '@craft-agent/server-core/handlers'
 import { RemoteBrowserPaneManager } from './RemoteBrowserPaneManager'
@@ -15,7 +15,6 @@ import {
   buildPrototypeStatus,
   listPrototypeStatuses,
   createPrototype as createNewPrototype,
-  getPrototypeDirPath,
 } from '@craft-agent/shared/prototypes'
 import { drawioDocument, drawioPages } from '@craft-agent/shared/drawio/types'
 import {
@@ -92,7 +91,6 @@ import {
 import { loadWorkspaceSources, loadAllSources, getSourcesBySlugs, isSourceUsable, type LoadedSource, type McpServerConfig, getSourcesNeedingAuth, getSourceCredentialManager, TokenRefreshManager } from '@craft-agent/shared/sources'
 import { listTaskSlugs, parseTaskSpec, uniqueTaskSlug } from '@craft-agent/shared/tasks'
 import { createTaskFromSpec, resolveCreateTaskProjectId } from '../tasks'
-import { buildWebsitesToolCallbacks } from '../websites/tool-callbacks'
 import { buildTweaksToolCallbacks } from '../tweaks/tool-callbacks'
 import { buildServersFromSources as buildServersFromSourcesShared } from '../sources/build-servers'
 import { ConfigWatcher, type ConfigWatcherCallbacks } from '@craft-agent/shared/config'
@@ -105,7 +103,7 @@ import { getCredentialManager } from '@craft-agent/shared/credentials'
 import { CraftMcpClient, McpClientPool, McpPoolServer } from '@craft-agent/shared/mcp'
 import { type Session, type SessionEvent, type FileAttachment, type SendMessageOptions, type UnreadSummary, type RemoteSessionTransferPayload, type ImportRemoteSessionTransferResult, RPC_CHANNELS, generateMessageId } from '@craft-agent/shared/protocol'
 import { messageToStored, storedToMessage, type Message, type StoredAttachment, type ToolDisplayMeta, type TokenUsage } from '@craft-agent/core/types'
-import { formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrlAsync, getEmojiIcon, resetSummarizationClient, resolveToolIcon, readFileAttachment, selectSpreadMessages, normalizePath, normalizePathForComparison } from '@craft-agent/shared/utils'
+import { formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrlAsync, getEmojiIcon, resetSummarizationClient, resolveToolIcon, readFileAttachment, selectSpreadMessages, normalizePath } from '@craft-agent/shared/utils'
 import { loadAllSkills, loadSkillBySlug, invalidateSkillsCache, type LoadedSkill } from '@craft-agent/shared/skills'
 import { invalidateContextFileCache } from '@craft-agent/shared/prompts/system'
 import { getToolIconsDir, getMiniModel } from '@craft-agent/shared/config'
@@ -1222,11 +1220,6 @@ export class SessionManager implements ISessionManager {
   }
 
   private browserPaneManager: IBrowserPaneManager | null = null
-  private enqueueWebsiteThumbnailFn?: (
-    req: { workspaceId: string; workspaceRootPath: string; slug: string },
-    options?: { force?: boolean },
-  ) => void
-  private websiteOriginResolver?: (workspaceRootPath: string, websiteSlug: string) => string | null
   private installTweaksFn?: (workspaceId: string) => void
   private rpcServer: RpcServer | null = null
   private remoteBpms = new Map<string, RemoteBrowserPaneManager>()
@@ -1240,47 +1233,6 @@ export class SessionManager implements ISessionManager {
 
   setBrowserPaneManager(bpm: IBrowserPaneManager): void {
     this.browserPaneManager = bpm
-  }
-
-  /**
-   * Inject the website thumbnail capturer (Electron main only — needs a
-   * BrowserWindow). Headless/WebUI hosts never call this, so
-   * {@link enqueueWebsiteThumbnail} no-ops and tiles fall back to the placeholder.
-   */
-  setWebsiteThumbnailer(
-    fn: (
-      req: { workspaceId: string; workspaceRootPath: string; slug: string },
-      options?: { force?: boolean },
-    ) => void,
-  ): void {
-    this.enqueueWebsiteThumbnailFn = fn
-  }
-
-  /**
-   * Inject the website origin resolver (Electron main only — the host that serves
-   * the addresses). It is what the websites tools report as a website's `origin`,
-   * and calling it is also what names the website to that host for this run. Hosts
-   * that serve no origins leave it unset, and the tools then report no address.
-   */
-  setWebsiteOriginResolver(fn: (workspaceRootPath: string, websiteSlug: string) => string | null): void {
-    this.websiteOriginResolver = fn
-  }
-
-  /**
-   * Request a (re)capture of a website's preview poster. Fire-and-forget: the
-   * injected capturer queues it, writes thumbnail.jpg, and stamps website.json
-   * (which broadcasts websites:changed). No-op when no capturer is injected.
-   *
-   * `force` is a manual refresh: re-shoot even when a poster for the current
-   * content already exists.
-   */
-  enqueueWebsiteThumbnail(
-    workspaceId: string,
-    workspaceRootPath: string,
-    slug: string,
-    options?: { force?: boolean },
-  ): void {
-    this.enqueueWebsiteThumbnailFn?.({ workspaceId, workspaceRootPath, slug }, options)
   }
 
   /**
@@ -1612,19 +1564,6 @@ export class SessionManager implements ISessionManager {
         // Notify renderer to re-read automations.json
         this.broadcastAutomationsChanged(workspaceId)
       },
-      onWebsitesListChange: (websites) => {
-        sessionLog.info(`Websites changed in ${workspaceId} (${websites.length} websites)`)
-        // Rebuild the synthetic website-refresh cron matchers (website.json is
-        // the completion marker, so this also fires after every refresh run)
-        this.automationSystems.get(workspaceRootPath)?.reloadWebsiteRefreshMatchers()
-        this.broadcastWebsitesChanged(workspaceId, websites)
-      },
-      onWebsitesContentChange: (websiteSlug) => {
-        // index.html was edited outside the tools: the digest moved, so the
-        // cached poster is stale by definition. Re-render it (a data-only
-        // refresh never reaches this callback).
-        this.enqueueWebsiteThumbnail(workspaceId, workspaceRootPath, websiteSlug)
-      },
       onTweaksListChange: (tweaks) => {
         // A tweak changed outside the RPC handlers (the agent's tools, or a hand edit to the
         // record or the code). Two things follow: the list pages show, and the registration the
@@ -1633,6 +1572,12 @@ export class SessionManager implements ISessionManager {
         sessionLog.info(`Tweaks changed in ${workspaceId} (${tweaks.length} tweaks)`)
         this.broadcastTweaksChanged(workspaceId, tweaks)
         this.installTweaks(workspaceId)
+      },
+      onArtifactsListChange: (artifacts) => {
+        // An artifact's file changed outside the app (an agent's write, or a hand edit). The
+        // library is a view of the disk, so the fresh list is what the renderer needs.
+        sessionLog.info(`Artifacts changed in ${workspaceId} (${artifacts.length} artifacts)`)
+        this.broadcastArtifactsChanged(workspaceId, artifacts)
       },
       onLlmConnectionsChange: () => {
         sessionLog.info(`LLM connections changed in ${workspaceId}`)
@@ -1836,16 +1781,16 @@ export class SessionManager implements ISessionManager {
     this.eventSink(RPC_CHANNELS.skills.CHANGED, { to: 'workspace', workspaceId }, workspaceId, skills)
   }
 
-  private broadcastWebsitesChanged(workspaceId: string, websites: import('@craft-agent/shared/websites').LoadedWebsite[]): void {
-    if (!this.eventSink) return
-    sessionLog.info(`Broadcasting websites changed (${websites.length} websites)`)
-    this.eventSink(RPC_CHANNELS.websites.CHANGED, { to: 'workspace', workspaceId }, workspaceId, websites)
-  }
-
   private broadcastTweaksChanged(workspaceId: string, tweaks: import('@craft-agent/shared/tweaks').TweakSummary[]): void {
     if (!this.eventSink) return
     sessionLog.info(`Broadcasting tweaks changed (${tweaks.length} tweaks)`)
     this.eventSink(RPC_CHANNELS.tweaks.CHANGED, { to: 'workspace', workspaceId }, workspaceId, tweaks)
+  }
+
+  private broadcastArtifactsChanged(workspaceId: string, artifacts: import('@craft-agent/shared/artifacts').ArtifactEntry[]): void {
+    if (!this.eventSink) return
+    sessionLog.info(`Broadcasting artifacts changed (${artifacts.length} artifacts)`)
+    this.eventSink(RPC_CHANNELS.artifacts.CHANGED, { to: 'workspace', workspaceId }, workspaceId, artifacts)
   }
 
   private broadcastDefaultPermissionsChanged(): void {
@@ -2697,24 +2642,23 @@ export class SessionManager implements ISessionManager {
         }
       } else {
         resolvedProjectId = project.config.id
-        if (
-          (options?.workingDirectory === undefined || options?.workingDirectory === 'user_default') &&
-          project.config.workingDirectory
-        ) {
-          resolvedWorkingDir = project.config.workingDirectory
+        // A session in a project works in the project's own place: the folder the project
+        // configured, or the project's own folder when it configured none. The project folder
+        // is the default because that is where the project's files live — a conversation that
+        // starts somewhere else makes "which folder is this project about" have several answers.
+        // Only an explicit directory escapes it: an absolute path, or 'none'. 'user_default' is
+        // still "no choice was made", so it takes the project's place just as undefined does.
+        if (options?.workingDirectory === undefined || options?.workingDirectory === 'user_default') {
+          resolvedWorkingDir = project.config.workingDirectory ?? project.folderPath
         }
       }
     }
 
-    // A session created for a prototype starts in the prototype's own folder: binding is
-    // the choice of where the conversation works, and a session that says it is on a
-    // prototype while bash runs somewhere else is exactly the disagreement the picker
-    // rules out. Guarded by existence for the same reason the bind path is: the slug is
-    // not validated, and a cwd that is not there would break the shell, not report it.
-    const prototypeDir = options?.prototypeSlug
-      ? getPrototypeDirPath(workspaceRootPath, options.prototypeSlug)
-      : null
-    if (prototypeDir && existsSync(prototypeDir)) resolvedWorkingDir = prototypeDir
+    // Binding a prototype does not choose where the conversation works — the working
+    // directory above is the project's (or the session's own fallback), and the prototype
+    // is a reference: the block injected into the prompt names its folder, so the agent
+    // reads and writes it by path. A binding that also moved the cwd would make the
+    // prototype a second owner of "where do I work", which the picker then had to referee.
 
     // Validate branch request up-front so branch metadata is only set for valid branches.
     // This prevents creating sessions that claim to be branched but don't have copied history.
@@ -4781,33 +4725,10 @@ export class SessionManager implements ISessionManager {
           const created = await createTaskFromSpec(this, ws.id, ws.rootPath, parsed.data)
           return { ...created, warnings: [...warnings, ...created.warnings] }
         },
-        // Websites tools (list_websites/get_website/create_website/
-        // update_website/write_website_data/delete_website) — grouped callbacks
-        // bound to the invoking session's workspace. Storage flows are shared
-        // with the websites RPC handlers; after each mutation we poke the
-        // watcher (Linux atomic-rename workaround) and broadcast
-        // websites:changed, exactly like those handlers do.
-        websites: buildWebsitesToolCallbacks({
-          workspaceId: managed.workspace.id,
-          workspaceRootPath: managed.workspace.rootPath,
-          log: (message: string) => sessionLog.info(message),
-          onWebsitesMutated: async (websiteSlug: string) => {
-            this.notifyConfigFileChange(managed.workspace.rootPath, `websites/${websiteSlug}/website.json`)
-            const { loadWorkspaceWebsites } = await import('@craft-agent/shared/websites')
-            this.broadcastWebsitesChanged(managed.workspace.id, loadWorkspaceWebsites(managed.workspace.rootPath))
-          },
-          onContentChanged: (websiteSlug: string) => {
-            this.enqueueWebsiteThumbnail(managed.workspace.id, managed.workspace.rootPath, websiteSlug)
-          },
-          // Read through the field, not a captured value: the resolver is injected
-          // by the host after the SessionManager is built.
-          resolveOrigin: (workspaceRootPath, websiteSlug) =>
-            this.websiteOriginResolver?.(workspaceRootPath, websiteSlug) ?? null,
-        }),
         // Tweaks tools (list_tweaks/get_tweak/create_tweak/update_tweak/delete_tweak) —
         // the standing edits that run on pages nobody here owns. A
         // mutation writes files in the workspace, so it is an out-of-band edit as far as
-        // the watcher is concerned: same poke as the websites callbacks, and the same
+        // the watcher is concerned: the poke is the same, and for the same
         // reason (files are the truth, and the watcher is how the app hears about them).
         tweaks: buildTweaksToolCallbacks({
           workspaceRootPath: managed.workspace.rootPath,
@@ -5877,18 +5798,6 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
-   * The folder a bound prototype claims, or null when nothing is bound.
-   *
-   * The one reader of "a conversation works either in a folder or in a prototype's own
-   * folder": binding, unbinding-by-folder and session creation all go through it, so the
-   * badge, the picker and bash's cwd cannot disagree about where the work is.
-   */
-  private prototypeWorkingDirectory(managed: ManagedSession): string | null {
-    if (!managed.prototypeSlug) return null
-    return getPrototypeDirPath(managed.workspace.rootPath, managed.prototypeSlug)
-  }
-
-  /**
    * Update the working directory for a session.
    *
    * If no messages have been sent yet (no SDK interaction), also updates sdkCwd
@@ -5912,15 +5821,9 @@ export class SessionManager implements ISessionManager {
 
       managed.workingDirectory = path
 
-      // A conversation works in one place: a folder, or a prototype's own folder. A
-      // directory that is not the bound prototype's own means the binding no longer
-      // holds, so it goes — keeping both would leave the badge and the picker
-      // disagreeing about where this conversation works.
-      const boundDir = this.prototypeWorkingDirectory(managed)
-      if (boundDir && normalizePathForComparison(boundDir) !== normalizePathForComparison(path)) {
-        managed.prototypeSlug = undefined
-        this.sendEvent({ type: 'prototype_slug_changed', sessionId, prototypeSlug: null }, managed.workspace.id)
-      }
+      // A prototype binding is left alone: where the conversation works and which body
+      // of work it is on are separate questions, so changing one says nothing about the
+      // other. Binding used to be dropped here because it *was* the working directory.
 
       // Invalidate filesystem caches that depend on working directory
       invalidateContextFileCache(path)
@@ -7869,14 +7772,11 @@ export class SessionManager implements ISessionManager {
         prototypeSlug: managed.prototypeSlug ?? null,
       }, managed.workspace.id)
 
-      // Binding is also the choice of where the conversation works, so the prototype's own
-      // folder becomes the working directory — bash and every relative path follow it.
-      // Guarded by existence because binding deliberately does not validate the slug: a
-      // session pointed at a folder that is not there would break the shell instead of
-      // reporting anything. Unbinding leaves the directory alone — it is a plain folder
-      // then, and nothing here knows where the person wants to be next.
-      const dir = this.prototypeWorkingDirectory(managed)
-      if (dir && existsSync(dir)) this.updateWorkingDirectory(sessionId, dir)
+      // Binding records which body of work this conversation is on — nothing more. It
+      // does not move the working directory: the prototype's folder is named in the block
+      // injected into the prompt, so relative paths and bash stay where the project (or
+      // the session's own fallback) put them, and the agent reaches the prototype's files
+      // by the absolute path it was given.
 
       this.persistSession(managed)
       await this.flushSession(managed.id)

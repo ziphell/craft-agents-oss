@@ -94,7 +94,6 @@ async function getExpectedCoreChannels(): Promise<Set<string>> {
     labels,
     llm,
     oauth,
-    websites,
     drawio,
     projects,
     prototypes,
@@ -110,6 +109,7 @@ async function getExpectedCoreChannels(): Promise<Set<string>> {
     resources,
     transfer,
     tweaks,
+    artifacts,
   ] = await Promise.all([
     import('@craft-agent/server-core/handlers/rpc/auth'),
     import('@craft-agent/server-core/handlers/rpc/automations'),
@@ -117,7 +117,6 @@ async function getExpectedCoreChannels(): Promise<Set<string>> {
     import('@craft-agent/server-core/handlers/rpc/labels'),
     import('@craft-agent/server-core/handlers/rpc/llm-connections'),
     import('@craft-agent/server-core/handlers/rpc/oauth'),
-    import('@craft-agent/server-core/handlers/rpc/websites'),
     import('@craft-agent/server-core/handlers/rpc/drawio'),
     import('@craft-agent/server-core/handlers/rpc/projects'),
     import('@craft-agent/server-core/handlers/rpc/prototypes'),
@@ -133,6 +132,7 @@ async function getExpectedCoreChannels(): Promise<Set<string>> {
     import('@craft-agent/server-core/handlers/rpc/resources'),
     import('@craft-agent/server-core/handlers/rpc/transfer'),
     import('@craft-agent/server-core/handlers/rpc/tweaks'),
+    import('@craft-agent/server-core/handlers/rpc/artifacts'),
   ])
 
   return new Set([
@@ -144,7 +144,6 @@ async function getExpectedCoreChannels(): Promise<Set<string>> {
     ...oauth.HANDLED_CHANNELS,
     ...projects.HANDLED_CHANNELS,
     ...prototypes.HANDLED_CHANNELS,
-    ...websites.HANDLED_CHANNELS,
     ...drawio.HANDLED_CHANNELS,
     ...sessions.HANDLED_CHANNELS,
     ...settings.HANDLED_CHANNELS,
@@ -158,6 +157,7 @@ async function getExpectedCoreChannels(): Promise<Set<string>> {
     ...resources.HANDLED_CHANNELS,
     ...transfer.HANDLED_CHANNELS,
     ...tweaks.HANDLED_CHANNELS,
+    ...artifacts.HANDLED_CHANNELS,
   ])
 }
 

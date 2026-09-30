@@ -19,8 +19,6 @@ import type { NavigationState } from '../../shared/types'
  * - sessions: a session is selected
  * - settings: a subpage is selected (bare `settings` route → false)
  * - sources / skills / automations: a detail item is selected
- * - websites: always — the library grid is the whole navigator (there is no
- *   detail page, and no navigator list to fall back to)
  * - tweaks: a tweak is selected (bare `tweaks` route → false) — the list is the
  *   navigator, one tweak's page is the detail
  */
@@ -37,8 +35,7 @@ export function isDetailNavState(navState: NavigationState | null): boolean {
     case 'projects':
     case 'prototypes':
     case 'tweaks':
+    case 'artifacts':
       return navState.details !== null
-    case 'websites':
-      return true
   }
 }

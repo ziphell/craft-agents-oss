@@ -33,8 +33,8 @@ import {
   isAutomationsNavigation,
   isProjectsNavigation,
   isPrototypesNavigation,
-  isWebsitesNavigation,
   isTweaksNavigation,
+  isArtifactsNavigation,
 } from '@/contexts/NavigationContext'
 import { useSessionSelection, useIsMultiSelectActive, useSelectedIds, useSelectionCount } from '@/hooks/useSession'
 import { sourceSelection, skillSelection, automationSelection } from '@/hooks/useEntitySelection'
@@ -47,8 +47,8 @@ import { AutomationInfoPage } from '../automations/AutomationInfoPage'
 import ProjectInfoPage from '@/pages/ProjectInfoPage'
 import PrototypeInfoPage from '@/pages/PrototypeInfoPage'
 import { KanbanBoardContainer } from './kanban/KanbanBoardContainer'
-import { WebsitesHome } from '../websites/WebsitesHome'
 import { TweakView } from '../tweaks/TweakView'
+import { ArtifactView } from '../artifacts/ArtifactView'
 import type { ExecutionEntry } from '../automations/types'
 import { automationsAtom } from '@/atoms/automations'
 import { SendResourceToWorkspaceDialog, type SendResourceType } from './SendResourceToWorkspaceDialog'
@@ -364,15 +364,6 @@ export function MainContentPanel({
     )
   }
 
-  // Websites navigator - the full-width library grid is the whole navigator
-  if (isWebsitesNavigation(navState)) {
-    return wrapWithStoplight(
-      <Panel variant="grow" className={className}>
-        <WebsitesHome />
-      </Panel>
-    )
-  }
-
   // Tweaks navigator - show one tweak's detail page, or an empty state
   if (isTweaksNavigation(navState)) {
     if (navState.details) {
@@ -387,6 +378,25 @@ export function MainContentPanel({
       <Panel variant="grow" className={className}>
         <div className="flex items-center justify-center h-full text-muted-foreground">
           <p className="text-sm">{t("tweaks.noTweakSelected")}</p>
+        </div>
+      </Panel>
+    )
+  }
+
+  // Artifacts navigator - show one artifact's detail page, or an empty state
+  if (isArtifactsNavigation(navState)) {
+    if (navState.details) {
+      return wrapWithStoplight(
+        <Panel variant="grow" className={className}>
+          <ArtifactView key={navState.details.id} relativePath={navState.details.id} />
+        </Panel>
+      )
+    }
+    // No artifact selected - empty state
+    return wrapWithStoplight(
+      <Panel variant="grow" className={className}>
+        <div className="flex items-center justify-center h-full text-muted-foreground">
+          <p className="text-sm">{t("artifacts.noArtifactSelected")}</p>
         </div>
       </Panel>
     )

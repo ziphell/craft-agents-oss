@@ -18,10 +18,8 @@
  *
  * One handler per session, and the app has two that matter:
  *
- * - the **browser windows'** session (`persist:browser-pane`), where a website
- *   opened in a tab is looked at;
- * - the **app's own** session, because the offscreen website-thumbnail window is
- *   created without a partition of its own and so renders there.
+ * - the **browser windows'** session (`persist:browser-pane`);
+ * - the **app's own** session, for documents rendered there.
  *
  * Registering on the app's own session does mean every `http` request the renderer
  * makes passes through this handler first — including its own document in
@@ -29,7 +27,6 @@
  * the same request Chromium would have made, only observed.
  */
 
-import { serveWebsiteRequest } from './website-host'
 import { serveDrawioRequest } from './drawio-host'
 import type { PassThrough, ProtocolHostSession } from './local-http'
 
@@ -46,7 +43,7 @@ export async function handleLocalHostRequest(
   passThrough: PassThrough,
 ): Promise<Response> {
   return (
-    (await serveWebsiteRequest(request)) ?? (await serveDrawioRequest(request)) ?? passThrough(request)
+    (await serveDrawioRequest(request)) ?? passThrough(request)
   )
 }
 

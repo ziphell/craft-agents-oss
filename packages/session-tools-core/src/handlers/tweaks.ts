@@ -4,7 +4,7 @@
  *
  * All storage logic (slug generation, file writes) happens behind
  * the injected ctx.tweaks callbacks, where the tweak primitives live — this package must
- * stay free of @craft-agent/shared (same rule as websites and create_task).
+ * stay free of @craft-agent/shared (same rule as create_task).
  *
  * Exporting is deliberately **not** one of these. It writes an extension into a folder a
  * person chooses, which is a decision of theirs and not something an agent can reason about;

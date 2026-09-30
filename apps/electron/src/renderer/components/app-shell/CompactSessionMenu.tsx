@@ -39,6 +39,8 @@ import {
   Copy,
   Flag,
   FlagOff,
+  FlaskConical,
+  FolderKanban,
   FolderOpen,
   Globe,
   Link2Off,
@@ -65,6 +67,7 @@ import {
   type LabelMenuItem,
 } from '@/components/ui/label-menu-utils'
 import type { LabelConfig } from '@craft-agent/shared/labels'
+import type { PrototypeStatus } from '@craft-agent/shared/prototypes'
 import {
   getStateColor,
   getStateIcon,
@@ -77,8 +80,11 @@ import { getSessionStatus, hasUnreadMeta, hasMessagesMeta } from '@/utils/sessio
 import { getFileManagerName } from '@/lib/platform'
 import { useMessagingConnect, type MessagingPlatform } from '@/components/messaging/MessagingSessionMenuItem'
 import { useSessionMenuActions } from '@/hooks/useSessionMenuActions'
+import { useAtomValue } from 'jotai'
+import { prototypesAtom } from '@/atoms/prototypes'
+import type { SessionMenuProjectOption } from './SessionMenu'
 
-type View = 'root' | 'status' | 'labels' | 'share' | 'messaging'
+type View = 'root' | 'status' | 'labels' | 'projects' | 'prototype' | 'share' | 'messaging'
 
 export interface CompactSessionMenuProps {
   /** Title text shown in the trigger button + drawer header. */
@@ -93,6 +99,10 @@ export interface CompactSessionMenuProps {
   sessionStatuses: SessionStatus[]
   labels?: LabelConfig[]
   hasTransferTargets?: boolean
+  /** Workspace projects (omit to hide the Projects pane). */
+  projects?: SessionMenuProjectOption[]
+  /** Bind/unbind this session's project. `null` clears it. */
+  onSetProjectId?: (projectId: string | null) => void
 
   // Callbacks — same as SessionMenu
   onLabelsChange?: (labels: string[]) => void
@@ -131,6 +141,8 @@ export function CompactSessionMenu({
   sessionStatuses,
   labels = [],
   hasTransferTargets,
+  projects = [],
+  onSetProjectId,
   onLabelsChange,
   onRename,
   onFlag,
@@ -183,6 +195,12 @@ export function CompactSessionMenu({
 
   const actions = useSessionMenuActions({ item, onLabelsChange })
 
+  // The workspace's prototypes (read here, as the desktop SessionMenu does), and the
+  // project this conversation is bound to. Both say what the conversation is about —
+  // neither moves where it works.
+  const prototypes = useAtomValue(prototypesAtom)
+  const boundProject = projects.find((project) => project.id === item.projectId)
+
   const flatLabelItems = React.useMemo(
     (): LabelMenuItem[] => createLabelMenuItems(labels),
     [labels],
@@ -216,6 +234,8 @@ export function CompactSessionMenu({
     switch (view) {
       case 'status':    return t('sessionMenu.status')
       case 'labels':    return t('sessionMenu.labels')
+      case 'projects':  return t('sessionMenu.projects')
+      case 'prototype': return t('sessionMenu.prototype')
       case 'share':     return t('sessionMenu.shared')
       case 'messaging': return t('sessionMenu.connectMessaging')
       default:          return title ?? ''
@@ -305,6 +325,12 @@ export function CompactSessionMenu({
               onOpenMessagingSub={() => setView('messaging')}
               onOpenStatusSub={() => setView('status')}
               onOpenLabelsSub={() => setView('labels')}
+              showProjects={projects.length > 0 && !!onSetProjectId}
+              projectName={boundProject?.name}
+              onOpenProjectsSub={() => setView('projects')}
+              showPrototype={prototypes.length > 0}
+              prototypeSlug={item.prototypeSlug}
+              onOpenPrototypeSub={() => setView('prototype')}
               onFlag={closeAfter(onFlag)}
               onUnflag={closeAfter(onUnflag)}
               onArchive={closeAfter(onArchive)}
@@ -336,6 +362,28 @@ export function CompactSessionMenu({
               items={flatLabelItems}
               appliedLabelIds={actions.appliedLabelIds}
               onToggle={actions.toggleLabel}
+            />
+          )}
+
+          {view === 'projects' && (
+            <ProjectsPane
+              projects={projects}
+              activeProjectId={item.projectId}
+              onSelect={(projectId) => {
+                onSetProjectId?.(projectId)
+                setOpen(false)
+              }}
+            />
+          )}
+
+          {view === 'prototype' && (
+            <PrototypePane
+              prototypes={prototypes}
+              activeSlug={item.prototypeSlug}
+              onSelect={(slug) => {
+                actions.setPrototypeSlug(slug)
+                setOpen(false)
+              }}
             />
           )}
 
@@ -372,6 +420,16 @@ interface RootPaneProps {
   hasMessages: boolean
   hasUnread: boolean
   hasTransferTargets?: boolean
+  /** Bound project's name, shown as the Projects row's trailing text. */
+  projectName?: string
+  /** Whether the Projects pane is offered (projects exist and something can bind them). */
+  showProjects: boolean
+  onOpenProjectsSub: () => void
+  /** Bound prototype's slug, shown as the Prototype row's trailing text. */
+  prototypeSlug?: string
+  /** Whether the Prototype pane is offered (this workspace has prototypes). */
+  showPrototype: boolean
+  onOpenPrototypeSub: () => void
   onShare?: () => void
   onOpenShareSub: () => void
   onSendToWorkspace?: () => void
@@ -403,6 +461,12 @@ function RootPane({
   hasMessages,
   hasUnread,
   hasTransferTargets,
+  projectName,
+  showProjects,
+  onOpenProjectsSub,
+  prototypeSlug,
+  showPrototype,
+  onOpenPrototypeSub,
   onShare,
   onOpenShareSub,
   onSendToWorkspace,
@@ -473,6 +537,26 @@ function RootPane({
           trailing={labelsCount > 0 ? <CountBadge count={labelsCount} /> : undefined}
           chevron
           onTap={onOpenLabelsSub}
+        />
+      )}
+
+      {showProjects && (
+        <Row
+          icon={<FolderKanban className="h-4 w-4" />}
+          label={t('sessionMenu.projects')}
+          trailing={projectName ? <TrailingText>{projectName}</TrailingText> : undefined}
+          chevron
+          onTap={onOpenProjectsSub}
+        />
+      )}
+
+      {showPrototype && (
+        <Row
+          icon={<FlaskConical className="h-4 w-4" />}
+          label={t('sessionMenu.prototype')}
+          trailing={prototypeSlug ? <TrailingText mono>{prototypeSlug}</TrailingText> : undefined}
+          chevron
+          onTap={onOpenPrototypeSub}
         />
       )}
 
@@ -585,6 +669,70 @@ function LabelsPane({
   )
 }
 
+function ProjectsPane({
+  projects,
+  activeProjectId,
+  onSelect,
+}: {
+  projects: SessionMenuProjectOption[]
+  activeProjectId?: string
+  onSelect: (projectId: string | null) => void
+}) {
+  const { t } = useTranslation()
+  return (
+    <div className="flex flex-col">
+      <Row
+        icon={<FolderKanban className="h-4 w-4" />}
+        label={t('sessionMenu.noProject')}
+        radioSelected={!activeProjectId}
+        onTap={() => onSelect(null)}
+      />
+      <Separator />
+      {projects.map((project) => (
+        <Row
+          key={project.id}
+          icon={<FolderKanban className="h-4 w-4" />}
+          label={project.name}
+          radioSelected={activeProjectId === project.id}
+          onTap={() => onSelect(project.id)}
+        />
+      ))}
+    </div>
+  )
+}
+
+function PrototypePane({
+  prototypes,
+  activeSlug,
+  onSelect,
+}: {
+  prototypes: PrototypeStatus[]
+  activeSlug?: string
+  onSelect: (slug: string | null) => void
+}) {
+  const { t } = useTranslation()
+  return (
+    <div className="flex flex-col">
+      <Row
+        icon={<FlaskConical className="h-4 w-4" />}
+        label={t('sessionMenu.noPrototype')}
+        radioSelected={!activeSlug}
+        onTap={() => onSelect(null)}
+      />
+      <Separator />
+      {prototypes.map((prototype) => (
+        <Row
+          key={prototype.slug}
+          icon={<FlaskConical className="h-4 w-4" />}
+          label={<span className="font-mono">{prototype.slug}</span>}
+          radioSelected={activeSlug === prototype.slug}
+          onTap={() => onSelect(prototype.slug)}
+        />
+      ))}
+    </div>
+  )
+}
+
 function SharePane({
   onOpenInBrowser,
   onCopyLink,
@@ -671,6 +819,15 @@ function CountBadge({ count }: { count: number }) {
   return (
     <span className="text-[11px] tabular-nums text-foreground/50">
       {count}
+    </span>
+  )
+}
+
+/** The bound value of a pane the root row only summarises (project name, prototype slug). */
+function TrailingText({ children, mono = false }: { children: React.ReactNode; mono?: boolean }) {
+  return (
+    <span className={cn('text-xs text-foreground/50 truncate max-w-[40%]', mono && 'font-mono')}>
+      {children}
     </span>
   )
 }
