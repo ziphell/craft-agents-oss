@@ -10,7 +10,7 @@
  * affordance for long sessions, not a container for content.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { Message } from '@craft-agent/core'
 import { cn } from '../../lib/utils'
@@ -86,25 +86,31 @@ export interface TurnRailProps {
 
 export function TurnRail({ items, activeKey, onSelect, className }: TurnRailProps) {
   const { t } = useTranslation()
-  const railRef = useRef<HTMLDivElement>(null)
+  // Hold the node in state rather than reading a ref once: the rail renders
+  // `null` until it has two ticks, so on the first pass there is nothing to
+  // measure — and an unwatched rail keeps a height of 0 forever, which crushes
+  // the tick column into the top of the rail and drops the oldest ticks.
+  const [railEl, setRailEl] = useState<HTMLDivElement | null>(null)
   const [railHeight, setRailHeight] = useState(0)
   const [hovered, setHovered] = useState<{ key: string; top: number } | null>(null)
 
   // Track the rail's height so the tick pitch can adapt to however many turns
   // the session has (a 20-turn chat and a 200-turn chat must both fit).
   useEffect(() => {
-    const el = railRef.current
-    if (!el) return
-    const observer = new ResizeObserver(() => setRailHeight(el.clientHeight))
-    observer.observe(el)
-    setRailHeight(el.clientHeight)
+    if (!railEl) return
+    const observer = new ResizeObserver(() => setRailHeight(railEl.clientHeight))
+    observer.observe(railEl)
+    setRailHeight(railEl.clientHeight)
     return () => observer.disconnect()
-  }, [])
+  }, [railEl])
 
   const pitch = useMemo(() => {
     if (items.length === 0) return TICK_PITCH_MAX
     const available = Math.max(0, railHeight - RAIL_PADDING * 2)
-    if (available === 0) return TICK_PITCH_MAX
+    // No room measured yet: compress, never expand. Falling back to the maximum
+    // pitch here makes `overflow` exceed the rail's padding and clip the oldest
+    // ticks — the exact thing the pitch is supposed to prevent.
+    if (available === 0) return TICK_PITCH_MIN
     return Math.min(TICK_PITCH_MAX, Math.max(TICK_PITCH_MIN, available / items.length))
   }, [items.length, railHeight])
 
@@ -123,7 +129,7 @@ export function TurnRail({ items, activeKey, onSelect, className }: TurnRailProp
 
   return (
     <div
-      ref={railRef}
+      ref={setRailEl}
       className={cn('relative z-20 h-full w-7 shrink-0 select-none', className)}
       onMouseLeave={() => setHovered(null)}
     >
