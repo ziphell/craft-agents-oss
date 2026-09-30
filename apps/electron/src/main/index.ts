@@ -492,6 +492,24 @@ app.whenReady().then(async () => {
     browserPaneManager.registerToolbarIpc()
     browserPaneManager.registerCapabilityIpc()
 
+    // A browser window belongs to its workspace, so it goes when that workspace's last
+    // window does: left behind, it is a window nothing can reach — it never closes
+    // itself, only hides. That is also what lets the app quit, since such a window keeps
+    // `window-all-closed` from ever firing and would leave the process resident with
+    // nothing visible on screen.
+    windowManager.setWorkspaceWindowsClosedHandler((workspaceId) => {
+      // macOS keeps the app running with no windows (standard); a headless server has none.
+      if (process.platform === 'darwin' || process.env.CRAFT_HEADLESS) return
+
+      browserPaneManager?.destroyForWorkspace(workspaceId)
+
+      // And if that was the app's last window, nothing may be left at all — including a
+      // browser window created without a workspace context, which the line above skips.
+      if ((windowManager?.getAllWindows().length ?? 0) === 0) {
+        browserPaneManager?.destroyAll()
+      }
+    })
+
     // Build real PlatformServices from Electron APIs
     const platform: PlatformServices = createElectronPlatform({
       app,

@@ -4072,6 +4072,25 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.stopWatchingDisplays()
   }
 
+  /**
+   * Destroy every browser window of a workspace.
+   *
+   * The window is the workspace's (not a session's), so this is what "that workspace is
+   * off the screen" means for the browser pane: the window has nothing left to belong
+   * to, and it never closes itself — left alone it would hold live renderers that nobody
+   * can reach, and keep `window-all-closed` from ever firing.
+   *
+   * A window created with no workspace context (`workspaceId` null) belongs to none and
+   * is not touched here.
+   */
+  destroyForWorkspace(workspaceId: string): void {
+    for (const instance of [...this.instances.values()]) {
+      if (instance.workspaceId === workspaceId) {
+        this.destroyInstance(instance.id)
+      }
+    }
+  }
+
   private finalizeDestroyedInstance(instance: BrowserInstance, source: 'destroy' | 'closed'): void {
     if (!this.instances.has(instance.id)) {
       return

@@ -62,6 +62,7 @@ export class WindowManager {
   private keyboardCloseIntents: Set<number> = new Set()  // webContents.id flagged by Cmd/Ctrl+W before close
   private keyboardCloseIntentTimeouts: Map<number, NodeJS.Timeout> = new Map()  // Auto-clear stale keyboard-close intents
   private isAppQuitting = false  // Skip layered close interception during app quit
+  private workspaceWindowsClosedHandler: ((workspaceId: string) => void) | null = null  // Fired once a workspace has no managed window left
 
   /**
    * Set the event sink and client resolver for pushing events via the RPC server
@@ -509,6 +510,16 @@ export class WindowManager {
       // name back to app name when the count drops from 2 → 1.
       this.refreshWindowTitles()
       windowLog.info(`Window closed for workspace ${workspaceId}`)
+
+      // That workspace is off the screen when no managed window of it is left. Anything
+      // the browser pane still holds for it is then a window with nothing to belong to —
+      // and it never closes itself, so it would sit there unreachable. See
+      // `setWorkspaceWindowsClosedHandler`. During an app quit the whole teardown is
+      // already under way, so this must not fire again.
+      const stillOnScreen = [...this.windows.values()].some((managed) => managed.workspaceId === workspaceId)
+      if (!stillOnScreen && !this.isAppQuitting) {
+        this.workspaceWindowsClosedHandler?.(workspaceId)
+      }
     })
 
     windowLog.info(`Created window for workspace ${workspaceId} (focused: ${focused})`)
@@ -568,6 +579,20 @@ export class WindowManager {
    */
   setAppQuitting(isQuitting: boolean): void {
     this.isAppQuitting = isQuitting
+  }
+
+  /**
+   * Called when the last managed window of a workspace has closed — the moment that
+   * workspace stops being on screen.
+   *
+   * It carries the workspace id because a browser window belongs to its workspace (the
+   * window is the workspace's, not a session's): with no window of that workspace left,
+   * the browser window has nothing to belong to, and it never closes itself, so it would
+   * sit there holding renderers nobody can reach. Electron's `window-all-closed` cannot
+   * be the only trigger either — while such a window is up, it never fires.
+   */
+  setWorkspaceWindowsClosedHandler(handler: (workspaceId: string) => void): void {
+    this.workspaceWindowsClosedHandler = handler
   }
 
   /**
