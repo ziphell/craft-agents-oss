@@ -204,10 +204,13 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
     try {
       await window.electronAPI.updateProject(workspaceId, project.config.slug, {
         name: editName.trim() || project.config.name,
-        description: editDescription.trim() || undefined,
-        workingDirectory: editWorkingDir.trim() || undefined,
-        details: editDetails.trim() || undefined,
-        color: editColor.trim() || undefined,
+        // Optional text goes as the trimmed value, so an emptied field arrives as '' — which
+        // the writer reads as "clear". Sending `undefined` would say nothing: the transport is
+        // JSON, which drops undefined keys, and the old value would come straight back.
+        description: editDescription.trim(),
+        workingDirectory: editWorkingDir.trim(),
+        details: editDetails.trim(),
+        color: editColor.trim(),
       })
       toast.success(t('projectInfo.saved'))
     } catch (err) {

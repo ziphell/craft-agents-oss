@@ -11,8 +11,10 @@ import { estimateTokensDensityAware } from '../../utils/large-response.ts';
 import {
   createProject,
   getProjectMemoryPath,
+  loadProjectConfig,
   loadProjectMemory,
   sanitizeAssetFilename,
+  updateProject,
 } from '../storage.ts';
 
 let tempDir: string;
@@ -45,6 +47,61 @@ describe('sanitizeAssetFilename', () => {
 
   it('falls back to a generated name when the input reduces to empty', () => {
     expect(sanitizeAssetFilename('\x00\n\t')).toMatch(/^asset_[0-9a-f]{8}$/);
+  });
+});
+
+describe('updateProject', () => {
+  it('sets a working directory', () => {
+    const slug = makeProjectSlug();
+    // Read back from disk rather than compared to the literal: the config normalises path
+    // separators, and the returned patch keeps what was handed in.
+    updateProject(workspaceRoot, slug, { workingDirectory: '/code/cart' });
+    expect(loadProjectConfig(workspaceRoot, slug)?.workingDirectory).toBeTruthy();
+  });
+
+  it("clears it when the patch carries '' — the shape a cleared field arrives in", () => {
+    const slug = makeProjectSlug();
+    updateProject(workspaceRoot, slug, { workingDirectory: '/code/cart' });
+
+    const updated = updateProject(workspaceRoot, slug, { workingDirectory: '' });
+
+    // Nothing is left behind, on disk either: absent, not ''. A stored '' would read back
+    // as *set* and win over the project's own folder.
+    expect(updated.workingDirectory).toBeUndefined();
+    expect(loadProjectConfig(workspaceRoot, slug)?.workingDirectory).toBeUndefined();
+  });
+
+  it("never writes '' for a field that was already unset", () => {
+    const slug = makeProjectSlug();
+    updateProject(workspaceRoot, slug, { description: '', details: '', color: '' });
+    const config = loadProjectConfig(workspaceRoot, slug);
+    expect(config?.description).toBeUndefined();
+    expect(config?.details).toBeUndefined();
+    expect(config?.color).toBeUndefined();
+  });
+
+  it('still keeps a real value beside a cleared one', () => {
+    const slug = makeProjectSlug();
+    updateProject(workspaceRoot, slug, { workingDirectory: '/code/cart', description: 'A cart' });
+
+    updateProject(workspaceRoot, slug, { workingDirectory: '' });
+
+    const config = loadProjectConfig(workspaceRoot, slug);
+    expect(config?.workingDirectory).toBeUndefined();
+    expect(config?.description).toBe('A cart');
+  });
+
+  it('a patch that omits the key changes nothing (which is why cleared text travels as \'\')', () => {
+    // The renderer used to send `workingDirectory: undefined` to mean "clear". The transport
+    // is JSON, which drops undefined keys, so the key never arrived and the old value stayed —
+    // the save looked like it worked and silently restored what was there before.
+    const slug = makeProjectSlug();
+    updateProject(workspaceRoot, slug, { workingDirectory: '/code/cart' });
+    const before = loadProjectConfig(workspaceRoot, slug)?.workingDirectory;
+
+    updateProject(workspaceRoot, slug, { name: 'Renamed' });
+
+    expect(loadProjectConfig(workspaceRoot, slug)?.workingDirectory).toBe(before as string);
   });
 });
 

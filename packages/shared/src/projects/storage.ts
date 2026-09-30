@@ -293,6 +293,18 @@ export function createProject(
 }
 
 /**
+ * Optional text on a project that a person can clear.
+ *
+ * A clear travels as `''`, not `undefined`: the RPC transport is JSON, which drops keys
+ * whose value is undefined, so a removed key would arrive as "no change at all" and the
+ * old value would survive the save. An empty string is never a meaningful value for any
+ * of these — stored, it would read back as *set* (`workingDirectory: ''` is not nullish,
+ * so it would beat the project folder) — so `''` is the clear, and the empty string is
+ * dropped here rather than written.
+ */
+const CLEARABLE_TEXT_FIELDS = ['description', 'details', 'color', 'workingDirectory'] as const;
+
+/**
  * Update a project's config with a partial patch.
  * `id` and `slug` cannot be changed.
  */
@@ -314,6 +326,12 @@ export function updateProject(
     createdAt: existing.createdAt,
     updatedAt: Date.now(),
   };
+
+  for (const field of CLEARABLE_TEXT_FIELDS) {
+    if (updated[field] === '') {
+      delete updated[field];
+    }
+  }
 
   saveProjectConfig(workspaceRootPath, updated);
   return updated;
