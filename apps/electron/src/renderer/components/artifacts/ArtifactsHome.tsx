@@ -3,14 +3,13 @@
  *
  * Workspace-scoped artifact list: the navigator slot's content while the
  * Artifacts item is active. One row per artifact — its drawn preview, its title
- * (the file's name), and a status dot. An artifact's own page is the content
- * column beside it. The path is deliberately not shown: a file's name is what
- * somebody picks it by, and the location is one hover action away.
+ * (the file's name), and when it last changed. An artifact's own page is the
+ * content column beside it. The path is deliberately not shown: a file's name is
+ * what somebody picks it by, and the location is one hover action away.
  *
  * The list is an **inbox**: newest first is the order that answers "what just
  * changed", and it is already the order `deriveArtifactEntries` hands over — so
- * this sorts nothing. The status dot is a placeholder: what "needs me" means is a
- * later pass, and a list that guessed at it now would say something wrong.
+ * this sorts nothing. The time is that order said out loud.
  *
  * A row's actions come from the file's place on disk: "open folder" hands the
  * absolute path to the shell, resolved from the active workspace root the same
@@ -105,9 +104,14 @@ export function ArtifactsHome({
                   title={artifact.title}
                   // The actions belong on the title's own line, not floating at the row's
                   // corner: `titleTrailing` is what the `…` button swaps with on hover, so
-                  // the button lands right-aligned and centred on the title. The dot is the
-                  // placeholder it shows the rest of the time.
-                  titleTrailing={<StatusDot />}
+                  // the button lands right-aligned and centred on the title. The rest of the
+                  // time it shows when the file last changed — the fact the list is ordered
+                  // by, which a name on its own does not carry.
+                  titleTrailing={
+                    <span className="text-[11px] text-foreground/40">
+                      {formatRelativeTime(artifact.mtimeMs, t)}
+                    </span>
+                  }
                   menuContent={
                     absolutePath ? (
                       <ArtifactMenu
@@ -149,12 +153,15 @@ function ArtifactMenu({ onOpenFolder, onCopyPath }: { onOpenFolder: () => void; 
   )
 }
 
-/**
- * The status area — a dot for now.
- *
- * The real "needs me" rule is a later pass; until it exists this is deliberately
- * inert rather than a guess, so nothing in the list reads as a claim it cannot back.
- */
-function StatusDot() {
-  return <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-foreground/20" aria-hidden="true" />
+/** Relative time, in the app's own phrasing (never a raw timestamp). */
+function formatRelativeTime(
+  timestamp: number,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string {
+  const minutes = Math.floor((Date.now() - timestamp) / 60000)
+  if (minutes < 1) return t('common.justNow')
+  if (minutes < 60) return t('time.minutesAgo', { count: minutes })
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return t('time.hoursAgo', { count: hours })
+  return t('time.daysAgo', { count: Math.floor(hours / 24) })
 }

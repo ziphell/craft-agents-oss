@@ -15,11 +15,9 @@
  * from, because real work is organized into as many documents as it takes.
  *
  * The id is the entire mechanism. It is short, survives rewriting the prose
- * around it, and — the point — is **referable**: any file in the prototype may say
- * `@requirement R-001` in a comment (`coverage.ts`), a finding says it with
- * `requirements:`, and the status report can then answer the two questions nobody
- * can answer by reading files: which requirement has nothing implementing it, and
- * which marker names an id the specification does not define.
+ * around it, and is the name a finding writes on its `requirements:` line when it argues for
+ * one. Nothing else refers to it: what a file *does* is the file's own business, and this
+ * workbench no longer keeps a second statement of it.
  *
  * The documents are deliberately **not** in a stored index. They are prose the agent
  * writes as files, and parsing them here is what keeps them documents people can
@@ -32,11 +30,8 @@
 
 import { readFileSync } from 'fs'
 import { join } from 'path'
-import { markerIndex } from '../markers.ts'
 import { getPrototypeDirPath, isMarkdownFile, listPrototypeFiles } from './storage.ts'
 import { PROTOTYPE_PRD_FILENAME } from './types.ts'
-
-const REQUIREMENT_MARKER = '@requirement'
 
 /**
  * Normalize a requirement id written by hand.
@@ -49,42 +44,6 @@ export function normalizeRequirementId(value: string): string | null {
   const match = /^R-?(\d{1,4})$/i.exec(value.trim())
   if (!match) return null
   return `R-${String(Number(match[1])).padStart(3, '0')}`
-}
-
-/**
- * The requirement ids a file declares with `@requirement`.
- *
- * A declaration is `@requirement R-001`, optionally with more ids on the same
- * line (`@requirement R-001 R-002` or `…, R-002`). Everything after the marker on
- * that line is read, so the marker can be followed by a reason: writing why a
- * requirement exists next to the id it serves is the behaviour this is meant to
- * encourage, not to reject.
- *
- * Any file of the prototype may carry it — a document, a stylesheet, a script —
- * which is what makes the thread independent of any one artifact type
- * (`coverage.ts`).
- *
- * Unknown spellings are ignored rather than guessed at: a line that says
- * `@requirement TBD` is a note to self, and treating it as a reference to a
- * requirement would invent an id.
- */
-export function extractRequirementIds(source: string): string[] {
-  const ids: string[] = []
-  const seen = new Set<string>()
-
-  for (const line of source.split('\n')) {
-    const marker = markerIndex(line, REQUIREMENT_MARKER)
-    if (marker === -1) continue
-
-    for (const match of line.slice(marker + REQUIREMENT_MARKER.length).matchAll(/R-?\d{1,4}/gi)) {
-      const id = normalizeRequirementId(match[0])
-      if (!id || seen.has(id)) continue
-      seen.add(id)
-      ids.push(id)
-    }
-  }
-
-  return ids
 }
 
 /** Absolute path to the prototype's conventional entry document (`PRD.md`). */
@@ -189,8 +148,8 @@ export function parseRequirementDocument(source: string, file: string): Prototyp
  * here.
  *
  * A file that is read twice (two documents claiming one id) is reported rather than resolved: which
- * of the two a reference meant is not something this can know, and guessing would make "which
- * requirement nothing implements" depend on the guess.
+ * of the two a finding's `requirements:` line meant is not something this can know, and guessing
+ * would make which document a requirement is written in depend on the guess.
  */
 export function readPrototypeRequirements(
   workspaceRootPath: string,

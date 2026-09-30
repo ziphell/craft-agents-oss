@@ -32,9 +32,9 @@
  *   deliberately removed: a one-way reference can only report a typo, while a link read from both
  *   ends says which document to read next from either one.
  *
- * A link is **navigation, not a claim about the work**: whether a requirement is implemented is
- * still only `@requirement R-00x` (`coverage.ts`), or a link would let any paragraph quietly mark
- * its own requirement done.
+ * A link is **navigation, and nothing more**: it says where to read next. It never carries a claim
+ * about the work — a paragraph that links to a document has not, by that act, said anything about
+ * what exists.
  *
  * Only the prototype's own markdown is read. A link to a document names the file (with its
  * extension) — a destination the browser fetches on its own, an absolute path, a fragment, or a

@@ -14,8 +14,6 @@ const PRD = [
   '',
   '## R-002 The cart is priced by the service',
   '',
-  '## R-003 An order can be cancelled',
-  '',
 ].join('\n')
 
 describe('whyPrototypeIsNotSettled', () => {
@@ -27,24 +25,14 @@ describe('whyPrototypeIsNotSettled', () => {
     createPrototype(workspaceRoot, { name: slug })
     const dir = getPrototypeDirPath(workspaceRoot, slug)
     writeFileSync(join(dir, 'PRD.md'), PRD, 'utf-8')
-    // R-001 and R-002 are implemented by files that declare them; R-003 by nothing, which is what
-    // one of the tests below is about.
-    writeFileSync(join(dir, 'cart.js'), '// @requirement R-001\nexport const total = 0\n', 'utf-8')
-    writeFileSync(join(dir, 'pricing.md'), 'Prices come from the service. @requirement R-002\n', 'utf-8')
+    writeFileSync(join(dir, 'cart.js'), 'export const total = 0\n', 'utf-8')
   })
 
   afterEach(() => {
     rmSync(workspaceRoot, { recursive: true, force: true })
   })
 
-  /** Write the change that implements R-003, the requirement the fixture leaves open. */
-  function implementR003(): void {
-    writeFileSync(join(getPrototypeDirPath(workspaceRoot, slug), 'notes.md'), 'Cancellation. @requirement R-003\n', 'utf-8')
-  }
-
   it('says nothing when there is nothing owed', () => {
-    implementR003()
-
     expect(whyPrototypeIsNotSettled(buildPrototypeStatus(workspaceRoot, slug))).toEqual([])
   })
 
@@ -54,12 +42,24 @@ describe('whyPrototypeIsNotSettled', () => {
     const status = buildPrototypeStatus(workspaceRoot, slug)
 
     expect(status.specificationFiles.map((file) => file.name)).toEqual(['PRD.md'])
-    expect(status.files.map((file) => file.name)).toEqual(['cart.js', 'pricing.md'])
+    expect(status.files.map((file) => file.name)).toEqual(['cart.js'])
     expect(status.requirements.map((requirement) => requirement.file)).toEqual([
       'PRD.md',
       'PRD.md',
-      'PRD.md',
     ])
+  })
+
+  // A requirement is prose in a document. The report carries no second statement of the work, so
+  // nothing here says a requirement is implemented — the row is the heading and nothing else.
+  it('lists the requirements and claims nothing about what implements them', () => {
+    const status = buildPrototypeStatus(workspaceRoot, slug)
+
+    expect(status.requirements[0]).toEqual({
+      id: 'R-001',
+      title: 'A cart holds its line',
+      file: 'PRD.md',
+      findings: [],
+    })
   })
 
   it('reads the links between documents, and reports one that points at nothing', () => {
@@ -80,21 +80,26 @@ describe('whyPrototypeIsNotSettled', () => {
     ])
   })
 
-  it('names a requirement nothing implements', () => {
-    const status = buildPrototypeStatus(workspaceRoot, slug)
-    const reasons = whyPrototypeIsNotSettled(status)
-
-    // The code is the contract with the panel; the sentence is what the agent prints.
-    expect(reasons.map((reason) => reason.code)).toEqual(['gate.requirementUnmet'])
-    expect(reasons[0]?.text).toBe(
-      'R-003 is in PRD.md but no file refers to it, so nothing implements it.',
+  // A finding names what it argues for on its `requirements:` line. An id no document defines is a
+  // citation to something that was never written — a fact about the files, so it is named.
+  it('names a finding that argues for an id no document defines', () => {
+    const dir = getPrototypeDirPath(workspaceRoot, slug)
+    mkdirSync(join(dir, 'research'), { recursive: true })
+    writeFileSync(
+      join(dir, 'research', 'F-001-sticky.md'),
+      '# F-001 Sticky total\n\nclaim: The total stays on screen.\nrequirements: R-099\n',
+      'utf-8',
     )
-    // Said once, and by the gate: the brief issues do not repeat what `unresolved` already says.
-    expect(status.briefIssues).toEqual([])
+
+    const status = buildPrototypeStatus(workspaceRoot, slug)
+
+    expect(status.briefIssues.map((issue) => issue.code)).toEqual(['requirement.undefined'])
+    expect(status.briefIssues[0]?.text).toBe(
+      'research/F-001-sticky.md names R-099, which no document in this prototype defines.',
+    )
   })
 
   it('names a link that points at nothing, because that is a fact about the files', () => {
-    implementR003()
     writeFileSync(
       join(getPrototypeDirPath(workspaceRoot, slug), 'PRD.md'),
       `${PRD}\nSee [the flow](docs/flow.md).\n`,
@@ -104,8 +109,10 @@ describe('whyPrototypeIsNotSettled', () => {
     const status = buildPrototypeStatus(workspaceRoot, slug)
     const reasons = whyPrototypeIsNotSettled(status)
 
+    // The code is the contract with the panel; the sentence is what the agent prints.
     expect(reasons.map((reason) => reason.code)).toEqual(['gate.linkBroken'])
     expect(reasons[0]?.text).toBe('PRD.md links to docs/flow.md, which is not in this prototype.')
+    // Said once, and by the gate: the brief issues do not repeat what `unresolved` already says.
     expect(status.briefIssues).toEqual([])
   })
 })

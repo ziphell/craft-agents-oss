@@ -21,7 +21,6 @@ export {
 export type { PrototypeFileEntry } from './storage.ts'
 
 export {
-  extractRequirementIds,
   getPrototypePrdPath,
   normalizeRequirementId,
   parseRequirementDocument,
@@ -37,9 +36,6 @@ export type { PrototypeFinding, PrototypeFindings } from './research.ts'
 
 export { extractLinkTargets, readPrototypeLinks } from './links.ts'
 export type { PrototypeLink, PrototypeLinks } from './links.ts'
-
-export { resolveRequirementCoverage } from './coverage.ts'
-export type { RequirementCoverage, RequirementCoverageReport } from './coverage.ts'
 
 export type {
   PrototypeStatus,

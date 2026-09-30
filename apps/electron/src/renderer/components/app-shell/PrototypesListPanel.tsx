@@ -104,9 +104,10 @@ export function PrototypesListPanel({
  * The status dot a row carries.
  *
  * A row carries a dot only when it has something to say: the PRD or the research has
- * something wrong with it, or something is still outstanding. **Nothing is not a colour** —
- * a prototype with no requirements at all has nothing outstanding either, and the row used to
- * answer that with a green "ready to hand over": a claim about work that does not exist yet.
+ * something wrong with it, or a link in it points at a file that is not there. **Nothing is
+ * not a colour** — a prototype that is merely unfinished has nothing to report, and the row
+ * used to answer that with a green "ready to hand over": a claim about work that does not
+ * exist yet.
  *
  * What counts as outstanding is `settleBlockers` — the gate's own list, so a row cannot look
  * finished while the details page says otherwise. The details page is where both lists are read
@@ -170,7 +171,7 @@ function PrototypeRow({
             title={
               issues > 0
                 ? t('prototypeInfo.briefIssues')
-                : t('prototypesList.notSettled', { count: blockers })
+                : t('prototypesList.linksToNothing', { count: blockers })
             }
           />
         ) : undefined

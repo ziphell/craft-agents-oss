@@ -58,24 +58,23 @@ describe('formatPrototypeContextForPrompt', () => {
     expect(text).toContain('never that it was worth writing')
   })
 
-  it('lists the requirements written so far, and what refers to each', () => {
+  it('lists the requirements written so far, with the findings that argue for one', () => {
     const text = formatPrototypeContextForPrompt(
       makeContext({
         requirements: [
-          { id: 'R-001', title: 'A cart holds its line', files: [], findings: [] },
-          { id: 'R-002', title: 'Checking out takes one step', files: ['cart.html'], findings: ['F-001'] },
+          { id: 'R-001', title: 'A cart holds its line', findings: [] },
+          { id: 'R-002', title: 'Checking out takes one step', findings: ['F-001'] },
         ],
       }),
     )
 
-    expect(text).toContain('- R-001 A cart holds its line — **nothing refers to it yet**')
-    expect(text).toContain('- R-002 Checking out takes one step — referred to by cart.html, F-001 (finding)')
+    expect(text).toContain('- R-001 A cart holds its line')
+    expect(text).toContain('- R-002 Checking out takes one step — argued for by F-001 (finding)')
   })
 
-  it('says how to declare what a file serves, and where research goes', () => {
+  it('says where research goes, and what a finding carries', () => {
     const text = formatPrototypeContextForPrompt(makeContext())
 
-    expect(text).toContain("'@requirement R-001' in a comment in the file")
     expect(text).toContain('/research/ holds what you learned from other products')
     expect(text).toContain("'claim:', 'source:', 'captured:', 'evidence:'")
     expect(text).toContain('research/ is **not** delivered')
@@ -93,7 +92,7 @@ describe('formatPrototypeContextForPrompt', () => {
   it('says nothing about pages, patches, anchors, a host or a mock', () => {
     const text = formatPrototypeContextForPrompt(
       makeContext({
-        requirements: [{ id: 'R-001', title: 'x', files: ['cart.html'], findings: [] }],
+        requirements: [{ id: 'R-001', title: 'x', findings: [] }],
       }),
     )
 
@@ -115,13 +114,13 @@ describe('buildPrototypePromptContext', () => {
     createPrototype(workspaceRoot, { name: 'Checkout flow' })
     const dir = getPrototypeDirPath(workspaceRoot, 'checkout-flow')
     writeFileSync(join(dir, 'PRD.md'), '## R-001 A cart holds its line\n', 'utf-8')
-    writeFileSync(join(dir, 'cart.html'), '<!doctype html><!-- @requirement R-001 --><html><body>cart</body></html>', 'utf-8')
+    writeFileSync(join(dir, 'cart.html'), '<!doctype html><html><body>cart</body></html>', 'utf-8')
 
     const context = buildPrototypePromptContext(workspaceRoot, 'checkout-flow')
 
-    expect(context?.requirements.map((requirement) => `${requirement.id}:${requirement.files.join(',')}`)).toEqual([
-      'R-001:cart.html',
-    ])
+    expect(context?.requirements.map((requirement) => requirement.id)).toEqual(['R-001'])
+    // Nothing in the context says a file implements a requirement — there is no such statement.
+    expect(context?.requirements[0]).toEqual({ id: 'R-001', title: 'A cart holds its line', findings: [] })
   })
 
   it('returns null for a prototype that does not exist', () => {

@@ -30,12 +30,10 @@
 
 /** What a notice is about, as a stable code a reader can translate. */
 export type PrototypeNoticeCode =
-  /** `briefIssues`: a `@requirement` marker naming an id no document defines. */
+  /** `briefIssues`: a finding arguing for an id no document in the prototype defines. */
   | 'requirement.undefined'
   /** `briefIssues`: a picture in the brief drawn from an earlier state of the diagram beside it. */
   | 'diagram.stale'
-  /** `settleBlockers`: a requirement nothing implements. */
-  | 'gate.requirementUnmet'
   /** `settleBlockers`: a link whose target is not in the prototype. */
   | 'gate.linkBroken'
   /** A diagnostic that stays in its own words. */
@@ -65,11 +63,9 @@ export interface PrototypeNotice {
  */
 const ENGLISH: Record<PrototypeNoticeCode, (params: PrototypeNoticeParams) => string> = {
   'requirement.undefined': ({ where, id }) =>
-    `${where} refers to ${id}, which no file in this prototype defines.`,
+    `${where} names ${id}, which no document in this prototype defines.`,
   'diagram.stale': ({ svg, source }) =>
     `${svg} is not what ${source} draws any more — it was exported before the diagram changed.`,
-  'gate.requirementUnmet': ({ id, file }) =>
-    `${id} is in ${file} but no file refers to it, so nothing implements it.`,
   'gate.linkBroken': ({ from, target }) =>
     `${from} links to ${target}, which is not in this prototype.`,
   raw: ({ text }) => String(text),

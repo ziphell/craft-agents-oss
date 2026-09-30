@@ -155,20 +155,20 @@ function prototypeStatus(slug: string, overrides: Partial<PrototypeStatus> = {})
     files: [],
     links: [],
     findings: [],
-    unresolved: { unmet: [], brokenLinks: [] },
+    unresolved: { brokenLinks: [] },
     settleBlockers: [],
     briefIssues: [],
     ...overrides,
   }
 }
 
-/** One requirement row, with what refers to it. */
+/** One requirement row, with the findings that argue for it. */
 function requirement(
   id: string,
   title: string,
   overrides: Partial<PrototypeStatusRequirement> = {},
 ): PrototypeStatusRequirement {
-  return { id, title, file: 'PRD.md', files: [], findings: [], ...overrides }
+  return { id, title, file: 'PRD.md', findings: [], ...overrides }
 }
 
 // ============================================================================
@@ -282,7 +282,7 @@ describe('the pane tools', () => {
       expect(help).toContain('  status [slug]')
       expect(help).toContain('PRD.md')
       expect(help).toContain('research/')
-      expect(help).toContain('@requirement R-001')
+      expect(help).toContain('## R-001 <title>')
       // None of the removed mechanisms may be briefed: no pages, patches, entry page or fragment —
       // and no contract, verification or deliverables.
       expect(help).not.toContain('patches/')
@@ -313,7 +313,7 @@ describe('the pane tools', () => {
       expect(tool.description).toContain('**The window**')
       expect(tool.description).toContain('docs/prototypes.md')
       expect(tool.description).toContain('PRD.md')
-      expect(tool.description).toContain('@requirement R-001')
+      expect(tool.description).toContain('requirements:')
       expect(tool.description).toContain('browser_tool')
     })
 
@@ -409,7 +409,7 @@ describe('the pane tools', () => {
       expect(text).toContain('dir: /tmp/prototypes/landing-page')
       expect(text).toContain('PRD: /tmp/prototypes/landing-page/PRD.md')
       expect(text).toContain('Write the requirements into its')
-      expect(text).toContain('@requirement R-001')
+      expect(text).toContain('## R-001 <what the requirement is>')
     })
 
     it('asks for a name, which is all creation needs', async () => {
@@ -453,9 +453,9 @@ describe('the pane tools', () => {
     // status
     // ========================================================================
 
-    // The requirements and what implements each one: the answer a reader of files cannot
-    // assemble, and the reason this report exists.
-    it('reports the requirements and the files that implement them', async () => {
+    // The requirements, and the findings that argue for one: what the folder holds, read back
+    // without a claim about what implements anything.
+    it('reports the requirements and the findings that argue for one', async () => {
       mockFns.prototypeStatus = async (slug) =>
         prototypeStatus(slug, {
           specificationFiles: [{ name: 'PRD.md', path: `/tmp/prototypes/${slug}/PRD.md` }],
@@ -464,7 +464,7 @@ describe('the pane tools', () => {
             { name: 'notes.md', path: `/tmp/prototypes/${slug}/notes.md` },
           ],
           requirements: [
-            requirement('R-001', 'A cart holds its line', { files: ['cart.html'] }),
+            requirement('R-001', 'A cart holds its line'),
             requirement('R-002', 'The cart is priced by the service', { findings: ['F-001'] }),
             requirement('R-003', 'Nothing here yet'),
           ],
@@ -473,10 +473,11 @@ describe('the pane tools', () => {
       const text = (await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })).content[0].text
 
       expect(text).toContain('spec:       PRD.md — 3 requirements')
-      expect(text).toContain('R-001 A cart holds its line — cart.html')
-      expect(text).toContain('R-002 The cart is priced by the service — F-001 (finding)')
-      // A requirement nothing refers to is the failure this report exists to name.
-      expect(text).toContain('R-003 Nothing here yet — nothing refers to it yet')
+      expect(text).toContain('R-001 A cart holds its line')
+      expect(text).toContain('R-002 The cart is priced by the service — argued for by F-001 (finding)')
+      expect(text).toContain('R-003 Nothing here yet')
+      // Nothing in the report says what implements a requirement — there is no such statement.
+      expect(text).not.toContain('nothing refers to it yet')
       expect(text).toContain('files:      cart.html, notes.md')
       // The removed sections are gone from the report.
       expect(text).not.toContain('services:')
@@ -484,26 +485,27 @@ describe('the pane tools', () => {
       expect(text).not.toContain('checks:')
     })
 
-    // A brief issue is a file that cannot be read as written — a marker naming an id the PRD does
-    // not define, a finding with no claim — and the status is the only place that says which.
+    // A brief issue is a file that cannot be read as written — a finding naming an id the documents
+    // do not define, a finding with no claim, a picture that no longer matches its diagram — and the
+    // status is the only place that says which.
     it('prints the brief issues, which a clean prototype does not have', async () => {
       const clean = await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })
       expect(clean.content[0].text).not.toContain('issues:')
 
       mockFns.prototypeStatus = async (slug) =>
         prototypeStatus(slug, {
-          briefIssues: [notice('requirement.undefined', { where: 'notes.md', id: 'R-009' })],
+          briefIssues: [notice('requirement.undefined', { where: 'research/F-001.md', id: 'R-009' })],
         })
 
       const issues = await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })
       expect(issues.content[0].text).toContain('issues:     1')
-      expect(issues.content[0].text).toContain('notes.md refers to R-009')
+      expect(issues.content[0].text).toContain('research/F-001.md names R-009')
     })
 
     it('names a broken link among what is still owed', async () => {
       mockFns.prototypeStatus = async (slug) =>
         prototypeStatus(slug, {
-          unresolved: { unmet: [], brokenLinks: [{ from: 'PRD.md', target: 'docs/flow.md' }] },
+          unresolved: { brokenLinks: [{ from: 'PRD.md', target: 'docs/flow.md' }] },
         })
 
       const text = (await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })).content[0]

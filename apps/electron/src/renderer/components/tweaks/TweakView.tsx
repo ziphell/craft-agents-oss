@@ -257,23 +257,21 @@ export function TweakView({ tweakSlug }: TweakViewProps) {
               </button>
             </div>
             <div className="mt-2 space-y-1">
-              {/* Only the files that are there: a path beside a file nobody wrote reads as
-                  "this exists", which is the one thing a file list must not say wrongly. */}
+              {/* Only the files that are there: naming one nobody wrote reads as "this
+                  exists", which is the one thing a file list must not say wrongly. Just the
+                  name — where it lives is what "Open folder" is for. */}
               {[
-                ...(details.hasCss ? [{ name: 'tweak.css', path: details.cssPath }] : []),
-                ...(details.hasJs ? [{ name: 'tweak.js', path: details.jsPath }] : []),
-              ].map(file => (
-                <div key={file.name} className="flex items-baseline gap-2">
-                  <span className="shrink-0 font-mono text-[11px] text-foreground/60">{file.name}</span>
-                  <span className="truncate font-mono text-[11px] text-foreground/40" title={file.path}>
-                    {file.path}
-                  </span>
+                ...(details.hasCss ? ['tweak.css'] : []),
+                ...(details.hasJs ? ['tweak.js'] : []),
+              ].map(name => (
+                <div key={name} className="font-mono text-[11px] text-foreground/60">
+                  {name}
                 </div>
               ))}
             </div>
           </section>
 
-          {/* What it expects to find, and what happened to each selector */}
+          {/* What it changes, and whether it still finds it there */}
           <section>
             <h3 className="text-[13px] font-medium">{t('tweaks.targetsTitle')}</h3>
             <p className="mt-1 text-xs text-foreground/50">

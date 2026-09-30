@@ -2,9 +2,10 @@
  * TweaksListPanel
  *
  * Workspace-scoped tweak list: the navigator slot's content while the Tweaks
- * item is active. One row per tweak — what it is called, whether it is on,
- * whether it has code, and the pages it runs on. A tweak's own page is the
- * content column beside it.
+ * item is active. One row per tweak — what it is called, whether it is on, and
+ * whether it has code. A tweak's own page is the content column beside it, and
+ * the pages a tweak runs on are listed there rather than here: a row that grew a
+ * chip per match read as a wall of them, and rows stopped being comparable.
  *
  * There is deliberately no "New tweak" here: a tweak is written by an agent (it
  * is code for a page this app does not own), and a form that produced an empty
@@ -87,17 +88,12 @@ export function TweaksListPanel({
                     <TweakChip tone={tweak.enabled ? 'on' : 'muted'}>
                       {tweak.enabled ? t('tweaks.on') : t('tweaks.off')}
                     </TweakChip>
-                    <TweakChip tone={tweak.hasCode ? 'muted' : 'warn'}>
-                      {tweak.hasCode ? t('tweaks.hasCode') : t('tweaks.noCode')}
-                    </TweakChip>
-                    {tweak.matches.map((pattern) => (
-                      <code
-                        key={pattern}
-                        className="shrink-0 rounded bg-foreground/[0.04] px-1.5 py-0.5 font-mono text-[11px] text-foreground/60"
-                      >
-                        {pattern}
-                      </code>
-                    ))}
+                    {/* Only the exception earns a chip: having code is what a working tweak
+                        always is, so a chip saying so would sit on every row and mean nothing.
+                        Having none is the state worth flagging. */}
+                    {!tweak.hasCode && (
+                      <TweakChip tone="warn">{t('tweaks.noCode')}</TweakChip>
+                    )}
                   </>
                 }
               />

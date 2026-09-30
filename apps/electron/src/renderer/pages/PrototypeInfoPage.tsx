@@ -5,22 +5,17 @@
  * It is read in two moments, and the screen is arranged by them rather than by
  * where each fact comes from:
  *
- * 1. **Handing over** — can this go out, and what stands in the way? The header's
- *    badge answers the first half, and it is **only there when something stands in
- *    the way**: a prototype with nothing outstanding says nothing about it. ("Ready
- *    to hand over" is not a state anybody opened the page to read — and an untouched
- *    prototype, one with no requirements at all, passed that gate too, so the badge
- *    used to announce as ready work that did not exist yet.) What it counts is
- *    **facts only** — a requirement nothing implements, a link that points at nothing
- *    — each spelled out, one line per notice, with **one action per line: "hand it to
- *    the conversation"**, because that is what settles either one.
+ * 1. **What it owes** — the header's badge names what is wrong with the folder, and it is **only
+ *    there when there is something to say**: a prototype with nothing broken says nothing about
+ *    itself. What it counts is **facts only** — links that point at nothing — spelled out, one
+ *    line per notice, with **one action per line: "hand it to the conversation"**.
  * 2. **The work itself**, in this order: the **specification** — every document it is made of, each
- *    named and openable, with `PRD.md` (the entry) read whole under them — then **what refers to
- *    each requirement** (the thread this is a workbench for), then the **rest of the folder** (the
+ *    named and openable, with `PRD.md` (the entry) read whole under them — then the
+ *    **requirements**, with the findings that argue for one, then the **rest of the folder** (the
  *    material the work is made of, listed by name).
  *
- * What is deliberately **not** a section: research. A finding is already shown where it matters, on
- * the requirement it argues for, and the notes in `research/` are not part of what is handed over.
+ * What is deliberately **not** a section: research. A finding is shown where it matters, on the
+ * requirement it argues for, and the notes in `research/` are not part of what is handed over.
  *
  * Each section costs one line while it is empty, so an untouched prototype is a
  * short screen instead of a stack of "nothing here yet".
@@ -415,26 +410,23 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
   /**
    * What the header says about the gate — **and only when there is something to say**.
    *
-   * "Settled" is not a state worth a badge. An untouched prototype — one with no requirements
-   * at all — satisfies the gate, so the page used to announce it as ready to hand over: a claim
-   * about work that does not exist yet, and one nobody opened the page to hear. What stands in
-   * the way is worth saying; nothing standing in the way is said by saying nothing.
+   * A prototype with nothing broken is not a state worth a badge, and "ready to hand over" is a
+   * verdict about work nobody opened the page to read. What is broken is worth saying; nothing
+   * broken is said by saying nothing.
    *
-   * What it counts is `settleBlockers` — **facts**: a requirement nothing implements, a link that
-   * points at nothing. An objection that still stands is deliberately not among them: it is a
-   * claim, nothing here can judge it, and counting it would let an agent hold its own delivery
-   * back by writing a file. It is shown per requirement instead.
+   * What it counts is `settleBlockers` — **facts**: links that point at nothing. Nothing about the
+   * design is ever one of them: a requirement is prose in a document, and this page does not claim
+   * to know what implements it.
    */
   const blockers = status?.settleBlockers ?? []
   const notSettled = blockers.length > 0
   /**
    * The one way a blocker is settled from here.
    *
-   * Both kinds end in the conversation — a requirement nobody implemented has to be asked
-   * for, a link that points at nothing has to be fixed — so there is one action, not a
-   * per-notice table of destinations. It puts the agent's own sentence into the draft and
-   * sends nothing (`usePrototypeAskAgent`), which is what "hand it over" means: the person
-   * still writes what they want done with it.
+   * A link that points at nothing has to be fixed, so there is one action, not a per-notice table
+   * of destinations. It puts the agent's own sentence into the draft and sends nothing
+   * (`usePrototypeAskAgent`), which is what "hand it to the conversation" means: the person still
+   * writes what they want done with it.
    */
   const askAgent = usePrototypeAskAgent(prototypeSlug)
 
@@ -447,19 +439,12 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
       <Info_Page.Header title={status?.slug ?? ''} />
       {status && (
         <Info_Page.Content>
-          <Info_Page.Hero avatar={<FlaskConical className="h-6 w-6 text-foreground/60" />} title={status.slug} />
-
-          {/* The state, and the things done from here. The badge is the one-line answer —
-              "not yet" — and what it counts is spelled out under it, each line with the one
-              action that settles it. Both are there only when something is outstanding. */}
-          <div className="flex flex-wrap items-center gap-2 pl-1">
-            {notSettled && (
-              <Info_Badge color="warning" className="!py-0.5 !pl-1.5 !pr-2 !text-[11px]">
-                {t('prototypesList.notSettled', { count: blockers.length })}
-              </Info_Badge>
-            )}
-
-            <div className="ml-auto flex shrink-0 items-center gap-2">
+          {/* The heading and the things done from here share a line (the automations page does
+              the same): the actions belong at the right of the title, not on a band of their
+              own underneath it, which left a mostly-empty row between them. */}
+          <div className="flex items-start justify-between gap-3">
+            <Info_Page.Hero avatar={<FlaskConical className="h-6 w-6 text-foreground/60" />} title={status.slug} />
+            <div className="flex shrink-0 items-center gap-2">
               {/* Where the prototype is actually built. A bound session means every
                   command stops needing a slug. */}
               <Button size="sm" variant="outline" onClick={() => void handleOpenChat()}>
@@ -489,6 +474,17 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
               </DropdownMenu>
             </div>
           </div>
+
+          {/* What the folder has wrong with it: the headline, then the lines it counts, each
+              with the one action that fixes it. Both are there only when there is something.
+              Indented to the title it is about — the hero's avatar plus its gap. */}
+          {notSettled && (
+            <div className="flex flex-wrap items-center gap-2 pl-11">
+              <Info_Badge color="warning" className="!py-0.5 !pl-1.5 !pr-2 !text-[11px]">
+                {t('prototypesList.linksToNothing', { count: blockers.length })}
+              </Info_Badge>
+            </div>
+          )}
 
           {notSettled && (
             <Info_Alert variant="warning" icon={<TriangleAlert className="h-4 w-4" />}>
@@ -542,12 +538,10 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
               The entry is the one read here whole, under that list, because it is where the
               specification begins; any other document opens the way documents open everywhere else
               in the app, in the reader.
-              One thing no document can say about itself is which requirement nothing implements:
-              that is read off `@requirement R-00x` markers in the prototype's files, and the
-              findings appear as evidence, never as implementation — "argued for, never built" must
-              not read as done. It is said in the section below, over **all** requirements rather
-              than one document's share of them, because the question it answers ("what refers to
-              this?") does not depend on which document states the requirement. */}
+              The requirements themselves are said in the section below, over **all** of them rather
+              than one document's share, because which document states a requirement is not what a
+              reader is looking for. A finding that argues for one is shown there too, labelled:
+              evidence about somebody else's product is not a statement about this folder. */}
           <Info_Section
             id="requirements"
             title={t('prototypeInfo.specification')}
@@ -620,8 +614,8 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
                     ) : null}
 
                     {/* The edges between documents, read from both ends: what the entry points at,
-                        and what points back at it. Navigation only — it says where to read next,
-                        never whether a requirement is done. */}
+                        and what points back at it. Navigation only — it says where to read next and
+                        nothing about what the folder holds. */}
                     {(prdLinks.outgoing.length > 0 || prdLinks.incoming.length > 0) && (
                       <div className="px-6 pb-3 font-mono text-xs text-foreground/60">
                         {prdLinks.outgoing.length > 0 && (
@@ -666,48 +660,29 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
             )}
           </Info_Section>
 
-          {/* What refers to each requirement — the thread this is a workbench for, and the one
-              answer no document can give about itself. Every name is a way *in*: opening one is the
-              same judgement the folder list below makes, so a reference can be checked rather than
-              believed. A finding is evidence and stays labelled, so a requirement argued for never
-              reads as one that was built. An objection that still stands is reported here, on the
-              requirement it is about, and deliberately **not** what the badge counts — a claim is
-              not a missing fact, so it does not hold the work back. */}
+          {/* The requirements, each with the findings that argue for one — the only thread this
+              reads between a requirement and the rest of the folder. A finding stays labelled and
+              is never a statement about what exists here: evidence about somebody else's product,
+              argued for and never built. What implements a requirement is not a question this page
+              answers at all, because nothing about a file says it. */}
           {status.requirements.length > 0 && (
-            <Info_Section title={t('prototypeInfo.requirementsCoverage')}>
+            <Info_Section title={t('prototypeInfo.requirements')}>
               <ul className="divide-y divide-border/30 px-6 py-3">
-                {status.requirements.map((requirement) => {
-                  const covered = requirement.files.length > 0 || requirement.findings.length > 0
-                  return (
-                    <li key={requirement.id} className="flex items-start gap-3 py-1.5">
-                      <span className="shrink-0 pt-0.5 font-mono text-xs text-foreground/70">
-                        {requirement.id}
-                      </span>
-                      <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5 font-mono text-xs">
-                        {!covered && (
-                          <span className="text-destructive">
-                            {t('prototypeInfo.requirementUncovered')}
-                          </span>
-                        )}
-                        {requirement.files.map((name) => (
-                          <button
-                            key={name}
-                            type="button"
-                            onClick={() => openFolderEntry(name)}
-                            className="text-accent hover:underline"
-                          >
-                            {name}
-                          </button>
-                        ))}
-                        {requirement.findings.map((id) => (
-                          <span key={id} className="text-foreground/60">
-                            {`${id} (${t('prototypeInfo.findingsShort')})`}
-                          </span>
-                        ))}
-                      </div>
-                    </li>
-                  )
-                })}
+                {status.requirements.map((requirement) => (
+                  <li key={requirement.id} className="flex items-start gap-3 py-1.5">
+                    <span className="shrink-0 pt-0.5 font-mono text-xs text-foreground/70">
+                      {requirement.id}
+                    </span>
+                    <span className="min-w-0 flex-1 text-sm">{requirement.title}</span>
+                    <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5 font-mono text-xs">
+                      {requirement.findings.map((id) => (
+                        <span key={id} className="text-foreground/60">
+                          {`${id} (${t('prototypeInfo.findingsShort')})`}
+                        </span>
+                      ))}
+                    </div>
+                  </li>
+                ))}
               </ul>
             </Info_Section>
           )}
@@ -782,12 +757,11 @@ export default function PrototypeInfoPage({ prototypeSlug }: PrototypeInfoPagePr
             )}
           </Info_Section>
 
-          {/* The silent failures of the layer above — a requirement nothing
-              implements, a marker naming an id the PRD does not define, a finding
-              with no claim or with evidence that is not there. A finding's own
-              problems are reported here rather than in a section of their own: the
-              finding itself is already shown on the requirement it argues for, and
-              `research/` is not part of what is handed over. */}
+          {/* The silent failures of the layer above — a requirement id two documents both define,
+              a finding with no claim or with evidence that is not there. A finding's own problems
+              are reported here rather than in a section of their own: the finding itself is already
+              shown on the requirement it argues for, and `research/` is not part of what is handed
+              over. */}
           {status.briefIssues.length > 0 && (
             <Info_Alert variant="warning" icon={<TriangleAlert className="h-4 w-4" />}>
               <Info_Alert.Title>{t('prototypeInfo.briefIssues')}</Info_Alert.Title>

@@ -703,12 +703,12 @@ A prototype is a proposal the user can read: a **folder that holds a specificati
 
 Every prototype command belongs to \`prototype_tool\` and carries no prefix — \`list\`, \`create\`, \`status\` — while the browser's own surface is \`browser_tool\`. The slug is optional for almost all of them: the prototype is read from this session's binding. \`list\` shows what exists. Every one of these is file work — none needs a browser window you are driving.
 
-**Read \`${DOC_REFS.prototypes}\` before your first prototype command** — it is the whole guide: the folder's layout, the markdown documents that state requirements and the files beside them / \`research/\`, and the \`@requirement\` marker that says what a file serves.
+**Read \`${DOC_REFS.prototypes}\` before your first prototype command** — it is the whole guide: the folder's layout, the markdown documents that state requirements and the files beside them / \`research/\`.
 
 **Recommended workflow:**
 1. \`create <name>\` — a folder with a starter \`PRD.md\`. Write the requirements into its markdown (one file or several), and put a subject that outgrows one file in its own beside it
-2. Write the work's files with the Write tool, declaring what each serves with \`@requirement R-001\` in a comment
-3. \`status\` — the requirements and the files that implement them, and what is still owed
+2. Write the work's files with the Write tool — the folder is the work, and a finding under \`research/\` says which requirement it argues for with its \`requirements:\` line
+3. \`status\` — the requirements, the files beside them, the findings, and any link that points at nothing
 
 When this session is bound to a prototype, a \`<prototype_context>\` block is added to this prompt describing it: its requirements and findings, as a snapshot taken when the session started. A project's own note about which prototype it is on is background and describes nothing for you.
 `;

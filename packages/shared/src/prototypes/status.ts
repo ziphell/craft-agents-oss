@@ -10,8 +10,8 @@
 import { readFileSync, readdirSync } from 'fs'
 import { getWorkspacePrototypesPath } from '../workspaces/storage.ts'
 import { pictureStanding } from '../drawio/picture.ts'
-import { notice, type PrototypeNotice } from './notices.ts'
-import { resolveRequirementCoverage } from './coverage.ts'
+import { notice, rawNotice, type PrototypeNotice } from './notices.ts'
+import { readPrototypeRequirements } from './requirements.ts'
 import { readPrototypeFindings } from './research.ts'
 import { readPrototypeLinks, type PrototypeLink } from './links.ts'
 import {
@@ -21,11 +21,11 @@ import {
 } from './storage.ts'
 
 /**
- * One requirement, and what implements it.
+ * One requirement, as its document states it.
  *
- * The lists are the whole value. A requirement that no file refers to is
- * the finding this report exists to produce: the delivery claims something that
- * nothing in it does.
+ * `findings` is what argues for it — evidence about somebody else's product, never a claim that
+ * the requirement is built. The workbench keeps no statement of what implements a requirement:
+ * that would be a second description of the work, and it would go stale the moment a file changed.
  */
 export interface PrototypeStatusRequirement {
   id: string
@@ -35,8 +35,6 @@ export interface PrototypeStatusRequirement {
    * file carries a requirement is no longer implied by the file name, so it travels with the row.
    */
   file: string
-  /** Files of the prototype folder that declare it (`@requirement R-001`). */
-  files: string[]
   /** Findings in `research/` that argue for it. */
   findings: string[]
 }
@@ -59,9 +57,9 @@ export interface PrototypeStatus {
   /** Absolute path to the prototype's directory. */
   dir: string
   /**
-   * The specification's requirements, each with the files that refer to it. Empty when no markdown
-   * file states one — the honest state of a prototype whose requirements have not been written down
-   * yet.
+   * The specification's requirements, each with the findings that argue for it. Empty when no
+   * markdown file states one — the honest state of a prototype whose requirements have not been
+   * written down yet.
    */
   requirements: PrototypeStatusRequirement[]
   /**
@@ -85,22 +83,19 @@ export interface PrototypeStatus {
    * ends: a link with its `from` and `to` is simultaneously an outgoing link for `from` and a
    * backlink for `to`, so the page can say "links to" and "linked from" without a second reading.
    *
-   * A link carries nothing about the work — it is navigation, never a claim that a requirement is
-   * implemented (that is still `@requirement R-00x`). A link that resolves to nothing is in
-   * `briefIssues`.
+   * A link carries nothing about the work — it is navigation, and nothing about a link says a
+   * requirement is done. A link that resolves to nothing is in `unresolved`.
    */
   links: PrototypeLink[]
   /** Findings under `research/` — what was learned about other products. */
   findings: PrototypeStatusFinding[]
   /**
    * What this prototype still owes **as a matter of fact** — the gate's own input
-   * (`whyPrototypeIsNotSettled`): a requirement nothing implements, a link that points at nothing.
+   * (`whyPrototypeIsNotSettled`): a link that points at nothing.
    *
-   * Both are read off the files and can be checked by anyone, which is what makes them a gate.
+   * Read off the files and checkable by anyone, which is what makes it a gate.
    */
   unresolved: {
-    /** Requirement ids nothing implements — the proposal claims what the delivery does not do. */
-    unmet: string[]
     /** Links whose target is not in the prototype — a reader following one arrives nowhere. */
     brokenLinks: Array<{ from: string; target: string }>
   }
@@ -116,12 +111,12 @@ export interface PrototypeStatus {
   settleBlockers: PrototypeNotice[]
   /**
    * Everything worth saying about the specification, the research and the pictures in it: a
-   * reference to an id no document defines, a document that cannot be read as written, a finding
-   * with no claim or with evidence that is not on disk, a diagram shown an earlier drawing of.
-   * Each is a silent failure otherwise — precisely the kind this report exists to make loud.
+   * document that cannot be read as written, a finding with no claim, with evidence that is not on
+   * disk, or arguing for an id no document defines, a diagram shown an earlier drawing of. Each is
+   * a silent failure otherwise — precisely the kind this report exists to make loud.
    *
-   * A requirement nothing implements and a link that points at nothing are **not** here, because
-   * they are what {@link unresolved} — and so the gate — already says.
+   * A link that points at nothing is **not** here, because that is what {@link unresolved} — and
+   * so the gate — already says.
    */
   briefIssues: PrototypeNotice[]
 }
@@ -153,29 +148,57 @@ export function listPrototypeStatuses(workspaceRootPath: string): PrototypeStatu
 export function buildPrototypeStatus(workspaceRootPath: string, slug: string): PrototypeStatus {
   const dir = getPrototypeDirPath(workspaceRootPath, slug)
 
-  // The thread from the specification to what implements it, derived in one place so this
-  // report and the delivered spec cannot disagree (see `coverage.ts`).
-  const coverage = resolveRequirementCoverage(workspaceRootPath, slug)
+  // The specification: the headings every markdown file of the folder states, in reading order
+  // (`requirements.ts`). Read here rather than through a derived layer, because a requirement is now
+  // only a fact about a document — nothing claims to implement it.
+  const documents = readPrototypeRequirements(workspaceRootPath, slug)
   // The prototype's own files, recursively, with no filter of any kind: the folder is the author's,
   // and what sits in it is their business. The files that define requirements are separated out so a
   // caller that renders them does not list them a second time among the material.
   const allFiles = listPrototypeFiles(workspaceRootPath, slug)
-  const defining = new Set(coverage.requirements.map((requirement) => requirement.file))
+  const defining = new Set(documents.requirements.map((requirement) => requirement.file))
   const specificationFiles = allFiles.filter((file) => defining.has(file.name))
   const files = allFiles.filter((file) => !defining.has(file.name))
   const findings = readPrototypeFindings(workspaceRootPath, slug)
   const linkReport = readPrototypeLinks(workspaceRootPath, slug)
 
+  // Findings by the requirement they argue for — the only thread left between a requirement and
+  // anything else in the folder, and evidence rather than implementation.
+  const arguedFor = new Map<string, string[]>()
+  for (const finding of findings.findings) {
+    for (const id of finding.requirements) {
+      const ids = arguedFor.get(id)
+      if (ids) ids.push(finding.id)
+      else arguedFor.set(id, [finding.id])
+    }
+  }
+
+  // A finding's `requirements:` line is the only reference the folder still makes, so an id no
+  // document defines is the one dangling reference this report can see. It is a fact about the
+  // files — a citation to something that was never written — so it is named rather than passed over.
+  const defined = new Set(documents.requirements.map((requirement) => requirement.id))
+  const dangling = findings.findings.flatMap((finding) =>
+    finding.requirements
+      .filter((id) => !defined.has(id))
+      .map((id) => notice('requirement.undefined', { where: finding.file, id })),
+  )
+
   // What the *layers* could not read, plus the pictures that disagree with their own source. The
-  // two facts the gate already owns — a requirement nothing implements, a link that points at
-  // nothing — are deliberately **not** here: they are `unresolved`, and this is the page's other
-  // warning box, so repeating them would say one thing twice in two wordings.
-  const briefIssues = [...coverage.issues, ...staleDrawings(allFiles)]
+  // fact the gate already owns — a link that points at nothing — is deliberately **not** here: it is
+  // `unresolved`, and this is the page's other warning box, so repeating it would say one thing twice.
+  const briefIssues = [...documents.issues, ...findings.issues]
+    .map(rawNotice)
+    .concat(dangling, staleDrawings(allFiles))
 
   const report: Omit<PrototypeStatus, 'settleBlockers'> = {
     slug,
     dir,
-    requirements: coverage.requirements,
+    requirements: documents.requirements.map((requirement) => ({
+      id: requirement.id,
+      title: requirement.title,
+      file: requirement.file,
+      findings: arguedFor.get(requirement.id) ?? [],
+    })),
     specificationFiles,
     files,
     links: linkReport.links,
@@ -187,9 +210,6 @@ export function buildPrototypeStatus(workspaceRootPath: string, slug: string): P
       file: finding.file,
     })),
     unresolved: {
-      unmet: coverage.requirements
-        .filter((requirement) => requirement.files.length === 0)
-        .map((requirement) => requirement.id),
       brokenLinks: linkReport.links
         .filter((link) => link.to === null)
         .map((link) => ({ from: link.from, target: link.target })),
@@ -262,17 +282,11 @@ function sourceNameOf(name: string): string {
  * and the panel's badge counts it. Reason-first, for the same reader — an agent that has to decide
  * whether to keep working, or whether what it has is finished.
  *
- * **Only facts count**, because a gate has to be answerable: a requirement nothing implements, a
- * link that points at nothing. Both are read off the files, either can be checked by anyone, and
- * there is work to do about each.
+ * **Only facts count**, because a gate has to be answerable: a link that points at nothing. It is
+ * read off the files, anyone can check it, and there is work to do about it.
  */
 export function whyPrototypeIsNotSettled(status: PrototypeStatus): PrototypeNotice[] {
   const reasons: PrototypeNotice[] = []
-
-  for (const id of status.unresolved.unmet) {
-    const file = status.requirements.find((requirement) => requirement.id === id)?.file ?? ''
-    reasons.push(notice('gate.requirementUnmet', { id, file }))
-  }
 
   for (const link of status.unresolved.brokenLinks) {
     reasons.push(notice('gate.linkBroken', { from: link.from, target: link.target }))

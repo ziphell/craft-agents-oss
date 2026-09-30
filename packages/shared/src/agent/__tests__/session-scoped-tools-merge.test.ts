@@ -65,7 +65,7 @@ describe('session-scoped tool callback merge', () => {
         links: [],
         findings: [],
         reviews: { total: 0, byStatus: { open: 0, fixed: 0, rebutted: 0, accepted: 0 }, unresolved: [] },
-        unresolved: { unmet: [], brokenLinks: [] },
+        unresolved: { brokenLinks: [] },
         settleBlockers: [],
         briefIssues: [],
       }),

@@ -3,7 +3,6 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import {
-  extractRequirementIds,
   getPrototypeDirPath,
   getPrototypeResearchPath,
   normalizeRequirementId,
@@ -11,16 +10,7 @@ import {
   parseRequirementDocument,
   readPrototypeFindings,
   readPrototypeRequirements,
-  resolveRequirementCoverage,
-  type RequirementCoverage,
 } from '..'
-
-/** The requirements nothing implements, as `status.unresolved.unmet` derives them. */
-function unmet(requirements: RequirementCoverage[]): string[] {
-  return requirements
-    .filter((requirement) => requirement.files.length === 0)
-    .map((requirement) => requirement.id)
-}
 
 let workspaceRoot = ''
 
@@ -31,7 +21,7 @@ afterEach(() => {
 
 /** A prototype with nothing but its folder, ready for files to be written into it. */
 function makePrototype(slug = 'checkout-flow'): string {
-  workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-prototype-coverage-'))
+  workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-prototype-requirements-'))
   mkdirSync(getPrototypeDirPath(workspaceRoot, slug), { recursive: true })
   return slug
 }
@@ -48,25 +38,13 @@ function writeFinding(slug: string, name: string, source: string): void {
 
 describe('requirement ids', () => {
   // Ids are written by hand in more than one kind of file, so the spellings have to
-  // converge — otherwise a typo reads as "no such requirement" rather than as a
-  // typo, and the thread breaks without saying anything.
+  // converge — otherwise a typo in a finding's `requirements:` line reads as "no such
+  // requirement" rather than as a typo.
   it('accepts the spellings a person actually writes', () => {
     expect(normalizeRequirementId('R-1')).toBe('R-001')
     expect(normalizeRequirementId('r-007')).toBe('R-007')
     expect(normalizeRequirementId('R-0042')).toBe('R-042')
     expect(normalizeRequirementId('TBD')).toBeNull()
-  })
-
-  it('reads a marker with several ids, and stops inventing them where it cannot', () => {
-    const source = [
-      '<!-- cart.html',
-      '  @requirement R-3 — the total stays visible',
-      '  @requirement R-003, R-4',
-      '  @requirement TBD: ask the user',
-      '-->',
-    ].join('\n')
-
-    expect(extractRequirementIds(source)).toEqual(['R-003', 'R-004'])
   })
 })
 
@@ -176,74 +154,7 @@ describe('findings', () => {
   })
 })
 
-describe('the thread from a requirement to what implements it', () => {
-  /**
-   * The two answers nobody can get by reading files one at a time: a requirement
-   * nothing implements, and a marker whose reason was never written down.
-   */
-  it('collects the files and findings behind each requirement', () => {
-    const slug = makePrototype()
-    writeFile(
-      slug,
-      'PRD.md',
-      ['## R-001 A cart holds its line until stock runs out', '', '## R-002 Checking out takes one step', '', '## R-003 Nobody built this one'].join('\n'),
-    )
-    // Any file of the folder may say what it serves — a document, a stylesheet, a script.
-    writeFile(slug, 'cart.html', '<!doctype html><!-- @requirement R-002 --><html><body>cart</body></html>')
-    writeFile(slug, 'notes.md', 'Some notes.\n\n@requirement R-003 and R-009, which the PRD does not define.\n')
-    writeFinding(slug, 'F-001-sticky.md', '# F-001 Sticky total\n\nclaim: The total stays on screen.\nrequirements: R-001\n')
-
-    const report = resolveRequirementCoverage(workspaceRoot, slug)
-    const byId = new Map(report.requirements.map((requirement) => [requirement.id, requirement]))
-
-    expect(byId.get('R-001')?.files).toEqual([])
-    expect(byId.get('R-001')?.findings).toEqual(['F-001'])
-    expect(byId.get('R-002')?.files).toEqual(['cart.html'])
-    expect(byId.get('R-003')?.files).toEqual(['notes.md'])
-    // PRD order, not discovery order: the document's order is part of its argument.
-    expect(report.requirements.map((requirement) => requirement.id)).toEqual(['R-001', 'R-002', 'R-003'])
-
-    // A finding is evidence, not implementation: R-001 has one and is still unmet. That is the
-    // empty `files` above — the report's own notices are only for what could not be read.
-    expect(unmet(report.requirements)).toEqual(['R-001'])
-    const issues = report.issues.map((issue) => issue.text).join('\n')
-    expect(issues).toContain('notes.md refers to R-009')
-    expect(report.issues.map((issue) => issue.code)).toEqual(['requirement.undefined'])
-  })
-
-  /**
-   * The brief defines requirements; it does not implement them. Counting a marker
-   * written in `PRD.md` would make every requirement look built.
-   */
-  it('does not read the brief as an implementation of what it defines', () => {
-    const slug = makePrototype()
-    writeFile(slug, 'PRD.md', '## R-001 A cart holds its line\n\n@requirement R-001 — see the section above.\n')
-
-    const report = resolveRequirementCoverage(workspaceRoot, slug)
-
-    // The marker sits in the document that states the requirement, so it buys nothing: `files`
-    // stays empty, which is the fact the gate reads.
-    expect(report.requirements[0]?.files).toEqual([])
-    expect(unmet(report.requirements)).toEqual(['R-001'])
-  })
-
-  /**
-   * A finding argues for a requirement; it does not implement it. The line that says so
-   * (`requirements:`) is not the marker that claims implementation (`@requirement`), so the
-   * requirement is still one the gate names.
-   */
-  it('does not count a finding as an implementation', () => {
-    const slug = makePrototype()
-    writeFile(slug, 'PRD.md', '## R-001 A cart holds its line\n')
-    writeFinding(slug, 'F-001-sticky.md', '# F-001 Sticky\n\nclaim: x\nrequirements: R-001\n')
-
-    const report = resolveRequirementCoverage(workspaceRoot, slug)
-
-    expect(report.requirements[0]?.files).toEqual([])
-    // A finding is evidence, not an implementation.
-    expect(unmet(report.requirements)).toEqual(['R-001'])
-  })
-
+describe('readPrototypeRequirements', () => {
   it('reads the requirements it was given', () => {
     const slug = makePrototype()
     writeFile(slug, 'PRD.md', '## R-001 x\n\n## R-002 y\n')
@@ -258,7 +169,6 @@ describe('the thread from a requirement to what implements it', () => {
     writeFile(slug, 'PRD.md', '## R-001 A cart holds its line\n')
     mkdirSync(join(getPrototypeDirPath(workspaceRoot, slug), 'docs'), { recursive: true })
     writeFile(slug, 'docs/features.md', '## R-002 Checking out takes one step\n')
-    writeFile(slug, 'cart.html', '<!doctype html><!-- @requirement R-002 --><html></html>')
 
     const read = readPrototypeRequirements(workspaceRoot, slug)
     expect(read.issues).toEqual([])
@@ -266,33 +176,10 @@ describe('the thread from a requirement to what implements it', () => {
       'R-001:PRD.md',
       'R-002:docs/features.md',
     ])
-
-    const report = resolveRequirementCoverage(workspaceRoot, slug)
-    const byId = new Map(report.requirements.map((requirement) => [requirement.id, requirement]))
-    expect(byId.get('R-001')?.file).toBe('PRD.md')
-    expect(byId.get('R-002')?.file).toBe('docs/features.md')
-    expect(byId.get('R-002')?.files).toEqual(['cart.html'])
-    // R-001 is written in the entry document and nothing implements it; R-002 is written in a
-    // second document, and the row — which is what a sentence about it names — carries that file.
-    expect(unmet(report.requirements)).toEqual(['R-001'])
   })
 
-  /**
-   * The old rule ("the brief defines requirements; it does not implement them") generalizes to any
-   * document that defines one — so a `@requirement` line written inside a spec document still does
-   * not count as building what it specifies.
-   */
-  it('treats any document that defines a requirement as specification, not implementation', () => {
-    const slug = makePrototype()
-    mkdirSync(join(getPrototypeDirPath(workspaceRoot, slug), 'docs'), { recursive: true })
-    writeFile(slug, 'docs/features.md', '## R-001 A cart holds its line\n\n@requirement R-001 — see above.\n')
-
-    const report = resolveRequirementCoverage(workspaceRoot, slug)
-
-    expect(report.requirements[0]?.files).toEqual([])
-    expect(unmet(report.requirements)).toEqual(['R-001'])
-  })
-
+  // A file that is read twice is reported rather than resolved: which of the two a finding's
+  // `requirements:` line meant is not something this can know.
   it('reports one id defined in two documents rather than guessing which a reference meant', () => {
     const slug = makePrototype()
     writeFile(slug, 'PRD.md', '## R-001 A cart holds its line\n')

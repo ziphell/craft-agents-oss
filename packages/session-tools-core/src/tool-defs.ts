@@ -548,11 +548,9 @@ A prototype is a **folder** plus a **specification**. The folder is where the wo
 specification is the folder's markdown — one file or several (\`PRD.md\` is the conventional entry a
 new prototype is seeded with, and any other markdown file is read the same way) — and every
 requirement is a heading whose id starts with \`R-\`
-(\`## R-001 <what the requirement is>\`). That id is the whole mechanism: any file in the folder
-declares what it serves with \`@requirement R-001\` in a comment, and that marker is what turns a
-requirement into "implemented by …". Nothing else records the link, so a requirement nothing refers
-to is a fact the report can state rather than a judgement. A file that *states* requirements is a
-specification, not an implementation of them.
+(\`## R-001 <what the requirement is>\`). The id is the only thing anything refers to: a finding
+writes it on its \`requirements:\` line to say which requirement it argues for. Nothing claims that a
+requirement is implemented — the folder *is* the work, and what is in it is read for what it is.
 
 A prototype is **not a project**: projects are separate containers that group sessions, tasks and
 shared assets, and a prototype is never nested inside one.
@@ -562,10 +560,8 @@ beside it (personas, a glossary, a screenshot, a spreadsheet — any format, no 
 there) and the findings under \`research/\`. Documents point at each
 other with an ordinary markdown link — \`[the flow](docs/checkout.md)\`, resolved from the linking
 document's folder and then the folder root — so one entry document can index several; that is
-navigation, and what implements a requirement is still only \`@requirement R-00x\`. What the commands
-*derive* from them is the point: \`status\` turns the markers into the two answers nobody can get by
-reading files one at a time — which requirement nothing implements, and which marker names an id no
-document defines (a link that points at nothing is reported too).
+navigation and nothing more. What the commands *derive* from the files is the point: \`status\`
+reports the requirements, the files beside them, the findings, and any link that points at nothing.
 
 **The window** is \`browser_tool\`'s, and **none of these commands needs a browser at all**: every one
 of them is file work on the prototype's folder. Naming tabs, snapshots, clicks and every page
@@ -578,7 +574,7 @@ Examples:
 - \`list\` — every prototype with its requirement and file counts, and which one is bound
 - \`create Landing page\` — a folder with a starter \`PRD.md\`. You write everything in it: the requirements into its markdown (one file or several), the work's files beside it
 - \`create Rival checkout --no-bind\` — create one *without* stealing this session's binding (the one to use when you only mean to study it)
-- \`status\` — the requirements and the files that implement them, the findings, the disputes that still stand, and what is still owed
+- \`status\` — the requirements, the files beside them, the findings, and any link that points at nothing
 
 Which prototype a command means is read from this session's binding. A command that takes no slug
 therefore still works with no window open, as long as this conversation is bound; with no binding,

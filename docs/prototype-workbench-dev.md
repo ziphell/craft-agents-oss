@@ -4,38 +4,37 @@
 > 读法：改代码前看 §1（模块地图）与 §2（不变量）；想知道「某个概念为什么现在没有了」看 §4（墓园）。
 > 用词与文案的口径（tab / 地址 / page、那个窗口的名字、给用户看的文案）见 [术语与文案规范](vocabulary.md)。
 >
-> **一句话**：把**需求**和**实现它的文件**绑在同一个文件夹里的规格工作台。人写规格（markdown 里 `## R-001 <标题>`，一个文件或几个），agent 用普通文件工具在同一文件夹里实现，工具只回答两句话：**哪个需求没人实现**、**哪个引用指向不存在的需求**。
+> **一句话**：把**需求**和**为它写的文件**放在同一个文件夹里的规格工作台。人写规格（markdown 里 `## R-001 <标题>`，一个文件或几个），agent 用普通文件工具在同一文件夹里写实现，工具只报告盘上有什么：**这份规格写了哪些需求**、**需求旁边有哪些文件**、**research/ 里有哪些洞察**，以及**哪个链接指向不存在的文件**。
 >
-> **一个原型 = 一个文件夹，只有三类内容**：规格（一个 markdown 文件或几个）、旁边的材料（任何格式）、`research/`（findings）。**唯一机制**是 `@requirement R-00x`——写在任何文件里即"这个文件服务于那条需求"；需求↔实现不存第二份，读时现算。实现与 findings 全由 agent 用 Write/Edit 写，`create` 只建文件夹与起步 `PRD.md`。
+> **一个原型 = 一个文件夹，只有三类内容**：规格（一个 markdown 文件或几个）、旁边的材料（任何格式）、`research/`（findings）。**没有任何东西声明"这个文件实现了哪条需求"**——`@requirement` 标记、覆盖关系与那条"需求没人实现"的门禁已整份删除（§4），文件夹里有什么就是什么，读时现算。实现与 findings 全由 agent 用 Write/Edit 写，`create` 只建文件夹与起步 `PRD.md`。
 
 ---
 
 ## 1. 模块地图
 
-### 共享层 `packages/shared/src/prototypes/`（14 个模块 / 1924 行）
+### 共享层 `packages/shared/src/prototypes/`（13 个模块 / 1712 行）
 
 | 文件 | 行 | 负责 |
 |---|---|---|
-| `types.ts` | 39 | `PROTOTYPE_PRD_FILENAME` / `PROTOTYPE_RESEARCH_DIRNAME` 与共享类型。**零依赖**（§2③）——所以任何渲染层要的常量都放这儿，从这里取值不会把 barrel 拖进打包 |
+| `types.ts` | 40 | `PROTOTYPE_PRD_FILENAME` / `PROTOTYPE_RESEARCH_DIRNAME` 与共享类型。**零依赖**（§2③）——所以任何渲染层要的常量都放这儿，从这里取值不会把 barrel 拖进打包 |
 | `storage.ts` | 112 | 目录内路径（目录 / `research`）、`listPrototypeFiles()`（**递归**列出目录内文件，任何格式、不做任何过滤、名字是原型相对路径；只跳过隐藏项）、`isMarkdownFile()` |
-| `requirements.ts` | 231 | 需求解析：`## R-00x` 是唯一机制，读**每个** `.md`/`.mdx`（`parseRequirementDocument` / `readPrototypeRequirements`），每条需求带上**定义它的文件**；跨文件重号被点名。`extractRequirementIds`（`@requirement` 标记）。起步文件名 `PROTOTYPE_PRD_FILENAME` = `PRD.md` 住在 `types.ts` |
+| `requirements.ts` | 190 | 需求解析：`## R-00x` 是唯一机制，读**每个** `.md`/`.mdx`（`parseRequirementDocument` / `readPrototypeRequirements`），每条需求带上**定义它的文件**；跨文件重号被点名。起步文件名 `PROTOTYPE_PRD_FILENAME` = `PRD.md` 住在 `types.ts` |
 | `links.ts` | 224 | 文档间的链接：`readPrototypeLinks()`——只扫 markdown 里**普通 markdown 链接**的相对、带扩展名的目标（跳代码段 / fence），按「本文档目录 → 原型根」解析（`../` 归一化）；链不到就留在列表里作 `to: null`，**由门禁去说**（§2⑪） |
 | `research.ts` | 206 | `research/*.md` 的 finding（`# F-001` + `claim:` / `source:` / `captured:` / `evidence:` / `requirements:`）解析，以及 `evidence:` 的存在性检查 |
-| `coverage.ts` | 152 | 需求 × 依据（文件 / findings）→ 每条需求的引用关系、未实现、悬空引用；只有**定义需求的文件**不算实现；"没人实现"用 `files` 为空表达，由门禁说成一句话 |
-| `status.ts` | 282 | 报告（`buildPrototypeStatus` / `listPrototypeStatuses`）+ 门禁 `whyPrototypeIsNotSettled`（**只数事实**：有需求没人实现、有链接指向不存在的文件，见 §2⑫）。报告把 `specificationFiles`（定义需求的文件）与 `files`（其余材料）分开，并带上 `links`；这两条事实**只由门禁说**，`briefIssues` 不重复它们 |
-| `notices.ts` | 94 | 可翻译的 notice：`code` + `params` + 由同一组 params 生成的**英文句**（agent 输出与详情页共读） |
-| `prompt.ts` | 189 | 绑定会话的 `<prototype_context>` 块（`buildPrototypePromptContext` / `formatPrototypeContextForPrompt`） |
+| `status.ts` | 284 | 报告（`buildPrototypeStatus` / `listPrototypeStatuses`）+ 门禁 `whyPrototypeIsNotSettled`（**只数事实**：有链接指向不存在的文件，见 §2⑫）。报告把 `specificationFiles`（定义需求的文件）与 `files`（其余材料）分开，并带上 `links` 与每条需求的 findings；断链**只由门禁说**，`briefIssues` 不重复它 |
+| `notices.ts` | 86 | 可翻译的 notice：`code` + `params` + 由同一组 params 生成的**英文句**（agent 输出与详情页共读） |
+| `prompt.ts` | 180 | 绑定会话的 `<prototype_context>` 块（`buildPrototypePromptContext` / `formatPrototypeContextForPrompt`） |
 | `project-link.ts` | 84 | 项目侧「碰过哪些原型」（`ProjectConfig.prototypeSlugs`，背景记录，不绑定不解析） |
 | `create.ts` | 106 | 建文件夹 + 起步 `PRD.md`（`createPrototype` / `prototypeSlugFromName`） |
 | `duplicate.ts` | 93 | 整份复制成一个新原型（`duplicatePrototype`，**只有界面用**） |
 | `delete.ts` | 43 | 删除整个目录（`deletePrototype`，**只有界面用**） |
-| `index.ts` | 68 | barrel。**渲染层只能对它 `import type`** |
+| `index.ts` | 64 | barrel。**渲染层只能对它 `import type`** |
 
 ### agent 面
 
-- `packages/shared/src/agent/prototype-commands.ts`（282 行）：命令体 —— `executePrototypeToolCommand` / `runPrototypeCommand`（`list` / `create` / `status`）/ `getPrototypeToolHelp`。解析不出就回 `null`。
-- `packages/shared/src/agent/prototype-tools.ts`（112 行）：`createPrototypeTools` + `PROTOTYPE_TOOL_DESCRIPTION`（工具描述的另一份在 `session-tools-core`，见 §2①）。
-- `packages/shared/src/markers.ts`：`markerIndex`（标记不是词的一部分）/ `cleanMarkerValue`。`@requirement` 的识别靠它。
+- `packages/shared/src/agent/prototype-commands.ts`（277 行）：命令体 —— `executePrototypeToolCommand` / `runPrototypeCommand`（`list` / `create` / `status`）/ `getPrototypeToolHelp`。解析不出就回 `null`。
+- `packages/shared/src/agent/prototype-tools.ts`（92 行）：`createPrototypeTools` + `PROTOTYPE_TOOL_DESCRIPTION`（工具描述的另一份在 `session-tools-core`，见 §2①）。
+- `packages/shared/src/markers.ts`：`markerIndex`（标记不是词的一部分）/ `cleanMarkerValue`。tweaks 的 `@target` 靠它。
 - `packages/shared/src/agent/command-cli.ts`：两门共用的 CLI（分词、`--` 选项、结果形状、`createCommandRunner`）。它不知道任何一扇门。
 - `packages/shared/src/prompts/system.ts`：`prototypeContext` 块的位置，以及**原型指南**——`getPrototypeGuideSection()` 把整份 `prototypes.md` 注入系统提示。
 - **两个 backend 各建一次 prompt 上下文**：`packages/shared/src/agent/claude-agent.ts`（首轮 pin `pinnedPrototypeContext`，之后漂移只提示）与 `packages/shared/src/agent/pi-agent.ts`（每轮 `resolvePrototypeContext`；同文件底部的 `PANE_TOOL_EXECUTORS` 是命令分派表）。
@@ -56,7 +55,7 @@
   - **一条 http/https 链接（对话里、md 里都是同一条）默认也进那个浏览器窗口**：`App.tsx` 的 `openUrl` 先问 `isBrowserUrl`（只有 http/https 是浏览器装得下的地址），再问用户偏好——是就 `browserPane.openUrl(url)`，否则交给 `shell:openUrl`（`mailto:` / `tel:` / 别人的 scheme / `craftagents:` 全走那条，deep link 也归它，那行"URL blocked"的报错也在那里）。**偏好管两处**：一条链接（点击时，`shouldOpenLinkInAppBrowser`）和 HTML 大窗里那颗「在浏览器中打开」（按下时，`shouldOpenFileInAppBrowser`）——同一个开关，因为"用哪个浏览器"是一个问题；两个函数都在 `apps/electron/src/renderer/lib/open-in-app-browser.ts`，答案存在 `preferences.json` 的 `UserPreferences.openInAppBrowser`（Settings → Links，缺省为开），**每次现读、不缓存**（点击不是热路径，而设置是人随时会改的）。它只管**人的点击与按钮**——agent 用 `browser_tool` 开什么都不受它影响。关掉时：链接交给 `shell:openUrl`，那颗按钮交给系统默认程序（`.html` 的默认程序就是浏览器）。两条通道在 main 侧各自把关，因为"渲染层已经判过"不是边界：`open-file` 过 `validateFilePath`（绝对路径，且在 home / tmp / workspace 根 / 工作目录之内，非敏感文件——`.ssh/`、`.env`、`*.pem` 这类在哪儿都拒；并且必须是**文件**而不是目录，顺带把 `..` 与软链解析掉），`open-url` 再问一次 `isBrowserUrl`（只有浏览器装得下的地址能进窗口）。两个 handler 共享一个 `openInWindow`（新 tab → 前置 → 加载）。
   - **详情页自己托管的三种是 `inAppKind()` 说的，聊天里的链接是全局的 `classifyFile()` 说的——这三种谁跟谁一样是逐个定的**：`.md` 两边都进同一个 `MarkdownFileOverlay`（聊天那条是 `FilePreviewRenderer` 的 markdown 分支）；`.drawio` 两边都进同一个 `DrawioOverlay`（看图那一支，路径要在开窗前先读出来，因为查看器画的是递给它的文档——图没有"源码"那一面可看，把 `<mxfile>` 摆出来不如把图画出来）；`.html` 两边都进同一个 `HTMLPreviewOverlay`（大窗）。链接认得出这些后缀，靠的是同一份扩展名表喂给 `linkify.ts`（`FILE_EXTENSIONS_PATTERN`）——`drawio` 是加进那张表之后才成链接的，在那之前这种路径根本不成链接，而是交给系统程序。**其余格式没有第二份判断**：`inAppKind()` 返回 `null`，页面就把路径交给同一个 `onOpenFile`（= `classifyFile()` 那条路），所以图片 / PDF / json / 代码在两边必然一致。
   - **两份判断现在没有对不上的地方**：html 曾经是唯一被点名的有意不一致（`classifyFile` 把 html/htm 归成 `code`，所以聊天里的 `.html` 链接看到的是**源码**——"聊天里给一个 html 链接时想要的通常是源码"），现在两边都进同一个 `HTMLPreviewOverlay`（大窗，看那一面）。"这份 HTML 要真在浏览器里跑"不在这次点击里决定：大窗头部那颗「在浏览器中打开」用应用偏好决定去内置窗口还是系统浏览器——判据是"**这个面 agent 接不接得上**"，而不是"聊天里想要什么"。源码要读就在编辑器里打开。图片曾被记成"方向相反"（聊天里开内置大图，文件夹里那一行交给系统程序）——**那条笔记是错的**：文件夹里那一行走的是同一个 `onOpenFile` → `classifyFile()`，点开一直是 app 内置的大图，两边同一条路。
-  - **分类器说它不能预览的那些**（xlsx / docx / zip / 视频 / HEIC…，`canPreview: false`）才交给系统的默认程序。**门禁只在"还差着什么"时出现**，而且是两件东西：徽章（一句"还不能交出去（N）"）**加上紧接其下的逐条 notice**——每行是读者语言的句子 + agent 原句，右边**一个「交给对话」**。没有"交付"按钮：`交付`是结论的名字，不是动作的名字；把清单藏在按钮后面，等于"看欠了什么"要经过一次点击，而只留一个计数则等于知道欠两条却既看不到也处理不了（这两版都被用户否掉了）。notice 翻译走 `t('prototypeNotice.' + code, params)`；动作走 `usePrototypeAskAgent`（把 agent 原句放进草稿、不发送）。
+  - **分类器说它不能预览的那些**（xlsx / docx / zip / 视频 / HEIC…，`canPreview: false`）才交给系统的默认程序。**门禁只在"盘上有事实不对"时出现**，而且是两件东西：徽章（`prototypesList.linksToNothing`，一句"链接指向不存在的文件——N 处"）**加上紧接其下的逐条 notice**——每行是读者语言的句子 + agent 原句，右边**一个「交给对话」**。没有"交付"按钮：`交付`是结论的名字，不是动作的名字；把清单藏在按钮后面，等于"看欠了什么"要经过一次点击，而只留一个计数则等于知道欠两条却既看不到也处理不了（这两版都被用户否掉了）。notice 翻译走 `t('prototypeNotice.' + code, params)`；动作走 `usePrototypeAskAgent`（把 agent 原句放进草稿、不发送）。
 - 行内菜单的**打开文件夹**走 `shell:openFile`（= Electron `shell.openPath`，**进入**这个目录），不是 `shell:showInFolder`（那个是在父目录里选中它）。
 - `apps/electron/src/renderer/components/app-shell/PrototypesListPanel.tsx`：原型列表 + 行菜单（复制 / 删除）。状态点是"有话说才画"：没有"可以交出去"的绿点。
 - `apps/electron/src/renderer/components/prototypes/CreatePrototypeDialog.tsx`：创建对话框，只问名字。复制 / 删除没有对话框——删除走 `window.confirm`，都在 `apps/electron/src/renderer/components/app-shell/AppShell.tsx` 的 handler 里。
@@ -73,14 +72,14 @@
 2. **locale key 集合一致**：`packages/shared/src/i18n/locales/*.json` 共 7 份（`en` + `de` / `es` / `hu` / `ja` / `pl` / `zh-Hans`），parity 逐个非 en 对 `en` 比对。加过 key 必须跑 `bun run lint:i18n:parity` 与 `bun scripts/sort-locales.ts`（排序也被强制）。
 3. **渲染层不能从共享包 barrel 取运行时值**（只能取类型）：值只能来自 `*/types` 这类零依赖模块或浏览器安全叶子模块，`@craft-agent/shared/prototypes` 这类 barrel 会把 workspace / config storage 拉进浏览器包并连带 node-only SDK。规矩与事故见 `docs/renderer-imports.md`；`packages/shared/src/prototypes/types.ts` 一个 import 都没有是刻意的。
 4. **新增 RPC 通道要同时改注册表与 routing**：注册表在 `packages/server-core/src/handlers/rpc/index.ts`（拼各 handler 的 `HANDLED_CHANNELS`），通道分类在 `packages/shared/src/protocol/routing.ts` 二选一（`LOCAL_ONLY_CHANNELS` / `REMOTE_ELIGIBLE_CHANNELS`）。只补一处，`routing.test.ts` 或 `ipc-channels.test.ts` 立刻红。
-5. **需求来自任何 markdown 文件的 `## R-00x` 标题，不是某个文件名**：`readPrototypeRequirements` 递归读每个 `.md`/`.mdx`（子目录也算），文件名不决定是不是规格——`PRD.md` 只是 `create` 的起步名。**定义需求的文件不算实现**：`coverage.ts` 跳过所有 `definingFiles`，否则规格会把自己写下的需求标成"已实现"（起步 `PRD.md` 正文里的 `@requirement R-001` 正是靠这条才无害）。
-6. **`@requirement` 必须是「标记」，不能是词的一部分**：`markers.ts` 的 `markerIndex` 认「前面不是 `[\w-]`」的标记（`not-a-@requirement` 是散文），`requirements.ts` 的 `extractRequirementIds` 取标记之后到行尾的所有 id。定义需求的文件自己不算实现（`coverage.ts` 跳过 `definingFiles`，见 §2⑤）。
+5. **需求来自任何 markdown 文件的 `## R-00x` 标题，不是某个文件名**：`readPrototypeRequirements` 递归读每个 `.md`/`.mdx`（子目录也算），文件名不决定是不是规格——`PRD.md` 只是 `create` 的起步名。
+6. **没有任何东西声明「这条需求由哪个文件实现」**：`@requirement` 标记与 `coverage.ts` 已整份删除（§4）。它当初是「认领」而不是「校验」（一个空文件就能让需求算已实现），补偿机制 `reviews/` 也已删除，于是这条认领只剩自问自答。要重新引入它，先想清楚谁来核验。现在需求与文件之间只有一条线：finding 的 `requirements:`——而那是证据，不是实现。
 7. **`research/` 的目录名只有一处**：`types.ts` 的常量，`storage.ts` 的路径构造与 `research.ts` 的 reader 都用它。改名只改一处就会静默读空。
 8. **原子写的临时文件名不能固定**：`packages/shared/src/utils/files.ts` 的 `atomicWriteFileSync` 用 `pid + random` 命名临时文件；同一个目标的两个并发写者连临时文件都不该争用（写项目配置 `prototypeSlugs` 经它）。
 9. **原型目录不是 agent 的写权限豁免**：Explore（safe）模式下 agent 只能写 `plansFolderPath` 与 `dataFolderPath`（外加 `allowedWritePaths` 授权），**`prototypesFolderPath` 不在其中**——原型是用户的材料，不是模式自己的管道；要改就在 Ask/Auto 模式下改，或者由人在 app 里改。`prototypesFolderPath` 仍然传给 agent，但它只是**告知位置**（prompt 里那行），不构成许可。这条有两个地方会静默失守：`mode-manager.ts` 的 Write/Edit 分支与 **bash/PowerShell 重定向**分支（后者只有 `likelyWriteAttempt` 时才查），以及 `prompts/system.ts` 里那几句"允许写哪里"的话——改一处就会让 agent 以为可以写。
 10. **人手动保存的边界 = 能把这个文件给你看的那条边界**：`file:write`（`onWriteFile` → `HtmlDesignEditor` / `DrawioEditorPane` / `MarkdownEditorPane`）走 `validateFilePath(path, getWorkspaceAllowedDirs(workspaceId))`，**和读同一句**——凡是读得出来给你看的文件，就存得回去。**故意不是** agent 的写策略（plans/data + 授权）：那条管工具，放宽这里不会放宽它。敏感路径（`.env`、`.key`、`credentials.json`…）读写两侧都拒，因为那条规则在 `validateFilePath` 里而不在调用方。写者**不预检**边界（`PlatformContext` 的注释），拒绝原样回给界面。**"何时写 / 谁赢"只有一份实现，而它现在只是一个钩子**：`useFileWriter`（`packages/ui/src/components/editors/useFileWriter.ts`）——**只有链路，没有界面**：去抖、写前重读并比对、外部改动"没改过就跟上、改过就停下问人"、卸载时把待写的补上——`DrawioEditorPane`、`MarkdownEditorPane`、`HtmlDesignEditor` 三个编辑器共用它。**界面各是各的，这是有意的**：占位、工具栏、`layout` 都归各自的编辑器画——页面编辑器的工具栏是 h-10 那一条，markdown 在对话块里根本不要它；**只有"文件和它怎么了"这一句是共用的**（`FileSaveStatus`：标题栏里一句纯文案 + 正中那个要人决定的胶囊，见 §7.4）。**曾经有过一个连行一起渲染的 `FileEditorPane` 组件**（drawio 与 markdown 用），因为"页面编辑器接不进来"而降到只留链路：它要求所有编辑器共用同一行，而那行正是三者差别最大的地方——共用一次飘出来的提示可以，共用一行不行。**新的文件编辑器接着用 `useFileWriter`，别再写第二份链路。**
-11. **文档间的链接只负责导航，不参与"哪条需求实现了"**：`links.ts` 只读 markdown 里**相对、带扩展名**的目标（外链 / 绝对路径 / `#片段` / 无扩展名一律不管；代码段与 fence 内不算），按「本文档目录 → 原型根」解析到文件，`status` 把断链放进 `briefIssues`；需求是否实现仍只看 `@requirement`（`coverage.ts`）。**用普通 markdown 链接、不用自造语法**：`[[…]]` 只在 Obsidian 里是链接，在同事的编辑器 / GitHub 里是字面括号——这与"图的画面用 `![]()` 而不是只有本 app 认的围栏"是同一条判据；而且自造语法会让 agent 去找它的"官方规则"（实测有 agent 为此 `curl` Obsidian 文档，2026-09-28，白花一轮）。**相对链接的解析只有一处**：`packages/ui/src/components/markdown/document-path.ts` 的 `resolveDocumentPath`，图片与链接共用（§7.4）。
-12. **门禁只数事实**：`whyPrototypeIsNotSettled` 只收 `unresolved.unmet`（需求没人实现）与 `unresolved.brokenLinks`（链接指向不存在的文件）——两者都能被任何人从盘上核验，也都对应"去做"这件事。**读不出来的一律不算欠款**：这个工具不猜、不评分，所以门禁的每一条都必须是盘上的一个事实。
+11. **文档间的链接只负责导航**：`links.ts` 只读 markdown 里**相对、带扩展名**的目标（外链 / 绝对路径 / `#片段` / 无扩展名一律不管；代码段与 fence 内不算），按「本文档目录 → 原型根」解析到文件，`status` 把断链放进 `unresolved`，**由门禁说出口**（§2⑫）。**用普通 markdown 链接、不用自造语法**：`[[…]]` 只在 Obsidian 里是链接，在同事的编辑器 / GitHub 里是字面括号——这与"图的画面用 `![]()` 而不是只有本 app 认的围栏"是同一条判据；而且自造语法会让 agent 去找它的"官方规则"（实测有 agent 为此 `curl` Obsidian 文档，2026-09-28，白花一轮）。**相对链接的解析只有一处**：`packages/ui/src/components/markdown/document-path.ts` 的 `resolveDocumentPath`，图片与链接共用（§7.4）。
+12. **门禁只数事实**：`whyPrototypeIsNotSettled` 只收 `unresolved.brokenLinks`（链接指向不存在的文件）——盘上的一个事实，谁都能核验，也对应"去做"这件事。**读不出来的一律不算欠款**：这个工具不猜、不评分，所以门禁的每一条都必须是盘上的一个事实。
 
 ---
 
@@ -104,9 +103,8 @@
 
 ### 3.4 生成的文本里出现标记**字面**，就会被当成标记
 
-- 解析器按行扫，把标记之后到行尾都算它的值——**它分不清「标记」和「谈论标记」**。所以在任何会被 `coverage.ts` 扫到的文件里写 `@requirement` 字面（哪怕是在注释里解释它），都会多出一条声明。同一个坑的边界由 `markers.ts` 的 `markerIndex` 兜住一半：`x-@requirement` 不是标记。
-- 受此约束的还有 `create.ts` 的起步 `PRD.md`：它正文里写了 `@requirement R-001`，之所以无害，正是因为 `coverage.ts` 跳过所有**定义需求的文件**（起步 `PRD.md` 定义了 `R-001`，于是整份被跳过）。
-- **讲解链接写法时把例子放进代码**：`links.ts` 与 `coverage.ts` 一样按行扫，分不清"链接"和"谈论链接"。`[x](docs/checkout.md)` 写在正文里就是真链接（会进 `links`、断链会被点名），写在反引号或 fence 里才是例子——解析器先圈出代码段（与渲染面的 linkifier 同一读法）。
+- 解析器按行扫，把标记之后到行尾都算它的值——**它分不清「标记」和「谈论标记」**。现在受此约束的是 tweaks 的 `@target`（`tweaks/targets.ts`）；`@requirement` 的同类坑随 `coverage.ts` 一起删除（§4），但规则仍在 `markers.ts` 的 `markerIndex`：`x-@target` 不是标记。
+- **讲解链接写法时把例子放进代码**：`links.ts` 按行扫，分不清"链接"和"谈论链接"。`[x](docs/checkout.md)` 写在正文里就是真链接（会进 `links`、断链会被点名），写在反引号或 fence 里才是例子——解析器先圈出代码段（与渲染面的 linkifier 同一读法）。
 
 ### 3.5 窗口与标签那批坑（相邻子系统，只给指针）
 
@@ -139,6 +137,7 @@
 | **项目指定「当前原型」**（`ProjectConfig.defaultPrototypeSlug` + `projects:setDefaultPrototype` + agent 的 `prototype-default` + 会话继承「恰好一个」） | 多原型项目的对话开箱就用某一个 | 它回答的是「项目替会话挑一个」，而挑就是猜；为这一个答案要多一个配置字段、一个受校验的写入者、一条 RPC、一条命令，以及悬空故事 | 项目只**记**自己在哪些原型上工作（`prototypeSlugs` → `<project_prototypes>` 一列）：背景信息，不绑定、不继承、不解析。会话要么自己绑，要么按名调用 |
 | **异议 / `reviews/`**（`reviews.ts` 332 行、`D-00x` 文件、`about:` / `on:` 指纹 / `status:`、`status.reviews`、`requirements[].disputes`、`requirementFingerprint` / `contentFingerprint`） | 让「有人不同意」不随窗口关掉而消失——`research/` 的镜像（那个是 *for*，这个是 *against*） | **唯一的写者就是做这份工作的 agent**：指南把「argue with it」排在构建之后，于是作者提、作者答（`rebutted` / `accepted` / `fixed`），是自问自答而非第二个声音。机制里最要紧的两件（`on:` 指纹对账、作者对异议作答）只有在**别人**提异议时才成立，而这不是这个工具能替代的 | 规格里只写需求与依据；agent 自己拿不准的回对话里说，或写进需求正文。任务 DAG 里那个 **critic 节点保留**（`tasks/generator-prompt.ts`），但它不再写文件——它读规格与 `status`，把异议作为节点自己的 `verdict` / `objections` 输出，图按 `when: "<critic>.verdict === 'fail'"` 回边重跑。`reviews/` 目录若仍在盘上，就只是普通文件夹（`listPrototypeFiles` 不再跳过它） |
 | **原型属于某个项目**（`PrototypeConfig.projectSlug` + `listPrototypesForProject` + `prototype-project` 命令 + `prototypes:setProject`） | 项目详情页列出「这个项目的原型」，`<prototype_context>` 说「新文件放哪边」 | 一个原型会被多个对话绑定，而那些对话可以属于不同项目——「它属于项目 A」不是事实，「这个项目有哪些原型」也不是该问的问题 | 原型**不记**自己属于谁；项目侧只留一条背景记录；要找原型用 `list` |
+| **需求 → 实现的认领**（`@requirement R-00x` 标记、`requirements.ts:extractRequirementIds`、`coverage.ts`（152 行）、`status.unresolved.unmet`、`gate.requirementUnmet`、详情页「每条需求被谁引用」那张表的文件半） | 让工具能回答「哪个需求没人实现」——规格 ↔ 实现的线不存第二份，写在文件里 | **它是「认领」而不是「校验」**：一个空文件写下标记就能让需求算「已实现」，工具只能回答"有没有人认领"，回答不了"做得对不对"。而它的补偿机制就是上一行的 `reviews/`（别人提异议才成立）——两者都删掉之后，这条认领只剩做这份工作的人自己盖章。判据是"两个写者会互相冲突吗"：不会——需求与文件之间本来就不存在一份需要对齐的记录 | 需求仍是 `## R-00x` 标题，工具报告盘上有什么：需求、它旁边的文件、`research/` 的 findings、断链。`status` 的 `requirements:` 行只剩 id + 标题（+ 为它提供依据的 finding）；详情页那一段同理。**唯一保留的引用检查**是 finding 的 `requirements:` 写了一个没有文档定义的 id（`requirement.undefined`）——那是一条悬空引用，盘上可核验，与"谁实现了谁"无关 |
 
 ---
 
@@ -156,12 +155,12 @@ cd apps/electron              && bun run typecheck
 # 原型 + 相关接缝（1270 pass / 1 skip / 9 fail；9 条全是既有环境失败，见 §5.2）
 bun test packages/shared/src/prototypes packages/shared/src/agent packages/shared/src/tasks \
          packages/server-core/src/domain packages/server-core/src/sessions packages/server-core/src/tasks
-# 单跑：packages/shared 的 prototypes 70 pass；server-core 的 domain+sessions 145 pass
+# 单跑：packages/shared 的 prototypes 66 pass；server-core 的 domain+sessions 145 pass
 
 # 界面侧全量 + 构建 + i18n
 cd apps/electron && bun test                     # 1121 pass / 0 fail
 cd apps/electron && bun run build:renderer       # 成功（改到 renderer 或共享包导出时务必跑，见 §2③）
-bun run lint:i18n:parity                         # i18n parity OK (6 locales, 1824 keys each)
+bun run lint:i18n:parity                         # i18n parity OK (6 locales, 1798 keys each)
 bun scripts/sort-locales.ts                      # 加过 key 之后跑一次，排序是强制的
 ```
 
@@ -179,17 +178,17 @@ bun scripts/sort-locales.ts                      # 加过 key 之后跑一次，
 
 ### 5.3 测试落点
 
-`packages/shared/src/prototypes/__tests__/`（10 个文件 / 1229 行）：
+`packages/shared/src/prototypes/__tests__/`（10 个文件 / 1103 行）：
 
 | 文件 | 行 | 管什么 |
 |---|---|---|
-| `coverage.test.ts` | 307 | 需求 id 与标记（含「写成词就不算」）、markdown 解析（多文件 / 子目录 / 跨文件重号）、findings、需求→实现的整条线 |
-| `settlement.test.ts` | 111 | 门禁只数事实（未实现的需求、断链）、规格/材料切分与文档间链接 |
-| `prompt.test.ts` | 131 | `<prototype_context>` 的渲染与构造（含转义） |
+| `requirements.test.ts` | 194 | 需求 id 的书写口径、markdown 解析（多文件 / 子目录 / 跨文件重号）、findings 的字段与 `evidence:` 存在性 |
+| `settlement.test.ts` | 115 | 门禁只数事实（断链）、规格/材料切分、文档间链接、finding 引用不存在的 id |
+| `prompt.test.ts` | 130 | `<prototype_context>` 的渲染与构造（含转义） |
 | `links.test.ts` | 124 | markdown 链接目标的提取（跳过代码段 / fence、外链与绝对路径、片段、无扩展名、图片）、路径与 `../` 解析（链不到就留在列表里作 `to: null`） |
 | `stale-diagrams.test.ts` | 119 | 图与它导出的 `.drawio` 对不上时的报告 |
 | `project-link.test.ts` | 112 | 项目侧的原型集合（存在性过滤） |
-| `prototypes.test.ts` | 85 | 路径、递归 `listPrototypeFiles` |
+| `prototypes.test.ts` | 92 | 路径、递归 `listPrototypeFiles` |
 | `create.test.ts` | 91 | slug 派生、建文件夹与起步 `PRD.md` |
 | `duplicate.test.ts` | 90 | 整份复制、命名与冲突 |
 | `delete.test.ts` | 52 | 整目录删除、不存在时报错 |
@@ -202,7 +201,7 @@ agent 命令层：`packages/shared/src/agent/__tests__/tool-commands.test.ts`（
 
 | 项 | 不对时看哪 |
 |---|---|
-| 详情页渲染（规格 / 每条需求被谁引用 / 文件 / 门禁徽章与逐条文案） | `PrototypeInfoPage.tsx`；文案是 `packages/shared/src/prototypes/notices.ts` 的 `code + params`，翻译 missing 时先看 locale |
+| 详情页渲染（规格 / 需求与为它提供依据的 finding / 文件 / 门禁徽章与逐条文案） | `PrototypeInfoPage.tsx`；文案是 `packages/shared/src/prototypes/notices.ts` 的 `code + params`，翻译 missing 时先看 locale |
 | 原型列表（计数、选中、行菜单） | `PrototypesListPanel.tsx`、`atoms/prototypes.ts`、`usePrototypes.ts` |
 | 创建对话框 | `CreatePrototypeDialog.tsx`（名字非法时错误就地渲染） |
 | 复制 / 删除 | `AppShell.tsx` 的 `handleDuplicatePrototype` / `handleDeletePrototype`（删除是 `window.confirm`） |
@@ -226,11 +225,11 @@ agent 命令层：`packages/shared/src/agent/__tests__/tool-commands.test.ts`（
 |---|---|
 | `dir:` | 原型目录的绝对路径 |
 | `spec:` | 定义需求的文件（一个或几个）+ 需求条数；没有时写 `not written yet` |
-| `requirements:` | 每条需求一行：id + 标题 — **谁引用了它**（文件名、`F-00x (finding)`；都没有时 `nothing refers to it yet`） |
+| `requirements:` | 每条需求一行：id + 标题 — 以及**为它提供依据的 finding**（`— argued for by F-00x (finding)`；没有就是一行光秃秃的需求）。**没有任何一行说谁实现了它** |
 | `files:` | 目录里的文件（递归；定义需求的那些 markdown 除外，它们在 `spec:` 里） |
 | `findings:` | 有才出现：条数与路径 |
-| `issues:` | 读不干净的地方（悬空引用、`evidence:` 不在盘上、缺字段、同一 id 被两个文档定义），每条一句。**门禁已经说过的不在这里**——一条事实一句话 |
-| `unresolved:` | **最后一段、行动项，只含事实**：空则 `nothing — every requirement is implemented and every link resolves`，否则逐条列出（未实现的需求 / 断链）。 |
+| `issues:` | 读不干净的地方（finding 引用了不存在的 id、`evidence:` 不在盘上、缺字段、同一 id 被两个文档定义），每条一句。**门禁已经说过的不在这里**——一条事实一句话 |
+| `unresolved:` | **最后一段、行动项，只含事实**：空则 `nothing — every link resolves`，否则逐条列出（断链）。 |
 
 ### 6.3 「为什么没生效」的排查路径
 
@@ -238,8 +237,8 @@ agent 命令层：`packages/shared/src/agent/__tests__/tool-commands.test.ts`（
 |---|---|
 | 目录不对（不在本 workspace 的 `prototypes/` 下） | `list` 只列当前 workspace；看 `status` 的 `dir:`。`status.ts:listPrototypeStatuses` 读 `getWorkspacePrototypesPath` |
 | 需求写在了非 markdown 文件里（如 `.txt`）或位置不对 | 不被读为需求（`requirements.ts:isMarkdownFile` 只认 `.md`/`.mdx`），该文件出现在 `files:` 里当材料。真源 `requirements.ts` 的 `isMarkdownFile` 与 `listPrototypeFiles` 的递归 |
-| 标记写成了词的一部分（`x-@requirement`）或值不合法（`@requirement TBD`） | `issues:` 为空、需求仍是 `nothing refers to it yet`。`requirements.ts:extractRequirementIds` + `markers.ts:markerIndex` |
-| 引用了不存在的 id | `issues:` 的 `requirement.undefined`（`… refers to R-099, which no file in this prototype defines`）。`coverage.ts` |
+| 标记写成了词的一部分（`x-@requirement`）或值不合法（`@requirement TBD`） | **已不适用**：`@requirement` 整份删除（§4）。文件不再声明自己服务于什么，也没有任何东西会因它没写而报错 |
+| 引用了不存在的 id | `issues:` 的 `requirement.undefined`（`research/F-001.md names R-099, which no document in this prototype defines`）。`status.ts:buildPrototypeStatus` |
 | 链接链不到（`[x](gone.md)`） | `unresolved:` 里的 `gate.linkBroken`（`PRD.md links to gone.md, which is not in this prototype`）；`links` 里它照旧是 `to: null`，详情页把它按原样显示（markdown 链接照常画，点开由 app 的路由决定）。`status.ts:whyPrototypeIsNotSettled` |
 | finding 的 `evidence:` 不在盘上 | `issues:` 的一句原文（`evidence "…" is not in research/.`）。`research.ts:readPrototypeFindings` |
 

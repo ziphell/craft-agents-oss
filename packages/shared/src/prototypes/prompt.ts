@@ -21,13 +21,13 @@ export interface PrototypePromptContext {
   /** Absolute path to the prototype's directory — the folder the author's files live in. */
   dir: string
   /**
-   * The specification's requirements with what refers to each one. Empty when no markdown file
-   * states one — a state the prompt has to name out loud, because the agent is their only writer.
+   * The specification's requirements, each with the findings that argue for it. Empty when no
+   * markdown file states one — a state the prompt has to name out loud, because the agent is their
+   * only writer.
    */
   requirements: Array<{
     id: string
     title: string
-    files: string[]
     findings: string[]
   }>
   /**
@@ -61,7 +61,6 @@ export function buildPrototypePromptContext(
     requirements: status.requirements.map((requirement) => ({
       id: requirement.id,
       title: requirement.title,
-      files: requirement.files,
       findings: requirement.findings,
     })),
     findings: status.findings.map((finding) => ({
@@ -106,7 +105,7 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
   lines.push(`This is a prototype: a **folder that holds a specification**, and nothing else of ours.`)
   lines.push(`- The specification is the markdown files in ${sanitize(ctx.dir)} — one file or several, flat or`)
   lines.push(`  in folders. A requirement is a heading whose id starts with R- ('## R-001 <what it is>'), and`)
-  lines.push(`  that id is what every other file refers back to.`)
+  lines.push(`  that id is what a finding names when it argues for one.`)
   lines.push(`- Everything else in that folder is yours, in any format — flows, personas, screenshots, a spreadsheet,`)
   lines.push(`  a stack of notes. There is no rule about what may sit there, and nothing enumerates or filters it.`)
   lines.push('')
@@ -119,23 +118,18 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
   lines.push(`- Before writing a requirement, think from first principles about the value: what the person cannot`)
   lines.push(`  do today, and what actually changes for them if this exists. Start from that problem rather than`)
   lines.push(`  from a screen, a competitor's feature or the user's own phrasing — a requirement that only`)
-  lines.push(`  restates one of those has not been thought about, and nothing here can check that for you: the`)
-  lines.push(`  workbench can show a requirement is unimplemented, never that it was worth writing.`)
+  lines.push(`  restates one of those has not been thought about, and nothing here can check that for you: this`)
+  lines.push(`  workbench can say what a requirement is about, never that it was worth writing.`)
   lines.push(`- One entry per requirement, headed by a stable id — '## R-001 <what it is>' — and the id is the`)
   lines.push(`  entire mechanism: short, survives rewriting the prose around it, and is what every reference is`)
   lines.push(`  written against. The prose under it is the requirement.`)
   if (ctx.requirements.length > 0) {
-    lines.push(`  Written so far, and what refers to each:`)
+    lines.push(`  Written so far:`)
     for (const requirement of ctx.requirements) {
-      const covered = [
-        ...requirement.files,
-        ...requirement.findings.map((id) => `${id} (finding)`),
-      ]
+      const argued = requirement.findings.map((id) => `${id} (finding)`)
       lines.push(
-        `  - ${sanitize(requirement.id)} ${sanitize(requirement.title)} — ${
-          covered.length > 0
-            ? `referred to by ${covered.map(sanitize).join(', ')}`
-            : '**nothing refers to it yet**'
+        `  - ${sanitize(requirement.id)} ${sanitize(requirement.title)}${
+          argued.length > 0 ? ` — argued for by ${argued.map(sanitize).join(', ')}` : ''
         }`,
       )
     }
@@ -143,16 +137,13 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
     lines.push(`  No requirement has been written yet. Write one before building anything: a prototype nobody can`)
     lines.push(`  read a requirement out of is a picture, not a proposal.`)
   }
-  lines.push(`- Say which requirement what you write serves: '@requirement R-001' in a comment in the file. That`)
-  lines.push(`  is what 'status' turns into the two answers nobody can get by reading files: which requirement`)
-  lines.push(`  nothing implements, and which marker names an id no document defines.`)
   lines.push(`- The specification may be one file or several: split a subject out (personas, the flow as it stands`)
   lines.push(`  today, a glossary) into its own markdown file rather than growing one document nobody can skim.`)
   lines.push(`- Documents point at each other with an ordinary markdown link, '[the flow](docs/checkout.md)',`)
   lines.push(`  resolved from this document's folder and then the folder root ('../PRD.md' works too). That is how`)
   lines.push(`  one file indexes several: a complex requirement stays a line in the entry document and its detail`)
-  lines.push(`  lives beside it. A link is navigation, not a claim about the work — what implements a requirement`)
-  lines.push(`  is still only '@requirement R-00x' — and a link that points at nothing is reported.`)
+  lines.push(`  lives beside it. A link is navigation and nothing else — it says where to read next, never that`)
+  lines.push(`  something exists — and a link that points at nothing is reported.`)
   lines.push(`- ${sanitize(ctx.dir)}/research/ holds what you learned from other products. One finding per file:`)
   lines.push(`  '# F-001 <what you found>', then labelled lines 'claim:', 'source:', 'captured:', 'evidence:',`)
   lines.push(`  'requirements:'. Evidence names files you keep in research/ (a screenshot you took, for`)
@@ -181,8 +172,8 @@ export function formatPrototypeContextForPrompt(ctx: PrototypePromptContext): st
   lines.push(`stays cacheable. Run 'status' before relying on it for anything you have changed.`)
   lines.push('')
 
-  lines.push(`Workflow: write the files above, then 'status' to re-read everything from disk — it is what turns`)
-  lines.push(`the markers into the answers nobody can get by reading files one at a time.`)
+  lines.push(`Workflow: write the files above, then 'status' to re-read the folder from disk — the requirements,`)
+  lines.push(`the files beside them, and any link that points at nothing.`)
   lines.push(`</prototype_context>`)
   lines.push('')
   return lines.join('\n')

@@ -31,9 +31,8 @@ export function getPrototypeToolHelp(): string {
     '  list                                           prototypes in this workspace, with their requirement',
     '                                                 counts, and which one is bound',
     '  create <name> [--no-bind]                      create a prototype — a folder with a starter PRD.md',
-    '  status [slug]                                  the report: the requirements and the files that',
-    '                                                 implement them, the findings, and what',
-    '                                                 is still owed',
+    '  status [slug]                                  the report: the requirements, the files beside',
+    '                                                 them, the findings, and what is still owed',
     '',
     'A prototype is a **folder**, and the work lives in it — it is yours to organize,',
     '"{workspace}/prototypes/{slug}/":',
@@ -44,9 +43,9 @@ export function getPrototypeToolHelp(): string {
     '  research/          what you learned, one finding per file.',
     'Nothing here writes those files for you: the specification, the material beside it and the work\'s',
     'own files are written with the Write/Edit tools.',
-    'A file declares what it serves with "@requirement R-001" in a comment. That marker is what turns a',
-    'requirement into "implemented by …" — and what makes the one answer nobody can get by reading',
-    'files possible: which requirement nothing implements.',
+    'A finding names the requirement it argues for on its "requirements:" line. What this report reads',
+    'is the specification itself — the requirements, whatever sits beside them, and any link that points',
+    'at nothing.',
     '',
     'Which prototype a command means is read from this session\'s binding. A command with no slug works',
     'with no window open, as long as this conversation is bound; with no binding, name one. Binding is',
@@ -198,8 +197,8 @@ export async function runPrototypeCommand(ctx: ToolCommandContext): Promise<Brow
       '',
       'It is a folder with a starter PRD.md and nothing else yet. Write the requirements into its',
       'markdown ("## R-001 <what the requirement is>") — one file or several — then whatever files the',
-      'work needs beside it. Any file declares what it serves with "@requirement R-001" in a comment,',
-      'and "status" then says which requirement nothing implements.',
+      'work needs beside it. "status" then reports what the folder holds: the requirements, the files',
+      'beside them, the findings, and any link that points at nothing.',
     ];
 
     if (!noBind) lines.push('', 'Commands now target it by default.');
@@ -224,19 +223,15 @@ export async function runPrototypeCommand(ctx: ToolCommandContext): Promise<Brow
       }`,
     ];
 
-    // The requirements and what implements each one: the whole reason this report exists, and the
-    // answer a reader of files cannot assemble. A row with nothing beside it is a
-    // requirement nothing does — the failure that must not read as "done".
+    // The requirements, and the findings that argue for one. A requirement is a heading in the
+    // folder's markdown and nothing more: the report does not claim to know what implements it.
     if (requirementCount > 0) {
       lines.push('  requirements:');
       for (const requirement of status.requirements) {
-        const covered = [
-          ...requirement.files,
-          ...requirement.findings.map((id) => `${id} (finding)`),
-        ];
+        const argued = requirement.findings.map((id) => `${id} (finding)`);
         lines.push(
-          `      ${requirement.id} ${requirement.title || '(no title)'} — ${
-            covered.length > 0 ? covered.join(', ') : 'nothing refers to it yet'
+          `      ${requirement.id} ${requirement.title || '(no title)'}${
+            argued.length > 0 ? ` — argued for by ${argued.join(', ')}` : ''
           }`,
         );
       }
@@ -252,8 +247,8 @@ export async function runPrototypeCommand(ctx: ToolCommandContext): Promise<Brow
       );
     }
 
-    // What could not be read as written: a reference to an id PRD.md does not define, an unreadable
-    // requirement, a finding with no claim. Each is a silent failure otherwise.
+    // What could not be read as written: two documents sharing a requirement id, a finding with no
+    // claim or with evidence that is not on disk. Each is a silent failure otherwise.
     if (status.briefIssues.length > 0) {
       lines.push(`  issues:     ${status.briefIssues.length}`);
       for (const issue of status.briefIssues) {
@@ -261,13 +256,13 @@ export async function runPrototypeCommand(ctx: ToolCommandContext): Promise<Brow
       }
     }
 
-    // What is still owed, last, because it is the thing to act on — the facts only: a requirement
-    // nothing implements, a link that points at nothing. One line per reason, each already a
-    // sentence; the gate and this output read the same function, so the report cannot look calmer
-    // than `whyPrototypeIsNotSettled` says the work is.
+    // What is still owed, last, because it is the thing to act on — the facts only: a link that
+    // points at nothing. One line per reason, each already a sentence; the gate and this output read
+    // the same function, so the report cannot look calmer than `whyPrototypeIsNotSettled` says the
+    // work is.
     const outstanding = whyPrototypeIsNotSettled(status);
     if (outstanding.length === 0) {
-      lines.push('  unresolved: nothing — every requirement is implemented and every link resolves');
+      lines.push('  unresolved: nothing — every link resolves');
     } else {
       lines.push(`  unresolved: ${outstanding.length}`);
       for (const reason of outstanding) {
