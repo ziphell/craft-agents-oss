@@ -18,15 +18,32 @@ import { BrowserView, BrowserWindow, WebContentsView, app, ipcMain, nativeTheme,
 import { mainLog } from './logger'
 import type { WindowManager } from './window-manager'
 import { BrowserCDP, type AccessibilitySnapshot, type ElementGeometry, type OverlayLabels } from './browser-cdp'
+import { applyLowEntropyClientHints, currentClientHintIdentity } from './browser-client-hints'
 import { sampleVideoFrames } from './video-frames'
 import * as drawioRender from './drawio-render'
-import { TabRecorder } from './tab-recorder'
+import { TabRecorder, type TabRecordingState } from './tab-recorder'
+import {
+  RECORDING_OBSERVER_KEY,
+  RECORDING_SIGNAL_PREFIX,
+  buildRecordingObserverOffSource,
+  buildRecordingObserverSource,
+  parseRecordingSignal,
+} from './recording-observer'
+import { SessionRecordings } from './session-recordings'
+import { openRecordingEncoder } from './recording-encoder'
+import type {
+  BrowserFinishedRecording,
+  BrowserRecordingRef,
+  BrowserStartRecordingArgs,
+  BrowserStartRecordingResult,
+  BrowserStopRecordingResult,
+} from '@craft-agent/shared/agent/browser-pane'
 import {
   type BrowserEmptyStateLaunchPayload,
   type BrowserEmptyStateLaunchResult,
   type BrowserInstanceInfo,
 } from '../shared/types'
-import { BACKGROUND_HEX, DEFAULT_THEME, getBackgroundColor, loadAppTheme, getAllowRemoteEvaluate } from '@craft-agent/shared/config'
+import { BACKGROUND_HEX, DEFAULT_THEME, getBackgroundColor, loadAppTheme, getAllowRemoteEvaluate, CONFIG_DIR } from '@craft-agent/shared/config'
 import { CodedError, RPC_CHANNELS, describeWork, sameWork, tabSectionOf } from '@craft-agent/shared/protocol'
 import type { PickedElement, PickedElementOrigin, BrowserToolbarAction, BrowserTabSummary, TabBelongsTo } from '@craft-agent/shared/protocol'
 import { PAGE_PANEL_RING, resolvePagePanelRing } from '../shared/browser-live-fx'
@@ -65,6 +82,14 @@ const TOOLBAR_HEIGHT = 48
  * scrolled sideways, which is how it ended up unusable.
  */
 const TAB_RAIL_WIDTH = 200
+/**
+ * The width a browser window's **page** opens at.
+ *
+ * The window is not the viewport: the rail takes `TAB_RAIL_WIDTH` off the side and the page panel
+ * is inset by the gutter (`pageAreaBounds`), so the window opens that much wider — the same sum
+ * `resizeViewport` does in reverse, for the size a window is born with.
+ */
+const DEFAULT_VIEWPORT_WIDTH = 1024
 const MAX_CONSOLE_LOG_ENTRIES = 500
 const MAX_NETWORK_LOG_ENTRIES = 500
 const MAX_DOWNLOAD_LOG_ENTRIES = 200
@@ -123,6 +148,22 @@ const SCREENSHOT_FIRST_FRAME_MS = 16
 const OFFSCREEN_PARK_MARGIN = 20_000
 /** Only ever seen inside this file: how a capture that never answered names its own error. */
 const SCREENSHOT_CAPTURE_TIMEOUT_MARKER = 'capture did not come back'
+
+/**
+ * What a page's own view is backed with — the browser's default canvas, not the app's surface.
+ *
+ * A document that paints nothing (no `theme-color`, no `html`/`body` background, no full-width
+ * bar: measured on `www.baidu.com/more/`) is a **light** page that leaves the canvas to the
+ * browser, and the browser's canvas is white. Painting the app's surface here instead put the
+ * app's dark background (`#080a10`) behind the page's black text in dark mode — the whole page
+ * read as black-on-black. The app's surface belongs *outside* the page's rectangle (the gutter,
+ * `#mask`, and the window's own `backgroundColor`), which is where it still is.
+ *
+ * Deliberately not theme-derived: this is the one colour in the pane that is not the app's to
+ * choose, and a value that follows the theme would also leave a tab created before a theme
+ * switch wearing the old one.
+ */
+const PAGE_VIEW_BACKDROP = '#ffffff'
 
 const THEME_COLOR_SIGNAL_PREFIX = '__craft_theme_color__:'
 const THEME_COLOR_NULL_SENTINEL = '__NULL__'
@@ -252,12 +293,14 @@ const SESSION_PARTITION = BROWSER_PANE_SESSION_PARTITION
  * The chrome picks the format — it is the side that has `MediaRecorder`, and the file has
  * to be named for what is about to be written into it, so the extension has to come from
  * there. Taken from a list rather than trusted: this ends up in a file name, and a name the
- * other side invents is what a path traversal looks like.
+ * other side invents is what a path traversal looks like. The list holds one entry because a
+ * recording is one container (`shared/recording-formats.ts`); anything else is not a name we
+ * take, and the answer to a name we do not take is the container we do write.
  */
-const RECORDING_EXTENSIONS = new Set(['mp4', 'webm', 'mkv'])
+const RECORDING_EXTENSIONS = new Set(['mp4'])
 function recordingExtension(requested: string | undefined): string {
   const wanted = (requested ?? '').toLowerCase().replace(/^\./, '')
-  return RECORDING_EXTENSIONS.has(wanted) ? wanted : 'webm'
+  return RECORDING_EXTENSIONS.has(wanted) ? wanted : 'mp4'
 }
 
 /**
@@ -733,6 +776,18 @@ let instanceCounter = 0
  */
 let tabCounter = 0
 
+/**
+ * Where the person's recordings go: **one fixed folder**, not configurable.
+ *
+ * It is the app's own (`~/.craft-agent/records/`, or wherever `CRAFT_CONFIG_DIR` points), which is
+ * what keeps a recording — and now the clicks and typed values beside it — out of a folder people
+ * pass files around in. The toolbar says where the file went, and hovering that chip gives the
+ * whole path, so nothing has to be guessed.
+ */
+function getPersonRecordsDir(): string {
+  return join(CONFIG_DIR, 'records')
+}
+
 export class BrowserPaneManager implements IBrowserPaneManager {
   private instances: Map<string, BrowserInstance> = new Map()
   private destroyingIds: Set<string> = new Set()
@@ -784,7 +839,29 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * and only one thing can be armed at a time anyway — the button is a person's, and a
    * person records one thing at a time.
    */
-  private readonly tabRecorder = new TabRecorder()
+  /** The recorder, wired so that however a recording ends, the page's observer comes back out. */
+  private readonly tabRecorder = this.createTabRecorder()
+
+  private createTabRecorder(): TabRecorder {
+    const recorder = new TabRecorder()
+    // One place, not four call sites: the deadline and a tab going away never pass through the code
+    // that started the recording, and those are the endings nobody is around to clean up after.
+    recorder.onRecordingEnded = (tabId) => {
+      void this.syncRecordingObserver(this.findInstanceByTabId(tabId)?.id ?? null, tabId)
+    }
+    return recorder
+  }
+
+  /**
+   * A conversation's recordings — the frames, the encoder behind them, and the one place they end.
+   *
+   * The person's recordings never come through here: they are armed by the toolbar, delivered by
+   * display media, and filed in downloads, all of which is that path's own.
+   */
+  private readonly sessionRecordings = new SessionRecordings({
+    recorder: this.tabRecorder,
+    openEncoder: openRecordingEncoder,
+  })
 
   /**
    * How long one capture may take before it counts as no image at all
@@ -918,8 +995,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // Where it opens is left to Electron on purpose (the person's call): a window is something
     // they move, snap and maximise, and a position computed from a work area we read once would
     // fight that — and on a small display it can put the window's top edge off the screen.
+    //
+    // The width is not left to Electron: it opens around a page `DEFAULT_VIEWPORT_WIDTH` wide, and
+    // the rail beside it and the panel's gutter are what the window adds to that.
+    const panelInset = this.pagePanelInsets()
     const window = new BrowserWindow({
-      width: 1200,
+      width: DEFAULT_VIEWPORT_WIDTH + TAB_RAIL_WIDTH + panelInset.left + panelInset.right,
       height: 900,
       minWidth: 700,
       minHeight: 500,
@@ -1408,9 +1489,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.lastNetworkActivityByWebContentsId.delete(wcId)
 
     // A recording follows a tab, so the tab going away ends it — with what was captured
-    // kept: the person was recording something, and part of it happened. Nobody else can
-    // say "stop" for a file whose tab is closed, so this is the one that must.
-    if (this.tabRecorder.stopIfSource(wcId)) this.pushToolbarState(instance)
+    // kept: somebody was recording something, and part of it happened. Nobody else can
+    // say "stop" for a file whose tab is closed, so this is the one that must. Every
+    // recording of this tab ends, whoever owns it — the person's and any conversation's.
+    if (this.tabRecorder.stopIfSource(wcId).length) this.pushToolbarState(instance)
+    // A conversation's recording of this tab ends here too, and through its own service — which
+    // stops the capture and waits for the encoder before the file settles.
+    this.sessionRecordings.endForTabs([tab.id])
 
     // A lock never outlives what it locks: closing the tab a session was holding lets go
     // of it here, rather than leaving the window claiming a tab that is gone.
@@ -1786,6 +1871,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // A window takes its tabs with it, and a recording of one of them ends with what it
     // captured — there is no button left to press once the window is gone.
     this.tabRecorder.stopIfSource(...instance.tabs.map((tab) => tab.tabView.webContents.id))
+    this.sessionRecordings.endForTabs(instance.tabs.map((tab) => tab.id))
     instance.pendingShowOnReady = false
     instance.pendingShowToken += 1
 
@@ -2558,7 +2644,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
        * nobody is looking at is a shot of *that* tab. */
       tab: BrowserTab
       mode: 'raw' | 'agent' | 'region'
-      errorPrefix: 'screenshot' | 'region screenshot'
+      errorPrefix: 'screenshot' | 'region screenshot' | 'recording seed'
       rect?: { x: number; y: number; width: number; height: number }
       dpr?: number
       format?: 'png' | 'jpeg'
@@ -2816,6 +2902,29 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const message = error.message.toLowerCase()
     return message.includes('current display surface not available for capture')
       || message.includes(SCREENSHOT_CAPTURE_TIMEOUT_MARKER)
+  }
+
+  /**
+   * One JPEG of a tab, for a recording's first frame.
+   *
+   * The screenshot path, not the capture: a window that is not on screen has no surface for
+   * `capturePage` to copy, and this is the same machinery `screenshot` uses to answer there —
+   * including the parked shot it falls back to. `null` when even that cannot be had, because a
+   * recording without a first picture is still a recording.
+   */
+  private async captureRecordingSeed(instance: BrowserInstance, tab: BrowserTab): Promise<Buffer | null> {
+    try {
+      const captured = await this.capturePageWithRecovery(instance, {
+        tab,
+        mode: 'raw',
+        errorPrefix: 'recording seed',
+        format: 'jpeg',
+        jpegQuality: 80,
+      })
+      return captured.imageBuffer
+    } catch {
+      return null
+    }
   }
 
   /**
@@ -3168,15 +3277,198 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     })
   }
 
-  /** Sample frames out of a recording someone recorded elsewhere. */
+/** Sample frames out of a recording someone recorded elsewhere. */
   async extractVideoFrames(
     filePath: string,
-    options: { mode: 'timeline' | 'changes'; everyMs: number; maxFrames: number },
+    options: {
+      mode: 'timeline' | 'changes'
+      everyMs: number
+      maxFrames: number
+      changeThreshold?: number
+      fromMs?: number
+      toMs?: number
+      first?: boolean
+      last?: boolean
+      maxEdge?: number
+    },
   ) {
     if (!existsSync(filePath)) {
       throw new Error(`No recording at ${filePath}.`)
     }
     return sampleVideoFrames(filePath, options)
+  }
+
+  // ---------------------------------------------------------------------------
+  // Recording a tab, for a conversation
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Start recording one of a conversation's tabs.
+   *
+   * The tab is resolved inside **that conversation's** window, so a tab id cannot reach another
+   * conversation's tab by being typed — the same rule every other tab-scoped call follows.
+   */
+  async startRecordingForSession(
+    sessionId: string,
+    args: BrowserStartRecordingArgs,
+    options?: { workspaceId?: string | null },
+  ): Promise<BrowserStartRecordingResult> {
+    // The workspace's window, which is the one every conversation in it works in — asking for it
+    // is what every other browser command does, and a conversation with no window has no tab to
+    // record anyway (the lookup below is what says so).
+    //
+    // `workspaceId` has to be carried in rather than left out: it is the whole of a window's
+    // identity to `findWindowForWorkspace`, so omitting it drops the lookup into the
+    // `workspaceId === null` bucket — a *different* window, which then has none of the caller's
+    // tabs and answers `has no tab "…"` about a window the caller never worked in.
+    const instanceId = await this.getOrCreateForSessionAsync(sessionId, {
+      workspaceId: options?.workspaceId,
+    })
+    const instance = this.requireAliveInstance(instanceId)
+    const tab = tabById(instance, args.tabId)
+    if (!tab) {
+      throw new Error(`Browser window "${instance.id}" has no tab "${args.tabId}". "tabs" lists them.`)
+    }
+
+    /** What the file's entry looks like to the layer above — its `(owner, tab)` half included. */
+    const ref = (state: TabRecordingState): BrowserRecordingRef =>
+      ({ tabId: state.tabId, file: state.file, startedAt: state.startedAt, bytes: state.bytes })
+
+    const result = await this.sessionRecordings.start({
+      sessionId,
+      tabId: tab.id,
+      dir: args.dir,
+      ttlMs: args.ttlMs,
+      source: tab.tabView.webContents,
+      // The tab's own CDP session, where the frames come from, and the size its view is at.
+      capture: tab.cdp,
+      size: tab.tabView.getBounds(),
+      // The first frame, taken the way a screenshot is rather than from the capture: a page that
+      // is not painting sends the screencast nothing, and a recording of a still page has to
+      // show the page it was still on.
+      seedFrame: () => this.captureRecordingSeed(instance, tab),
+    })
+
+    // Nothing is pushed to the chrome: the toolbar shows the person's recording and only theirs
+    // (a conversation's recording is not theirs to display), so nothing it draws has changed.
+    if (!result.ok) {
+      if (result.reason === 'already-recording') {
+        return { started: false, reason: 'already-recording', recording: ref(result.state) }
+      }
+      return { started: false, reason: result.reason, message: result.message }
+    }
+
+    // The page's own half of the observation starts with the recording (`recording-observer.ts`).
+    void this.syncRecordingObserver(instance.id, tab.id)
+
+    const recording = ref(result.state)
+    const extension = result.state.file.split('.').pop() ?? ''
+    if (!args.wait) return { started: true, recording, extension }
+
+    // The two forms, one call: with `wait`, the answer is the ending.
+    const finished = await result.finished
+    return {
+      started: true,
+      recording,
+      extension,
+      ...(finished
+        ? {
+            finished: {
+              tabId: finished.tabId,
+              file: finished.file,
+              bytes: finished.bytes,
+              seconds: finished.seconds,
+              reason: 'it ended',
+            },
+          }
+        : {}),
+    }
+  }
+
+  /** End one early. */
+  async stopRecordingForSession(sessionId: string, tabId: string): Promise<BrowserStopRecordingResult> {
+    const finished = await this.sessionRecordings.end(sessionId, tabId, 'asked')
+    if (!finished) return { stopped: false, reason: 'not-recording' }
+
+    // Silenced only if nothing else still covers this tab — the person may be recording it too.
+    void this.syncRecordingObserver(this.findInstanceByTabId(tabId)?.id ?? null, tabId)
+
+    return {
+      stopped: true,
+      recording: {
+        tabId: finished.tabId,
+        file: finished.file,
+        bytes: finished.bytes,
+        seconds: finished.seconds,
+        reason: 'asked',
+      },
+    }
+  }
+
+  /**
+   * Put the page's observer in place — or take it out — to match whether a recording covers a tab.
+   *
+   * **Two halves, because a recording is about now and a tweak is about the next document.** The
+   * init script reaches documents that do not exist yet; the injection starts the observer in the
+   * one in front of the person, who is about to demonstrate something in *that* one. Removing is
+   * the same pair in reverse, and the copy already inside a document is silenced rather than
+   * abandoned — a listener still reporting to nobody is still a listener in somebody's page.
+   *
+   * Called after every start and every stop, from both paths (the person's button, a
+   * conversation's command): what decides is whether a recording covers the tab afterwards, not
+   * which of them asked.
+   */
+  private async syncRecordingObserver(instanceId: string | null, tabId: string): Promise<void> {
+    if (!instanceId) return
+
+    const covered = this.tabRecorder.states().some((state) => state.tabId === tabId)
+    try {
+      if (covered) {
+        const source = buildRecordingObserverSource()
+        await this.addInitScript(instanceId, RECORDING_OBSERVER_KEY, source, tabId)
+        await this.evaluate(instanceId, source, tabId)
+      } else {
+        await this.clearInitScripts(instanceId, RECORDING_OBSERVER_KEY, tabId)
+        await this.evaluate(instanceId, buildRecordingObserverOffSource(), tabId)
+      }
+    } catch {
+      // The tab may be gone, or the page may refuse the script. A recording without the page's own
+      // report is still a recording: the navigations and requests are the host's, not the page's.
+    }
+  }
+
+  /** The window holding a tab — for a stop, which names the tab and never the window. */
+  private findInstanceByTabId(tabId: string): BrowserInstance | null {
+    for (const instance of this.instances.values()) {
+      if (instance.tabs.some((tab) => tab.id === tabId)) return instance
+    }
+    return null
+  }
+
+  /** End everything a conversation is recording, because it is going away. */
+  endRecordingsForSession(sessionId: string): void {
+    this.sessionRecordings.endAllFor(sessionId)
+  }
+
+  /**
+   * Wait for one of a conversation's recordings to end.
+   *
+   * Answers `null` for a tab that is not being recorded — including one that already finished,
+   * since there is no longer anything to wait for and the caller has missed it rather than being
+   * owed an answer. Deliberately not a poll: the promise is the one the recording already settles
+   * when it ends (`session-recordings.ts`), so this costs a listener and no clock.
+   */
+  async waitForRecordingEnd(sessionId: string, tabId: string): Promise<BrowserFinishedRecording | null> {
+    const finished = await (this.sessionRecordings.waitFor(sessionId, tabId) ?? Promise.resolve(null))
+    if (!finished) return null
+
+    return {
+      tabId: finished.tabId,
+      file: finished.file,
+      bytes: finished.bytes,
+      seconds: finished.seconds,
+      reason: 'it ended',
+    }
   }
 
   /** A `.drawio` document → SVG, an editable SVG, a PNG or a page. */
@@ -3465,6 +3757,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   destroyForSession(sessionId: string): void {
     this.unbindAllForSession(sessionId)
     this.clearCursors(sessionId)
+    // A conversation that is gone cannot be waiting for its recordings, and a recording outlives
+    // nobody: its files live under the session's own folder (which goes with it).
+    this.sessionRecordings.endAllFor(sessionId)
   }
 
   /**
@@ -4964,10 +5259,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
           const finished = this.tabRecorder.stop()
           this.pushToolbarState(inst)
           if (!finished) return null
+          // Silenced only if nothing else still covers this tab — a conversation may be recording it.
+          void this.syncRecordingObserver(inst.id, finished.tabId)
 
           // An empty file is not a recording: the picture never arrived (the chrome's
           // display-media request was refused, or there was no tab to grab), and a session
-          // should not keep a webm that shows nothing. `null` is the chrome's "nothing came
+          // should not keep an mp4 that shows nothing. `null` is the chrome's "nothing came
           // of it".
           if (finished.bytes === 0) {
             rmSync(finished.file, { force: true })
@@ -4978,17 +5275,22 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
         const tab = activeTab(inst)
         const state = this.tabRecorder.start({
-          // The same place a download from this window goes, and for the same reason: it is
-          // the person's file, not a conversation's. Filing it under whichever conversation
-          // happened to own the tab on screen would be reading a fact that is not there —
-          // a demo recorded in a tab a conversation opened is very often not *for* that
-          // conversation — so it lands in the downloads folder, where they can see it and
-          // hand it on (or tell an agent to sample it).
-          dir: app.getPath('downloads'),
+          // Which tab this is, is part of the recording's identity now: the person and a
+          // conversation may each be recording this same tab.
+          tabId: tab.id,
+          // **One fixed place, the app's own** — not the downloads folder, and not a conversation's.
+          // It is still the person's file (a conversation is not what a demo is for), but downloads
+          // is where files are handed around, and a recording now carries what was typed into the
+          // page as well as the picture. One folder also keeps the film and its record together,
+          // so neither can be left behind by the other.
+          dir: getPersonRecordsDir(),
           source: tab.tabView.webContents,
           extension: recordingExtension(extension),
         })
         this.pushToolbarState(inst)
+        // The page's own half of the observation starts with the recording (`recording-observer.ts`):
+        // the person is about to demonstrate something in the tab they just armed.
+        void this.syncRecordingObserver(inst.id, tab.id)
         return state
       },
     )
@@ -5203,6 +5505,29 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       }
       case 'clearAgentControl':
         this.clearAgentControl(sessionId)
+        return undefined
+
+      // -- Recording a tab (session-scoped) -----------------------------------
+      //
+      // Session-scoped like the block above, and the only way the remote caller reaches these:
+      // without a case the capability path fell through to `default:` and answered
+      // "Unknown browser capability method". `args` carries the caller's own tuple (its
+      // `sessionId` first, which is the same id the envelope named) and `workspaceId` is the
+      // envelope's — never read from `args`, so a caller cannot pick somebody else's window.
+      case 'startRecordingForSession': {
+        const [, recordingArgs] = args as [string, BrowserStartRecordingArgs]
+        return this.startRecordingForSession(sessionId, recordingArgs, { workspaceId })
+      }
+      case 'stopRecordingForSession': {
+        const [, tabId] = args as [string, string]
+        return this.stopRecordingForSession(sessionId, tabId)
+      }
+      case 'waitForRecordingEnd': {
+        const [, tabId] = args as [string, string]
+        return this.waitForRecordingEnd(sessionId, tabId)
+      }
+      case 'endRecordingsForSession':
+        this.endRecordingsForSession(sessionId)
         return undefined
 
       // -- Mixed (instanceId + optional sessionId) ----------------------------
@@ -5836,6 +6161,18 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     if (this.partitionObserversInitialized) return
     this.partitionObserversInitialized = true
 
+    // Put back the low-entropy client hints the tab's user-agent override leaves behind — the
+    // engine's own values, so headers and `navigator.userAgentData` agree (`browser-client-hints.ts`
+    // has the whole why). Read once: these are facts about this build, not about the request.
+    const clientHintIdentity = currentClientHintIdentity()
+    if (clientHintIdentity) {
+      ses.webRequest.onBeforeSendHeaders((details, callback) => {
+        const headers = { ...details.requestHeaders }
+        applyLowEntropyClientHints(headers, details.url, clientHintIdentity)
+        callback({ requestHeaders: headers })
+      })
+    }
+
     ses.webRequest.onBeforeRequest((details, callback) => {
       const wcId = details.webContentsId
       if (typeof wcId === 'number' && wcId > 0) {
@@ -5865,6 +6202,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         resourceType: String(details.resourceType ?? 'unknown'),
         ok: (details.statusCode ?? 0) >= 200 && (details.statusCode ?? 0) < 400,
       })
+
+      // And into the recording's own log, if this tab is being recorded (`recording-sidecar.ts`).
+      this.tabRecorder.noteEvent(located.tab.id, {
+        type: 'request',
+        method: details.method ?? 'GET',
+        url: details.url ?? '',
+        status: details.statusCode ?? 0,
+        resourceType: String(details.resourceType ?? 'unknown'),
+      })
     })
 
     ses.webRequest.onErrorOccurred((details) => {
@@ -5885,6 +6231,16 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         status: 0,
         resourceType: String(details.resourceType ?? 'unknown'),
         ok: false,
+      })
+
+      // A request that never came back is still something the page did.
+      this.tabRecorder.noteEvent(located.tab.id, {
+        type: 'request',
+        method: details.method ?? 'GET',
+        url: details.url ?? '',
+        status: 0,
+        resourceType: String(details.resourceType ?? 'unknown'),
+        error: details.error,
       })
     })
 
@@ -6216,8 +6572,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     // The view's own backdrop, so a document that paints nothing — a page with no
     // background of its own — is not a hole: what sits under a tab's view is the window's overlay
-    // and the tabs stacked below it, and neither is what this page is meant to look like.
-    tab.tabView.setBackgroundColor(getBackgroundColor(nativeTheme.shouldUseDarkColors))
+    // and the tabs stacked below it, and neither is what this page is meant to look like. What
+    // replaces them is the browser's own canvas (`PAGE_VIEW_BACKDROP`), **not** the app's surface:
+    // the app's colours belong outside the page's rectangle, and a page that leaves the canvas to
+    // the browser is a light page whatever theme the app is wearing.
+    tab.tabView.setBackgroundColor(PAGE_VIEW_BACKDROP)
     this.applyPageCornerRadius(tab)
 
     // A tab is **born at the window's current page area** — a viewport has to exist from the first
@@ -6292,6 +6651,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       tab.currentUrl = normalized.url
       tab.title = normalized.title
       mainLog.info(`[browser-pane] did-navigate id=${instance.id} from=${previousUrl} to=${tab.currentUrl}`)
+      this.tabRecorder.noteEvent(tab.id, { type: 'navigate', url: tab.currentUrl })
       tab.canGoBack = tabWc.canGoBack()
       tab.canGoForward = tabWc.canGoForward()
       // Drain in-flight count — prior page's requests are cancelled on navigation
@@ -6324,6 +6684,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       tab.title = normalized.title
       tab.canGoBack = tabWc.canGoBack()
       tab.canGoForward = tabWc.canGoForward()
+      // A route change is a move worth recording: the address a step ended on is often the whole
+      // answer to "where did this leave us" (`recording-sidecar.ts`).
+      this.tabRecorder.noteEvent(tab.id, { type: 'navigate', url: tab.currentUrl, inPage: true })
 
       void this.maybeHandleEmptyStateLaunch(instance, url).then((handled) => {
         if (handled) {
@@ -6396,6 +6759,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
             }
           }
         }
+        return
+      }
+
+      if (message.startsWith(RECORDING_SIGNAL_PREFIX)) {
+        // A recorded page reporting what was done to it. Recognised and dropped here for the same
+        // reason the theme signal above is: it is a signal, not something the page said
+        // (`recording-observer.ts`).
+        const reported = parseRecordingSignal(message)
+        if (reported) this.tabRecorder.noteEvent(tab.id, reported)
         return
       }
 

@@ -8,7 +8,7 @@
  * this is one of them.
  *
  * What is left that is drawio's own: the origin it is served from, the theme, and the frame.
- * The `drawio-preview` block's pencil and the prototype page's open-the-diagram entry both put this
+ * The `drawio-preview` block's pencil and the full-size overlay both put this
  * somewhere; neither re-implements any of it.
  */
 

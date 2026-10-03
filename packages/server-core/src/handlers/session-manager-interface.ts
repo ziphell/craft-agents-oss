@@ -23,7 +23,7 @@ import type {
   UnreadSummary,
   ShareResult,
 } from '@craft-agent/shared/protocol'
-import type { SessionBundle, DispatchMode } from '@craft-agent/shared/sessions'
+import type { SessionBundle, DispatchMode, SessionMode } from '@craft-agent/shared/sessions'
 import type { EventSink } from '../transport'
 
 export interface ISessionManager {
@@ -88,8 +88,8 @@ export interface ISessionManager {
     opts?: { parentSessionId?: string },
   ): Promise<{ labelId: string } | undefined>
   setSessionProjectId(sessionId: string, projectId: string | null): Promise<void>
-  /** Bind or unbind a session to a prototype (a slug under the workspace's prototypes/ folder). */
-  setSessionPrototypeSlug(sessionId: string, prototypeSlug: string | null): Promise<void>
+  /** Set (or clear, with `null`) the layer a session is working in (only meaningful inside its project). */
+  setSessionMode(sessionId: string, mode: SessionMode | null): Promise<void>
   setKanbanColumn(sessionId: string, column: string | null): Promise<void>
   setTaskNodeCount(sessionId: string, count: number): Promise<void>
   /** How many `kind: approval` gates of this session's active task run are waiting on a person. */

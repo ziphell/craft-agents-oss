@@ -295,8 +295,8 @@ describe('isFilePathTarget', () => {
   // A drive letter looks like a scheme, and the file-path character classes hold `/` but
   // neither `:` nor `\` — so these matched nothing and were handed to the URL opener.
   it('accepts a Windows path', () => {
-    expect(isFilePathTarget('C:\\Users\\tester\\prototypes\\a\\flow.drawio')).toBe(true)
-    expect(isFilePathTarget('C:/Users/tester/prototypes/a/flow.drawio')).toBe(true)
+    expect(isFilePathTarget('C:\\Users\\tester\\projects\\a\\flow.drawio')).toBe(true)
+    expect(isFilePathTarget('C:/Users/tester/projects/a/flow.drawio')).toBe(true)
   })
 
   it('still reads a real scheme as a scheme', () => {

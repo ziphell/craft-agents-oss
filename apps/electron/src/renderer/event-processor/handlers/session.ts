@@ -14,7 +14,7 @@ import type {
   SourcesChangedEvent,
   LabelsChangedEvent,
   ProjectIdChangedEvent,
-  PrototypeSlugChangedEvent,
+  ModeChangedEvent,
   SessionStatusChangedEvent,
   SessionMetadataChangedEvent,
   SessionFlaggedEvent,
@@ -715,11 +715,11 @@ export function handleProjectIdChanged(
 }
 
 /**
- * Handle prototype_slug_changed - update session's prototypeSlug binding
+ * Handle mode_changed - update the layer this session is working in
  */
-export function handlePrototypeSlugChanged(
+export function handleModeChanged(
   state: SessionState,
-  event: PrototypeSlugChangedEvent
+  event: ModeChangedEvent
 ): ProcessResult {
   const { session, streaming } = state
 
@@ -727,7 +727,7 @@ export function handlePrototypeSlugChanged(
     state: {
       session: {
         ...session,
-        prototypeSlug: event.prototypeSlug ?? undefined,
+        mode: event.mode ?? undefined,
       },
       streaming,
     },

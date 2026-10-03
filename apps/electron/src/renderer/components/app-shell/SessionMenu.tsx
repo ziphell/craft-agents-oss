@@ -29,13 +29,10 @@ import {
   CloudUpload,
   RefreshCw,
   Tag,
-  FlaskConical,
   Send,
   FolderKanban,
   Check,
 } from 'lucide-react'
-import { useAtomValue } from 'jotai'
-import { prototypesAtom } from '@/atoms/prototypes'
 import { useMenuComponents } from '@/components/ui/menu-context'
 import { getStateColor, getStateIcon, type SessionStatusId } from '@/config/session-status-config'
 import type { SessionStatus } from '@/config/session-status-config'
@@ -116,11 +113,6 @@ export function SessionMenu({
   const _hasUnread = hasUnreadMeta(item)
 
   const actions = useSessionMenuActions({ item, onLabelsChange })
-
-  // The workspace's prototypes. Read here rather than threaded through the two
-  // consumers (list menu + chat title menu) — the same reason their labels and
-  // statuses are props while this one is not: only this menu shows it.
-  const prototypes = useAtomValue(prototypesAtom)
 
   // Get menu components from context (works with both DropdownMenu and ContextMenu)
   const { MenuItem, Separator, Sub, SubTrigger, SubContent } = useMenuComponents()
@@ -231,39 +223,6 @@ export function SessionMenu({
                 <MenuItem key={p.id} onClick={() => onSetProjectId(p.id)}>
                   {isBound && <Check className="h-3.5 w-3.5" />}
                   <span className={isBound ? 'flex-1' : 'flex-1 ml-[18px]'}>{p.name}</span>
-                </MenuItem>
-              )
-            })}
-          </SubContent>
-        </Sub>
-      )}
-
-      {/* Prototype submenu — the body of work this conversation is on, which is a
-          reference and not a place: binding does not move the working directory
-          (see SessionManager.setSessionPrototypeSlug). So it sits here with the
-          labels and the status, not with the folder picker. */}
-      {prototypes.length > 0 && (
-        <Sub>
-          <SubTrigger className="pr-2">
-            <FlaskConical className="h-3.5 w-3.5" />
-            <span className="flex-1">{t("sessionMenu.prototype")}</span>
-          </SubTrigger>
-          <SubContent>
-            <MenuItem onClick={() => actions.setPrototypeSlug(null)}>
-              {!item.prototypeSlug && <Check className="h-3.5 w-3.5" />}
-              <span className={item.prototypeSlug ? 'flex-1 ml-[18px]' : 'flex-1'}>
-                {t("sessionMenu.noPrototype")}
-              </span>
-            </MenuItem>
-            <Separator />
-            {prototypes.map((prototype) => {
-              const isBound = item.prototypeSlug === prototype.slug
-              return (
-                <MenuItem key={prototype.slug} onClick={() => actions.setPrototypeSlug(prototype.slug)}>
-                  {isBound && <Check className="h-3.5 w-3.5" />}
-                  <span className={isBound ? 'flex-1 truncate font-mono' : 'flex-1 ml-[18px] truncate font-mono'}>
-                    {prototype.slug}
-                  </span>
                 </MenuItem>
               )
             })}

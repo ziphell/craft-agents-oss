@@ -253,14 +253,6 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.sessions.UNWATCH_FILES,
   RPC_CHANNELS.sessions.FILES_CHANGED,
 
-  // prototypes — prototype-workbench artifacts (workspace-level)
-  RPC_CHANNELS.prototypes.WATCH,
-  RPC_CHANNELS.prototypes.UNWATCH,
-  RPC_CHANNELS.prototypes.CHANGED,
-  RPC_CHANNELS.prototypes.LIST,
-  RPC_CHANNELS.prototypes.CREATE,
-  RPC_CHANNELS.prototypes.DUPLICATE,
-  RPC_CHANNELS.prototypes.DELETE,
   RPC_CHANNELS.sessions.SEARCH_CONTENT,
   RPC_CHANNELS.sessions.EXPORT,
   RPC_CHANNELS.sessions.IMPORT,
@@ -429,6 +421,7 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   // projects — workspace projects
   RPC_CHANNELS.projects.GET,
   RPC_CHANNELS.projects.GET_ONE,
+  RPC_CHANNELS.projects.LAYERS,
   RPC_CHANNELS.projects.CREATE,
   RPC_CHANNELS.projects.UPDATE,
   RPC_CHANNELS.projects.DELETE,
@@ -436,6 +429,9 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.projects.UPLOAD_ASSET,
   RPC_CHANNELS.projects.DELETE_ASSET,
   RPC_CHANNELS.projects.CHANGED,
+  RPC_CHANNELS.projects.WATCH_FILES,
+  RPC_CHANNELS.projects.UNWATCH_FILES,
+  RPC_CHANNELS.projects.FILES_CHANGED,
 
   // drawio — the app's own bundled editor, at an origin a host hands out
   RPC_CHANNELS.drawio.GET_ORIGIN,

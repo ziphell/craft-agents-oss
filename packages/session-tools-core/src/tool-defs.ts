@@ -169,14 +169,6 @@ export const BrowserToolSchema = z.object({
   ]).describe('Browser command as a string (e.g., "click @e1") or array (e.g., ["evaluate", "var x = 1; x + 2"]). Array mode preserves semicolons and whitespace in arguments.'),
 });
 
-// Prototype tool schema — the same CLI-like shape, one command per call (no batching).
-export const PrototypeToolSchema = z.object({
-  command: z.union([
-    z.string(),
-    z.array(z.string()),
-  ]).describe('Prototype command as a string (e.g., "list") or array (e.g., ["create", "Landing page"]). One command per call — batches are not supported here.'),
-});
-
 // Video tool schema — the same CLI-like shape, one command per call (no batching).
 export const VideoToolSchema = z.object({
   command: z.union([
@@ -540,65 +532,54 @@ Examples:
 - \`focus [windowId]\` — focus a browser window (no new window)
 - \`release [windowId|all]\` — dismiss the agent control overlay when done
 - \`close [windowId]\` — close a window of your own; the shared window is refused
-- \`hide [windowId]\` — hide the window while preserving state`,
+- \`hide [windowId]\` — hide the window while preserving state
 
-  prototype_tool: `Run a prototype's own commands (one command per call — string or array input, no batching).
+**Recording a tab.** \`record-start --tab <id> --ttl <dur> [--wait]\` records one named tab for at
+most <dur> and stops on its own when that is up (the ceiling is ten minutes). \`record-stop --tab
+<id>\` ends one early. Both name the tab: nothing is recorded by default, and a stop that guessed
+would land on a different recording than the one it meant.
 
-A prototype is a **folder** plus a **specification**. The folder is where the work lives; the
-specification is the folder's \`*.spec.md\` files — one spec per file (\`cart-total.spec.md\`),
-the file's name being the spec's identity — while \`spec.md\` is the conventional entry a new
-prototype is seeded with: an index, not a spec. Nothing claims that a
-spec is implemented — the folder *is* the work, and what is in it is read for what it is.
+A recording is not part of a turn. It ends when its time runs out, when the tab or its window goes
+away, or when you stop it — never because a turn ended — and its length is settled when it starts,
+so nothing has to be kept open or closed by hand. Without \`--wait\` the answer comes back as soon
+as it is recording; with it, the answer *is* the finished recording. Recording two tabs at once is
+ordinary: start one, work, start another, and the first keeps going. The tab you are recording is
+recorded whether or not you are looking at it.
 
-A prototype is **not a project**: projects are separate containers that group sessions, tasks and
-shared assets, and a prototype is never nested inside one.
-
-Everything in the folder is written with the Write/Edit tools: the specification and the material
-beside it (personas, a glossary, a screenshot, a spreadsheet — any format, no rule about what may sit
-there). Documents point at each
-other with an ordinary markdown link — \`[the flow](docs/checkout.md)\`, resolved from the linking
-document's folder and then the folder root — so one entry document can index several; that is
-navigation and nothing more. What the commands *derive* from the files is the point: \`status\`
-reports the specs, the files beside them, and any link that points at nothing.
-
-**The window** is \`browser_tool\`'s, and **none of these commands needs a browser at all**: every one
-of them is file work on the prototype's folder. Naming tabs, snapshots, clicks and every page
-primitive are that tool's. Looking at a recording is neither — that is \`video_tool sample\`.
-
-Read \`docs/prototypes.md\` before your first prototype command: it is the whole guide, and what is
-above is the short version of it. Run \`--help\` for the commands, their flags and examples.
+The file is a video, and reading it is \`video_tool\` (\`understand\` asks a question about it,
+\`sample\` pulls frames out). Recording first and working out what to ask afterwards is the normal
+order.
 
 Examples:
-- \`list\` — every prototype with its spec and file counts, and which one is bound
-- \`create Landing page\` — a folder with a starter \`spec.md\`. You write everything in it: each spec into its own \`<name>.spec.md\` file, the work's files beside it
-- \`create Rival checkout --no-bind\` — create one *without* stealing this session's binding (the one to use when you only mean to study it)
-- \`status\` — the specs, the files beside them, and any link that points at nothing
+- \`record-start --tab tab-3 --ttl 30s\`
+- \`record-start --tab tab-3 --ttl 1m --wait\`
+- \`record-stop --tab tab-3\``,
 
-Which prototype a command means is read from this session's binding. A command that takes no slug
-therefore still works with no window open, as long as this conversation is bound; with no binding,
-name one. Binding is the person's: they set it in the app, or a \`create\` binds what it made. Every
-command here is file work: none needs a browser window this conversation drives.`,
+  video_tool: `Read a recording — by asking a model about it, or by looking at its frames yourself
+(one command per call — string or array input, no batching).
 
-  video_tool: `Turn a recording into frames you can look at (one command per call — string or array input, no batching).
+\`understand <path> --prompt <question>\` decodes the recording into frames, sends them to a model
+together with the moment each one was taken from, and answers with what the model said. You get the
+reading, not the pictures — use it to find out what happened, in what order, and when. \`--changes\`
+keeps only the frames that moved, \`--every <dur>\` sets their spacing, \`--max <n>\` is the ceiling on
+how many are sent (the one knob that bounds a model's bill), and \`--model <id>\` picks the model.
 
-\`sample <path> [--out <dir>] [--every <dur>] [--changes] [--max <n>]\` decodes the recording into
-JPEG frames and hands them back to you as images — the way to read a screen recording, which is not
-something you can watch. The decoding is Chromium's: a hidden window of the app's own browser loads
-the file and samples it, so nothing needs ffmpeg. mp4 (H.264), webm and most mov files read; a HEVC,
-ProRes or otherwise unsupported recording is refused by name instead of half-read.
+\`sample <path>\` is the same frames without the model, handed back to you as images — for when you
+would rather look at them yourself. \`--out <dir>\` writes them as \`frame-0001.jpg\`,
+\`frame-0002.jpg\`, … and names them; without it they exist only in the reply.
 
-The default is a timeline: one frame every 2000 ms, at most 40 frames. \`--every <dur>\` changes the
-spacing (500ms, 2s), \`--changes\` keeps only the frames that moved, and \`--max <n>\` changes the
-ceiling. It writes **nothing** unless you pass \`--out <dir>\` — with it the frames are written there
-as \`frame-0001.jpg\`, \`frame-0002.jpg\`, … and the reply names them; without it they exist only in
-the reply, so run it again with \`--out\` when you need files to cite later. A relative \`<path>\` or
-\`<dir>\` counts from the workspace root.
+The decoding is Chromium's — the browser the app already ships, in a hidden window of its own — so
+there is no ffmpeg to install. mp4 (H.264), webm and most mov files read; HEVC reads only where the
+machine has a hardware decoder for it, and ProRes not at all. A recording that cannot be read is
+refused by name instead of half-read. A relative \`<path>\` or \`<dir>\`
+counts from the workspace root. \`understand\` needs a model configured for this conversation; when
+there is none it says so, and \`sample\` still works.
 
 Examples:
 - \`--help\`
-- \`sample ~/Desktop/demo.mp4\` — frames of the recording, in the reply, nothing written
-- \`sample demo.mp4 --out research/demo --every 500ms\` — every half second, written as files
-- \`sample demo.mp4 --changes --max 20\` — only the moments that moved, at most 20 frames`,
+- \`understand demo.mp4 --prompt "what did the user do, and when?"\`
+- \`understand demo.mp4 --prompt "did the total change?" --changes --max 20\`
+- \`sample demo.mp4 --out research/demo --every 500ms\``,
 
   drawio_tool: `Make and draw diagrams (one command per call — string or array input, no batching).
 
@@ -637,7 +618,7 @@ from the workspace root.
 
 Read \`docs/drawio-tools.md\` before your first drawio command: it is the whole guide — the file
 format and the rules that fail silently, where the shapes come from, and how a diagram takes part in
-a prototype.
+a spec.
 
 Examples:
 - \`--help\`
@@ -816,8 +797,6 @@ export const SESSION_TOOL_DEFS: SessionToolDef[] = [
   // Browser tool (backend-specific — requires BrowserPaneManager in Electron)
   // Single CLI-like tool that handles all browser actions via command string.
   { name: 'browser_tool', description: TOOL_DESCRIPTIONS.browser_tool, inputSchema: BrowserToolSchema, executionMode: 'backend', safeMode: 'allow', handler: null },
-  // Prototype workbench (backend-specific — same runtime as the browser tool, other door)
-  { name: 'prototype_tool', description: TOOL_DESCRIPTIONS.prototype_tool, inputSchema: PrototypeToolSchema, executionMode: 'backend', safeMode: 'allow', handler: null },
   // Video tool (backend-specific — the same pane runtime, decoding a recording in a hidden window)
   { name: 'video_tool', description: TOOL_DESCRIPTIONS.video_tool, inputSchema: VideoToolSchema, executionMode: 'backend', safeMode: 'allow', handler: null },
   { name: 'drawio_tool', description: TOOL_DESCRIPTIONS.drawio_tool, inputSchema: DrawioToolSchema, executionMode: 'backend', safeMode: 'allow', handler: null },

@@ -65,8 +65,8 @@ export interface WorkingDirectorySelectorProps {
  * WorkingDirectorySelector — trigger-agnostic picker for **which folder a
  * conversation works in**.
  *
- * The prototype a conversation is on is not a second answer to that question and is
- * not offered here: it has its own badge and picker next to this one, and binding one
+ * Whether the conversation is about the project's specs is not a second answer to that
+ * question and is not offered here: it has its own badge next to this one, and toggling it
  * does not move the folder.
  *
  * Owns the state machine ({@link useWorkingDirectoryState}), the Radix popover with

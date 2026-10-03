@@ -21,7 +21,7 @@
 
 import * as React from 'react'
 import { usePlatform } from '../../context/PlatformContext'
-import { usePrototypeFileWatch } from '../../hooks/usePrototypeFileWatch'
+import { useProjectFilesWatch } from '../../hooks/useProjectFilesWatch'
 
 /** Long enough to survive typing, short enough that nobody closes the app on a pending write. */
 const SAVE_DEBOUNCE_MS = 1200
@@ -248,7 +248,7 @@ export function useFileWriter(
     setSaveState('idle')
   }, [src])
 
-  usePrototypeFileWatch(() => void checkForExternalChange())
+  useProjectFilesWatch(() => void checkForExternalChange())
 
   const report = React.useCallback((next: string) => {
     latestRef.current = next

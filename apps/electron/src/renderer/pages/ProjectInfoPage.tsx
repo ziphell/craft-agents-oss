@@ -1,21 +1,27 @@
 /**
  * ProjectInfoPage
  *
- * Workspace-project detail page with three tabs: Sessions, Assets, Settings.
- * v1 scope only — no memory tab, no provider selection, no plugin marketplace.
+ * Workspace-project detail page with four tabs: Sessions, Specs, Assets, Settings.
+ *
+ * The **Specs** tab is the project's work report, in three layers: the goal (`goal.md`), the
+ * specifications (`*.spec.md`) and the plans (`*.plan.md`), each a file in this project's own
+ * folder (`specs.ts`). It is read from disk when the tab is opened — the same report the agent is
+ * told to read, from the same folder, so the page and the conversation can never disagree about
+ * what is there.
  */
 
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useAtomValue } from 'jotai'
-import { FolderKanban, FolderOpen, MessageSquarePlus, Plus, Trash2, Upload } from 'lucide-react'
+import { FileText, FolderKanban, FolderOpen, Plus, Trash2, TriangleAlert, Upload } from 'lucide-react'
 import { toast } from 'sonner'
 import { useActiveWorkspace, useAppShellContext } from '@/context/AppShellContext'
 import { navigate, routes } from '@/lib/navigate'
+import { useAskAgent } from '@/hooks/useAskAgent'
 import { sessionMetaMapAtom } from '@/atoms/sessions'
-import { prototypesAtom } from '@/atoms/prototypes'
 import {
+  Info_Alert,
   Info_Page,
   Info_Section,
   Info_Table,
@@ -28,22 +34,25 @@ import { cn } from '@/lib/utils'
 import { PROJECT_COLOR_PALETTE } from '@/utils/project-colors'
 import { InlineColorPickerRow } from '@/components/ui/inline-color-picker-row'
 import type { LoadedProject, ProjectAsset } from '@craft-agent/shared/projects/types'
+// A type, so it is erased: the barrel reaches node fs, and a value imported from it could not be
+// bundled for the renderer.
+import type { WorkLayers } from '@craft-agent/shared/projects'
 
 interface ProjectInfoPageProps {
   projectSlug: string
 }
 
-type TabKey = 'sessions' | 'prototypes' | 'assets' | 'settings'
+type TabKey = 'sessions' | 'specs' | 'assets' | 'settings'
 
 export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
   const { t } = useTranslation()
   const workspace = useActiveWorkspace()
   const workspaceId = workspace?.id
   const sessionMetaMap = useAtomValue(sessionMetaMapAtom)
-  const prototypes = useAtomValue(prototypesAtom)
-  const { onCreateSession } = useAppShellContext()
+  const { onCreateSession, onOpenFile } = useAppShellContext()
 
   const [project, setProject] = useState<LoadedProject | null>(null)
+  const [layers, setLayers] = useState<WorkLayers | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [tab, setTab] = useState<TabKey>('sessions')
@@ -111,6 +120,23 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
     if (tab === 'assets') refreshAssets()
   }, [tab, refreshAssets])
 
+  // The layers report, read when its tab is opened. Read rather than watched: it is derived from
+  // the folder on every call, and a person looking at the tab is the moment it has to be true.
+  const refreshLayers = useCallback(async () => {
+    if (!workspaceId) return
+    try {
+      const report = await window.electronAPI.getProjectLayers(workspaceId, projectSlug)
+      setLayers((report as WorkLayers) ?? null)
+    } catch (err) {
+      console.error('[ProjectInfoPage] Failed to read the layers report:', err)
+      setLayers(null)
+    }
+  }, [workspaceId, projectSlug])
+
+  useEffect(() => {
+    if (tab === 'specs') refreshLayers()
+  }, [tab, refreshLayers])
+
   const projectSessions = useMemo(() => {
     if (!project) return []
     const result: { id: string; name: string }[] = []
@@ -122,62 +148,17 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
     return result
   }, [project, sessionMetaMap])
 
-  const [bindingPrototype, setBindingPrototype] = React.useState(false)
-
   /**
-   * Tick a prototype this project works on, or untick it. The project carries the set
-   *; it is background for conversations here, not a binding — a
-   * prototype belongs to no project, and a conversation is bound
-   * explicitly, if at all.
-   *
-   * The whole set travels, in the order the prototypes are listed, so ticking one off
-   * sends the rest and unticking the last one sends an empty set — which is the clear,
-   * with nothing to say about it separately.
+   * The one way a notice is settled from here: the agent's own sentence goes into the draft of a
+   * conversation on this project, and nothing is sent on its own (`useAskAgent`). Which
+   * conversation is that hook's business, and it answers the same way for this project's specs.
    */
-  const handleToggleProjectPrototype = useCallback(async (prototypeSlug: string, checked: boolean) => {
-    if (!workspaceId || !project) return
-    const current = project.config.prototypeSlugs ?? []
-    const next = prototypes
-      .map((prototype) => prototype.slug)
-      .filter((slug) => (slug === prototypeSlug ? checked : current.includes(slug)))
-
-    setBindingPrototype(true)
-    try {
-      await window.electronAPI.updateProject(workspaceId, project.config.slug, { prototypeSlugs: next })
-    } catch (err) {
-      console.error('[ProjectInfoPage] Failed to change the project\'s prototypes:', err)
-      toast.error(t('projectInfo.prototypesSaveFailed'))
-    } finally {
-      setBindingPrototype(false)
-    }
-  }, [workspaceId, project, prototypes, t])
+  const askAgent = useAskAgent({ projectId: project?.config.id, name: project?.config.name })
 
   const handleStartSession = useCallback(async () => {
     if (!workspaceId || !project) return
     try {
       const session = await onCreateSession(workspaceId, { projectId: project.config.id })
-      if (session?.id) {
-        navigate(routes.view.allSessions(session.id))
-      }
-    } catch (err) {
-      console.error('[ProjectInfoPage] Failed to create session:', err)
-      toast.error(t('projectInfo.newSessionFailed'))
-    }
-  }, [workspaceId, project, onCreateSession, t])
-
-  /**
-   * A conversation on one prototype, chosen explicitly rather than left to the
-   * agent to work out from the background it is given. It *binds that
-   * conversation* and nothing else: the prototypes the project is worked on with
-   * are told to the conversation, never applied to it.
-   */
-  const handleStartSessionForPrototype = useCallback(async (prototypeSlug: string) => {
-    if (!workspaceId || !project) return
-    try {
-      const session = await onCreateSession(workspaceId, {
-        projectId: project.config.id,
-        prototypeSlug,
-      })
       if (session?.id) {
         navigate(routes.view.allSessions(session.id))
       }
@@ -262,6 +243,18 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
     }
   }, [workspaceId, project, refreshAssets, t])
 
+  // The three row kinds the layers tab renders: the goal (one, at most), the entry (one, at most)
+  // and one row per piece of work. Pulled out here so each can be narrowed once instead of
+  // repeating the null checks through the JSX.
+  const goalLayer = layers?.goal ?? null
+  const entryLayer = layers?.entry ?? null
+  const workPieces = layers?.pieces ?? []
+  const hasLayers = goalLayer !== null || entryLayer !== null || workPieces.length > 0
+
+  // A piece names its layers by their path relative to the folder, so the folder turns a name into
+  // the path a row opens. The goal and the entry carry their own absolute paths already.
+  const layerPath = (file: string) => `${layers?.dir ?? ''}/${file}`
+
   return (
     <Info_Page
       loading={loading}
@@ -282,8 +275,8 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
             <TabButton active={tab === 'sessions'} onClick={() => setTab('sessions')}>
               {t('projectInfo.tabSessions')}
             </TabButton>
-            <TabButton active={tab === 'prototypes'} onClick={() => setTab('prototypes')}>
-              {t('projectInfo.tabPrototypes')}
+            <TabButton active={tab === 'specs'} onClick={() => setTab('specs')}>
+              {t('projectSpecs.title')}
             </TabButton>
             <TabButton active={tab === 'assets'} onClick={() => setTab('assets')}>
               {t('projectInfo.tabAssets')}
@@ -326,57 +319,139 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
             </Info_Section>
           )}
 
-          {/* Prototypes tab — the prototypes in the workspace. A prototype belongs
-              to no project: the same one is worked on from conversations of
-              different projects. Any of them can be ticked as one
-              this project works on; that is background for
-              conversations here, not a binding — a conversation is bound
-              explicitly, if at all. */}
-          {tab === 'prototypes' && (
+          {/* Layers tab — what this project's own folder states, read from disk.
+              The thinking is written down in three layers, each a file in this folder: the goal
+              (`goal.md`, one at the root), the specifications (`*.spec.md`) and the plans
+              (`*.plan.md`). A spec and a plan that share a stem are the two layers of one piece
+              of work, so a piece is one row with a chip per layer it holds.
+              The goal and the entry are each one row; a piece is one row whose left side names the
+              work and whose right side carries one button per layer — a row has two targets, so it
+              cannot itself be the click.
+              Nothing here claims what implements a spec: that would be a second description of the
+              work, and it would go stale the moment a file changed. And nothing here counts what is
+              missing: a layer with no file is simply a layer with no button.
+              The i18n keys say `projectSpecs.*`: one set of words for the concept, at the project
+              page where the layer surface lives. The layer names themselves are `mode.*`, shared
+              with the composer's selector. */}
+          {tab === 'specs' && (
             <Info_Section
-              title={t('projectInfo.tabPrototypes')}
-              description={t('projectInfo.prototypesHint')}
+              title={t('projectSpecs.title')}
+              description={layers && workPieces.length > 0 ? t('projectSpecs.hint') : undefined}
+              bare={!layers || !hasLayers}
             >
-              {prototypes.length === 0 ? (
+              {!layers ? null : !hasLayers ? (
                 <div className="px-4 py-6 text-sm text-muted-foreground">
-                  {t('projectInfo.prototypesEmpty')}
+                  {t('projectSpecs.empty')}
                 </div>
               ) : (
                 <ul className="divide-y divide-border/50">
-                  {prototypes.map((prototype) => (
-                    <li key={prototype.slug} className="px-4 py-2 flex items-center gap-3">
-                      {/* Which ones this project works on: the
-                          project's own set, ticked here. A set, not a choice of
-                          one — several can be ticked at once. */}
-                      <input
-                        type="checkbox"
-                        className="shrink-0"
-                        checked={(project.config.prototypeSlugs ?? []).includes(prototype.slug)}
-                        disabled={bindingPrototype}
-                        onChange={(event) => void handleToggleProjectPrototype(prototype.slug, event.target.checked)}
-                      />
+                  {/* The goal: one row, no layer chip, opening the file itself. */}
+                  {goalLayer && (
+                    <li>
                       <button
                         type="button"
-                        className="flex-1 min-w-0 text-sm font-mono text-foreground hover:underline text-left truncate"
-                        onClick={() => navigate(routes.view.prototypes(prototype.slug))}
+                        onClick={() => onOpenFile(goalLayer.file.path)}
+                        className="flex w-full min-w-0 items-center gap-2 px-4 py-2 text-left"
                       >
-                        {prototype.slug}
+                        <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <span className="min-w-0 flex-1 truncate text-sm">{goalLayer.title}</span>
+                        <span
+                          className="max-w-[50%] shrink-0 truncate font-mono text-xs text-foreground/50"
+                          title={goalLayer.file.name}
+                        >
+                          {goalLayer.file.name}
+                        </span>
                       </button>
-                      {/* The explicit choice, in the one place a choice is needed: a
-                          conversation is bound to a prototype or it is not, and this
-                          binds the new one. Unrelated to which
-                          prototypes the project is worked on with. */}
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => void handleStartSessionForPrototype(prototype.slug)}
+                    </li>
+                  )}
+
+                  {/* The entry: the index, named by its file name and opened on click. */}
+                  {entryLayer && (
+                    <li>
+                      <button
+                        type="button"
+                        onClick={() => onOpenFile(entryLayer.path)}
+                        className="flex w-full min-w-0 items-center gap-2 px-4 py-2 text-left"
                       >
-                        <MessageSquarePlus className="h-3.5 w-3.5 mr-1" />
-                        {t('projectInfo.prototypeNewSession')}
-                      </Button>
+                        <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <span className="min-w-0 flex-1 truncate text-sm">{entryLayer.name}</span>
+                      </button>
+                    </li>
+                  )}
+
+                  {/* One row per piece of work: the name on the left, and one chip per layer it
+                      holds on the right — each chip opens its own file. */}
+                  {workPieces.map((piece) => (
+                    <li key={piece.stem} className="flex min-w-0 items-center gap-2 px-4 py-2">
+                      <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      <span className="min-w-0 flex-1 truncate text-sm">
+                        {piece.spec?.title ?? piece.plan?.title ?? piece.stem}
+                      </span>
+                      {/* The stem is the piece's identity — what its layers are grouped by — so it
+                          travels beside the name rather than being inferred from it. */}
+                      <span
+                        className="max-w-[40%] shrink-0 truncate font-mono text-xs text-foreground/50"
+                        title={piece.stem}
+                      >
+                        {piece.stem}
+                      </span>
+                      <div className="flex shrink-0 items-center gap-1">
+                        {piece.spec && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 px-2 text-xs"
+                            title={piece.spec.file}
+                            onClick={() => onOpenFile(layerPath(piece.spec!.file))}
+                          >
+                            {t('mode.spec')}
+                          </Button>
+                        )}
+                        {piece.plan && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 px-2 text-xs"
+                            title={piece.plan.file}
+                            onClick={() => onOpenFile(layerPath(piece.plan!.file))}
+                          >
+                            {t('mode.plan')}
+                          </Button>
+                        )}
+                      </div>
                     </li>
                   ))}
                 </ul>
+              )}
+
+              {/* What the folder owes — facts only: links that point at nothing. Shown only when
+                  there is something, and each line carries the one action that settles it: hand
+                  the agent's own sentence to a conversation on this project. */}
+              {layers && layers.brokenLinkNotices.length > 0 && (
+                <div className="border-t border-border/50">
+                  <Info_Alert variant="warning" icon={<TriangleAlert className="h-4 w-4" />}>
+                    <div className="flex flex-col gap-1.5">
+                      {layers.brokenLinkNotices.map((blocker) => (
+                        <div key={blocker.text} className="flex items-start gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div>{t(`projectSpecNotice.${blocker.code}`, blocker.params)}</div>
+                            <div className="font-mono text-xs break-words text-foreground/50">
+                              {blocker.text}
+                            </div>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="shrink-0 px-2"
+                            onClick={() => void askAgent(blocker.text)}
+                          >
+                            {t('projectSpecs.askAgent')}
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  </Info_Alert>
+                </div>
               )}
             </Info_Section>
           )}

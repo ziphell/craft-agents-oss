@@ -47,10 +47,7 @@ import { EventQueue } from './backend/event-queue.ts';
 import { getSystemPrompt } from '../prompts/system.ts';
 import { getCoAuthorPreference } from '../config/preferences.ts';
 import { loadProjectById, getProjectAssetsPath, listProjectAssets, getProjectMemoryPath, loadProjectMemory } from '../projects/storage.ts';
-import type { ProjectPromptContext } from '../projects/types.ts';
-import { buildPrototypePromptContext } from '../prototypes/prompt.ts';
-import { getProjectPrototypes } from '../prototypes/project-link.ts';
-import type { PrototypePromptContext } from '../prototypes/prompt.ts';
+import type { LoadedProject, ProjectPromptContext } from '../projects/types.ts';
 
 // Credential manager for token storage
 import { getCredentialManager } from '../credentials/manager.ts';
@@ -91,7 +88,6 @@ import { homedir } from 'os';
 
 // Session storage (plans folder path)
 import { getSessionDataPath, getSessionPath, getSessionPlansPath } from '../sessions/storage.ts';
-import { getWorkspacePrototypesPath } from '../workspaces/storage.ts';
 
 // Error typing
 import { parseError, type AgentError } from './errors.ts';
@@ -108,7 +104,6 @@ import { extractWorkspaceSlug } from '../utils/workspace.ts';
 // LLM tool types
 import { LLM_QUERY_TIMEOUT_MS, type LLMQueryRequest, type LLMQueryResult } from './llm-tool.ts';
 import { executeBrowserToolCommand } from './browser-commands.ts';
-import { executePrototypeToolCommand } from './prototype-commands.ts';
 import { executeVideoToolCommand } from './video-commands.ts';
 import { executeDrawioToolCommand } from './drawio-commands.ts';
 import { saveBinaryResponse } from '../utils/binary-detection.ts';
@@ -122,7 +117,6 @@ export const PI_BACKEND_SESSION_TOOL_NAMES = new Set<string>([
   'call_llm',
   'spawn_session',
   'browser_tool',
-  'prototype_tool',
   'video_tool',
   'drawio_tool',
 ]);
@@ -130,13 +124,12 @@ export const PI_BACKEND_SESSION_TOOL_NAMES = new Set<string>([
 /**
  * Which command table a pane tool name runs — the doors, in one place.
  *
- * One command table per door: `browser_tool` for the window itself, `prototype_tool` for a
- * prototype's own files and flow, `video_tool` for frames out of a recording. A name not in here
- * is not a pane tool at all, and falls through to the registry below.
+ * One command table per door: `browser_tool` for the window itself, `video_tool` for frames out of
+ * a recording. A name not in here is not a pane tool at all, and falls through to the registry
+ * below.
  */
 const PANE_TOOL_EXECUTORS: Record<string, typeof executeBrowserToolCommand> = {
   browser_tool: executeBrowserToolCommand,
-  prototype_tool: executePrototypeToolCommand,
   video_tool: executeVideoToolCommand,
   drawio_tool: executeDrawioToolCommand,
 };
@@ -222,69 +215,40 @@ export class PiAgent extends BaseAgent {
   private static readonly MAX_IDENTICAL_SUBPROCESS_ERRORS = 3;
 
   /**
-   * Look up the bound project (if any) and return a snapshot for system-prompt injection.
-   * Mirrors ClaudeAgent.resolveProjectContext — safe to call on every turn since the
-   * project config file is small.
+   * Look up the session's bound project once. The project block and the spec block
+   * both build from this single load, so the two can never disagree about where the
+   * session's project lives. Mirrors ClaudeAgent.loadBoundProject — safe to call on
+   * every turn since the project config file is small.
    */
-  private resolveProjectContext(): ProjectPromptContext | null {
+  private loadBoundProject(): LoadedProject | null {
     const projectId = this.config.session?.projectId;
     if (!projectId) return null;
 
     try {
-      const root = this.config.workspace.rootPath;
-      const project = loadProjectById(root, projectId);
-      if (!project) return null;
-      const slug = project.config.slug;
-      return {
-        name: project.config.name,
-        description: project.config.description,
-        details: project.config.details,
-        // What a project says about prototypes: the ones its work touches — told
-        // as background, not given: a set, with nothing targeted for the session. A
-        // prototype belongs to no project, so this is the only direction there is.
-        prototypes: getProjectPrototypes(root, slug),
-        assetsPath: getProjectAssetsPath(root, slug),
-        assets: listProjectAssets(root, slug).map((a) => ({
-          filename: a.filename,
-          mimeType: a.mimeType,
-          sizeBytes: a.sizeBytes,
-        })),
-        memoryPath: getProjectMemoryPath(root, slug),
-        memoryContent: loadProjectMemory(root, slug) ?? undefined,
-      };
+      return loadProjectById(this.config.workspace.rootPath, projectId);
     } catch (error) {
       this.debug(`[resolveProjectContext] Failed to load project ${projectId}: ${error instanceof Error ? error.message : error}`);
       return null;
     }
   }
 
-  /**
-   * Look up the prototype this conversation is on (if any) and return a snapshot
-   * for system-prompt injection.
-   *
-   * Only this conversation's own binding counts. A project's note about which
-   * prototype it is on is background — it reaches the session through
-   * `<project_prototype>` and nothing is targeted for the conversation because of it.
-   *
-   * Resolved per turn (unlike ClaudeAgent, which pins on the first chat) because
-   * this backend rebuilds its prompt each time anyway — and asked of the host
-   * rather than read off `config.session`, which is a snapshot from agent creation
-   * and would make "per turn" mean "per turn, from a stale value"
-   * (see BackendConfig.getPrototypeSlug).
-   */
-  private resolvePrototypeContext(): PrototypePromptContext | null {
-    const slug = this.config.getPrototypeSlug?.() ?? this.config.session?.prototypeSlug ?? null;
-    if (!slug) return null;
-
-    try {
-      return buildPrototypePromptContext(
-        this.config.workspace.rootPath,
-        slug,
-      );
-    } catch (error) {
-      this.debug(`[resolvePrototypeContext] Failed to load prototype ${slug}: ${error instanceof Error ? error.message : error}`);
-      return null;
-    }
+  /** Snapshot a loaded project for system-prompt injection. */
+  private buildProjectPromptContext(project: LoadedProject): ProjectPromptContext {
+    const root = this.config.workspace.rootPath;
+    const slug = project.config.slug;
+    return {
+      name: project.config.name,
+      description: project.config.description,
+      details: project.config.details,
+      assetsPath: getProjectAssetsPath(root, slug),
+      assets: listProjectAssets(root, slug).map((a) => ({
+        filename: a.filename,
+        mimeType: a.mimeType,
+        sizeBytes: a.sizeBytes,
+      })),
+      memoryPath: getProjectMemoryPath(root, slug),
+      memoryContent: loadProjectMemory(root, slug) ?? undefined,
+    };
   }
 
   private resetSubprocessErrorDedup(): void {
@@ -1291,7 +1255,10 @@ export class PiAgent extends BaseAgent {
     const dataFolderPath = sessionId
       ? getSessionDataPath(rootPath, sessionId)
       : undefined;
-    const prototypesFolderPath = getWorkspacePrototypesPath(rootPath);
+    // The session's project folder — where its specs are written, and therefore one of the
+    // folders Explore mode allows writes to. Resolved through the same loader the project and
+    // spec prompt blocks read; absent when the session is in no project.
+    const projectFolderPath = this.loadBoundProject()?.folderPath;
 
     // Build RTK context fresh per call so toggling the preference takes
     // effect without restart. `getRtkPath()` is cached per process.
@@ -1308,7 +1275,7 @@ export class PiAgent extends BaseAgent {
       workspaceId: workspaceSlug,
       plansFolderPath,
       dataFolderPath,
-      prototypesFolderPath,
+      projectFolderPath,
       workingDirectory: this.config.session?.workingDirectory,
       activeSourceSlugs: Array.from(this.sourceManager.getActiveSlugs()),
       allSourceSlugs: this.sourceManager.getAllSources().map(s => s.config.slug),
@@ -1382,6 +1349,7 @@ export class PiAgent extends BaseAgent {
           workspaceId: workspaceSlug,
           plansFolderPath,
           dataFolderPath,
+          projectFolderPath,
           workingDirectory: this.config.session?.workingDirectory,
           activeSourceSlugs: Array.from(this.sourceManager.getActiveSlugs()),
           allSourceSlugs: this.sourceManager.getAllSources().map(s => s.config.slug),
@@ -1603,8 +1571,7 @@ export class PiAgent extends BaseAgent {
       }
 
       // The pane tools — one command table per door, reached by name: `browser_tool` for the
-      // window itself, `prototype_tool` for a prototype's own files and flow, `video_tool` for
-      // frames out of a recording.
+      // window itself, `video_tool` for frames out of a recording.
       const paneExecute = PANE_TOOL_EXECUTORS[toolName];
       if (paneExecute) {
         const callbacks = getSessionScopedToolCallbacks(this._sessionId);
@@ -1619,6 +1586,12 @@ export class PiAgent extends BaseAgent {
             fns: browserFns,
             sessionId: this._sessionId,
             workspaceRootPath: this.config.workspace.rootPath,
+            // The same registry the pane functions came from, and the same callback `call_llm`
+            // uses: `video_tool understand` reads a recording by asking a model about its
+            // frames, so a door that is handed one without it can only refuse. Read from
+            // *these* callbacks rather than a second lookup — they are one object, and
+            // dropping this half is what made `understand` answer "no model is configured".
+            queryLlm: callbacks?.queryFn,
           });
 
           let content = result.output;
@@ -2143,8 +2116,8 @@ export class PiAgent extends BaseAgent {
       }
 
       // Build system prompt
-      const projectContext = this.resolveProjectContext();
-      const prototypeContext = this.resolvePrototypeContext();
+      const boundProject = this.loadBoundProject();
+      const projectContext = boundProject ? this.buildProjectPromptContext(boundProject) : null;
       const systemPrompt = getSystemPrompt(
         undefined, // pinnedPreferencesPrompt
         this.config.debugMode,
@@ -2154,7 +2127,6 @@ export class PiAgent extends BaseAgent {
         'Craft Agents Backend', // backendName
         getCoAuthorPreference(), // respect user's includeCoAuthoredBy preference (#576)
         projectContext ?? undefined,
-        prototypeContext ?? undefined,
       );
 
       // Build context from sources
@@ -2175,7 +2147,12 @@ export class PiAgent extends BaseAgent {
       const plansFolderPath = getSessionPlansPath(this.config.workspace.rootPath, this._sessionId);
       const stableParts = this.promptBuilder.buildStableContextParts();
       const volatileParts = this.promptBuilder.buildVolatileContextParts(
-        { plansFolderPath },
+        {
+          plansFolderPath,
+          // The session's project folder — named in `<session_state>` so the agent knows where
+          // its specs go (and that Explore mode lets it write them there).
+          projectFolderPath: boundProject?.folderPath,
+        },
         sourceContext
       );
 

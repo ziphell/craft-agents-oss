@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { useTranslation } from "react-i18next"
 import { Command as CommandPrimitive } from 'cmdk'
-import { Check, Minimize2 } from 'lucide-react'
+import { Check, Minimize2, Target, FileText, ListChecks } from 'lucide-react'
 import { Icon_Folder } from '@craft-agent/ui'
 import { cn } from '@/lib/utils'
 import { PERMISSION_MODE_CONFIG, PERMISSION_MODE_ORDER, type PermissionMode } from '@craft-agent/shared/agent/modes'
@@ -10,7 +10,11 @@ import { PERMISSION_MODE_CONFIG, PERMISSION_MODE_ORDER, type PermissionMode } fr
 // Types
 // ============================================================================
 
-export type SlashCommandId = PermissionMode | 'compact'
+/** The project layers a conversation can be working on (`goal` / `spec` / `plan`). */
+export const LAYER_COMMAND_IDS = ['goal', 'spec', 'plan'] as const
+export type LayerCommandId = (typeof LAYER_COMMAND_IDS)[number]
+
+export type SlashCommandId = PermissionMode | 'compact' | LayerCommandId
 
 /** Union type for all item types in the slash menu */
 export type SlashItemType = 'command' | 'folder'
@@ -96,6 +100,33 @@ const compactCommand: SlashCommand = {
   description: 'Summarize conversation context to free up token budget',
   icon: <Minimize2 className={MENU_ICON_SIZE} />,
 }
+
+// The three project layers. Labels stay in English on purpose: unlike the
+// permission modes these name the layer a conversation works on (goal.md /
+// *.spec.md / *.plan.md), not a UI noun that should follow the locale.
+const layerCommands: SlashCommand[] = [
+  {
+    id: 'goal',
+    label: 'Goal',
+    description: "Work out the project's goal",
+    icon: <Target className={MENU_ICON_SIZE} />,
+  },
+  {
+    id: 'spec',
+    label: 'Spec',
+    description: 'Work out the requirements',
+    icon: <FileText className={MENU_ICON_SIZE} />,
+  },
+  {
+    id: 'plan',
+    label: 'Plan',
+    description: 'Work out the approach',
+    icon: <ListChecks className={MENU_ICON_SIZE} />,
+  },
+]
+
+/** The layer commands, for surfaces that add them as their own group. */
+export const LAYER_COMMANDS: SlashCommand[] = layerCommands
 
 export const DEFAULT_SLASH_COMMANDS: SlashCommand[] = [
   ...permissionModeCommands,
@@ -534,6 +565,8 @@ export interface UseInlineSlashCommandOptions {
   activeCommands?: SlashCommandId[]
   recentFolders?: string[]
   homeDir?: string
+  /** Add the project-layer commands (Goal / Spec / Plan) to the Commands section */
+  showLayerCommands?: boolean
 }
 
 export interface UseInlineSlashCommandReturn {
@@ -555,6 +588,7 @@ export function useInlineSlashCommand({
   activeCommands = [],
   recentFolders = [],
   homeDir,
+  showLayerCommands = false,
 }: UseInlineSlashCommandOptions): UseInlineSlashCommandReturn {
   const [isOpen, setIsOpen] = React.useState(false)
   const [filter, setFilter] = React.useState('')
@@ -578,7 +612,7 @@ export function useInlineSlashCommand({
     result.push({
       id: 'commands',
       label: 'Commands',
-      items: [compactCommand],
+      items: [...(showLayerCommands ? layerCommands : []), compactCommand],
     })
 
     // Recent folders section - sorted alphabetically by folder name, show all
@@ -604,7 +638,7 @@ export function useInlineSlashCommand({
     }
 
     return result
-  }, [recentFolders, homeDir])
+  }, [recentFolders, homeDir, showLayerCommands])
 
   const handleInputChange = React.useCallback((value: string, cursorPosition: number) => {
     // Store current state for handleSelect

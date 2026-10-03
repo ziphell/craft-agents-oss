@@ -90,36 +90,10 @@ export function getWorkspaceSkillsPath(rootPath: string): string {
 }
 
 /**
- * Directory name (under a workspace root) holding prototype-workbench artifacts.
- * Lives at the workspace level so deliverables survive individual sessions.
- */
-export const PROTOTYPES_DIRNAME = 'prototypes';
-
-/**
- * Get path to the workspace prototypes directory (prototype-workbench artifacts)
- * @param rootPath - Absolute path to workspace root folder
- */
-export function getWorkspacePrototypesPath(rootPath: string): string {
-  return join(rootPath, PROTOTYPES_DIRNAME);
-}
-
-/**
- * Ensure the workspace prototypes directory exists, returning its path.
- * @param rootPath - Absolute path to workspace root folder
- */
-export function ensureWorkspacePrototypesPath(rootPath: string): string {
-  const prototypesPath = getWorkspacePrototypesPath(rootPath);
-  if (!existsSync(prototypesPath)) {
-    mkdirSync(prototypesPath, { recursive: true });
-  }
-  return prototypesPath;
-}
-
-/**
  * Directory name (under a workspace root) holding the tweaks that act on other
  * people's web pages.
  *
- * Workspace level, like the prototypes directory, because a tweak is a standing
+ * Workspace level, like the sessions directory, because a tweak is a standing
  * arrangement rather than something one conversation owns: it has to be findable by
  * whatever is about to load a page, long after the conversation that wrote it ended.
  */

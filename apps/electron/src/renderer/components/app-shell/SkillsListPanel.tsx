@@ -1,11 +1,14 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
+import { useAtomValue } from 'jotai'
 import { Zap } from 'lucide-react'
 import { toast } from 'sonner'
 import { SkillAvatar } from '@/components/ui/skill-avatar'
 import { EntityPanel } from '@/components/ui/entity-panel'
 import { EntityListEmptyScreen } from '@/components/ui/entity-list-empty'
 import { skillSelection } from '@/hooks/useEntitySelection'
+import { automationsAtom } from '@/atoms/automations'
+import { skillSlugsWithEntries } from '@/lib/skill-entries'
 import { SkillMenu } from './SkillMenu'
 import { SendResourceToWorkspaceDialog } from './SendResourceToWorkspaceDialog'
 import { EditPopover, getEditConfig } from '@/components/ui/EditPopover'
@@ -37,6 +40,13 @@ export function SkillsListPanel({
   const canRevealLocally = !activeWorkspace?.remoteServer
   const { workspaces, activeWorkspaceId } = useAppShellContext()
   const hasOtherWorkspaces = workspaces.length > 1
+
+  // Which skills an automation runs on its own — computed from automations.json, never stored.
+  const automations = useAtomValue(automationsAtom)
+  const withEntries = React.useMemo(
+    () => skillSlugsWithEntries(automations, skills.map((s) => s.slug)),
+    [automations, skills],
+  )
 
   // Send to Workspace dialog state
   const [sendDialogOpen, setSendDialogOpen] = React.useState(false)
@@ -81,6 +91,11 @@ export function SkillsListPanel({
             {skill.source === 'project' && (
               <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded-full bg-foreground/5 text-muted-foreground">
                 {t('skillsList.projectBadge')}
+              </span>
+            )}
+            {withEntries.has(skill.slug) && (
+              <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded-full bg-foreground/5 text-muted-foreground">
+                {t('skillsList.autoRunBadge')}
               </span>
             )}
             <span className="truncate">{skill.metadata.description}</span>

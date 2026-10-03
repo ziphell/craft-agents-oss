@@ -34,9 +34,6 @@ export interface CompactWorkingDirectorySelectorProps {
  * The desktop `Popover` + `cmdk` variant continues to live in
  * `FreeFormInput.tsx` for non-compact layouts.
  *
- * The prototype a conversation is on is a separate badge with its own picker
- * (`CompactPrototypeSelector`), not an answer here.
- *
  * State is shared with the desktop surface via `useWorkingDirectoryState`.
  */
 export function CompactWorkingDirectorySelector({

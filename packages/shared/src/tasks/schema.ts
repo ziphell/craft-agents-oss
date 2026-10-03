@@ -209,6 +209,11 @@ export const TaskSpecSchema = z
     goal: z.string().min(1),
     /** Freeform rubric the orchestrator grades the final result against (verification gate). Falls back to `goal`. */
     acceptance_criteria: z.string().min(1).optional(),
+    /** The plan file this task was generated from — a `*.plan.md` in the project folder. Optional:
+     *  a hand-authored task (or one generated with no plan) carries none. Stored portable (a `~`
+     *  prefix when under the home dir) and expanded on read, exactly like ProjectConfig.workingDirectory
+     *  (see storage.ts) — the same convention, not a new one. */
+    from: z.string().min(1).optional(),
     project: z.string().min(1).optional(),
     /** Working directory for the orchestrator and every child session. Absolute path; when
      *  omitted the orchestrator's own working directory (project/workspace default) is used and

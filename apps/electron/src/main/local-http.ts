@@ -10,14 +10,6 @@
 import { stat } from 'fs/promises'
 
 /**
- * Hand a request back to Chromium's own network stack.
- *
- * `bypassCustomProtocolHandlers` is what keeps the handler from answering itself,
- * and it makes the request Chromium would have made anyway.
- */
-export type PassThrough = (request: Request) => Promise<Response>
-
-/**
  * The piece of `Electron.Session` these hosts need.
  *
  * Structural on purpose: the routing is the interesting part and it has to be

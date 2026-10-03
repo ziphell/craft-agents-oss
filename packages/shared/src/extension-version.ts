@@ -1,9 +1,8 @@
 /**
  * The version a generated browser extension is stamped with.
  *
- * One rule, two writers: an extension is built from a prototype's pages or from a set of
- * tweaks, and both have to answer the same question — "which build am I looking at?" —
- * for a reviewer who reloads the extension after every change.
+ * An extension is built from a set of tweaks, and it has to answer one question — "which
+ * build am I looking at?" — for a reviewer who reloads the extension after every change.
  *
  * Chrome's version parts are numbers, so the answer has to be numbers:
  * `1.<days since epoch>.<minutes of the day>` is monotonic within a day, readable, and

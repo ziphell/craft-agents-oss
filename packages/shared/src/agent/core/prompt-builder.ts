@@ -16,13 +16,20 @@ import { isLocalMcpEnabled } from '../../workspaces/storage.ts';
 import { formatPreferencesForPrompt } from '../../config/preferences.ts';
 import { formatSessionState } from '../mode-manager.ts';
 import { getDateTimeContext, getWorkingDirectoryContext } from '../../prompts/system.ts';
+import { formatModeContextForPrompt } from '../../projects/mode-prompt.ts';
 import { getSessionPlansPath, getSessionDataPath, getSessionPath } from '../../sessions/storage.ts';
-import { getWorkspacePrototypesPath } from '../../workspaces/storage.ts';
+import type { SessionMode } from '../../sessions/types.ts';
 import type {
   PromptBuilderConfig,
   ContextBlockOptions,
   RecoveryMessage,
 } from './types.ts';
+
+/**
+ * Sentinel for "the session-mode block has never been announced in this session".
+ * Distinct from both `null` (mode off, already announced) and a `SessionMode` value.
+ */
+const MODE_NOT_ANNOUNCED = Symbol('mode-not-announced');
 
 /**
  * PromptBuilder provides utilities for building prompts and context blocks.
@@ -46,6 +53,12 @@ export class PromptBuilder {
   private config: PromptBuilderConfig;
   private workspaceRootPath: string;
   private pinnedPreferencesPrompt: string | null = null;
+  /**
+   * The session mode last announced in a user message, or {@link MODE_NOT_ANNOUNCED} when none
+   * has been. Comparing the live mode against this is what makes the `<work>` block a one-shot:
+   * it goes out when the mode is set or changed, not on every turn. See buildSessionModeBlock().
+   */
+  private announcedSessionMode: SessionMode | null | typeof MODE_NOT_ANNOUNCED = MODE_NOT_ANNOUNCED;
 
   constructor(config: PromptBuilderConfig) {
     this.config = config;
@@ -112,21 +125,30 @@ export class PromptBuilder {
     // Date/time first (kept on the user tail to preserve prompt caching)
     parts.push(getDateTimeContext());
 
-    // Session state (permission mode, plans folder path, data folder path).
+    // Session state (permission mode, plans folder path, data folder path, project folder path).
     // Only this volatile builder may consume the one-shot mode-change signal.
     const sessionId = this.config.session?.id ?? `temp-${Date.now()}`;
     const plansFolderPath = options.plansFolderPath ??
       getSessionPlansPath(this.workspaceRootPath, sessionId);
     const dataFolderPath = options.dataFolderPath ??
       getSessionDataPath(this.workspaceRootPath, sessionId);
-    const prototypesFolderPath = options.prototypesFolderPath ??
-      getWorkspacePrototypesPath(this.workspaceRootPath);
+    // The project folder has no workspace-level default: it is the *session's* project that owns
+    // one, and a session in no project names none — so it travels only when a caller resolved it.
+    const projectFolderPath = options.projectFolderPath;
     parts.push(formatSessionState(sessionId, {
       plansFolderPath,
       dataFolderPath,
-      prototypesFolderPath,
+      projectFolderPath,
       consumeModeChangeUserSignal: true,
     }));
+
+    // The session's work mode (`goal`/`spec`/`plan`), announced once when it is set or changed.
+    // It rides the user tail for the same reason as the blocks above: the mode's rules must not
+    // live in the cached system prefix, or setting/changing a mode would invalidate it.
+    const modeBlock = this.buildSessionModeBlock(options.projectFolderPath);
+    if (modeBlock) {
+      parts.push(modeBlock);
+    }
 
     // Source state if provided
     if (sourceStateBlock) {
@@ -134,6 +156,55 @@ export class PromptBuilder {
     }
 
     return parts;
+  }
+
+  /**
+   * Build the `<work mode="…" folder="…">` block — but only on the turn after the session's
+   * mode is set or changed, and on the turn after compaction (see resetInjectedSessionMode()).
+   *
+   * Why once rather than every turn: the block states the whole rule set for the mode, so
+   * repeating it on every user message would be pure noise. Why the user message rather than the
+   * system prompt: the system prompt is the cached prefix, and a value that changes with the mode
+   * would re-stamp it on every switch (the same reason date/time and safe-mode context already
+   * live here). The block's own copy is one static string per mode, so re-emitting it after a
+   * change costs only the tail of the new message — never the history behind it.
+   *
+   * The live mode is read from the session config, which the session layer keeps current through
+   * `setSessionMode()`; a change is detected by comparing against the last announced value. A mode
+   * on a session with no project folder names nowhere, so it renders as absent and is deliberately
+   * left un-announced so it can go out once the session is bound.
+   */
+  private buildSessionModeBlock(projectFolderPath?: string): string | null {
+    const mode = this.config.session?.mode ?? null;
+
+    if (mode === this.announcedSessionMode) {
+      return null;
+    }
+
+    // Mode off: nothing to say, and remember it so "off" is not re-checked every turn.
+    if (mode == null) {
+      this.announcedSessionMode = null;
+      return null;
+    }
+
+    // Mode on but no project folder to point at: the block would name nowhere. Leave it
+    // un-announced so it still goes out once a folder exists (or on the next mode change).
+    if (!projectFolderPath) {
+      return null;
+    }
+
+    this.announcedSessionMode = mode;
+    return formatModeContextForPrompt({ mode, folderPath: projectFolderPath });
+  }
+
+  /**
+   * Re-arm the session-mode block so the current mode is announced again on the next user
+   * message. Called after context compaction: the block lives in user messages now, and
+   * compaction rolls the earlier ones into a summary, so without this the model would come out of
+   * compaction with no mode at all. A no-op when no mode is set — the next build sees "off".
+   */
+  resetInjectedSessionMode(): void {
+    this.announcedSessionMode = MODE_NOT_ANNOUNCED;
   }
 
   /**

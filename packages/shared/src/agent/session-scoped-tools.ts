@@ -34,7 +34,6 @@ import {
 import { createLLMTool, type LLMQueryRequest, type LLMQueryResult } from './llm-tool.ts';
 import { createSpawnSessionTool, type SpawnSessionFn } from './spawn-session-tool.ts';
 import { createBrowserTools } from './browser-tools.ts';
-import { createPrototypeTools } from './prototype-tools.ts';
 import { createVideoTools } from './video-tools.ts';
 import { createDrawioTools } from './drawio-tools.ts';
 import type { BrowserPaneFns } from './browser-pane.ts';
@@ -82,7 +81,6 @@ export const CLAUDE_BACKEND_SESSION_TOOL_NAMES = new Set<string>([
   'call_llm',
   'spawn_session',
   'browser_tool',
-  'prototype_tool',
   'video_tool',
   'drawio_tool',
 ]);
@@ -309,24 +307,20 @@ export function getSessionScopedTools(
             return callbacks?.browserPaneFns;
           },
         }),
-        // The prototype workbench is the same runtime behind its own door: its commands drive
-        // this window too, so it is under the same switch.
-        ...createPrototypeTools({
-          sessionId,
-          workspaceRootPath,
-          getBrowserPaneFns: () => {
-            const callbacks = getSessionScopedToolCallbacks(sessionId);
-            return callbacks?.browserPaneFns;
-          },
-        }),
         // Video frames are decoded by the app's browser (a hidden window of its own), so the
-        // video tool is on this runtime too, and under the same switch.
+        // video tool is on this runtime too, and under the same switch. It also asks a model
+        // (`understand`) — the same callback `call_llm` uses, which is why it is the one door
+        // that carries both surfaces.
         ...createVideoTools({
           sessionId,
           workspaceRootPath,
           getBrowserPaneFns: () => {
             const callbacks = getSessionScopedToolCallbacks(sessionId);
             return callbacks?.browserPaneFns;
+          },
+          getQueryFn: () => {
+            const callbacks = getSessionScopedToolCallbacks(sessionId);
+            return callbacks?.queryFn;
           },
         }),
         // Diagrams are converted and drawn by the app's own drawio (a hidden window again), so

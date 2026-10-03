@@ -21,8 +21,6 @@ export {
   getWorkspaceSourcesPath,
   getWorkspaceSessionsPath,
   getWorkspaceSkillsPath,
-  getWorkspacePrototypesPath,
-  ensureWorkspacePrototypesPath,
   getWorkspaceTweaksPath,
   TWEAKS_DIRNAME,
   // Config operations
@@ -43,5 +41,4 @@ export {
   // Constants
   CONFIG_DIR,
   DEFAULT_WORKSPACES_DIR,
-  PROTOTYPES_DIRNAME,
 } from './storage.ts';

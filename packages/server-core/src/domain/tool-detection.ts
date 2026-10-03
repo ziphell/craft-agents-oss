@@ -2,9 +2,8 @@
  * Browser tool detection helpers.
  *
  * Browser overlay activation is driven by `browser_tool` alone — the one command wrapper that drives
- * a page. `prototype_tool` reads and writes a prototype's own files and never acts on the session's
- * tab, so it never raises the overlay. Which name denotes which wrapper is `resolveToolName`'s
- * question, answered once in `@craft-agent/shared/agent`.
+ * a page. Which name denotes that wrapper is `resolveToolName`'s question, answered once in
+ * `@craft-agent/shared/agent`.
  */
 
 import { resolveToolName } from '@craft-agent/shared/agent'

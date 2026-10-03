@@ -32,12 +32,35 @@ import { getModelById, getDefaultSummarizationModel, MODEL_REGISTRY } from '../c
 // ============================================================================
 
 /**
+ * One image in a request, with where it sits in a recording when it came from one.
+ *
+ * The prompt text names the offsets too (an ordered list, one per image) so every backend can
+ * pair an image with a moment by position alone; `timestampMs` is the same fact on the data
+ * side, for a backend that can interleave it (Claude can) instead of re-reading the text.
+ */
+export interface LLMQueryImage {
+  /** Base64, without a `data:` prefix. */
+  data: string;
+  /** e.g. `image/jpeg`. */
+  mimeType: string;
+  /** Position in the recording, ms from its start. */
+  timestampMs?: number;
+}
+
+/**
  * Request passed to the agent-native queryFn callback.
  * The prompt includes serialized file content (attachments are pre-processed by the tool).
  */
 export interface LLMQueryRequest {
   /** Full prompt including serialized file content */
   prompt: string;
+  /**
+   * Images to send with the prompt, in order.
+   *
+   * A recording becomes a sequence of frames the model can look at; this is that sequence. An
+   * empty array is the same as omitting it.
+   */
+  images?: LLMQueryImage[];
   /** Optional system prompt */
   systemPrompt?: string;
   /** Model to use (validated against registry) */
@@ -61,6 +84,14 @@ export interface LLMQueryResult {
   /** Non-fatal warning attached to a partially-successful result (e.g. SDK stopped at max_turns). */
   warning?: string;
 }
+
+/**
+ * The agent-native query callback, as the registry holds it.
+ *
+ * Named once because two doors need the same thing: `call_llm` is a prompt someone else wrote,
+ * and `video_tool understand` is a prompt this app assembles out of a recording's frames.
+ */
+export type LlmQueryFn = (request: LLMQueryRequest) => Promise<LLMQueryResult>;
 
 /**
  * Unified timeout for secondary LLM calls (call_llm and mini-completion flows).
@@ -553,7 +584,7 @@ export interface LLMToolOptions {
    * Called at execution time to get the current callback from the session registry.
    * Each backend implements queryLlm() with native structured output support.
    */
-  getQueryFn: () => ((request: LLMQueryRequest) => Promise<LLMQueryResult>) | undefined;
+  getQueryFn: () => LlmQueryFn | undefined;
 }
 
 export function createLLMTool(options: LLMToolOptions) {

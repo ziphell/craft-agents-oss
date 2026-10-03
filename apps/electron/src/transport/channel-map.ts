@@ -219,14 +219,10 @@ export const CHANNEL_MAP = {
   unwatchSessionFiles: invoke(RPC_CHANNELS.sessions.UNWATCH_FILES),
   onSessionFilesChanged: listener(RPC_CHANNELS.sessions.FILES_CHANGED),
 
-  // Prototype workbench artifacts (workspace-level)
-  watchPrototypes: invoke(RPC_CHANNELS.prototypes.WATCH),
-  unwatchPrototypes: invoke(RPC_CHANNELS.prototypes.UNWATCH),
-  listPrototypes: invoke(RPC_CHANNELS.prototypes.LIST),
-  createPrototype: invoke(RPC_CHANNELS.prototypes.CREATE),
-  duplicatePrototype: invoke(RPC_CHANNELS.prototypes.DUPLICATE),
-  deletePrototype: invoke(RPC_CHANNELS.prototypes.DELETE),
-  onPrototypesChanged: listener(RPC_CHANNELS.prototypes.CHANGED),
+  // Project files (workspace-level)
+  watchProjectFiles: invoke(RPC_CHANNELS.projects.WATCH_FILES),
+  unwatchProjectFiles: invoke(RPC_CHANNELS.projects.UNWATCH_FILES),
+  onProjectFilesChanged: listener(RPC_CHANNELS.projects.FILES_CHANGED),
 
   // Sources
   getSources: invoke(RPC_CHANNELS.sources.GET),
@@ -399,6 +395,7 @@ export const CHANNEL_MAP = {
   // Projects
   getProjects: invoke(RPC_CHANNELS.projects.GET),
   getProject: invoke(RPC_CHANNELS.projects.GET_ONE),
+  getProjectLayers: invoke(RPC_CHANNELS.projects.LAYERS),
   createProject: invoke(RPC_CHANNELS.projects.CREATE),
   updateProject: invoke(RPC_CHANNELS.projects.UPDATE),
   deleteProject: invoke(RPC_CHANNELS.projects.DELETE),

@@ -16,6 +16,7 @@ import type {
 } from '@craft-agent/core/types'
 import type { PermissionMode } from '../agent/mode-types'
 import type { ThinkingLevel } from '../agent/thinking-levels'
+import type { SessionMode } from '../sessions/types'
 import type { ConnectionModelEntry, CustomEndpointConfig } from '../config/llm-connections'
 import type {
   AuthRequest as SharedAuthRequest,
@@ -25,6 +26,11 @@ import type {
 
 // Re-export generateMessageId for handler convenience
 export { generateMessageId } from '@craft-agent/core/types'
+
+// The conversation's mode family lives with the session field that carries it;
+// re-exported here so renderer code (which imports the protocol barrel) sees the
+// one shared type instead of repeating the union.
+export type { SessionMode } from '../sessions/types'
 
 // ---------------------------------------------------------------------------
 // Session types
@@ -103,8 +109,13 @@ export interface Session {
   supportsBranching?: boolean
   /** Workspace-scoped project id this session is bound to (undefined = unbound) */
   projectId?: string
-  /** Prototype slug this session is bound to (undefined = unbound) */
-  prototypeSlug?: string
+  /**
+   * The layer this conversation is working in (`goal` / `spec` / `plan`), or
+   * undefined for an ordinary conversation. Its home is the folder of the project
+   * this session belongs to, so a mode means nothing outside a project.
+   * Only affects the prompt block added for this conversation, no tools.
+   */
+  mode?: SessionMode
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task) */
   parentSessionId?: string
   /** Kanban board column id ('todo' | 'in-progress' | 'done'); independent of sessionStatus */
@@ -157,8 +168,8 @@ export interface CreateSessionOptions {
   branchFromSessionId?: string
   /** Bind the new session to a workspace project (inherits project's workingDirectory). */
   projectId?: string
-  /** Bind the new session to a prototype (a slug under the workspace's prototypes/ folder). */
-  prototypeSlug?: string
+  /** The layer the new session is working in (its home is the owning project's folder). */
+  mode?: SessionMode
   /** Mark the new session as a subtask of this parent session (undefined = top-level task). */
   parentSessionId?: string
   /** Tasks Conductor: slug of the task spec this session belongs to (orchestrator + child nodes). */
@@ -227,6 +238,13 @@ export interface TaskCreateRequest {
    * leave a duplicate tile). Distinct from `orchestratorSessionId`, which adopts a hidden draft.
    */
   attachToExistingSession?: string
+  /**
+   * Optional absolute path to the plan file this task is being created from — the same path
+   * `tasks:generate` was handed via `TaskGenerateRequest.planPath`. When present, the handler
+   * records it as the spec's `from` (the task's origin), stored portable on write like
+   * `ProjectConfig.workingDirectory`. Absent → no `from` is written. Sent verbatim; no validation.
+   */
+  planPath?: string
 }
 
 export interface TaskCreateResult {
@@ -246,6 +264,13 @@ export interface TaskCreateResult {
 export interface TaskGenerateRequest {
   /** Natural-language goal the orchestrator turns into a task.yaml DAG. */
   goal: string
+  /**
+   * Optional absolute path to a plan file (`*.plan.md`) the orchestrator must turn into the DAG
+   * instead of re-inventing a decomposition. Sent as an absolute path — a project's file paths are
+   * absolute (`FolderFile.path`). The handler reads the file and hands its text to the generator;
+   * it does NOT gate on the suffix, so any file the person points at is read.
+   */
+  planPath?: string
   /** Optional working title for the task / orchestrator session. */
   title?: string
   /** Optional model for the orchestrator session (defaults to the session default). */
@@ -408,7 +433,7 @@ export type SessionEvent =
   | { type: 'sources_changed'; sessionId: string; enabledSourceSlugs: string[] }
   | { type: 'labels_changed'; sessionId: string; labels: string[] }
   | { type: 'project_id_changed'; sessionId: string; projectId: string | null }
-  | { type: 'prototype_slug_changed'; sessionId: string; prototypeSlug: string | null }
+  | { type: 'mode_changed'; sessionId: string; mode: SessionMode | null }
   | { type: 'connection_changed'; sessionId: string; connectionSlug: string; supportsBranching?: boolean }
   | { type: 'task_backgrounded'; sessionId: string; toolUseId: string; taskId: string; intent?: string; turnId?: string; kind?: 'workflow'; workflowId?: string }
   | { type: 'shell_backgrounded'; sessionId: string; toolUseId: string; shellId: string; intent?: string; command?: string; turnId?: string }
@@ -424,7 +449,7 @@ export type SessionEvent =
   | { type: 'name_changed'; sessionId: string; name?: string }
   | { type: 'session_model_changed'; sessionId: string; model: string | null }
   | { type: 'session_status_changed'; sessionId: string; sessionStatus: SessionStatus }
-  | { type: 'session_metadata_changed'; sessionId: string; changes: Partial<Pick<Session, 'taskNodeCount' | 'taskAwaitingApproval' | 'kanbanColumn' | 'taskDraft' | 'taskSlug' | 'projectId' | 'prototypeSlug'>> }
+  | { type: 'session_metadata_changed'; sessionId: string; changes: Partial<Pick<Session, 'taskNodeCount' | 'taskAwaitingApproval' | 'kanbanColumn' | 'taskDraft' | 'taskSlug' | 'projectId' | 'mode'>> }
   | { type: 'session_deleted'; sessionId: string }
   | { type: 'session_created'; sessionId: string }
   | { type: 'session_shared'; sessionId: string; sharedUrl: string }
@@ -469,8 +494,7 @@ export type SessionCommand =
   | { type: 'setSources'; sourceSlugs: string[] }
   | { type: 'setLabels'; labels: string[] }
   | { type: 'setProjectId'; projectId: string | null }
-  /** Bind or unbind this session to a prototype. Pass null to unbind. */
-  | { type: 'setPrototypeSlug'; prototypeSlug: string | null }
+  | { type: 'setMode'; mode: SessionMode | null }
   | { type: 'setKanbanColumn'; column: string | null }
   | { type: 'showInFinder' }
   | { type: 'copyPath' }
@@ -874,7 +898,7 @@ export interface PickedElementOrigin {
 /**
  * An action the browser panel's toolbar forwards to the main window.
  *
- * The panel has no workspace or prototype context of its own (it is a separate
+ * The panel has no workspace context of its own (it is a separate
  * render process), so it reports *what the user did* and lets the main window —
  * which owns the binding — decide what it means.
  */
@@ -890,8 +914,8 @@ export type BrowserToolbarAction =
    * conversation.
    *
    * Separate from `picked` because the two do different things with the same
-   * element — one hands it to the edit flow, the other writes a draft — and this
-   * one needs no prototype at all, only a conversation.
+   * element — one hands it to the edit flow, the other writes a draft into a
+   * conversation.
    *
    * `origin` is the tab inside the window this pick came from: with the picker
    * resident across the window's tabs, the element alone does not say where it

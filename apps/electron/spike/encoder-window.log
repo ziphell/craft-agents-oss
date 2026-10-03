@@ -1,0 +1,31 @@
+﻿
+SPIKE_STEP 14:42:22.378 bundling the app's own page and preload into C:\Users\Ryan\AppData\Local\Temp\craft-encoder-spike-qIkuPw
+node_modules/electron/dist/electron.exe : 
+At line:15 char:3787
++ ... pgrep\bin'; node_modules/electron/dist/electron.exe apps/electron/spi ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  ..\..\AppData\Local\Temp\craft-encoder-spike-qIkuPw\page.cjs  4.0kb
+
+Done in 6ms
+
+  ..\..\AppData\Local\Temp\craft-encoder-spike-qIkuPw\preload.cjs  1.5kb
+
+Done in 5ms
+
+  ..\..\AppData\Local\Temp\craft-encoder-spike-qIkuPw\formats.cjs  1.7kb
+
+Done in 7ms
+SPIKE_STEP 14:42:23.764 negotiated: video/mp4;codecs=avc1.42E01E → .mp4
+SPIKE_STEP 14:42:23.768 recording for 3000ms
+SPIKE_STEP 14:42:27.391 file: 94833 bytes, container=mp4, chunks=3, frames=92
+SPIKE_STEP 14:42:27.482 read back: {"verdict":"metadata","duration":2.9633,"width":640,"height":480}
+SPIKE_JSON {"negotiated":{"mimeType":"video/mp4;codecs=avc1.42E01E","extension":"mp4"},"container":"mp4","bytes":94833,"chunks":3,"frames":92,"readBack":{"verdict":"metadata","duration":2.9633,"width":640,"height":480},"ok":true,"file":"C:\\Users\\Ryan\\AppData\\Local\\Temp\\craft-encoder-spike-qIkuPw\\spike.mp4"}
+
+negotiated   video/mp4;codecs=avc1.42E01E  (.mp4)
+container    mp4
+bytes        94833  in 3 chunks, from 92 frames
+read back    {"verdict":"metadata","duration":2.9633,"width":640,"height":480}
+file         C:\Users\Ryan\AppData\Local\Temp\craft-encoder-spike-qIkuPw\spike.mp4

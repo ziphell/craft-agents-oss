@@ -1,6 +1,6 @@
 # Tweaks
 
-A tweak is a **standing edit to a page nobody here owns**: "on our admin console, show the order id next to the customer name". It is one folder holding the pages it is for and the CSS and/or JavaScript that does it, and it is applied **every time one of those pages loads** — in an ordinary browser, whether or not this app is running anywhere near it. That last part is what separates a tweak from a prototype's patch: a patch is replayed while somebody is looking at the page, a tweak is the standing version of the same edit.
+A tweak is a **standing edit to a page nobody here owns**: "on our admin console, show the order id next to the customer name". It is one folder holding the pages it is for and the CSS and/or JavaScript that does it, and it is applied **every time one of those pages loads** — in an ordinary browser, whether or not this app is running anywhere near it. That last part is what sets a tweak apart from an edit that is only made while somebody is looking at the page: the tweak is the standing version of that same edit.
 
 Two carriers deliver a tweak, and they are built from the same files:
 

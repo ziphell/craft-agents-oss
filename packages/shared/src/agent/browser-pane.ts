@@ -2,15 +2,13 @@
  * The browser pane's capability surface.
  *
  * `BrowserPaneFns` is what the main process implements and what every command on every door calls
- * (`browser_tool` for the window itself, `prototype_tool` for a prototype's own files and flow,
- * `video_tool` for frames out of a recording). Keeping it in its own module is what lets those
- * tools be separate files without any of them owning the interface the others depend on.
+ * (`browser_tool` for the window itself, `video_tool` for frames out of a recording). Keeping it in
+ * its own module is what lets those tools be separate files without any of them owning the
+ * interface the others depend on.
  */
 
 import type { BrowserTabSummary, PickedElement } from '../protocol/dto.ts';
 import type { DrawioPage } from '../drawio/types.ts';
-import type { CreatedPrototype } from '../prototypes/create.ts';
-import type { PrototypeStatus } from '../prototypes/status.ts';
 
 // ============================================================================
 // Browser Pane Function Interface
@@ -169,6 +167,58 @@ export const DRAWIO_EXTENSIONS: Record<DrawioFormat, string> = {
   xml: '.drawio',
 }
 
+/** A recording in flight, as `record-start` and `record-stop` report it. */
+export interface BrowserRecordingRef {
+  tabId: string
+  /** Absolute path the file is being written to. */
+  file: string
+  startedAt: number
+  bytes: number
+}
+
+/** A finished recording: where it is, how long it ran, and why it ended. */
+export interface BrowserFinishedRecording {
+  tabId: string
+  file: string
+  bytes: number
+  seconds: number
+  /** Words, because this is reported to whoever asked: `asked`, `deadline`, `the tab went away`… */
+  reason: string
+}
+
+export interface BrowserStartRecordingArgs {
+  /** The tab to record. Named, never guessed — a stop has to be able to match it. */
+  tabId: string
+  /**
+   * The directory the file goes in.
+   *
+   * Passed in rather than derived here: the pane knows about windows and tabs, not about where a
+   * conversation keeps its files. The door that knows the convention computes it
+   * (`browser-commands.ts` → the session's `records/`), so the convention has one home.
+   */
+  dir: string
+  /** How long, in ms. Required: it is the only thing that bounds a recording. */
+  ttlMs: number
+  /**
+   * Wait for it to end, and answer with what it left on disk.
+   *
+   * The two forms a recording has, in one call rather than two: without this, the answer comes
+   * back as soon as it is running (and the ending arrives later, as a background event); with
+   * it, the answer *is* the ending. Asking twice — start, then poll — would leave a gap in
+   * which a short recording could end and its result be lost.
+   */
+  wait?: boolean
+}
+
+export type BrowserStartRecordingResult =
+  | { started: true; recording: BrowserRecordingRef; extension: string; finished?: BrowserFinishedRecording }
+  | { started: false; reason: 'already-recording'; recording: BrowserRecordingRef }
+  | { started: false; reason: 'no-encoder' | 'no-capture'; message: string }
+
+export type BrowserStopRecordingResult =
+  | { stopped: true; recording: BrowserFinishedRecording }
+  | { stopped: false; reason: 'not-recording' }
+
 export interface BrowserPaneFns {
   openPanel: (options?: { background?: boolean }) => Promise<{ instanceId: string }>;
   navigate: (url: string) => Promise<{ url: string; title: string }>;
@@ -212,21 +262,6 @@ export interface BrowserPaneFns {
   /** Prompt the user to click an element; resolves null on cancel/timeout. */
   pick: (options?: { timeoutMs?: number }) => Promise<PickedElement | null>;
   /**
-   * The prototype this session is bound to, or null when unbound.
-   *
-   * Every `prototype_tool` command falls back to this when no slug is passed,
-   * which is what lets a bound conversation be driven without naming artifacts.
-   */
-  getBoundPrototypeSlug?: () => string | null;
-  /** Every prototype in the workspace, with its derived status. */
-  listPrototypes: () => Promise<PrototypeStatus[]>;
-  /** Create a prototype: a folder plus a starter `spec.md`. The files written into it are the prototype. */
-  createPrototype: (input: {
-    name: string;
-  }) => Promise<CreatedPrototype>;
-  /** Bind (or unbind, with null) this session's prototype. */
-  bindPrototype: (slug: string | null) => Promise<void>;
-  /**
    * Sample frames out of a recording — `video_tool sample`.
    *
    * The decoding is Chromium's: a hidden window loads the file and copies each sample to a
@@ -249,6 +284,33 @@ export interface BrowserPaneFns {
     everyMs?: number;
     /** Ceiling on frames. */
     maxFrames?: number;
+    /**
+     * How much has to change for `changes` mode to keep a frame — `(0, 1]`, smaller keeps more.
+     *
+     * Omitted means the sampler's own default (the thing this mode always did), so passing it is
+     * only ever a deliberate loosening or tightening.
+     */
+    changeThreshold?: number;
+    /** Where to start looking, ms. Omitted, from the beginning. */
+    fromMs?: number;
+    /**
+     * Where to stop, ms. **Omitted means to the end.**
+     *
+     * There is deliberately no "to the end" token: the caller cannot name a duration it has not
+     * been told yet, so not passing this is how that is said.
+     */
+    toMs?: number;
+    /**
+     * The first frame of the recording, and/or the last, **and nothing else** — `sample` cover and
+     * "where did it end up".
+     *
+     * Not a way of narrowing a scan: a range is sampled on an interval, so `--from 0 --to end` on
+     * a 30s recording is fifteen frames, not the two ends. These ask for those two specifically.
+     */
+    first?: boolean;
+    last?: boolean;
+    /** Longest edge of each frame, in pixels. Scales down only, aspect preserved. */
+    maxEdge?: number;
   }) => Promise<{ durationMs: number; truncated: boolean; frames: SampledVideoFrame[] }>;
   /**
    * A `.drawio` document → SVG, an editable SVG, a PNG or a standalone page — `drawio_tool
@@ -290,17 +352,12 @@ export interface BrowserPaneFns {
    * the pages of a file are otherwise only visible to whoever reads its XML.
    */
   listDrawioPages: (args: { path: string }) => Promise<DrawioPage[]>;
-  /**
-   * Inspect a prototype: its specification, the specs its documents state, and the rest of
-   * the folder. Pure file inspection — no browser needed.
-   */
-  prototypeStatus: (slug: string) => Promise<PrototypeStatus>;
   focusWindow: (instanceId?: string) => Promise<{ instanceId: string; title: string; url: string }>;
   releaseControl: (instanceId?: string) => Promise<BrowserLifecycleActionResult>;
   closeWindow: (instanceId?: string) => Promise<BrowserLifecycleActionResult>;
   hideWindow: (instanceId?: string) => Promise<BrowserLifecycleActionResult>;
   /**
-   * Add a tab to this session's window — what makes several prototypes workable
+   * Add a tab to this session's window — what makes several pages workable
    * at once, since the window is one and its tabs are many. Returns
    * the new tab's id.
    *
@@ -358,6 +415,24 @@ export interface BrowserPaneFns {
     agentControlActive?: boolean;
   }>>;
   detectChallenge: () => Promise<{ detected: boolean; provider: string; signals: string[] }>;
+  /**
+   * Record a tab — `record-start`.
+   *
+   * A recording belongs to `(this conversation, this tab)`, so the person can be recording the
+   * same tab at the same time and neither is the other's business. **What is recorded is
+   * whichever tab is named**, and it keeps being that tab: the conversation moving to another
+   * tab does not move the recording.
+   *
+   * Its length is settled here and nothing lengthens it afterwards — `ttlMs` is required, and it
+   * is the only bound. See `wait` for the two forms.
+   *
+   * Optional because recording needs a window with a live renderer and an encoder behind it: a
+   * headless runtime has neither, and saying "this runtime cannot record" is better than a
+   * method that always throws. `record-start` refuses by name when it is absent.
+   */
+  startRecording?: (args: BrowserStartRecordingArgs) => Promise<BrowserStartRecordingResult>;
+  /** End one early — `record-stop`. `--ttl` is the ordinary end; this is for "it is done now". */
+  stopRecording?: (args: { tabId: string }) => Promise<BrowserStopRecordingResult>;
 }
 
 // ============================================================================
@@ -368,8 +443,9 @@ export interface BrowserPaneFns {
  * What both tool factories are built with: which session they answer for, how to reach that
  * session's pane, and where the workspace is.
  *
- * Named after the pane rather than one of the tools, because `createBrowserTools` and
- * `createPrototypeTools` take the same options — the two are doors onto one window.
+ * Named after the pane rather than one of the tools, because every tool on this runtime —
+ * `browser_tool`, `video_tool`, `drawio_tool` — takes the same options: they are doors onto one
+ * window.
  */
 export interface BrowserPaneToolOptions {
   sessionId: string;

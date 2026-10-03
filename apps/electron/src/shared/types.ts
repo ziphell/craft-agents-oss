@@ -517,33 +517,10 @@ export interface ElectronAPI {
   unwatchSessionFiles(): Promise<void>
   onSessionFilesChanged(callback: (sessionId: string) => void): () => void
 
-  // Prototype workbench artifacts (workspace-level)
-  watchPrototypes(): Promise<void>
-  unwatchPrototypes(): Promise<void>
-  onPrototypesChanged(callback: (workspaceId: string, file: string | null) => void): () => void
-  /** Every prototype in the workspace, each with its derived status. */
-  listPrototypes(workspaceId: string): Promise<unknown>
-  /**
-   * Create a prototype: a folder with the entry document (`spec.md`) in it. The files
-   * written into it afterwards are the prototype, so creation asks for nothing but
-   * a name.
-   */
-  createPrototype(workspaceId: string, input: { name: string }): Promise<unknown>
-  /**
-   * Copy a prototype into a new one (the list's "Duplicate"): the same files, its
-   * own slug. The two are independent afterwards. `name` only derives the new slug —
-   * omitted, the copy is `<slug> copy`.
-   */
-  duplicatePrototype(
-    workspaceId: string,
-    slug: string,
-    options?: { name?: string },
-  ): Promise<unknown>
-  /**
-   * Remove a prototype and everything in it. Irreversible — the caller asks the
-   * user first.
-   */
-  deletePrototype(workspaceId: string, slug: string): Promise<unknown>
+  // Project files (workspace-level)
+  watchProjectFiles(): Promise<void>
+  unwatchProjectFiles(): Promise<void>
+  onProjectFilesChanged(callback: (workspaceId: string, file: string | null) => void): () => void
 
   // Sources
   getSources(workspaceId: string): Promise<LoadedSource[]>
@@ -752,12 +729,9 @@ export interface ElectronAPI {
   // Projects (workspace-scoped)
   getProjects(workspaceId: string): Promise<unknown>
   getProject(workspaceId: string, projectIdOrSlug: string): Promise<unknown | null>
+  getProjectLayers(workspaceId: string, projectSlug: string): Promise<import('@craft-agent/shared/projects').WorkLayers>
   createProject(workspaceId: string, input: import('@craft-agent/shared/projects/types').CreateProjectInput): Promise<import('@craft-agent/shared/projects/types').ProjectConfig>
-  /**
-   * Patch a project. `prototypeSlugs` is the set of prototypes the project is worked on
-   * with and is carried as a whole set: an empty list is the clear.
-   */
-  updateProject(workspaceId: string, projectSlug: string, patch: Partial<Omit<import('@craft-agent/shared/projects/types').ProjectConfig, 'id' | 'slug' | 'createdAt' | 'prototypeSlugs'>> & { prototypeSlugs?: string[] }): Promise<import('@craft-agent/shared/projects/types').ProjectConfig>
+  updateProject(workspaceId: string, projectSlug: string, patch: Partial<Omit<import('@craft-agent/shared/projects/types').ProjectConfig, 'id' | 'slug' | 'createdAt'>>): Promise<import('@craft-agent/shared/projects/types').ProjectConfig>
   deleteProject(workspaceId: string, projectSlug: string): Promise<void>
   listProjectAssets(workspaceId: string, projectSlug: string): Promise<unknown>
   uploadProjectAsset(workspaceId: string, projectSlug: string, input: { filename: string; base64?: string; text?: string; sourcePath?: string }): Promise<import('@craft-agent/shared/projects/types').ProjectAsset>
@@ -1014,15 +988,6 @@ export interface ProjectsNavigationState {
 }
 
 /**
- * Prototypes navigation state
- */
-export interface PrototypesNavigationState {
-  navigator: 'prototypes'
-  details: { type: 'prototype'; prototypeSlug: string } | null
-  rightSidebar?: RightSidebarPanel
-}
-
-/**
  * Tweaks navigation state
  *
  * Bare `tweaks` (details: null) shows the library list — it never
@@ -1044,7 +1009,6 @@ export type NavigationState =
   | SkillsNavigationState
   | AutomationsNavigationState
   | ProjectsNavigationState
-  | PrototypesNavigationState
   | TweaksNavigationState
 
 export const isSessionsNavigation = (
@@ -1070,10 +1034,6 @@ export const isAutomationsNavigation = (
 export const isProjectsNavigation = (
   state: NavigationState
 ): state is ProjectsNavigationState => state.navigator === 'projects'
-
-export const isPrototypesNavigation = (
-  state: NavigationState
-): state is PrototypesNavigationState => state.navigator === 'prototypes'
 
 export const isTweaksNavigation = (
   state: NavigationState
@@ -1109,12 +1069,6 @@ export const getNavigationStateKey = (state: NavigationState): string => {
       return `projects/project/${state.details.projectSlug}`
     }
     return 'projects'
-  }
-  if (state.navigator === 'prototypes') {
-    if (state.details?.type === 'prototype') {
-      return `prototypes/prototype/${state.details.prototypeSlug}`
-    }
-    return 'prototypes'
   }
   if (state.navigator === 'tweaks') {
     if (state.details?.type === 'tweak') {
@@ -1178,16 +1132,6 @@ export const parseNavigationStateKey = (key: string): NavigationState | null => 
       return { navigator: 'projects', details: { type: 'project', projectSlug } }
     }
     return { navigator: 'projects', details: null }
-  }
-
-  // Handle prototypes
-  if (key === 'prototypes') return { navigator: 'prototypes', details: null }
-  if (key.startsWith('prototypes/prototype/')) {
-    const prototypeSlug = key.slice(21)
-    if (prototypeSlug) {
-      return { navigator: 'prototypes', details: { type: 'prototype', prototypeSlug } }
-    }
-    return { navigator: 'prototypes', details: null }
   }
 
   // Handle tweaks

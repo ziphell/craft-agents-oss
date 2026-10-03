@@ -1467,8 +1467,14 @@ html.dark[data-scenic] .fullscreen-overlay-background {
    needs a viewport-media equivalent for the topbar variant specifically. */
 @media (max-width: 768px) {
   /* TopBar lives outside the shell container, so mirror the compact 36px
-     button target here instead of relying only on @container shell rules. */
-  .header-icon-btn {
+     button target here instead of relying only on @container shell rules.
+
+     Skipped in the embedded browser chrome (`browser-toolbar.html` marks its
+     document `.browser-chrome`): that document is a view whose viewport is the
+     *window minus the tab rail*, so narrowing a browser window trips this very
+     query — and its action buttons grew (28 → 36px, icons 14 → 20px) although
+     nothing about the screen had changed. */
+  html:not(.browser-chrome) .header-icon-btn {
     width: 36px;
     height: 36px;
     border-radius: 8px;
@@ -1494,8 +1500,9 @@ html.dark[data-scenic] .fullscreen-overlay-background {
   }
 
   /* Bump TopBar icons from 18px → 20px in compact mode. Kept tight inside the
-     36×36 button so it doesn't dominate the bar. */
-  .header-icon-btn svg {
+     36×36 button so it doesn't dominate the bar. (Not the browser chrome — same
+     reason as the button target above.) */
+  html:not(.browser-chrome) .header-icon-btn svg {
     width: 20px;
     height: 20px;
   }

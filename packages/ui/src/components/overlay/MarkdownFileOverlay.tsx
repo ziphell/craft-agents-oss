@@ -1,6 +1,5 @@
 /**
- * A markdown file, opened full size — from a link in a conversation, from the block that names it,
- * or from the prototype page's file list.
+ * A markdown file, opened full size — from a link in a conversation, or from the block that names it.
  *
  * It is the same overlay every other file preview opens (`PreviewOverlay`: one header, one place the
  * file's own menu lives, modal on a wide screen and full screen on a narrow one), filled by

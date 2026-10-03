@@ -58,13 +58,36 @@ import { PrerequisiteManager } from './core/prerequisite-manager.ts';
 import type { AutomationSystem } from '../automations/automation-system.ts';
 import type { AgentEvent as AutomationAgentEvent, SdkAutomationInput } from '../automations/types.ts';
 import { getSessionPlansPath, getSessionDataPath, getSessionPath } from '../sessions/storage.ts';
-import { getWorkspacePrototypesPath } from '../workspaces/storage.ts';
+import type { SessionMode } from '../sessions/types.ts';
+import { loadProjectById } from '../projects/storage.ts';
 import { getMiniAgentSystemPrompt } from '../prompts/system.ts';
 import { buildTitlePrompt, buildRegenerateTitlePrompt, validateTitle } from '../utils/title-generator.ts';
 
 // Skill extraction for Codex/Copilot backends (Claude uses native SDK Skill tool)
 import { parseMentions, resolveSkillMentions, resolveSourceMentions, resolveFileMentions } from '../mentions/index.ts';
 import { loadAllSkills } from '../skills/storage.ts';
+
+/**
+ * The folder of the project this session belongs to, when it belongs to one.
+ *
+ * Resolved through the same loader the project and spec prompt blocks read — the session's bound
+ * project id — so the folder a prompt names and the folder Explore mode allows writes to can
+ * never be two different answers. A session in no project, or one whose project is gone, names
+ * none and no folder is passed on.
+ */
+function resolveBoundProjectFolderPath(
+  workspaceRootPath: string,
+  projectId: string | undefined,
+  onDebug: (message: string) => void,
+): string | undefined {
+  if (!projectId) return undefined;
+  try {
+    return loadProjectById(workspaceRootPath, projectId)?.folderPath;
+  } catch (error) {
+    onDebug(`[projectFolderPath] Failed to load project ${projectId}: ${error instanceof Error ? error.message : error}`);
+    return undefined;
+  }
+}
 
 // ============================================================
 // Mini Agent Configuration
@@ -283,7 +306,13 @@ export abstract class BaseAgent implements AgentBackend {
       workingDirectory: this.workingDirectory,
       plansFolderPath: getSessionPlansPath(config.workspace.rootPath, this._sessionId),
       dataFolderPath: getSessionDataPath(config.workspace.rootPath, this._sessionId),
-      prototypesFolderPath: getWorkspacePrototypesPath(config.workspace.rootPath),
+      // The session's project folder — resolved from the same source the project/spec prompt
+      // blocks use (the session's bound project id), and absent for a session in no project.
+      projectFolderPath: resolveBoundProjectFolderPath(
+        config.workspace.rootPath,
+        config.session?.projectId,
+        (message) => this.debug(message),
+      ),
     });
 
     // SourceManager: tracks active/inactive sources and formats state for context injection
@@ -490,10 +519,16 @@ export abstract class BaseAgent implements AgentBackend {
    * After compaction the LLM no longer has guide content in context,
    * so it must re-read before using source tools.
    * Also resets seen sources so guide paths re-appear in source introductions.
+   *
+   * Both agents call this on compaction, which is also why the current session mode is re-armed
+   * here: the mode block now rides user messages, and compaction rolls the earlier ones into a
+   * summary — so without this the model would come out of compaction with no mode at all. The
+   * block is re-injected once on the next user message (see PromptBuilder.resetInjectedSessionMode).
    */
   resetPrerequisiteState(): void {
     this.prerequisiteManager.resetReadState();
     this.sourceManager.resetSeenSources();
+    this.promptBuilder.resetInjectedSessionMode();
   }
 
   /**
@@ -525,6 +560,21 @@ export abstract class BaseAgent implements AgentBackend {
       this.config.session.sdkCwd = path;
     }
     this.debug(`SDK cwd updated: ${path}`);
+  }
+
+  /**
+   * Update the layer this session is working in (`goal`/`spec`/`plan`, or null for none).
+   *
+   * The mode is announced to the model through the user message, not the system prompt — the
+   * system prompt is the cached prefix and must not change when the mode does. So this only keeps
+   * the session config current (PromptBuilder holds the same object and notices the change on the
+   * next turn); it emits nothing here.
+   */
+  setSessionMode(mode: SessionMode | null): void {
+    if (this.config.session) {
+      this.config.session.mode = mode ?? undefined;
+    }
+    this.debug(`Session mode updated: ${mode ?? 'none'}`);
   }
 
   // ============================================================

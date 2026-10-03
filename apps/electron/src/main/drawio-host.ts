@@ -32,6 +32,7 @@ import {
   contentTypeFor,
   isDocumentRequest,
   labelFromHost,
+  LOCAL_ORIGIN_SCHEME,
   localHostLabel,
   localHostOrigin,
   resolveServedPath,
@@ -42,7 +43,7 @@ import {
   DRAWIO_VIEWER_PATH,
 } from '@craft-agent/shared/drawio/types'
 import { getBundledAssetsDir } from '@craft-agent/shared/utils/paths'
-import { fileResponse, isFile, textResponse } from './local-http'
+import { fileResponse, isFile, textResponse, type ProtocolHostSession } from './local-http'
 import { mainLog } from './logger'
 
 /**
@@ -113,11 +114,11 @@ function resolveServedDrawio(url: string): string | null {
 const BUNDLE_CACHE = 'public, max-age=600'
 
 /**
- * Answer a request for the drawio origin, or null when the host is not ours.
+ * Answer a request for the drawio origin, or null when the label is not ours.
  *
- * Null is the common case and the caller answers it with the pass-through:
- * `*.localhost` is full of real dev servers, so a label nobody handed out is not
- * ours to answer however much it looks like one of ours.
+ * Null is the answer for a label this run never handed out — an address nobody served.
+ * The caller refuses it: nothing shares this scheme with us, so there is no
+ * pass-through to fall back to.
  */
 export async function serveDrawioRequest(request: Request): Promise<Response | null> {
   const dir = resolveServedDrawio(request.url)
@@ -191,6 +192,26 @@ export async function serveDrawioRequest(request: Request): Promise<Response | n
     mainLog.warn(`[drawio-host] failed to serve ${request.url}: ${String(error)}`)
     return textResponse(500, 'The diagram editor could not be served. See the app logs.')
   }
+}
+
+/**
+ * Install the drawio host on a session — a handler for the app's own scheme, and no other.
+ *
+ * One call per session the diagram is rendered on. The app renders it on its own session
+ * (the embedded viewer and the hidden engine window both live there), so that is the one
+ * this is registered on.
+ *
+ * A scheme of our own is the whole point: the app installs **no** handler on `http` or
+ * `https`, so a request for a real page never enters this process and every browsing
+ * session stays Chromium's. The cost of the alternative was paid in full — a handler on
+ * `http` comes down on every http request the session makes, and re-issuing those through
+ * the host is what quietly broke real http pages.
+ */
+export function registerDrawioHandler(ses: ProtocolHostSession): void {
+  ses.protocol.handle(LOCAL_ORIGIN_SCHEME, async (request) => {
+    const response = await serveDrawioRequest(request)
+    return response ?? textResponse(404, `No diagram is served at ${request.url}.`)
+  })
 }
 
 /**

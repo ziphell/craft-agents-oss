@@ -55,8 +55,8 @@ export const SESSION_PERSISTENT_FIELDS = [
   'triggeredBy',
   // Project binding (workspace-scoped grouping)
   'projectId',
-  // Prototype binding (lets the agent resolve prototype commands without a slug)
-  'prototypeSlug',
+  // Mode: the layer this conversation is working in (goal / spec / plan)
+  'mode',
   // Kanban: task/subtask hierarchy + board column
   'parentSessionId',
   'kanbanColumn',
@@ -70,6 +70,20 @@ export const SESSION_PERSISTENT_FIELDS = [
 ] as const;
 
 export type SessionPersistentField = typeof SESSION_PERSISTENT_FIELDS[number];
+
+/**
+ * The layer a conversation is working in — one at a time, or none (undefined).
+ *
+ * A conversation has one mode (a stage), never several at once:
+ * - `goal` — the project's goal: one `goal.md` at the project folder's root;
+ * - `spec` — a specification: one `*.spec.md` per piece of work;
+ * - `plan` — how one piece gets built: one `*.plan.md` sharing a spec's stem.
+ *
+ * The mode is the session's own declaration; its home is the folder of the
+ * workspace project the session belongs to, so a mode on a session outside a
+ * project means nothing.
+ */
+export type SessionMode = 'goal' | 'spec' | 'plan';
 
 /**
  * Session status (user-controlled, never automatic)
@@ -214,16 +228,15 @@ export interface SessionConfig {
   /** Workspace-scoped project id this session belongs to (undefined = unbound). */
   projectId?: string;
   /**
-   * Prototype this session is working on (a slug under the workspace's
-   * `prototypes/` folder; undefined = none). Binding is what lets the agent
-   * resolve `prototype_tool` commands without being told a slug every turn.
+   * The layer this conversation is working in (`goal` / `spec` / `plan`), or
+   * undefined for an ordinary conversation. Its home is the folder of the
+   * workspace project this session belongs to (`projects/<slug>/`), so a mode on
+   * a session that is not in a project means nothing.
    *
-   * It is the session's own binding and nothing else writes one here: a project tells
-   * its conversations what prototypes exist, and what it is on — as
-   * background, like a connected source — but names none of them *for* a conversation,
-   * so the persisted header and what a conversation works on are the same thing.
+   * It only affects the prompt block added for this conversation, and changes no
+   * tool behavior. One mode at a time — a stage, not a set of switches.
    */
-  prototypeSlug?: string;
+  mode?: SessionMode;
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */
   parentSessionId?: string;
   /** Kanban board column id ('todo' | 'in-progress' | 'done'). Drag-to-move target; independent of sessionStatus. */
@@ -334,11 +347,15 @@ export interface SessionHeader {
   /** Workspace-scoped project id this session belongs to (undefined = unbound). */
   projectId?: string;
   /**
-   * Prototype this session is bound to (a slug under the workspace's
-   * `prototypes/` folder; undefined = unbound). Binding is what lets the agent
-   * resolve `prototype_tool` commands without being told a slug every turn.
+   * The layer this conversation is working in (`goal` / `spec` / `plan`), or
+   * undefined for an ordinary conversation. Its home is the folder of the
+   * workspace project this session belongs to (`projects/<slug>/`), so a mode on
+   * a session that is not in a project means nothing.
+   *
+   * It only affects the prompt block added for this conversation, and changes no
+   * tool behavior. One mode at a time — a stage, not a set of switches.
    */
-  prototypeSlug?: string;
+  mode?: SessionMode;
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */
   parentSessionId?: string;
   /** Kanban board column id ('todo' | 'in-progress' | 'done'). Drag-to-move target; independent of sessionStatus. */
@@ -438,11 +455,15 @@ export interface SessionMetadata {
   /** Workspace-scoped project id this session belongs to (undefined = unbound). */
   projectId?: string;
   /**
-   * Prototype this session is bound to (a slug under the workspace's
-   * `prototypes/` folder; undefined = unbound). Binding is what lets the agent
-   * resolve `prototype_tool` commands without being told a slug every turn.
+   * The layer this conversation is working in (`goal` / `spec` / `plan`), or
+   * undefined for an ordinary conversation. Its home is the folder of the
+   * workspace project this session belongs to (`projects/<slug>/`), so a mode on
+   * a session that is not in a project means nothing.
+   *
+   * It only affects the prompt block added for this conversation, and changes no
+   * tool behavior. One mode at a time — a stage, not a set of switches.
    */
-  prototypeSlug?: string;
+  mode?: SessionMode;
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */
   parentSessionId?: string;
   /** Kanban board column id ('todo' | 'in-progress' | 'done'). Drag-to-move target; independent of sessionStatus. */

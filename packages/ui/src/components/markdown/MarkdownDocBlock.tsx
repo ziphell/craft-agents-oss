@@ -87,7 +87,7 @@ export function MarkdownDocBlock({ code, className, onUrlClick, onFileClick }: M
    * Whether the window wrote anything while it was open, and a counter that re-reads when it did.
    *
    * The block and the window are **two readers of the same file**: the window saves to the disk, and
-   * nothing here hears about it — the watcher only reports the prototypes tree, so a document
+   * nothing here hears about it — the watcher only reports the project folder, so a document
    * anywhere else would keep showing the version from before the edit. Rather than copy the text
    * across, the block reads the file again, which is the authority it was built on and also picks up
    * whatever else changed meanwhile.

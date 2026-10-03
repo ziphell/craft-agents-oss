@@ -5,7 +5,7 @@
  * All agent events flow through a single pure function for consistent state transitions.
  */
 
-import type { Session, SessionEvent, Message, PermissionRequest, CredentialRequest, TypedError, PermissionMode, SessionStatus, AuthRequest, ToolDisplayMeta } from '../../shared/types'
+import type { Session, SessionEvent, Message, PermissionRequest, CredentialRequest, TypedError, PermissionMode, SessionStatus, SessionMode, AuthRequest, ToolDisplayMeta } from '../../shared/types'
 
 /** Explicit SDK retry boundaries; keep their transport shape authoritative. */
 export type TextDiscardEvent = Extract<SessionEvent, { type: 'text_discard' }>
@@ -161,12 +161,12 @@ export interface ProjectIdChangedEvent {
 }
 
 /**
- * Prototype slug changed event (session bound/unbound to a prototype)
+ * Mode changed event (the layer this session is working in changed)
  */
-export interface PrototypeSlugChangedEvent {
-  type: 'prototype_slug_changed'
+export interface ModeChangedEvent {
+  type: 'mode_changed'
   sessionId: string
-  prototypeSlug: string | null
+  mode: SessionMode | null
 }
 
 /**
@@ -185,7 +185,7 @@ export interface SessionStatusChangedEvent {
 export interface SessionMetadataChangedEvent {
   type: 'session_metadata_changed'
   sessionId: string
-  changes: Partial<Pick<Session, 'taskNodeCount' | 'taskAwaitingApproval' | 'kanbanColumn' | 'taskDraft' | 'taskSlug' | 'projectId' | 'prototypeSlug'>>
+  changes: Partial<Pick<Session, 'taskNodeCount' | 'taskAwaitingApproval' | 'kanbanColumn' | 'taskDraft' | 'taskSlug' | 'projectId' | 'mode'>>
 }
 
 /**
@@ -542,7 +542,7 @@ export type AgentEvent =
   | SourcesChangedEvent
   | LabelsChangedEvent
   | ProjectIdChangedEvent
-  | PrototypeSlugChangedEvent
+  | ModeChangedEvent
   | SessionStatusChangedEvent
   | SessionMetadataChangedEvent
   | SessionFlaggedEvent

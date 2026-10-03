@@ -6,13 +6,19 @@
  * prompt is legibility-first (#7): bias toward the simplest graph that achieves
  * the goal, with clear titles and explicit dependencies — not the cleverest one.
  */
-export function buildGeneratorPrompt(goal: string, title?: string): string {
+export function buildGeneratorPrompt(goal: string, title?: string, plan?: string): string {
   return [
     'You are authoring a `task.yaml` that decomposes a goal into a small DAG of subtasks.',
     'Each node becomes a child AI session; a `depends_on` edge passes the upstream node\'s output to the dependent.',
     '',
     'Rules:',
     '- Output ONLY the YAML — no prose, no code fences, no explanation.',
+    ...(plan
+      ? [
+          "- A settled PLAN is given at the end of this prompt. The steps are already thought through: take them AS the `nodes` — one node per step — and the order the plan states AS `depends_on`. Do NOT re-invent the decomposition, and do NOT add, drop, merge, split or reorder its steps.",
+          '- The plan says WHAT happens; you supply only the execution detail it leaves out — which node declares which field a downstream node reads, where a person must decide (a `kind: approval` gate), and the `acceptance_criteria`. Where the plan is silent, keep each node\'s prompt in the plan\'s own words rather than inventing scope it does not mention.',
+        ]
+      : []),
     '- Prefer the SIMPLEST graph that achieves the goal: few nodes, clear titles, explicit dependencies. A human will read and edit this.',
     '- Make nodes parallel (no `depends_on` between them) ONLY when the steps are genuinely independent.',
     '- Reference an upstream result inside a prompt with ${nodes.<id>.output}.',
@@ -20,7 +26,7 @@ export function buildGeneratorPrompt(goal: string, title?: string): string {
     '- Every ${nodes.<id>.output} reference MUST point to an `id` that you actually declare under `nodes`. Never reference a node you did not create. Verify each reference resolves before emitting the YAML.',
     "- Branch only when the plan genuinely branches (an approved/rejected split), with `when: \"node-id.field === 'value'\"` over a field another node declares in `outputs`. A node whose `when` is false is skipped, and so is anything depending on it — that is how one side of a split is left out, not a way to express ordinary sequencing.",
     "- A step that needs a PERSON to decide is `kind: approval` with the question as its `prompt`; declare `outputs: [{ name: verdict }]` on it and branch on `when: \"<id>.verdict === 'approved'\"`. Never use it for a step an agent could do.",
-    "- When the goal is to BUILD or CHANGE a prototype, add a critic node after the building one instead of trusting it: the critic reads the specification for itself — its markdown documents, and the findings under `research/` that argue for each requirement — and checks the thread `prototype_tool status` prints, declaring `outputs: [{ name: verdict, enum: [pass, fail] }, { name: objections, type: number }]`. Object when a requirement has nothing implementing it, or when a finding the requirement is argued from has no `claim:`, no `source:`, or cites evidence that is not in `research/`. The node after it carries `when: \"<critic>.verdict === 'fail'\"` and goes back to the building node, so a run only finishes when nothing is left outstanding. `prototype_tool status` prints exactly what is still outstanding.",
+    "- When the goal is to write or change a specification — the `*.spec.md` files of the project's folder, where a spec's path is its identity and its links are ordinary markdown — add a critic node after the building one instead of trusting it: the critic reads those files for itself, and the links written in them, declaring `outputs: [{ name: verdict, enum: [pass, fail] }, { name: objections, type: number }]`. Object when a link points at a file that is not there. The node after it carries `when: \"<critic>.verdict === 'fail'\"` and goes back to the building node, so a run only finishes when nothing is left outstanding.",
     '- Add `acceptance_criteria`: a short, checkable rubric for the FINISHED task (what "done and correct" means). It is what you will grade the result against when the run finishes — make it concrete and testable, not a restatement of the goal.',
     '',
     'Schema:',
@@ -55,6 +61,7 @@ export function buildGeneratorPrompt(goal: string, title?: string): string {
     '',
     title ? `Working title: ${title}` : '',
     `Goal: ${goal}`,
+    plan ? `\nPlan (the steps below are settled — turn them into nodes, do not re-plan):\n${plan}` : '',
   ]
     .filter(Boolean)
     .join('\n')

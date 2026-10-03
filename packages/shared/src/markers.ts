@@ -15,8 +15,8 @@
  * - **a marker is usually inside a comment**, so the terminator of that comment (the
  *   star and slash that close it, or an HTML arrow) is on the line and is not the value.
  *
- * What each marker *means* — where a target is aimed, which requirement a change serves,
- * which pages a rule is for — belongs to whoever declares it, not here.
+ * What each marker *means* — where a target is aimed, which pages a rule is for — belongs
+ * to whoever declares it, not here.
  */
 
 /**

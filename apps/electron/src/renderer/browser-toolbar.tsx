@@ -18,6 +18,7 @@ import { cn } from '@/lib/utils'
 import { getHostname } from '@/components/browser/utils'
 import { groupTabsByWork, shouldShowGroupHeaders, type TabGroup } from '@/components/browser/tab-groups'
 import type { BrowserTabSummary, TabBelongsTo } from '../shared/types'
+import { RECORDING_FORMATS, pickRecordingFormat } from '../shared/recording-formats'
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -193,37 +194,11 @@ function downloadPercent(entry: Pick<ToolbarDownloadEntry, 'bytesReceived' | 'to
   return Math.max(0, Math.min(100, Math.round((entry.bytesReceived / entry.totalBytes) * 100)))
 }
 
-/**
- * What to record into, best first.
- *
- * **mp4 first**, and for two reasons that were measured rather than assumed (see
- * `apps/electron/spike/recorder-formats.cjs`): it is the container everything else opens —
- * QuickTime, Windows, a browser tab — and it is the one whose duration a `<video>` knows
- * the moment it loads, which is what `sample-video` computes its sampling step from. A
- * webm (or mkv) recorded live reports `duration: Infinity` until something reads the file
- * out, so it is the fallback for a build that cannot record mp4 rather than the default.
- * Both play back and sample here; the sampler resolves a webm's duration itself.
+/*
+ * What to record into — the table and the picker come from `shared/recording-formats.ts`, because
+ * a conversation's recording is encoded by a hidden window of its own and the two must answer
+ * this the same way. The order to try, and why mp4 is first, are written up there.
  */
-const RECORDING_FORMATS = [
-  { mimeType: 'video/mp4;codecs=avc1.42E01E', extension: 'mp4' },
-  { mimeType: 'video/mp4', extension: 'mp4' },
-  { mimeType: 'video/webm;codecs=vp9', extension: 'webm' },
-  { mimeType: 'video/webm', extension: 'webm' },
-]
-
-/** The first format this build will record, or `null` when it will record none of them. */
-function pickRecordingFormat(): { mimeType: string; extension: string } | null {
-  if (typeof MediaRecorder === 'undefined') return null
-  for (const format of RECORDING_FORMATS) {
-    try {
-      if (MediaRecorder.isTypeSupported(format.mimeType)) return format
-    } catch {
-      // `isTypeSupported` can throw on a string it cannot parse; a format that cannot be
-      // asked about is not a format to record into.
-    }
-  }
-  return null
-}
 
 /* ------------------------------------------------------------------ */
 /*  Tab rail                                                          */
@@ -828,7 +803,8 @@ function BrowserToolbarApp() {
     setSavedFile(null)
 
     // The format first, because the host opens the file — and names it — before any of the
-    // picture exists: an mp4 that ended up as `…webm` would be a file nothing opens.
+    // picture exists, and because a build that can record into nothing has to be caught before
+    // there is a file to leave behind.
     const format = pickRecordingFormat()
     if (!format) {
       setRecordFailed(true)
@@ -1079,8 +1055,12 @@ function BrowserToolbarApp() {
             />
 
             {recording && (
+              // The elapsed time, and **what this recording is taking**: the button's meaning is
+              // wider than "record the screen" — the page reports what was clicked and filled, and
+              // values too, except where a field says it is a secret. Saying so is what makes the
+              // press an informed one, so it sits here rather than in a tooltip.
               <span className="inline-flex select-none items-center whitespace-nowrap rounded-[6px] bg-destructive/15 px-2 py-1 text-[11px] tabular-nums text-destructive">
-                {formatElapsed(elapsedMs)}
+                {formatElapsed(elapsedMs)} · {t('browser.recordingNoted')}
               </span>
             )}
 

@@ -714,11 +714,48 @@ export interface OverlayLabels {
   add: string
 }
 
+/** One frame out of a screencast, and where it sits in the recording. */
+export interface ScreencastFrame {
+  /** The frame, as JPEG bytes. */
+  bytes: Buffer
+  /** ms from the start of the stream — which is what this is a picture of. */
+  offsetMs: number
+}
+
+export interface ScreencastOptions {
+  /** Every frame, in the order Chromium produced them. */
+  onFrame: (frame: ScreencastFrame) => void
+  /** The stream ended without being asked to — the renderer died, or the session went away. */
+  onEnd?: (reason: string) => void
+  /** JPEG quality, 0-100. Default 70. */
+  quality?: number
+  /**
+   * Cap the frame at the source, in device pixels.
+   *
+   * The spatial half of "how much is this costing": a frame scaled here never has to be
+   * scaled later, and it is the encoding — not the capture — that pays for size.
+   */
+  maxWidth?: number
+  maxHeight?: number
+}
+
 export class BrowserCDP {
   private webContents: WebContents
   private attached = false
   private detachListenerRegistered = false
   private idleDetachTimer: ReturnType<typeof setTimeout> | null = null
+  /**
+   * The screencast in flight, if one is running — the page as a stream of frames.
+   *
+   * The listener is kept so the stream can be unhooked by the same handle it was hooked with,
+   * and `startedAtMs` is what the frames' offsets are counted from.
+   */
+  private screencast: {
+    onFrame: (frame: ScreencastFrame) => void
+    onEnd?: (reason: string) => void
+    listener: (event: unknown, method: string, params: any) => void
+    startedAtMs: number
+  } | null = null
   // Map from "@eN" refs to backend node IDs for the current snapshot.
   private refMap: Map<string, number> = new Map()
   // Map from "@eN" refs to semantic details captured during snapshot.
@@ -784,12 +821,17 @@ export class BrowserCDP {
   }
 
   /**
-   * Persistent injections and focus emulation live in the CDP session: detaching
-   * silently drops them. Hold the attachment while any is active; the idle timer
+   * Persistent injections, focus emulation and a running screencast live in the CDP session:
+   * detaching silently drops them. Hold the attachment while any is active; the idle timer
    * resumes once all are off.
+   *
+   * The screencast is held for a reason the other two do not have: **a static page produces no
+   * frames**, so there are no acks either, and the timer would fire on exactly the recording
+   * that has nothing else happening (`spike/capture-hidden-frames.cjs` has the frame counts;
+   * `CDP_IDLE_DETACH_MS` is 5s).
    */
   private holdsSessionState(): boolean {
-    return this.initScriptIds.size > 0 || this.focusEmulated
+    return this.initScriptIds.size > 0 || this.focusEmulated || this.screencast !== null
   }
 
   private resetIdleDetachTimer(): void {
@@ -836,6 +878,18 @@ export class BrowserCDP {
     this.initScriptIds.clear()
     this.pageDomainEnabled = false
     this.focusEmulated = false
+    // A screencast is a registration on that session like the others, and unlike the others
+    // somebody outside is waiting on it: a recording whose frames stop is over, so the caller
+    // has to hear it here rather than discover it as a film that ends mid-action.
+    const screencast = this.screencast
+    if (screencast) {
+      this.screencast = null
+      // The listener has to come off here as well as in `stopScreencast`: `debugger.on` outlives
+      // a detach, so a listener left standing would be joined by another on the next recording
+      // and the pile would grow with every one that ended this way.
+      this.webContents.debugger.removeListener('message', screencast.listener)
+      screencast.onEnd?.('the CDP session ended')
+    }
   }
 
   private async send(method: string, params?: Record<string, unknown>): Promise<any> {
@@ -879,6 +933,97 @@ export class BrowserCDP {
     this.focusEmulated = enabled
     // `send` has just restarted the countdown against the value from *before* this call, so
     // this is the line that turns "one more command" into "for as long as it is on".
+    this.resetIdleDetachTimer()
+  }
+
+  // ---------------------------------------------------------------------------
+  // Screencast — the page as a stream of frames
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The page as frames, for as long as it is asked for.
+   *
+   * This is Chromium's own remote-viewing stream, and the one capture path that is *meant* for
+   * a page nobody is looking at: measured, it keeps delivering while the tab's window is off
+   * every display and while it is hidden (`spike/capture-hidden-frames.cjs` — 120 frames per
+   * 2s in all three states). It is also the agent's half of recording; the person's is display
+   * media, and the two share nothing but the file they write to.
+   *
+   * Two things here are load-bearing rather than housekeeping:
+   *
+   * - **Every frame is acked.** Chromium waits for `Page.screencastFrameAck` between frames;
+   *   without it the stream delivers one frame and stops. The ack goes through `send`, so it
+   *   also counts as activity for the idle timer.
+   * - **The stream holds the session** (see {@link holdsSessionState}): a static page sends no
+   *   frames and so no acks, and the 5s idle timer would then detach the debugger out from
+   *   under exactly the recording that has nothing else happening.
+   */
+  async startScreencast(options: ScreencastOptions): Promise<void> {
+    await this.stopScreencast()
+    await this.ensureAttached()
+
+    const startedAtMs = Date.now()
+    const listener = (_event: unknown, method: string, params: any): void => {
+      if (method !== 'Page.screencastFrame') return
+      // A frame arriving after the stream was stopped — or after the session went away —
+      // belongs to nothing. Dropping it is not a lost frame; it is the one that would have
+      // been delivered to nobody.
+      const current = this.screencast
+      if (!current) return
+
+      const data = params?.data
+      if (typeof data === 'string' && data.length > 0) {
+        // Chromium's own timestamp when it is there: it is when the frame was taken, which is
+        // what the recording's clock should follow, not when it reached us.
+        const atMs = typeof params?.metadata?.timestamp === 'number'
+          ? params.metadata.timestamp * 1000
+          : Date.now()
+        current.onFrame({
+          bytes: Buffer.from(data, 'base64'),
+          offsetMs: Math.max(0, Math.round(atMs - startedAtMs)),
+        })
+      }
+
+      void this.send('Page.screencastFrameAck', { sessionId: params?.sessionId }).catch(() => {})
+    }
+
+    this.screencast = { onFrame: options.onFrame, onEnd: options.onEnd, listener, startedAtMs }
+    this.webContents.debugger.on('message', listener)
+
+    try {
+      await this.send('Page.startScreencast', {
+        format: 'jpeg',
+        quality: options.quality ?? 70,
+        everyNthFrame: 1,
+        ...(options.maxWidth ? { maxWidth: options.maxWidth } : {}),
+        ...(options.maxHeight ? { maxHeight: options.maxHeight } : {}),
+      })
+    } catch (error) {
+      // A stream that never started must not leave a listener, a held session, or a caller
+      // believing it is recording.
+      this.webContents.debugger.removeListener('message', listener)
+      this.screencast = null
+      throw error
+    }
+
+    // From here the session is held by the stream. `send` restarted the countdown against the
+    // value from *before* this call, so this is the line that turns "one more command" into
+    // "for as long as the stream is on".
+    this.resetIdleDetachTimer()
+  }
+
+  /** End the stream. Safe to call when none is running. */
+  async stopScreencast(): Promise<void> {
+    const current = this.screencast
+    if (!current) return
+
+    this.screencast = null
+    this.webContents.debugger.removeListener('message', current.listener)
+    try {
+      await this.send('Page.stopScreencast')
+    } catch {
+      // The session may already be gone, in which case the stream went with it.
+    }
     this.resetIdleDetachTimer()
   }
 

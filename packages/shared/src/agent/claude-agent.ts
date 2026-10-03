@@ -24,8 +24,6 @@ import type { McpClientPool } from '../mcp/mcp-pool.ts';
 import { proxyToolName } from '../mcp/proxy-tool-name.ts';
 import { loadPlanFromPath, type SessionConfig as Session } from '../sessions/storage.ts';
 import { loadProjectById, getProjectAssetsPath, listProjectAssets, getProjectMemoryPath, loadProjectMemory } from '../projects/storage.ts';
-import { buildPrototypePromptContext } from '../prototypes/prompt.ts';
-import { getProjectPrototypes } from '../prototypes/project-link.ts';
 import { DEFAULT_MODEL, isClaudeModel, isAdaptiveThinkingAlwaysOnModel, getDefaultSummarizationModel, getModelContextWindow } from '../config/models.ts';
 import { getCredentialManager } from '../credentials/index.ts';
 import { loadPreferences, formatPreferencesForPrompt, getCoAuthorPreference } from '../config/preferences.ts';
@@ -61,7 +59,6 @@ import {
   SAFE_MODE_CONFIG,
 } from './mode-manager.ts';
 import { getSessionDataPath, getSessionPlansPath, getSessionPath } from '../sessions/storage.ts';
-import { getWorkspacePrototypesPath } from '../workspaces/storage.ts';
 import { getLastApiError } from '../interceptor-common.ts';
 import { extractWorkspaceSlug } from '../utils/workspace.ts';
 import {
@@ -206,8 +203,6 @@ export interface ClaudeAgentConfig {
   getBranchSeedMessages?: () => RecoveryMessage[];
   /** Mark branch seed as applied (called after first injection). */
   markBranchSeedApplied?: () => void;
-  /** Live prototype slug for this conversation — see BackendConfig.getPrototypeSlug. */
-  getPrototypeSlug?: () => string | null;
   /** Get transferred session summary for cross-server session context. */
   getTransferredSessionSummary?: () => string | null;
   /** Mark transferred session summary as applied. */
@@ -508,17 +503,8 @@ export class ClaudeAgent extends BaseAgent {
   private pinnedPreferencesPrompt: string | null = null;
   private pinnedIncludeCoAuthoredBy: boolean | null = null;
   private pinnedProjectContext: import('../projects/types.ts').ProjectPromptContext | null = null;
-  private pinnedPrototypeContext: import('../prototypes/prompt.ts').PrototypePromptContext | null = null;
-  /**
-   * The prototype the host resolved when the prompt was pinned — kept beside the
-   * context rather than read off it, because a context that failed to build (the
-   * prototype was deleted) is `null` for a reason that is not "no prototype".
-   */
-  private pinnedPrototypeSlug: string | null = null;
   // Track if preference drift notification has been shown this session
   private preferencesDriftNotified: boolean = false;
-  // Same, for the prototype: said once per session, reset where the pin is.
-  private prototypeDriftNotified: boolean = false;
   // Captured stderr from SDK subprocess (for error diagnostics when process exits with code 1)
   private lastStderrOutput: string[] = [];
   /** Pending steer message — injected via additionalContext on next PreToolUse */
@@ -705,67 +691,39 @@ export class ClaudeAgent extends BaseAgent {
   }
 
   /**
-   * Look up the bound project (if any) and return a snapshot for system-prompt injection.
-   * Resolution silently no-ops when the session is unbound or the project no longer exists,
-   * so this never blocks a chat() call.
+   * Look up the session's bound project once. The project block and the spec block
+   * both build from this single load, so the two can never disagree about where the
+   * session's project lives. Resolution silently no-ops when the session is unbound
+   * or the project no longer exists, so this never blocks a chat() call.
    */
-  private resolveProjectContext(): import('../projects/types.ts').ProjectPromptContext | null {
+  private loadBoundProject(): import('../projects/types.ts').LoadedProject | null {
     const projectId = this.config.session?.projectId;
     if (!projectId) return null;
 
     try {
-      const project = loadProjectById(this.workspaceRootPath, projectId);
-      if (!project) return null;
-      const slug = project.config.slug;
-      return {
-        name: project.config.name,
-        description: project.config.description,
-        details: project.config.details,
-        // What a project says about prototypes: the ones its work touches — told
-        // as background, a set, with nothing targeted for the session. A prototype belongs
-        // to no project, so this is the only direction there is.
-        prototypes: getProjectPrototypes(this.workspaceRootPath, slug),
-        assetsPath: getProjectAssetsPath(this.workspaceRootPath, slug),
-        assets: listProjectAssets(this.workspaceRootPath, slug).map((a) => ({
-          filename: a.filename,
-          mimeType: a.mimeType,
-          sizeBytes: a.sizeBytes,
-        })),
-        memoryPath: getProjectMemoryPath(this.workspaceRootPath, slug),
-        memoryContent: loadProjectMemory(this.workspaceRootPath, slug) ?? undefined,
-      };
+      return loadProjectById(this.workspaceRootPath, projectId);
     } catch (error) {
       debug(`[resolveProjectContext] Failed to load project ${projectId}:`, error);
       return null;
     }
   }
 
-  /**
-   * Look up the prototype this conversation is on (if any) and return a snapshot
-   * for system-prompt injection. Safe to call on every chat() — resolution
-   * no-ops when there is none, and returns null when the prototype no longer
-   * exists (deleted since the session started).
-   */
-  private resolvePrototypeContext(): import('../prototypes/prompt.ts').PrototypePromptContext | null {
-    const slug = this.currentPrototypeSlug();
-    if (!slug) return null;
-
-    try {
-      return buildPrototypePromptContext(this.workspaceRootPath, slug);
-    } catch (error) {
-      debug(`[resolvePrototypeContext] Failed to load prototype ${slug}:`, error);
-      return null;
-    }
-  }
-
-  /**
-   * The prototype this conversation works on *now* — asked of the host, not read
-   * off `config.session`, which is a snapshot from when this agent was created
-   * (see BackendConfig.getPrototypeSlug). Falls back to the snapshot when the host
-   * passes no resolver, so an agent built without one behaves as it always did.
-   */
-  private currentPrototypeSlug(): string | null {
-    return this.config.getPrototypeSlug?.() ?? this.config.session?.prototypeSlug ?? null;
+  /** Snapshot a loaded project for system-prompt injection. */
+  private buildProjectPromptContext(project: import('../projects/types.ts').LoadedProject): import('../projects/types.ts').ProjectPromptContext {
+    const slug = project.config.slug;
+    return {
+      name: project.config.name,
+      description: project.config.description,
+      details: project.config.details,
+      assetsPath: getProjectAssetsPath(this.workspaceRootPath, slug),
+      assets: listProjectAssets(this.workspaceRootPath, slug).map((a) => ({
+        filename: a.filename,
+        mimeType: a.mimeType,
+        sizeBytes: a.sizeBytes,
+      })),
+      memoryPath: getProjectMemoryPath(this.workspaceRootPath, slug),
+      memoryContent: loadProjectMemory(this.workspaceRootPath, slug) ?? undefined,
+    };
   }
 
   // Callback for permission requests - set by application to receive permission prompts
@@ -1073,9 +1031,8 @@ export class ClaudeAgent extends BaseAgent {
         // First chat in this session - pin current values
         this.pinnedPreferencesPrompt = currentPreferencesPrompt;
         this.pinnedIncludeCoAuthoredBy = currentCoAuthorPref;
-        this.pinnedProjectContext = this.resolveProjectContext();
-        this.pinnedPrototypeSlug = this.currentPrototypeSlug();
-        this.pinnedPrototypeContext = this.resolvePrototypeContext();
+        const boundProject = this.loadBoundProject();
+        this.pinnedProjectContext = boundProject ? this.buildProjectPromptContext(boundProject) : null;
         debug('[chat] Pinned system prompt components for session consistency');
       } else {
         // Detect drift: warn user if context has changed since session started
@@ -1088,23 +1045,6 @@ export class ClaudeAgent extends BaseAgent {
           };
           this.preferencesDriftNotified = true;
           debug(`[chat] Detected drift in: preferences`);
-        }
-
-        // The prototype context is pinned like the rest, so a conversation that was
-        // moved to another prototype goes on describing the old one. Everything else
-        // about prototypes is live (the window, the commands' default slug), so silence
-        // here would leave the agent's own prose as the one place that is wrong. Say it
-        // instead. Only this conversation's own binding counts: a project's note about
-        // which prototype it is on is background, and is not what the block describes.
-        const currentPrototypeSlug = this.currentPrototypeSlug();
-
-        if (currentPrototypeSlug !== this.pinnedPrototypeSlug && !this.prototypeDriftNotified) {
-          yield {
-            type: 'info',
-            message: `Note: This conversation's prototype changed (the system prompt still describes ${this.pinnedPrototypeSlug ?? 'none'}, it is now ${currentPrototypeSlug ?? 'none'}). Start a new session to rebuild the prompt.`,
-          };
-          this.prototypeDriftNotified = true;
-          debug(`[chat] Detected drift in: prototype`);
         }
       }
 
@@ -1294,7 +1234,6 @@ export class ClaudeAgent extends BaseAgent {
                 undefined, // backendName
                 this.pinnedIncludeCoAuthoredBy ?? undefined,
                 this.pinnedProjectContext ?? undefined,
-                this.pinnedPrototypeContext ?? undefined,
               ),
             },
         // Use sdkCwd for SDK session storage - this is set once at session creation and never changes.
@@ -1412,7 +1351,10 @@ export class ClaudeAgent extends BaseAgent {
                 workspaceId: extractWorkspaceSlug(this.workspaceRootPath, this.config.workspace.id),
                 plansFolderPath: sessionId ? getSessionPlansPath(this.workspaceRootPath, sessionId) : undefined,
                 dataFolderPath: sessionId ? getSessionDataPath(this.workspaceRootPath, sessionId) : undefined,
-                prototypesFolderPath: getWorkspacePrototypesPath(this.workspaceRootPath),
+                // The session's project folder — where its specs are written, and therefore one of
+                // the folders Explore mode allows writes to. Resolved through the same loader the
+                // project and spec prompt blocks read; absent when the session is in no project.
+                projectFolderPath: this.loadBoundProject()?.folderPath,
                 workingDirectory: this.config.session?.workingDirectory,
                 activeSourceSlugs: Array.from(this.sourceManager.getActiveSlugs()),
                 allSourceSlugs: this.sourceManager.getAllSources().map(s => s.config.slug),
@@ -2000,10 +1942,7 @@ This is a branched conversation. All prior messages in this conversation are par
           this.pinnedPreferencesPrompt = null;
           this.pinnedIncludeCoAuthoredBy = null;
           this.pinnedProjectContext = null;
-          this.pinnedPrototypeContext = null;
-          this.pinnedPrototypeSlug = null;
           this.preferencesDriftNotified = false;
-          this.prototypeDriftNotified = false;
 
           let retryMessage = userMessage;
           const recoveryContext = this.buildRecoveryContext();
@@ -2206,10 +2145,7 @@ This is a branched conversation. All prior messages in this conversation are par
           this.pinnedPreferencesPrompt = null;
           this.pinnedIncludeCoAuthoredBy = null;
           this.pinnedProjectContext = null;
-          this.pinnedPrototypeContext = null;
-          this.pinnedPrototypeSlug = null;
           this.preferencesDriftNotified = false;
-          this.prototypeDriftNotified = false;
 
           let retryMessage = userMessage;
           const recoveryContext = this.buildRecoveryContext();
@@ -2413,10 +2349,7 @@ This is a branched conversation. All prior messages in this conversation are par
           this.pinnedPreferencesPrompt = null;
           this.pinnedIncludeCoAuthoredBy = null;
           this.pinnedProjectContext = null;
-          this.pinnedPrototypeContext = null;
-          this.pinnedPrototypeSlug = null;
           this.preferencesDriftNotified = false;
-          this.prototypeDriftNotified = false;
 
           let retryMessage = userMessage;
           const recoveryContext = this.buildRecoveryContext();
@@ -2508,7 +2441,10 @@ This is a branched conversation. All prior messages in this conversation are par
       `modeVersion=${textPromptDiagnostics.modeVersion} changedBy=${textPromptDiagnostics.lastChangedBy} changedAt=${textPromptDiagnostics.lastChangedAt}`
     )
     const contextParts = this.promptBuilder.buildContextParts(
-      { plansFolderPath: getSessionPlansPath(this.workspaceRootPath, this.modeSessionId) },
+      {
+        plansFolderPath: getSessionPlansPath(this.workspaceRootPath, this.modeSessionId),
+        projectFolderPath: this.loadBoundProject()?.folderPath,
+      },
       this.sourceManager.formatSourceState()
     );
 
@@ -2554,7 +2490,10 @@ This is a branched conversation. All prior messages in this conversation are par
       `modeVersion=${sdkPromptDiagnostics.modeVersion} changedBy=${sdkPromptDiagnostics.lastChangedBy} changedAt=${sdkPromptDiagnostics.lastChangedAt}`
     )
     const contextParts = this.promptBuilder.buildContextParts(
-      { plansFolderPath: getSessionPlansPath(this.workspaceRootPath, this.modeSessionId) },
+      {
+        plansFolderPath: getSessionPlansPath(this.workspaceRootPath, this.modeSessionId),
+        projectFolderPath: this.loadBoundProject()?.folderPath,
+      },
       this.sourceManager.formatSourceState()
     );
 
@@ -2819,10 +2758,7 @@ This is a branched conversation. All prior messages in this conversation are par
     this.pinnedPreferencesPrompt = null;
     this.pinnedIncludeCoAuthoredBy = null;
     this.pinnedProjectContext = null;
-    this.pinnedPrototypeContext = null;
-    this.pinnedPrototypeSlug = null;
     this.preferencesDriftNotified = false;
-    this.prototypeDriftNotified = false;
   }
 
   /**
@@ -2997,10 +2933,7 @@ This is a branched conversation. All prior messages in this conversation are par
     this.pinnedPreferencesPrompt = null;
     this.pinnedIncludeCoAuthoredBy = null;
     this.pinnedProjectContext = null;
-    this.pinnedPrototypeContext = null;
-    this.pinnedPrototypeSlug = null;
     this.preferencesDriftNotified = false;
-    this.prototypeDriftNotified = false;
 
     // Clear Claude-specific callbacks (not handled by BaseAgent)
     this.onSourcesListChange = null;
@@ -3175,10 +3108,7 @@ This is a branched conversation. All prior messages in this conversation are par
     this.pinnedPreferencesPrompt = null;
     this.pinnedIncludeCoAuthoredBy = null;
     this.pinnedProjectContext = null;
-    this.pinnedPrototypeContext = null;
-    this.pinnedPrototypeSlug = null;
     this.preferencesDriftNotified = false;
-    this.prototypeDriftNotified = false;
     // Atomic on-disk persistence: clears all four fork fields at once. This
     // supersedes onSdkSessionIdCleared, which only persists sdkSessionId and
     // would leave the branchFromSdk* fields on disk to reload next launch.
@@ -3238,8 +3168,47 @@ This is a branched conversation. All prior messages in this conversation are par
       } : {}),
     };
 
+    const images = request.images ?? [];
+    if (images.length === 0) {
+      return consumeLlmQueryMessages(
+        query({ prompt: request.prompt, options }),
+        (msg) => this.debug(msg),
+      );
+    }
+
+    // A recording arrives as frames, and a model reads them in order: each frame is placed where
+    // its moment belongs in the text, so "the total moves at 0:12" has something to point at.
+    // The prompt is the last block, because it is what all of the frames are about.
+    const content: ContentBlockParam[] = [];
+    for (const image of images) {
+      const mediaType = this.mapImageMediaType(image.mimeType);
+      if (!mediaType) {
+        throw new Error(
+          `Unsupported image type "${image.mimeType}" — this path takes jpeg, png, gif or webp.`,
+        );
+      }
+      if (image.timestampMs !== undefined) {
+        content.push({ type: 'text', text: `[+${image.timestampMs}ms]` });
+      }
+      content.push({ type: 'image', source: { type: 'base64', media_type: mediaType, data: image.data } });
+    }
+    content.push({ type: 'text', text: request.prompt });
+
+    const message = {
+      type: 'user',
+      message: { role: 'user', content },
+      parent_tool_use_id: null,
+      // Same as `buildSDKUserMessage`: resumption is `options.resume`'s job, and setting a
+      // session id here is what used to make the SDK answer with nothing.
+      session_id: '',
+    } as SDKUserMessage;
+
+    async function* singleMessage(): AsyncIterable<SDKUserMessage> {
+      yield message;
+    }
+
     return consumeLlmQueryMessages(
-      query({ prompt: request.prompt, options }),
+      query({ prompt: singleMessage(), options }),
       (msg) => this.debug(msg),
     );
   }

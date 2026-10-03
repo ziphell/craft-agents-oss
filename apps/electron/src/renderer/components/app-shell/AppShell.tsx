@@ -33,7 +33,6 @@ import {
   Info,
   MailOpen,
   FolderKanban,
-  FlaskConical,
   Wand2,
 } from "lucide-react"
 // SessionStatusIcons no longer used - icons come from dynamic sessionStatuses
@@ -107,7 +106,6 @@ import { createLabelMenuItems, filterItems as filterLabelMenuItems, type LabelMe
 import { buildLabelTree, getDescendantIds, getLabelDisplayName, flattenLabels, extractLabelId, findLabelById, sortLabelsForDisplay, matchesLabelFilter } from "@craft-agent/shared/labels"
 import type { LabelConfig, LabelTreeNode } from "@craft-agent/shared/labels"
 import { resolveEntityColor } from "@craft-agent/shared/colors"
-import type { CreatedPrototype, DuplicatedPrototype } from "@craft-agent/shared/prototypes"
 import * as storage from "@/lib/local-storage"
 import { toast } from "sonner"
 import { navigate, routes } from "@/lib/navigate"
@@ -120,7 +118,6 @@ import {
   isSkillsNavigation,
   isAutomationsNavigation,
   isProjectsNavigation,
-  isPrototypesNavigation,
   isTweaksNavigation,
   type NavigationState,
 } from "@/contexts/NavigationContext"
@@ -129,19 +126,16 @@ import { SourcesListPanel } from "./SourcesListPanel"
 import { SkillsListPanel } from "./SkillsListPanel"
 import { AutomationsListPanel } from "../automations/AutomationsListPanel"
 import { ProjectsListPanel } from "./ProjectsListPanel"
-import { PrototypesListPanel } from "./PrototypesListPanel"
 import { TweaksListPanel } from "./TweaksListPanel"
 import { APP_EVENTS, AGENT_EVENTS, type AutomationFilterKind, AUTOMATION_TYPE_TO_FILTER_KIND } from "../automations/types"
 import { useAutomations } from "@/hooks/useAutomations"
 import { useProjects } from "@/hooks/useProjects"
-import { usePrototypes } from "@/hooks/usePrototypes"
 import { useTweaks } from "@/hooks/useTweaks"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { PanelHeader } from "./PanelHeader"
 import { FabNewChat } from "./FabNewChat"
 import { SendToWorkspaceDialog } from "./SendToWorkspaceDialog"
 import { CreateProjectDialog } from "../projects/CreateProjectDialog"
-import { CreatePrototypeDialog, type CreatePrototypeValues } from "../prototypes/CreatePrototypeDialog"
 import { useBrowserToolbarActions, type AddElementRequest } from "@/hooks/useBrowserToolbarActions"
 import { MessagingDialogHost } from "@/components/messaging/MessagingDialogHost"
 import { EditPopover, getEditConfig, type EditContextKey } from "@/components/ui/EditPopover"
@@ -948,7 +942,21 @@ function AppShellContent({
   } = useAutomations(activeWorkspaceId)
 
   const { projects } = useProjects(activeWorkspaceId)
-  const { prototypes, refresh: refreshPrototypes } = usePrototypes(activeWorkspaceId)
+
+  // The workspace's project files tree is watched so anything that follows external edits to it
+  // (`useProjectFilesWatch`, used by the diagram and HTML editors) keeps receiving
+  // `projects:filesChanged`. The watcher is per-client and must be owned by exactly one component.
+  useEffect(() => {
+    if (!activeWorkspaceId) return
+    window.electronAPI.watchProjectFiles().catch((err: unknown) => {
+      console.error('[AppShell] Failed to start project files watcher:', err)
+    })
+    return () => {
+      window.electronAPI.unwatchProjectFiles().catch((err: unknown) => {
+        console.error('[AppShell] Failed to stop project files watcher:', err)
+      })
+    }
+  }, [activeWorkspaceId])
 
   /**
    * Put a chip in a conversation's draft, and bring the composer up on it.
@@ -1933,11 +1941,6 @@ function AppShellContent({
     navigate(routes.view.projects())
   }, [])
 
-  // Handler for prototypes view
-  const handlePrototypesClick = useCallback(() => {
-    navigate(routes.view.prototypes())
-  }, [])
-
   // Handler for tweaks view
   const handleTweaksClick = useCallback(() => {
     navigate(routes.view.tweaks())
@@ -2121,72 +2124,6 @@ function AppShellContent({
     }
   }, [activeWorkspace?.id, navigate, t])
 
-  // Handler for "Add Prototype" — same shape as openAddProject: prompt for a
-  // name up front so the slug is meaningful and not "new-prototype-3".
-  const [createPrototypeDialogOpen, setCreatePrototypeDialogOpen] = useState(false)
-  const openAddPrototype = useCallback(() => {
-    if (!activeWorkspace?.id) return
-    setCreatePrototypeDialogOpen(true)
-  }, [activeWorkspace?.id])
-  const handleCreatePrototypeSubmit = useCallback(async (values: CreatePrototypeValues) => {
-    if (!activeWorkspace?.id) return
-    // Deliberately does NOT catch: createPrototype rejects on a taken slug or
-    // an unusable name, and CreatePrototypeDialog renders that message inline.
-    // A new prototype has no pages — a page is added afterwards, and its kind
-    // (a live address, or a document of ours) is asked for there.
-    const created = (await window.electronAPI.createPrototype(
-      activeWorkspace.id,
-      { name: values.name }
-    )) as CreatedPrototype
-    setCreatePrototypeDialogOpen(false)
-    toast.success(t('prototypeCreate.success', { name: values.name }))
-    navigate(routes.view.prototypes(created.slug))
-  }, [activeWorkspace?.id, t])
-
-  // Duplicate and delete are the two decisions about *which prototypes exist*,
-  // and both live on the list row's menu. Everything else about a prototype is
-  // said in the conversation.
-  //
-  // Duplicate opens the copy: taking a variant somewhere else is the whole point
-  // of the action, so landing on it is the expected next screen. The copy brings
-  // the prototype's own files along; the two are independent afterwards.
-  const handleDuplicatePrototype = useCallback(async (slug: string) => {
-    if (!activeWorkspace?.id) return
-    try {
-      const copied = (await window.electronAPI.duplicatePrototype(
-        activeWorkspace.id,
-        slug,
-      )) as DuplicatedPrototype
-      await refreshPrototypes()
-      toast.success(t('prototypesList.duplicated', { name: copied.slug }))
-      navigate(routes.view.prototypes(copied.slug))
-    } catch (err) {
-      console.error('[AppShell] Failed to duplicate prototype:', err)
-      toast.error(t('prototypesList.duplicateFailed'))
-    }
-  }, [activeWorkspace?.id, refreshPrototypes, navigate, t])
-
-  // Deleting removes the directory and everything in it, so it is confirmed
-  // first — the one irreversible thing the workbench offers. Nothing else has to
-  // be cleaned up or reported: another prototype may mention this slug in a
-  // document, and that is prose, not a relation (see delete.ts).
-  const handleDeletePrototype = useCallback(async (slug: string) => {
-    if (!activeWorkspace?.id) return
-    if (!window.confirm(t('prototypesList.deleteConfirm', { name: slug }))) return
-    try {
-      await window.electronAPI.deletePrototype(activeWorkspace.id, slug)
-      await refreshPrototypes()
-      toast.success(t('prototypesList.deleted', { name: slug }))
-      // The details page would otherwise keep showing a prototype that is gone.
-      if (isPrototypesNavigation(navState) && navState.details?.prototypeSlug === slug) {
-        navigate(routes.view.prototypes())
-      }
-    } catch (err) {
-      console.error('[AppShell] Failed to delete prototype:', err)
-      toast.error(t('prototypesList.deleteFailed'))
-    }
-  }, [activeWorkspace?.id, refreshPrototypes, navigate, t, navState])
-
   /**
    * Resolve the "inherit sole active filter" rule for new sessions. Only
    * include-mode filters are candidates — an excluded status/label/project must
@@ -2305,18 +2242,17 @@ function AppShellContent({
     }
     flattenTree(labelTree)
 
-    // 3. Sources, Skills, Projects, Prototypes, Tweaks, Automations, Settings (visual order)
+    // 3. Sources, Skills, Projects, Tweaks, Automations, Settings (visual order)
     result.push({ id: 'nav:sources', type: 'nav', action: handleSourcesClick })
     result.push({ id: 'nav:skills', type: 'nav', action: handleSkillsClick })
     result.push({ id: 'nav:projects', type: 'nav', action: handleProjectsClick })
-    result.push({ id: 'nav:prototypes', type: 'nav', action: handlePrototypesClick })
     result.push({ id: 'nav:tweaks', type: 'nav', action: handleTweaksClick })
     result.push({ id: 'nav:automations', type: 'nav', action: handleAutomationsClick })
     result.push({ id: 'nav:settings', type: 'nav', action: () => handleSettingsClick() })
     result.push({ id: 'nav:whats-new', type: 'nav', action: handleWhatsNewClick })
 
     return result
-  }, [handleAllSessionsClick, handleFlaggedClick, handleArchivedClick, handleSessionStatusClick, effectiveSessionStatuses, handleLabelClick, labelConfigs, labelTree, viewConfigs, handleViewClick, handleSourcesClick, handleSkillsClick, handleProjectsClick, handleAutomationsClick, handlePrototypesClick, handleTweaksClick, handleSettingsClick, handleWhatsNewClick])
+  }, [handleAllSessionsClick, handleFlaggedClick, handleArchivedClick, handleSessionStatusClick, effectiveSessionStatuses, handleLabelClick, labelConfigs, labelTree, viewConfigs, handleViewClick, handleSourcesClick, handleSkillsClick, handleProjectsClick, handleAutomationsClick, handleTweaksClick, handleSettingsClick, handleWhatsNewClick])
 
   // Toggle folder expanded state
   const handleToggleFolder = React.useCallback((path: string) => {
@@ -2438,11 +2374,6 @@ function AppShellContent({
     // Projects navigator
     if (isProjectsNavigation(navState)) {
       return t("sidebar.allProjects")
-    }
-
-    // Prototypes navigator
-    if (isPrototypesNavigation(navState)) {
-      return t("sidebar.allPrototypes")
     }
 
     // Tweaks navigator
@@ -2814,15 +2745,6 @@ function AppShellContent({
                         variant: (sessionFilter?.kind === 'allSessions' && projectFilter.get(p.config.id) === 'include') ? "default" as const : "ghost" as const,
                         onClick: () => handleJumpToProjectSessions(p.config.id),
                       })),
-                    },
-                    {
-                      id: "nav:prototypes",
-                      title: t("sidebar.prototypes"),
-                      label: String(prototypes.length),
-                      icon: FlaskConical,
-                      // Highlight only when on Prototypes view itself
-                      variant: isPrototypesNavigation(navState) ? "default" : "ghost",
-                      onClick: handlePrototypesClick,
                     },
                     {
                       id: "nav:tweaks",
@@ -3679,14 +3601,6 @@ function AppShellContent({
                       onClick={openAddProject}
                     />
                   )}
-                  {/* Add Prototype button (only for prototypes mode) */}
-                  {isPrototypesNavigation(navState) && activeWorkspace && (
-                    <HeaderIconButton
-                      icon={<Plus className="h-4 w-4" />}
-                      tooltip={t("sidebarMenu.addPrototype")}
-                      onClick={openAddPrototype}
-                    />
-                  )}
                 </>
               }
             />
@@ -3723,17 +3637,6 @@ function AppShellContent({
                 onAddProject={openAddProject}
                 onJumpToSessions={handleJumpToProjectSessions}
                 selectedProjectSlug={isProjectsNavigation(navState) ? navState.details?.projectSlug ?? null : null}
-              />
-            )}
-            {isPrototypesNavigation(navState) && (
-              /* Prototypes List — one prototype per row; its pages are in its details page */
-              <PrototypesListPanel
-                prototypes={prototypes}
-                onPrototypeClick={(slug) => navigate(routes.view.prototypes(slug))}
-                onAddPrototype={openAddPrototype}
-                onDuplicatePrototype={handleDuplicatePrototype}
-                onDeletePrototype={handleDeletePrototype}
-                selectedPrototypeSlug={isPrototypesNavigation(navState) ? navState.details?.prototypeSlug ?? null : null}
               />
             )}
             {isTweaksNavigation(navState) && (
@@ -4132,13 +4035,6 @@ function AppShellContent({
         open={createProjectDialogOpen}
         onCancel={() => setCreateProjectDialogOpen(false)}
         onSubmit={handleCreateProjectSubmit}
-      />
-
-      {/* Create Prototype dialog — same reason, plus duplicate-slug errors are shown inside */}
-      <CreatePrototypeDialog
-        open={createPrototypeDialogOpen}
-        onCancel={() => setCreatePrototypeDialogOpen(false)}
-        onSubmit={handleCreatePrototypeSubmit}
       />
 
       {/* Messaging dialogs (pairing-code + WA connect) — driven by messagingDialogAtom.

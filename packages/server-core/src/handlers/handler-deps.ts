@@ -33,7 +33,7 @@ export interface HandlerDeps<
    * serve one.
    *
    * A host with a protocol handler can hand that address out; a standalone server
-   * has no way to serve `*.localhost` on someone else's machine, so it leaves this
+   * runs no browser session of its own, so it leaves this
    * absent. There is no workspace argument: what is served is a
    * directory that ships with the app, so the answer is install-wide — and null
    * means the bundle is not installed (`bun scripts/fetch-drawio-assets.ts`), which

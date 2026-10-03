@@ -1,13 +1,13 @@
 /**
- * The app's own origins: `<label>.localhost`, answered from disk.
+ * The app's own origins: `<scheme>://<label>`, answered from disk.
  *
  * A directory is served this way: it is reachable at an origin of its own, so
  * its documents can load their own files by root-absolute path, keep state in
  * `localStorage`, and `fetch` their own endpoints. The mechanism lives here rather than
- * inside each feature because the security-relevant half is here: the label a directory is
- * reachable at, the suffix that makes that label resolvable, the fence that keeps a
- * request inside the directory it names, and the content types a file is answered with.
- * What a feature *serves* is its own business.
+ * inside each feature because the security-relevant half is here: the scheme and the
+ * label a directory is reachable at, the fence that keeps a request inside the directory
+ * it names, and the content types a file is answered with. What a feature *serves* is
+ * its own business.
  *
  * ## Why the label carries a hash
  *
@@ -16,19 +16,26 @@
  * identity. Two directories that share a slug — the same name in two places — get
  * two labels, and neither can answer for the other.
  *
- * ## Why `*.localhost` and not a port
+ * ## Why a scheme of our own, and not `http://<label>.localhost`
  *
- * `*.localhost` resolves to loopback in Chromium, so no DNS entry is needed and no
- * port is involved — which is what makes the origin the same on every start. That
- * matters because the origin is the key cookies and `localStorage` are stored under:
- * an ephemeral port changed the origin on every launch.
+ * `*.localhost` would give the same stable origin, but reaching it means handling the
+ * `http` scheme — and a protocol handler is registered per **session**, so a handler on
+ * `http` comes down on every http request that session makes, the ones real pages make
+ * included. A scheme of our own is answered by a handler for that scheme alone, so
+ * nothing a person browses ever passes through it. Registering the scheme `standard`
+ * (and `secure`) is what gives what the loopback name was borrowed for: a real origin,
+ * root-absolute references that resolve, and the storage APIs.
  */
 
 import { createHash } from 'crypto'
 import { extname, resolve, sep } from 'path'
 
-/** Any `*.localhost` resolves to loopback in Chromium, so no DNS entry is needed. */
-export const LOCAL_HOST_SUFFIX = '.localhost'
+/**
+ * The scheme the app's own origins live on. It is registered as a privileged standard
+ * scheme before `app.whenReady()` — there is one registration call for the whole app, in
+ * the Electron main process (`registerPrivilegedSchemes`).
+ */
+export const LOCAL_ORIGIN_SCHEME = 'craft-local'
 
 /** A DNS label caps at 63 chars; the slug part is truncated to leave room for `-` + 8 hex. */
 const MAX_LABEL_LENGTH = 63
@@ -53,19 +60,16 @@ export function localHostLabel(slug: string, dir: string): string {
 
 /** The origin a label is reachable at. No trailing slash: it is an origin, not a URL. */
 export function localHostOrigin(label: string): string {
-  return `http://${label}${LOCAL_HOST_SUFFIX}`
+  return `${LOCAL_ORIGIN_SCHEME}://${label}`
 }
 
-/** `slug-hash.localhost` (with or without a port) → `slug-hash`. Null for anything else. */
+/** `slug-hash` (with or without a port) → `slug-hash`. Null for anything else. */
 export function labelFromHost(hostHeader: string | undefined): string | null {
   if (!hostHeader) return null
   const host = hostHeader.split(':')[0]!.trim().toLowerCase()
-  if (!host.endsWith(LOCAL_HOST_SUFFIX)) return null
-
-  const label = host.slice(0, -LOCAL_HOST_SUFFIX.length)
-  // Exactly one label: `a.b.localhost` would otherwise reach for something
-  // through a name nobody handed out.
-  return label && !label.includes('.') ? label : null
+  // Exactly one label: `a.b` would otherwise reach for something through a name
+  // nobody handed out.
+  return host && !host.includes('.') ? host : null
 }
 
 const CONTENT_TYPES: Record<string, string> = {

@@ -9,12 +9,15 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { useEffect, useState, useCallback } from 'react'
+import { useAtomValue } from 'jotai'
 import { Check, X, Minus } from 'lucide-react'
 import { EditPopover, EditButton, getEditConfig } from '@/components/ui/EditPopover'
 import { toast } from 'sonner'
 import { SkillMenu } from '@/components/app-shell/SkillMenu'
 import { SkillAvatar } from '@/components/ui/skill-avatar'
 import { routes, navigate } from '@/lib/navigate'
+import { automationsAtom } from '@/atoms/automations'
+import { entriesForSkill } from '@/lib/skill-entries'
 import { useActiveWorkspace } from '@/context/AppShellContext'
 import { getFileManagerName } from '@/lib/platform'
 import {
@@ -38,6 +41,13 @@ export default function SkillInfoPage({ skillSlug, workspaceId, workingDirectory
   const [error, setError] = useState<string | null>(null)
   const activeWorkspace = useActiveWorkspace()
   const canRevealLocally = !activeWorkspace?.remoteServer
+
+  // The automations that run this skill on its own — the entry a playbook has.
+  const automations = useAtomValue(automationsAtom)
+  const entries = React.useMemo(
+    () => (skill ? entriesForSkill(automations, skill.slug) : []),
+    [automations, skill],
+  )
 
   // Load skill data
   useEffect(() => {
@@ -215,6 +225,47 @@ export default function SkillInfoPage({ skillSlug, workspaceId, workingDirectory
               )}
             </Info_Table>
           </Info_Section>
+
+          {/* When it runs — the automations that start this skill on its own */}
+          {entries.length > 0 && (
+            <Info_Section title={t('skillInfo.whenItRuns')}>
+              <Info_Table>
+                {entries.map((automation) => (
+                  <Info_Table.Row key={automation.id} label={automation.name}>
+                    {automation.summary}
+                  </Info_Table.Row>
+                ))}
+              </Info_Table>
+            </Info_Section>
+          )}
+
+          {/*
+            Last run — what a run found for this skill's declared targets.
+
+            **"No record" is not "nothing matched."** `hits.json` is written by whoever ran the
+            skill, and nobody has to have: so an empty record says so in words rather than showing
+            an empty table, and a target with no time says it never matched rather than looking
+            like a success with a missing date.
+          */}
+          {((skill.hits?.targets.length ?? 0) > 0 || (skill.anchors?.length ?? 0) > 0) && (
+            <Info_Section title={t('skillInfo.playbookLastRun')}>
+              {skill.hits && skill.hits.targets.length > 0 ? (
+                <Info_Table>
+                  {skill.hits.targets.map((target) => (
+                    <Info_Table.Row key={target.selector} label={target.selector}>
+                      {target.lastMatchedAt === undefined
+                        ? t('skillInfo.playbookNeverMatched')
+                        : new Date(target.lastMatchedAt).toLocaleString()}
+                    </Info_Table.Row>
+                  ))}
+                </Info_Table>
+              ) : (
+                <p className="px-4 py-3 text-xs text-muted-foreground">
+                  {t('skillInfo.playbookNeverRun')}
+                </p>
+              )}
+            </Info_Section>
+          )}
 
           {/* Permission Modes */}
           {skill.metadata.alwaysAllow && skill.metadata.alwaysAllow.length > 0 && (

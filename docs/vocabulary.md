@@ -1,7 +1,7 @@
 # 术语与文案规范（Craft Agents）
 
 > 覆盖：这套代码里"东西叫什么"的规矩——浏览器这一条线（tab / 地址 / page / HTML）、那个窗口的名字、以及给用户看的文案怎么写。适用于代码标识符、注释、开发者文档，以及所有应用内可见的文案。
-> 配套文档：[渲染层的导入边界](renderer-imports.md)、[原型工作台开发笔记](prototype-workbench-dev.md)、[开发环境运行指南](dev-environment.md)
+> 配套文档：[渲染层的导入边界](renderer-imports.md)、[项目分层开发文档](project-layers.md)、[开发环境运行指南](dev-environment.md)
 
 ## 1. 浏览器这条线：窗口装 tab，tab 拿地址，显示的才叫 page
 
@@ -18,7 +18,7 @@
 
 判据：**先问"这是浏览器显示的对象，还是加载它的地址 / 装它的 tab / 盘上的文件 / app 画的 HTML？"** 只有第一种能用 page。
 
-中文同理：不要用"页面"指一条链接、一个 `.html` 文件，或任何"要去浏览器打开的东西"。**例外是界面屏幕**——"详情页""设置页"里的"页"是 app 自己的一屏（`PrototypeInfoPage`、`AppSettingsPage`），不是浏览器里的 page，照旧用。
+中文同理：不要用"页面"指一条链接、一个 `.html` 文件，或任何"要去浏览器打开的东西"。**例外是界面屏幕**——"详情页""设置页"里的"页"是 app 自己的一屏（`ProjectInfoPage`、`AppSettingsPage`），不是浏览器里的 page，照旧用。
 
 ## 2. 为什么：这个词在这份代码库里有三个前身
 
@@ -30,11 +30,11 @@
 
 ## 3. 那个窗口不叫"画布"
 
-它是**工作区的浏览器窗口**：一个工作区一个，工作区里的每个对话和每个人都用它，**通用任务（查资料、填表、看后台）也用它**——跟原型没有必然关系。
+它是**工作区的浏览器窗口**：一个工作区一个，工作区里的每个对话和每个人都用它，**通用任务（查资料、填表、看后台）也用它**——跟某一个具体功能没有必然关系。
 
 窗口的**身份是作用域**（工作区 vs 会话），不是用途。所以代码里**没有** `isCanvas` 这样的字段：解析"这个对话在哪个窗口干活"的是 `resolveWorkspaceWindow` / `resolveWorkspaceWindowId`（[SessionManager.ts](file:///c:/Users/Ryan/code/craft-agents-oss/packages/server-core/src/sessions/SessionManager.ts#L3738)），注释一律写 "the workspace's window"；助手的 `tabs` 输出里 `belongs to:` / `driven by:` 谈的都是**tab**，窗口本身不署任何会话的名——那才是一个工作区只留一个窗口还能让多个对话并用的前提。
 
-判据：**问"通用任务会不会用到它"。** 会用到的，就不能用原型 / 画布的一套词。
+判据：**问"通用任务会不会用到它"。** 会用到的，就不能用某一个功能自己的名字 / 画布的一套词。
 
 ## 4. 给用户看的文案：说人话，不面向开发过程
 
@@ -48,7 +48,7 @@
 
 | 位置 | 改前 | 改后 |
 |---|---|---|
-| `projectInfo.prototypesHint` | 一整段解释 | "The workspace's prototypes — tick the ones this project works on." |
+| `chat.modeTooltip` | 一整段解释（这个开关会往系统提示里注入一段规则、把会话所属项目的文件夹告诉 agent…） | "What this conversation is working on." |
 | `settings.links.openInAppBrowser` | "Open pages in the app's browser" | "Open links in the app's browser" |
 
 范围：应用内可见文案——标签、说明、按钮、空态、toast。**提示词、开发者文档、代码注释不适用**：那里要的是精确的规则与理由，不要拿这一条去砍它们。

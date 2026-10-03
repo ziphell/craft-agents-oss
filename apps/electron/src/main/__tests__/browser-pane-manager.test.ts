@@ -337,6 +337,12 @@ function createMockWindow(opts?: { width?: number; height?: number; minWidth?: n
   return win
 }
 
+/**
+ * `nativeTheme`, as the manager sees it: a mutable object rather than a literal, because the
+ * app's theme is exactly what must **not** decide a page's own canvas (see the backdrop tests).
+ */
+const mockNativeTheme = { shouldUseDarkColors: false }
+
 mock.module('electron', () => ({
   app: {
     getPath: mock((name: string) => name === 'downloads' ? downloadsDir : `/tmp/mock-${name}`),
@@ -389,9 +395,7 @@ mock.module('electron', () => ({
       popup: mock(() => {}),
     })),
   },
-  nativeTheme: {
-    shouldUseDarkColors: false,
-  },
+  nativeTheme: mockNativeTheme,
   shell: {
     openExternal: mockShellOpenExternal,
   },
@@ -401,6 +405,7 @@ mock.module('electron', () => ({
       setPermissionRequestHandler: mock(() => {}),
       webRequest: {
         onBeforeRequest: mock((_cb: any) => {}),
+        onBeforeSendHeaders: mock((_cb: any) => {}),
         onCompleted: mock((_cb: any) => {}),
         onErrorOccurred: mock((_cb: any) => {}),
       },
@@ -620,7 +625,7 @@ describe('BrowserPaneManager', () => {
   })
 
   // Every request for a window of its own becomes a tab beside the one that asked,
-  // whatever asked: a link, a scripted popup, a link on a prototype's own document.
+  // whatever asked: a link, a scripted popup, a link inside one of our own pages.
   // There is no second-window path left.
   it('opens a window request as a tab beside the one that asked for it', () => {
     manager.createInstance('window-open-link')
@@ -1015,7 +1020,7 @@ describe('BrowserPaneManager', () => {
         // ending keeps it — see "holds a tab for a session, and lets go without touching the
         // window or the cursor"). A deleted conversation cannot work anywhere again, so the id
         // would be state about nothing — read by the toolbar for the tab's label, and by the
-        // prototype and downloads fallbacks.
+        // downloads fallback.
         expect(tab.cursorOf).toEqual([])
         expect(whyTabIsOutOfReach(tab, work('sess-b'))).toBeNull()
       })
@@ -1827,8 +1832,8 @@ describe('BrowserPaneManager', () => {
     // is parked at the size it had when it was last on screen (`parkTab`).
     const resident = instance.parkingWindow
     expect(resident.contentView.children).toContain(behind.tabView)
-    expect(behind.tabView.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 993, height: 845 })
-    expect(behind.tabView.getBounds()).toEqual({ x: 0, y: 0, width: 993, height: 845 })
+    expect(behind.tabView.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 1024, height: 845 })
+    expect(behind.tabView.getBounds()).toEqual({ x: 0, y: 0, width: 1024, height: 845 })
   })
 
   it('treats a capture that never comes back as a miss, and the parked view answers instead', async () => {
@@ -2042,7 +2047,7 @@ describe('BrowserPaneManager', () => {
     const onScreen = instance.tabs[0]
     manager.createTab('minimized', { url: 'https://behind.example.com/', activate: false })
     const behind = instance.tabs[1]
-    expect(onScreen.tabView.getBounds()).toEqual({ x: 201, y: 49, width: 993, height: 845 })
+    expect(onScreen.tabView.getBounds()).toEqual({ x: 201, y: 49, width: 1024, height: 845 })
 
     // Minimized — no size at all — and a layout asked for anyway, which is what the window's own
     // `resize` does on the way down.
@@ -2054,7 +2059,7 @@ describe('BrowserPaneManager', () => {
 
     // The page is left on the size it had, rather than on the size the window never had…
     expect(onScreen.tabView.setBounds).not.toHaveBeenCalled()
-    expect(onScreen.tabView.getBounds()).toEqual({ x: 201, y: 49, width: 993, height: 845 })
+    expect(onScreen.tabView.getBounds()).toEqual({ x: 201, y: 49, width: 1024, height: 845 })
     // …and the tab that is not on screen is not touched either: it lives in the parking window, at
     // its own viewport.
     expect(behind.tabView.setBounds).not.toHaveBeenCalled()
@@ -2131,7 +2136,7 @@ describe('BrowserPaneManager', () => {
     const behind = instance.tabs.find((tab: any) => tab.id === behindId)
 
     // Born in the parking window, at the size the page area had then.
-    expect(behind.tabView.getBounds()).toEqual({ x: 0, y: 0, width: 993, height: 845 })
+    expect(behind.tabView.getBounds()).toEqual({ x: 0, y: 0, width: 1024, height: 845 })
     expect(instance.parkingWindow.contentView.children).toContain(behind.tabView)
     expect(instance.window.contentView.children).not.toContain(behind.tabView)
     behind.tabView.setBounds.mockClear()
@@ -2144,8 +2149,8 @@ describe('BrowserPaneManager', () => {
     // …and the one that is not on screen is only ever told the size it already has: it is parked
     // again at the very viewport it was given, so the page is not laid out a second time, and it is
     // never given the window's area while it is not showing.
-    expect(behind.tabView.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 993, height: 845 })
-    expect(behind.tabView.getBounds()).toEqual({ x: 0, y: 0, width: 993, height: 845 })
+    expect(behind.tabView.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 1024, height: 845 })
+    expect(behind.tabView.getBounds()).toEqual({ x: 0, y: 0, width: 1024, height: 845 })
     expect(instance.window.contentView.children).not.toContain(behind.tabView)
 
     // Coming forward is where it gets the window's size — and the window holds it from then on.
@@ -2175,7 +2180,7 @@ describe('BrowserPaneManager', () => {
     instance.window.setContentSize.mockClear()
 
     // Born in the parking window, which is the size of what it holds.
-    expect(parking.getContentSize()).toEqual([993, 845])
+    expect(parking.getContentSize()).toEqual([1024, 845])
 
     const resized = manager.resizeViewport('resize-behind', 1280, 720, behindId)
 
@@ -2240,7 +2245,7 @@ describe('BrowserPaneManager', () => {
       // the agent's markings are drawn for. The panel's own line is up either way (the page's
       // corner comes from the page's view, not from this document).
       expect(tab(instance).heldBy ?? null).toBeNull()
-      expect(instance.nativeOverlayView.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 48, width: 1000, height: 852 })
+      expect(instance.nativeOverlayView.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 48, width: 1031, height: 852 })
       expect(overlayScript(instance)).toContain('const locked = false;')
       expect(overlayScript(instance)).toContain('const shieldActive = false;')
       expect(instance.nativeOverlayView.webContents.focus).not.toHaveBeenCalled()
@@ -2280,7 +2285,7 @@ describe('BrowserPaneManager', () => {
       await settle()
 
       // The held tab is on screen: covered, locked, and the pointer says so.
-      expect(instance.nativeOverlayView.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 48, width: 1000, height: 852 })
+      expect(instance.nativeOverlayView.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 48, width: 1031, height: 852 })
       expect(overlayScript(instance)).toContain('const shieldActive = true;')
       expect(overlayScript(instance)).toContain('const locked = true;')
       expect(manager.listTabs('ac-lock').find((tab) => tab.id === heldId)?.lockedBy).toBe('sess-lock')
@@ -2291,7 +2296,7 @@ describe('BrowserPaneManager', () => {
       // A tab the person switched to is not the agent's to hold. The panel comes forward with it
       // — same overlay, sized to the tab area, saying this tab's state — but nothing on it is a
       // lock: no accent, no dim, no chip, and the page takes input.
-      expect(instance.nativeOverlayView.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 48, width: 1000, height: 852 })
+      expect(instance.nativeOverlayView.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 48, width: 1031, height: 852 })
       expect(overlayScript(instance)).toContain('const locked = false;')
       expect(overlayScript(instance)).toContain('const shieldActive = false;')
       // …while the tab it *is* working on stays locked in the model.
@@ -2318,7 +2323,7 @@ describe('BrowserPaneManager', () => {
 
       const instance = (manager as any).instances.get('ac-idle')
       // The panel's line around the page is up, and it says no lock.
-      expect(instance.nativeOverlayView.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 48, width: 1000, height: 852 })
+      expect(instance.nativeOverlayView.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 48, width: 1031, height: 852 })
       expect(overlayScript(instance)).toContain('const locked = false;')
       expect(overlayScript(instance)).toContain('const shieldActive = false;')
       expect(instance.nativeOverlayView.webContents.focus).not.toHaveBeenCalled()
@@ -2574,15 +2579,31 @@ describe('BrowserPaneManager', () => {
       ])
     })
 
+    // What a page opens at is the **page**, not the window: the rail takes its width off the side
+    // and the panel is inset by the gutter, so a 1024px viewport is a wider window. This is the one
+    // place that says which of the two numbers is the intended one, so a window tweak cannot quietly
+    // move the viewport with it.
+    it('opens around a 1024px page, not a 1024px window', () => {
+      manager.createInstance('tabs-default-size')
+      const instance = (manager as any).instances.get('tabs-default-size')
+
+      // The page itself — what a site sees as its viewport — is `DEFAULT_VIEWPORT_WIDTH` wide.
+      expect(instance.tabs[0].tabView.getBounds()).toEqual({ x: 201, y: 49, width: 1024, height: 845 })
+      // And the window is that plus the rail (200) and the panel's gutter (1 + 6).
+      expect(instance.window.getContentSize()).toEqual([1231, 900])
+    })
+
     // The backdrop belongs to the *view*: `webContents.setBackgroundColor` does not exist,
     // so calling it there was a silent no-op and a tab whose page paints nothing was a hole
     // onto whichever tab is stacked under it (every tab is laid out at the same bounds).
+    // What fills that hole is the **browser's** canvas — white — not the app's own surface:
+    // the app's colours belong outside the page's rectangle (the gutter, `#mask`).
     it('gives each tab a backdrop of its own', () => {
       manager.createInstance('tabs-backdrop')
       const instance = (manager as any).instances.get('tabs-backdrop')
       const first = instance.tabs[0]
 
-      expect(first.tabView.setBackgroundColor).toHaveBeenCalledWith(BACKGROUND_HEX.light)
+      expect(first.tabView.setBackgroundColor).toHaveBeenCalledWith('#ffffff')
       // The overlay is the window's and is transparent: what it paints — the gutter's surface —
       // is its document's business, not the view's backdrop.
       expect(instance.nativeOverlayView.setBackgroundColor).toHaveBeenCalledWith('#00000000')
@@ -2590,7 +2611,28 @@ describe('BrowserPaneManager', () => {
       const secondId = manager.createTab('tabs-backdrop', { url: 'https://second.example.com/' })
       const second = instance.tabs.find((tab: any) => tab.id === secondId)
 
-      expect(second.tabView.setBackgroundColor).toHaveBeenCalledWith(BACKGROUND_HEX.light)
+      expect(second.tabView.setBackgroundColor).toHaveBeenCalledWith('#ffffff')
+    })
+
+    // A document that paints nothing is a light page whichever theme the app wears, and the
+    // canvas it leaves to the browser is white in both. Measured on `www.baidu.com/more/`
+    // (no `theme-color`, `html`/`body` transparent, no full-width bar): backing it with the
+    // app's own surface put `#080a10` behind the page's black text in dark mode and the whole
+    // page read as black-on-black — a page that looks broken, not a page that is dark.
+    it('backs a page with the browser canvas in dark mode too', () => {
+      mockNativeTheme.shouldUseDarkColors = true
+      try {
+        manager.createInstance('tabs-backdrop-dark')
+        const instance = (manager as any).instances.get('tabs-backdrop-dark')
+        const first = instance.tabs[0]
+
+        expect(first.tabView.setBackgroundColor).toHaveBeenCalledWith('#ffffff')
+        // The app's dark surface is the one thing it must *not* be: it is what painted the
+        // page black.
+        expect(first.tabView.setBackgroundColor).not.toHaveBeenCalledWith(BACKGROUND_HEX.dark)
+      } finally {
+        mockNativeTheme.shouldUseDarkColors = false
+      }
     })
 
     // A window is created holding one blank tab. That tab is what a window is
@@ -2663,7 +2705,7 @@ describe('BrowserPaneManager', () => {
       // screen where every tab that is not showing lives — at the size the page area had when it was
       // opened. That is its viewport until it comes forward, and it is what keeps the person's window
       // free of pages nobody asked to see.
-      expect(second.tabView.setBounds).toHaveBeenCalledWith({ x: 0, y: 0, width: 993, height: 845 })
+      expect(second.tabView.setBounds).toHaveBeenCalledWith({ x: 0, y: 0, width: 1024, height: 845 })
       expect(instance.window.contentView.children).not.toContain(second.tabView)
       expect(instance.parkingWindow.contentView.children).toContain(second.tabView)
     })
@@ -2960,7 +3002,7 @@ describe('BrowserPaneManager', () => {
         x: 0, y: 0, width: 200, height: expect.anything(),
       })
       expect(instance.toolbarView.setBounds).toHaveBeenCalledWith({
-        x: 200, y: 0, width: 1000, height: 48,
+        x: 200, y: 0, width: 1031, height: 48,
       })
 
       // And the rail is the topmost view in the window: tabs and the agent's overlay
@@ -3572,40 +3614,36 @@ describe('BrowserPaneManager', () => {
       return registration[1]
     }
 
-    it('files the recording in the downloads folder, whoever\'s tab it was', async () => {
-      // A conversation's tab: the recording still goes to the person's downloads — whose
-      // tab it is is not what the file is about. A download is filed the same way, for
-      // the same reason (`will-download`: a download is not the tab's).
+    it('files the recording in one fixed folder of the app\'s own, whoever\'s tab it was', async () => {
+      // A conversation's tab: the recording is still the person's file — whose tab it is is not what
+      // the file is about. But it goes to a folder the app owns, not to downloads, which is where
+      // files get handed around and a recording now carries what was typed into the page.
       const instanceId = manager.createInstance('record-downloads', { workspaceId: 'workspace-a' })
       manager.createTab(instanceId, { belongsTo: work('session-a') })
       manager.registerToolbarIpc()
 
       const started = await toolbarHandler('browser-toolbar:record')({}, instanceId, 'start')
-      expect(started.file.startsWith(join(downloadsDir, ''))).toBe(true)
+      expect(started.file.startsWith(join(downloadsDir, ''))).toBe(false)
+      expect(started.file.replace(/\\/g, '/')).toContain('/records/')
 
       // Nothing was ever captured — no display media, so no chunk — and a recording with
-      // nothing in it is not left behind as a webm that shows nothing.
+      // nothing in it is not left behind as an mp4 that shows nothing.
       expect(await toolbarHandler('browser-toolbar:record')({}, instanceId, 'stop')).toBeNull()
       expect(existsSync(started.file)).toBe(false)
     })
 
-    it('names the file for the container the chrome is about to record into', async () => {
+    it('names the file an mp4 whatever container the chrome asks for', async () => {
       const instanceId = manager.createInstance('record-format')
       manager.registerToolbarIpc()
       const record = toolbarHandler('browser-toolbar:record')
 
       // The extension comes from the chrome — it is the side that knows what
-      // `MediaRecorder` will write — but from a list: the last case is a name, and a name
-      // is not the caller's to invent.
-      const cases: Array<[string | undefined, string]> = [
-        ['mp4', '.mp4'],
-        ['WEBM', '.webm'],
-        ['../../evil', '.webm'],
-        [undefined, '.webm'],
-      ]
-      for (const [asked, expected] of cases) {
+      // `MediaRecorder` will write — but from a list: a name the other side invents is not
+      // one we take, and a recording is one container, so anything else comes back as mp4.
+      const cases: Array<string | undefined> = ['mp4', 'WEBM', 'webm', '../../evil', undefined]
+      for (const asked of cases) {
         const started = await record({}, instanceId, 'start', asked)
-        expect(started.file.endsWith(expected)).toBe(true)
+        expect(started.file.endsWith('.mp4')).toBe(true)
         // Every one of these is empty (nothing was ever captured), so this also removes
         // the file it just made.
         await record({}, instanceId, 'stop')
@@ -3628,6 +3666,72 @@ describe('BrowserPaneManager', () => {
 
       await toolbarHandler('browser-toolbar:record')({}, instanceId, 'stop')
       expect(sent().at(-1)).toBeNull()
+    })
+  })
+
+  /**
+   * Recording **a conversation's** tab (`record-start`).
+   *
+   * A window is identified by its **workspace** alone (`findWindowForWorkspace`), so the
+   * workspace has to be carried into the call. Leaving it out resolves the
+   * `workspaceId === null` bucket instead — *creating* that window — and then reports
+   * `has no tab "…"` about a window the conversation never worked in. That is the bug
+   * pinned here.
+   */
+  describe("recording a conversation's tab", () => {
+    /** The recorder proper is not what these tests are about: what it was *asked* is. */
+    function stubRecorder(): Array<{ tabId: string }> {
+      const asked: Array<{ tabId: string }> = []
+      ;(manager as any).sessionRecordings = {
+        start: async (options: any) => {
+          asked.push({ tabId: options.tabId })
+          return {
+            ok: true,
+            state: {
+              tabId: options.tabId,
+              file: join(downloadsDir, 'conversation-recording.webm'),
+              startedAt: Date.now(),
+              bytes: 0,
+            },
+            // Nothing ends it here, so no test has to wait for one.
+            finished: new Promise(() => {}),
+          }
+        },
+      }
+      return asked
+    }
+
+    it('records the tab in the conversation\'s own workspace window', async () => {
+      const workspaceId = 'workspace-recording'
+      const instanceId = manager.createInstance('recording-workspace', { workspaceId })
+      const tabId = tab((manager as any).instances.get('recording-workspace')).id
+      const asked = stubRecorder()
+
+      const result = await manager.startRecordingForSession(
+        'session-recording',
+        { tabId, ttlMs: 30_000 } as any,
+        { workspaceId },
+      )
+
+      expect(result.started).toBe(true)
+      expect(asked.map((one) => one.tabId)).toEqual([tabId])
+      // The window it recorded in is the caller's — not a second one conjured up for it.
+      expect((manager as any).instances.size).toBe(1)
+      expect((manager as any).instances.get(instanceId).workspaceId).toBe(workspaceId)
+    })
+
+    it('does not reach a tab that lives in another workspace\'s window', async () => {
+      const other = manager.createInstance('recording-other-workspace', { workspaceId: 'workspace-other' })
+      const tabId = tab((manager as any).instances.get(other)).id
+      stubRecorder()
+
+      await expect(
+        manager.startRecordingForSession(
+          'session-recording',
+          { tabId, ttlMs: 30_000 } as any,
+          { workspaceId: 'workspace-recording' },
+        ),
+      ).rejects.toThrow(/has no tab/)
     })
   })
 })

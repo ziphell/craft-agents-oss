@@ -1,9 +1,10 @@
 /**
  * Cross-platform preload build script with verification.
  *
- * Builds BOTH preload entry points:
+ * Builds the preload entry points:
  * - apps/electron/src/preload/bootstrap.ts -> dist/bootstrap-preload.cjs
  * - apps/electron/src/preload/browser-toolbar.ts -> dist/browser-toolbar-preload.cjs
+ * - apps/electron/src/preload/recording-encoder.ts -> dist/recording-encoder-preload.cjs
  */
 
 import { spawn } from "bun";
@@ -23,6 +24,11 @@ const OUTPUTS = [
     entry: "apps/electron/src/preload/browser-toolbar.ts",
     outfile: "apps/electron/dist/browser-toolbar-preload.cjs",
     label: "browser-toolbar-preload.cjs",
+  },
+  {
+    entry: "apps/electron/src/preload/recording-encoder.ts",
+    outfile: "apps/electron/dist/recording-encoder-preload.cjs",
+    label: "recording-encoder-preload.cjs",
   },
 ] as const;
 

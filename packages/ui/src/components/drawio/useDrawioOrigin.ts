@@ -1,11 +1,11 @@
 /**
  * The origin drawio is served at, resolved once per mount.
  *
- * Three surfaces need this — the block's viewer, the block's editor, and the editor the
- * prototype page opens — and it is one call for all of them. What is worth keeping in one
+ * Three surfaces need this — the block's viewer, the block's editor, and the full-size overlay's
+ * editor — and it is one call for all of them. What is worth keeping in one
  * place is not the effect: it is the two ways this fails, and neither is exotic. The bundle
  * is fetched rather than committed, so a checkout may simply not have it, and a host that
- * cannot serve `*.localhost` (a standalone server) has nowhere to put a frame at all. Both
+ * cannot serve the app's own origin (a standalone server) has nowhere to put a frame at all. Both
  * come back as a sentence rather than as null, because a blank frame says less than either.
  */
 

@@ -35,7 +35,7 @@ export interface ParsedRoute {
 // Compound Route Types (new format)
 // =============================================================================
 
-export type NavigatorType = 'sessions' | 'sources' | 'skills' | 'automations' | 'projects' | 'prototypes' | 'tweaks' | 'settings'
+export type NavigatorType = 'sessions' | 'sources' | 'skills' | 'automations' | 'projects' | 'tweaks' | 'settings'
 
 export interface ParsedCompoundRoute {
   /** The navigator type */
@@ -63,7 +63,7 @@ export interface ParsedCompoundRoute {
  * Known prefixes that indicate a compound route
  */
 const COMPOUND_ROUTE_PREFIXES = [
-  'allSessions', 'flagged', 'archived', 'state', 'label', 'view', 'board', 'sources', 'skills', 'automations', 'projects', 'prototypes', 'tweaks', 'settings'
+  'allSessions', 'flagged', 'archived', 'state', 'label', 'view', 'board', 'sources', 'skills', 'automations', 'projects', 'tweaks', 'settings'
 ]
 
 /**
@@ -187,20 +187,6 @@ export function parseCompoundRoute(route: string): ParsedCompoundRoute | null {
       return {
         navigator: 'projects',
         details: { type: 'project', id: segments[2] },
-      }
-    }
-    return null
-  }
-
-  // Prototypes navigator
-  if (first === 'prototypes') {
-    if (segments.length === 1) {
-      return { navigator: 'prototypes', details: null }
-    }
-    if (segments[1] === 'prototype' && segments[2]) {
-      return {
-        navigator: 'prototypes',
-        details: { type: 'prototype', id: segments[2] },
       }
     }
     return null
@@ -353,11 +339,6 @@ export function buildCompoundRoute(parsed: ParsedCompoundRoute): string {
     return `projects/project/${parsed.details.id}`
   }
 
-  if (parsed.navigator === 'prototypes') {
-    if (!parsed.details) return 'prototypes'
-    return `prototypes/prototype/${parsed.details.id}`
-  }
-
   if (parsed.navigator === 'tweaks') {
     if (!parsed.details) return 'tweaks'
     return `tweaks/tweak/${parsed.details.id}`
@@ -495,14 +476,6 @@ function convertCompoundToViewRoute(compound: ParsedCompoundRoute): ParsedRoute 
       return { type: 'view', name: 'projects', params: {} }
     }
     return { type: 'view', name: 'project-info', id: compound.details.id, params: {} }
-  }
-
-  // Prototypes
-  if (compound.navigator === 'prototypes') {
-    if (!compound.details) {
-      return { type: 'view', name: 'prototypes', params: {} }
-    }
-    return { type: 'view', name: 'prototype-info', id: compound.details.id, params: {} }
   }
 
   // Tweaks
@@ -659,17 +632,6 @@ function convertCompoundToNavigationState(compound: ParsedCompoundRoute): Naviga
     }
   }
 
-  // Prototypes
-  if (compound.navigator === 'prototypes') {
-    if (!compound.details) {
-      return { navigator: 'prototypes', details: null }
-    }
-    return {
-      navigator: 'prototypes',
-      details: { type: 'prototype', prototypeSlug: compound.details.id },
-    }
-  }
-
   // Tweaks
   if (compound.navigator === 'tweaks') {
     if (!compound.details) {
@@ -769,16 +731,6 @@ function convertParsedRouteToNavigationState(parsed: ParsedRoute): NavigationSta
         }
       }
       return { navigator: 'projects', details: null }
-    case 'prototypes':
-      return { navigator: 'prototypes', details: null }
-    case 'prototype-info':
-      if (parsed.id) {
-        return {
-          navigator: 'prototypes',
-          details: { type: 'prototype', prototypeSlug: parsed.id },
-        }
-      }
-      return { navigator: 'prototypes', details: null }
     case 'tweaks':
       return { navigator: 'tweaks', details: null }
     case 'tweak-info':
@@ -901,13 +853,6 @@ function navigationStateToCompoundRoute(state: NavigationState): ParsedCompoundR
     return {
       navigator: 'projects',
       details: state.details ? { type: 'project', id: state.details.projectSlug } : null,
-    }
-  }
-
-  if (state.navigator === 'prototypes') {
-    return {
-      navigator: 'prototypes',
-      details: state.details ? { type: 'prototype', id: state.details.prototypeSlug } : null,
     }
   }
 

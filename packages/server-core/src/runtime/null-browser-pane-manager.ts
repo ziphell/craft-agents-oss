@@ -27,6 +27,12 @@ import type {
   BrowserWaitResult,
 } from '../handlers/browser-pane-manager-interface'
 import type { BrowserInstanceInfo, PickedElement, TabBelongsTo } from '@craft-agent/shared/protocol'
+import type {
+  BrowserFinishedRecording,
+  BrowserStartRecordingArgs,
+  BrowserStartRecordingResult,
+  BrowserStopRecordingResult,
+} from '@craft-agent/shared/agent/browser-pane'
 
 const NOT_AVAILABLE = 'Browser automation is not available in headless mode'
 
@@ -46,6 +52,23 @@ export class NullBrowserPaneManager implements IBrowserPaneManager {
     _meta: { displayName?: string; intent?: string },
     _options?: { workspaceId?: string | null },
   ): void {}
+
+  // -- Recording (nothing to record: no window, no renderer) --
+  startRecordingForSession(
+    _sessionId: string,
+    _args: BrowserStartRecordingArgs,
+    _options?: { workspaceId?: string | null },
+  ): Promise<BrowserStartRecordingResult> {
+    return unavailable('startRecordingForSession')
+  }
+  async stopRecordingForSession(_sessionId: string, _tabId: string): Promise<BrowserStopRecordingResult> {
+    return unavailable('stopRecordingForSession')
+  }
+  /** Nothing is ever recording here, so there is nothing to wait for — an answer, not a refusal. */
+  async waitForRecordingEnd(_sessionId: string, _tabId: string): Promise<BrowserFinishedRecording | null> {
+    return null
+  }
+  endRecordingsForSession(_sessionId: string): void {}
 
   // -- Instance management --
   createForSession(_sessionId: string, _options?: { show?: boolean; workspaceId?: string | null }): string { return unavailable('createForSession') }

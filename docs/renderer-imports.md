@@ -10,9 +10,9 @@
 | 你要的 | 允许 | 说明 |
 |---|---|---|
 | **类型** | `import type { X } from '@craft-agent/shared/<任意路径>'` | 含 barrel。`import type` 在编译期整体擦除，不进包 |
-| **值** | 只从 `*/types` 模块取 | 约定是**只允许出现 `import type`**，不允许任何值依赖。列入白名单的这几个目前连 type import 都没有：`config/types`、`projects/types`、`sources/types`、`prototypes/types`（与 `packages/shared/package.json` 的 `exports` 一一对应） |
+| **值** | 只从 `*/types` 模块取 | 约定是**只允许出现 `import type`**，不允许任何值依赖。列入白名单的这几个目前连值依赖都没有：`config/types`、`projects/types`、`sources/types`（与 `packages/shared/package.json` 的 `exports` 一一对应） |
 | **值** | 只从浏览器安全的叶子模块取 | 现有：`@craft-agent/shared/agent/modes`（`mode-types.ts`，唯一依赖是 zod）、`@craft-agent/shared/agent/thinking-levels`（无 import） |
-| **值** | **barrel（`index.ts`）一律不行** | `@craft-agent/shared`、`@craft-agent/shared/prototypes` 等 barrel 会把整个家族（含 workspace / config storage）拉进浏览器包，哪怕你只要一个字符串常量 |
+| **值** | **barrel（`index.ts`）一律不行** | `@craft-agent/shared`、`@craft-agent/shared/workspaces` 等 barrel 会把整个家族（含 workspace / config storage）拉进浏览器包，哪怕你只要一个字符串常量 |
 
 ## 2. 为什么：一次真实事故（2026-09-15）
 
@@ -23,13 +23,12 @@
 1: import { __vitePreload } from "vite/preload-helper.js";#!/usr/bin/env node
 ```
 
-`__vitePreload` 被注入到 shebang **之前**，于是 rollup 在文件中间撞上 `#!` 直接解析失败。注入的前提是：这个文件在浏览器包里。实际链路（用 vite 自己的依赖扫描器确认，不是推测）：
+`__vitePreload` 被注入到 shebang **之前**，于是 rollup 在文件中间撞上 `#!` 直接解析失败。注入的前提是：这个文件在浏览器包里。实际链路（用 vite 自己的依赖扫描器确认，不是推测）。事故当时的触发点是从 `renderer/components/prototypes/CreatePrototypeDialog.tsx` 取 `@craft-agent/shared/prototypes` 这个 barrel（该 subpath 已随原型家族删除，见 [项目分层](project-layers.md) §4）；**这条链现在仍然从任何一个 barrel 走得到**，下面用今天存在的那个写：
 
 ```
-renderer/components/prototypes/CreatePrototypeDialog.tsx
-  → @craft-agent/shared/prototypes                    ← barrel，且取的是一个【运行时值】
-  → packages/shared/src/prototypes/index.ts
-  → packages/shared/src/prototypes/storage.ts
+renderer/** 的一个组件
+  → @craft-agent/shared/workspaces                    ← barrel，且取的是一个【运行时值】
+  → packages/shared/src/workspaces/index.ts
   → packages/shared/src/workspaces/storage.ts
   → packages/shared/src/config/storage.ts
   → import('../agent/session-scoped-tools.ts')        ← 惰性，但打包器照走
@@ -48,7 +47,7 @@ renderer/components/prototypes/CreatePrototypeDialog.tsx
 
 **渲染层需要一个共享包的新值时：**
 
-1. 把那个值（连同它的类型）放进所属家族的 `types.ts`——**该文件只允许出现 `import type`，不允许任何值依赖**。`prototypes/types.ts` 干脆一个 import 都没有，它的模块注释写明了这一点是刻意的（见 [prototypes/types.ts](file:///c:/Users/Ryan/code/craft-agents-oss/packages/shared/src/prototypes/types.ts)）。
+1. 把那个值（连同它的类型）放进所属家族的 `types.ts`——**该文件只允许出现 `import type`，不允许任何值依赖**。`projects/types.ts` 干脆一个 import 都没有，它的模块注释写明了这一点是刻意的（见 [projects/types.ts](file:///c:/Users/Ryan/code/craft-agents-oss/packages/shared/src/projects/types.ts)）。
 2. 在 [packages/shared/package.json](file:///c:/Users/Ryan/code/craft-agents-oss/packages/shared/package.json) 的 `exports` 里加一条 `"./<family>/types": "./src/<family>/types.ts"`。
 3. 服务端那侧照旧从原来的位置 import——`config.ts` 之类转发一层即可，调用方不用改。
 

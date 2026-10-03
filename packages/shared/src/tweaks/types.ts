@@ -2,13 +2,11 @@
  * A tweak: for the pages it matches, everything in its folder.
  *
  * A tweak is the standing version of an edit somebody makes to a page they do not own —
- * "on our admin console, show the order id next to the customer name" — where a
- * prototype's patch is the one-off version. The difference that matters is **who runs
- * it and when**: a patch is replayed by the workbench while somebody is looking at the
- * page, a tweak is applied every time the page loads, in an ordinary browser, whether or
- * not this app is anywhere near it. That is also why the two carriers are what they
- * are (`tweaks/` in the app, and a loadable extension built from the same files): the
- * tweak is the fact, and the carrier is how it reaches a page.
+ * "on our admin console, show the order id next to the customer name". What matters is
+ * **who runs it and when**: a tweak is applied every time the page loads, in an ordinary
+ * browser, whether or not this app is anywhere near it. That is also why the two carriers
+ * are what they are (`tweaks/` in the app, and a loadable extension built from the same
+ * files): the tweak is the fact, and the carrier is how it reaches a page.
  *
  * ## What is a file and what is a field
  *

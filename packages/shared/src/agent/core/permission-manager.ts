@@ -135,7 +135,7 @@ export class PermissionManager {
     const result = shouldAllowToolInMode(toolName, toolInput, mode, {
       plansFolderPath: this.config.plansFolderPath,
       dataFolderPath: this.config.dataFolderPath,
-      prototypesFolderPath: this.config.prototypesFolderPath,
+      projectFolderPath: this.config.projectFolderPath,
       permissionsContext: this.permissionsContext,
     });
 

@@ -190,12 +190,6 @@ export const routes = {
         ? `projects/project/${projectSlug}` as const
         : 'projects' as const,
 
-    /** Prototypes view (prototypes navigator) */
-    prototypes: (prototypeSlug?: string) =>
-      prototypeSlug
-        ? `prototypes/prototype/${prototypeSlug}` as const
-        : 'prototypes' as const,
-
     /** Tweaks view (library list, or one tweak's detail page) */
     tweaks: (tweakSlug?: string) =>
       tweakSlug

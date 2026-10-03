@@ -51,7 +51,7 @@ const FORMATS: Record<DrawioFormat, { mimeType: string; extension: string }> = {
   png: { mimeType: 'image/png', extension: DRAWIO_EXTENSIONS.png },
   html: { mimeType: 'text/html', extension: DRAWIO_EXTENSIONS.html },
   // The document itself. `.drawio` rather than `.xml`: the same content either way, but `.drawio` is
-  // the suffix this app recognizes a diagram by (the prototype page's file list, for one) — and the
+  // the suffix this app recognizes a diagram by (the project's file list, for one) — and the
   // caller gives its own path anyway.
   xml: { mimeType: 'application/xml', extension: DRAWIO_EXTENSIONS.xml },
 }

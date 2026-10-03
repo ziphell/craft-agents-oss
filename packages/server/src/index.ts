@@ -43,7 +43,7 @@ if (process.argv.includes('--generate-token')) {
   process.exit(0)
 }
 import type { WsRpcTlsOptions } from '@craft-agent/server-core/transport'
-import { registerCoreRpcHandlers, cleanupSessionFileWatchForClient, cleanupPrototypesWatchForClient } from '@craft-agent/server-core/handlers/rpc'
+import { registerCoreRpcHandlers, cleanupSessionFileWatchForClient, cleanupProjectFilesWatchForClient } from '@craft-agent/server-core/handlers/rpc'
 import { SessionManager, setSessionPlatform, setSessionRuntimeHooks } from '@craft-agent/server-core/sessions'
 import { initModelRefreshService, setFetcherPlatform } from '@craft-agent/server-core/model-fetchers'
 import { setSearchPlatform, setImageProcessor } from '@craft-agent/server-core/services'
@@ -248,7 +248,7 @@ const instance = await (async () => {
       },
       cleanupClientResources: (clientId) => {
         cleanupSessionFileWatchForClient(clientId)
-        cleanupPrototypesWatchForClient(clientId)
+        cleanupProjectFilesWatchForClient(clientId)
       },
     })
   } catch (error) {

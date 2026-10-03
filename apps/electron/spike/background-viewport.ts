@@ -1,4 +1,4 @@
-﻿﻿/**
+/**
  * Spike — a background tab's viewport: **if we stop resizing it, does its layout stop moving — and
  * what does that cost the shot and the coordinates?**
  *

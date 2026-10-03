@@ -11,8 +11,8 @@ import { registerResourcesHandlers } from './resources'
 import { registerOnboardingHandlers } from './onboarding'
 import { registerSessionsHandlers } from './sessions'
 export { registerSessionsHandlers, cleanupSessionFileWatchForClient } from './sessions'
-import { registerPrototypesHandlers } from './prototypes'
-export { registerPrototypesHandlers, cleanupPrototypesWatchForClient } from './prototypes'
+import { registerProjectFilesHandlers } from './project-files'
+export { registerProjectFilesHandlers, cleanupProjectFilesWatchForClient } from './project-files'
 import { registerServerHandlers } from './server'
 import type { ServerHandlerContext } from '../../bootstrap/headless-start'
 export type { ServerHandlerContext } from '../../bootstrap/headless-start'
@@ -44,7 +44,7 @@ export function registerCoreRpcHandlers(
   registerOnboardingHandlers(server, deps)
   registerResourcesHandlers(server, deps)
   registerSessionsHandlers(server, deps)
-  registerPrototypesHandlers(server, deps)
+  registerProjectFilesHandlers(server, deps)
   if (serverCtx) registerServerHandlers(server, deps, serverCtx)
   registerSettingsHandlers(server, deps)
   registerProjectsHandlers(server, deps)

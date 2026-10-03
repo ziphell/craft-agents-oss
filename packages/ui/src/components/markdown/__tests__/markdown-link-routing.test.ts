@@ -31,18 +31,18 @@ describe('resolveMarkdownLinkTarget', () => {
   // given a path and answered "the system cannot find the file specified". See
   // `isFilePathTarget`.
   it('resolves a Windows path as a file target, not a URL', () => {
-    expect(resolveMarkdownLinkTarget('C:\\Users\\tester\\prototypes\\a\\flow.drawio')).toEqual({
+    expect(resolveMarkdownLinkTarget('C:\\Users\\tester\\projects\\a\\flow.drawio')).toEqual({
       kind: 'file',
-      path: 'C:\\Users\\tester\\prototypes\\a\\flow.drawio',
+      path: 'C:\\Users\\tester\\projects\\a\\flow.drawio',
     })
   })
 
   it('decodes a percent-encoded Windows path', () => {
     expect(
-      resolveMarkdownLinkTarget('C:%5CUsers%5Ctester%5Cprototypes%5Ca%5Cflow.drawio'),
+      resolveMarkdownLinkTarget('C:%5CUsers%5Ctester%5Cprojects%5Ca%5Cflow.drawio'),
     ).toEqual({
       kind: 'file',
-      path: 'C:\\Users\\tester\\prototypes\\a\\flow.drawio',
+      path: 'C:\\Users\\tester\\projects\\a\\flow.drawio',
     })
   })
 

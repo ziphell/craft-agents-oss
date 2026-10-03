@@ -133,7 +133,7 @@ export interface PlatformActions {
   onGetDrawioOrigin?: () => Promise<string>
 
   /**
-   * Something in the workspace's prototypes tree changed on disk, whoever wrote it.
+   * Something in the workspace's project files tree changed on disk, whoever wrote it.
    *
    * The event's own payload — which file `fs.watch` happened to name — is deliberately not
    * passed through: it is relative, sometimes spelled with the platform's separator, and
@@ -142,7 +142,7 @@ export interface PlatformActions {
    *
    * Absent on a host with no watcher, where a component reads once and stays.
    */
-  onPrototypesChanged?: (callback: () => void) => () => void
+  onProjectFilesChanged?: (callback: () => void) => () => void
 
   /**
    * Read a file as data URL (Electron: fs.readFile via IPC + base64 encode)

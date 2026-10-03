@@ -3,7 +3,7 @@
 import { loadShellEnv } from './shell-env'
 loadShellEnv()
 
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, nativeTheme, net, session, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, nativeTheme, session, shell } from 'electron'
 import { createHash, randomUUID } from 'crypto'
 import { hostname, homedir } from 'os'
 import * as Sentry from '@sentry/electron/main'
@@ -78,7 +78,7 @@ import { existsSync, readFileSync } from 'fs'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { SessionManager, setSessionPlatform, setSessionRuntimeHooks } from '@craft-agent/server-core/sessions'
 import { registerAllRpcHandlers } from './handlers/index'
-import { registerCoreRpcHandlers, cleanupSessionFileWatchForClient, cleanupPrototypesWatchForClient } from '@craft-agent/server-core/handlers/rpc'
+import { registerCoreRpcHandlers, cleanupSessionFileWatchForClient, cleanupProjectFilesWatchForClient } from '@craft-agent/server-core/handlers/rpc'
 import type { PlatformServices } from '../runtime/platform'
 import { createElectronPlatform } from './platform'
 import type { HandlerDeps } from './handlers/handler-deps'
@@ -100,11 +100,10 @@ import { setBundledAssetsRoot } from '@craft-agent/shared/utils'
 import { initializeBackendHostRuntime } from '@craft-agent/shared/agent/backend'
 import { setPowerShellValidatorRoot } from '@craft-agent/shared/agent'
 import { handleDeepLink } from './deep-link'
-import { BrowserPaneManager, BROWSER_PANE_SESSION_PARTITION } from './browser-pane-manager'
+import { BrowserPaneManager } from './browser-pane-manager'
 import { OAuthFlowStore } from '@craft-agent/shared/auth'
-import { registerThumbnailScheme, registerThumbnailHandler } from './thumbnail-protocol'
-import { registerLocalHostHandler } from './local-host'
-import { drawioOriginUrl } from './drawio-host'
+import { registerPrivilegedSchemes, registerThumbnailHandler } from './thumbnail-protocol'
+import { drawioOriginUrl, registerDrawioHandler } from './drawio-host'
 import { requestTweaksForWorkspace } from './tweaks-injector'
 import log, { isDebugMode, mainLog, getLogFilePath, getMessagingGatewayLogFilePath, messagingGatewayLog, autoUpdateLog } from './logger'
 import { setPerfEnabled, enableDebug } from '@craft-agent/shared/utils'
@@ -164,12 +163,19 @@ if (isDebugMode) {
   }
 
   process.env.CRAFT_SCRIPTS = scriptsDir
-  process.env.CRAFT_COMMANDS_ENTRY = app.isPackaged
+  // The `craft-agent` config CLI (labels, sources, skills, automations, permissions, theme) is an
+  // optional part of the build — this checkout does not carry its packages at all. Advertise it only
+  // when the entry is really on disk: an env var pointing at a file that is not there turns every
+  // `craft-agent …` into a bun module error, which reads as a broken install rather than as a CLI
+  // this build does not have. With neither entry set, the wrapper says so in one line.
+  const commandsEntry = app.isPackaged
     ? join(app.getAppPath(), 'packages', 'craft-agents-commands', 'src', 'main.ts')
     : join(process.cwd(), 'packages', 'craft-agents-commands', 'src', 'main.ts')
-  process.env.CRAFT_CLI_ENTRY = app.isPackaged
+  const cliEntry = app.isPackaged
     ? join(app.getAppPath(), 'packages', 'craft-cli', 'src', 'cli.ts')
     : join(process.cwd(), 'packages', 'craft-cli', 'src', 'cli.ts')
+  if (existsSync(commandsEntry)) process.env.CRAFT_COMMANDS_ENTRY = commandsEntry
+  if (existsSync(cliEntry)) process.env.CRAFT_CLI_ENTRY = cliEntry
   process.env.CRAFT_COMMANDS_DOC_PATH = app.isPackaged
     ? join(resourcesBase, 'resources', 'docs', 'craft-cli.md')
     : join(process.cwd(), 'apps', 'electron', 'resources', 'docs', 'craft-cli.md')
@@ -283,9 +289,9 @@ if (process.env.CRAFT_SERVER_URL) {
   }
 }
 
-// Register thumbnail:// custom protocol for file preview thumbnails in the sidebar.
-// Must happen before app.whenReady() — Electron requires early scheme registration.
-registerThumbnailScheme()
+// Register the app's privileged schemes (thumbnail://, and the app's own origin scheme).
+// Must happen before app.whenReady() — Electron allows one registration, and only early.
+registerPrivilegedSchemes()
 
 // Handle deeplink on macOS (when app is already running)
 app.on('open-url', (event, url) => {
@@ -420,17 +426,15 @@ app.whenReady().then(async () => {
   // Register thumbnail:// protocol handler (scheme was registered earlier, before app.whenReady)
   registerThumbnailHandler()
 
-  // The drawio editor needs a real origin: file:// is opaque, which costs the cookie jar,
-  // relative fetch and ES modules. It is answered by an http handler — no port,
-  // so the address is the same on every start, and anything that is not one of our
-  // hosts goes straight back to Chromium's network stack.
+  // The drawio editor needs a real origin: file:// is opaque, which costs relative fetch
+  // and ES modules. It gets a scheme of the app's own, registered earlier, so its
+  // addresses are stable across launches and no port is involved.
   //
-  // One handler per session, and the app renders on two: the browser windows' own
-  // session, and the app's. Both get the same router — see `local-host.ts`.
-  const passThrough = (request: Request) =>
-    net.fetch(request, { bypassCustomProtocolHandlers: true })
-  registerLocalHostHandler(session.fromPartition(BROWSER_PANE_SESSION_PARTITION), passThrough)
-  registerLocalHostHandler(session.defaultSession, passThrough)
+  // Registered on the app's own session — where the embedded viewer and the hidden engine
+  // window live — and on nothing else. Deliberately **no** handler on `http` or `https`:
+  // a handler there is per session and comes down on every request that session makes,
+  // real pages included, which is what broke them.
+  registerDrawioHandler(session.defaultSession)
 
   // Re-apply proxy settings now that Electron sessions are available
   // (first call before app.whenReady only configured Node-level proxy)
@@ -764,7 +768,7 @@ app.whenReady().then(async () => {
             if (cId === clientId) { clientMap.delete(wcId); break }
           }
           cleanupSessionFileWatchForClient(clientId)
-          cleanupPrototypesWatchForClient(clientId)
+          cleanupProjectFilesWatchForClient(clientId)
         },
       })
 

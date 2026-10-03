@@ -141,6 +141,12 @@ function migratePermissions(
   const existingMcpPatterns = new Set(
     (installed.allowedMcpPatterns || []).map(getPatternString)
   );
+  // Write paths carry no comment worth keeping, but a new one added to the bundle has to arrive:
+  // an entry that only ever reached fresh installs would be a default that silently does nothing
+  // for everybody who already had the file.
+  const existingWritePaths = new Set(
+    (installed.allowedWritePaths || []).map(getPatternString)
+  );
 
   // Find new patterns not already in installed
   const newBashPatterns = (bundled.allowedBashPatterns || []).filter(
@@ -148,6 +154,9 @@ function migratePermissions(
   );
   const newMcpPatterns = (bundled.allowedMcpPatterns || []).filter(
     p => !existingMcpPatterns.has(getPatternString(p))
+  );
+  const newWritePaths = (bundled.allowedWritePaths || []).filter(
+    p => !existingWritePaths.has(getPatternString(p))
   );
 
   // Merge blocked command hints (dedupe by command + whenNotMatching + reason)
@@ -161,6 +170,7 @@ function migratePermissions(
 
   debug('[Permissions] Adding', newBashPatterns.length, 'new bash patterns');
   debug('[Permissions] Adding', newMcpPatterns.length, 'new MCP patterns');
+  debug('[Permissions] Adding', newWritePaths.length, 'new write paths');
   debug('[Permissions] Adding', newBlockedCommandHints.length, 'new blocked command hints');
 
   return {
@@ -173,6 +183,10 @@ function migratePermissions(
     allowedMcpPatterns: [
       ...(installed.allowedMcpPatterns || []),
       ...newMcpPatterns,
+    ],
+    allowedWritePaths: [
+      ...(installed.allowedWritePaths || []),
+      ...newWritePaths,
     ],
     blockedCommandHints: [
       ...installedHints,

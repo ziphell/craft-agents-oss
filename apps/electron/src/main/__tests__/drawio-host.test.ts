@@ -3,13 +3,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { DRAWIO_BRIDGE_PROTOCOL, DRAWIO_VIEWER_PATH } from '@craft-agent/shared/drawio/types'
-import { DRAWIO_ENGINE_PATH, DRAWIO_ENGINE_SURFACE, registerDrawioOrigin } from '../drawio-host'
-import { registerLocalHostHandler } from '../local-host'
+import { DRAWIO_ENGINE_PATH, DRAWIO_ENGINE_SURFACE, registerDrawioHandler, registerDrawioOrigin } from '../drawio-host'
 import type { ProtocolHostSession } from '../local-http'
 
 interface Host {
   origin: string
-  passedThrough: string[]
   serve: (path: string, init?: RequestInit) => Promise<Response>
   close: () => void
 }
@@ -32,21 +30,14 @@ function hostFor(): Host {
   writeFileSync(join(dir, 'stencils', 'aws.xml'), '<shapes/>')
 
   const fake = fakeSession()
-  const passedThrough: string[] = []
-  registerLocalHostHandler(fake.session, async (request) => {
-    passedThrough.push(request.url)
-    return new Response('somebody else', { status: 200, headers: { 'x-passthrough': '1' } })
-  })
+  registerDrawioHandler(fake.session)
   const handler = fake.handler()
   const origin = registerDrawioOrigin(dir)
 
   return {
     origin,
-    passedThrough,
-    serve: (path: string, init: RequestInit = {}) => {
-      passedThrough.length = 0
-      return Promise.resolve(handler(new Request(new URL(path, origin).toString(), init)))
-    },
+    serve: (path: string, init: RequestInit = {}) =>
+      Promise.resolve(handler(new Request(new URL(path, origin).toString(), init))),
     close: () => rmSync(dir, { recursive: true, force: true }),
   }
 }
@@ -133,7 +124,6 @@ describe('drawio at its own origin', () => {
 
       expect(response.status).toBe(200)
       expect(response.headers.get('content-type')).toContain('text/html')
-      expect(host.passedThrough).toEqual([])
     } finally {
       host.close()
     }
@@ -344,7 +334,6 @@ describe('the engine document', () => {
       const page = await host.serve(DRAWIO_ENGINE_PATH)
       expect(page.status).toBe(200)
       expect(page.headers.get('content-type')).toContain('text/html')
-      expect(host.passedThrough).toEqual([])
 
       const script = await host.serve('/__craft/engine.js')
       expect(script.headers.get('content-type')).toContain('text/javascript')
@@ -524,14 +513,15 @@ describe('the engine document', () => {
   })
 })
 
-describe('the hosts that are not ours', () => {
-  it('passes a foreign localhost label through', async () => {
+describe('an address nobody served', () => {
+  // The scheme is the app's own, so there is nothing to pass a foreign label through to:
+  // a label this run never handed out is a request for something that does not exist.
+  it('is refused rather than passed on', async () => {
     const host = hostFor()
     try {
-      const response = await host.serve('//dev-server.localhost:5173/app.js')
+      const response = await host.serve('//somebody-else/app.js')
 
-      expect(response.status).toBe(200)
-      expect(response.headers.get('x-passthrough')).toBe('1')
+      expect(response.status).toBe(404)
     } finally {
       host.close()
     }

@@ -19,3 +19,13 @@ export {
   skillNeedsIconDownload,
   downloadSkillIcon,
 } from './storage.ts';
+export {
+  parseAnchors,
+  getSkillHitsPath,
+  parseSkillHits,
+  readSkillHits,
+  recordSkillHits,
+  writeSkillHits,
+  skillAnchors,
+} from './anchors.ts';
+export type { MatchedAnchors } from './anchors.ts';

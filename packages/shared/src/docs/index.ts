@@ -105,6 +105,7 @@ export const DOC_REFS = {
   sources: `${APP_ROOT}/docs/sources.md`,
   permissions: `${APP_ROOT}/docs/permissions.md`,
   skills: `${APP_ROOT}/docs/skills.md`,
+  playbooks: `${APP_ROOT}/docs/playbooks.md`,
   themes: `${APP_ROOT}/docs/themes.md`,
   statuses: `${APP_ROOT}/docs/statuses.md`,
   labels: `${APP_ROOT}/docs/labels.md`,
@@ -122,7 +123,7 @@ export const DOC_REFS = {
   markdownPreview: `${APP_ROOT}/docs/markdown-preview.md`,
   llmTool: `${APP_ROOT}/docs/llm-tool.md`,
   browserTools: `${APP_ROOT}/docs/browser-tools.md`,
-  prototypes: `${APP_ROOT}/docs/prototypes.md`,
+  layers: `${APP_ROOT}/docs/layers.md`,
   craftCli: `${APP_ROOT}/docs/craft-cli.md`,
   docsDir: `${APP_ROOT}/docs/`,
 } as const;
@@ -175,8 +176,7 @@ export function initializeDocs(): void {
  * Get the text of one bundled doc, or null when it cannot be read in this runtime.
  *
  * For the places where a doc **is** the content rather than a reference to read
- * later — the prototype guide is injected whole into the system prompt while a
- * session works on a prototype, so it must be readable at prompt-build time.
+ * later — text injected whole into a prompt has to be readable at prompt-build time.
  *
  * The bundled copy is preferred (it is always the running version); the file synced
  * on launch is the same text and is the fallback for a runtime that has no bundled

@@ -1,5 +1,5 @@
 {
-  "version": "2026-03-07",
+  "version": "2026-10-03",
   "allowedBashPatterns": [
     {
       "pattern": "^ls\\b",
@@ -945,5 +945,10 @@
     }
   ],
   "allowedApiEndpoints": [],
-  "allowedWritePaths": []
+  "allowedWritePaths": [
+    {
+      "pattern": "**/skills/*/hits.json",
+      "comment": "A playbook's record of what a run found — the observation, not the steps. Written by the run itself, which for a scheduled playbook is an unattended one at --permission-mode safe; SKILL.md is deliberately not on this list, so such a run can say what it saw but cannot rewrite what it was told to do."
+    }
+  ]
 }

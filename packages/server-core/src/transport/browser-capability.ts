@@ -60,6 +60,11 @@ export type BrowserCapabilityMethod =
   | 'clearInitScripts'
   // Video frames
   | 'extractVideoFrames'
+  // Recording a tab for a conversation
+  | 'startRecordingForSession'
+  | 'stopRecordingForSession'
+  | 'waitForRecordingEnd'
+  | 'endRecordingsForSession'
   // Diagrams
   | 'renderDrawio'
   // Clipboard

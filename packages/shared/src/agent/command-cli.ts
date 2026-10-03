@@ -1,16 +1,21 @@
 /**
- * The CLI the two pane tools share.
+ * The CLI every pane tool shares.
  *
- * One command line over one capability surface (`BrowserPaneFns`), reached through two doors:
- * `browser_tool` for the window's own pages, `prototype_tool` for a prototype's files and the
- * flow they describe. What is *the same* on both lives here — tokenizing the command string or
- * array, `--tab` targeting, option and path resolution, the result shape, and the skeleton of
- * running one command.
+ * One command line over one capability surface (`BrowserPaneFns`), reached through several doors:
+ * `browser_tool` for the window's own pages, `video_tool` for frames out of a recording,
+ * `drawio_tool` for diagrams. What is *the same* on all of them lives here — tokenizing the command
+ * string or array, `--tab` targeting, option and path resolution, the result shape, and the skeleton
+ * of running one command.
  *
- * **Nothing here knows either door.** A door is three things — its help text, its command table,
+ * One more surface rides along, optional: a door that reads something with a model asks for it
+ * (`video_tool understand`), and a door that does not never sees it. It is carried here rather than
+ * closed over, because the command body is the thing that needs it and this module is what hands
+ * the body its context.
+ *
+ * **Nothing here knows any door.** A door is three things — its help text, its command table,
  * and what it says about a command it does not handle — and it hands them to `createCommandRunner`.
- * That is what keeps the dependency one-way: `browser-commands.ts` and `prototype-commands.ts`
- * import this module, and it imports neither.
+ * That is what keeps the dependency one-way: the `*-commands.ts` modules import this module, and it
+ * imports none of them.
  *
  * What is *not* here either: batching (only `browser_tool` batches), `evaluate --file`, the settle
  * timings `open` waits on, and every command body.
@@ -19,6 +24,7 @@
 import { homedir } from 'node:os';
 import { isAbsolute, resolve } from 'node:path';
 import type { BrowserPaneFns } from './browser-pane.ts';
+import type { LlmQueryFn } from './llm-tool.ts';
 
 export interface BrowserCommandImage {
   data: string;
@@ -200,7 +206,7 @@ export function numberOption(parts: string[], flag: string, fallback: number, mi
  * A byte count in the units a person reads, for the replies that report a file's size.
  *
  * Shared between the doors because both report sizes — a screenshot on the window's side, the
- * frames a capture writes on the prototype's — and a second copy is how the two would start
+ * frames a capture writes on the workspace's — and a second copy is how the two would start
  * disagreeing about what "KB" means.
  */
 export function formatBytes(bytes: number): string {
@@ -237,6 +243,25 @@ export function durationOption(parts: string[], flag: string, fallbackMs: number
   const unit = match[2] ?? 's';
   const ms = unit === 'ms' ? value : unit === 'm' ? value * 60_000 : value * 1000;
   return Math.min(600_000, Math.max(100, Math.round(ms)));
+}
+
+/**
+ * A duration the command **must** be given.
+ *
+ * `durationOption`'s fallback is the wrong shape where the value is the whole bound: a recording
+ * whose length nobody stated has no bound at all, so "absent" and "unreadable" have to be told
+ * apart rather than both quietly becoming a default. The ceiling is `durationOption`'s — a
+ * recording cannot outlast it however it was asked for.
+ */
+export function requiredDurationOption(parts: string[], flag: string, example: string): number {
+  const at = parts.indexOf(flag);
+  if (at === -1) throw new Error(`${flag} is required — how long. Example: ${example}`);
+
+  const raw = (parts[at + 1] ?? '').trim().toLowerCase();
+  if (!/^(\d+(?:\.\d+)?)(ms|s|m)?$/.test(raw)) {
+    throw new Error(`${flag} needs a duration like 500ms, 30s or 2m. Example: ${example}`);
+  }
+  return durationOption(parts, flag, 0);
 }
 
 /**
@@ -293,6 +318,13 @@ export interface ToolCommandArgs {
   platform?: NodeJS.Platform
   /** Where a relative `--file` path is counted from (the workspace root). */
   workspaceRootPath?: string
+  /**
+   * A model this door may ask, when it needs one.
+   *
+   * `video_tool understand` reads a recording by asking a vision model about its frames, so its
+   * command body needs the same callback `call_llm` uses. Doors that never ask leave it out.
+   */
+  queryLlm?: LlmQueryFn
 }
 
 /** What a door's command body is handed once the command line has been read. */
@@ -301,6 +333,15 @@ export interface ToolCommandContext {
   sessionId: string
   workspaceRootPath?: string
   platform?: NodeJS.Platform
+  queryLlm?: LlmQueryFn
+  /**
+   * The tab `--tab` named, when the command named one.
+   *
+   * The option itself is taken off the command line (and used to target the conversation), so
+   * this is the only place a body can see *which* tab was meant — which is what a command has to
+   * name back to stop the thing it started (`record-stop --tab`).
+   */
+  tabId?: string
   parts: string[]
   cmd: string
 }
@@ -364,6 +405,8 @@ export function createCommandRunner(
       sessionId: args.sessionId,
       workspaceRootPath: args.workspaceRootPath,
       platform: args.platform,
+      queryLlm: args.queryLlm,
+      ...(tabId ? { tabId } : {}),
       parts,
       cmd,
     };

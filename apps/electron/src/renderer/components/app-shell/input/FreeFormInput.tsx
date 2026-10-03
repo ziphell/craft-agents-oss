@@ -12,6 +12,7 @@ import {
   ChevronUp,
   AlertCircle,
   Image as ImageIcon,
+  X,
 } from 'lucide-react'
 import { Icon_Home, Spinner } from '@craft-agent/ui'
 
@@ -20,6 +21,7 @@ import { Button } from '@/components/ui/button'
 import {
   InlineSlashCommand,
   useInlineSlashCommand,
+  LAYER_COMMANDS,
   type SlashCommandId,
 } from '@/components/ui/slash-command-menu'
 import {
@@ -37,6 +39,7 @@ import { parseMentions } from '@/lib/mentions'
 import { expandElementMentions, type ElementRef } from '@/lib/element-mention'
 import { expandTabMentions, tabLabel, type TabRef } from '@/lib/tab-mention'
 import { browserInstancesAtom, filterInstancesForWorkspace } from '@/atoms/browser-pane'
+import { sessionMetaMapAtom } from '@/atoms/sessions'
 import { tabRefOf } from '@/components/browser/utils'
 import { RichTextInput, type RichTextInputHandle } from '@/components/ui/rich-text-input'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@craft-agent/ui'
@@ -78,6 +81,7 @@ import { FreeFormInputContextBadge } from './FreeFormInputContextBadge'
 import { derivePickerMode } from './picker-mode'
 import type { FileAttachment, LoadedSource, LoadedSkill } from '../../../../shared/types'
 import type { PermissionMode } from '@craft-agent/shared/agent/modes'
+import type { SessionMode } from '@craft-agent/shared/protocol'
 import { type ThinkingLevel, THINKING_LEVELS, getThinkingLevelNameKey } from '@craft-agent/shared/agent/thinking-levels'
 import { useEscapeInterrupt } from '@/context/EscapeInterruptContext'
 import { hasOpenOverlay } from '@/lib/overlay-detection'
@@ -90,7 +94,6 @@ import {
   addRecentWorkingDir,
 } from './working-directory-history'
 import { WorkingDirectorySelector, formatPathForDisplay } from './WorkingDirectorySelector'
-import { PrototypeBadge, CompactPrototypeSelector } from './PrototypeSelector'
 import { CompactPermissionModeSelector } from './CompactPermissionModeSelector'
 import { CompactModelSelector } from './CompactModelSelector'
 import {
@@ -461,6 +464,16 @@ export function FreeFormInput({
       .flatMap(instance => instance.tabs ?? [])
       .map(tabRefOf)
   }, [appShellCtx, allBrowserInstances, workspaceId])
+
+  // The layer this conversation works on (`goal`/`spec`/`plan`) — session state, read
+  // from the atom the server's `mode_changed` broadcast feeds. Only conversations
+  // that belong to a project get the commands: those files' home is the project
+  // folder, so for a conversation outside a project there is nothing to point at.
+  const sessionMetaMap = useAtomValue(sessionMetaMapAtom)
+  const sessionMeta = sessionId ? sessionMetaMap.get(sessionId) : undefined
+  const layerMode: SessionMode | undefined = sessionMeta?.mode
+  const layersEnabled = !!sessionMeta?.projectId
+  const layerCommand = layerMode ? LAYER_COMMANDS.find(c => c.id === layerMode) : undefined
 
   // Shuffle placeholder order once per mount so each session feels fresh.
   // In compact mode, suppress desktop-keyboard guidance that is noisy or misleading
@@ -987,16 +1000,21 @@ export function FreeFormInput({
     if (permissionMode === 'safe') active.push('safe')
     else if (permissionMode === 'ask') active.push('ask')
     else if (permissionMode === 'allow-all') active.push('allow-all')
+    // Add the layer this conversation is on, if any
+    if (layerMode) active.push(layerMode)
     return active
-  }, [permissionMode])
+  }, [permissionMode, layerMode])
 
   // Handle slash command selection (mode/feature commands)
   const handleSlashCommand = React.useCallback((commandId: SlashCommandId) => {
     if (commandId === 'safe') onPermissionModeChange?.('safe')
     else if (commandId === 'ask') onPermissionModeChange?.('ask')
     else if (commandId === 'allow-all') onPermissionModeChange?.('allow-all')
+    else if (commandId === 'goal' || commandId === 'spec' || commandId === 'plan') {
+      if (sessionId) window.electronAPI.sessionCommand(sessionId, { type: 'setMode', mode: commandId })
+    }
     else if (commandId === 'compact' && !isProcessing) onSubmit('/compact', undefined)
-  }, [onPermissionModeChange, isProcessing, onSubmit])
+  }, [onPermissionModeChange, isProcessing, onSubmit, sessionId])
 
   // Handle folder selection from slash command menu
   const handleSlashFolderSelect = React.useCallback((path: string) => {
@@ -1005,6 +1023,11 @@ export function FreeFormInput({
       onWorkingDirectoryChange(path)
     }
   }, [onWorkingDirectoryChange, workspaceId])
+
+  // Turn the layer off — the prefix chip's own affordance (the menus only set it).
+  const clearLayerMode = React.useCallback(() => {
+    if (sessionId) window.electronAPI.sessionCommand(sessionId, { type: 'setMode', mode: null })
+  }, [sessionId])
 
   // Get recent folders and home directory for slash menu and mention menu
   const [recentFolders, setRecentFolders] = React.useState<string[]>([])
@@ -1025,6 +1048,7 @@ export function FreeFormInput({
     activeCommands,
     recentFolders,
     homeDir,
+    showLayerCommands: layersEnabled,
   })
 
   // Handle mention selection (sources, skills, files, tabs)
@@ -1797,33 +1821,63 @@ export function FreeFormInput({
 
         {/* Rich Text Input with inline mention badges */}
         {/* In compact mode, hide input while the agent is processing — until the
-            user clicks / hovers the collapsed bar to expand it back. */}
+            user clicks / hovers the collapsed bar to expand it back.
+
+            The scroll lives on this wrapper (not the editor) so the layer prefix
+            below scrolls with the first line instead of floating over it. */}
         {!isCollapsedInCompact && (
-        <RichTextInput
-          ref={richInputRef}
-          value={input}
-          onChange={handleInputChange}
-          onInput={handleRichInput}
-          onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-          onLongTextPaste={handleLongTextPaste}
-          onFocus={() => { setIsFocused(true); onFocusChange?.(true) }}
-          onBlur={() => {
-            // Save caret position before losing focus (for restoration via craft:focus-input)
-            lastCaretPositionRef.current = richInputRef.current?.selectionStart ?? null
-            setIsFocused(false)
-            onFocusChange?.(false)
-          }}
-          placeholder={effectivePlaceholder}
-          disabled={disabled}
-          skills={skills}
-          sources={sources}
-          workspaceId={workspaceSlug}
-          className="pl-5 pr-4 pt-4 pb-3 overflow-y-auto min-h-[88px]"
-          style={{ maxHeight: inputMaxHeight }}
-          data-tutorial="chat-input"
-          spellCheck={spellCheck}
-        />
+        <div className="overflow-y-auto" style={{ maxHeight: inputMaxHeight }}>
+          <div className="relative">
+            {/* Layer prefix — indents the first line only (the editor's text-indent),
+                so the caret starts to its right while the rest of the text wraps back
+                to the normal left edge. It is outside the editor's content: never
+                serialized, never sent. The menus only set it; its X clears it. */}
+            {layerCommand && (
+              <span className="absolute left-5 top-4 z-10 inline-flex h-5 items-center gap-1 rounded-[5px] bg-foreground/5 pl-1.5 pr-1 text-xs leading-none text-foreground/80 select-none">
+                <span className="shrink-0 flex items-center [&>svg]:h-3 [&>svg]:w-3">{layerCommand.icon}</span>
+                <span>{layerCommand.label}</span>
+                <button
+                  type="button"
+                  aria-label={t('common.remove')}
+                  onClick={clearLayerMode}
+                  className="h-4 w-4 shrink-0 inline-flex items-center justify-center rounded-[3px] text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            )}
+            <RichTextInput
+              ref={richInputRef}
+              value={input}
+              onChange={handleInputChange}
+              onInput={handleRichInput}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+              onLongTextPaste={handleLongTextPaste}
+              onFocus={() => { setIsFocused(true); onFocusChange?.(true) }}
+              onBlur={() => {
+                // Save caret position before losing focus (for restoration via craft:focus-input)
+                lastCaretPositionRef.current = richInputRef.current?.selectionStart ?? null
+                setIsFocused(false)
+                onFocusChange?.(false)
+              }}
+              placeholder={effectivePlaceholder}
+              disabled={disabled}
+              skills={skills}
+              sources={sources}
+              workspaceId={workspaceSlug}
+              className={cn(
+                "pl-5 pr-4 pt-4 pb-3 min-h-[88px]",
+                layerCommand && "[text-indent:84px]"
+              )}
+              // Keep the editor's line-height at text-sm's (1.25rem) so it still
+              // matches the placeholder overlay, which only gets `className`.
+              style={{ lineHeight: '1.25rem' }}
+              data-tutorial="chat-input"
+              spellCheck={spellCheck}
+            />
+          </div>
+        </div>
         )}
 
         {/* Bottom Row: Controls - wrapped in relative container for status slot overlay */}
@@ -1962,8 +2016,6 @@ export function FreeFormInput({
               workspaceId={workspaceId}
             />
           )}
-          {/* The prototype's own badge, beside the folder's: two questions, two badges. */}
-          <CompactPrototypeSelector sessionId={sessionId} />
           </div>
           )}
 
@@ -2073,8 +2125,6 @@ export function FreeFormInput({
             />
           )}
 
-          {/* 4. Prototype Badge — its own control beside the folder, not a section of it. */}
-          <PrototypeBadge sessionId={sessionId} isEmptySession={isEmptySession} />
           </div>
           )}
 
@@ -2548,7 +2598,7 @@ export function FreeFormInput({
  * Renders the context-badge trigger; the picker popover + its state machine live in
  * {@link WorkingDirectorySelector} so the Tasks editor reuses the same picker (and can
  * supply its own trigger). The badge answers one question — which folder this
- * conversation works in. The prototype it is on is its own badge beside this one.
+ * conversation works in.
  */
 function WorkingDirectoryBadge({
   workingDirectory,

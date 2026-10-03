@@ -2,9 +2,10 @@
 
 This guide explains how to create and configure skills in Craft Agent.
 
-> **CLI-first workflow (recommended):** Use `craft-agent skill ...` commands instead of editing `SKILL.md` files directly.
+> **Writing skills:** where the `craft-agent` CLI is available, use `craft-agent skill ...` instead of editing `SKILL.md` files directly — it is the sanctioned writer for `skills/`.
 > - `craft-agent skill --help`
 > - Canonical command reference: [craft-cli.md](./craft-cli.md)
+> - No `craft-agent` on this machine? The file is the same either way: write `SKILL.md` as described below, and check it with `skill_validate({ skillSlug })`.
 
 ## What Are Skills?
 

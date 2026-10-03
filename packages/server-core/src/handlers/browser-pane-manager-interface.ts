@@ -9,7 +9,14 @@
  */
 
 import type { BrowserInstanceInfo, BrowserTabSummary, PickedElement, TabBelongsTo } from '@craft-agent/shared/protocol'
-import type { DrawioFormat, DrawioTheme } from '@craft-agent/shared/agent/browser-pane'
+import type {
+  BrowserFinishedRecording,
+  BrowserStartRecordingArgs,
+  BrowserStartRecordingResult,
+  BrowserStopRecordingResult,
+  DrawioFormat,
+  DrawioTheme,
+} from '@craft-agent/shared/agent/browser-pane'
 
 // ---------------------------------------------------------------------------
 // Supporting types — minimal subsets of BPM's internal types
@@ -191,6 +198,22 @@ export interface VideoFrameOptions {
   everyMs: number
   /** Ceiling on frames — a long recording must not become a thousand pictures. */
   maxFrames: number
+  /**
+   * How much has to change for `changes` mode to keep a frame — `(0, 1]`, smaller keeps more.
+   *
+   * Omitted means the sampler's own default, so a caller that does not care gets exactly what
+   * this mode always did.
+   */
+  changeThreshold?: number
+  /** Where to start, ms. Omitted, from the beginning. */
+  fromMs?: number
+  /** Where to stop, ms. **Omitted means to the end** — nobody can name a duration they don't know. */
+  toMs?: number
+  /** The first frame of the recording, and/or the last, **and nothing else**. Replaces the scan. */
+  first?: boolean
+  last?: boolean
+  /** Longest edge of the output, in pixels. Scales down only, aspect preserved. */
+  maxEdge?: number
 }
 
 export interface ExtractedVideoFrame {
@@ -464,14 +487,56 @@ export interface IBrowserPaneManager {
   /**
    * Sample frames out of a video the user recorded elsewhere.
    *
-   * Decoding is Chromium's, so nothing here depends on ffmpeg being installed —
-   * and a codec Chromium does not implement (HEVC, ProRes, some `.mov`) fails with
-   * a message that says so rather than producing a truncated capture.
+   * Decoding is Chromium's, so nothing here depends on ffmpeg being installed — and a
+   * codec this Chromium cannot read (ProRes always; HEVC on a machine with no hardware
+   * decoder for it) fails with a message that says so rather than producing a truncated
+   * capture.
    *
    * The bytes come back with their offsets; where they are written is the
    * caller's business, which is the same shape as `capturePage`.
    */
   extractVideoFrames(filePath: string, options: VideoFrameOptions): Promise<VideoFrameExtractionResult>
+
+  // -- Recording ------------------------------------------------------------
+
+  /**
+   * Record one of this conversation's tabs, and keep recording it.
+   *
+   * The recording belongs to `(sessionId, tabId)`, which is what lets the person record the same
+   * tab at the same time without either touching the other. `wait` decides the shape of the
+   * answer: without it the call returns once it is recording, with it the call returns when the
+   * recording ends.
+   *
+   * `dir` is where the file goes, decided by the caller — this layer knows windows and tabs, not
+   * where a conversation keeps its files.
+   */
+  startRecordingForSession(
+    sessionId: string,
+    args: BrowserStartRecordingArgs,
+    /**
+     * Which window to record in — the caller's **workspace's**, like every other browser call.
+     * Required in practice: the window is picked by workspace alone, so omitting it resolves (and
+     * creates) the `workspaceId === null` window instead of the one the caller works in.
+     */
+    options?: { workspaceId?: string | null },
+  ): Promise<BrowserStartRecordingResult>
+
+  /** End one early. `--ttl` is the ordinary end; this is "it is done now". */
+  stopRecordingForSession(sessionId: string, tabId: string): Promise<BrowserStopRecordingResult>
+
+  /**
+   * Wait for one of this conversation's recordings to end.
+   *
+   * The other half of `wait: false`: that answers at the start so a turn is not held open, and
+   * this is how whoever started it hears about the end. Resolves `null` when nothing is recording
+   * that tab — including when it already ended before this was asked.
+   *
+   * Shape of `pick`: a call that may sit unanswered for a while, rather than a poll.
+   */
+  waitForRecordingEnd(sessionId: string, tabId: string): Promise<BrowserFinishedRecording | null>
+
+  /** End everything one conversation is recording, because it is going away. */
+  endRecordingsForSession(sessionId: string): void
 
   // -- Diagrams -------------------------------------------------------------
 

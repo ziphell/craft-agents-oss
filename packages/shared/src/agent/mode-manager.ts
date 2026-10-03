@@ -1781,14 +1781,11 @@ const ALWAYS_ALLOWED_TOOLS = new Set([
   'LSP',                            // Language server (read-only)
   // Browser automation tool (canonical wrapper)
   'browser_tool',
-  // Prototype workbench (the other door onto the same wrapper): a prototype is built by
-  // writing its files, and the browser wrapper is what turns them into something to look at.
-  'prototype_tool',
-  // Frames out of a recording, decoded by the browser the app already ships — the third door
+  // Frames out of a recording, decoded by the browser the app already ships — the second door
   // onto that same wrapper.
   'video_tool',
   // Diagrams: converted and drawn by the drawio webapp the app already ships, in a hidden window
-  // of its own — the fourth door, and the only one whose subject is a file rather than a window.
+  // of its own — the third door, and the only one whose subject is a file rather than a window.
   'drawio_tool',
 ]);
 
@@ -1816,7 +1813,14 @@ export function shouldAllowToolInMode(
   options?: {
     plansFolderPath?: string;
     dataFolderPath?: string;
-    prototypesFolderPath?: string;
+    /**
+     * The folder of the project this session belongs to, when it belongs to one.
+     *
+     * Writes there are allowed in Explore mode because that folder is where the project's specs
+     * (`*.spec.md`) are written — the person's demand lives there, so a session working on it must
+     * be able to put it on disk. Not passed at all for a session that is in no project.
+     */
+    projectFolderPath?: string;
     permissionsContext?: PermissionsContext;
   }
 ): ToolCheckResult {
@@ -1881,7 +1885,7 @@ export function shouldAllowToolInMode(
         (rejection.type === 'dangerous_operator' && rejection.operatorType === 'redirect') ||
         looksLikePotentialWrite(command);
 
-      if (likelyWriteAttempt && (options?.plansFolderPath || options?.dataFolderPath)) {
+      if (likelyWriteAttempt && (options?.plansFolderPath || options?.dataFolderPath || options?.projectFolderPath)) {
         const targetPath = extractBashWriteTarget(command) ?? extractPowerShellWriteTarget(command);
         if (targetPath) {
           // Check plans folder with robust path containment (prevents sibling-prefix bypasses)
@@ -1893,6 +1897,13 @@ export function shouldAllowToolInMode(
           // Check data folder with robust path containment
           if (options?.dataFolderPath && isPathWithinDirectory(targetPath, options.dataFolderPath)) {
             debug(`[Mode] Allowing write to data folder: ${targetPath}`);
+            return { allowed: true };
+          }
+
+          // Check the project's own folder with robust path containment — it is where the
+          // project's specs are written, so it needs no mode change to be writable.
+          if (options?.projectFolderPath && isPathWithinDirectory(targetPath, options.projectFolderPath)) {
+            debug(`[Mode] Allowing write to project folder: ${targetPath}`);
             return { allowed: true };
           }
 
@@ -1910,15 +1921,19 @@ export function shouldAllowToolInMode(
           if (options?.dataFolderPath) {
             lines.push(`  Data:   ${options.dataFolderPath}`);
           }
+          if (options?.projectFolderPath) {
+            lines.push(`  Project: ${options.projectFolderPath}`);
+          }
           if (pathHint) {
             lines.push(``, pathHint);
           }
           const plansHint = options?.plansFolderPath ? `For plans, write to: ${options.plansFolderPath}` : null;
           const dataHint = options?.dataFolderPath ? `For data output, write to: ${options.dataFolderPath}` : null;
+          const projectHint = options?.projectFolderPath ? `For the project's specs, write to: ${options.projectFolderPath}` : null;
           lines.push(
             ``,
             `Allowed paths in Explore mode:`,
-            ...[plansHint, dataHint].filter(Boolean).map(p => `• ${p}`),
+            ...[plansHint, dataHint, projectHint].filter(Boolean).map(p => `• ${p}`),
             `• Or ask the user to switch to Ask or Auto mode (${config.shortcutHint}) to enable writes anywhere`
           );
           return {
@@ -1941,10 +1956,10 @@ export function shouldAllowToolInMode(
     };
   }
 
-  // Handle Write/Edit/MultiEdit/NotebookEdit - allow if targeting the plans or data folder, or
-  // allowedWritePaths. The prototypes folder is deliberately NOT among them: it is the user's
-  // material rather than the mode's own plumbing, so a prototype file needs a mode that allows
-  // writes (or the person, editing it in the app).
+  // Handle Write/Edit/MultiEdit/NotebookEdit - allow if targeting the plans folder, the data
+  // folder, the session's project folder, or allowedWritePaths. The project folder is among them
+  // because it is where the project's specs are written: the person turned the work on there, so
+  // Explore mode must not stand between the agent and the file the demand *is*.
   if (toolName === 'Write' || toolName === 'Edit' || toolName === 'MultiEdit' || toolName === 'NotebookEdit') {
     const input = toolInput as Record<string, unknown> | null;
     const filePath = (input?.file_path ?? input?.notebook_path) as string | undefined;
@@ -1965,6 +1980,12 @@ export function shouldAllowToolInMode(
         return { allowed: true };
       }
 
+      // Check the project's own folder — where this session's specs live
+      if (options?.projectFolderPath && isPathWithinDirectory(filePath, options.projectFolderPath)) {
+        debug(`[Mode] Allowing ${toolName} to project folder`);
+        return { allowed: true };
+      }
+
       // Check allowedWritePaths from permissions config
       if (config.allowedWritePaths && config.allowedWritePaths.length > 0) {
         if (matchesAllowedWritePath(filePath, config.allowedWritePaths)) {
@@ -1973,8 +1994,8 @@ export function shouldAllowToolInMode(
         }
       }
 
-      // Not in plans/data folder and not in allowedWritePaths - provide detailed rejection
-      if (options?.plansFolderPath || options?.dataFolderPath) {
+      // Not in plans/data/project folder and not in allowedWritePaths - provide detailed rejection
+      if (options?.plansFolderPath || options?.dataFolderPath || options?.projectFolderPath) {
         debug(`[Mode] ${toolName} target "${filePath}" not in allowed folders or allowedWritePaths`);
         const pathHint = options?.plansFolderPath ? getPathHint(filePath, options.plansFolderPath, options?.dataFolderPath) : null;
         const lines = [
@@ -1988,15 +2009,19 @@ export function shouldAllowToolInMode(
         if (options?.dataFolderPath) {
           lines.push(`  Data:   ${options.dataFolderPath}`);
         }
+        if (options?.projectFolderPath) {
+          lines.push(`  Project: ${options.projectFolderPath}`);
+        }
         if (pathHint) {
           lines.push(``, pathHint);
         }
         const plansHint = options?.plansFolderPath ? `For plans, write to: ${options.plansFolderPath}` : null;
         const dataHint = options?.dataFolderPath ? `For data output, write to: ${options.dataFolderPath}` : null;
+        const projectHint = options?.projectFolderPath ? `For the project's specs, write to: ${options.projectFolderPath}` : null;
         lines.push(
           ``,
           `Allowed paths in Explore mode:`,
-          ...[plansHint, dataHint].filter(Boolean).map(p => `• ${p}`),
+          ...[plansHint, dataHint, projectHint].filter(Boolean).map(p => `• ${p}`),
           `• Or ask the user to switch to Ask or Auto mode (${config.shortcutHint}) to enable writes anywhere`
         );
         return {
@@ -2143,7 +2168,7 @@ export function getSessionState(sessionId: string): { permissionMode: Permission
  */
 export function formatSessionState(
   sessionId: string,
-  options?: { plansFolderPath?: string; dataFolderPath?: string; prototypesFolderPath?: string; consumeModeChangeUserSignal?: boolean }
+  options?: { plansFolderPath?: string; dataFolderPath?: string; projectFolderPath?: string; consumeModeChangeUserSignal?: boolean }
 ): string {
   const diagnostics = getPermissionModeDiagnostics(sessionId);
 
@@ -2179,9 +2204,10 @@ export function formatSessionState(
     result += `\ndataFolderPath: ${options.dataFolderPath}`;
   }
 
-  // Include prototypes folder path so agent knows where prototype-workbench artifacts go
-  if (options?.prototypesFolderPath) {
-    result += `\nprototypesFolderPath: ${options.prototypesFolderPath}`;
+  // Include the project's folder path so the agent knows where this session's specs go — and,
+  // being one of the folders Explore mode allows writes to, where it may write them.
+  if (options?.projectFolderPath) {
+    result += `\nprojectFolderPath: ${options.projectFolderPath}`;
   }
 
   result += '\n</session_state>';

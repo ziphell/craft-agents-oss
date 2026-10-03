@@ -12,6 +12,7 @@ import { z } from 'zod';
 import { TOOL_DESCRIPTIONS } from '@craft-agent/session-tools-core';
 import { requireBrowserPaneFns, type BrowserPaneToolOptions } from './browser-pane.ts';
 import { executeVideoToolCommand } from './video-commands.ts';
+import type { LlmQueryFn } from './llm-tool.ts';
 
 // Tool result type - matches MCP CallToolResult content blocks
 type ToolResult = {
@@ -48,12 +49,30 @@ function successResponse(text: string): ToolResult {
 const VIDEO_TOOL_DESCRIPTION = TOOL_DESCRIPTIONS.video_tool;
 
 /**
+ * What this door is built with: the pane's surface, plus the model it may ask.
+ *
+ * It extends the pane's options rather than the other way round, so a door only carries what it
+ * uses — `browser_tool` and `drawio_tool` never ask a model.
+ */
+export interface VideoToolOptions extends BrowserPaneToolOptions {
+  /**
+   * Lazy resolver for the model callback, resolved at execution time like the pane's — the
+   * registry that holds it is per session and can be gone by the time a tool runs.
+   *
+   * Optional because only `understand` needs it, and a caller that does not ask a model should
+   * not have to say so. When it is absent `understand` refuses with the reason, and `sample` —
+   * the other half of the door — is untouched.
+   */
+  getQueryFn?: () => LlmQueryFn | undefined;
+}
+
+/**
  * `video_tool` — the same pane runtime as the other two doors, reached by its own name.
  *
  * It takes the same `fns` because the decoding happens on the pane's side; what is separate is the
  * **subject** — a recording, and nothing else.
  */
-export function createVideoTools(options: BrowserPaneToolOptions) {
+export function createVideoTools(options: VideoToolOptions) {
   return [
     tool(
       'video_tool',
@@ -71,6 +90,7 @@ export function createVideoTools(options: BrowserPaneToolOptions) {
             fns: requireBrowserPaneFns(options),
             sessionId: options.sessionId,
             workspaceRootPath: options.workspaceRootPath,
+            queryLlm: options.getQueryFn?.(),
           });
 
           // Every sampled frame goes into the reply as an image: the point of the command is that

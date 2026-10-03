@@ -188,8 +188,8 @@ export async function createSession(
     labels?: string[];
     isFlagged?: boolean;
     projectId?: string;
-    /** Bind the new session to a prototype (a slug under the workspace's prototypes/ folder). */
-    prototypeSlug?: string;
+    /** The layer this session is working in (its home is the owning project's folder). */
+    mode?: SessionConfig['mode'];
     parentSessionId?: string;
     taskSlug?: string;
     taskRunId?: string;
@@ -227,7 +227,7 @@ export async function createSession(
     labels: options?.labels,
     isFlagged: options?.isFlagged,
     projectId: options?.projectId,
-    prototypeSlug: options?.prototypeSlug,
+    mode: options?.mode,
     parentSessionId: options?.parentSessionId,
     taskSlug: options?.taskSlug,
     taskRunId: options?.taskRunId,

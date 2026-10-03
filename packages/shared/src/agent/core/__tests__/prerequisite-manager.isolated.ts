@@ -133,13 +133,12 @@ describe('PrerequisiteManager', () => {
       expect(manager.checkPrerequisites('mcp__session__drawio_tool').allowed).toBe(false);
     });
 
-    // The other doors on the same runtime are not gated: `video_tool` reads a recording off a
-    // hidden window and `prototype_tool` is file work, and neither has silent failure modes.
-    it('does not gate the neighbouring doors', () => {
+    // The other door on the same runtime is not gated: `video_tool` reads a recording off a
+    // hidden window and has no silent failure modes.
+    it('does not gate the neighbouring door', () => {
       mockExistsPaths.add(drawioDocPath());
 
       expect(manager.checkPrerequisites('video_tool').allowed).toBe(true);
-      expect(manager.checkPrerequisites('prototype_tool').allowed).toBe(true);
     });
 
     it('allows drawio_tool when the guide is not installed', () => {

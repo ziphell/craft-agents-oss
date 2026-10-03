@@ -15,8 +15,7 @@
  * the grammar is anchored at both ends — the path must match in full, and only a
  * trailing `*` may run past its end. `/admin/*` therefore covers `/admin/users` and
  * `/admin/`, but not `/admin`. That distinction looks pedantic until a tweak for an admin
- * console starts running on `/administrate`. (The companion `matchPatternForUrl` in
- * `prototypes/extension.ts` leaves a `*` on the end for the same reason.)
+ * console starts running on `/administrate`.
  */
 
 /** A parsed pattern. Absent pieces are the wildcards the grammar spells `*`. */

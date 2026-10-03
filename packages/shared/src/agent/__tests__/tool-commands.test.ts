@@ -1,9 +1,9 @@
 /**
- * Tests for the three pane tool factories.
+ * Tests for the pane tool factories.
  *
- * `browser_tool`, `prototype_tool` and `video_tool` are doors onto one command table, and the
- * suite drives each command through the door that owns it. All three delegate to `BrowserPaneFns`
- * via CLI commands.
+ * `browser_tool`, `video_tool` and `drawio_tool` are doors onto one command table, and the suite
+ * drives each command through the door that owns it. All of them delegate to `BrowserPaneFns` via
+ * CLI commands.
  */
 
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
@@ -11,12 +11,9 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { describe, it, expect, afterEach, beforeEach } from 'bun:test'
 import { createBrowserTools } from '../browser-tools'
-import { createPrototypeTools } from '../prototype-tools'
 import { createVideoTools } from '../video-tools'
 import { createDrawioTools } from '../drawio-tools'
 import type { BrowserPaneFns } from '../browser-pane'
-import type { PrototypeStatus, PrototypeStatusSpec } from '../../prototypes/status'
-import { notice } from '../../prototypes/notices'
 import type { BrowserTabSummary } from '../../protocol/dto'
 
 /**
@@ -106,16 +103,6 @@ function createMockFns(): BrowserPaneFns {
       path: null,
     }),
     listDrawioPages: async () => [{ id: 'p1', name: 'Checkout', compressed: false }],
-    prototypeStatus: async (slug: string) => prototypeStatus(slug),
-    // Unbound by default; tests that exercise the no-slug fallback override it.
-    getBoundPrototypeSlug: () => null,
-    listPrototypes: async () => [],
-    createPrototype: async ({ name }: { name: string }) => ({
-      slug: name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
-      dir: `/tmp/prototypes/${name}`,
-      entryPath: `/tmp/prototypes/${name}/spec.md`,
-    }),
-    bindPrototype: async (_slug: string | null) => {},
     focusWindow: async (instanceId?: string) => ({ instanceId: instanceId ?? 'browser-1', title: 'Example Domain', url: 'https://example.com' }),
     createTab: async () => 'tab-1',
     targetTab: async (_tabId: string) => {},
@@ -139,35 +126,6 @@ function createMockFns(): BrowserPaneFns {
     ]),
     detectChallenge: async () => ({ detected: false, provider: 'none', signals: [] }),
   }
-}
-
-// ============================================================================
-// Helpers
-// ============================================================================
-
-/** Minimal PrototypeStatus for `status` tests — only the listed fields are read. */
-function prototypeStatus(slug: string, overrides: Partial<PrototypeStatus> = {}): PrototypeStatus {
-  return {
-    slug,
-    dir: `/tmp/prototypes/${slug}`,
-    specs: [],
-    specificationFiles: [],
-    files: [],
-    links: [],
-    unresolved: { brokenLinks: [] },
-    settleBlockers: [],
-    briefIssues: [],
-    ...overrides,
-  }
-}
-
-/** One spec row — a `*.spec.md` file and the title its first heading states. */
-function spec(
-  title: string,
-  file: string,
-  overrides: Partial<PrototypeStatusSpec> = {},
-): PrototypeStatusSpec {
-  return { title, file, ...overrides }
 }
 
 // ============================================================================
@@ -197,7 +155,7 @@ async function executeTool(tools: any[], name: string, args: Record<string, unkn
  * One module per door, because that is where a command belongs now — the names carry no prefix
  * for the test to sort them by.
  */
-async function runtimeCommands(module: 'browser-commands' | 'prototype-commands'): Promise<string[]> {
+async function runtimeCommands(module: 'browser-commands' | 'video-commands' | 'drawio-commands'): Promise<string[]> {
   const source = await Bun.file(new URL(`../${module}.ts`, import.meta.url)).text()
   const matches = [...source.matchAll(/\bcmd === '([a-z-]+)'/g)]
   return [...new Set(matches.map((match) => match[1]!))]
@@ -214,13 +172,9 @@ describe('the pane tools', () => {
   beforeEach(() => {
     mockFns = createMockFns()
     // Every door: one command table each, and the suite drives commands through the one that owns
-    // them — a prototype command named at `browser_tool` is refused (there is a test for that).
+    // them.
     tools = [
       ...createBrowserTools({
-        sessionId: 'test-session',
-        getBrowserPaneFns: () => mockFns,
-      }),
-      ...createPrototypeTools({
         sessionId: 'test-session',
         getBrowserPaneFns: () => mockFns,
       }),
@@ -243,333 +197,6 @@ describe('the pane tools', () => {
     expect(browserOnly.length).toBe(1)
     expect(browserOnly.map((t: any) => t.name)).toEqual(['browser_tool'])
   })
-
-  // A tool's own description is what the model reads before choosing it, and it is the only
-  // place the two meanings of "project" are told apart.
-  it('tells the model that a prototype is not a project', () => {
-    const tool = findTool(tools, 'prototype_tool') as any
-    expect(tool.description).toContain('not a project')
-    expect(tool.description).toContain('projects are separate containers')
-  })
-
-  describe('prototype_tool', () => {
-    it('returns exactly 1 tool (prototype_tool only)', () => {
-      const prototypeOnly = createPrototypeTools({
-        sessionId: 'test-session',
-        getBrowserPaneFns: () => mockFns,
-      })
-      expect(prototypeOnly.length).toBe(1)
-      expect(prototypeOnly.map((t: any) => t.name)).toEqual(['prototype_tool'])
-    })
-
-    it('documents every prototype command the runtime implements', async () => {
-      const prototypeCommands = await runtimeCommands('prototype-commands')
-      // list / create / status
-      expect(prototypeCommands.length).toBe(3)
-
-      const help = (await executeTool(tools, 'prototype_tool', { command: '--help' })).content[0].text
-      expect(prototypeCommands.filter((cmd) => !help.includes(cmd))).toEqual([])
-    })
-
-    // The two doors answer "--help" with their own list: an agent that asked the prototype tool
-    // what exists is not asking about the browser. The commands carry no prefix — the tool's
-    // name is the subject, the way `browser_tool snapshot` reads.
-    it('answers --help with the prototype commands, and the folder they act on', async () => {
-      const help = (await executeTool(tools, 'prototype_tool', { command: '--help' })).content[0].text
-
-      expect(help).toContain('prototype_tool command help')
-      expect(help).toContain('  status [slug]')
-      // The entry's own name, not merely the suffix: `spec.md` with a character before it that is
-      // not a dot (which is what `*.spec.md` has).
-      expect(help).toMatch(/(?<!\.)spec\.md/)
-      expect(help).toContain('*.spec.md')
-      // None of the removed mechanisms may be briefed: no pages, patches, entry page or fragment —
-      // and no contract, verification or deliverables.
-      expect(help).not.toContain('patches/')
-      expect(help).not.toContain('--page')
-      expect(help).not.toContain('entry page')
-      expect(help).not.toContain('/_index')
-      expect(help).not.toContain('browser_tool command help')
-      expect(help).not.toContain('navigate <url>')
-      expect(help).not.toContain('verify')
-      expect(help).not.toContain('contract')
-      expect(help).not.toContain('openapi')
-      expect(help).not.toContain('acceptance')
-      expect(help).not.toContain('dist/')
-      expect(help).not.toContain('reviews/')
-      expect(help).not.toContain('research/')
-      // Nor the mock and dev-spec machinery that left with them.
-      expect(help).not.toContain('mock')
-      expect(help).not.toContain('dev-spec')
-      expect(help).not.toContain('handoff')
-      expect(help).not.toContain('fixtures')
-    })
-
-    // The description is the whole model-facing brief for this door: what the commands act on
-    // (a prototype's folder) and where the rules are — the layout is the guide's, read once,
-    // rather than a second copy of it in front of every session.
-    it('describes the folder it acts on, and points at the guide for the rest', () => {
-      const tool = findTool(tools, 'prototype_tool') as any
-
-      expect(tool.description).toContain('**The window**')
-      expect(tool.description).toContain('docs/prototypes.md')
-      // The entry's own name, not merely the suffix (see the help case above).
-      expect(tool.description).toMatch(/(?<!\.)spec\.md/)
-      expect(tool.description).toContain('.spec.md')
-      expect(tool.description).toContain('browser_tool')
-    })
-
-    // `browser_tool snapshot` reads plausible here, so the refusal has to say where the other
-    // subject's commands live rather than just "unknown".
-    it('refuses a browser command, and names the tool that takes it', async () => {
-      const result = await executeTool(tools, 'prototype_tool', { command: 'snapshot' })
-
-      expect(result.isError).toBe(true)
-      expect(result.content[0].text).toContain('Unknown prototype_tool command "snapshot"')
-      expect(result.content[0].text).toContain('browser_tool')
-    })
-
-    it('runs one command per call, so a batch is refused rather than half-run', async () => {
-      const result = await executeTool(tools, 'prototype_tool', {
-        command: 'list; status',
-      })
-
-      expect(result.isError).toBe(true)
-      expect(result.content[0].text).toContain('One command per call')
-    })
-
-    // ========================================================================
-    // list
-    // ========================================================================
-
-    it('lists prototypes with their spec and file counts, and marks the bound one', async () => {
-      mockFns.getBoundPrototypeSlug = () => 'checkout-flow'
-      mockFns.listPrototypes = async () => [
-        prototypeStatus('checkout-flow', {
-          specs: [
-            spec('A cart holds its line', 'cart-line.spec.md'),
-            spec('The cart is priced by the service', 'pricing.spec.md'),
-          ],
-          specificationFiles: [
-            { name: 'spec.md', path: '/tmp/prototypes/checkout-flow/spec.md' },
-            { name: 'cart-line.spec.md', path: '/tmp/prototypes/checkout-flow/cart-line.spec.md' },
-            { name: 'pricing.spec.md', path: '/tmp/prototypes/checkout-flow/pricing.spec.md' },
-          ],
-          files: [{ name: 'cart.html', path: '/tmp/prototypes/checkout-flow/cart.html' }],
-        }),
-        prototypeStatus('draft'),
-      ]
-
-      const text = (await executeTool(tools, 'prototype_tool', { command: 'list' })).content[0].text
-
-      expect(text).toContain('bound to "checkout-flow"')
-      expect(text).toContain('BOUND')
-      expect(text).toContain('checkout-flow — BOUND, 2 specs, 4 files')
-      // A prototype with nothing in it yet is a normal state, not a broken one.
-      expect(text).toContain('draft — 0 specs, 0 files')
-    })
-
-    it('says how to start one when the workspace has none', async () => {
-      mockFns.listPrototypes = async () => []
-
-      const text = (await executeTool(tools, 'prototype_tool', { command: 'list' })).content[0].text
-
-      expect(text).toContain('No prototypes in this workspace yet')
-      expect(text).toContain('spec.md')
-    })
-
-    // ========================================================================
-    // create
-    // ========================================================================
-
-    it('creates a prototype and binds the session in the same step', async () => {
-      const bound: Array<string | null> = []
-      mockFns.bindPrototype = async (slug) => { bound.push(slug) }
-
-      const result = await executeTool(tools, 'prototype_tool', {
-        command: 'create Checkout flow',
-      })
-
-      expect(result.content[0].text).toContain('Created prototype "checkout-flow" and bound this session to it.')
-      expect(bound).toEqual(['checkout-flow'])
-    })
-
-    // Creation makes a folder and a starter brief, and nothing else: the folder *is* the
-    // prototype, so the output has to say how the work comes to exist rather than describing a
-    // form to fill in.
-    it('creates a folder with a starter spec, and says how the work is written into it', async () => {
-      const seen: Array<{ name: string }> = []
-      mockFns.createPrototype = async (input) => {
-        seen.push(input)
-        return {
-          slug: 'landing-page',
-          dir: '/tmp/prototypes/landing-page',
-          entryPath: '/tmp/prototypes/landing-page/spec.md',
-        }
-      }
-
-      const result = await executeTool(tools, 'prototype_tool', { command: 'create Landing page' })
-      const text = result.content[0].text
-
-      expect(seen).toEqual([{ name: 'Landing page' }])
-      expect(text).toContain('dir: /tmp/prototypes/landing-page')
-      expect(text).toContain('entry: /tmp/prototypes/landing-page/spec.md')
-      expect(text).toContain('Write each spec into its own')
-      expect(text).toContain('.spec.md')
-    })
-
-    it('asks for a name, which is all creation needs', async () => {
-      const result = await executeTool(tools, 'prototype_tool', { command: 'create' })
-      expect(result.content[0].text).toContain('needs a name')
-    })
-
-    // A leftover flag from when creation asked about pages would otherwise be swallowed by the
-    // name — and a flag silently folded into a slug is not a mistake anyone would find later.
-    it('refuses a flag creation does not take', async () => {
-      const result = await executeTool(tools, 'prototype_tool', { command: 'create Cart --page cart' })
-
-      expect(result.isError).toBe(true)
-      expect(result.content[0].text).toContain('create does not take "--page"')
-    })
-
-    // Without this, creating a prototype you only mean to study would rebind the
-    // session to it and every later slug-less command would retarget it.
-    it('leaves the session binding alone with --no-bind', async () => {
-      let bound = false
-      mockFns.bindPrototype = async () => { bound = true }
-
-      const result = await executeTool(tools, 'prototype_tool', {
-        command: 'create Rival checkout --no-bind',
-      })
-
-      expect(bound).toBe(false)
-      expect(result.content[0].text).toContain('not bound')
-    })
-
-    it('still binds by default, so the name keeps its spaces', async () => {
-      const bound: Array<string | null> = []
-      mockFns.bindPrototype = async (slug) => { bound.push(slug) }
-
-      await executeTool(tools, 'prototype_tool', { command: 'create Checkout flow' })
-
-      expect(bound).toEqual(['checkout-flow'])
-    })
-
-    // ========================================================================
-    // status
-    // ========================================================================
-
-    // The specs: what the folder holds, read back without a claim about what implements
-    // anything.
-    it('reports the specs', async () => {
-      mockFns.prototypeStatus = async (slug) =>
-        prototypeStatus(slug, {
-          specificationFiles: [
-            { name: 'spec.md', path: `/tmp/prototypes/${slug}/spec.md` },
-            { name: 'cart-line.spec.md', path: `/tmp/prototypes/${slug}/cart-line.spec.md` },
-            { name: 'pricing.spec.md', path: `/tmp/prototypes/${slug}/pricing.spec.md` },
-            { name: 'nothing-yet.spec.md', path: `/tmp/prototypes/${slug}/nothing-yet.spec.md` },
-          ],
-          files: [
-            { name: 'cart.html', path: `/tmp/prototypes/${slug}/cart.html` },
-            { name: 'notes.md', path: `/tmp/prototypes/${slug}/notes.md` },
-          ],
-          specs: [
-            spec('A cart holds its line', 'cart-line.spec.md'),
-            spec('The cart is priced by the service', 'pricing.spec.md'),
-            spec('Nothing here yet', 'nothing-yet.spec.md'),
-          ],
-        })
-
-      const text = (await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })).content[0].text
-
-      expect(text).toContain(
-        'spec:       spec.md, cart-line.spec.md, pricing.spec.md, nothing-yet.spec.md',
-      )
-      // Each spec is its file, shown with the title its first heading states.
-      expect(text).toContain('A cart holds its line (cart-line.spec.md)')
-      expect(text).toContain('The cart is priced by the service (pricing.spec.md)')
-      expect(text).toContain('Nothing here yet (nothing-yet.spec.md)')
-      // Nothing in the report says what implements a spec — there is no such statement.
-      expect(text).not.toContain('nothing refers to it yet')
-      expect(text).toContain('files:      cart.html, notes.md')
-      // The removed sections are gone from the report.
-      expect(text).not.toContain('services:')
-      expect(text).not.toContain('dist:')
-      expect(text).not.toContain('checks:')
-    })
-
-    // A brief issue is a file that cannot be read as written — a picture that no longer matches its
-    // diagram — and the status is the only place that says which.
-    it('prints the brief issues, which a clean prototype does not have', async () => {
-      const clean = await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })
-      expect(clean.content[0].text).not.toContain('issues:')
-
-      mockFns.prototypeStatus = async (slug) =>
-        prototypeStatus(slug, {
-          briefIssues: [notice('diagram.stale', { svg: 'cart.drawio.svg', source: 'cart.drawio' })],
-        })
-
-      const issues = await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })
-      expect(issues.content[0].text).toContain('issues:     1')
-      expect(issues.content[0].text).toContain('cart.drawio.svg is not what cart.drawio draws any more')
-    })
-
-    it('names a broken link among what is still owed', async () => {
-      mockFns.prototypeStatus = async (slug) =>
-        prototypeStatus(slug, {
-          unresolved: { brokenLinks: [{ from: 'spec.md', target: 'docs/flow.md' }] },
-        })
-
-      const text = (await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })).content[0]
-        .text
-
-      expect(text).toContain('unresolved: 1')
-      expect(text).toContain('spec.md links to docs/flow.md, which is not in this prototype.')
-    })
-
-    it('says so when nothing is owed, rather than staying quiet', async () => {
-      const result = await executeTool(tools, 'prototype_tool', { command: 'status checkout-flow' })
-
-      expect(result.content[0].text).toContain('unresolved: nothing')
-      expect(result.content[0].text).not.toContain('acceptance:')
-    })
-
-    // ========================================================================
-    // Prototype binding — a bound session drives the prototype without slugs.
-    // ========================================================================
-
-    it('falls back to the bound prototype when no slug is passed', async () => {
-      mockFns.getBoundPrototypeSlug = () => 'bound-flow'
-      const result = await executeTool(tools, 'prototype_tool', { command: 'status' })
-      expect(result.content[0].text).toContain('Prototype "bound-flow"')
-    })
-
-    it('lets an explicit slug win over the binding', async () => {
-      mockFns.getBoundPrototypeSlug = () => 'bound-flow'
-      const result = await executeTool(tools, 'prototype_tool', { command: 'status other-flow' })
-      expect(result.content[0].text).toContain('Prototype "other-flow"')
-    })
-
-    it('treats a leading flag as "no slug" so options can follow the command directly', async () => {
-      mockFns.getBoundPrototypeSlug = () => 'bound-flow'
-      const result = await executeTool(tools, 'prototype_tool', {
-        command: 'status --verbose',
-      })
-      // The bound slug was used, not the literal "--verbose".
-      expect(result.content[0].text).toContain('Prototype "bound-flow"')
-    })
-
-    // Nothing says which prototype is meant, so the answer has to be actionable without a
-    // binding: name one, or bind this conversation to one.
-    it('names both ways out when there is no slug and no binding', async () => {
-      const result = await executeTool(tools, 'prototype_tool', { command: 'status' })
-      expect(result.content[0].text).toContain('status <slug>')
-      expect(result.content[0].text).toContain('bind this conversation')
-      expect(result.content[0].text).toContain('list')
-    })
-  })
-
 
   describe('drawio_tool', () => {
     it('returns exactly 1 tool (drawio_tool only)', () => {
@@ -643,13 +270,13 @@ describe('the pane tools', () => {
       const help = (await executeTool(tools, 'video_tool', { command: '--help' })).content[0].text
 
       expect(help).toContain('video_tool command help')
-      expect(help).toContain('sample <path> [--out <dir>] [--every <dur>] [--changes] [--max <n>]')
+      expect(help).toContain('sample <path> [--out <dir>] [--every <dur>] [--changes] [--threshold <r>] [--from <dur>] [--to <dur>] [--first] [--last] [--max-edge <n>] [--max <n>]')
       expect(help).toContain('--out <dir>')
       expect(help).toContain('Chromium')
       expect(help).toContain('workspace root')
     })
 
-    it('samples on a timeline every 2000 ms, at most 40 frames, writing nothing, by default', async () => {
+    it('samples on a timeline every 1000 ms, at most 1000 frames, writing nothing, by default', async () => {
       const seen: Array<Record<string, unknown>> = []
       mockFns.sampleVideo = async (args) => {
         seen.push(args)
@@ -659,7 +286,7 @@ describe('the pane tools', () => {
       const result = await executeTool(tools, 'video_tool', { command: 'sample /tmp/demo.mp4' })
       const text = result.content[0].text
 
-      expect(seen[0]).toMatchObject({ mode: 'timeline', everyMs: 2000, maxFrames: 40 })
+      expect(seen[0]).toMatchObject({ mode: 'timeline', everyMs: 1000, maxFrames: 1000 })
       expect(seen[0]!.out).toBeUndefined()
       expect(text).toContain('Sampled 1 frame out of /tmp/demo.mp4 (6s long)')
       expect(text).toContain('• frame-0001.jpg  @ 0ms')
@@ -736,7 +363,7 @@ describe('the pane tools', () => {
 
       expect(receivedMax).toBe(12)
       expect(text).toContain('Sampled 12 frames')
-      expect(text).toContain('hit its frame ceiling')
+      expect(text).toContain('than the ceiling holds')
     })
 
     it('writes nothing without --out, and says how to get files instead', async () => {
@@ -761,8 +388,9 @@ describe('the pane tools', () => {
     it('passes a decode failure through unchanged', async () => {
       const message =
         'Could not read the recording: this browser cannot decode the recording (media error 4). ' +
-        'Chromium decodes mp4 (H.264), webm and most mov files; a HEVC, ProRes or otherwise ' +
-        'unsupported recording has to be converted first.'
+        'Chromium reads mp4 (H.264), webm and most mov files. HEVC reads only where the machine ' +
+        'has a hardware decoder for it, and ProRes does not read at all — a file that will not open ' +
+        'has to be converted first.'
       mockFns.sampleVideo = async () => { throw new Error(message) }
 
       const result = await executeTool(tools, 'video_tool', { command: 'sample /tmp/demo.mov' })
@@ -779,7 +407,7 @@ describe('the pane tools', () => {
       expect(result.content[0].text).toContain('browser_tool')
     })
 
-    // A relative path counts from the workspace root, the same rule a prototype command follows.
+    // A relative path counts from the workspace root, the same rule every pane command follows.
     it('counts a relative path from the workspace root', async () => {
       const workspaceRoot = mkdtempSync(join(tmpdir(), 'craft-video-ws-'))
       tempDirs.push(workspaceRoot)
@@ -969,8 +597,8 @@ describe('the pane tools', () => {
       expect(text).toContain('[button]')
       expect(text).toContain('"Click me"')
       expect(text).toContain('(focused)')
-      // A window says nothing about a prototype: the tab's document is the whole answer, and
-      // nothing here claims to know which prototype it belongs to.
+      // The snapshot text is about the page: the tab's document is the whole answer, and
+      // nothing here claims to know which project or conversation the tab belongs to.
       expect(text).not.toContain('Prototype:')
     })
 

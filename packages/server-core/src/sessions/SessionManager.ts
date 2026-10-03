@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿import type { EventSink, RpcServer } from '@craft-agent/server-core/transport'
+import type { EventSink, RpcServer } from '@craft-agent/server-core/transport'
 import { CLIENT_BROWSER_INVOKE } from '@craft-agent/server-core/transport'
 import type { ISessionManager, IBrowserPaneManager, ExecutePromptAutomationInput } from '@craft-agent/server-core/handlers'
 import { RemoteBrowserPaneManager } from './RemoteBrowserPaneManager'
@@ -11,11 +11,6 @@ import { randomUUID } from 'node:crypto'
 import { type AgentEvent, setPermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserPaneFns, generateConversationSummary, resolveKeepBackgroundTasksAlive, resolveToolName } from '@craft-agent/shared/agent'
 import type { BrowserInstanceInfo, BrowserTabSummary, TabBelongsTo } from '@craft-agent/shared/protocol'
 import { sameTask, sameWork, workOfSession } from '@craft-agent/shared/protocol'
-import {
-  buildPrototypeStatus,
-  listPrototypeStatuses,
-  createPrototype as createNewPrototype,
-} from '@craft-agent/shared/prototypes'
 import { drawioDocument, drawioPages } from '@craft-agent/shared/drawio/types'
 import {
   pickCommandTarget,
@@ -85,6 +80,7 @@ import {
   type StoredMessage,
   type SessionMetadata,
   type SessionStatus,
+  type SessionMode,
   type SessionHeader,
   pickSessionFields,
 } from '@craft-agent/shared/sessions'
@@ -640,8 +636,6 @@ async function resolveToolDisplayMeta(
     'NotebookEdit': 'Edit Notebook',
     'KillShell': 'Kill Shell',
     'TaskOutput': 'Task Output',
-    // The prototype workbench: it drives the same window, but it is not the browser (no Chrome icon).
-    'prototype_tool': 'Prototype',
     // Frames out of a recording — the window is the decoder, not the subject.
     'video_tool': 'Video',
     // Drawn by the app's own drawio — no window of the person's involved.
@@ -762,10 +756,10 @@ interface ManagedSession {
   labels?: string[]
   // Workspace-scoped project binding (undefined = unbound)
   projectId?: string
-  // Prototype binding (slug under the workspace's prototypes/ folder; undefined = unbound).
-  // Resolved into <prototype_context> for the agent and used as the default
-  // target of every `prototype_tool` command.
-  prototypeSlug?: string
+  // The layer this conversation is working in (undefined = no mode).
+  // Its home is the owning project's folder, and it only feeds the prompt block
+  // added for this conversation — it changes no tool behavior. One at a time.
+  mode?: SessionMode
   // Parent session id — when set, this session is a subtask of the parent (undefined = top-level task)
   parentSessionId?: string
   // Kanban board column id ('todo' | 'in-progress' | 'done'); independent of sessionStatus
@@ -1471,10 +1465,9 @@ export class SessionManager implements ISessionManager {
       changed = true
     }
 
-    // Prototype binding — mirrors the project binding: external edits (another
-    // window, the file itself) reconcile in without a dedicated event.
-    if (managed.prototypeSlug !== header.prototypeSlug) {
-      managed.prototypeSlug = header.prototypeSlug
+    // Mode — reconciled in without a dedicated event.
+    if (managed.mode !== header.mode) {
+      managed.mode = header.mode
       changed = true
     }
 
@@ -2642,12 +2635,6 @@ export class SessionManager implements ISessionManager {
       }
     }
 
-    // Binding a prototype does not choose where the conversation works — the working
-    // directory above is the project's (or the session's own fallback), and the prototype
-    // is a reference: the block injected into the prompt names its folder, so the agent
-    // reads and writes it by path. A binding that also moved the cwd would make the
-    // prototype a second owner of "where do I work", which the picker then had to referee.
-
     // Validate branch request up-front so branch metadata is only set for valid branches.
     // This prevents creating sessions that claim to be branched but don't have copied history.
     let validatedBranch: {
@@ -2847,7 +2834,7 @@ export class SessionManager implements ISessionManager {
       labels: options?.labels,
       isFlagged: options?.isFlagged,
       projectId: resolvedProjectId,
-      prototypeSlug: options?.prototypeSlug,
+      mode: options?.mode,
       parentSessionId: options?.parentSessionId,
       taskSlug: options?.taskSlug,
       taskRunId: options?.taskRunId,
@@ -3387,10 +3374,9 @@ export class SessionManager implements ISessionManager {
         permissionMode: managed.permissionMode,
         previousPermissionMode: managed.previousPermissionMode,
         projectId: managed.projectId,
-        // The same resolution the window and the commands use, so the prompt
-        // describes the prototype the conversation actually works on — which, now
-        // that a project contributes none, is its own binding.
-        prototypeSlug: this.effectivePrototypeSlug(managed),
+        // The layer this conversation is working in — consumed by the prompt block
+        // added for this conversation, not by any tool.
+        mode: managed.mode,
       }
 
       const onSdkSessionIdUpdate = (sdkSessionId: string) => {
@@ -3505,11 +3491,6 @@ export class SessionManager implements ISessionManager {
         getBranchFallbackMessages,
         getBranchSeedMessages,
         markBranchSeedApplied,
-        // Asked live rather than read off the session snapshot, so the agent can
-        // tell when this conversation's prototype moved on since its prompt was
-        // pinned — and so a Pi turn, which rebuilds its prompt, is
-        // rebuilding it from the current answer.
-        getPrototypeSlug: () => this.effectivePrototypeSlug(managed) ?? null,
         getTransferredSessionSummary,
         markTransferredSessionSummaryApplied,
         mcpPool: managed.mcpPool,
@@ -3965,31 +3946,37 @@ export class SessionManager implements ISessionManager {
               const { instanceId, tabId } = await resolveCommandTarget('browser_pick')
               return bpm.pickElement(instanceId, options, tabId)
             },
-            // The prototype a command that names none means: this conversation's own
-            // binding. A window holds tabs of several conversations now, and the remote
-            // bridge's sync accessors answer nothing — so the session binding is the one
-            // answer both the local and the remote path can give.
-            getBoundPrototypeSlug: () => this.effectivePrototypeSlug(managed) ?? null,
-            listPrototypes: async () => {
-              return listPrototypeStatuses(managed.workspace.rootPath)
-            },
-            createPrototype: async (input) => {
-              return createNewPrototype(managed.workspace.rootPath, input)
-            },
-            // Writing through the setter (rather than `managed.prototypeSlug = …`)
-            // is what emits prototype_slug_changed and persists the header, so the
-            // UI badge and a later resume both see the new binding.
-            bindPrototype: async (prototypeSlug) => {
-              await this.setSessionPrototypeSlug(managed.id, prototypeSlug)
-            },
             // No browser instance: a recording is decoded by a hidden window, not
             // by the one the session is driving, so this works in a session that
             // has never opened a tab.
-            sampleVideo: async ({ path, out, mode, everyMs, maxFrames }) => {
+            sampleVideo: async ({ path, out, mode, everyMs, maxFrames, changeThreshold, fromMs, toMs, first, last, maxEdge }) => {
               const extracted = await bpm.extractVideoFrames(path, {
                 mode: mode ?? 'timeline',
                 everyMs: Math.max(100, everyMs ?? 2_000),
-                maxFrames: Math.max(1, Math.min(400, maxFrames ?? 40)),
+                // The same ceiling the command line defaults to and tops out at: high enough that
+                // the interval, not this, decides the spacing of an ordinary read.
+                maxFrames: Math.max(1, Math.min(1_000, maxFrames ?? 1_000)),
+                // `changes` only, and bounded here as well as in the sampler: a nonsense value
+                // should be settled at the door rather than travel to a page and be clamped there.
+                ...(typeof changeThreshold === 'number'
+                  ? { changeThreshold: Math.min(1, Math.max(0.0005, changeThreshold)) }
+                  : {}),
+                // The range is clamped to the recording by the sampler, which is where the
+                // duration is known; this only refuses to pass a negative in.
+                ...(typeof fromMs === 'number' ? { fromMs: Math.max(0, fromMs) } : {}),
+                ...(typeof toMs === 'number' ? { toMs: Math.max(0, toMs) } : {}),
+                // The two ends are all-or-nothing: the sampler treats either as "these frames
+                // instead of a scan", so a `false` carries no meaning and is left out.
+                ...(first ? { first: true } : {}),
+                ...(last ? { last: true } : {}),
+                // The ceiling is the format's own (`scale_long`), and it only ever scales down.
+                // **`0` means "no scaling"** (see the command line's own default), so it is passed
+                // on as *absent* rather than clamped up to the smallest edge: `Math.max(16, 0)` is
+                // 16, and that floor is what made every frame 16px wide unless `--max-edge` was
+                // given. The floor still guards a deliberately tiny number.
+                ...(typeof maxEdge === 'number' && maxEdge > 0
+                  ? { maxEdge: Math.max(16, Math.min(4096, maxEdge)) }
+                  : {}),
               })
 
               // No `out` means the frames are the reply: hand them back and write nothing.
@@ -4019,6 +4006,51 @@ export class SessionManager implements ISessionManager {
 
               return { durationMs: extracted.durationMs, truncated: extracted.truncated, frames }
             },
+            // Recording a tab the conversation is working in. The file's directory is decided
+            // by the door that asks (a session's `records/`), so this only forwards — what it
+            // owns is the conversation's half of the identity, `(sessionId, tabId)`.
+            startRecording: async (args) => {
+              // The window to record in is the workspace's, resolved the same way every other
+              // command resolves it — the manager picks a window by workspace alone, so leaving
+              // it out lands on the `null`-workspace window, which has none of this session's tabs.
+              const result = await bpm.startRecordingForSession(sid, args, { workspaceId })
+
+              // The non-waiting form answers at the start, so the *end* has to be delivered
+              // separately — otherwise the file lands on disk and nobody is ever told. Nobody
+              // is holding a turn open here: the wait is a listener on the promise the recording
+              // already settles (`waitForRecordingEnd`), not a poll and not a blocked turn.
+              if (result.started && !args.wait) {
+                void bpm.waitForRecordingEnd(sid, args.tabId).then((finished) => {
+                  if (!finished) return
+                  // A turn in flight already sees the file in its own tool results, and a
+                  // follow-up would only interrupt what it is doing.
+                  if (this.sessions.get(sid)?.isProcessing) return
+                  sessionLog.info('[recording] finished, telling the session', {
+                    sessionId: sid,
+                    tabId: finished.tabId,
+                    file: finished.file,
+                  })
+                  void this.sendMessage(
+                    sid,
+                    [
+                      `[recording-finished] The recording you started of tab ${finished.tabId} has finished`,
+                      `(${finished.seconds}s) and is saved at: ${finished.file}`,
+                      `Read it with: video_tool understand ${finished.file} --prompt "..."`,
+                    ].join('\n'),
+                    [],
+                    [],
+                    { hidden: true },
+                  ).catch((error) => {
+                    sessionLog.error('[recording] failed to report a finished recording', { sessionId: sid, error })
+                  })
+                }).catch(() => {
+                  // The window, or the whole runtime, went away with the recording in it.
+                })
+              }
+
+              return result
+            },
+            stopRecording: async ({ tabId }) => bpm.stopRecordingForSession(sid, tabId),
             // A `.drawio` document → SVG, an editable SVG, a PNG or a page. The document is read
             // here — the workspace is where this runs, and only its text has to travel to the
             // engine — and drawn by the pane side. `out` is the whole difference between looking
@@ -4053,10 +4085,6 @@ export class SessionManager implements ISessionManager {
                 throw new Error(`No diagram at ${path}.`)
               }
               return drawioPages(await readFile(path, 'utf-8'))
-            },
-            // Pure file inspection — deliberately does not resolve a browser instance.
-            prototypeStatus: async (prototypeSlug) => {
-              return buildPrototypeStatus(managed.workspace.rootPath, prototypeSlug)
             },
             focusWindow: async (targetInstanceId) => {
               // Bringing the window up is about the person's view: a child session does not do it
@@ -4587,10 +4615,8 @@ export class SessionManager implements ISessionManager {
           labels: request.labels ?? managed.labels,
           workingDirectory: request.workingDirectory,
           projectId: request.projectId ?? managed.projectId,
-          // A subtask of a prototype-bound session works on the same prototype —
-          // inheriting it is what keeps the child's prototype_tool commands aimed at
-          // the right prototype without the parent having to pass it down.
-          prototypeSlug: managed.prototypeSlug,
+          // A subtask of a session working in a mode keeps working in it.
+          mode: managed.mode,
           // Spawned sessions become subtasks of the spawning session.
           parentSessionId: managed.id,
         })
@@ -5808,10 +5834,6 @@ export class SessionManager implements ISessionManager {
       }
 
       managed.workingDirectory = path
-
-      // A prototype binding is left alone: where the conversation works and which body
-      // of work it is on are separate questions, so changing one says nothing about the
-      // other. Binding used to be dropped here because it *was* the working directory.
 
       // Invalidate filesystem caches that depend on working directory
       invalidateContextFileCache(path)
@@ -7683,25 +7705,6 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
-   * Which prototype a session is working on, and the workspace that owns it.
-   *
-   * Read by the browser toolbar (through the pane manager's injected resolver),
-   * which needs both: the workspace the prototype belongs to, and the
-   * slug to say which prototype the window is. A window whose conversation has no
-   * prototype shows the tab it is actually on and offers no prototype actions —
-   * an entry point's precondition is shown before the click, not
-   * answered after it.
-   */
-  getSessionPrototypeBinding(sessionId: string): { slug: string; workspaceRootPath: string } | null {
-    const managed = this.sessions.get(sessionId)
-    if (!managed) return null
-
-    const slug = this.effectivePrototypeSlug(managed)
-    if (!slug) return null
-    return { slug, workspaceRootPath: managed.workspace.rootPath }
-  }
-
-  /**
    * What a conversation is called, for a window that is showing its tabs.
    *
    * Read by the tab rail's group headers, through the pane manager's injected
@@ -7717,54 +7720,29 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
-   * The prototype a conversation is working on — the shape every prototype path
-   * asks for, so they cannot disagree about which one it is.
+   * Set (or clear, with `null`) the layer this session is working in.
    *
-   * **Its own binding, and nothing else.** A project used to provide one: first the
-   * single prototype claiming it, then a stored "current" one. Both were withdrawn
-   * — a conversation that is *told* what exists can name one itself,
-   * while a project picking one for it was a guess that cost a config field, a
-   * validated writer and a story for the value going stale.
-   *
-   * A project may note which prototype it is on — and that is deliberately
-   * not here. It is background information for its conversations, told in
-   * `<project_prototype>`: it binds no conversation, injects no prototype context or
-   * guide, and never becomes a command's default target. So this stays one line, and
-   * nothing caches it.
+   * It is the session's own declaration, and it means something only inside its
+   * project: the owning project's folder (`projects/<slug>/`) is where these files
+   * live, so a session outside a project has nothing for a mode to point at.
+   * It feeds only the prompt block added for this conversation — it binds no tool
+   * and constrains nothing. One mode at a time: setting one replaces the last.
    */
-  private effectivePrototypeSlug(managed: ManagedSession): string | undefined {
-    return managed.prototypeSlug
-  }
-
-  /**
-   * Bind or unbind a session to/from a prototype.
-   * Pass `null` to unbind.
-   *
-   * Binding is what makes the conversation usable without naming artifacts:
-   * the agent gets the prototype as `<prototype_context>` in its system prompt
-   * and every `prototype_tool` command defaults to it.
-   *
-   * The slug is NOT validated against disk here — a prototype can legitimately
-   * be deleted and re-created while a session stays bound, and refusing to bind
-   * a not-yet-created slug would break "create one from this conversation".
-   */
-  async setSessionPrototypeSlug(sessionId: string, prototypeSlug: string | null): Promise<void> {
+  async setSessionMode(sessionId: string, mode: SessionMode | null): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (managed) {
-      managed.prototypeSlug = prototypeSlug ?? undefined
+      managed.mode = mode ?? undefined
+      // Keep a live agent's session config current so the new mode is announced to the model once
+      // on the next user message (the mode block now rides user messages, never the system prompt).
+      // A session without an agent yet picks the mode up from `sessionConfig` when it is created.
+      managed.agent?.setSessionMode(managed.mode ?? null)
       this.setMetadataWriteGuard(managed)
 
       this.sendEvent({
-        type: 'prototype_slug_changed',
+        type: 'mode_changed',
         sessionId: managed.id,
-        prototypeSlug: managed.prototypeSlug ?? null,
+        mode: managed.mode ?? null,
       }, managed.workspace.id)
-
-      // Binding records which body of work this conversation is on — nothing more. It
-      // does not move the working directory: the prototype's folder is named in the block
-      // injected into the prompt, so relative paths and bash stay where the project (or
-      // the session's own fallback) put them, and the agent reaches the prototype's files
-      // by the absolute path it was given.
 
       this.persistSession(managed)
       await this.flushSession(managed.id)

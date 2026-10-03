@@ -150,9 +150,9 @@ describe('drawioEmbedEvent', () => {
   })
 
   it('addresses the editor at the app’s own origin', () => {
-    const url = drawioEditorUrl('http://drawio-1a2b3c4d.localhost')
+    const url = drawioEditorUrl('craft-local://drawio-1a2b3c4d')
 
-    expect(url.startsWith('http://drawio-1a2b3c4d.localhost/?')).toBe(true)
+    expect(url.startsWith('craft-local://drawio-1a2b3c4d/?')).toBe(true)
     expect(url).toContain('embed=1')
     expect(url).toContain('proto=json')
     // The bundle drops the raw stencils directory, so asking for it would 404.
@@ -161,7 +161,7 @@ describe('drawioEmbedEvent', () => {
     // one lever there is over a document we do not serve.
     expect(url).toContain('offline=1')
     expect(url).not.toContain('dark=1')
-    expect(drawioEditorUrl('http://drawio-1a2b3c4d.localhost', true)).toContain('dark=1')
+    expect(drawioEditorUrl('craft-local://drawio-1a2b3c4d', true)).toContain('dark=1')
   })
 
   it('speaks the app’s language, in the shape drawio names languages', () => {
@@ -174,10 +174,10 @@ describe('drawioEmbedEvent', () => {
     // No language known yet (i18next before it resolves): English, which is also the fallback.
     expect(drawioLanguage(undefined)).toBe('en')
 
-    expect(drawioEditorUrl('http://drawio-1a2b3c4d.localhost', false, 'zh-Hans')).toContain('lang=zh')
+    expect(drawioEditorUrl('craft-local://drawio-1a2b3c4d', false, 'zh-Hans')).toContain('lang=zh')
     // The viewer reads its language from the address as it loads, so it is in the address.
-    expect(drawioViewerUrl('http://drawio-1a2b3c4d.localhost', 'zh-Hans')).toBe(
-      'http://drawio-1a2b3c4d.localhost/__craft/viewer.html?lang=zh',
+    expect(drawioViewerUrl('craft-local://drawio-1a2b3c4d', 'zh-Hans')).toBe(
+      'craft-local://drawio-1a2b3c4d/__craft/viewer.html?lang=zh',
     )
   })
 })

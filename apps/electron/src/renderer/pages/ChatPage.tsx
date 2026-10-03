@@ -641,9 +641,6 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
   }, [isTaskOrchestrator, handleEditTask, t])
 
   const primaryHeaderAction = isCompactMode ? compactInfoButton : shareButton
-  // Nothing about the prototype lives in the header: which prototype a conversation works
-  // in is *where it works*, so it belongs to the working-directory picker next to the
-  // input, where the folder half already is.
   const headerActions = (
     <div className="flex items-center gap-1.5">
       {editTaskButton}
@@ -761,7 +758,6 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
         isProcessing: sessionMeta.isProcessing || false,
         isFlagged: sessionMeta.isFlagged,
         workingDirectory: sessionMeta.workingDirectory,
-        prototypeSlug: sessionMeta.prototypeSlug,
         enabledSourceSlugs: sessionMeta.enabledSourceSlugs,
       }
 

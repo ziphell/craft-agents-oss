@@ -15,6 +15,7 @@
  * and intentionally left untouched; retiring it is a separate cleanup.
  */
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
+import { readFile, stat } from 'fs/promises'
 import type {
   TaskCreateRequest,
   TaskCreateResult,
@@ -46,6 +47,7 @@ import {
 } from '@craft-agent/shared/tasks'
 import { createLogger } from '@craft-agent/shared/utils'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
+import { validateFilePath, getWorkspaceAllowedDirs } from '@craft-agent/server-core/handlers'
 import type { HandlerDeps } from '../handler-deps'
 import { TaskRunner, createTaskFromSpec, finishTaskOrchestrator } from '../../tasks'
 
@@ -94,6 +96,55 @@ function extractYaml(text: string): string {
   return (fenced ? fenced[1] : text).trim()
 }
 
+/**
+ * How large a plan file `tasks:generate` will read.
+ *
+ * The same ceiling the browser tool puts on `evaluate --file` (256 KB): a plan this big is a
+ * mistake rather than a plan, and dragging it through the authoring turn serves no purpose — so it
+ * is refused with the size named, never silently truncated.
+ */
+const MAX_PLAN_FILE_BYTES = 256 * 1024
+
+/**
+ * Read the plan file a generate request names.
+ *
+ * It goes through the SAME boundary the app uses to read any file the user pointed at — the
+ * `file:read` channel's `validateFilePath(path, getWorkspaceAllowedDirs(workspaceId))` — rather
+ * than a second rule of its own. It is deliberately NOT gated on the suffix: whichever file the
+ * person named is the one read; whether the name ends in `.plan.md` is not this RPC's business.
+ * Each failure (missing / not a file / over the ceiling / unreadable) is refused with its own
+ * message, because these surface to the person in the UI.
+ */
+async function readPlanFile(planPath: string, workspaceId: string): Promise<string> {
+  const safePath = await validateFilePath(planPath, getWorkspaceAllowedDirs(workspaceId))
+
+  let size: number
+  try {
+    const info = await stat(safePath)
+    if (!info.isFile()) throw new Error(`Plan path is not a file: ${planPath}`)
+    size = info.size
+  } catch (err) {
+    if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(`Plan file not found: ${planPath}`)
+    }
+    throw err
+  }
+
+  if (size > MAX_PLAN_FILE_BYTES) {
+    throw new Error(
+      `Plan file is ${Math.round(size / 1024)} KB, over the ${MAX_PLAN_FILE_BYTES / 1024} KB ceiling: ` +
+        `${planPath}. Split it, or point at the part that matters.`,
+    )
+  }
+
+  try {
+    return await readFile(safePath, 'utf-8')
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    throw new Error(`Failed to read plan file ${planPath}: ${message}`)
+  }
+}
+
 export function registerTasksHandlers(server: RpcServer, deps: HandlerDeps): void {
   // One Conductor per workspace, created on demand. Holds active runs in memory.
   const runners = new Map<string, TaskRunner>()
@@ -128,6 +179,9 @@ export function registerTasksHandlers(server: RpcServer, deps: HandlerDeps): voi
       return { slug: '', orchestratorSessionId: '', validation }
     }
     const spec = parsed.spec
+    // Record the origin plan when the caller authored this task from one (mirrors the planPath the
+    // generate call was handed). Written verbatim — no validation, no default. Absent → no `from`.
+    if (req.planPath) spec.from = req.planPath
     saveTaskSpec(ws.rootPath, spec)
 
     // Single choke point for ALL orchestrator paths (attach / adopt / fresh): apply the reserved
@@ -198,6 +252,10 @@ export function registerTasksHandlers(server: RpcServer, deps: HandlerDeps): voi
   // never leaves a visible orphan tile.
   server.handle(RPC_CHANNELS.tasks.GENERATE, async (_ctx, workspaceId: string, req: TaskGenerateRequest): Promise<TaskGenerateAck> => {
     workspaceOrThrow(workspaceId) // validate the workspace exists; generate no longer writes task.yaml
+    // A named plan is read BEFORE the draft session is created: a bad path (missing / over the
+    // ceiling / unreadable) must fail the call — the client shows the message as a toast — without
+    // leaving a hidden orphan draft behind. Absent → the generator behaves exactly as before.
+    const planText = req.planPath ? await readPlanFile(req.planPath, workspaceId) : undefined
     const orchestrator = await deps.sessionManager.createSession(workspaceId, {
       name: req.title?.trim() || 'New task',
       sessionStatus: 'todo',
@@ -224,6 +282,7 @@ export function registerTasksHandlers(server: RpcServer, deps: HandlerDeps): voi
       workspaceId,
       sessionId,
       hasCwd: Boolean(req.cwd),
+      hasPlan: Boolean(planText),
       model: req.model,
       projectId: req.projectId,
       hasConnection: Boolean(req.llmConnection),
@@ -264,7 +323,7 @@ export function registerTasksHandlers(server: RpcServer, deps: HandlerDeps): voi
         // authored spec fails validation (commonly a ${nodes.X.output} ref to an undeclared
         // node) hand the concrete errors back and re-validate. Bounded so a model that can't
         // self-correct can't loop forever — the last attempt's validation is returned as-is.
-        let prompt = buildGeneratorPrompt(req.goal, req.title)
+        let prompt = buildGeneratorPrompt(req.goal, req.title, planText)
         let yaml = ''
         let parsed = parseTaskYaml(yaml)
         let attempts = 0

@@ -2,8 +2,8 @@
  * `browser_tool`'s commands.
  *
  * The window's own surface: pages, refs, input, screenshots, console, network, tabs. Every command
- * here drives the shared browser window and nothing else; the other door's commands live in
- * `prototype-commands.ts`, and the CLI both doors read their command line with is `command-cli.ts`.
+ * here drives the shared browser window and nothing else; the other doors' commands live in their
+ * own `*-commands.ts` files, and the CLI all of them read their command line with is `command-cli.ts`.
  *
  * This door's own runtime lives here too, because only this door has it: batching (the other door
  * takes one command per call), `evaluate --file`, and the settle timings `open` waits on.
@@ -22,6 +22,8 @@ import type {
   BrowserWaitArgs,
 } from './browser-pane.ts';
 import { describeWork } from '../protocol/dto.ts';
+import { getSessionPath } from '../sessions/storage.ts';
+import { join } from 'node:path';
 import {
   type BrowserCommandImage,
   type BrowserCommandResult,
@@ -31,6 +33,7 @@ import {
   createCommandRunner,
   formatBytes,
   getPageMetrics,
+  requiredDurationOption,
   resolveLocalPath,
   tokenizeCommand,
 } from './command-cli.ts';
@@ -303,6 +306,8 @@ export function getBrowserToolHelp(): string {
     '  tab-new [url]                                  add a tab to this window, behind the person\'s',
     '  tab-show <id>                                  bring a tab up for the person to look at',
     '  tab-assign <id> <session>                      hand a tab of your task to another conversation (a child session you spawned)',
+    '  record-start --tab <id> --ttl <dur> [--wait]   record a tab for at most <dur>, then stop on its own',
+    '  record-stop --tab <id>                         end a recording early',
     '  tab-close <id>                                 close a tab of your task (the last one closes the window)',
     '  focus [windowId]                               focus a browser window (no new window)',
     '  release [windowId|all]                         dismiss agent overlay, and unlock the tab it held',
@@ -672,6 +677,8 @@ async function verifySelectResult(args: {
 
 export async function runBrowserCommand(ctx: ToolCommandContext): Promise<BrowserCommandResult | null> {
   const { fns, parts, cmd } = ctx;
+  // Only the record commands read these: everything else works on the tab that is on screen.
+  const { sessionId, workspaceRootPath } = ctx;
 
   if (cmd === 'open') {
     const foreground = parts.includes('--foreground') || parts.includes('-f');
@@ -1790,6 +1797,95 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
         `Tab ${tabId} is now that conversation's task, and the tab it works from — it can start working there ` +
         'without naming a tab. Hand over one tab per session you want working in parallel: they share this window, ' +
         'and each works in its own tab.',
+      appendReleaseHint: false,
+    };
+  }
+
+  if (cmd === 'record-start') {
+    // `--tab` is required, and it is the tab that gets recorded — not the one on screen, and not
+    // whichever the conversation happens to work from when someone later asks for a stop.
+    const tabId = ctx.tabId;
+    if (!tabId) {
+      throw new Error(
+        'record-start needs the tab to record. Example: record-start --tab tab-3 --ttl 30s — "tabs" lists them.',
+      );
+    }
+    const ttlMs = requiredDurationOption(parts, '--ttl', `record-start --tab ${tabId} --ttl 30s`);
+
+    // Recording needs a window that can paint and an encoder behind it. A runtime without them
+    // says so here rather than at the end of a call that looked like it worked.
+    if (!fns.startRecording) {
+      throw new Error('Recording is not available in this runtime.');
+    }
+    // Where a recording lands is a convention, not an option: the conversation's own `records/`,
+    // computed here so there is one place that decides it.
+    if (!workspaceRootPath) {
+      throw new Error(
+        'Recording needs to know where this conversation keeps its files, and this runtime did not say.',
+      );
+    }
+    const dir = join(getSessionPath(workspaceRootPath, sessionId), 'records');
+
+    const result = await fns.startRecording({ tabId, dir, ttlMs, wait: parts.includes('--wait') });
+
+    if (!result.started) {
+      if (result.reason === 'already-recording') {
+        return {
+          output:
+            `Tab ${tabId} is already being recorded into ${result.recording.file} — let it run out, ` +
+            `or stop it with "record-stop --tab ${tabId}".`,
+          appendReleaseHint: false,
+        };
+      }
+      throw new Error(
+        result.reason === 'no-encoder'
+          ? `${result.message} Nothing was recorded.`
+          : `The recording could not start, so nothing was recorded: ${result.message}`,
+      );
+    }
+
+    if (result.finished) {
+      const finished = result.finished;
+      return {
+        output: [
+          `Recorded tab ${tabId} for ${finished.seconds}s — ${formatBytes(finished.bytes)}, at ${finished.file}`,
+          `It ended because: ${finished.reason}.`,
+          `Read it with: video_tool understand ${finished.file} --prompt "..."`,
+        ].join('\n'),
+        appendReleaseHint: false,
+      };
+    }
+
+    return {
+      output: [
+        `Recording tab ${tabId} into ${result.recording.file}.`,
+        `It stops on its own after ${Math.round(ttlMs / 1000)}s, or earlier with "record-stop --tab ${tabId}".`,
+        'You do not have to wait for it: keep working, and it is reported when it ends.',
+        `Read it with: video_tool understand ${result.recording.file} --prompt "..."`,
+      ].join('\n'),
+      appendReleaseHint: false,
+    };
+  }
+
+  if (cmd === 'record-stop') {
+    const tabId = ctx.tabId;
+    if (!tabId) {
+      throw new Error('record-stop needs the tab it is about. Example: record-stop --tab tab-3');
+    }
+
+    const result = fns.stopRecording
+      ? await fns.stopRecording({ tabId })
+      : ({ stopped: false, reason: 'not-recording' } as const);
+    if (!result.stopped) {
+      return { output: `Tab ${tabId} is not being recorded.`, appendReleaseHint: false };
+    }
+
+    const finished = result.recording;
+    return {
+      output: [
+        `Stopped recording tab ${tabId} — ${finished.seconds}s, ${formatBytes(finished.bytes)}, at ${finished.file}`,
+        `Read it with: video_tool understand ${finished.file} --prompt "..."`,
+      ].join('\n'),
       appendReleaseHint: false,
     };
   }

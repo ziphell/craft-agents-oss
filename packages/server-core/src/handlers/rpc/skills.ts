@@ -27,10 +27,18 @@ export function registerSkillsHandlers(server: RpcServer, deps: HandlerDeps): vo
     const effectiveWorkingDir = workingDirectory && existsSync(workingDirectory)
       ? workingDirectory
       : undefined
-    const { loadAllSkills } = await import('@craft-agent/shared/skills')
+    const { loadAllSkills, parseAnchors, getSkillHitsPath, readSkillHits } = await import('@craft-agent/shared/skills')
     const skills = loadAllSkills(workspace.rootPath, effectiveWorkingDir)
     deps.platform.logger?.info(`SKILLS_GET: Loaded ${skills.length} skills from ${workspace.rootPath}`)
-    return skills
+    // A playbook's two read-time facts, computed here rather than stored on the skill: which
+    // targets its body declares, and what a run last found (`anchors.ts`). `hits` stays null when
+    // there is no record — "nobody has checked" is not "nothing matched", and the page has to be
+    // able to tell them apart.
+    return skills.map((skill) => ({
+      ...skill,
+      anchors: parseAnchors(skill.content),
+      hits: readSkillHits(getSkillHitsPath(workspace.rootPath, skill.slug)),
+    }))
   })
 
   // Get files in a skill directory

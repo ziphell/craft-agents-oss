@@ -53,8 +53,9 @@ export interface PermissionManagerConfig {
   plansFolderPath?: string;
   /** Data folder path (writes to this folder are allowed in Explore mode for transform_data output) */
   dataFolderPath?: string;
-  /** Prototypes folder path (writes to this folder are allowed in Explore mode for prototype-workbench artifacts) */
-  prototypesFolderPath?: string;
+  /** The session's project folder, when it belongs to a project (writes there are allowed in Explore
+   * mode: the project's specs are written in that folder) */
+  projectFolderPath?: string;
 }
 
 /**
@@ -110,8 +111,8 @@ export interface ContextBlockOptions {
   plansFolderPath?: string;
   /** Data folder path (transform_data tool output) */
   dataFolderPath?: string;
-  /** Prototypes folder path (prototype-workbench artifacts) */
-  prototypesFolderPath?: string;
+  /** The session's project folder, when the session belongs to a project (writes allowed there) */
+  projectFolderPath?: string;
   /** Active source slugs */
   activeSources?: string[];
   /** Inactive source slugs */

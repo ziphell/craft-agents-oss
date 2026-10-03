@@ -65,9 +65,8 @@ export interface UseWorkingDirectoryStateResult {
  * drawer (CompactWorkingDirectorySelector) so they cannot drift.
  *
  * It answers one question — **which folder does this conversation work in** — and
- * nothing else. Which body of work the conversation is on (its prototype) is a
- * separate question with its own badge and its own picker beside this one, and binding
- * a prototype does not move the folder.
+ * nothing else. Whether the conversation is about the project's specs is a separate
+ * question with its own badge beside this one, and toggling it does not move the folder.
  *
  * A pick is reported and the session answers with events, so no surface keeps a
  * second copy of the choice to fall out of step.

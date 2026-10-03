@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, appendFileSync } from
 import { join } from 'path';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { atomicWriteFileSync, stripBom } from '../utils/files.ts';
+import { expandPath, toPortablePath } from '../utils/paths.ts';
 import { validateTaskInput } from './validate.ts';
 import { TaskSpecSchema, type TaskSpec } from './schema.ts';
 import type { NodeOutput } from './refs.ts';
@@ -108,7 +109,11 @@ export function loadTaskSpec(
 ): (ValidationResult & { spec?: TaskSpec }) | null {
   const path = taskYamlPath(workspaceRoot, slug);
   if (!existsSync(path)) return null;
-  return parseTaskYaml(readFileSync(path, 'utf-8'));
+  const result = parseTaskYaml(readFileSync(path, 'utf-8'));
+  // Expand the portable origin plan path on read so consumers always see an absolute path
+  // (mirrors loadProjectConfig's handling of ProjectConfig.workingDirectory).
+  if (result.spec?.from) result.spec.from = expandPath(result.spec.from);
+  return result;
 }
 
 /** Write a spec to disk as task.yaml. Validates the shape first; throws on invalid. */
@@ -117,6 +122,9 @@ export function saveTaskSpec(workspaceRoot: string, spec: TaskSpec): void {
   if (!parsed.success) {
     throw new Error(`Refusing to save invalid task spec: ${parsed.error.issues.map((i) => i.message).join('; ')}`);
   }
+  // Persist the origin plan path portably (…/home/… → ~/…) so a workspace copied to another
+  // machine still resolves it (mirrors saveProjectConfig's handling of ProjectConfig.workingDirectory).
+  if (parsed.data.from) parsed.data.from = toPortablePath(parsed.data.from);
   ensureDir(taskDir(workspaceRoot, parsed.data.id));
   atomicWriteFileSync(taskYamlPath(workspaceRoot, parsed.data.id), serializeTaskYaml(parsed.data));
 }

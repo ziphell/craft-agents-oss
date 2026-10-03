@@ -1,8 +1,10 @@
 import * as React from 'react'
+import { useAtomValue } from 'jotai'
 import { useTranslation } from "react-i18next"
 import { cn } from '@/lib/utils'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { SlashCommandMenu, DEFAULT_SLASH_COMMAND_GROUPS, type SlashCommandId } from '@/components/ui/slash-command-menu'
+import { SlashCommandMenu, DEFAULT_SLASH_COMMAND_GROUPS, LAYER_COMMANDS, type CommandGroup, type SlashCommandId } from '@/components/ui/slash-command-menu'
+import { sessionMetaMapAtom } from '@/atoms/sessions'
 import { ChevronDown, Info } from 'lucide-react'
 import { PERMISSION_MODE_CONFIG, type PermissionMode } from '@craft-agent/shared/agent/modes'
 import { ActiveTasksBar, type BackgroundTask } from './ActiveTasksBar'
@@ -166,7 +168,7 @@ export function ActiveOptionBadges({
       )}
 
     <div className={cn("flex items-start gap-2 mb-2 px-px pt-px pb-0.5", className)}>
-      {/* Left side: mode → prototype → state → labels stack */}
+      {/* Left side: mode → state → labels stack */}
       <div className="flex items-start gap-2 min-w-0 flex-1">
         {/* Permission Mode Badge */}
         {permissionMode && (
@@ -440,23 +442,43 @@ function PermissionModeDropdown({ permissionMode, onPermissionModeChange, sessio
   // Optimistic local state - updates immediately, syncs with prop
   const [optimisticMode, setOptimisticMode] = React.useState(permissionMode)
 
+  // The layer a conversation works on (`goal`/`spec`/`plan`) is session state, not
+  // a permission — but it is offered from the same menu so there is one place to
+  // set "how this conversation works". Only conversations that belong to a project
+  // have somewhere for those files to live.
+  const sessionMetaMap = useAtomValue(sessionMetaMapAtom)
+  const sessionMeta = sessionId ? sessionMetaMap.get(sessionId) : undefined
+  const layerMode = sessionMeta?.mode
+  const hasProject = !!sessionMeta?.projectId
+
   // Sync optimistic state when prop changes (confirmation from backend)
   React.useEffect(() => {
     setOptimisticMode(permissionMode)
   }, [permissionMode])
 
   const activeCommands = React.useMemo((): SlashCommandId[] => {
-    return [optimisticMode as SlashCommandId]
-  }, [optimisticMode])
+    const active: SlashCommandId[] = [optimisticMode as SlashCommandId]
+    if (layerMode) active.push(layerMode)
+    return active
+  }, [optimisticMode, layerMode])
+
+  const commandGroups = React.useMemo((): CommandGroup[] => {
+    if (!hasProject) return DEFAULT_SLASH_COMMAND_GROUPS
+    return [...DEFAULT_SLASH_COMMAND_GROUPS, { id: 'layers', commands: LAYER_COMMANDS }]
+  }, [hasProject])
 
   // Handle command selection from dropdown
   const handleSelect = React.useCallback((commandId: SlashCommandId) => {
     if (commandId === 'safe' || commandId === 'ask' || commandId === 'allow-all') {
       setOptimisticMode(commandId)
       onPermissionModeChange?.(commandId)
+    } else if (commandId === 'goal' || commandId === 'spec' || commandId === 'plan') {
+      if (sessionId) {
+        window.electronAPI.sessionCommand(sessionId, { type: 'setMode', mode: commandId })
+      }
     }
     setOpen(false)
-  }, [onPermissionModeChange])
+  }, [onPermissionModeChange, sessionId])
 
   // Get config for current mode (use optimistic state for instant UI update)
   const config = PERMISSION_MODE_CONFIG[optimisticMode]
@@ -515,7 +537,7 @@ function PermissionModeDropdown({ permissionMode, onPermissionModeChange, sessio
         }}
       >
         <SlashCommandMenu
-          commandGroups={DEFAULT_SLASH_COMMAND_GROUPS}
+          commandGroups={commandGroups}
           activeCommands={activeCommands}
           onSelect={handleSelect}
           showFilter

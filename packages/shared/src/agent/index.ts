@@ -152,7 +152,7 @@ export {
 // Export core utilities for shared agent logic
 export * from './core/index.ts';
 
-// Which pane tool (browser_tool / prototype_tool) a tool name denotes
+// Which pane tool (browser_tool) a tool name denotes
 export { resolveToolName } from './tool-names.ts';
 
 // Export PowerShell validator root setter (for Electron startup on Windows)

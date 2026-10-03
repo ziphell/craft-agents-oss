@@ -109,7 +109,7 @@ contextBridge.exposeInMainWorld('browserToolbar', {
    *
    * `start` arms a recording of the tab on screen — the host opens the file, in the
    * person's downloads folder — and answers with what the button should draw. The
-   * extension is the container the caller is about to record into (`mp4`, `webm`): the file
+   * extension is the container the caller is about to record into (an `mp4`): the file
    * is named before the picture exists, so the two have to be decided together.
    * The picture is not taken here: right after this, this renderer asks for display
    * media and the host hands it that exact tab, which is the only thing it hands back.

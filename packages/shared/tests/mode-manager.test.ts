@@ -1598,67 +1598,90 @@ describe('shouldAllowToolInMode - Bash plans folder exception', () => {
     });
   });
 
-  describe('should treat the workspace prototypes folder like any other path', () => {
-    const prototypesFolderPath = join(testRoot, 'prototypes');
-    const patchesPath = join(prototypesFolderPath, 'checkout-flow', 'patches');
-    const pathsFragmentPath = join(prototypesFolderPath, 'checkout-flow', 'services', 'checkout-api', 'paths');
+  describe('should allow writes to the session project folder in safe mode', () => {
+    const projectFolderPath = join(testRoot, 'projects', 'checkout-flow');
+    const specsPath = join(projectFolderPath, 'specs');
+    const outsidePath = join(testRoot, 'outside');
 
     beforeAll(() => {
-      mkdirSync(patchesPath, { recursive: true });
-      mkdirSync(pathsFragmentPath, { recursive: true });
+      mkdirSync(specsPath, { recursive: true });
+      mkdirSync(outsidePath, { recursive: true });
     });
 
-    // The prototype folder is the *user's* material, not the mode's own plumbing: Explore mode
-    // may write plans and data because the app needs them written, and it may not write here.
-    // Whoever wants an artifact changed switches the mode (or the person changes it by hand).
-    it('should block Write to a prototype patch file', () => {
+    // The project folder is where the person's demand lives: a spec *is* a `*.spec.md` file, so
+    // Explore mode has to let the agent write one there. It is the mode's own business, like the
+    // plans and data folders — not the person's material.
+    it('should allow Write of a spec file at the project root', () => {
       const result = shouldAllowToolInMode(
         'Write',
-        { file_path: join(patchesPath, 'A-001-btn.css'), content: '.btn{}' },
+        { file_path: join(projectFolderPath, 'cart-line.spec.md'), content: '# A cart holds its line' },
         'safe',
-        { prototypesFolderPath }
+        { projectFolderPath }
       );
-      expect(result.allowed).toBe(false);
+      expect(result.allowed).toBe(true);
     });
 
-    it('should block Edit to an API contract fragment', () => {
+    it('should allow Edit of a spec in a subfolder', () => {
       const result = shouldAllowToolInMode(
         'Edit',
-        { file_path: join(pathsFragmentPath, 'list-orders.yaml'), old_string: 'a', new_string: 'b' },
+        { file_path: join(specsPath, 'checkout.spec.md'), old_string: 'a', new_string: 'b' },
         'safe',
-        { prototypesFolderPath }
+        { projectFolderPath }
       );
-      expect(result.allowed).toBe(false);
+      expect(result.allowed).toBe(true);
     });
 
-    it('should block a bash redirect into the prototypes folder', () => {
+    it('should allow a bash redirect into the project folder', () => {
       const result = shouldAllowToolInMode(
         'Bash',
-        { command: `echo '{}' > "${join(patchesPath, 'A-002-fixture.json')}"` },
+        { command: `printf '# Cart' > "${join(projectFolderPath, 'cart-line.spec.md')}"` },
         'safe',
-        { prototypesFolderPath }
+        { projectFolderPath }
+      );
+      expect(result.allowed).toBe(true);
+    });
+
+    it('should still block Write outside the project folder', () => {
+      const result = shouldAllowToolInMode(
+        'Write',
+        { file_path: join(outsidePath, 'notes.md'), content: 'x' },
+        'safe',
+        { projectFolderPath }
       );
       expect(result.allowed).toBe(false);
     });
 
-    it('should still block Write outside the prototypes folder', () => {
+    // Containment, not a name prefix: a sibling folder that merely starts with the project's
+    // name is not inside it.
+    it('should still block a sibling folder sharing the project name prefix', () => {
+      const sibling = join(testRoot, 'projects', 'checkout-flow-notes', 'notes.md');
       const result = shouldAllowToolInMode(
         'Write',
-        { file_path: join(testRoot, 'outside.txt'), content: 'x' },
+        { file_path: sibling, content: 'x' },
         'safe',
-        { prototypesFolderPath }
+        { projectFolderPath }
       );
       expect(result.allowed).toBe(false);
     });
 
-    // The path is still carried for the prompt (it says where prototype artifacts go), so it
-    // must not become a permission by being present.
-    it('should not allow writes just because the folder path was provided', () => {
+    it('should still block a bash redirect to a sibling folder', () => {
+      const sibling = join(testRoot, 'projects', 'checkout-flow-notes', 'notes.md');
+      const result = shouldAllowToolInMode(
+        'Bash',
+        { command: `printf '# nope' > "${sibling}"` },
+        'safe',
+        { projectFolderPath }
+      );
+      expect(result.allowed).toBe(false);
+    });
+
+    // A session in no project is passed no folder, so nothing is allowed by its absence.
+    it('should not allow writes when no project folder was provided', () => {
       const result = shouldAllowToolInMode(
         'Write',
-        { file_path: join(patchesPath, 'A-003.css'), content: 'x' },
+        { file_path: join(projectFolderPath, 'cart-line.spec.md'), content: 'x' },
         'safe',
-        { prototypesFolderPath }
+        {}
       );
       expect(result.allowed).toBe(false);
     });

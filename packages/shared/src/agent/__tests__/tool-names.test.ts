@@ -2,16 +2,14 @@ import { describe, it, expect } from 'bun:test';
 import { resolveToolName } from '../tool-names.ts';
 
 describe('tool names', () => {
-  it('recognizes both wrappers, bare and namespaced', () => {
+  it('recognizes the wrapper, bare and namespaced', () => {
     expect(resolveToolName('browser_tool')).toBe('browser');
-    expect(resolveToolName('prototype_tool')).toBe('prototype');
 
     // The namespace is not enumerated on purpose: `mcp__workspace__…` and `session__…` are
     // the same tool, and a fourth namespace must not need this file changed.
     expect(resolveToolName('mcp__session__browser_tool')).toBe('browser');
     expect(resolveToolName('mcp__workspace__browser_tool')).toBe('browser');
     expect(resolveToolName('session__browser_tool')).toBe('browser');
-    expect(resolveToolName('mcp__session__prototype_tool')).toBe('prototype');
   });
 
   it('answers browser for the names the browser commands shipped under', () => {

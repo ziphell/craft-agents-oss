@@ -41,8 +41,6 @@ export interface SessionMenuActions {
   appliedLabelIds: Set<string>
   /** Toggle a label (add if absent, remove all entries with this base ID if present). */
   toggleLabel: (labelId: string) => void
-  /** Bind this conversation to a prototype, or clear the binding with `null`. */
-  setPrototypeSlug: (slug: string | null) => void
   share: () => Promise<void>
   showInFinder: () => void
   copyPath: () => Promise<void>
@@ -129,10 +127,6 @@ export function useSessionMenuActions({
     onLabelsChange(next)
   }, [onLabelsChange])
 
-  const setPrototypeSlug = React.useCallback((slug: string | null) => {
-    window.electronAPI.sessionCommand(sessionId, { type: 'setPrototypeSlug', prototypeSlug: slug })
-  }, [sessionId])
-
   const share = React.useCallback(async () => {
     const result = await window.electronAPI.sessionCommand(sessionId, { type: 'shareToViewer' }) as { success: boolean; url?: string; error?: string } | undefined
     if (result?.success && result.url) {
@@ -208,7 +202,6 @@ export function useSessionMenuActions({
   return {
     appliedLabelIds,
     toggleLabel,
-    setPrototypeSlug,
     share,
     showInFinder,
     copyPath,

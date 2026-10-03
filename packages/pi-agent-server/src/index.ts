@@ -1115,8 +1115,16 @@ async function queryLlm(
         }
       });
 
+      // Frames ride with the prompt, in order. This SDK takes them as a flat list, so an image is
+      // paired with its moment by position — which is why the prompt text names the offsets too.
+      const images = (request.images ?? []).map((image) => ({
+        type: 'image' as const,
+        data: image.data,
+        mimeType: image.mimeType,
+      }));
+
       lifecycle.throwIfCancelled();
-      await ephemeralSession.prompt(request.prompt);
+      await ephemeralSession.prompt(request.prompt, images.length > 0 ? { images } : undefined);
       lifecycle.throwIfCancelled();
       debugLog(`[queryLlm] Result length: ${result.trim().length}`);
 

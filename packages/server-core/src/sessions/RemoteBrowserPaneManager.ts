@@ -38,6 +38,12 @@ import type {
   BrowserTabSummary,
   AccessibilitySnapshot,
 } from '../handlers/browser-pane-manager-interface'
+import type {
+  BrowserFinishedRecording,
+  BrowserStartRecordingArgs,
+  BrowserStartRecordingResult,
+  BrowserStopRecordingResult,
+} from '@craft-agent/shared/agent/browser-pane'
 import {
   CLIENT_BROWSER_INVOKE,
   requestClientBrowserInvoke,
@@ -381,6 +387,30 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
     options: VideoFrameOptions,
   ): Promise<VideoFrameExtractionResult> {
     return await this.invoke<VideoFrameExtractionResult>('extractVideoFrames', [filePath, options])
+  }
+
+  async startRecordingForSession(
+    sessionId: string,
+    args: BrowserStartRecordingArgs,
+  ): Promise<BrowserStartRecordingResult> {
+    return await this.invoke<BrowserStartRecordingResult>('startRecordingForSession', [sessionId, args])
+  }
+
+  async stopRecordingForSession(sessionId: string, tabId: string): Promise<BrowserStopRecordingResult> {
+    return await this.invoke<BrowserStopRecordingResult>('stopRecordingForSession', [sessionId, tabId])
+  }
+
+  /** A long call, like `pick`: it is answered when the recording ends, not when it is made. */
+  async waitForRecordingEnd(sessionId: string, tabId: string): Promise<BrowserFinishedRecording | null> {
+    return await this.invoke<BrowserFinishedRecording | null>('waitForRecordingEnd', [sessionId, tabId])
+  }
+
+  /**
+   * Fire-and-forget: a conversation being torn down has nobody left to wait for it, and the
+   * recording's own end is what anything still interested hears about.
+   */
+  endRecordingsForSession(sessionId: string): void {
+    void this.invoke<void>('endRecordingsForSession', [sessionId]).catch(() => {})
   }
 
   async renderDrawio(options: DrawioRenderOptions): Promise<RenderedDrawioFile> {

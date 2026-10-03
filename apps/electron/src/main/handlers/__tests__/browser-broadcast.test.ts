@@ -223,8 +223,8 @@ describe('browser handler — workspace filtering', () => {
       expect(calls).toEqual(['window', 'tab:browser-1:{"activate":true}'])
     })
 
-    // An ordinary browser window is not a prototype's, so nothing is said about it.
-    it('says nothing about a prototype when the caller named none', async () => {
+    // A create that pins its own window id and asks for no new tab makes only that window.
+    it('makes only the window when the caller pinned an id and asked for no tab', async () => {
       const calls: string[] = []
       const { registerBrowserHandlers } = await import('../browser')
       const deps = makeDeps({ instances: [] })

@@ -3,7 +3,7 @@ import { getBrowserToolEnabled } from '../config/storage.ts';
 import { debug } from '../utils/debug.ts';
 import { existsSync, readFileSync, readdirSync } from 'fs';
 import { join, relative, basename } from 'path';
-import { DOC_REFS, APP_ROOT, getDocContent } from '../docs/index.ts';
+import { DOC_REFS, APP_ROOT } from '../docs/index.ts';
 import { PERMISSION_MODE_CONFIG } from '../agent/mode-types.ts';
 import { FEATURE_FLAGS } from '../feature-flags.ts';
 import { APP_VERSION } from '../version/index.ts';
@@ -12,8 +12,6 @@ import { formatBytes } from '../utils/binary-detection.ts';
 import { globSync } from 'glob';
 import os from 'os';
 import type { ProjectPromptContext } from '../projects/types.ts';
-import { formatPrototypeContextForPrompt } from '../prototypes/prompt.ts';
-import type { PrototypePromptContext } from '../prototypes/prompt.ts';
 
 /** Maximum size of CLAUDE.md file to include (10KB) */
 const MAX_CONTEXT_FILE_SIZE = 10 * 1024;
@@ -347,7 +345,6 @@ Use config_validate to verify changes match the expected schema.
  * @param preset - System prompt preset ('default' | 'mini' | custom string)
  * @param backendName - Backend name for "powered by X" text (default: 'Claude Code')
  * @param projectContext - Bound workspace project, when the session has one
- * @param prototypeContext - Bound prototype, when the session has one
  */
 export function getSystemPrompt(
   pinnedPreferencesPrompt?: string,
@@ -358,7 +355,6 @@ export function getSystemPrompt(
   backendName?: string,
   includeCoAuthoredBy?: boolean,
   projectContext?: ProjectPromptContext,
-  prototypeContext?: PrototypePromptContext,
 ): string {
   // Use mini agent prompt for quick edits (pass workspace root for config paths)
   if (preset === 'mini') {
@@ -376,10 +372,6 @@ export function getSystemPrompt(
   // Optional workspace-project context (injected after preferences, before debug+context-files)
   const projectBlock = projectContext ? formatProjectContextForPrompt(projectContext) : '';
 
-  // Optional prototype context — sits next to the project block so the two
-  // "what is this session about" statements read together.
-  const prototypeBlock = prototypeContext ? formatPrototypeContextForPrompt(prototypeContext) : '';
-
   // Fall back to the user's current preference when callers don't pin/pass a value,
   // so forgetting the argument can't silently re-enable the co-author trailer (see #576).
   const resolvedIncludeCoAuthoredBy = includeCoAuthoredBy ?? getCoAuthorPreference();
@@ -387,8 +379,10 @@ export function getSystemPrompt(
   // Note: Date/time context is now added to user messages instead of system prompt
   // to enable prompt caching. The system prompt stays static and cacheable.
   // Safe Mode context is also in user messages for the same reason.
-  const basePrompt = getCraftAssistantPrompt(workspaceRootPath, backendName, resolvedIncludeCoAuthoredBy, Boolean(prototypeContext));
-  const fullPrompt = `${basePrompt}${preferences}${projectBlock}${prototypeBlock}${debugContext}${projectContextFiles}`;
+  // The session's work mode (`goal`/`spec`/`plan`) is injected the same way — see PromptBuilder —
+  // so that setting or changing it never re-stamps (and so never invalidates) this cached prefix.
+  const basePrompt = getCraftAssistantPrompt(workspaceRootPath, backendName, resolvedIncludeCoAuthoredBy);
+  const fullPrompt = `${basePrompt}${preferences}${projectBlock}${debugContext}${projectContextFiles}`;
 
   debug('[getSystemPrompt] full prompt length:', fullPrompt.length);
 
@@ -403,7 +397,7 @@ export function getSystemPrompt(
  * or the monorepo CLAUDE.md context.
  */
 /** Block tags whose closing form must not appear inside injected body content. */
-const PROJECT_BLOCK_TAGS = ['project_context', 'project_memory', 'project_assets', 'project_prototypes'] as const;
+const PROJECT_BLOCK_TAGS = ['project_context', 'project_memory', 'project_assets'] as const;
 
 /**
  * Neutralize a literal closing tag inside injected body content so user- or
@@ -464,20 +458,6 @@ export function formatProjectContextForPrompt(ctx: ProjectPromptContext): string
     lines.push('');
   }
 
-  // What a project says about prototypes: the ones its work touches. Not a
-  // default — background, so a session is told a fact without anything being resolved on
-  // its behalf. A **set**, because a project works on several at once and nothing here
-  // says which is in front. A prototype belongs to no project, so this is the
-  // only direction there is.
-  if (ctx.prototypes.length > 0) {
-    lines.push('<project_prototypes>');
-    for (const slug of ctx.prototypes) {
-      lines.push(`- ${sanitizeProjectFilename(slug)}`);
-    }
-    lines.push('</project_prototypes>');
-    lines.push('');
-  }
-
   lines.push(`<project_assets_path>${sanitizeProjectBodyText(ctx.assetsPath)}</project_assets_path>`);
   if (ctx.assets.length > 0) {
     lines.push('<project_assets>');
@@ -496,12 +476,6 @@ export function formatProjectContextForPrompt(ctx: ProjectPromptContext): string
   lines.push('');
 
   lines.push(`The user has bound this session to the project above.`);
-  if (ctx.prototypes.length > 0) {
-    lines.push(`<project_prototypes> are the prototypes this project is worked on with — **background,`);
-    lines.push(`like a connected source**: they are told, and nothing is targeted for you. This conversation`);
-    lines.push(`is not bound to any of them, so work on one by naming its slug on a`);
-    lines.push(`\`prototype_tool\` command, or ask the person to bind this conversation to it.`);
-  }
   if (ctx.assets.length > 0) {
     lines.push(`<project_assets> lists reference files the user provided. Read a specific file on-demand by`);
     lines.push(`its absolute path (<project_assets_path> + filename) only when it's relevant — you do not need`);
@@ -577,29 +551,6 @@ function getCraftAgentEnvironmentMarker(): string {
 }
 
 /**
- * The prototype guide, injected whole while a session works on a prototype.
- *
- * The doc is the content here rather than a reference: a session that works on a
- * prototype is the case the guide is written for, so it is put in front of the agent
- * instead of being a file it is asked to read first. Same text, one source — the
- * bundled `prototypes.md`, which is also what `${DOC_REFS.prototypes}` holds.
- *
- * Returns null when the doc cannot be read in this runtime, so the caller can fall
- * back to the pointer version (still true, only slower to use).
- */
-function getPrototypeGuideSection(): string | null {
-  const guide = getDocContent('prototypes.md');
-  if (!guide) return null;
-
-  return `## Prototypes — the full guide
-
-This session works on a prototype, so the guide is here in full (the same text as \`${DOC_REFS.prototypes}\`): what a prototype is, how its files are laid out, who writes which file, and every \`prototype_tool\` command.
-
-${guide.trim()}
-`;
-}
-
-/**
  * Get the Craft Assistant system prompt with workspace-specific paths.
  *
  * This prompt is intentionally concise - detailed documentation lives in
@@ -608,11 +559,8 @@ ${guide.trim()}
  * @param workspaceRootPath - Root path of the workspace
  * @param backendName - Backend name for "powered by X" text (default: 'Claude Code')
  * @param includeCoAuthoredBy - Whether to include the Co-Authored-By git trailer instruction (default: true)
- * @param worksOnPrototype - Whether this session is bound to a prototype. True swaps the
- *   prototype section for the whole guide. A project's own note about which prototype it
- *   is on is background and does not make this true.
  */
-function getCraftAssistantPrompt(workspaceRootPath?: string, backendName: string = 'Claude Code', includeCoAuthoredBy: boolean = true, worksOnPrototype: boolean = false): string {
+function getCraftAssistantPrompt(workspaceRootPath?: string, backendName: string = 'Claude Code', includeCoAuthoredBy: boolean = true): string {
   // Default to ${APP_ROOT}/workspaces/{id} if no path provided
   const workspacePath = workspaceRootPath || `${APP_ROOT}/workspaces/{id}`;
 
@@ -682,40 +630,6 @@ Use the browser as an **alternative/fallback** path when source setup is fragile
 \`video_tool sample <path>\` turns a recording into frames you can look at: Chromium decodes it in a hidden window of its own — the browser the app already ships, so there is no ffmpeg to install — and the frames come back as images. It writes nothing unless you pass \`--out <dir>\`, which keeps them as \`frame-0001.jpg\`, \`frame-0002.jpg\`, … .
 ` : '';
 
-  // The prototype workbench is registered on the same runtime as the browser tool — it is the same
-  // capability surface behind its own door — so this section is subject to the same switch as the
-  // browser one above.
-  //
-  // A session that is bound to a prototype gets the guide itself rather than a pointer to
-  // it: that is what the binding is for, so the rules are in front of the agent instead of
-  // being a step it may skip. A project's note about which prototype *it* is on does not
-  // put the session in this case — that is background, not a binding.
-  //
-  // And a session that is *not* bound gets nothing: these are the workbench's own rules, and
-  // a conversation doing something else has no use for them — saying them anyway spends the
-  // prompt's attention on vocabulary the task does not have. A session that wants a prototype
-  // starts at the documentation table below, which lists this topic like every other one.
-  // `shortPrototypeSection` is the fallback for a bound session when the guide cannot be read
-  // in this runtime (still true, only slower to use).
-  const shortPrototypeSection = `## Prototypes
-
-A prototype is a proposal the user can read: a **folder that holds a specification** under \`{workspace}/prototypes/{slug}/\`. The specification is the folder's \`*.spec.md\` files — one spec per file, the file's name being the spec's identity — which may point at each other with ordinary markdown links, \`spec.md\` being the conventional entry a new prototype is seeded with (an index, not a spec); everything else in the folder is the work and the material around it, in any format. A prototype is **not a project**: projects are separate containers that group sessions and shared assets, and a prototype belongs to no project.
-
-Every prototype command belongs to \`prototype_tool\` and carries no prefix — \`list\`, \`create\`, \`status\` — while the browser's own surface is \`browser_tool\`. The slug is optional for almost all of them: the prototype is read from this session's binding. \`list\` shows what exists. Every one of these is file work — none needs a browser window you are driving.
-
-**Read \`${DOC_REFS.prototypes}\` before your first prototype command** — it is the whole guide: the folder's layout, the \`*.spec.md\` files that state the specification and the files beside them.
-
-**Recommended workflow:**
-1. \`create <name>\` — a folder with a starter \`spec.md\`. Write each spec into its own \`<name>.spec.md\` file, and put the material that outgrows it in a document beside it
-2. Write the work's files with the Write tool — the folder is the work
-3. \`status\` — the specs, the files beside them, and any link that points at nothing
-
-When this session is bound to a prototype, a \`<prototype_context>\` block is added to this prompt describing it: its specs, as a snapshot taken when the session started. A project's own note about which prototype it is on is background and describes nothing for you.
-`;
-  const prototypeSection = getBrowserToolEnabled() && worksOnPrototype
-    ? getPrototypeGuideSection() ?? shortPrototypeSection
-    : '';
-
   return `${environmentMarker}
 
 You are Craft Agent - an AI assistant that helps users connect and work across their data sources through a desktop interface.
@@ -775,6 +689,7 @@ Read relevant context files using the Read tool - they contain architecture info
 | Sources | \`${DOC_REFS.sources}\` | BEFORE creating/modifying sources |
 | Permissions | \`${DOC_REFS.permissions}\` | BEFORE modifying ${PERMISSION_MODE_CONFIG['safe'].displayName} mode rules |
 | Skills | \`${DOC_REFS.skills}\` | BEFORE creating custom skills |
+| Playbooks | \`${DOC_REFS.playbooks}\` | BEFORE saving a session's browser work as a reusable playbook |
 | Automations | \`${DOC_REFS.hooks}\` | BEFORE creating/modifying automations |
 | Themes | \`${DOC_REFS.themes}\` | BEFORE customizing colors |
 | Statuses | \`${DOC_REFS.statuses}\` | When user mentions statuses or workflow states |
@@ -788,7 +703,6 @@ Read relevant context files using the Read tool - they contain architecture info
 | Image Preview | \`${DOC_REFS.imagePreview}\` | When displaying local image files inline |
 | Markdown Preview | \`${DOC_REFS.markdownPreview}\` | When displaying rendered .md files inline |
 | Browser Tools | \`${DOC_REFS.browserTools}\` | When using in-app browser tools (\`browser_tool\`) |
-| Prototypes | \`${DOC_REFS.prototypes}\` | BEFORE the first \`prototype_tool\` command |
 | Tweaks | \`${DOC_REFS.tweaks}\` | BEFORE creating a tweak or changing its code |
 | LLM Tool | \`${DOC_REFS.llmTool}\` | When using \`call_llm\` for subtasks |${FEATURE_FLAGS.craftAgentsCli ? `
 | Craft CLI | \`${DOC_REFS.craftCli}\` | When managing labels/sources/skills/automations via \`craft-agent\` |` : ''}
@@ -839,7 +753,7 @@ Co-Authored-By: Craft Agent <agents-noreply@craft.do>
 
 **Mode switching is normal:** Users may switch between exploration and implementation multiple times during the same conversation. Do not be surprised when this happens. Adapt to the current mode and respect the user's latest intention as it changes.
 
-Current mode is in \`<session_state>\`, along with last mode-transition metadata when available (for example: \`modeTransition\`, \`modeChangedBy\`, \`modeChangedAt\`, \`modeVersion\`). \`plansFolderPath\` shows the **exact path** where you can write plan files. \`dataFolderPath\` shows where you can write data files (e.g. \`transform_data\` output). \`prototypesFolderPath\` shows where prototype-workbench artifacts go (a prototype's \`spec.md\` and the files beside it) — it is where they belong, **not** an exemption from the mode: in Explore mode writes are allowed only to \`plansFolderPath\` and \`dataFolderPath\`, so a prototype file is written in Ask or Auto mode, or by the person.
+Current mode is in \`<session_state>\`, along with last mode-transition metadata when available (for example: \`modeTransition\`, \`modeChangedBy\`, \`modeChangedAt\`, \`modeVersion\`). \`plansFolderPath\` shows the **exact path** where you can write plan files. \`dataFolderPath\` shows where you can write data files (e.g. \`transform_data\` output). \`projectFolderPath\` shows, for a session that is in a project, that project's own folder — where its specs (\`*.spec.md\`) are written, and one of the folders Explore mode allows writes to.
 
 **${PERMISSION_MODE_CONFIG['safe'].displayName} mode:** Read, search, and explore freely. Use \`SubmitPlan\` when ready to implement - the user sees an "Accept Plan" button to transition to execution. 
 Be decisive: when you have enough context, present your approach and ask "Ready for a plan?" or write it directly. This will help the user move forward.
@@ -848,8 +762,8 @@ Be decisive: when you have enough context, present your approach and ask "Ready 
 When presenting a plan via SubmitPlan the system will interrupt your current run and wait for user confirmation. Expect, and prepare for this.
 Never try to execute a plan without submitting it first - it will fail, especially if user is in ${PERMISSION_MODE_CONFIG['safe'].displayName} mode.
 
-**CRITICAL:** You MUST write plan files to the **exact \`plansFolderPath\`** and data files to the **exact \`dataFolderPath\`** from \`<session_state>\`. These folders already exist (created by the system). In Explore mode, writes to any other path (including the parent session folder and the prototypes folder) will be blocked.
-**Do NOT** write to \`.copilot-config/\`, \`session-state/\`, or any other directory — in Explore mode, use ONLY \`plansFolderPath\` or \`dataFolderPath\`. Prototype-workbench artifacts (a prototype's \`spec.md\` and the files beside it) belong in the \`prototypesFolderPath\` from \`<session_state>\`, and are written in ${PERMISSION_MODE_CONFIG['ask'].displayName} or ${PERMISSION_MODE_CONFIG['allow-all'].displayName} mode — or by the person, in the app.
+**CRITICAL:** You MUST write plan files to the **exact \`plansFolderPath\`** and data files to the **exact \`dataFolderPath\`** from \`<session_state>\`. These folders already exist (created by the system). In Explore mode, writes to any other path (including the parent session folder and another project's folder) will be blocked.
+**Do NOT** write to \`.copilot-config/\`, \`session-state/\`, or any other directory — in Explore mode, use ONLY \`plansFolderPath\`, \`dataFolderPath\`, or the \`projectFolderPath\` from \`<session_state>\` when there is one (the session's own project folder — where that project's specs are written).
 ${backendName === 'Codex' ? `
 ### Planning tools (Codex)
 - **update_plan** — Live task tracking within a turn/session (statuses: pending/in_progress/completed). Does not pause execution or request approval.
@@ -1051,7 +965,6 @@ Use the \`call_llm\` tool to invoke a secondary LLM for focused subtasks. It run
 
 **Quick reference:** Read \`${DOC_REFS.llmTool}\` for full parameter docs, output formats, and examples.
 ${browserToolsSection}
-${prototypeSection}
 ## Session Self-Management
 
 You can manage your own session's metadata and query other sessions in the workspace.
@@ -1251,7 +1164,7 @@ You can render \`markdown-preview\` code blocks as inline rendered markdown. Use
 **\`src\` field:** References a markdown file on disk. Use an absolute path from tool results (Write, Read, transform_data) or a path the user has referenced.
 
 **Workflow for showing a markdown file you just wrote:**
-1. Write the file via the \`Write\` tool to an allowed path for the current permission mode (in Explore mode, only \`plansFolderPath\` or \`dataFolderPath\`; in execution modes, the appropriate workspace/session path — prototype-workbench artifacts belong in \`prototypesFolderPath\`).
+1. Write the file via the \`Write\` tool to an allowed path for the current permission mode (in Explore mode, only \`plansFolderPath\`, \`dataFolderPath\`, or the \`projectFolderPath\` of the session's own project; in execution modes, the appropriate workspace/session path).
 2. Output a \`markdown-preview\` block with \`"src"\` pointing to the absolute path you wrote.
 
 **When to use:**

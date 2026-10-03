@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'bun:test'
 import {
   contentTypeFor,
+  LOCAL_ORIGIN_SCHEME,
   localHostLabel,
   localHostOrigin,
   labelFromHost,
-  LOCAL_HOST_SUFFIX,
 } from '../local-origin'
 
 describe('localHostLabel', () => {
@@ -32,21 +32,21 @@ describe('localHostLabel', () => {
 
 describe('localHostOrigin', () => {
   it('is an origin, not a URL', () => {
-    expect(localHostOrigin('cart-1a2b3c4d')).toBe(`http://cart-1a2b3c4d${LOCAL_HOST_SUFFIX}`)
+    expect(localHostOrigin('cart-1a2b3c4d')).toBe(`${LOCAL_ORIGIN_SCHEME}://cart-1a2b3c4d`)
   })
 })
 
 describe('labelFromHost', () => {
   it('reads the label back, with or without a port', () => {
-    expect(labelFromHost('cart-1a2b3c4d.localhost')).toBe('cart-1a2b3c4d')
-    expect(labelFromHost('cart-1a2b3c4d.localhost:5173')).toBe('cart-1a2b3c4d')
+    expect(labelFromHost('cart-1a2b3c4d')).toBe('cart-1a2b3c4d')
+    expect(labelFromHost('cart-1a2b3c4d:5173')).toBe('cart-1a2b3c4d')
   })
 
-  it('refuses a name that is not one of ours', () => {
+  it('refuses a name that is not a single label', () => {
     expect(labelFromHost('example.com')).toBeNull()
     expect(labelFromHost(undefined)).toBeNull()
     // Two labels would reach something through a name nobody handed out.
-    expect(labelFromHost('a.b.localhost')).toBeNull()
+    expect(labelFromHost('a.b')).toBeNull()
   })
 })
 

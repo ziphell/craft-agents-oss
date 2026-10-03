@@ -11,7 +11,7 @@
 import { atom } from 'jotai'
 import type { Getter, Setter } from 'jotai/vanilla'
 import { atomFamily } from 'jotai-family'
-import type { Session, Message } from '../../shared/types'
+import type { Session, Message, SessionMode } from '../../shared/types'
 
 /**
  * Session metadata for list display (lightweight, no messages)
@@ -43,8 +43,8 @@ export interface SessionMeta {
   hasUnread?: boolean
   /** Labels for filtering (additive tags, many-per-session) */
   labels?: string[]
-  /** Prototype this session is bound to (undefined = unbound) */
-  prototypeSlug?: string
+  /** The layer this conversation is working in (only meaningful inside its project; prompt-block only) */
+  mode?: SessionMode
   /** Permission mode ('safe', 'ask', 'allow-all') — used by view expressions */
   permissionMode?: string
   /** Session status for filtering */

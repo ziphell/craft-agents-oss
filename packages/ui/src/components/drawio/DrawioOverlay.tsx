@@ -1,12 +1,12 @@
 /**
- * A diagram, opened full size — from the prototype page, from the expand button on a
- * `drawio-preview` block, or from that block's pencil.
+ * A diagram, opened full size — from the expand button on a `drawio-preview` block, or from
+ * that block's pencil.
  *
  * One overlay rather than two, because the difference between the ways in is which pane it
  * mounts and nothing else — and the window switches between them itself, with a pencil in its
  * own header, the way the page preview does. What it is worth having is what it borrows:
  * `DrawioEditorPane` is the same editor a block opens and `DrawioViewer` the same viewer it draws
- * with, so the debounce, the prototypes-folder write boundary and the "the file changed
+ * with, so the debounce, the project-folder write boundary and the "the file changed
  * underneath" question are answered in one place.
  *
  * The chrome is the app's shared one — the same `PreviewOverlay` every other preview uses —
@@ -47,7 +47,7 @@ export interface DrawioOverlayProps {
    *
    * The window is a view of what the caller is already showing, so it holds no page of its own: it
    * says which page was picked and the caller decides. That is what keeps the block behind it on the
-   * same page as the window, and what lets the prototype page hold a page for a file it opened.
+   * same page as the window, and what lets the caller hold a page for a file it opened.
    */
   onSelectPage?: (pageId: string) => void
   /** The file's own name when it has no better title. */

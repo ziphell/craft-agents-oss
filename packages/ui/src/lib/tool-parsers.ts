@@ -457,7 +457,7 @@ export function formatToolCommandPreview(
   }
 
   // Wrapper commands pass through the raw CLI input for best fidelity.
-  if ((normalized === 'browser_tool' || normalized === 'prototype_tool' || normalized === 'video_tool' || normalized === 'drawio_tool') && typeof input.command === 'string' && input.command.trim()) {
+  if ((normalized === 'browser_tool' || normalized === 'video_tool' || normalized === 'drawio_tool') && typeof input.command === 'string' && input.command.trim()) {
     return input.command.trim()
   }
 

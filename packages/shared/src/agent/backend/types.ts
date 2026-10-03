@@ -21,6 +21,7 @@ import type { AuthRequest } from '../session-scoped-tools.ts';
 import type { McpClientPool } from '../../mcp/mcp-pool.ts';
 import type { Workspace } from '../../config/storage.ts';
 import type { SessionConfig as Session } from '../../sessions/storage.ts';
+import type { SessionMode } from '../../sessions/types.ts';
 import type { SourceManager } from '../core/source-manager.ts';
 
 // Import AbortReason and RecoveryMessage from core module (single source of truth)
@@ -242,20 +243,6 @@ export interface CoreBackendConfig {
   /** Callback invoked after branch seed context has been injected. */
   markBranchSeedApplied?: () => void;
 
-  /**
-   * The prototype this conversation is working on *right now*, resolved by the host:
-   * its own binding, or the one its project provides when it has none.
-   *
-   * Asked live rather than read off `session.prototypeSlug`, because that field is a
-   * snapshot taken when the agent was created — a conversation can be moved to
-   * another prototype, or its project's prototype can change, while this agent is
-   * alive. The system prompt is pinned on the first turn regardless (the SDK's
-   * resume expects a session's prompt to be stable), so the two answers differ
-   * exactly when the conversation has moved on and the prompt has not. That gap is
-   * the agent's to report, not to paper over.
-   */
-  getPrototypeSlug?: () => string | null;
-
   /** One-shot hidden summary to inject on the first turn of a transferred session. */
   getTransferredSessionSummary?: () => string | null;
 
@@ -474,6 +461,12 @@ export interface AgentBackend {
 
   /** Cycle to next permission mode */
   cyclePermissionMode(): PermissionMode;
+
+  /**
+   * Set the layer this session is working in (`goal`/`spec`/`plan`), or null for none. The mode
+   * is announced to the model through the next user message, not the system prompt.
+   */
+  setSessionMode(mode: SessionMode | null): void;
 
   // ============================================================
   // State

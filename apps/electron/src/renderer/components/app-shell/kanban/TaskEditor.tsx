@@ -7,6 +7,7 @@ import { Spinner, LoadingIndicator, Markdown } from '@craft-agent/ui'
 import { ANTHROPIC_MODELS, DEFAULT_MODEL, getModelShortName } from '@config/models'
 import { useAtomValue, useStore } from 'jotai'
 import { useProjects } from '@/hooks/useProjects'
+import { useAppShellContext } from '@/context/AppShellContext'
 import { sourcesAtom } from '@/atoms/sources'
 import { skillsAtom } from '@/atoms/skills'
 import { sessionMetaMapAtom } from '@/atoms/sessions'
@@ -28,6 +29,7 @@ import { SourceSelectorPopover } from '@/components/ui/SourceSelectorPopover'
 import { SkillSelectorPopover } from '@/components/ui/SkillSelectorPopover'
 import { WorkingDirectorySelector } from '../input/WorkingDirectorySelector'
 import type { LoadedSource, LoadedSkill } from '../../../../shared/types'
+import type { WorkLayers } from '@craft-agent/shared/projects'
 
 // Client-side fallback for async generate: a touch longer than the server's GENERATE_TIMEOUT_MS
 // (180s) so the orchestrator's own timeout + result push can land before we give up locally.
@@ -511,6 +513,7 @@ export function TaskEditor({
   const groups = modelGroups.length > 0 ? modelGroups : FALLBACK_MODEL_GROUPS
   const fallbackModel = defaultModel || groups[0]?.models[0]?.id || DEFAULT_MODEL
   const { projects } = useProjects(workspaceId)
+  const { onOpenFile } = useAppShellContext()
   const [tab, setTab] = React.useState<Tab>('definition')
   const [mode, setMode] = React.useState<Mode>('manual')
   const [title, setTitle] = React.useState('')
@@ -534,6 +537,13 @@ export function TaskEditor({
   const [boundProjectId, setBoundProjectId] = React.useState('')
   const [subtasks, setSubtasks] = React.useState<EditorSubtask[]>([])
   const [cwd, setCwd] = React.useState('')
+  // The plan file pointed at for generation, as its folder-relative path ('' = none). Its home is the
+  // project folder, so it is only meaningful while a project is bound; the layers below supply the list.
+  const [planFilePath, setPlanFilePath] = React.useState('')
+  const [projectLayers, setProjectLayers] = React.useState<WorkLayers | null>(null)
+  // The origin plan this task was generated from (its spec `from`, absolute). Prefilled in edit mode
+  // and carried back on save so an edit can't silently drop it; empty when the task has no origin.
+  const [fromPath, setFromPath] = React.useState('')
   // Task-level sources (enabled on orchestrator + children) and skills (read as context
   // before each child works). Empty = leave workspace defaults / no skill preamble.
   const [sourceSlugs, setSourceSlugs] = React.useState<string[]>([])
@@ -606,13 +616,16 @@ export function TaskEditor({
         .then((res) => {
           if (cancelled) return
           const spec = res.spec as
-            | { title?: string; goal?: string; acceptance_criteria?: string; max_iterations?: number; project?: string; cwd?: string; sources?: string[]; skills?: string[]; defaults?: { model?: string; llmConnection?: string; permissionMode?: TaskPermissionMode }; nodes?: Array<{ id: string; title?: string; prompt?: string; model?: string; llmConnection?: string; depends_on?: string[] }> }
+            | { title?: string; goal?: string; acceptance_criteria?: string; max_iterations?: number; from?: string; project?: string; cwd?: string; sources?: string[]; skills?: string[]; defaults?: { model?: string; llmConnection?: string; permissionMode?: TaskPermissionMode }; nodes?: Array<{ id: string; title?: string; prompt?: string; model?: string; llmConnection?: string; depends_on?: string[] }> }
             | undefined
           if (!spec) return
           if (spec.title) setTitle(spec.title)
           if (spec.goal) setGoal(spec.goal)
           setAcceptanceCriteria(spec.acceptance_criteria ?? '')
           setMaxRepairs(spec.max_iterations != null ? String(spec.max_iterations) : '')
+          // The authored origin plan (absolute on read). Kept so an edit round-trips it instead of
+          // dropping it — it comes back on save through the same planPath channel.
+          if (spec.from) setFromPath(spec.from)
           // Bind from the spec, else the session's existing binding. Record it as the immutable floor.
           const bound = spec.project ?? sessionProjectId
           setProjectId(bound)
@@ -712,6 +725,42 @@ export function TaskEditor({
 
   const project = projects.find((p) => p.config.id === projectId)
 
+  // Plan files live in the project folder, so the picker can only exist once a project is bound — a
+  // task pointing at no project has no folder to read a plan from. Read the layers per project (the
+  // folder is the source of truth) and drop a stale selection when the project changes.
+  const projectSlug = project?.config.slug
+  React.useEffect(() => {
+    setPlanFilePath('')
+    if (!projectSlug) {
+      setProjectLayers(null)
+      return
+    }
+    let cancelled = false
+    void window.electronAPI
+      .getProjectLayers(workspaceId, projectSlug)
+      .then((report) => {
+        if (!cancelled) setProjectLayers(report ?? null)
+      })
+      .catch(() => {
+        if (!cancelled) setProjectLayers(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [workspaceId, projectSlug])
+
+  // The plans written for this project, each named by its title; its file carries the path back.
+  const planOptions = React.useMemo(
+    () =>
+      (projectLayers?.pieces ?? [])
+        .map((piece) => piece.plan)
+        .filter((plan): plan is NonNullable<typeof plan> => plan !== null),
+    [projectLayers],
+  )
+  const selectedPlan = planOptions.find((plan) => plan.file === planFilePath)
+  // Last path segment of the origin plan (handles both separators), shown by the "From plan" row.
+  const fromName = fromPath.split(/[\\/]/).pop() || fromPath
+
   const updateSubtask = (id: string, patch: Partial<EditorSubtask>) =>
     setSubtasks((prev) => prev.map((s) => (s.uid === id ? { ...s, ...patch } : s)))
   const removeSubtask = (id: string) =>
@@ -805,6 +854,10 @@ export function TaskEditor({
     try {
       const ack = await window.electronAPI.generateTask(workspaceId, {
         goal: g,
+        // A plan pointed at replaces the goal's decomposition: the generator reads this file and turns
+        // the steps it states into nodes. Sent as an absolute path — the project folder is the plan's
+        // home, so the folder-relative name the picker carries is joined onto it.
+        ...(planFilePath ? { planPath: `${projectLayers?.dir ?? ''}/${planFilePath}` } : {}),
         title: title.trim() || undefined,
         model: orchModel,
         // Route the authoring turn through the preserved connection (falls back to the model's default),
@@ -868,6 +921,12 @@ export function TaskEditor({
       modelToConnection,
     )
     const yaml = JSON.stringify(spec, null, 2) // JSON is a valid YAML subset
+    // The origin plan to record on the spec. Generate/create: the plan picked for authoring (joined
+    // onto its project folder, exactly as the generate call built it). Edit: the task's existing
+    // origin, carried back so a save can't drop it. Either way it rides the same createTask channel.
+    const planPath = planFilePath
+      ? `${projectLayers?.dir ?? ''}/${planFilePath}`
+      : fromPath || undefined
     // Adopt the generate draft in place whenever we have one — spec edits run fine on the draft
     // orchestrator, so there's no need to mint a fresh session.
     const draftId = generatedDraftRef.current
@@ -877,6 +936,7 @@ export function TaskEditor({
       // a generate draft if present, else mints a fresh orchestrator.
       const created = await window.electronAPI.createTask(workspaceId, {
         yaml,
+        ...(planPath ? { planPath } : {}),
         ...(isEdit && editSessionId
           ? { attachToExistingSession: editSessionId }
           : { orchestratorSessionId: draftId ?? undefined }),
@@ -1033,6 +1093,48 @@ export function TaskEditor({
               className="w-full resize-none rounded-lg border border-border bg-background px-3 py-2 text-[12.5px] leading-relaxed outline-none focus:border-foreground/25 field-sizing-content max-h-48"
             />
           </div>
+
+          {projectId && (
+            <div>
+              <div className="mb-1.5 flex items-baseline justify-between">
+                <span className="text-[12px] font-semibold text-foreground/55">{t('tasks.planFile')}</span>
+                <span className="text-[10.5px] text-foreground/35">{t('tasks.planFileHint')}</span>
+              </div>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <SelectButton className="w-full justify-between">
+                    <span className="truncate">{selectedPlan ? selectedPlan.title : t('tasks.planFileNone')}</span>
+                    <ChevronDown className="h-3.5 w-3.5 shrink-0 text-foreground/40" strokeWidth={2} />
+                  </SelectButton>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="min-w-[220px]">
+                  <DropdownMenuItem className="text-xs" onSelect={() => setPlanFilePath('')}>
+                    {t('tasks.planFileNone')}
+                    {!planFilePath && <Check className="ml-auto h-3.5 w-3.5" strokeWidth={2} />}
+                  </DropdownMenuItem>
+                  {planOptions.map((plan) => (
+                    <DropdownMenuItem key={plan.file} className="text-xs" onSelect={() => setPlanFilePath(plan.file)}>
+                      <span className="truncate">{plan.title}</span>
+                      {planFilePath === plan.file && <Check className="ml-auto h-3.5 w-3.5 shrink-0" strokeWidth={2} />}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          )}
+
+          {fromPath && (
+            <button
+              type="button"
+              onClick={() => onOpenFile(fromPath)}
+              title={fromPath}
+              className="inline-flex w-fit max-w-full items-center gap-1.5 text-[12px] text-foreground/55 hover:text-foreground/80"
+            >
+              <Folder className="h-3.5 w-3.5 shrink-0" strokeWidth={2} />
+              <span>{t('tasks.fromPlan')}</span>
+              <span className="truncate font-medium text-foreground/75 hover:underline">{fromName}</span>
+            </button>
+          )}
 
           <div>
             <div className="mb-1.5 flex items-baseline justify-between">

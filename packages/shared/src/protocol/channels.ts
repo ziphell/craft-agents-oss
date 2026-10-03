@@ -110,25 +110,6 @@ export const RPC_CHANNELS = {
     SEARCH: 'fs:search',
     LIST_DIRECTORY: 'fs:listDirectory',
   },
-  prototypes: {
-    WATCH: 'prototypes:watch',
-    UNWATCH: 'prototypes:unwatch',
-    CHANGED: 'prototypes:changed',
-    /** Read-only listing of every prototype in a workspace (drives the panel). */
-    LIST: 'prototypes:list',
-    /** Create a prototype (the panel's "New Prototype"). */
-    CREATE: 'prototypes:create',
-    /**
-     * Copy a prototype into a new one: the same files, its own slug (the list's
-     * "Duplicate"). The two are independent afterwards.
-     */
-    DUPLICATE: 'prototypes:duplicate',
-    /**
-     * Remove a prototype and everything in it. Irreversible, and the caller is
-     * the one that asked the user first — the agent has no command for this.
-     */
-    DELETE: 'prototypes:delete',
-  },
   debug: {
     LOG: 'debug:log',
   },
@@ -426,8 +407,8 @@ export const RPC_CHANNELS = {
     /**
      * Pushed from the browser panel's own toolbar to the main window, because the
      * panel is a separate render process with no workspace/session context of its
-     * own. The main window owns the prototype binding, so it decides what a pick
-     * or an apply actually means.
+     * own. The main window owns that context, so it decides what a pick actually
+     * means.
      */
     TOOLBAR_ACTION: 'browser-pane:toolbar-action',
   },
@@ -449,6 +430,7 @@ export const RPC_CHANNELS = {
   projects: {
     GET: 'projects:get',
     GET_ONE: 'projects:getOne',
+    LAYERS: 'projects:layers',
     CREATE: 'projects:create',
     UPDATE: 'projects:update',
     DELETE: 'projects:delete',
@@ -456,6 +438,16 @@ export const RPC_CHANNELS = {
     UPLOAD_ASSET: 'projects:uploadAsset',
     DELETE_ASSET: 'projects:deleteAsset',
     CHANGED: 'projects:changed',
+    /**
+     * Watch the workspace's project tree so editors can follow external changes.
+     *
+     * A spec is a file in the project folder now, and the editors that follow external
+     * edits (`useFileWriter`, `MarkdownDrawioBlock`) need the signal to point there —
+     * otherwise following a change would silently stop working.
+     */
+    WATCH_FILES: 'projects:watchFiles',
+    UNWATCH_FILES: 'projects:unwatchFiles',
+    FILES_CHANGED: 'projects:filesChanged',
   },
   // The app's bundled drawio editor. It is not a workspace resource — one
   // directory ships with the app and one origin serves it — which is

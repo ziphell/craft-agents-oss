@@ -43,7 +43,7 @@ import {
   useDrawioOrigin,
 } from '../drawio'
 import { InlineDiagram } from './InlineDiagram'
-import { usePrototypeFileWatch } from '../../hooks/usePrototypeFileWatch'
+import { useProjectFilesWatch } from '../../hooks/useProjectFilesWatch'
 import { parseMarkdownPreviewSpec } from './markdown-preview-helpers'
 
 // ── Error boundary ───────────────────────────────────────────────────────────
@@ -170,7 +170,7 @@ export function MarkdownDrawioBlock({ code, className, interactive = true }: Mar
       })
   }, [src, onReadFile])
 
-  usePrototypeFileWatch(reread)
+  useProjectFilesWatch(reread)
 
   // What the editor wrote, including the write it makes on its way out: the newest document
   // lives in the pane while it is open, and this is how the block behind it gets it.

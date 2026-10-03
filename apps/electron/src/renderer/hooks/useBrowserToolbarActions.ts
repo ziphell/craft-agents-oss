@@ -16,7 +16,7 @@ import type { PickedElement, PickedElementOrigin } from '@craft-agent/shared/pro
 /**
  * An element handed to a conversation rather than to anything else.
  *
- * No workspace and no prototype: picking an element to talk about needs a
+ * No workspace and no project: picking an element to talk about needs a
  * conversation and nothing else, so a plain tab someone opened in a window works
  * exactly like any other page.
  */

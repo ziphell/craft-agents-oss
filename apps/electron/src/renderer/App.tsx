@@ -838,7 +838,7 @@ export default function App() {
     // Handoff events signal end of streaming - need to sync back to React state
     // Also includes todo_state_changed so status updates immediately reflect in sidebar
     // async_operation included so shimmer effect on session titles updates in real-time
-    const handoffEventTypes = new Set(['complete', 'error', 'interrupted', 'typed_error', 'session_status_changed', 'session_metadata_changed', 'session_flagged', 'session_unflagged', 'name_changed', 'labels_changed', 'project_id_changed', 'prototype_slug_changed', 'title_generated', 'async_operation'])
+    const handoffEventTypes = new Set(['complete', 'error', 'interrupted', 'typed_error', 'session_status_changed', 'session_metadata_changed', 'session_flagged', 'session_unflagged', 'name_changed', 'labels_changed', 'project_id_changed', 'title_generated', 'async_operation'])
 
     // Helper to handle side effects (same logic for both paths)
     const handleEffects = (effects: Effect[], sessionId: string, eventType: string) => {
@@ -2045,10 +2045,10 @@ export default function App() {
     onSendToChat: sendHtmlSelectionToChat,
     // The origin the bundled drawio editor is served at (used by drawio-preview blocks)
     onGetDrawioOrigin: () => window.electronAPI.getDrawioOrigin(),
-    // The prototypes tree changed on disk. The event's payload is dropped on purpose: what a
+    // The project files tree changed on disk. The event's payload is dropped on purpose: what a
     // listener does with this is re-read the file (see PlatformActions).
-    onPrototypesChanged: (callback: () => void) =>
-      window.electronAPI.onPrototypesChanged(() => callback()),
+    onProjectFilesChanged: (callback: () => void) =>
+      window.electronAPI.onProjectFilesChanged(() => callback()),
     // Reveal a file in the system file manager (Finder on macOS, Explorer on Windows, etc.)
     onRevealInFinder: (path: string) => {
       window.electronAPI.showInFolder(path).catch(() => {})
@@ -2446,7 +2446,7 @@ function FilePreviewRenderer({
 
 /**
  * The draw.io window a `.drawio` link opens — the same `DrawioOverlay` a `drawio-preview` block
- * and the prototype page open, on the drawing rather than in the editor.
+ * opens, on the drawing rather than in the editor.
  *
  * It holds which page is showing, because the window does not: a page picked from the window's
  * own row is reported back to whoever is showing the file, and here that is nobody else. `key` on
