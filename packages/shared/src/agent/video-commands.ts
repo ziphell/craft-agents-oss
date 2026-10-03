@@ -262,6 +262,9 @@ export async function runVideoCommand(ctx: ToolCommandContext): Promise<BrowserC
       );
     }
 
+    // `--to` is the one that has to stay absent when it is absent: "to the end" is not a number.
+    const toMs = optionalDurationOption(parts, '--to');
+
     const result = await fns.sampleVideo({
       path: resolveLocalPath(path, workspaceRootPath),
       out: namedOut ? resolveLocalPath(namedOut, workspaceRootPath) : undefined,
@@ -271,10 +274,7 @@ export async function runVideoCommand(ctx: ToolCommandContext): Promise<BrowserC
       changeThreshold: thresholdOption(parts),
       // `--from 0` and no `--from` mean the same thing, so a plain duration option is enough.
       fromMs: durationOption(parts, '--from', 0),
-      // `--to` is the one that has to stay absent when it is absent: "to the end" is not a number.
-      ...(optionalDurationOption(parts, '--to') !== undefined
-        ? { toMs: optionalDurationOption(parts, '--to') }
-        : {}),
+      ...(toMs !== undefined ? { toMs } : {}),
       first: parts.includes('--first'),
       last: parts.includes('--last'),
       // This is the one command whose frames are **paid for** — they go to a model, per image —
@@ -344,6 +344,9 @@ export async function runVideoCommand(ctx: ToolCommandContext): Promise<BrowserC
       throw new Error('--out needs a directory. Example: sample demo.mp4 --out research/demo');
     }
 
+    // `--to` is the one that has to stay absent when it is absent: "to the end" is not a number.
+    const toMs = optionalDurationOption(parts, '--to');
+
     const result = await fns.sampleVideo({
       path: resolveLocalPath(path, workspaceRootPath),
       out: namedOut ? resolveLocalPath(namedOut, workspaceRootPath) : undefined,
@@ -353,10 +356,7 @@ export async function runVideoCommand(ctx: ToolCommandContext): Promise<BrowserC
       changeThreshold: thresholdOption(parts),
       // `--from 0` and no `--from` mean the same thing, so a plain duration option is enough.
       fromMs: durationOption(parts, '--from', 0),
-      // `--to` is the one that has to stay absent when it is absent: "to the end" is not a number.
-      ...(optionalDurationOption(parts, '--to') !== undefined
-        ? { toMs: optionalDurationOption(parts, '--to') }
-        : {}),
+      ...(toMs !== undefined ? { toMs } : {}),
       first: parts.includes('--first'),
       last: parts.includes('--last'),
       // `sample` writes the frames for someone to look at, so the recording's own size is the
