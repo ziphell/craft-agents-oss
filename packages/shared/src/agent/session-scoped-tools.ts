@@ -307,35 +307,38 @@ export function getSessionScopedTools(
             return callbacks?.browserPaneFns;
           },
         }),
-        // Video frames are decoded by the app's browser (a hidden window of its own), so the
-        // video tool is on this runtime too, and under the same switch. It also asks a model
-        // (`understand`) — the same callback `call_llm` uses, which is why it is the one door
-        // that carries both surfaces.
-        ...createVideoTools({
-          sessionId,
-          workspaceRootPath,
-          getBrowserPaneFns: () => {
-            const callbacks = getSessionScopedToolCallbacks(sessionId);
-            return callbacks?.browserPaneFns;
-          },
-          getQueryFn: () => {
-            const callbacks = getSessionScopedToolCallbacks(sessionId);
-            return callbacks?.queryFn;
-          },
-        }),
-        // Diagrams are converted and drawn by the app's own drawio (a hidden window again), so
-        // the drawio tool is on this runtime too — and under the same switch, because the
-        // drawio webapp ships with the same browser build.
-        ...createDrawioTools({
-          sessionId,
-          workspaceRootPath,
-          getBrowserPaneFns: () => {
-            const callbacks = getSessionScopedToolCallbacks(sessionId);
-            return callbacks?.browserPaneFns;
-          },
-        }),
       );
     }
+
+    // Video frames are decoded by the app's browser (a hidden window of its own) and diagrams are
+    // drawn by the app's own drawio (another hidden window), so both are on this runtime — but
+    // neither is the browser door, so neither follows the "Built-in browser" setting: what they
+    // need is the engine behind the pane, which a runtime either has or has not, and
+    // `requireBrowserPaneFns` refuses by name when it has not.
+    // `video_tool` also asks a model (`understand`) — the same callback `call_llm` uses, which is
+    // why it is the one door that carries both surfaces.
+    tools.push(
+      ...createVideoTools({
+        sessionId,
+        workspaceRootPath,
+        getBrowserPaneFns: () => {
+          const callbacks = getSessionScopedToolCallbacks(sessionId);
+          return callbacks?.browserPaneFns;
+        },
+        getQueryFn: () => {
+          const callbacks = getSessionScopedToolCallbacks(sessionId);
+          return callbacks?.queryFn;
+        },
+      }),
+      ...createDrawioTools({
+        sessionId,
+        workspaceRootPath,
+        getBrowserPaneFns: () => {
+          const callbacks = getSessionScopedToolCallbacks(sessionId);
+          return callbacks?.browserPaneFns;
+        },
+      }),
+    );
 
     sessionToolsCache.set(cacheKey, tools);
   }

@@ -335,7 +335,7 @@ export function registerSystemCoreHandlers(server: RpcServer, deps: HandlerDeps)
       // Expand ~ before resolve() — resolve() treats ~ as a literal path component
       const expanded = path.startsWith('~') ? path.replace(/^~/, homedir()) : path
       const absolutePath = resolve(expanded)
-      const safePath = await validateFilePath(absolutePath, getWorkspaceAllowedDirs(ctx.workspaceId))
+      const safePath = await validateFilePath(absolutePath, getWorkspaceAllowedDirs(ctx.workspaceId, { sessionManager: deps.sessionManager }))
       const result = await requestClientOpenPath(server, ctx.clientId, safePath)
       if (result.error) throw new Error(result.error)
     } catch (error) {
@@ -350,7 +350,7 @@ export function registerSystemCoreHandlers(server: RpcServer, deps: HandlerDeps)
     try {
       const expanded = path.startsWith('~') ? path.replace(/^~/, homedir()) : path
       const absolutePath = resolve(expanded)
-      const safePath = await validateFilePath(absolutePath, getWorkspaceAllowedDirs(ctx.workspaceId))
+      const safePath = await validateFilePath(absolutePath, getWorkspaceAllowedDirs(ctx.workspaceId, { sessionManager: deps.sessionManager }))
       await requestClientShowInFolder(server, ctx.clientId, safePath)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error'

@@ -239,7 +239,7 @@ export function registerSystemCoreHandlers(server: RpcServer, deps: HandlerDeps)
       const expanded = path.startsWith('~') ? path.replace(/^~/, homedir()) : path
       const absolutePath = resolve(expanded)
       const workspaceId = ctx.workspaceId ?? deps.windowManager?.getWorkspaceForWindow(ctx.webContentsId!)
-      const safePath = await validateFilePath(absolutePath, getWorkspaceAllowedDirs(workspaceId))
+      const safePath = await validateFilePath(absolutePath, getWorkspaceAllowedDirs(workspaceId, { sessionManager: deps.sessionManager }))
       const result = await requestClientOpenPath(server, ctx.clientId, safePath)
       if (result.error) throw new Error(result.error)
     } catch (error) {
@@ -254,7 +254,7 @@ export function registerSystemCoreHandlers(server: RpcServer, deps: HandlerDeps)
       const expanded = path.startsWith('~') ? path.replace(/^~/, homedir()) : path
       const absolutePath = resolve(expanded)
       const workspaceId = ctx.workspaceId ?? deps.windowManager?.getWorkspaceForWindow(ctx.webContentsId!)
-      const safePath = await validateFilePath(absolutePath, getWorkspaceAllowedDirs(workspaceId))
+      const safePath = await validateFilePath(absolutePath, getWorkspaceAllowedDirs(workspaceId, { sessionManager: deps.sessionManager }))
       await requestClientShowInFolder(server, ctx.clientId, safePath)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error'

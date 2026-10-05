@@ -131,14 +131,10 @@ const RULES: PrerequisiteRule[] = [
   // is unreadable to everything but draw.io, a shape outside the bundled sets draws as a plain
   // box, and neither says anything at the time. Reading the guide is the difference between
   // a diagram that is right and one that merely looks plausible, so this is strict, like the
-  // browser's: the guide is not a suggestion. Under the same switch as the tool itself, because a
-  // disabled tool needs no prerequisite.
+  // browser's: the guide is not a suggestion.
   {
-    // The tool name first: the config is read only for the two spellings that can match, not for
-    // every tool call in the session.
     toolMatcher: (toolName: string) =>
-      (toolName === 'drawio_tool' || toolName === 'mcp__session__drawio_tool') &&
-      getBrowserToolEnabled(),
+      toolName === 'drawio_tool' || toolName === 'mcp__session__drawio_tool',
     resolveRequiredPath: () => {
       return existsSync(DRAWIO_TOOLS_DOC_PATH) ? DRAWIO_TOOLS_DOC_PATH : null;
     },

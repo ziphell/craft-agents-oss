@@ -13,6 +13,7 @@ import {
   getWorkspaceAllowedDirs,
   type DrawioRenderOptions,
   type RenderedDrawioFile,
+  type ISessionManager,
 } from '@craft-agent/server-core/handlers'
 import { BrowserView, BrowserWindow, WebContentsView, app, ipcMain, nativeTheme, screen, session, shell, type Session as ElectronSession } from 'electron'
 import { mainLog } from './logger'
@@ -821,6 +822,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   private downloadsByWorkspace = new Map<string | null, BrowserDownloadEntry[]>()
   private windowManager: WindowManager | null = null
   /**
+   * Conversations, for the working directories a file may legitimately come from.
+   *
+   * Injected (see main/index.ts) once the session manager exists — it is created after
+   * this manager. A conversation's working directory is settable and may sit outside
+   * its workspace, so a file picked from there is still one the workspace showed and
+   * must not be refused as "outside allowed directories".
+   */
+  private sessionManager: ISessionManager | null = null
+  /**
    * What to call a conversation, for the tab rail's group headers. Injected
    * (see main/index.ts).
    *
@@ -891,6 +901,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   setWindowManager(windowManager: WindowManager): void {
     this.windowManager = windowManager
+  }
+
+  setSessionManager(sessionManager: ISessionManager): void {
+    this.sessionManager = sessionManager
   }
 
   setSessionLabelResolver(fn: (sessionId: string) => string | null): void {
@@ -3187,7 +3201,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const safePaths: string[] = []
     for (const p of filePaths) {
       const workspaceId = this.resolveLaunchWorkspaceId()
-      const safePath = await validateFilePath(p, getWorkspaceAllowedDirs(workspaceId))
+      const safePath = await validateFilePath(p, getWorkspaceAllowedDirs(workspaceId, { sessionManager: this.sessionManager ?? undefined }))
       if (!existsSync(safePath)) throw new Error(`File not found: ${p}`)
       safePaths.push(safePath)
     }

@@ -69,6 +69,7 @@ import { pickProviderAppropriateMiniModel } from './pick-mini-model.ts';
 import {
   CRAFT_PI_EPHEMERAL_QUERY_DEADLINE_MS,
   createCraftSettingsManager,
+  resolveGitBashPath,
 } from './session-settings.ts';
 import {
   EphemeralQueryCancelledError,
@@ -395,7 +396,7 @@ function stopCallbackServer(): void {
 
 function resolvedCwd(): string {
   const wd = initConfig?.cwd || initConfig?.workingDirectory || process.cwd();
-  if (wd.startsWith('~/')) return join(homedir(), wd.slice(2));
+  if (wd.startsWith('~/') || wd.startsWith('~\\')) return join(homedir(), wd.slice(2));
   if (wd === '~') return homedir();
   return wd;
 }
@@ -656,9 +657,13 @@ async function ensureSession(): Promise<AgentSession> {
   //     our hooked versions take effect (permissions + large-response summarization).
   //   - Do NOT pass tool *objects* to `tools` — `allowedToolNames = new Set(options.tools)`
   //     then `.has(name)` returns false for every string lookup → zero tools active.
+  // Windows: hand the Bash tool an explicit Git Bash path when one is found,
+  // so per-user installs (`%LOCALAPPDATA%\Programs\Git`) work; without this the
+  // SDK's own resolver only checks Program Files and PATH.
+  const gitBashPath = resolveGitBashPath();
   const builtinDefs = [
     createReadToolDefinition(cwd),
-    createBashToolDefinition(cwd),
+    createBashToolDefinition(cwd, gitBashPath ? { shellPath: gitBashPath } : undefined),
     createEditToolDefinition(cwd),
     createWriteToolDefinition(cwd),
     createGrepToolDefinition(cwd),

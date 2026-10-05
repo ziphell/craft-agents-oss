@@ -4627,7 +4627,7 @@ export class SessionManager implements ISessionManager {
           const attachments: FileAttachment[] = []
           for (const a of request.attachments) {
             try {
-              const extraDirs = getWorkspaceAllowedDirs(managed.workspace.id)
+              const extraDirs = getWorkspaceAllowedDirs(managed.workspace.id, { sessionManager: this })
               if (request.workingDirectory) extraDirs.push(request.workingDirectory)
               const safePath = await validateFilePath(a.path, extraDirs)
               const attachment = readFileAttachment(safePath)
@@ -4860,7 +4860,7 @@ export class SessionManager implements ISessionManager {
             const builtAttachments: FileAttachment[] = []
             for (const a of attachments) {
               try {
-                const extraDirs = getWorkspaceAllowedDirs(managed.workspace.id)
+                const extraDirs = getWorkspaceAllowedDirs(managed.workspace.id, { sessionManager: this })
                 const safePath = await validateFilePath(a.path, extraDirs)
                 const attachment = readFileAttachment(safePath)
                 if (attachment) {

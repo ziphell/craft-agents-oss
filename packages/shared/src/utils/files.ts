@@ -287,7 +287,7 @@ function looksLikeFilePath(str: string): boolean {
  * Resolve a path (handle ~ expansion)
  */
 export function resolvePath(filePath: string): string {
-  if (filePath.startsWith('~/')) {
+  if (filePath.startsWith('~/') || filePath.startsWith('~\\')) {
     const home = process.env.HOME || process.env.USERPROFILE || '';
     return resolve(home, filePath.slice(2));
   }

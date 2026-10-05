@@ -28,13 +28,17 @@ export function expandPath(inputPath: string, basePath?: string): string {
   let expanded = inputPath;
   const home = homedir();
 
-  // Handle ~ alone
+  // Handle ~ alone, and ~ with either separator. A portable path may carry
+  // `~/` or `~\` — the latter is what `path.normalize('~/…')` yields on Windows.
+  // Recognizing only `~/` sent `~\…` down the relative branch below, where it
+  // was resolved against the cwd; that is how a literal `~` folder ended up in
+  // the working directory.
   if (expanded === '~') {
     return home;
   }
 
-  // Handle ~/ prefix
-  if (expanded.startsWith('~/')) {
+  // Handle ~/ and ~\ prefixes
+  if (expanded.startsWith('~/') || expanded.startsWith('~\\')) {
     expanded = join(home, expanded.slice(2));
   }
 

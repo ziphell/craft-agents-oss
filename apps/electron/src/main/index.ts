@@ -786,6 +786,10 @@ app.whenReady().then(async () => {
       // stays `belongsTo`'s answer. (A task's section needs no resolver — it is named
       // by its own slug.)
       browserPaneManager?.setSessionLabelResolver((sessionId) => sessionManager?.getSessionName(sessionId) ?? null)
+      // Files a conversation works with can live outside its workspace (the working
+      // directory is settable), so the browser upload path needs the conversation list
+      // to allow them. The manager is built before the session manager, hence the setter.
+      if (sessionManager) browserPaneManager?.setSessionManager(sessionManager)
 
       // -----------------------------------------------------------------------
       // Messaging Gateway — attach the WS publisher, init local workspaces,

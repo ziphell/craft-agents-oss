@@ -148,7 +148,7 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
    */
   server.handle(RPC_CHANNELS.browserPane.OPEN_FILE, async (ctx, path: string) => {
     const workspaceId = ctx.workspaceId ?? windowManager?.getWorkspaceForWindow(ctx.webContentsId!)
-    const filePath = await validateFilePath(path, getWorkspaceAllowedDirs(workspaceId))
+    const filePath = await validateFilePath(path, getWorkspaceAllowedDirs(workspaceId, { sessionManager: deps.sessionManager }))
     const info = statSync(filePath, { throwIfNoEntry: false })
     if (!info?.isFile()) {
       throw new Error(`Not a file: ${path}`)

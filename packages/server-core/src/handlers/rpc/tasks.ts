@@ -115,8 +115,12 @@ const MAX_PLAN_FILE_BYTES = 256 * 1024
  * Each failure (missing / not a file / over the ceiling / unreadable) is refused with its own
  * message, because these surface to the person in the UI.
  */
-async function readPlanFile(planPath: string, workspaceId: string): Promise<string> {
-  const safePath = await validateFilePath(planPath, getWorkspaceAllowedDirs(workspaceId))
+async function readPlanFile(
+  planPath: string,
+  workspaceId: string,
+  sessionManager: HandlerDeps['sessionManager'],
+): Promise<string> {
+  const safePath = await validateFilePath(planPath, getWorkspaceAllowedDirs(workspaceId, { sessionManager }))
 
   let size: number
   try {
@@ -255,7 +259,7 @@ export function registerTasksHandlers(server: RpcServer, deps: HandlerDeps): voi
     // A named plan is read BEFORE the draft session is created: a bad path (missing / over the
     // ceiling / unreadable) must fail the call — the client shows the message as a toast — without
     // leaving a hidden orphan draft behind. Absent → the generator behaves exactly as before.
-    const planText = req.planPath ? await readPlanFile(req.planPath, workspaceId) : undefined
+    const planText = req.planPath ? await readPlanFile(req.planPath, workspaceId, deps.sessionManager) : undefined
     const orchestrator = await deps.sessionManager.createSession(workspaceId, {
       name: req.title?.trim() || 'New task',
       sessionStatus: 'todo',

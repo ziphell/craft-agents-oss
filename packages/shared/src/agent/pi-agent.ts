@@ -2676,7 +2676,7 @@ export class PiAgent extends BaseAgent {
    */
   private resolvedCwd(): string {
     const wd = this.workingDirectory;
-    if (wd.startsWith('~/')) return join(homedir(), wd.slice(2));
+    if (wd.startsWith('~/') || wd.startsWith('~\\')) return join(homedir(), wd.slice(2));
     if (wd === '~') return homedir();
     return wd;
   }

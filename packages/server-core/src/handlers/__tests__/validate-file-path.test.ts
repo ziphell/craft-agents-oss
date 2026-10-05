@@ -38,6 +38,15 @@ describe('validateFilePath', () => {
     expect(result).toContain('test.txt')
   })
 
+  it('compares paths case-insensitively on Windows', async () => {
+    // Windows folders are case-insensitive: a path whose case differs from the
+    // allowed dir must still be allowed.
+    if (sep !== '\\') return
+    const path = join(home.toUpperCase(), 'test.txt')
+    const result = await validateFilePath(path)
+    expect(result.toLowerCase()).toContain('test.txt')
+  })
+
   it('blocks sensitive files even inside allowed dirs', async () => {
     const path = join(home, '.ssh', 'id_rsa')
     await expect(validateFilePath(path)).rejects.toThrow('sensitive')

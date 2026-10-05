@@ -7,7 +7,68 @@
  */
 
 import { describe, it, expect } from 'bun:test'
+import { unified } from 'unified'
+import remarkParse from 'remark-parse'
 import { preprocessLinks, detectLinks, isPlaceholderUrl, isFilePathTarget } from '../linkify'
+
+/**
+ * What markdown actually delivers for the first link in this text — the destination the click
+ * handler sees and the text the reader sees. Both are subject to the same escapes, and a
+ * destination is the one place where what was written and what arrives differ.
+ */
+function parsedLink(markdown: string): { url?: string; text?: string } {
+  let found: { url?: string; text?: string } | undefined
+  const walk = (node: unknown): void => {
+    const n = node as { type?: string; url?: unknown; children?: unknown[] }
+    if (n.type === 'link') {
+      const first = (n.children ?? [])[0] as { value?: string } | undefined
+      found = { url: typeof n.url === 'string' ? n.url : undefined, text: first?.value }
+      return
+    }
+    for (const child of n.children ?? []) {
+      if (found === undefined) walk(child)
+    }
+  }
+  walk(unified().use(remarkParse).parse(markdown))
+  return found ?? {}
+}
+
+/** A reference definition carries the URL a link referring to it inherits — the same loss. */
+function parsedDefinition(markdown: string): string | undefined {
+  let found: string | undefined
+  const walk = (node: unknown): void => {
+    const n = node as { type?: string; url?: unknown; children?: unknown[] }
+    if (n.type === 'definition' && typeof n.url === 'string') {
+      found = n.url
+      return
+    }
+    for (const child of n.children ?? []) {
+      if (found === undefined) walk(child)
+    }
+  }
+  walk(unified().use(remarkParse).parse(markdown))
+  return found
+}
+
+/** What a reader sees: every text node markdown delivers, concatenated. */
+function renderedText(markdown: string): string {
+  const out: string[] = []
+  const walk = (node: unknown): void => {
+    const n = node as { value?: unknown; children?: unknown[] }
+    if (typeof n.value === 'string') out.push(n.value)
+    for (const child of n.children ?? []) walk(child)
+  }
+  walk(unified().use(remarkParse).parse(markdown))
+  return out.join('')
+}
+
+function parsedDestination(markdown: string): string | undefined {
+  return parsedLink(markdown).url
+}
+
+function parsedLinkText(markdown: string): string | undefined {
+  return parsedLink(markdown).text
+}
 
 // ============================================================================
 // preprocessLinks — existing markdown links should NOT be corrupted
@@ -43,6 +104,102 @@ describe('preprocessLinks', () => {
     it('preserves link with domain and extra description in text', () => {
       const input = '- [stackoverflow.com - How to fix React hydration errors](https://stackoverflow.com/questions/123)'
       expect(preprocessLinks(input)).toBe(input)
+    })
+  })
+
+  // A destination is subject to CommonMark's backslash escapes, and `\` before punctuation is one
+  // of them: `.` is punctuation, so `[test.md](C:\Users\Ryan\.craft-agent\…)` arrived at the
+  // click handler as `…\Ryan.craft-agent\…` — a path that is not on disk, and not inside an
+  // allowed directory either (`C:\Users\Ryan` is a *prefix* of `C:\Users\Ryan.craft-agent`,
+  // not its parent), so the app refused a file the person could see plainly exists.
+  describe('a Windows path keeps its backslashes as a link destination', () => {
+    const PATH = 'C:\\Users\\Ryan\\.craft-agent\\workspaces\\my-workspace\\projects\\a\\test.md'
+    const ESCAPED_PATH = PATH.replace(/\\/g, '\\\\')
+
+    it('escapes the destination so markdown delivers the path it was given', () => {
+      const input = `[test.md](${PATH})`
+      expect(preprocessLinks(input)).toBe(`[test.md](${ESCAPED_PATH})`)
+      expect(parsedDestination(preprocessLinks(input))).toBe(PATH)
+    })
+
+    it('leaves an already-escaped destination alone', () => {
+      const input = `[test.md](${ESCAPED_PATH})`
+      expect(preprocessLinks(input)).toBe(input)
+      expect(parsedDestination(preprocessLinks(input))).toBe(PATH)
+    })
+
+    it('is stable when run twice, as a re-render would', () => {
+      const once = preprocessLinks(`[test.md](${PATH})`)
+      expect(preprocessLinks(once)).toBe(once)
+    })
+
+    it('handles the angle-bracket form, which protects nothing from this', () => {
+      const input = `[test.md](<${PATH}>)`
+      expect(parsedDestination(preprocessLinks(input))).toBe(PATH)
+    })
+
+    it('escapes every Windows link in the text', () => {
+      const other = 'C:\\Users\\Ryan\\.craft-agent\\workspaces\\my-workspace\\projects\\a\\flows\\flow.drawio'
+      const input = `see [test.md](${PATH}) and [flow](${other})`
+      const processed = preprocessLinks(input)
+      expect(parsedDestination(processed)).toBe(PATH)
+      expect(processed).toContain(`(${other.replace(/\\/g, '\\\\')})`)
+    })
+
+    it('leaves destinations that are not Windows paths alone', () => {
+      const input = '[docs](https://example.com/a_b\\c.md) and [notes](notes\\draft.md)'
+      expect(preprocessLinks(input)).toBe(input)
+    })
+
+    it('escapes the path it detects in prose, for the label as well as the click', () => {
+      const path = String.raw`D:\work\proj\a\test.md`
+      const processed = preprocessLinks(`see ${path} here`)
+
+      // Both halves have to read back as the path: the text is under the same escapes as the
+      // destination, so an unescaped label would *display* one character short.
+      expect(parsedLinkText(processed)).toBe(path)
+      expect(parsedDestination(processed)).toBe(path)
+      // Escaped in the source for both halves — twice the backslashes, twice over.
+      const escaped = path.replace(/\\/g, '\\\\')
+      expect(processed).toBe(`see [${escaped}](${escaped}) here`)
+    })
+
+    it('keeps a UNC path intact, leading pair and all', () => {
+      const path = String.raw`\\fileserver\team\proj\.hidden\a\test.md`
+      const processed = preprocessLinks(`see ${path} here`)
+
+      // The leading pair is two backslashes *of the path*, so both are escaped — the one place a
+      // pair is not one backslash already written the long way.
+      expect(parsedLinkText(processed)).toBe(path)
+      expect(parsedDestination(processed)).toBe(path)
+      expect(preprocessLinks(processed)).toBe(processed)
+    })
+
+    it('leaves a UNC destination that is already escaped alone', () => {
+      const escaped = String.raw`\\\\fileserver\\team\\a.md`
+      const input = `[share](${escaped})`
+      expect(preprocessLinks(input)).toBe(input)
+    })
+
+    it('routes a UNC target to the file opener, raw or percent-encoded', () => {
+      // The renderer percent-encodes the backslashes before the click handler sees them — one
+      // `%5C` each, the leading pair included — and decodeFilePath turns them back.
+      expect(isFilePathTarget(String.raw`\\fileserver\team\a.md`)).toBe(true)
+      expect(isFilePathTarget('%5C%5Cfileserver%5Cteam%5Ca.md')).toBe(true)
+      expect(isFilePathTarget('%5c%5cserver%5cshare%5ca.md')).toBe(true)
+    })
+
+    it('leaves a detected path inside code alone', () => {
+      const input = 'see `D:\\work\\a\\test.md` here'
+      expect(preprocessLinks(input)).toBe(input)
+    })
+
+    it('leaves a link inside code alone, so the broken form can still be quoted', () => {
+      const fenced = '```\n[test.md](C:\\Users\\Ryan\\.craft-agent\\a.md)\n```'
+      expect(preprocessLinks(fenced)).toBe(fenced)
+
+      const inline = 'write `[test.md](C:\\Users\\Ryan\\.craft-agent\\a.md)` to link it'
+      expect(preprocessLinks(inline)).toBe(inline)
     })
   })
 
@@ -215,6 +372,69 @@ describe('isPlaceholderUrl', () => {
 // detectLinks — basic detection sanity checks
 // ============================================================================
 
+// A definition's destination is invisible in what is rendered — that is what a definition is for —
+// but a link that refers to it inherits the URL markdown hands over, so the same loss lands here.
+describe('reference definitions', () => {
+  const PATH = String.raw`C:\Users\Ryan\.craft-agent\workspaces\a\test.md`
+
+  it('keeps the destination intact', () => {
+    const processed = preprocessLinks(`[test.md][ref]\n\n[ref]: ${PATH}`)
+    expect(parsedDefinition(processed)).toBe(PATH)
+    expect(processed).toContain(`[ref]: ${PATH.replace(/\\/g, '\\\\')}`)
+  })
+
+  it('leaves a title after the destination alone', () => {
+    const processed = preprocessLinks(`[ref]: ${PATH} "the file"`)
+    expect(parsedDefinition(processed)).toBe(PATH)
+    expect(processed.endsWith('"the file"')).toBe(true)
+  })
+
+  it('leaves a definition inside a fence alone', () => {
+    const input = '```\n[ref]: C:\\Users\\Ryan\\.craft-agent\\a.md\n```'
+    expect(preprocessLinks(input)).toBe(input)
+  })
+})
+
+// The *text* of a message goes through the same escapes a destination does, so a Windows path in
+// prose reached the reader a character short: `\.craft-agent` showed as `.craft-agent`, quietly
+// joining two folder names.
+describe('a Windows path in the message text', () => {
+  const PATH = String.raw`C:\Users\Ryan\code\craft-agents-oss\~\.craft-agent`
+
+  it('is shown exactly as it was written', () => {
+    const sentence = `见 ${PATH} 这一层`
+    expect(renderedText(preprocessLinks(sentence))).toBe(sentence)
+  })
+
+  it('keeps its backslashes when it is the label of a link', () => {
+    const processed = preprocessLinks(`[${PATH}](${PATH})`)
+    expect(renderedText(processed)).toBe(PATH)
+    expect(parsedDestination(processed)).toBe(PATH)
+  })
+
+  it('covers the portable `~` form the app writes paths in', () => {
+    const portable = String.raw`~\.craft-agent\workspaces\my-workspace`
+    expect(renderedText(preprocessLinks(portable))).toBe(portable)
+  })
+
+  it('covers a UNC path, extension or not', () => {
+    const unc = String.raw`\\fileserver\team\.hidden`
+    expect(renderedText(preprocessLinks(unc))).toBe(unc)
+  })
+
+  it('leaves markdown escapes that are not paths alone', () => {
+    const escapes = String.raw`snake\_case and \*literal asterisks\* and \[not a link\]`
+    expect(renderedText(preprocessLinks(escapes))).toBe('snake_case and *literal asterisks* and [not a link]')
+  })
+
+  it('leaves code alone', () => {
+    const fenced = '```\n' + PATH + '\n```'
+    expect(preprocessLinks(fenced)).toBe(fenced)
+    const inline = 'write `' + PATH + '` to see it'
+    expect(preprocessLinks(inline)).toBe(inline)
+  })
+})
+
 describe('detectLinks', () => {
   it('detects a bare URL', () => {
     const links = detectLinks('Visit https://example.com today')
@@ -276,6 +496,48 @@ describe('detectLinks', () => {
     expect(links[0]).toBeDefined()
     expect(links[0]!.type).toBe('file')
     expect(links[0]!.url).toBe('../README.md')
+  })
+
+  // A drive letter looks like a scheme, and the file-path classes held neither `\` nor `:`, so a
+  // Windows absolute path matched no branch at all: the path a Windows user pasted stayed plain
+  // text while the POSIX path in the next sentence was a link.
+  describe('Windows absolute paths', () => {
+    it('detects one on any drive, not just C:', () => {
+      const path = String.raw`D:\work\proj\a\test.md`
+      const links = detectLinks(`Open ${path} for details`)
+      expect(links).toHaveLength(1)
+      expect(links[0]!.type).toBe('file')
+      expect(links[0]!.url).toBe(path)
+    })
+
+    it('detects the forward-slash form, and a lower-case drive letter', () => {
+      expect(detectLinks('Open e:/work/proj/a/test.md for details').map((l) => l.url)).toEqual([
+        'e:/work/proj/a/test.md',
+      ])
+    })
+
+    it('detects one whose folder names are not ASCII', () => {
+      const path = 'C:\\Users\\\u7528\u6237\\a.md'
+      expect(detectLinks(`Open ${path} for details`).map((l) => l.url)).toEqual([path])
+    })
+
+    it('does not detect one with no known file extension', () => {
+      expect(detectLinks(String.raw`Open D:\work\proj\a today`)).toHaveLength(0)
+    })
+
+    it('detects one written beside full-width punctuation', () => {
+      const path = String.raw`D:\work\a\test.md`
+      const links = detectLinks(`\u89c1 ${path}\uff0c\u7136\u540e`)
+      expect(links.map((l) => l.url)).toEqual([path])
+    })
+
+    it('detects a UNC path, whose root is two backslashes', () => {
+      const path = String.raw`\\fileserver\team\proj\.hidden\a\test.md`
+      const links = detectLinks(`Open ${path} for details`)
+      expect(links).toHaveLength(1)
+      expect(links[0]!.type).toBe('file')
+      expect(links[0]!.url).toBe(path)
+    })
   })
 })
 

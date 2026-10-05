@@ -1,8 +1,10 @@
-import { normalize, isAbsolute, sep } from 'path'
+import { normalize, isAbsolute, resolve, sep } from 'path'
 import { homedir, tmpdir } from 'os'
 import { realpath } from 'fs/promises'
 import { getWorkspaceByNameOrId, type Workspace } from '@craft-agent/shared/config'
 import { loadWorkspaceConfig } from '@craft-agent/shared/workspaces'
+import { loadWorkspaceProjects } from '@craft-agent/shared/projects'
+import type { ISessionManager } from './session-manager-interface'
 import type { PlatformServices } from '../runtime/platform'
 
 /**
@@ -48,11 +50,27 @@ export function sanitizeFilename(name: string): string {
 }
 
 /**
- * Resolve allowed directories for a workspace: its root path and configured
- * working directory (if set). Returns an empty array if the workspace is
- * unknown or has no relevant paths.
+ * Extra context a caller can hand in when resolving the allowed directories.
+ *
+ * `sessionManager` lets the working directories of this workspace's conversations count
+ * as allowed. A conversation's working directory is settable and may sit anywhere — outside
+ * the workspace as easily as inside — and a file written there is still a file this
+ * workspace showed, so reading or saving it back must not be refused.
  */
-export function getWorkspaceAllowedDirs(workspaceId?: string | null): string[] {
+export interface WorkspaceAllowedDirsOptions {
+  sessionManager?: Pick<ISessionManager, 'getSessions'>
+}
+
+/**
+ * Resolve allowed directories for a workspace: its root path, its configured
+ * working directory, every project's bound working directory, and — when a session
+ * manager is given — every conversation's working directory. Returns an empty array
+ * if the workspace is unknown or has no relevant paths.
+ */
+export function getWorkspaceAllowedDirs(
+  workspaceId?: string | null,
+  options?: WorkspaceAllowedDirsOptions,
+): string[] {
   if (!workspaceId) return []
   const workspace = getWorkspaceByNameOrId(workspaceId)
   if (!workspace) return []
@@ -62,25 +80,84 @@ export function getWorkspaceAllowedDirs(workspaceId?: string | null): string[] {
   if (config?.defaults?.workingDirectory) {
     dirs.push(config.defaults.workingDirectory)
   }
+
+  // A project's own folder is always inside the workspace; only its bound working
+  // directory can sit outside it, so only that one needs adding.
+  for (const project of loadWorkspaceProjects(workspace.rootPath)) {
+    if (project.config.workingDirectory) {
+      dirs.push(project.config.workingDirectory)
+    }
+  }
+
+  // A conversation's working directory is settable too, and may be anywhere.
+  if (options?.sessionManager) {
+    for (const session of options.sessionManager.getSessions(workspaceId)) {
+      if (session.workingDirectory) {
+        dirs.push(session.workingDirectory)
+      }
+    }
+  }
+
   return dirs
+}
+
+/**
+ * Expand a leading `~` to the user's home directory. Both separators are accepted
+ * (`~/` and `~\`), because a portable path may carry either.
+ */
+function expandHome(p: string): string {
+  if (p === '~') return homedir()
+  if (p.startsWith('~/') || p.startsWith('~\\')) return resolve(homedir(), p.slice(2))
+  return p
+}
+
+/**
+ * Resolve symlinks when the path exists; otherwise return it as given (a file that
+ * does not exist yet is still a valid target for a write).
+ */
+async function realpathIfExists(p: string): Promise<string> {
+  try {
+    return await realpath(p)
+  } catch {
+    return p
+  }
+}
+
+/**
+ * Comparison form of a path: normalized, without a trailing separator, and
+ * case-folded on Windows (where `C:\Users\Ryan` and `c:\users\ryan` are one folder).
+ */
+function toComparablePath(p: string): string {
+  let normalized = normalize(p)
+  if (normalized.length > 1 && normalized.endsWith(sep)) {
+    normalized = normalized.slice(0, -1)
+  }
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
+}
+
+/** Is `realPath` the directory `dir` itself or something inside it? */
+function isWithinDir(realPath: string, dir: string): boolean {
+  if (realPath === dir) return true
+  return realPath.startsWith(dir.endsWith(sep) ? dir : dir + sep)
 }
 
 /**
  * Validates that a file path is within allowed directories to prevent path traversal attacks.
  * Allowed directories: user's home directory, /tmp, and any additional dirs passed by the caller
- * (e.g. workspace root, workspace working directory).
+ * (e.g. workspace root, workspace working directory). Additional dirs may be portable (`~/...`),
+ * so they are expanded the same way as the path under check.
+ *
+ * Both sides of the containment check are resolved through symlinks and compared
+ * case-insensitively on Windows. Comparing the file's resolved path against an unresolved
+ * allowed dir (and with a case-sensitive `startsWith`) refused files that plainly sit inside
+ * the workspace when a symlink or a case difference happened to sit between them.
  */
 export async function validateFilePath(
   filePath: string,
   additionalAllowedDirs?: string[],
 ): Promise<string> {
-  // Normalize the path to resolve . and .. components
-  let normalizedPath = normalize(filePath)
-
-  // Expand ~ to home directory
-  if (normalizedPath.startsWith('~')) {
-    normalizedPath = normalizedPath.replace(/^~/, homedir())
-  }
+  // Normalize to resolve . and .. components, then expand a leading ~
+  const normalizedPath = expandHome(normalize(filePath))
 
   // Must be an absolute path
   if (!isAbsolute(normalizedPath)) {
@@ -88,27 +165,25 @@ export async function validateFilePath(
   }
 
   // Resolve symlinks to get the real path
-  let realFilePath: string
-  try {
-    realFilePath = await realpath(normalizedPath)
-  } catch {
-    // File doesn't exist or can't be resolved - use normalized path
-    realFilePath = normalizedPath
-  }
+  const realFilePath = await realpathIfExists(normalizedPath)
 
   // Define allowed base directories
   const allowedDirs = [
     homedir(),
     tmpdir(),
     ...(additionalAllowedDirs ?? []),
-  ].filter(Boolean)
+  ].filter(Boolean).map(expandHome)
 
-  // Check if the real path is within an allowed directory (cross-platform)
-  const isAllowed = allowedDirs.some(dir => {
-    const normalizedDir = normalize(dir)
-    const normalizedReal = normalize(realFilePath)
-    return normalizedReal.startsWith(normalizedDir + sep) || normalizedReal === normalizedDir
-  })
+  // Check if the real path is within an allowed directory (cross-platform, case-aware on Windows)
+  const comparableReal = toComparablePath(realFilePath)
+  let isAllowed = false
+  for (const dir of allowedDirs) {
+    const comparableDir = toComparablePath(await realpathIfExists(dir))
+    if (isWithinDir(comparableReal, comparableDir)) {
+      isAllowed = true
+      break
+    }
+  }
 
   if (!isAllowed) {
     throw new Error('Access denied: file path is outside allowed directories')

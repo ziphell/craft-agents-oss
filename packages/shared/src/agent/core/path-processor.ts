@@ -94,7 +94,7 @@ export class PathProcessor {
     if (path === '~') {
       return this.homeDir;
     }
-    if (path.startsWith('~/')) {
+    if (path.startsWith('~/') || path.startsWith('~\\')) {
       return this.homeDir + path.slice(1);
     }
     return path;
