@@ -19,8 +19,8 @@ import {
   cpSync,
 } from 'fs';
 import { join } from 'path';
+import { homedir } from 'os';
 import { randomUUID } from 'crypto';
-import { CONFIG_DIR } from '../config/paths.ts';
 import { expandPath, toPortablePath } from '../utils/paths.ts';
 import { atomicWriteFileSync, readJsonFileSync } from '../utils/files.ts';
 import { CONFIG_DIR, DEFAULT_CONFIG_DIR_NAME } from '../config/paths.ts';
