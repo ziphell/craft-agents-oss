@@ -133,10 +133,10 @@ export function parseStoredApiCredential(raw: string, api: StoredCredentialShape
   if (api?.headerName && keys.length === 1 && keys[0] === api.headerName) {
     return headerMap[api.headerName]!;
   }
-  // No configured header names and no single-header match: the credential is not
-  // intended as a header map — spreading arbitrary JSON keys (e.g. a service-account
-  // object) as header names would corrupt the request.
-  if (configuredNames.length === 0) return raw;
+  // No single-header match: the value was stored as a JSON header map, so send it
+  // as one. (Reaching here means `authType === 'header'` — `configuredNames` was
+  // already handled above — which is exactly the intent the multi-header prompt
+  // writes: the user typed the value under these names, so send them under those names.)
   return headerMap;
 }
 

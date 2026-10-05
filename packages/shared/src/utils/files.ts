@@ -885,7 +885,7 @@ export function formatSinglePathToRelative(absolutePath: string, cwd?: string): 
 
   const relativePath = relative(basePath, absolutePath);
   if (relativePath && !relativePath.startsWith('..') && !relativePath.startsWith('./')) {
-    return './' + relativePath;
+    return './' + relativePath.split(sep).join('/');
   }
   return relativePath || absolutePath;
 }
