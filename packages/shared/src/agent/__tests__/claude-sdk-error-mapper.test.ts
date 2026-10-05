@@ -281,3 +281,33 @@ describe('mapClaudeSdkAssistantError', () => {
     });
   });
 });
+
+describe('mapClaudeSdkAssistantError — codes added in SDK 0.3.280', () => {
+  it('maps verification_required to a non-retryable credentials error pointing at the Console', () => {
+    const error = mapClaudeSdkAssistantError('verification_required', baseContext);
+
+    expect(error.code).toBe('invalid_credentials');
+    expect(error.title).toBe('Verification Required');
+    expect(error.canRetry).toBe(false);
+    expect(error.details?.some(d => /console/i.test(d))).toBe(true);
+    expect(error.actions.some(a => a.action === 'settings')).toBe(true);
+  });
+
+  it('maps cloud_credential_error to a credentials error naming the cloud providers', () => {
+    const error = mapClaudeSdkAssistantError('cloud_credential_error', {
+      ...baseContext,
+      capturedApiError: {
+        status: 403,
+        statusText: 'Forbidden',
+        message: 'The security token included in the request is expired',
+        timestamp: Date.now(),
+      },
+    });
+
+    expect(error.code).toBe('invalid_credentials');
+    expect(error.title).toBe('Cloud Credential Error');
+    expect(error.canRetry).toBe(false);
+    expect(error.details?.some(d => /AWS|Google Cloud|Azure/.test(d))).toBe(true);
+    expect(error.details?.some(d => d.includes('Status: 403 Forbidden'))).toBe(true);
+  });
+});

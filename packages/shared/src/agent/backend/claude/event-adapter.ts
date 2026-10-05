@@ -13,7 +13,8 @@
  */
 
 import type { SDKMessage, SDKAssistantMessageError } from '@anthropic-ai/claude-agent-sdk';
-import type { AgentEvent } from '@craft-agent/core/types';
+import type { AgentEvent, ContextUsageSnapshot } from '@craft-agent/core/types';
+import { contextAfterCompaction, contextFromClaude } from '../../context-usage.ts';
 import type { AgentError } from '../../errors.ts';
 import { BaseEventAdapter } from '../base-event-adapter.ts';
 import { ToolIndex, extractToolStarts, extractToolResults, isParentTaskTool, type ContentBlock } from '../../tool-matching.ts';
@@ -76,10 +77,13 @@ export class ClaudeEventAdapter extends BaseEventAdapter {
   private emittedToolStarts = new Set<string>();
   private activeParentTools = new Set<string>();
   private pendingText: string | null = null;
+  private manualCompactionRequested = false;
+  private manualCompactionBoundarySeen = false;
 
   // Session-persistent state (survives across turns)
   private lastAssistantUsage: AssistantUsage | null = null;
   private cachedContextWindow?: number;
+  private contextUsage?: ContextUsageSnapshot;
   private _sdkTools: string[] = [];
 
   private callbacks: ClaudeAdapterCallbacks;
@@ -99,11 +103,26 @@ export class ClaudeEventAdapter extends BaseEventAdapter {
     this.activeParentTools = new Set();
     this.pendingText = null;
     this.lastAssistantUsage = null;
+    this.manualCompactionRequested = false;
+    this.manualCompactionBoundarySeen = false;
   }
 
   // ============================================================
   // Public API
   // ============================================================
+
+  /** Called only for our explicit /compact command, after startTurn(). */
+  expectManualCompaction(): void {
+    this.manualCompactionRequested = true;
+  }
+
+  setContextUsage(snapshot: ContextUsageSnapshot): void {
+    this.contextUsage = snapshot;
+  }
+
+  getContextUsage(): ContextUsageSnapshot | undefined {
+    return this.contextUsage;
+  }
 
   /**
    * Convert an SDK message to AgentEvents.
@@ -227,6 +246,11 @@ export class ClaudeEventAdapter extends BaseEventAdapter {
 
     // Track usage from non-sidechain assistant messages
     const isSidechain = (message as any).parent_tool_use_id !== null;
+    const structuredContextUsage = !isSidechain ? contextFromClaude((message as any).context_usage) : undefined;
+    if (structuredContextUsage) {
+      this.contextUsage = structuredContextUsage;
+      events.push({ type: 'context_usage', contextUsage: structuredContextUsage });
+    }
     if (!isSidechain && (message as any).message?.usage) {
       const usage = (message as any).message.usage;
       this.lastAssistantUsage = {
@@ -247,6 +271,20 @@ export class ClaudeEventAdapter extends BaseEventAdapter {
           contextWindow: this.cachedContextWindow,
         },
       });
+
+      // Local command replies carry synthetic zero usage, not fresh occupancy.
+      // Never let those overwrite a compact boundary or the previous snapshot.
+      if (!this.manualCompactionRequested && !structuredContextUsage) {
+        const estimate = contextFromClaude({
+          totalTokens: currentInputTokens + (usage.output_tokens ?? 0),
+          rawMaxTokens: this.contextUsage?.limitTokens ?? this.cachedContextWindow,
+          isAutoCompactEnabled: this.contextUsage?.limitKind === 'compaction',
+        });
+        if (estimate) {
+          this.contextUsage = estimate;
+          events.push({ type: 'context_usage', contextUsage: estimate });
+        }
+      }
     }
 
     // Full assistant message with content blocks
@@ -483,6 +521,17 @@ export class ClaudeEventAdapter extends BaseEventAdapter {
       contextWindow: primaryModelUsage?.contextWindow,
     };
 
+    if (this.manualCompactionRequested) {
+      // The installed CLI returns result(success, is_error:false) even for
+      // too-small/API-failed /compact commands. Only a correlated boundary
+      // proves success, and plan readiness waits until this terminal result.
+      if (this.manualCompactionBoundarySeen && msg.subtype === 'success' && !msg.is_error) {
+        events.push({ type: 'info', message: 'Compacted Conversation', compactionTrigger: 'manual' });
+      } else {
+        events.push({ type: 'compaction_failed' });
+      }
+    }
+
     if (msg.subtype === 'success') {
       events.push({ type: 'complete', usage });
     } else {
@@ -508,10 +557,13 @@ export class ClaudeEventAdapter extends BaseEventAdapter {
         this.callbacks.onDebug?.(`SDK init: captured ${this._sdkTools.length} tools`);
       }
     } else if (msg.subtype === 'compact_boundary') {
-      events.push({
-        type: 'info',
-        message: 'Compacted Conversation',
-      });
+      this.contextUsage = contextAfterCompaction(msg.compact_metadata?.post_tokens, this.contextUsage);
+      events.push({ type: 'context_usage', contextUsage: this.contextUsage });
+      if (this.manualCompactionRequested && msg.compact_metadata?.trigger === 'manual') {
+        this.manualCompactionBoundarySeen = true;
+      } else {
+        events.push({ type: 'info', message: 'Compacted Conversation', compactionTrigger: 'auto' });
+      }
     } else if (msg.subtype === 'status' && msg.status === 'compacting') {
       events.push({ type: 'status', message: 'Compacting conversation...' });
     } else if (msg.subtype === 'task_notification') {

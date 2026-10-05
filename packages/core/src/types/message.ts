@@ -2,6 +2,8 @@
  * Message types for conversations
  */
 
+import type { ContextUsageSnapshot } from './context-usage.ts';
+
 /**
  * Message roles for display (runtime)
  */
@@ -429,6 +431,9 @@ export interface TokenUsage {
   costUsd: number;
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
+  contextWindow?: number;
+  /** Current occupancy, separate from cumulative/billable counters. */
+  contextUsage?: ContextUsageSnapshot;
 }
 
 /**
@@ -553,7 +558,7 @@ export type AgentEvent =
   | { type: 'retry'; phase: 'backoff'; message: string }
   | { type: 'retry'; phase: 'active' | 'end' }
   | { type: 'status'; message: string }
-  | { type: 'info'; message: string }
+  | { type: 'info'; message: string; compactionTrigger?: 'manual' | 'auto' }
   | { type: 'text_delta'; text: string; turnId?: string; parentToolUseId?: string }
   | { type: 'text_complete'; text: string; isIntermediate?: boolean; turnId?: string; parentToolUseId?: string; sdkMessageId?: string }
   | { type: 'pi_turn_anchor'; sdkMessageId: string; sdkTurnAnchor: string }
@@ -586,7 +591,9 @@ export type AgentEvent =
   | { type: 'shell_killed'; shellId: string; turnId?: string }
   | { type: 'source_activated'; sourceSlug: string; originalMessage: string }
   | { type: 'usage_update'; usage: Pick<AgentEventUsage, 'inputTokens' | 'contextWindow'> }
-  | { type: 'steer_undelivered'; message: string };
+  | { type: 'context_usage'; contextUsage: ContextUsageSnapshot }
+  | { type: 'compaction_failed' }
+  | { type: 'steer_undelivered'; message: string; messageId?: string };
 
 /**
  * Generate a unique message ID

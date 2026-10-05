@@ -165,7 +165,7 @@ export interface ISessionManager {
   // ---------------------------------------------------------------------------
 
   setPendingPlanExecution(sessionId: string, planPath: string, draftInputSnapshot?: string): Promise<void>
-  markPendingPlanExecutionDispatched(sessionId: string): Promise<void>
+  markPendingPlanExecutionDispatched(sessionId: string): Promise<boolean>
   clearPendingPlanExecution(sessionId: string): Promise<void>
   getPendingPlanExecution(sessionId: string): { planPath: string; draftInputSnapshot?: string; awaitingCompaction: boolean; executionDispatched: boolean } | null
   markCompactionComplete(sessionId: string): Promise<void>

@@ -41,11 +41,12 @@ import type { Workspace } from '../config/storage.ts';
 
 // Event adapter
 import { PiEventAdapter } from './backend/pi/event-adapter.ts';
+import type { PiCompactResult } from './backend/pi/protocol.ts';
 import { EventQueue } from './backend/event-queue.ts';
 
 // System prompt for Craft Agent context
 import { getSystemPrompt } from '../prompts/system.ts';
-import { getCoAuthorPreference } from '../config/preferences.ts';
+import { formatPreferencesForPrompt, getCoAuthorPreference } from '../config/preferences.ts';
 import { loadProjectById, getProjectAssetsPath, listProjectAssets, getProjectMemoryPath, loadProjectMemory } from '../projects/storage.ts';
 import type { LoadedProject, ProjectPromptContext } from '../projects/types.ts';
 
@@ -214,6 +215,14 @@ export class PiAgent extends BaseAgent {
   private subprocessErrorRepeatCount = 0;
   private static readonly MAX_IDENTICAL_SUBPROCESS_ERRORS = 3;
 
+  // Pinned system-prompt components. Claude already pins these for SDK resume
+  // consistency; Pi gets the same behavior so preferences/project context do
+  // not silently mutate the cached system prefix mid-session.
+  private pinnedPreferencesPrompt: string | null = null;
+  private pinnedIncludeCoAuthoredBy: boolean | null = null;
+  private pinnedProjectContext: ProjectPromptContext | null = null;
+  private promptDriftNotified = false;
+
   /**
    * Look up the session's bound project once. The project block and the spec block
    * both build from this single load, so the two can never disagree about where the
@@ -254,6 +263,13 @@ export class PiAgent extends BaseAgent {
   private resetSubprocessErrorDedup(): void {
     this.lastSubprocessError = null;
     this.subprocessErrorRepeatCount = 0;
+  }
+
+  private clearPinnedPromptSnapshot(): void {
+    this.pinnedPreferencesPrompt = null;
+    this.pinnedIncludeCoAuthoredBy = null;
+    this.pinnedProjectContext = null;
+    this.promptDriftNotified = false;
   }
 
   // Ring buffer of recent subprocess stderr. Always on (independent of CRAFT_DEBUG)
@@ -311,9 +327,12 @@ export class PiAgent extends BaseAgent {
     reject: (error: Error) => void;
   }> = new Map();
 
+  // Invalidates a manual compact continuation if stop/dispose wins its await.
+  private compactionEpoch = 0;
+
   // Pending compact requests (manual compaction RPC)
   private pendingCompactions: Map<string, {
-    resolve: (result: { summary: string; firstKeptEntryId: string; tokensBefore: number } | null) => void;
+    resolve: (result: PiCompactResult) => void;
     reject: (error: Error) => void;
   }> = new Map();
 
@@ -1135,6 +1154,10 @@ export class PiAgent extends BaseAgent {
 
     // Detect session MCP tool completions (same pattern as in-process version)
     const eventType = event.type as string;
+    // Manual /compact uses an RPC-owned generator rather than the event queue.
+    // Its SDK end arrives before compact_result; only the correlated response
+    // may report success (including after a timeout/stop discarded the request).
+    if (eventType === 'compaction_end' && event.reason === 'manual') return;
     let adaptedEvent = event;
 
     if (eventType === 'tool_execution_start') {
@@ -1771,7 +1794,7 @@ export class PiAgent extends BaseAgent {
 
     const raw = msg.result as Record<string, unknown> | undefined;
     if (!raw) {
-      pending.resolve(null);
+      pending.reject(new Error('Compaction returned no result'));
       return;
     }
 
@@ -1779,6 +1802,9 @@ export class PiAgent extends BaseAgent {
       summary: String(raw.summary || ''),
       firstKeptEntryId: String(raw.firstKeptEntryId || ''),
       tokensBefore: Number(raw.tokensBefore || 0),
+      estimatedTokensAfter: raw.estimatedTokensAfter as PiCompactResult['estimatedTokensAfter'],
+      contextUsage: raw.contextUsage as PiCompactResult['contextUsage'],
+      compactionSettings: raw.compactionSettings as PiCompactResult['compactionSettings'],
     });
   }
 
@@ -1912,8 +1938,10 @@ export class PiAgent extends BaseAgent {
   /**
    * Ask subprocess to compact the active session context.
    */
-  private async requestCompact(customInstructions?: string): Promise<{ summary: string; firstKeptEntryId: string; tokensBefore: number } | null> {
+  private async requestCompact(customInstructions?: string): Promise<PiCompactResult> {
+    const epoch = this.compactionEpoch;
     await this.ensureSubprocess();
+    if (epoch !== this.compactionEpoch) throw new Error('Compaction aborted');
 
     const id = `compact-${++this.rpcIdCounter}`;
     // GPT-backed Pi compactions on large conversations can legitimately take 60-120s
@@ -1921,7 +1949,7 @@ export class PiAgent extends BaseAgent {
     // cases; truly hung subprocesses are caught by the stdio death watchdog.
     const timeoutMs = 300_000;
 
-    return new Promise<{ summary: string; firstKeptEntryId: string; tokensBefore: number } | null>((resolve, reject) => {
+    return new Promise<PiCompactResult>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingCompactions.delete(id);
         reject(new Error(`compact timed out after ${Math.floor(timeoutMs / 1000)}s`));
@@ -2047,6 +2075,8 @@ export class PiAgent extends BaseAgent {
     options?: ChatOptions
   ): AsyncGenerator<AgentEvent> {
     let message = messageParam;
+    const compactMatch = message.trim().match(/^\/compact(?:\s+([\s\S]+))?$/i);
+    const compactEpoch = this.compactionEpoch;
     // Reset state for new turn
     this._isProcessing = true;
     this.abortReason = undefined;
@@ -2085,6 +2115,7 @@ export class PiAgent extends BaseAgent {
           this.piSessionId = null;
           this.killSubprocess();
           this.clearSessionForRecovery();
+          this.clearPinnedPromptSnapshot();
 
           const recoveryContext = this.buildRecoveryContext();
           if (recoveryContext) {
@@ -2098,35 +2129,58 @@ export class PiAgent extends BaseAgent {
         }
       }
 
-      const trimmedMessage = message.trim();
-      const compactMatch = trimmedMessage.match(/^\/compact(?:\s+([\s\S]+))?$/i);
       if (compactMatch) {
+        if (compactEpoch !== this.compactionEpoch) throw new Error('Compaction aborted');
         const customInstructions = compactMatch[1]?.trim() || undefined;
         const compactResult = await this.requestCompact(customInstructions);
-        if (compactResult) {
-          yield {
-            type: 'info',
-            message: `Compacted context to fit within limits (from ~${compactResult.tokensBefore.toLocaleString()} tokens)`,
-          };
-        } else {
-          yield { type: 'info', message: 'Compacted context to fit within limits' };
-        }
+        if (compactEpoch !== this.compactionEpoch) throw new Error('Compaction aborted');
+        this.resetPrerequisiteState();
+        yield* this.adapter.adaptContextUsage(compactResult, true, compactResult.estimatedTokensAfter);
+        // A consumer can stop between yielded occupancy and success.
+        if (compactEpoch !== this.compactionEpoch) throw new Error('Compaction aborted');
+        yield {
+          type: 'info',
+          message: `Compacted context to fit within limits (from ~${compactResult.tokensBefore.toLocaleString()} tokens)`,
+          compactionTrigger: 'manual',
+        };
         yield { type: 'complete' };
         return;
       }
 
-      // Build system prompt
+      // Build system prompt from a pinned session snapshot. Pi folds stable
+      // blocks into its cached system prefix, so changing these mid-session
+      // would silently churn cache and diverge from Claude's behavior.
       const boundProject = this.loadBoundProject();
-      const projectContext = boundProject ? this.buildProjectPromptContext(boundProject) : null;
+      const currentPreferencesPrompt = formatPreferencesForPrompt();
+      const currentIncludeCoAuthoredBy = getCoAuthorPreference();
+      const currentProjectContext = boundProject ? this.buildProjectPromptContext(boundProject) : null;
+
+      if (this.pinnedPreferencesPrompt === null) {
+        this.pinnedPreferencesPrompt = currentPreferencesPrompt;
+        this.pinnedIncludeCoAuthoredBy = currentIncludeCoAuthoredBy;
+        this.pinnedProjectContext = currentProjectContext;
+      } else {
+        const preferencesDrifted = currentPreferencesPrompt !== this.pinnedPreferencesPrompt;
+        const coAuthorDrifted = currentIncludeCoAuthoredBy !== this.pinnedIncludeCoAuthoredBy;
+        const projectDrifted = JSON.stringify(currentProjectContext) !== JSON.stringify(this.pinnedProjectContext);
+        if ((preferencesDrifted || coAuthorDrifted || projectDrifted) && !this.promptDriftNotified) {
+          yield {
+            type: 'info',
+            message: 'Note: System prompt context changed since this session started. Start a new session to apply preference or project-memory changes.',
+          };
+          this.promptDriftNotified = true;
+        }
+      }
+
       const systemPrompt = getSystemPrompt(
-        undefined, // pinnedPreferencesPrompt
+        this.pinnedPreferencesPrompt ?? undefined,
         this.config.debugMode,
         this.config.workspace.rootPath,
         this.config.session?.workingDirectory,
         this.config.systemPromptPreset,
         'Craft Agents Backend', // backendName
-        getCoAuthorPreference(), // respect user's includeCoAuthoredBy preference (#576)
-        projectContext ?? undefined,
+        this.pinnedIncludeCoAuthoredBy ?? undefined,
+        this.pinnedProjectContext ?? undefined,
       );
 
       // Build context from sources
@@ -2247,7 +2301,9 @@ export class PiAgent extends BaseAgent {
         return;
       }
     } catch (error) {
+      if (compactMatch) yield { type: 'compaction_failed' };
       if (error instanceof Error && error.message.includes('abort')) {
+        if (compactMatch) yield { type: 'complete' };
         if (this.abortReason === AbortReason.PlanSubmitted) {
           return;
         }
@@ -2374,6 +2430,7 @@ export class PiAgent extends BaseAgent {
   }
 
   async abort(reason?: string): Promise<void> {
+    this.cancelPendingCompactions();
     // Fire Stop hook event (fire-and-forget)
     this.emitAutomationEvent('Stop', { hook_event_name: 'Stop' });
 
@@ -2392,6 +2449,7 @@ export class PiAgent extends BaseAgent {
   }
 
   forceAbort(reason: AbortReason): void {
+    this.cancelPendingCompactions();
     // Fire Stop hook event (fire-and-forget)
     this.emitAutomationEvent('Stop', { hook_event_name: 'Stop' });
 
@@ -2513,6 +2571,7 @@ export class PiAgent extends BaseAgent {
    * Used before an idle runtime restart so we don't leave transient children behind.
    */
   private async killSubprocessGracefully(timeoutMs = 2_000): Promise<void> {
+    this.cancelPendingCompactions();
     this.rejectAllPendingEphemeral(new Error('Pi subprocess stopped'));
 
     const child = this.subprocess;
@@ -2574,7 +2633,16 @@ export class PiAgent extends BaseAgent {
   /**
    * Kill the subprocess and clean up resources.
    */
+  private cancelPendingCompactions(): void {
+    this.compactionEpoch++;
+    for (const pending of this.pendingCompactions.values()) {
+      pending.reject(new Error('Compaction aborted'));
+    }
+    this.pendingCompactions.clear();
+  }
+
   private killSubprocess(): void {
+    this.cancelPendingCompactions();
     this.rejectAllPendingEphemeral(new Error('Pi subprocess stopped'));
 
     if (this.readline) {

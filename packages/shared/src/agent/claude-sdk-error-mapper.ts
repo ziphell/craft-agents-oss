@@ -276,6 +276,42 @@ export function mapClaudeSdkAssistantError(
         providerInfo,
       };
 
+    case 'verification_required':
+      return {
+        code: 'invalid_credentials',
+        title: 'Verification Required',
+        message: 'Anthropic requires your account or organization to complete verification before this request can run.',
+        details: [
+          ...apiDetails,
+          'Complete verification in the Anthropic Console, then retry',
+          'Some models and features are only available to verified organizations',
+        ],
+        actions: [
+          { key: 's', label: 'Settings', action: 'settings' },
+          { key: 'r', label: 'Retry', action: 'retry' },
+        ],
+        canRetry: false,
+        providerInfo,
+      };
+
+    case 'cloud_credential_error':
+      return {
+        code: 'invalid_credentials',
+        title: 'Cloud Credential Error',
+        message: 'The cloud provider credentials used for this connection were rejected.',
+        details: [
+          ...apiDetails,
+          'Check the AWS, Google Cloud, or Azure credentials configured for this connection',
+          'Cloud credentials often expire and need to be refreshed',
+        ],
+        actions: [
+          { key: 's', label: 'Settings', action: 'settings' },
+          { key: 'r', label: 'Retry', action: 'retry' },
+        ],
+        canRetry: false,
+        providerInfo,
+      };
+
     case 'rate_limit':
       return {
         code: 'rate_limited',

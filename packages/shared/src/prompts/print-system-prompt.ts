@@ -57,13 +57,15 @@ printAnnotation('Built once per session, passed to SDK, enables prompt caching')
 printAnnotation('The SDK also uses preset: "claude_code" which adds Claude Code\'s base system prompt');
 printAnnotation('');
 printAnnotation('Composed of:');
-printAnnotation('  1. User Preferences (if set) - formatPreferencesForPrompt()');
-printAnnotation('  2. Craft Agent Environment Marker - version, platform, arch');
-printAnnotation('  3. Core Instructions - capabilities, sources, guidelines');
-printAnnotation('  4. Configuration Documentation Refs - permissions, skills, themes, statuses');
-printAnnotation('  5. Permission Modes Documentation - inlined in system prompt');
-printAnnotation('  6. Error Handling & Tool Metadata - guidelines for tool usage');
-printAnnotation('  7. Debug Mode Context (if enabled) - formatDebugModeContext()');
+printAnnotation('  1. Craft Agent Environment Marker - version, platform, arch');
+printAnnotation('  2. Core Instructions - capabilities, sources, guidelines');
+printAnnotation('  3. Configuration Documentation Refs - permissions, skills, themes, statuses');
+printAnnotation('  4. Permission Modes Documentation - inlined in system prompt');
+printAnnotation('  5. Error Handling & Tool Metadata - guidelines for tool usage');
+printAnnotation('  6. User Preferences (if set) - formatPreferencesForPrompt()');
+printAnnotation('  7. Project context block (if session is bound to a project)');
+printAnnotation('  8. Debug Mode Context (if enabled) - formatDebugModeContext()');
+printAnnotation('  9. Project context file manifest - getProjectContextFilesPrompt()');
 
 const systemPrompt = getSystemPrompt(
   undefined, // No pinned preferences (use current from disk)
@@ -91,9 +93,9 @@ printHeader('PART 2: DYNAMIC USER MESSAGE CONTEXT (per message)');
 printAnnotation('These components are prepended to every user message');
 printAnnotation('Placed in user messages (not system prompt) to enable prompt caching');
 printAnnotation('');
-printAnnotation('Volatile vs stable (issue #862): blocks 1-3 (date/time, session_state, sources)');
-printAnnotation('change per turn and are VOLATILE; blocks 4-5 (workspace capabilities, working');
-printAnnotation('directory) are STABLE for the session.');
+printAnnotation('Volatile vs stable (issue #862): date/time, session_state, sources, and');
+printAnnotation('volatile git status change per turn. Workspace capabilities, working directory,');
+printAnnotation('and stable git repo metadata are STABLE for the session.');
 printAnnotation('  - Claude path: all blocks ride the user-message tail (system prompt stays cacheable).');
 printAnnotation('  - Pi path: STABLE blocks fold into the system prefix, VOLATILE blocks ride the');
 printAnnotation('    user tail — so the cached prefix is not re-stamped every turn.');
@@ -148,8 +150,8 @@ printSection(
   workingDirContext || '(empty - no working directory)',
   colors.magenta
 );
-printAnnotation('Contains: working_directory path, working_directory_context explanation');
-printAnnotation('If project context file exists, includes <project_context_file> tag (agent reads via Read tool)');
+printAnnotation('Contains: working_directory path and explanation. Context-file manifests are');
+printAnnotation('listed separately in <project_context_files>, relative to context_root when present.');
 
 // 6. Recovery Context (example)
 const exampleRecoveryContext = `<recovery_context>
@@ -188,7 +190,22 @@ local-mcp: enabled (stdio subprocess servers supported)
 
 <working_directory_context>The user explicitly selected this as the working directory for this session.</working_directory_context>
 
-<project_context_file>CLAUDE.md</project_context_file>
+<developer_context kind="git_repository" scope="stable">
+repoRoot: /Users/example/projects/my-app
+repoParent: /Users/example/projects
+selectedWorkingDirectory: /Users/example/projects/my-app
+selectedPathWithinRepo: .
+Guidance:
+- When creating a git worktree, create it as a sibling of repoRoot inside repoParent unless the user explicitly asks for another location.
+</developer_context>
+
+<developer_context kind="git_repository" scope="volatile">
+branch: main
+worktreeState: clean
+stagedFiles: 0
+unstagedFiles: 0
+untrackedFiles: 0
+</developer_context>
 
 What files are in the src directory?`;
 
@@ -208,30 +225,34 @@ ${colors.bold}SDK Configuration:${colors.reset}
   systemPrompt.append: getSystemPrompt() ${colors.dim}// Craft Agent additions (static, cacheable)${colors.reset}
 
 ${colors.bold}Static System Prompt Components:${colors.reset}
-  1. User Preferences (if set)           ${colors.dim}// formatPreferencesForPrompt()${colors.reset}
-  2. Craft Agent Environment Marker      ${colors.dim}// Version, platform, arch${colors.reset}
-  3. Core Instructions                   ${colors.dim}// Capabilities, sources, guidelines${colors.reset}
-  4. Configuration Documentation Refs    ${colors.dim}// Permissions, skills, themes, statuses${colors.reset}
-  5. Permission Modes Documentation      ${colors.dim}// Inlined in system prompt${colors.reset}
-  6. Error Handling & Tool Metadata      ${colors.dim}// Guidelines for tool usage${colors.reset}
-  7. Debug Mode Context (if enabled)     ${colors.dim}// formatDebugModeContext()${colors.reset}
+  1. Craft Agent Environment Marker      ${colors.dim}// Version, platform, arch${colors.reset}
+  2. Core Instructions                   ${colors.dim}// Capabilities, sources, guidelines${colors.reset}
+  3. Configuration Documentation Refs    ${colors.dim}// Permissions, skills, themes, statuses${colors.reset}
+  4. Permission Modes Documentation      ${colors.dim}// Inlined in system prompt${colors.reset}
+  5. Error Handling & Tool Metadata      ${colors.dim}// Guidelines for tool usage${colors.reset}
+  6. User Preferences (if set)           ${colors.dim}// formatPreferencesForPrompt()${colors.reset}
+  7. Project Context (if bound)          ${colors.dim}// formatProjectContextForPrompt()${colors.reset}
+  8. Debug Mode Context (if enabled)     ${colors.dim}// formatDebugModeContext()${colors.reset}
+  9. Context File Manifest               ${colors.dim}// getProjectContextFilesPrompt()${colors.reset}
 
 ${colors.bold}Dynamic User Message Components (per message):${colors.reset}
-  1. Date/Time Context                   ${colors.dim}// getDateTimeContext()         [VOLATILE]${colors.reset}
-  2. Session State                       ${colors.dim}// formatSessionState()         [VOLATILE]${colors.reset}
-  3. Source State                        ${colors.dim}// formatSourceState()          [VOLATILE]${colors.reset}
-  4. Workspace Capabilities              ${colors.dim}// formatWorkspaceCapabilities()  [STABLE]${colors.reset}
-  5. Working Directory + project_context_file  ${colors.dim}// getWorkingDirectoryContext()  [STABLE]${colors.reset}
-  6. Recovery Context (on resume only)   ${colors.dim}// buildRecoveryContext()${colors.reset}
-  7. File Attachments                    ${colors.dim}// Inline paths or base64${colors.reset}
-  8. User Message Text                   ${colors.dim}// The actual user input${colors.reset}
+  1. Date/Time Context                   ${colors.dim}// getDateTimeContext()             [VOLATILE]${colors.reset}
+  2. Session State                       ${colors.dim}// formatSessionState()             [VOLATILE]${colors.reset}
+  3. Source State                        ${colors.dim}// formatSourceState()              [VOLATILE]${colors.reset}
+  4. Volatile Git Developer Context      ${colors.dim}// branch/status/dirty files        [VOLATILE]${colors.reset}
+  5. Workspace Capabilities              ${colors.dim}// formatWorkspaceCapabilities()    [STABLE]${colors.reset}
+  6. Working Directory                   ${colors.dim}// getWorkingDirectoryContext()     [STABLE]${colors.reset}
+  7. Stable Git Developer Context        ${colors.dim}// repo root/parent/guidance        [STABLE]${colors.reset}
+  8. Recovery Context (on resume only)   ${colors.dim}// buildRecoveryContext()${colors.reset}
+  9. File Attachments                    ${colors.dim}// Inline paths or base64${colors.reset}
+ 10. User Message Text                   ${colors.dim}// The actual user input${colors.reset}
 
-  ${colors.dim}Claude: 1-5 ride the user tail. Pi (#862): STABLE 4-5 -> system prefix, VOLATILE 1-3 -> user tail.${colors.reset}
+  ${colors.dim}Claude: 1-7 ride the user tail. Pi (#862): STABLE 5-7 -> system prefix, VOLATILE 1-4 -> user tail.${colors.reset}
   ${colors.dim}Builders: PromptBuilder.buildVolatileContextParts() / buildStableContextParts() (composed by buildContextParts())${colors.reset}
 
 ${colors.bold}Key Files:${colors.reset}
   packages/shared/src/prompts/system.ts          ${colors.dim}// Main prompt assembly${colors.reset}
-  packages/shared/src/agent/craft-agent.ts       ${colors.dim}// User message building${colors.reset}
+  packages/shared/src/agent/core/prompt-builder.ts ${colors.dim}// Dynamic context split/building${colors.reset}
   packages/shared/src/agent/mode-manager.ts      ${colors.dim}// Permission modes${colors.reset}
   packages/shared/src/config/preferences.ts      ${colors.dim}// User preferences${colors.reset}
 `);

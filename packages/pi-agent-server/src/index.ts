@@ -33,6 +33,7 @@ import {
   createGrepToolDefinition,
   createFindToolDefinition,
   createLsToolDefinition,
+  getAgentDir,
 } from '@earendil-works/pi-coding-agent';
 import type {
   AgentSession,
@@ -99,7 +100,13 @@ import { createWebFetchTool } from './tools/web-fetch.ts';
 import { resolveSearchProvider } from './tools/search/resolve-provider.ts';
 import { createSearchTool } from './tools/search/create-search-tool.ts';
 import { allowCraftMetadataProperties, stripCraftMetadata } from './craft-metadata-schema.ts';
-import { applySystemPromptOverride } from './system-prompt-override.ts';
+import {
+  createCraftResourceLoader,
+  createSystemPromptOverride,
+  type SystemPromptOverride,
+} from './system-prompt-override.ts';
+import { readContextUsage, deferContextUsage } from './context-usage.ts';
+import type { PiCompactResult, PiContextUsagePayload } from '../../shared/src/agent/backend/pi/protocol.ts';
 import { adaptCredentialForPiSdk, type PiCredential } from './adapt-credential.ts';
 
 // ============================================================
@@ -185,7 +192,7 @@ type EnrichedToolExecutionStartEvent = Extract<AgentSessionEvent, { type: 'tool_
   toolMetadata?: ToolExecutionMetadata;
 };
 
-type OutboundAgentEvent = AgentSessionEvent | EnrichedToolExecutionStartEvent;
+type OutboundAgentEvent = (AgentSessionEvent | EnrichedToolExecutionStartEvent | { type: 'context_usage' }) & PiContextUsagePayload;
 
 /** Messages to main process (stdout) */
 interface OutboundReady { type: 'ready'; sessionId: string | null; callbackPort: number }
@@ -216,7 +223,7 @@ interface OutboundCompactResult {
   type: 'compact_result';
   id: string;
   success: boolean;
-  result?: { summary: string; firstKeptEntryId: string; tokensBefore: number };
+  result?: PiCompactResult;
   errorMessage?: string;
 }
 interface OutboundSetAutoCompactionResult {
@@ -256,6 +263,11 @@ type OutboundMessage =
 // ============================================================
 
 let piSession: AgentSession | null = null;
+// Forces Craft's system prompt onto piSession (see system-prompt-override.ts);
+// recreated together with the session.
+let piSessionPromptOverride: SystemPromptOverride | null = null;
+// A stop must also cancel a manual compact still waiting for auto-compaction.
+let compactionEpoch = 0;
 let piModelRegistry: PiModelRegistry | null = null;
 let moduleCredentialStore: InMemoryCredentialStore | null = null;
 // Cached runtime build shared by the main session and ephemeral queryLlm
@@ -679,12 +691,13 @@ async function ensureSession(): Promise<AgentSession> {
   // settingsManager: explicit in-memory settings (retry policy, compaction)
   // instead of the SDK default that merges `<cwd>/.pi/settings.json` from the
   // user's working directory and writes to `<agentDir>/settings.json`.
+  const settingsManager = createCraftSettingsManager('main');
   const sessionOptions: CreateAgentSessionOptions = {
     cwd,
     modelRuntime,
     customTools: wrappedAll,
     tools: toolAllowlist,
-    settingsManager: createCraftSettingsManager('main'),
+    settingsManager,
   };
 
   // Extension isolation: set agentDir to a temp directory under session path
@@ -768,9 +781,21 @@ async function ensureSession(): Promise<AgentSession> {
     sessionOptions.thinkingLevel = piThinkingLevel;
   }
 
+  // Craft's system prompt is forced through a before_agent_start extension
+  // registered on the resource loader (see system-prompt-override.ts). The
+  // loader otherwise mirrors the one createAgentSession would build itself.
+  const systemPromptOverride = createSystemPromptOverride();
+  sessionOptions.resourceLoader = await createCraftResourceLoader({
+    cwd,
+    agentDir: sessionOptions.agentDir ?? getAgentDir(),
+    settingsManager,
+    systemPromptOverride,
+  });
+
   // Create the session — tools flow through customTools + allowlist (see comment above).
   const { session } = await createAgentSession(sessionOptions);
   piSession = session;
+  piSessionPromptOverride = systemPromptOverride;
 
   toolsChanged = false;
   debugLog(`Created Pi session: ${session.sessionId} (${wrappedAll.length} tools)`);
@@ -1050,14 +1075,23 @@ async function queryLlm(
       );
     }
 
-    // Create minimal ephemeral session
+    // Create minimal ephemeral session. The resource loader mirrors the SDK
+    // default (same cwd, default agentDir) plus the system-prompt override.
+    const ephemeralSettings = createCraftSettingsManager('ephemeral');
+    const ephemeralPromptOverride = createSystemPromptOverride();
     const ephemeralOptions: CreateAgentSessionOptions = {
       cwd: resolvedCwd(),
       modelRuntime,
       tools: [],
       sessionManager: PiSessionManager.inMemory(),
-      settingsManager: createCraftSettingsManager('ephemeral'),
+      settingsManager: ephemeralSettings,
       model: piModel,
+      resourceLoader: await createCraftResourceLoader({
+        cwd: resolvedCwd(),
+        agentDir: getAgentDir(),
+        settingsManager: ephemeralSettings,
+        systemPromptOverride: ephemeralPromptOverride,
+      }),
     };
 
     const { session: ephemeralSession } = await createAgentSession(ephemeralOptions);
@@ -1080,11 +1114,11 @@ async function queryLlm(
 
       debugLog(`[queryLlm] Created ephemeral session: ${ephemeralSession.sessionId}`);
 
-      // Force the system prompt — see system-prompt-override.ts for why direct
-      // assignment to `state.systemPrompt` doesn't survive `session.prompt()`.
+      // Force the system prompt via the before_agent_start override registered
+      // on this session's resource loader (see system-prompt-override.ts).
       const promptForSession =
         request.systemPrompt ?? 'Reply with ONLY the requested text. No explanation.';
-      applySystemPromptOverride(ephemeralSession, promptForSession);
+      ephemeralPromptOverride.set(promptForSession);
 
       // Collect response text and errors from events. `prompt()` resolves only
       // after SDK retries/continuations settle, so the request-level coordinator
@@ -1261,6 +1295,11 @@ function handleSessionEvent(event: AgentSessionEvent): void {
     }
 
     if (msg?.role === 'assistant' && piSession) {
+      // The SDK's post-compaction usage gate reads the journal, which is only
+      // appended after this callback returns. Defer rather than report an old count.
+      deferContextUsage(piSession, () => piSession, (payload) => {
+        send({ type: 'event', event: { type: 'context_usage', ...payload } });
+      });
       // CRITICAL: do NOT read `getLeafId()` here.
       //
       // The Pi SDK fires `message_end` synchronously BEFORE calling
@@ -1366,6 +1405,12 @@ function handleSessionEvent(event: AgentSessionEvent): void {
     }
   }
 
+  // These boundaries already have committed SDK history; keep metadata inline
+  // so agent_end cannot close the host queue before occupancy reaches it.
+  if (piSession && (event.type === 'turn_end' || event.type === 'agent_end' || event.type === 'compaction_end')) {
+    forwardedEvent = { ...forwardedEvent, ...readContextUsage(piSession) };
+  }
+
   // Forward all events to main process
   send({ type: 'event', event: forwardedEvent });
 }
@@ -1458,11 +1503,10 @@ async function handlePrompt(msg: Extract<InboundMessage, { type: 'prompt' }>): P
 
     const session = await ensureSession();
 
-    // Force the Craft-built system prompt onto the Pi session. Direct assignment
-    // to `state.systemPrompt` is wiped on every `session.prompt()` call by the Pi
-    // SDK (see system-prompt-override.ts).
+    // Force the Craft-built system prompt onto the Pi session through the
+    // before_agent_start override created with it (see system-prompt-override.ts).
     if (msg.systemPrompt) {
-      applySystemPromptOverride(session, msg.systemPrompt);
+      piSessionPromptOverride?.set(msg.systemPrompt);
     }
 
     // Wire up event handler
@@ -1548,6 +1592,7 @@ function handleCancelEphemeralQuery(
 }
 
 async function handleAbort(): Promise<void> {
+  compactionEpoch++;
   if (piSession) {
     try {
       await piSession.abort();
@@ -1614,6 +1659,7 @@ async function handleEnsureSessionReady(msg: Extract<InboundMessage, { type: 'en
 }
 
 async function handleCompact(msg: Extract<InboundMessage, { type: 'compact' }>): Promise<void> {
+  const epoch = compactionEpoch;
   try {
     const session = await ensureSession();
     // Serialize manual /compact behind any in-flight auto-compaction. Public
@@ -1623,7 +1669,9 @@ async function handleCompact(msg: Extract<InboundMessage, { type: 'compact' }>):
     // before starting a manual one. waitForCompaction has its own timeout
     // fallback so we don't deadlock on a stuck subprocess.
     await waitForCompaction(session);
+    if (piSession !== session || epoch !== compactionEpoch) throw new Error('Compaction aborted or session replaced');
     const result = await session.compact(msg.customInstructions);
+    if (piSession !== session || epoch !== compactionEpoch) throw new Error('Compaction aborted or session replaced');
     send({
       type: 'compact_result',
       id: msg.id,
@@ -1632,6 +1680,8 @@ async function handleCompact(msg: Extract<InboundMessage, { type: 'compact' }>):
         summary: result.summary,
         firstKeptEntryId: result.firstKeptEntryId,
         tokensBefore: result.tokensBefore,
+        estimatedTokensAfter: result.estimatedTokensAfter,
+        ...readContextUsage(session),
       },
     });
   } catch (error) {

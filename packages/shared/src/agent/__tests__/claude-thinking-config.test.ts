@@ -168,6 +168,88 @@ describe('resolveClaudeThinkingOptions', () => {
       thinking: { type: 'disabled' },
     })
   })
+
+  it('never disables thinking on Opus 5.5 when level is off (adaptive + low instead)', () => {
+    const result = resolveClaudeThinkingOptions({
+      thinkingLevel: 'off',
+      model: 'claude-opus-5-5',
+      providerType: 'anthropic',
+      minimizeThinking: false,
+    })
+
+    expect(result).toEqual({
+      thinking: { type: 'adaptive' },
+      effort: 'low',
+    })
+  })
+
+  it('never disables thinking on Opus 5.5 when minimizeThinking is set', () => {
+    const result = resolveClaudeThinkingOptions({
+      thinkingLevel: 'high',
+      model: 'claude-opus-5-5',
+      providerType: 'anthropic',
+      minimizeThinking: true,
+    })
+
+    expect(result).toEqual({
+      thinking: { type: 'adaptive' },
+      effort: 'low',
+    })
+  })
+
+  it('uses adaptive thinking + effort for Opus 5.5 at normal levels', () => {
+    const result = resolveClaudeThinkingOptions({
+      thinkingLevel: 'medium',
+      model: 'claude-opus-5-5',
+      providerType: 'anthropic',
+      minimizeThinking: false,
+    })
+
+    expect(result).toEqual({
+      thinking: { type: 'adaptive' },
+      effort: 'medium',
+    })
+  })
+
+  it('detects Opus 5.5 behind Bedrock-native and pi/ id forms', () => {
+    for (const model of ['us.anthropic.claude-opus-5-5', 'pi/claude-opus-5-5']) {
+      expect(resolveClaudeThinkingOptions({
+        thinkingLevel: 'off',
+        model,
+        providerType: 'anthropic',
+        minimizeThinking: false,
+      })).toEqual({ thinking: { type: 'adaptive' }, effort: 'low' })
+    }
+  })
+
+  it('still disables thinking on Opus 5 when level is off (disabled is accepted there)', () => {
+    const result = resolveClaudeThinkingOptions({
+      thinkingLevel: 'off',
+      model: 'claude-opus-5',
+      providerType: 'anthropic',
+      minimizeThinking: false,
+    })
+
+    expect(result).toEqual({
+      thinking: { type: 'disabled' },
+    })
+  })
+
+  it('never disables thinking on a dated Opus 5.5 snapshot the registry does not list', () => {
+    // /v1/models can surface dated ids ahead of MODEL_REGISTRY; picking one from the
+    // live list must not send `disabled` (a 400 on the 5.5 family).
+    const result = resolveClaudeThinkingOptions({
+      thinkingLevel: 'off',
+      model: 'claude-opus-5-5-20260922',
+      providerType: 'anthropic',
+      minimizeThinking: false,
+    })
+
+    expect(result).toEqual({
+      thinking: { type: 'adaptive' },
+      effort: 'low',
+    })
+  })
 })
 
 describe('getThinkingTokens', () => {

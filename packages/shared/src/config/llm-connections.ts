@@ -969,9 +969,9 @@ export function getModelsForProviderType(providerType: LlmProviderType, piAuthPr
 export const PI_PREFERRED_DEFAULTS: Record<string, string[]> = {
   // TODO(opus-4.6-sunset): drop 'claude-opus-4-6' from anthropic and amazon-bedrock
   // when Opus 4.6 is deprecated.
-  // Opus 5 entered the Pi catalog in SDK 0.82.1; rank it right below the
-  // Opus 4.8 default so it surfaces near the top without changing the default.
-  anthropic: ['claude-opus-4-8', 'claude-opus-5', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-fable-5-1', 'claude-fable-5', 'claude-sonnet-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
+  // Opus 5.5 (in the Pi catalog since SDK 0.87.1) is the default for new
+  // connections, matching the Claude Agent SDK path; older Opus generations follow.
+  anthropic: ['claude-opus-5-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-fable-5-1', 'claude-fable-5', 'claude-sonnet-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
   // GPT-6 Astra entered the Pi catalog in SDK 0.85.1 for both the API-key and
   // the ChatGPT-account (openai-codex) flows; new connections default to it.
   openai: ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.2', 'gpt-5.1', 'gpt-5', 'o4-mini', 'o3', 'gpt-4o'],
@@ -982,14 +982,16 @@ export const PI_PREFERRED_DEFAULTS: Record<string, string[]> = {
   // unresponsive on generateContent — verified against the live API in
   // April 2026 — and are deliberately excluded from defaults.
   google: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3-flash-preview', 'gemini-3.1-flash-lite-preview'],
-  deepseek: ['deepseek-v4-pro', 'deepseek-v4-flash'],
+  // Pi 0.86.0 replaced the retired `deepseek-v4-flash` alias (and the experimental
+  // vision variant) with `deepseek-flash`; stored ids migrate via DEPRECATED_MODEL_REPLACEMENTS.
+  deepseek: ['deepseek-v4-pro', 'deepseek-flash'],
   // Kimi has no mini/flash-named model, so findSmallModel falls back to the
   // last entry of the connection's model list; keep the cheaper K2.6 second
   // so 3-tier setups get a sensible summarizer default.
   moonshotai: ['kimi-k3', 'kimi-k2.6'],
   'moonshotai-cn': ['kimi-k3', 'kimi-k2.6'],
   'github-copilot': ['claude-sonnet-4-6', 'gpt-5', 'o4-mini', 'claude-haiku-4-5'],
-  'amazon-bedrock': ['claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
+  'amazon-bedrock': ['claude-opus-5-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
 };
 
 export function getDefaultModelsForConnection(providerType: LlmProviderType, piAuthProvider?: string): Array<ModelDefinition | string> {
@@ -1128,6 +1130,8 @@ export function isValidProviderAuthCombination(
  * Source: Pi SDK registry (models.generated.js) — us.* variants
  */
 const BEDROCK_MODEL_MAP: Record<string, string> = {
+  'claude-opus-5-5': 'us.anthropic.claude-opus-5-5',
+  'claude-opus-5': 'us.anthropic.claude-opus-5',
   'claude-opus-4-8': 'us.anthropic.claude-opus-4-8',
   'claude-opus-4-7': 'us.anthropic.claude-opus-4-7',
   'claude-fable-5-1': 'us.anthropic.claude-fable-5-1',
@@ -1140,6 +1144,8 @@ const BEDROCK_MODEL_MAP: Record<string, string> = {
   'claude-opus-4-5-20251101': 'us.anthropic.claude-opus-4-5-20251101-v1:0',
   'claude-sonnet-4-5-20250929': 'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   // Also map base IDs (without region prefix) to US inference profiles
+  'anthropic.claude-opus-5-5': 'us.anthropic.claude-opus-5-5',
+  'anthropic.claude-opus-5': 'us.anthropic.claude-opus-5',
   'anthropic.claude-opus-4-8': 'us.anthropic.claude-opus-4-8',
   'anthropic.claude-opus-4-7': 'us.anthropic.claude-opus-4-7',
   'anthropic.claude-opus-4-6-v1': 'us.anthropic.claude-opus-4-6-v1',
@@ -1155,6 +1161,8 @@ const BEDROCK_MODEL_MAP: Record<string, string> = {
 /** Reverse map: all known Bedrock ID variants → bare Anthropic ID */
 const BEDROCK_REVERSE_MAP: Record<string, string> = {
   // US inference profiles
+  'us.anthropic.claude-opus-5-5': 'claude-opus-5-5',
+  'us.anthropic.claude-opus-5': 'claude-opus-5',
   'us.anthropic.claude-opus-4-8': 'claude-opus-4-8',
   'us.anthropic.claude-fable-5-1': 'claude-fable-5-1',
   'us.anthropic.claude-fable-5': 'claude-fable-5',
@@ -1167,6 +1175,8 @@ const BEDROCK_REVERSE_MAP: Record<string, string> = {
   'us.anthropic.claude-opus-4-5-20251101-v1:0': 'claude-opus-4-5-20251101',
   'us.anthropic.claude-sonnet-4-5-20250929-v1:0': 'claude-sonnet-4-5-20250929',
   // EU inference profiles
+  'eu.anthropic.claude-opus-5-5': 'claude-opus-5-5',
+  'eu.anthropic.claude-opus-5': 'claude-opus-5',
   'eu.anthropic.claude-opus-4-8': 'claude-opus-4-8',
   'eu.anthropic.claude-fable-5-1': 'claude-fable-5-1',
   'eu.anthropic.claude-fable-5': 'claude-fable-5',
@@ -1179,6 +1189,8 @@ const BEDROCK_REVERSE_MAP: Record<string, string> = {
   'eu.anthropic.claude-opus-4-5-20251101-v1:0': 'claude-opus-4-5-20251101',
   'eu.anthropic.claude-sonnet-4-5-20250929-v1:0': 'claude-sonnet-4-5-20250929',
   // Global inference profiles
+  'global.anthropic.claude-opus-5-5': 'claude-opus-5-5',
+  'global.anthropic.claude-opus-5': 'claude-opus-5',
   'global.anthropic.claude-opus-4-8': 'claude-opus-4-8',
   'global.anthropic.claude-fable-5-1': 'claude-fable-5-1',
   'global.anthropic.claude-fable-5': 'claude-fable-5',
@@ -1189,6 +1201,8 @@ const BEDROCK_REVERSE_MAP: Record<string, string> = {
   'global.anthropic.claude-haiku-4-5-20251001-v1:0': 'claude-haiku-4-5-20251001',
   'global.anthropic.claude-opus-4-6-v1': 'claude-opus-4-6',
   // Base IDs (no region prefix)
+  'anthropic.claude-opus-5-5': 'claude-opus-5-5',
+  'anthropic.claude-opus-5': 'claude-opus-5',
   'anthropic.claude-opus-4-8': 'claude-opus-4-8',
   'anthropic.claude-fable-5-1': 'claude-fable-5-1',
   'anthropic.claude-fable-5': 'claude-fable-5',

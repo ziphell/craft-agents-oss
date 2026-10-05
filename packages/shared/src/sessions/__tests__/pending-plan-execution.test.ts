@@ -58,8 +58,10 @@ describe('pending plan execution persistence', () => {
       executionDispatched: false,
     })
 
+    expect(await markPendingPlanExecutionDispatched(workspaceRoot, 'session-1')).toBe(false)
     await markCompactionComplete(workspaceRoot, 'session-1')
-    await markPendingPlanExecutionDispatched(workspaceRoot, 'session-1')
+    expect(await markPendingPlanExecutionDispatched(workspaceRoot, 'session-1')).toBe(true)
+    expect(await markPendingPlanExecutionDispatched(workspaceRoot, 'session-1')).toBe(false)
 
     expect(getPendingPlanExecution(workspaceRoot, 'session-1')).toEqual({
       planPath: '/tmp/plan.md',

@@ -12,6 +12,7 @@ import type {
   ContentBadge,
   ToolDisplayMeta,
   AnnotationV1,
+  ContextUsageSnapshot,
   PermissionRequest as BasePermissionRequest,
 } from '@craft-agent/core/types'
 import type { PermissionMode } from '../agent/mode-types'
@@ -101,6 +102,7 @@ export interface Session {
     cacheCreationTokens?: number
     /** Model's context window size in tokens (from SDK modelUsage) */
     contextWindow?: number
+    contextUsage?: ContextUsageSnapshot
   }
   /** When true, session is hidden from session list (e.g., mini edit sessions) */
   hidden?: boolean
@@ -457,7 +459,7 @@ export type SessionEvent =
   | { type: 'auth_request'; sessionId: string; message: Message; request: SharedAuthRequest }
   | { type: 'auth_completed'; sessionId: string; requestId: string; success: boolean; cancelled?: boolean; error?: string }
   | { type: 'source_activated'; sessionId: string; sourceSlug: string; originalMessage: string }
-  | { type: 'usage_update'; sessionId: string; tokenUsage: { inputTokens: number; contextWindow?: number } }
+  | { type: 'usage_update'; sessionId: string; tokenUsage: Pick<NonNullable<Session['tokenUsage']>, 'inputTokens' | 'contextWindow' | 'contextUsage'> }
   | { type: 'message_annotations_updated'; sessionId: string; messageId: string; annotations: AnnotationV1[] }
   | { type: 'working_directory_error'; sessionId: string; error: string }
 

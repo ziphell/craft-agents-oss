@@ -47,7 +47,7 @@ import {
   type Workspace,
   type WorkspaceInfo,
 } from '@craft-agent/shared/config'
-import type { ActiveSessionInfo, SessionProcessingStatus } from '@craft-agent/core/types'
+import type { ActiveSessionInfo, ContextUsageSnapshot, SessionProcessingStatus } from '@craft-agent/core/types'
 import { loadWorkspaceConfig } from '@craft-agent/shared/workspaces'
 import { loadProjectById } from '@craft-agent/shared/projects'
 import {
@@ -727,6 +727,8 @@ interface ManagedSession {
   poolServer?: McpPoolServer
   // SDK session ID for conversation continuity
   sdkSessionId?: string
+  /** Accept & Compact state; persisted with the session header. */
+  pendingPlanExecution?: StoredSession['pendingPlanExecution']
   // Token usage for display
   tokenUsage?: {
     inputTokens: number
@@ -738,6 +740,8 @@ interface ManagedSession {
     cacheCreationTokens?: number
     /** Model's context window size in tokens (from SDK modelUsage) */
     contextWindow?: number
+    /** Current occupancy, separate from cumulative/billable counters. */
+    contextUsage?: ContextUsageSnapshot
   }
   // Session status (user-controlled) - determines open vs closed
   // Dynamic status ID referencing workspace status config
@@ -828,6 +832,9 @@ interface ManagedSession {
     messageId?: string  // Pre-generated ID for matching with UI
     optimisticMessageId?: string  // Frontend's ID for reliable event matching
   }>
+  // Original host payloads for backends that can return undelivered text steers.
+  // Runtime-only; Pi's native steering does not opt into an acknowledgement protocol.
+  acceptedSteers?: Map<string, ManagedSession['messageQueue'][number]>
   // Map of shellId -> command for killing background shells
   backgroundShellCommands: Map<string, string>
   // Map of taskId -> output info for background task results
@@ -1106,6 +1113,22 @@ export function resolveMidStreamDeliveryOutcome(
     shouldQueue: !steered,
     wasInterrupted: behavior === 'steer' && !steered,
   }
+}
+
+/** Text redirects cannot carry attachments or options that affect model input. */
+export function canSteerTextPayload(
+  attachments?: FileAttachment[],
+  storedAttachments?: StoredAttachment[],
+  options?: SendMessageOptions,
+): boolean {
+  if (attachments?.length || storedAttachments?.length) return false
+  return !Object.entries(options ?? {}).some(([key, value]) => {
+    if (value === undefined || key === 'optimisticMessageId') return false
+    if ((key === 'skillSlugs' || key === 'badges') && Array.isArray(value) && !value.length) return false
+    if (key === 'hidden' && value === false) return false
+    // Unknown future options conservatively use the full-payload path.
+    return true
+  })
 }
 
 export class SessionManager implements ISessionManager {
@@ -2009,6 +2032,7 @@ export class SessionManager implements ISessionManager {
     if (stored) {
       managed.messages = (stored.messages || []).map(storedToMessage)
       managed.tokenUsage = stored.tokenUsage
+      managed.pendingPlanExecution = stored.pendingPlanExecution
       // Deferred-load fields (intentionally undefined after startup, see
       // loadSessionsFromDisk). Populate from disk only if not already set in
       // memory — a caller may have mutated them via setSessionSources etc.
@@ -2466,6 +2490,7 @@ export class SessionManager implements ISessionManager {
     if (storedSession) {
       managed.messages = (storedSession.messages || []).map(storedToMessage)
       managed.tokenUsage = storedSession.tokenUsage
+      managed.pendingPlanExecution = storedSession.pendingPlanExecution
       managed.lastReadMessageId = storedSession.lastReadMessageId
       managed.hasUnread = storedSession.hasUnread  // Explicit unread flag for NEW badge state machine
       managed.enabledSourceSlugs = storedSession.enabledSourceSlugs
@@ -3051,6 +3076,7 @@ export class SessionManager implements ISessionManager {
 
   private async disposeManagedAgentRuntime(managed: ManagedSession, reason: string): Promise<void> {
     const sessionId = managed.id
+    this.recoverPendingSteers(managed)
 
     if (managed.agent) {
       try {
@@ -4515,6 +4541,7 @@ export class SessionManager implements ISessionManager {
           if (managed.isProcessing && managed.agent) {
             sessionLog.info(`Interrupting for plan submission in session ${managed.id}`)
             managed.agent.interruptForHandoff(AbortReason.PlanSubmitted)
+            this.recoverPendingSteers(managed)
             this.setProcessing(managed, false)
 
             // Release browser overlay + driven-by marks because the agent is no longer running.
@@ -4574,6 +4601,7 @@ export class SessionManager implements ISessionManager {
         if (managed.isProcessing && managed.agent) {
           sessionLog.info(`Interrupting for auth request in session ${managed.id}`)
           managed.agent.interruptForHandoff(AbortReason.AuthRequest)
+          this.recoverPendingSteers(managed)
           this.setProcessing(managed, false)
 
           // Release browser overlay + driven-by marks because the agent is paused awaiting user auth.
@@ -5211,6 +5239,12 @@ export class SessionManager implements ISessionManager {
   async setPendingPlanExecution(sessionId: string, planPath: string, draftInputSnapshot?: string): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (managed) {
+      managed.pendingPlanExecution = {
+        planPath,
+        draftInputSnapshot,
+        awaitingCompaction: true,
+        executionDispatched: false,
+      }
       await setStoredPendingPlanExecution(managed.workspace.rootPath, sessionId, planPath, draftInputSnapshot)
       sessionLog.info(`Session ${sessionId}: set pending plan execution for ${planPath}`)
     }
@@ -5224,6 +5258,7 @@ export class SessionManager implements ISessionManager {
   async markCompactionComplete(sessionId: string): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (managed) {
+      if (managed.pendingPlanExecution) managed.pendingPlanExecution.awaitingCompaction = false
       await markStoredCompactionComplete(managed.workspace.rootPath, sessionId)
       sessionLog.info(`Session ${sessionId}: compaction marked complete for pending plan`)
     }
@@ -5234,12 +5269,16 @@ export class SessionManager implements ISessionManager {
    * This prevents reload recovery from double-submitting the same plan if
    * sending succeeded but cleanup failed due a reconnect/disconnect.
    */
-  async markPendingPlanExecutionDispatched(sessionId: string): Promise<void> {
+  async markPendingPlanExecutionDispatched(sessionId: string): Promise<boolean> {
     const managed = this.sessions.get(sessionId)
-    if (managed) {
-      await markStoredPendingPlanExecutionDispatched(managed.workspace.rootPath, sessionId)
-      sessionLog.info(`Session ${sessionId}: marked pending plan execution as dispatched`)
+    if (!managed || managed.isProcessing) {
+      sessionLog.info(`Session ${sessionId}: pending plan dispatch claim rejected (missing or busy)`)
+      return false
     }
+    const claimed = await markStoredPendingPlanExecutionDispatched(managed.workspace.rootPath, sessionId)
+    if (claimed && managed.pendingPlanExecution) managed.pendingPlanExecution.executionDispatched = true
+    sessionLog.info(`Session ${sessionId}: pending plan execution dispatch claim ${claimed ? 'accepted' : 'rejected'}`)
+    return claimed
   }
 
   /**
@@ -5250,6 +5289,7 @@ export class SessionManager implements ISessionManager {
   async clearPendingPlanExecution(sessionId: string): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (managed) {
+      delete managed.pendingPlanExecution
       await clearStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
       sessionLog.info(`Session ${sessionId}: cleared pending plan execution`)
     }
@@ -5262,6 +5302,12 @@ export class SessionManager implements ISessionManager {
   getPendingPlanExecution(sessionId: string): { planPath: string; draftInputSnapshot?: string; awaitingCompaction: boolean; executionDispatched: boolean } | null {
     const managed = this.sessions.get(sessionId)
     if (!managed) return null
+    if (managed.pendingPlanExecution) {
+      return {
+        ...managed.pendingPlanExecution,
+        executionDispatched: managed.pendingPlanExecution.executionDispatched === true,
+      }
+    }
     return getStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
   }
 
@@ -6250,9 +6296,14 @@ export class SessionManager implements ISessionManager {
     }
 
     // Clear any pending plan execution state when a new user message is sent.
-    // This acts as a safety valve - if the user moves on, we don't want to
-    // auto-execute an old plan later.
-    await clearStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
+    // The explicit /compact turn immediately after "Accept & Compact" is the
+    // one exception: that command is what transitions the pending record from
+    // awaiting → ready. Any other message remains a safety valve that cancels it.
+    const isCompactCommand = /^\/compact(\s|$)/i.test(message.trim())
+    if (!isCompactCommand) {
+      delete managed.pendingPlanExecution
+      await clearStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
+    }
 
     // Ensure messages are loaded before we try to add new ones
     await this.ensureMessagesLoaded(managed)
@@ -6274,22 +6325,6 @@ export class SessionManager implements ISessionManager {
       // today's exact behavior (call redirect, take whatever it returns).
       const behavior = connection ? resolveMidStreamBehavior(connection) : 'steer'
 
-      const agent = managed.agent
-      let steered = false
-      if (behavior === 'steer') {
-        steered = agent?.redirect(message) ?? false
-      }
-      // For 'queue': skip redirect entirely. The current turn is undisturbed.
-
-      sessionLog.info('mid-stream send', {
-        sessionId,
-        behavior,
-        steered,
-        queueLengthBefore: managed.messageQueue.length,
-        backend: agent ? agent.constructor.name : 'none',
-        connectionSlug: connection?.slug,
-      })
-
       // Create user message for UI
       const userMessage: Message = {
         id: generateMessageId(),
@@ -6304,7 +6339,22 @@ export class SessionManager implements ISessionManager {
       }
       managed.messages.push(userMessage)
 
-      const delivery = resolveMidStreamDeliveryOutcome(behavior, steered)
+      const agent = managed.agent
+      // Redirect is text-only. Any semantic options/attachments use the normal
+      // host queue, without aborting the current turn or dropping the payload.
+      const textOnly = canSteerTextPayload(attachments, storedAttachments, options)
+      const attemptedSteer = behavior === 'steer' && textOnly && !!agent
+      const steered = attemptedSteer
+        ? agent.redirect(message, { messageId: userMessage.id })
+        : false
+      const payload = { message, attachments, storedAttachments, options, messageId: userMessage.id, optimisticMessageId: options?.optimisticMessageId }
+      if (steered && agent?.takePendingSteers) {
+        (managed.acceptedSteers ??= new Map()).set(userMessage.id, payload)
+      }
+      sessionLog.info('mid-stream send', { sessionId, behavior, steered, textOnly, queueLengthBefore: managed.messageQueue.length })
+
+      const delivery = resolveMidStreamDeliveryOutcome(attemptedSteer ? 'steer' : 'queue', steered)
+      userMessage.isQueued = delivery.shouldQueue
 
       // Emit to UI — 'accepted' iff a steer succeeded; 'queued' otherwise
       // (covers both queue-direct and queue-after-abort paths).
@@ -6321,7 +6371,7 @@ export class SessionManager implements ISessionManager {
         // for both queue-direct (current turn still running) and
         // queue-after-abort (backend already aborted) — the replay path in
         // processNextQueuedMessage is identical.
-        managed.messageQueue.push({ message, attachments, storedAttachments, options, messageId: userMessage.id, optimisticMessageId: options?.optimisticMessageId })
+        managed.messageQueue.push(payload)
         // Only claim interruption when a steer attempt actually aborted the
         // in-flight turn. In 'queue' mode the current turn runs to natural
         // completion, so the replayed turn must NOT inject the "previous response
@@ -6645,6 +6695,14 @@ export class SessionManager implements ISessionManager {
       sessionLog.info('Got chat iterator, starting iteration...')
 
       for await (const event of chatIterator) {
+        // Handoff may start a new turn before the old SDK iterator settles.
+        // Pending steers were transferred synchronously at the handoff boundary;
+        // trailing old events must not complete or mutate the replacement turn.
+        if (managed.processingGeneration !== myGeneration) {
+          sendSpan.mark('chat.superseded')
+          sendSpan.end()
+          return
+        }
         // Log events (skip noisy text_delta)
         if (event.type !== 'text_delta') {
           if (event.type === 'tool_start') {
@@ -6763,6 +6821,11 @@ export class SessionManager implements ISessionManager {
         // This ensures we don't lose in-flight messages.
       }
 
+      if (managed.processingGeneration !== myGeneration) {
+        sendSpan.mark('chat.superseded')
+        sendSpan.end()
+        return
+      }
       // Loop exited - either via complete event (normal) or generator ended after soft interrupt
       if (!managed.isProcessing) {
         sessionLog.info('Chat loop exited after explicit handoff/stop')
@@ -6775,6 +6838,11 @@ export class SessionManager implements ISessionManager {
         sessionLog.info('Chat loop exited unexpectedly')
       }
     } catch (error) {
+      if (managed.processingGeneration !== myGeneration) {
+        sendSpan.mark('chat.superseded')
+        sendSpan.end()
+        return
+      }
       // Check if this is an abort error (expected when interrupted)
       const isAbortError = error instanceof Error && (
         error.name === 'AbortError' ||
@@ -6836,6 +6904,10 @@ export class SessionManager implements ISessionManager {
     }
 
     sessionLog.info('Cancelling processing for session:', sessionId, silent ? '(silent)' : '')
+
+    // A hard Stop visibly cancels undelivered accepted steers just like queued
+    // sends. Transfer first so the existing input-restoration path includes them.
+    this.recoverPendingSteers(managed)
 
     // Collect queued message text for input restoration before clearing
     const queuedTexts = managed.messageQueue.map(q => q.message)
@@ -6940,6 +7012,7 @@ export class SessionManager implements ISessionManager {
 
         // 2. Destroy the agent — the new agent's postInit() will refresh auth
         sessionLog.info(`[auth-retry] Destroying agent for session ${sessionId}`)
+        this.recoverPendingSteers(managed)
         managed.agent = null
 
         // 3. Retry the message
@@ -7027,6 +7100,38 @@ export class SessionManager implements ISessionManager {
     }
   }
 
+  /** Reconcile an accepted steer with its original bubble and full host payload. */
+  private recoverUndeliveredSteer(managed: ManagedSession, steer: { message: string; messageId?: string }): void {
+    const payload = steer.messageId ? managed.acceptedSteers?.get(steer.messageId) : { message: steer.message }
+    // Identity-bearing events are idempotent, including trailing events after Stop.
+    if (!payload) return
+    if (steer.messageId) managed.acceptedSteers?.delete(steer.messageId)
+    const existing = payload.messageId ? managed.messages.find(m => m.id === payload.messageId) : undefined
+    if (existing) {
+      existing.isQueued = true
+      this.sendEvent({ type: 'user_message', sessionId: managed.id, message: existing,
+        status: 'queued', optimisticMessageId: payload.optimisticMessageId }, managed.workspace.id)
+    }
+    // Recover into original arrival order, including attachment sends that were
+    // already queued while this text steer was pending inside the backend.
+    const index = existing ? managed.messages.indexOf(existing) : -1
+    const before = index < 0 ? -1 : managed.messageQueue.findIndex(item => {
+      const queuedIndex = managed.messages.findIndex(m => m.id === item.messageId)
+      return queuedIndex > index
+    })
+    if (before < 0) managed.messageQueue.push(payload)
+    else managed.messageQueue.splice(before, 0, payload)
+    this.persistSession(managed)
+  }
+
+  /** Synchronous ownership transfer before a backend is paused or disposed. */
+  private recoverPendingSteers(managed: ManagedSession): void {
+    for (const steer of managed.agent?.takePendingSteers?.() ?? []) {
+      this.recoverUndeliveredSteer(managed, steer)
+    }
+    managed.acceptedSteers?.clear()
+  }
+
   /**
    * Central handler for when processing stops (any reason).
    * Single source of truth for cleanup and queue processing.
@@ -7042,6 +7147,9 @@ export class SessionManager implements ISessionManager {
     if (!managed) return
 
     sessionLog.info(`Processing stopped for session ${sessionId}: ${reason}`)
+
+    // Backend recovery events precede complete; discard payloads already delivered.
+    managed.acceptedSteers?.clear()
 
     // 1. Cleanup state
     this.setProcessing(managed, false)
@@ -8474,10 +8582,12 @@ export class SessionManager implements ISessionManager {
 
       case 'info': {
         const isCompactionComplete = event.message.startsWith('Compacted')
+        const isManualCompactionComplete = isCompactionComplete && event.compactionTrigger === 'manual'
         const infoTimestamp = this.monotonic()
 
-        // Persist compaction messages so they survive reload
-        // Other info messages are transient (just sent to renderer)
+        // Persist compaction messages so they survive reload. Only a manual
+        // command-correlated success marks Accept & Compact ready; automatic
+        // compaction and SDK false-success command results must not execute a plan.
         if (isCompactionComplete) {
           const compactionMessage: Message = {
             id: generateMessageId(),
@@ -8488,24 +8598,10 @@ export class SessionManager implements ISessionManager {
           }
           managed.messages.push(compactionMessage)
 
-          // Mark compaction complete in the session state.
-          // This is done here (backend) rather than in the renderer so it's
-          // not affected by CMD+R during compaction. The frontend reload
-          // recovery will see awaitingCompaction=false and trigger execution.
-          void markStoredCompactionComplete(managed.workspace.rootPath, sessionId)
-          sessionLog.info(`Session ${sessionId}: compaction complete, marked pending plan ready`)
-
-          // Emit usage_update so the context count badge refreshes immediately
-          // after compaction, without waiting for the next message
-          if (managed.tokenUsage) {
-            this.sendEvent({
-              type: 'usage_update',
-              sessionId,
-              tokenUsage: {
-                inputTokens: managed.tokenUsage.inputTokens,
-                contextWindow: managed.tokenUsage.contextWindow,
-              },
-            }, workspaceId)
+          if (isManualCompactionComplete) {
+            if (managed.pendingPlanExecution) managed.pendingPlanExecution.awaitingCompaction = false
+            await markStoredCompactionComplete(managed.workspace.rootPath, sessionId)
+            sessionLog.info(`Session ${sessionId}: manual compaction complete, marked pending plan ready`)
           }
         }
 
@@ -8861,6 +8957,36 @@ export class SessionManager implements ISessionManager {
         break
       }
 
+      case 'context_usage': {
+        if (!managed.tokenUsage) {
+          managed.tokenUsage = {
+            inputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+            contextTokens: 0,
+            costUsd: 0,
+          }
+        }
+        managed.tokenUsage.contextUsage = event.contextUsage
+        this.sendEvent({
+          type: 'usage_update',
+          sessionId: managed.id,
+          tokenUsage: {
+            inputTokens: managed.tokenUsage.inputTokens,
+            contextWindow: managed.tokenUsage.contextWindow,
+            contextUsage: event.contextUsage,
+          },
+        }, workspaceId)
+        this.persistSession(managed)
+        break
+      }
+
+      case 'compaction_failed':
+        delete managed.pendingPlanExecution
+        await clearStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
+        sessionLog.info(`Session ${sessionId}: compaction failed, cleared pending plan execution`)
+        break
+
       case 'complete':
         // Complete event from CraftAgent - accumulate usage from this turn
         // Actual 'complete' sent to renderer comes from the finally block in sendMessage
@@ -8918,17 +9044,14 @@ export class SessionManager implements ISessionManager {
             tokenUsage: {
               inputTokens: event.usage.inputTokens,
               contextWindow: event.usage.contextWindow,
+              contextUsage: managed.tokenUsage.contextUsage,
             },
           }, workspaceId)
         }
         break
 
       case 'steer_undelivered':
-        // Steer message was not delivered (no PreToolUse fired before turn ended).
-        // Re-queue it so it's sent as a normal message on the next turn.
-        sessionLog.info(`Steer message undelivered, re-queuing for session ${sessionId}`)
-        managed.messageQueue.push({ message: event.message })
-        managed.wasInterrupted = true
+        this.recoverUndeliveredSteer(managed, event)
         break
 
       // Note: working_directory_changed is user-initiated only (via updateWorkingDirectory),

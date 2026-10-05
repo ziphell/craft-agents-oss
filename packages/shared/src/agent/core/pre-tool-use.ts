@@ -105,7 +105,6 @@ export const BUILT_IN_TOOLS = new Set([
   'WebFetch',
   'WebSearch',
   'Task',
-  'TaskOutput',
   'TodoWrite',
   'MultiEdit',
   'NotebookEdit',

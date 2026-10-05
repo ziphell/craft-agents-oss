@@ -1,6 +1,23 @@
 import { describe, it, expect } from 'bun:test'
-import { isEscapeDuringComposition, textToHTML } from '../rich-text-input'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { isEscapeDuringComposition, RichTextInput, textToHTML } from '../rich-text-input'
 import { buildElementMention } from '@/lib/element-mention'
+
+it('merges caller sizing styles without dropping the default editor line-height', () => {
+  const html = renderToStaticMarkup(createElement(RichTextInput, {
+    value: 'Draft', onChange: () => {}, style: { maxHeight: 180 },
+  }))
+  expect(html).toContain('line-height:1.25')
+  expect(html).toContain('max-height:180px')
+})
+
+it('allows an explicit caller line-height override', () => {
+  const html = renderToStaticMarkup(createElement(RichTextInput, {
+    value: 'Draft', onChange: () => {}, style: { lineHeight: 1.5 },
+  }))
+  expect(html).toContain('line-height:1.5')
+})
 
 describe('isEscapeDuringComposition', () => {
   it('returns true for Escape when local composition ref is active', () => {

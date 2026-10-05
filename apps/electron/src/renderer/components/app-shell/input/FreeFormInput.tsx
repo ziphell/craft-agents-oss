@@ -42,6 +42,11 @@ import { browserInstancesAtom, filterInstancesForWorkspace } from '@/atoms/brows
 import { sessionMetaMapAtom } from '@/atoms/sessions'
 import { tabRefOf } from '@/components/browser/utils'
 import { RichTextInput, type RichTextInputHandle } from '@/components/ui/rich-text-input'
+import { useInputAvailableHeight } from '@/hooks/useInputAvailableHeight'
+import { getComposerMaxHeight } from './composer-height'
+import { getContextDisplay, getContextDisplayLabels, type ContextStatus } from './context-display'
+import { createPendingPlanDispatcher } from './pending-plan-dispatch'
+import { scrollFocusedCaretIntoView } from '@/lib/scroll-focused-caret'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@craft-agent/ui'
 import {
   DropdownMenu,
@@ -97,7 +102,6 @@ import { WorkingDirectorySelector, formatPathForDisplay } from './WorkingDirecto
 import { CompactPermissionModeSelector } from './CompactPermissionModeSelector'
 import { CompactModelSelector } from './CompactModelSelector'
 import {
-  formatTokenCount,
   groupConnectionsByProvider,
   modelLabel,
   stripPiPrefixForDisplay,
@@ -177,6 +181,8 @@ export interface FreeFormInputProps {
   onAttachmentsChange?: (attachments: FileAttachment[]) => void
   /** When true, removes container styling (shadow, bg, rounded) - used when wrapped by InputContainer */
   unstyled?: boolean
+  /** Total height budget, including actions; supplied by InputContainer when wrapped. */
+  maxHeight?: number
   /** Callback when component height changes (for external animation sync) */
   onHeightChange?: (height: number) => void
   /** Callback when focus state changes */
@@ -215,14 +221,7 @@ export interface FreeFormInputProps {
   /** Whether the session is empty (no messages yet) - affects context badge prominence */
   isEmptySession?: boolean
   /** Context status for showing compaction indicator and token usage */
-  contextStatus?: {
-    /** True when SDK is actively compacting the conversation */
-    isCompacting?: boolean
-    /** Input tokens used so far in this session */
-    inputTokens?: number
-    /** Model's context window size in tokens */
-    contextWindow?: number
-  }
+  contextStatus?: ContextStatus
   /** Follow-up annotations shown as context chips above the input */
   followUpItems?: FollowUpInputItem[]
   /** Callback when user clicks a follow-up chip body */
@@ -290,6 +289,7 @@ export function FreeFormInput({
   onAttachmentsChange,
   unstyled = false,
   onHeightChange,
+  maxHeight,
   onFocusChange,
   sources = [],
   enabledSourceSlugs = [],
@@ -602,7 +602,6 @@ export function FreeFormInput({
   const [loadingCount, setLoadingCount] = React.useState(0)
   const [sourceDropdownOpen, setSourceDropdownOpen] = React.useState(false)
   const [isFocused, setIsFocused] = React.useState(false)
-  const [inputMaxHeight, setInputMaxHeight] = React.useState(540)
   const [modelDropdownOpen, setModelDropdownOpen] = React.useState(false)
 
   // A turn can start while the picker is open (e.g. a queued send lands); close it
@@ -636,19 +635,11 @@ export function FreeFormInput({
   // Double-Esc interrupt: show warning overlay on first Esc, interrupt on second
   const { showEscapeOverlay } = useEscapeInterrupt()
 
-  // Calculate max height: min(66% of window height, 540px)
-  React.useEffect(() => {
-    const updateMaxHeight = () => {
-      const maxFromWindow = Math.floor(window.innerHeight * 0.66)
-      setInputMaxHeight(Math.min(maxFromWindow, 540))
-    }
-    updateMaxHeight()
-    window.addEventListener('resize', updateMaxHeight)
-    return () => window.removeEventListener('resize', updateMaxHeight)
-  }, [])
-
   const dragCounterRef = React.useRef(0)
   const containerRef = React.useRef<HTMLDivElement>(null)
+  const contentScrollRef = React.useRef<HTMLDivElement>(null)
+  const availableHeight = useInputAvailableHeight(containerRef, maxHeight === undefined)
+  const composerMaxHeight = maxHeight ?? getComposerMaxHeight(availableHeight, 'freeform')
   const sourceButtonRef = React.useRef<HTMLButtonElement>(null)
   const fileInputRef = React.useRef<HTMLInputElement>(null)
 
@@ -768,136 +759,78 @@ export function FreeFormInput({
     return () => window.removeEventListener('craft:approve-plan', handleApprovePlan as EventListener)
   }, [sessionId, permissionMode, onPermissionModeChange, onSubmit, consumeInputDraftSnapshot])
 
-  // Listen for craft:approve-plan-with-compact events (Accept & Compact option)
-  // This compacts the conversation first, then executes the plan.
-  // The pending state is persisted to survive page reloads (CMD+R).
-  React.useEffect(() => {
-    const handleApprovePlanWithCompact = async (e: CustomEvent<PlanApprovalEventDetail>) => {
-      // Only handle if this event is for our session
-      if (e.detail?.sessionId && e.detail.sessionId !== sessionId) {
-        return
-      }
+  // Live completion and reload recovery share one persisted-state dispatcher.
+  // Register its listener before the approval listener can send /compact.
+  const processingRef = React.useRef(isProcessing)
+  processingRef.current = isProcessing
+  const requestPendingPlanRef = React.useRef<(() => void) | null>(null)
 
-      const planPath = e.detail?.planPath
-      const shouldIncludeDraft = e.detail?.includeDraftInput !== false
-      const draftInputSnapshot = shouldIncludeDraft ? consumeInputDraftSnapshot() : ''
-
-      // Switch to allow-all (Auto) mode if in Explore mode
-      if (permissionMode === 'safe') {
-        onPermissionModeChange?.('allow-all')
-      }
-
-      // Persist the pending plan execution state BEFORE sending /compact.
-      // This allows reload recovery if CMD+R happens during compaction.
-      if (sessionId) {
-        await window.electronAPI.sessionCommand(sessionId, {
-          type: 'setPendingPlanExecution',
-          planPath: planPath ?? '',
-          draftInputSnapshot,
-        })
-      }
-
-      // Send /compact to trigger compaction
-      onSubmit('/compact', undefined)
-
-      // Set up a one-time listener for compaction complete.
-      // This handles the normal case (no reload during compaction).
-      const handleCompactionComplete = async (compactEvent: CustomEvent<{ sessionId?: string }>) => {
-        // Only handle if this is for our session
-        if (compactEvent.detail?.sessionId !== sessionId) {
-          return
-        }
-
-        // Remove the listener (one-time use)
-        window.removeEventListener('craft:compaction-complete', handleCompactionComplete as unknown as EventListener)
-
-        const executionMessage = buildPlanApprovalMessage({
-          planPath,
-          draftInput: draftInputSnapshot,
-        })
-        onSubmit(executionMessage, undefined)
-
-        // Clear the pending state since we just sent the execution message
-        if (sessionId) {
-          await window.electronAPI.sessionCommand(sessionId, {
-            type: 'clearPendingPlanExecution',
-          })
-        }
-      }
-
-      window.addEventListener('craft:compaction-complete', handleCompactionComplete as unknown as EventListener)
-    }
-
-    window.addEventListener('craft:approve-plan-with-compact', handleApprovePlanWithCompact as unknown as EventListener)
-    return () => window.removeEventListener('craft:approve-plan-with-compact', handleApprovePlanWithCompact as unknown as EventListener)
-  }, [sessionId, permissionMode, onPermissionModeChange, onSubmit, consumeInputDraftSnapshot])
-
-  // Reload recovery: Check for pending plan execution on mount.
-  // If the page reloaded after compaction completed (awaitingCompaction = false),
-  // we need to send the plan execution message that was interrupted by the reload.
-  // Also listen for compaction-complete in case CMD+R happened during compaction.
   React.useEffect(() => {
     if (!sessionId) return
-
-    let hasExecuted = false
-
-    const isExpectedReconnectError = (error: unknown): boolean => {
-      const message = error instanceof Error ? error.message : String(error)
-      return message.includes('Connection closed')
-        || message.includes('Client disconnected')
-        || message.includes('transport')
-        || message.includes('socket')
-    }
-
-    const executePendingPlan = async () => {
-      if (hasExecuted) return
-
-      try {
-        const pending = await window.electronAPI.getPendingPlanExecution(sessionId)
-        if (!pending || pending.awaitingCompaction || pending.executionDispatched) return
-
-        // Mark dispatched before sending so reload recovery does not double-submit
-        // the same plan if onSubmit succeeds but cleanup fails during a reconnect.
-        await window.electronAPI.sessionCommand(sessionId, {
-          type: 'markPendingPlanExecutionDispatched',
-        })
-
-        // Compaction completed but we never sent the execution message (page reloaded).
-        // Send it now and clear the pending state.
-        hasExecuted = true
-        const executionMessage = buildPlanApprovalMessage({
-          planPath: pending.planPath,
-          draftInput: pending.draftInputSnapshot,
-        })
-        onSubmit(executionMessage, undefined)
-
-        await window.electronAPI.sessionCommand(sessionId, {
-          type: 'clearPendingPlanExecution',
-        })
-      } catch (error) {
-        if (!isExpectedReconnectError(error)) {
+    const dispatcher = createPendingPlanDispatcher({
+      isBusy: () => processingRef.current,
+      load: () => window.electronAPI.getPendingPlanExecution(sessionId),
+      claim: () => window.electronAPI.sessionCommand(sessionId, { type: 'markPendingPlanExecutionDispatched' }),
+      submit: pending => onSubmit(buildPlanApprovalMessage({
+        planPath: pending.planPath,
+        draftInput: pending.draftInputSnapshot,
+      }), undefined),
+      clear: () => window.electronAPI.sessionCommand(sessionId, { type: 'clearPendingPlanExecution' }),
+    })
+    const request = () => {
+      void dispatcher.request().catch(error => {
+        const message = error instanceof Error ? error.message : String(error)
+        if (!/Connection closed|Client disconnected|transport|socket/.test(message)) {
           console.error('[FreeFormInput] Failed to resume pending plan execution:', error)
         }
-      }
+      })
     }
-
-    // Check immediately on mount (handles case where compaction already completed)
-    executePendingPlan()
-
-    // Also listen for compaction-complete in case CMD+R happened during compaction.
-    // When compaction finishes after reload, this listener will trigger execution.
-    const handleCompactionComplete = async (e: CustomEvent<{ sessionId: string }>) => {
-      if (e.detail?.sessionId !== sessionId) return
-      // Small delay to ensure markCompactionComplete has been called
-      await new Promise(resolve => setTimeout(resolve, 100))
-      executePendingPlan()
+    const handleCompactionComplete = (event: Event) => {
+      if ((event as CustomEvent<{ sessionId?: string }>).detail?.sessionId === sessionId) request()
     }
-
-    window.addEventListener('craft:compaction-complete', handleCompactionComplete as unknown as EventListener)
+    requestPendingPlanRef.current = request
+    window.addEventListener('craft:compaction-complete', handleCompactionComplete)
+    request()
     return () => {
-      window.removeEventListener('craft:compaction-complete', handleCompactionComplete as unknown as EventListener)
+      window.removeEventListener('craft:compaction-complete', handleCompactionComplete)
+      if (requestPendingPlanRef.current === request) requestPendingPlanRef.current = null
+      dispatcher.dispose()
     }
   }, [sessionId, onSubmit])
+
+  // Completion may be published while the host is finishing the current turn.
+  // Its idle transition is a second wakeup, not a timing-based guess.
+  React.useEffect(() => {
+    if (!isProcessing) requestPendingPlanRef.current?.()
+  }, [isProcessing, sessionId])
+
+  React.useEffect(() => {
+    if (!sessionId) return
+    let preparing = false
+    const handleApprovePlanWithCompact = async (event: CustomEvent<PlanApprovalEventDetail>) => {
+      if (!shouldHandleScopedInputEvent({ sessionId, isFocusedPanel, targetSessionId: event.detail?.sessionId })) return
+      if (preparing || processingRef.current) return
+      preparing = true
+      try {
+        const draftInputSnapshot = event.detail?.includeDraftInput !== false ? consumeInputDraftSnapshot() : ''
+        if (permissionMode === 'safe') onPermissionModeChange?.('allow-all')
+        // Persist first. Only actual successful manual compaction changes this
+        // readiness; failure/automatic compaction events never authorize a send.
+        await window.electronAPI.sessionCommand(sessionId, {
+          type: 'setPendingPlanExecution',
+          planPath: event.detail?.planPath ?? '',
+          draftInputSnapshot,
+        })
+        onSubmit('/compact', undefined)
+      } catch (error) {
+        console.error('[FreeFormInput] Failed to start plan compaction:', error)
+      } finally {
+        preparing = false
+      }
+    }
+    window.addEventListener('craft:approve-plan-with-compact', handleApprovePlanWithCompact as unknown as EventListener)
+    return () => window.removeEventListener('craft:approve-plan-with-compact', handleApprovePlanWithCompact as unknown as EventListener)
+  }, [sessionId, isFocusedPanel, permissionMode, onPermissionModeChange, onSubmit, consumeInputDraftSnapshot])
 
   // Listen for craft:focus-input events (restore focus after popover/dropdown closes)
   React.useEffect(() => {
@@ -1638,18 +1571,25 @@ export function FreeFormInput({
     hasStagedImages
     && !!effectiveConnectionDetails
     && !modelSupportsImages(effectiveConnectionDetails, currentModel)
+  const contextDisplay = getContextDisplay(contextStatus, getModelContextWindow(currentModel))
+  const contextLabels = getContextDisplayLabels(contextDisplay, t)
+
+  React.useLayoutEffect(() => {
+    if (contentScrollRef.current) scrollFocusedCaretIntoView(contentScrollRef.current)
+  }, [composerMaxHeight, attachments, followUpItems, showVisionWarning, isCollapsedInCompact])
 
   return (
     <form onSubmit={handleSubmit}>
       <div
         ref={containerRef}
         className={cn(
-          'overflow-hidden transition-all',
+          'flex flex-col min-h-0 overflow-hidden transition-colors',
           // Container styling - only when not wrapped by InputContainer
           !unstyled && 'rounded-[16px] shadow-middle',
           !unstyled && 'bg-background',
           isDraggingOver && 'ring-2 ring-foreground ring-offset-2 ring-offset-background bg-foreground/5'
         )}
+        style={{ maxHeight: composerMaxHeight }}
         onDragEnter={handleDragEnter}
         onDragLeave={handleDragLeave}
         onDragOver={handleDragOver}
@@ -1718,8 +1658,12 @@ export function FreeFormInput({
           />
         )}
 
-        {/* Pre-flight image-support warning — shown whenever the active model's
-            entry disables image input, with a one-click per-model override. */}
+        {/* Text and ancillary content share one scroll region. Keeping actions
+            outside it reserves their measured flex height, even with many chips. */}
+        <div ref={contentScrollRef} className="min-h-0 overflow-y-auto overscroll-contain" data-composer-content>
+        {/* Pre-flight image-support warning — only for pi_compat connections
+            where the renderer can both detect text-only models and offer to
+            flip the per-model supportsImages override on the spot. */}
         {showVisionWarning && effectiveConnectionDetails && (
           <ImageSupportWarningBanner
             modelName={currentModelDisplayName}
@@ -1826,62 +1770,59 @@ export function FreeFormInput({
             The scroll lives on this wrapper (not the editor) so the layer prefix
             below scrolls with the first line instead of floating over it. */}
         {!isCollapsedInCompact && (
-        <div className="overflow-y-auto" style={{ maxHeight: inputMaxHeight }}>
-          <div className="relative">
-            {/* Layer prefix — indents the first line only (the editor's text-indent),
-                so the caret starts to its right while the rest of the text wraps back
-                to the normal left edge. It is outside the editor's content: never
-                serialized, never sent. The menus only set it; its X clears it. */}
-            {layerCommand && (
-              <span className="absolute left-5 top-4 z-10 inline-flex h-5 items-center gap-1 rounded-[5px] bg-foreground/5 pl-1.5 pr-1 text-xs leading-none text-foreground/80 select-none">
-                <span className="shrink-0 flex items-center [&>svg]:h-3 [&>svg]:w-3">{layerCommand.icon}</span>
-                <span>{layerCommand.label}</span>
-                <button
-                  type="button"
-                  aria-label={t('common.remove')}
-                  onClick={clearLayerMode}
-                  className="h-4 w-4 shrink-0 inline-flex items-center justify-center rounded-[3px] text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              </span>
+        <div className="relative">
+          {/* Layer prefix — indents the first line only (the editor's text-indent),
+              so the caret starts to its right while the rest of the text wraps back
+              to the normal left edge. It is outside the editor's content: never
+              serialized, never sent. The menus only set it; its X clears it. */}
+          {layerCommand && (
+            <span className="absolute left-5 top-4 z-10 inline-flex h-5 items-center gap-1 rounded-[5px] bg-foreground/5 pl-1.5 pr-1 text-xs leading-none text-foreground/80 select-none">
+              <span className="shrink-0 flex items-center [&>svg]:h-3 [&>svg]:w-3">{layerCommand.icon}</span>
+              <span>{layerCommand.label}</span>
+              <button
+                type="button"
+                aria-label={t('common.remove')}
+                onClick={clearLayerMode}
+                className="h-4 w-4 shrink-0 inline-flex items-center justify-center rounded-[3px] text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </span>
+          )}
+          <RichTextInput
+            ref={richInputRef}
+            value={input}
+            onChange={handleInputChange}
+            onInput={handleRichInput}
+            onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
+            onLongTextPaste={handleLongTextPaste}
+            onFocus={() => { setIsFocused(true); onFocusChange?.(true) }}
+            onBlur={() => {
+              // Save caret position before losing focus (for restoration via craft:focus-input)
+              lastCaretPositionRef.current = richInputRef.current?.selectionStart ?? null
+              setIsFocused(false)
+              onFocusChange?.(false)
+            }}
+            placeholder={effectivePlaceholder}
+            disabled={disabled}
+            skills={skills}
+            sources={sources}
+            workspaceId={workspaceSlug}
+            className={cn(
+              "pl-5 pr-4 pt-4 pb-3 min-h-[88px]",
+              layerCommand && "[text-indent:84px]"
             )}
-            <RichTextInput
-              ref={richInputRef}
-              value={input}
-              onChange={handleInputChange}
-              onInput={handleRichInput}
-              onKeyDown={handleKeyDown}
-              onPaste={handlePaste}
-              onLongTextPaste={handleLongTextPaste}
-              onFocus={() => { setIsFocused(true); onFocusChange?.(true) }}
-              onBlur={() => {
-                // Save caret position before losing focus (for restoration via craft:focus-input)
-                lastCaretPositionRef.current = richInputRef.current?.selectionStart ?? null
-                setIsFocused(false)
-                onFocusChange?.(false)
-              }}
-              placeholder={effectivePlaceholder}
-              disabled={disabled}
-              skills={skills}
-              sources={sources}
-              workspaceId={workspaceSlug}
-              className={cn(
-                "pl-5 pr-4 pt-4 pb-3 min-h-[88px]",
-                layerCommand && "[text-indent:84px]"
-              )}
-              // Keep the editor's line-height at text-sm's (1.25rem) so it still
-              // matches the placeholder overlay, which only gets `className`.
-              style={{ lineHeight: '1.25rem' }}
-              data-tutorial="chat-input"
-              spellCheck={spellCheck}
-            />
-          </div>
+            data-tutorial="chat-input"
+            spellCheck={spellCheck}
+          />
         </div>
         )}
 
-        {/* Bottom Row: Controls - wrapped in relative container for status slot overlay */}
-        <div className="relative">
+        </div>
+
+        {/* Bottom Row: Controls - never shrinks into the scrolling draft region. */}
+        <div className="relative shrink-0" data-composer-actions>
           {/* Status slot overlay - escape interrupt (highest priority), browser status, etc. */}
           <ToolbarStatusSlot
             showEscapeOverlay={isProcessing && showEscapeOverlay}
@@ -2483,20 +2424,25 @@ export function FreeFormInput({
                 </>
               )}
 
-              {/* Context usage footer - only show when we have token data */}
-              {contextStatus?.inputTokens != null && contextStatus.inputTokens > 0 && (
+              {/* Context usage footer - snapshot-aware occupancy, not cumulative billing. */}
+              {contextDisplay.visible && (
                 <>
                   <StyledDropdownMenuSeparator className="my-1" />
                   <div className="px-2 py-1.5 select-none">
-                    <div className="flex items-center justify-between text-xs text-muted-foreground">
-                      <span>{t('chat.context')}</span>
-                      <span className="flex items-center gap-1.5">
-                        {contextStatus.isCompacting && (
-                          <Spinner className="h-3 w-3" />
+                    <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                      <span>{contextLabels.window}</span>
+                      <span className="flex min-w-0 items-center gap-1.5 text-right">
+                        {contextStatus?.isCompacting && (
+                          <Spinner className="h-3 w-3 shrink-0" />
                         )}
-                        {t('chat.tokensUsed', { displayCount: formatTokenCount(contextStatus.inputTokens) })}
+                        <span>{contextLabels.usage}</span>
                       </span>
                     </div>
+                    {(contextLabels.percent || contextLabels.qualifier) && (
+                      <div className="mt-0.5 text-[10px] text-foreground/40">
+                        {[contextLabels.percent, contextLabels.qualifier].filter(Boolean).join(' · ')}
+                      </div>
+                    )}
                   </div>
                 </>
               )}

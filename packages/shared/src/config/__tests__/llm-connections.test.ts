@@ -73,11 +73,12 @@ describe('getDefaultModelForConnection', () => {
     expect(modelIds).toContain(defaultModel)
   })
 
-  it('Pi anthropic keeps Opus 4.8 as default with Opus 5 ranked directly below it', () => {
+  it('Pi anthropic defaults to Opus 5.5 with Opus 5 and Opus 4.8 ranked directly below it', () => {
     const ids = getDefaultModelsForConnection('pi', 'anthropic').map(m => typeof m === 'string' ? m : m.id)
-    expect(ids[0]).toBe('pi/claude-opus-4-8')
+    expect(ids[0]).toBe('pi/claude-opus-5-5')
     expect(ids[1]).toBe('pi/claude-opus-5')
-    expect(getDefaultModelForConnection('pi', 'anthropic')).toBe('pi/claude-opus-4-8')
+    expect(ids[2]).toBe('pi/claude-opus-4-8')
+    expect(getDefaultModelForConnection('pi', 'anthropic')).toBe('pi/claude-opus-5-5')
   })
 
   // Regression: the Pi catalogs still list the retired Opus 4.5 snapshot. Its
@@ -89,7 +90,7 @@ describe('getDefaultModelForConnection', () => {
       const defaultModel = getDefaultModelForConnection('pi', provider)
       expect(defaultModel).toBe(ids[0]!)
       expect(normalizeDeprecatedModelId(defaultModel)).toBe(defaultModel)
-      expect(defaultModel).toMatch(/claude-opus-4-8$/)
+      expect(defaultModel).toMatch(/claude-opus-5-5$/)
       // Deprecated entries stay listed, but only after every preferred model
       // (matched directly or via the Bedrock reverse mapping).
       const preferred = PI_PREFERRED_DEFAULTS[provider]!
@@ -411,7 +412,7 @@ describe('Bedrock preferred defaults ordering', () => {
     if (models.length === 0) return // Pi resolver not registered in test env
     const firstId = typeof models[0] === 'string' ? models[0] : (models[0] as any).id
     // First model should be a preferred model (claude-opus or claude-sonnet), not a deprecated one
-    expect(firstId).toMatch(/claude-(opus|sonnet)-4/)
+    expect(firstId).toMatch(/claude-(opus|sonnet)-[45]/)
   })
 })
 
@@ -529,8 +530,8 @@ describe('Claude Fable 5', () => {
     expect(isClaudeModel('claude-fable-5')).toBe(true)
   })
 
-  it('does NOT become the Anthropic default (Opus 4.8 stays default)', () => {
-    expect(getDefaultModelForConnection('anthropic')).toBe('claude-opus-4-8')
+  it('does NOT become the Anthropic default (Opus 5.5 is the default)', () => {
+    expect(getDefaultModelForConnection('anthropic')).toBe('claude-opus-5-5')
   })
 
   it('round-trips through the Bedrock inference-profile mapping', () => {
@@ -573,8 +574,8 @@ describe('Claude Fable 5.1', () => {
     expect(isClaudeModel('claude-fable-5-1')).toBe(true)
   })
 
-  it('does NOT become the Anthropic default (Opus 4.8 stays default)', () => {
-    expect(getDefaultModelForConnection('anthropic')).toBe('claude-opus-4-8')
+  it('does NOT become the Anthropic default (Opus 5.5 is the default)', () => {
+    expect(getDefaultModelForConnection('anthropic')).toBe('claude-opus-5-5')
   })
 
   it('round-trips through the Bedrock inference-profile mapping', () => {
@@ -592,5 +593,84 @@ describe('Claude Fable 5.1', () => {
     // Exact-key maps must not let the 'claude-fable-5' prefix swallow 5.1.
     expect(fromBedrockNativeId('us.anthropic.claude-fable-5')).toBe('claude-fable-5')
     expect(toBedrockNativeId('claude-fable-5')).toBe('us.anthropic.claude-fable-5')
+  })
+})
+
+// ============================================================
+// Claude Opus 5.5 (new default) and Opus 5 registration
+// ============================================================
+
+describe('Claude Opus 5.5', () => {
+  it('is registered as an Anthropic model with the expected metadata', () => {
+    const opus = ANTHROPIC_MODELS.find(m => m.id === 'claude-opus-5-5')
+    expect(opus).toBeDefined()
+    expect(opus!.provider).toBe('anthropic')
+    expect(opus!.name).toBe('Opus 5.5')
+    expect(opus!.shortName).toBe('Opus')
+    expect(opus!.contextWindow).toBe(1_000_000)
+    expect(opus!.descriptionKey).toBe('model.opusDesc')
+    expect(opus!.thinkingAlwaysOn).toBe(true)
+  })
+
+  it('is the default for new direct Anthropic connections, listed ahead of Opus 5 and 4.8', () => {
+    const ids = ANTHROPIC_MODELS.map(m => m.id)
+    expect(ids[0]).toBe('claude-opus-5-5')
+    expect(ids.indexOf('claude-opus-5-5')).toBeLessThan(ids.indexOf('claude-opus-5'))
+    expect(ids.indexOf('claude-opus-5')).toBeLessThan(ids.indexOf('claude-opus-4-8'))
+    expect(getDefaultModelForConnection('anthropic')).toBe('claude-opus-5-5')
+  })
+
+  it('is the default for new Pi-backed Anthropic and Bedrock connections', () => {
+    expect(getDefaultModelForConnection('pi', 'anthropic')).toBe('pi/claude-opus-5-5')
+    // Bedrock lists one inference profile per region; they share a rank, so the
+    // catalog's own (alphabetical) order decides which region surfaces first.
+    // The connection's region prefix is applied later by normalizeBedrockModelId.
+    const bedrockDefault = getDefaultModelForConnection('pi', 'amazon-bedrock')
+    expect(bedrockDefault).toMatch(/^pi\/(us|eu|global)\.anthropic\.claude-opus-5-5$/)
+    expect(fromBedrockNativeId(bedrockDefault.slice('pi/'.length))).toBe('claude-opus-5-5')
+  })
+
+  it('resolves display/short name, context window, and Claude detection', () => {
+    expect(getModelDisplayName('claude-opus-5-5')).toBe('Opus 5.5')
+    expect(getModelShortName('claude-opus-5-5')).toBe('Opus')
+    expect(getModelContextWindow('claude-opus-5-5')).toBe(1_000_000)
+    expect(isClaudeModel('claude-opus-5-5')).toBe(true)
+  })
+
+  it('round-trips through the Bedrock inference-profile mapping', () => {
+    expect(toBedrockNativeId('claude-opus-5-5')).toBe('us.anthropic.claude-opus-5-5')
+    expect(toBedrockNativeId('claude-opus-5-5', 'eu')).toBe('eu.anthropic.claude-opus-5-5')
+    expect(toBedrockNativeId('anthropic.claude-opus-5-5')).toBe('us.anthropic.claude-opus-5-5')
+    expect(fromBedrockNativeId('us.anthropic.claude-opus-5-5')).toBe('claude-opus-5-5')
+    expect(fromBedrockNativeId('eu.anthropic.claude-opus-5-5')).toBe('claude-opus-5-5')
+    expect(fromBedrockNativeId('global.anthropic.claude-opus-5-5')).toBe('claude-opus-5-5')
+    expect(fromBedrockNativeId('anthropic.claude-opus-5-5')).toBe('claude-opus-5-5')
+    expect(normalizeBedrockModelId('pi/claude-opus-5-5', 'eu')).toBe('eu.anthropic.claude-opus-5-5')
+    expect(getModelDisplayName('us.anthropic.claude-opus-5-5')).toBe('Opus 5.5')
+  })
+
+  it('the 5.5 and 5.0 ids never cross-map through the Bedrock tables', () => {
+    expect(fromBedrockNativeId('us.anthropic.claude-opus-5')).toBe('claude-opus-5')
+    expect(toBedrockNativeId('claude-opus-5')).toBe('us.anthropic.claude-opus-5')
+    expect(toBedrockNativeId('claude-opus-5', 'eu')).toBe('eu.anthropic.claude-opus-5')
+    expect(fromBedrockNativeId('global.anthropic.claude-opus-5')).toBe('claude-opus-5')
+  })
+})
+
+describe('Claude Opus 5', () => {
+  it('is registered as the previous Opus generation with 1M context and disable-able thinking', () => {
+    const opus = ANTHROPIC_MODELS.find(m => m.id === 'claude-opus-5')
+    expect(opus).toBeDefined()
+    expect(opus!.name).toBe('Opus 5')
+    expect(opus!.shortName).toBe('Opus')
+    expect(opus!.contextWindow).toBe(1_000_000)
+    expect(opus!.thinkingAlwaysOn).toBeUndefined()
+    expect(getModelDisplayName('eu.anthropic.claude-opus-5')).toBe('Opus 5')
+  })
+
+  it('keeps Opus 4.8 registered and selectable (no forced migration to 5.5)', () => {
+    expect(ANTHROPIC_MODELS.some(m => m.id === 'claude-opus-4-8')).toBe(true)
+    expect(normalizeDeprecatedModelId('claude-opus-4-8')).toBe('claude-opus-4-8')
+    expect(normalizeDeprecatedModelId('claude-opus-5')).toBe('claude-opus-5')
   })
 })

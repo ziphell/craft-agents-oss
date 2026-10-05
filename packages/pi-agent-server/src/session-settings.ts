@@ -45,6 +45,9 @@ export const CRAFT_PI_RETRY_SETTINGS = {
   enabled: true,
   maxRetries: 4,
   baseDelayMs: 2_000,
+  // Cap for one agent-level backoff sleep (pi 0.86.0+, SDK default 60 s). Four
+  // retries at 2 s base never reach it; pinned so the policy is fully explicit.
+  maxAgentDelayMs: 60_000,
   provider: {
     maxRetries: 2,
     maxRetryDelayMs: 60_000,
@@ -64,6 +67,7 @@ export const CRAFT_PI_EPHEMERAL_RETRY_SETTINGS = {
   enabled: true,
   maxRetries: 2,
   baseDelayMs: 2_000,
+  maxAgentDelayMs: 60_000,
   provider: {
     maxRetries: 2,
     maxRetryDelayMs: 10_000,
@@ -110,10 +114,13 @@ export function buildCraftPiSettings(purpose: CraftPiSessionPurpose = 'main'): P
     : CRAFT_PI_RETRY_SETTINGS;
 
   return {
+    // Deliver all steers pending at a turn boundary in one model call.
+    steeringMode: 'all',
     retry: {
       enabled: retry.enabled,
       maxRetries: retry.maxRetries,
       baseDelayMs: retry.baseDelayMs,
+      maxAgentDelayMs: retry.maxAgentDelayMs,
       provider: { ...retry.provider },
     },
     // PiAgent re-asserts auto-compaction on every subprocess start

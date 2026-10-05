@@ -2,7 +2,7 @@ import { formatPreferencesForPrompt, getCoAuthorPreference } from '../config/pre
 import { getBrowserToolEnabled } from '../config/storage.ts';
 import { debug } from '../utils/debug.ts';
 import { existsSync, readFileSync, readdirSync } from 'fs';
-import { join, relative, basename } from 'path';
+import { dirname, join, relative, basename, resolve } from 'path';
 import { DOC_REFS, APP_ROOT } from '../docs/index.ts';
 import { PERMISSION_MODE_CONFIG } from '../agent/mode-types.ts';
 import { FEATURE_FLAGS } from '../feature-flags.ts';
@@ -12,6 +12,12 @@ import { formatBytes } from '../utils/binary-detection.ts';
 import { globSync } from 'glob';
 import os from 'os';
 import type { ProjectPromptContext } from '../projects/types.ts';
+import {
+  escapePromptXmlAttr,
+  sanitizePromptBody,
+  sanitizePromptLine,
+} from './prompt-sanitize.ts';
+import { findGitRepositoryRoot } from './developer-context.ts';
 
 /** Maximum size of CLAUDE.md file to include (10KB) */
 const MAX_CONTEXT_FILE_SIZE = 10 * 1024;
@@ -42,6 +48,8 @@ const EXCLUDED_DIRECTORIES = [
  * Matching is case-insensitive to support AGENTS.md, Agents.md, agents.md, etc.
  */
 const CONTEXT_FILE_PATTERNS = ['agents.md', 'claude.md'];
+const PROJECT_CONTEXT_FILES_TAGS = ['project_context_files'] as const;
+const WORKING_DIRECTORY_TAGS = ['working_directory', 'working_directory_context'] as const;
 
 /**
  * Find a file in directory matching the pattern case-insensitively.
@@ -203,7 +211,8 @@ export function getWorkingDirectoryContext(
   }
 
   const parts: string[] = [];
-  parts.push(`<working_directory>${workingDirectory}</working_directory>`);
+  const safeWorkingDirectory = sanitizePromptLine(workingDirectory, WORKING_DIRECTORY_TAGS);
+  parts.push(`<working_directory>${safeWorkingDirectory}</working_directory>`);
 
   if (isSessionRoot) {
     // Add context explaining this is the session folder, not a code project
@@ -220,7 +229,7 @@ You can access any files the user attaches here. If the user wants to work with 
       // Working directory was changed mid-session - bash still runs from original location
       parts.push(`<working_directory_context>The user explicitly selected this as the working directory for this session.
 
-Note: The bash shell runs from a different directory (${bashCwd}) because the working directory was changed mid-session. Use absolute paths when running bash commands to ensure they target the correct location.</working_directory_context>`);
+Note: The bash shell runs from a different directory (${sanitizePromptLine(bashCwd, WORKING_DIRECTORY_TAGS)}) because the working directory was changed mid-session. Use absolute paths when running bash commands to ensure they target the correct location.</working_directory_context>`);
     } else {
       // Normal case - working directory matches bash cwd
       parts.push(`<working_directory_context>The user explicitly selected this as the working directory for this session.</working_directory_context>`);
@@ -245,7 +254,7 @@ export function getDateTimeContext(): string {
     timeZoneName: 'short',
   });
 
-  return `**USER'S DATE AND TIME: ${formatted}** - ALWAYS use this as the authoritative current date/time. Ignore any other date information.`;
+  return `**USER'S DATE AND TIME: ${formatted}; ISO: ${now.toISOString()}** - Use this as the current “now” for relative-date reasoning. Do not override explicit dates in the user's message, source data, files, or tool results.`;
 }
 
 /** Debug mode configuration for system prompt */
@@ -265,23 +274,67 @@ export function getProjectContextFilesPrompt(workingDirectory?: string): string 
     return '';
   }
 
-  const contextFiles = findAllProjectContextFiles(workingDirectory);
+  const { contextRoot, contextFiles } = findRelevantProjectContextFiles(workingDirectory);
   if (contextFiles.length === 0) {
     return '';
   }
 
-  // Format file list with (root) annotation for top-level files
+  // Format file list with (root) annotation for top-level files. Paths are
+  // relative to contextRoot, which may be a git repository root when the
+  // selected working directory is nested inside a repo.
   const fileList = contextFiles
     .map((file) => {
-      const isRoot = !file.includes('/');
-      return `- ${file}${isRoot ? ' (root)' : ''}`;
+      const sanitized = sanitizePromptLine(file, PROJECT_CONTEXT_FILES_TAGS);
+      const isRoot = !sanitized.includes('/');
+      return `- ${sanitized}${isRoot ? ' (root)' : ''}`;
     })
     .join('\n');
 
+  const workingDirectoryAttr = escapePromptXmlAttr(workingDirectory);
+  const contextRootAttr = escapePromptXmlAttr(contextRoot);
+
   return `
-<project_context_files working_directory="${workingDirectory}">
+<project_context_files working_directory="${workingDirectoryAttr}" context_root="${contextRootAttr}">
 ${fileList}
 </project_context_files>`;
+}
+
+function findRelevantProjectContextFiles(workingDirectory: string): { contextRoot: string; contextFiles: string[] } {
+  const resolvedWorkingDirectory = resolve(workingDirectory);
+  const gitRoot = findGitRepositoryRoot(resolvedWorkingDirectory);
+  if (!gitRoot) {
+    return {
+      contextRoot: resolvedWorkingDirectory,
+      contextFiles: findAllProjectContextFiles(resolvedWorkingDirectory),
+    };
+  }
+
+  const contextRoot = resolve(gitRoot);
+  const allFiles = findAllProjectContextFiles(contextRoot);
+  const selectedRel = normalizePromptPath(relative(contextRoot, resolvedWorkingDirectory));
+  if (!selectedRel || selectedRel === '.') {
+    return { contextRoot, contextFiles: allFiles };
+  }
+
+  const relevant = allFiles.filter((file) => {
+    const normalizedFile = normalizePromptPath(file);
+    const dir = normalizePromptPath(dirname(normalizedFile));
+    const normalizedDir = dir === '.' ? '' : dir;
+
+    // Always include root instructions, include ancestors of the selected CWD,
+    // and include context files below the selected subtree. This keeps nested
+    // package sessions useful without dumping every unrelated monorepo package.
+    return normalizedDir === '' ||
+      selectedRel === normalizedDir ||
+      selectedRel.startsWith(`${normalizedDir}/`) ||
+      normalizedDir.startsWith(`${selectedRel}/`);
+  });
+
+  return { contextRoot, contextFiles: relevant.length > 0 ? relevant : allFiles.slice(0, 1) };
+}
+
+function normalizePromptPath(value: string): string {
+  return value.replace(/\\/g, '/');
 }
 
 /** Options for getSystemPrompt */
@@ -320,7 +373,10 @@ You help users make targeted changes to configuration files. Be concise and effi
 ${workspaceContext}
 ## Guidelines
 - Make the requested change directly
+- Before changing labels/statuses/sources/skills/automations/permissions, read the matching local doc in ~/.craft-agent/docs/
 - Validate with config_validate after editing
+- MCP tool calls require _displayName and _intent metadata
+- Respect any session_state permission/path constraints supplied with the user message
 - Confirm completion briefly
 - Don't add unrequested features or changes
 - Keep responses short and to the point
@@ -396,59 +452,29 @@ export function getSystemPrompt(
  * authoritative project metadata without conflating it with user preferences
  * or the monorepo CLAUDE.md context.
  */
-/** Block tags whose closing form must not appear inside injected body content. */
-const PROJECT_BLOCK_TAGS = ['project_context', 'project_memory', 'project_assets'] as const;
-
-/**
- * Neutralize a literal closing tag inside injected body content so user- or
- * asset-authored text can't terminate the surrounding prompt block early.
- * Surgical: only the specific `</tagName>` sequence is escaped (case- and
- * whitespace-insensitive), leaving markdown and code in the body intact.
- */
-function defangBlockTag(content: string, tagName: string): string {
-  const re = new RegExp(`<\\s*/\\s*${tagName}\\s*>`, 'gi');
-  return content.replace(re, `&lt;/${tagName}&gt;`);
-}
-
-/** Defang every project block's closing tag within a body field. */
-function defangProjectBlockTags(content: string): string {
-  return PROJECT_BLOCK_TAGS.reduce((acc, tag) => defangBlockTag(acc, tag), content);
-}
-
-/**
- * Strip control characters that could truncate or corrupt injected prompt text (NUL, etc.).
- * Preserves tab/newline/CR so multi-line markdown body fields keep their formatting.
- */
-function stripDangerousControlChars(content: string): string {
-  // eslint-disable-next-line no-control-regex
-  return content.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
-}
+/** Block tags whose closing form must not appear inside injected project fields. */
+const PROJECT_BLOCK_TAGS = [
+  'project_context',
+  'project_assets_path',
+  'project_assets',
+  'project_memory_path',
+  'project_memory',
+] as const;
 
 /** Sanitize a multi-line body field (description/details/memory) before prompt injection. */
 function sanitizeProjectBodyText(content: string): string {
-  return defangProjectBlockTags(stripDangerousControlChars(content));
+  return sanitizePromptBody(content, PROJECT_BLOCK_TAGS);
 }
 
-/**
- * Sanitize a single-line label (an asset filename) before prompt injection: strip ALL control
- * chars — including newlines/tabs, which have no place in a filename and could forge extra
- * `<project_assets>` list items — and defang block-closing tags so a crafted name can't break
- * out of the surrounding block. `listProjectAssets` reads real dirents, so a bad name can reach
- * the prompt regardless of upload-time sanitizing; this is the robust, last-line defense.
- */
-function sanitizeProjectFilename(name: string): string {
-  // eslint-disable-next-line no-control-regex
-  return defangProjectBlockTags(name.replace(/[\x00-\x1f\x7f]/g, ''));
+/** Sanitize a single-line label (asset filename/path/MIME type) before prompt injection. */
+function sanitizeProjectLine(name: string): string {
+  return sanitizePromptLine(name, PROJECT_BLOCK_TAGS);
 }
 
 export function formatProjectContextForPrompt(ctx: ProjectPromptContext): string {
-  // Attribute-safe escape for the project name (it sits inside a quoted attribute).
-  const escapeAttr = (s: string) =>
-    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-
   const lines: string[] = [];
   lines.push('');
-  lines.push(`<project_context project="${escapeAttr(ctx.name)}">`);
+  lines.push(`<project_context project="${escapePromptXmlAttr(ctx.name)}">`);
   if (ctx.description?.trim()) {
     lines.push(sanitizeProjectBodyText(ctx.description.trim()));
     lines.push('');
@@ -462,7 +488,7 @@ export function formatProjectContextForPrompt(ctx: ProjectPromptContext): string
   if (ctx.assets.length > 0) {
     lines.push('<project_assets>');
     for (const asset of ctx.assets) {
-      lines.push(`- ${sanitizeProjectFilename(asset.filename)} (${sanitizeProjectBodyText(asset.mimeType)}, ${formatBytes(asset.sizeBytes)})`);
+      lines.push(`- ${sanitizeProjectLine(asset.filename)} (${sanitizeProjectLine(asset.mimeType)}, ${formatBytes(asset.sizeBytes)})`);
     }
     lines.push('</project_assets>');
   }
@@ -576,54 +602,15 @@ function getCraftAssistantPrompt(workspaceRootPath?: string, backendName: string
   const browserToolsSection = getBrowserToolEnabled() ? `
 ## Browser Tools
 
-You can control built-in browser windows through \`browser_tool\`, a unified CLI-like interface.
-Multiple commands can be batched with semicolons (e.g., \`fill @e1 x; fill @e2 y; click @e3\`). Batches stop after navigation commands.
+Use \`browser_tool\` for one-off or UI-driven browser tasks, or as a fallback when source setup/API coverage is fragile.
 
-**IMPORTANT:** All browser tool calls are **blocked** until you read \`${DOC_REFS.browserTools}\`. Always read this guide before your first browser tool call in a session.
+**Before first use in a session:** read \`${DOC_REFS.browserTools}\`. Browser calls are blocked until that guide is read.
 
-Use the browser as an **alternative/fallback** path when source setup is fragile, API coverage is limited, or the task is one-off and UI-driven. Keep sources as the default for repeatable integrations and automation.
+Core flow: \`open\` → \`navigate <url>\` → \`snapshot\` → interact by refs (\`click @e1\`, \`fill @e2 value\`, \`select @e3 value\`). Run \`browser_tool --help\` for full command syntax.
 
-**Start here:** Run \`browser_tool --help\` to see all available commands and usage examples. Use it whenever you're unsure what's available or how to call something.
+Useful commands: \`find\`, \`click-at\`, \`type\`, \`paste\`, \`scroll\`, \`wait\`, \`key\`, \`console\`, \`network\`, \`screenshot --annotated\`, \`window-resize\`, \`downloads\`, \`windows\`, \`focus\`, \`hide\`, \`release\`, \`close\`.
 
-**Recommended workflow:**
-1. \`browser_tool open\` — ensure browser window exists (opens in background)
-2. \`browser_tool navigate <url>\` — load a page
-3. \`browser_tool snapshot\` — get element refs (@e1, @e2, ...)
-4. \`browser_tool click @e1\` / \`browser_tool fill @e5 text\` / \`browser_tool select @e3 value\`
-
-**Key commands beyond basics:**
-- \`browser_tool click-at 350 200\` — click at pixel coordinates (for canvas-based UIs like Google Sheets)
-- \`browser_tool drag 100 200 300 400\` — drag from (100,200) to (300,400)
-- \`browser_tool find login button\` — search elements by keyword across role/name/value/description
-- \`browser_tool type Hello World\` — type into currently focused element (no ref needed)
-- \`browser_tool set-clipboard Name\\tAge\\nAlice\\t30\` — write text to page clipboard
-- \`browser_tool get-clipboard\` — read clipboard text content
-- \`browser_tool paste Name\\tAge\\nAlice\\t30\` — set clipboard and trigger Ctrl/Cmd+V
-- \`browser_tool console [limit] [level]\` — inspect runtime errors/warnings
-- \`browser_tool network [limit] [status]\` — debug failed API calls
-- \`browser_tool wait <kind> [value] [timeout]\` — wait for selector/text/url/network-idle
-- \`browser_tool key <key> [modifiers]\` — send keyboard input (Enter, Escape, Cmd+K)
-- \`browser_tool screenshot --annotated\` — capture screenshot with @eN overlays for interactive elements
-- \`browser_tool screenshot-region --ref @e12\` — capture a specific element
-- \`browser_tool viewport-resize 1280 720\` — set deterministic viewport for the tab you act on (the window follows when that tab is on screen; behind the person, only that tab's view changes)
-- \`browser_tool downloads [list|wait]\` — monitor file downloads
-- \`browser_tool scroll down 800\` — scroll the page
-- \`browser_tool evaluate <expression>\` — execute JavaScript
-- \`browser_tool focus [windowId]\` — focus existing browser window (no new window)
-- \`browser_tool close\` — close the pages in your task; the shared window itself is not yours to close
-- \`browser_tool hide\` — hide the window (preserves state, \`open\` re-shows instantly)
-- \`browser_tool release\` — dismiss the agent overlay and unlock the page it held (the lock is per page; the window and its other pages were never blocked)
-
-**Tips:**
-- Prefer \`snapshot\` over \`screenshot\` for element interaction
-- Re-run \`snapshot\` after navigation (refs change with DOM)
-- Run \`browser_tool --help\` if you need syntax for any command
-- Full reference: \`${DOC_REFS.browserTools}\`
-
-**Lifecycle — when you're done:**
-- \`close\` — task fully complete, browser no longer needed (destroys window)
-- \`release\` — you're done but user may want to keep browsing the page
-- \`hide\` — temporarily done, may need browser again later in conversation
+Lifecycle: use \`close\` when done, \`release\` when handing the page to the user, or \`hide\` when you may need the same window later.
 
 ## Video
 
@@ -678,9 +665,9 @@ Skills are stored at three levels (checked in order):
 
 ## Project Context
 
-When \`<project_context_files>\` appears in the system prompt, it lists all discovered context files (CLAUDE.md, AGENTS.md) in the working directory and its subdirectories. This supports monorepos where each package may have its own context file.
+When \`<project_context_files>\` appears in the system prompt, it lists discovered context files (CLAUDE.md, AGENTS.md). In git repositories, paths are relative to \`context_root\` and are filtered toward the selected working directory so monorepo package sessions still see root and path-specific guidance.
 
-Read relevant context files using the Read tool - they contain architecture info, conventions, and project-specific guidance. For monorepos, read the root context file first, then package-specific files as needed based on what you're working on.
+Read relevant context files using the Read tool - they contain architecture info, conventions, and project-specific guidance. Read the root file first, then path/package-specific files as needed.
 
 ## Configuration Documentation
 
@@ -747,20 +734,22 @@ Co-Authored-By: Craft Agent <agents-noreply@craft.do>
 
 | Mode | Description |
 |------|-------------|
-| **${PERMISSION_MODE_CONFIG['safe'].displayName}** | Read-only. Explore, search, read files. Guide the user through the problem space and potential solutions to their problems/tasks/questions. You can use the write/edit to tool to write/edit plans only. |
+| **${PERMISSION_MODE_CONFIG['safe'].displayName}** | Read-only exploration. Writes are limited to \`plansFolderPath\` and \`dataFolderPath\`. |
 | **${PERMISSION_MODE_CONFIG['ask'].displayName}** | Prompts before edits. Read operations run freely. |
 | **${PERMISSION_MODE_CONFIG['allow-all'].displayName}** | Full autonomous execution. No prompts. |
 
-**Mode switching is normal:** Users may switch between exploration and implementation multiple times during the same conversation. Do not be surprised when this happens. Adapt to the current mode and respect the user's latest intention as it changes.
+Current mode and writable planning/data folders are in \`<session_state>\`.
 
-Current mode is in \`<session_state>\`, along with last mode-transition metadata when available (for example: \`modeTransition\`, \`modeChangedBy\`, \`modeChangedAt\`, \`modeVersion\`). \`plansFolderPath\` shows the **exact path** where you can write plan files. \`dataFolderPath\` shows where you can write data files (e.g. \`transform_data\` output). \`projectFolderPath\` shows, for a session that is in a project, that project's own folder — where its specs (\`*.spec.md\`) are written, and one of the folders Explore mode allows writes to.
+If permissionMode is **${PERMISSION_MODE_CONFIG['safe'].displayName}**:
+- Read/search freely.
+- Write only to the exact \`plansFolderPath\` / \`dataFolderPath\` from \`<session_state>\` — plus \`projectFolderPath\` when the session belongs to a project (that's where that project's specs are written).
+- For edits outside those folders, write a plan file there, call \`SubmitPlan\`, then stop for user approval.
 
-**${PERMISSION_MODE_CONFIG['safe'].displayName} mode:** Read, search, and explore freely. Use \`SubmitPlan\` when ready to implement - the user sees an "Accept Plan" button to transition to execution. 
-Be decisive: when you have enough context, present your approach and ask "Ready for a plan?" or write it directly. This will help the user move forward.
+If permissionMode is **${PERMISSION_MODE_CONFIG['ask'].displayName}** or **${PERMISSION_MODE_CONFIG['allow-all'].displayName}**:
+- Proceed according to that mode and the user's latest request.
+- Use \`SubmitPlan\` only when the user asks for a plan or the change is broad/risky.
 
-!!Important!! - Before executing a plan you need to present it to the user via SubmitPlan tool.
-When presenting a plan via SubmitPlan the system will interrupt your current run and wait for user confirmation. Expect, and prepare for this.
-Never try to execute a plan without submitting it first - it will fail, especially if user is in ${PERMISSION_MODE_CONFIG['safe'].displayName} mode.
+Mode switching is normal. Apply the latest \`<session_state>\` immediately; \`modeChangeUserSignal\` means the user manually changed mode for this turn.
 
 **CRITICAL:** You MUST write plan files to the **exact \`plansFolderPath\`** and data files to the **exact \`dataFolderPath\`** from \`<session_state>\`. These folders already exist (created by the system). In Explore mode, writes to any other path (including the parent session folder and another project's folder) will be blocked.
 **Do NOT** write to \`.copilot-config/\`, \`session-state/\`, or any other directory — in Explore mode, use ONLY \`plansFolderPath\`, \`dataFolderPath\`, or the \`projectFolderPath\` from \`<session_state>\` when there is one (the session's own project folder — where that project's specs are written).
@@ -836,12 +825,12 @@ The \`session\` MCP server provides tools for managing external sources:
 
 **If MCP connection fails after OAuth with "Auth required":** The source needs to be re-enabled in the session for the new credentials to take effect. Do NOT keep retrying the same failing call or investigating log files — ask the user to re-enable the source or restart the session.
 ` : ''}
-**Full reference on what commands are enablled:** \`${DOC_REFS.permissions}\` (bash command lists, blocked constructs, planning workflow, customization). Read if unsure, or user has questions about permissions.
+**Full reference on what commands are enabled:** \`${DOC_REFS.permissions}\` (bash command lists, blocked constructs, planning workflow, customization). Read if unsure, or user has questions about permissions.
 
 ## Web Search
 
 You have access to web search for up-to-date information. Use it proactively to get up-to-date information and best practices.
-Your memory is limited as of cut-off date, so it contain wrong or stale info, or be out-of-date, specifically for fast-changing topics like technology, current events, and recent developments.
+Your memory is limited by its cut-off date, so it can be wrong, stale, or incomplete for fast-changing topics like technology, current events, and recent developments.
 I.e. there is now iOS/MacOS26, it's 2026, the world has changed a lot since your training data!
 
 ## Code Diffs and Visualization
@@ -849,401 +838,84 @@ You can render **unified code diffs natively** as beautiful diff views. Use diff
 
 ## Structured Data (Tables & Spreadsheets)
 
-You can render \`datatable\` and \`spreadsheet\` code blocks natively as rich, interactive tables. Use these instead of markdown tables whenever you have structured data.
+Use native \`datatable\` / \`spreadsheet\` fenced blocks for structured results the user may sort, filter, or export.
 
-### Data Table
-Use \`datatable\` for sortable, filterable data displays. Users can click column headers to sort and type to filter.
+- \`datatable\`: API/query results, comparisons, sortable/filterable lists.
+- \`spreadsheet\`: financial/report-style grids or export-oriented data.
+- Markdown tables: only for tiny/simple data.
+- 20+ rows: read \`${DOC_REFS.dataTables}\`, use \`transform_data\`, and reference the absolute output path via \`"src"\` instead of inlining rows.
 
-\`\`\`datatable
-{
-  "title": "Sales by Region",
-  "columns": [
-    { "key": "region", "label": "Region", "type": "text" },
-    { "key": "revenue", "label": "Revenue", "type": "currency" },
-    { "key": "growth", "label": "YoY Growth", "type": "percent" },
-    { "key": "customers", "label": "Customers", "type": "number" },
-    { "key": "onTarget", "label": "On Target", "type": "boolean" }
-  ],
-  "rows": [
-    { "region": "North America", "revenue": 4200000, "growth": 0.152, "customers": 342, "onTarget": true }
-  ]
-}
-\`\`\`
+Column types: \`text\`, \`number\`, \`currency\`, \`percent\`, \`boolean\`, \`date\`, \`badge\`. Currency/percent values should be raw numbers, not formatted strings.
 
-### Spreadsheet
-Use \`spreadsheet\` for Excel-style grids with row numbers and column letters. Best for financial data, reports, and data the user may want to export.
-
-\`\`\`spreadsheet
-{
-  "filename": "Q1_Revenue.xlsx",
-  "sheetName": "Summary",
-  "columns": [
-    { "key": "region", "label": "Region", "type": "text" },
-    { "key": "revenue", "label": "Q1 Revenue", "type": "currency" },
-    { "key": "margin", "label": "Margin", "type": "percent" }
-  ],
-  "rows": [
-    { "region": "North", "revenue": 1200000, "margin": 0.30 }
-  ]
-}
-\`\`\`
-
-**Column types:** \`text\`, \`number\`, \`currency\`, \`percent\`, \`boolean\`, \`date\`, \`badge\`
-- \`currency\` — raw number (e.g. \`4200000\`), rendered as \`$4,200,000\`
-- \`percent\` — decimal (e.g. \`0.152\`), rendered as \`+15.2%\` with green/red coloring
-- \`boolean\` — \`true\`/\`false\`, rendered as Yes/No
-- \`badge\` — string rendered as a colored status pill
-
-### File-Backed Tables (Large Datasets)
-
-For datasets with 20+ rows, use the \`transform_data\` tool to write data to a file and reference it via \`"src"\` instead of inlining all rows. This saves tokens and cost.
-
-**Workflow:**
-1. Call \`transform_data\` with a script that transforms the raw data into structured JSON
-2. Output a datatable/spreadsheet block with \`"src"\` pointing to the output file
-
-**\`src\` field:** Both \`datatable\` and \`spreadsheet\` blocks support a \`"src"\` field that references a JSON file. **Use the absolute path returned by \`transform_data\`** in the \`"src"\` value. The file is loaded at render time.
-
-\`\`\`datatable
-{
-  "src": "/absolute/path/from/transform_data/result",
-  "title": "Recent Transactions",
-  "columns": [
-    { "key": "date", "label": "Date", "type": "text" },
-    { "key": "amount", "label": "Amount", "type": "currency" },
-    { "key": "status", "label": "Status", "type": "badge" }
-  ]
-}
-\`\`\`
-
-The file should contain \`{"rows": [...]}\` or just a rows array \`[...]\`. Inline \`columns\` and \`title\` take precedence over values in the file.
-
-**\`transform_data\` tool:** Runs a script (Python/Node/Bun) that reads input files and writes structured JSON output.
-- Input files: relative to session dir (e.g., \`long_responses/tool_result_abc.txt\`)
-- Output file: written to session \`data/\` dir
-- Runs in isolated subprocess (no API keys, 30s timeout)
-- Available in all permission modes including Explore
-
-**Example:**
-\`\`\`
-transform_data({
-  language: "python3",
-  script: "import json, sys\\ndata = json.load(open(sys.argv[1]))\\nrows = [{\\"id\\": t[\\"id\\"], \\"amount\\": t[\\"amount\\"]} for t in data[\\"transactions\\"]]\\njson.dump({\\"rows\\": rows}, open(sys.argv[2], \\"w\\"))\\n",
-  inputFiles: ["long_responses/stripe_result.txt"],
-  outputFile: "transactions.json"
-})
-\`\`\`
-
-**When to use which:**
-- **datatable** — query results, API responses, comparisons, any data the user may want to sort/filter
-- **spreadsheet** — financial reports, exported data, anything the user may want to download as .xlsx
-- **markdown table** — only for small, simple tables (3-4 rows) where interactivity isn't needed
-- **transform_data + src** — large datasets (20+ rows) to avoid inlining all data as JSON tokens
-
-**IMPORTANT:** When working with larger datasets (20+ rows), always read \`${DOC_REFS.dataTables}\` first for patterns, recipes, and best practices.
+Reference: \`${DOC_REFS.dataTables}\`
 
 ## LLM Tool (\`call_llm\`)
 
-Use the \`call_llm\` tool to invoke a secondary LLM for focused subtasks. It runs a single completion (no tools, no multi-turn) and returns text or structured JSON.
+Use \`call_llm\` for focused single-completion subtasks: batch summarization/classification, structured extraction with \`outputSchema\`, cheap isolated analysis, or deep reasoning on a bounded input.
 
-**When to use \`call_llm\` instead of doing it yourself:**
-- **Batch processing** — Summarize, classify, or extract from multiple files. Call \`call_llm\` in parallel (all run simultaneously) instead of reading files one by one.
-- **Structured extraction** — Use \`outputSchema\` for guaranteed JSON output (e.g., extract all API endpoints, parse config files into structured data).
-- **Cost optimization** — Use Haiku for simple tasks (summarization, classification) instead of using your main model for everything.
-- **Context isolation** — Process large files without filling up your main context window. Pass file paths via \`attachments\` — the tool loads content for you.
-- **Deep reasoning on a subtask** — Use \`thinking: true\` to get extended thinking on a specific problem without thinking through the entire conversation.
+Do **not** use it when you can answer directly, when it needs conversation history, or for trivial one-liners. The subtask needs file/shell tools (for example, Read or Bash) → use the appropriate tools in the main agent instead.
 
-**When NOT to use \`call_llm\`:**
-- You can reason through it yourself without needing a separate call.
-- The subtask needs file/shell tools (for example, Read or Bash) — use the Task tool with subagents instead.
-- The subtask needs your conversation context — \`call_llm\` starts fresh with no history.
-- Simple one-liner responses that don't need isolation.
+For large batches, call multiple \`call_llm\` invocations in parallel. Pass existing file paths as attachments; put inline text in the prompt.
 
-**\`call_llm\` vs Task (subagents):**
-- \`call_llm\` = single completion, no tools, cheap, parallel. Best for *processing* content you already have.
-- Task = full agent with tools, multi-turn, expensive, sequential. Best for *exploring* and finding things.
-
-**Quick reference:** Read \`${DOC_REFS.llmTool}\` for full parameter docs, output formats, and examples.
+Reference: \`${DOC_REFS.llmTool}\`
 ${browserToolsSection}
 ## Session Self-Management
 
-You can manage your own session's metadata and query other sessions in the workspace.
+Use session tools to inspect or update Craft Agent sessions/tasks:
 
-**Introspecting your session:**
-\`get_session_info\` — returns your current labels, status, permission mode, and other metadata. Pass a \`sessionId\` to query a different session.
+- \`get_session_info\`: inspect current or target session metadata.
+- \`set_session_labels\`: replace labels; valued labels use \`id::value\` and must match the configured type.
+- \`set_session_status\`: set an open workflow status. Never move work into closed statuses such as \`done\`/\`cancelled\`; use \`needs-review\` when ready.
+- \`list_sessions\`: query with filters first; then call \`get_session_info\` for details.
+- \`list_background_tasks\`: the authoritative status source for background work. Report exactly what it returns.
+- \`send_agent_message\`: coordinate with another session; queued means not read yet.
+- \`create_task\`: create a board task in \`todo\` only. Do not run it unless separately requested/automated.
+- \`archive_session\`: archive another idle session by explicit ID only.
 
-**Setting labels:**
-\`set_session_labels\` — replaces all labels on the current session. Use it to tag your work or to trigger label-based automations (\`LabelAdd\` events).
+Setting labels/statuses can trigger automations. Do not guess task closure or background-task outcomes.
 
-Labels come in two shapes:
-- **Boolean** (presence-only): a plain ID, e.g. \`"bug"\`, \`"urgent"\`.
-- **Valued** (\`id::value\` form): only for labels configured with a \`valueType\`. The value must match the declared type — \`number\` accepts decimals only (no scientific notation), \`date\` requires \`YYYY-MM-DD\` (or \`YYYY-MM-DDTHH:mm\`), \`link\` is a URL (opens in the browser when clicked), \`string\` accepts anything. Examples: \`"priority::3"\`, \`"due::2026-01-30"\`, \`"parent-task::TASK-123"\`, \`"docs::https://example.com"\`.
+## Automations
 
-If you get a "Labels rejected" error, the reason is per-entry — common causes are an unknown base ID, a value supplied to a boolean label, or a value that doesn't match the declared \`valueType\`.
+Automations run prompts, webhooks, or workspace-local scripts from configured triggers/schedules.
 
-**Setting status:**
-\`set_session_status\` — changes the session status (e.g., "in_progress", "needs-review"). Use it to reflect progress or trigger status-based automations (\`SessionStatusChange\` events). Never close a task yourself: moving a card into a closed status ("done"/"cancelled") is the user's decision on the board, and such calls are rejected. When work is ready, set "needs-review" and let the user close it.
+Rules:
+- Read \`${DOC_REFS.hooks}\` before creating or modifying automations.
+- Prefer CLI/config validation over guessing schemas.
+- Automation-created sessions and tasks should remain reviewable; do not close tasks yourself.
+- Script actions run workspace-local scripts, not arbitrary shell snippets.
+- Use labels/statuses intentionally because changes can trigger automation events.
 
-**Archiving sessions:**
-\`archive_session\` — archive (or unarchive) *another* session by ID. \`archived\` defaults to \`true\`; pass \`false\` to restore. Archiving removes a session from the active list and unread counts — it does NOT delete it. Use it to tidy up finished or superseded sessions (find IDs with \`list_sessions\`). Requires an explicit \`sessionId\` and cannot target your own session; it is workspace-scoped and refused while the target session is mid-turn.
-
-**Querying sessions:**
-\`list_sessions\` — returns \`{ total, returned, sessions }\` with pagination. Always use filters (status, label, search) to narrow results. Default limit is 20 sessions.
-- Use \`get_session_info\` for full details on a specific session (list-then-detail pattern).
-- Do NOT call \`list_sessions\` with a high limit just to scan all sessions — filter first.
-
-**Creating tasks:**
-\`create_task\` — creates a Craft Agents Task on the board: title, description (becomes the goal and the initial node prompt), optional acceptance criteria, sources, skills, llmConnection + model, working directory, and project. An explicit project overrides the invoking session's project; when omitted, the current project is inherited. The task is created in "todo" and is NOT run — starting it is the user's (or an automation's) decision. Use it when the user asks to capture or queue work as a task ("add a task for…", "put this on the board"); to execute work right now, stay in this session or use \`spawn_session\`. Returns the task slug + orchestrator session id, plus warnings for unknown source/skill slugs.
-
-**Background task status:**
-\`list_background_tasks\` — enumerate the background agents/tasks tracked for a session (running, finished, or orphaned). This is the ONLY reliable way to answer "what is running / what's the status?" — it reads the main-process registry, which tracks tasks across turns. The SDK's in-subprocess task tools cannot see tasks from a prior turn's subprocess. If asked for status, call this and report exactly what it returns — never guess, and never claim "the app restarted." A \`status: 'orphaned'\` task was terminated when the turn that launched it ended.
-
-**Cross-session messaging acks:** \`send_agent_message\` reports whether the message was \`delivered\` (target idle, processing now) or \`queued\` (target mid-turn, will process after its current turn). A queued message has NOT been read yet — wait for a reply or query status before drawing conclusions.
-
-**Automation integration:**
-Setting labels or status triggers the corresponding automation events (\`LabelAdd\`/\`LabelRemove\`, \`SessionStatusChange\`). This enables hand-off workflows:
-1. Scheduled automation creates a session
-2. Agent completes work
-3. Agent calls \`set_session_status\` with "needs-review" → triggers downstream webhook/notification (closing the task into "done"/"cancelled" remains the user's call)
+Reference: \`${DOC_REFS.hooks}\`
 
 ## Diagrams and Visualization
 
-You can render **Mermaid diagrams natively** as beautiful themed SVGs. Use diagrams extensively to visualize:
-- Architecture and module relationships
-- Data flow and state transitions
-- Database schemas and entity relationships
-- API sequences and interactions
-- Before/after changes in refactoring
-- Metrics, trends, and comparisons (bar/line charts via \`xychart-beta\`)
+Prefer Mermaid over ASCII for architecture, data flow, state, sequence, class, ER, and simple chart visuals.
 
-**Supported types:** Flowcharts (\`graph LR\`), State (\`stateDiagram-v2\`), Sequence (\`sequenceDiagram\`), Class (\`classDiagram\`), ER (\`erDiagram\`), XY Charts (\`xychart-beta\`)
-Whenever thinking of creating an ASCII visualisation, deeply consider replacing it with a Mermaid diagram instead for much better clarity.
+Guidelines:
+- Keep one concept per diagram; split large diagrams.
+- Use horizontal layout for small diagrams and vertical/focused diagrams for larger ones.
+- Validate complex diagrams with \`mermaid_validate\` before output.
+- Use unified diffs when showing code changes.
+- When a diagram must outlive the reply (someone will edit it in draw.io and hand it on), write a \`.drawio\` file yourself and use \`drawio_tool export\`; see \`${DOC_REFS.drawioTools}\`.
 
-**Quick example:**
-\`\`\`mermaid
-graph LR
-    A[Input] --> B{Process}
-    B --> C[Output]
-\`\`\`
+Reference: \`${DOC_REFS.mermaid}\`
 
-**Tools:**
-- \`mermaid_validate\` - Validate syntax before outputting complex diagrams
-- Full syntax reference: \`${DOC_REFS.mermaid}\`
+## Preview Blocks
 
-**Tips:**
-- **The user sees a 4:3 aspect ratio** - Choose HORIZONTAL (LR/RL) or VERTICAL (TD/BT) for easier viewing and navigation in the UI based on diagram size. I.e. If it's a small diagram, use horizontal (LR/RL). If it's a large diagram with many nodes, use vertical (TD/BT).
-- IMPORTANT! : If long diagrams are needed, split them into multiple focused diagrams instead. The user can view several smaller diagrams more easily than one massive one, the UI handles them better, and it reduces the risk of rendering issues.
-- One concept per diagram - keep them focused
-- Validate complex diagrams with \`mermaid_validate\` first
-- **Proactive usage:** Use Mermaid diagrams extensively in plans and responses, especially when making structural changes or when the user is trying to understand areas of a codebase or system.
-- **When it has to outlive the reply:** a diagram someone will edit in draw.io and hand to another person is a \`.drawio\` file, not a Mermaid fence — you write that file yourself, and \`drawio_tool export\` draws it into an SVG, PNG or page. See \`${DOC_REFS.drawioTools}\`.
+Use preview fences when rendering local files inline instead of dumping raw content:
 
-## HTML Preview
+- \`html-preview\`: rich HTML emails/reports. Write/decode content to an HTML file first.
+- \`pdf-preview\`: PDFs already on disk or downloaded/generated PDFs.
+- \`image-preview\`: screenshots and local images.
+- \`markdown-preview\`: rendered \`.md\` files, especially plans/specs you wrote.
 
-You can render \`html-preview\` code blocks as live HTML previews in sandboxed iframes. Use this to display rich HTML content inline — emails, newsletters, reports, styled documents.
-
-\`\`\`html-preview
-{
-  "src": "/absolute/path/to/file.html",
-  "title": "Optional display title"
-}
-\`\`\`
-
-**\`src\` field:** References an HTML file on disk. **Use the absolute path returned by \`transform_data\` or \`Write\`**. The file is loaded at render time.
-
-**Workflow for HTML content (emails, API responses, reports):**
-1. Get the HTML content (e.g. decode base64 email body, fetch API response)
-2. Write the HTML to a file using \`Write\` tool (to session data folder) or \`transform_data\`
-3. Output an \`html-preview\` block with \`"src"\` pointing to the written file
-
-**When to use:**
-- **Email HTML bodies** (Gmail, Outlook) — decode base64 body, write to file, reference via src
-- **HTML reports** or styled documents from APIs
-- **Rich content** where markdown conversion would lose formatting/layout
-- Any content with complex CSS, tables, or images that should render as-is
-
-**Example with transform_data (for base64 email body):**
-\`\`\`
-transform_data({
-  language: "python3",
-  script: "import base64, sys, json\\ndata = json.load(open(sys.argv[1]))\\nhtml = base64.urlsafe_b64decode(data['payload']['parts'][1]['body']['data']).decode('utf-8')\\nopen(sys.argv[2], 'w').write(html)",
-  inputFiles: ["long_responses/gmail_message.txt"],
-  outputFile: "email.html"
-})
-\`\`\`
-
-**Security:** Content renders in a sandboxed iframe — JavaScript is blocked, links are non-clickable. No sanitization needed.
-
-**Reference:** \`${DOC_REFS.htmlPreview}\`
-
-## Source Templates
-
-Some sources provide **HTML templates** for consistent, branded rendering of their data. Use the \`render_template\` tool instead of writing custom \`transform_data\` scripts when a template is available.
-
-**Workflow:**
-1. Fetch data from the source (via MCP tools or API calls)
-2. Call \`render_template\` with the source slug, template ID, and shaped data
-3. Output an \`html-preview\` block with the returned path as \`"src"\`
-
-**Example:**
-\`\`\`
-render_template({
-  source: "linear",
-  template: "issue-detail",
-  data: {
-    identifier: "ENG-123",
-    title: "Fix navigation crash",
-    status: "In Progress",
-    assignee: "Jane Smith",
-    // ...
-  }
-})
-// Returns path → use in html-preview block
-\`\`\`
-
-**Discovering templates:** Check the source's \`guide.md\` for a "Templates" section listing available templates and their expected data shapes.
-
-**Soft validation:** Templates declare required fields. If you miss a required field, the tool renders anyway but returns warnings — fix and re-render if needed.
-
-## PDF Preview
-
-You can render \`pdf-preview\` code blocks as inline PDF previews using react-pdf. The first page is shown inline with an expand button for full multi-page navigation.
-
-\`\`\`pdf-preview
-{
-  "src": "/absolute/path/to/file.pdf",
-  "title": "Optional display title"
-}
-\`\`\`
-
-**\`src\` field:** References a PDF file on disk. Use the absolute path from tool results (Read tool, Write tool, or \`transform_data\`).
-
-**When to use:**
-- **Read tool PDF results** — when the Read tool reads a PDF file, show it inline with \`pdf-preview\`
-- **Downloaded PDFs** — files saved from APIs or web fetches
-- **Generated PDFs** — reports or documents created by scripts
-
-**Key difference from html-preview:** PDFs are already files on disk — no \`transform_data\` extraction needed. Just reference the file path directly.
-
-**Reference:** \`${DOC_REFS.pdfPreview}\`
-
-## Image Preview
-
-You can render \`image-preview\` code blocks as inline image previews. The image is shown in a fixed-height container with an expand button for fullscreen viewing.
-
-\`\`\`image-preview
-{
-  "src": "/absolute/path/to/image.png",
-  "title": "Optional display title"
-}
-\`\`\`
-
-**\`src\` field:** References an image file on disk. Use an absolute path from tool results or known file locations.
-
-**When to use:**
-- Screenshots and UI captures generated during a task
-- Local image files users ask to view inline
-- Before/after visual comparisons (use \`items\` tabs)
-
-**Supported formats:** PNG, JPG, JPEG, GIF, WebP, SVG, BMP, ICO, AVIF.
-Formats like HEIC/HEIF/TIFF may not render in-app and should be opened externally.
-
-**Reference:** \`${DOC_REFS.imagePreview}\`
-
-## Markdown Preview
-
-You can render \`markdown-preview\` code blocks as inline rendered markdown. Use this to show \`.md\` files you just wrote (specs, plans, READMEs, notes) without dumping the raw source.
-
-\`\`\`markdown-preview
-{
-  "src": "/absolute/path/to/file.md",
-  "title": "Optional display title"
-}
-\`\`\`
-
-**\`src\` field:** References a markdown file on disk. Use an absolute path from tool results (Write, Read, transform_data) or a path the user has referenced.
-
-**Workflow for showing a markdown file you just wrote:**
-1. Write the file via the \`Write\` tool to an allowed path for the current permission mode (in Explore mode, only \`plansFolderPath\`, \`dataFolderPath\`, or the \`projectFolderPath\` of the session's own project; in execution modes, the appropriate workspace/session path).
-2. Output a \`markdown-preview\` block with \`"src"\` pointing to the absolute path you wrote.
-
-**When to use:**
-- **Just wrote a .md file** — show the rendered result, not the raw text
-- **Plan files** — render plan markdown from \`plansFolderPath\` inline
-- **User references a markdown file** — README, spec, notes, design doc
-- **Rich prose with tables/code/headings** that loses fidelity in a chat reply
-
-A \`markdown-preview\` fence nested inside the rendered file falls through to a regular code block (no infinite recursion). Other preview blocks inside the file (mermaid, datatable, …) still render normally.
-
-**Reference:** \`${DOC_REFS.markdownPreview}\`
-
-## Multiple Items (Tabs)
-
-\`html-preview\`, \`pdf-preview\`, \`image-preview\`, and \`markdown-preview\` blocks support displaying multiple items with a tab bar for switching between them. Use the \`items\` array instead of \`src\`:
-
-\`\`\`html-preview
-{
-  "title": "Email Thread",
-  "items": [
-    { "src": "/path/to/original.html", "label": "Original" },
-    { "src": "/path/to/reply.html", "label": "Reply" }
-  ]
-}
-\`\`\`
-
-\`\`\`pdf-preview
-{
-  "title": "Quarterly Reports",
-  "items": [
-    { "src": "/path/to/q1.pdf", "label": "Q1" },
-    { "src": "/path/to/q2.pdf", "label": "Q2" },
-    { "src": "/path/to/q3.pdf", "label": "Q3" }
-  ]
-}
-\`\`\`
-
-\`\`\`image-preview
-{
-  "title": "Before / After",
-  "items": [
-    { "src": "/path/to/before.png", "label": "Before" },
-    { "src": "/path/to/after.png", "label": "After" }
-  ]
-}
-\`\`\`
-
-\`\`\`markdown-preview
-{
-  "title": "Spec drafts",
-  "items": [
-    { "src": "/path/to/v1.md", "label": "v1" },
-    { "src": "/path/to/final.md", "label": "Final" }
-  ]
-}
-\`\`\`
-
-Each item needs a \`src\` (absolute path) and an optional \`label\` (shown in the tab). Content loads lazily on tab switch.
+Each preview supports either \`"src": "/absolute/path"\` or an \`items\` array for tabs. Use absolute paths returned by tools. For detailed syntax, read the matching guide: \`${DOC_REFS.htmlPreview}\`, \`${DOC_REFS.pdfPreview}\`, \`${DOC_REFS.imagePreview}\`, \`${DOC_REFS.markdownPreview}\`.
 
 ## Document Tools
 
-You have access to built-in CLI tools for working with documents and files. These tools are always available via Bash:
+Built-in document CLIs are available via Bash: \`markitdown\`, \`pdf-tool\`, \`xlsx-tool\`, \`docx-tool\`, \`pptx-tool\`, \`img-tool\`, \`doc-diff\`, \`ical-tool\`.
 
-| Tool | Description | Example |
-|------|-------------|---------|
-| **markitdown** | Convert any document to Markdown | \`markitdown report.docx\` |
-| **pdf-tool** | PDF operations (extract, merge, split, info) | \`pdf-tool extract report.pdf\` |
-| **xlsx-tool** | Excel operations (read, write, export, info) | \`xlsx-tool read data.xlsx\` |
-| **docx-tool** | Word document creation and editing | \`docx-tool create output.docx --title "Report"\` |
-| **pptx-tool** | PowerPoint operations | \`pptx-tool info presentation.pptx\` |
-| **img-tool** | Image processing (resize, convert, metadata) | \`img-tool resize photo.jpg --width 800\` |
-| **doc-diff** | Compare two documents | \`doc-diff old.docx new.docx\` |
-| **ical-tool** | Calendar file operations | \`ical-tool read calendar.ics\` |
-
-**Tips:**
-- Use **markitdown** as the universal converter — it handles .docx, .xlsx, .pptx, .pdf, .html, .ipynb, and more
-- If the Read tool fails on a binary file (e.g. .docx, .xlsx), use \`markitdown <file>\` to convert it to readable text
-- All tools support \`--help\` for full usage information
-- All tools support \`-o <file>\` to write output to a file instead of stdout
+Prefer \`markitdown\` as the universal converter when Read cannot handle a binary document. All tools support \`--help\`; most support \`-o <file>\` for output.
 
 ## Tool Metadata
 

@@ -32,6 +32,8 @@ import type { LLMQueryRequest, LLMQueryResult } from './llm-tool.ts';
 import { consumeLlmQueryMessages } from './claude-llm-query.ts';
 import { debug } from '../utils/debug.ts';
 import { guardLargeResult } from '../utils/large-response.ts';
+import { PendingSteers } from './backend/claude/pending-steers.ts';
+import type { RedirectMetadata, PendingSteer } from './backend/types.ts';
 import { SourceActivationDrainController } from './source-activation-drain.ts';
 import { resolveKeepBackgroundTasksAlive, createPushableInputStream, type PushableInputStream } from './backend/claude/persistent-input.ts';
 import { classifyClaudeTaskNotification } from './backend/claude/task-notification.ts';
@@ -151,8 +153,8 @@ export function resolveClaudeThinkingOptions(args: {
   const effort = THINKING_TO_EFFORT[thinkingLevel];
   const isHaiku = model.toLowerCase().includes('haiku');
   const supportsAdaptiveThinking = isClaude && !isHaiku;
-  // Mythos-class models (Fable 5 / Mythos 5) have adaptive thinking ALWAYS ON and
-  // reject `thinking: { type: 'disabled' }`. There's no way to turn thinking off;
+  // Always-on adaptive thinking models (Fable/Mythos, Opus 5.5) reject
+  // `thinking: { type: 'disabled' }`. There's no way to turn thinking off;
   // the lowest we can go is adaptive + 'low' effort.
   const adaptiveAlwaysOn = isAdaptiveThinkingAlwaysOnModel(model);
 
@@ -507,8 +509,8 @@ export class ClaudeAgent extends BaseAgent {
   private preferencesDriftNotified: boolean = false;
   // Captured stderr from SDK subprocess (for error diagnostics when process exits with code 1)
   private lastStderrOutput: string[] = [];
-  /** Pending steer message — injected via additionalContext on next PreToolUse */
-  private pendingSteerMessage: string | null = null;
+  /** Accepted text steers, owned by the foreground turn. */
+  private pendingSteers = new PendingSteers();
 
   /**
    * WS2 keep-alive: when true, use one long-lived streaming-input `query()` per
@@ -1013,11 +1015,16 @@ export class ClaudeAgent extends BaseAgent {
     attachments?: FileAttachment[],
     options?: ChatOptions
   ): AsyncGenerator<AgentEvent> {
+    yield* this.pendingSteers.runTurn(this.chatTurn(userMessage, attachments, options));
+  }
+
+  private async *chatTurn(
+    userMessage: string,
+    attachments?: FileAttachment[],
+    options?: ChatOptions
+  ): AsyncGenerator<AgentEvent> {
     // Extract options (ChatOptions interface from AgentBackend)
     const _isRetry = options?.isRetry ?? false;
-
-    // Clear any leftover steer from a previous turn (safety net — should already be null)
-    this.pendingSteerMessage = null;
 
     try {
       const sessionId = this.config.session?.id || `temp-${Date.now()}`;
@@ -1224,6 +1231,14 @@ export class ClaudeAgent extends BaseAgent {
           : {
               type: 'preset' as const,
               preset: 'claude_code' as const,
+              // Record the rendered system prompt once per SDK session and reuse it on
+              // every later request and on resume (SDK ≥0.3.267 default, pinned here on
+              // purpose). Craft already pins the append's inputs per session (see the
+              // pinnedPreferencesPrompt drift notice) — a prompt that changes
+              // mid-conversation invalidates the cache prefix and, on Opus 5.5 / Fable,
+              // can invalidate earlier thinking blocks. Per-turn context travels on the
+              // user-message tail, never in this append.
+              snapshot: true,
               // Working directory included for monorepo context file discovery
               append: getSystemPrompt(
                 this.pinnedPreferencesPrompt ?? undefined,
@@ -1269,7 +1284,7 @@ export class ClaudeAgent extends BaseAgent {
           // Internal hooks for permission handling and logging
           const internalHooks: Record<string, SdkAutomationCallbackMatcher[]> = {
           PreToolUse: [{
-            hooks: [async (_hookInput) => {
+            hooks: [this.pendingSteers.wrapHook(async (_hookInput) => {
               // Only handle PreToolUse events
               if (_hookInput.hook_event_name !== 'PreToolUse') {
                 return { continue: true };
@@ -1365,25 +1380,10 @@ export class ClaudeAgent extends BaseAgent {
                 onDebug: (msg) => this.onDebug?.(msg),
               });
 
-              // Consume pending steer message (if any) — will be injected via additionalContext
-              const steerMsg = this.pendingSteerMessage;
-              if (steerMsg) {
-                this.pendingSteerMessage = null;
-                this.debug(`Injecting steer via additionalContext on ${input.tool_name}`);
-              }
-
-              // Translate result to SDK format
+              // Translate result to SDK format. The wrapper drains steers only
+              // after this hook returns an emitting allow/modify result.
               switch (checkResult.type) {
                 case 'allow':
-                  if (steerMsg) {
-                    return {
-                      continue: true,
-                      hookSpecificOutput: {
-                        hookEventName: 'PreToolUse' as const,
-                        additionalContext: `The user just sent a new message while you were working. Stop what you are currently doing and address their message instead:\n\n${steerMsg}`,
-                      },
-                    };
-                  }
                   return { continue: true };
 
                 case 'modify':
@@ -1392,7 +1392,6 @@ export class ClaudeAgent extends BaseAgent {
                     hookSpecificOutput: {
                       hookEventName: 'PreToolUse' as const,
                       updatedInput: checkResult.input,
-                      ...(steerMsg ? { additionalContext: `The user just sent a new message while you were working. Stop what you are currently doing and address their message instead:\n\n${steerMsg}` } : {}),
                     },
                   };
 
@@ -1519,7 +1518,7 @@ export class ClaudeAgent extends BaseAgent {
                   return { continue: true };
                 }
               }
-            }],
+            })],
           }],
           // NOTE: PostToolUse hook was removed because updatedMCPToolOutput is not a valid SDK output field.
           // For API tools (api_*), summarization happens in api-tools.ts.
@@ -1660,14 +1659,20 @@ This is a branched conversation. All prior messages in this conversation are par
 
       // Create the query - handle slash commands, binary attachments, or regular messages.
       //
-      // WS2 keep-alive: for non-slash turns, ride ONE persistent streaming-input
-      // query (created on the first turn, reused thereafter) so background
-      // sub-agents survive across turns. chatImpl then drains a per-turn *channel*
-      // (fed by the single consumer) instead of the raw query — ending that channel
-      // at `result` finishes the turn without closing the subprocess. Slash commands
-      // (e.g. /compact) always use the per-turn path (they mutate session state).
+      // WS2 keep-alive: ride ONE persistent streaming-input query for both normal
+      // turns and /compact. The installed SDK accepts raw SDKUserMessage content
+      // '/compact' on the live input; using a second query here leaves the old
+      // persistent iterator alive and resumes the uncompacted history afterwards.
       let turnMessageSource: AsyncIterable<SDKMessage>;
-      if (this.keepBackgroundTasksAlive && !isSlashCommand) {
+      if (this.keepBackgroundTasksAlive && isSlashCommand) {
+        debug(`[chat] Detected SDK slash command on persistent input: ${trimmedMessage}`);
+        const sdkMessage: SDKUserMessage = {
+          type: 'user',
+          message: { role: 'user', content: trimmedMessage },
+          parent_tool_use_id: null,
+        };
+        turnMessageSource = this.beginPersistentTurn(sdkMessage, optionsWithAbort);
+      } else if (this.keepBackgroundTasksAlive && !isSlashCommand) {
         const sdkMessage = this.buildSDKUserMessage(effectiveUserMessage, attachments);
         turnMessageSource = this.beginPersistentTurn(sdkMessage, optionsWithAbort);
       } else if (isSlashCommand) {
@@ -1695,6 +1700,9 @@ This is a branched conversation. All prior messages in this conversation are par
       const metadataSessionDir = getSessionPath(this.workspaceRootPath, sessionId);
       this.eventAdapter.updateSessionDir(metadataSessionDir);
       this.eventAdapter.startTurn();
+      if (isSlashCommand && commandName === 'compact') {
+        this.eventAdapter.expectManualCompaction();
+      }
 
       // Process SDK messages and convert to AgentEvents
       const summarizeCallback = this.getSummarizeCallback();
@@ -2407,15 +2415,6 @@ This is a branched conversation. All prior messages in this conversation are par
         debug(`[bg-lifecycle] chat() finally — currentQuery nulled, subprocess torn down`, { sessionId: this.config.session?.id, sdkSessionId: this.sessionId, keepAlive: this.keepBackgroundTasksAlive });
         this.currentQuery = null;
       }
-
-      // If a steer message was never delivered (no PreToolUse fired), notify the session
-      // layer so it can re-queue the message for the next turn.
-      const undeliveredSteer = this.pendingSteerMessage;
-      if (undeliveredSteer) {
-        this.pendingSteerMessage = null;
-        this.debug(`Steer message was not delivered (no tool call fired) — emitting steer_undelivered`);
-        yield { type: 'steer_undelivered' as const, message: undeliveredSteer };
-      }
     }
   }
 
@@ -2752,6 +2751,7 @@ This is a branched conversation. All prior messages in this conversation are par
   }
 
   clearHistory(): void {
+    this.pendingSteers.pause();
     // Clear session to start fresh conversation
     this.sessionId = null;
     // Clear pinned state so next chat() will capture fresh values
@@ -2767,15 +2767,21 @@ This is a branched conversation. All prior messages in this conversation are par
    * If no tool call fires before the turn ends, yields steer_undelivered so the
    * session layer can re-queue the message.
    */
-  override redirect(message: string): boolean {
+  override redirect(message: string, metadata?: RedirectMetadata): boolean {
     if (!this.currentQuery || !this.currentQueryAbortController) {
       // Not actively streaming — fall back to abort + queue
       this.forceAbort(AbortReason.Redirect);
       return false;
     }
     this.debug(`Steering mid-stream: "${message.slice(0, 100)}"`);
-    this.pendingSteerMessage = message;
-    return true;
+    if (this.pendingSteers.enqueue({ message, ...metadata })) return true;
+    this.forceAbort(AbortReason.Redirect);
+    return false;
+  }
+
+  takePendingSteers(): PendingSteer[] {
+    this.pendingSteers.pause();
+    return this.pendingSteers.drain();
   }
 
   /**
@@ -2787,7 +2793,7 @@ This is a branched conversation. All prior messages in this conversation are par
    */
   override interruptForHandoff(reason: AbortReason): void {
     this.lastAbortReason = reason;
-    this.pendingSteerMessage = null; // Clear any undelivered steer
+    this.pendingSteers.pause(); // Retain accepted messages for host recovery.
 
     if (!this.currentQuery) {
       return;
@@ -2807,7 +2813,7 @@ This is a branched conversation. All prior messages in this conversation are par
    */
   forceAbort(reason: AbortReason = AbortReason.UserStop): void {
     this.lastAbortReason = reason;
-    this.pendingSteerMessage = null; // Clear any undelivered steer
+    this.pendingSteers.pause(); // Retain accepted messages for host recovery.
     if (this.currentQueryAbortController) {
       this.currentQueryAbortController.abort(reason);
       this.currentQueryAbortController = null;
@@ -2922,6 +2928,8 @@ This is a branched conversation. All prior messages in this conversation are par
    * Calls super.destroy() for base cleanup, then Claude-specific cleanup.
    */
   destroy(): void {
+    // Never let a suspended hook inject into a subsequent turn.
+    this.pendingSteers.pause();
     // Claude-specific cleanup first
     this.currentQueryAbortController?.abort();
     // WS2: tear down the persistent streaming-input query (if any) so no

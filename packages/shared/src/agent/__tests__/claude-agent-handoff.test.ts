@@ -1,5 +1,6 @@
 import { describe, expect, it, mock } from 'bun:test'
 import { ClaudeAgent } from '../claude-agent.ts'
+import { PendingSteers } from '../backend/claude/pending-steers.ts'
 import { AbortReason } from '../backend/types.ts'
 
 describe('ClaudeAgent handoff interrupts', () => {
@@ -12,7 +13,9 @@ describe('ClaudeAgent handoff interrupts', () => {
 
     agent.currentQuery = { interrupt }
     agent.currentQueryAbortController = { abort }
-    agent.pendingSteerMessage = 'queued steer'
+    agent.pendingSteers = new PendingSteers()
+    agent.pendingSteers.begin()
+    agent.pendingSteers.enqueue({ message: 'queued steer', messageId: 'a' })
     agent.lastAbortReason = null
     agent.debug = debug
 
@@ -22,7 +25,7 @@ describe('ClaudeAgent handoff interrupts', () => {
     expect(interrupt).toHaveBeenCalledTimes(1)
     expect(abort).not.toHaveBeenCalled()
     expect(agent.lastAbortReason).toBe(AbortReason.AuthRequest)
-    expect(agent.pendingSteerMessage).toBeNull()
+    expect(agent.takePendingSteers()).toEqual([{ message: 'queued steer', messageId: 'a' }])
   })
 
   it('logs interrupt failures instead of falling back to AbortController', async () => {
@@ -36,7 +39,7 @@ describe('ClaudeAgent handoff interrupts', () => {
 
     agent.currentQuery = { interrupt }
     agent.currentQueryAbortController = { abort }
-    agent.pendingSteerMessage = null
+    agent.pendingSteers = new PendingSteers()
     agent.lastAbortReason = null
     agent.debug = debug
 

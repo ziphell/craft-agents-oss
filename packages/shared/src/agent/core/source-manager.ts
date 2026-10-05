@@ -16,9 +16,23 @@ import { join } from 'node:path';
 import type { LoadedSource } from '../../sources/types.ts';
 import { sourceNeedsAuthentication } from '../../sources/credential-manager.ts';
 import type { SourceManagerConfig } from './types.ts';
+import {
+  escapePromptXmlAttr,
+  sanitizePromptBody,
+  sanitizePromptLine,
+} from '../../prompts/prompt-sanitize.ts';
 
 /** Slugs exempt from guide.md prerequisite (internal sources) */
 const GUIDE_EXEMPT_SLUGS = new Set(['session']);
+const SOURCE_PROMPT_TAGS = ['sources', 'source_issue'] as const;
+
+function sourceLine(value: string | undefined): string {
+  return sanitizePromptLine(value ?? 'undefined', SOURCE_PROMPT_TAGS);
+}
+
+function sourceBody(value: string): string {
+  return sanitizePromptBody(value, SOURCE_PROMPT_TAGS);
+}
 
 /**
  * SourceManager provides centralized source state tracking for agent backends.
@@ -191,7 +205,8 @@ export class SourceManager {
     if (activeSlugs.length > 0) {
       const activeWithStatus = activeSlugs.map((slug) => {
         const hasWorkingTools = this.activeSlugs.has(slug);
-        return hasWorkingTools ? slug : `${slug} (no tools)`;
+        const safeSlug = sourceLine(slug);
+        return hasWorkingTools ? safeSlug : `${safeSlug} (no tools)`;
       });
       parts.push(`Active: ${activeWithStatus.join(', ')}`);
     } else {
@@ -206,7 +221,7 @@ export class SourceManager {
           : sourceNeedsAuthentication(s)
             ? 'needs auth'
             : 'inactive';
-        return `${s.config.slug} (${reason})`;
+        return `${sourceLine(s.config.slug)} (${reason})`;
       });
       parts.push(`Inactive: ${inactiveList.join(', ')}`);
     }
@@ -229,10 +244,10 @@ export class SourceManager {
       let hasGuides = false;
       for (const s of unseenSources) {
         const tagline = s.config.tagline || s.config.provider;
-        parts.push(`- ${s.config.slug}: ${tagline}`);
+        parts.push(`- ${sourceLine(s.config.slug)}: ${sourceLine(tagline)}`);
         // Add guide path for sources that have guides (excluding internal sources)
         if (s.guide?.raw && !GUIDE_EXEMPT_SLUGS.has(s.config.slug)) {
-          parts.push(`  Guide: ${join(s.folderPath, 'guide.md')}`);
+          parts.push(`  Guide: ${sourceLine(join(s.folderPath, 'guide.md'))}`);
           hasGuides = true;
         }
       }
@@ -246,11 +261,11 @@ export class SourceManager {
 
     // Inject issue context for sources needing attention
     for (const s of sourcesNeedingAttention) {
-      const status = s.config.connectionStatus;
-      output += `\n\n<source_issue source="${s.config.slug}" status="${status}">`;
+      const status = s.config.connectionStatus ?? 'unknown';
+      output += `\n\n<source_issue source="${escapePromptXmlAttr(s.config.slug)}" status="${escapePromptXmlAttr(status)}">`;
 
       if (s.config.connectionError) {
-        output += `\nError: ${s.config.connectionError}`;
+        output += `\nError: ${sourceBody(s.config.connectionError)}`;
       }
 
       // Provide context-aware fix instructions
