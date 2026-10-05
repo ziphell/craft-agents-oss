@@ -284,7 +284,10 @@ export function getProjectContextFilesPrompt(workingDirectory?: string): string 
   // selected working directory is nested inside a repo.
   const fileList = contextFiles
     .map((file) => {
-      const sanitized = sanitizePromptLine(file, PROJECT_CONTEXT_FILES_TAGS);
+      // Normalize separators first so the path reads the same on Windows and
+      // POSIX and the (root) test below only matches a genuinely top-level file.
+      const normalized = normalizePromptPath(file);
+      const sanitized = sanitizePromptLine(normalized, PROJECT_CONTEXT_FILES_TAGS);
       const isRoot = !sanitized.includes('/');
       return `- ${sanitized}${isRoot ? ' (root)' : ''}`;
     })

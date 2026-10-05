@@ -386,7 +386,9 @@ export async function processAttachment(
   if (basePath && filePath && !path.isAbsolute(filePath) && !filePath.startsWith('~')) {
     filePath = path.resolve(basePath, filePath);
   }
-  const filename = filePath.split('/').pop() || filePath;
+  // basename() understands both separators, so Windows paths yield the bare
+  // filename instead of the whole path (which split('/') would have produced).
+  const filename = path.basename(filePath) || filePath;
   const safeFilename = escapeXml(filename); // Escape for use in XML-like tags
 
   // --- Validate path exists and is a file ---

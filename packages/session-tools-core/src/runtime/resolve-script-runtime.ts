@@ -58,6 +58,20 @@ function firstExistingPath(candidates: string[]): string | null {
   return null;
 }
 
+/**
+ * Absolute path of the Bun executable running this process, when there is one.
+ *
+ * On Windows, PATH commonly exposes only `bun`/`bun.cmd` shims, which an argv
+ * spawn (no shell) cannot execute — it fails with ENOENT. When the host is
+ * itself Bun (`bun run`, `bun test`), our own executable is the reliable answer.
+ */
+function currentBunExecutable(): string | null {
+  const bunVersion = (process.versions as Record<string, string | undefined>).bun;
+  if (!bunVersion) return null;
+  const execPath = process.execPath;
+  return execPath && existsSync(execPath) ? execPath : null;
+}
+
 function getPlatformRuntimeDir(): string {
   return `${process.platform}-${process.arch}`;
 }
@@ -244,6 +258,11 @@ export function resolveScriptRuntime(
   }
 
   if (!isPackaged) {
+    const selfBun = currentBunExecutable();
+    if (selfBun) {
+      return { command: selfBun, argsPrefix: [], source: 'path' };
+    }
+
     const bunPath = resolveBinaryOnPath('bun');
     if (bunPath) {
       return { command: bunPath, argsPrefix: [], source: 'path' };

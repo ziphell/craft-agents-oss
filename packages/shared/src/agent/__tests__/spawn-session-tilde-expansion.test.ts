@@ -64,8 +64,11 @@ describe('preExecuteSpawnSession workingDirectory normalization', () => {
   });
 
   it('leaves absolute paths unchanged (aside from normalization)', async () => {
-    await agent.invokeSpawn({ prompt: 'hi', workingDirectory: '/tmp/abs/path' });
-    expect(captured[0]?.workingDirectory).toBe('/tmp/abs/path');
+    // Build the expected value with the platform's own rules: a POSIX-looking
+    // literal is not an absolute path on Windows, where normalization rewrites it.
+    const absPath = resolve('/tmp/abs/path');
+    await agent.invokeSpawn({ prompt: 'hi', workingDirectory: absPath });
+    expect(captured[0]?.workingDirectory).toBe(absPath);
   });
 
   it('resolves relative paths against cwd', async () => {

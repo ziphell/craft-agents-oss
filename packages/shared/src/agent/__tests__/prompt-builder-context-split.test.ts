@@ -16,7 +16,7 @@
  *  3. The one-shot mode-change signal is consumed exactly once, and only by the
  *     volatile builder — never by the stable builder.
  */
-import { describe, it, expect, afterEach } from 'bun:test'
+import { describe, it, expect, afterEach, beforeEach, setSystemTime } from 'bun:test'
 import { TestAgent, createMockBackendConfig } from './test-utils.ts'
 import { cleanupModeState, initializeModeState, setPermissionMode } from '../mode-manager.ts'
 
@@ -30,7 +30,14 @@ function makeBuilder() {
 }
 
 describe('PromptBuilder volatile/stable context split (issue #862)', () => {
-  afterEach(() => cleanupModeState(SESSION_ID))
+  // Freeze the clock: getDateTimeContext() stamps a millisecond-precision ISO
+  // timestamp on every call, so an unfrozen clock makes the byte-identical
+  // comparison below flaky whenever the two builds straddle a millisecond.
+  beforeEach(() => setSystemTime(new Date('2026-03-02T10:00:00.000Z')))
+  afterEach(() => {
+    setSystemTime()
+    cleanupModeState(SESSION_ID)
+  })
 
   it('buildContextParts equals [...volatile, ...stable] (Claude path stays byte-identical)', () => {
     // No pending one-shot signal → consume is a no-op → repeated calls are stable.

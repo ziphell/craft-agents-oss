@@ -52,7 +52,7 @@ describe('isValidWorkingDirectory', () => {
   it('accepts an existing Unix directory', () => {
     const dir = mkdtempSync(join(tmpdir(), 'craft-agent-path-validation-'))
     try {
-      expect(isValidWorkingDirectory(dir, 'darwin')).toEqual({ valid: true })
+      expect(isValidWorkingDirectory(dir, process.platform)).toEqual({ valid: true })
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -64,7 +64,7 @@ describe('isValidWorkingDirectory', () => {
     writeFileSync(file, 'x')
 
     try {
-      expect(isValidWorkingDirectory(file, 'darwin')).toEqual({
+      expect(isValidWorkingDirectory(file, process.platform)).toEqual({
         valid: false,
         reason: `Not a directory: ${file}`,
       })

@@ -42,7 +42,16 @@ describe('sanitizeAssetFilename', () => {
   });
 
   it('strips path separators and leading dots so an upload stays in the assets dir', () => {
-    expect(sanitizeAssetFilename('..\\..\\etc\\passwd')).toBe('etcpasswd');
+    // Forward slashes are separators on every platform, so the trailing component
+    // is deterministic here.
+    expect(sanitizeAssetFilename('../../etc/passwd')).toBe('passwd');
+
+    // Backslash variants are neutralized too: the result never keeps a separator
+    // or a leading '..' (the exact surviving substring differs by platform because
+    // basename() only treats '\' as a separator on Windows).
+    const backslash = sanitizeAssetFilename('..\\..\\etc\\passwd');
+    expect(backslash).not.toMatch(/[\\/]/);
+    expect(backslash).not.toContain('..');
   });
 
   it('falls back to a generated name when the input reduces to empty', () => {

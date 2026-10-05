@@ -3,6 +3,12 @@ import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { shouldAllowToolInMode, extractBashWriteTarget } from '../../agent/mode-manager.ts';
+import { setPowerShellValidatorRoot } from '../powershell-validator.ts';
+
+// Register the PowerShell validator root before any validation runs, so on Windows
+// shouldAllowToolInMode can find powershell-parser.ps1 instead of throwing. Mirrors
+// the setup in packages/shared/tests/mode-manager.test.ts.
+setPowerShellValidatorRoot(join(import.meta.dir, '..'));
 
 describe('mode-manager path containment for plans/data exceptions', () => {
   let base: string;

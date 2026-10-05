@@ -1501,7 +1501,11 @@ describe('shouldAllowToolInMode - Bash plans folder exception', () => {
 
   describe('should allow bash writes to plans folder in safe mode', () => {
     it('should allow Codex-style zsh write to plans folder', () => {
-      const command = `/bin/zsh -lc "cat <<'EOF' > ${plansFolderPath}/my-plan.md\n# Plan\n## Steps\n1. Do thing\nEOF"`;
+      // extractBashWriteTarget's shell-wrapper pattern (Pattern 2) reads an
+      // unquoted target and stops at a backslash, so the command carries a
+      // POSIX-style path (forward slashes) with no quotes around it.
+      const planPath = join(plansFolderPath, 'my-plan.md').replace(/\\/g, '/');
+      const command = `/bin/zsh -lc "cat <<'EOF' > ${planPath}\n# Plan\n## Steps\n1. Do thing\nEOF"`;
       const result = shouldAllowToolInMode(
         'Bash',
         { command },
@@ -1523,34 +1527,31 @@ describe('shouldAllowToolInMode - Bash plans folder exception', () => {
     });
 
     it.skipIf(!isWindows)('should allow PowerShell Out-File to plans folder', () => {
-      const windowsPlansFolderPath = 'C:\\Users\\test\\.craft-agent\\workspaces\\ws\\sessions\\s1\\plans';
-      const command = `@('# Plan', '', '## Steps', '1. Do thing') | Out-File -FilePath '${windowsPlansFolderPath}\\plan.md' -Encoding utf8`;
+      const command = `@('# Plan', '', '## Steps', '1. Do thing') | Out-File -FilePath '${join(plansFolderPath, 'plan.md')}' -Encoding utf8`;
       const result = shouldAllowToolInMode(
         'Bash',
         { command },
         'safe',
-        { plansFolderPath: windowsPlansFolderPath }
+        { plansFolderPath }
       );
       expect(result.allowed).toBe(true);
     });
 
     it.skipIf(!isWindows)('should allow PowerShell Set-Content to plans folder', () => {
-      const windowsPlansFolderPath = 'C:\\Users\\test\\.craft-agent\\workspaces\\ws\\sessions\\s1\\plans';
-      const command = `'# Plan content' | Set-Content -Path '${windowsPlansFolderPath}\\plan.md'`;
+      const command = `'# Plan content' | Set-Content -Path '${join(plansFolderPath, 'plan.md')}'`;
       const result = shouldAllowToolInMode(
         'Bash',
         { command },
         'safe',
-        { plansFolderPath: windowsPlansFolderPath }
+        { plansFolderPath }
       );
       expect(result.allowed).toBe(true);
     });
 
     it.skipIf(!isWindows)('should allow Bash write with different case in path (Windows compatibility)', () => {
-      // On Windows, paths are case-insensitive. The system might report "C:\Users\Balin\..."
-      // but the command might use "C:\Users\balin\..." - both should work.
-      const plansFolderPath = 'C:\\Users\\Balin\\.craft-agent\\workspaces\\ws\\sessions\\s1\\plans';
-      const command = `@('# Plan') | Out-File -FilePath 'C:\\Users\\balin\\.craft-agent\\workspaces\\ws\\sessions\\s1\\plans\\plan.md' -Encoding utf8`;
+      // On Windows paths are case-insensitive: the command may use different casing
+      // than the folder the system reported.
+      const command = `@('# Plan') | Out-File -FilePath '${join(plansFolderPath, 'plan.md').toUpperCase()}' -Encoding utf8`;
       const result = shouldAllowToolInMode(
         'Bash',
         { command },
@@ -1561,8 +1562,7 @@ describe('shouldAllowToolInMode - Bash plans folder exception', () => {
     });
 
     it.skipIf(!isWindows)('should allow Unix redirect with different case in path (Windows compatibility)', () => {
-      const plansFolderPath = 'C:\\Users\\Balin\\.craft-agent\\plans';
-      const command = `printf '# Plan' > "C:\\Users\\balin\\.craft-agent\\plans\\plan.md"`;
+      const command = `printf '# Plan' > "${join(plansFolderPath, 'plan.md').toUpperCase()}"`;
       const result = shouldAllowToolInMode(
         'Bash',
         { command },
@@ -1575,11 +1575,10 @@ describe('shouldAllowToolInMode - Bash plans folder exception', () => {
 
   describe('should allow Write/Edit to plans folder with case-insensitive paths', () => {
     it.skipIf(!isWindows)('should allow Write with different case in path (Windows compatibility)', () => {
-      // Simulating Windows where system reports "C:\Users\Balin\..." but tool uses "C:\Users\balin\..."
-      const plansFolderPath = 'C:\\Users\\Balin\\.craft-agent\\workspaces\\ws\\sessions\\s1\\plans';
+      // Simulating Windows where the system reports one casing but the tool uses another.
       const result = shouldAllowToolInMode(
         'Write',
-        { file_path: 'C:\\Users\\balin\\.craft-agent\\workspaces\\ws\\sessions\\s1\\plans\\plan.md', content: '# Plan' },
+        { file_path: join(plansFolderPath, 'plan.md').toUpperCase(), content: '# Plan' },
         'safe',
         { plansFolderPath }
       );
@@ -1587,10 +1586,9 @@ describe('shouldAllowToolInMode - Bash plans folder exception', () => {
     });
 
     it.skipIf(!isWindows)('should allow Edit with different case in path (Windows compatibility)', () => {
-      const plansFolderPath = 'C:\\Users\\Balin\\.craft-agent\\plans';
       const result = shouldAllowToolInMode(
         'Edit',
-        { file_path: 'C:\\Users\\balin\\.craft-agent\\plans\\plan.md', old_string: 'old', new_string: 'new' },
+        { file_path: join(plansFolderPath, 'plan.md').toUpperCase(), old_string: 'old', new_string: 'new' },
         'safe',
         { plansFolderPath }
       );
@@ -2089,13 +2087,24 @@ describe('unwrapPowerShellCommand', () => {
 
 describe('PowerShell plans folder exception', () => {
   const psAvailable = isPowerShellAvailable();
-  const plansFolderPath = 'C:\\Users\\test\\.craft-agent\\workspaces\\ws\\sessions\\s1\\plans';
+  // Real temp dirs: isPathWithinDirectory() re-validates via the filesystem
+  // (symlink-escape protection), so a fabricated C:\... path never qualifies.
+  const plansRoot = join(tmpdir(), `mode-manager-ps-plans-${process.pid}`);
+  const plansFolderPath = join(plansRoot, 'plans');
+
+  beforeAll(() => {
+    mkdirSync(plansFolderPath, { recursive: true });
+  });
+
+  afterAll(() => {
+    rmSync(plansRoot, { recursive: true, force: true });
+  });
 
   describe('should allow Out-File to plans folder', () => {
     it('allows Out-File with -FilePath to plans folder', () => {
       if (!psAvailable) return;
 
-      const command = `@('# Sample Plan','','## Goal','Test') | Out-File -FilePath '${plansFolderPath}\\sample-plan.md' -Encoding utf8`;
+      const command = `@('# Sample Plan','','## Goal','Test') | Out-File -FilePath '${join(plansFolderPath, 'sample-plan.md')}' -Encoding utf8`;
       const result = shouldAllowToolInMode(
         'Bash',
         { command },
@@ -2108,7 +2117,7 @@ describe('PowerShell plans folder exception', () => {
     it('allows Set-Content to plans folder', () => {
       if (!psAvailable) return;
 
-      const command = `'# Plan content' | Set-Content -Path '${plansFolderPath}\\plan.md'`;
+      const command = `'# Plan content' | Set-Content -Path '${join(plansFolderPath, 'plan.md')}'`;
       const result = shouldAllowToolInMode(
         'Bash',
         { command },
@@ -2151,8 +2160,8 @@ describe('PowerShell plans folder exception', () => {
     it('allows write when path case differs from plansFolderPath', () => {
       if (!psAvailable) return;
 
-      // plansFolderPath uses lowercase 'test', command uses 'Test'
-      const command = `@('plan') | Out-File -FilePath 'C:\\Users\\Test\\.craft-agent\\workspaces\\ws\\sessions\\s1\\plans\\plan.md'`;
+      // plansFolderPath uses the real on-disk casing, the command uses upper case.
+      const command = `@('plan') | Out-File -FilePath '${join(plansFolderPath, 'plan.md').toUpperCase()}'`;
       const result = shouldAllowToolInMode(
         'Bash',
         { command },
@@ -2187,7 +2196,7 @@ describe('PowerShell plans folder exception', () => {
 
     it.skipIf(!isWindows)('should allow the exact Codex-generated command from session 260208-aware-bamboo (escaped quotes)', () => {
       // Real-world regression test: this was the command that got blocked
-      const realPlansFolder = 'C:\\Users\\balin\\.craft-agent\\workspaces\\my-workspace\\sessions\\260208-aware-bamboo\\plans';
+      const realPlansFolder = plansFolderPath;
       const command = `"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "Set-Content -Path \\"${realPlansFolder}\\\\slack-api-source-plan.md\\" -Value @('# Plan: Add Slack API source (OAuth, read/write)','', '## Goal','Set up a Slack API source for the whole workspace with OAuth and full read/write access.', '', '## Steps','1. Create source folder.','2. Write config.json.','3. Write guide.md.','4. Run source_test.','5. Trigger OAuth.')"`;
       const result = shouldAllowToolInMode('Bash', { command }, 'safe', { plansFolderPath: realPlansFolder });
       expect(result.allowed).toBe(true);
@@ -2197,18 +2206,19 @@ describe('PowerShell plans folder exception', () => {
       // Second real-world variant: Codex sometimes emits unescaped inner quotes.
       // The -Path "C:\..." uses regular " not \" inside the outer -Command "..." string.
       // This is handled by extractBashWriteTarget Pattern 6 (regex), not AST unwrapping.
-      const realPlansFolder = 'C:\\Users\\balin\\.craft-agent\\workspaces\\my-workspace\\sessions\\260208-aware-bamboo\\plans';
+      const realPlansFolder = plansFolderPath;
       const command = `"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "Set-Content -Path "${realPlansFolder}\\slack-api-source-plan.md" -Value @('# Plan: Add Slack API source (OAuth, read/write)','', '## Goal','Set up a Slack API source for the whole workspace with OAuth and full read/write access.', '', '## Steps','1. Create the source folder at C:\\Users\\balin\\.craft-agent\\workspaces\\my-workspace\\sources\\slack.','2. Write config.json with baseUrl https://slack.com/api/, bearer auth, and testEndpoint POST auth.test; set an icon (emoji by default) and tagline.','3. Write permissions.json allowing GET/POST/PUT/PATCH/DELETE for full API access in Explore mode.','4. Write guide.md tailored to whole-workspace usage (search messages, list channels/users, post messages, etc.).','5. Run source_test to validate the configuration.','6. Trigger source_slack_oauth_trigger to authenticate Slack OAuth.')"`;
       const result = shouldAllowToolInMode('Bash', { command }, 'safe', { plansFolderPath: realPlansFolder });
       expect(result.allowed).toBe(true);
     });
 
     it.skipIf(!isWindows)('should allow the verbatim command from session 260208-aware-bamboo (exact JSON string)', () => {
-      // This is the EXACT command string as received from Codex via JSON-RPC.
-      // Pasted verbatim from the blocked command log.
-      const realPlansFolder = 'C:\\Users\\balin\\.craft-agent\\workspaces\\my-workspace\\sessions\\260208-aware-bamboo\\plans';
-      const command = '"C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe" -Command "Set-Content -Path \\"C:\\\\Users\\\\balin\\\\.craft-agent\\\\workspaces\\\\my-workspace\\\\sessions\\\\260208-aware-bamboo\\\\plans\\\\slack-api-source-plan.md\\" -Value @(\'# Plan: Add Slack API source (OAuth, read/write)\',\'\', \'## Goal\',\'Set up a Slack API source for the whole workspace with OAuth and full read/write access.\', \'\', \'## Steps\',\'1. Create the source folder at C:\\\\Users\\\\balin\\\\.craft-agent\\\\workspaces\\\\my-workspace\\\\sources\\\\slack.\',\'2. Write config.json with baseUrl https://slack.com/api/, bearer auth, and testEndpoint POST auth.test; set an icon and tagline.\',\'3. Write permissions.json allowing GET/POST/PUT/PATCH/DELETE for full API access in Explore mode.\',\'4. Write guide.md tailored to whole-workspace usage (search messages, list channels/users, post messages, etc.).\',\'5. Run source_test to validate the configuration.\',\'6. Trigger source_slack_oauth_trigger to authenticate Slack OAuth.\')"';
-      const result = shouldAllowToolInMode('Bash', { command }, 'safe', { plansFolderPath: realPlansFolder });
+      // EXACT shape as received from Codex via JSON-RPC (backslashes are doubled,
+      // as they appear after JSON decoding). The target path is bound to the real
+      // temp plans dir so the containment check has a real directory to resolve.
+      const escapedPlansFolder = plansFolderPath.replace(/\\/g, '\\\\');
+      const command = `"C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe" -Command "Set-Content -Path \\"${escapedPlansFolder}\\\\slack-api-source-plan.md\\" -Value @('# Plan: Add Slack API source (OAuth, read/write)','', '## Goal','Set up a Slack API source for the whole workspace with OAuth and full read/write access.', '', '## Steps','1. Create the source folder at C:\\\\Users\\\\balin\\\\.craft-agent\\\\workspaces\\\\my-workspace\\\\sources\\\\slack.','2. Write config.json with baseUrl https://slack.com/api/, bearer auth, and testEndpoint POST auth.test; set an icon and tagline.','3. Write permissions.json allowing GET/POST/PUT/PATCH/DELETE for full API access in Explore mode.','4. Write guide.md tailored to whole-workspace usage (search messages, list channels/users, post messages, etc.).','5. Run source_test to validate the configuration.','6. Trigger source_slack_oauth_trigger to authenticate Slack OAuth.')"`;
+      const result = shouldAllowToolInMode('Bash', { command }, 'safe', { plansFolderPath });
       expect(result.allowed).toBe(true);
     });
   });
