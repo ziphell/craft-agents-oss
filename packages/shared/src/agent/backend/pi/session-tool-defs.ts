@@ -11,6 +11,7 @@ import {
   type JsonSchemaToolDef,
 } from '@craft-agent/session-tools-core';
 import { FEATURE_FLAGS } from '../../../feature-flags.ts';
+import { isDecisionFeatureActive } from '../../../decisions/resolve.ts';
 
 export type SessionToolProxyDef = JsonSchemaToolDef;
 
@@ -20,5 +21,8 @@ export function getSessionToolProxyDefs(): SessionToolProxyDef[] {
   return getToolDefsAsJsonSchema({
     prefix: 'mcp__session__',
     includeDeveloperFeedback: FEATURE_FLAGS.developerFeedback,
+    // Same gate as the Claude path (session-scoped-tools.ts): advertise `decide`
+    // only while the decision layer is on.
+    includeDecide: isDecisionFeatureActive('decideTool'),
   });
 }

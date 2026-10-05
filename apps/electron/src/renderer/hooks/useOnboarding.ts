@@ -478,6 +478,9 @@ export function useOnboarding({
         model: testModel,
         piAuthProvider: data.piAuthProvider,
         customEndpoint: data.customEndpoint,
+        // Editing: the key field may still hold the masked placeholder; the server
+        // resolves it to the stored credential by slug (OSS #1048).
+        connectionSlug: editingSlug ?? undefined,
       })
 
       if (!testResult.success) {

@@ -24,6 +24,12 @@ import { isValidThinkingLevel, normalizeThinkingLevel } from '../agent/thinking-
 import { parsePermissionMode, PERMISSION_MODE_ORDER } from '../agent/mode-types.ts';
 import { type ConfigDefaults } from './config-defaults-schema.ts';
 import { isValidThemeFile } from './validators.ts';
+import {
+  mergeDecisionLayerSettings,
+  normalizeDecisionLayerSettings,
+  type DecisionLayerSettings,
+  type DecisionLayerStoredSettings,
+} from '../decisions/settings.ts';
 
 // Re-export CONFIG_DIR for convenience (centralized in paths.ts)
 export { CONFIG_DIR } from './paths.ts';
@@ -82,6 +88,8 @@ export interface StoredConfig {
   enable1MContext?: boolean;  // Enable 1M context window for supported models (default: false — opt-in; requires Anthropic Tier 4+)
   // Token optimization
   rtkEnabled?: boolean;  // Route Bash commands through rtk to compress tool output (default: false). https://github.com/rtk-ai/rtk
+  // Decision layer (Jev / TypeSafe System One) — opt-in, off by default. See src/decisions/.
+  decisionLayer?: DecisionLayerStoredSettings;
   // Network proxy
   networkProxy?: import('./types.ts').NetworkProxySettings;
   // Windows: path to Git Bash (bash.exe) for the SDK subprocess
@@ -560,6 +568,32 @@ export function setRtkEnabled(enabled: boolean): void {
   if (!config) return;
   config.rtkEnabled = enabled;
   saveConfig(config);
+}
+
+/**
+ * Decision layer (Jev / TypeSafe System One) settings with defaults applied.
+ * Off by default; the `enabled` switch is the only master gate.
+ * See `src/decisions/settings.ts` for the shape and `src/decisions/resolve.ts` for how it is used.
+ */
+export function getDecisionLayerSettings(): DecisionLayerSettings {
+  const config = loadStoredConfig();
+  return normalizeDecisionLayerSettings(config?.decisionLayer);
+}
+
+/**
+ * Merge a settings patch (features merge key-wise; `null` clears an optional
+ * string) and persist. Returns the normalized result.
+ */
+export function setDecisionLayerSettings(patch: Partial<Record<keyof DecisionLayerStoredSettings, unknown>>): DecisionLayerSettings {
+  const config = loadStoredConfig();
+  if (!config) {
+    // Unlike the void rtk setter, callers display the returned value — do not
+    // pretend a write happened.
+    throw new Error('Cannot save decision model settings: config.json is not initialized');
+  }
+  config.decisionLayer = mergeDecisionLayerSettings(config.decisionLayer, patch);
+  saveConfig(config);
+  return normalizeDecisionLayerSettings(config.decisionLayer);
 }
 
 /**

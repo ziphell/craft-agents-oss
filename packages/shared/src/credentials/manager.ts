@@ -348,6 +348,29 @@ export class CredentialManager {
     return this.delete({ type: 'llm_api_key', connectionSlug });
   }
 
+  // ============================================================
+  // Decision Layer Credentials (Jev / System One providers)
+  // ============================================================
+
+  /**
+   * Get the API key stored for a decision provider (`decision_api_key::{provider}`).
+   * Keys reused from an LLM connection are read via getLlmApiKey instead.
+   */
+  async getDecisionApiKey(provider: string): Promise<string | null> {
+    const cred = await this.get({ type: 'decision_api_key', name: provider });
+    return cred?.value || null;
+  }
+
+  /** Store the API key for a decision provider. */
+  async setDecisionApiKey(provider: string, apiKey: string): Promise<void> {
+    await this.set({ type: 'decision_api_key', name: provider }, { value: apiKey });
+  }
+
+  /** Delete the API key for a decision provider. Returns true if one was removed. */
+  async deleteDecisionApiKey(provider: string): Promise<boolean> {
+    return this.delete({ type: 'decision_api_key', name: provider });
+  }
+
   /**
    * Get OAuth token for an LLM connection.
    * @param connectionSlug - The connection slug

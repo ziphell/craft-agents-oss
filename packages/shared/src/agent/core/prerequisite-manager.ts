@@ -15,10 +15,10 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { dirname, resolve, join } from 'node:path';
 import { expandPath } from './path-processor.ts';
 import { getBrowserToolEnabled } from '../../config/storage.ts';
+import { CONFIG_DIR } from '../../config/paths.ts';
 
 // ============================================================
 // Types
@@ -57,14 +57,11 @@ export interface PrerequisiteManagerConfig {
 /** Slugs that are exempt from prerequisite checks (internal sources) */
 const EXEMPT_SLUGS = new Set(['session']);
 
-/** The synced guides, as the system prompt names them: `~/.craft-agent/docs/<name>.md`. */
-const DOCS_DIR_PATH = resolve(join(homedir(), '.craft-agent', 'docs'));
-
 /** Global browser tools docs path required before browser tool usage. */
-const BROWSER_TOOLS_DOC_PATH = join(DOCS_DIR_PATH, 'browser-tools.md');
+const BROWSER_TOOLS_DOC_PATH = resolve(join(CONFIG_DIR, 'docs', 'browser-tools.md'));
 
 /** Global drawio docs path required before `drawio_tool` usage. */
-const DRAWIO_TOOLS_DOC_PATH = join(DOCS_DIR_PATH, 'drawio-tools.md');
+const DRAWIO_TOOLS_DOC_PATH = resolve(join(CONFIG_DIR, 'docs', 'drawio-tools.md'));
 
 // ============================================================
 // Rules

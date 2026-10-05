@@ -138,7 +138,7 @@ Additional tools to block (rarely needed).
 
 ### allowedWritePaths
 
-Glob patterns for directories where writes are allowed.
+Glob patterns for directories where writes are allowed. Applies in **Explore** and **Ask to Edit** mode: writes to a matching path run without a prompt, writes elsewhere are blocked in Explore and prompt in Ask to Edit. Use it to let automations run in Ask to Edit instead of Execute.
 
 ```json
 {

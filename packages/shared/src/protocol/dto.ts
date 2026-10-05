@@ -651,6 +651,11 @@ export interface LlmConnectionSetup {
 export interface TestLlmConnectionParams {
   provider: 'anthropic' | 'pi'
   apiKey: string
+  /**
+   * Slug of the connection being edited. Lets the server resolve the masked
+   * GET_API_KEY placeholder back to the stored credential for the test.
+   */
+  connectionSlug?: string
   baseUrl?: string
   model?: string
   piAuthProvider?: string

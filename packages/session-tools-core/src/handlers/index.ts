@@ -93,3 +93,7 @@ export type {
   UpdateTweakArgs,
   DeleteTweakArgs,
 } from './tweaks.ts';
+
+// Decision model
+export { handleDecide } from './decide.ts';
+export type { DecideArgs } from './decide.ts';

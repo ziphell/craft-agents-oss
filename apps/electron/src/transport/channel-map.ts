@@ -329,6 +329,15 @@ export const CHANNEL_MAP = {
   getRtkStatus: invoke(RPC_CHANNELS.rtk.GET_STATUS),
   getRtkGain: invoke(RPC_CHANNELS.rtk.GET_GAIN),
 
+  // Decision model (Jev)
+  getDecisionLayerSettings: invoke(RPC_CHANNELS.decisions.GET_SETTINGS),
+  setDecisionLayerSettings: invoke(RPC_CHANNELS.decisions.SET_SETTINGS),
+  getDecisionLayerStatus: invoke(RPC_CHANNELS.decisions.GET_STATUS),
+  setDecisionApiKey: invoke(RPC_CHANNELS.decisions.SET_API_KEY),
+  deleteDecisionApiKey: invoke(RPC_CHANNELS.decisions.DELETE_API_KEY),
+  testDecisionConnection: invoke(RPC_CHANNELS.decisions.TEST),
+  probeDecisionServer: invoke(RPC_CHANNELS.decisions.PROBE_SERVER),
+
   // Badge
   refreshBadge: invoke(RPC_CHANNELS.badge.REFRESH),
   setDockIconWithBadge: invoke(RPC_CHANNELS.badge.SET_ICON),

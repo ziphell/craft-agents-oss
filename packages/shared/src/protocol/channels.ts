@@ -339,6 +339,15 @@ export const RPC_CHANNELS = {
     GET_STATUS: 'rtk:getStatus',
     GET_GAIN: 'rtk:getGain',
   },
+  decisions: {
+    GET_SETTINGS: 'decisions:getSettings',
+    SET_SETTINGS: 'decisions:setSettings',
+    GET_STATUS: 'decisions:getStatus',
+    SET_API_KEY: 'decisions:setApiKey',
+    DELETE_API_KEY: 'decisions:deleteApiKey',
+    TEST: 'decisions:test',
+    PROBE_SERVER: 'decisions:probeServer',
+  },
   badge: {
     REFRESH: 'badge:refresh',
     SET_ICON: 'badge:setIcon',

@@ -603,7 +603,11 @@ export abstract class BaseAgent implements AgentBackend {
     // Both MCP sources and API sources are routed through the pool.
     if (this.config.mcpPool) {
       try {
-        await this.config.mcpPool.sync(mcpServers, apiServers as Record<string, ApiServerConfig>);
+        const failures = await this.config.mcpPool.sync(mcpServers, apiServers as Record<string, ApiServerConfig>);
+        if (failures.length > 0) {
+          console.warn(`[${this.backendName}] ${failures.length} source(s) failed to connect and will be unavailable this session: ${failures.join(', ')}`);
+          this.debug(`MCP sync failures: ${failures.join(', ')}`);
+        }
       } catch (err) {
         this.debug(`Failed to sync MCP pool: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -1073,6 +1077,16 @@ ${formattedMessages}
    */
   redirect(_message: string): boolean {
     this.forceAbort(AbortReason.Redirect);
+    return false;
+  }
+
+  /**
+   * Whether a manual compaction owns the current turn. Default: never.
+   * Backends that run /compact as an RPC (Pi) override this so the session
+   * layer queues mid-stream messages instead of steering into a turn that has
+   * no agent loop to consume them (OSS #1058).
+   */
+  isCompactionInFlight(): boolean {
     return false;
   }
 

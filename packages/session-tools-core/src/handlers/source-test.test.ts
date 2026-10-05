@@ -781,3 +781,145 @@ describe('source_test basic-auth header (regression for #824)', () => {
     expect(authHeader()).toBe('Basic not-json');
   });
 });
+
+describe('source_test header auth uses the runtime assembly (regression for #1067)', () => {
+  let tempDir: string;
+  const origFetch = globalThis.fetch;
+  let captured: { url: string; init: RequestInit } | null = null;
+  let respond: () => Response = () => new Response('{}', { status: 200 });
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'source-test-header-'));
+    captured = null;
+    respond = () => new Response('{}', { status: 200 });
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      captured = { url, init };
+      return respond();
+    }) as typeof fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = origFetch;
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const KEY = 'AIzaSy' + 'k'.repeat(33);
+  const WRAPPED = JSON.stringify({ 'x-goog-api-key': KEY });
+
+  function writeApiAuthSource(slug: string, api: Record<string, unknown>): void {
+    const sourcePath = join(tempDir, 'sources', slug);
+    mkdirSync(sourcePath, { recursive: true });
+    const config = {
+      id: slug,
+      slug,
+      name: `Test ${slug}`,
+      enabled: true,
+      provider: 'test',
+      type: 'api',
+      tagline: 'Header auth API source',
+      icon: '🧪',
+      isAuthenticated: true,
+      api: {
+        baseUrl: 'https://api.example.test',
+        testEndpoint: { method: 'GET', path: '/models' },
+        ...api,
+      },
+    } as unknown as SourceConfig;
+    writeFileSync(join(sourcePath, 'config.json'), JSON.stringify(config, null, 2));
+    writeFileSync(
+      join(sourcePath, 'guide.md'),
+      '# Guide\n\nThis is a longer guide with more than fifty words so the validator does not warn about the guide being too short for the readability criteria the tool enforces when evaluating source completeness for this test suite which is only here to exercise the header-auth assembly path and not the completeness check.'
+    );
+  }
+
+  function sentHeaders(): Record<string, string> {
+    return (captured?.init.headers as Record<string, string> | undefined) ?? {};
+  }
+
+  async function run(slug: string, token: string): Promise<string> {
+    const cred = makeCredentialManager({ cachedToken: token });
+    const ctx = createCtx(tempDir, { credentialManager: cred.manager });
+    const result = await handleSourceTest(ctx, { sourceSlug: slug, autoEnable: false });
+    return result.content[0]?.text ?? '';
+  }
+
+  it('JSON-wrapped single-header credential is sent as the bare header value', async () => {
+    writeApiAuthSource('gemini', { authType: 'header', headerName: 'x-goog-api-key' });
+    const text = await run('gemini', WRAPPED);
+
+    expect(sentHeaders()['x-goog-api-key']).toBe(KEY);
+    expect(JSON.stringify(sentHeaders())).not.toContain('{\\"x-goog-api-key');
+    expect(text).toContain('Credential loaded, sent as header x-goog-api-key');
+    expect(text).toContain('Authenticated request succeeded (HTTP 200)');
+  });
+
+  it('plain single-header credential is sent unchanged', async () => {
+    writeApiAuthSource('plain', { authType: 'header', headerName: 'x-goog-api-key' });
+    await run('plain', KEY);
+    expect(sentHeaders()['x-goog-api-key']).toBe(KEY);
+  });
+
+  it('multi-header credential sends one header per configured name', async () => {
+    writeApiAuthSource('datadog', { authType: 'header', headerNames: ['DD-API-KEY', 'DD-APPLICATION-KEY'] });
+    const text = await run('datadog', JSON.stringify({ 'DD-API-KEY': 'api', 'DD-APPLICATION-KEY': 'app' }));
+
+    expect(sentHeaders()['DD-API-KEY']).toBe('api');
+    expect(sentHeaders()['DD-APPLICATION-KEY']).toBe('app');
+    expect(text).toContain('sent as headers DD-API-KEY, DD-APPLICATION-KEY');
+  });
+
+  it('multi-header source with a partial credential is reported as a configuration error', async () => {
+    writeApiAuthSource('datadog-partial', { authType: 'header', headerNames: ['DD-API-KEY', 'DD-APPLICATION-KEY'] });
+    const text = await run('datadog-partial', JSON.stringify({ 'DD-API-KEY': 'api' }));
+
+    expect(captured).toBeNull();
+    expect(text).toContain('Multi-header auth requires one stored value per header');
+  });
+
+  it('query auth puts the credential on the URL and not in a header', async () => {
+    writeApiAuthSource('query', { authType: 'query', queryParam: 'key' });
+    await run('query', KEY);
+
+    expect(captured?.url).toBe(`https://api.example.test/models?key=${KEY}`);
+    expect(Object.values(sentHeaders())).not.toContain(KEY);
+  });
+
+  it('a 400 that rejects the key is surfaced instead of reading as authenticated', async () => {
+    writeApiAuthSource('rejected', { authType: 'header', headerName: 'x-goog-api-key' });
+    respond = () =>
+      new Response(
+        JSON.stringify({ error: { code: 400, message: 'API key not valid. Please pass a valid API key.', status: 'INVALID_ARGUMENT' } }),
+        { status: 400 }
+      );
+    const text = await run('rejected', KEY);
+
+    expect(text).not.toContain('Authenticated request succeeded');
+    expect(text).toContain('API returned 400');
+    expect(text).toContain('API key not valid');
+    expect(text).toContain('re-authenticate the source');
+    expect(text).toContain('Validation passed with warnings');
+  });
+
+  it('a 401 is reported as an auth failure with the response excerpt', async () => {
+    writeApiAuthSource('expired', { authType: 'bearer' });
+    respond = () => new Response('{"message":"token expired"}', { status: 401 });
+    const text = await run('expired', 'stale-token');
+
+    expect(sentHeaders()['Authorization']).toBe('Bearer stale-token');
+    expect(text).toContain('API returned 401 (credentials invalid or expired)');
+    expect(text).toContain('token expired');
+  });
+
+  it('testEndpoint Content-Type overrides the JSON default while auth headers still win', async () => {
+    writeApiAuthSource('form', {
+      authType: 'header',
+      headerName: 'X-Key',
+      testEndpoint: { method: 'POST', path: '/token', body: 'grant=x', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Key': 'stale' } },
+    });
+    await run('form', 'live');
+
+    expect(sentHeaders()['Content-Type']).toBe('application/x-www-form-urlencoded');
+    expect(sentHeaders()['X-Key']).toBe('live');
+    expect(captured?.init.body).toBe('grant=x');
+  });
+});

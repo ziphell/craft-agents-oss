@@ -590,6 +590,16 @@ export class PiEventAdapter extends BaseEventAdapter {
             sdkMessageId,
           };
           this.hasStreamedDeltas = false;
+        } else if (!textContent && !isIntermediate && !this.hasEmittedFinalText && msg.usage && (msg.usage as { output?: number }).output) {
+          // The model used output tokens but produced no text. This typically means
+          // reasoning consumed the entire output budget (observed with DeepSeek models
+          // when context is large and no budget_tokens cap is set). Without this warning
+          // the turn silently completes and the user sees no reply with no error.
+          console.warn(
+            `[PiEventAdapter] Turn produced ${(msg.usage as { output?: number }).output} output token(s) but zero text. ` +
+            `Reasoning likely consumed the full output budget (seen with DeepSeek + thinkingLevel≥medium at large contexts). ` +
+            `Lower the thinking level or start a fresh session to recover.`
+          );
         }
 
         // Emit usage_update if the assistant message includes token usage

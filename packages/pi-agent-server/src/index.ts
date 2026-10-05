@@ -65,8 +65,9 @@ import { registerBunOAuthFlows } from '@earendil-works/pi-ai/bun-oauth';
 registerBunOAuthFlows();
 
 // Model resolution (extracted for testability + custom-endpoint precedence)
-import { resolvePiModel, isDeniedMiniModelId, isModelNotFoundError } from './model-resolution.ts';
+import { resolvePiModel, isDeniedMiniModelId } from './model-resolution.ts';
 import { pickProviderAppropriateMiniModel } from './pick-mini-model.ts';
+import { queryMiniModel } from './mini-model-query.ts';
 import {
   CRAFT_PI_EPHEMERAL_QUERY_DEADLINE_MS,
   createCraftSettingsManager,
@@ -106,6 +107,7 @@ import {
   type SystemPromptOverride,
 } from './system-prompt-override.ts';
 import { readContextUsage, deferContextUsage } from './context-usage.ts';
+import { waitForCompaction, MANUAL_COMPACT_WAIT_MS, PROMPT_COMPACT_WAIT_MS } from './compaction-wait.ts';
 import type { PiCompactResult, PiContextUsagePayload } from '../../shared/src/agent/backend/pi/protocol.ts';
 import { adaptCredentialForPiSdk, type PiCredential } from './adapt-credential.ts';
 
@@ -1180,55 +1182,17 @@ async function queryLlm(
     }
   };
 
-  const fallbackCandidates = [
-    // Removed 'pi/gpt-5.1-codex-mini' (#596) — stale on several OpenAI catalogs.
-    // The connection-configured miniModel is still tried via `initConfig.miniModel`.
-    'pi/gpt-5-mini',
-    initConfig.miniModel,
-    getDefaultSummarizationModel(),
-  ].filter((candidate): candidate is string => !!candidate && !isDeniedMiniModelId(candidate, piAuthProvider));
-
-  const triedModels = new Set<string>();
-  let currentModel = model;
-
-  while (true) {
-    triedModels.add(currentModel);
-    try {
-      const text = await runQueryWithModel(currentModel);
-      return { text, model: currentModel };
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      const shouldRetry = isModelNotFoundError(errorMsg);
-
-      if (!shouldRetry) {
-        throw error;
-      }
-
-      const retryModel = fallbackCandidates.find(candidate => {
-        if (triedModels.has(candidate)) return false;
-        try {
-          const resolved = resolvePiModel(modelRegistry, candidate, initConfig!.piAuth?.provider, shouldPreferCustomEndpoint(), customModelOverrides);
-          if (!resolved) return false;
-          if (initConfig!.piAuth) {
-            const rp = (resolved as any).provider;
-            if (rp !== initConfig!.piAuth.provider && rp !== 'custom-endpoint') {
-              return false;
-            }
-          }
-          return true;
-        } catch {
-          return false;
-        }
-      });
-
-      if (!retryModel) {
-        throw error;
-      }
-
-      debugLog(`[queryLlm] Model ${currentModel} not found, retrying with ${retryModel}`);
-      currentModel = retryModel;
-    }
-  }
+  return queryMiniModel({
+    model,
+    miniModel: initConfig.miniModel,
+    sessionModel: initConfig.model,
+    authProvider: piAuthProvider,
+    modelRegistry,
+    preferCustomEndpoint: shouldPreferCustomEndpoint(),
+    onFallback: (rejectedModel, retryModel) => {
+      debugLog(`[queryLlm] Model ${rejectedModel} unavailable, retrying with ${retryModel}`);
+    },
+  }, runQueryWithModel);
 }
 
 function runEphemeralLlmQuery(
@@ -1460,30 +1424,6 @@ async function handleInit(msg: Extract<InboundMessage, { type: 'init' }>): Promi
   });
 }
 
-/**
- * Wait for any in-flight compaction to finish before sending a prompt or
- * starting another compaction. Prevents a race in the Pi SDK where concurrent
- * _runAutoCompaction calls crash on a shared AbortController
- * (see craft-agents-oss#464). Default timeout matches the RPC compact timeout
- * in PiAgent.requestCompact (300 s), since GPT compactions can legitimately
- * take 60–120 s.
- */
-async function waitForCompaction(session: { isCompacting: boolean }, timeoutMs = 300_000): Promise<void> {
-  if (!session.isCompacting) return;
-  debugLog('Waiting for in-flight compaction to finish before prompt...');
-  const start = Date.now();
-  while (session.isCompacting) {
-    if (Date.now() - start > timeoutMs) {
-      debugLog(`Compaction wait timed out after ${Math.floor(timeoutMs / 1000)}s, proceeding anyway`);
-      break;
-    }
-    await new Promise(resolve => setTimeout(resolve, 200));
-  }
-  if (Date.now() - start < timeoutMs) {
-    debugLog('Compaction finished, proceeding with prompt');
-  }
-}
-
 async function handlePrompt(msg: Extract<InboundMessage, { type: 'prompt' }>): Promise<void> {
   currentUserMessage = msg.message;
 
@@ -1516,7 +1456,10 @@ async function handlePrompt(msg: Extract<InboundMessage, { type: 'prompt' }>): P
     unsubscribeEvents = session.subscribe(handleSessionEvent);
 
     // Wait for any in-flight auto-compaction to avoid race (craft-agents-oss#464)
-    await waitForCompaction(session);
+    const compactionWait = await waitForCompaction(session, { timeoutMs: PROMPT_COMPACT_WAIT_MS, log: debugLog });
+    if (compactionWait.timedOut) {
+      debugLog('Proceeding with prompt while the compaction flag is still set');
+    }
 
     // Fire prompt — use followUp when session is already streaming so the
     // message is queued instead of throwing "Agent is already processing".
@@ -1660,18 +1603,26 @@ async function handleEnsureSessionReady(msg: Extract<InboundMessage, { type: 'en
 
 async function handleCompact(msg: Extract<InboundMessage, { type: 'compact' }>): Promise<void> {
   const epoch = compactionEpoch;
+  const startedAt = Date.now();
   try {
     const session = await ensureSession();
-    // Serialize manual /compact behind any in-flight auto-compaction. Public
+    // Serialize manual /compact behind an in-flight auto-compaction. Public
     // session.compact() calls agent.abort() and uses its own controller; if
     // it runs while _runAutoCompaction is suspended, agent state churns and
-    // the SDK's race surface widens. Wait for the auto-compaction to drain
-    // before starting a manual one. waitForCompaction has its own timeout
-    // fallback so we don't deadlock on a stuck subprocess.
-    await waitForCompaction(session);
+    // the SDK's race surface widens. The wait is capped well under the host's
+    // 300 s RPC deadline: a stuck compaction used to eat the whole budget
+    // before compact() even started (craft-agents-oss#1060). Proceeding after
+    // the cap is deliberate, since compact() begins with abort() and thereby
+    // cancels the stale compaction.
+    const wait = await waitForCompaction(session, { timeoutMs: MANUAL_COMPACT_WAIT_MS, log: debugLog });
     if (piSession !== session || epoch !== compactionEpoch) throw new Error('Compaction aborted or session replaced');
+    debugLog(
+      `[compact] Starting manual compaction after ${wait.waitedMs}ms wait` +
+        (wait.timedOut ? ' (prior compaction still flagged; compact() aborts it)' : ''),
+    );
     const result = await session.compact(msg.customInstructions);
     if (piSession !== session || epoch !== compactionEpoch) throw new Error('Compaction aborted or session replaced');
+    debugLog(`[compact] Done in ${Date.now() - startedAt}ms: ${result.tokensBefore} -> ~${result.estimatedTokensAfter} tokens`);
     send({
       type: 'compact_result',
       id: msg.id,
@@ -1686,7 +1637,7 @@ async function handleCompact(msg: Extract<InboundMessage, { type: 'compact' }>):
     });
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
-    debugLog(`[compact] Failed: ${errorMsg}`);
+    debugLog(`[compact] Failed after ${Date.now() - startedAt}ms: ${errorMsg}`);
     send({
       type: 'compact_result',
       id: msg.id,

@@ -20,6 +20,14 @@ import {
   getSourceGuidePath,
   getSourcePath,
 } from '../source-helpers.ts';
+import {
+  apiAuthSpecFromConfig,
+  appendQueryAuth,
+  buildApiAuthHeaders,
+  describeApiAuth,
+  isMultiHeaderCredential,
+  parseStoredApiCredential,
+} from '../api-auth.ts';
 
 export interface SourceTestArgs {
   sourceSlug: string;
@@ -510,71 +518,33 @@ async function testApiConnectionWithAuth(
     return { lines: [], success: false, hasError: false, attempted: false };
   }
 
-  // Build auth headers based on authType
-  const headers: Record<string, string> = {};
-  let urlWithAuth = testUrl;
+  // Assemble auth exactly as the runtime request path does (shared with
+  // api-tools.ts through ../api-auth.ts), so a passing test means the generated
+  // api_<source> tools can authenticate too (#1067).
+  const api = source.api!;
+  const authSpec = apiAuthSpecFromConfig(api);
+  const credential = parseStoredApiCredential(token, api);
 
-  switch (source.api!.authType) {
-    case 'bearer':
-    case 'oauth':
-      // Generic OAuth tokens are sent as Bearer tokens
-      headers['Authorization'] = `Bearer ${token}`;
-      break;
-    case 'basic': {
-      // Vault value for source_basic is JSON `{"username","password"}` (written by
-      // source_credential_prompt / WebUI). Parse and base64-encode to match what
-      // api-tools.ts buildHeaders does at runtime. Fall through if the token is
-      // already a non-JSON string (legacy / hand-edited vault entries).
-      try {
-        const parsed = JSON.parse(token);
-        if (parsed && typeof parsed === 'object' && parsed.username && parsed.password) {
-          const encoded = Buffer.from(`${parsed.username}:${parsed.password}`).toString('base64');
-          headers['Authorization'] = `Basic ${encoded}`;
-          break;
-        }
-      } catch {
-        // Not JSON — pass through
-      }
-      headers['Authorization'] = `Basic ${token}`;
-      break;
-    }
-    case 'header':
-      // Custom header name
-      if (source.api!.headerName) {
-        headers[source.api!.headerName] = token;
-      } else if (source.api!.headerNames && source.api!.headerNames.length > 0) {
-        // Multi-header auth: token is JSON with header values
-        const headerNames = source.api!.headerNames;
-        try {
-          const headerValues = JSON.parse(token) as Record<string, string>;
-          for (const headerName of headerNames) {
-            if (headerValues[headerName]) {
-              headers[headerName] = headerValues[headerName];
-            }
-          }
-        } catch {
-          // Token is not valid JSON - this is a configuration error for multi-header auth
-          const firstHeader = headerNames[0] || 'Header';
-          return {
-            lines: [`✗ Multi-header auth requires JSON token with header values`],
-            success: false,
-            hasError: true,
-            error: `Expected JSON token like {"${firstHeader}": "value"} but got non-JSON string`,
-            attempted: true,
-          };
-        }
-      } else {
-        // Fallback to X-API-Key if no header name specified
-        headers['X-API-Key'] = token;
-      }
-      break;
-    case 'query':
-      // Add token as query parameter
-      const paramName = source.api!.queryParam || 'api_key';
-      const separator = testUrl.includes('?') ? '&' : '?';
-      urlWithAuth = `${testUrl}${separator}${paramName}=${encodeURIComponent(token)}`;
-      break;
+  // headerNames sources must have one value per configured header; a lone
+  // headerNames entry equal to headerName is just single-header auth.
+  const configuredHeaderNames = api.headerNames?.filter(Boolean) ?? [];
+  const requiresHeaderMap =
+    configuredHeaderNames.length > 1 ||
+    (configuredHeaderNames.length === 1 && configuredHeaderNames[0] !== api.headerName);
+  if (requiresHeaderMap && !isMultiHeaderCredential(credential)) {
+    const firstHeader = configuredHeaderNames[0] || 'Header';
+    return {
+      lines: [`✗ Multi-header auth requires one stored value per header (${configuredHeaderNames.join(', ')})`],
+      success: false,
+      hasError: true,
+      error: `Expected a stored credential like {"${firstHeader}": "value"} covering every header in headerNames; re-run source_credential_prompt`,
+      attempted: true,
+    };
   }
+
+  const headers = buildApiAuthHeaders(authSpec, credential, api.defaultHeaders);
+  const urlWithAuth = appendQueryAuth(testUrl, authSpec, credential);
+  lines.push(`✓ Credential loaded, sent as ${describeApiAuth(authSpec, credential)}`);
 
   // Make authenticated request
   try {
@@ -585,20 +555,23 @@ async function testApiConnectionWithAuth(
     const body = source.api!.testEndpoint?.body;
     const extraHeaders = source.api!.testEndpoint?.headers;
 
-    // Merge any per-endpoint headers; auth headers win on conflict so a stale
-    // testEndpoint header can't shadow the live token.
+    // Merge per-endpoint headers. Auth headers win on conflict so a stale
+    // testEndpoint header cannot shadow the live credential; Content-Type is
+    // the exception because the endpoint knows its own body encoding.
     if (extraHeaders) {
       for (const [k, v] of Object.entries(extraHeaders)) {
-        if (!(k in headers)) headers[k] = v;
+        if (k.toLowerCase() === 'content-type') {
+          delete headers['Content-Type'];
+          headers[k] = v;
+        } else if (!(k in headers)) {
+          headers[k] = v;
+        }
       }
     }
 
     const init: RequestInit = { method, headers, signal: controller.signal };
     if (body !== undefined && method !== 'GET') {
       init.body = typeof body === 'string' ? body : JSON.stringify(body);
-      // Default to JSON only if no Content-Type was provided by testEndpoint.headers.
-      const hasContentType = Object.keys(headers).some((k) => k.toLowerCase() === 'content-type');
-      if (!hasContentType) headers['Content-Type'] = 'application/json';
     }
 
     const response = await fetch(urlWithAuth, init);
@@ -606,11 +579,12 @@ async function testApiConnectionWithAuth(
     clearTimeout(timeoutId);
 
     if (response.ok) {
-      lines.push(`✓ API connection successful (authenticated)`);
-      lines.push(`  Status: ${response.status}`);
+      lines.push(`✓ Authenticated request succeeded (HTTP ${response.status})`);
       return { lines, success: true, hasError: false, attempted: true };
     } else if (response.status === 401 || response.status === 403) {
       lines.push(`✗ API returned ${response.status} (credentials invalid or expired)`);
+      const excerpt = await readResponseExcerpt(response);
+      if (excerpt) lines.push(`  Response: ${excerpt}`);
       lines.push('  Re-authenticate the source to refresh credentials');
       return { lines, success: false, hasError: true, error: `Auth failed: ${response.status}`, attempted: true };
     } else if (response.status === 404) {
@@ -621,6 +595,11 @@ async function testApiConnectionWithAuth(
       return { lines, success: false, hasError: false, attempted: true };
     } else {
       lines.push(`⚠ API returned ${response.status}`);
+      const excerpt = await readResponseExcerpt(response);
+      if (excerpt) lines.push(`  Response: ${excerpt}`);
+      if (response.status === 400) {
+        lines.push('  A 400 that mentions the API key or token means the credential was rejected; re-authenticate the source');
+      }
       return { lines, success: false, hasError: false, attempted: true };
     }
   } catch (e) {
@@ -630,6 +609,20 @@ async function testApiConnectionWithAuth(
       lines.push('  Request timed out after 10 seconds');
     }
     return { lines, success: false, hasError: true, error: errorMsg, attempted: true };
+  }
+}
+
+/**
+ * First line of an error body, trimmed, so a rejected key is visible in the
+ * report (Google answers 400 API_KEY_INVALID, which otherwise reads as a bad endpoint).
+ */
+async function readResponseExcerpt(response: Response, maxChars = 200): Promise<string | null> {
+  try {
+    const text = (await response.text()).replace(/\s+/g, ' ').trim();
+    if (!text) return null;
+    return text.length > maxChars ? `${text.slice(0, maxChars)}…` : text;
+  } catch {
+    return null;
   }
 }
 
@@ -933,7 +926,8 @@ async function checkAuthStatus(
       try {
         const token = await ctx.credentialManager.getToken(loadedSource);
         if (token) {
-          lines.push('✓ Source is authenticated (token valid)');
+          // Presence and expiry only; whether the API accepts it is the connection test's job.
+          lines.push('✓ Credential stored and not expired');
         } else {
           // Token missing or expired — attempt refresh before reporting failure.
           // OAuth tokens are short-lived (typically 1h) and frequently expired in the

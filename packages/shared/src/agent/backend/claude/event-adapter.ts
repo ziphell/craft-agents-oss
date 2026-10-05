@@ -116,6 +116,11 @@ export class ClaudeEventAdapter extends BaseEventAdapter {
     this.manualCompactionRequested = true;
   }
 
+  /** True from expectManualCompaction() until the next turn starts. */
+  isManualCompactionRequested(): boolean {
+    return this.manualCompactionRequested;
+  }
+
   setContextUsage(snapshot: ContextUsageSnapshot): void {
     this.contextUsage = snapshot;
   }

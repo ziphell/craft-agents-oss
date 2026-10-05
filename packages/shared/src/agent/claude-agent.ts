@@ -2785,6 +2785,17 @@ This is a branched conversation. All prior messages in this conversation are par
   }
 
   /**
+   * A /compact turn is running. Claude steers are delivered at the next tool
+   * call, which a compaction turn never makes, so the session layer queues
+   * the message for replay instead (OSS #1058).
+   */
+  override isCompactionInFlight(): boolean {
+    // Optional chaining: partially constructed agents (teardown, prototype-based
+    // test fixtures) have no adapter and must read as "not compacting".
+    return this.isProcessing() && this.eventAdapter?.isManualCompactionRequested() === true;
+  }
+
+  /**
    * Interrupt the current query because control is being handed to the UI.
    *
    * For Claude, handoff boundaries (auth requests, plan submission) should use

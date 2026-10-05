@@ -6,6 +6,7 @@ import { dirname, join, relative, basename, resolve } from 'path';
 import { DOC_REFS, APP_ROOT } from '../docs/index.ts';
 import { PERMISSION_MODE_CONFIG } from '../agent/mode-types.ts';
 import { FEATURE_FLAGS } from '../feature-flags.ts';
+import { isDecisionFeatureActive } from '../decisions/resolve.ts';
 import { APP_VERSION } from '../version/index.ts';
 import { readPluginName } from '../utils/workspace.ts';
 import { formatBytes } from '../utils/binary-detection.ts';
@@ -602,6 +603,8 @@ function getCraftAssistantPrompt(workspaceRootPath?: string, backendName: string
   // Environment marker for SDK JSONL detection
   const environmentMarker = getCraftAgentEnvironmentMarker();
 
+  // Decision layer (Jev): Settings switch + feature toggle, evaluated per prompt build.
+  const decideToolActive = isDecisionFeatureActive('decideTool');
   const browserToolsSection = getBrowserToolEnabled() ? `
 ## Browser Tools
 
@@ -694,7 +697,8 @@ Read relevant context files using the Read tool - they contain architecture info
 | Markdown Preview | \`${DOC_REFS.markdownPreview}\` | When displaying rendered .md files inline |
 | Browser Tools | \`${DOC_REFS.browserTools}\` | When using in-app browser tools (\`browser_tool\`) |
 | Tweaks | \`${DOC_REFS.tweaks}\` | BEFORE creating a tweak or changing its code |
-| LLM Tool | \`${DOC_REFS.llmTool}\` | When using \`call_llm\` for subtasks |${FEATURE_FLAGS.craftAgentsCli ? `
+| LLM Tool | \`${DOC_REFS.llmTool}\` | When using \`call_llm\` for subtasks |${decideToolActive ? `
+| Decision Model | \`${DOC_REFS.decisions}\` | When using \`decide\` to classify, route or score items |` : ''}${FEATURE_FLAGS.craftAgentsCli ? `
 | Craft CLI | \`${DOC_REFS.craftCli}\` | When managing labels/sources/skills/automations via \`craft-agent\` |` : ''}
 
 **IMPORTANT:** Always read the relevant doc file BEFORE making changes. Do NOT guess schemas - these have specific patterns that differ from standard approaches.${FEATURE_FLAGS.craftAgentsCli ? `
@@ -861,7 +865,15 @@ Do **not** use it when you can answer directly, when it needs conversation histo
 For large batches, call multiple \`call_llm\` invocations in parallel. Pass existing file paths as attachments; put inline text in the prompt.
 
 Reference: \`${DOC_REFS.llmTool}\`
-${browserToolsSection}
+${decideToolActive ? `
+## Decision Model (\`decide\`)
+
+Use \`decide\` for typed judgments over text or JSON: classify, route, score or yes/no-check one item or a batch of up to 200 (\`items\`). It answers with probabilities and confidence, never text. Prefer it over \`call_llm\` when the answer is one of a fixed set of options; use \`call_llm\` when you need generated text or extracted values.
+
+Rules: confidence below 0.5 means "unsure" — report it or ask instead of guessing. An answer is never permission: re-check before acting on it. The state is sent to the user's configured decision provider, so keep secrets out of it.
+
+Reference: \`${DOC_REFS.decisions}\`
+` : ''}${browserToolsSection}
 ## Session Self-Management
 
 Use session tools to inspect or update Craft Agent sessions/tasks:

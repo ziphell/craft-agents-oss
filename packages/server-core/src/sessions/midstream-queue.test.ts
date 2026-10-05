@@ -10,6 +10,7 @@ import {
   SessionManager,
   createManagedSession,
   resolveMidStreamDeliveryOutcome,
+  shouldAttemptMidStreamSteer,
   canSteerTextPayload,
 } from './SessionManager.ts'
 
@@ -56,6 +57,32 @@ describe('mid-stream queue runtime invariants', () => {
       shouldQueue: false,
       wasInterrupted: false,
     })
+  })
+
+  it('queues instead of steering while a manual compaction owns the turn (#1058)', () => {
+    const compacting = { isCompactionInFlight: () => true }
+    const idle = { isCompactionInFlight: () => false }
+    expect(shouldAttemptMidStreamSteer('steer', true, compacting)).toBe(false)
+    expect(shouldAttemptMidStreamSteer('steer', true, idle)).toBe(true)
+    // Backends without the concept behave as before.
+    expect(shouldAttemptMidStreamSteer('steer', true, {})).toBe(true)
+    expect(shouldAttemptMidStreamSteer('queue', true, idle)).toBe(false)
+    expect(shouldAttemptMidStreamSteer('steer', false, idle)).toBe(false)
+    expect(shouldAttemptMidStreamSteer('steer', true, undefined)).toBe(false)
+    // The forced queue path is not an interruption: the compaction runs to
+    // completion and the replayed turn must not claim it was cut off.
+    expect(resolveMidStreamDeliveryOutcome('queue', false)).toEqual({ shouldQueue: true, wasInterrupted: false })
+
+    // Claude reports a live /compact turn through its event adapter; a bare
+    // prototype without an adapter reads as not compacting.
+    const claude = Object.create(ClaudeAgent.prototype) as any
+    claude.currentQuery = { interrupt: async () => {} }
+    expect(claude.isCompactionInFlight()).toBe(false)
+    claude.eventAdapter = { isManualCompactionRequested: () => true }
+    expect(claude.isCompactionInFlight()).toBe(true)
+    expect(shouldAttemptMidStreamSteer('steer', true, claude)).toBe(false)
+    claude.currentQuery = null
+    expect(claude.isCompactionInFlight()).toBe(false)
   })
 
   it('recovers distinct identical-text steers by identity without interrupting or duplicating', async () => {

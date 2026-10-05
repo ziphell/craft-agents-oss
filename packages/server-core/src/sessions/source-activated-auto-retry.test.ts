@@ -144,7 +144,9 @@ describe('source_activated auto-retry', () => {
     ])
   })
 
-  it('empty originalMessage — forwards event but does not schedule a bogus retry', async () => {
+  it('empty originalMessage and no prior user message — skips (nothing to resend)', async () => {
+    // With no user message in history there is genuinely nothing to fall back to,
+    // so the auto-retry is skipped rather than re-sending a bogus empty message.
     const sessionId = 'empty-original'
     const managed = buildSession(sessionId)
     const calls = spyOnSendMessage(sessionId)
@@ -155,6 +157,29 @@ describe('source_activated auto-retry', () => {
     expect(calls).toEqual([])
     expect(managed.autoRetryPending).toBeUndefined()
     expect(managed.autoRetryTimer).toBeUndefined()
+  })
+
+  it('empty originalMessage with a prior user message — falls back to the last user message', async () => {
+    // Regression for bugfix/session-continuation: when the per-turn capture comes
+    // back empty (empty/attachment-only turn, or a capture that raced turn teardown)
+    // but the user's message is already in history, the activation must still continue
+    // by resending the last user message — not silently strand the session.
+    const sessionId = 'empty-with-history'
+    const managed = buildSession(sessionId)
+    const calls = spyOnSendMessage(sessionId)
+
+    // The current turn's user message is pushed to history at turn start.
+    managed.messages.push({
+      id: 'u1',
+      role: 'user',
+      content: 'summarize my latest doc',
+      timestamp: Date.now(),
+    } as never)
+
+    await fireSourceActivated(sessionId, 'craft-my-space', '')
+    await new Promise(r => setTimeout(r, 150))
+
+    expect(calls).toEqual(['summarize my latest doc\n\n[craft-my-space activated]'])
   })
 
   it('legitimate user message preempts retry — skipped when follow-up arrived', async () => {

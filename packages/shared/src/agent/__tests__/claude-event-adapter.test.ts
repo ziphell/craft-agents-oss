@@ -935,3 +935,15 @@ describe('buildWindowsSkillsDirError', () => {
     expect(buildWindowsSkillsDirError('ENOENT: no such file, /tmp/other')).toBeNull();
   });
 });
+
+describe('ClaudeEventAdapter manual compaction flag', () => {
+  it('reports a requested manual compaction until the next turn starts (#1058)', () => {
+    const adapter = new ClaudeEventAdapter(createCallbacks());
+    adapter.startTurn();
+    expect(adapter.isManualCompactionRequested()).toBe(false);
+    adapter.expectManualCompaction();
+    expect(adapter.isManualCompactionRequested()).toBe(true);
+    adapter.startTurn();
+    expect(adapter.isManualCompactionRequested()).toBe(false);
+  });
+});

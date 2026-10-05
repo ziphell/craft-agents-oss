@@ -89,6 +89,12 @@ export interface SessionScopedToolCallbacks {
    * same way.
    */
   tweaks?: import('@craft-agent/session-tools-core').TweakToolCallbacks;
+  /**
+   * Decision-layer callback for the `decide` tool (Jev / System One). Wired by
+   * SessionManager from `@craft-agent/shared/decisions`; gating (Settings switch,
+   * feature toggle, key) happens inside the callback at call time.
+   */
+  decide?: import('@craft-agent/session-tools-core').DecisionToolCallbacks;
 }
 
 // Registry of callbacks keyed by sessionId

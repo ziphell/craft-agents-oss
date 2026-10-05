@@ -354,6 +354,19 @@ export interface SessionToolContext {
   tweaks?: TweakToolCallbacks;
 
   // ============================================================
+  // Decision model (decide)
+  // ============================================================
+
+  /**
+   * Decision-layer callback for the `decide` tool (Jev / System One typed
+   * judgments over text or JSON). Injected by the backend (SessionManager)
+   * from @craft-agent/shared/decisions; undefined in backends that don't run
+   * alongside it — the handler tells the agent how the user can enable it.
+   * Answers are hints for the agent and never grant authority.
+   */
+  decide?: DecisionToolCallbacks;
+
+  // ============================================================
   // Inter-Session Messaging
   // ============================================================
 
@@ -567,6 +580,72 @@ export interface TweakToolCallbacks {
   createTweak(input: CreateTweakToolInput): Promise<TweakToolDetails>;
   updateTweak(slug: string, patch: UpdateTweakToolPatch): Promise<TweakToolDetails>;
   deleteTweak(slug: string): Promise<DeleteTweakToolResult>;
+}
+
+// ============================================================
+// Decision Tool Types (mirror @craft-agent/shared/decisions — this package
+// must stay free of that dependency, same rule as pages)
+// ============================================================
+
+export type DecisionToolQuestionType = 'choice' | 'score' | 'noul';
+
+/** A sentence, or a small structured object such as { question, focus }. */
+export type DecisionToolInstructions = string | Record<string, unknown>;
+
+/**
+ * choice: option key → description (string, structured object, or null when self-explanatory).
+ * score: ordered array of level descriptions, lowest first.
+ * noul: optional { true, false } descriptions.
+ */
+export type DecisionToolCriteria =
+  | Record<string, string | null | Record<string, unknown>>
+  | Array<string | Record<string, unknown>>;
+
+export interface DecisionToolQuestion {
+  type: DecisionToolQuestionType;
+  instructions: DecisionToolInstructions;
+  criteria?: DecisionToolCriteria;
+}
+
+/** Text, a JSON object, or an array of text values. */
+export type DecisionToolState = string | Record<string, unknown> | unknown[];
+
+export interface DecisionToolRequest {
+  state: DecisionToolState;
+  questions: Record<string, DecisionToolQuestion>;
+  /** Wall-clock budget for the call, in ms. */
+  deadlineMs?: number;
+  /** Caller context written to the decision record (redacted by key name). Never the state. */
+  meta?: Record<string, unknown>;
+}
+
+export type DecisionToolAnswer =
+  | { type: 'choice'; choice: string; confidence: number; probabilities: Record<string, number> }
+  | { type: 'score'; score: number; confidence: number; probabilities: Record<string, number>; legend?: Record<string, unknown> }
+  | { type: 'noul'; noul: number };
+
+export interface DecisionToolUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
+/** Failure the agent may see. Never contains the API key or the state. */
+export interface DecisionToolError {
+  kind: string;
+  message: string;
+  status?: number;
+}
+
+export type DecisionToolResult =
+  | { ok: true; model: string; answers: Record<string, DecisionToolAnswer>; usage: DecisionToolUsage; latencyMs: number; truncated: boolean }
+  | { ok: false; error: DecisionToolError };
+
+/**
+ * Decision-layer callback, injected by the backend (SessionManager). Network,
+ * validation, gating and recording all live behind it.
+ */
+export interface DecisionToolCallbacks {
+  decide(request: DecisionToolRequest): Promise<DecisionToolResult>;
 }
 
 export interface SessionInfo {

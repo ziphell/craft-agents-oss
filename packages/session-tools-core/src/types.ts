@@ -261,6 +261,8 @@ export interface ApiSourceConfig {
   headerNames?: string[];
   queryParam?: string;
   authScheme?: string;
+  /** Headers sent with every request, merged before auth headers */
+  defaultHeaders?: Record<string, string>;
   testEndpoint?: {
     method: 'GET' | 'POST';
     path: string;

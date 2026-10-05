@@ -11,6 +11,7 @@
  *   - claude_oauth::global
  *   - source_oauth::{workspaceId}::{sourceId}
  *   - source_bearer::{workspaceId}::{sourceId}
+ *   - decision_api_key::{provider}
  *
  * Note: Using "::" as delimiter to avoid conflicts with "/" in URLs or paths.
  */
@@ -33,7 +34,9 @@ export type CredentialType =
   | 'source_apikey'      // API keys
   | 'source_basic'       // Basic auth (base64 encoded user:pass)
   // Messaging gateway credentials (keyed by workspaceId + platform)
-  | 'messaging_bearer'; // Platform tokens (e.g., Telegram bot token)
+  | 'messaging_bearer'   // Platform tokens (e.g., Telegram bot token)
+  // Decision layer (Jev / System One) API key, keyed by decision provider id via `name`
+  | 'decision_api_key';
 
 /** Valid credential types for validation */
 const VALID_CREDENTIAL_TYPES: readonly CredentialType[] = [
@@ -49,6 +52,7 @@ const VALID_CREDENTIAL_TYPES: readonly CredentialType[] = [
   'source_apikey',
   'source_basic',
   'messaging_bearer',
+  'decision_api_key',
 ] as const;
 
 /** Check if a string is a valid CredentialType */
@@ -149,6 +153,11 @@ function isMessagingCredential(type: CredentialType): boolean {
   return (MESSAGING_CREDENTIAL_TYPES as readonly string[]).includes(type);
 }
 
+/** Check if type is a decision-layer credential (decision provider id via `name`) */
+function isDecisionCredential(type: CredentialType): boolean {
+  return type === 'decision_api_key';
+}
+
 /** LLM connection credential types */
 const LLM_CREDENTIAL_TYPES = [
   'llm_api_key',
@@ -198,6 +207,13 @@ export function credentialIdToAccount(id: CredentialId): string {
   // messaging_bearer::{workspaceId}::{platform}
   if (isMessagingCredential(id.type) && id.workspaceId && id.name) {
     parts.push(id.workspaceId);
+    parts.push(id.name);
+    return parts.join(CREDENTIAL_DELIMITER);
+  }
+
+  // Decision-provider format:
+  // decision_api_key::{provider}
+  if (isDecisionCredential(id.type) && id.name) {
     parts.push(id.name);
     return parts.join(CREDENTIAL_DELIMITER);
   }
@@ -268,6 +284,12 @@ export function accountToCredentialId(account: string): CredentialId | null {
   // messaging_bearer::{workspaceId}::{platform}
   if (isMessagingCredential(type) && parts.length === 3) {
     return { type, workspaceId: parts[1], name: parts[2] };
+  }
+
+  // Decision-provider format:
+  // decision_api_key::{provider}
+  if (isDecisionCredential(type) && parts.length === 2 && parts[1] && parts[1] !== 'global') {
+    return { type, name: parts[1] };
   }
 
   if (parts.length === 2 && parts[1] === 'global') {

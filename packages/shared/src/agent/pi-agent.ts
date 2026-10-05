@@ -330,6 +330,11 @@ export class PiAgent extends BaseAgent {
   // Invalidates a manual compact continuation if stop/dispose wins its await.
   private compactionEpoch = 0;
 
+  // Host-side deadline for a manual compact RPC. GPT-backed compactions on large
+  // conversations legitimately take 60-120 s (one blocking summary call, no
+  // progress stream); 5 min covers realistic cases. Overridable for tests.
+  private compactTimeoutMs = 300_000;
+
   // Pending compact requests (manual compaction RPC)
   private pendingCompactions: Map<string, {
     resolve: (result: PiCompactResult) => void;
@@ -1944,15 +1949,20 @@ export class PiAgent extends BaseAgent {
     if (epoch !== this.compactionEpoch) throw new Error('Compaction aborted');
 
     const id = `compact-${++this.rpcIdCounter}`;
-    // GPT-backed Pi compactions on large conversations can legitimately take 60-120s
-    // (single blocking OpenAI summary call, no progress stream). 5 min covers realistic
-    // cases; truly hung subprocesses are caught by the stdio death watchdog.
-    const timeoutMs = 300_000;
+    const timeoutMs = this.compactTimeoutMs;
 
     return new Promise<PiCompactResult>((resolve, reject) => {
       const timer = setTimeout(() => {
+        if (!this.pendingCompactions.has(id)) return;
         this.pendingCompactions.delete(id);
-        reject(new Error(`compact timed out after ${Math.floor(timeoutMs / 1000)}s`));
+        // Cancel the work in the child as well (OSS #1060): the epoch bump turns a
+        // late compact_result and the /compact continuation into no-ops, and
+        // `abort` makes the subprocess call session.abort(), which cancels the
+        // in-flight summarization instead of leaving it running behind a
+        // rejected promise.
+        this.compactionEpoch++;
+        this.send({ type: 'abort' });
+        reject(new Error(`Compaction timed out after ${Math.floor(timeoutMs / 1000)}s and was cancelled`));
       }, timeoutMs);
 
       this.pendingCompactions.set(id, {
@@ -2496,6 +2506,13 @@ export class PiAgent extends BaseAgent {
    * Events flow through the existing generator — no abort needed.
    */
   override redirect(message: string): boolean {
+    if (this.isCompactionInFlight()) {
+      // A manual /compact owns this turn: no agent loop is running to consume a
+      // steer, so it would vanish (OSS #1058). Refuse without aborting the
+      // compaction; the session layer queues the message for replay.
+      this.debug('Steer refused during manual compaction; message must be queued');
+      return false;
+    }
     if (!this._isProcessing || !this.subprocess) {
       // Not streaming or no subprocess — fall back to abort
       this.forceAbort(AbortReason.Redirect);
@@ -2504,6 +2521,11 @@ export class PiAgent extends BaseAgent {
     this.debug(`Steering mid-stream: "${message.slice(0, 100)}"`);
     this.send({ type: 'steer', message });
     return true;
+  }
+
+  /** A pending manual compact RPC owns the turn; see AgentBackend.isCompactionInFlight. */
+  override isCompactionInFlight(): boolean {
+    return this.pendingCompactions.size > 0;
   }
 
   // ============================================================

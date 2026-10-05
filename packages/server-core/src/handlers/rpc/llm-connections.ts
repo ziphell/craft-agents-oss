@@ -1,5 +1,5 @@
 import { RPC_CHANNELS, type LlmConnectionSetup } from '@craft-agent/shared/protocol'
-import { getLlmConnections, getLlmConnection, addLlmConnection, updateLlmConnection, deleteLlmConnection, getDefaultLlmConnection, setDefaultLlmConnection, touchLlmConnection, isCompatProvider, isAnthropicProvider, getDefaultModelsForConnection, getDefaultModelForConnection, maskCredential, isMaskedCredential, type LlmConnection, type LlmConnectionUpdate, type LlmConnectionWithStatus, toBedrockNativeId, deriveBedrockRegionPrefix } from '@craft-agent/shared/config'
+import { getLlmConnections, getLlmConnection, addLlmConnection, updateLlmConnection, deleteLlmConnection, getDefaultLlmConnection, setDefaultLlmConnection, touchLlmConnection, isCompatProvider, isAnthropicProvider, getDefaultModelsForConnection, getDefaultModelForConnection, type LlmConnection, type LlmConnectionUpdate, type LlmConnectionWithStatus, toBedrockNativeId, deriveBedrockRegionPrefix } from '@craft-agent/shared/config'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
 import { setSetupDeferred, applyLlmConnectionUpdate } from '@craft-agent/shared/config/storage'
 import {
@@ -8,7 +8,7 @@ import {
   validateStoredBackendConnection,
 } from '@craft-agent/shared/agent/backend'
 import { getModelRefreshService } from '@craft-agent/server-core/model-fetchers'
-import { parseTestConnectionError, createBuiltInConnection, validateModelList, piAuthProviderDisplayName, validateSetupTestInput, setupTestRequiresApiKey, resolveCustomEndpointSetup } from '@craft-agent/server-core/domain'
+import { parseTestConnectionError, createBuiltInConnection, validateModelList, piAuthProviderDisplayName, validateSetupTestInput, setupTestRequiresApiKey, resolveCustomEndpointSetup, resolveSetupTestApiKey, maskApiKey, isMaskedApiKey } from '@craft-agent/server-core/domain'
 import { getWorkspaceOrThrow, buildBackendHostRuntimeContext } from '@craft-agent/server-core/handlers'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
@@ -279,7 +279,8 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
       }
 
       // Store credential if provided (skip masked placeholders from GET_API_KEY)
-      if (setup.credential && !isMaskedCredential(setup.credential)) {
+      const isMasked = isMaskedApiKey(setup.credential)
+      if (setup.credential && !isMasked) {
         const authType = pendingConnection.authType
         if (authType === 'oauth') {
           await manager.setLlmOAuth(setup.slug, { accessToken: setup.credential })
@@ -340,13 +341,22 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
   // Unified connection test — uses the agent factory to spawn a real agent subprocess
   // and validate credentials via runMiniCompletion(). Same code path as actual chat.
   server.handle(RPC_CHANNELS.settings.TEST_LLM_CONNECTION_SETUP, async (_ctx, params: import('@craft-agent/shared/protocol').TestLlmConnectionParams): Promise<import('@craft-agent/shared/protocol').TestLlmConnectionResult> => {
-    const { provider, apiKey, baseUrl, model, piAuthProvider, customEndpoint } = params
-    const trimmedKey = apiKey?.trim() ?? ''
+    const { provider, apiKey, baseUrl, model, piAuthProvider, customEndpoint, connectionSlug } = params
     const allowEmptyApiKey = !setupTestRequiresApiKey(baseUrl)
 
-    if (!trimmedKey && !allowEmptyApiKey) {
-      return { success: false, error: 'API key is required' }
+    // The edit form echoes the stored key back as the GET_API_KEY placeholder;
+    // resolve it to the real credential instead of testing the bullets (OSS #1048).
+    const keyResolution = await resolveSetupTestApiKey(
+      { apiKey, connectionSlug, allowEmptyApiKey },
+      (slug) => getCredentialManager().getLlmApiKey(slug),
+    )
+    if (!keyResolution.ok) {
+      return { success: false, error: keyResolution.error }
     }
+    if (keyResolution.source === 'stored') {
+      deps.platform.logger?.info(`[testLlmConnectionSetup] Using the stored API key of ${connectionSlug}`)
+    }
+    const trimmedKey = keyResolution.apiKey
 
     const setupValidation = validateSetupTestInput({ provider, baseUrl, piAuthProvider })
     if (!setupValidation.valid) {
@@ -458,7 +468,8 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
     const manager = getCredentialManager()
     const key = await manager.getLlmApiKey(slug)
     if (!key) return null
-    return maskCredential(key)
+    // Provider prefix + mask + last four; the test handler resolves this back by slug
+    return maskApiKey(key)
   })
 
   // Save (create or update) an LLM connection

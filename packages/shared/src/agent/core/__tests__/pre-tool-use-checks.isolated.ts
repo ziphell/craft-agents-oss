@@ -25,11 +25,17 @@ let mockIsReadOnlyBashCommandWithConfig = mock(
 
 let mockEffectivePermissionMode: 'safe' | 'ask' | 'allow-all' = 'safe';
 
+// Minimal glob support for allowedWritePaths tests: `dir/**` prefix or exact path.
+let mockMatchesAllowedWritePath = mock((filePath: string, patterns: string[]) =>
+  patterns.some((p) => (p.endsWith('/**') ? filePath.startsWith(p.slice(0, -2)) : filePath === p))
+);
+
 // Paths resolve from THIS file's location (core/__tests__/)
 mock.module('../../mode-manager.ts', () => ({
   shouldAllowToolInMode: (a: any, b: any, c: any, d?: any) => mockShouldAllowToolInMode(a, b, c, d),
   isApiEndpointAllowed: (a: any, b: any, c?: any) => mockIsApiEndpointAllowed(a, b, c),
   isReadOnlyBashCommandWithConfig: (a: any, b: any) => mockIsReadOnlyBashCommandWithConfig(a, b),
+  matchesAllowedWritePath: (a: any, b: any) => mockMatchesAllowedWritePath(a, b),
   getPermissionModeDiagnostics: () => ({
     permissionMode: mockEffectivePermissionMode,
     modeVersion: 7,
@@ -38,13 +44,15 @@ mock.module('../../mode-manager.ts', () => ({
   }),
 }));
 
-// Mock permissionsConfigCache for read-only bash pattern checks
+// Mock permissionsConfigCache for read-only bash pattern and allowedWritePaths checks
 let mockReadOnlyBashPatterns: Array<{ regex: RegExp }> = [];
+let mockAllowedWritePaths: string[] = [];
 
 mock.module('../../permissions-config.ts', () => ({
   permissionsConfigCache: {
     getMergedConfig: () => ({
       readOnlyBashPatterns: mockReadOnlyBashPatterns,
+      allowedWritePaths: mockAllowedWritePaths,
     }),
   },
 }));
@@ -166,6 +174,7 @@ describe('runPreToolUseChecks', () => {
     mockValidateConfigFileContent.mockReset();
     mockValidateConfigFileContent.mockImplementation(() => null);
     mockReadOnlyBashPatterns = [];
+    mockAllowedWritePaths = [];
     mockCraftAgentsCliFlag = false;
   });
 
@@ -919,6 +928,7 @@ describe('shouldPromptInAskMode', () => {
     mockValidateConfigFileContent.mockReset();
     mockValidateConfigFileContent.mockImplementation(() => null);
     mockReadOnlyBashPatterns = [];
+    mockAllowedWritePaths = [];
     mockCraftAgentsCliFlag = false;
   });
 
@@ -965,6 +975,48 @@ describe('shouldPromptInAskMode', () => {
       expect(result).not.toBeNull();
       expect(result!.promptType).toBe('file_write');
       expect(result!.description).toContain('/test/nb.ipynb');
+    });
+
+    // Regression for OSS #1065 (PR #1066 by ZerVisionGo): allowedWritePaths was
+    // honored by Explore mode only, so automations in Ask mode had to run Allow-All.
+    it('auto-allows writes to an allowedWritePaths glob (no prompt in ask mode)', () => {
+      mockAllowedWritePaths = ['/test/social/**'];
+      const result = shouldPromptInAskMode('Write', { file_path: '/test/social/x/thread.md', content: 'x' }, pm, {
+        workspaceRootPath: '/test',
+        activeSourceSlugs: [],
+      });
+      expect(result).toBeNull();
+      expect(mockMatchesAllowedWritePath).toHaveBeenCalledWith('/test/social/x/thread.md', ['/test/social/**']);
+    });
+
+    it('still prompts for writes outside allowedWritePaths', () => {
+      mockAllowedWritePaths = ['/test/social/**'];
+      const result = shouldPromptInAskMode('Write', { file_path: '/test/secrets/key.txt', content: 'x' }, pm, {
+        workspaceRootPath: '/test',
+        activeSourceSlugs: [],
+      });
+      expect(result).not.toBeNull();
+      expect(result!.promptType).toBe('file_write');
+    });
+
+    it('applies allowedWritePaths to notebook_path writes', () => {
+      mockAllowedWritePaths = ['/test/notebooks/**'];
+      const result = shouldPromptInAskMode('NotebookEdit', { notebook_path: '/test/notebooks/a.ipynb', new_source: 'x' }, pm, {
+        workspaceRootPath: '/test',
+        activeSourceSlugs: [],
+      });
+      expect(result).toBeNull();
+    });
+
+    it('does not consult the allowlist when the tool input has no path', () => {
+      mockAllowedWritePaths = ['/test/**'];
+      mockMatchesAllowedWritePath.mockClear();
+      const result = shouldPromptInAskMode('Write', { content: 'x' }, pm, {
+        workspaceRootPath: '/test',
+        activeSourceSlugs: [],
+      });
+      expect(result).not.toBeNull();
+      expect(mockMatchesAllowedWritePath).not.toHaveBeenCalled();
     });
 
     it('auto-allows whitelisted file write tools', () => {

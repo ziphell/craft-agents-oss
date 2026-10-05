@@ -282,7 +282,7 @@ describe('mapClaudeSdkAssistantError', () => {
   });
 });
 
-describe('mapClaudeSdkAssistantError — codes added in SDK 0.3.280', () => {
+describe('mapClaudeSdkAssistantError — extended codes not yet in SDK type but returned by backend', () => {
   it('maps verification_required to a non-retryable credentials error pointing at the Console', () => {
     const error = mapClaudeSdkAssistantError('verification_required', baseContext);
 

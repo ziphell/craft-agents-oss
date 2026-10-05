@@ -84,10 +84,11 @@ import {
   type SessionHeader,
   pickSessionFields,
 } from '@craft-agent/shared/sessions'
-import { loadWorkspaceSources, loadAllSources, getSourcesBySlugs, isSourceUsable, type LoadedSource, type McpServerConfig, getSourcesNeedingAuth, getSourceCredentialManager, TokenRefreshManager } from '@craft-agent/shared/sources'
+import { serializeHeaderCredential, loadWorkspaceSources, loadAllSources, getSourcesBySlugs, isSourceUsable, type LoadedSource, type McpServerConfig, getSourcesNeedingAuth, getSourceCredentialManager, TokenRefreshManager } from '@craft-agent/shared/sources'
 import { listTaskSlugs, parseTaskSpec, uniqueTaskSlug } from '@craft-agent/shared/tasks'
 import { createTaskFromSpec, resolveCreateTaskProjectId } from '../tasks'
 import { buildTweaksToolCallbacks } from '../tweaks/tool-callbacks'
+import { buildDecisionToolCallbacks } from '../decisions/tool-callbacks'
 import { buildServersFromSources as buildServersFromSourcesShared } from '../sources/build-servers'
 import { ConfigWatcher, type ConfigWatcherCallbacks } from '@craft-agent/shared/config'
 import { getValidClaudeOAuthToken } from '@craft-agent/shared/auth'
@@ -961,6 +962,25 @@ export function claimAutoRetryPending(
 }
 
 /**
+ * Most-recent non-empty user message content, for the source-activation auto-retry
+ * fallback (bugfix/session-continuation). The per-turn capture
+ * (`getCurrentTurnUserMessage`) can come back empty — an empty/attachment-only turn,
+ * or a capture that raced turn teardown — which used to strand the session: the
+ * activation force-aborted the turn but nothing was re-sent. Falling back to the last
+ * persisted user message keeps the turn continuing, while preserving the "no bogus
+ * empty resend" intent (returns '' only when there is genuinely nothing to resend).
+ */
+export function lastUserMessageContent(messages: Message[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (m.role === 'user' && typeof m.content === 'string' && m.content.trim()) {
+      return m.content
+    }
+  }
+  return ''
+}
+
+/**
  * Create a ManagedSession from any session-like source (SessionMetadata, SessionConfig, StoredSession).
  * Spreads all matching fields from the source so new persistent fields automatically propagate.
  * Runtime-only fields get sensible defaults.
@@ -1113,6 +1133,20 @@ export function resolveMidStreamDeliveryOutcome(
     shouldQueue: !steered,
     wasInterrupted: behavior === 'steer' && !steered,
   }
+}
+
+/**
+ * Whether a mid-stream text message should be steered into the live turn.
+ * A manual compaction owns the turn without an agent loop to consume steers,
+ * so the message is queued for replay after `complete` instead (OSS #1058).
+ */
+export function shouldAttemptMidStreamSteer(
+  behavior: MidStreamBehavior,
+  textOnly: boolean,
+  agent: { isCompactionInFlight?: () => boolean } | null | undefined,
+): boolean {
+  if (behavior !== 'steer' || !textOnly || !agent) return false
+  return agent.isCompactionInFlight?.() !== true
 }
 
 /** Text redirects cannot carry attachments or options that affect model input. */
@@ -2263,10 +2297,12 @@ export class SessionManager implements ISessionManager {
           { value: response.value! }
         )
       } else if (request.mode === 'multi-header') {
-        // Store multi-header credentials as JSON { "DD-API-KEY": "...", "DD-APPLICATION-KEY": "..." }
+        // Store multi-header credentials as JSON { "DD-API-KEY": "...", "DD-APPLICATION-KEY": "..." }.
+        // A single header matching the source's headerName is stored bare so it never
+        // reaches the wire as a serialized object (#1067).
         await credManager.set(
           { type: 'source_apikey', workspaceId: wsId, sourceId: request.sourceSlug },
-          { value: JSON.stringify(response.headers) }
+          { value: serializeHeaderCredential(response.headers ?? {}, request.headerName) }
         )
       } else {
         // header or query - both use API key storage
@@ -4779,6 +4815,14 @@ export class SessionManager implements ISessionManager {
             this.notifyConfigFileChange(managed.workspace.rootPath, `tweaks/${tweakSlug}/tweak.json`)
           },
         }),
+        // Decision model (`decide`) — always wired; the callback re-checks the
+        // Settings switch, the feature toggle and the key on every call, so an
+        // agent that still advertises the tool after the user disabled it gets
+        // a clear "not enabled" answer instead of a stale client.
+        decide: buildDecisionToolCallbacks({
+          sessionId: managed.id,
+          log: (message: string) => sessionLog.info(message),
+        }),
         getSessionInfoFn: (sessionId?: string) => {
           const targetId = sessionId ?? managed.id
           const session = this.sessions.get(targetId)
@@ -5793,6 +5837,8 @@ export class SessionManager implements ISessionManager {
 
         agent = createBackendFromConnection(managed.llmConnection, {
           workspace: managed.workspace,
+          // Preserve the selected model as a fallback if the account rejects its mini model.
+          model: managed.model,
           miniModel: resolvedMiniModel,
           session: {
             id: `title-${managed.id}`,
@@ -6343,15 +6389,18 @@ export class SessionManager implements ISessionManager {
       // Redirect is text-only. Any semantic options/attachments use the normal
       // host queue, without aborting the current turn or dropping the payload.
       const textOnly = canSteerTextPayload(attachments, storedAttachments, options)
-      const attemptedSteer = behavior === 'steer' && textOnly && !!agent
-      const steered = attemptedSteer
+      // A manual compaction owns the turn: nothing consumes steers, so queue for
+      // replay after `complete` instead of steering (OSS #1058). Not an interruption.
+      const compactionInFlight = agent?.isCompactionInFlight?.() === true
+      const attemptedSteer = shouldAttemptMidStreamSteer(behavior, textOnly, agent)
+      const steered = attemptedSteer && agent
         ? agent.redirect(message, { messageId: userMessage.id })
         : false
       const payload = { message, attachments, storedAttachments, options, messageId: userMessage.id, optimisticMessageId: options?.optimisticMessageId }
       if (steered && agent?.takePendingSteers) {
         (managed.acceptedSteers ??= new Map()).set(userMessage.id, payload)
       }
-      sessionLog.info('mid-stream send', { sessionId, behavior, steered, textOnly, queueLengthBefore: managed.messageQueue.length })
+      sessionLog.info('mid-stream send', { sessionId, behavior, steered, textOnly, compactionInFlight, queueLengthBefore: managed.messageQueue.length })
 
       const delivery = resolveMidStreamDeliveryOutcome(attemptedSteer ? 'steer' : 'queue', steered)
       userMessage.isQueued = delivery.shouldQueue
@@ -8147,6 +8196,7 @@ export class SessionManager implements ISessionManager {
 
         agent = createBackendFromConnection(managed.llmConnection, {
           workspace: managed.workspace,
+          model: managed.model,
           miniModel: connection ? (getMiniModel(connection) ?? connection.defaultModel) : undefined,
           session: {
             id: `title-${managed.id}`,
@@ -8332,7 +8382,7 @@ export class SessionManager implements ISessionManager {
 
       case 'tool_start': {
         // Format tool input paths to relative for better readability
-        const formattedToolInput = formatToolInputPaths(event.input)
+        const formattedToolInput = formatToolInputPaths(event.input, managed.workingDirectory)
 
         // Resolve call_llm model for TurnCard badge display.
         // Resolve call_llm model short names to full IDs for display.
@@ -8465,7 +8515,7 @@ export class SessionManager implements ISessionManager {
         const toolName = event.toolName || 'unknown'
 
         // Format absolute paths to relative paths for better readability
-        const rawFormattedResult = event.result ? formatPathsToRelative(event.result) : ''
+        const rawFormattedResult = event.result ? formatPathsToRelative(event.result, managed.workingDirectory) : ''
 
         // Safety net: prevent massive tool results from bloating session JSONL (protects all backends)
         const MAX_PERSISTED_RESULT_CHARS = 200_000 // ~50K tokens
@@ -8915,13 +8965,21 @@ export class SessionManager implements ISessionManager {
 
         if (!managed) break
 
-        const originalMessage = event.originalMessage ?? ''
-        if (!originalMessage.trim()) {
-          sessionLog.warn(`Source "${event.sourceSlug}" activated for session ${sessionId}, but originalMessage was empty; skipping auto-retry`)
+        // The captured original message can be empty — an empty/attachment-only turn,
+        // or a per-turn capture that raced turn teardown. Fall back to the last
+        // persisted user message so an activation that force-aborted the turn still
+        // continues; skip only when there is genuinely nothing to resend (preserves
+        // the "no bogus empty resend" intent). See bugfix/session-continuation.
+        const capturedMessage = event.originalMessage ?? ''
+        const resendMessage = capturedMessage.trim()
+          ? capturedMessage
+          : lastUserMessageContent(managed.messages)
+        if (!resendMessage.trim()) {
+          sessionLog.warn(`Source "${event.sourceSlug}" activated for session ${sessionId}, but no message to resend (empty capture, no prior user message); skipping auto-retry`)
           break
         }
 
-        const messageWithSuffix = `${originalMessage}\n\n[${event.sourceSlug} activated]`
+        const messageWithSuffix = `${resendMessage}\n\n[${event.sourceSlug} activated]`
         const messageCountAtSchedule = managed.messages.length
 
         // Stash the retry payload so a duplicate sendMessage from a legacy renderer

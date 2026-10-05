@@ -61,6 +61,7 @@ Sentry.init({
 // the system prompt's "Preferred language" line, and the native menu.
 import { setupI18n, i18n, SUPPORTED_LANGUAGE_CODES, type LanguageCode } from '@craft-agent/shared/i18n'
 import { getPersistedUiLanguage, setPersistedUiLanguage } from '@craft-agent/shared/config'
+import { CONFIG_DIR } from '@craft-agent/shared/config/paths'
 setupI18n()
 const persistedUiLanguage = getPersistedUiLanguage()
 if (persistedUiLanguage) {
@@ -707,7 +708,7 @@ app.whenReady().then(async () => {
             sessionManager: sm,
             credentialManager: getCredentialManager(),
             getMessagingDir: (wsId: string) =>
-              join(homedir(), '.craft-agent', 'workspaces', wsId, 'messaging'),
+              join(CONFIG_DIR, 'workspaces', wsId, 'messaging'),
             getLegacyMessagingDir: (wsId: string) => {
               const ws = getWorkspaces().find((w) => w.id === wsId)
               return ws ? join(ws.rootPath, 'messaging') : undefined

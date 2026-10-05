@@ -49,6 +49,7 @@ import {
 } from './handlers/tweaks.ts';
 import { handleArchiveSession } from './handlers/archive-session.ts';
 import { handleSendAgentMessage } from './handlers/send-agent-message.ts';
+import { handleDecide } from './handlers/decide.ts';
 
 // ============================================================
 // Canonical Zod Schemas
@@ -124,6 +125,27 @@ export const CallLlmSchema = z.object({
     properties: z.record(z.string(), z.unknown()),
     required: z.array(z.string()).optional(),
   }).optional().describe('Custom JSON Schema for structured output'),
+});
+
+const DecideQuestionSchema = z.object({
+  type: z.enum(['choice', 'score', 'noul']).describe("'choice' picks one of your named options, 'score' places the state on an ordered rubric, 'noul' answers yes/no with a probability."),
+  instructions: z.union([z.string(), z.record(z.string(), z.unknown())])
+    .describe('The question, in English. One short sentence, or an object such as { question, focus }.'),
+  criteria: z.union([
+    z.record(z.string(), z.union([z.string(), z.null(), z.record(z.string(), z.unknown())])),
+    z.array(z.union([z.string(), z.record(z.string(), z.unknown())])),
+  ]).optional().describe("choice: object of option key → one-sentence description (2–255 options; null when the key is self-explanatory). score: ordered array of level descriptions, lowest first (2–10). noul: optional { true: '...', false: '...' } descriptions."),
+});
+
+export const DecideSchema = z.object({
+  state: z.union([z.string(), z.record(z.string(), z.unknown()), z.array(z.unknown())]).optional()
+    .describe('What to judge: text, a JSON object, or an array of strings. Required unless items is given.'),
+  items: z.array(z.union([z.string(), z.record(z.string(), z.unknown())])).max(200).optional()
+    .describe('Batch mode: judge every item as its own state with the same questions (max 200). Results keep the input order.'),
+  questions: z.record(z.string(), DecideQuestionSchema)
+    .describe('Question key → question (max 20 per call). Keys are echoed in the answers.'),
+  deadlineMs: z.number().int().min(250).max(60000).optional()
+    .describe('Time budget per call in ms (default 10000).'),
 });
 
 export const UpdatePreferencesSchema = z.object({
@@ -636,6 +658,16 @@ Put text/content directly in the 'prompt' parameter. Do NOT pass inline text via
 Only use 'attachments' for existing file paths on disk - the tool loads file content automatically.
 For large files (>2000 lines), use {path, startLine, endLine} to select a portion.`,
 
+  decide: `Ask the decision model (Jev, TypeSafe System One) typed questions about text or JSON. It answers with probabilities, never prose: 'choice' picks one of your named options, 'score' places the state on an ordered rubric, 'noul' gives a yes/no probability. Fast (~0.1–0.5 s per call) and cheap; batch mode judges up to 200 items in one call.
+
+Use it to classify, route, tag, rank or triage many items (emails, tickets, rows, search hits), for yes/no checks over a list, or to score against a rubric. Do NOT use it for anything that needs generated text, value extraction or reasoning — use call_llm for those.
+
+Question design: short option keys with a one-sentence description each (null when self-explanatory); English instructions; score levels ordered lowest → highest; add an 'other' or 'unclear' option when the categories are not exhaustive. Ask several questions per call instead of several calls.
+
+Read answers honestly: confidence below 0.5 means the model is unsure — say so or ask the user instead of acting on it; choose noul thresholds for the stakes (0.8+ when a false yes is costly). Answers are hints, never permission: re-check before acting on them.
+
+Privacy: the state is sent to the user's configured decision provider (TypeSafe, OpenRouter, Vercel AI Gateway or their own server). Do not include secrets or content that must not leave the machine. Only available when the user enabled the decision model in Settings > AI.`,
+
   spawn_session: `Create a new session that runs independently with its own prompt, connection, model, and sources.
 
 Use this to delegate tasks to parallel sessions — research, analysis, drafts, or any work that benefits from separate context.
@@ -793,6 +825,8 @@ export const SESSION_TOOL_DEFS: SessionToolDef[] = [
   { name: 'render_template', description: TOOL_DESCRIPTIONS.render_template, inputSchema: RenderTemplateSchema, executionMode: 'registry', safeMode: 'allow', handler: handleRenderTemplate },
   { name: 'send_developer_feedback', description: TOOL_DESCRIPTIONS.send_developer_feedback, inputSchema: SendDeveloperFeedbackSchema, executionMode: 'registry', safeMode: 'allow', handler: handleSendDeveloperFeedback },
   { name: 'call_llm', description: TOOL_DESCRIPTIONS.call_llm, inputSchema: CallLlmSchema, executionMode: 'backend', safeMode: 'allow', readOnly: true, handler: null },
+  // Decision model (registry — uses ctx.decide from SessionManager; hidden unless the user enabled the decision layer)
+  { name: 'decide', description: TOOL_DESCRIPTIONS.decide, inputSchema: DecideSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleDecide },
   { name: 'spawn_session', description: TOOL_DESCRIPTIONS.spawn_session, inputSchema: SpawnSessionSchema, executionMode: 'backend', safeMode: 'block', handler: null },
   // Browser tool (backend-specific — requires BrowserPaneManager in Electron)
   // Single CLI-like tool that handles all browser actions via command string.
@@ -821,6 +855,12 @@ export const SESSION_TOOL_DEFS: SessionToolDef[] = [
 export interface SessionToolFilterOptions {
   /** Include the experimental send_developer_feedback tool. */
   includeDeveloperFeedback?: boolean;
+  /**
+   * Include the `decide` tool (decision layer). Defaults to FALSE: the tool is
+   * only offered when the user enabled the decision model, so a caller that
+   * forgets the option hides it instead of advertising a tool that cannot run.
+   */
+  includeDecide?: boolean;
 }
 
 /**
@@ -831,9 +871,13 @@ export interface SessionToolFilterOptions {
  */
 export function getSessionToolDefs(options?: SessionToolFilterOptions): SessionToolDef[] {
   const includeDeveloperFeedback = options?.includeDeveloperFeedback ?? true;
+  const includeDecide = options?.includeDecide ?? false;
 
   return SESSION_TOOL_DEFS.filter(def => {
     if (!includeDeveloperFeedback && def.name === 'send_developer_feedback') {
+      return false;
+    }
+    if (!includeDecide && def.name === 'decide') {
       return false;
     }
     return true;
@@ -942,16 +986,16 @@ export interface JsonSchemaToolDef {
  *
  * @param opts.prefix - Optional prefix for tool names (e.g., 'mcp__session__' for Pi)
  * @param opts.includeDeveloperFeedback - Include experimental feedback tool in output
+ * @param opts.includeDecide - Include the decision-layer `decide` tool (default false)
  * @returns Array of tool definitions with JSON Schema inputSchema
  */
 export function getToolDefsAsJsonSchema(opts?: {
   prefix?: string;
   includeDeveloperFeedback?: boolean;
+  includeDecide?: boolean;
 }): JsonSchemaToolDef[] {
   const prefix = opts?.prefix || '';
-  const defs = getSessionToolDefs({
-    includeDeveloperFeedback: opts?.includeDeveloperFeedback,
-  });
+  const defs = getSessionToolDefs({ includeDeveloperFeedback: opts?.includeDeveloperFeedback, includeDecide: opts?.includeDecide });
 
   return defs.map(def => {
     // Explicit `as any` avoids TS2589 ("type instantiation is excessively deep")

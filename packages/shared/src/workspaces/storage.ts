@@ -16,12 +16,14 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  cpSync,
 } from 'fs';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { CONFIG_DIR } from '../config/paths.ts';
 import { expandPath, toPortablePath } from '../utils/paths.ts';
 import { atomicWriteFileSync, readJsonFileSync } from '../utils/files.ts';
+import { CONFIG_DIR, DEFAULT_CONFIG_DIR_NAME } from '../config/paths.ts';
 import { getDefaultStatusConfig, saveStatusConfig, ensureDefaultIconFiles } from '../statuses/storage.ts';
 import { getDefaultLabelConfig, saveLabelConfig } from '../labels/storage.ts';
 import { loadConfigDefaults } from '../config/storage.ts';
@@ -35,6 +37,19 @@ import type {
 } from './types.ts';
 
 const DEFAULT_WORKSPACES_DIR = join(CONFIG_DIR, 'workspaces');
+
+// One-time migration: v0.13.5 always stored workspaces in ~/.craft-agent/workspaces
+// even when CRAFT_CONFIG_DIR was set. Copy on first access so the workspace list survives.
+const LEGACY_WORKSPACES_DIR = join(homedir(), DEFAULT_CONFIG_DIR_NAME, 'workspaces');
+function migrateWorkspacesIfNeeded(): void {
+  if (DEFAULT_WORKSPACES_DIR === LEGACY_WORKSPACES_DIR) return;
+  if (existsSync(DEFAULT_WORKSPACES_DIR) || !existsSync(LEGACY_WORKSPACES_DIR)) return;
+  try {
+    cpSync(LEGACY_WORKSPACES_DIR, DEFAULT_WORKSPACES_DIR, { recursive: true });
+  } catch {
+    // Best-effort: an empty workspace list is better than a crashed app.
+  }
+}
 
 // ============================================================
 // Path Utilities
@@ -51,6 +66,7 @@ export function getDefaultWorkspacesDir(): string {
  * Ensure default workspaces directory exists
  */
 export function ensureDefaultWorkspacesDir(): void {
+  migrateWorkspacesIfNeeded();
   if (!existsSync(DEFAULT_WORKSPACES_DIR)) {
     mkdirSync(DEFAULT_WORKSPACES_DIR, { recursive: true });
   }

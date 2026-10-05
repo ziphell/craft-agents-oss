@@ -32,17 +32,32 @@ import {
   createHash,
 } from 'crypto';
 import { execSync } from 'child_process';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, copyFileSync, chmodSync } from 'fs';
 import { hostname, userInfo, homedir } from 'os';
 import { join, dirname } from 'path';
 
 import type { CredentialBackend } from './types.ts';
 import type { CredentialId, StoredCredential } from '../types.ts';
 import { credentialIdToAccount, accountToCredentialId } from '../types.ts';
+import { CONFIG_DIR, DEFAULT_CONFIG_DIR_NAME } from '../../config/paths.ts';
 
 // File location
-const CREDENTIALS_DIR = join(homedir(), '.craft-agent');
-const CREDENTIALS_FILE = join(CREDENTIALS_DIR, 'credentials.enc');
+const CREDENTIALS_FILE = join(CONFIG_DIR, 'credentials.enc');
+
+// One-time migration: v0.13.5 always stored credentials in ~/.craft-agent even
+// when CRAFT_CONFIG_DIR was set. Copy on first start so credentials survive.
+const LEGACY_CREDENTIALS_FILE = join(homedir(), DEFAULT_CONFIG_DIR_NAME, 'credentials.enc');
+function migrateCredentialsIfNeeded(): void {
+  if (CREDENTIALS_FILE === LEGACY_CREDENTIALS_FILE) return;
+  if (existsSync(CREDENTIALS_FILE) || !existsSync(LEGACY_CREDENTIALS_FILE)) return;
+  try {
+    mkdirSync(dirname(CREDENTIALS_FILE), { recursive: true, mode: 0o700 });
+    copyFileSync(LEGACY_CREDENTIALS_FILE, CREDENTIALS_FILE);
+    chmodSync(CREDENTIALS_FILE, 0o600);
+  } catch {
+    // Best-effort: proceed with empty store rather than crashing startup.
+  }
+}
 
 // File format constants
 const MAGIC_BYTES = Buffer.from('CRAFT01\0');
@@ -199,6 +214,8 @@ export class SecureStorageBackend implements CredentialBackend {
     // Return cached store if available
     if (this.cachedStore) return this.cachedStore;
 
+    migrateCredentialsIfNeeded();
+
     if (!existsSync(CREDENTIALS_FILE)) return null;
 
     let fileData: Buffer;
@@ -280,8 +297,8 @@ export class SecureStorageBackend implements CredentialBackend {
 
   private saveStoreSync(store: CredentialStore): void {
     // Ensure directory exists
-    if (!existsSync(CREDENTIALS_DIR)) {
-      mkdirSync(CREDENTIALS_DIR, { recursive: true, mode: 0o700 });
+    if (!existsSync(CONFIG_DIR)) {
+      mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
     }
 
     // Use existing salt or generate new one

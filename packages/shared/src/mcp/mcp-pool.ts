@@ -298,48 +298,46 @@ export class McpClientPool {
     const currentSlugs = new Set(this.clients.keys());
     const failures: string[] = [];
 
-    // Disconnect sources no longer desired
-    for (const slug of currentSlugs) {
-      if (!desiredSlugs.has(slug)) {
-        await this.disconnect(slug);
-      }
-    }
+    // Disconnect sources no longer desired — run in parallel, failures are non-fatal.
+    await Promise.all(
+      [...currentSlugs].filter(slug => !desiredSlugs.has(slug)).map(slug => this.disconnect(slug))
+    );
 
-    // Connect new MCP sources + reconnect existing ones whose config changed (e.g. refreshed token)
+    // Build a list of (slug, connectFn) pairs for sources that need to come up.
+    // Changed sources (token refresh, URL change) are disconnected first, then
+    // queued alongside new sources so all connections run concurrently.
+    const toConnect: Array<{ slug: string; connectFn: () => Promise<void> }> = [];
+
     for (const [slug, config] of Object.entries(filteredMcp)) {
       if (!currentSlugs.has(slug)) {
-        try {
-          await this.connect(slug, config);
-        } catch (err) {
-          this.debug(`Failed to connect MCP source ${slug}: ${err instanceof Error ? err.message : String(err)}`);
-          failures.push(slug);
-        }
+        toConnect.push({ slug, connectFn: () => this.connect(slug, config) });
       } else {
         const oldConfig = this.activeConfigs.get(slug);
         if (oldConfig && mcpConfigChanged(oldConfig, config)) {
           this.debug(`Config changed for ${slug}, reconnecting with fresh credentials`);
           await this.disconnect(slug);
-          try {
-            await this.connect(slug, config);
-          } catch (err) {
-            this.debug(`Failed to reconnect MCP source ${slug}: ${err instanceof Error ? err.message : String(err)}`);
-            failures.push(slug);
-          }
+          toConnect.push({ slug, connectFn: () => this.connect(slug, config) });
         }
       }
     }
 
-    // Connect new API sources
     for (const [slug, server] of apiSlugs) {
       if (!currentSlugs.has(slug)) {
-        try {
-          await this.connectInProcess(slug, server);
-        } catch (err) {
-          this.debug(`Failed to connect API source ${slug}: ${err instanceof Error ? err.message : String(err)}`);
-          failures.push(slug);
-        }
+        toConnect.push({ slug, connectFn: () => this.connectInProcess(slug, server) });
       }
     }
+
+    // Connect all new/reconnected sources in parallel and collect failures.
+    const connectResults = await Promise.allSettled(toConnect.map(({ connectFn }) => connectFn()));
+    connectResults.forEach((result, i) => {
+      if (result.status === 'rejected') {
+        const slug = toConnect[i]!.slug;
+        const msg = result.reason instanceof Error ? (result.reason as Error).message : String(result.reason);
+        console.warn(`[McpClientPool] Failed to connect source "${slug}": ${msg}`);
+        this.debug(`Failed to connect source ${slug}: ${msg}`);
+        failures.push(slug);
+      }
+    });
 
     this.onToolsChanged?.();
     return failures;

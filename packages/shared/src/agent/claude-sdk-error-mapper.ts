@@ -3,6 +3,13 @@ import type { AgentError } from './errors.ts';
 import type { LastApiError } from '../interceptor-common.ts';
 import { getProviderMetadata, getProviderDisplayName } from '../config/provider-metadata.ts';
 
+// SDK 0.3.280 did not include these codes in the union type, but the Anthropic
+// backend can still return them. Accept them explicitly rather than widening to string.
+type ExtendedSDKAssistantMessageError =
+  | SDKAssistantMessageError
+  | 'verification_required'
+  | 'cloud_credential_error';
+
 export interface ClaudeSdkApiError {
   errorType: string;
   message: string;
@@ -169,7 +176,7 @@ function buildApiDetails(context: ClaudeSdkErrorContext): string[] {
   return details;
 }
 
-function classifyFailure(errorCode: SDKAssistantMessageError, context: ClaudeSdkErrorContext): FailureKind {
+function classifyFailure(errorCode: ExtendedSDKAssistantMessageError, context: ClaudeSdkErrorContext): FailureKind {
   const status = context.capturedApiError?.status;
   const actualType = normalize(context.actualError?.errorType);
   const actualMessage = normalize(context.actualError?.message);
@@ -208,7 +215,7 @@ function classifyFailure(errorCode: SDKAssistantMessageError, context: ClaudeSdk
 }
 
 export function mapClaudeSdkAssistantError(
-  errorCode: SDKAssistantMessageError,
+  errorCode: ExtendedSDKAssistantMessageError,
   context: ClaudeSdkErrorContext,
 ): AgentError {
   const apiDetails = buildApiDetails(context);
