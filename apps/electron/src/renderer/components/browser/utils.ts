@@ -3,7 +3,7 @@
  */
 
 import type { BrowserTabSummary } from '../../../shared/types'
-import type { TabRef } from '@/lib/tab-mention'
+import type { TabRef } from '@craft-agent/shared/mentions'
 
 export function getHostname(url: string): string {
   try {
@@ -94,13 +94,15 @@ export function openTargetOfActiveTab(
  * One tab of a window, as the reference a composer chip carries (see tab-mention).
  *
  * The title is the one a tab row shows (`title` before `getHostname`, for a tab that
- * has none yet), so the chip reads like the tab the person picked.
+ * has none yet), so the chip reads like the tab the person picked. The id rides along
+ * because the browser tools address a tab by it and an address cannot: two tabs can be
+ * on the same page, and a command pointed at one of them needs the id to say which.
  */
 export function tabRefOf(
-  tab: Pick<BrowserTabSummary, 'url' | 'title'>,
+  tab: Pick<BrowserTabSummary, 'id' | 'url' | 'title'>,
 ): TabRef {
   const title = tab.title.trim() || getHostname(tab.url)
-  return { url: tab.url, title }
+  return { tabId: tab.id, url: tab.url, title }
 }
 
 /**

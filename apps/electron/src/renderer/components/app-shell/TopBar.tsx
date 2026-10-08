@@ -31,7 +31,7 @@ import { WorkspaceSwitcher } from "./WorkspaceSwitcher"
 import { CompactWorkspaceSwitcher } from "./CompactWorkspaceSwitcher"
 import { getDocUrl } from "@craft-agent/shared/docs/doc-links"
 import { AppMenu } from "../AppMenu"
-import type { TabRef } from "@/lib/tab-mention"
+import type { TabRef } from "@craft-agent/shared/mentions"
 
 const RIGHT_SLOT_FULL_BADGES_THRESHOLD = 420
 const RIGHT_SLOT_TWO_BADGES_THRESHOLD = 300

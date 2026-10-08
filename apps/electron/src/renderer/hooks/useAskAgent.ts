@@ -36,7 +36,9 @@ import {
 /**
  * The work a conversation can be on.
  *
- * A **project** is the binding this app has (`projectId` on the session header).
+ * A **project** is one binding this app has (`projectId` on the session header). Left out, the
+ * target is the **workspace** itself — which is what a source's page is: a source belongs to the
+ * workspace, not to a project, so any conversation here is one that can carry the line.
  */
 export interface AskAgentTarget {
   /** The project this work is in — a conversation counts when its `projectId` matches. */
@@ -59,9 +61,12 @@ export function useAskAgent(target: AskAgentTarget): (line: string) => Promise<v
 
   return useCallback(
     async (line: string) => {
-      if (!workspaceId || !projectId) return
+      if (!workspaceId) return
 
+      // No project named means the whole workspace is the target, which is a source's case. The
+      // focused conversation is still the least surprising target when it is already here.
       const isOnThisWork = (sessionId: string) => {
+        if (!projectId) return true
         const meta = sessionMetaMap.get(sessionId) as
           | { projectId?: string }
           | undefined

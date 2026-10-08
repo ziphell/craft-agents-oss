@@ -217,7 +217,7 @@ export interface ValidationResult {
 /**
  * Source type discriminator
  */
-export type SourceType = 'mcp' | 'api' | 'local';
+export type SourceType = 'mcp' | 'api' | 'local' | 'web';
 
 /**
  * MCP transport type
@@ -299,6 +299,13 @@ export interface LocalSourceConfig {
 }
 
 /**
+ * Web page source configuration block (a bookmark; the snapshot lives beside config.json)
+ */
+export interface WebSourceConfig {
+  url: string;
+}
+
+/**
  * Connection status for sources
  */
 export type ConnectionStatus = 'connected' | 'disconnected' | 'error' | 'unknown';
@@ -316,6 +323,7 @@ export interface SourceConfig {
   mcp?: McpSourceConfig;
   api?: ApiSourceConfig;
   local?: LocalSourceConfig;
+  web?: WebSourceConfig;
   isAuthenticated?: boolean;
   lastTestedAt?: number; // millisecond timestamp
   createdAt?: number;

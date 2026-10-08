@@ -1,13 +1,17 @@
 /**
  * ProjectInfoPage
  *
- * Workspace-project detail page with four tabs: Sessions, Specs, Assets, Settings.
+ * Workspace-project detail page with five tabs: Sessions, Specs, Designs, Assets, Settings.
  *
  * The **Specs** tab is the project's work report, in three layers: the goal (`goal.md`), the
  * specifications (`*.spec.md`) and the plans (`*.plan.md`), each a file in this project's own
  * folder (`specs.ts`). It is read from disk when the tab is opened — the same report the agent is
  * told to read, from the same folder, so the page and the conversation can never disagree about
  * what is there.
+ *
+ * The **Designs** tab lists the workspace designs bound to this project (`config.projectId`),
+ * read from the same `designsAtom` the Designs library uses — a view of the binding, not a
+ * second place it is declared.
  */
 
 import * as React from 'react'
@@ -20,6 +24,8 @@ import { useActiveWorkspace, useAppShellContext } from '@/context/AppShellContex
 import { navigate, routes } from '@/lib/navigate'
 import { useAskAgent } from '@/hooks/useAskAgent'
 import { sessionMetaMapAtom } from '@/atoms/sessions'
+import { designsAtom } from '@/atoms/designs'
+import { DesignKindBadge } from '@/components/designs/design-visuals'
 import {
   Info_Alert,
   Info_Page,
@@ -42,13 +48,14 @@ interface ProjectInfoPageProps {
   projectSlug: string
 }
 
-type TabKey = 'sessions' | 'specs' | 'assets' | 'settings'
+type TabKey = 'sessions' | 'specs' | 'designs' | 'assets' | 'settings'
 
 export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
   const { t } = useTranslation()
   const workspace = useActiveWorkspace()
   const workspaceId = workspace?.id
   const sessionMetaMap = useAtomValue(sessionMetaMapAtom)
+  const designs = useAtomValue(designsAtom)
   const { onCreateSession, onOpenFile } = useAppShellContext()
 
   const [project, setProject] = useState<LoadedProject | null>(null)
@@ -147,6 +154,15 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
     }
     return result
   }, [project, sessionMetaMap])
+
+  // The designs bound to this project, newest-first like the library grid. Read from the
+  // shared atom, so a binding made on the design's own page shows up here without a reload.
+  const projectDesigns = useMemo(() => {
+    if (!project) return []
+    return designs
+      .filter((design) => design.config.projectId === project.config.id)
+      .sort((a, b) => b.config.updatedAt - a.config.updatedAt)
+  }, [project, designs])
 
   /**
    * The one way a notice is settled from here: the agent's own sentence goes into the draft of a
@@ -277,6 +293,9 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
             </TabButton>
             <TabButton active={tab === 'specs'} onClick={() => setTab('specs')}>
               {t('projectSpecs.title')}
+            </TabButton>
+            <TabButton active={tab === 'designs'} onClick={() => setTab('designs')}>
+              {t('projectInfo.tabDesigns')}
             </TabButton>
             <TabButton active={tab === 'assets'} onClick={() => setTab('assets')}>
               {t('projectInfo.tabAssets')}
@@ -452,6 +471,34 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
                     </div>
                   </Info_Alert>
                 </div>
+              )}
+            </Info_Section>
+          )}
+
+          {/* Designs tab — the workspace designs bound to this project. A row opens the
+              design itself; the binding is made on the design's own page, so nothing here
+              writes it. */}
+          {tab === 'designs' && (
+            <Info_Section title={t('projectInfo.tabDesigns')}>
+              {projectDesigns.length === 0 ? (
+                <div className="px-4 py-6 text-sm text-muted-foreground">
+                  {t('projectInfo.noDesigns')}
+                </div>
+              ) : (
+                <ul className="divide-y divide-border/50">
+                  {projectDesigns.map((design) => (
+                    <li key={design.config.id}>
+                      <button
+                        type="button"
+                        onClick={() => navigate(routes.view.designs(design.config.slug))}
+                        className="flex w-full min-w-0 items-center gap-2 px-4 py-2 text-left"
+                      >
+                        <span className="min-w-0 flex-1 truncate text-sm">{design.config.name}</span>
+                        <DesignKindBadge kind={design.config.kind} />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
               )}
             </Info_Section>
           )}

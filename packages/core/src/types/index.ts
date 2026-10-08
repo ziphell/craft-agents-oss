@@ -67,4 +67,27 @@ export type {
   ActiveSessionInfo,
 } from './server.ts';
 
+// Design types (workspace-scoped mini dashboards)
+export type {
+  DesignKind,
+  DesignScriptRuntime,
+  DesignRefreshSpec,
+  DesignRefreshStatus,
+  DesignSeriesPoint,
+  DesignDataSnapshot,
+  DesignActionHttpMethod,
+  DesignActionDescriptor,
+  DesignActionGrant,
+  DesignRenderLease,
+  DesignActionInvocation,
+  DesignActionRequest,
+  DesignActionResult,
+  DesignShareInfo,
+  DesignThumbnailInfo,
+  DesignConfig,
+  DesignDeckAspect,
+  DesignDeckSpec,
+  DesignMotionSpec,
+} from './design.ts';
+
 

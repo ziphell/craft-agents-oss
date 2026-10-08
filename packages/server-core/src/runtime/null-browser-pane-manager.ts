@@ -28,6 +28,7 @@ import type {
 } from '../handlers/browser-pane-manager-interface'
 import type { BrowserInstanceInfo, PickedElement, TabBelongsTo } from '@craft-agent/shared/protocol'
 import type {
+  BrowserFetchedResource,
   BrowserFinishedRecording,
   BrowserStartRecordingArgs,
   BrowserStartRecordingResult,
@@ -119,6 +120,11 @@ export class NullBrowserPaneManager implements IBrowserPaneManager {
   async sendKey(_id: string, _args: BrowserKeyArgs): Promise<void> { unavailable('sendKey') }
   async uploadFile(_id: string, _ref: string, _filePaths: string[]): Promise<unknown> { return unavailable('uploadFile') }
   async evaluate(_id: string, _expression: string): Promise<unknown> { return unavailable('evaluate') }
+  async fetchResource(
+    _id: string,
+    _url: string,
+    _options?: { referrer?: string; maxBytes?: number },
+  ): Promise<BrowserFetchedResource> { return unavailable('fetchResource') }
   async pickElement(_id: string, _options?: { timeoutMs?: number; pollMs?: number }): Promise<PickedElement | null> { return unavailable('pickElement') }
   async addInitScript(_id: string, _key: string, _source: string): Promise<string> { return unavailable('addInitScript') }
   async clearInitScripts(_id: string, _keyPrefix: string): Promise<string[]> { return unavailable('clearInitScripts') }

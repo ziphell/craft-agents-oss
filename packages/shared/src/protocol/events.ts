@@ -8,6 +8,7 @@ import type { LoadedSource } from '../sources/types'
 import type { LoadedSkill } from '../skills/types'
 import type { LoadedProject } from '../projects/types'
 import type { TweakSummary } from '../tweaks/summary'
+import type { LoadedDesign } from '../designs/types'
 import { RPC_CHANNELS } from './channels'
 import type {
   SessionEvent,
@@ -32,6 +33,7 @@ export interface BroadcastEventMap {
   [RPC_CHANNELS.skills.CHANGED]: [workspaceId: string, skills: LoadedSkill[]]
   [RPC_CHANNELS.projects.CHANGED]: [workspaceId: string, projects: LoadedProject[]]
   [RPC_CHANNELS.tweaks.CHANGED]: [workspaceId: string, tweaks: TweakSummary[]]
+  [RPC_CHANNELS.designs.CHANGED]: [workspaceId: string, designs: LoadedDesign[]]
   [RPC_CHANNELS.tasks.GENERATED]: [workspaceId: string, result: TaskGenerateResult]
   [RPC_CHANNELS.projects.FILES_CHANGED]: [workspaceId: string, file: string | null]
   [RPC_CHANNELS.llmConnections.CHANGED]: []

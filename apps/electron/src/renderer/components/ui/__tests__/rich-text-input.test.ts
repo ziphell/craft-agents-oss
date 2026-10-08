@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { isEscapeDuringComposition, RichTextInput, textToHTML } from '../rich-text-input'
-import { buildElementMention } from '@/lib/element-mention'
+import { buildElementMention } from '@craft-agent/shared/mentions'
 
 it('merges caller sizing styles without dropping the default editor line-height', () => {
   const html = renderToStaticMarkup(createElement(RichTextInput, {

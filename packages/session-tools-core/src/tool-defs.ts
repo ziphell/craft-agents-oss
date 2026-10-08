@@ -47,6 +47,14 @@ import {
   handleUpdateTweak,
   handleDeleteTweak,
 } from './handlers/tweaks.ts';
+import {
+  handleListDesigns,
+  handleGetDesign,
+  handleCreateDesign,
+  handleUpdateDesign,
+  handleWriteDesignData,
+  handleDeleteDesign,
+} from './handlers/designs.ts';
 import { handleArchiveSession } from './handlers/archive-session.ts';
 import { handleSendAgentMessage } from './handlers/send-agent-message.ts';
 import { handleDecide } from './handlers/decide.ts';
@@ -297,6 +305,75 @@ export const DeleteTweakSchema = z.object({
   slug: z.string().describe('Slug of the tweak to delete'),
 });
 
+const DesignRefreshSpecInputSchema = z.object({
+  cron: z.string().describe('5-field cron expression evaluated once per minute (e.g. "*/15 * * * *")'),
+  script: z.string().describe('Script path relative to the workspace root (must stay inside it). Bun runtime.'),
+  args: z.array(z.string()).optional().describe('Extra argv appended after the script path'),
+  timezone: z.string().optional().describe('IANA timezone for cron evaluation (system local when omitted)'),
+  timeoutMs: z.number().optional().describe('Per-run timeout in ms (default 60000, clamped to 1s–15min)'),
+  enabled: z.boolean().optional().describe('Set false to pause scheduling without deleting the spec'),
+});
+
+const DesignDeckSpecInputSchema = z.object({
+  aspect: z.enum(['16:9', '4:3', '16:10', '9:16']).optional().describe('Authored aspect ratio (default 16:9)'),
+  theme: z.string().optional().describe('Template/theme this deck was authored from (provenance, free-form)'),
+});
+
+const DesignMotionSpecInputSchema = z.object({
+  fps: z.number().int().min(1).max(60).optional().describe('Capture frame rate (default 30, max 60 — capture is realtime)'),
+  durationMs: z.number().int().min(100).max(600000).optional().describe('Piece length in ms (default 5000, max 600000 = 10min)'),
+  aspect: z.enum(['16:9', '4:3', '16:10', '9:16']).optional().describe('Frame aspect ratio (default 16:9)'),
+});
+
+export const ListDesignsSchema = z.object({
+  projectId: z.string().optional().describe('Only return designs bound to this project ID'),
+});
+
+export const GetDesignSchema = z.object({
+  slug: z.string().describe('Design slug (from list_designs or create_design)'),
+  includeContent: z.boolean().optional().describe('Also return the full index.html content (can be large). Default false — the response always includes contentPath for reading it from disk instead.'),
+});
+
+export const CreateDesignSchema = z.object({
+  name: z.string().describe('Design name shown on the tile (also drives the slug)'),
+  description: z.string().optional().describe('Short description shown in lists'),
+  kind: z.enum(['prototype', 'dashboard', 'deck', 'motion'])
+    .optional()
+    .describe("What this design is: 'prototype' (a page you read: report, tool), 'dashboard' (a page kept open and fed: instrument panel, KPI wallboard — it is the kind with its own controls pulling data, and a refresh spec behind it), 'deck' (slides) or 'motion' (a self-driving timeline exported as video). One design is one kind; passing deck/motion settings implies it. Default: prototype."),
+  projectId: z.string().optional().describe('Stable Project ID to bind the design to'),
+  content: z.string().optional().describe('Full self-contained HTML document for index.html (inline CSS/JS, no external requests). Read docs/designs.md for the authoring guide and data-bridge snippet BEFORE writing design HTML.'),
+  refresh: DesignRefreshSpecInputSchema.optional().describe('Scheduled data refresh: cron + workspace-relative Bun script that updates the design data store'),
+  deck: DesignDeckSpecInputSchema.optional().describe('Deck settings (aspect/theme) — this makes the design a deck. Author the slides as <section class="slide"> blocks and report the count over the craft-designs/v1 bridge — read docs/designs.md.'),
+  motion: DesignMotionSpecInputSchema.optional().describe('Render settings (fps/durationMs/aspect) — this makes the design a motion composition whose deliverable is a video. Author a self-driving timeline (CSS animations / WAAPI) that plays on load with no user input, sized against the viewport — read docs/designs.md.'),
+});
+
+export const UpdateDesignSchema = z.object({
+  slug: z.string().describe('Slug of the design to update'),
+  name: z.string().optional().describe('New design name (slug stays stable)'),
+  description: z.string().nullable().optional().describe('New description. Pass null to clear.'),
+  kind: z.enum(['prototype', 'dashboard', 'deck', 'motion']).optional().describe("New kind. Changing it drops the settings of the kind it no longer is; deck/motion settings in the same call settle it."),
+  projectId: z.string().nullable().optional().describe('New Project ID. Pass null to unbind from its project.'),
+  content: z.string().optional().describe('Replacement index.html (full document). Read docs/designs.md for the authoring guide and data-bridge snippet BEFORE writing design HTML. Re-digests the content — existing source-action grants become stale by design and need re-approval.'),
+  refresh: DesignRefreshSpecInputSchema.nullable().optional().describe('New refresh spec. Pass null to remove scheduled refresh.'),
+  deck: DesignDeckSpecInputSchema.nullable().optional().describe('New deck settings (aspect/theme). Pass null to clear them (the design stays a deck and takes the defaults).'),
+  motion: DesignMotionSpecInputSchema.nullable().optional().describe('New motion settings (fps/durationMs/aspect). Pass null to clear them (the design stays a motion composition and takes the defaults).'),
+});
+
+export const WriteDesignDataSchema = z.object({
+  slug: z.string().describe('Slug of the design whose data store to write'),
+  set: z.record(z.string(), z.unknown()).optional().describe('KV upserts: key → any JSON value (objects/arrays allowed)'),
+  delete: z.array(z.string()).optional().describe('KV keys to delete'),
+  appendSeries: z.record(z.string(), z.array(z.object({
+    t: z.number().optional().describe('Timestamp epoch ms (defaults to now). Writing an existing (series, t) overwrites its value — re-runs are idempotent.'),
+    v: z.number().describe('Numeric value'),
+  }))).optional().describe('Timeseries appends: series name → array of points'),
+  pruneSeries: z.record(z.string(), z.number()).optional().describe('Timeseries prunes: series name → deleteBefore timestamp (points with t < value are removed)'),
+});
+
+export const DeleteDesignSchema = z.object({
+  slug: z.string().describe('Slug of the design to delete'),
+});
+
 export const ListSessionsSchema = z.object({
   status: z.string().optional().describe('Filter by status'),
   label: z.string().optional().describe('Filter by label'),
@@ -517,6 +594,7 @@ Examples:
 - \`open\`
 - \`navigate https://example.com\`
 - \`snapshot\`
+- \`read --save sources/my-page/snapshot.md\` — read the page as an article (markdown + the facts it states); \`--save\` writes it and keeps its images beside it in \`snapshot.assets/\`; without \`--save\` the note comes back instead of being written
 - \`find login button\` — search elements by keyword
 - \`click @e12\`
 - \`click-at 350 200\` — click at pixel coordinates (for canvas elements)
@@ -735,6 +813,34 @@ The code is read on the next load of each matching page, so nothing here reaches
 
   delete_tweak: `Delete a tweak — its folder, its code and its record. DESTRUCTIVE: confirm with the user first unless they explicitly asked for the deletion.`,
 
+  list_designs: `List the workspace's Designs — persistent, agent-authored HTML mini dashboards/documents rendered in the app's Designs section (sidebar) and optionally shared via password-protected public links.
+
+Returns compact summaries: slug, name, kind (prototype/dashboard/deck/motion), project, refresh schedule, last refresh outcome, share state, and folder path. Optionally filter by projectId. Use get_design for full details on one design.`,
+
+  get_design: `Get full details for one Design by slug: config, content digest/length/path, a data summary (KV keys + per-series point counts and latest values), source-action grants, and share state.
+
+The response includes absolute paths (contentPath, data.snapshotPath) — Read those files for the full HTML or the complete data snapshot. Pass includeContent: true only when you need the HTML inline. It also includes previewUrl: the design's own address, which you can open in the browser window (browser_tool navigate) to read the page, take screenshots of it, or drive it — note that a plain tab has no host bridge, so the design renders without the data snapshot there.`,
+
+  create_design: `Create a new Design: a persistent, self-contained HTML document stored at designs/{slug}/ in the workspace, shown as a tile in the app's Designs section, and rendered in a sandboxed iframe.
+
+Its kind is what it is — 'prototype' (a page you read), 'dashboard' (a page kept open and fed) or 'deck' (slides) or 'motion' (a video) — and deck/motion settings are that kind's parameters (passing them settles the kind). One design is one kind.
+
+IMPORTANT — read docs/designs.md BEFORE authoring design HTML. Key rules: provide a FULL standalone HTML document with ALL CSS/JS inline (no external requests — shared copies get network egress blocked); to display data from the design's data store, listen for the 'craft-designs/v1' bridge messages (init/data) documented there. The host pushes a fresh snapshot into the open frame whenever the data changes — render it if the page should follow the data, ignore it if it is a snapshot.
+
+Use Designs (instead of chat previews) when the user wants something persistent: a dashboard that an automation refreshes, a report they'll revisit or share, a tracker fed by write_design_data. Returns the created design details including the slug.`,
+
+  update_design: `Update an existing Design: metadata (name, description, kind, projectId), the scheduled refresh spec, and/or replace its HTML content.
+
+Only provided fields change; pass null to clear description/projectId/refresh. Replacing content re-computes the content digest, so existing source-action grants go stale by design (the user must re-approve them). The slug never changes.`,
+
+  write_design_data: `Write to a Design's data store: KV upserts/deletes plus numeric timeseries appends/prunes, applied in one transaction. The data snapshot (data/snapshot.json) is regenerated and pushed to open renders — an open design updates on screen without a reload.
+
+Data model: kv is key → any JSON value; series are named lists of { t: epoch ms, v: number } points with idempotent (series, t) upserts — re-running the same write is safe. Use timeseries for anything you may want charted over time (metrics, counts, prices). Composes with scheduled refresh scripts writing the same store.`,
+
+  delete_design: `Delete a Design permanently — removes its folder including content, data store, and grants. DESTRUCTIVE: confirm with the user first unless they explicitly asked for the deletion.
+
+A published design is unpublished first (best effort); the result reports publicCopyMayRemain when the remote copy could not be confirmed removed.`,
+
   get_session_info: `Get metadata about the current session or a specific session by ID.
 
 Returns labels, status, name, permission mode, projectId (if the session is bound to a project), workingDirectory, and other details.
@@ -845,6 +951,13 @@ export const SESSION_TOOL_DEFS: SessionToolDef[] = [
   { name: 'create_tweak', description: TOOL_DESCRIPTIONS.create_tweak, inputSchema: CreateTweakSchema, executionMode: 'registry', safeMode: 'block', handler: handleCreateTweak },
   { name: 'update_tweak', description: TOOL_DESCRIPTIONS.update_tweak, inputSchema: UpdateTweakSchema, executionMode: 'registry', safeMode: 'block', handler: handleUpdateTweak },
   { name: 'delete_tweak', description: TOOL_DESCRIPTIONS.delete_tweak, inputSchema: DeleteTweakSchema, executionMode: 'registry', safeMode: 'block', handler: handleDeleteTweak },
+  // Designs tools (registry — use the grouped ctx.designs callbacks from SessionManager)
+  { name: 'list_designs', description: TOOL_DESCRIPTIONS.list_designs, inputSchema: ListDesignsSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleListDesigns },
+  { name: 'get_design', description: TOOL_DESCRIPTIONS.get_design, inputSchema: GetDesignSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleGetDesign },
+  { name: 'create_design', description: TOOL_DESCRIPTIONS.create_design, inputSchema: CreateDesignSchema, executionMode: 'registry', safeMode: 'block', handler: handleCreateDesign },
+  { name: 'update_design', description: TOOL_DESCRIPTIONS.update_design, inputSchema: UpdateDesignSchema, executionMode: 'registry', safeMode: 'block', handler: handleUpdateDesign },
+  { name: 'write_design_data', description: TOOL_DESCRIPTIONS.write_design_data, inputSchema: WriteDesignDataSchema, executionMode: 'registry', safeMode: 'block', handler: handleWriteDesignData },
+  { name: 'delete_design', description: TOOL_DESCRIPTIONS.delete_design, inputSchema: DeleteDesignSchema, executionMode: 'registry', safeMode: 'block', handler: handleDeleteDesign },
   { name: 'get_session_info', description: TOOL_DESCRIPTIONS.get_session_info, inputSchema: GetSessionInfoSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleGetSessionInfo },
   { name: 'list_sessions', description: TOOL_DESCRIPTIONS.list_sessions, inputSchema: ListSessionsSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleListSessions },
   { name: 'list_background_tasks', description: TOOL_DESCRIPTIONS.list_background_tasks, inputSchema: ListBackgroundTasksSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleListBackgroundTasks },

@@ -21,7 +21,6 @@ import {
   DatabaseZap,
   Zap,
   Inbox,
-  Globe,
   FolderOpen,
   Cake,
   Calendar,
@@ -34,6 +33,8 @@ import {
   MailOpen,
   FolderKanban,
   Wand2,
+  PanelsTopLeft,
+  Bookmark,
 } from "lucide-react"
 // SessionStatusIcons no longer used - icons come from dynamic sessionStatuses
 import { SourceAvatar } from "@/components/ui/source-avatar"
@@ -46,7 +47,7 @@ import { Button } from "@/components/ui/button"
 import { HeaderIconButton } from "@/components/ui/HeaderIconButton"
 import { resolveInheritedFilterParams, type FilterMode } from "./inherited-filter-params"
 import { Separator } from "@/components/ui/separator"
-import { Tooltip, TooltipTrigger, TooltipContent, DocumentFormattedMarkdownOverlay } from "@craft-agent/ui"
+import { Tooltip, TooltipTrigger, TooltipContent, DocumentFormattedMarkdownOverlay, MentionIcon } from "@craft-agent/ui"
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -119,6 +120,7 @@ import {
   isAutomationsNavigation,
   isProjectsNavigation,
   isTweaksNavigation,
+  isDesignsNavigation,
   type NavigationState,
 } from "@/contexts/NavigationContext"
 import type { SettingsSubpage } from "../../../shared/types"
@@ -131,6 +133,7 @@ import { APP_EVENTS, AGENT_EVENTS, type AutomationFilterKind, AUTOMATION_TYPE_TO
 import { useAutomations } from "@/hooks/useAutomations"
 import { useProjects } from "@/hooks/useProjects"
 import { useTweaks } from "@/hooks/useTweaks"
+import { useDesigns } from "@/hooks/useDesigns"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { PanelHeader } from "./PanelHeader"
 import { FabNewChat } from "./FabNewChat"
@@ -154,8 +157,7 @@ import { hasOpenOverlay } from "@/lib/overlay-detection"
 import { clearSourceIconCaches } from "@/lib/icon-cache"
 import { dispatchFocusInputEvent, dispatchRestoreInput } from "./input/focus-input-events"
 import { appendRestoredInput } from "@/lib/input-text"
-import { buildElementMention } from "@/lib/element-mention"
-import { buildTabMention, type TabRef } from "@/lib/tab-mention"
+import { buildElementMention, buildTabMention, type TabRef } from "@craft-agent/shared/mentions"
 
 /**
  * AppShellProps - Minimal props interface for AppShell component
@@ -641,6 +643,10 @@ function AppShellContent({
   // so the navigator (and its resize handle) collapse to zero width while it's active.
   const isBoardView = isSessionsNavigation(navState) && navState.viewMode === 'board'
 
+  // Designs behaves the same way: both the library grid and an open design render
+  // full-width in the content area — there is no designs navigator list.
+  const isDesignsView = isDesignsNavigation(navState)
+
   // Derive source filter from navigation state (only when in sources navigator)
   const sourceFilter: SourceFilter | null = isSourcesNavigation(navState) ? navState.filter ?? null : null
 
@@ -1000,12 +1006,13 @@ function AppShellContent({
   /**
    * Hand an element to a conversation.
    *
-   * The element is inserted as a chip — a marker in the composer's text that the
-   * input renders as an inline badge and that `FreeFormInput` expands into a
-   * readable reference on send (see element-mention). It carries the page it was
-   * picked on, because the picker stays on across the window's tabs and the agent
-   * needs to know which one. It is *appended*: picking an element adds a reference
-   * to the question being written, so the question has to survive the pick.
+   * The element is inserted as a chip — a marker in the composer's text that the input renders
+   * as an inline badge and that the message keeps, so the chip survives the send and the agent
+   * can rewrite it into a readable reference (see element-mention). It carries the tab it was
+   * picked on — its id and its address — because the picker stays on across the window's tabs,
+   * so the element alone does not say which one the change is meant for. It is *appended*:
+   * picking an element adds a reference to the question being written, so the question has to
+   * survive the pick.
    */
   const handleAddElementToConversation = useCallback((request: AddElementRequest) => {
     const { origin } = request
@@ -1013,6 +1020,7 @@ function AppShellContent({
       selector: request.element.selector,
       text: request.element.text,
       ...(origin.url ? { url: origin.url } : {}),
+      tabId: origin.tabId,
     })} `
 
     void appendChipToConversation(chip, request.sessionId)
@@ -1044,6 +1052,7 @@ function AppShellContent({
   })
 
   const { tweaks } = useTweaks(activeWorkspaceId)
+  const { designs } = useDesigns(activeWorkspaceId)
 
   const projectMenuOptions = useMemo(
     () => projects.map(p => ({ id: p.config.id, slug: p.config.slug, name: p.config.name, color: p.config.color })),
@@ -1630,10 +1639,10 @@ function AppShellContent({
 
   // Count sources by type for the Sources dropdown subcategories
   const sourceTypeCounts = useMemo(() => {
-    const counts = { api: 0, mcp: 0, local: 0 }
+    const counts = { api: 0, mcp: 0, local: 0, web: 0 }
     for (const source of sources) {
       const t = source.config.type
-      if (t === 'api' || t === 'mcp' || t === 'local') {
+      if (t === 'api' || t === 'mcp' || t === 'local' || t === 'web') {
         counts[t]++
       }
     }
@@ -1926,6 +1935,10 @@ function AppShellContent({
     navigate(routes.view.sourcesLocal())
   }, [])
 
+  const handleSourcesWebClick = useCallback(() => {
+    navigate(routes.view.sourcesWeb())
+  }, [])
+
   // Handler for skills view
   const handleSkillsClick = useCallback(() => {
     navigate(routes.view.skills())
@@ -1944,6 +1957,11 @@ function AppShellContent({
   // Handler for tweaks view
   const handleTweaksClick = useCallback(() => {
     navigate(routes.view.tweaks())
+  }, [])
+
+  // Handler for designs view
+  const handleDesignsClick = useCallback(() => {
+    navigate(routes.view.designs())
   }, [])
 
   const handleAutomationsScheduledClick = useCallback(() => {
@@ -1983,8 +2001,8 @@ function AppShellContent({
   // State to control which EditPopover is open (triggered from context menus).
   // We use controlled popovers instead of deep links so the user can type
   // their request in the popover UI before opening a new chat window.
-  // add-source variants: add-source (generic), add-source-api, add-source-mcp, add-source-local
-  const [editPopoverOpen, setEditPopoverOpen] = useState<'statuses' | 'labels' | 'views' | 'add-source' | 'add-source-api' | 'add-source-mcp' | 'add-source-local' | 'add-skill' | 'add-label' | 'automation-config' | 'add-project' | null>(null)
+  // add-source variants: add-source (generic), add-source-api, add-source-mcp, add-source-local, add-source-web
+  const [editPopoverOpen, setEditPopoverOpen] = useState<'statuses' | 'labels' | 'views' | 'add-source' | 'add-source-api' | 'add-source-mcp' | 'add-source-local' | 'add-source-web' | 'add-skill' | 'add-label' | 'automation-config' | 'add-project' | null>(null)
 
   // Stores the Y position of the last right-clicked sidebar item so the EditPopover
   // appears near it rather than at a fixed location. Updated synchronously before
@@ -2083,7 +2101,7 @@ function AppShellContent({
   // Handler for "Add Source" context menu action
   // Opens the EditPopover for adding a new source
   // Optional sourceType param allows filter-aware context (from subcategory menus or filtered views)
-  const openAddSource = useCallback((sourceType?: 'api' | 'mcp' | 'local') => {
+  const openAddSource = useCallback((sourceType?: 'api' | 'mcp' | 'local' | 'web') => {
     captureContextMenuPosition()
     const key = sourceType ? `add-source-${sourceType}` as const : 'add-source' as const
     setTimeout(() => setEditPopoverOpen(key), 50)
@@ -2242,17 +2260,18 @@ function AppShellContent({
     }
     flattenTree(labelTree)
 
-    // 3. Sources, Skills, Projects, Tweaks, Automations, Settings (visual order)
+    // 3. Sources, Skills, Projects, Tweaks, Pages, Automations, Settings (visual order)
     result.push({ id: 'nav:sources', type: 'nav', action: handleSourcesClick })
     result.push({ id: 'nav:skills', type: 'nav', action: handleSkillsClick })
     result.push({ id: 'nav:projects', type: 'nav', action: handleProjectsClick })
     result.push({ id: 'nav:tweaks', type: 'nav', action: handleTweaksClick })
+    result.push({ id: 'nav:designs', type: 'nav', action: handleDesignsClick })
     result.push({ id: 'nav:automations', type: 'nav', action: handleAutomationsClick })
     result.push({ id: 'nav:settings', type: 'nav', action: () => handleSettingsClick() })
     result.push({ id: 'nav:whats-new', type: 'nav', action: handleWhatsNewClick })
 
     return result
-  }, [handleAllSessionsClick, handleFlaggedClick, handleArchivedClick, handleSessionStatusClick, effectiveSessionStatuses, handleLabelClick, labelConfigs, labelTree, viewConfigs, handleViewClick, handleSourcesClick, handleSkillsClick, handleProjectsClick, handleAutomationsClick, handleTweaksClick, handleSettingsClick, handleWhatsNewClick])
+  }, [handleAllSessionsClick, handleFlaggedClick, handleArchivedClick, handleSessionStatusClick, effectiveSessionStatuses, handleLabelClick, labelConfigs, labelTree, viewConfigs, handleViewClick, handleSourcesClick, handleSkillsClick, handleProjectsClick, handleAutomationsClick, handleTweaksClick, handleDesignsClick, handleSettingsClick, handleWhatsNewClick])
 
   // Toggle folder expanded state
   const handleToggleFolder = React.useCallback((path: string) => {
@@ -2379,6 +2398,11 @@ function AppShellContent({
     // Tweaks navigator
     if (isTweaksNavigation(navState)) {
       return t("sidebar.allTweaks")
+    }
+
+    // Designs navigator
+    if (isDesignsNavigation(navState)) {
+      return t("sidebar.allDesigns")
     }
 
     // Automations navigator
@@ -2673,7 +2697,9 @@ function AppShellContent({
                           id: "nav:sources:api",
                           title: t("sidebar.apis"),
                           label: String(sourceTypeCounts.api),
-                          icon: Globe,
+                          // The same mark a source chip shows (see @craft-agent/ui → mention-icons):
+                          // the globe is the browser tab's, an API is a connection.
+                          icon: <MentionIcon kind="source" className="h-3.5 w-3.5" />,
                           variant: (sourceFilter?.kind === 'type' && sourceFilter.sourceType === 'api') ? "default" : "ghost",
                           onClick: handleSourcesApiClick,
                           contextMenu: {
@@ -2706,6 +2732,22 @@ function AppShellContent({
                             type: 'sources' as const,
                             onAddSource: () => openAddSource('local'),
                             sourceType: 'local',
+                          },
+                        },
+                        {
+                          id: "nav:sources:web",
+                          title: t("sidebar.webPages"),
+                          label: String(sourceTypeCounts.web),
+                          // A bookmark: a url kept. Not the globe — that one is the browser tab's
+                          // (see @craft-agent/ui → mention-icons).
+                          icon: Bookmark,
+                          variant: (sourceFilter?.kind === 'type' && sourceFilter.sourceType === 'web') ? "default" : "ghost",
+                          onClick: handleSourcesWebClick,
+                          contextMenu: {
+                            type: 'sources' as const,
+                            onAddSource: () => openAddSource('web'),
+                            // No sourceType: the site has no web-source docs page, so "Learn More"
+                            // falls back to the general sources page rather than a broken link.
                           },
                         },
                       ],
@@ -2744,6 +2786,25 @@ function AppShellContent({
                         // Highlight when on allSessions view AND filter includes this project (the jump-to state)
                         variant: (sessionFilter?.kind === 'allSessions' && projectFilter.get(p.config.id) === 'include') ? "default" as const : "ghost" as const,
                         onClick: () => handleJumpToProjectSessions(p.config.id),
+                      })),
+                    },
+                    {
+                      id: "nav:designs",
+                      title: t("sidebar.designs"),
+                      label: String(designs.length),
+                      icon: PanelsTopLeft,
+                      // Highlight on the library grid only, not when a design is open (mirrors Projects)
+                      variant: (isDesignsNavigation(navState) && !navState.details) ? "default" : "ghost",
+                      onClick: handleDesignsClick,
+                      expandable: designs.length > 0,
+                      expanded: isExpanded('nav:designs'),
+                      onToggle: () => toggleExpanded('nav:designs'),
+                      items: designs.map(p => ({
+                        id: `nav:designs:${p.config.id}`,
+                        title: p.config.name,
+                        icon: PanelsTopLeft,
+                        variant: (isDesignsNavigation(navState) && navState.details?.designSlug === p.config.slug) ? "default" as const : "ghost" as const,
+                        onClick: () => navigate(routes.view.designs(p.config.slug)),
                       })),
                     },
                     {
@@ -3736,7 +3797,7 @@ function AppShellContent({
             )}
             </div>
           }
-          navigatorWidth={isAutoCompact ? sessionListWidth : (effectiveSidebarAndNavigatorHidden || isBoardView ? 0 : sessionListWidth)}
+          navigatorWidth={isAutoCompact ? sessionListWidth : (effectiveSidebarAndNavigatorHidden || isBoardView || isDesignsView ? 0 : sessionListWidth)}
           isSidebarAndNavigatorHidden={effectiveSidebarAndNavigatorHidden}
           isRightSidebarVisible={false}
           isCompact={isAutoCompact}
@@ -3776,8 +3837,8 @@ function AppShellContent({
         </div>
         )}
 
-        {/* Session List Resize Handle (absolute, hidden in focused mode and board view) */}
-        {!effectiveSidebarAndNavigatorHidden && !isBoardView && (
+        {/* Session List Resize Handle (absolute, hidden in focused mode, board view, and designs) */}
+        {!effectiveSidebarAndNavigatorHidden && !isBoardView && !isDesignsView && (
         <div
           ref={sessionListHandleRef}
           onMouseDown={(e) => { e.preventDefault(); setIsResizing('session-list') }}
@@ -3901,9 +3962,9 @@ function AppShellContent({
             {...getEditConfig('edit-views', activeWorkspace.rootPath)}
           />
           {/* Add Source EditPopovers - one for each variant (generic + filter-specific)
-           * editPopoverOpen can be: 'add-source', 'add-source-api', 'add-source-mcp', 'add-source-local'
+           * editPopoverOpen can be: 'add-source', 'add-source-api', 'add-source-mcp', 'add-source-local', 'add-source-web'
            * Each variant uses its corresponding EditContextKey for filter-aware agent context */}
-          {(['add-source', 'add-source-api', 'add-source-mcp', 'add-source-local'] as const).map((variant) => (
+          {(['add-source', 'add-source-api', 'add-source-mcp', 'add-source-local', 'add-source-web'] as const).map((variant) => (
             <EditPopover
               key={variant}
               open={editPopoverOpen === variant}

@@ -706,7 +706,7 @@ export interface ElectronAPI {
      * Open a local file as a page, in a new tab of the workspace's browser window.
      *
      * A path, not a URL: main turns it into the file's own address (see the channel).
-     * A page belongs in that window because that is the surface the agent can keep
+     * A design belongs in that window because that is the surface the agent can keep
      * working on — `browser_tool` drives tabs, not frames inside this app.
      */
     openFile(path: string): Promise<void>
@@ -774,6 +774,41 @@ export interface ElectronAPI {
   /** Build the loadable extension into a folder the person picked. */
   exportTweaks(workspaceId: string, destParent: string): Promise<import('@craft-agent/shared/tweaks').TweaksExportResult>
   onTweaksChanged(callback: (workspaceId: string, tweaks: import('@craft-agent/shared/tweaks').TweakSummary[]) => void): () => void
+
+  // Designs (workspace-scoped mini dashboards)
+  getDesigns(workspaceId: string): Promise<import('@craft-agent/shared/designs/types').LoadedDesign[]>
+  getDesign(workspaceId: string, designIdOrSlug: string): Promise<import('@craft-agent/shared/designs/types').LoadedDesign | null>
+  createDesign(workspaceId: string, input: import('@craft-agent/shared/designs/types').CreateDesignInput): Promise<import('@craft-agent/shared/designs/types').DesignConfig>
+  /** Optional fields (projectId, description, refresh) accept explicit null = clear (undefined is dropped by the JSON transport). */
+  updateDesign(workspaceId: string, designSlug: string, patch: Partial<Omit<import('@craft-agent/shared/designs/types').DesignConfig, 'id' | 'slug' | 'createdAt' | 'contentDigest' | 'lastRefresh' | 'grants' | 'share' | 'projectId' | 'description' | 'refresh'>> & { projectId?: string | null; description?: string | null; refresh?: import('@craft-agent/shared/designs/types').DesignRefreshSpec | null }): Promise<import('@craft-agent/shared/designs/types').DesignConfig>
+  deleteDesign(workspaceId: string, designSlug: string): Promise<{ publicCopyMayRemain: boolean }>
+  getDesignContent(workspaceId: string, designSlug: string): Promise<{ content: string | null; contentDigest?: string }>
+  setDesignContent(workspaceId: string, designSlug: string, content: string): Promise<import('@craft-agent/shared/designs/types').DesignConfig>
+  getDesignData(workspaceId: string, designSlug: string): Promise<import('@craft-agent/shared/designs/types').DesignDataSnapshot | null>
+  listDesignGrants(workspaceId: string, designSlug: string): Promise<import('@craft-agent/shared/designs/types').DesignActionGrant[]>
+  issueDesignGrant(workspaceId: string, designSlug: string, input: { action: import('@craft-agent/shared/designs/types').DesignActionDescriptor; description?: string; ttlMs?: number }): Promise<import('@craft-agent/shared/designs/types').DesignActionGrant>
+  revokeDesignGrant(workspaceId: string, designSlug: string, grantId: string): Promise<boolean>
+  createDesignLease(workspaceId: string, designSlug: string): Promise<{ lease: import('@craft-agent/shared/designs/types').DesignRenderLease; content: string; previewUrl?: string }>
+  releaseDesignLease(workspaceId: string, leaseId: string): Promise<void>
+  executeDesignAction(workspaceId: string, request: import('@craft-agent/shared/designs/types').DesignActionRequest): Promise<import('@craft-agent/shared/designs/types').DesignActionResult>
+  cancelDesignAction(workspaceId: string, requestId: string): Promise<boolean>
+  getDesignShareCapabilities(): Promise<{ sharingEnabled: boolean }>
+  /** What `includeData` would publish + key paths that look credential-bearing (warn-only). */
+  getDesignShareDataScan(workspaceId: string, designSlug: string): Promise<{ snapshotBytes: number | null; secretCandidates: string[] }>
+  publishDesign(workspaceId: string, designSlug: string, options: { includeData: boolean; password?: string; viewOnlyAcknowledged?: boolean }): Promise<import('@craft-agent/shared/designs/types').DesignConfig>
+  setDesignPublicationPassword(workspaceId: string, designSlug: string, password: string | null): Promise<import('@craft-agent/shared/designs/types').DesignConfig>
+  unpublishDesign(workspaceId: string, designSlug: string): Promise<{ config: import('@craft-agent/shared/designs/types').DesignConfig; warning?: 'remote-copy-may-remain' }>
+  /** Read a design's cached poster as a data URL — only returns when fresh (digest matches current content). */
+  getDesignThumbnail(workspaceId: string, designSlug: string): Promise<{ dataUrl: string; digest: string } | null>
+  /** Request a (re)capture of a design's poster (no-op on hosts without a capturer). */
+  regenerateDesignThumbnail(workspaceId: string, designSlug: string): Promise<boolean>
+  /**
+   * Export a design to a file the person picks. Opens the native picker, then
+   * writes it — PDF/PNG/video need the desktop app's hidden-window renderer, so
+   * they throw on a host that has none (HTML/ZIP work anywhere).
+   */
+  exportDesign(workspaceId: string, designSlug: string, format: import('@craft-agent/shared/designs/types').DesignExportFormat): Promise<import('@craft-agent/shared/designs/types').DesignExportResult>
+  onDesignsChanged(callback: (workspaceId: string, pages: import('@craft-agent/shared/designs/types').LoadedDesign[]) => void): () => void
 
   // Automations
   getAutomations(workspaceId: string): Promise<unknown>
@@ -945,7 +980,7 @@ export interface SessionsNavigationState {
  */
 export interface SourceFilter {
   kind: 'type'
-  sourceType: 'api' | 'mcp' | 'local'
+  sourceType: 'api' | 'mcp' | 'local' | 'web'
 }
 
 /**
@@ -970,7 +1005,7 @@ export interface SourcesNavigationState {
  * Settings navigation state
  *
  * `subpage: null` means the bare `settings` route — navigator-only view in compact
- * mode. On desktop, the content panel falls back to the App page so it isn't empty.
+ * mode. On desktop, the content panel falls back to the App design so it isn't empty.
  * Sources/Skills/Automations use `details: null` for the same purpose.
  */
 export interface SettingsNavigationState {
@@ -1020,6 +1055,18 @@ export interface TweaksNavigationState {
 }
 
 /**
+ * Designs navigation state
+ *
+ * Bare `designs` (details: null) shows the library grid — it never auto-selects
+ * one, and the middle navigator collapses while a designs route is active.
+ */
+export interface DesignsNavigationState {
+  navigator: 'designs'
+  details: { type: 'design'; designSlug: string } | null
+  rightSidebar?: RightSidebarPanel
+}
+
+/**
  * Unified navigation state
  */
 export type NavigationState =
@@ -1030,6 +1077,7 @@ export type NavigationState =
   | AutomationsNavigationState
   | ProjectsNavigationState
   | TweaksNavigationState
+  | DesignsNavigationState
 
 export const isSessionsNavigation = (
   state: NavigationState
@@ -1058,6 +1106,10 @@ export const isProjectsNavigation = (
 export const isTweaksNavigation = (
   state: NavigationState
 ): state is TweaksNavigationState => state.navigator === 'tweaks'
+
+export const isDesignsNavigation = (
+  state: NavigationState
+): state is DesignsNavigationState => state.navigator === 'designs'
 
 export const DEFAULT_NAVIGATION_STATE: NavigationState = {
   navigator: 'sessions',
@@ -1095,6 +1147,12 @@ export const getNavigationStateKey = (state: NavigationState): string => {
       return `tweaks/tweak/${state.details.tweakSlug}`
     }
     return 'tweaks'
+  }
+  if (state.navigator === 'designs') {
+    if (state.details?.type === 'design') {
+      return `designs/design/${state.details.designSlug}`
+    }
+    return 'designs'
   }
   if (state.navigator === 'settings') {
     if (state.subpage === null) return 'settings'
@@ -1162,6 +1220,16 @@ export const parseNavigationStateKey = (key: string): NavigationState | null => 
       return { navigator: 'tweaks', details: { type: 'tweak', tweakSlug } }
     }
     return { navigator: 'tweaks', details: null }
+  }
+
+  // Handle designs
+  if (key === 'designs') return { navigator: 'designs', details: null }
+  if (key.startsWith('designs/design/')) {
+    const designSlug = key.slice(15)
+    if (designSlug) {
+      return { navigator: 'designs', details: { type: 'design', designSlug } }
+    }
+    return { navigator: 'designs', details: null }
   }
 
   // Handle settings

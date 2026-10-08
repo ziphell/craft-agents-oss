@@ -81,6 +81,7 @@ function createMockFns(): BrowserPaneFns {
     goForward: async () => {},
     reload: async () => {},
     evaluate: async (expr: string) => eval(expr),
+    fetchResource: async () => ({ ok: false, error: 'no session in this test' }),
     pick: async (_options?: { timeoutMs?: number }) => ({
       selector: '[data-testid="pay"]',
       tag: 'button',
@@ -1123,6 +1124,23 @@ describe('the pane tools', () => {
         format: 'jpeg',
       })
       expect(result.content[0].text).toContain('Region screenshot captured')
+    })
+
+    it('passes --force through and defaults it off', async () => {
+      let args: any
+      mockFns.screenshotRegion = async (a) => {
+        args = a
+        return { imageBuffer: Buffer.from('fake'), imageFormat: 'png' as const }
+      }
+
+      await executeTool(tools, 'browser_tool', { command: 'screenshot-region --selector .artboard' })
+      expect(args).toMatchObject({ selector: '.artboard', force: false })
+
+      await executeTool(tools, 'browser_tool', { command: 'screenshot-region --selector .artboard --force' })
+      expect(args).toMatchObject({ selector: '.artboard', force: true })
+
+      await executeTool(tools, 'browser_tool', { command: 'screenshot-region --ref @e9 --force --png' })
+      expect(args).toMatchObject({ ref: '@e9', force: true, format: 'png' })
     })
 
     it('routes console command', async () => {

@@ -4,6 +4,7 @@ import type { IOAuthFlowStore } from './oauth-flow-store-interface'
 import type { IBrowserPaneManager } from './browser-pane-manager-interface'
 import type { IWindowManager } from './window-manager-interface'
 import type { IMessagingGatewayRegistry } from './messaging-registry-interface'
+import type { DesignRenderExportRequest } from '@craft-agent/shared/designs/types'
 
 /**
  * Generic handler dependency bag.
@@ -40,4 +41,15 @@ export interface HandlerDeps<
    * is a state a checkout can legitimately be in.
    */
   drawioOrigin?: () => string | null
+
+  /**
+   * Produce a design's PDF / per-slide PNG / motion video with the host's own
+   * renderer.
+   *
+   * Those formats need a real engine, which only the desktop app has (a hidden
+   * `BrowserWindow` — see apps/electron/src/main/design-exporter.ts). A
+   * headless/standalone server leaves this absent, and the export handler
+   * refuses PDF/PNG/video there. HTML/ZIP need no renderer and work regardless.
+   */
+  designExportRender?: (req: DesignRenderExportRequest) => Promise<string[]>
 }

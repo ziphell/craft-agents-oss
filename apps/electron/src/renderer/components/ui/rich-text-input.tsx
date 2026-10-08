@@ -3,8 +3,8 @@ import { useTranslation } from 'react-i18next'
 import { coerceInputText } from '@/lib/input-text'
 import { cn } from '@/lib/utils'
 import { findMentionMatches, parseMentions, type ComposerMentionType, type MentionMatch } from '@/lib/mentions'
-import { elementLabel, parseElementMention } from '@/lib/element-mention'
-import { parseTabMention, tabLabel } from '@/lib/tab-mention'
+import { designLabel, elementLabel, parseDesignMention, parseElementMention, parseTabMention, tabLabel } from '@craft-agent/shared/mentions'
+import { mentionIconKindFor, mentionIconSvg } from '@craft-agent/ui'
 import {
   loadSourceIcon,
   loadSkillIcon,
@@ -89,42 +89,8 @@ export interface RichTextInputHandle {
 // InlineMentionBadge - Compact badge for inline display (static HTML version)
 // ============================================================================
 
-// SVG icons as HTML strings (avoiding react-dom/server which doesn't work in browser)
-const SKILL_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg>`
-
-const SOURCE_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>`
-
-// File icon (document with folded corner) - matches UserMessageBubble style (12x12, text-muted-foreground)
-const FILE_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-muted-foreground"><path d="M10.5 2.5C12.1569 2.5 13.5 3.84315 13.5 5.5V6.1C13.5 6.4716 13.5 6.6574 13.5246 6.81287C13.6602 7.66865 14.3313 8.33983 15.1871 8.47538C15.3426 8.5 15.5284 8.5 15.9 8.5H16.5C18.1569 8.5 19.5 9.84315 19.5 11.5M9 16H15M9 12H10M10.9645 2.5H10.6678C8.64635 2.5 7.63561 2.5 6.84835 2.85692C5.96507 3.25736 5.25736 3.96507 4.85692 4.84835C4.5 5.63561 4.5 6.64635 4.5 8.66781V14C4.5 17.2875 4.5 18.9312 5.40796 20.0376C5.57418 20.2401 5.75989 20.4258 5.96243 20.592C7.06878 21.5 8.71252 21.5 12 21.5C15.2875 21.5 16.9312 21.5 18.0376 20.592C18.2401 20.4258 18.4258 20.2401 18.592 20.0376C19.5 18.9312 19.5 17.2875 19.5 14V11.0355C19.5 10.0027 19.5 9.48628 19.4176 8.99414C19.2671 8.09576 18.9141 7.24342 18.3852 6.50177C18.0955 6.09549 17.7303 5.73032 17 5C16.2697 4.26968 15.9045 3.90451 15.4982 3.6148C14.7566 3.08595 13.9042 2.7329 13.0059 2.58243C12.5137 2.5 11.9973 2.5 10.9645 2.5Z"/></svg>`
-
-// Code file icon (document with < > brackets) - matches UserMessageBubble style (12x12, text-muted-foreground)
-const CODE_FILE_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-muted-foreground"><path d="M10.5 2.5C12.1569 2.5 13.5 3.84315 13.5 5.5V6.1C13.5 6.4716 13.5 6.6574 13.5246 6.81287C13.6602 7.66865 14.3313 8.33983 15.1871 8.47538C15.3426 8.5 15.5284 8.5 15.9 8.5H16.5C18.1569 8.5 19.5 9.84315 19.5 11.5M10.5 12.8799C9.70024 13.2985 9.10807 13.8275 8.64232 14.5478C8.51063 14.7515 8.44479 14.8533 8.44489 15.0011C8.44498 15.1488 8.51099 15.2506 8.643 15.4542C9.1095 16.1736 9.70167 16.7028 10.5 17.1225M13.5 12.8799C14.2998 13.2985 14.8919 13.8275 15.3577 14.5478C15.4894 14.7515 15.5552 14.8533 15.5551 15.0011C15.555 15.1488 15.489 15.2506 15.357 15.4542C14.8905 16.1736 14.2983 16.7028 13.5 17.1225M10.9645 2.5H10.6678C8.64635 2.5 7.63561 2.5 6.84835 2.85692C5.96507 3.25736 5.25736 3.96507 4.85692 4.84835C4.5 5.63561 4.5 6.64635 4.5 8.66781V14C4.5 17.2875 4.5 18.9312 5.40796 20.0376C5.57418 20.2401 5.75989 20.4258 5.96243 20.592C7.06878 21.5 8.71252 21.5 12 21.5C15.2875 21.5 16.9312 21.5 18.0376 20.592C18.2401 20.4258 18.4258 20.2401 18.592 20.0376C19.5 18.9312 19.5 17.2875 19.5 14V11.0355C19.5 10.0027 19.5 9.48628 19.4176 8.99414C19.2671 8.09576 18.9141 7.24342 18.3852 6.50177C18.0955 6.09549 17.7303 5.73032 17 5C16.2697 4.26968 15.9045 3.90451 15.4982 3.6148C14.7566 3.08595 13.9042 2.7329 13.0059 2.58243C12.5137 2.5 11.9973 2.5 10.9645 2.5Z"/></svg>`
-
-// Folder icon (open folder) - matches UserMessageBubble style (12x12, text-muted-foreground)
-const FOLDER_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" class="shrink-0 text-muted-foreground"><path d="M20.5 10C20.5 9.07003 20.5 8.60504 20.3978 8.22354C20.1204 7.18827 19.3117 6.37962 18.2765 6.10222C17.895 6 17.43 6 16.5 6H13.1008C12.4742 6 12.1609 6 11.8739 5.91181C11.6824 5.85298 11.5009 5.76572 11.3353 5.65295C11.0871 5.48389 10.8914 5.23926 10.5 4.75L10.4095 4.63693C10.107 4.25881 9.9558 4.06975 9.7736 3.92674C9.54464 3.74703 9.27921 3.61946 8.99585 3.55294C8.77037 3.5 8.52825 3.5 8.04402 3.5C6.60485 3.5 5.88527 3.5 5.32008 3.74178C4.61056 4.0453 4.0453 4.61056 3.74178 5.32008C3.5 5.88527 3.5 6.60485 3.5 8.04402V10M9.46502 20.5H14.535C16.9102 20.5 18.0978 20.5 18.9301 19.8113C19.7624 19.1226 19.9846 17.9559 20.429 15.6227L20.8217 13.5613C21.1358 11.9121 21.2929 11.0874 20.843 10.5437C20.393 10 19.5536 10 17.8746 10H6.12537C4.44643 10 3.60696 10 3.15704 10.5437C2.70713 11.0874 2.8642 11.9121 3.17835 13.5613L3.57099 15.6227C4.01541 17.9559 4.23763 19.1226 5.06992 19.8113C5.90221 20.5 7.08981 20.5 9.46502 20.5Z"/></svg>`
-
-// Picked page element (cursor) - matches UserMessageBubble style (12x12, text-muted-foreground)
-const ELEMENT_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-muted-foreground"><path d="M4.037 4.688a.495.495 0 0 1 .651-.651l16 6.5a.5.5 0 0 1-.063.947l-6.124 1.58a2 2 0 0 0-1.438 1.435l-1.579 6.126a.5.5 0 0 1-.947.063z"/></svg>`
-
-// A whole tab of the browser window (globe) - matches UserMessageBubble style (12x12, text-muted-foreground)
-const TAB_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-muted-foreground"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>`
-
-/** Known code file extensions - used to pick code file icon vs generic file icon */
-const CODE_EXTENSIONS = new Set([
-  'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs',
-  'py', 'rs', 'go', 'java', 'rb', 'swift', 'kt',
-  'c', 'cpp', 'h', 'hpp', 'cs',
-  'css', 'scss', 'less', 'html', 'vue', 'svelte',
-  'json', 'yaml', 'yml', 'toml', 'xml',
-  'sh', 'bash', 'zsh', 'fish',
-  'md', 'mdx',
-  'sql', 'graphql', 'proto',
-])
-
-function isCodeFile(name: string): boolean {
-  const ext = name.split('.').pop()?.toLowerCase()
-  return ext ? CODE_EXTENSIONS.has(ext) : false
-}
+// The chip's fallback icon comes from one place shared with the sent message and the @ menu
+// (see @craft-agent/ui → mention-icons), so a kind looks the same in all three.
 
 function renderBadgeHTML(
   type: ComposerMentionType,
@@ -154,21 +120,9 @@ function renderBadgeHTML(
       iconHtml = `<img src="${cachedIconUrl}" class="h-[12px] w-[12px] rounded-[2px] shrink-0" alt="" />`
     }
   } else {
-    // Fall back to generic SVG icon based on type
-    if (type === 'skill') {
-      iconHtml = `<span class="h-[12px] w-[12px] rounded-[2px] bg-foreground/5 flex items-center justify-center text-foreground/50 shrink-0">${SKILL_ICON_SVG}</span>`
-    } else if (type === 'source') {
-      iconHtml = `<span class="h-[12px] w-[12px] rounded-[2px] bg-foreground/5 flex items-center justify-center text-foreground/50 shrink-0">${SOURCE_ICON_SVG}</span>`
-    } else if (type === 'file') {
-      // Pick code file or generic file icon based on extension (no container, icon carries its own classes)
-      iconHtml = isCodeFile(label) ? CODE_FILE_ICON_SVG : FILE_ICON_SVG
-    } else if (type === 'folder') {
-      iconHtml = FOLDER_ICON_SVG
-    } else if (type === 'element') {
-      iconHtml = ELEMENT_ICON_SVG
-    } else if (type === 'tab') {
-      iconHtml = TAB_ICON_SVG
-    }
+    // The kind's icon, from the shared set. Sized and coloured here, because the markup it
+    // hands back is sizeless and paints with currentColor.
+    iconHtml = `<span class="h-[12px] w-[12px] flex items-center justify-center text-muted-foreground shrink-0 [&>svg]:h-full [&>svg]:w-full">${mentionIconSvg(mentionIconKindFor(type, label))}</span>`
   }
 
   const escapedLabel = label.replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -444,6 +398,15 @@ export function textToHTML(
         label = tabLabel(ref)
         tooltip = ref.url
       }
+    } else if (match.type === 'design') {
+      // The same encoded payload, for one of the workspace's designs (see
+      // design-mention): the name is the label, and on hover the slug — the identity
+      // the design tools take.
+      const ref = parseDesignMention(match.id)
+      if (ref) {
+        label = designLabel(ref)
+        tooltip = ref.slug
+      }
     }
 
     // Render badge with data-mention-text storing the original text
@@ -568,6 +531,8 @@ export const RichTextInput = React.forwardRef<RichTextInputHandle, RichTextInput
     const isInternalUpdate = React.useRef(false)
     // Pending cursor position to restore after external value update (e.g., after @mention selection)
     const pendingCursorRef = React.useRef<number | null>(null)
+    /** Bumped when the icon preload settles, so chips can be redrawn from the warmed cache. */
+    const [iconEpoch, setIconEpoch] = React.useState(0)
 
     const skillSlugs = React.useMemo(() => skills.map(s => s.slug), [skills])
     const sourceSlugs = React.useMemo(() => sources.map(s => s.config.slug), [sources])
@@ -575,16 +540,23 @@ export const RichTextInput = React.forwardRef<RichTextInputHandle, RichTextInput
     // Preload icons for sources and skills
     React.useEffect(() => {
       if (!workspaceId) return
+      let cancelled = false
 
       // Preload source icons
-      for (const source of sources) {
-        loadSourceIcon({ config: source.config, workspaceId })
-      }
+      const loads = sources.map((source) => loadSourceIcon({ config: source.config, workspaceId }))
 
       // Preload skill icons (handles emoji, URL, file, and auto-discovery)
-      for (const skill of skills) {
-        loadSkillIcon(skill, workspaceId)
-      }
+      for (const skill of skills) loads.push(loadSkillIcon(skill, workspaceId))
+
+      if (loads.length === 0) return
+
+      // The chip is drawn from the *synchronous* cache, and these loads fill it
+      // asynchronously — so once they settle the content has to be rebuilt, or a chip born
+      // before its icon landed keeps the fallback it was born with (see the rebuild effect).
+      void Promise.allSettled(loads).then(() => {
+        if (!cancelled) setIconEpoch(epoch => epoch + 1)
+      })
+      return () => { cancelled = true }
     }, [sources, skills, workspaceId])
 
     // Expose imperative handle
@@ -754,6 +726,20 @@ export const RichTextInput = React.forwardRef<RichTextInputHandle, RichTextInput
       divRef.current.innerHTML = html || '<br>'
       lastValueRef.current = safeValue
     }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Redraw the chips once the icon preload settles.
+    //
+    // A chip is built from the *synchronous* icon cache, so one drawn before its entity's icon
+    // landed is drawn with the kind's fallback — and would stay that way, because the value has
+    // not changed and nothing else rebuilds the content. Only the chips can change here, so the
+    // caret is put back where it was; mid-composition the input is left alone.
+    React.useEffect(() => {
+      if (!divRef.current || iconEpoch === 0 || isComposing.current) return
+      isInternalUpdate.current = true
+      divRef.current.innerHTML = textToHTML(lastValueRef.current, skills, sources, workspaceId) || '<br>'
+      setCursorPosition(divRef.current, cursorPositionRef.current)
+      isInternalUpdate.current = false
+    }, [iconEpoch, skills, sources, workspaceId])
 
     // Handle selection changes to highlight badges when selected
     React.useEffect(() => {

@@ -35,6 +35,8 @@ export type CredentialType =
   | 'source_basic'       // Basic auth (base64 encoded user:pass)
   // Messaging gateway credentials (keyed by workspaceId + platform)
   | 'messaging_bearer'   // Platform tokens (e.g., Telegram bot token)
+  // Design publication admin token (keyed by workspaceId + pageId)
+  | 'design_publish_token' // Secret capability that authorizes publication update/unpublish
   // Decision layer (Jev / System One) API key, keyed by decision provider id via `name`
   | 'decision_api_key';
 
@@ -52,6 +54,7 @@ const VALID_CREDENTIAL_TYPES: readonly CredentialType[] = [
   'source_apikey',
   'source_basic',
   'messaging_bearer',
+  'design_publish_token',
   'decision_api_key',
 ] as const;
 
@@ -153,6 +156,11 @@ function isMessagingCredential(type: CredentialType): boolean {
   return (MESSAGING_CREDENTIAL_TYPES as readonly string[]).includes(type);
 }
 
+/** Check if type is a design publication credential (workspaceId + pageId via `name`) */
+function isDesignCredential(type: CredentialType): boolean {
+  return type === 'design_publish_token';
+}
+
 /** Check if type is a decision-layer credential (decision provider id via `name`) */
 function isDecisionCredential(type: CredentialType): boolean {
   return type === 'decision_api_key';
@@ -206,6 +214,14 @@ export function credentialIdToAccount(id: CredentialId): string {
   // Messaging-scoped format:
   // messaging_bearer::{workspaceId}::{platform}
   if (isMessagingCredential(id.type) && id.workspaceId && id.name) {
+    parts.push(id.workspaceId);
+    parts.push(id.name);
+    return parts.join(CREDENTIAL_DELIMITER);
+  }
+
+  // Design-scoped format:
+  // design_publish_token::{workspaceId}::{pageId}
+  if (isDesignCredential(id.type) && id.workspaceId && id.name) {
     parts.push(id.workspaceId);
     parts.push(id.name);
     return parts.join(CREDENTIAL_DELIMITER);
@@ -283,6 +299,12 @@ export function accountToCredentialId(account: string): CredentialId | null {
   // Messaging-scoped format:
   // messaging_bearer::{workspaceId}::{platform}
   if (isMessagingCredential(type) && parts.length === 3) {
+    return { type, workspaceId: parts[1], name: parts[2] };
+  }
+
+  // Design-scoped format:
+  // design_publish_token::{workspaceId}::{pageId}
+  if (isDesignCredential(type) && parts.length === 3) {
     return { type, workspaceId: parts[1], name: parts[2] };
   }
 

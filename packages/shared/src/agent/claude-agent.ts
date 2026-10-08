@@ -24,6 +24,7 @@ import type { McpClientPool } from '../mcp/mcp-pool.ts';
 import { proxyToolName } from '../mcp/proxy-tool-name.ts';
 import { loadPlanFromPath, type SessionConfig as Session } from '../sessions/storage.ts';
 import { loadProjectById, getProjectAssetsPath, listProjectAssets, getProjectMemoryPath, loadProjectMemory } from '../projects/storage.ts';
+import { loadProjectDesigns } from '../designs/storage.ts';
 import { DEFAULT_MODEL, isClaudeModel, isAdaptiveThinkingAlwaysOnModel, getDefaultSummarizationModel, getModelContextWindow } from '../config/models.ts';
 import { getCredentialManager } from '../credentials/index.ts';
 import { loadPreferences, formatPreferencesForPrompt, getCoAuthorPreference } from '../config/preferences.ts';
@@ -722,6 +723,11 @@ export class ClaudeAgent extends BaseAgent {
         filename: a.filename,
         mimeType: a.mimeType,
         sizeBytes: a.sizeBytes,
+      })),
+      designs: loadProjectDesigns(this.workspaceRootPath, project.config.id).map((d) => ({
+        name: d.config.name,
+        slug: d.config.slug,
+        kind: d.config.kind,
       })),
       memoryPath: getProjectMemoryPath(this.workspaceRootPath, slug),
       memoryContent: loadProjectMemory(this.workspaceRootPath, slug) ?? undefined,

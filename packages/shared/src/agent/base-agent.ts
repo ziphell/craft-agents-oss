@@ -64,7 +64,7 @@ import { getMiniAgentSystemPrompt } from '../prompts/system.ts';
 import { buildTitlePrompt, buildRegenerateTitlePrompt, validateTitle } from '../utils/title-generator.ts';
 
 // Skill extraction for Codex/Copilot backends (Claude uses native SDK Skill tool)
-import { parseMentions, resolveSkillMentions, resolveSourceMentions, resolveFileMentions } from '../mentions/index.ts';
+import { parseMentions, resolveSkillMentions, resolveSourceMentions, resolveTabMentions, resolveDesignMentions, resolveElementMentions, resolveFileMentions } from '../mentions/index.ts';
 import { loadAllSkills } from '../skills/storage.ts';
 
 /**
@@ -941,11 +941,18 @@ ${formattedMessages}
     // Resolve mentions to semantic markers (like file mentions) instead of stripping them.
     // This preserves sentence structure: "find the bug in [skill:datadog-api]"
     // becomes "find the bug in [Mentioned skill: Datadog API (slug: datadog-api)]"
+    // Tabs, designs and picked page elements are rewritten the same way — their markers reach
+    // here too, because the store keeps them so the sent chip can be redrawn from the marker
+    // (see tab-mention / design-mention / element-mention). This is also where an unknown or
+    // malformed marker is simply left alone.
     const skillNames = new Map(skills.map(s => [s.slug, s.metadata.name]));
     const withSkills = resolveSkillMentions(message, skillNames);
     const withSources = resolveSourceMentions(withSkills);
+    const withTabs = resolveTabMentions(withSources);
+    const withDesigns = resolveDesignMentions(withTabs);
+    const withElements = resolveElementMentions(withDesigns);
     const workDir = this.config.session?.workingDirectory ?? this.workingDirectory;
-    const resolved = resolveFileMentions(withSources, workDir).trim();
+    const resolved = resolveFileMentions(withElements, workDir).trim();
 
     // If user sent only skill mentions with no other text, add a directive
     const cleanMessage = (!resolved && skillPaths.size > 0)

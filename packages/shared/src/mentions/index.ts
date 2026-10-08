@@ -5,11 +5,22 @@
  * No renderer/browser dependencies — safe to use in any context.
  *
  * Mention types:
- * - Skills:  [skill:slug] or [skill:workspaceId:slug]
- * - Sources: [source:slug]
- * - Files:   [file:path]
- * - Folders: [folder:path]
+ * - Skills:   [skill:slug] or [skill:workspaceId:slug]
+ * - Sources:  [source:slug]
+ * - Files:    [file:path]
+ * - Folders:  [folder:path]
+ * - Tabs:     [tab:url|title|tabId]                         — see ./tab-mention.ts
+ * - Designs:  [design:slug|name]                           — see ./design-mention.ts
+ * - Elements: [element:selector|text|url|tabId]            — see ./element-mention.ts
+ *
+ * Each of these keeps its marker in the message: the store keeps it so the composer's chip can
+ * be redrawn, and the agent rewrites it into a readable reference at the model boundary (see
+ * the `resolve*Mentions` functions).
  */
+
+export * from './tab-mention.ts';
+export * from './design-mention.ts';
+export * from './element-mention.ts';
 
 // Simple path join that works in both Node and browser contexts.
 // Cannot use node:path here — this module is imported by the Vite renderer.

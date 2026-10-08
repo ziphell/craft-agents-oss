@@ -12,6 +12,7 @@
 import type { WebContents } from 'electron'
 import type { PickedElement } from '@craft-agent/shared/protocol'
 import { mainLog } from './logger'
+import { keyStroke, modifierMask, type BrowserKeyModifier } from './browser-key-map'
 
 export interface AccessibilityNode {
   ref: string           // "@e1", "@e2", etc.
@@ -1313,6 +1314,71 @@ export class BrowserCDP {
     }
   }
 
+  /**
+   * Capture a rectangle of the page by **cropping pixels that already exist** — including pixels
+   * outside the viewport, which `capturePage(rect)` cannot reach: that one clamps to the viewport
+   * and hands back a smaller image without saying so. Nothing is resized, zoomed or scrolled for
+   * this: the clip is a rectangle of the document as it stands.
+   *
+   * `clip` is in **document** coordinates, so the caller's viewport-relative rect (what
+   * `getBoundingClientRect` gives) is offset by the scroll position here.
+   *
+   * `scale` is image pixels per CSS pixel — 1 is the element's own pixel size, `devicePixelRatio`
+   * is what the rest of the app's shots use.
+   */
+  async captureRegion(
+    rect: { x: number; y: number; width: number; height: number },
+    options: { scale?: number; format?: 'png' | 'jpeg'; quality?: number } = {},
+  ): Promise<{ buffer: Buffer; width: number; height: number; beyondViewport: boolean }> {
+    const scale = options.scale && options.scale > 0 ? options.scale : 1
+    const metrics = await this.getViewportMetrics()
+    const scrollX = Number(metrics.scrollX ?? 0)
+    const scrollY = Number(metrics.scrollY ?? 0)
+    const viewportWidth = Number(metrics.width ?? 0)
+    const viewportHeight = Number(metrics.height ?? 0)
+
+    // The rect as given is what the page shows; a sliver of rounding error is cheaper than a
+    // clipped edge, so the box grows outward to whole pixels before it is clipped out.
+    const left = Math.floor(rect.x)
+    const top = Math.floor(rect.y)
+    const right = Math.ceil(rect.x + rect.width)
+    const bottom = Math.ceil(rect.y + rect.height)
+    const width = Math.max(1, right - left)
+    const height = Math.max(1, bottom - top)
+
+    const beyondViewport =
+      right + scrollX > scrollX + viewportWidth || bottom + scrollY > scrollY + viewportHeight
+
+    const result = await this.send('Page.captureScreenshot', {
+      format: options.format === 'jpeg' ? 'jpeg' : 'png',
+      ...(options.format === 'jpeg' ? { quality: Math.round((options.quality ?? 0.8) * 100) } : {}),
+      clip: { x: left + scrollX, y: top + scrollY, width, height, scale },
+      captureBeyondViewport: true,
+      // Measured, twice, on this capture path (a parked window is what a background tab is captured
+      // through):
+      //   fromSurface: true  — the clip comes back at the right size, but everything past the
+      //                        viewport's edge is page background: captureBeyondViewport is ignored,
+      //                        because the surface only exists for the viewport.
+      //   fromSurface: false — the whole image is black.
+      // So this returns **real pixels for the part that was on screen**, and nothing for the rest.
+      // Callers that need the whole element must resize the viewport themselves (an explicit act);
+      // `--beyond-viewport` says so when it hands back an image with unpainted area.
+      fromSurface: true,
+    })
+
+    const data = result?.data
+    if (typeof data !== 'string' || data.length === 0) {
+      throw new Error('Page.captureScreenshot returned no image data')
+    }
+
+    return {
+      buffer: Buffer.from(data, 'base64'),
+      width: Math.round(width * scale),
+      height: Math.round(height * scale),
+      beyondViewport,
+    }
+  }
+
   async getViewportMetrics(): Promise<ViewportMetrics> {
     const result = await this.send('Runtime.evaluate', {
       expression: `(() => ({
@@ -1611,7 +1677,7 @@ export class BrowserCDP {
   }
 
   // ---------------------------------------------------------------------------
-  // Native Mouse Input (uses webContents.sendInputEvent for trusted events)
+  // Mouse Input (through CDP — see sendMouseEvent for why not native injection)
   // ---------------------------------------------------------------------------
 
   /**
@@ -1648,77 +1714,89 @@ export class BrowserCDP {
     return points
   }
 
-  private sendMouseEvent(type: 'mouseMove' | 'mouseDown' | 'mouseUp', x: number, y: number, button?: 'left' | 'right' | 'middle', clickCount?: number): void {
-    const event: Record<string, unknown> = { type, x: Math.round(x), y: Math.round(y) }
-    if (button) event.button = button
-    if (clickCount !== undefined) event.clickCount = clickCount
-    this.webContents.sendInputEvent(event as any)
-  }
-
-  // Explicit CDP mouse fallback methods kept for resilience.
-  private async clickAtCDP(x: number, y: number): Promise<void> {
-    await this.send('Input.dispatchMouseEvent', {
-      type: 'mousePressed',
-      x,
-      y,
-      button: 'left',
-      clickCount: 1,
-    })
-    await this.send('Input.dispatchMouseEvent', {
-      type: 'mouseReleased',
-      x,
-      y,
-      button: 'left',
-      clickCount: 1,
-    })
-  }
-
-  private async dragCDP(x1: number, y1: number, x2: number, y2: number): Promise<void> {
-    const dx = x2 - x1
-    const dy = y2 - y1
-    const distance = Math.sqrt(dx * dx + dy * dy)
-    const steps = Math.max(5, Math.min(20, Math.round(distance / 20)))
-    let lastX = x1
-    let lastY = y1
-
-    await this.send('Input.dispatchMouseEvent', {
-      type: 'mousePressed',
-      x: x1,
-      y: y1,
-      button: 'left',
-      buttons: 1,
-      clickCount: 1,
-    })
-
-    try {
-      for (let i = 1; i <= steps; i++) {
-        const t = i / steps
-        const x = Math.round(x1 + dx * t)
-        const y = Math.round(y1 + dy * t)
-        await this.send('Input.dispatchMouseEvent', {
-          type: 'mouseMoved',
-          x,
-          y,
-          button: 'left',
-          buttons: 1,
-        })
-        lastX = x
-        lastY = y
-
-        if (i < steps) {
-          await new Promise(resolve => setTimeout(resolve, 10))
-        }
-      }
-    } finally {
-      await this.send('Input.dispatchMouseEvent', {
-        type: 'mouseReleased',
-        x: lastX,
-        y: lastY,
-        button: 'left',
-        buttons: 0,
-        clickCount: 1,
+  /**
+   * Scroll the tab, the way a person scrolling there would, and say what happened.
+   *
+   * `window.scrollBy` first, because it is deterministic: it scrolls the document
+   * whatever the pointer happens to be over, which is what `scroll down 400` means
+   * on an ordinary page. Only when the document has nowhere to go does a real wheel
+   * event go to the middle of the viewport — that is what reaches a scroller which
+   * is *not* the document: an app shell whose list scrolls inside a frame, an
+   * embedded viewer, a dialog. A `mouseWheel` through CDP goes into the browser's
+   * input pipeline, which hit-tests and routes to whatever is there (the same
+   * reason clicks go through CDP — see sendMouseEvent).
+   *
+   * Neither reaching anything is reported rather than pretended: `documentMoved`
+   * says whether the document itself moved, and when the gesture was handed on,
+   * that is stated instead of claiming a scroll that may not have happened.
+   */
+  async scrollBy(deltaX: number, deltaY: number): Promise<{ viaWheel: boolean; documentMoved: boolean }> {
+    const metrics = async (): Promise<[number, number, number, number]> => {
+      const res = await this.send('Runtime.evaluate', {
+        expression: 'JSON.stringify([window.scrollX, window.scrollY, window.innerWidth, window.innerHeight])',
+        returnByValue: true,
       })
+      try {
+        const parsed = JSON.parse(res?.result?.value ?? '[0,0,0,0]')
+        return [Number(parsed[0]) || 0, Number(parsed[1]) || 0, Number(parsed[2]) || 0, Number(parsed[3]) || 0]
+      } catch {
+        return [0, 0, 0, 0]
+      }
     }
+
+    const before = await metrics()
+    await this.send('Runtime.evaluate', { expression: `window.scrollBy(${deltaX}, ${deltaY})` })
+    const afterScript = await metrics()
+    if (afterScript[0] !== before[0] || afterScript[1] !== before[1]) {
+      return { viaWheel: false, documentMoved: true }
+    }
+
+    await this.send('Input.dispatchMouseEvent', {
+      type: 'mouseWheel',
+      x: Math.round(afterScript[2] / 2),
+      y: Math.round(afterScript[3] / 2),
+      deltaX,
+      deltaY,
+    })
+    const afterWheel = await metrics()
+    return { viaWheel: true, documentMoved: afterWheel[0] !== before[0] || afterWheel[1] !== before[1] }
+  }
+
+  /**
+   * One mouse step, dispatched through CDP.
+   *
+   * Not `webContents.sendInputEvent`: a natively injected mouse event is handed
+   * to the TOP renderer, which cannot deliver it into a frame that lives in
+   * another process — so a click on a cross-origin iframe (a YouTube embed, a
+   * payment form, any third-party widget) did nothing at all while the command
+   * reported success. Measured on one page with two frames (same-origin and
+   * opaque): the native injector reached the same-origin frame and never the
+   * opaque one; CDP reached both, and the page still sees `isTrusted: true`
+   * (`spike/cdp-oopif-click.cjs`). CDP goes through the browser's own input
+   * pipeline, which hit-tests the page and routes to the right frame on its own
+   * — so the coordinates stay page coordinates, exactly as before.
+   *
+   * `buttons` is the state of the buttons *during* the event: a move that is part
+   * of a drag carries 1, or the drag reads as a hover.
+   */
+  private async sendMouseEvent(
+    type: 'mouseMove' | 'mouseDown' | 'mouseUp',
+    x: number,
+    y: number,
+    button?: 'left' | 'right' | 'middle',
+    clickCount?: number,
+    buttons = 0,
+  ): Promise<void> {
+    const cdpType = type === 'mouseMove' ? 'mouseMoved' : type === 'mouseDown' ? 'mousePressed' : 'mouseReleased'
+    const params: Record<string, unknown> = {
+      type: cdpType,
+      x: Math.round(x),
+      y: Math.round(y),
+      buttons: type === 'mouseDown' ? Math.max(buttons, 1) : buttons,
+    }
+    if (button) params.button = button
+    if (clickCount !== undefined) params.clickCount = clickCount
+    await this.send('Input.dispatchMouseEvent', params)
   }
 
   // ---------------------------------------------------------------------------
@@ -1727,73 +1805,150 @@ export class BrowserCDP {
 
   async clickAtCoordinates(x: number, y: number): Promise<void> {
     try {
-      // Generate short trajectory to the click target for realism
+      // A short trajectory to the click target, for realism. Through CDP like
+      // every other mouse step: the motion is the same, and it reaches frames
+      // the native injector never could.
       const startX = x + (Math.random() - 0.5) * 60
       const startY = y + (Math.random() - 0.5) * 60
       const trajectory = this.generateTrajectory(startX, startY, x, y, 3 + Math.floor(Math.random() * 3))
 
       for (const point of trajectory) {
-        this.sendMouseEvent('mouseMove', point.x, point.y)
+        await this.sendMouseEvent('mouseMove', point.x, point.y)
         await new Promise(resolve => setTimeout(resolve, 4 + Math.random() * 8))
       }
 
-      this.sendMouseEvent('mouseDown', Math.round(x), Math.round(y), 'left', 1)
+      await this.sendMouseEvent('mouseDown', Math.round(x), Math.round(y), 'left', 1)
       await new Promise(resolve => setTimeout(resolve, 20 + Math.random() * 40))
-      this.sendMouseEvent('mouseUp', Math.round(x), Math.round(y), 'left', 1)
+      await this.sendMouseEvent('mouseUp', Math.round(x), Math.round(y), 'left', 1)
     } catch (error) {
-      mainLog.warn(`[browser-cdp] native clickAt failed, falling back to CDP: ${error instanceof Error ? error.message : String(error)}`)
-      await this.clickAtCDP(x, y)
+      // There is no second mechanism to fall back to (native injection is the
+      // one that silently did nothing on cross-origin frames), so this says so.
+      mainLog.warn(`[browser-cdp] click at (${x}, ${y}) failed: ${error instanceof Error ? error.message : String(error)}`)
+      throw error
     }
   }
 
   async drag(x1: number, y1: number, x2: number, y2: number): Promise<void> {
+    const dx = x2 - x1
+    const dy = y2 - y1
+    const distance = Math.sqrt(dx * dx + dy * dy)
+    const steps = Math.max(5, Math.min(20, Math.round(distance / 20)))
+
+    let lastX = x1
+    let lastY = y1
+
     try {
-      const dx = x2 - x1
-      const dy = y2 - y1
-      const distance = Math.sqrt(dx * dx + dy * dy)
-      const steps = Math.max(5, Math.min(20, Math.round(distance / 20)))
-
-      // Move to start position
-      this.sendMouseEvent('mouseMove', x1, y1)
-      await new Promise(resolve => setTimeout(resolve, 10))
-
-      // Press at start position
-      this.sendMouseEvent('mouseDown', x1, y1, 'left', 1)
+      await this.sendMouseEvent('mouseDown', x1, y1, 'left', 1)
       await new Promise(resolve => setTimeout(resolve, 30))
 
-      let lastX = x1
-      let lastY = y1
+      // The moves carry buttons: 1 — a move without it reads as a hover, and the
+      // drag never starts.
+      const trajectory = this.generateTrajectory(x1, y1, x2, y2, steps)
+      for (let i = 0; i < trajectory.length; i++) {
+        const point = trajectory[i]!
+        await this.sendMouseEvent('mouseMove', point.x, point.y, 'left', undefined, 1)
+        lastX = point.x
+        lastY = point.y
 
-      try {
-        const trajectory = this.generateTrajectory(x1, y1, x2, y2, steps)
-        for (let i = 0; i < trajectory.length; i++) {
-          const point = trajectory[i]!
-          this.sendMouseEvent('mouseMove', point.x, point.y)
-          lastX = point.x
-          lastY = point.y
-
-          if (i < trajectory.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 8 + Math.random() * 12))
-          }
+        if (i < trajectory.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 8 + Math.random() * 12))
         }
-      } catch (error) {
-        // Always release even on error
-        this.sendMouseEvent('mouseUp', lastX, lastY, 'left', 1)
-        throw error
       }
-
-      await new Promise(resolve => setTimeout(resolve, 20))
-      this.sendMouseEvent('mouseUp', lastX, lastY, 'left', 1)
     } catch (error) {
-      mainLog.warn(`[browser-cdp] native drag failed, falling back to CDP: ${error instanceof Error ? error.message : String(error)}`)
-      await this.dragCDP(x1, y1, x2, y2)
+      // The page must not be left mid-drag, but a failed release must not hide
+      // what actually went wrong.
+      await this.releaseDrag(lastX, lastY)
+      throw error
     }
+
+    await new Promise(resolve => setTimeout(resolve, 20))
+    await this.sendMouseEvent('mouseUp', lastX, lastY, 'left', 1)
+  }
+
+  /** Let go of a drag, best effort: the caller's own error is the one that matters. */
+  private async releaseDrag(x: number, y: number): Promise<void> {
+    try {
+      await this.sendMouseEvent('mouseUp', x, y, 'left', 1)
+    } catch (error) {
+      mainLog.warn(`[browser-cdp] drag release at (${x}, ${y}) failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  /**
+   * Type one character, with the key identity a page expects.
+   *
+   * `{ type: 'keyDown', text }` alone inserts the character but hands the page a
+   * `keydown` whose `e.key` is the empty string (measured: five presses, five
+   * empty strings), so a page that watches keys — a search box that filters on
+   * `keydown`, a canvas app — reads the typing as nothing at all. The mapped
+   * `key`/`code`/`windowsVirtualKeyCode` are what a real keystroke carries; the
+   * `text` stays exactly what it was, so what gets inserted is unchanged.
+   */
+  private async sendChar(char: string): Promise<void> {
+    const stroke = keyStroke(char)
+    const params = {
+      key: stroke.key,
+      code: stroke.code,
+      windowsVirtualKeyCode: stroke.windowsVirtualKeyCode,
+      nativeVirtualKeyCode: stroke.windowsVirtualKeyCode,
+      modifiers: 0,
+    }
+    await this.send('Input.dispatchKeyEvent', { type: 'keyDown', text: stroke.text ?? char, ...params })
+    await this.send('Input.dispatchKeyEvent', { type: 'keyUp', ...params })
   }
 
   async typeText(text: string): Promise<void> {
     for (const char of text) {
-      await this.send('Input.dispatchKeyEvent', { type: 'keyDown', text: char })
-      await this.send('Input.dispatchKeyEvent', { type: 'keyUp', text: char })
+      await this.sendChar(char)
+    }
+  }
+
+  /**
+   * Press one key on this tab — the `browser_tool key` path.
+   *
+   * Through CDP rather than `webContents.sendInputEvent`, because a natively
+   * injected key goes to the widget the *window* has focused: on a browser
+   * window the person is not typing in it goes nowhere, and the command still
+   * reported success (see browser-key-map.ts for the measurement).
+   *
+   * `keyDown`, not `rawKeyDown`: `keyDown` is the shape this app is known to
+   * deliver (it is what `type`/`fill` send), and `rawKeyDown` — the usual
+   * Playwright shape — reached no page here even though the same payload
+   * delivers fine from a standalone Electron. A key that produces text carries
+   * it on the keydown itself (as `type` does), so no second `char` event is
+   * sent — that would insert the character twice.
+   *
+   * Delivery is checked, not assumed: a listener is installed for the duration
+   * of the press, so "sent" and "arrived" are told apart. A page that saw
+   * nothing is reported (a frame holding the focus — an iframe, say — is the
+   * one honest reason it can happen).
+   */
+  async pressKey(key: string, modifiers: readonly BrowserKeyModifier[] = []): Promise<{ delivered: number }> {
+    const stroke = keyStroke(key, modifiers)
+    const params = {
+      key: stroke.key,
+      code: stroke.code,
+      windowsVirtualKeyCode: stroke.windowsVirtualKeyCode,
+      nativeVirtualKeyCode: stroke.windowsVirtualKeyCode,
+      modifiers: modifierMask(modifiers),
+      ...(stroke.text !== undefined ? { text: stroke.text } : {}),
+    }
+
+    const install = `(() => { window.__craftKeySeen = []; window.__craftKeyProbe = (e) => window.__craftKeySeen.push(e.key); addEventListener('keydown', window.__craftKeyProbe, true) })()`
+    const remove = `(() => { removeEventListener('keydown', window.__craftKeyProbe, true); delete window.__craftKeyProbe; delete window.__craftKeySeen })()`
+
+    await this.send('Runtime.evaluate', { expression: install })
+    try {
+      await this.send('Input.dispatchKeyEvent', { type: 'keyDown', ...params })
+      await this.send('Input.dispatchKeyEvent', { type: 'keyUp', ...params })
+      const seen = await this.send('Runtime.evaluate', { expression: 'window.__craftKeySeen.length', returnByValue: true })
+      return { delivered: Number(seen?.result?.value ?? 0) }
+    } finally {
+      try {
+        await this.send('Runtime.evaluate', { expression: remove })
+      } catch {
+        /* navigation mid-press: the page it was installed into is gone with it */
+      }
     }
   }
 
@@ -1867,14 +2022,7 @@ export class BrowserCDP {
 
       // Type the new value character by character for realistic input
       for (const char of value) {
-        await this.send('Input.dispatchKeyEvent', {
-          type: 'keyDown',
-          text: char,
-        })
-        await this.send('Input.dispatchKeyEvent', {
-          type: 'keyUp',
-          text: char,
-        })
+        await this.sendChar(char)
       }
 
       // Dispatch change event

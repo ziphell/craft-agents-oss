@@ -408,6 +408,14 @@ export const RPC_CHANNELS = {
     SELECT: 'browser-pane:select',
     SCREENSHOT: 'browser-pane:screenshot',
     EVALUATE: 'browser-pane:evaluate',
+    /**
+     * Bytes fetched through the window's own session.
+     *
+     * Its own network stack, so the session's cookies ride along and the page's CORS does not
+     * apply — a page may *display* an image from another origin that script may not *read*, and
+     * this is what reads it. Used by `read` to keep a captured article's images.
+     */
+    FETCH_RESOURCE: 'browser-pane:fetch-resource',
     SCROLL: 'browser-pane:scroll',
     LAUNCH: 'browser-empty-state:launch',
     STATE_CHANGED: 'browser-pane:state-changed',
@@ -457,6 +465,32 @@ export const RPC_CHANNELS = {
     WATCH_FILES: 'projects:watchFiles',
     UNWATCH_FILES: 'projects:unwatchFiles',
     FILES_CHANGED: 'projects:filesChanged',
+  },
+  designs: {
+    GET: 'designs:get',
+    GET_ONE: 'designs:getOne',
+    CREATE: 'designs:create',
+    UPDATE: 'designs:update',
+    DELETE: 'designs:delete',
+    GET_CONTENT: 'designs:getContent',
+    SET_CONTENT: 'designs:setContent',
+    GET_DATA: 'designs:getData',
+    LIST_GRANTS: 'designs:listGrants',
+    ISSUE_GRANT: 'designs:issueGrant',
+    REVOKE_GRANT: 'designs:revokeGrant',
+    CREATE_LEASE: 'designs:createLease',
+    RELEASE_LEASE: 'designs:releaseLease',
+    EXECUTE_ACTION: 'designs:executeAction',
+    CANCEL_ACTION: 'designs:cancelAction',
+    GET_SHARE_CAPABILITIES: 'designs:getShareCapabilities',
+    GET_SHARE_DATA_SCAN: 'designs:getShareDataScan',
+    PUBLISH: 'designs:publish',
+    SET_PUBLICATION_PASSWORD: 'designs:setPublicationPassword',
+    UNPUBLISH: 'designs:unpublish',
+    GET_THUMBNAIL: 'designs:getThumbnail',
+    REGENERATE_THUMBNAIL: 'designs:regenerateThumbnail',
+    EXPORT: 'designs:export',
+    CHANGED: 'designs:changed',
   },
   // The app's bundled drawio editor. It is not a workspace resource — one
   // directory ships with the app and one origin serves it — which is

@@ -128,6 +128,12 @@ const layerCommands: SlashCommand[] = [
 /** The layer commands, for surfaces that add them as their own group. */
 export const LAYER_COMMANDS: SlashCommand[] = layerCommands
 
+/**
+ * The compact command, for surfaces that offer it as an action rather than as
+ * part of the `/` list. Same definition either way — one label, one icon.
+ */
+export const COMPACT_COMMAND: SlashCommand = compactCommand
+
 export const DEFAULT_SLASH_COMMANDS: SlashCommand[] = [
   ...permissionModeCommands,
   compactCommand,
@@ -597,16 +603,15 @@ export function useInlineSlashCommand({
   // Store current input state for handleSelect
   const currentInputRef = React.useRef({ value: '', cursorPosition: 0 })
 
-  // Build sections from commands and folders
+  // Build sections from commands and folders.
+  //
+  // The permission modes are deliberately not here: a permission has its own
+  // badge above the composer, and offering the same three from `/` made two
+  // places that set one thing — the same reason the layer left that badge for
+  // the composer's `+` menu. `/` offers what it alone can: the commands that
+  // act on this conversation, and a way to pick the folder it works in.
   const sections = React.useMemo((): SlashSection[] => {
     const result: SlashSection[] = []
-
-    // Modes section
-    result.push({
-      id: 'modes',
-      label: 'Modes',
-      items: permissionModeCommands,
-    })
 
     // Commands section
     result.push({

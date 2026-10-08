@@ -19,6 +19,7 @@ import { BrowserView, BrowserWindow, WebContentsView, app, ipcMain, nativeTheme,
 import { mainLog } from './logger'
 import type { WindowManager } from './window-manager'
 import { BrowserCDP, type AccessibilitySnapshot, type ElementGeometry, type OverlayLabels } from './browser-cdp'
+import { registerLocalOriginHandler } from './local-origin-router'
 import { applyLowEntropyClientHints, currentClientHintIdentity } from './browser-client-hints'
 import { sampleVideoFrames } from './video-frames'
 import * as drawioRender from './drawio-render'
@@ -33,6 +34,7 @@ import {
 import { SessionRecordings } from './session-recordings'
 import { openRecordingEncoder } from './recording-encoder'
 import type {
+  BrowserFetchedResource,
   BrowserFinishedRecording,
   BrowserRecordingRef,
   BrowserStartRecordingArgs,
@@ -94,6 +96,14 @@ const DEFAULT_VIEWPORT_WIDTH = 1024
 const MAX_CONSOLE_LOG_ENTRIES = 500
 const MAX_NETWORK_LOG_ENTRIES = 500
 const MAX_DOWNLOAD_LOG_ENTRIES = 200
+/**
+ * A ceiling on what `fetchResource` will hand back, for the caller that names none.
+ *
+ * A refusal after the fact is not a refusal: the bytes have already crossed the bridge by then. So
+ * the caller's own limit is what is enforced, and this is only the backstop for a caller that
+ * forgot to have one.
+ */
+const MAX_FETCHED_RESOURCE_BYTES = 32 * 1024 * 1024
 /**
  * How many of a window's downloads the chrome lists.
  *
@@ -665,6 +675,8 @@ export interface BrowserScreenshotRegionTarget {
   height?: number
   ref?: string
   selector?: string
+  /** Return the incomplete image instead of failing when the region is bigger than the page painted. */
+  force?: boolean
   padding?: number
   format?: 'png' | 'jpeg'
   jpegQuality?: number
@@ -997,6 +1009,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
 
     const ses = session.fromPartition(SESSION_PARTITION)
+    // Designs are served on this partition too, so a design can be opened as a tab and
+    // read or driven with the browser tools. What a page here may reach is bounded by
+    // the host, not by the partition: a design's `data/` is never served (see
+    // design-preview-host).
+    registerLocalOriginHandler(ses)
     this.setupSessionPermissions(ses)
     this.setupDisplayMediaHandler(ses)
     this.setupSessionObservers(ses)
@@ -2615,7 +2632,30 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const clippedHeight = Math.min(Math.max(1, Math.floor(box.height)), maxHeight)
 
     if (maxWidth <= 0 || maxHeight <= 0 || clippedWidth <= 0 || clippedHeight <= 0) {
-      throw new Error('Resolved screenshot region is outside the current viewport')
+      throw new Error(
+        `The region is not on screen at all (viewport ${viewport.width}×${viewport.height}). ` +
+          `Give the tab the room it needs (\`viewport-resize ${Math.ceil(box.x + box.width)} ${Math.ceil(box.y + box.height)}\`) or scroll it into view, then shoot again.`,
+      )
+    }
+
+    // All or nothing.
+    //
+    // An image missing part of what was asked for is a wrong answer, not a smaller one: nobody can
+    // tell from the picture that something was cut, so a clipped region is an error rather than a
+    // quiet crop. The caller can insist with `--force`, and then the result says what was missing.
+    //
+    // Measured: pixels outside the viewport are not available to this capture at all (background
+    // with `fromSurface: true`, black with `false`), so no flag conjures them. The way to a whole
+    // element is to give the tab the room (`viewport-resize`), which reflows the page — the
+    // caller's call, not something a shot does behind their back.
+    const clipped = clippedWidth < Math.floor(box.width) || clippedHeight < Math.floor(box.height)
+    if (clipped && !target.force) {
+      throw new Error(
+        `The region is bigger than the page has painted (${clippedWidth}×${clippedHeight} of ` +
+          `${Math.floor(box.width)}×${Math.floor(box.height)}; viewport is ${viewport.width}×${viewport.height}). ` +
+          `Run \`viewport-resize ${Math.ceil(box.x + box.width)} ${Math.ceil(box.y + box.height)}\` and shoot again — that reflows the page, which is your call — ` +
+          `or pass \`--force\` to take the incomplete image. (The size is the region's bottom-right corner, not its width and height: the region does not start at the origin. A reflow can move it, so the next shot may ask for another size.)`,
+      )
     }
 
     const captured = await this.capturePageWithRecovery(instance, {
@@ -2632,6 +2672,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       format: target.format,
       jpegQuality: target.jpegQuality,
     })
+
+    if (clipped) {
+      captured.warnings.push(
+        `Incomplete, as forced (\`--force\`): ${clippedWidth}×${clippedHeight} of ${Math.floor(box.width)}×${Math.floor(box.height)} — the rest was not on screen.`,
+      )
+    }
 
     return {
       imageBuffer: captured.imageBuffer,
@@ -3144,25 +3190,33 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     throw new Error(`Unknown wait kind: ${args.kind}`)
   }
 
+  /**
+   * `key` — one key press, delivered to this tab wherever it sits.
+   *
+   * It used to be injected natively (`webContents.sendInputEvent`), which
+   * silently delivered nothing: a key event goes to the widget the window has
+   * focused, and a browser window the person is not typing in has none. The
+   * command still reported success. CDP reaches the tab itself (see
+   * browser-key-map.ts).
+   */
   async sendKey(id: string, args: BrowserKeyArgs, tabId?: string): Promise<void> {
     const instance = this.requireAliveInstance(id)
-    const tabWebContents = this.tabOf(instance, tabId).tabView.webContents
+    const tab = this.tabOf(instance, tabId)
 
     const key = args.key?.trim()
     if (!key) throw new Error('browser_key requires key')
 
     const modifiers = (args.modifiers ?? []) as Array<'shift' | 'control' | 'alt' | 'meta'>
-
-    tabWebContents.sendInputEvent({
-      type: 'keyDown',
-      keyCode: key,
-      modifiers,
-    } as any)
-    tabWebContents.sendInputEvent({
-      type: 'keyUp',
-      keyCode: key,
-      modifiers,
-    } as any)
+    const { delivered } = await tab.cdp.pressKey(key, modifiers)
+    if (delivered === 0) {
+      // "Sent" and "arrived" are different facts, and the failure this tool used
+      // to have was reporting the first as if it were the second. A frame that
+      // holds the focus (an iframe of the page) is the one honest reason a key
+      // reaches nothing here — so this warns rather than failing the command.
+      mainLog.warn(`[browser-pane] key "${key}": CDP accepted it, but the page received no keydown`)
+    } else {
+      mainLog.info(`[browser-pane] key "${key}" delivered (page saw ${delivered} keydown)`)
+    }
   }
 
   /**
@@ -3269,9 +3323,71 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
   }
 
+  /**
+   * Hand a design's fresh snapshot to every tab in this workspace that is showing it.
+   *
+   * The tab is a page with no host, so this is the only way it hears about new data: the
+   * snapshot is posted in the bridge's own shape (`craft-designs/v1` + `data`), which the
+   * design listens for whether it was opened from the app or typed into a tab. A tab whose
+   * address is not this design's — including the diagram editor's origin — is left alone.
+   */
+  async pushDesignSnapshot(workspaceId: string, label: string, snapshotJson: string): Promise<void> {
+    const instance = this.findWindowForWorkspace(workspaceId)
+    if (!instance) return
+    const tabs = await this.listTabsAsync(instance.id)
+    const expression =
+      `window.postMessage({ protocol: 'craft-designs/v1', type: 'data', ` +
+      `payload: { snapshot: ${snapshotJson} } }, '*')`
+    for (const tab of tabs) {
+      if (!tab.url || !tab.url.startsWith(`craft-local://${label}/`)) continue
+      await this.evaluate(instance.id, expression, tab.id)
+    }
+  }
+
   async evaluate(id: string, expression: string, tabId?: string): Promise<unknown> {
     const instance = this.requireAliveInstance(id)
     return this.tabOf(instance, tabId).tabView.webContents.executeJavaScript(expression)
+  }
+
+  /**
+   * Fetch a url through this tab's **session** — its cookies, and not the page's CORS.
+   *
+   * The window's own network stack rather than the page's `fetch`, which is the whole reason this
+   * exists: a page can display an image from another origin that script is not allowed to read.
+   * `referrer`, when given, makes the request look like the page's own — some hosts serve an image
+   * only to a request that came from the page it sits on.
+   *
+   * Answers rather than throws, so one unreachable image does not take a whole capture with it.
+   */
+  async fetchResource(
+    id: string,
+    url: string,
+    options?: { referrer?: string; maxBytes?: number },
+    tabId?: string,
+  ): Promise<BrowserFetchedResource> {
+    const instance = this.requireAliveInstance(id)
+    const requestSession = this.tabOf(instance, tabId).tabView.webContents.session
+
+    try {
+      const response = await requestSession.fetch(url, {
+        ...(options?.referrer ? { referrer: options.referrer } : {}),
+      })
+      if (!response.ok) return { ok: false, error: `HTTP ${response.status}` }
+
+      const bytes = Buffer.from(await response.arrayBuffer())
+      const maxBytes = options?.maxBytes ?? MAX_FETCHED_RESOURCE_BYTES
+      if (bytes.byteLength > maxBytes) {
+        return { ok: false, error: `over ${Math.round(maxBytes / 1048576)} MB` }
+      }
+
+      return {
+        ok: true,
+        base64: bytes.toString('base64'),
+        mimeType: response.headers.get('content-type') ?? '',
+      }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
   }
 
   /**
@@ -3588,7 +3704,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const deltaX = direction === 'left' ? -amount : direction === 'right' ? amount : 0
     const deltaY = direction === 'up' ? -amount : direction === 'down' ? amount : 0
 
-    await this.tabOf(instance, tabId).tabView.webContents.executeJavaScript(`window.scrollBy(${deltaX}, ${deltaY})`)
+    // The document first; a wheel at the viewport centre only when it cannot move
+    // (that is what scrolls a list inside a frame — see BrowserCDP.scrollBy).
+    const { viaWheel, documentMoved } = await this.tabOf(instance, tabId).cdp.scrollBy(deltaX, deltaY)
+    if (viaWheel) {
+      mainLog.info(
+        `[browser-pane] scroll: the document had nowhere to go, so the gesture went to the viewport centre ` +
+          `(document moved: ${documentMoved})`,
+      )
+    }
   }
 
   /**
@@ -5723,6 +5847,19 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         }
         return this.evaluate(instanceId, expression, commandTabId)
       }
+      case 'fetchResource': {
+        const [instanceId, url, fetchOptions] = args as [
+          string, string, { referrer?: string; maxBytes?: number } | undefined,
+        ]
+        this.requireInstanceInWorkspace(instanceId, workspaceId)
+        // Same gate as evaluation, and for a sharper reason: this is a request made with the
+        // person's own cookies, from their machine, to a url an agent chose.
+        if (!getAllowRemoteEvaluate()) {
+          throw new CodedError('BROWSER_REMOTE_FETCH_BLOCKED',
+            'Fetching a url through this client\'s browser session is disabled for remote agents.')
+        }
+        return this.fetchResource(instanceId, url, fetchOptions, commandTabId)
+      }
       case 'pickElement': {
         const [instanceId, pickOptions] = args as [string, { timeoutMs?: number; pollMs?: number } | undefined]
         this.requireInstanceInWorkspace(instanceId, workspaceId)
@@ -6872,12 +7009,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    *
    * Split out of {@link toTabSummary} because a pick needs exactly these answers
    * about the tab it happened on — and nothing else — and a second producer of
-   * "which URL, which title" is how a picked element and the tab strip would come
-   * to disagree about where the user was standing.
+   * "which tab, which URL, which title" is how a picked element and the tab strip would come
+   * to disagree about where the user was standing. The id is the first of the three for the
+   * same reason it is on the summary: it is the only one a command can be pointed with.
    */
   private describeTabLocation(tab: BrowserTab): PickedElementOrigin {
     // -- Observation: what the tab itself reports --
     return {
+      tabId: tab.id,
       url: tab.currentUrl,
       title: tab.title,
     }
@@ -6892,9 +7031,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * the tab reports, then what its opener said about it.
    */
   private toTabSummary(instance: BrowserInstance, tab: BrowserTab): BrowserTabSummary {
+    // The location's `tabId` is the summary's `id`: one fact, named once per shape.
+    const { tabId, ...location } = this.describeTabLocation(tab)
     return {
-      id: tab.id,
-      ...this.describeTabLocation(tab),
+      id: tabId,
+      ...location,
       favicon: tab.favicon,
       isLoading: tab.isLoading,
       active: tab.id === instance.activeTabId,

@@ -46,8 +46,10 @@ import { EventQueue } from './backend/event-queue.ts';
 
 // System prompt for Craft Agent context
 import { getSystemPrompt } from '../prompts/system.ts';
+import { PromptDriftNotices, collectPromptDrift, formatPromptDriftNotice } from './core/prompt-drift.ts';
 import { formatPreferencesForPrompt, getCoAuthorPreference } from '../config/preferences.ts';
 import { loadProjectById, getProjectAssetsPath, listProjectAssets, getProjectMemoryPath, loadProjectMemory } from '../projects/storage.ts';
+import { loadProjectDesigns } from '../designs/storage.ts';
 import type { LoadedProject, ProjectPromptContext } from '../projects/types.ts';
 
 // Credential manager for token storage
@@ -162,6 +164,9 @@ function mapBrowserToolErrorCode(code: string): string | null {
     case 'BROWSER_REMOTE_EVALUATE_BLOCKED':
       return 'JavaScript evaluation is disabled on this desktop client. ' +
         'Ask the user to enable it in settings.';
+    case 'BROWSER_REMOTE_FETCH_BLOCKED':
+      return 'Fetching a url through this desktop client\'s browser session is disabled for remote ' +
+        'agents. Ask the user to enable it in settings.';
     default:
       return null;
   }
@@ -221,7 +226,9 @@ export class PiAgent extends BaseAgent {
   private pinnedPreferencesPrompt: string | null = null;
   private pinnedIncludeCoAuthoredBy: boolean | null = null;
   private pinnedProjectContext: ProjectPromptContext | null = null;
-  private promptDriftNotified = false;
+  // Which drift notices this session has already emitted. Per-kind rather than a single
+  // flag: each kind has its own exit (see core/prompt-drift.ts), so each is said once.
+  private readonly promptDrift = new PromptDriftNotices();
 
   /**
    * Look up the session's bound project once. The project block and the spec block
@@ -255,6 +262,11 @@ export class PiAgent extends BaseAgent {
         mimeType: a.mimeType,
         sizeBytes: a.sizeBytes,
       })),
+      designs: loadProjectDesigns(root, project.config.id).map((d) => ({
+        name: d.config.name,
+        slug: d.config.slug,
+        kind: d.config.kind,
+      })),
       memoryPath: getProjectMemoryPath(root, slug),
       memoryContent: loadProjectMemory(root, slug) ?? undefined,
     };
@@ -269,7 +281,7 @@ export class PiAgent extends BaseAgent {
     this.pinnedPreferencesPrompt = null;
     this.pinnedIncludeCoAuthoredBy = null;
     this.pinnedProjectContext = null;
-    this.promptDriftNotified = false;
+    this.promptDrift.reset();
   }
 
   // Ring buffer of recent subprocess stderr. Always on (independent of CRAFT_DEBUG)
@@ -2170,15 +2182,27 @@ export class PiAgent extends BaseAgent {
         this.pinnedIncludeCoAuthoredBy = currentIncludeCoAuthoredBy;
         this.pinnedProjectContext = currentProjectContext;
       } else {
-        const preferencesDrifted = currentPreferencesPrompt !== this.pinnedPreferencesPrompt;
-        const coAuthorDrifted = currentIncludeCoAuthoredBy !== this.pinnedIncludeCoAuthoredBy;
-        const projectDrifted = JSON.stringify(currentProjectContext) !== JSON.stringify(this.pinnedProjectContext);
-        if ((preferencesDrifted || coAuthorDrifted || projectDrifted) && !this.promptDriftNotified) {
-          yield {
-            type: 'info',
-            message: 'Note: System prompt context changed since this session started. Start a new session to apply preference or project-memory changes.',
+        // Report what drifted, not that something did: instructions baked into the prefix
+        // can only be applied by a new session, while the project's files can simply be
+        // re-read — so one sentence covering both would give the wrong advice to one of
+        // them. See core/prompt-drift.ts.
+        const drifted = collectPromptDrift({
+          currentPreferencesPrompt,
+          pinnedPreferencesPrompt: this.pinnedPreferencesPrompt,
+          currentIncludeCoAuthoredBy,
+          pinnedIncludeCoAuthoredBy: this.pinnedIncludeCoAuthoredBy,
+          currentProject: currentProjectContext,
+          pinnedProject: this.pinnedProjectContext,
+        });
+        if (drifted.length > 0) {
+          const paths = {
+            memoryPath: currentProjectContext?.memoryPath ?? this.pinnedProjectContext?.memoryPath,
+            assetsPath: currentProjectContext?.assetsPath ?? this.pinnedProjectContext?.assetsPath,
           };
-          this.promptDriftNotified = true;
+          for (const kind of this.promptDrift.take(drifted)) {
+            this.debug(`[chat] Prompt drift: ${kind}`);
+            yield { type: 'info', message: formatPromptDriftNotice(kind, paths) };
+          }
         }
       }
 

@@ -461,6 +461,7 @@ const PROJECT_BLOCK_TAGS = [
   'project_context',
   'project_assets_path',
   'project_assets',
+  'project_designs',
   'project_memory_path',
   'project_memory',
 ] as const;
@@ -497,6 +498,14 @@ export function formatProjectContextForPrompt(ctx: ProjectPromptContext): string
     lines.push('</project_assets>');
   }
 
+  if (ctx.designs.length > 0) {
+    lines.push('<project_designs>');
+    for (const design of ctx.designs) {
+      lines.push(`- ${sanitizeProjectLine(design.name)} (slug: ${sanitizeProjectLine(design.slug)}, ${sanitizeProjectLine(design.kind)})`);
+    }
+    lines.push('</project_designs>');
+  }
+
   lines.push(`<project_memory_path>${sanitizeProjectBodyText(ctx.memoryPath)}</project_memory_path>`);
   if (ctx.memoryContent?.trim()) {
     lines.push('<project_memory>');
@@ -510,6 +519,10 @@ export function formatProjectContextForPrompt(ctx: ProjectPromptContext): string
     lines.push(`<project_assets> lists reference files the user provided. Read a specific file on-demand by`);
     lines.push(`its absolute path (<project_assets_path> + filename) only when it's relevant — you do not need`);
     lines.push(`to read them all.`);
+  }
+  if (ctx.designs.length > 0) {
+    lines.push(`<project_designs> lists designs the user bound to this project. Read one with get_design (by its`);
+    lines.push(`slug) only when it's relevant — you do not need to read them all.`);
   }
   lines.push(`<project_memory> is authoritative accumulated knowledge for this project; treat it as`);
   lines.push(`established context. When you learn something durable (a decision, gotcha, convention, or`);

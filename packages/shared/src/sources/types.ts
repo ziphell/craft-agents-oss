@@ -13,7 +13,7 @@
 /**
  * Source types - how we connect to the source
  */
-export type SourceType = 'mcp' | 'api' | 'local';
+export type SourceType = 'mcp' | 'api' | 'local' | 'web';
 
 /**
  * MCP source authentication types (for individual source connections)
@@ -413,6 +413,33 @@ export interface LocalSourceConfig {
 }
 
 /**
+ * Web page configuration
+ *
+ * A web source is a bookmark: the url is the entry point, and the workspace
+ * browser window (with its own logged-in session) captures the page into a
+ * snapshot file next to this config. The snapshot is what gets reused across
+ * sessions — the url only says where to refresh it from.
+ */
+export interface WebSourceConfig {
+  url: string;
+}
+
+/** The note a captured page is written to, beside `config.json`. */
+export const WEB_SNAPSHOT_FILE = 'snapshot.md';
+
+/**
+ * The folder a note's images live in — named after the note, so a folder on disk says which file it
+ * belongs to without either of them being read. `snapshot.md` → `snapshot.assets`.
+ *
+ * A naming convention rather than a secret, and one the writer and the reader share: `read --save`
+ * writes into it, and a source's detail page counts what is in it.
+ */
+export function snapshotAssetsDirName(noteFileName: string): string {
+  const stem = noteFileName.replace(/\.[a-z0-9]+$/i, '');
+  return `${stem || 'snapshot'}.assets`;
+}
+
+/**
  * Source connection status
  * - 'connected': Source is connected and working
  * - 'needs_auth': Source requires authentication
@@ -460,6 +487,7 @@ export interface FolderSourceConfig {
   mcp?: McpSourceConfig;
   api?: ApiSourceConfig;
   local?: LocalSourceConfig;
+  web?: WebSourceConfig;
 
   // Icon: emoji or URL
   // Config is the source of truth. Local icon files are auto-discovered only when icon is undefined.
@@ -502,6 +530,24 @@ export interface SourceGuide {
 }
 
 /**
+ * The captured page a **web** source keeps.
+ *
+ * Pre-computed while the source is loaded, for the same reason `iconPath` is: a source's detail
+ * page has to say what was captured, how big it is and when, and the renderer has no filesystem of
+ * its own. Absent means nothing has been captured yet — or this is not a web source.
+ */
+export interface LoadedSourceSnapshot {
+  /** Absolute path to the note. */
+  path: string;
+  /** Bytes, as written. */
+  bytes: number;
+  /** When the note was last written, ms since epoch. */
+  writtenAt: number;
+  /** How many images sit beside it, when any do. */
+  imageCount: number;
+}
+
+/**
  * Fully loaded source with all files
  */
 export interface LoadedSource {
@@ -525,6 +571,9 @@ export interface LoadedSource {
    * Computed during source loading so renderer doesn't need filesystem access.
    */
   iconPath?: string;
+
+  /** The captured page, for a web source that has one. See {@link LoadedSourceSnapshot}. */
+  snapshot?: LoadedSourceSnapshot;
 }
 
 /**
@@ -537,6 +586,7 @@ export interface CreateSourceInput {
   mcp?: McpSourceConfig;
   api?: ApiSourceConfig;
   local?: LocalSourceConfig;
+  web?: WebSourceConfig;
   icon?: string; // Emoji or URL (auto-downloaded)
   enabled?: boolean;
 }

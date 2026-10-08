@@ -49,7 +49,7 @@ import { BrowserTabBadge } from './BrowserTabBadge'
 import type { BrowserInstanceInfo } from '../../../shared/types'
 import { getHostname, openTargetOfActiveTab, tabRefOf } from './utils'
 import { navigate, routes } from '@/lib/navigate'
-import type { TabRef } from '@/lib/tab-mention'
+import type { TabRef } from '@craft-agent/shared/mentions'
 
 const DEFAULT_MAX_VISIBLE_BADGES = 3
 

@@ -88,6 +88,7 @@ import { serializeHeaderCredential, loadWorkspaceSources, loadAllSources, getSou
 import { listTaskSlugs, parseTaskSpec, uniqueTaskSlug } from '@craft-agent/shared/tasks'
 import { createTaskFromSpec, resolveCreateTaskProjectId } from '../tasks'
 import { buildTweaksToolCallbacks } from '../tweaks/tool-callbacks'
+import { buildDesignsToolCallbacks } from '../designs/tool-callbacks'
 import { buildDecisionToolCallbacks } from '../decisions/tool-callbacks'
 import { buildServersFromSources as buildServersFromSourcesShared } from '../sources/build-servers'
 import { ConfigWatcher, type ConfigWatcherCallbacks } from '@craft-agent/shared/config'
@@ -383,7 +384,7 @@ async function saveClaudeTurnAnchor(
 /**
  * Session-flavored wrapper around the shared builder: keeps the ~7 existing
  * call sites unchanged while routing logs through sessionLog. The
- * implementation lives in ../sources/build-servers.ts so the pages action
+ * implementation lives in ../sources/build-servers.ts so the designs action
  * executor uses the exact same credential path.
  */
 async function buildServersFromSources(
@@ -1277,6 +1278,8 @@ export class SessionManager implements ISessionManager {
   /** Pinned desktop client per session for `client:browser:invoke` routing. */
   private browserHostBySession = new Map<string, string>()
   private eventSink: EventSink | null = null
+  private enqueueDesignThumbnailFn?: (req: { workspaceId: string; workspaceRootPath: string; slug: string }) => void
+  private designsChangedNotifierFn?: (workspaceId: string) => void
 
   setEventSink(sink: EventSink): void {
     this.eventSink = sink
@@ -1293,6 +1296,34 @@ export class SessionManager implements ISessionManager {
    */
   setTweaksInstaller(fn: (workspaceId: string) => void): void {
     this.installTweaksFn = fn
+  }
+
+  /**
+   * Inject the design thumbnail capturer (Electron main only — needs a
+   * BrowserWindow). Headless/WebUI hosts never call this, so
+   * {@link enqueueDesignThumbnail} no-ops and tiles fall back to the placeholder.
+   */
+  setDesignThumbnailer(fn: (req: { workspaceId: string; workspaceRootPath: string; slug: string }) => void): void {
+    this.enqueueDesignThumbnailFn = fn
+  }
+
+  /**
+   * Called whenever a workspace's design list is reloaded and about to be broadcast — which
+   * includes the write that follows a data change (it stamps `design.json`). The host uses it
+   * to push a fresh snapshot into any browser tab that is showing one of those designs, since
+   * a tab has no bridge of its own. Without a notifier, nothing happens.
+   */
+  setDesignsChangedNotifier(fn: (workspaceId: string) => void): void {
+    this.designsChangedNotifierFn = fn
+  }
+
+  /**
+   * Request a (re)capture of a design's preview poster. Fire-and-forget: the
+   * injected capturer queues it, writes thumbnail.jpg, and stamps design.json
+   * (which broadcasts designs:changed). No-op when no capturer is injected.
+   */
+  enqueueDesignThumbnail(workspaceId: string, workspaceRootPath: string, slug: string): void {
+    this.enqueueDesignThumbnailFn?.({ workspaceId, workspaceRootPath, slug })
   }
 
   /**
@@ -1616,12 +1647,19 @@ export class SessionManager implements ISessionManager {
       },
       onTweaksListChange: (tweaks) => {
         // A tweak changed outside the RPC handlers (the agent's tools, or a hand edit to the
-        // record or the code). Two things follow: the list pages show, and the registration the
+        // record or the code). Two things follow: the list designs show, and the registration the
         // next document is given — a tweak is a rule set, so a code edit is as much a change to
         // the rules as a switch is.
         sessionLog.info(`Tweaks changed in ${workspaceId} (${tweaks.length} tweaks)`)
         this.broadcastTweaksChanged(workspaceId, tweaks)
         this.installTweaks(workspaceId)
+      },
+      onDesignsListChange: (designs) => {
+        sessionLog.info(`Designs changed in ${workspaceId} (${designs.length} designs)`)
+        // Rebuild the synthetic design-refresh cron matchers (design.json is the
+        // completion marker of a refresh run)
+        this.automationSystems.get(workspaceRootPath)?.reloadDesignRefreshMatchers()
+        this.broadcastDesignsChanged(workspaceId, designs)
       },
       onLlmConnectionsChange: () => {
         sessionLog.info(`LLM connections changed in ${workspaceId}`)
@@ -1829,6 +1867,19 @@ export class SessionManager implements ISessionManager {
     if (!this.eventSink) return
     sessionLog.info(`Broadcasting tweaks changed (${tweaks.length} tweaks)`)
     this.eventSink(RPC_CHANNELS.tweaks.CHANGED, { to: 'workspace', workspaceId }, workspaceId, tweaks)
+  }
+
+  private broadcastDesignsChanged(workspaceId: string, designs: import('@craft-agent/shared/designs').LoadedDesign[]): void {
+    if (!this.eventSink) return
+    sessionLog.info(`Broadcasting designs changed (${designs.length} designs)`)
+    this.eventSink(RPC_CHANNELS.designs.CHANGED, { to: 'workspace', workspaceId }, workspaceId, designs)
+    // A tab showing one of these designs has no bridge: this is how it hears about new data.
+    // Fire-and-forget, and never in the way of the broadcast itself.
+    try {
+      this.designsChangedNotifierFn?.(workspaceId)
+    } catch (error) {
+      sessionLog.warn(`Designs-changed notifier failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
   private broadcastDefaultPermissionsChanged(): void {
@@ -4004,6 +4055,12 @@ export class SessionManager implements ISessionManager {
               const { instanceId, tabId } = await resolveCommandTarget('browser_evaluate')
               return bpm.evaluate(instanceId, expression, tabId)
             },
+            // Bytes through the window's session rather than the page's fetch: a url the page
+            // displayed but script could not read still comes down here.
+            fetchResource: async (url, options) => {
+              const { instanceId, tabId } = await resolveCommandTarget('browser_fetch_resource')
+              return bpm.fetchResource(instanceId, url, options, tabId)
+            },
             pick: async (options) => {
               const { instanceId, tabId } = await resolveCommandTarget('browser_pick')
               return bpm.pickElement(instanceId, options, tabId)
@@ -4019,7 +4076,7 @@ export class SessionManager implements ISessionManager {
                 // the interval, not this, decides the spacing of an ordinary read.
                 maxFrames: Math.max(1, Math.min(1_000, maxFrames ?? 1_000)),
                 // `changes` only, and bounded here as well as in the sampler: a nonsense value
-                // should be settled at the door rather than travel to a page and be clamped there.
+                // should be settled at the door rather than travel to a design and be clamped there.
                 ...(typeof changeThreshold === 'number'
                   ? { changeThreshold: Math.min(1, Math.max(0.0005, changeThreshold)) }
                   : {}),
@@ -4815,6 +4872,24 @@ export class SessionManager implements ISessionManager {
             this.notifyConfigFileChange(managed.workspace.rootPath, `tweaks/${tweakSlug}/tweak.json`)
           },
         }),
+        // Designs tools (list_designs/get_design/create_design/update_design/
+        // write_design_data/delete_design) — grouped callbacks bound to the
+        // designs RPC handlers; after each mutation we poke the watcher (Linux
+        // atomic-rename workaround) and broadcast designs:changed, exactly like
+        // those handlers do.
+        designs: buildDesignsToolCallbacks({
+          workspaceId: managed.workspace.id,
+          workspaceRootPath: managed.workspace.rootPath,
+          log: (message: string) => sessionLog.info(message),
+          onDesignsMutated: async (designSlug: string) => {
+            const { getDesignConfigRelativePath, loadWorkspaceDesigns } = await import('@craft-agent/shared/designs')
+            this.notifyConfigFileChange(managed.workspace.rootPath, getDesignConfigRelativePath(designSlug))
+            this.broadcastDesignsChanged(managed.workspace.id, loadWorkspaceDesigns(managed.workspace.rootPath))
+          },
+          onContentChanged: (designSlug: string) => {
+            this.enqueueDesignThumbnail(managed.workspace.id, managed.workspace.rootPath, designSlug)
+          },
+        }),
         // Decision model (`decide`) — always wired; the callback re-checks the
         // Settings switch, the feature toggle and the key on every call, so an
         // agent that still advertises the tool after the user disabled it gets
@@ -5278,7 +5353,7 @@ export class SessionManager implements ISessionManager {
   /**
    * Set pending plan execution state.
    * Called when user clicks "Accept & Compact" to persist the plan path
-   * so execution can resume after compaction (even if page reloads).
+   * so execution can resume after compaction (even if design reloads).
    */
   async setPendingPlanExecution(sessionId: string, planPath: string, draftInputSnapshot?: string): Promise<void> {
     const managed = this.sessions.get(sessionId)

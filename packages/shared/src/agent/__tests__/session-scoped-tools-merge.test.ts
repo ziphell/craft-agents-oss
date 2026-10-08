@@ -41,6 +41,7 @@ describe('session-scoped tool callback merge', () => {
       goForward: async () => {},
       reload: async () => {},
       evaluate: async () => 'ok',
+      fetchResource: async () => ({ ok: false, error: 'no session in this test' }),
       pick: async () => null,
       sampleVideo: async () => ({
         durationMs: 12_000,

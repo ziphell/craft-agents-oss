@@ -21,8 +21,11 @@ export interface ConfigDefaults {
     extendedPromptCache: boolean;
     browserToolEnabled: boolean;
     /**
-     * Allow remote agents to call `browser_tool evaluate <expression>`.
-     * When false, the local dispatcher rejects with `BROWSER_REMOTE_EVALUATE_BLOCKED`.
+     * Allow remote agents to reach into this browser window themselves: `browser_tool evaluate
+     * <expression>`, `pick`, and fetching a url through the window's own session (the request a
+     * captured article's images are brought down with, which carries the person's cookies).
+     * When false, the local dispatcher rejects with `BROWSER_REMOTE_EVALUATE_BLOCKED` or
+     * `BROWSER_REMOTE_FETCH_BLOCKED`.
      */
     allowRemoteEvaluate: boolean;
   };

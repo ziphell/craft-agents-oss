@@ -10,11 +10,13 @@ import { useTranslation } from 'react-i18next'
 import { useEffect, useState, useMemo, useCallback } from 'react'
 import { AlertCircle } from 'lucide-react'
 import { EditPopover, EditButton, getEditConfig } from '@/components/ui/EditPopover'
+import { Button } from '@/components/ui/button'
 import { SourceAvatar } from '@/components/ui/source-avatar'
 import { SourceMenu } from '@/components/app-shell/SourceMenu'
 import { cn } from '@/lib/utils'
 import { routes, navigate } from '@/lib/navigate'
 import { useNavigation } from '@/contexts/NavigationContext'
+import { useAskAgent } from '@/hooks/useAskAgent'
 import { toast } from 'sonner'
 import {
   Info_Page,
@@ -29,6 +31,7 @@ import {
 } from '@/components/info'
 import type { LoadedSource, McpToolWithPermission } from '../../shared/types'
 import type { PermissionsConfigFile } from '@craft-agent/shared/agent/modes'
+import { WEB_SNAPSHOT_FILE } from '@craft-agent/shared/sources/types'
 
 interface SourceInfoPageProps {
   sourceSlug: string
@@ -55,15 +58,23 @@ function formatRelativeTime(timestamp: number | undefined, t: (key: string, opti
   return t('time.daysAgo', { count: days })
 }
 
+/** A byte count in the units a person reads. */
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
 /**
  * Get source URL for display
  */
 function getSourceUrl(source: LoadedSource): string | null {
-  const { type, mcp, api, local } = source.config
+  const { type, mcp, api, local, web } = source.config
 
   if (type === 'mcp' && mcp?.url) return mcp.url
   if (type === 'api' && api?.baseUrl) return api.baseUrl
   if (type === 'local' && local?.path) return local.path
+  if (type === 'web' && web?.url) return web.url
 
   return null
 }
@@ -150,6 +161,9 @@ function getConnectionDescription(source: LoadedSource, t: (key: string) => stri
   if (type === 'local') {
     return t('sourceInfo.filesystemPath')
   }
+  if (type === 'web') {
+    return t('sourceInfo.pageUrl')
+  }
   return t('sourceInfo.connectionDetails')
 }
 
@@ -179,6 +193,13 @@ export default function SourceInfoPage({ sourceSlug, workspaceId, onDelete }: So
   const [mcpToolsLoading, setMcpToolsLoading] = useState(false)
   const [mcpToolsError, setMcpToolsError] = useState<string | null>(null)
   const [localMcpEnabled, setLocalMcpEnabled] = useState(true)
+
+  /**
+   * "Hand it to the conversation", for this page's one agent-backed action: re-taking a web
+   * source's snapshot, which needs the browser window and a command. A source belongs to the
+   * workspace rather than to a project, so no project is named and any conversation here will do.
+   */
+  const askAgent = useAskAgent({ name: source?.config.name })
 
 
   // Load source data
@@ -354,6 +375,31 @@ export default function SourceInfoPage({ sourceSlug, workspaceId, onDelete }: So
     window.electronAPI.openUrl(`craftagents://sources/source/${sourceSlug}?window=focused`)
   }, [sourceSlug])
 
+  /**
+   * Reveal the captured page where it lives.
+   *
+   * The same gesture a local source's path row makes — the payload is a file in the source's own
+   * folder, and this app's way of showing you a file is to show you where it is.
+   */
+  const handleOpenSnapshot = useCallback(() => {
+    if (source?.snapshot) window.electronAPI.showInFolder(source.snapshot.path)
+  }, [source])
+
+  /**
+   * Take the page again — which this page cannot do itself: it needs the browser window, a
+   * navigation and a capture, all of which belong to a conversation. So the line goes into a
+   * conversation's draft and **nothing is sent on its own** (`useAskAgent`), the same rule the
+   * project page's notices follow.
+   */
+  const handleRefreshSnapshot = useCallback(() => {
+    const url = source?.config.web?.url
+    if (!source || !url) return
+    void askAgent(
+      `Refresh the snapshot of ${source.config.name}: open ${url} in the browser window and ` +
+        `capture it again with browser_tool read --save sources/${source.config.slug}/${WEB_SNAPSHOT_FILE}.`,
+    )
+  }, [source, askAgent])
+
   // Get source name for header
   const sourceName = source?.config.name || sourceSlug
 
@@ -432,9 +478,56 @@ export default function SourceInfoPage({ sourceSlug, workspaceId, onDelete }: So
                   </button>
                 </Info_Table.Row>
               )}
-              <Info_Table.Row label={t('sourceInfo.lastTested')} value={formatRelativeTime(source.config.lastTestedAt, t)} />
+              {/* A web source has no server, so "last tested" would only ever read "never". */}
+              {source.config.type !== 'web' && (
+                <Info_Table.Row label={t('sourceInfo.lastTested')} value={formatRelativeTime(source.config.lastTestedAt, t)} />
+              )}
             </Info_Table>
           </Info_Section>
+
+          {/* Snapshot - what a web source is for: the page as it was captured */}
+          {source.config.type === 'web' && (
+            <Info_Section
+              title={t('sourceInfo.snapshot')}
+              description={source.snapshot ? t('sourceInfo.snapshotDesc') : t('sourceInfo.snapshotMissing')}
+              bare={!source.snapshot}
+              actions={
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleRefreshSnapshot}
+                  className={cn(
+                    'h-8 px-3 rounded-[6px] bg-background shadow-minimal text-foreground/70 hover:text-foreground',
+                  )}
+                >
+                  {t('sourceInfo.refreshSnapshot')}
+                </Button>
+              }
+            >
+              {source.snapshot ? (
+                <Info_Table>
+                  <Info_Table.Row label={t('sourceInfo.snapshotFile')}>
+                    <button
+                      onClick={handleOpenSnapshot}
+                      className="truncate hover:underline text-foreground focus:outline-none focus-visible:underline text-left block w-full"
+                    >
+                      {WEB_SNAPSHOT_FILE}
+                    </button>
+                  </Info_Table.Row>
+                  <Info_Table.Row
+                    label={t('sourceInfo.snapshotCaptured')}
+                    value={`${formatSize(source.snapshot.bytes)} · ${formatRelativeTime(source.snapshot.writtenAt, t)}`}
+                  />
+                  {source.snapshot.imageCount > 0 && (
+                    <Info_Table.Row
+                      label={t('sourceInfo.snapshotImages')}
+                      value={String(source.snapshot.imageCount)}
+                    />
+                  )}
+                </Info_Table>
+              ) : null}
+            </Info_Section>
+          )}
 
           {/* Permissions - for API and local sources */}
           {source.config.type !== 'mcp' && permissionsConfig && apiPermissionsData.length > 0 && (

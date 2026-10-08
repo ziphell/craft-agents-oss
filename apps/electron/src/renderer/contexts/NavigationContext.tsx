@@ -72,6 +72,7 @@ import {
   isAutomationsNavigation,
   isProjectsNavigation,
   isTweaksNavigation,
+  isDesignsNavigation,
   DEFAULT_NAVIGATION_STATE,
 } from '../../shared/types'
 import { sessionMetaMapAtom, updateSessionMetaAtom, type SessionMeta } from '@/atoms/sessions'
@@ -94,7 +95,7 @@ export type { Route }
 
 // Re-export navigation state types for consumers
 export type { NavigationState, SessionFilter }
-export { isSessionsNavigation, isSourcesNavigation, isSettingsNavigation, isSkillsNavigation, isAutomationsNavigation, isProjectsNavigation, isTweaksNavigation }
+export { isSessionsNavigation, isSourcesNavigation, isSettingsNavigation, isSkillsNavigation, isAutomationsNavigation, isProjectsNavigation, isTweaksNavigation, isDesignsNavigation }
 
 // =============================================================================
 // Context
@@ -898,7 +899,7 @@ export function NavigationProvider({
       }
 
       // Parse route to NavigationState. Bare `settings` produces `subpage: null` —
-      // navigator-only view in compact mode, App-page fallback on desktop. We
+      // navigator-only view in compact mode, App-design fallback on desktop. We
       // intentionally do NOT auto-redirect to the last-visited subpage; doing so
       // would defeat the compact-mode drill-in UX.
       const newNavState = parseRouteToNavigationState(route)
@@ -1197,6 +1198,9 @@ export function NavigationProvider({
           return
         case 'local':
           navigate(routes.view.sourcesLocal(sourceSlug))
+          return
+        case 'web':
+          navigate(routes.view.sourcesWeb(sourceSlug))
           return
       }
     }

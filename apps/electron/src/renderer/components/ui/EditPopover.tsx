@@ -79,6 +79,7 @@ export type EditContextKey =
   | 'add-source-api'   // Filter-specific: user is viewing APIs
   | 'add-source-mcp'   // Filter-specific: user is viewing MCPs
   | 'add-source-local' // Filter-specific: user is viewing Local Folders
+  | 'add-source-web'   // Filter-specific: user is viewing Web Pages
   | 'add-skill'
   | 'edit-statuses'
   | 'edit-labels'
@@ -379,6 +380,28 @@ const EDIT_CONFIGS: Record<EditContextKey, (location: string) => EditConfig> = {
     displayLabelKey: 'editPopover.label.addLocalFolder',
     exampleKey: 'editPopover.example.addSourceLocal',
     overridePlaceholderKey: 'editPopover.placeholder.addSourceLocal',
+  }),
+
+  'add-source-web': (location) => ({
+    context: {
+      label: 'Add Web Page',
+      filePath: `${location}/sources/`,
+      context:
+        'The user is viewing web sources and wants to save a page. ' +
+        'A web source is a bookmark: type "web" with a web.url field, and the page itself is captured ' +
+        'into snapshot.md beside config.json. ' +
+        'Create the source folder and config.json in the workspace sources directory. ' +
+        'Then capture the page in the browser: navigate to the url, and run ' +
+        'browser_tool with command "read --save sources/<slug>/snapshot.md". ' +
+        'Write a guide.md saying what the page is and why it matters, and repeat that refresh recipe. ' +
+        'There is no server, so do not call source_test. ' +
+        'Follow the patterns in ~/.craft-agent/docs/sources.md.',
+    },
+    example: 'Save this docs page',
+    overridePlaceholder: 'What page would you like to save?',
+    displayLabelKey: 'editPopover.label.addSourceWeb',
+    exampleKey: 'editPopover.example.addSourceWeb',
+    overridePlaceholderKey: 'editPopover.placeholder.addSourceWeb',
   }),
 
   'add-skill': (location) => ({

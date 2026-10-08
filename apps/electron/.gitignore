@@ -1,5 +1,9 @@
 # Build artifacts for DMG packaging
 vendor/
+# ...but the editable-PPTX engine is checked in on purpose (MIT; see
+# resources/vendor/dom-to-pptx/README.md) — the `vendor/` rule above would
+# otherwise swallow it.
+!resources/vendor/
 packages/
 release/
 node_modules/@anthropic-ai/

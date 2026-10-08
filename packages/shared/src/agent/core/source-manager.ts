@@ -226,12 +226,24 @@ export class SourceManager {
       parts.push(`Inactive: ${inactiveList.join(', ')}`);
     }
 
-    // Persistent reminder: if any active source has a guide, remind the LLM every message
+    // Persistent reminder: if any active source has a guide, remind the LLM every message.
+    //
+    // Split by whether the source has tools, because only one of the two sentences is true of
+    // each. A guide is worth reading either way — it is where a source is described — but a call
+    // can only be *rejected* for not having read it when there is a call to reject, and the gate
+    // matches on tool name (`mcp__{slug}__*`, `api_{slug}`; see prerequisite-manager.ts). A source
+    // that provides none (a captured page, a folder) has no call to block, so promising a
+    // rejection there would be a rule the agent can watch fail and then stop believing.
     const activeSourcesWithGuides = activeSources.filter(
       (s) => s.guide?.raw && !GUIDE_EXEMPT_SLUGS.has(s.config.slug)
     );
-    if (activeSourcesWithGuides.length > 0) {
+    const guideSourcesWithTools = activeSourcesWithGuides.filter((s) => this.activeSlugs.has(s.config.slug));
+    const guideSourcesWithoutTools = activeSourcesWithGuides.filter((s) => !this.activeSlugs.has(s.config.slug));
+    if (guideSourcesWithTools.length > 0) {
       parts.push('Read each source\'s guide.md before first tool use — calls are blocked until guide is read.');
+    }
+    if (guideSourcesWithoutTools.length > 0) {
+      parts.push('Read the guide.md of a source with no tools before working from it: nothing is callable there, so the guide is the only thing that says what it holds.');
     }
 
     // Source descriptions (shown once per session when first introduced)
@@ -241,19 +253,25 @@ export class SourceManager {
       if (!isFirstMessage) {
         parts.push('New:');
       }
-      let hasGuides = false;
+      let hasToolGuides = false;
+      let hasToolLessGuides = false;
       for (const s of unseenSources) {
         const tagline = s.config.tagline || s.config.provider;
         parts.push(`- ${sourceLine(s.config.slug)}: ${sourceLine(tagline)}`);
         // Add guide path for sources that have guides (excluding internal sources)
         if (s.guide?.raw && !GUIDE_EXEMPT_SLUGS.has(s.config.slug)) {
           parts.push(`  Guide: ${sourceLine(join(s.folderPath, 'guide.md'))}`);
-          hasGuides = true;
+          if (this.activeSlugs.has(s.config.slug)) hasToolGuides = true;
+          else hasToolLessGuides = true;
         }
       }
-      if (hasGuides) {
+      if (hasToolGuides) {
         parts.push('');
         parts.push('IMPORTANT: You MUST read a source\'s guide with the Read tool BEFORE using any of its tools. Tool calls WILL BE REJECTED if the guide has not been read first.');
+      }
+      if (hasToolLessGuides) {
+        parts.push('');
+        parts.push('A source that provides no tools is read rather than called: read its guide with the Read tool before working from it, because that guide is the only thing that says what the source holds.');
       }
     }
 

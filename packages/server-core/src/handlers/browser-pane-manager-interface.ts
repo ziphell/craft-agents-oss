@@ -10,6 +10,7 @@
 
 import type { BrowserInstanceInfo, BrowserTabSummary, PickedElement, TabBelongsTo } from '@craft-agent/shared/protocol'
 import type {
+  BrowserFetchedResource,
   BrowserFinishedRecording,
   BrowserStartRecordingArgs,
   BrowserStartRecordingResult,
@@ -456,6 +457,13 @@ export interface IBrowserPaneManager {
   sendKey(id: string, args: BrowserKeyArgs, tabId?: string): Promise<void>
   uploadFile(id: string, ref: string, filePaths: string[], tabId?: string): Promise<unknown>
   evaluate(id: string, expression: string, tabId?: string): Promise<unknown>
+  /** Bytes from the window's own session — its cookies, no page CORS. See `BrowserPaneFns`. */
+  fetchResource(
+    id: string,
+    url: string,
+    options?: { referrer?: string; maxBytes?: number },
+    tabId?: string,
+  ): Promise<BrowserFetchedResource>
 
   /**
    * Prompt the user to click an element on the page. Resolves with the picked

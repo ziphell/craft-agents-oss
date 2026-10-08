@@ -48,6 +48,12 @@ export interface BrowserScreenshotRegionArgs {
   height?: number
   ref?: string
   selector?: string
+  /**
+   * Take the image even when it is incomplete (part of the region was not on screen). Without it, a
+   * region bigger than the page has painted is an error — an image missing part of what was asked
+   * for is a wrong answer, and nothing in the picture says so.
+   */
+  force?: boolean
   padding?: number
   format?: 'png' | 'jpeg'
   jpegQuality?: number
@@ -219,6 +225,17 @@ export type BrowserStopRecordingResult =
   | { stopped: true; recording: BrowserFinishedRecording }
   | { stopped: false; reason: 'not-recording' }
 
+/**
+ * Bytes a url answered with, when a door asked for them through the window's session.
+ *
+ * `base64` because it crosses the bridge as one string, and a refusal is an *answer* rather than
+ * an error: an image that could not be brought down is something the caller reports and carries
+ * on from, not something that should take the whole capture down with it.
+ */
+export type BrowserFetchedResource =
+  | { ok: true; base64: string; mimeType: string }
+  | { ok: false; error: string }
+
 export interface BrowserPaneFns {
   openPanel: (options?: { background?: boolean }) => Promise<{ instanceId: string }>;
   navigate: (url: string) => Promise<{ url: string; title: string }>;
@@ -259,6 +276,23 @@ export interface BrowserPaneFns {
    */
   reload: () => Promise<void>;
   evaluate: (expression: string) => Promise<unknown>;
+  /**
+   * Fetch a url through the window's **own session**.
+   *
+   * Not the page's `fetch`: this is the network stack behind the window, so it carries that
+   * session's cookies and the page's CORS does not apply to it. That is the whole point — a page
+   * may *display* an image from another origin that script may not *read*, and this is what reads
+   * it. Privileged for exactly that reason, which is why it lives on the pane rather than being
+   * something the command layer does for itself.
+   *
+   * `referrer` asks for the request to look like the page's own, which some hosts require of an
+   * image before they will serve it. `maxBytes` is the caller's ceiling: a body over it comes back
+   * as a refusal rather than as bytes nobody wanted.
+   */
+  fetchResource: (
+    url: string,
+    options?: { referrer?: string; maxBytes?: number },
+  ) => Promise<BrowserFetchedResource>;
   /** Prompt the user to click an element; resolves null on cancel/timeout. */
   pick: (options?: { timeoutMs?: number }) => Promise<PickedElement | null>;
   /**

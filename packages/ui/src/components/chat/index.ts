@@ -18,5 +18,15 @@ export { SystemMessage, type SystemMessageProps, type SystemMessageType } from '
 // Attachment helpers
 export { FileTypeIcon, getFileTypeLabel, type FileTypeIconProps } from './attachment-helpers'
 
+// The one icon a mention chip shows, per kind (composer chip, message badge, @ menu)
+export {
+  MentionIcon,
+  mentionIconSvg,
+  mentionIconComponent,
+  mentionIconKindFor,
+  fileMentionIconKind,
+  type MentionIconKind,
+} from './mention-icons'
+
 // Accept plan dropdown (for plan cards)
 export { AcceptPlanDropdown } from './AcceptPlanDropdown'

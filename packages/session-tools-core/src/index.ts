@@ -166,6 +166,19 @@ export type {
   CreateTweakToolInput,
   UpdateTweakToolPatch,
   DeleteTweakToolResult,
+  // Designs types
+  DesignsToolCallbacks,
+  DesignToolRefreshSpec,
+  DesignToolSummary,
+  DesignToolDataSummary,
+  DesignToolDetails,
+  DesignToolDeckSpec,
+  DesignToolMotionSpec,
+  CreateDesignToolInput,
+  UpdateDesignToolPatch,
+  DesignDataToolPatch,
+  DesignDataWriteSummary,
+  DeleteDesignToolResult,
   // Decision tool types
   DecisionToolCallbacks,
   DecisionToolQuestionType,
@@ -216,6 +229,13 @@ export {
   handleCreateTweak,
   handleUpdateTweak,
   handleDeleteTweak,
+  // Designs
+  handleListDesigns,
+  handleGetDesign,
+  handleCreateDesign,
+  handleUpdateDesign,
+  handleWriteDesignData,
+  handleDeleteDesign,
   // Decision model
   handleDecide,
 } from './handlers/index.ts';
@@ -240,6 +260,12 @@ export type {
   CreateTweakArgs,
   UpdateTweakArgs,
   DeleteTweakArgs,
+  ListDesignsArgs,
+  GetDesignArgs,
+  CreateDesignArgs,
+  UpdateDesignArgs,
+  WriteDesignDataArgs,
+  DeleteDesignArgs,
   DecideArgs,
 } from './handlers/index.ts';
 

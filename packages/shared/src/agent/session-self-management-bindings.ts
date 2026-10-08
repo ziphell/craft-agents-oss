@@ -2,7 +2,7 @@
  * Session Self-Management Bindings
  *
  * Attaches the session-scoped tool properties (session management, tasks,
- * messaging, tweaks, decide) to a SessionToolContext using
+ * messaging, tweaks, designs, decide) to a SessionToolContext using
  * Object.defineProperty with non-memoized lazy getters. Each access resolves
  * the callback from the session-scoped tool callback registry at call time,
  * so late merges and callback replacements are immediately visible without
@@ -26,7 +26,8 @@ import { getSessionScopedToolCallbacks } from './session-scoped-tool-callback-re
  * Attach session self-management bindings to a SessionToolContext.
  *
  * Defines lazy getters for the session-management callbacks (labels, status,
- * archive, list/info, resolve helpers), messaging, createTask, and pages.
+ * archive, list/info, resolve helpers), messaging, createTask, tweaks, designs,
+ * and decide.
  *
  * @param context - The SessionToolContext to augment (mutated in place)
  * @param sessionId - The session ID for registry lookup and getSessionInfo defaulting
@@ -124,6 +125,17 @@ export function attachSessionSelfManagementBindings(
   Object.defineProperty(context, 'tweaks', {
     get() {
       return getSessionScopedToolCallbacks(sessionId)?.tweaks;
+    },
+    configurable: true,
+    enumerable: true,
+  });
+
+  // The six design tools are advertised to every session, so the grouped
+  // callbacks they execute through must be bound here too — otherwise each one
+  // degrades to "Designs tools are not available in this context."
+  Object.defineProperty(context, 'designs', {
+    get() {
+      return getSessionScopedToolCallbacks(sessionId)?.designs;
     },
     configurable: true,
     enumerable: true,

@@ -66,8 +66,9 @@ export interface WorkingDirectorySelectorProps {
  * conversation works in**.
  *
  * Whether the conversation is about the project's specs is not a second answer to that
- * question and is not offered here: it has its own badge next to this one, and toggling it
- * does not move the folder.
+ * question and is not offered here: it is set from the composer's `+` menu
+ * (`ComposerPlusMenu`), it is shown on the draft's own layer chip, and setting it does
+ * not move the folder.
  *
  * Owns the state machine ({@link useWorkingDirectoryState}), the Radix popover with
  * its cmdk list, and the ServerDirectoryBrowser. The trigger itself is supplied by the

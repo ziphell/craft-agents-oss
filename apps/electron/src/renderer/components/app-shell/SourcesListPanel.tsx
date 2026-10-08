@@ -17,6 +17,9 @@ const SOURCE_TYPE_CONFIG: Record<string, { labelKey: string; colorClass: string 
   mcp: { labelKey: 'sourcesList.typeMcp', colorClass: 'bg-accent/10 text-accent' },
   api: { labelKey: 'sourcesList.typeApi', colorClass: 'bg-success/10 text-success' },
   local: { labelKey: 'sourcesList.typeLocal', colorClass: 'bg-info/10 text-info' },
+  // Neutral on purpose: a web source is a page kept, not a live connection, so it takes no
+  // colour from the three that are wired into something.
+  web: { labelKey: 'sourcesList.typeWeb', colorClass: 'bg-foreground/10 text-foreground/70' },
 }
 
 const SOURCE_STATUS_CONFIG: Record<string, { labelKey: string; colorClass: string } | null> = {
@@ -31,6 +34,7 @@ const SOURCE_TYPE_FILTER_LABEL_KEYS: Record<string, string> = {
   api: 'sourcesList.filterApi',
   mcp: 'sourcesList.filterMcp',
   local: 'sourcesList.filterLocalFolder',
+  web: 'sourcesList.filterWeb',
 }
 
 export interface SourcesListPanelProps {

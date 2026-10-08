@@ -53,6 +53,12 @@ export interface OpenRecordingEncoderOptions {
   /** The frame size to encode at — the tab's view, in device pixels. */
   width: number
   height: number
+  /**
+   * How many times a second the canvas is sampled (see {@link ENCODER_FPS}).
+   * Defaults to {@link ENCODER_FPS}; a motion export passes its own `fps` so the
+   * file's frame rate follows the composition's hint.
+   */
+  fps?: number
   /** Each encoded chunk, in the order the recorder produced it. */
   onChunk: (bytes: Uint8Array) => void
   /**
@@ -152,7 +158,7 @@ export async function openRecordingEncoder(
 
   try {
     await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(
-      encoderPageHtml({ formats: RECORDING_FORMATS, fps: ENCODER_FPS }),
+      encoderPageHtml({ formats: RECORDING_FORMATS, fps: options.fps ?? ENCODER_FPS }),
     )}`)
 
     const format = (await withTimeout(

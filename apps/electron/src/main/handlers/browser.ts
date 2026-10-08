@@ -28,6 +28,7 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.browserPane.SELECT,
   RPC_CHANNELS.browserPane.SCREENSHOT,
   RPC_CHANNELS.browserPane.EVALUATE,
+  RPC_CHANNELS.browserPane.FETCH_RESOURCE,
   RPC_CHANNELS.browserPane.SCROLL,
 ] as const
 
@@ -333,6 +334,18 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
       throw err
     }
   })
+
+  server.handle(
+    RPC_CHANNELS.browserPane.FETCH_RESOURCE,
+    async (_ctx, id: string, url: string, options?: { referrer?: string; maxBytes?: number }) => {
+      try {
+        return await browserPaneManager.fetchResource(id, url, options)
+      } catch (err) {
+        platform.logger.error(`[browser-pane] fetch-resource failed for ${id}:`, err)
+        throw err
+      }
+    },
+  )
 
   server.handle(RPC_CHANNELS.browserPane.SCROLL, async (_ctx, id: string, direction: string, amount?: number) => {
     const validDirections = ['up', 'down', 'left', 'right']

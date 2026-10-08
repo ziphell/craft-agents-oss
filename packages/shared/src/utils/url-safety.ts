@@ -74,7 +74,11 @@ export function isSafeExternalUrl(rawUrl: string): boolean {
 export function isBrowserUrl(rawUrl: string): boolean {
   try {
     const protocol = new URL(rawUrl.trim()).protocol
-    return protocol === 'http:' || protocol === 'https:'
+    // `craft-local` is the app's own origin — a design's folder, the diagram editor —
+    // served by a host in this process. It is allowed here so a design can be opened
+    // as a tab and read or driven with the browser tools; the host itself decides what
+    // a page on that origin may fetch (a design's data/ is never served).
+    return protocol === 'http:' || protocol === 'https:' || protocol === 'craft-local:'
   } catch {
     return false
   }

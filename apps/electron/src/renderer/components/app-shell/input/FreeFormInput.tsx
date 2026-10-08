@@ -3,7 +3,6 @@ import { useAtomValue } from 'jotai'
 import { useTranslation } from "react-i18next"
 import { AnimatePresence, motion } from 'motion/react'
 import {
-  Paperclip,
   ArrowUp,
   Square,
   Check,
@@ -36,15 +35,15 @@ import {
 } from '@/components/ui/label-menu'
 import type { LabelConfig } from '@craft-agent/shared/labels'
 import { parseMentions } from '@/lib/mentions'
-import { expandElementMentions, type ElementRef } from '@/lib/element-mention'
-import { expandTabMentions, tabLabel, type TabRef } from '@/lib/tab-mention'
+import type { TabRef } from '@craft-agent/shared/mentions'
+import { designsAtom } from '@/atoms/designs'
 import { browserInstancesAtom, filterInstancesForWorkspace } from '@/atoms/browser-pane'
 import { sessionMetaMapAtom } from '@/atoms/sessions'
 import { tabRefOf } from '@/components/browser/utils'
 import { RichTextInput, type RichTextInputHandle } from '@/components/ui/rich-text-input'
 import { useInputAvailableHeight } from '@/hooks/useInputAvailableHeight'
 import { getComposerMaxHeight } from './composer-height'
-import { getContextDisplay, getContextDisplayLabels, type ContextStatus } from './context-display'
+import { getContextDisplay, getContextDisplayLabels, shouldShowCompactBadge, type ContextStatus } from './context-display'
 import { createPendingPlanDispatcher } from './pending-plan-dispatch'
 import { scrollFocusedCaretIntoView } from '@/lib/scroll-focused-caret'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@craft-agent/ui'
@@ -66,6 +65,7 @@ import { coerceInputText } from '@/lib/input-text'
 import { isMac } from '@/lib/platform'
 import { applySmartTypography } from '@/lib/smart-typography'
 import { AttachmentPreview } from '../AttachmentPreview'
+import { ComposerPlusMenu } from './ComposerPlusMenu'
 import { ImageSupportWarningBanner } from './ImageSupportWarningBanner'
 import { ANTHROPIC_MODELS, getModelDisplayName, getModelContextWindow, type ModelDefinition } from '@config/models'
 import {
@@ -73,7 +73,6 @@ import {
   isCompatProvider,
   modelSupportsImages,
   modelSupportsThinking,
-  modelContextWindow,
 } from '@config/llm-connections'
 import { useOptionalAppShellContext } from '@/context/AppShellContext'
 import { EditPopover, getEditConfig } from '@/components/ui/EditPopover'
@@ -465,6 +464,14 @@ export function FreeFormInput({
       .map(tabRefOf)
   }, [appShellCtx, allBrowserInstances, workspaceId])
 
+  /**
+   * The workspace's designs, so one can be referenced as the thing to work on — read
+   * from the atom the same way the tabs above are. A design lives in the workspace, not
+   * in this conversation, so `@`-mentioning one is how a message says which design it
+   * means (see design-mention).
+   */
+  const designs = useAtomValue(designsAtom)
+
   // The layer this conversation works on (`goal`/`spec`/`plan`) — session state, read
   // from the atom the server's `mode_changed` broadcast feeds. Only conversations
   // that belong to a project get the commands: those files' home is the project
@@ -682,45 +689,18 @@ export function FreeFormInput({
   const handleToggleModelVision = useModelVisionToggle()
 
   /**
-   * The reference an element chip turns into when the message is sent.
+   * The draft as it goes out.
    *
-   * A chip is a marker in the composer's text (see element-mention), and the model
-   * should read a sentence rather than a payload — so the marker is rewritten on the
-   * way out. This is the single place outgoing text is translated, which is why it
-   * lives next to the two paths that consume the composer (`submitMessage` and the
-   * plan-approval snapshot).
-   *
-   * The page it was picked on is part of the sentence: the picker stays on across
-   * the window's tabs, so the same element can be picked from two of them, and
-   * "which page" is the one thing the agent cannot work out from the element.
+   * Nothing is rewritten here any more: every reference chip — source, skill, file, folder, tab,
+   * design, picked element — travels as its own marker in the text, so the sent message keeps it
+   * and the chip can be redrawn from it (see `lib/mentions`). The agent rewrites the markers into
+   * readable references at the model boundary (shared/mentions, `resolve*Mentions`).
    */
-  const formatElementReference = React.useCallback((ref: ElementRef) => {
-    const where = ref.url ?? ''
-    if (!where) return t('browserEdit.elementReference', { selector: ref.selector, text: ref.text })
-    return t('browserEdit.elementReferenceFrom', { selector: ref.selector, text: ref.text, where })
-  }, [t])
-
-  /**
-   * The same, for a whole tab added from the window's tab list.
-   *
-   * The address is always in the sentence — a title alone does not say which tab it
-   * is.
-   */
-  const formatTabReference = React.useCallback((ref: TabRef) => {
-    return t('browserEdit.tabReference', { title: tabLabel(ref), url: ref.url })
-  }, [t])
-
-  /** Outgoing text: every reference the composer holds, written out as prose. */
-  const expandComposerMentions = React.useCallback(
-    (text: string) => expandTabMentions(expandElementMentions(text, formatElementReference), formatTabReference),
-    [formatElementReference, formatTabReference],
-  )
-
   const consumeInputDraftSnapshot = React.useCallback((): string => {
-    const snapshot = expandComposerMentions(input.trim())
+    const snapshot = input.trim()
     clearInputDraft()
     return snapshot
-  }, [input, clearInputDraft, expandComposerMentions])
+  }, [input, clearInputDraft])
 
   type PlanApprovalEventDetail = {
     sessionId?: string
@@ -926,28 +906,27 @@ export function FreeFormInput({
     return () => window.removeEventListener('craft:paste-files', handlePasteFiles as unknown as EventListener)
   }, [disabled, sessionId, isFocusedPanel, richInputRef])
 
-  // Build active commands list for slash command menu
-  const activeCommands = React.useMemo(() => {
-    const active: SlashCommandId[] = []
-    // Add the currently active permission mode
-    if (permissionMode === 'safe') active.push('safe')
-    else if (permissionMode === 'ask') active.push('ask')
-    else if (permissionMode === 'allow-all') active.push('allow-all')
-    // Add the layer this conversation is on, if any
-    if (layerMode) active.push(layerMode)
-    return active
-  }, [permissionMode, layerMode])
+  // What the `/` menu ticks: the layer this conversation is on, if any. The
+  // permission mode is not offered there any more, so it is not ticked there.
+  const activeCommands = React.useMemo((): SlashCommandId[] => {
+    return layerMode ? [layerMode] : []
+  }, [layerMode])
 
-  // Handle slash command selection (mode/feature commands)
+  // Summarize the context now. Same command as `/compact`, and the same guard:
+  // a turn in flight cannot be summarized, so the `+` menu disables it instead.
+  const handleCompactClick = React.useCallback(() => {
+    if (!isProcessing) onSubmit('/compact', undefined)
+  }, [isProcessing, onSubmit])
+
+  // Handle slash command selection (`/` offers the layer and the commands that
+  // act on this conversation — not the permission modes, which have their own
+  // badge above the composer).
   const handleSlashCommand = React.useCallback((commandId: SlashCommandId) => {
-    if (commandId === 'safe') onPermissionModeChange?.('safe')
-    else if (commandId === 'ask') onPermissionModeChange?.('ask')
-    else if (commandId === 'allow-all') onPermissionModeChange?.('allow-all')
-    else if (commandId === 'goal' || commandId === 'spec' || commandId === 'plan') {
+    if (commandId === 'goal' || commandId === 'spec' || commandId === 'plan') {
       if (sessionId) window.electronAPI.sessionCommand(sessionId, { type: 'setMode', mode: commandId })
     }
-    else if (commandId === 'compact' && !isProcessing) onSubmit('/compact', undefined)
-  }, [onPermissionModeChange, isProcessing, onSubmit, sessionId])
+    else if (commandId === 'compact') handleCompactClick()
+  }, [handleCompactClick, sessionId])
 
   // Handle folder selection from slash command menu
   const handleSlashFolderSelect = React.useCallback((path: string) => {
@@ -956,6 +935,11 @@ export function FreeFormInput({
       onWorkingDirectoryChange(path)
     }
   }, [onWorkingDirectoryChange, workspaceId])
+
+  // Set the layer this conversation works on (the `+` menu and `/` both set one).
+  const selectLayer = React.useCallback((layer: SessionMode) => {
+    if (sessionId) window.electronAPI.sessionCommand(sessionId, { type: 'setMode', mode: layer })
+  }, [sessionId])
 
   // Turn the layer off — the prefix chip's own affordance (the menus only set it).
   const clearLayerMode = React.useCallback(() => {
@@ -1000,13 +984,14 @@ export function FreeFormInput({
     // Skills also don't need special handling beyond text insertion.
   }, [optimisticSourceSlugs, onSourcesChange])
 
-  // Inline mention hook (for skills, sources, files and the window's tabs)
+  // Inline mention hook (for skills, sources, files, the window's tabs and the workspace's designs)
   const inlineMention = useInlineMention({
     inputRef: richInputRef,
     skills,
     sources,
     basePath: workingDirectory,
     tabs: browserTabs,
+    designs,
     onSelect: handleMentionSelect,
     // Use workspace slug (not UUID) for SDK skill qualification
     workspaceId: workspaceSlug,
@@ -1291,7 +1276,7 @@ export function FreeFormInput({
     const attachmentSnapshot = attachments
 
     onSubmit(
-      expandComposerMentions(input.trim()),
+      input.trim(),
       attachmentSnapshot.length > 0 ? attachmentSnapshot : undefined,
       mentions.skills.length > 0 ? mentions.skills : undefined
     )
@@ -1309,7 +1294,7 @@ export function FreeFormInput({
     })
 
     return true
-  }, [input, attachments, followUpItems, disabled, disableSend, onInputChange, onAttachmentsChange, onSubmit, skills, sources, optimisticSourceSlugs, onSourcesChange, onWorkingDirectoryChange, homeDir, expandComposerMentions])
+  }, [input, attachments, followUpItems, disabled, disableSend, onInputChange, onAttachmentsChange, onSubmit, skills, sources, optimisticSourceSlugs, onSourcesChange, onWorkingDirectoryChange, homeDir])
 
   // Listen for craft:submit-input events (simulate pressing the Send button)
   React.useEffect(() => {
@@ -1864,18 +1849,15 @@ export function FreeFormInput({
               contextStatus={contextStatus}
             />
           )}
-          <FreeFormInputContextBadge
-            icon={<Paperclip className="h-4 w-4" />}
-            label={attachments.length > 0
-              ? t("chat.filesCount", { count: attachments.length })
-              : t("chat.attach")
-            }
-            isExpanded={false}
-            hasSelection={attachments.length > 0}
-            showChevron={false}
-            onClick={handleAttachClick}
-            tooltip={t("chat.attachFilesTooltip")}
+          <ComposerPlusMenu
             disabled={disabled}
+            layersEnabled={layersEnabled}
+            layerMode={layerMode}
+            attachmentCount={attachments.length}
+            isProcessing={isProcessing}
+            onAttach={handleAttachClick}
+            onSelectLayer={selectLayer}
+            onCompact={handleCompactClick}
           />
           {onSourcesChange && (
             <div className="relative shrink min-w-0">
@@ -1963,19 +1945,17 @@ export function FreeFormInput({
           {/* Desktop: full badges row with labels and working directory */}
           {!compactMode && (
           <div className="flex items-center gap-1 min-w-32 shrink overflow-hidden">
-          {/* 1. Attach Files Badge */}
-          <FreeFormInputContextBadge
-            icon={<Paperclip className="h-4 w-4" />}
-            label={attachments.length > 0
-              ? t("chat.filesCount", { count: attachments.length })
-              : t("chat.attachFiles")
-            }
-            isExpanded={isEmptySession}
-            hasSelection={attachments.length > 0}
-            showChevron={false}
-            onClick={handleAttachClick}
-            tooltip={t("chat.attachFilesTooltip")}
+          {/* 1. Add / Command Badge — files, the layer, compact (`/` still works) */}
+          <ComposerPlusMenu
             disabled={disabled}
+            layersEnabled={layersEnabled}
+            layerMode={layerMode}
+            attachmentCount={attachments.length}
+            isProcessing={isProcessing}
+            onAttach={handleAttachClick}
+            onSelectLayer={selectLayer}
+            onCompact={handleCompactClick}
+            data-tutorial="composer-plus-menu"
           />
 
           {/* 2. Source Selector Badge - only show if onSourcesChange is provided */}
@@ -2450,61 +2430,41 @@ export function FreeFormInput({
           </DropdownMenu>
           )}
 
-          {/* 5.5 Context Usage Warning Badge - shows when approaching auto-compaction threshold */}
-          {(() => {
-            // Calculate usage percentage based on compaction threshold (~77.5% of context window),
-            // not the full context window - this gives users meaningful warnings before compaction kicks in.
-            // SDK triggers compaction at ~155k tokens for a 200k context window.
-            // Read order: the model layer (what the connection declares, and what
-            // we registered with the SDK) → what the SDK reported → the static
-            // registry, which does not know custom models at all.
-            const effectiveContextWindow =
-              modelContextWindow(effectiveConnectionDetails, currentModel)
-              ?? contextStatus?.contextWindow
-              ?? getModelContextWindow(currentModel)
-            const compactionThreshold = effectiveContextWindow
-              ? Math.round(effectiveContextWindow * 0.775)
-              : null
-            const usagePercent = contextStatus?.inputTokens && compactionThreshold
-              ? Math.min(99, Math.round((contextStatus.inputTokens / compactionThreshold) * 100))
-              : null
-            // Show badge when >= 80% of compaction threshold AND not currently compacting
-            // Hide for Codex and Copilot models which don't support context compaction
-            const showWarning = usagePercent !== null && usagePercent >= 80 && !contextStatus?.isCompacting
-
-            if (!showWarning) return null
-
-            const handleCompactClick = () => {
-              if (!isProcessing) {
-                onSubmit('/compact', [])
-              }
-            }
-
-            return (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    onClick={handleCompactClick}
-                    disabled={isProcessing}
-                    className="inline-flex items-center h-6 px-2 text-[12px] font-medium bg-info/10 rounded-[6px] shadow-tinted select-none cursor-pointer hover:bg-info/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    style={{
-                      '--shadow-color': 'var(--info-rgb)',
-                      color: 'color-mix(in oklab, var(--info) 30%, var(--foreground))',
-                    } as React.CSSProperties}
-                  >
-                    {usagePercent}%
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top">
-                  {isProcessing
-                    ? `${usagePercent}% context used — wait for current operation`
-                    : `${usagePercent}% context used — click to compact`
-                  }
-                </TooltipContent>
-              </Tooltip>
-            )
-          })()}
+          {/* 5.5 Context Usage Warning Badge — one source of truth with the model
+              popover: the SDK's own snapshot, measured against the window
+              compaction actually triggers on (contextWindow − reserveTokens), not
+              a hardcoded share of the raw window. A 0.775-of-window heuristic
+              reads 99% a quarter of the window before that trigger (on a 1M
+              window: 767k vs 983,616), and its 99 cap hides ever crossing it. */}
+          {shouldShowCompactBadge(contextDisplay) && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!isProcessing) {
+                      onSubmit('/compact', [])
+                    }
+                  }}
+                  disabled={isProcessing}
+                  aria-label={t('chat.contextUsage.compact')}
+                  className="inline-flex items-center h-6 px-2 text-[12px] font-medium bg-info/10 rounded-[6px] shadow-tinted select-none cursor-pointer hover:bg-info/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  style={{
+                    '--shadow-color': 'var(--info-rgb)',
+                    color: 'color-mix(in oklab, var(--info) 30%, var(--foreground))',
+                  } as React.CSSProperties}
+                >
+                  {contextDisplay.percent}%
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                {isProcessing
+                  ? t('chat.contextUsage.waitToCompact')
+                  : `${contextLabels.usage} · ${t('chat.contextUsage.compact')}`
+                }
+              </TooltipContent>
+            </Tooltip>
+          )}
 
           {/* 6. Send/Stop Button - Always show stop when processing */}
           {isProcessing ? (

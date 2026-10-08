@@ -896,6 +896,11 @@ export interface PickedElement {
  * function in the pane manager.
  */
 export interface PickedElementOrigin {
+  /**
+   * The id of that tab — what `--tab <id>` names it by, so the conversation can act on the tab
+   * the person pointed at rather than the one it happens to be working from.
+   */
+  tabId: string
   /** The address the tab was on when the element was picked. */
   url: string
   /** That tab's title. */

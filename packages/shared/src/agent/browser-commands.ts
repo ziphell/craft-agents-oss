@@ -11,10 +11,11 @@
  * not import it back, which is what keeps the CLI free of either door.
  */
 
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import type {
   BrowserConsoleArgs,
   BrowserDownloadsArgs,
+  BrowserFetchedResource,
   BrowserLifecycleActionResult,
   BrowserNetworkArgs,
   BrowserPaneFns,
@@ -23,7 +24,15 @@ import type {
 } from './browser-pane.ts';
 import { describeWork } from '../protocol/dto.ts';
 import { getSessionPath } from '../sessions/storage.ts';
-import { join } from 'node:path';
+import {
+  buildWebSnapshot,
+  findMarkdownImages,
+  renderWebSnapshotNote,
+  rewriteMarkdownImages,
+  snapshotImageFileName,
+} from '../sources/web-snapshot.ts';
+import { snapshotAssetsDirName } from '../sources/types.ts';
+import { basename, dirname, join } from 'node:path';
 import {
   type BrowserCommandImage,
   type BrowserCommandResult,
@@ -225,6 +234,166 @@ export function readEvaluateFile(filePath: string, workspaceRootPath?: string): 
 }
 
 /**
+ * What one `read --save` may pull down, so a gallery page cannot run away with the capture.
+ * Counted here rather than in the page: the ceiling is about what lands on disk.
+ */
+const MAX_SNAPSHOT_IMAGES = 40;
+const MAX_SNAPSHOT_IMAGE_BYTES = 8 * 1024 * 1024;
+const MAX_SNAPSHOT_IMAGE_TOTAL_BYTES = 24 * 1024 * 1024;
+
+/**
+ * Fetch one image **in the page**, through `evaluate`.
+ *
+ * In the page and not in this process: an image behind the same login as the article is only
+ * reachable with the window's cookies, which an out-of-process fetch does not carry — the same
+ * reason the article itself is read through the window rather than fetched. The url travels as a
+ * JSON literal rather than interpolated into the script, so nothing in a url can become a statement.
+ *
+ * It is tried first because it is the request the page itself would make — its referrer, its
+ * origin — and some hosts serve an image only to that. It cannot be the only way: the browser
+ * refuses to let script *read* a cross-origin response that carries no CORS header, which is
+ * where `fetchResource` takes over.
+ */
+async function fetchImageInPage(fns: BrowserPaneFns, url: string): Promise<BrowserFetchedResource> {
+  const megabytes = Math.round(MAX_SNAPSHOT_IMAGE_BYTES / 1048576);
+  const expression = `(async () => {
+    try {
+      const response = await fetch(${JSON.stringify(url)}, { credentials: 'include' });
+      if (!response.ok) return { ok: false, error: 'HTTP ' + response.status };
+      const blob = await response.blob();
+      if (blob.size > ${MAX_SNAPSHOT_IMAGE_BYTES}) return { ok: false, error: 'over ${megabytes} MB' };
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      let binary = '';
+      for (let i = 0; i < bytes.length; i += 0x8000) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+      }
+      return { ok: true, base64: btoa(binary), mimeType: blob.type || '' };
+    } catch (error) {
+      const message = String((error && error.message) || error);
+      // A displayed image failing to fetch is almost always the browser refusing to *read* a
+      // cross-origin response (no CORS header), not a broken url — "Failed to fetch" alone would
+      // send the reader looking for the wrong thing.
+      return { ok: false, error: message === 'Failed to fetch' ? 'cross-origin, not readable here' : message };
+    }
+  })()`;
+
+  const answer = (await fns.evaluate(expression)) as BrowserFetchedResource | null;
+  if (!answer || typeof answer !== 'object' || typeof (answer as { ok?: unknown }).ok !== 'boolean') {
+    return { ok: false, error: 'the page gave no answer' };
+  }
+  return answer;
+}
+
+/**
+ * A refusal is an answer, not an exception.
+ *
+ * A door can throw for reasons that are about the door rather than about the image — the tab went
+ * away, the far side refused the whole capability — and none of them should take a capture down
+ * over one picture.
+ */
+async function refusalOr(
+  run: () => Promise<BrowserFetchedResource>,
+): Promise<BrowserFetchedResource> {
+  try {
+    return await run();
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * One image, by whichever door can actually reach it.
+ *
+ * The page first — the request the page itself would make, with its referrer and its origin, which
+ * some hosts require. Then the window's session, which is not bound by the page's CORS and so reads
+ * an image the page displayed but script could not. That second door is the more capable one, so
+ * **its** answer is the one reported: `HTTP 403` is the real reason, where the page could only say
+ * that it was not allowed to look.
+ */
+async function fetchImage(
+  fns: BrowserPaneFns,
+  url: string,
+  referrer: string | undefined,
+): Promise<BrowserFetchedResource> {
+  const viaPage = await refusalOr(() => fetchImageInPage(fns, url));
+  if (viaPage.ok) return viaPage;
+
+  return refusalOr(() =>
+    fns.fetchResource(url, {
+      ...(referrer ? { referrer } : {}),
+      maxBytes: MAX_SNAPSHOT_IMAGE_BYTES,
+    }),
+  );
+}
+
+/**
+ * Keep a note's images beside it and point the note at them.
+ *
+ * An image that could not be kept **keeps its remote url** — a capture is not improved by turning a
+ * working link into a hole — and the count is reported so the capture says what it is worth.
+ */
+async function localizeSnapshotImages(args: {
+  note: string;
+  notePath: string;
+  pageUrl: string;
+  fns: BrowserPaneFns;
+}): Promise<{
+  note: string;
+  dirName: string | null;
+  saved: number;
+  left: Array<{ url: string; reason: string }>;
+}> {
+  const urls = findMarkdownImages(args.note);
+  if (urls.length === 0) return { note: args.note, dirName: null, saved: 0, left: [] };
+
+  const dirName = snapshotAssetsDirName(basename(args.notePath));
+  const dir = join(dirname(args.notePath), dirName);
+  const replacements = new Map<string, string>();
+  const left: Array<{ url: string; reason: string }> = [];
+  let totalBytes = 0;
+
+  for (const url of urls) {
+    if (replacements.size >= MAX_SNAPSHOT_IMAGES) {
+      left.push({ url, reason: `over ${MAX_SNAPSHOT_IMAGES} images` });
+      continue;
+    }
+    if (totalBytes >= MAX_SNAPSHOT_IMAGE_TOTAL_BYTES) {
+      left.push({ url, reason: 'over the capture budget' });
+      continue;
+    }
+
+    const fetched = await fetchImage(args.fns, url, args.pageUrl);
+    if (!fetched.ok) {
+      left.push({ url, reason: fetched.error });
+      continue;
+    }
+
+    const bytes = Buffer.from(fetched.base64, 'base64');
+    totalBytes += bytes.byteLength;
+    const fileName = snapshotImageFileName(url, bytes, fetched.mimeType);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, fileName), bytes);
+    replacements.set(url, `${dirName}/${fileName}`);
+  }
+
+  return {
+    note: rewriteMarkdownImages(args.note, replacements),
+    dirName: replacements.size > 0 ? dirName : null,
+    saved: replacements.size,
+    left,
+  };
+}
+
+/** The reasons images were left as links, counted — one URL each would be a wall. */
+function summarizeImageFailures(left: Array<{ url: string; reason: string }>): string {
+  const counts = new Map<string, number>();
+  for (const item of left) counts.set(item.reason, (counts.get(item.reason) ?? 0) + 1);
+  return Array.from(counts.entries())
+    .map(([reason, count]) => (count > 1 ? `${reason} ×${count}` : reason))
+    .join(', ');
+}
+
+/**
  * One browser command, once the command line has been read.
  *
  * The three things this door says about itself: its help, its command table, and what an unknown
@@ -274,6 +443,7 @@ export function getBrowserToolHelp(): string {
     '  open [--foreground|-f]                         open browser (background by default)',
     '  navigate <url>',
     '  snapshot',
+    '  read [--save <path>]                           read this page as an article (markdown + stated facts); --save writes it, keeping its images beside it',
     '  find <query>                                   search elements by keyword (matches role, name, value)',
     '  click <ref> [none|navigation|network-idle] [timeoutMs]',
     '  click-at <x> <y>                               click at pixel coordinates (canvas elements)',
@@ -286,9 +456,9 @@ export function getBrowserToolHelp(): string {
     '  get-clipboard                                  read clipboard text content',
     '  paste <text>                                   set clipboard + trigger Ctrl/Cmd+V',
     '  screenshot [--annotated|-a] [--png]            capture screenshot (JPEG default, --png for lossless)',
-    '  screenshot-region <x> <y> <width> <height> [--png]',
-    '  screenshot-region --ref <@eN> [--padding <px>] [--png]',
-    '  screenshot-region --selector <css-selector> [--padding <px>] [--png]',
+    '  screenshot-region <x> <y> <width> <height> [--png] [--force]',
+    '  screenshot-region --ref <@eN> [--padding <px>] [--png] [--force]',
+    '  screenshot-region --selector <css-selector> [--padding <px>] [--png] [--force]',
     '  console [limit] [level]',
     '  viewport-resize <width> <height>                  size a tab\'s view; the window follows only when that tab is the one on screen',
     '  network [limit] [status]',
@@ -351,6 +521,7 @@ export function getBrowserToolHelp(): string {
     '',
     'Examples:',
     '  navigate https://example.com',
+    '  read --save sources/my-page/snapshot.md',
     '  click @e12',
     '  click-at 350 200',
     '  drag 100 200 300 400',
@@ -845,6 +1016,78 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
     return { output: lines.join('\n'), appendReleaseHint: true };
   }
 
+  if (cmd === 'read') {
+    // Read the page that is loaded *now* — an article as markdown plus whatever the page states
+    // about itself. Nothing navigates and nothing waits: "navigate" put the page there, and the
+    // window is already showing it.
+    const saveAt = parts.indexOf('--save');
+    let savePath: string | null = null;
+    if (saveAt !== -1) {
+      const requested = parts[saveAt + 1]?.trim();
+      if (!requested || requested.startsWith('--')) {
+        throw new Error('--save needs a path. Example: read --save sources/my-page/snapshot.md');
+      }
+      savePath = resolveLocalPath(requested, ctx.workspaceRootPath);
+    }
+
+    const extra = parts.slice(1);
+    if (saveAt !== -1) extra.splice(saveAt - 1, 2);
+    if (extra.length > 0) {
+      throw new Error(
+        `read takes no arguments besides "--save <path>" ("${extra.join(' ')}" would be ignored).`,
+      );
+    }
+
+    // One round trip, so the HTML and the address it was read at are the same moment of the same
+    // tab. The expression is wrapped in parens to be an expression rather than a statement.
+    const page = await fns.evaluate(
+      '({ html: document.documentElement.outerHTML, url: location.href })',
+    );
+    const html = (page as { html?: unknown } | null)?.html;
+    if (typeof html !== 'string' || html.length === 0) {
+      throw new Error('read: this tab has no HTML to read — navigate to a page first.');
+    }
+    const rawUrl = (page as { url?: unknown }).url;
+    const url = typeof rawUrl === 'string' && rawUrl.length > 0 ? rawUrl : 'about:blank';
+
+    const snapshot = await buildWebSnapshot({ html, url });
+    const note = renderWebSnapshotNote(snapshot);
+
+    const summary = [
+      `Read: ${snapshot.title || '(untitled)'}`,
+      `URL: ${url}`,
+      `Words: ${snapshot.meta.wordCount ?? 'unknown'}${snapshot.meta.author ? ` · Author: ${snapshot.meta.author}` : ''}`,
+    ];
+
+    if (savePath) {
+      // Keeping the note is what makes its images worth keeping too: a file somebody reads later
+      // should not be half a link. Read-only `read` skips this — there is nothing to keep it with.
+      const localized = await localizeSnapshotImages({ note, notePath: savePath, pageUrl: url, fns });
+      mkdirSync(dirname(savePath), { recursive: true });
+      writeFileSync(savePath, localized.note, 'utf8');
+      summary.push(
+        `Saved: ${savePath} (${formatBytes(new TextEncoder().encode(localized.note).length)})`,
+      );
+      if (localized.dirName) {
+        summary.push(`Images: ${localized.saved} saved to ${localized.dirName}/`);
+      }
+      if (localized.left.length > 0) {
+        summary.push(
+          `Images left as links (${localized.left.length}): ${summarizeImageFailures(localized.left)}`,
+        );
+      }
+      return { output: summary.join('\n'), appendReleaseHint: true };
+    }
+
+    // A reply is not a file: without --save the note is capped, and the cap is stated so the
+    // agent knows to reach for --save rather than assume it read the whole page.
+    const limit = 40_000;
+    const body = note.length > limit
+      ? `${note.slice(0, limit)}\n... (truncated — ${note.length - limit} more chars; use --save to keep the whole snapshot)`
+      : note;
+    return { output: [...summary, '', body].join('\n'), appendReleaseHint: true };
+  }
+
   if (cmd === 'find') {
     const query = parts.slice(1).join(' ').trim();
     if (!query) throw new Error('find requires a search query. Example: find login button');
@@ -1228,7 +1471,11 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
 
     const usePng = rest.includes('--png');
     const format = usePng ? 'png' as const : 'jpeg' as const;
-    const filteredRest = rest.filter((t) => t !== '--png');
+    // A shot is all or nothing: a region bigger than the page has painted is an error, not a quiet
+    // crop — an image missing part of what was asked for is a wrong answer. `--force` takes the
+    // incomplete image anyway, and the result says what was missing.
+    const force = rest.includes('--force');
+    const filteredRest = rest.filter((t) => t !== '--png' && t !== '--force');
 
     const parsePadding = (tokens: string[]) => {
       const idx = tokens.findIndex((t) => t === '--padding');
@@ -1272,6 +1519,7 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
     }
 
     const started = Date.now();
+    screenshotArgs.force = force;
     const result = await fns.screenshotRegion(screenshotArgs);
     const elapsedMs = Date.now() - started;
     const buf = result.imageBuffer;

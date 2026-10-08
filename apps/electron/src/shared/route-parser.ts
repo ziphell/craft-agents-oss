@@ -35,7 +35,7 @@ export interface ParsedRoute {
 // Compound Route Types (new format)
 // =============================================================================
 
-export type NavigatorType = 'sessions' | 'sources' | 'skills' | 'automations' | 'projects' | 'tweaks' | 'settings'
+export type NavigatorType = 'sessions' | 'sources' | 'skills' | 'automations' | 'projects' | 'tweaks' | 'designs' | 'settings'
 
 export interface ParsedCompoundRoute {
   /** The navigator type */
@@ -48,7 +48,7 @@ export interface ParsedCompoundRoute {
   automationFilter?: AutomationFilter
   /** Sessions presentation mode (only for sessions navigator). 'board' = Kanban view. */
   viewMode?: 'list' | 'board'
-  /** Details page info (null for empty state) */
+  /** Details design info (null for empty state) */
   details: {
     type: string
     id: string
@@ -63,7 +63,7 @@ export interface ParsedCompoundRoute {
  * Known prefixes that indicate a compound route
  */
 const COMPOUND_ROUTE_PREFIXES = [
-  'allSessions', 'flagged', 'archived', 'state', 'label', 'view', 'board', 'sources', 'skills', 'automations', 'projects', 'tweaks', 'settings'
+  'allSessions', 'flagged', 'archived', 'state', 'label', 'view', 'board', 'sources', 'skills', 'automations', 'projects', 'tweaks', 'designs', 'settings'
 ]
 
 /**
@@ -85,6 +85,7 @@ export function isCompoundRoute(route: string): boolean {
  *   'sources/api' -> { navigator: 'sources', sourceFilter: { kind: 'type', sourceType: 'api' }, details: null }
  *   'sources/mcp' -> { navigator: 'sources', sourceFilter: { kind: 'type', sourceType: 'mcp' }, details: null }
  *   'sources/local' -> { navigator: 'sources', sourceFilter: { kind: 'type', sourceType: 'local' }, details: null }
+ *   'sources/web' -> { navigator: 'sources', sourceFilter: { kind: 'type', sourceType: 'web' }, details: null }
  *   'sources/source/github' -> { navigator: 'sources', details: { type: 'source', id: 'github' } }
  *   'sources/api/source/gmail' -> { navigator: 'sources', sourceFilter: { kind: 'type', sourceType: 'api' }, details: { type: 'source', id: 'gmail' } }
  *   'settings' -> { navigator: 'settings', details: null }  // navigator-only view
@@ -131,10 +132,10 @@ export function parseCompoundRoute(route: string): ParsedCompoundRoute | null {
       return { navigator: 'sources', details: null }
     }
 
-    // Check for type filter: sources/api, sources/mcp, sources/local
-    const validSourceTypes = ['api', 'mcp', 'local']
+    // Check for type filter: sources/api, sources/mcp, sources/local, sources/web
+    const validSourceTypes = ['api', 'mcp', 'local', 'web']
     if (validSourceTypes.includes(segments[1])) {
-      const sourceType = segments[1] as 'api' | 'mcp' | 'local'
+      const sourceType = segments[1] as 'api' | 'mcp' | 'local' | 'web'
       const sourceFilter: SourceFilter = { kind: 'type', sourceType }
 
       // Check for source selection within filtered view: sources/api/source/{sourceSlug}
@@ -201,6 +202,20 @@ export function parseCompoundRoute(route: string): ParsedCompoundRoute | null {
       return {
         navigator: 'tweaks',
         details: { type: 'tweak', id: segments[2] },
+      }
+    }
+    return null
+  }
+
+  // Designs navigator
+  if (first === 'designs') {
+    if (segments.length === 1) {
+      return { navigator: 'designs', details: null }
+    }
+    if (segments[1] === 'design' && segments[2]) {
+      return {
+        navigator: 'designs',
+        details: { type: 'design', id: segments[2] },
       }
     }
     return null
@@ -344,6 +359,11 @@ export function buildCompoundRoute(parsed: ParsedCompoundRoute): string {
     return `tweaks/tweak/${parsed.details.id}`
   }
 
+  if (parsed.navigator === 'designs') {
+    if (!parsed.details) return 'designs'
+    return `designs/design/${parsed.details.id}`
+  }
+
   // Sessions navigator
   // Board is a standalone view of all sessions; emit its own prefix.
   if (parsed.viewMode === 'board') return 'board'
@@ -484,6 +504,14 @@ function convertCompoundToViewRoute(compound: ParsedCompoundRoute): ParsedRoute 
       return { type: 'view', name: 'tweaks', params: {} }
     }
     return { type: 'view', name: 'tweak-info', id: compound.details.id, params: {} }
+  }
+
+  // Designs
+  if (compound.navigator === 'designs') {
+    if (!compound.details) {
+      return { type: 'view', name: 'designs', params: {} }
+    }
+    return { type: 'view', name: 'design-info', id: compound.details.id, params: {} }
   }
 
   // Sessions
@@ -643,6 +671,17 @@ function convertCompoundToNavigationState(compound: ParsedCompoundRoute): Naviga
     }
   }
 
+  // Designs
+  if (compound.navigator === 'designs') {
+    if (!compound.details) {
+      return { navigator: 'designs', details: null }
+    }
+    return {
+      navigator: 'designs',
+      details: { type: 'design', designSlug: compound.details.id },
+    }
+  }
+
   // Sessions
   const filter = compound.sessionFilter || { kind: 'allSessions' as const }
   if (compound.details) {
@@ -741,6 +780,16 @@ function convertParsedRouteToNavigationState(parsed: ParsedRoute): NavigationSta
         }
       }
       return { navigator: 'tweaks', details: null }
+    case 'designs':
+      return { navigator: 'designs', details: null }
+    case 'design-info':
+      if (parsed.id) {
+        return {
+          navigator: 'designs',
+          details: { type: 'design', designSlug: parsed.id },
+        }
+      }
+      return { navigator: 'designs', details: null }
     case 'session':
       if (parsed.id) {
         // Reconstruct filter from params
@@ -860,6 +909,13 @@ function navigationStateToCompoundRoute(state: NavigationState): ParsedCompoundR
     return {
       navigator: 'tweaks',
       details: state.details ? { type: 'tweak', id: state.details.tweakSlug } : null,
+    }
+  }
+
+  if (state.navigator === 'designs') {
+    return {
+      navigator: 'designs',
+      details: state.details ? { type: 'design', id: state.details.designSlug } : null,
     }
   }
 

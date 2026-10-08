@@ -48,6 +48,7 @@ browser_tool({ command: "open" })
 browser_tool({ command: "open --foreground" })
 browser_tool({ command: "navigate https://example.com" })
 browser_tool({ command: "snapshot" })
+browser_tool({ command: "read --save sources/my-page/snapshot.md" })
 browser_tool({ command: "find login button" })
 browser_tool({ command: "click @e12" })
 browser_tool({ command: "click-at 350 200" })
@@ -118,6 +119,35 @@ Create or reuse the session browser window.
 ### `snapshot`
 Returns an accessibility tree with refs and element metadata.
 
+### `read [--save <path>]`
+Read the page currently loaded in the tab as an **article**: markdown plus the facts the page states about itself (title, source url, author, published, description, site, language, word count). Extraction is [Defuddle](https://github.com/kepano/defuddle)'s, run over the HTML the window already rendered — so a page behind a login, or one a script built after load, is read the way the person sees it (an HTTP fetch would get the empty shell instead).
+
+- `read` — the note comes back in the reply (capped at 40k chars; the cap is stated when it hits).
+- `read --save <path>` — the note is written to that file and only a summary comes back. A relative path counts from the workspace root, so a web source's snapshot is `read --save sources/<slug>/snapshot.md`.
+
+**Its images are kept too.** With `--save`, every image the article references is brought down and written into `<note>.assets/` beside the note (`snapshot.md` → `snapshot.assets/`, so the folder says which file it belongs to). The note's links are rewritten to those relative paths, which is how a picture beside a document is resolved and drawn. Two doors, tried in this order. First **the page's own `fetch`** — the request the page itself would make, with its referrer and its origin, which some hosts require of an image. The browser will not let script *read* a cross-origin response that carries no CORS header, though, and an image a page may **display** is exactly the kind it may not **read** — so a failure there falls through to **the window's own session**: the network stack behind the window, carrying that session's cookies and not subject to the page's CORS. That is how an image on a host that allows no cross-origin read still comes down. An image the page itself can read costs one request; only one it cannot read reaches the second door. Names are readable and stable: the stem comes from the url, then a short content hash, so re-capturing an unchanged image lands on the same name instead of accumulating copies, and two different `photo.jpg`s do not collide. A capture only ever **writes**: an image that changed, or that the page no longer carries, leaves its earlier file behind rather than being pruned — the folder is the person's, and nothing here deletes from it. An image that could not be fetched at all **keeps its remote url** and the reply says how many were kept and why the rest were not (`Images left as links (2): HTTP 403, over 8 MB`) — a working link is not improved by becoming a hole. Ceilings: 40 images, 8 MB each, 24 MB in total, after which the rest stay as links. Images arrive from Defuddle already made absolute (root-relative, `../`, protocol-relative all resolved against the page), lazy-load placeholders already replaced by the real `data-src`, and `srcset` already narrowed to its largest candidate. Plain `read` writes nothing and downloads nothing.
+
+The note is YAML frontmatter followed by the body:
+
+```markdown
+---
+title: …
+source: https://…
+author: …
+published: …
+created: 2026-10-07
+description: …
+site: …
+language: en
+wordCount: 1234
+tags: clippings
+---
+
+…article as markdown…
+```
+
+`read` reads what is loaded; it does not navigate or wait. Load the page first (`navigate <url>`, then `wait network-idle` if the page builds itself client-side), then `read`. Known gap: content inside shadow roots is not part of the page's `outerHTML`, so web-component-heavy pages come back thin.
+
 ### `find <query>`
 Performs keyword search over the snapshot accessibility nodes (`role`, `name`, `value`, `description`) and returns matching refs.
 
@@ -177,6 +207,14 @@ Convenience command: writes text to clipboard then triggers Ctrl+V (or Cmd+V on 
 
 ### `screenshot` / `screenshot --annotated` / `screenshot-region ...`
 Capture full-window or targeted screenshots. `--annotated` overlays `@eN` labels on interactive elements for easier ref debugging.
+
+A `--selector`/`--ref` region contains **only pixels the page has painted**, and it is all or nothing:
+if the region is bigger than that — measured: a 1440×900 element in a 900-wide viewport — the shot
+**fails**, and the error carries the numbers plus the size to give the tab (`viewport-resize <w> <h>`,
+then shoot again; resizing reflows the page, which is the caller's explicit decision). `--force`
+returns the incomplete image instead, labelled with what was missing. Nothing a region shot does
+resizes, zooms or scrolls the page. Content the page never rendered (off-screen virtualised lists,
+lazy images) has no pixels either way.
 
 ### `console`, `network`, `wait`, `downloads`
 Debug runtime issues, requests, synchronization points, and download progress.

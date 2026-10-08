@@ -123,6 +123,12 @@ export interface ScriptAction {
   runtime?: ScriptActionRuntime;
   /** Per-run timeout in ms (default 60_000, clamped to [1_000, 900_000]) */
   timeoutMs?: number;
+  /**
+   * Design slug this script refreshes. When set, the executor injects
+   * CRAFT_DESIGN_* env vars and records the outcome on the design's design.json
+   * (the completion marker the config watcher turns into `designs:changed`).
+   */
+  design?: string;
 }
 
 export type AutomationAction = PromptAction | WebhookAction | ScriptAction;
@@ -275,6 +281,8 @@ export interface ScriptActionResult {
   /** Captured stderr, or the block/spawn error (capped) */
   stderr: string;
   durationMs: number;
+  /** Design slug when this run refreshed a design */
+  design?: string;
 }
 
 export type ActionExecutionResult = PromptActionResult | WebhookActionResult | ScriptActionResult;

@@ -10,7 +10,7 @@
  */
 import { describe, it, expect } from 'bun:test'
 import { parseMentions, findMentionMatches, removeMention, stripAllMentions, resolveSkillMentions, resolveSourceMentions, extractBadges } from '../mentions'
-import { buildElementMention, parseElementMention } from '../element-mention'
+import { buildDesignMention, buildElementMention, buildTabMention, parseElementMention } from '@craft-agent/shared/mentions'
 
 // ============================================================================
 // parseMentions - Skill Pattern Tests
@@ -165,9 +165,45 @@ describe('element mentions', () => {
     expect(matches.map(m => m.type)).toEqual(['element', 'folder'])
   })
 
-  it('produces no badge for an element: the marker is expanded before send', () => {
+  it('produces a badge, so the chip survives in the sent message', () => {
     const marker = buildElementMention({ selector: '.a', text: 'A' })
-    expect(extractBadges(`see ${marker}`, [], [], 'ws')).toEqual([])
+    expect(extractBadges(`see ${marker}`, [], [], 'ws')).toMatchObject([
+      { type: 'element', label: 'A', rawText: marker },
+    ])
+  })
+})
+
+// ============================================================================
+// findMentionMatches / extractBadges - Tab & Design Pattern Tests
+// ============================================================================
+
+describe('tab mentions', () => {
+  it('produces a badge, so the chip survives in the sent message', () => {
+    const marker = buildTabMention({ url: 'https://a.example/', title: 'A' })
+    expect(extractBadges(`see ${marker}`, [], [], 'ws')).toMatchObject([
+      { type: 'tab', label: 'A', rawText: marker },
+    ])
+  })
+})
+
+describe('design mentions', () => {
+  it('finds a design marker so the composer can render it as a chip', () => {
+    const marker = buildDesignMention({ slug: 'cart', name: 'Cart' })
+    const matches = findMentionMatches(`open ${marker} please`, [], [])
+
+    expect(matches).toHaveLength(1)
+    expect(matches[0]).toMatchObject({
+      type: 'design',
+      fullMatch: marker,
+      startIndex: 5,
+    })
+  })
+
+  it('produces a badge, so the chip survives in the sent message', () => {
+    const marker = buildDesignMention({ slug: 'cart', name: 'Cart' })
+    expect(extractBadges(`see ${marker}`, [], [], 'ws')).toMatchObject([
+      { type: 'design', label: 'Cart', rawText: marker },
+    ])
   })
 })
 

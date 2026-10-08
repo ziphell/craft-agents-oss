@@ -39,6 +39,7 @@ import type {
   AccessibilitySnapshot,
 } from '../handlers/browser-pane-manager-interface'
 import type {
+  BrowserFetchedResource,
   BrowserFinishedRecording,
   BrowserStartRecordingArgs,
   BrowserStartRecordingResult,
@@ -364,6 +365,15 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
   }
   async evaluate(id: string, expression: string, tabId?: string): Promise<unknown> {
     return await this.invoke('evaluate', [id, expression], tabId)
+  }
+
+  async fetchResource(
+    id: string,
+    url: string,
+    options?: { referrer?: string; maxBytes?: number },
+    tabId?: string,
+  ): Promise<BrowserFetchedResource> {
+    return await this.invoke<BrowserFetchedResource>('fetchResource', [id, url, options], tabId)
   }
 
   async pickElement(

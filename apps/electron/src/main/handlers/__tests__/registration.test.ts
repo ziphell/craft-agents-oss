@@ -110,6 +110,7 @@ async function getExpectedChannels(): Promise<Set<string>> {
     projectFiles,
     drawio,
     tweaks,
+    pages,
     decisions,
   ] = await Promise.all([
     import('@craft-agent/server-core/handlers/rpc/auth'),
@@ -133,6 +134,7 @@ async function getExpectedChannels(): Promise<Set<string>> {
     import('@craft-agent/server-core/handlers/rpc/project-files'),
     import('@craft-agent/server-core/handlers/rpc/drawio'),
     import('@craft-agent/server-core/handlers/rpc/tweaks'),
+    import('@craft-agent/server-core/handlers/rpc/designs'),
     import('@craft-agent/server-core/handlers/rpc/decisions'),
   ])
 
@@ -166,6 +168,7 @@ async function getExpectedChannels(): Promise<Set<string>> {
     ...projectFiles.HANDLED_CHANNELS,
     ...drawio.HANDLED_CHANNELS,
     ...tweaks.HANDLED_CHANNELS,
+    ...pages.HANDLED_CHANNELS,
     ...decisions.HANDLED_CHANNELS,
     ...browser.HANDLED_CHANNELS,
     ...guiSystem.GUI_HANDLED_CHANNELS,

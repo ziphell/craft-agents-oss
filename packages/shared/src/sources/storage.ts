@@ -8,15 +8,17 @@
  * NOT a workspace slug. The `LoadedSource.workspaceId` is derived via basename().
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, statSync } from 'fs';
 import { join, basename } from 'path';
 import { randomUUID } from 'crypto';
 import type {
   FolderSourceConfig,
   SourceGuide,
   LoadedSource,
+  LoadedSourceSnapshot,
   CreateSourceInput,
 } from './types.ts';
+import { WEB_SNAPSHOT_FILE, snapshotAssetsDirName } from './types.ts';
 import { validateSourceConfig } from '../config/validators.ts';
 import { debug } from '../utils/debug.ts';
 import { readJsonFileSync } from '../utils/files.ts';
@@ -354,7 +356,42 @@ export function loadSource(workspaceRootPath: string, sourceSlug: string): Loade
     workspaceRootPath,
     workspaceId,
     iconPath,
+    ...(config.type === 'web' ? { snapshot: readSourceSnapshot(folderPath) } : {}),
   };
+}
+
+/**
+ * What a web source's captured page looks like from here, or nothing when it has none.
+ *
+ * Read while the source is loaded rather than when a page asks, so the detail page can say what was
+ * captured without a filesystem of its own — `iconPath` is here for the same reason. A source that
+ * has never been captured simply has no `snapshot`, which the page shows as an empty state.
+ */
+function readSourceSnapshot(folderPath: string): LoadedSourceSnapshot | undefined {
+  const notePath = join(folderPath, WEB_SNAPSHOT_FILE);
+
+  try {
+    const stats = statSync(notePath);
+    return {
+      path: notePath,
+      bytes: stats.size,
+      // The file's own mtime rather than the note's `created:` line: this answers "when was it
+      // written", which is what a stale snapshot means — an edit by hand counts.
+      writtenAt: stats.mtime.getTime(),
+      imageCount: countFiles(join(folderPath, snapshotAssetsDirName(WEB_SNAPSHOT_FILE))),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/** How many files a folder holds, or 0 when it is not there. */
+function countFiles(dirPath: string): number {
+  try {
+    return readdirSync(dirPath).length;
+  } catch {
+    return 0;
+  }
 }
 
 /**
@@ -514,6 +551,11 @@ export async function createSource(
     case 'local':
       if (input.local) {
         config.local = input.local;
+      }
+      break;
+    case 'web':
+      if (input.web) {
+        config.web = input.web;
       }
       break;
   }

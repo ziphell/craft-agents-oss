@@ -4,7 +4,7 @@
  * Renders content based on the unified NavigationState:
  * - Chats navigator: ChatPage for selected session, or empty state
  * - Sources navigator: SourceInfoPage for selected source, or empty state
- * - Settings navigator: Settings, Preferences, or Shortcuts page
+ * - Settings navigator: Settings, Preferences, or Shortcuts design
  *
  * The NavigationState is the single source of truth for what to display.
  *
@@ -33,6 +33,7 @@ import {
   isAutomationsNavigation,
   isProjectsNavigation,
   isTweaksNavigation,
+  isDesignsNavigation,
 } from '@/contexts/NavigationContext'
 import { useSessionSelection, useIsMultiSelectActive, useSelectedIds, useSelectionCount } from '@/hooks/useSession'
 import { sourceSelection, skillSelection, automationSelection } from '@/hooks/useEntitySelection'
@@ -45,6 +46,8 @@ import { AutomationInfoPage } from '../automations/AutomationInfoPage'
 import ProjectInfoPage from '@/pages/ProjectInfoPage'
 import { KanbanBoardContainer } from './kanban/KanbanBoardContainer'
 import { TweakView } from '../tweaks/TweakView'
+import { DesignsHome } from '../designs/DesignsHome'
+import { DesignView } from '../designs/DesignView'
 import type { ExecutionEntry } from '../automations/types'
 import { automationsAtom } from '@/atoms/automations'
 import { SendResourceToWorkspaceDialog, type SendResourceType } from './SendResourceToWorkspaceDialog'
@@ -235,10 +238,10 @@ export function MainContentPanel({
     </StoplightProvider>
   )
 
-  // Settings navigator - uses component map from settings-pages.ts.
+  // Settings navigator - uses component map from settings-designs.ts.
   // Bare `settings` route (subpage === null) means navigator-only view in compact mode;
   // PanelStackContainer hides the content panel entirely. On desktop the panel still
-  // mounts, so fall back to the App page so it isn't empty.
+  // mounts, so fall back to the App design so it isn't empty.
   if (isSettingsNavigation(navState)) {
     const subpage = navState.subpage ?? 'app'
     const SettingsPageComponent = getSettingsPageComponent(subpage)
@@ -379,7 +382,20 @@ export function MainContentPanel({
     )
   }
 
-  // Projects navigator - show project detail page or empty state
+  // Designs navigator - full-width library grid, or one design's embedded render
+  if (isDesignsNavigation(navState)) {
+    return wrapWithStoplight(
+      <Panel variant="grow" className={className}>
+        {navState.details ? (
+          <DesignView key={navState.details.designSlug} designSlug={navState.details.designSlug} />
+        ) : (
+          <DesignsHome />
+        )}
+      </Panel>
+    )
+  }
+
+  // Projects navigator - show project detail design or empty state
   if (isProjectsNavigation(navState)) {
     const projectDetails = navState.details
     if (projectDetails && projectDetails.type === 'project') {

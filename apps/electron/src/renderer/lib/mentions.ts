@@ -13,11 +13,26 @@ import type { MentionItemType } from '@/components/ui/mention-menu'
 import type { LoadedSkill, LoadedSource } from '../../shared/types'
 import { AGENTS_PLUGIN_NAME } from '@craft-agent/shared/skills/types'
 import { getSourceIconSync, getSkillIconSync } from './icon-cache'
-import { findElementMentions, parseElementMention } from './element-mention'
-import { findTabMentions } from './tab-mention'
 
-// Import and re-export parsing functions from shared (pure string operations, no renderer deps)
-import { parseMentions, stripAllMentions, resolveSkillMentions, resolveSourceMentions, type ParsedMentions } from '@craft-agent/shared/mentions'
+// Import and re-export parsing functions from shared (pure string operations, no renderer deps).
+// The tab / design / element marker formats are shared with the agent side, which rewrites
+// them for the model — so their format lives there too (shared/mentions/*.ts).
+import {
+  designLabel,
+  elementLabel,
+  findDesignMentions,
+  findElementMentions,
+  findTabMentions,
+  parseDesignMention,
+  parseElementMention,
+  parseMentions,
+  parseTabMention,
+  stripAllMentions,
+  resolveSkillMentions,
+  resolveSourceMentions,
+  tabLabel,
+  type ParsedMentions,
+} from '@craft-agent/shared/mentions'
 export { parseMentions, stripAllMentions, resolveSkillMentions, resolveSourceMentions, type ParsedMentions }
 
 // ============================================================================
@@ -123,7 +138,7 @@ export function findMentionMatches(
     })
   }
 
-  // Match element mentions: [element:<selector>|<text>] — an encoded payload, so
+  // Match element mentions: [element:<selector>|<text>|<url>|<tabId>] — an encoded payload, so
   // the id here is the raw payload and consumers decode it (see element-mention).
   for (const element of findElementMentions(text)) {
     matches.push({
@@ -134,7 +149,7 @@ export function findMentionMatches(
     })
   }
 
-  // Match tab mentions: [tab:<url>|<title>] — the same encoded-payload shape, for a
+  // Match tab mentions: [tab:<url>|<title>|<tabId>] — the same encoded-payload shape, for a
   // whole tab of the browser window rather than one element of it (see tab-mention).
   for (const tab of findTabMentions(text)) {
     matches.push({
@@ -142,6 +157,17 @@ export function findMentionMatches(
       id: tab.payload,
       fullMatch: tab.fullMatch,
       startIndex: tab.startIndex,
+    })
+  }
+
+  // Match design mentions: [design:<slug>|<name>] — the same encoded-payload shape,
+  // for one of the workspace's designs (see design-mention).
+  for (const design of findDesignMentions(text)) {
+    matches.push({
+      type: 'design',
+      id: design.payload,
+      fullMatch: design.fullMatch,
+      startIndex: design.startIndex,
     })
   }
 
@@ -169,6 +195,10 @@ export function removeMention(text: string, type: MentionItemType, id: string): 
       break
     case 'folder':
       pattern = new RegExp(`\\[folder:${escapeRegExp(id)}\\]`, 'g')
+      break
+    case 'design':
+      // The id is the encoded payload (see design-mention).
+      pattern = new RegExp(`\\[design:${escapeRegExp(id)}\\]`, 'g')
       break
     case 'skill':
     default:
@@ -249,10 +279,8 @@ export function extractBadges(
   const sourcesBySlug = new Map(sources.map(s => [s.config.slug, s]))
 
   return matches.flatMap(match => {
-    // Element and tab references never reach a stored message: the composer expands
-    // them into readable text at send time (see element-mention / tab-mention), so
-    // there is nothing here to badge.
-    if (match.type === 'element' || match.type === 'tab') return []
+    // Every reference keeps its marker in the message — the store keeps it so the sent chip can
+    // be redrawn from it, and the agent rewrites it for the model (see the resolve* functions).
 
     let label = match.id
     let iconDataUrl: string | undefined
@@ -278,6 +306,18 @@ export function extractBadges(
       // Show folder name as label, full relative path stored for tooltip
       label = match.id.split('/').pop() || match.id
       filePath = match.id
+    } else if (match.type === 'tab') {
+      // The id is the encoded payload (see tab-mention); the title is the chip.
+      const ref = parseTabMention(match.id)
+      label = ref ? tabLabel(ref) : match.id
+    } else if (match.type === 'design') {
+      // The same, for a design: the name is the chip, and the slug is already in the marker.
+      const ref = parseDesignMention(match.id)
+      label = ref ? designLabel(ref) : match.id
+    } else if (match.type === 'element') {
+      // The same, for a picked element: what it says, or its selector when it says nothing.
+      const ref = parseElementMention(match.id)
+      label = ref ? elementLabel(ref) : match.id
     }
 
     // For skills, create fully-qualified rawText (pluginName:slug) so the agent
@@ -291,7 +331,8 @@ export function extractBadges(
     }
 
     return [{
-      type: match.type as 'source' | 'skill' | 'file' | 'folder',
+      // Every ComposerMentionType is a ContentBadge type now that all references are badged.
+      type: match.type as ContentBadge['type'],
       label,
       rawText,
       iconDataUrl,

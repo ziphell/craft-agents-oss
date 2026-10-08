@@ -39,6 +39,10 @@ function drawioDocPath(): string {
   return resolve(join(homedir(), '.craft-agent', 'docs', 'drawio-tools.md'));
 }
 
+function designsDocPath(): string {
+  return resolve(join(process.env.CRAFT_CONFIG_DIR || join(homedir(), '.craft-agent'), 'docs', 'designs.md'));
+}
+
 describe('PrerequisiteManager', () => {
   let manager: PrerequisiteManager;
   let debugMessages: string[];
@@ -131,6 +135,33 @@ describe('PrerequisiteManager', () => {
       mockExistsPaths.add(docsPath);
 
       expect(manager.checkPrerequisites('mcp__session__drawio_tool').allowed).toBe(false);
+    });
+
+    it('matches the design authoring tools and blocks until the designs guide is read', () => {
+      const docsPath = designsDocPath();
+      mockExistsPaths.add(docsPath);
+
+      for (const tool of ['create_design', 'update_design', 'mcp__session__create_design', 'mcp__session__update_design']) {
+        const result = manager.checkPrerequisites(tool);
+        expect(result.allowed).toBe(false);
+        expect(result.blockReason).toContain('designs guide');
+        expect(result.blockReason).toContain(docsPath);
+      }
+    });
+
+    // Only the tools that carry `content` need the authoring guide; reading or feeding a design
+    // does not, so they must not be caught by the rule's matcher.
+    it('does not gate the design tools that do not author HTML', () => {
+      mockExistsPaths.add(designsDocPath());
+
+      for (const tool of ['list_designs', 'get_design', 'write_design_data', 'delete_design']) {
+        expect(manager.checkPrerequisites(tool).allowed).toBe(true);
+      }
+    });
+
+    it('allows design tools when the guide is not installed', () => {
+      expect(manager.checkPrerequisites('create_design').allowed).toBe(true);
+      expect(manager.checkPrerequisites('update_design').allowed).toBe(true);
     });
 
     // The other door on the same runtime is not gated: `video_tool` reads a recording off a
@@ -366,6 +397,21 @@ describe('PrerequisiteManager', () => {
 
       manager.resetReadState();
       expect(manager.checkPrerequisites('drawio_tool').allowed).toBe(false);
+    });
+
+    // Strict too: the failures the designs guide prevents are silent (an external request inside
+    // design HTML is blocked with nothing to see; an unrecognized bridge message never arrives),
+    // so repeated attempts must not wear the block down.
+    it('does not bypass the designs guide after repeated rejections', () => {
+      const docsPath = designsDocPath();
+      mockExistsPaths.add(docsPath);
+
+      expect(manager.checkPrerequisites('create_design').allowed).toBe(false);
+      expect(manager.checkPrerequisites('create_design').allowed).toBe(false);
+      expect(manager.checkPrerequisites('create_design').allowed).toBe(false);
+
+      manager.trackReadTool({ file_path: docsPath });
+      expect(manager.checkPrerequisites('create_design').allowed).toBe(true);
     });
   });
 

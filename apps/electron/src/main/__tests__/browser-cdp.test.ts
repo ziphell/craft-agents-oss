@@ -464,6 +464,59 @@ describe('BrowserCDP', () => {
     })
   })
 
+  describe('scrollBy', () => {
+    it('scrolls the document and never reaches for a wheel when it moves', async () => {
+      const commands: Array<{ method: string; params: any }> = []
+      let metricsReads = 0
+      const wc = createMockWebContents(async (method, params) => {
+        commands.push({ method, params })
+        if (method === 'Runtime.evaluate' && String(params?.expression).includes('window.scrollX')) {
+          metricsReads++
+          const y = metricsReads === 1 ? 0 : 400
+          return { result: { value: JSON.stringify([0, y, 1000, 800]) } }
+        }
+        return {}
+      })
+
+      const cdp = new BrowserCDP(wc as any)
+      expect(await cdp.scrollBy(0, 400)).toEqual({ viaWheel: false, documentMoved: true })
+      expect(commands.some((c) => c.method === 'Input.dispatchMouseEvent')).toBe(false)
+    })
+
+    it('hands the gesture to the middle of the viewport when the document cannot move', async () => {
+      const commands: Array<{ method: string; params: any }> = []
+      const wc = createMockWebContents(async (method, params) => {
+        commands.push({ method, params })
+        if (method === 'Runtime.evaluate' && String(params?.expression).includes('window.scrollX')) {
+          return { result: { value: JSON.stringify([0, 0, 1000, 800]) } }
+        }
+        return {}
+      })
+
+      const cdp = new BrowserCDP(wc as any)
+      expect(await cdp.scrollBy(0, 400)).toEqual({ viaWheel: true, documentMoved: false })
+
+      const wheel = commands.find((c) => c.method === 'Input.dispatchMouseEvent')
+      expect(wheel?.params).toMatchObject({ type: 'mouseWheel', x: 500, y: 400, deltaX: 0, deltaY: 400 })
+    })
+
+    it('says the document moved when the wheel is what moved it', async () => {
+      let metricsReads = 0
+      const wc = createMockWebContents(async (method, params) => {
+        if (method === 'Runtime.evaluate' && String(params?.expression).includes('window.scrollX')) {
+          metricsReads++
+          // 1: before, 2: after the script scroll (no movement), 3: after the wheel
+          const y = metricsReads >= 3 ? 400 : 0
+          return { result: { value: JSON.stringify([0, y, 1000, 800]) } }
+        }
+        return {}
+      })
+
+      const cdp = new BrowserCDP(wc as any)
+      expect(await cdp.scrollBy(0, 400)).toEqual({ viaWheel: true, documentMoved: true })
+    })
+  })
+
   describe('detach', () => {
     it('detaches debugger', async () => {
       const wc = createMockWebContents()

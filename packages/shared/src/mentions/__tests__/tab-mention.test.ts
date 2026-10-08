@@ -1,14 +1,18 @@
+/**
+ * Tab mentions — the marker `[tab:<url>|<title>|<tabId>]` the composer inserts, and the
+ * reference the agent rewrites it into at the model boundary.
+ *
+ * The marker itself has to survive to the store (so the sent chip can be redrawn from it), so
+ * these tests cover both halves: reading it back, and getting the model-facing sentence out.
+ */
 import { describe, expect, it } from 'bun:test'
 import {
   buildTabMention,
-  expandTabMentions,
   findTabMentions,
   parseTabMention,
+  resolveTabMentions,
   tabLabel,
-} from '../tab-mention'
-
-const format = (ref: { url: string; title: string }) =>
-  `[Mentioned tab: "${ref.title}" (${ref.url})]`
+} from '../tab-mention.ts'
 
 describe('buildTabMention / parseTabMention', () => {
   it('round-trips a plain tab', () => {
@@ -42,6 +46,34 @@ describe('buildTabMention / parseTabMention', () => {
       url: 'https://example.com/',
       title: 'Example',
     })
+  })
+
+  it('round-trips the tab the reference is pointed with', () => {
+    // The address says where the reader is standing; the id is the only part a
+    // command can be pointed with (`--tab <id>`), so a tab mention carries both.
+    const marker = buildTabMention({ url: 'https://example.com/cart', title: 'Cart', tabId: '12' })
+
+    expect(marker).toBe('[tab:https%3A%2F%2Fexample.com%2Fcart|Cart|12]')
+    expect(parseTabMention(marker.slice('[tab:'.length, -1))).toEqual({
+      url: 'https://example.com/cart',
+      title: 'Cart',
+      tabId: '12',
+    })
+  })
+
+  it('keeps the id in its place for a tab with no title', () => {
+    const marker = buildTabMention({ url: 'about:blank', title: '', tabId: '7' })
+
+    expect(marker).toBe('[tab:about%3Ablank||7]')
+    expect(parseTabMention(marker.slice('[tab:'.length, -1))).toEqual({
+      url: 'about:blank',
+      title: '',
+      tabId: '7',
+    })
+  })
+
+  it('still reads a marker written before tabs carried an id', () => {
+    expect(parseTabMention('about%3Ablank|')).toEqual({ url: 'about:blank', title: '' })
   })
 
   it('rejects payloads that are not ours', () => {
@@ -79,32 +111,44 @@ describe('findTabMentions', () => {
   })
 })
 
-describe('expandTabMentions', () => {
-  it('replaces a marker with the reference the model reads', () => {
+describe('resolveTabMentions', () => {
+  it('rewrites a marker into the reference the model reads', () => {
     const marker = buildTabMention({ url: 'https://example.com/cart', title: 'Cart' })
 
-    expect(expandTabMentions(`看看 ${marker}`, format))
-      .toBe('看看 [Mentioned tab: "Cart" (https://example.com/cart)]')
+    expect(resolveTabMentions(`看看 ${marker}`))
+      .toBe('看看 [Mentioned tab: Cart (https://example.com/cart)]')
+  })
+
+  it('names the tab by id, so a command can be pointed at it', () => {
+    const marker = buildTabMention({ url: 'https://example.com/cart', title: 'Cart', tabId: '12' })
+
+    expect(resolveTabMentions(`看看 ${marker}`))
+      .toBe('看看 [Mentioned tab: Cart (tab 12, https://example.com/cart)]')
+  })
+
+  it('names the address when the title says nothing', () => {
+    const marker = buildTabMention({ url: 'about:blank', title: '' })
+
+    expect(resolveTabMentions(marker)).toBe('[Mentioned tab: about:blank (about:blank)]')
   })
 
   it('leaves the user text around the marker untouched', () => {
     const marker = buildTabMention({ url: 'https://example.com/', title: 'Example' })
-    expect(expandTabMentions(`before ${marker} after`, format))
-      .toBe('before [Mentioned tab: "Example" (https://example.com/)] after')
+    expect(resolveTabMentions(`before ${marker} after`))
+      .toBe('before [Mentioned tab: Example (https://example.com/)] after')
   })
 
-  it('expands every marker', () => {
+  it('rewrites every marker', () => {
     const text = `${buildTabMention({ url: 'https://a.example/', title: 'A' })} and ${buildTabMention({ url: 'https://b.example/', title: 'B' })}`
-    expect(expandTabMentions(text, format))
-      .toBe('[Mentioned tab: "A" (https://a.example/)] and [Mentioned tab: "B" (https://b.example/)]')
+    expect(resolveTabMentions(text))
+      .toBe('[Mentioned tab: A (https://a.example/)] and [Mentioned tab: B (https://b.example/)]')
   })
 
   it('leaves text with no markers byte-identical', () => {
-    expect(expandTabMentions('just a question', format)).toBe('just a question')
+    expect(resolveTabMentions('just a question')).toBe('just a question')
   })
 
   it('leaves a malformed marker visible rather than dropping it', () => {
-    expect(expandTabMentions('see [tab:broken] here', format))
-      .toBe('see [tab:broken] here')
+    expect(resolveTabMentions('see [tab:broken] here')).toBe('see [tab:broken] here')
   })
 })

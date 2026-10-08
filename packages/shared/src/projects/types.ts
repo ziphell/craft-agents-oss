@@ -94,6 +94,18 @@ export interface LoadedProject {
 }
 
 /**
+ * One design bound to the project, as the project block carries it.
+ *
+ * The slug is the identity the design tools take (`get_design`/`update_design`), so the
+ * block lists it and the agent reads the page on demand rather than carrying its markup.
+ */
+export interface ProjectPromptDesign {
+  name: string;
+  slug: string;
+  kind: string;
+}
+
+/**
  * Project context shape used for system-prompt injection.
  * Decoupled from ProjectConfig so prompt builders can be tested in isolation.
  */
@@ -104,6 +116,8 @@ export interface ProjectPromptContext {
   assetsPath: string;
   /** Lightweight manifest of reference files (newest-first); bodies are read on-demand. */
   assets: { filename: string; mimeType: string; sizeBytes: number }[];
+  /** Designs bound to this project (by `config.projectId`), sorted by slug for a stable prompt. */
+  designs: ProjectPromptDesign[];
   /** Absolute path to MEMORY.md, so the agent knows where to persist learnings. */
   memoryPath: string;
   /** MEMORY.md content, already capped by loadProjectMemory. */

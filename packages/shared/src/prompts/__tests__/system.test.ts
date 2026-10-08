@@ -189,6 +189,7 @@ describe('formatProjectContextForPrompt', () => {
     assetsPath: '/ws/projects/acme/assets',
     memoryPath: '/ws/projects/acme/MEMORY.md',
     assets: [],
+    designs: [],
     ...overrides,
   })
 
@@ -225,6 +226,19 @@ describe('formatProjectContextForPrompt', () => {
     const block = formatProjectContextForPrompt(baseCtx())
     expect(block).not.toContain('<project_assets>')
     expect(block).not.toContain('lists reference files')
+  })
+
+  it('renders a designs manifest when designs are bound, and omits it when none', () => {
+    const without = formatProjectContextForPrompt(baseCtx())
+    expect(without).not.toContain('<project_designs>')
+    expect(without).not.toContain('lists designs')
+
+    const withDesigns = formatProjectContextForPrompt(
+      baseCtx({ designs: [{ name: 'Cart', slug: 'cart', kind: 'prototype' }] }),
+    )
+    expect(withDesigns).toContain('<project_designs>')
+    expect(withDesigns).toContain('- Cart (slug: cart, prototype)')
+    expect(withDesigns).toContain('lists designs')
   })
 
   it('emits the <project_memory> wrapper only when memory content is present', () => {

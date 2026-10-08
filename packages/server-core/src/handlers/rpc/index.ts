@@ -22,6 +22,7 @@ import { registerSettingsHandlers } from './settings'
 import { registerProjectsHandlers } from './projects'
 import { registerDrawioHandlers } from './drawio'
 import { registerTweaksHandlers } from './tweaks'
+import { registerDesignsHandlers } from './designs'
 import { registerSkillsHandlers } from './skills'
 import { registerSourcesHandlers } from './sources'
 import { registerStatusesHandlers } from './statuses'
@@ -52,6 +53,7 @@ export function registerCoreRpcHandlers(
   registerProjectsHandlers(server, deps)
   registerDrawioHandlers(server, deps)
   registerTweaksHandlers(server, deps)
+  registerDesignsHandlers(server, deps)
   registerSkillsHandlers(server, deps)
   registerSourcesHandlers(server, deps)
   registerStatusesHandlers(server, deps)

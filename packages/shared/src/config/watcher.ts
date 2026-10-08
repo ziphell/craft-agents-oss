@@ -44,6 +44,7 @@ import { permissionsConfigCache, getAppPermissionsDir } from '../agent/permissio
 import { getWorkspacePath, getWorkspaceSourcesPath, getWorkspaceSkillsPath } from '../workspaces/storage.ts';
 import type { LoadedSkill } from '../skills/types.ts';
 import { loadWorkspaceTweaks } from '../tweaks/storage.ts';
+import { loadWorkspaceDesigns } from '../designs/storage.ts';
 import { toTweakSummary } from '../tweaks/summary.ts';
 import { TWEAK_CONFIG_FILENAME, TWEAK_CSS_FILENAME, TWEAK_JS_FILENAME } from '../tweaks/types.ts';
 import { loadSkill, loadAllSkills, invalidateSkillsCache, skillNeedsIconDownload, downloadSkillIcon } from '../skills/storage.ts';
@@ -161,7 +162,7 @@ export interface ConfigWatcherCallbacks {
    * Called when a tweak changes on disk: its record (created, edited, deleted), or the code
    * beside it. A tweak **is** the record plus the code, so both are what the list and the
    * installer have to follow — the fresh list is handed over because that is what the app's
-   * own pages show.
+   * own designs show.
    *
    * `hits.json` is deliberately not watched, and neither is the folder itself: only the
    * applier writes `hits.json`, and it writes it *because* the rules were just installed —
@@ -169,6 +170,13 @@ export interface ConfigWatcherCallbacks {
    * re-install the rules it has just run, once per debounce, forever.
    */
   onTweaksListChange?: (tweaks: import('../tweaks/summary.ts').TweakSummary[]) => void;
+
+  /**
+   * Called when any designs/{slug}/design.json changes (create/delete/refresh
+   * completion). design.json is the completion marker of a refresh run, so
+   * data/ churn (sqlite, snapshot tmp files) is deliberately NOT watched.
+   */
+  onDesignsListChange?: (designs: import('../designs/types.ts').LoadedDesign[]) => void;
 
   // Session callbacks
   /** Called when a session's JSONL header is modified externally (labels, name, flags, etc.) */
@@ -507,6 +515,18 @@ export class ConfigWatcher {
       if (followed) {
         debug('[ConfigWatcher] tweak file changed:', relativePath);
         this.debounce('tweaks-dir', () => this.handleTweaksChange());
+      }
+      return;
+    }
+
+    // Designs changes: designs/{slug}/design.json is the ONLY trigger — a refresh
+    // run's last write is design.json, so reacting to it (and nothing else)
+    // means observers never see a half-written data/ directory. Slug-dir
+    // add/remove also fires (design created/deleted externally).
+    if (parts[0] === 'designs' && parts.length >= 2) {
+      const file = parts[2];
+      if (parts.length === 2 || file === 'design.json') {
+        this.debounce('designs-dir', () => this.handleDesignsChange());
       }
       return;
     }
@@ -991,7 +1011,7 @@ export class ConfigWatcher {
 
   /**
    * A tweak changed on disk: its record, or the code beside it. The list is re-derived from the
-   * record and handed to the callback — that is what the app's own pages show — and the code
+   * record and handed to the callback — that is what the app's own designs show — and the code
    * files are left to whoever installs the tweak, which reads them from disk itself.
    */
   private handleTweaksChange(): void {
@@ -1002,6 +1022,26 @@ export class ConfigWatcher {
       this.callbacks.onTweaksListChange(tweaks);
     } catch (error) {
       debug('[ConfigWatcher] Failed to reload tweaks:', error);
+    }
+  }
+
+  // ============================================================
+  // Design Handlers
+  // ============================================================
+
+  /**
+   * Handle a designs change (any design.json touched, or a design folder
+   * added/removed). Coarse by design: reload the full list once per
+   * debounce window.
+   */
+  private handleDesignsChange(): void {
+    if (!this.callbacks.onDesignsListChange) return;
+    try {
+      const designs = loadWorkspaceDesigns(this.workspaceDir);
+      debug('[ConfigWatcher] designs changed:', this.workspaceId, `(${designs.length} designs)`);
+      this.callbacks.onDesignsListChange(designs);
+    } catch (error) {
+      debug('[ConfigWatcher] Failed to reload designs:', error);
     }
   }
 

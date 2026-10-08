@@ -90,6 +90,12 @@ export interface SessionScopedToolCallbacks {
    */
   tweaks?: import('@craft-agent/session-tools-core').TweakToolCallbacks;
   /**
+   * Designs tools (list/get/create/update/write data/delete) — grouped in one
+   * object because the six operations always ship together. Wired by
+   * SessionManager to the invoking session's workspace.
+   */
+  designs?: import('@craft-agent/session-tools-core').DesignsToolCallbacks;
+  /**
    * Decision-layer callback for the `decide` tool (Jev / System One). Wired by
    * SessionManager from `@craft-agent/shared/decisions`; gating (Settings switch,
    * feature toggle, key) happens inside the callback at call time.

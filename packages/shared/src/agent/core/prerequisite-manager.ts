@@ -63,6 +63,9 @@ const BROWSER_TOOLS_DOC_PATH = resolve(join(CONFIG_DIR, 'docs', 'browser-tools.m
 /** Global drawio docs path required before `drawio_tool` usage. */
 const DRAWIO_TOOLS_DOC_PATH = resolve(join(CONFIG_DIR, 'docs', 'drawio-tools.md'));
 
+/** Global designs guide required before authoring a design (`create_design` / `update_design`). */
+const DESIGNS_DOC_PATH = resolve(join(CONFIG_DIR, 'docs', 'designs.md'));
+
 // ============================================================
 // Rules
 // ============================================================
@@ -137,6 +140,25 @@ const RULES: PrerequisiteRule[] = [
     },
     blockMessage:
       'You must read the drawio guide before using drawio_tool. Please read the file at {filePath} first, then retry.',
+    strict: true,
+  },
+
+  // Built-in design tools: require designs.md before authoring HTML.
+  //
+  // Only `create_design` / `update_design` carry a `content` field, so only they need the authoring
+  // guide; `list` / `get` / `write_design_data` / `delete_design` read or feed a design and are
+  // left alone. The failures the guide prevents are silent too — an external request inside design
+  // HTML is blocked with nothing to see, and a bridge message the host does not recognize simply
+  // never arrives — so this is strict, like the browser's and the drawio's.
+  {
+    toolMatcher: (toolName: string) =>
+      toolName === 'create_design' || toolName === 'mcp__session__create_design' ||
+      toolName === 'update_design' || toolName === 'mcp__session__update_design',
+    resolveRequiredPath: () => {
+      return existsSync(DESIGNS_DOC_PATH) ? DESIGNS_DOC_PATH : null;
+    },
+    blockMessage:
+      'You must read the designs guide before creating or updating a design. Please read the file at {filePath} first, then retry.',
     strict: true,
   },
 ];

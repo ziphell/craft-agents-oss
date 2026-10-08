@@ -78,6 +78,9 @@ import { join, delimiter } from 'path'
 import { existsSync, readFileSync } from 'fs'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { SessionManager, setSessionPlatform, setSessionRuntimeHooks } from '@craft-agent/server-core/sessions'
+import { DesignThumbnailer } from './design-thumbnailer'
+import { pushDesignSnapshotsToTabs } from './design-tab-pusher'
+import { DesignExporter } from './design-exporter'
 import { registerAllRpcHandlers } from './handlers/index'
 import { registerCoreRpcHandlers, cleanupSessionFileWatchForClient, cleanupProjectFilesWatchForClient } from '@craft-agent/server-core/handlers/rpc'
 import type { PlatformServices } from '../runtime/platform'
@@ -94,6 +97,7 @@ import { loadWindowState, saveWindowState } from './window-state'
 import { getWorkspaces, getWorkspaceByNameOrId, loadStoredConfig, addWorkspace, saveConfig } from '@craft-agent/shared/config'
 import { getDefaultWorkspacesDir } from '@craft-agent/shared/workspaces'
 import { initializeDocs } from '@craft-agent/shared/docs'
+import { getDesignConfigRelativePath } from '@craft-agent/shared/designs'
 import { initializeReleaseNotes } from '@craft-agent/shared/release-notes'
 import { ensureDefaultPermissions } from '@craft-agent/shared/agent/permissions-config'
 import { ensureToolIcons, ensurePresetThemes } from '@craft-agent/shared/config'
@@ -104,7 +108,8 @@ import { handleDeepLink } from './deep-link'
 import { BrowserPaneManager } from './browser-pane-manager'
 import { OAuthFlowStore } from '@craft-agent/shared/auth'
 import { registerPrivilegedSchemes, registerThumbnailHandler } from './thumbnail-protocol'
-import { drawioOriginUrl, registerDrawioHandler } from './drawio-host'
+import { drawioOriginUrl } from './drawio-host'
+import { registerLocalOriginHandler } from './local-origin-router'
 import { requestTweaksForWorkspace } from './tweaks-injector'
 import log, { isDebugMode, mainLog, getLogFilePath, getMessagingGatewayLogFilePath, messagingGatewayLog, autoUpdateLog } from './logger'
 import { setPerfEnabled, enableDebug } from '@craft-agent/shared/utils'
@@ -434,8 +439,10 @@ app.whenReady().then(async () => {
   // Registered on the app's own session — where the embedded viewer and the hidden engine
   // window live — and on nothing else. Deliberately **no** handler on `http` or `https`:
   // a handler there is per session and comes down on every request that session makes,
-  // real pages included, which is what broke them.
-  registerDrawioHandler(session.defaultSession)
+  // real designs included, which is what broke them.
+  // One handler for the app's own scheme, routing every feature that lives on it
+  // (the diagram editor, and now a design's own folder).
+  registerLocalOriginHandler(session.defaultSession)
 
   // Re-apply proxy settings now that Electron sessions are available
   // (first call before app.whenReady only configured Node-level proxy)
@@ -586,6 +593,13 @@ app.whenReady().then(async () => {
       const result = await dialog.showOpenDialog(win, spec)
       return { canceled: result.canceled, filePaths: result.filePaths }
     })
+    ipcMain.handle('__dialog:showSaveDialog', async (event, spec) => {
+      const win = BrowserWindow.fromWebContents(event.sender)
+        || BrowserWindow.getFocusedWindow()
+        || BrowserWindow.getAllWindows()[0]
+      const result = await dialog.showSaveDialog(win, spec)
+      return { canceled: result.canceled, filePath: result.filePath ?? null }
+    })
 
     if (!isClientOnly) {
       // Restore persisted Git Bash path on Windows (must happen before any SDK subprocess spawn)
@@ -627,7 +641,7 @@ app.whenReady().then(async () => {
       const clientMap = new Map<number, string>()
       const resolveClientId = (wcId: number) => clientMap.get(wcId)
 
-      // Read embedded server config (Server settings page)
+      // Read embedded server config (Server settings design)
       const { getServerConfig } = await import('@craft-agent/shared/config')
       const embeddedServerConfig = getServerConfig()
       const serverModeEnabled = embeddedServerConfig.enabled && !isClientOnly
@@ -697,10 +711,29 @@ app.whenReady().then(async () => {
           // watcher calls this on every tweak write, so the registration a new document is
           // given follows the folder rather than whatever was installed last.
           sm.setTweaksInstaller(requestTweaksForWorkspace)
+          // Design preview posters: offscreen capture is Electron-main-only. On
+          // capture, nudge the watcher so the designs:changed push carries the
+          // fresh thumbnail pointer to open grids. The poke names the design's
+          // design.json — the one path the watcher treats as a designs trigger.
+          const designThumbnailer = new DesignThumbnailer({
+            log: (m) => mainLog.info(m),
+            onCaptured: ({ workspaceRootPath, slug }) => {
+              sm.notifyConfigFileChange(workspaceRootPath, getDesignConfigRelativePath(slug))
+            },
+          })
+          sm.setDesignThumbnailer((req) => designThumbnailer.enqueue(req))
+          // A design opened in a browser tab has no host bridge, so a fresh snapshot is
+          // pushed into any tab that is showing it (see design-tab-pusher).
+          sm.setDesignsChangedNotifier((workspaceId) => {
+            void pushDesignSnapshotsToTabs(browserPaneManager!, workspaceId)
+          })
           return sm
         },
         bindRpcServer: (sm, server) => sm.setRpcServer(server),
         createHandlerDeps: ({ sessionManager: sm, platform: p, oauthFlowStore: ofs }) => {
+          // PDF / per-slide PNG exports render in a hidden window, which lives
+          // in this process — so the renderer is injected here (see design-exporter.ts).
+          const designExporter = new DesignExporter({ log: (m) => mainLog.info(m) })
           // The messaging handle is built here because it needs sessionManager.
           // The WS publisher is attached after bootstrapServer resolves (via
           // handle.setPublisher) because wsServer isn't available yet.
@@ -738,6 +771,7 @@ app.whenReady().then(async () => {
             drawioOrigin: drawioOriginUrl,
             oauthFlowStore: ofs,
             messagingRegistry: messagingHandle.registry,
+            designExportRender: (req) => designExporter.export(req),
           }
         },
         // Headless: register only core handlers (no GUI handlers for browser, settings, etc.)

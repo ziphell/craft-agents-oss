@@ -1,14 +1,19 @@
+/**
+ * Element mentions — the marker `[element:<selector>|<text>|<url>|<tabId>]` the browser picker
+ * inserts,
+ * and the reference the agent rewrites it into at the model boundary.
+ *
+ * The marker itself has to survive to the store (so the sent chip can be redrawn from it), so
+ * these tests cover both halves: reading it back, and getting the model-facing sentence out.
+ */
 import { describe, expect, it } from 'bun:test'
 import {
   buildElementMention,
   elementLabel,
-  expandElementMentions,
   findElementMentions,
   parseElementMention,
-} from '../element-mention'
-
-const format = (ref: { selector: string; text: string }) =>
-  `[Mentioned element: ${ref.selector} ("${ref.text}")]`
+  resolveElementMentions,
+} from '../element-mention.ts'
 
 describe('buildElementMention / parseElementMention', () => {
   it('round-trips a plain reference', () => {
@@ -56,6 +61,25 @@ describe('buildElementMention / parseElementMention', () => {
     })
   })
 
+  it('round-trips the tab the element was picked in', () => {
+    // Two tabs can be on the same page, so the address alone does not say which
+    // one to change; the id is what a command is pointed with.
+    const marker = buildElementMention({
+      selector: '#submit',
+      text: 'Submit',
+      url: 'https://shop.example.com/cart',
+      tabId: '12',
+    })
+
+    expect(marker).toBe('[element:%23submit|Submit|https%3A%2F%2Fshop.example.com%2Fcart|12]')
+    expect(parseElementMention(marker.slice('[element:'.length, -1))).toEqual({
+      selector: '#submit',
+      text: 'Submit',
+      url: 'https://shop.example.com/cart',
+      tabId: '12',
+    })
+  })
+
   it('drops the parts a pick did not carry', () => {
     // The agent's own `browser_tool pick` carries no page: the marker is shorter,
     // and reading it back leaves nothing empty behind.
@@ -70,6 +94,14 @@ describe('buildElementMention / parseElementMention', () => {
 
   it('still reads a marker written before picks carried an origin', () => {
     expect(parseElementMention('%23submit|Submit')).toEqual({ selector: '#submit', text: 'Submit' })
+  })
+
+  it('still reads a marker written before picks carried a tab', () => {
+    expect(parseElementMention('%23submit|Submit|https%3A%2F%2Fshop.example%2Fcart')).toEqual({
+      selector: '#submit',
+      text: 'Submit',
+      url: 'https://shop.example/cart',
+    })
   })
 
   it('rejects payloads that are not ours', () => {
@@ -107,32 +139,59 @@ describe('elementLabel', () => {
   })
 })
 
-describe('expandElementMentions', () => {
-  it('replaces a marker with the reference the model reads', () => {
+describe('resolveElementMentions', () => {
+  it('rewrites a marker with the label, the selector and the page', () => {
+    const marker = buildElementMention({
+      selector: '#submit',
+      text: 'Submit',
+      url: 'https://shop.example/cart',
+    })
+
+    expect(resolveElementMentions(`改一下 ${marker}`))
+      .toBe('改一下 [Mentioned element: Submit (#submit on https://shop.example/cart)]')
+  })
+
+  it('names the tab when the pick carried one', () => {
+    const marker = buildElementMention({
+      selector: '#submit',
+      text: 'Submit',
+      url: 'https://shop.example/cart',
+      tabId: '12',
+    })
+
+    expect(resolveElementMentions(`改一下 ${marker}`))
+      .toBe('改一下 [Mentioned element: Submit (#submit on https://shop.example/cart, tab 12)]')
+  })
+
+  it('omits the page when the pick carried none', () => {
     const marker = buildElementMention({ selector: '#submit', text: 'Submit' })
 
-    expect(expandElementMentions(`改一下 ${marker}`, format))
-      .toBe('改一下 [Mentioned element: #submit ("Submit")]')
+    expect(resolveElementMentions(marker)).toBe('[Mentioned element: Submit (#submit)]')
+  })
+
+  it('falls back to the selector as the label for an element with no text', () => {
+    const marker = buildElementMention({ selector: 'svg.icon', text: '' })
+
+    expect(resolveElementMentions(marker)).toBe('[Mentioned element: svg.icon (svg.icon)]')
   })
 
   it('leaves the user text around the marker untouched', () => {
     const marker = buildElementMention({ selector: '.a', text: 'A' })
-    expect(expandElementMentions(`before ${marker} after`, format))
-      .toBe('before [Mentioned element: .a ("A")] after')
+    expect(resolveElementMentions(`before ${marker} after`))
+      .toBe('before [Mentioned element: A (.a)] after')
   })
 
-  it('expands every marker', () => {
+  it('rewrites every marker', () => {
     const text = `${buildElementMention({ selector: '.a', text: 'A' })} and ${buildElementMention({ selector: '.b', text: 'B' })}`
-    expect(expandElementMentions(text, format))
-      .toBe('[Mentioned element: .a ("A")] and [Mentioned element: .b ("B")]')
+    expect(resolveElementMentions(text))
+      .toBe('[Mentioned element: A (.a)] and [Mentioned element: B (.b)]')
   })
 
   it('leaves text with no markers byte-identical', () => {
-    expect(expandElementMentions('just a question', format)).toBe('just a question')
+    expect(resolveElementMentions('just a question')).toBe('just a question')
   })
 
   it('leaves a malformed marker visible rather than dropping it', () => {
-    expect(expandElementMentions('see [element:broken] here', format))
-      .toBe('see [element:broken] here')
+    expect(resolveElementMentions('see [element:broken] here')).toBe('see [element:broken] here')
   })
 })

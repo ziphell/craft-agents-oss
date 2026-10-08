@@ -1,7 +1,7 @@
 /**
  * SourceAvatar - Thin wrapper around EntityIcon for sources.
  *
- * Sets fallbackIcon based on source type (McpIcon, Globe, HardDrive, etc.)
+ * Sets fallbackIcon based on source type (McpIcon, Unplug, HardDrive, etc.)
  * and adds source-specific extras:
  * - Favicon resolution as secondary fallback when no local icon found
  * - Connection status indicator dot (only when showStatus=true)
@@ -10,8 +10,9 @@
  */
 
 import * as React from 'react'
-import { Globe, HardDrive, Mail, Plug } from 'lucide-react'
+import { Bookmark, HardDrive, Mail } from 'lucide-react'
 import { EntityIcon, type IconComponent } from '@/components/ui/entity-icon'
+import { mentionIconComponent } from '@craft-agent/ui'
 import { useEntityIcon, logoUrlCache } from '@/lib/icon-cache'
 import { McpIcon } from '@/components/icons/McpIcon'
 import type { LoadedSource } from '@craft-agent/shared/sources/types'
@@ -22,7 +23,7 @@ import { SourceStatusIndicator, deriveConnectionStatus } from './source-status-i
 // Types
 // ============================================================================
 
-export type SourceType = 'mcp' | 'api' | 'gmail' | 'local'
+export type SourceType = 'mcp' | 'api' | 'gmail' | 'local' | 'web'
 
 interface SourceAvatarProps {
   /** LoadedSource object */
@@ -41,19 +42,31 @@ interface SourceAvatarProps {
 // Fallback Icons per Source Type
 // ============================================================================
 
+/**
+ * The mark for an API source — and for any source kind the app has no bespoke icon for.
+ *
+ * Taken from the shared mention-icon set, so it is the same unplug a source chip shows; the globe
+ * belongs to the browser tab (see @craft-agent/ui → mention-icons). Made once, not per render: a
+ * new component identity would remount the avatar each time.
+ */
+const SOURCE_MARK = mentionIconComponent('source')
+
 /** Source-specific fallback icons based on source type */
 const SOURCE_FALLBACKS: Record<string, IconComponent> = {
   mcp: McpIcon,
-  api: Globe,
+  api: SOURCE_MARK,
   gmail: Mail,
   local: HardDrive,
+  // A bookmark, because that is what it is: a url kept. Not the globe — that one is the tab's (see
+  // @craft-agent/ui → mention-icons), and the two must not read as the same thing.
+  web: Bookmark,
 }
 
 /**
  * Get the fallback icon for a source type
  */
 export function getSourceFallbackIcon(type: SourceType): IconComponent {
-  return SOURCE_FALLBACKS[type] ?? Plug
+  return SOURCE_FALLBACKS[type] ?? SOURCE_MARK
 }
 
 // ============================================================================
@@ -159,7 +172,7 @@ export function SourceAvatar({ source, size = 'md', fluid, showStatus, className
     ? { kind: 'file', value: faviconUrl, colorable: false }
     : icon
 
-  const FallbackIcon = SOURCE_FALLBACKS[source.config.type] ?? Plug
+  const FallbackIcon = SOURCE_FALLBACKS[source.config.type] ?? SOURCE_MARK
 
   const entityIcon = (
     <EntityIcon

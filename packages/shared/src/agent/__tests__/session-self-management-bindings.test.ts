@@ -6,7 +6,13 @@ import {
 } from '../session-scoped-tools.ts';
 import { createClaudeContext } from '../claude-context.ts';
 import { attachSessionSelfManagementBindings } from '../session-self-management-bindings.ts';
-import type { SessionToolContext, SessionInfo } from '@craft-agent/session-tools-core';
+import type {
+  SessionToolContext,
+  SessionInfo,
+  DesignsToolCallbacks,
+  DesignToolSummary,
+  DesignToolDetails,
+} from '@craft-agent/session-tools-core';
 import { SESSION_TOOL_REGISTRY } from '@craft-agent/session-tools-core';
 
 // Minimal noop callbacks for createClaudeContext
@@ -288,5 +294,100 @@ describe('Claude/Pi session self-management parity', () => {
     const listResult = await listHandler(ctx, {});
     expect(listResult.isError).toBe(true);
     expect(listResult.content[0]!.text).toContain('not available in this context');
+  });
+});
+
+// ============================================================
+// Phase 4 — Designs: the six design tools are advertised to every session,
+// so the grouped callbacks behind them must be bound like every other
+// session-scoped group. Regression: they were wired in SessionManager and left
+// out of this helper, so all six answered
+// "Designs tools are not available in this context."
+// ============================================================
+
+describe('designs tools binding', () => {
+  const sessionId = 'test-designs-binding';
+
+  beforeEach(() => {
+    unregisterSessionScopedToolCallbacks(sessionId);
+  });
+
+  const SUMMARY: DesignToolSummary = {
+    slug: 'build-health',
+    kind: 'prototype',
+    name: 'Build Health',
+    createdAt: 1,
+    updatedAt: 2,
+    hasContent: true,
+    shared: false,
+    folderPath: '/ws/designs/build-health',
+  };
+
+  const DETAILS: DesignToolDetails = {
+    ...SUMMARY,
+    id: 'design_1a2b3c4d',
+    contentDigest: 'abc',
+    contentLength: 128,
+    contentPath: '/ws/designs/build-health/index.html',
+    data: null,
+    grants: [],
+  };
+
+  function designsCallbacks(): DesignsToolCallbacks {
+    return {
+      listDesigns: () => [SUMMARY],
+      getDesign: (slug) => (slug === SUMMARY.slug ? DETAILS : null),
+      createDesign: async () => DETAILS,
+      updateDesign: async () => DETAILS,
+      writeDesignData: async (slug) => ({
+        slug,
+        kvCount: 1,
+        seriesCount: 0,
+        generatedAt: 3,
+        snapshotPath: `/ws/designs/${slug}/data/snapshot.json`,
+        durationMs: 1,
+      }),
+      deleteDesign: async () => ({ deleted: true, publicCopyMayRemain: false }),
+    };
+  }
+
+  it('every design tool reaches its registry callbacks, with no tool left unbound', async () => {
+    const ctx = createBaseContext(sessionId);
+    attachSessionSelfManagementBindings(ctx, sessionId);
+
+    // Without callbacks the degrade path still stands (unchanged behaviour).
+    expect(ctx.designs).toBeUndefined();
+
+    const designs = designsCallbacks();
+    registerSessionScopedToolCallbacks(sessionId, { designs });
+
+    // Resolved fresh from the registry, not captured at attach time.
+    expect(ctx.designs).toBe(designs);
+
+    const invocations: Array<[string, Record<string, unknown>]> = [
+      ['list_designs', {}],
+      ['get_design', { slug: SUMMARY.slug }],
+      ['create_design', { name: 'Build Health' }],
+      ['update_design', { slug: SUMMARY.slug, name: 'Renamed' }],
+      ['write_design_data', { slug: SUMMARY.slug, set: { total: 1 } }],
+      ['delete_design', { slug: SUMMARY.slug }],
+    ];
+
+    for (const [name, args] of invocations) {
+      const handler = SESSION_TOOL_REGISTRY.get(name)!.handler!;
+      const result = await handler(ctx, args);
+      expect(`${name}: ${result.content[0]!.text}`).not.toContain('not available in this context');
+      expect(result.isError).toBe(false);
+    }
+  });
+
+  it('reports \"not available\" for a design tool when no callbacks are registered', async () => {
+    const ctx = createBaseContext(sessionId);
+    attachSessionSelfManagementBindings(ctx, sessionId);
+
+    const handler = SESSION_TOOL_REGISTRY.get('list_designs')!.handler!;
+    const result = await handler(ctx, {});
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain('not available in this context');
   });
 });

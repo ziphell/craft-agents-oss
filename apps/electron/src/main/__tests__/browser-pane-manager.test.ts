@@ -403,6 +403,10 @@ mock.module('electron', () => ({
     fromPartition: mock(() => ({
       setPermissionCheckHandler: mock(() => {}),
       setPermissionRequestHandler: mock(() => {}),
+      // The manager installs the craft-local scheme handler on this session at instance
+      // creation (registerLocalOriginHandler), so a fake without `protocol` fails every
+      // test in this file — the mock has to model what the code actually uses.
+      protocol: { handle: mock(() => {}) },
       webRequest: {
         onBeforeRequest: mock((_cb: any) => {}),
         onBeforeSendHeaders: mock((_cb: any) => {}),
@@ -1943,7 +1947,7 @@ describe('BrowserPaneManager', () => {
 
     await expect(
       manager.screenshotRegion('region-oob', { x: 5000, y: 5000, width: 100, height: 100 })
-    ).rejects.toThrow('Resolved screenshot region is outside the current viewport')
+    ).rejects.toThrow(/not on screen at all/)
   })
 
   it('resizes browser window viewport and returns effective applied size', () => {

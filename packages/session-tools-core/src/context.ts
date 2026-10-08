@@ -352,6 +352,7 @@ export interface SessionToolContext {
    * (SessionManager); undefined elsewhere, where the handlers degrade gracefully.
    */
   tweaks?: TweakToolCallbacks;
+  designs?: DesignsToolCallbacks;
 
   // ============================================================
   // Decision model (decide)
@@ -510,7 +511,7 @@ export interface TweakToolSummary {
  * One selector a tweak declares with `@target`, and what it has matched.
  *
  * `stale` is the whole point of keeping the record: the tweak has been applied since the
- * last time this selector matched, and it did not match — the page moved.
+ * last time this selector matched, and it did not match — the design moved.
  */
 export interface TweakToolTarget {
   selector: string;
@@ -583,8 +584,189 @@ export interface TweakToolCallbacks {
 }
 
 // ============================================================
+// Designs Types
+// ============================================================
+// Plain JSON shapes mirroring @craft-agent/core design types — duplicated here
+// on purpose so this package stays dependency-free (same rule as
+// CreateTaskInput). The backend maps real DesignConfig/LoadedDesign onto these.
+
+/** Scheduled refresh spec for a design (5-field cron → workspace-relative script). */
+export interface DesignToolRefreshSpec {
+  /** 5-field cron expression evaluated once per minute */
+  cron: string;
+  /** Script path relative to the workspace root (must stay within it) */
+  script: string;
+  /** Extra argv appended after the script path */
+  args?: string[];
+  /** IANA timezone for cron evaluation (system local when omitted) */
+  timezone?: string;
+  /** Per-run timeout in ms (default 60_000, clamped to [1_000, 900_000]) */
+  timeoutMs?: number;
+  /** false pauses scheduling without deleting the spec */
+  enabled?: boolean;
+}
+
+/** Deck presentation hint. Present = the design is a deck. */
+export interface DesignToolDeckSpec {
+  /** '16:9' | '4:3' | '16:10' | '9:16' */
+  aspect?: string;
+  /** Template/theme the deck was authored from */
+  theme?: string;
+}
+
+/** Motion composition hint. Present = the design renders to video. */
+export interface DesignToolMotionSpec {
+  /** Capture frame rate (1–60) */
+  fps?: number;
+  /** Piece length in ms (100–600000) */
+  durationMs?: number;
+  /** '16:9' | '4:3' | '16:10' | '9:16' */
+  aspect?: string;
+}
+
+/** Compact design entry (returned by list_designs). */
+export interface DesignToolSummary {
+  slug: string;
+  name: string;
+  description?: string;
+  /** 'prototype' | 'dashboard' | 'deck' | 'motion' — what the design is */
+  kind: string;
+  projectId?: string;
+  createdAt: number;
+  updatedAt: number;
+  /** Whether index.html exists yet */
+  hasContent: boolean;
+  refresh?: DesignToolRefreshSpec;
+  /** Outcome of the most recent data refresh (scheduled or agent write) */
+  lastRefresh?: { at: number; ok: boolean; durationMs: number; error?: string };
+  /** Whether the design is currently published (share link exists) */
+  shared: boolean;
+  /** Deck presentation hint (absent = a plain document) */
+  deck?: DesignToolDeckSpec;
+  /** Motion composition hint (absent = not a motion composition) */
+  motion?: DesignToolMotionSpec;
+  /** Absolute path to the design folder (designs/{slug}/) */
+  folderPath: string;
+}
+
+/** Summary of a design's data snapshot (kv keys + per-series stats, not full points). */
+export interface DesignToolDataSummary {
+  generatedAt: number;
+  kvKeys: string[];
+  series: Array<{ name: string; points: number; latest?: { t: number; v: number } }>;
+  /** Absolute path to data/snapshot.json — Read it for the full contents */
+  snapshotPath: string;
+}
+
+/** Full design details (returned by get_design / create_design / update_design). */
+export interface DesignToolDetails extends DesignToolSummary {
+  id: string;
+  /** The design's own address — open it with `browser_tool` to read or drive the page */
+  previewUrl?: string;
+  /** sha256 hex of index.html (grants and render leases bind to it) */
+  contentDigest?: string;
+  /** Byte length of index.html when present */
+  contentLength?: number;
+  /** Absolute path to index.html */
+  contentPath: string;
+  /** Data snapshot summary, or null when no data has been written yet */
+  data: DesignToolDataSummary | null;
+  /** Source-action grants (user-approved; stale = digest mismatch or expired) */
+  grants: Array<{
+    id: string;
+    kind: string;
+    /** Source slug for api/mcp grants (absent for script grants) */
+    sourceSlug?: string;
+    /** Workspace-relative script path for script grants (absent otherwise) */
+    script?: string;
+    description?: string;
+    expiresAt: number;
+    stale: boolean;
+  }>;
+  /** Public share URL when published */
+  shareUrl?: string;
+  /** Full index.html content (only when requested with includeContent) */
+  content?: string;
+}
+
+/** Input for create_design. */
+export interface CreateDesignToolInput {
+  name: string;
+  description?: string;
+  /** 'prototype' | 'deck' | 'motion' (default: 'prototype'); deck/motion settings imply it */
+  kind?: string;
+  /** Stable Project ID to bind the design to */
+  projectId?: string;
+  /** Full self-contained HTML document for index.html */
+  content?: string;
+  refresh?: DesignToolRefreshSpec;
+  /** Deck presentation hint — provide it to make this a deck (see docs/designs.md) */
+  deck?: DesignToolDeckSpec;
+  /** Motion composition hint — provide it to make this renderable as video (see docs/designs.md) */
+  motion?: DesignToolMotionSpec;
+}
+
+/** Patch for update_design — only provided fields change; null clears a field. */
+export interface UpdateDesignToolPatch {
+  name?: string;
+  description?: string | null;
+  /** 'prototype' | 'deck' | 'motion' — changing it drops the old kind's settings */
+  kind?: string;
+  projectId?: string | null;
+  /** Replaces index.html entirely (re-digests; existing grants go stale by design) */
+  content?: string;
+  refresh?: DesignToolRefreshSpec | null;
+  /** Deck presentation hint. Pass null to turn the design back into a plain document. */
+  deck?: DesignToolDeckSpec | null;
+  /** Motion composition hint. Pass null to turn the design back into a plain document. */
+  motion?: DesignToolMotionSpec | null;
+}
+
+/** Data mutation batch for write_design_data (applied in one transaction). */
+export interface DesignDataToolPatch {
+  /** KV upserts: key → any JSON value */
+  set?: Record<string, unknown>;
+  /** KV keys to delete */
+  delete?: string[];
+  /** Timeseries appends: series name → points ({ t? epoch ms, v number }) */
+  appendSeries?: Record<string, Array<{ t?: number; v: number }>>;
+  /** Timeseries prunes: series name → deleteBefore timestamp (t < value removed) */
+  pruneSeries?: Record<string, number>;
+}
+
+/** Result of write_design_data. */
+export interface DesignDataWriteSummary {
+  slug: string;
+  kvCount: number;
+  seriesCount: number;
+  generatedAt: number;
+  snapshotPath: string;
+  durationMs: number;
+}
+
+/** Result of delete_design. */
+export interface DeleteDesignToolResult {
+  deleted: true;
+  /** True when the design was published and the remote copy may still exist */
+  publicCopyMayRemain: boolean;
+}
+
+/**
+ * Designs tool callbacks, injected by the backend (SessionManager). All storage
+ * logic lives behind these — this package never touches designs/ directly.
+ */
+export interface DesignsToolCallbacks {
+  listDesigns(): DesignToolSummary[] | Promise<DesignToolSummary[]>;
+  getDesign(slug: string, options?: { includeContent?: boolean }): DesignToolDetails | null | Promise<DesignToolDetails | null>;
+  createDesign(input: CreateDesignToolInput): Promise<DesignToolDetails>;
+  updateDesign(slug: string, patch: UpdateDesignToolPatch): Promise<DesignToolDetails>;
+  writeDesignData(slug: string, patch: DesignDataToolPatch): Promise<DesignDataWriteSummary>;
+  deleteDesign(slug: string): Promise<DeleteDesignToolResult>;
+}
+
+// ============================================================
 // Decision Tool Types (mirror @craft-agent/shared/decisions — this package
-// must stay free of that dependency, same rule as pages)
+// must stay free of that dependency, same rule as designs)
 // ============================================================
 
 export type DecisionToolQuestionType = 'choice' | 'score' | 'noul';

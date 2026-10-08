@@ -54,6 +54,7 @@ export type BrowserCapabilityMethod =
   | 'scroll'
   | 'waitFor'
   | 'evaluate'
+  | 'fetchResource'
   | 'pickElement'
   // Persistent injection
   | 'addInitScript'

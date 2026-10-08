@@ -165,6 +165,13 @@ describe('isBrowserUrl — an address a browser window can hold', () => {
     expect(isBrowserUrl('  HTTPS://example.com  ')).toBe(true)
   })
 
+  it('is true for the app\'s own origin, so a design can be opened as a tab', () => {
+    // Served by a host in this process (designs, the diagram editor). A design is opened
+    // here to be read or driven with the browser tools; what that page may fetch is the
+    // host's decision, not this one’s.
+    expect(isBrowserUrl('craft-local://build-health-1a2b3c4d/index.html')).toBe(true)
+  })
+
   it('is false for everything the OS should have instead', () => {
     // Safe to hand out, and none of it is a browser address: mail and phone go to their own
     // apps, and someone else's scheme goes to whoever registered it.

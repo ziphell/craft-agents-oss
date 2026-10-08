@@ -15,10 +15,12 @@ export type {
   McpSourceConfig,
   ApiSourceConfig,
   LocalSourceConfig,
+  WebSourceConfig,
   SourceConnectionStatus,
   FolderSourceConfig,
   SourceGuide,
   LoadedSource,
+  LoadedSourceSnapshot,
   CreateSourceInput,
   ApiRenewEndpoint,
 } from './types.ts';
@@ -26,6 +28,8 @@ export type {
 // Constants and helpers
 export {
   API_OAUTH_PROVIDERS,
+  WEB_SNAPSHOT_FILE,
+  snapshotAssetsDirName,
   isApiOAuthProvider,
   isGenericOAuthSource,
   hasRenewEndpoint,

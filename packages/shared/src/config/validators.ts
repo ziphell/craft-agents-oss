@@ -377,7 +377,7 @@ import { getWorkspaceSourcesPath } from '../workspaces/storage.ts';
 
 // --- sources/{slug}/config.json ---
 
-const SourceTypeSchema = z.enum(['mcp', 'api', 'local']);
+const SourceTypeSchema = z.enum(['mcp', 'api', 'local', 'web']);
 
 // MCP source supports two transport types:
 // - HTTP/SSE: requires url and authType
@@ -453,6 +453,10 @@ const LocalSourceConfigSchema = z.object({
   format: z.string().optional(),
 });
 
+const WebSourceConfigSchema = z.object({
+  url: z.string().url(),
+});
+
 // Source brand schema
 const SourceBrandSchema = z.object({
   color: EntityColorSchema.optional(),
@@ -468,6 +472,7 @@ export const FolderSourceConfigSchema = z.object({
   mcp: McpSourceConfigSchema.optional(),
   api: ApiSourceConfigSchema.optional(),
   local: LocalSourceConfigSchema.optional(),
+  web: WebSourceConfigSchema.optional(),
   brand: SourceBrandSchema.optional(),
   isAuthenticated: z.boolean().optional(),
   lastTestedAt: z.number().int().min(0).optional(),
@@ -482,9 +487,10 @@ export const FolderSourceConfigSchema = z.object({
       case 'mcp': return !!data.mcp;
       case 'api': return !!data.api;
       case 'local': return !!data.local;
+      case 'web': return !!data.web;
     }
   },
-  { message: 'Config must include type-specific configuration (mcp, api, or local)' }
+  { message: 'Config must include type-specific configuration (mcp, api, local, or web)' }
 );
 
 /**

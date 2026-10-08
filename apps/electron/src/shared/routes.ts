@@ -124,14 +124,14 @@ export const routes = {
         : `view/${encodeURIComponent(viewId)}` as const,
 
     /** Sources view (sources navigator) - supports type filtering */
-    sources: (params?: { sourceSlug?: string; type?: 'api' | 'mcp' | 'local' }) => {
+    sources: (params?: { sourceSlug?: string; type?: 'api' | 'mcp' | 'local' | 'web' }) => {
       const { sourceSlug, type } = params ?? {}
       // Build base from filter type
       const base = type ? `sources/${type}` : 'sources'
       if (sourceSlug) {
         return `${base}/source/${sourceSlug}` as const
       }
-      return base as 'sources' | `sources/${'api' | 'mcp' | 'local'}`
+      return base as 'sources' | `sources/${'api' | 'mcp' | 'local' | 'web'}`
     },
 
     /** API sources view (sources navigator, api filter) */
@@ -151,6 +151,12 @@ export const routes = {
       sourceSlug
         ? `sources/local/source/${sourceSlug}` as const
         : 'sources/local' as const,
+
+    /** Web page sources view (sources navigator, web filter) */
+    sourcesWeb: (sourceSlug?: string) =>
+      sourceSlug
+        ? `sources/web/source/${sourceSlug}` as const
+        : 'sources/web' as const,
 
     /** Skills view (skills navigator). Pass a slug string for a local skill detail view. */
     skills: (skillSlug?: string) => {
@@ -195,6 +201,12 @@ export const routes = {
       tweakSlug
         ? `tweaks/tweak/${tweakSlug}` as const
         : 'tweaks' as const,
+
+    /** Designs view (full-width library grid, or one design's embedded render) */
+    designs: (designSlug?: string) =>
+      designSlug
+        ? `designs/design/${designSlug}` as const
+        : 'designs' as const,
 
     /** Kanban board view (sessions navigator, board view mode, all sessions) */
     board: () => 'board' as const,

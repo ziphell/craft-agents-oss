@@ -94,6 +94,24 @@ export type {
   DeleteTweakArgs,
 } from './tweaks.ts';
 
+// Designs
+export {
+  handleListDesigns,
+  handleGetDesign,
+  handleCreateDesign,
+  handleUpdateDesign,
+  handleWriteDesignData,
+  handleDeleteDesign,
+} from './designs.ts';
+export type {
+  ListDesignsArgs,
+  GetDesignArgs,
+  CreateDesignArgs,
+  UpdateDesignArgs,
+  WriteDesignDataArgs,
+  DeleteDesignArgs,
+} from './designs.ts';
+
 // Decision model
 export { handleDecide } from './decide.ts';
 export type { DecideArgs } from './decide.ts';
