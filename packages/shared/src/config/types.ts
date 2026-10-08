@@ -25,4 +25,9 @@ export interface NetworkProxySettings {
   httpProxy?: string;
   httpsProxy?: string;
   noProxy?: string;
+  /**
+   * Whether loopback (127.0.0.1, ::1, localhost) bypasses the proxy in custom
+   * mode. Defaults to true — the app's own local connections depend on it.
+   */
+  bypassLoopback?: boolean;
 }

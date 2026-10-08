@@ -117,7 +117,8 @@ poster hint (see "The cover is a full view"), and a design may ignore it.
 - **One artboard is one page for export.** `.artboard` is the unit the exporter walks, exactly as
   a deck's `.slide` is: one PNG per frame **at the frame's own size** (the exporter parks it at the
   origin at 1:1, so nothing is scaled and no camera is involved), one PPTX page per frame, and — with
-  the print rule in the starter — one PDF page per frame. Nothing to configure for it either.
+  the print rule in the starter, which releases `html, body` from the camera's viewport, since a root
+  that clips cannot break across pages — one PDF page per frame. Nothing to configure for it either.
 - **A frame's name is part of what a camera move frames.** The label sits above the frame, so a focus
   that ignores it puts the label off the top of the view.
 - **Until a person moves the camera, it follows the viewport.** A container that is still settling —
@@ -170,11 +171,21 @@ Copy it, then add one `<section class="artboard">` per screen — nothing else h
     color: #6b7280; font-variant-numeric: tabular-nums }
   #zoom button { all: unset; min-width: 26px; height: 24px; text-align: center; border-radius: 6px;
     color: #111; cursor: pointer }
-  /* a still shows the view, not your chrome */
+  /* Two stills, and they are not the same picture.
+     `poster` — the cover: the whole canvas, your chrome hidden, frames drawn the way you draw them.
+     `export` — a page on its way out: the frame IS the page, so nothing is drawn around it. */
   body.poster > aside, body.poster #zoom, body.poster #hint { display: none }
-  /* PDF: one page per frame, and nothing of the canvas in between */
+  body.export .label { display: none }
+  body.export .artboard[aria-current="true"] .frame { outline: none }
+  body.export .frame { border: 0; border-radius: 0; box-shadow: none }
+  /* PDF: one page per frame, and nothing of the canvas in between. The root boxes have to let go
+     first: `height: 100%; overflow: clip` is the camera's viewport, and a root that clips cannot
+     be broken across pages — leave it and every frame lands on one clipped page (measured). */
   @media print {
-    body > aside, #zoom, #hint { display: none }
+    html, body { height: auto; overflow: visible }
+    body > aside, #zoom, #hint, .label { display: none }
+    .artboard[aria-current="true"] .frame { outline: none }
+    .frame { border: 0; border-radius: 0; box-shadow: none }
     #world { position: static; transform: none !important }
     .artboard { position: static; transform: none !important; margin: 0; break-after: page; page-break-after: always }
   }
@@ -462,14 +473,15 @@ Copy it, then add one `<section class="artboard">` per screen — nothing else h
   })
 
   // Tell the host what this render is for. The host is deliberately thin: it draws no rail and
-  // no zoom of its own, because the canvas and its navigation belong to this document. The one
-  // thing it does ask for is a still — a cover — and that is the overview, chrome hidden.
+  // no zoom of its own, because the canvas and its navigation belong to this document. What it
+  // does say is which still it wants — a cover (the whole canvas) or an export (one page).
   addEventListener('message', function (e) {
     var m = e.data
     if (!m || m.protocol !== 'craft-designs/v1' || m.type !== 'init') return
-    var poster = Boolean(m.payload && m.payload.poster)
-    document.body.classList.toggle('poster', poster)
-    if (poster) { cameraOwned = true; fitAll() } else if (!cameraOwned) fromHash()
+    var payload = m.payload || {}
+    document.body.classList.toggle('poster', Boolean(payload.poster))
+    document.body.classList.toggle('export', Boolean(payload.export))
+    if (payload.poster) { cameraOwned = true; fitAll() } else if (!cameraOwned) fromHash()
   })
 
   build()
@@ -499,6 +511,26 @@ body.poster > aside, body.poster #zoom, body.poster #hint { display: none }
 ```
 
 It is a hint, not a mode: a design that ignores it simply gets a still of whatever it was showing.
+The cover **keeps the canvas as you draw it** — frames are cards, with their names — because a cover
+is a picture *of the canvas*.
+
+### An export is a page, not the canvas
+
+Exporting (the **Export…** menu) sends **`poster: true` *and* `export: true`**. The first still hides
+your chrome; the second says the picture is a **page**, so a frame's own drawing goes with it — corner
+radius, border, shadow, selection ring, name — and what lands in the PDF or the PNG is the screen
+itself, edge to edge. Measured on a design authored from this starter: answering only `poster` exported
+the rounded corners (the canvas showing through them), the 1px border and the current-frame ring.
+
+```css
+body.export .label { display: none }
+body.export .artboard[aria-current="true"] .frame { outline: none }
+body.export .frame { border: 0; border-radius: 0; box-shadow: none }
+```
+
+A **deck** needs none of this — a slide has no card drawn around it, and `poster` already hides its
+page dots. The same three rules also belong under `@media print`: printing the document yourself is
+the same wish as an export, and no host sends the flag then.
 
 ### Before you say it works
 
@@ -517,7 +549,8 @@ browser_tool: evaluate …                    # frame rects, labels, zoomLabel, 
 3. **`location.hash` matches the frame the camera is on** (so a reload and a deep link land there).
 4. **The document's own controls move the camera** — the rail, ⌘/Ctrl-wheel, drag, `Fit` — and
    `location.hash` follows the frame you pick.
-5. **`poster: true` shows the overview** with your chrome hidden.
+5. **`poster: true` shows the overview** with your chrome hidden — and `export: true` drops the
+   frame's own drawing (corners, border, shadow, ring, name), so the page is the screen.
 6. **A touch works too** — a pinch zooms; a frame holding a real list scrolls under the wheel; and the
    rail scrolls once you have more frames than fit in it.
 

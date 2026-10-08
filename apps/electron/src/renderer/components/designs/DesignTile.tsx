@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { Globe2, Lock, MessageSquarePlus, RefreshCw, Trash2 } from 'lucide-react'
+import { FolderOpen, Globe2, Lock, MessageSquarePlus, RefreshCw, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
 import { cn } from '@/lib/utils'
@@ -33,6 +33,8 @@ interface DesignTileProps {
   onDelete: () => void
   /** Open a conversation to keep working on this design (see DesignView). */
   onContinueInChat: () => void
+  /** Open the design's own folder in the system file manager. */
+  onOpenFolder: () => void
 }
 
 /**
@@ -43,7 +45,7 @@ interface DesignTileProps {
  * mirroring `isThumbnailFresh` server-side (inlined here — the renderer must
  * not import Node-backed `@craft-agent/shared` code).
  */
-export function DesignTile({ design, workspaceId, project, onOpen, onDelete, onContinueInChat }: DesignTileProps) {
+export function DesignTile({ design, workspaceId, project, onOpen, onDelete, onContinueInChat, onOpenFolder }: DesignTileProps) {
   const { t } = useTranslation()
   const { config } = design
   const monogram = (config.name.trim()[0] ?? '?').toUpperCase()
@@ -175,6 +177,10 @@ export function DesignTile({ design, workspaceId, project, onOpen, onDelete, onC
       <StyledContextMenuContent>
         <StyledContextMenuItem onClick={onOpen}>
           {t('common.open')}
+        </StyledContextMenuItem>
+        <StyledContextMenuItem onClick={onOpenFolder}>
+          <FolderOpen />
+          {t('designs.openFolder')}
         </StyledContextMenuItem>
         <StyledContextMenuItem onClick={onContinueInChat}>
           <MessageSquarePlus />

@@ -44,6 +44,8 @@ export interface UseWorkingDirectoryStateResult {
   folderName: string | undefined
   /** Whether the Reset action should be offered. */
   showReset: boolean
+  /** Whether there is a folder to open in the system file manager. */
+  canOpenLocation: boolean
   /** Whether the surface should show a search/filter input
    *  (true when more than {@link WORKING_DIR_FILTER_THRESHOLD} sortedRecent entries). */
   showFilter: boolean
@@ -52,6 +54,8 @@ export interface UseWorkingDirectoryStateResult {
   handleReset: () => void
   handleRemoveRecent: (e: React.MouseEvent, path: string) => void
   handleChooseFolder: () => void
+  /** Open the conversation's working folder in the system file manager. */
+  handleOpenLocation: () => void
 
   serverBrowser: Pick<
     ServerBrowserBridge,
@@ -153,6 +157,17 @@ export function useWorkingDirectoryState(
     pickDirectory()
   }, [onClose, pickDirectory])
 
+  // The folder this conversation works in: the chosen folder, or the session's own folder
+  // when none is chosen. This is what "Open location" opens.
+  const openLocationPath = workingDirectory ?? sessionFolderPath
+
+  const handleOpenLocation = React.useCallback(() => {
+    if (!openLocationPath) return
+    // eslint-disable-next-line craft-links/no-direct-file-open -- directories can't be previewed in-app
+    window.electronAPI.openFile(openLocationPath)
+    onClose()
+  }, [openLocationPath, onClose])
+
   const sortedRecent = React.useMemo(
     () => deriveSortedRecent(recentDirs, workingDirectory),
     [recentDirs, workingDirectory],
@@ -175,11 +190,13 @@ export function useWorkingDirectoryState(
     hasFolder,
     folderName,
     showReset,
+    canOpenLocation: !!openLocationPath,
     showFilter,
     handleSelectRecent,
     handleReset,
     handleRemoveRecent,
     handleChooseFolder,
+    handleOpenLocation,
     serverBrowser: {
       showServerBrowser,
       serverBrowserMode,

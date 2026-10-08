@@ -21,6 +21,7 @@ export type {
   SourceGuide,
   LoadedSource,
   LoadedSourceSnapshot,
+  WebSnapshotMeta,
   CreateSourceInput,
   ApiRenewEndpoint,
 } from './types.ts';
@@ -30,6 +31,8 @@ export {
   API_OAUTH_PROVIDERS,
   WEB_SNAPSHOT_FILE,
   snapshotAssetsDirName,
+  splitWebSnapshotNote,
+  webSnapshotBody,
   isApiOAuthProvider,
   isGenericOAuthSource,
   hasRenewEndpoint,

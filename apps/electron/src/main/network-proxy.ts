@@ -142,6 +142,38 @@ async function configureElectronProxy(settings: NetworkProxySettings | undefined
   await Promise.all(sessions.map(ses => ses.setProxy(proxyConfig)));
 }
 
+/**
+ * Hosts that must never go through a proxy — a proxy is the one thing they cannot be.
+ * Spelled the way a URL spells them, because that is what they get matched against.
+ */
+const LOOPBACK_HOSTS = ['localhost', '127.0.0.1', '[::1]'];
+
+/**
+ * Bypass rules for a custom proxy.
+ *
+ * Loopback (127.0.0.1, ::1, localhost) is kept out of the proxy by default: the
+ * renderer's RPC websocket is `ws://127.0.0.1:<port>`, so a proxy that is handed
+ * loopback traffic breaks the app's own connection to its local server. The
+ * person can turn that off.
+ *
+ * `cancelImplicitLoopback` is for Chromium, which bypasses loopback for any
+ * configured proxy on its own — `<-loopback>` is what actually lets loopback
+ * through. Node has no such implicit rules, so the plain list is enough.
+ */
+function buildBypassRules(
+  noProxy: string | undefined,
+  bypassLoopback: boolean,
+  cancelImplicitLoopback = false,
+): string {
+  const userRules = splitCommaSeparated(noProxy);
+  const hosts = bypassLoopback
+    ? [...LOOPBACK_HOSTS, ...userRules]
+    : cancelImplicitLoopback
+      ? ['<-loopback>', ...userRules]
+      : userRules;
+  return [...new Set(hosts)].join(',');
+}
+
 function buildElectronProxyConfig(settings: NetworkProxySettings): Electron.ProxyConfig {
   const rules: string[] = [];
 
@@ -161,17 +193,9 @@ function buildElectronProxyConfig(settings: NetworkProxySettings): Electron.Prox
   return {
     mode: 'fixed_servers',
     proxyRules: rules.join(';'),
-    proxyBypassRules: settings.noProxy
-      ? splitCommaSeparated(settings.noProxy).join(',')
-      : undefined,
+    proxyBypassRules: buildBypassRules(settings.noProxy, settings.bypassLoopback !== false, true),
   };
 }
-
-/**
- * Hosts that must never go through a proxy — a proxy is the one thing they cannot be.
- * Spelled the way a URL spells them, because that is what they get matched against.
- */
-const LOOPBACK_HOSTS = ['localhost', '127.0.0.1', '[::1]'];
 
 /**
  * Where we ask the operating system what it would do.
@@ -338,7 +362,11 @@ export async function applyConfiguredProxySettings(): Promise<void> {
   }
 
   const nodeProxy: EffectiveProxy | undefined = mode === 'custom'
-    ? { httpProxy: settings?.httpProxy, httpsProxy: settings?.httpsProxy, noProxy: settings?.noProxy }
+    ? {
+        httpProxy: settings?.httpProxy,
+        httpsProxy: settings?.httpsProxy,
+        noProxy: buildBypassRules(settings?.noProxy, settings?.bypassLoopback !== false),
+      }
     : undefined;
 
   log.info('[proxy] Applying proxy settings:', { mode, nodeProxy: !!nodeProxy });

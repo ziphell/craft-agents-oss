@@ -237,9 +237,9 @@ export function readEvaluateFile(filePath: string, workspaceRootPath?: string): 
  * What one `read --save` may pull down, so a gallery page cannot run away with the capture.
  * Counted here rather than in the page: the ceiling is about what lands on disk.
  */
-const MAX_SNAPSHOT_IMAGES = 40;
+const MAX_SNAPSHOT_IMAGES = 100;
 const MAX_SNAPSHOT_IMAGE_BYTES = 8 * 1024 * 1024;
-const MAX_SNAPSHOT_IMAGE_TOTAL_BYTES = 24 * 1024 * 1024;
+const MAX_SNAPSHOT_IMAGE_TOTAL_BYTES = 100 * 1024 * 1024;
 
 /**
  * Fetch one image **in the page**, through `evaluate`.

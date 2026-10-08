@@ -11,7 +11,7 @@
  * written from the files by @craft-agent/shared/designs.
  *
  * Follows design-thumbnailer.ts: hidden window with `backgroundThrottling:
- * false`, the design loaded as a data URL, a settle delay, and empty-frame
+ * false`, the design loaded from its own address, a settle delay, and empty-frame
  * retries (Chromium can return a transparent frame before the compositor
  * paints). The renderer is the app's own Electron — no second engine.
  */
@@ -31,6 +31,8 @@ import {
   buildShowAllDeckSlidesScript,
   deckPageSizeInches,
   deckSlideSize,
+  designPreviewUrl,
+  getDesignPath,
   loadDesignConfig,
   loadDesignContent,
   readDesignDataSnapshot,
@@ -104,6 +106,14 @@ export class DesignExporter {
       throw new Error(`Design has no content: ${req.slug}`)
     }
 
+    // Render from the design's own address, exactly as the preview frame and the
+    // thumbnailer do. A `data:` document has no base URL, so anything the design
+    // references relatively — an image beside its index.html, a linked stylesheet —
+    // could not be resolved and came out as a broken image; and past Chromium's
+    // ~2MB limit a data URL does not load at all. Served, the browser resolves
+    // every `src` itself, whatever the design points at.
+    const previewUrl = designPreviewUrl(req.slug, getDesignPath(req.workspaceRootPath, req.slug))
+
     // A deck's slide size frames both the print page and the captured images.
     const size = deckSlideSize(req.aspect)
     const win = new BrowserWindow({
@@ -130,7 +140,7 @@ export class DesignExporter {
       win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
       win.webContents.on('will-navigate', (event) => event.preventDefault())
 
-      await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(content)}`)
+      await win.loadURL(previewUrl)
       await this.deliverInit(win, req)
       await this.waitForFonts(win)
 
@@ -358,6 +368,11 @@ export class DesignExporter {
         // being used, not for a picture of it: without this, a deck exported its page dots into
         // every PNG and a canvas exported its rail, zoom control and the page's own background.
         poster: true,
+        // …and it is the **page on its way out**, not the canvas. The cover is a picture OF the
+        // canvas (frames drawn as cards, each named); an export is a picture of one screen, so a
+        // frame's own drawing — corner radius, border, shadow, selection ring, name — must go with
+        // it. A design says which one it is in `body.export` vs `body.poster`.
+        export: true,
         snapshot: readDesignDataSnapshot(req.workspaceRootPath, req.slug),
       },
     }

@@ -99,11 +99,13 @@ export function WorkingDirectorySelector({
     hasFolder,
     folderName,
     showReset,
+    canOpenLocation,
     showFilter,
     handleSelectRecent,
     handleReset,
     handleRemoveRecent,
     handleChooseFolder,
+    handleOpenLocation,
     serverBrowser: {
       showServerBrowser,
       serverBrowserMode,
@@ -215,6 +217,15 @@ export function WorkingDirectorySelector({
 
             {/* Bottom actions - always visible, outside scrollable area */}
             <div className="border-t border-border/50 p-1">
+              {canOpenLocation && (
+                <button
+                  type="button"
+                  onClick={handleOpenLocation}
+                  className={cn(MENU_ITEM_STYLE, 'w-full hover:bg-foreground/5')}
+                >
+                  {t('chat.openLocation')}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={handleChooseFolder}

@@ -580,7 +580,8 @@ export function SessionFilesSection({ sessionId, className, sessionFolderPath, h
           {sessionFolderPath && (
             <button
               type="button"
-              onClick={() => window.electronAPI.showInFolder(sessionFolderPath)}
+              // eslint-disable-next-line craft-links/no-direct-file-open -- directories can't be previewed in-app
+              onClick={() => window.electronAPI.openFile(sessionFolderPath)}
               className="text-xs text-foreground/50 hover:text-foreground/80 hover:underline underline-offset-2 transition-colors"
             >
               {t("chat.viewInFileManager", { fileManager: fileManagerName })}

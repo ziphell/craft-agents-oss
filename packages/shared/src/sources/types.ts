@@ -530,6 +530,43 @@ export interface SourceGuide {
 }
 
 /**
+ * A captured page's note, split into the block that describes it and the page itself.
+ *
+ * The note's shape is fixed and written by `renderWebSnapshotNote`; this is the reader's half of
+ * it, shared by the loader (which reads the fields back) and by anything drawing the note (which
+ * wants the page, not the envelope — a markdown renderer has no concept of frontmatter, and would
+ * set `---` as a rule and `title: …` as a run-on paragraph). Only the leading block counts: a
+ * `---` line further down is a horizontal rule.
+ */
+export function splitWebSnapshotNote(note: string): { frontmatter: string; body: string } {
+  const match = note.match(/^\uFEFF?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*\r?\n?/)
+  if (!match) return { frontmatter: '', body: note }
+  return { frontmatter: match[1] ?? '', body: note.slice(match[0].length) }
+}
+
+/** The page itself, without the envelope. See {@link splitWebSnapshotNote}. */
+export function webSnapshotBody(note: string): string {
+  return splitWebSnapshotNote(note).body
+}
+
+/**
+ * Page facts worth keeping, as much as the page was willing to state them.
+ *
+ * One type for both halves: extraction fills it in (`extractWebSnapshot`, from the page's own
+ * metadata) and it is written into the note's frontmatter, from which the loader reads it back.
+ * Where it lives is why it is here rather than beside the extractor — a source's detail page shows
+ * these fields, and that page may not import a Node-only module (the extractor pulls in Defuddle).
+ */
+export interface WebSnapshotMeta {
+  author?: string
+  published?: string
+  description?: string
+  site?: string
+  language?: string
+  wordCount?: number
+}
+
+/**
  * The captured page a **web** source keeps.
  *
  * Pre-computed while the source is loaded, for the same reason `iconPath` is: a source's detail
@@ -539,12 +576,16 @@ export interface SourceGuide {
 export interface LoadedSourceSnapshot {
   /** Absolute path to the note. */
   path: string;
+  /** What the capture called the page. */
+  title?: string;
   /** Bytes, as written. */
   bytes: number;
   /** When the note was last written, ms since epoch. */
   writtenAt: number;
   /** How many images sit beside it, when any do. */
   imageCount: number;
+  /** What the capture wrote about itself. Absent when the note carries no frontmatter. */
+  meta?: WebSnapshotMeta;
 }
 
 /**

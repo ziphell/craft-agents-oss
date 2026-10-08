@@ -344,7 +344,8 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
       case 'showInFinder': {
         const sessionPath = sessionManager.getSessionPath(sessionId)
         if (sessionPath) {
-          deps.platform.showItemInFolder?.(sessionPath)
+          // Open the session's own folder (not its parent with the folder selected).
+          await deps.platform.openPath?.(sessionPath)
         }
         return
       }

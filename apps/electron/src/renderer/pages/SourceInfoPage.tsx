@@ -31,7 +31,7 @@ import {
 } from '@/components/info'
 import type { LoadedSource, McpToolWithPermission } from '../../shared/types'
 import type { PermissionsConfigFile } from '@craft-agent/shared/agent/modes'
-import { WEB_SNAPSHOT_FILE } from '@craft-agent/shared/sources/types'
+import { WEB_SNAPSHOT_FILE, webSnapshotBody } from '@craft-agent/shared/sources/types'
 
 interface SourceInfoPageProps {
   sourceSlug: string
@@ -289,6 +289,31 @@ export default function SourceInfoPage({ sourceSlug, workspaceId, onDelete }: So
     })
   }, [workspaceId])
 
+  /**
+   * The captured page's own text, read when this page asks for it rather than carried in the
+   * sources list: a capture can be a whole article, and the list is read often. The path is what
+   * the list carries (`snapshot.path`); the contents are the file's business.
+   */
+  const [snapshotText, setSnapshotText] = useState<string | null>(null)
+  useEffect(() => {
+    const path = source?.snapshot?.path
+    if (!path) {
+      setSnapshotText(null)
+      return
+    }
+
+    let cancelled = false
+    window.electronAPI
+      .readFile(path)
+      .then((text) => { if (!cancelled) setSnapshotText(text) })
+      .catch((err) => {
+        console.error('[SourceInfoPage] Failed to read the snapshot:', err)
+        if (!cancelled) setSnapshotText(null)
+      })
+
+    return () => { cancelled = true }
+  }, [source?.snapshot?.path])
+
   // Listen for source folder changes
   useEffect(() => {
     if (!window.electronAPI?.onSourcesChanged) return
@@ -335,17 +360,25 @@ export default function SourceInfoPage({ sourceSlug, workspaceId, onDelete }: So
     return buildToolsData(mcpTools)
   }, [mcpTools])
 
+  /**
+   * Hand a target to the app, which is the only place that knows what to do with it: an address
+   * goes to the browser, a path to whatever shows that kind of file. One rule, used by the
+   * Connection rows and by a link inside a captured page alike.
+   */
+  const openTarget = useCallback(async (target: string) => {
+    if (!window.electronAPI) return
+    if (target.startsWith('http://') || target.startsWith('https://')) {
+      await window.electronAPI.openUrl(target)
+    } else {
+      await window.electronAPI.showInFolder(target)
+    }
+  }, [])
+
   // Handle opening URL (website or folder)
   const handleOpenUrl = useCallback(async () => {
     if (!source || !sourceUrl) return
-    if (window.electronAPI) {
-      if (sourceUrl.startsWith('http://') || sourceUrl.startsWith('https://')) {
-        await window.electronAPI.openUrl(sourceUrl)
-      } else {
-        await window.electronAPI.showInFolder(sourceUrl)
-      }
-    }
-  }, [source, sourceUrl])
+    await openTarget(sourceUrl)
+  }, [source, sourceUrl, openTarget])
 
   // Handle opening source folder
   const handleOpenSourceFolder = useCallback(async () => {
@@ -487,46 +520,90 @@ export default function SourceInfoPage({ sourceSlug, workspaceId, onDelete }: So
 
           {/* Snapshot - what a web source is for: the page as it was captured */}
           {source.config.type === 'web' && (
-            <Info_Section
-              title={t('sourceInfo.snapshot')}
-              description={source.snapshot ? t('sourceInfo.snapshotDesc') : t('sourceInfo.snapshotMissing')}
-              bare={!source.snapshot}
-              actions={
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleRefreshSnapshot}
-                  className={cn(
-                    'h-8 px-3 rounded-[6px] bg-background shadow-minimal text-foreground/70 hover:text-foreground',
-                  )}
-                >
-                  {t('sourceInfo.refreshSnapshot')}
-                </Button>
-              }
-            >
-              {source.snapshot ? (
-                <Info_Table>
-                  <Info_Table.Row label={t('sourceInfo.snapshotFile')}>
-                    <button
-                      onClick={handleOpenSnapshot}
-                      className="truncate hover:underline text-foreground focus:outline-none focus-visible:underline text-left block w-full"
-                    >
-                      {WEB_SNAPSHOT_FILE}
-                    </button>
-                  </Info_Table.Row>
-                  <Info_Table.Row
-                    label={t('sourceInfo.snapshotCaptured')}
-                    value={`${formatSize(source.snapshot.bytes)} · ${formatRelativeTime(source.snapshot.writtenAt, t)}`}
-                  />
-                  {source.snapshot.imageCount > 0 && (
+            <>
+              <Info_Section
+                title={t('sourceInfo.snapshot')}
+                description={source.snapshot ? t('sourceInfo.snapshotDesc') : t('sourceInfo.snapshotMissing')}
+                bare={!source.snapshot}
+                actions={
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleRefreshSnapshot}
+                    className={cn(
+                      'h-8 px-3 rounded-[6px] bg-background shadow-minimal text-foreground/70 hover:text-foreground',
+                    )}
+                  >
+                    {t('sourceInfo.refreshSnapshot')}
+                  </Button>
+                }
+              >
+                {source.snapshot ? (
+                  <Info_Table>
+                    {source.snapshot.title && (
+                      <Info_Table.Row label={t('sourceInfo.snapshotTitle')}>
+                        {source.snapshot.title}
+                      </Info_Table.Row>
+                    )}
+                    {source.snapshot.meta?.author && (
+                      <Info_Table.Row label={t('sourceInfo.snapshotAuthor')}>
+                        {source.snapshot.meta.author}
+                      </Info_Table.Row>
+                    )}
+                    {source.snapshot.meta?.published && (
+                      <Info_Table.Row label={t('sourceInfo.snapshotPublished')}>
+                        {source.snapshot.meta.published}
+                      </Info_Table.Row>
+                    )}
+                    {source.snapshot.meta?.wordCount !== undefined && (
+                      <Info_Table.Row
+                        label={t('sourceInfo.snapshotWords')}
+                        value={String(source.snapshot.meta.wordCount)}
+                      />
+                    )}
+                    <Info_Table.Row label={t('sourceInfo.snapshotFile')}>
+                      <button
+                        onClick={handleOpenSnapshot}
+                        className="truncate hover:underline text-foreground focus:outline-none focus-visible:underline text-left block w-full"
+                      >
+                        {WEB_SNAPSHOT_FILE}
+                      </button>
+                    </Info_Table.Row>
                     <Info_Table.Row
-                      label={t('sourceInfo.snapshotImages')}
-                      value={String(source.snapshot.imageCount)}
+                      label={t('sourceInfo.snapshotCaptured')}
+                      value={`${formatSize(source.snapshot.bytes)} · ${formatRelativeTime(source.snapshot.writtenAt, t)}`}
                     />
-                  )}
-                </Info_Table>
-              ) : null}
-            </Info_Section>
+                    {source.snapshot.imageCount > 0 && (
+                      <Info_Table.Row
+                        label={t('sourceInfo.snapshotImages')}
+                        value={String(source.snapshot.imageCount)}
+                      />
+                    )}
+                  </Info_Table>
+                ) : null}
+              </Info_Section>
+
+              {/*
+                The capture itself, rendered — the point of keeping it, and the same treatment a
+                skill's instructions get (`Info_Markdown`, capped, expandable). `baseDir` is the
+                source's folder, because the note's pictures were rewritten to sit beside it
+                (`snapshot.assets/…`), and that is what resolves them; a link goes to the app, the
+                way the Connection rows hand theirs over.
+              */}
+              {source.snapshot && snapshotText !== null && (
+                <Info_Section title={t('sourceInfo.snapshotPage')}>
+                  <Info_Markdown
+                    maxHeight={540}
+                    fullscreen
+                    baseDir={source.folderPath}
+                    onFileClick={openTarget}
+                    onUrlClick={openTarget}
+                  >
+                    {webSnapshotBody(snapshotText).trim() || t('sourceInfo.snapshotEmpty')}
+                  </Info_Markdown>
+                </Info_Section>
+              )}
+            </>
           )}
 
           {/* Permissions - for API and local sources */}

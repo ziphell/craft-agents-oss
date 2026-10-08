@@ -51,6 +51,7 @@ interface ProxyFormState {
   httpProxy: string
   httpsProxy: string
   noProxy: string
+  bypassLoopback: boolean
 }
 
 const DEFAULT_PROXY_MODE: NetworkProxyMode = 'direct'
@@ -60,6 +61,7 @@ const EMPTY_PROXY_FORM: ProxyFormState = {
   httpProxy: '',
   httpsProxy: '',
   noProxy: '',
+  bypassLoopback: true,
 }
 
 function toProxyFormState(settings?: NetworkProxySettings): ProxyFormState {
@@ -69,6 +71,7 @@ function toProxyFormState(settings?: NetworkProxySettings): ProxyFormState {
     httpProxy: settings.httpProxy ?? '',
     httpsProxy: settings.httpsProxy ?? '',
     noProxy: settings.noProxy ?? '',
+    bypassLoopback: settings.bypassLoopback !== false,
   }
 }
 
@@ -78,6 +81,7 @@ function toNetworkProxySettings(form: ProxyFormState): NetworkProxySettings {
     httpProxy: form.httpProxy.trim() || undefined,
     httpsProxy: form.httpsProxy.trim() || undefined,
     noProxy: form.noProxy.trim() || undefined,
+    bypassLoopback: form.bypassLoopback,
   }
 }
 
@@ -327,6 +331,12 @@ export default function AppSettingsPage() {
                         onChange={(value) => setProxyForm(prev => ({ ...prev, noProxy: value }))}
                         placeholder={t("settings.network.bypassPlaceholder")}
                         inCard
+                      />
+                      <SettingsToggle
+                        label={t("settings.network.bypassLoopback")}
+                        description={t("settings.network.bypassLoopbackDesc")}
+                        checked={proxyForm.bypassLoopback}
+                        onCheckedChange={(checked) => setProxyForm(prev => ({ ...prev, bypassLoopback: checked }))}
                       />
                     </>
                   )}

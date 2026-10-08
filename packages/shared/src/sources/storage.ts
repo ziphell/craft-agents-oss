@@ -8,9 +8,10 @@
  * NOT a workspace slug. The `LoadedSource.workspaceId` is derived via basename().
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, statSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, statSync, openSync, readSync, closeSync } from 'fs';
 import { join, basename } from 'path';
 import { randomUUID } from 'crypto';
+import { readWebSnapshotNote } from './web-snapshot.ts';
 import type {
   FolderSourceConfig,
   SourceGuide,
@@ -372,16 +373,37 @@ function readSourceSnapshot(folderPath: string): LoadedSourceSnapshot | undefine
 
   try {
     const stats = statSync(notePath);
+    // Only the head is read: the envelope is at the top by construction, and a capture can be a
+    // whole article that no list call should have to read through.
+    const { title, meta } = readWebSnapshotNote(readFileHead(notePath, NOTE_HEAD_BYTES));
+
     return {
       path: notePath,
+      ...(title ? { title } : {}),
       bytes: stats.size,
       // The file's own mtime rather than the note's `created:` line: this answers "when was it
       // written", which is what a stale snapshot means — an edit by hand counts.
       writtenAt: stats.mtime.getTime(),
       imageCount: countFiles(join(folderPath, snapshotAssetsDirName(WEB_SNAPSHOT_FILE))),
+      ...(Object.keys(meta).length > 0 ? { meta } : {}),
     };
   } catch {
     return undefined;
+  }
+}
+
+/** How much of a note is read to learn what it says about itself — its frontmatter and no more. */
+const NOTE_HEAD_BYTES = 8192;
+
+/** The first `maxBytes` of a file, as text. */
+function readFileHead(path: string, maxBytes: number): string {
+  const fd = openSync(path, 'r');
+  try {
+    const buffer = Buffer.alloc(maxBytes);
+    const read = readSync(fd, buffer, 0, maxBytes, 0);
+    return buffer.subarray(0, read).toString('utf8');
+  } finally {
+    closeSync(fd);
   }
 }
 

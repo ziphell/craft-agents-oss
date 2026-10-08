@@ -28,7 +28,7 @@ const KIND_FILTERS: ReadonlyArray<DesignKind | 'all'> = ['all', 'prototype', 'da
  * and the New Design action; tiles open the embedded design render.
  */
 export function DesignsHome() {
-  const { activeWorkspaceId } = useAppShellContext()
+  const { activeWorkspaceId, onOpenFile } = useAppShellContext()
   const { t } = useTranslation()
   const { navigate } = useNavigation()
   const designs = useAtomValue(designsAtom)
@@ -226,6 +226,7 @@ export function DesignsHome() {
                   onOpen={() => openDesign(design.config.slug)}
                   onDelete={() => setPendingDelete(design)}
                   onContinueInChat={() => handleContinueInChat(design)}
+                  onOpenFolder={() => onOpenFile(design.folderPath)}
                 />
               ))}
           </div>

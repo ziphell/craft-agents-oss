@@ -3073,6 +3073,9 @@ function normalizeNetworkProxySettings(
     httpProxy: normalizeProxyString(settings.httpProxy),
     httpsProxy: normalizeProxyString(settings.httpsProxy),
     noProxy: normalizeProxyString(settings.noProxy),
+    // Configs written before this flag existed meant "bypass loopback", which
+    // is also the default — only an explicit false turns it off.
+    bypassLoopback: settings.bypassLoopback !== false,
   };
 }
 

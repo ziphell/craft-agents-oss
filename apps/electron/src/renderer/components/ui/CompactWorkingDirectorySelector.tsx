@@ -56,11 +56,13 @@ export function CompactWorkingDirectorySelector({
     hasFolder,
     folderName,
     showReset,
+    canOpenLocation,
     showFilter,
     handleSelectRecent,
     handleReset,
     handleRemoveRecent,
     handleChooseFolder,
+    handleOpenLocation,
     serverBrowser: {
       showServerBrowser,
       serverBrowserMode,
@@ -198,6 +200,16 @@ export function CompactWorkingDirectorySelector({
 
           {/* Bottom actions — full-width tap targets */}
           <div className="px-2 pt-2 pb-4 border-t border-border/30 flex flex-col gap-1">
+            {canOpenLocation && (
+              <button
+                type="button"
+                onClick={handleOpenLocation}
+                className="w-full h-12 px-3 rounded-[10px] flex items-center gap-3 text-sm font-medium hover:bg-foreground/5 transition-colors"
+              >
+                <Icon_Folder className="h-5 w-5 shrink-0 text-foreground/60" />
+                <span>{t('chat.openLocation')}</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={handleChooseFolder}

@@ -15,18 +15,9 @@
  */
 
 import { Defuddle } from 'defuddle/node';
-import { stringify as stringifyYaml } from 'yaml';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { createHash } from 'node:crypto';
-
-/** Page facts worth keeping, as much as the page was willing to state them. */
-export interface WebSnapshotMeta {
-  author?: string;
-  published?: string;
-  description?: string;
-  site?: string;
-  language?: string;
-  wordCount?: number;
-}
+import { splitWebSnapshotNote, type WebSnapshotMeta } from './types.ts';
 
 export interface WebSnapshot {
   url: string;
@@ -110,6 +101,41 @@ export function renderWebSnapshotNote(snapshot: WebSnapshot): string {
 function trimOrUndefined(value: string | null | undefined): string | undefined {
   const trimmed = (value ?? '').trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/**
+ * The other half of {@link renderWebSnapshotNote}: what a note says about itself, back out.
+ *
+ * Returned as the same shape the extractor fills in, so a page can show what the page said
+ * without knowing how a note is written. A note with no frontmatter reads as nothing. The caller
+ * may hand in only the head of the file — the envelope is at the top by construction, and a whole
+ * article never needs to be read to learn its title.
+ */
+export function readWebSnapshotNote(note: string): { title?: string; meta: WebSnapshotMeta } {
+  const { frontmatter } = splitWebSnapshotNote(note);
+  if (!frontmatter.trim()) return { meta: {} };
+
+  const parsed = parseYaml(frontmatter) as Record<string, unknown> | null;
+  if (!parsed || typeof parsed !== 'object') return { meta: {} };
+
+  const text = (value: unknown): string | undefined =>
+    typeof value === 'string' && value.trim() ? value.trim() : undefined;
+
+  const words = typeof parsed.wordCount === 'number'
+    ? parsed.wordCount
+    : Number.parseInt(String(parsed.wordCount ?? ''), 10);
+
+  return {
+    title: text(parsed.title),
+    meta: {
+      author: text(parsed.author),
+      published: text(parsed.published),
+      description: text(parsed.description),
+      site: text(parsed.site),
+      language: text(parsed.language),
+      ...(Number.isFinite(words) ? { wordCount: words } : {}),
+    },
+  };
 }
 
 // ============================================================================

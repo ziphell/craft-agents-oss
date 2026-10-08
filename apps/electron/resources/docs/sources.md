@@ -795,11 +795,13 @@ It is a **point-in-time** capture, and nothing refreshes it on its own — re-ru
 take a new one. Edit it by hand if you like; the folder is the source of truth. One known gap: text
 inside shadow roots is not part of the page's HTML, so web-component-heavy pages capture thin.
 
-The source's own page reads that folder back: **Snapshot** says what is there — the note, its size,
-when it was written, how many images came with it — and an empty state when nothing has been captured
-yet. Its **Refresh** button starts the capture again; it does **not** send anything by itself, it puts
-the line into a conversation's draft, because taking a page again needs the browser window and a
-command.
+The source's own page reads that folder back in two parts, the way a skill's page reads `SKILL.md`:
+**Snapshot** shows what the capture says about itself — the page's title, author, published date and
+word count, then the note, its size, when it was written and how many images came with it (and an
+empty state before anything has been captured) — and **Captured page** draws the note itself, capped
+and expandable, with the pictures beside it resolved from the folder. Its **Refresh** button starts
+the capture again; it does **not** send anything by itself, it puts the line into a conversation's
+draft, because taking a page again needs the browser window and a command.
 
 **guide.md for a web source** should say what the page is and why it matters, point at `snapshot.md`
 by name, and repeat the refresh recipe — so a later session knows how to bring it up to date.
