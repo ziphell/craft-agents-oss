@@ -1,6 +1,6 @@
 /**
- * What a design is — `prototype`, `deck` or `motion` — and the one rule that
- * keeps the stored kind and its settings from ever disagreeing.
+ * What a design is — `webpage`, `prototype`, `deck` or `motion` — and the one
+ * rule that keeps the stored kind and its settings from ever disagreeing.
  *
  * The kind is **declared and stored** rather than computed from the settings:
  * it is intent (an author knows they are making a deck before there is any
@@ -25,7 +25,7 @@
 
 import type { DesignDeckSpec, DesignKind, DesignMotionSpec } from '@craft-agent/core';
 
-export const DESIGN_KINDS: readonly DesignKind[] = ['prototype', 'dashboard', 'deck', 'motion'];
+export const DESIGN_KINDS: readonly DesignKind[] = ['webpage', 'prototype', 'deck', 'motion'];
 
 export function isDesignKind(value: unknown): value is DesignKind {
   return typeof value === 'string' && (DESIGN_KINDS as readonly string[]).includes(value);
@@ -61,10 +61,11 @@ export interface DesignKindMigration {
  * An explicit valid kind is kept; anything else has its kind **inferred from the
  * settings it carries** — a file holding deck settings is a deck whatever it
  * called itself, and one holding motion settings is a motion composition. (The
- * retired runtime kinds `static`/`interactive`/`live` said nothing about what a
- * design *is*, so they are inferred the same way.) Settings that do not belong
- * to the settled kind are dropped; a file that somehow carried both is settled
- * as a deck, because slides are what a person saw it as.
+ * retired `dashboard` kind and the retired runtime kinds
+ * `static`/`interactive`/`live` said nothing about what a design *is* under
+ * today's names, so they all settle as the general `webpage`.) Settings that do
+ * not belong to the settled kind are dropped; a file that somehow carried both
+ * is settled as a deck, because slides are what a person saw it as.
  *
  * Pure: the caller writes the result back on the next save.
  */
@@ -73,27 +74,18 @@ export function migrateDesignKind(raw: Record<string, unknown>): DesignKindMigra
   const stored = raw.kind;
   const hasDeck = raw.deck !== undefined && raw.deck !== null;
   const hasMotion = raw.motion !== undefined && raw.motion !== null;
-  // A design that runs on a schedule is a dashboard — that is what a dashboard
-  // is (see the kind's own description) — so a file with a refresh spec and no
-  // kind of its own settles there.
-  const hasRefresh = raw.refresh !== undefined && raw.refresh !== null;
 
+  // Anything that is not a current kind — the retired `dashboard`, and the
+  // retired runtime kinds `static`/`interactive`/`live` — said nothing about a
+  // design's shape under today's names, so it settles as the general `webpage`
+  // (the default). Settings still win: they describe the shape.
   const kind: DesignKind = isDesignKind(stored)
     ? stored
     : hasDeck
       ? 'deck'
       : hasMotion
         ? 'motion'
-        : stored === 'live'
-          ? // The retired runtime kind whose scenario a dashboard is (a page fed
-            // while it stays open). Settings come first: those describe the
-            // shape, and the old kind only ever described the runtime.
-            'dashboard'
-          : hasRefresh
-            ? // A design that runs on a schedule is a dashboard — that is what a
-              // dashboard is.
-              'dashboard'
-            : 'prototype';
+        : 'webpage';
 
   if (!isDesignKind(stored)) {
     notes.push(
@@ -130,7 +122,7 @@ export interface ResolveDesignKindInput {
   deck?: DesignDeckSpec | null;
   /** Motion settings being written: absent = untouched, null = cleared. */
   motion?: DesignMotionSpec | null;
-  /** What the design is now (an update) — `prototype` for a creation. */
+  /** What the design is now (an update) — `webpage` for a creation. */
   current?: DesignKindState;
 }
 
@@ -139,7 +131,7 @@ export interface ResolveDesignKindInput {
  * request contradicts itself; otherwise the answer is the state to store.
  */
 export function resolveDesignKindState(input: ResolveDesignKindInput): DesignKindState {
-  const current: DesignKindState = input.current ?? { kind: 'prototype' };
+  const current: DesignKindState = input.current ?? { kind: 'webpage' };
   const requested = kindFromSettings({ deck: input.deck, motion: input.motion });
   const kind = input.kind ?? requested ?? current.kind;
 

@@ -629,7 +629,7 @@ export interface DesignToolSummary {
   slug: string;
   name: string;
   description?: string;
-  /** 'prototype' | 'dashboard' | 'deck' | 'motion' — what the design is */
+  /** 'webpage' | 'prototype' | 'deck' | 'motion' — what the design is */
   kind: string;
   projectId?: string;
   createdAt: number;
@@ -693,7 +693,7 @@ export interface DesignToolDetails extends DesignToolSummary {
 export interface CreateDesignToolInput {
   name: string;
   description?: string;
-  /** 'prototype' | 'deck' | 'motion' (default: 'prototype'); deck/motion settings imply it */
+  /** 'webpage' | 'prototype' | 'deck' | 'motion' (default: 'webpage'); deck/motion settings imply it */
   kind?: string;
   /** Stable Project ID to bind the design to */
   projectId?: string;
@@ -710,7 +710,7 @@ export interface CreateDesignToolInput {
 export interface UpdateDesignToolPatch {
   name?: string;
   description?: string | null;
-  /** 'prototype' | 'deck' | 'motion' — changing it drops the old kind's settings */
+  /** 'webpage' | 'prototype' | 'deck' | 'motion' — changing it drops the old kind's settings */
   kind?: string;
   projectId?: string | null;
   /** Replaces index.html entirely (re-digests; existing grants go stale by design) */

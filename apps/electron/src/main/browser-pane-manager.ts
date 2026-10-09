@@ -46,7 +46,14 @@ import {
   type BrowserEmptyStateLaunchResult,
   type BrowserInstanceInfo,
 } from '../shared/types'
-import { BACKGROUND_HEX, DEFAULT_THEME, getBackgroundColor, loadAppTheme, getAllowRemoteEvaluate, CONFIG_DIR } from '@craft-agent/shared/config'
+import { BACKGROUND_HEX, DEFAULT_THEME, getBackgroundColor, loadAppTheme, getAllowRemoteEvaluate, loadPreferences, CONFIG_DIR } from '@craft-agent/shared/config'
+import { isBrowserUrl } from '@craft-agent/shared/utils/url-safety'
+import {
+  loadBrowserTabsState,
+  saveBrowserTabsState,
+  type SavedBrowserTab,
+  type SavedBrowserWindowTabs,
+} from './browser-tabs-state'
 import { CodedError, RPC_CHANNELS, describeWork, sameWork, tabSectionOf } from '@craft-agent/shared/protocol'
 import type { PickedElement, PickedElementOrigin, BrowserToolbarAction, BrowserTabSummary, TabBelongsTo } from '@craft-agent/shared/protocol'
 import { PAGE_PANEL_RING, resolvePagePanelRing } from '../shared/browser-live-fx'
@@ -940,7 +947,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * wired and nothing is laid out — `attachTab` does that, and every tab goes through both,
    * so a tab cannot be half-created.
    */
-  private buildTab(ses: ElectronSession): BrowserTab {
+  private buildTab(ses: ElectronSession, restoredId?: string): BrowserTab {
     /**
      * The page is a `WebContentsView` rather than the deprecated `BrowserView` for one reason:
      * only the former can round its own corners (`setBorderRadius`). The page's panel look —
@@ -974,7 +981,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     })
 
     return {
-      id: `tab-${++tabCounter}`,
+      id: restoredId ?? `tab-${++tabCounter}`,
       tabView,
       cdp: new BrowserCDP(tabView.webContents),
       currentUrl: 'about:blank',
@@ -998,6 +1005,115 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
   }
 
+  /**
+   * Whether the browser window's tabs are remembered between runs.
+   *
+   * Read where it matters — a window going away, a window being created — rather than cached:
+   * the person turns it on in Settings while the app is running, and the next window they open
+   * already obeys it.
+   */
+  private restoreTabsEnabled(): boolean {
+    return loadPreferences().restoreBrowserTabs === true
+  }
+
+  /**
+   * A window's tabs as they are worth remembering, or `null` when it holds nothing that can be
+   * opened again (only blank tabs): a window with no real pages leaves no trace behind.
+   */
+  private snapshotTabsForRestore(instance: BrowserInstance): SavedBrowserWindowTabs | null {
+    const tabs: SavedBrowserTab[] = instance.tabs
+      // `isBrowserUrl` is the gate the rest of the app opens a page through (http/https, and
+      // the app's own origin). A `file://` a person opened once is deliberately *not* remembered:
+      // reopening it here would be the one way in that skips `validateFilePath`.
+      .filter((tab) => isBrowserUrl(tab.currentUrl))
+      .map((tab) => ({ id: tab.id, url: tab.currentUrl, title: tab.title }))
+
+    if (tabs.length === 0) return null
+    const active = tabs.find((tab) => tab.id === instance.activeTabId)
+    return { workspaceId: instance.workspaceId, tabs, activeTabId: active?.id ?? tabs[0].id }
+  }
+
+  /**
+   * Remember these windows' tabs, leaving every other workspace's entry alone.
+   *
+   * One entry per workspace, replaced whole: the file is a picture of "what to reopen", so a
+   * window with nothing left to reopen drops its entry rather than keeping a stale one.
+   */
+  private persistInstancesTabsForRestore(instances: Iterable<BrowserInstance>): void {
+    if (!this.restoreTabsEnabled()) return
+
+    const byWorkspace = new Map<string | null, SavedBrowserWindowTabs>()
+    for (const saved of loadBrowserTabsState().windows) {
+      byWorkspace.set(saved.workspaceId, saved)
+    }
+    for (const instance of instances) {
+      const snapshot = this.snapshotTabsForRestore(instance)
+      if (snapshot) byWorkspace.set(snapshot.workspaceId, snapshot)
+      else byWorkspace.delete(instance.workspaceId)
+    }
+    saveBrowserTabsState({ windows: [...byWorkspace.values()] })
+  }
+
+  /**
+   * Forget a workspace's tabs — what closing the window's last tab means.
+   *
+   * Written regardless of the setting, so a preference turned off and on again cannot resurrect a
+   * window the person had emptied.
+   */
+  private forgetTabsForWorkspace(workspaceId: string | null): void {
+    const state = loadBrowserTabsState()
+    const kept = state.windows.filter((saved) => saved.workspaceId !== workspaceId)
+    if (kept.length === state.windows.length) return
+    saveBrowserTabsState({ windows: kept })
+  }
+
+  /** This workspace's remembered pages, when there are any and the person asked for them. */
+  private restoredTabsForWorkspace(workspaceId: string | null): SavedBrowserWindowTabs | null {
+    if (!this.restoreTabsEnabled()) return null
+    const saved = loadBrowserTabsState().windows.find((entry) => entry.workspaceId === workspaceId)
+    return saved && saved.tabs.length > 0 ? saved : null
+  }
+
+  /**
+   * Open a window with the pages it had last time.
+   *
+   * The first tab is already in the window (it was built with the remembered id); the rest are
+   * built and attached here, behind it, the same way a tab opened in the background is. Ids are
+   * kept so a name a message quoted (`@tab-3`) still finds its page, and the counter is seeded past
+   * them so the next tab a person opens cannot collide.
+   */
+  private restoreTabs(instance: BrowserInstance, saved: SavedBrowserWindowTabs): void {
+    for (const id of saved.tabs.map((tab) => tab.id)) {
+      const seed = Number.parseInt(id.replace(/^tab-/, ''), 10)
+      if (Number.isFinite(seed) && seed > tabCounter) tabCounter = seed
+    }
+
+    const [first, ...rest] = saved.tabs
+    // The tab the window was built around is the first remembered one: give it its page back.
+    // The address is written **now**, not when the page commits, so a request that opens something
+    // in this window in the same breath (a clicked link) reads it as a page rather than as the blank
+    // tab it started as — a blank tab is what such a request is allowed to reuse.
+    const firstTab = activeTab(instance)
+    if (first.title) firstTab.title = first.title
+    firstTab.currentUrl = first.url
+    this.loadTab(instance, firstTab, first.url)
+
+    for (const page of rest) {
+      const tab = this.buildTab(session.fromPartition(SESSION_PARTITION), page.id)
+      if (page.title) tab.title = page.title
+      tab.currentUrl = page.url
+      instance.tabs.push(tab)
+      this.attachTab(instance, tab)
+      this.loadTab(instance, tab, page.url)
+    }
+
+    if (instance.tabs.some((tab) => tab.id === saved.activeTabId)) {
+      instance.activeTabId = saved.activeTabId
+    }
+    this.layoutAllViews(instance)
+    mainLog.info(`[browser-pane] Restored ${saved.tabs.length} tab(s) instance=${instance.id} workspace=${instance.workspaceId ?? 'none'} active=${instance.activeTabId}`)
+  }
+
   createInstance(id?: string, options?: CreateBrowserInstanceOptions): string {
     const instanceId = id || `browser-${++instanceCounter}`
     const shouldShow = options?.show ?? false
@@ -1007,6 +1123,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       mainLog.warn(`[browser-pane] Instance already exists, reusing: ${instanceId}`)
       return instanceId
     }
+
+    // The pages this workspace's window had last time, when the person asked for them back.
+    const restored = this.restoredTabsForWorkspace(workspaceId)
 
     const ses = session.fromPartition(SESSION_PARTITION)
     // Designs are served on this partition too, so a design can be opened as a tab and
@@ -1100,8 +1219,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     nativeOverlayView.setBackgroundColor('#00000000')
 
     // A window is *opened on* something, so it starts with one tab; the tabs a
-    // user adds afterwards go through `createTab`.
-    const tab = this.buildTab(ses)
+    // user adds afterwards go through `createTab`. A window being restored opens on the
+    // first page it had, under the id it had.
+    const tab = this.buildTab(ses, restored?.tabs[0].id)
 
     const instance: BrowserInstance = {
       id: instanceId,
@@ -1158,6 +1278,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     this.setupWindowListeners(instance)
     this.instances.set(instanceId, instance)
+    // The rest of the remembered pages, once the window is registered and can take tabs.
+    if (restored) this.restoreTabs(instance, restored)
     this.loadNativeOverlay(instance)
     this.emitStateChange(instance)
     mainLog.info(`[browser-pane] toolbar version: v4-react-chromeless`)
@@ -1174,24 +1296,28 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // from inside the window — so it gets the same load-and-retry the bar has. It does
     // not gate showing the window: a window whose rail failed is still a window.
     void this.loadChromePage(instance, 'rail')
-    void this.loadEmptyStateDocument(instance).catch((error) => {
-      mainLog.warn(`[browser-pane] empty-state load failed id=${instance.id}: ${error instanceof Error ? error.message : String(error)}`)
+    // A restored window is already loading its pages; the empty-state document is what a
+    // window with nothing to restore opens with.
+    if (!restored) {
+      void this.loadEmptyStateDocument(instance).catch((error) => {
+        mainLog.warn(`[browser-pane] empty-state load failed id=${instance.id}: ${error instanceof Error ? error.message : String(error)}`)
 
-      // `ERR_ABORTED` means something else navigated first — in practice the
-      // caller creating a window and pointing it somewhere in the same breath.
-      // Forcing `about:blank` here would abort *that* navigation and fail it, with
-      // the error surfacing against `about:blank` (so the real navigation looks
-      // broken when it actually succeeded). Only take over when nothing else did.
-      const superseded = abortedLoad(error)
-      if (superseded) {
-        mainLog.info(`[browser-pane] empty-state load superseded id=${instance.id} aborted=${superseded.url ?? 'unknown'}`)
-        return
-      }
+        // `ERR_ABORTED` means something else navigated first — in practice the
+        // caller creating a window and pointing it somewhere in the same breath.
+        // Forcing `about:blank` here would abort *that* navigation and fail it, with
+        // the error surfacing against `about:blank` (so the real navigation looks
+        // broken when it actually succeeded). Only take over when nothing else did.
+        const superseded = abortedLoad(error)
+        if (superseded) {
+          mainLog.info(`[browser-pane] empty-state load superseded id=${instance.id} aborted=${superseded.url ?? 'unknown'}`)
+          return
+        }
 
-      void tab.tabView.webContents.loadURL('about:blank').catch((fallbackError) => {
-        mainLog.warn(`[browser-pane] about:blank fallback failed id=${instance.id}: ${String(fallbackError)}`)
+        void tab.tabView.webContents.loadURL('about:blank').catch((fallbackError) => {
+          mainLog.warn(`[browser-pane] about:blank fallback failed id=${instance.id}: ${String(fallbackError)}`)
+        })
       })
-    })
+    }
 
     return instanceId
   }
@@ -1509,7 +1635,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     if (index === -1) return
 
     if (instance.tabs.length === 1) {
-      this.destroyInstance(instanceId)
+      // Closing the last tab is a window emptied by hand: there is nothing to bring back next
+      // time, so the remembered pages go with it (`forgetTabs`).
+      this.destroyInstance(instanceId, { forgetTabs: true })
       return
     }
 
@@ -1880,12 +2008,24 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     return this.listTabs(instanceId)
   }
 
-  destroyInstance(id: string): void {
+  /**
+   * Tear a window down for good.
+   *
+   * This is the last moment its pages exist, so it is where "what comes back next time" is
+   * decided. The default is to **remember** them: a window closed in full, left at quit, or
+   * whose workspace is going away is one the person expects to find again. `forgetTabs` says
+   * the opposite, for the one case that means the opposite — a window **emptied by hand**, by
+   * closing its last tab — where there is nothing left to bring back.
+   */
+  destroyInstance(id: string, options?: { forgetTabs?: boolean }): void {
     const instance = this.instances.get(id)
     if (!instance) {
       mainLog.info(`[browser-pane] destroy requested for missing instance id=${id}`)
       return
     }
+
+    if (options?.forgetTabs) this.forgetTabsForWorkspace(instance.workspaceId)
+    else this.persistInstancesTabsForRestore([instance])
 
     const destroyedBefore = instance.window.isDestroyed()
     mainLog.info(`[browser-pane] destroy requested id=${id} destroyedBefore=${destroyedBefore} keepAlive=${instance.keepAliveOnWindowClose}`)
@@ -2250,6 +2390,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     win.hide()
 
     instance.isVisible = false
+
+    // The window is going away — which is exactly what "remember my tabs" is about, and the
+    // pages are still here (hiding keeps them), so this is where they can be read.
+    this.persistInstancesTabsForRestore([instance])
 
     // Defer the state-change callback so native window teardown completes before
     // listeners (which may touch BrowserView/Chromium internals) run.
@@ -4517,6 +4661,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * is not touched here.
    */
   destroyForWorkspace(workspaceId: string): void {
+    // Each window remembers its pages as it is destroyed (`destroyInstance`), so a workspace
+    // put away comes back the way it was left.
     for (const instance of [...this.instances.values()]) {
       if (instance.workspaceId === workspaceId) {
         this.destroyInstance(instance.id)

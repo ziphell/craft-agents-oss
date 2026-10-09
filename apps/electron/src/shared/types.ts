@@ -775,7 +775,7 @@ export interface ElectronAPI {
   exportTweaks(workspaceId: string, destParent: string): Promise<import('@craft-agent/shared/tweaks').TweaksExportResult>
   onTweaksChanged(callback: (workspaceId: string, tweaks: import('@craft-agent/shared/tweaks').TweakSummary[]) => void): () => void
 
-  // Designs (workspace-scoped mini dashboards)
+  // Designs (workspace-scoped mini web pages)
   getDesigns(workspaceId: string): Promise<import('@craft-agent/shared/designs/types').LoadedDesign[]>
   getDesign(workspaceId: string, designIdOrSlug: string): Promise<import('@craft-agent/shared/designs/types').LoadedDesign | null>
   createDesign(workspaceId: string, input: import('@craft-agent/shared/designs/types').CreateDesignInput): Promise<import('@craft-agent/shared/designs/types').DesignConfig>

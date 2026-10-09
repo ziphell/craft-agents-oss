@@ -67,7 +67,7 @@ export type {
   ActiveSessionInfo,
 } from './server.ts';
 
-// Design types (workspace-scoped mini dashboards)
+// Design types (workspace-scoped mini web pages)
 export type {
   DesignKind,
   DesignScriptRuntime,

@@ -167,7 +167,7 @@ export function DesignFrame({ workspaceId, design, lease, content, previewUrl, s
   }, [usableConfigGrants, postGrants])
 
   // Every design gets replacement snapshots, and the document decides what to
-  // do with one: rendering it is what makes a dashboard follow its data, and
+  // do with one: rendering it is what makes a live page follow its data, and
   // ignoring it is what makes a report stay the snapshot it was opened as.
   // (There is no kind to declare this; the page's own code says it.)
   useEffect(() => {

@@ -176,12 +176,32 @@ function flattenItems(sections: MentionSection[]): MentionItem[] {
   return sections.flatMap(section => section.items)
 }
 
+// ============================================================================
+// Mention trigger
+// ============================================================================
+
+// CJK ranges (Ext-A, Unified Ideographs, Compat Ideographs). Chinese has no word
+// separators, so a Chinese name has to be typed as-is (`@项目计划.md`); without these
+// ranges the query regex below matches nothing and the menu closes on the first character.
+const CJK_RANGES = '\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff'
+
+// @ followed by up to 100 chars of word chars, hyphens, slashes, dots, spaces, or CJK.
+// Spaces are allowed so filenames with spaces work (e.g. @app availability.md); the menu
+// auto-closes when a space produces no matches (Slack-style, see useInlineMention below).
+// Exported so the trigger tests can assert on it directly.
+export const MENTION_QUERY_REGEX = new RegExp(`@([\\w\\-\\/.\\s${CJK_RANGES}]{0,100})?$`)
+
+// A CJK character before @ is a word boundary, so `见@报告.md` opens the menu the same
+// way `see @report.md` does. Latin letters/digits before @ stay invalid (emails).
+const CJK_CHAR_REGEX = new RegExp(`[${CJK_RANGES}]`)
+
 /**
  * Check if the @ character at the given position is a valid mention trigger.
  * Valid triggers are:
  * - @ at the start of input (position 0)
  * - @ preceded by whitespace (space, tab, newline)
  * - @ preceded by opening brackets or quotes: ( " '
+ * - @ preceded by a CJK character (Chinese text is written without spaces)
  *
  * Invalid triggers (returns false):
  * - @ in the middle of a word (e.g., "test@example.com")
@@ -196,8 +216,8 @@ export function isValidMentionTrigger(textBeforeCursor: string, atPosition: numb
   if (atPosition === 0) return true
   const charBefore = textBeforeCursor[atPosition - 1]
   if (charBefore === undefined) return false
-  // Allow whitespace or opening brackets/quotes before @
-  return /\s/.test(charBefore) || /[("']/.test(charBefore)
+  // Allow whitespace, opening brackets/quotes, or a CJK character before @
+  return /\s/.test(charBefore) || /[("']/.test(charBefore) || CJK_CHAR_REGEX.test(charBefore)
 }
 
 // ============================================================================
@@ -560,10 +580,7 @@ export function useInlineMention({
     currentInputRef.current = { value, cursorPosition }
 
     const textBeforeCursor = value.slice(0, cursorPosition)
-    // Match @ followed by up to 100 chars (word chars, hyphens, slashes, dots, and spaces).
-    // Spaces are allowed so users can type filenames with spaces (e.g. @app availability.md).
-    // The menu auto-closes when a space produces no matches (Slack-style behavior).
-    const atMatch = textBeforeCursor.match(/@([\w\-\/.\s]{0,100})?$/)
+    const atMatch = textBeforeCursor.match(MENTION_QUERY_REGEX)
 
     // Check if this is a valid @ mention trigger
     const matchStart = atMatch ? textBeforeCursor.lastIndexOf('@') : -1

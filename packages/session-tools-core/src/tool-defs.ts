@@ -337,9 +337,9 @@ export const GetDesignSchema = z.object({
 export const CreateDesignSchema = z.object({
   name: z.string().describe('Design name shown on the tile (also drives the slug)'),
   description: z.string().optional().describe('Short description shown in lists'),
-  kind: z.enum(['prototype', 'dashboard', 'deck', 'motion'])
+  kind: z.enum(['webpage', 'prototype', 'deck', 'motion'])
     .optional()
-    .describe("What this design is: 'prototype' (a page you read: report, tool), 'dashboard' (a page kept open and fed: instrument panel, KPI wallboard — it is the kind with its own controls pulling data, and a refresh spec behind it), 'deck' (slides) or 'motion' (a self-driving timeline exported as video). One design is one kind; passing deck/motion settings implies it. Default: prototype."),
+    .describe("What this design is: 'webpage' (the default — a persistent page or mini app you use and revisit: a report, a tracker, a tool, a live panel), 'prototype' (several screens you walk through on a canvas: a flow), 'deck' (slides) or 'motion' (a self-driving timeline exported as video). One design is one kind; passing deck/motion settings implies it. Default: webpage."),
   projectId: z.string().optional().describe('Stable Project ID to bind the design to'),
   content: z.string().optional().describe('Full self-contained HTML document for index.html (inline CSS/JS, no external requests). Read docs/designs.md for the authoring guide and data-bridge snippet BEFORE writing design HTML.'),
   refresh: DesignRefreshSpecInputSchema.optional().describe('Scheduled data refresh: cron + workspace-relative Bun script that updates the design data store'),
@@ -351,7 +351,7 @@ export const UpdateDesignSchema = z.object({
   slug: z.string().describe('Slug of the design to update'),
   name: z.string().optional().describe('New design name (slug stays stable)'),
   description: z.string().nullable().optional().describe('New description. Pass null to clear.'),
-  kind: z.enum(['prototype', 'dashboard', 'deck', 'motion']).optional().describe("New kind. Changing it drops the settings of the kind it no longer is; deck/motion settings in the same call settle it."),
+  kind: z.enum(['webpage', 'prototype', 'deck', 'motion']).optional().describe("New kind. Changing it drops the settings of the kind it no longer is; deck/motion settings in the same call settle it."),
   projectId: z.string().nullable().optional().describe('New Project ID. Pass null to unbind from its project.'),
   content: z.string().optional().describe('Replacement index.html (full document). Read docs/designs.md for the authoring guide and data-bridge snippet BEFORE writing design HTML. Re-digests the content — existing source-action grants become stale by design and need re-approval.'),
   refresh: DesignRefreshSpecInputSchema.nullable().optional().describe('New refresh spec. Pass null to remove scheduled refresh.'),
@@ -813,9 +813,9 @@ The code is read on the next load of each matching page, so nothing here reaches
 
   delete_tweak: `Delete a tweak — its folder, its code and its record. DESTRUCTIVE: confirm with the user first unless they explicitly asked for the deletion.`,
 
-  list_designs: `List the workspace's Designs — persistent, agent-authored HTML mini dashboards/documents rendered in the app's Designs section (sidebar) and optionally shared via password-protected public links.
+  list_designs: `List the workspace's Designs — persistent, agent-authored HTML mini web pages/documents rendered in the app's Designs section (sidebar) and optionally shared via password-protected public links.
 
-Returns compact summaries: slug, name, kind (prototype/dashboard/deck/motion), project, refresh schedule, last refresh outcome, share state, and folder path. Optionally filter by projectId. Use get_design for full details on one design.`,
+Returns compact summaries: slug, name, kind (webpage/prototype/deck/motion), project, refresh schedule, last refresh outcome, share state, and folder path. Optionally filter by projectId. Use get_design for full details on one design.`,
 
   get_design: `Get full details for one Design by slug: config, content digest/length/path, a data summary (KV keys + per-series point counts and latest values), source-action grants, and share state.
 
@@ -823,11 +823,11 @@ The response includes absolute paths (contentPath, data.snapshotPath) — Read t
 
   create_design: `Create a new Design: a persistent, self-contained HTML document stored at designs/{slug}/ in the workspace, shown as a tile in the app's Designs section, and rendered in a sandboxed iframe.
 
-Its kind is what it is — 'prototype' (a page you read), 'dashboard' (a page kept open and fed) or 'deck' (slides) or 'motion' (a video) — and deck/motion settings are that kind's parameters (passing them settles the kind). One design is one kind.
+Its kind is what it is — 'webpage' (the default: a page or mini app you use), 'prototype' (screens you walk through on a canvas) or 'deck' (slides) or 'motion' (a video) — and deck/motion settings are that kind's parameters (passing them settles the kind). One design is one kind.
 
 IMPORTANT — read docs/designs.md BEFORE authoring design HTML. Key rules: provide a FULL standalone HTML document with ALL CSS/JS inline (no external requests — shared copies get network egress blocked); to display data from the design's data store, listen for the 'craft-designs/v1' bridge messages (init/data) documented there. The host pushes a fresh snapshot into the open frame whenever the data changes — render it if the page should follow the data, ignore it if it is a snapshot.
 
-Use Designs (instead of chat previews) when the user wants something persistent: a dashboard that an automation refreshes, a report they'll revisit or share, a tracker fed by write_design_data. Returns the created design details including the slug.`,
+Use Designs (instead of chat previews) when the user wants something persistent: a live page that an automation refreshes, a report they'll revisit or share, a tracker fed by write_design_data. Returns the created design details including the slug.`,
 
   update_design: `Update an existing Design: metadata (name, description, kind, projectId), the scheduled refresh spec, and/or replace its HTML content.
 

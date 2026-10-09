@@ -492,6 +492,19 @@ mock.module('../browser-cdp', () => ({
   },
 }))
 
+/**
+ * The remembered-tabs store, kept off the disk.
+ *
+ * The manager writes here when a window goes away and reads here when one is created — on disk
+ * that is the person's own file under `~/.craft-agent`, which a test has no business reading or
+ * writing (and whose contents would depend on whether the person has the setting on). Inert, so
+ * every test sees a window with nothing to restore and nothing it remembers.
+ */
+mock.module('../browser-tabs-state', () => ({
+  loadBrowserTabsState: () => ({ windows: [] }),
+  saveBrowserTabsState: () => {},
+}))
+
 const { BrowserPaneManager } = await import('../browser-pane-manager')
 
 /**

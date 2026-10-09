@@ -20,7 +20,7 @@ import type { LoadedDesign } from '@craft-agent/shared/designs/types'
 import type { DesignKind } from '@craft-agent/shared/designs/types'
 
 /** The kind chips, in the order a person reads them. */
-const KIND_FILTERS: ReadonlyArray<DesignKind | 'all'> = ['all', 'prototype', 'dashboard', 'deck', 'motion']
+const KIND_FILTERS: ReadonlyArray<DesignKind | 'all'> = ['all', 'webpage', 'prototype', 'deck', 'motion']
 
 /**
  * Designs library — the full-width home grid (mirrors the Kanban board pane).

@@ -73,7 +73,7 @@ const DECK_ASPECTS: readonly string[] = ['16:9', '4:3', '16:10', '9:16']
 function assertKind(kind: string | undefined): DesignKind | undefined {
   if (kind === undefined) return undefined
   if (!isDesignKind(kind)) {
-    throw new Error(`Invalid design kind "${kind}" — expected prototype | dashboard | deck | motion`)
+    throw new Error(`Invalid design kind "${kind}" — expected webpage | prototype | deck | motion`)
   }
   return kind
 }

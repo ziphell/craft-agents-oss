@@ -119,10 +119,11 @@ export function registerWorkspaceGuiHandlers(server: RpcServer, deps: HandlerDep
     windowManager.closeWindow(ctx.webContentsId!)
   })
 
-  // Confirm close - force close the window (bypasses interception).
+  // Confirm close - the renderer answered the close request, so put the window away.
+  // (A close hides rather than destroys — the app lives in the tray.)
   server.handle(RPC_CHANNELS.window.CONFIRM_CLOSE, (ctx) => {
     if (!windowManager) return
-    windowManager.forceCloseWindow(ctx.webContentsId!)
+    windowManager.hideWindow(ctx.webContentsId!)
   })
 
   // Cancel close - renderer handled the request (closed a modal/panel).

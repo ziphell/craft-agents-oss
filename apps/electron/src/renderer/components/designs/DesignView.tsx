@@ -505,8 +505,8 @@ export function DesignView({ designSlug }: DesignViewProps) {
         </div>
       )}
 
-      {/* Present: a dashboard is made to be shown big — on a KPI screen or in a decision
-          room — and a prototype or a motion piece is just as much a thing to watch. The deck
+      {/* Present: a webpage or a prototype is made to be shown big — on a KPI screen or in a
+          decision room — and a motion piece is just as much a thing to watch. The deck
           keeps its own copy of this button, beside the slide counter. */}
       {showsPresent && (
         <div className="mx-3 mt-2 flex items-center gap-2 text-xs text-foreground/60">

@@ -173,11 +173,12 @@ export function loadDesignConfig(
 
   try {
     const raw = readJsonFileSync<Record<string, unknown>>(configPath);
-    // Kinds are stored now (prototype / deck / motion). A file written before
-    // that says which one it is by which settings it carries — and one written
-    // with the retired runtime kinds (`static`/`interactive`/`live`) said
-    // nothing about what it is, so it is inferred the same way. Whatever is
-    // settled here is written back on the next save.
+    // Kinds are stored now (webpage / prototype / deck / motion). A file written
+    // before that says which one it is by which settings it carries — and one
+    // written with the retired `dashboard` or the retired runtime kinds
+    // (`static`/`interactive`/`live`) said nothing about what it is under
+    // today's names, so it is inferred the same way. Whatever is settled here
+    // is written back on the next save.
     const migrated = migrateDesignKind(raw);
     for (const note of migrated.notes) {
       debug('[loadDesignConfig]', designSlug, note);

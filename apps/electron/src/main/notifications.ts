@@ -99,9 +99,13 @@ function handleNotificationClick(workspaceId: string, sessionId: string): void {
   }
 
   if (window && !window.isDestroyed() && !window.webContents.isDestroyed()) {
-    // Focus the window
+    // Bring it back: a window that was put away is hidden, and focus() alone does
+    // not show one.
     if (window.isMinimized()) {
       window.restore()
+    }
+    if (!window.isVisible()) {
+      window.show()
     }
     window.focus()
 

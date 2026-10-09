@@ -4,7 +4,7 @@
  */
 
 import * as React from 'react'
-import { Clapperboard, Gauge, LayoutTemplate, Presentation, type LucideIcon } from 'lucide-react'
+import { AppWindow, Clapperboard, LayoutTemplate, Presentation, type LucideIcon } from 'lucide-react'
 import { formatDistanceToNowStrict, type Locale } from 'date-fns'
 import { useTranslation } from 'react-i18next'
 import { cn } from '@/lib/utils'
@@ -12,8 +12,8 @@ import { shortTimeLocale } from '@/utils/session'
 import type { DesignConfig, DesignKind } from '@craft-agent/shared/designs/types'
 
 const DESIGN_KIND_ICONS: Record<DesignKind, LucideIcon> = {
+  webpage: AppWindow,
   prototype: LayoutTemplate,
-  dashboard: Gauge,
   deck: Presentation,
   motion: Clapperboard,
 }
@@ -37,8 +37,8 @@ export function DesignKindBadge({ kind, className }: { kind: DesignKind; classNa
     <span
       className={cn(
         'inline-flex shrink-0 items-center gap-1 rounded-md border border-border/60 bg-foreground/[0.02] px-1.5 py-0.5 text-[10.5px] font-medium text-foreground/60',
+        kind === 'webpage' && 'text-emerald-600 dark:text-emerald-400',
         kind === 'prototype' && 'text-sky-600 dark:text-sky-400',
-        kind === 'dashboard' && 'text-emerald-600 dark:text-emerald-400',
         kind === 'deck' && 'text-orange-600 dark:text-orange-400',
         kind === 'motion' && 'text-violet-600 dark:text-violet-400',
         className,

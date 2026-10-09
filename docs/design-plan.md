@@ -176,6 +176,42 @@
 
 **还剩一个决定**（§9）：**工作区浏览器窗口要不要收这个 scheme？** 它现在只认 http/https（`isBrowserUrl` 把 `craftagents://` / `file://` / `data:` 一律判否）。**v1 建议不收**——真交互在应用内的渲染面跑，"Open in browser" 保持 http/https。
 
+### 2.7 独立窗口：把一件 design 开在自己的窗口里（待实现）
+
+design 现在只在详情页里看（§2.4）。它应当还能**开在自己的窗口里**——一个精简的独立窗口，去掉应用的主界面，只剩这件 design 加最薄的一层操作。这是**预览面的一种形态**，不是第五种产物：产物仍是那四种，变的只是它在哪儿被呈现。机制上它也不新建容器——窗口里仍是 app renderer 跑同一条 design 路由、同一个 `DesignFrame` 宿主。
+
+**它和"PWA"不是一回事，先把这条划清。** 真 PWA（浏览器里 Install、独立 origin + manifest + SW）在这里装不了：`craft-local` 是 Electron 自有 scheme，在 `thumbnail-protocol.ts:registerPrivilegedSchemes` 一次性注册，真浏览器认不得自定义 scheme；仓库现存的 manifest（`apps/webui/src/public/manifest.json`）是**整个应用**的远程壳，不是每一件 design 的。所以目标是"app 内的独立窗口"，不是"装到系统里的应用"。它与**发布副本**（Share 出去的远程链接，§Sharing）也不是一回事：那个在 app 之外、只读、actions 禁用；这个仍在 app 内、仍是活的。
+
+**复用（不新造机制）**：
+
+| 需要 | 已有 |
+|---|---|
+| 开一个窗口 | `windowManager.createWindow({ workspaceId, focused, initialDeepLink })`；`focused` 已经是 900×700 的小窗 |
+| 隐藏主界面 | `focused` 写进 query，`AppShell` 读它隐藏侧边栏与导航栏 |
+| 从链接开窗 | `deep-link.ts` 的 `?window=focused\|full` 已经走"新建窗口"那条路 |
+| 落到这件 design | 路由 `designs/design/:slug`（`routes.ts`），渲染进 `MainContentPanel` → `DesignView` |
+| 仍要是"活的" | 窗口里仍是 `DesignFrame` 作宿主，grants / 实时数据 / Present 照旧 |
+
+**缺口只有三处**：
+
+1. **深链不认识 design**：`deep-link.ts` 的 `COMPOUND_ROUTE_PREFIXES` 没有 `designs`，`craftagents://designs/design/<slug>` 现在解析不出来。
+2. **没有入口**：`DesignView` 头部要加一个"在新窗口打开"的动作。
+3. **窗口自己的呈现**：现成的 `focused` 只砍了侧边栏，`DesignView` 头部仍是详情页的样子——"返回 designs 列表"在独立窗里没有意义；标题会被 `refreshWindowTitles` 改成**工作区名**而不是 design 名；`window-state.json` 的 `SavedWindow.type` 只有 `'main'`，独立窗要决定存不存、怎么恢复。这三条才是"精简"真正的工作量。
+
+**一条必须定的岔路**：
+
+| | 保留宿主（**建议**） | 直接加载地址 |
+|---|---|---|
+| 做法 | 独立窗仍是 app renderer 跑 design 路由，只把 chrome 削到最薄 | 窗口直接 `loadURL('craft-local://…/index.html')` |
+| grants / actions | 在 | **全废**（没有宿主可批准、可执行） |
+| 实时数据 | 在（宿主推） | 只剩加载那刻的 snapshot（页面自己 fetch） |
+| 壳 | 一层极薄的 renderer | 零壳，纯粹是那个 design |
+| 它还是"小应用"吗 | 是 | 退化成一张会动的图 |
+
+**建议保留宿主**：零壳那版丢掉的正是 grants 与刷新——那恰好是 design 之所以是"小应用"的部分；丢了它，独立窗与"Share 出来的只读副本"就只剩本地 / 远程之差。零壳那版更诚实的定位是"把设计导出成一张本地页面"，属于 §2.5「交出去」，不属于"开在哪里"。
+
+**边界**：不新增 scheme、不新增服务、不新增容器；不追求 OS 级"可安装应用"，也不做绕开主窗口的桌面 / dock 入口——那是另一件事。
+
 ---
 
 ## 3. Deck（第三种产物）

@@ -48,6 +48,15 @@ export interface UserPreferences {
    */
   openInAppBrowser?: boolean;
   /**
+   * Whether a workspace's browser window opens with the tabs it had last time
+   * (default: false). Off unless the person turns it on.
+   *
+   * When on, each workspace's browser window remembers its pages as it goes away, and the
+   * next time that window is created they are opened again — same addresses, same tab ids.
+   * Only `http`/`https` addresses are remembered. Maintained by Settings → Links.
+   */
+  restoreBrowserTabs?: boolean;
+  /**
    * Internal: persisted UI language code (mirrors Appearance → Language).
    * Maintained only by the main-process `i18n:changeLanguage` IPC handler.
    * Not user-editable; not exposed via the `update_user_preferences` tool.

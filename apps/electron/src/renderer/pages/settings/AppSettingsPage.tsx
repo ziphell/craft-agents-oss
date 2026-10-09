@@ -24,6 +24,7 @@ import { routes } from '@/lib/navigate'
 import { Spinner } from '@craft-agent/ui'
 import type { DetailsPageMeta } from '@/lib/navigation-registry'
 import type { NetworkProxyMode, NetworkProxySettings } from '../../../shared/types'
+import type { UserPreferences } from '@craft-agent/shared/config'
 import { readOpenInAppBrowserFrom, writeOpenInAppBrowser } from '@/lib/open-in-app-browser'
 
 import {
@@ -98,6 +99,37 @@ function validateProxyUrl(url: string): string | undefined {
   }
 }
 
+/**
+ * The "bring my tabs back" switch, in the same shape as the browser switch beside it: the
+ * answer lives in the preferences file, and the settings page reads a copy it already has.
+ */
+function readRestoreBrowserTabsFrom(content: string): boolean {
+  try {
+    return (JSON.parse(content) as UserPreferences).restoreBrowserTabs === true
+  } catch {
+    return false
+  }
+}
+
+/** Write it back, keeping whatever else the file holds. */
+async function writeRestoreBrowserTabs(enabled: boolean): Promise<void> {
+  const { content } = await window.electronAPI.readPreferences()
+
+  let prefs: UserPreferences
+  try {
+    prefs = JSON.parse(content) as UserPreferences
+  } catch {
+    prefs = {}
+  }
+
+  const result = await window.electronAPI.writePreferences(
+    JSON.stringify({ ...prefs, restoreBrowserTabs: enabled, updatedAt: Date.now() }, null, 2),
+  )
+  if (!result.success) {
+    throw new Error(result.error ?? 'Could not write preferences')
+  }
+}
+
 // ============================================
 // Main Component
 // ============================================
@@ -116,6 +148,7 @@ export default function AppSettingsPage() {
 
   // Links and pages state
   const [openInAppBrowser, setOpenInAppBrowser] = useState(true)
+  const [restoreBrowserTabs, setRestoreBrowserTabs] = useState(false)
 
   // Proxy state
   const [proxyForm, setProxyForm] = useState<ProxyFormState>(EMPTY_PROXY_FORM)
@@ -152,6 +185,7 @@ export default function AppSettingsPage() {
       setKeepAwakeEnabled(keepAwakeOn)
       setBrowserToolEnabled(browserToolOn)
       setOpenInAppBrowser(readOpenInAppBrowserFrom(preferencesFile.content))
+      setRestoreBrowserTabs(readRestoreBrowserTabsFrom(preferencesFile.content))
       const form = toProxyFormState(proxySettings)
       setProxyForm(form)
       setSavedProxyForm(form)
@@ -187,6 +221,19 @@ export default function AppSettingsPage() {
       // Back where it was: this switch says where a page opens, so it must not show a change
       // that never reached the disk.
       setOpenInAppBrowser(!enabled)
+      toast.error(t('toast.failedToSaveSetting', { setting: t('settings.links.title') }), {
+        description: error instanceof Error ? error.message : undefined,
+      })
+    }
+  }, [t])
+
+  const handleRestoreBrowserTabsChange = useCallback(async (enabled: boolean) => {
+    setRestoreBrowserTabs(enabled)
+    try {
+      await writeRestoreBrowserTabs(enabled)
+    } catch (error) {
+      // Back where it was: the switch must not show a change that never reached the disk.
+      setRestoreBrowserTabs(!enabled)
       toast.error(t('toast.failedToSaveSetting', { setting: t('settings.links.title') }), {
         description: error instanceof Error ? error.message : undefined,
       })
@@ -285,6 +332,12 @@ export default function AppSettingsPage() {
                       description={t("settings.links.openInAppBrowserDesc")}
                       checked={openInAppBrowser}
                       onCheckedChange={handleOpenInAppBrowserChange}
+                    />
+                    <SettingsToggle
+                      label={t("settings.links.restoreBrowserTabs")}
+                      description={t("settings.links.restoreBrowserTabsDesc")}
+                      checked={restoreBrowserTabs}
+                      onCheckedChange={handleRestoreBrowserTabsChange}
                     />
                   </SettingsCard>
                 </SettingsSection>

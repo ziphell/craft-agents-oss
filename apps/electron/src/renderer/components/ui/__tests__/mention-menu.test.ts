@@ -13,10 +13,12 @@ mock.module('pdfjs-dist/build/pdf.worker.min.mjs?url', () => ({ default: '' }));
 mock.module('pdfjs-dist', () => ({ GlobalWorkerOptions: { workerSrc: '' }, getDocument: () => ({}) }));
 
 let isValidMentionTrigger: (text: string, position: number) => boolean;
+let MENTION_QUERY_REGEX: RegExp;
 
 beforeAll(async () => {
   const mod = await import('../mention-menu');
   isValidMentionTrigger = mod.isValidMentionTrigger;
+  MENTION_QUERY_REGEX = mod.MENTION_QUERY_REGEX;
 });
 
 describe('isValidMentionTrigger', () => {
@@ -66,6 +68,13 @@ describe('isValidMentionTrigger', () => {
     it('returns true when @ is preceded by single quote', () => {
       expect(isValidMentionTrigger("'@", 1)).toBe(true);
       expect(isValidMentionTrigger("use '@skill'", 5)).toBe(true);
+    });
+
+    it('returns true when @ is preceded by a CJK character', () => {
+      // Chinese is written without spaces, so `见@文件` must open the menu.
+      expect(isValidMentionTrigger('见@', 1)).toBe(true);
+      expect(isValidMentionTrigger('见@报告.md', 1)).toBe(true);
+      expect(isValidMentionTrigger('帮我总结一下@项目计划.md', 6)).toBe(true);
     });
   });
 
@@ -121,5 +130,18 @@ describe('isValidMentionTrigger', () => {
       expect(isValidMentionTrigger('user@test @', 4)).toBe(false);  // first @
       expect(isValidMentionTrigger('user@test @', 10)).toBe(true); // second @
     });
+  });
+});
+
+describe('MENTION_QUERY_REGEX (query captured after @)', () => {
+  it('captures an ASCII query', () => {
+    expect(MENTION_QUERY_REGEX.exec('@app availability.md')?.[1]).toBe('app availability.md');
+  });
+
+  it('captures a Chinese query', () => {
+    // Without CJK in the character class the whole match fails, so the menu closes.
+    expect(MENTION_QUERY_REGEX.exec('@项目计划')?.[1]).toBe('项目计划');
+    expect(MENTION_QUERY_REGEX.exec('@项目计划.md')?.[1]).toBe('项目计划.md');
+    expect(MENTION_QUERY_REGEX.exec('帮我看看@报告')?.[1]).toBe('报告');
   });
 });

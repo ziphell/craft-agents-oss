@@ -518,8 +518,8 @@ export function registerDesignsHandlers(server: RpcServer, deps: HandlerDeps): v
       throw new Error(`${format.toUpperCase()} export is only available in the desktop app.`)
     }
     // PNG is "one image per page", and a page is a convention the document follows: a deck's
-    // `.slide`, or a canvas's `.artboard`. Both are rendered by the same walk (see
-    // design-exporter.ts), so both may ask for it — a dashboard or a motion composition has no
+    // `.slide`, or a prototype's canvas `.artboard`. Both are rendered by the same walk (see
+    // design-exporter.ts), so both may ask for it — a webpage or a motion composition has no
     // pages, and is refused with the reason.
     if (format === 'png' && !config.deck && config.kind !== 'prototype') {
       throw new Error(

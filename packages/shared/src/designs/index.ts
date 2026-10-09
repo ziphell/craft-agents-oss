@@ -1,7 +1,7 @@
 /**
  * Designs - Public API
  *
- * Workspace-scoped mini dashboards: storage/CRUD, refresh-hook matchers, and
+ * Workspace-scoped mini web pages: storage/CRUD, refresh-hook matchers, and
  * the mediated source-action bridge.
  *
  * NOT exported here: ./data-store.ts (bun:sqlite) — Bun-only by design, import

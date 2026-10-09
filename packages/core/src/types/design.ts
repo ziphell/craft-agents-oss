@@ -1,7 +1,7 @@
 /**
  * Design Types
  *
- * Designs are workspace-scoped, agent-authored mini dashboards: static HTML/JS
+ * Designs are workspace-scoped, agent-authored mini web pages: static HTML/JS
  * rendered by the host in an opaque sandboxed iframe, backed by data that
  * refresh scripts write to disk, plus a mediated bridge for privileged
  * source actions (approved per-grant, executed by the host — never by
@@ -33,11 +33,13 @@
 /**
  * What a design **is** — declared, stored, and the only statement of it.
  *
- * - `prototype` — a page you read: a report, a calculator, a tool
- * - `dashboard` — a page that is kept open and fed: a real-time instrument panel,
- *                 a KPI wallboard, a decision room's screen. It is the kind whose
- *                 own controls pull the data (see the dashboard section of
- *                 docs/designs.md), and whose schedule is the normal case
+ * - `webpage`   — the general case (the default): a persistent page or mini app
+ *                 you use and revisit — a report, a tracker, a tool, a live
+ *                 panel fed by data. Renders exactly as it is. A `refresh` spec
+ *                 is a field, not this kind: any design may be fed on a schedule.
+ * - `prototype` — several screens you walk through on a canvas: a flow, framed
+ *                 as `.artboard` sections (see the prototype section of
+ *                 docs/designs.md). Exports one image per frame.
  * - `deck`      — slides, presented one at a time and exported one per page
  * - `motion`    — a self-driving timeline, whose deliverable is a video
  *
@@ -47,7 +49,7 @@
  * so the two are resolved together at the one write path (see
  * `@craft-agent/shared/designs` → resolveDesignKindState).
  */
-export type DesignKind = 'prototype' | 'dashboard' | 'deck' | 'motion';
+export type DesignKind = 'webpage' | 'prototype' | 'deck' | 'motion';
 
 // ============================================================================
 // Refresh

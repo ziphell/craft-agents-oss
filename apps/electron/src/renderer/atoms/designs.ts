@@ -1,5 +1,5 @@
 /**
- * Jotai atoms for workspace Designs (agent-authored mini dashboards).
+ * Jotai atoms for workspace Designs (agent-authored mini web pages).
  *
  * `designsAtom` is the single source of truth for the loaded design list —
  * `useDesigns` writes it and every consumer (sidebar count, grid, detail view)

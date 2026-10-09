@@ -47,6 +47,7 @@ describe('notification click routing', () => {
     const mockWindow = {
       isDestroyed: () => false,
       isMinimized: () => false,
+      isVisible: () => true,
       restore: () => {},
       focus: () => {},
       webContents: {
@@ -81,6 +82,7 @@ describe('notification click routing', () => {
     const mockWindow = {
       isDestroyed: () => false,
       isMinimized: () => false,
+      isVisible: () => true,
       restore: () => {},
       focus: () => {},
       webContents: {

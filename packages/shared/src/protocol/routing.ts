@@ -456,7 +456,7 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.tweaks.EXPORT,
   RPC_CHANNELS.tweaks.CHANGED,
 
-  // designs — workspace designs (mini dashboards)
+  // designs — workspace designs (mini web pages)
   RPC_CHANNELS.designs.GET,
   RPC_CHANNELS.designs.GET_ONE,
   RPC_CHANNELS.designs.CREATE,

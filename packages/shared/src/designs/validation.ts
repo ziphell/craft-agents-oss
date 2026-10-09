@@ -175,7 +175,7 @@ export const DesignActionGrantSchema = z.object({
   expiresAt: z.number(),
 });
 
-export const DesignKindSchema = z.enum(['prototype', 'dashboard', 'deck', 'motion']);
+export const DesignKindSchema = z.enum(['webpage', 'prototype', 'deck', 'motion']);
 
 export const DesignDeckAspectSchema = z.enum(['16:9', '4:3', '16:10', '9:16']);
 

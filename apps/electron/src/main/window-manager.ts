@@ -62,7 +62,21 @@ export class WindowManager {
   private keyboardCloseIntents: Set<number> = new Set()  // webContents.id flagged by Cmd/Ctrl+W before close
   private keyboardCloseIntentTimeouts: Map<number, NodeJS.Timeout> = new Map()  // Auto-clear stale keyboard-close intents
   private isAppQuitting = false  // Skip layered close interception during app quit
+  /**
+   * Whether the app stays alive between windows. It is only true when there is a
+   * way back to a window — the tray (or, on macOS, the dock). Without one, a close
+   * stays a real close, or the app would sit invisible with nothing to bring back.
+   */
+  private resident = false
   private workspaceWindowsClosedHandler: ((workspaceId: string) => void) | null = null  // Fired once a workspace has no managed window left
+  /**
+   * The window the person used most recently, and the workspace it was on. A
+   * window close hides rather than destroys, so this is what the tray brings
+   * back; it also answers "which workspace" when nothing is open any more and a
+   * new window has to be made. Updated on focus.
+   */
+  private lastActiveWebContentsId: number | null = null
+  private lastActiveWorkspaceId: string | null = null
 
   /**
    * Set the event sink and client resolver for pushing events via the RPC server
@@ -263,7 +277,8 @@ export class WindowManager {
       }
     })
 
-    // Show window when first paint is ready (faster perceived startup)
+    // Show window when first paint is ready (faster perceived startup). A restored
+    // window is shown too: opening the app means seeing it (see docs/tray-plan.md §3.4).
     window.once('ready-to-show', () => {
       window.show()
     })
@@ -416,6 +431,9 @@ export class WindowManager {
 
     // Handle focus/blur to broadcast window focus state
     window.on('focus', () => {
+      // Remember what was used last — the tray brings this one back (see raiseOrCreateWindow).
+      this.lastActiveWebContentsId = webContentsId
+      this.lastActiveWorkspaceId = this.windows.get(webContentsId)?.workspaceId ?? workspaceId
       this.pushToWindow(window, RPC_CHANNELS.window.FOCUS_STATE, true)
     })
     window.on('blur', () => {
@@ -446,18 +464,40 @@ export class WindowManager {
       }, 500))
     })
 
-    // Handle window close request (traffic-light button, menu close, Cmd/Ctrl+W)
-    // and send source metadata so renderer can decide layered dismiss vs direct close.
+    // Handle window close request (traffic-light button, menu close, Cmd/Ctrl+W).
+    //
+    // A close **puts the window away** — the app lives in the tray, and the window
+    // keeps its state (panels, scroll) for when it is brought back — but only for the
+    // **last** window of its workspace. A workspace's other windows are temporary
+    // views, and closing one really closes it: otherwise a workspace's windows would
+    // pile up hidden, one renderer each, with no bound (see docs/tray-plan.md §3.7).
     window.on('close', (event) => {
-      // During app quit, bypass layered close behavior and allow native close flow.
+      // During app quit, let the native close flow run (Cmd+Q means quit, not hide).
       // This preserves expected Cmd+Q semantics (quit app instead of closing overlays/panels first).
       if (this.isAppQuitting) {
         return
       }
 
-      // Check if renderer is ready (mainFrame exists) - if not, allow close directly
+      // Without a way back to a window (the tray), a close is a real close — the
+      // app must not outlive its last window with nothing left on screen.
+      if (!this.resident) {
+        return
+      }
+
+      // A workspace keeps one window. Anything else closing is a temporary view: let
+      // the default close run, which destroys it.
+      const workspace = this.windows.get(webContentsId)?.workspaceId
+      const aliveForWorkspace = [...this.windows.values()].filter(
+        managed => managed.workspaceId === workspace && !managed.window.isDestroyed(),
+      ).length
+      if (aliveForWorkspace > 1) {
+        return
+      }
+
+      // The workspace's last window: put it away, never destroy it here.
+      event.preventDefault()
+
       if (!window.webContents.isDestroyed() && window.webContents.mainFrame) {
-        event.preventDefault()
         const wcId = window.webContents.id
         let source: WindowCloseRequestSource = 'window-button'
         if (this.keyboardCloseIntents.has(wcId)) {
@@ -473,17 +513,19 @@ export class WindowManager {
         // Send close request to renderer - it will either close a modal/panel or confirm close.
         this.pushToWindow(window, RPC_CHANNELS.window.CLOSE_REQUESTED, { source })
 
-        // Fallback timeout: if IPC fails (e.g., on Hyprland/Wayland), force close after 3s.
-        // Reset timeout on each attempt so active users closing modals aren't interrupted.
+        // Fallback timeout: if IPC fails (e.g., on Hyprland/Wayland), put the window away
+        // after 3s. Reset timeout on each attempt so active users closing modals aren't interrupted.
         const existingTimeout = this.pendingCloseTimeouts.get(wcId)
         if (existingTimeout) clearTimeout(existingTimeout)
 
         this.pendingCloseTimeouts.set(wcId, setTimeout(() => {
           this.pendingCloseTimeouts.delete(wcId)
-          if (!window.isDestroyed()) window.destroy()
+          if (!window.isDestroyed()) window.hide()
         }, 3000))
+      } else {
+        // No live renderer: nothing to dismiss and nobody to ask — put it away.
+        if (!window.isDestroyed()) window.hide()
       }
-      // If renderer not ready, allow default close behavior
     })
 
     // Handle window closed - clean up theme listener and internal state
@@ -574,6 +616,14 @@ export class WindowManager {
   }
 
   /**
+   * Mark whether the app stays alive between windows (see `resident`). Set once at
+   * startup, after the tray exists — nothing toggles it at runtime.
+   */
+  setResident(value: boolean): void {
+    this.resident = value
+  }
+
+  /**
    * Mark whether the app is in quit flow.
    * When true, window close events bypass layered close interception.
    */
@@ -606,11 +656,14 @@ export class WindowManager {
   }
 
   /**
-   * Force close window by webContents.id (bypasses close event interception).
-   * Used when renderer confirms the close action (no modals to close).
+   * Put a window away by webContents.id.
+   *
+   * This is what the renderer's "confirm close" means once the app lives in the
+   * tray (see the `close` handler): the window is **hidden, not destroyed**, so it
+   * keeps its state for the tray to bring back. Only a real quit destroys windows.
    */
-  forceCloseWindow(webContentsId: number): void {
-    // Clear any pending close timeout since renderer confirmed
+  hideWindow(webContentsId: number): void {
+    // Clear any pending close timeout — the renderer answered.
     const timeout = this.pendingCloseTimeouts.get(webContentsId)
     if (timeout) {
       clearTimeout(timeout)
@@ -618,10 +671,8 @@ export class WindowManager {
     }
 
     const managed = this.windows.get(webContentsId)
-    if (managed && !managed.window.isDestroyed()) {
-      // Remove close listener temporarily to avoid infinite loop,
-      // then destroy the window directly
-      managed.window.destroy()
+    if (managed && !managed.window.isDestroyed() && managed.window.isVisible()) {
+      managed.window.hide()
     }
   }
 
@@ -658,6 +709,12 @@ export class WindowManager {
     if (managed) {
       const oldWorkspaceId = managed.workspaceId
       managed.workspaceId = workspaceId
+      // The remembered workspace follows the window that was last used. An in-window
+      // switch does not re-fire `focus`, so it has to be kept in step here — else
+      // `getLastActiveWorkspaceId()` keeps naming the workspace the window left.
+      if (this.lastActiveWebContentsId === webContentsId) {
+        this.lastActiveWorkspaceId = workspaceId
+      }
       // Re-apply window-title policy so in-window workspace switches update
       // the titlebar immediately (relevant when ≥2 windows are open).
       this.refreshWindowTitles()
@@ -691,18 +748,56 @@ export class WindowManager {
   }
 
   /**
-   * Focus existing window for workspace or create new one
+   * Focus an existing window for a workspace, or create one.
+   *
+   * A window that was *put away* (hidden) is shown again: `focus()` alone does not
+   * show a window, and hidden is neither minimized nor destroyed.
    */
   focusOrCreateWindow(workspaceId: string): BrowserWindow {
     const existing = this.getWindowByWorkspace(workspaceId)
     if (existing) {
-      if (existing.isMinimized()) {
-        existing.restore()
-      }
-      existing.focus()
-      return existing
+      return this.bringToFront(existing)
     }
     return this.createWindow({ workspaceId })
+  }
+
+  /**
+   * Bring a window back: the one used most recently, or a new one when none is
+   * left. This is what the tray is for — where a hidden window returns from.
+   */
+  raiseOrCreateWindow(fallbackWorkspaceId: string): BrowserWindow {
+    const remembered = this.lastUsedWindow()
+    if (remembered) {
+      return this.bringToFront(remembered)
+    }
+    return this.createWindow({ workspaceId: fallbackWorkspaceId })
+  }
+
+  /** The window the person used most recently, if it is still alive. */
+  private lastUsedWindow(): BrowserWindow | null {
+    const remembered = this.lastActiveWebContentsId !== null
+      ? this.windows.get(this.lastActiveWebContentsId)
+      : undefined
+    if (remembered && !remembered.window.isDestroyed()) return remembered.window
+
+    const focused = this.getFocusedWindow()
+    if (focused) return focused
+
+    const all = this.getAllWindows()
+    return all.length > 0 ? all[0].window : null
+  }
+
+  /** Show it if it was put away, restore it if minimized, then focus it. */
+  private bringToFront(window: BrowserWindow): BrowserWindow {
+    if (window.isMinimized()) window.restore()
+    if (!window.isVisible()) window.show()
+    window.focus()
+    return window
+  }
+
+  /** The workspace of the window used most recently — where a new window opens. */
+  getLastActiveWorkspaceId(): string | null {
+    return this.lastActiveWorkspaceId
   }
 
   /**

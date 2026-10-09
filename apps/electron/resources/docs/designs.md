@@ -1,6 +1,6 @@
 # Designs
 
-Designs are persistent, self-hosted HTML mini apps stored in the workspace and rendered inside the app (sidebar → **Designs**). Use them for dashboards, reports, trackers, and small tools that should outlive the conversation — optionally auto-refreshed on a schedule and shareable as password-protected public links.
+Designs are persistent, self-hosted HTML mini apps stored in the workspace and rendered inside the app (sidebar → **Designs**). Use them for live pages, reports, trackers, and small tools that should outlive the conversation — optionally auto-refreshed on a schedule and shareable as password-protected public links.
 
 ## Folder layout (managed — do not edit directly)
 
@@ -22,8 +22,8 @@ is exactly one kind:
 
 | Kind | What it is | The app… |
 |------|------------|----------|
-| `prototype` (default) | a page you read: a report, a calculator, a tool | renders it as it is |
-| `dashboard` | a page kept **open and fed**: a real-time panel, a KPI wallboard, a decision room's screen | renders it, offers Present (fullscreen wallboard), and expects a `refresh` spec behind it |
+| `webpage` (default) | a persistent page or mini app you use and revisit: a report, a tracker, a tool, a live panel | renders it as it is |
+| `prototype` | several screens you walk through on a canvas: a flow | renders it; one PNG per frame on export |
 | `deck` | slides | letterboxes it to the deck's `aspect`, shows slide navigation, exports one slide per page |
 | `motion` | a self-driving timeline | offers **Video** in Export… |
 
@@ -43,12 +43,12 @@ scheduled refresh script, or `write_design_data`). The document decides what to 
 render it and the page follows its data, ignore it and the page stays the snapshot it was
 opened as. Nothing has to be declared for either.
 
-## Dashboards
+## A page that is kept open and fed
 
-A **dashboard** is the kind for a page nobody reads once: it is kept open — on a KPI screen, in a
-decision room — and fed. Declaring it buys two things beyond the badge it shows: **Present**
-(full-screen, chromeless — a wallboard), and the expectation that a schedule runs behind it
-(`refresh`), so the frame it replaces itself in stays current.
+A page nobody reads once — kept open on a KPI screen, in a decision room — and fed is a
+**scenario, not a kind**: it is a `webpage` (the default) that is kept open and fed. What it needs
+is a `refresh` spec behind it, and the host's **Present** (full-screen, chromeless — a wallboard)
+is offered to every design except a deck, so the frame it replaces itself in stays current.
 
 The artifact's **own controls are what pull the data**; there is no host-side parameter panel to
 learn. A control changes what should be shown, and the page asks for it through a granted action
@@ -63,10 +63,10 @@ post({ type: 'action', requestId: crypto.randomUUID(), nonce, grantId: rangeGran
 // …and render the body when the action-result arrives.
 ```
 
-Two things this kind deliberately does **not** promise yet. The page cannot remember its controls
+Two things a fed page deliberately does **not** promise yet. The page cannot remember its controls
 across a reload — the frame is an opaque origin, so there is no `localStorage` and no URL to carry
-them — so a dashboard should open on defaults and refetch, and parameters set by a person live for
-as long as the page does. And a dashboard has no export of its own beyond PDF/HTML/ZIP: it is a
+them — so a fed page should open on defaults and refetch, and parameters set by a person live for
+as long as the page does. And such a page has no export of its own beyond PDF/HTML/ZIP: it is a
 surface, not a deliverable.
 
 ## Frames and a canvas
@@ -95,7 +95,7 @@ poster hint (see "The cover is a full view"), and a design may ignore it.
   frame refuses an anchor's own navigation (rule 3 above), and the same code stays correct at the
   design's own address, where anchors do navigate by themselves.
 - **100% is the resting state.** Zoom is a camera move somebody asks for; a canvas that silently fits
-  itself to the pane is indistinguishable from a dashboard.
+  itself to the pane is indistinguishable from a plain page.
 - **The canvas has no keyboard model.** A deck owns the keyboard because a deck *is* a presentation; a
   canvas is not, and walking its screens with Tab was not worth its weight. The rail and the zoom buttons
   are real buttons — that *is* the keyboard path to the camera — so the document listens for no keys of
@@ -1165,7 +1165,7 @@ Users publish designs from the design's **Share** button (feature-flagged): pass
 
 ## Recipes
 
-- **"Make me a dashboard of X that updates every N minutes"** → `create_design` (kind `dashboard`, content + `refresh` spec) → write the refresh script into the workspace → seed initial data with `write_design_data` so it isn't empty before the first tick. A page that renders on the `data` message follows the data while it stays open; one that renders only on `init` stays put.
+- **"Make me a live page of X that updates every N minutes"** → `create_design` (the default `webpage` kind, content + `refresh` spec) → write the refresh script into the workspace → seed initial data with `write_design_data` so it isn't empty before the first tick. A page that renders on the `data` message follows the data while it stays open; one that renders only on `init` stays put.
 - **"Track this number over time"** → design with a series chart; append points with `write_design_data` whenever you learn a new value (idempotent by timestamp).
 - **"Turn this report into something I can share"** → `create_design` (fully inline HTML) → tell the user to use the Share button for a password-protected link.
 - **Iterating on a design** → `update_design` with new `content`; warn the user that existing grants go stale on content changes.

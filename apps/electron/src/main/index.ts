@@ -116,6 +116,7 @@ import { setPerfEnabled, enableDebug } from '@craft-agent/shared/utils'
 import { registerPiModelResolver } from '@craft-agent/shared/config'
 import { getPiModelsForAuthProvider, getAllPiModels } from '@craft-agent/shared/config'
 import { initNotificationService, initBadgeIcon, initInstanceBadge, updateBadgeCount } from './notifications'
+import { createTray, destroyTray } from './tray'
 import { checkForUpdatesOnLaunch, setAutoUpdateEventSink, isUpdating, setBeforeUpdateQuitHook, setBeforeUpdateInstallHook, setInstallQuitFailedHook } from './auto-update'
 import type { EventSink } from '@craft-agent/server-core/transport'
 import { validateGitBashPath, checkVCRedistInstalled } from '@craft-agent/server-core/services'
@@ -329,13 +330,11 @@ if (!gotTheLock) {
         mainLog.error('Failed to handle deep link:', err)
       })
     } else if (windowManager) {
-      // No deep link - just focus the first window
-      const windows = windowManager.getAllWindows()
-      if (windows.length > 0) {
-        const win = windows[0].window
-        if (win.isMinimized()) win.restore()
-        win.focus()
-      }
+      // No deep link: bring the app back. The window may have been put away (hidden,
+      // not destroyed) — `focus()` would not show it — or none may be left, in which
+      // case one is made.
+      const workspaceId = windowManager.getLastActiveWorkspaceId() ?? getWorkspaces()[0]?.id
+      if (workspaceId) windowManager.raiseOrCreateWindow(workspaceId)
     }
   })
 }
@@ -363,14 +362,17 @@ async function createInitialWindows(): Promise<void> {
   const validWorkspaceIds = workspaces.map(ws => ws.id)
 
   if (savedState?.windows.length) {
-    // Restore windows from saved state
-    let restoredCount = 0
+    // **One** window: the workspace the person was last in. Not one per saved window —
+    // with the tray, a hidden window can survive per workspace (§3.7 bounds it to one
+    // per workspace, not one overall), and launching the app must not open all of them
+    // (see docs/tray-plan.md §3.4). Its bounds and route are restored, so "where you
+    // left off" still holds.
+    const saved =
+      savedState.windows.find(
+        w => w.workspaceId === savedState.lastFocusedWorkspaceId && validWorkspaceIds.includes(w.workspaceId),
+      ) ?? savedState.windows.find(w => validWorkspaceIds.includes(w.workspaceId))
 
-    for (const saved of savedState.windows) {
-      // Skip invalid workspaces
-      if (!validWorkspaceIds.includes(saved.workspaceId)) continue
-
-      // Restore main window with focused mode if it was saved
+    if (saved) {
       mainLog.info(`Restoring window: workspaceId=${saved.workspaceId}, focused=${saved.focused ?? false}, url=${saved.url ?? 'none'}`)
       const win = windowManager.createWindow({
         workspaceId: saved.workspaceId,
@@ -378,22 +380,21 @@ async function createInitialWindows(): Promise<void> {
         restoreUrl: saved.url,
       })
       win.setBounds(saved.bounds)
-
-      restoredCount++
-    }
-
-    if (restoredCount > 0) {
-      mainLog.info(`Restored ${restoredCount} window(s) from saved state`)
       return
     }
   }
 
-  // Default: open window for first workspace
+  // Nothing to restore: the first workspace.
   windowManager.createWindow({ workspaceId: workspaces[0].id })
   mainLog.info(`Created window for first workspace: ${workspaces[0].name}`)
 }
 
 app.whenReady().then(async () => {
+  // A losing second instance called app.quit() at the top of this file, but that quit
+  // is asynchronous — this callback can still run. Nothing may be created here: above
+  // all not a second tray (see docs/tray-plan.md §3.6).
+  if (!gotTheLock) return
+
   // Export packaged state as env var so logger.ts (and headless Bun) don't need 'electron'
   process.env.CRAFT_IS_PACKAGED = app.isPackaged ? 'true' : 'false'
 
@@ -497,6 +498,14 @@ app.whenReady().then(async () => {
 
     // Initialize notification service (always — triggered by server push events)
     initNotificationService(windowManager)
+
+    // The tray: the app's always-there surface. No GUI (headless) means no tray.
+    // The app only stays alive between windows where there is a way back to one —
+    // the tray, or the macOS dock. Everywhere else a close stays a real close, so a
+    // tray that failed to appear can never leave the app invisible (see §3.6).
+    const trayReady = !isHeadless && createTray(windowManager)
+    residentMode = trayReady || process.platform === 'darwin'
+    windowManager.setResident(residentMode)
 
     // Initialize browser pane manager (always — even in headless, for deps wiring)
     browserPaneManager = new BrowserPaneManager()
@@ -1250,31 +1259,28 @@ app.whenReady().then(async () => {
     // Continue anyway - the app will show errors in the UI
   }
 
-  // macOS: Re-create window when dock icon is clicked
+  // macOS: clicking the dock icon brings the app back. A window that was put away
+  // (hidden) is shown again, and one is made if none exists — what the tray does.
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0 && windowManager) {
-      // Open first workspace or last focused
-      const workspaces = getWorkspaces()
-      if (workspaces.length > 0) {
-        const savedState = loadWindowState()
-        const wsId = savedState?.lastFocusedWorkspaceId || workspaces[0].id
-        // Verify workspace still exists
-        if (workspaces.some(ws => ws.id === wsId)) {
-          windowManager.createWindow({ workspaceId: wsId })
-        } else {
-          windowManager.createWindow({ workspaceId: workspaces[0].id })
-        }
-      }
-    }
+    if (!windowManager) return
+    const workspaceId = windowManager.getLastActiveWorkspaceId() ?? getWorkspaces()[0]?.id
+    if (workspaceId) windowManager.raiseOrCreateWindow(workspaceId)
   })
 })
 
+// Whether the app stays alive between windows (set at startup, see below).
+let residentMode = false
+
+// Closing every window does not quit the app **where it is resident**: it lives in
+// the tray, and a close only puts a window away (see the `close` handler in
+// window-manager). Quitting is then an explicit action — the tray's Quit, or
+// Cmd/Ctrl+Q. Where the app is not resident, the old behavior stands. Subscribing at
+// all is required either way: it stops Electron's default "quit when the last window
+// closes" on Windows/Linux from running behind our back.
 app.on('window-all-closed', () => {
-  if (process.env.CRAFT_HEADLESS) return  // headless server stays alive
-  // On macOS, apps typically stay active until explicitly quit
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
+  if (residentMode) return
+  if (process.env.CRAFT_HEADLESS) return
+  app.quit()
 })
 
 // Track if we're in the process of quitting (to avoid re-entry)
@@ -1326,10 +1332,13 @@ async function performQuitCleanup(): Promise<void> {
     sessionManager.cleanup()
   }
 
-  // Clean up browser pane instances
+  // Clean up browser pane instances (each one remembers its pages as it is destroyed)
   if (browserPaneManager) {
     browserPaneManager.destroyAll()
   }
+
+  // Take the tray icon down (Windows leaves it behind until the mouse passes over it otherwise)
+  destroyTray()
 
   // Clean up OAuth flow store (stop periodic cleanup timer)
   if (oauthFlowStore) {
