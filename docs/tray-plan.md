@@ -209,7 +209,10 @@ Windows / Linux 上**原生应用菜单是 `null`**（`apps/electron/src/main/me
 
 - **新增一个模块**：`apps/electron/src/main/tray.ts`，与 `menu.ts` 同级——它是**主进程面**，不走 RPC、不进渲染层。
 - **创建时机**：`app.whenReady()` 之后（在 `index.ts` 里，与 `windowManager` / `notification` 初始化同处）；退出路径上销毁，避免残留图标。
-- **图标**：macOS 用 `resources/craft-logos/` 里的**两套单色稿**——`tray-black.png`（浅色菜单栏）/ `tray-white.png`（深色菜单栏），各自带 `@2x`；按 `nativeTheme.shouldUseDarkColors` 选一张，并在系统主题变化时 `setImage` 换。**刻意不用 template image**：这是一对显式的黑白稿，保留标记自身的粗细，而不是被系统读成剪影。**Windows 用多尺寸 `tray-app.ico`（16 / 20 / 24 / 32，对应 100 / 125 / 150 / 200% 缩放）**——Electron 自己的建议就是 Windows 用 ICO、且带齐这几档；单一尺寸的 PNG 被系统放大，正是托盘在高 DPI 下发糊的原因。Linux 用 `tray-app.png`（`@2x` 为 32px）。`tray-*` 这些文件（黑白各 1x/@2x、`tray-app.png`/@2x、`tray-app.ico`）都由 `craft_logo_black/white.png` 与 `icon.png` 派生。Linux 上 `Tray` 依赖桌面环境的指示器支持，是已知的平台差异，要真机核。
+- **macOS 用同一枚标记的两套单色稿**——`tray-black.png`（浅色菜单栏）/ `tray-white.png`（深色菜单栏），各自带 `@2x`；同样由 `icon.svg` 渲染（**替换 SVG 里的 `fill`** 为纯黑 / 纯白——比事后 tint 精确），几何与 Windows 那枚一致。按 `nativeTheme.shouldUseDarkColors` 选一张，并在系统主题变化时 `setImage` 换。**刻意不用 template image**：这是一对显式的黑白稿，保留标记自身的粗细，而不是被系统读成剪影。
+- **Windows / Linux 从矢量渲染**：`resources/icon.svg`（24×24 的三条杠图形，本身即品牌色 `#9570BE`）→ 用 `sharp`（依赖里已有）渲染，**裁掉自带内缩**、按比例落位（`contain`，不压扁——这枚图形高瘦，硬塞成方形会走形）。选它是因为**实测**：同样渲染到 16px，它的边缘能量是应用图标的 **2.5 倍**（12604 vs 5084）——应用图标是带渐变的实心圆角方块，小尺寸下对比不足。它也正是 macOS 那对黑白稿的图形，**三平台同一枚标记**。
+  - **Windows 带白色圆角底**（`tray-app.ico`）：一枚小的应用图块——**圆角半径 = 边长的 22%**、图形高 = 边长的 **60%**（宽度随它自身的比例 16:18；留出角部余量），这样在浅色与深色任务栏上都读得出来；四角透明，任务栏从圆角外透出来。图形**按 bbox 居中**、在矢量里排布（不贴位图，因此没有半像素取整漂移）。多尺寸 **16 / 20 / 24 / 32**（对应 100 / 125 / 150 / 200% 缩放）——Electron 自己的建议就是 Windows 用 ICO 且带齐这几档，单一尺寸的 PNG 被系统放大是发糊的另一半原因。
+  - **Linux 用透明底**（`tray-app.png`，`@2x` 为 32px）：桌面环境的托盘区域样式各异，压一块白底不一定合适。
 - **生命周期改动点**：`index.ts` 的 `app.on('window-all-closed')`（§3）。
 - **与 §2.7 独立窗口的关系**：后面做②时，托盘的"design 停靠点"就是那些窗口的宿主/切入口；届时**读盘** `{workspace}/designs/` 取列表，不新增登记表。
 
