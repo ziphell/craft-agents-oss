@@ -358,6 +358,13 @@ export interface DesignConfig {
   kind: DesignKind;
   /** Stable Project ID this design belongs to (never the project slug) */
   projectId?: string;
+  /**
+   * When the design was pinned to the tray (epoch ms). Absent = not pinned:
+   * **presence IS the pin**, and the value only orders the tray's Designs menu
+   * (oldest pinned first). Local user display state — it travels with the
+   * design and is never published (the share bundle is field-allowlisted).
+   */
+  pinnedToTrayAt?: number;
   createdAt: number;
   updatedAt: number;
   /** Scheduled data refresh (absent = manual/agent-driven data only) */

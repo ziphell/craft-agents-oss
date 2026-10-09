@@ -240,6 +240,7 @@ export const DesignConfigSchema = z.object({
   description: z.string().optional(),
   kind: DesignKindSchema,
   projectId: z.string().min(1).optional(),
+  pinnedToTrayAt: z.number().optional(),
   createdAt: z.number(),
   updatedAt: z.number(),
   refresh: DesignRefreshSpecSchema.optional(),

@@ -16,6 +16,7 @@ import { join } from 'path'
 import { existsSync } from 'fs'
 import { i18n } from '@craft-agent/shared/i18n'
 import { getWorkspaces } from '@craft-agent/shared/config'
+import { loadWorkspaceDesigns } from '@craft-agent/shared/designs'
 import { mainLog } from './logger'
 import type { WindowManager } from './window-manager'
 
@@ -77,6 +78,32 @@ function fallbackWorkspaceId(windowManager: WindowManager): string | undefined {
 }
 
 /**
+ * Every design pinned to the tray, across all workspaces, oldest pinned first.
+ *
+ * A design is pinned by `DesignConfig.pinnedToTrayAt` (presence = pinned — see
+ * docs/design-plan.md §2.7). Scanned live on every menu open, so a deleted design
+ * or a removed workspace simply is not listed: there is no second list to sync.
+ */
+function pinnedDesigns(): Array<{ workspaceId: string; slug: string; name: string }> {
+  const pinned: Array<{ workspaceId: string; slug: string; name: string; at: number }> = []
+  for (const workspace of getWorkspaces()) {
+    let designs
+    try {
+      designs = loadWorkspaceDesigns(workspace.rootPath)
+    } catch (error) {
+      mainLog.warn(`[tray] could not list designs for workspace ${workspace.id}:`, error)
+      continue
+    }
+    for (const design of designs) {
+      const at = design.config.pinnedToTrayAt
+      if (at === undefined) continue
+      pinned.push({ workspaceId: workspace.id, slug: design.config.slug, name: design.config.name, at })
+    }
+  }
+  return pinned.sort((a, b) => a.at - b.at).map(({ at: _at, ...rest }) => rest)
+}
+
+/**
  * The menu, built fresh so it always matches what is open.
  *
  * It lists **workspaces**, not windows: a workspace's window is its home, and any
@@ -96,13 +123,19 @@ function buildMenu(windowManager: WindowManager): Menu {
   }
   if (workspaces.length > 0) items.push({ type: 'separator' })
 
-  items.push({
-    label: i18n.t('menu.newWindow'),
-    click: () => {
-      const workspaceId = fallbackWorkspaceId(windowManager)
-      if (workspaceId) windowManager.createWindow({ workspaceId })
-    },
-  })
+  // Pinned designs — the design mini-app launcher (docs/design-plan.md §2.7).
+  // Each opens its own window without going through the main interface. Absent
+  // until at least one design is pinned.
+  const pinned = pinnedDesigns()
+  if (pinned.length > 0) {
+    items.push({
+      label: i18n.t('menu.designs'),
+      submenu: pinned.map(design => ({
+        label: design.name,
+        click: () => windowManager.openDesignWindow(design.workspaceId, design.slug),
+      })),
+    })
+  }
 
   items.push({ type: 'separator' })
   items.push({ label: i18n.t('menu.quitCraftAgents'), click: () => app.quit() })

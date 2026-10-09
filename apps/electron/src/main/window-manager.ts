@@ -5,8 +5,10 @@ import { existsSync } from 'fs'
 import { release } from 'os'
 import { fileURLToPath } from 'url'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
+import { loadDesignConfig } from '@craft-agent/shared/designs'
 import { classifyExternalUrl, formatBlockedUrlError } from '@craft-agent/shared/utils/url-safety'
 import { RPC_CHANNELS, type WindowCloseRequestSource } from '../shared/types'
+import { routes } from '../shared/routes'
 import type { SavedWindow } from './window-state'
 
 // Vite dev server URL for hot reload
@@ -40,6 +42,13 @@ function getWindowsBackgroundMaterial(): 'mica' | 'acrylic' | undefined {
 interface ManagedWindow {
   window: BrowserWindow
   workspaceId: string
+  /**
+   * The design this window belongs to, when it is a design's own window (a
+   * temporary view opened from the tray — docs/design-plan.md §2.7). Absent for
+   * ordinary workspace windows. Its presence is what makes the window temporary:
+   * see the close handler, getWindowStates, getWindowByWorkspace.
+   */
+  designSlug?: string
 }
 
 export interface CreateWindowOptions {
@@ -51,6 +60,19 @@ export interface CreateWindowOptions {
   initialDeepLink?: string
   /** Full URL to restore from saved state (preserves route/query params) */
   restoreUrl?: string
+  /**
+   * Route to land on, written straight into the window's query (`?route=`) — the
+   * renderer reconciles its first panel from it. No deep link is parsed, so this
+   * does not require the route's prefix to be a known deep-link host.
+   */
+  initialRoute?: string
+  /**
+   * The design this window is for. Marks it a **temporary window** (see
+   * docs/tray-plan.md §3.7): it closes for real, is never restored on relaunch,
+   * never stands in for the workspace's home window, titles itself after the
+   * design, and lands on the design's route. What `openDesignWindow` passes.
+   */
+  designSlug?: string
 }
 
 export class WindowManager {
@@ -187,9 +209,13 @@ export class WindowManager {
    */
   private refreshWindowTitles(): void {
     const defaultTitle = app.getName()
-    const showWorkspaceName = this.windows.size > 1
-    for (const { window, workspaceId } of this.windows.values()) {
+    // Design windows title themselves (set in createWindow) and are skipped here;
+    // they also do not count towards the "≥2 windows → workspace name" rule, which
+    // is about disambiguating ordinary workspace windows.
+    const showWorkspaceName = [...this.windows.values()].filter(m => !m.designSlug).length > 1
+    for (const { window, workspaceId, designSlug } of this.windows.values()) {
       if (window.isDestroyed()) continue
+      if (designSlug) continue
       let title = defaultTitle
       if (showWorkspaceName && workspaceId) {
         try {
@@ -208,7 +234,7 @@ export class WindowManager {
    * @param options - Window creation options
    */
   createWindow(options: CreateWindowOptions): BrowserWindow {
-    const { workspaceId, focused = false, initialDeepLink, restoreUrl } = options
+    const { workspaceId, focused = false, initialDeepLink, restoreUrl, initialRoute, designSlug } = options
 
     // Load platform-specific app icon
     // In packaged app, resources are at dist/resources/ (same level as __dirname)
@@ -247,8 +273,10 @@ export class WindowManager {
       show: false, // Don't show until ready-to-show event (faster perceived startup)
       title: '',
       icon: iconExists ? iconPath : undefined,
-      // macOS-specific: hidden title bar with inset traffic lights
-      ...(isMac && {
+      // macOS-specific: hidden title bar with inset traffic lights. A design
+      // window keeps the standard title bar instead — it has no in-app header, and
+      // the system title bar is what the window is dragged by (docs/design-plan.md §2.7).
+      ...(isMac && !designSlug && {
         titleBarStyle: 'hiddenInset',
         trafficLightPosition: { x: 18, y: 16 },
         vibrancy: 'under-window',
@@ -326,12 +354,19 @@ export class WindowManager {
     // Store the window mapping BEFORE loadURL — bootstrap preload uses
     // __get-workspace-id (via sendSync) which reads this map during eval.
     const webContentsId = window.webContents.id
-    this.windows.set(webContentsId, { window, workspaceId })
+    this.windows.set(webContentsId, { window, workspaceId, ...(designSlug ? { designSlug } : {}) })
 
     // Apply window-title policy now that the map size reflects this window —
     // covers both the new window and any existing windows that should switch
     // from app name → workspace name as the count crosses 1 → 2.
     this.refreshWindowTitles()
+
+    // A design window titles itself after the design, not the workspace
+    // (refreshWindowTitles skips it). Falls back to the slug if the config can't
+    // be read — better a slug than the workspace name.
+    if (designSlug) {
+      window.setTitle(this.designTitleFor(workspaceId, designSlug) ?? designSlug)
+    }
 
     // Track focused mode state for persistence
     if (focused) {
@@ -374,6 +409,15 @@ export class WindowManager {
       const query: Record<string, string> = { workspaceId }
       if (focused) {
         query.focused = 'true' // Open in focused mode (no sidebars)
+      }
+      // The renderer reconciles its first panel from `?route=` (see
+      // NavigationContext), so this lands the window on a route with no deep link.
+      if (initialRoute) {
+        query.route = initialRoute
+      }
+      // Marks the window so the renderer drops the "back to Designs" chrome (§2.7).
+      if (designSlug) {
+        query.designWindow = 'true'
       }
 
       if (VITE_DEV_SERVER_URL) {
@@ -484,6 +528,13 @@ export class WindowManager {
         return
       }
 
+      // A design window is a temporary view (docs/design-plan.md §2.7): it closes
+      // for real even when it is the only window of its workspace — a mini-app
+      // opened from the tray must not linger hidden with nothing to bring it back.
+      if (this.windows.get(webContentsId)?.designSlug) {
+        return
+      }
+
       // A workspace keeps one window. Anything else closing is a temporary view: let
       // the default close run, which destroys it.
       const workspace = this.windows.get(webContentsId)?.workspaceId
@@ -578,9 +629,14 @@ export class WindowManager {
 
   /**
    * Get window by workspace ID (returns first match - for backwards compatibility)
+   *
+   * Design windows are skipped: they are temporary views, never the workspace's
+   * home window, so the tray's workspace entry and close-for-workspace keep
+   * targeting the real one (docs/design-plan.md §2.7).
    */
   getWindowByWorkspace(workspaceId: string): BrowserWindow | null {
     for (const managed of this.windows.values()) {
+      if (managed.designSlug) continue
       if (managed.workspaceId === workspaceId && !managed.window.isDestroyed()) {
         return managed.window
       }
@@ -762,6 +818,43 @@ export class WindowManager {
   }
 
   /**
+   * Open a design in its own window, or bring its window back if one is already
+   * open. This is the tray's Designs menu entry (docs/design-plan.md §2.7).
+   *
+   * The window is a **temporary view** of the design's workspace: at most one
+   * exists per design (clicking again focuses it), it never stands in for the
+   * workspace's home window, and it closes for real.
+   */
+  openDesignWindow(workspaceId: string, designSlug: string): BrowserWindow {
+    const existing = [...this.windows.values()].find(
+      managed =>
+        managed.designSlug === designSlug &&
+        managed.workspaceId === workspaceId &&
+        !managed.window.isDestroyed(),
+    )
+    if (existing) return this.bringToFront(existing.window)
+
+    return this.createWindow({
+      workspaceId,
+      focused: true,
+      designSlug,
+      initialRoute: routes.view.designs(designSlug),
+    })
+  }
+
+  /** The design's display name for a design window's title (null when unreadable). */
+  private designTitleFor(workspaceId: string, designSlug: string): string | null {
+    try {
+      const workspace = getWorkspaceByNameOrId(workspaceId)
+      if (!workspace) return null
+      return loadDesignConfig(workspace.rootPath, designSlug)?.name ?? null
+    } catch (err) {
+      windowLog.warn(`Failed to read the title of design ${designSlug}:`, err)
+      return null
+    }
+  }
+
+  /**
    * Bring a window back: the one used most recently, or a new one when none is
    * left. This is what the tray is for — where a hidden window returns from.
    */
@@ -805,7 +898,10 @@ export class WindowManager {
    * Used by window-state.ts to save/restore windows
    */
   getWindowStates(): SavedWindow[] {
-    return this.getAllWindows().map(managed => {
+    // Design windows are temporary (docs/design-plan.md §2.7) and deliberately not
+    // persisted: a relaunch restores your workspace window, not a mini-app that was
+    // open at the time.
+    return this.getAllWindows().filter(managed => !managed.designSlug).map(managed => {
       const webContentsId = managed.window.webContents.id
       const isFocused = this.focusedModeWindows.has(webContentsId)
       const url = managed.window.webContents.getURL()

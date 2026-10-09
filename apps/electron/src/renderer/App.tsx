@@ -11,7 +11,9 @@ import { generateMessageId } from '../shared/types'
 import { useEventProcessor } from './event-processor'
 import type { AgentEvent, Effect } from './event-processor'
 import { AppShell } from '@/components/app-shell/AppShell'
-import type { AppShellContextType } from '@/context/AppShellContext'
+import { DesignWindow } from '@/components/designs/DesignWindow'
+import { AppShellProvider, type AppShellContextType } from '@/context/AppShellContext'
+import { parseRouteToNavigationState } from '../shared/route-parser'
 import { OnboardingWizard, ReauthScreen } from '@/components/onboarding'
 import { WorkspacePicker } from '@/components/workspace'
 import { ResetConfirmationDialog } from '@/components/ResetConfirmationDialog'
@@ -332,13 +334,27 @@ export default function App() {
   }, [windowWorkspaceId, workspaces])
 
   // Get initial sessionId and focused mode from URL params (for "Open in New Window" feature)
-  const { initialSessionId, isFocusedMode } = useMemo(() => {
+  const { initialSessionId, isFocusedMode, isDesignWindow } = useMemo(() => {
     const params = new URLSearchParams(window.location.search)
     return {
       initialSessionId: params.get('sessionId'),
       isFocusedMode: params.get('focused') === 'true',
+      // A design's own window (opened from the tray, docs/design-plan.md §2.7):
+      // it renders the design instead of the app shell.
+      isDesignWindow: params.get('designWindow') === 'true',
     }
   }, [])
+
+  // Which design a design window shows. The window's own route is the single
+  // statement of it — the same `designs/design/<slug>` route the app renders.
+  const designWindowSlug = useMemo(() => {
+    if (!isDesignWindow) return null
+    const route = new URLSearchParams(window.location.search).get('route')
+    if (!route) return null
+    const state = parseRouteToNavigationState(route)
+    if (state?.navigator !== 'designs') return null
+    return state.details?.designSlug ?? null
+  }, [isDesignWindow])
 
   // Derive remote workspace ID for session matching in NavigationContext
   const windowRemoteWorkspaceId = useMemo(() => {
@@ -2175,7 +2191,8 @@ export default function App() {
           {/* Main UI - always rendered, splash fades away to reveal it */}
           <div
             className="h-full flex flex-col text-foreground"
-            style={{ paddingTop: 'var(--topbar-height)' }}
+            // A design window has no top bar, so it takes the whole height.
+            style={{ paddingTop: isDesignWindow ? 0 : 'var(--topbar-height)' }}
           >
             {showTransportConnectionBanner && connectionState && (
               <TransportConnectionBanner
@@ -2189,6 +2206,12 @@ export default function App() {
                   message={sessionLoadError}
                   onRetry={() => { void loadSessionsFromServer() }}
                 />
+              ) : isDesignWindow && designWindowSlug ? (
+                // A design window: the design surface alone, no app shell — but
+                // still hosted (grants, live data, Present), see DesignWindow.
+                <AppShellProvider value={appShellContextValue}>
+                  <DesignWindow designSlug={designWindowSlug} />
+                </AppShellProvider>
               ) : (
                 <AppShell
                   contextValue={appShellContextValue}

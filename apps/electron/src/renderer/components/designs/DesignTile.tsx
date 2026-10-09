@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { FolderOpen, Globe2, Lock, MessageSquarePlus, RefreshCw, Trash2 } from 'lucide-react'
+import { FolderOpen, Globe2, Lock, MessageSquarePlus, Pin, PinOff, RefreshCw, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
 import { cn } from '@/lib/utils'
@@ -35,6 +35,8 @@ interface DesignTileProps {
   onContinueInChat: () => void
   /** Open the design's own folder in the system file manager. */
   onOpenFolder: () => void
+  /** Pin / unpin the design from the tray (see DesignConfig.pinnedToTrayAt). */
+  onTogglePin: () => void
 }
 
 /**
@@ -45,7 +47,7 @@ interface DesignTileProps {
  * mirroring `isThumbnailFresh` server-side (inlined here — the renderer must
  * not import Node-backed `@craft-agent/shared` code).
  */
-export function DesignTile({ design, workspaceId, project, onOpen, onDelete, onContinueInChat, onOpenFolder }: DesignTileProps) {
+export function DesignTile({ design, workspaceId, project, onOpen, onDelete, onContinueInChat, onOpenFolder, onTogglePin }: DesignTileProps) {
   const { t } = useTranslation()
   const { config } = design
   const monogram = (config.name.trim()[0] ?? '?').toUpperCase()
@@ -185,6 +187,10 @@ export function DesignTile({ design, workspaceId, project, onOpen, onDelete, onC
         <StyledContextMenuItem onClick={onContinueInChat}>
           <MessageSquarePlus />
           {t('designs.continueInChat')}
+        </StyledContextMenuItem>
+        <StyledContextMenuItem onClick={onTogglePin}>
+          {config.pinnedToTrayAt ? <PinOff /> : <Pin />}
+          {config.pinnedToTrayAt ? t('designs.unpinFromTray') : t('designs.pinToTray')}
         </StyledContextMenuItem>
         <StyledContextMenuItem onClick={refreshPreview}>
           <RefreshCw />

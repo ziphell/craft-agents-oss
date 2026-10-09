@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { AlertTriangle, ArrowLeft, Check, Download, FolderKanban, FolderOpen, Globe2, KeyRound, Maximize2, MessageSquarePlus, MoreHorizontal, Pencil, RefreshCw, Sparkles, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Check, Download, FolderKanban, FolderOpen, Globe2, KeyRound, Maximize2, MessageSquarePlus, MoreHorizontal, Pencil, Pin, PinOff, RefreshCw, Sparkles, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useAtomValue } from 'jotai'
 import { useTranslation } from 'react-i18next'
@@ -30,6 +30,15 @@ import { ShareDesignDialog, useDesignShareCapabilities } from './ShareDesignDial
 
 interface DesignViewProps {
   designSlug: string
+  /**
+   * This render IS the design's own window (docs/design-plan.md §2.7), and it is
+   * meant to look exactly like the design's page opened on its own. Every trace
+   * of the host is dropped — the header, the Present row, the deck bar, the
+   * status banners, and the frame's own margin, border, rounding and shadow —
+   * leaving the sandboxed render edge to edge. The page's no-content and failure
+   * states stay: a blank window would explain nothing.
+   */
+  standalone?: boolean
 }
 
 interface LeaseState {
@@ -49,7 +58,7 @@ interface LeaseState {
  * re-read whenever design.json is stamped (refresh completion), which for
  * live designs flows into the frame as a replacement snapshot.
  */
-export function DesignView({ designSlug }: DesignViewProps) {
+export function DesignView({ designSlug, standalone = false }: DesignViewProps) {
   const { activeWorkspaceId, onOpenFile, enabledSources } = useAppShellContext()
   const { t } = useTranslation()
   const { navigate } = useNavigation()
@@ -184,6 +193,21 @@ export function DesignView({ designSlug }: DesignViewProps) {
     }
   }, [activeWorkspaceId, design, t])
 
+  // Pinning is a local tray preference: presence of the field IS the pin, so
+  // unpinning is an explicit null (see DesignConfig.pinnedToTrayAt).
+  const togglePin = React.useCallback(async () => {
+    if (!activeWorkspaceId || !design) return
+    try {
+      await window.electronAPI.updateDesign(activeWorkspaceId, design.config.slug, {
+        pinnedToTrayAt: design.config.pinnedToTrayAt ? null : Date.now(),
+      })
+    } catch (err) {
+      toast.error(t('toast.designUpdateFailed'), {
+        description: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }, [activeWorkspaceId, design, t])
+
   const handleDesignWithAgent = React.useCallback(() => {
     if (!design) return
     navigate(routes.action.newSession({
@@ -291,7 +315,9 @@ export function DesignView({ designSlug }: DesignViewProps) {
 
   return (
     <div className="flex h-full flex-col bg-background">
-      {/* Header: back, title, kind, freshness, overflow */}
+      {/* Header: back, title, kind, freshness, overflow. Dropped in a design's own
+          window — that window's own title bar carries the name (see `standalone`). */}
+      {!standalone && (
       <div className="flex items-center gap-2 border-b border-border/50 px-3 py-2">
         <button
           type="button"
@@ -436,6 +462,10 @@ export function DesignView({ designSlug }: DesignViewProps) {
                   </StyledDropdownMenuSubContent>
                 </DropdownMenuSub>
               )}
+              <StyledDropdownMenuItem onClick={() => void togglePin()}>
+                {config.pinnedToTrayAt ? <PinOff /> : <Pin />}
+                {config.pinnedToTrayAt ? t('designs.unpinFromTray') : t('designs.pinToTray')}
+              </StyledDropdownMenuItem>
               <StyledDropdownMenuItem onClick={handleOpenFolder}>
                 <FolderOpen />
                 {t('designs.openFolder')}
@@ -458,9 +488,10 @@ export function DesignView({ designSlug }: DesignViewProps) {
           </DropdownMenu>
         </div>
       </div>
+      )}
 
       {/* Granted sources that lost auth get a reconnect row above the frame */}
-      {activeWorkspaceId && (
+      {!standalone && activeWorkspaceId && (
         <DesignSourceAuthBanner
           workspaceId={activeWorkspaceId}
           design={design}
@@ -470,7 +501,7 @@ export function DesignView({ designSlug }: DesignViewProps) {
       )}
 
       {/* Last-refresh failure surfaces above the frame, not inside it */}
-      {refreshFailed && (
+      {!standalone && refreshFailed && (
         <Info_Alert
           variant="error"
           inline
@@ -487,8 +518,9 @@ export function DesignView({ designSlug }: DesignViewProps) {
       )}
 
       {/* Deck chrome: a counter and Present. Navigation (keys, wheel, dots)
-          belongs to the deck's own runtime — the host never drives it. */}
-      {deck && (
+          belongs to the deck's own runtime — the host never drives it, and a
+          design's own window shows none of this. */}
+      {!standalone && deck && (
         <div className="mx-3 mt-2 flex items-center gap-2 text-xs text-foreground/60">
           <span className="tabular-nums">
             {deckState ? `${deckState.current + 1} / ${deckState.slides}` : '– / –'}
@@ -507,8 +539,9 @@ export function DesignView({ designSlug }: DesignViewProps) {
 
       {/* Present: a webpage or a prototype is made to be shown big — on a KPI screen or in a
           decision room — and a motion piece is just as much a thing to watch. The deck
-          keeps its own copy of this button, beside the slide counter. */}
-      {showsPresent && (
+          keeps its own copy of this button, beside the slide counter. A design's own
+          window drops the whole row. */}
+      {!standalone && showsPresent && (
         <div className="mx-3 mt-2 flex items-center gap-2 text-xs text-foreground/60">
           <button
             type="button"
@@ -521,8 +554,9 @@ export function DesignView({ designSlug }: DesignViewProps) {
         </div>
       )}
 
-      {/* Body: edge-to-edge sandboxed frame on a neutral canvas */}
-      <div className="relative min-h-0 flex-1 p-3">
+      {/* Body: edge-to-edge sandboxed frame on a neutral canvas. In a design's own
+          window the frame IS the window — no margin, no card. */}
+      <div className={standalone ? 'relative min-h-0 flex-1' : 'relative min-h-0 flex-1 p-3'}>
         {!hasContent ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
             <span className="text-sm font-medium text-foreground/70">{t('designs.noContentTitle')}</span>
@@ -568,14 +602,20 @@ export function DesignView({ designSlug }: DesignViewProps) {
             ref={presentRef}
             className={
               deck
-                ? 'flex h-full w-full items-center justify-center rounded-lg bg-neutral-950 p-2'
-                : 'h-full w-full overflow-hidden rounded-lg border border-border/60 shadow-minimal'
+                ? standalone
+                  ? 'flex h-full w-full items-center justify-center bg-neutral-950'
+                  : 'flex h-full w-full items-center justify-center rounded-lg bg-neutral-950 p-2'
+                : standalone
+                  ? 'h-full w-full overflow-hidden'
+                  : 'h-full w-full overflow-hidden rounded-lg border border-border/60 shadow-minimal'
             }
           >
             <div
               className={
                 deck
-                  ? 'h-full max-w-full overflow-hidden rounded-lg border border-border/60 shadow-minimal'
+                  ? standalone
+                    ? 'h-full max-w-full overflow-hidden'
+                    : 'h-full max-w-full overflow-hidden rounded-lg border border-border/60 shadow-minimal'
                   : 'h-full w-full'
               }
               // Letterbox to the authored aspect; the deck's own CSS still lays

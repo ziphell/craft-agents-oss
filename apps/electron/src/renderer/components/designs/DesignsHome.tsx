@@ -126,6 +126,20 @@ export function DesignsHome() {
     }))
   }, [navigate, t])
 
+  // Presence of pinnedToTrayAt IS the pin; null clears it (see DesignConfig).
+  const handleTogglePin = React.useCallback(async (design: LoadedDesign) => {
+    if (!activeWorkspaceId) return
+    try {
+      await window.electronAPI.updateDesign(activeWorkspaceId, design.config.slug, {
+        pinnedToTrayAt: design.config.pinnedToTrayAt ? null : Date.now(),
+      })
+    } catch (err) {
+      toast.error(t('toast.designUpdateFailed'), {
+        description: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }, [activeWorkspaceId, t])
+
   const handleConfirmDelete = React.useCallback(async () => {
     if (!activeWorkspaceId || !pendingDelete) return
     const { slug, name } = pendingDelete.config
@@ -227,6 +241,7 @@ export function DesignsHome() {
                   onDelete={() => setPendingDelete(design)}
                   onContinueInChat={() => handleContinueInChat(design)}
                   onOpenFolder={() => onOpenFile(design.folderPath)}
+                  onTogglePin={() => void handleTogglePin(design)}
                 />
               ))}
           </div>

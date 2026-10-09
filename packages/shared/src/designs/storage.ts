@@ -361,7 +361,7 @@ export type UpdateDesignPatch = Partial<
   // (string | null) = string) and silently forbid the null again.
   Omit<
     DesignConfig,
-    'schemaVersion' | 'id' | 'slug' | 'createdAt' | 'contentDigest' | 'lastRefresh' | 'grants' | 'share' | 'thumbnail' | 'projectId' | 'description' | 'refresh' | 'deck' | 'motion'
+    'schemaVersion' | 'id' | 'slug' | 'createdAt' | 'contentDigest' | 'lastRefresh' | 'grants' | 'share' | 'thumbnail' | 'projectId' | 'description' | 'refresh' | 'deck' | 'motion' | 'pinnedToTrayAt'
   >
 > & {
   projectId?: string | null;
@@ -369,10 +369,11 @@ export type UpdateDesignPatch = Partial<
   refresh?: DesignConfig['refresh'] | null;
   deck?: DesignConfig['deck'] | null;
   motion?: DesignConfig['motion'] | null;
+  pinnedToTrayAt?: number | null;
 };
 
 /** Patch fields where an explicit null means "clear" (see UpdateDesignPatch) */
-const NULL_CLEARABLE_DESIGN_FIELDS = ['projectId', 'description', 'refresh', 'deck', 'motion'] as const;
+const NULL_CLEARABLE_DESIGN_FIELDS = ['projectId', 'description', 'refresh', 'deck', 'motion', 'pinnedToTrayAt'] as const;
 
 /**
  * Update a design's config with a partial patch.
