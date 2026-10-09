@@ -44,9 +44,13 @@ function resourcePath(...parts: string[]): string | null {
  * being reinterpreted as a silhouette. Each ships at 1x and 2x (`tray-black.png`
  * beside `tray-black@2x.png`, which Electron picks up on its own).
  *
- * Windows/Linux get the app's own mark, **cropped to its content**: the app icon
- * carries transparent padding for its own reasons, and shrinking that padding along
- * with the mark left the tray icon noticeably smaller than the icons beside it.
+ * Windows takes an ICO: Electron's own advice is a multi-size icon (16/20/24/32 for
+ * 100/125/150/200% display scaling). A single-size PNG is upscaled by the shell, which
+ * is what made the tray icon look soft on a scaled display.
+ *
+ * Linux takes the app's mark as a PNG, **cropped to its content**: the app icon carries
+ * transparent padding for its own reasons, and shrinking that padding along with the
+ * mark left the tray icon noticeably smaller than the icons beside it (1x + a 2x @2x).
  */
 function trayImage(): Electron.NativeImage {
   if (process.platform === 'darwin') {
@@ -56,8 +60,13 @@ function trayImage(): Electron.NativeImage {
     mainLog.warn(`[tray] ${name} not found — falling back to the app icon`)
   }
 
-  // Prepared from the app icon with the padding trimmed (16px + a 32px @2x). Not
-  // resized here, so the 2x representation survives for denser display scaling.
+  if (process.platform === 'win32') {
+    const multiSize = resourcePath('craft-logos', 'tray-app.ico')
+    if (multiSize) return nativeImage.createFromPath(multiSize)
+    mainLog.warn('[tray] tray-app.ico not found — falling back to the PNG')
+  }
+
+  // Not resized here, so the 2x representation survives for denser display scaling.
   const prepared = resourcePath('craft-logos', 'tray-app.png')
   if (prepared) return nativeImage.createFromPath(prepared)
 
