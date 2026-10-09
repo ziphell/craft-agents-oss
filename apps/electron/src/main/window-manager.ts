@@ -486,9 +486,23 @@ export class WindowManager {
 
     // Detect Cmd/Ctrl+W before close events so renderer can distinguish close source.
     // Intent is short-lived to avoid stale classification.
-    window.webContents.on('before-input-event', (_event, input) => {
+    window.webContents.on('before-input-event', (event, input) => {
       if (!input || input.type !== 'keyDown') return
       const key = input.key?.toLowerCase?.()
+
+      // A design's own window is meant to be shown like the page itself, so F11
+      // puts it fullscreen (docs/design-plan.md §2.7) — and on macOS, where F11 is
+      // not a fullscreen key, the convention ⌃⌘F does the same. Other windows keep both.
+      const wantsFullscreen = designSlug && (
+        input.key === 'F11'
+        || (process.platform === 'darwin' && key === 'f' && !!input.control && !!input.meta)
+      )
+      if (wantsFullscreen) {
+        event.preventDefault()
+        window.setFullScreen(!window.isFullScreen())
+        return
+      }
+
       if (key !== 'w') return
 
       const isCloseShortcut = process.platform === 'darwin'

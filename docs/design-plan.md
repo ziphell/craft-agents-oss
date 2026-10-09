@@ -202,7 +202,7 @@ design 现在只在详情页里看（§2.4）。它应当还能**开在自己的
 | 需要 | 已有 |
 |---|---|
 | 开一个窗口 | `windowManager.openDesignWindow(workspaceId, slug)` → `createWindow({ workspaceId, focused, designSlug, initialRoute })`；`focused` 已经是 900×700 的小窗；`initialRoute` 把 `designs/design/<slug>` 直接写进窗口的 `?route=`，不经过深链 |
-| 隐藏主界面（不用主界面） | design 窗的根是 `DesignWindow`（`renderer/components/designs/DesignWindow.tsx`）——只包 `AppShellProvider` + `useDesigns`，**根本不渲染 `AppShell`**；`DesignView` 以 `standalone` 渲染：没有头部、没有 Present 栏、没有 deck 栏、没有 banner，frame **无边距 / 无边框 / 无圆角 / 无阴影**——看上去就是那个页面被直接打开。**系统标题栏保留**（拖窗靠它；macOS 上 design 窗不用 `hiddenInset`） |
+| 隐藏主界面（不用主界面） | design 窗的根是 `DesignWindow`（`renderer/components/designs/DesignWindow.tsx`）——只包 `AppShellProvider` + `useDesigns`，**根本不渲染 `AppShell`**；`DesignView` 以 `standalone` 渲染：没有头部、没有 Present 栏、没有 deck 栏、没有 banner，frame **无边距 / 无边框 / 无圆角 / 无阴影**——看上去就是那个页面被直接打开。**系统标题栏保留**（拖窗靠它；macOS 上 design 窗不用 `hiddenInset`）；**F11 全屏**（macOS 上另接 `⌃⌘F`；`before-input-event`，只对 design 窗） |
 | 落到这件 design | 窗口地址带 `?route=designs/design/<slug>`（`routes.ts`）；`App.tsx` 解析它拿到 slug，直接渲染 `DesignView`（与主界面同一个组件） |
 | 仍要是"活的" | 窗口里仍是 `DesignFrame` 作宿主，grants / 实时数据 / Present 照旧 |
 | 入口常驻、且不在主界面 | 托盘（`tray.ts` 的 `buildMenu`，纯主进程、无 RPC）；列固定项不必惊动 renderer——主进程本就有 `getWorkspaceDesignsPath` / `loadDesignConfig` |
