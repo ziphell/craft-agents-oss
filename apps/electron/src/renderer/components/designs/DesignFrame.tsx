@@ -336,7 +336,10 @@ export function DesignFrame({ workspaceId, design, lease, content, previewUrl, s
     <>
       <iframe
         ref={iframeRef}
-        title={design.config.name}
+        // The design's name, for screen readers. `aria-label`, not `title`: both
+        // name the frame, but `title` also paints a native hover tooltip, which
+        // shows the design's name across the whole surface in its own window.
+        aria-label={design.config.name}
         sandbox={DESIGN_FRAME_SANDBOX}
         referrerPolicy="no-referrer"
         {...(previewUrl ? { src: previewUrl } : { srcDoc: content })}
