@@ -11,7 +11,7 @@
  * is no config file and nothing to keep in sync (see docs/tray-plan.md).
  */
 
-import { Tray, Menu, app, nativeImage, nativeTheme, type MenuItemConstructorOptions } from 'electron'
+import { Tray, Menu, app, nativeImage, type MenuItemConstructorOptions } from 'electron'
 import { join } from 'path'
 import { existsSync } from 'fs'
 import { i18n } from '@craft-agent/shared/i18n'
@@ -22,9 +22,6 @@ import type { WindowManager } from './window-manager'
 
 /** There is one tray per process — a second `new Tray` would stack a second icon. */
 let tray: Tray | null = null
-
-/** Keeps the macOS menu-bar icon in step with the system appearance. */
-let themeListener: (() => void) | null = null
 
 /** A file under the bundled resources (packaged: dist/resources, dev: ../resources). */
 function resourcePath(...parts: string[]): string | null {
@@ -38,11 +35,13 @@ function resourcePath(...parts: string[]): string | null {
 /**
  * The tray image.
  *
- * macOS gets one of **two monochrome icons** — black on a light menu bar, white on
- * a dark one — because the colored app icon looks wrong up there. They are a pair
- * rather than a template image on purpose: the mark keeps its own weight instead of
- * being reinterpreted as a silhouette. Each ships at 1x and 2x (`tray-black.png`
- * beside `tray-black@2x.png`, which Electron picks up on its own).
+ * macOS gets one **monochrome mark marked as a template image**, so macOS draws it itself:
+ * black on a light menu bar, white on a dark one. That is not the same as picking a colour
+ * from `nativeTheme.shouldUseDarkColors` — the system reads the menu bar's *effective*
+ * appearance, and on macOS 26 the bar is translucent, so it can sit light over a light
+ * wallpaper while the system is in dark mode and a manually chosen white icon washes out.
+ * Only the alpha is used, so the artwork must be monochrome; it is. Ships at 1x and 2x
+ * (`tray-template.png` beside `tray-template@2x.png`, which Electron picks up on its own).
  *
  * Windows takes an ICO: Electron's own advice is a multi-size icon (16/20/24/32 for
  * 100/125/150/200% display scaling). A single-size PNG is upscaled by the shell, which
@@ -54,10 +53,14 @@ function resourcePath(...parts: string[]): string | null {
  */
 function trayImage(): Electron.NativeImage {
   if (process.platform === 'darwin') {
-    const name = nativeTheme.shouldUseDarkColors ? 'tray-white.png' : 'tray-black.png'
-    const monochrome = resourcePath('craft-logos', name)
-    if (monochrome) return nativeImage.createFromPath(monochrome)
-    mainLog.warn(`[tray] ${name} not found — falling back to the app icon`)
+    const template = resourcePath('craft-logos', 'tray-template.png')
+    if (template) {
+      const image = nativeImage.createFromPath(template)
+      // The system paints it — see the note above.
+      image.setTemplateImage(true)
+      return image
+    }
+    mainLog.warn('[tray] tray-template.png not found — falling back to the app icon')
   }
 
   if (process.platform === 'win32') {
@@ -175,15 +178,6 @@ export function createTray(windowManager: WindowManager): boolean {
 
   tray.setToolTip(app.getName())
 
-  // The macOS menu bar can flip between light and dark while the app is running, so
-  // the black/white icon has to follow it.
-  if (process.platform === 'darwin') {
-    themeListener = () => {
-      if (tray && !tray.isDestroyed()) tray.setImage(trayImage())
-    }
-    nativeTheme.on('updated', themeListener)
-  }
-
   const openMenu = () => {
     if (tray && !tray.isDestroyed()) tray.popUpContextMenu(buildMenu(windowManager))
   }
@@ -210,10 +204,6 @@ export function createTray(windowManager: WindowManager): boolean {
  * over it if it is not destroyed, so this has to run on the way out.
  */
 export function destroyTray(): void {
-  if (themeListener) {
-    nativeTheme.removeListener('updated', themeListener)
-    themeListener = null
-  }
   if (tray && !tray.isDestroyed()) tray.destroy()
   tray = null
 }
