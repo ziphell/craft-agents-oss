@@ -21,7 +21,7 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyDirBeforeWrite: true,
-    sourcemap: true,
+    sourcemap: false,
   },
   optimizeDeps: {
     include: ['react', 'react-dom'],
