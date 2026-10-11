@@ -108,6 +108,31 @@ function resolveLarkDomain(domain: 'lark' | 'feishu'): lark.Domain {
 }
 
 /**
+ * Every `im.message.*` REST response carries a business envelope:
+ * `{ code, msg, data? }`. A rejected call comes back as HTTP 200 with a
+ * non-zero `code` — the SDK does NOT throw (`im.message.create/update/patch`
+ * resolve normally). Treating that as success is what made rejected sends and
+ * edits vanish silently (see the messaging-gateway "reply never sent" bug).
+ */
+interface LarkEnvelope<T = unknown> {
+  code?: number
+  msg?: string
+  data?: T
+}
+
+/**
+ * Return the business error of a Lark REST envelope, or `null` when the call
+ * succeeded. Absence of a numeric `code` (older/partial shapes) is treated as
+ * success so we never turn a healthy response into a failure.
+ */
+function larkBusinessError(result: unknown): { code: number; msg: string } | null {
+  if (!result || typeof result !== 'object') return null
+  const { code, msg } = result as { code?: unknown; msg?: unknown }
+  if (typeof code !== 'number' || code === 0) return null
+  return { code, msg: typeof msg === 'string' ? msg : '' }
+}
+
+/**
  * Strip a leading `<at user_id="...">…</at> ` prefix from a Lark text message
  * content. Lark prepends the @mention as a literal in the content, but the
  * agent only cares about what comes after.
@@ -128,15 +153,15 @@ interface LarkClient {
       create: (args: {
         params: { receive_id_type: 'chat_id' | 'open_id' | 'union_id' }
         data: { receive_id: string; msg_type: string; content: string; uuid?: string }
-      }) => Promise<{ data?: { message_id?: string } } | null>
+      }) => Promise<LarkEnvelope<{ message_id?: string }> | null>
       update: (args: {
         path: { message_id: string }
         data: { msg_type: string; content: string }
-      }) => Promise<unknown>
+      }) => Promise<LarkEnvelope | null>
       patch: (args: {
         path: { message_id: string }
         data: { content: string }
-      }) => Promise<unknown>
+      }) => Promise<LarkEnvelope | null>
     }
     file: {
       create: (args: {
@@ -147,6 +172,16 @@ interface LarkClient {
       create: (args: {
         data: { image_type: 'message' | 'avatar'; image: Buffer }
       }) => Promise<{ image_key?: string } | null>
+    }
+    /**
+     * Resource download for inbound message attachments. NOTE the SDK path is
+     * `im.messageResource.get` (a single namespace), NOT `im.message.resource`.
+     */
+    messageResource: {
+      get: (args: {
+        path: { message_id: string; file_key: string }
+        params: { type: 'image' | 'file' }
+      }) => Promise<{ writeFile: (path: string) => Promise<unknown>; file?: Buffer } & Record<string, unknown>>
     }
   }
 }
@@ -337,8 +372,33 @@ export class LarkAdapter implements PlatformAdapter {
       params: { receive_id_type: 'chat_id' },
       data: { receive_id: channelId, msg_type: msgType, content },
     })
+
+    // The SDK resolves business errors instead of throwing — check the envelope
+    // so a rejected send is logged and surfaced rather than silently dropped.
+    const bizErr = larkBusinessError(result)
+    if (bizErr) {
+      this.log.error('[lark] sendText rejected by Lark', {
+        event: 'lark_send_failed',
+        chatId: channelId,
+        msgType,
+        textLen: text.length,
+        larkCode: bizErr.code,
+        larkMsg: bizErr.msg,
+      })
+      throw new Error(`Lark sendText failed (code ${bizErr.code}): ${bizErr.msg}`)
+    }
+
     const messageId = result?.data?.message_id ?? ''
     if (messageId) this.sentMsgTypes.set(messageId, msgType)
+    // Successful text sends were previously unlogged (only cards were), which is
+    // why "clean logs" long masked the dropped-reply bug. Log the happy path too.
+    this.log.info('[lark] sent text', {
+      event: 'lark_send_ok',
+      chatId: channelId,
+      msgType,
+      messageId,
+      textLen: text.length,
+    })
     return { platform: 'lark', channelId, messageId }
   }
 
@@ -357,15 +417,14 @@ export class LarkAdapter implements PlatformAdapter {
       // For the text-only edit path the renderer takes, we fall back to a
       // cleared-card patch (text without buttons), matching the Telegram
       // behaviour where a final-text edit removes the button row.
-      try {
-        await this.client.im.message.patch({
-          path: { message_id: messageId },
-          data: { content: JSON.stringify(buildClearedCard(text)) },
-        })
-      } catch (err: unknown) {
-        if (isLarkEditExpiredError(err)) return
-        throw err
-      }
+      await this.runEdit(
+        () =>
+          this.client!.im.message.patch({
+            path: { message_id: messageId },
+            data: { content: JSON.stringify(buildClearedCard(text)) },
+          }),
+        { messageId, msgType: 'interactive' },
+      )
       return
     }
 
@@ -384,14 +443,61 @@ export class LarkAdapter implements PlatformAdapter {
       msgType = 'text'
     }
 
+    await this.runEdit(
+      () =>
+        this.client!.im.message.update({
+          path: { message_id: messageId },
+          data: { msg_type: msgType, content },
+        }),
+      { messageId, msgType },
+    )
+  }
+
+  /**
+   * Run a Lark edit (`update`/`patch`) and fail loudly on business errors.
+   *
+   * The SDK resolves `{ code, msg }` business errors instead of throwing, and
+   * the previous code additionally swallowed "edit expired". Together those
+   * made a failed final edit silently freeze the progress bubble on
+   * "💭 thinking…" with no trace. We now log and rethrow so the renderer can
+   * fall back to posting a fresh message.
+   */
+  private async runEdit(
+    call: () => Promise<LarkEnvelope | null>,
+    meta: { messageId: string; msgType: 'text' | 'post' | 'interactive' },
+  ): Promise<void> {
+    let result: LarkEnvelope | null
     try {
-      await this.client.im.message.update({
-        path: { message_id: messageId },
-        data: { msg_type: msgType, content },
-      })
+      result = await call()
     } catch (err: unknown) {
-      if (isLarkEditExpiredError(err)) return
+      const errObj = (err ?? {}) as {
+        response?: { data?: { code?: unknown; msg?: unknown } }
+        message?: unknown
+      }
+      this.log.warn('[lark] editMessage threw', {
+        event: 'lark_edit_failed',
+        messageId: meta.messageId,
+        msgType: meta.msgType,
+        larkCode:
+          typeof errObj.response?.data?.code === 'number' ? errObj.response.data.code : undefined,
+        larkMsg:
+          typeof errObj.response?.data?.msg === 'string' ? errObj.response.data.msg : undefined,
+        expired: isLarkEditExpiredError(err),
+        error: err instanceof Error ? err.message : String(err),
+      })
       throw err
+    }
+
+    const bizErr = larkBusinessError(result)
+    if (bizErr) {
+      this.log.warn('[lark] editMessage rejected by Lark', {
+        event: 'lark_edit_failed',
+        messageId: meta.messageId,
+        msgType: meta.msgType,
+        larkCode: bizErr.code,
+        larkMsg: bizErr.msg,
+      })
+      throw new Error(`Lark editMessage failed (code ${bizErr.code}): ${bizErr.msg}`)
     }
   }
 
@@ -435,6 +541,16 @@ export class LarkAdapter implements PlatformAdapter {
           content: cardJson,
         },
       })
+      // The SDK resolves `{ code, msg }` business errors instead of throwing.
+      // Re-throw so the catch below logs `lark_send_card_failed` and posts the
+      // plain-text fallback, rather than reporting a rejected card as sent.
+      const bizErr = larkBusinessError(result)
+      if (bizErr) {
+        throw Object.assign(
+          new Error(`Lark card create failed (code ${bizErr.code}): ${bizErr.msg}`),
+          { response: { data: { code: bizErr.code, msg: bizErr.msg } } },
+        )
+      }
       messageId = result?.data?.message_id ?? ''
       this.log.info('[lark] sent card', {
         event: 'lark_send_card_ok',
@@ -723,22 +839,12 @@ export class LarkAdapter implements PlatformAdapter {
   }): Promise<string | null> {
     if (!this.client) return null
     try {
-      // The SDK's `im.message.resource.get` returns a Node stream-like object
-      // with a `writeFile` helper for the common case. We use that for size+brevity.
-      const sdkResource = await (
-        (this.client as unknown as {
-          im: {
-            message: {
-              resource: {
-                get: (args: {
-                  path: { message_id: string; file_key: string }
-                  params: { type: 'image' | 'file' }
-                }) => Promise<{ writeFile: (path: string) => Promise<void> } & Record<string, unknown>>
-              }
-            }
-          }
-        }).im.message.resource.get
-      )({
+      // The SDK exposes the download at `im.messageResource.get` (a single
+      // namespace). The previous `im.message.resource.get` path is undefined,
+      // so every inbound image/file download threw
+      // "Cannot read properties of undefined (reading 'get')". The call returns
+      // a stream-like object with a `writeFile` helper for the common case.
+      const sdkResource = await this.client.im.messageResource.get({
         path: { message_id: args.messageId, file_key: args.fileKey },
         params: { type: args.isImage ? 'image' : 'file' },
       })

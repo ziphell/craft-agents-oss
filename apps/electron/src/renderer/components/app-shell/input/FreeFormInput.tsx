@@ -73,6 +73,7 @@ import {
   isCompatProvider,
   modelSupportsImages,
   modelSupportsThinking,
+  resolveImageModel,
 } from '@config/llm-connections'
 import { useOptionalAppShellContext } from '@/context/AppShellContext'
 import { EditPopover, getEditConfig } from '@/components/ui/EditPopover'
@@ -1556,6 +1557,13 @@ export function FreeFormInput({
     hasStagedImages
     && !!effectiveConnectionDetails
     && !modelSupportsImages(effectiveConnectionDetails, currentModel)
+  // When the session can route images to a vision-capable model, the warning
+  // becomes an informational note naming that model; otherwise it stays the
+  // "images will be dropped" warning with its one-click enable action.
+  const routedVisionModel =
+    showVisionWarning && effectiveConnectionDetails
+      ? resolveImageModel(effectiveConnectionDetails, currentModel)
+      : undefined
   const contextDisplay = getContextDisplay(contextStatus, getModelContextWindow(currentModel))
   const contextLabels = getContextDisplayLabels(contextDisplay, t)
 
@@ -1652,6 +1660,7 @@ export function FreeFormInput({
         {showVisionWarning && effectiveConnectionDetails && (
           <ImageSupportWarningBanner
             modelName={currentModelDisplayName}
+            routedToModelName={routedVisionModel ? getModelDisplayName(routedVisionModel) : undefined}
             onEnable={() => handleToggleModelVision(effectiveConnectionDetails.slug, currentModel, true)}
           />
         )}
@@ -1829,7 +1838,7 @@ export function FreeFormInput({
               anchored to the right (craft-agents-oss#798). overflow-hidden is safe — Radix Drawer /
               dropdowns inside render via portals, so they aren't clipped. */}
           {compactMode && (
-          <div className="flex items-center gap-1 min-w-0 shrink overflow-hidden">
+          <div className="flex items-center gap-1 min-w-0 shrink overflow-hidden p-px -m-px">
           {onPermissionModeChange && (
             <CompactPermissionModeSelector
               permissionMode={permissionMode}

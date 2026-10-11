@@ -286,6 +286,10 @@ export function getSessionScopedTools(
           const callbacks = getSessionScopedToolCallbacks(sessionId);
           return callbacks?.queryFn;
         },
+        getImageModel: () => {
+          const callbacks = getSessionScopedToolCallbacks(sessionId);
+          return callbacks?.getImageModelFn?.();
+        },
       }),
     );
 
@@ -334,6 +338,10 @@ export function getSessionScopedTools(
         getQueryFn: () => {
           const callbacks = getSessionScopedToolCallbacks(sessionId);
           return callbacks?.queryFn;
+        },
+        getImageModel: () => {
+          const callbacks = getSessionScopedToolCallbacks(sessionId);
+          return callbacks?.getImageModelFn?.();
         },
       }),
       ...createDrawioTools({

@@ -188,4 +188,18 @@ describe('startWebuiHttpServer', () => {
       wsUrl: 'wss://craft.example.com/ws',
     })
   })
+
+  it('redirects unauthenticated HTML requests to /login', async () => {
+    const { baseUrl } = await createServer()
+
+    const res = await fetch(`${baseUrl}/`, {
+      redirect: 'manual',
+      headers: { Accept: 'text/html' },
+    })
+
+    expect(res.status).toBe(302)
+    // Relative Location — a bare `Response.redirect('/login')` throws under Node's
+    // undici, so the handler must build the response itself.
+    expect(res.headers.get('location')).toBe('/login')
+  })
 })

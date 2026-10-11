@@ -27,6 +27,7 @@ import { getSessionPath } from '../sessions/storage.ts';
 import {
   buildWebSnapshot,
   findMarkdownImages,
+  pageShotFileName,
   renderWebSnapshotNote,
   rewriteMarkdownImages,
   snapshotImageFileName,
@@ -382,6 +383,22 @@ async function localizeSnapshotImages(args: {
     saved: replacements.size,
     left,
   };
+}
+
+/**
+ * Keep a picture of the page itself beside the note, and answer with the path to point at it.
+ *
+ * It goes into the same folder the article's images do (`snapshot.assets/`), so a note resolves
+ * both the same way — a renderer drawing the note with the source folder as its base shows the
+ * picture without having to know it is a different kind of image.
+ */
+function savePageShot(notePath: string, bytes: Buffer): string {
+  const dirName = snapshotAssetsDirName(basename(notePath));
+  const fileName = pageShotFileName(bytes);
+  const dir = join(dirname(notePath), dirName);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, fileName), bytes);
+  return `${dirName}/${fileName}`;
 }
 
 /** The reasons images were left as links, counted — one URL each would be a wall. */
@@ -1050,6 +1067,19 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
     const rawUrl = (page as { url?: unknown }).url;
     const url = typeof rawUrl === 'string' && rawUrl.length > 0 ? rawUrl : 'about:blank';
 
+    // The page's own picture, taken pressed against the read that just happened: the note and the
+    // shot are then the same page at (nearly) the same moment. Waiting until the note is written
+    // would let a navigation or a repaint in between make the two disagree. Only when the note is
+    // kept — a throwaway read has nothing to keep a picture with, and a capture is not free — and a
+    // capture that fails is not an error: the note is the point.
+    let shot: Buffer | null = null;
+    if (savePath) {
+      shot = await fns
+        .screenshot({ format: 'png' })
+        .then((result) => (result.imageBuffer.length > 0 ? result.imageBuffer : null))
+        .catch(() => null);
+    }
+
     const snapshot = await buildWebSnapshot({ html, url });
     const note = renderWebSnapshotNote(snapshot);
 
@@ -1062,12 +1092,18 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
     if (savePath) {
       // Keeping the note is what makes its images worth keeping too: a file somebody reads later
       // should not be half a link. Read-only `read` skips this — there is nothing to keep it with.
-      const localized = await localizeSnapshotImages({ note, notePath: savePath, pageUrl: url, fns });
+      // The page's own picture is kept first, so the note can lead with it; the article's images
+      // follow and are rewritten in place (a relative path is left alone — only `http(s)` is
+      // localized), so the two never touch each other.
+      const relShot = shot ? savePageShot(savePath, shot) : null;
+      const savedNote = relShot ? renderWebSnapshotNote({ ...snapshot, leadImage: relShot }) : note;
+      const localized = await localizeSnapshotImages({ note: savedNote, notePath: savePath, pageUrl: url, fns });
       mkdirSync(dirname(savePath), { recursive: true });
       writeFileSync(savePath, localized.note, 'utf8');
       summary.push(
         `Saved: ${savePath} (${formatBytes(new TextEncoder().encode(localized.note).length)})`,
       );
+      summary.push(relShot ? `Shot: ${relShot}` : 'Shot: not captured');
       if (localized.dirName) {
         summary.push(`Images: ${localized.saved} saved to ${localized.dirName}/`);
       }

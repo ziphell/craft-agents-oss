@@ -59,7 +59,10 @@ async function handleRequest(
   const request = new Request(url, {
     method: nodeReq.method,
     headers,
-    body,
+    // Buffer is an ArrayBufferView at runtime; the cast bridges the DOM lib's
+    // BodyInit typing (which rejects Buffer's ArrayBufferLike generic) while
+    // staying valid under Node/Bun libs too.
+    body: body as unknown as RequestInit['body'],
   })
 
   const response = await handler(request)

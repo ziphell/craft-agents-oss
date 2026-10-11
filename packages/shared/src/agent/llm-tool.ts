@@ -123,6 +123,7 @@ const MAX_FILE_LINES = 2000;
 const MAX_FILE_BYTES = 500_000; // 500KB per text file
 const MAX_ATTACHMENTS = 20;
 const MAX_TOTAL_CONTENT_BYTES = 2_000_000; // 2MB total across all attachments
+const MAX_TOTAL_IMAGE_BYTES = 20_000_000; // 20MB total across all image attachments
 
 // ============================================================================
 // PREDEFINED OUTPUT FORMATS
@@ -197,6 +198,12 @@ export interface BuildCallLlmOptions {
   validateModel?: (resolvedModelId: string) => string | undefined;
   /** Session directory for resolving relative attachment paths */
   sessionPath?: string;
+  /**
+   * Lazy resolver for the connection's vision model. Same contract as
+   * {@link LLMToolOptions.getImageModel}: consulted only when the call carries
+   * images and no explicit model was given; `undefined` refuses images.
+   */
+  getImageModel?: () => string | undefined;
 }
 
 /**
@@ -217,7 +224,13 @@ export async function buildCallLlmRequest(
 
   // Process attachments
   const textParts: string[] = [];
+  const images: LLMQueryImage[] = [];
   const attachments = input.attachments as Array<string | { path: string; startLine?: number; endLine?: number }> | undefined;
+
+  // Images are accepted only when a model that can read them exists: the
+  // caller's explicit pick, else the connection's vision model. Otherwise the
+  // historical refusal stands (this backend cannot read the picture).
+  const imageModel = (input.model as string | undefined)?.trim() || options.getImageModel?.();
 
   if (attachments?.length) {
     for (let i = 0; i < attachments.length; i++) {
@@ -226,9 +239,13 @@ export async function buildCallLlmRequest(
         throw new Error(result.message);
       }
       if (result.type === 'image') {
-        throw new Error(
-          `Attachment ${i + 1}: Image attachments are not supported in ${options.backendName} mode. Use text files only.`
-        );
+        if (!imageModel) {
+          throw new Error(
+            `Attachment ${i + 1}: Image attachments are not supported in ${options.backendName} mode. Use text files only.`
+          );
+        }
+        images.push({ data: result.base64, mimeType: result.mediaType });
+        continue;
       }
       if (result.type === 'text') {
         textParts.push(`<file path="${result.filename}">\n${result.content}\n</file>`);
@@ -252,6 +269,12 @@ export async function buildCallLlmRequest(
     if (options.validateModel) {
       model = options.validateModel(model) ?? undefined;
     }
+  }
+
+  // No explicit model but images are present: route them to the resolved vision
+  // model so they reach something that can actually read them.
+  if (!model && images.length > 0) {
+    model = imageModel;
   }
 
   // Build system prompt with structured output injection if needed
@@ -278,6 +301,7 @@ export async function buildCallLlmRequest(
     maxTokens: input.maxTokens as number | undefined,
     temperature: input.temperature as number | undefined,
     outputSchema: schema ?? undefined,
+    ...(images.length > 0 ? { images } : {}),
   };
 }
 
@@ -367,7 +391,7 @@ interface AttachmentInput {
 
 type AttachmentResult =
   | { type: 'text'; content: string; filename: string; bytes: number }
-  | { type: 'image'; base64: string; mediaType: string }
+  | { type: 'image'; base64: string; mediaType: string; bytes: number }
   | { type: 'error'; message: string };
 
 export async function processAttachment(
@@ -461,7 +485,7 @@ export async function processAttachment(
       const imageData = await readFile(filePath);
       const base64 = imageData.toString('base64');
       const mediaType = ext === 'jpg' ? 'image/jpeg' : `image/${ext}`;
-      return { type: 'image', base64, mediaType };
+      return { type: 'image', base64, mediaType, bytes: stats.size };
     } catch (err) {
       return { type: 'error', message: `Attachment ${index + 1}: Failed to read image "${safeFilename}": ${err instanceof Error ? err.message : err}` };
     }
@@ -587,6 +611,17 @@ export interface LLMToolOptions {
    * Each backend implements queryLlm() with native structured output support.
    */
   getQueryFn: () => LlmQueryFn | undefined;
+  /**
+   * Lazy resolver for the connection's vision model (see `resolveImageModel` in
+   * `@craft-agent/shared/config`). Consulted only when the call carries image
+   * attachments and no explicit `model` was given.
+   *
+   * `undefined` means no image-capable model can be resolved — images are then
+   * refused with the same message as before (the connection has nothing that
+   * can read them). Resolved at execution time like `getQueryFn`, because the
+   * session may switch connection or model between calls.
+   */
+  getImageModel?: () => string | undefined;
 }
 
 export function createLLMTool(options: LLMToolOptions) {
@@ -603,6 +638,7 @@ export function createLLMTool(options: LLMToolOptions) {
 
 Put text/content directly in the 'prompt' parameter. Do NOT pass inline text via attachments.
 Only use 'attachments' for existing file paths on disk - the tool loads file content automatically.
+Images are supported: give an image's file path and a model that can see reads it (the connection's vision model, or this model when it can see). Use this when the image cannot be sent to you directly.
 For large files (>2000 lines), use {path, startLine, endLine} to select a portion.`,
     {
       prompt: z.string().min(1, 'Prompt cannot be empty')
@@ -683,7 +719,15 @@ For large files (>2000 lines), use {path, startLine, endLine} to select a portio
       // ========================================
 
       const textParts: string[] = [];
+      const images: LLMQueryImage[] = [];
       let totalContentBytes = 0;
+      let totalImageBytes = 0;
+
+      // Images are accepted only when a model that can read them is resolvable:
+      // the caller's explicit pick, else the connection's vision model. No such
+      // model -> keep the historical refusal, so an unconfigured setup behaves
+      // exactly as before (nothing on this connection can see the picture).
+      const imageModel = args.model?.trim() || options.getImageModel?.();
 
       if (args.attachments?.length) {
         for (let i = 0; i < args.attachments.length; i++) {
@@ -695,9 +739,23 @@ For large files (>2000 lines), use {path, startLine, endLine} to select a portio
           }
 
           if (result.type === 'image') {
-            return errorResponse(
-              `Attachment ${i + 1}: Image attachments are not supported. Use text files only.`
-            );
+            if (!imageModel) {
+              return errorResponse(
+                `Attachment ${i + 1}: Image attachments are not supported. Use text files only.`
+              );
+            }
+            totalImageBytes += result.bytes;
+            if (totalImageBytes > MAX_TOTAL_IMAGE_BYTES) {
+              return errorResponse(
+                `Total image size exceeds ${MAX_TOTAL_IMAGE_BYTES / 1_000_000}MB limit.\n\n` +
+                'Options:\n' +
+                '1. Send fewer images\n' +
+                '2. Compress them first\n' +
+                '3. Split into multiple call_llm calls'
+              );
+            }
+            images.push({ data: result.base64, mimeType: result.mediaType });
+            continue;
           }
 
           if (result.type === 'text') {
@@ -724,7 +782,9 @@ For large files (>2000 lines), use {path, startLine, endLine} to select a portio
       // EXECUTE QUERY
       // ========================================
 
-      const model = args.model || getDefaultSummarizationModel();
+      const model = images.length > 0
+        ? imageModel!
+        : (args.model || getDefaultSummarizationModel());
       const schema = args.outputSchema || (args.outputFormat ? OUTPUT_FORMATS[args.outputFormat] : null);
 
       try {
@@ -735,6 +795,7 @@ For large files (>2000 lines), use {path, startLine, endLine} to select a portio
           maxTokens: args.maxTokens,
           temperature: args.temperature,
           outputSchema: schema ? (schema as Record<string, unknown>) : undefined,
+          ...(images.length > 0 ? { images } : {}),
         });
 
         if (!result.text && !result.warning) {

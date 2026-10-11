@@ -164,6 +164,13 @@ export interface CoreBackendConfig {
   /** Mini/utility model for summarization/title generation/mini-completions */
   miniModel?: string;
 
+  /**
+   * Model that reads images / video frames when a tool is handed pictures and
+   * the caller names none (see `resolveImageModel`). Sent to the Pi subprocess
+   * so `call_llm` there resolves the same model the parent would.
+   */
+  imageModel?: string;
+
   /** Initial thinking level */
   thinkingLevel?: ThinkingLevel;
 

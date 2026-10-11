@@ -438,7 +438,9 @@ export function KanbanBoardContainer() {
 
   const handleAddColumn = React.useCallback(() => {
     const base = resolveEditableColumns()
-    const id = `col-${crypto.randomUUID().slice(0, 8)}`
+    // `crypto.randomUUID` is unavailable in non-secure contexts (webui over http from a LAN IP).
+    const rand = crypto.randomUUID ? crypto.randomUUID() : String(Date.now())
+    const id = `col-${rand.slice(0, 8)}`
     persistProjectColumns([...base, { id, name: t('kanban.column.newColumnName') }])
   }, [resolveEditableColumns, persistProjectColumns, t])
 

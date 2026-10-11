@@ -325,6 +325,13 @@ export interface ToolCommandArgs {
    * command body needs the same callback `call_llm` uses. Doors that never ask leave it out.
    */
   queryLlm?: LlmQueryFn
+  /**
+   * The model that reads images / video frames, when the caller names none
+   * (see `resolveImageModel`). `understand` uses it as its default `--model`;
+   * absent means no image-capable model is configured. Doors that never ask
+   * leave it out.
+   */
+  imageModel?: string
 }
 
 /** What a door's command body is handed once the command line has been read. */
@@ -334,6 +341,8 @@ export interface ToolCommandContext {
   workspaceRootPath?: string
   platform?: NodeJS.Platform
   queryLlm?: LlmQueryFn
+  /** The resolved vision model (see `ToolCommandArgs.imageModel`), when one exists. */
+  imageModel?: string
   /**
    * The tab `--tab` named, when the command named one.
    *
@@ -406,6 +415,7 @@ export function createCommandRunner(
       workspaceRootPath: args.workspaceRootPath,
       platform: args.platform,
       queryLlm: args.queryLlm,
+      imageModel: args.imageModel,
       ...(tabId ? { tabId } : {}),
       parts,
       cmd,

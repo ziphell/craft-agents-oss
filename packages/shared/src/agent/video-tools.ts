@@ -64,6 +64,14 @@ export interface VideoToolOptions extends BrowserPaneToolOptions {
    * the other half of the door — is untouched.
    */
   getQueryFn?: () => LlmQueryFn | undefined;
+  /**
+   * Lazy resolver for the connection's vision model — the default `--model` for
+   * `understand` when the caller names none (see `resolveImageModel`). Read at
+   * execution time like the others; `undefined` means nothing on the connection
+   * can read the frames, and `understand` says so rather than shipping them to
+   * a model that cannot.
+   */
+  getImageModel?: () => string | undefined;
 }
 
 /**
@@ -91,6 +99,7 @@ export function createVideoTools(options: VideoToolOptions) {
             sessionId: options.sessionId,
             workspaceRootPath: options.workspaceRootPath,
             queryLlm: options.getQueryFn?.(),
+            imageModel: options.getImageModel?.(),
           });
 
           // Every sampled frame goes into the reply as an image: the point of the command is that

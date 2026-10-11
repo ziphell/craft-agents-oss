@@ -43,9 +43,6 @@ import {
 /** Spring transition matching AppShell's sidebar/navigator animation */
 const PANEL_SPRING = { type: 'spring' as const, stiffness: 600, damping: 49 }
 
-/** Visual breathing room between the fixed compact TopBar and the first panel. */
-const COMPACT_PANEL_TOP_GAP = 8
-
 interface PanelStackContainerProps {
   sidebarSlot: React.ReactNode
   sidebarWidth: number
@@ -128,7 +125,13 @@ export function PanelStackContainer({
           marginBlock: -PANEL_STACK_VERTICAL_OVERFLOW,
           marginBottom: -6,
           paddingBottom: 6,
-          '--compact-panel-stack-top': `${PANEL_STACK_VERTICAL_OVERFLOW + COMPACT_PANEL_TOP_GAP}px`,
+          // Compact panels run flush under the fixed TopBar (desktop does the
+          // same): the panel's own hairline — shadow-middle's 1px ring — is what
+          // divides bar from content. Adding a gap here made the bar read 8px
+          // taller AND left that hairline floating as a second separator line.
+          // This is the stack's content-box top: paddingBlock/marginBlock cancel
+          // out around the overflow room reserved for the panel shadows.
+          '--compact-panel-stack-top': `${PANEL_STACK_VERTICAL_OVERFLOW}px`,
         } as React.CSSProperties}
       >
         {/* Navigator slot — full width, slides left to -30% when detail focused. */}
@@ -136,6 +139,7 @@ export function PanelStackContainer({
           <CompactPanelTransition role="navigator" isDetailActive={hasSelectedContent}>
             <div
               data-panel-role="navigator"
+              data-compact="true"
               className={cn(
                 'h-full w-full overflow-clip relative',
                 'bg-background shadow-middle',

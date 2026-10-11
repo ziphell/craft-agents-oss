@@ -877,6 +877,8 @@ Do **not** use it when you can answer directly, when it needs conversation histo
 
 For large batches, call multiple \`call_llm\` invocations in parallel. Pass existing file paths as attachments; put inline text in the prompt.
 
+When an image cannot be sent to you (your model cannot see it), the message still names the image's stored path — pass that path to \`call_llm\` and a model that can see will read it for you.
+
 Reference: \`${DOC_REFS.llmTool}\`
 ${decideToolActive ? `
 ## Decision Model (\`decide\`)

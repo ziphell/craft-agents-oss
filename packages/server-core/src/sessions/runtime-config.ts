@@ -1,5 +1,5 @@
 import type { AgentProvider, LlmAuthType } from '@craft-agent/shared/agent/backend'
-import { isCompatProvider, modelSupportsImages, toCustomEndpointModels, type LlmConnection } from '@craft-agent/shared/config'
+import { isCompatProvider, modelSupportsImages, resolveImageModel, toCustomEndpointModels, type LlmConnection } from '@craft-agent/shared/config'
 import type { FileAttachment } from '@craft-agent/shared/protocol'
 
 export interface BackendRuntimeSignatureInput {
@@ -127,12 +127,30 @@ export function filterAttachmentsForModelInput(
   if (!connection) return { attachments, omittedImages: [] }
   if (modelSupportsImages(connection, modelId)) return { attachments, omittedImages: [] }
 
+  // The main model cannot see images. If the session can route them to a
+  // vision-capable model, keep a "path shell" for each image (path kept, pixels
+  // dropped) so the agent learns there is a picture and where it is — that is
+  // what lets it hand the file to call_llm. With nothing that can see, the
+  // images are dropped entirely, exactly as before.
+  const imageModel = resolveImageModel(connection, modelId)
+
   const modelAttachments: FileAttachment[] = []
   const omittedImages: FileAttachment[] = []
 
   for (const attachment of attachments) {
     if (isImageAttachment(attachment)) {
       omittedImages.push(attachment)
+      if (imageModel) {
+        modelAttachments.push({
+          type: attachment.type,
+          path: attachment.path,
+          name: attachment.name,
+          mimeType: attachment.mimeType,
+          size: attachment.size,
+          ...(attachment.storedPath ? { storedPath: attachment.storedPath } : {}),
+          ...(attachment.markdownPath ? { markdownPath: attachment.markdownPath } : {}),
+        })
+      }
     } else {
       modelAttachments.push(attachment)
     }

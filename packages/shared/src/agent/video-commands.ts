@@ -224,7 +224,7 @@ export function buildUnderstandPrompt(question: string, offsetsMs: number[], dur
  * that mattered gets dropped. `--out` is the only thing that decides whether they are also files.
  */
 export async function runVideoCommand(ctx: ToolCommandContext): Promise<BrowserCommandResult | null> {
-  const { fns, parts, cmd, workspaceRootPath, queryLlm } = ctx;
+  const { fns, parts, cmd, workspaceRootPath, queryLlm, imageModel } = ctx;
 
   if (cmd === 'understand') {
     const path = parts[1];
@@ -259,6 +259,18 @@ export async function runVideoCommand(ctx: ToolCommandContext): Promise<BrowserC
       throw new Error(
         'No model is configured for this conversation, so a recording cannot be read. ' +
         '"sample" still works — it hands you the frames themselves.',
+      );
+    }
+
+    // Which model reads the frames: the one named, else the connection's vision
+    // model. If neither exists there is nothing that can see them — say so and
+    // name the remedy rather than ship the frames to a model that cannot (that
+    // was a 400 waiting to happen, previously silent).
+    const readModel = model ?? imageModel;
+    if (!readModel) {
+      throw new Error(
+        'No model that can read images is configured for this conversation, so the frames cannot be read. ' +
+        'Pick a "Vision model" on the connection, pass --model, or use "sample" to get the frames themselves.',
       );
     }
 
@@ -301,7 +313,7 @@ export async function runVideoCommand(ctx: ToolCommandContext): Promise<BrowserC
         mimeType: 'image/jpeg' as const,
         timestampMs: frame.offsetMs,
       })),
-      model,
+      model: readModel,
     });
 
     const lines = [

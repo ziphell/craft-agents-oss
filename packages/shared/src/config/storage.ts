@@ -3192,7 +3192,11 @@ import { randomUUID } from 'crypto';
  */
 export function getServerConfig(): ServerConfig {
   const config = loadStoredConfig();
-  return config?.serverConfig ?? { ...DEFAULT_SERVER_CONFIG };
+  const stored = config?.serverConfig;
+  if (!stored) return { ...DEFAULT_SERVER_CONFIG };
+  // `allowExternal` was added after server mode shipped; a stored config without it
+  // predates the split and behaved as external (0.0.0.0), so default it to true.
+  return { ...DEFAULT_SERVER_CONFIG, ...stored, allowExternal: stored.allowExternal ?? true };
 }
 
 /**

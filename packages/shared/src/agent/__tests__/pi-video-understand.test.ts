@@ -56,6 +56,9 @@ describe('video_tool understand on the pi backend', () => {
         asked.push(request)
         return { text: 'a page with a moving dot' }
       },
+      // The vision model `understand` defaults to (the app resolves this from
+      // the connection and merges it in alongside the pane functions).
+      getImageModelFn: () => 'pi/test-vision',
     })
 
     const agent = new PiAgent(createConfig())

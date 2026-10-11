@@ -255,6 +255,25 @@ describe('Renderer — progress mode (default)', () => {
     expect(sends.map((s) => s.text)).toEqual(['🔧 Read…', 'The answer is 42.'])
   })
 
+  it('falls back to a fresh message when the final edit fails (edit window expired)', async () => {
+    const adapter = makeAdapter()
+    // Simulate a platform whose edit window closed under a long-lived bubble
+    // (Lark): every in-place edit is rejected.
+    adapter.editMessage = async () => {
+      throw new Error('lark edit expired')
+    }
+    const binding = makeBinding()
+    await play(renderer, binding, adapter, [
+      ev.toolStart('Read'),
+      ev.final('The answer is 42.'),
+      ev.complete(),
+    ])
+
+    const sends = adapter.calls.filter((c) => c.kind === 'sendText')
+    // Status bubble + the final answer re-posted as a new message (not stranded).
+    expect(sends.map((s) => s.text)).toEqual(['🔧 Read…', 'The answer is 42.'])
+  })
+
   it('tool-terminated run with no non-intermediate final → falls back to last assistant text', async () => {
     const adapter = makeAdapter()
     const binding = makeBinding()
@@ -413,6 +432,32 @@ describe('Renderer — streaming mode (legacy)', () => {
     expect(sends.length).toBe(2)
     expect(sends[0]!.text).toBe('first')
     expect(sends[1]!.text).toBe('second')
+  })
+
+  it('folds intermediate text_complete into a single bubble (no per-turn fragmentation)', async () => {
+    const adapter = makeAdapter()
+    const binding = makeBinding({ responseMode: 'streaming' as ResponseMode })
+    await play(renderer, binding, adapter, [
+      ev.delta('one', 't1'),
+      ev.intermediate('one'),
+      ev.delta('two', 't2'),
+      ev.intermediate('two'),
+      ev.delta('three', 't3'),
+      ev.final('three'),
+      ev.complete(),
+    ])
+
+    const sends = adapter.calls.filter((c) => c.kind === 'sendText')
+    const edits = adapter.calls.filter((c) => c.kind === 'editMessage')
+    // One message for the whole run — intermediate turns edit the same bubble
+    // instead of starting a fresh one each round-trip.
+    expect(sends).toHaveLength(1)
+    expect(edits.map((e) => e.messageId)).toEqual([
+      sends[0]!.messageId,
+      sends[0]!.messageId,
+      sends[0]!.messageId,
+    ])
+    expect(edits.map((e) => e.text)).toEqual(['one', 'two', 'three'])
   })
 
   it('drops a buffered failed attempt and sends only the recovered answer without editing', async () => {

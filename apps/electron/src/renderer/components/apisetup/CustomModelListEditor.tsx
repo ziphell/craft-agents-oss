@@ -53,6 +53,13 @@ export interface CustomModelListEditorProps {
   fastModel?: string
   /** Called with the picked fast model, or `null` for "follow the default model". */
   onFastModelChange: (id: string | null) => void
+  /**
+   * The vision-model selection to show: the connection's `visionModel`.
+   * `''` = no pick (the chain falls through to the small / current model).
+   */
+  visionModel?: string
+  /** Called with the picked vision model, or `null` for "no pick". */
+  onVisionModelChange: (id: string | null) => void
   disabled?: boolean
   /** Validation message shown under the list (e.g. "at least one model"). */
   error?: string | null
@@ -94,6 +101,8 @@ export function CustomModelListEditor({
   onDefaultModelChange,
   fastModel,
   onFastModelChange,
+  visionModel,
+  onVisionModelChange,
   disabled,
   error,
   idPrefix = 'custom-model',
@@ -124,6 +133,14 @@ export function CustomModelListEditor({
   const fastOptions = [...new Set(knownIds)]
   if (storedFast && !fastOptions.includes(storedFast)) fastOptions.push(storedFast)
 
+  const storedVision = visionModel?.trim()
+  const visionOptions = [...new Set(knownIds)]
+  if (storedVision && !visionOptions.includes(storedVision)) visionOptions.push(storedVision)
+  // A pick the row itself flags as "no images" is a contradiction worth saying
+  // out loud — the resolver treats it as "no pick".
+  const visionCannotSee =
+    !!storedVision && entries.find(entry => entry.id.trim() === storedVision)?.supportsImages === false
+
   const readValue = (index: number): CustomEndpointModelEntry => toEntry(value[index]!)
 
   const writeEntry = (index: number, next: CustomEndpointModelEntry) => {
@@ -148,6 +165,7 @@ export function CustomModelListEditor({
     if (!nextId || previousId === nextId) return
     if (previousId === pickedDefaultId) onDefaultModelChange(nextId)
     if (previousId === storedFast) onFastModelChange(nextId)
+    if (previousId === storedVision) onVisionModelChange(nextId)
   }
 
   const addRow = () => {
@@ -336,6 +354,23 @@ export function CustomModelListEditor({
         disabled={disabled}
         onChange={next => onFastModelChange(next || null)}
       />
+
+      <ModelPicker
+        id={`${idPrefix}-vision`}
+        label="Vision model"
+        value={storedVision ?? ''}
+        options={visionOptions}
+        emptyOption="None"
+        optionNote={option => (knownIds.includes(option) ? undefined : 'not in the list')}
+        hint="Reads images for call_llm and video understanding — used when the main model can't see images."
+        disabled={disabled}
+        onChange={next => onVisionModelChange(next || null)}
+      />
+      {visionCannotSee && (
+        <p className="text-xs text-destructive">
+          The selected vision model is marked as not accepting images — it will be ignored.
+        </p>
+      )}
 
       {duplicateIds.length > 0 && (
         <p className="text-xs text-destructive">

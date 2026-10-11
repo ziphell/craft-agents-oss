@@ -32,6 +32,9 @@ async function run(
   command: string | string[],
   fns: BrowserPaneFns,
   queryLlm?: (request: LLMQueryRequest) => Promise<LLMQueryResult>,
+  // A stand-in for the model `resolveImageModel` would hand `understand` by
+  // default; pass `undefined` to exercise the "nothing can see the frames" path.
+  imageModel: string | undefined = 'pi/test-vision',
 ) {
   return executeVideoToolCommand({
     command,
@@ -39,6 +42,7 @@ async function run(
     sessionId: 'test-session',
     workspaceRootPath: WORKSPACE,
     queryLlm,
+    imageModel,
   })
 }
 
@@ -396,6 +400,25 @@ describe('video_tool understand', () => {
 
     expect(message).toContain('No model is configured')
     expect(message).toContain('"sample" still works')
+  })
+
+  it('refuses when no image-capable model is configured — and names the remedy', async () => {
+    const { fn } = stubQuery()
+    const fns = stubFns(async () => ({ durationMs: 2000, truncated: false, frames: frames(1) }))
+
+    // Built directly so `imageModel` is genuinely absent (the `run` helper would
+    // apply its own default).
+    const message = await executeVideoToolCommand({
+      command: 'understand demo.mp4 --prompt "q"',
+      fns,
+      sessionId: 'test-session',
+      workspaceRootPath: WORKSPACE,
+      queryLlm: fn,
+    }).catch((err) => (err as Error).message)
+
+    expect(message).toContain('No model that can read images')
+    expect(message).toContain('--model')
+    expect(message).toContain('"sample"')
   })
 
   it('resolves --out, names the files, and still answers', async () => {

@@ -1370,142 +1370,79 @@ html.dark[data-scenic] .fullscreen-overlay-background {
 }
 
 /* ==========================================================================
-   1.3× touch target scaling on mobile (shell ≤ 768px)
-   Formula: round(desktop_value × 1.3)
+   Compact-mode rules.
+   Keyed off the renderer's `data-compact` attribute — the single source of
+   truth is AppShell's `isAutoCompact` — instead of a `@container shell
+   (max-width: 768px)` query. Two separate breakpoints (React on the outer
+   shell's border box, the container query on the panel stack's content box)
+   sat ~15px apart and produced a second reflow when crossing 768; driving the
+   CSS from the same React state leaves exactly one breakpoint.
    ========================================================================== */
-@container shell (max-width: 768px) {
-  /* Panel header buttons: X, share, back chevron.
-     Apple HIG minimum tap target is 44pt; min-width/height enforces the floor
-     even if internal padding alone wouldn't reach it. */
-  .panel-header-btn {
-    padding: 10px;
-    border-radius: 10px;
-    min-width: 44px;
-    min-height: 44px;
-  }
-
-  /* Compact panel header icons: keep desktop icons at their caller-provided
-     size, but make compact-mode icons read clearly inside the 44px target. */
-  [data-compact] .panel-header-btn > svg {
-    width: 24px;
-    height: 24px;
-  }
-
-  /* Session/source/skill list rows (desktop: py-3 = 12px → 16px) */
-  .entity-row-btn {
-    padding-top: 16px;
-    padding-bottom: 16px;
-  }
-
-  /* TopBar icon buttons: +, ?, nav arrows (desktop: 28×28 → 36×36) */
-  .header-icon-btn {
-    width: 36px;
-    height: 36px;
-  }
-
-  /* Input toolbar items: attach, task, workspace pill, model picker (desktop: h-7 = 28px → 36px) */
-  .input-toolbar-btn {
-    height: 36px;
-    min-width: 36px;
-  }
-
-  /* Send button (desktop: 28×28 → 36×36) */
-  .send-btn {
-    width: 36px;
-    height: 36px;
-  }
-
-  /* Settings form controls: 44px minimum height + 16px font.
-     The 16px font-size prevents iOS Safari from auto-zooming into the field
-     on focus (it triggers below 16px). Compact-only override so desktop stays
-     at the original tighter sizing. */
-  [data-layout="settings-row"] [data-slot="select-trigger"],
-  [data-layout="settings-row"] [data-slot="input"],
-  [data-layout="settings-row"] [data-slot="textarea"] {
-    min-height: 44px;
-    font-size: 16px;
-  }
-
-  /* Hover-reveal opt-in for touch.
-     Components that use `opacity-0 group-hover:opacity-100` (more menus,
-     row deletes, etc.) become invisible on touch — hover never fires.
-     Adding `data-touch-reveal="true"` opts the element into always-visible
-     in compact. Desktop keeps the hover-reveal behavior unchanged.
-     `!important` is necessary to beat Tailwind's `opacity-0` utility. */
-  [data-touch-reveal="true"] {
-    opacity: 1 !important;
-  }
-
-  /* Bottom safe area for iOS home indicator + FAB clearance.
-     Sessions list keeps a 72px buffer (FAB is ~56px + bottom inset 16px)
-     so the last row never sits underneath the floating action button.
-     Other list roles (sources/skills/automations) only need the iOS
-     safe-area inset since they don't have a FAB. */
-  [data-list-role] {
-    padding-bottom: env(safe-area-inset-bottom, 0px);
-  }
-  [data-list-role="sessions"] {
-    padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px));
-  }
-
-  /* Top safe area: keep the navigator's first row clear of the iOS notch
-     when the app runs as a PWA / mobile webui. Desktop builds report 0px
-     for the inset so this is a no-op there. */
-  [data-panel-role="navigator"] {
-    padding-top: env(safe-area-inset-top, 0px);
-  }
-
-  /* Workspace pill chevron: 12px is hard to read at narrow widths,
-     bump to 16px so the dropdown affordance is clearly tappable. */
-  [data-workspace-switcher="topbar"] [data-slot="chevron"] {
-    width: 16px;
-    height: 16px;
-  }
+[data-compact] .entity-row-btn {
+  padding-top: 16px;
+  padding-bottom: 16px;
 }
 
-/* TopBar lives outside the shell container, so the workspace pill chevron
-   needs a viewport-media equivalent for the topbar variant specifically. */
-@media (max-width: 768px) {
-  /* TopBar lives outside the shell container, so mirror the compact 36px
-     button target here instead of relying only on @container shell rules.
+/* Settings form controls: 44px minimum height + 16px font.
+   The 16px font-size prevents iOS Safari from auto-zooming into the field
+   on focus (it triggers below 16px). Compact-only so desktop stays tighter. */
+[data-compact] [data-layout="settings-row"] [data-slot="select-trigger"],
+[data-compact] [data-layout="settings-row"] [data-slot="input"],
+[data-compact] [data-layout="settings-row"] [data-slot="textarea"] {
+  min-height: 44px;
+  font-size: 16px;
+}
 
-     Skipped in the embedded browser chrome (`browser-toolbar.html` marks its
-     document `.browser-chrome`): that document is a view whose viewport is the
-     *window minus the tab rail*, so narrowing a browser window trips this very
-     query — and its action buttons grew (28 → 36px, icons 14 → 20px) although
-     nothing about the screen had changed. */
-  html:not(.browser-chrome) .header-icon-btn {
-    width: 36px;
-    height: 36px;
-    border-radius: 8px;
-  }
+/* Hover-reveal opt-in for touch.
+   Components that use `opacity-0 group-hover:opacity-100` (more menus,
+   row deletes, etc.) become invisible on touch — hover never fires.
+   Adding `data-touch-reveal="true"` opts the element into always-visible
+   in compact. Desktop keeps the hover-reveal behavior unchanged.
+   `!important` is necessary to beat Tailwind's `opacity-0` utility. */
+[data-compact] [data-touch-reveal="true"] {
+  opacity: 1 !important;
+}
 
-  [data-workspace-switcher="topbar"] [data-slot="chevron"] {
-    width: 16px;
-    height: 16px;
-  }
+/* Bottom safe area for iOS home indicator + FAB clearance.
+   Sessions list keeps a 72px buffer (FAB is ~56px + bottom inset 16px)
+   so the last row never sits underneath the floating action button.
+   Other list roles (sources/skills/automations) only need the iOS
+   safe-area inset since they don't have a FAB. */
+[data-compact] [data-list-role] {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+[data-compact] [data-list-role="sessions"] {
+  padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+}
+
+/* Top safe area: keep the navigator's first row clear of the iOS notch
+   when the app runs as a PWA / mobile webui. Desktop builds report 0px
+   for the inset so this is a no-op there. */
+[data-panel-role="navigator"][data-compact] {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+/* The compact navigator is the surface the detail card slides over, not a card
+   itself — and while the detail is up it is off-screen to the left, so its
+   shadow-middle ring (and its scenic-mode ::before twin) was painting a second
+   hairline across most of the width, over the card that is actually on screen.
+   Its own outline is dropped; the detail panel keeps its ring, which is what
+   makes its rounded top corners read as a card (the desktop panels are inset
+   rounded cards in the same way). The scenic glass itself is left alone — only
+   this outline goes. */
+[data-panel-role="navigator"][data-compact] {
+  box-shadow: none;
+}
+[data-panel-role="navigator"][data-compact]::before {
+  content: none;
 }
 
 /* ==========================================================================
-   TopBar height — bumps to 56px on narrow viewports so it matches the larger
-   touch targets and feels less cramped on mobile. The TopBar uses position:
-   fixed so the App content area reads the same variable for its padding-top.
+   TopBar height. The TopBar uses position: fixed so the App content area
+   reads the same variable for its padding-top.
    ========================================================================== */
 :root {
   --topbar-height: 48px;
-}
-@media (max-width: 768px) {
-  :root {
-    --topbar-height: 56px;
-  }
-
-  /* Bump TopBar icons from 18px → 20px in compact mode. Kept tight inside the
-     36×36 button so it doesn't dominate the bar. (Not the browser chrome — same
-     reason as the button target above.) */
-  html:not(.browser-chrome) .header-icon-btn svg {
-    width: 20px;
-    height: 20px;
-  }
 }
 
 /* TurnCard action buttons (Copy, Markdown) — outside @container/shell,

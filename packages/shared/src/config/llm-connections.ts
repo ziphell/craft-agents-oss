@@ -391,6 +391,18 @@ export interface LlmConnection {
   fastModel?: string;
 
   /**
+   * Explicitly chosen model used to read **images / video frames** — the one
+   * `call_llm` and `video_tool understand` reach for when they are handed
+   * pictures. It is the preferred candidate of {@link resolveImageModel};
+   * absent means "not picked", and the connection's small / current model
+   * answer instead if they can see (see that function for the full chain).
+   *
+   * Distinct from {@link fastModel}: that one means "cheap", this one means
+   * "can see". A single id may legitimately hold both roles.
+   */
+  visionModel?: string;
+
+  /**
    * Ownership mode for the model list.
    * - automaticallySyncedFromProvider: provider defaults are kept in sync.
    * - userDefined3Tier: preserve user-selected Best/Balanced/Fast list.
@@ -856,6 +868,64 @@ export function modelSupportsImages(
     return entry.supportsImages;
   }
   return true;
+}
+
+/**
+ * Explicitly picked vision model, if it is usable.
+ *
+ * Returns the stored `visionModel` only when it is still one of the
+ * connection's models and its entry says it accepts images; otherwise
+ * `undefined`. Three cases collapse to "no pick": unset, an id no longer in
+ * the list, and a pick the user has themselves flagged `supportsImages: false`
+ * (a contradiction we refuse to act on rather than send images into a 400).
+ *
+ * The name-based guess is deliberately **not** applied here — a built-in
+ * catalog carries no reliable "can see" signal, and guessing is exactly what
+ * {@link resolveImageModel} avoids.
+ */
+export function getVisionModel(
+  connection: Pick<LlmConnection, 'models' | 'visionModel'>,
+): string | undefined {
+  const pick = connection.visionModel?.trim();
+  if (!pick) return undefined;
+  const namesAKnownModel =
+    !connection.models?.length || connection.models.some(m => (typeof m === 'string' ? m : m.id).trim() === pick);
+  if (!namesAKnownModel) return undefined;
+  if (!modelSupportsImages(connection, pick)) return undefined;
+  return pick;
+}
+
+/**
+ * Which model reads images / video frames when one is needed and the caller
+ * named none.
+ *
+ * A capability-checked candidate chain — the first entry that can actually see
+ * wins, so the callers never hand pictures to a model that cannot accept them
+ * (the failure this replaces was a provider 400):
+ *
+ *   1. `visionModel` ({@link getVisionModel}) — the explicit pick;
+ *   2. the connection's small model ({@link getMiniModel}) — usually the cheap
+ *      one, and the existing default of both callers;
+ *   3. `mainModel` — the model this session is actually on (falling back to the
+ *      connection's `defaultModel`). This is what makes "the main model can
+ *      see, the small one cannot" work with no extra configuration.
+ *
+ * `undefined` means no candidate can see — the caller then keeps its own
+ * existing behaviour (reject for `call_llm`, error for `video_tool`).
+ */
+export function resolveImageModel(
+  connection: LlmConnection,
+  mainModel?: string,
+): string | undefined {
+  const explicit = getVisionModel(connection);
+  if (explicit) return explicit;
+
+  const small = getMiniModel(connection);
+  const main = mainModel?.trim() || connection.defaultModel?.trim();
+  for (const id of [small, main]) {
+    if (id && modelSupportsImages(connection, id)) return id;
+  }
+  return undefined;
 }
 
 /**

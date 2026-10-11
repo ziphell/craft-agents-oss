@@ -31,3 +31,13 @@ try {
   // Only warn - PowerShell validation is optional on non-Windows platforms
   console.log('⚠ powershell-parser.ps1 copy skipped (not critical on non-Windows)');
 }
+
+// Copy the built WebUI — served by the Electron server on the RPC port in server
+// mode (see main/index.ts). Optional: without it, server mode has no browser UI.
+// Run `bun run webui:build` before packaging to include it.
+try {
+  cpSync(join('..', '..', 'apps', 'webui', 'dist'), join('dist', 'resources', 'webui'), { recursive: true });
+  console.log('✓ Copied apps/webui/dist → dist/resources/webui/');
+} catch {
+  console.log('⚠ apps/webui/dist not found — run `bun run webui:build` to include the WebUI');
+}

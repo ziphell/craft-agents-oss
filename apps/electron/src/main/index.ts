@@ -101,7 +101,7 @@ import { getDesignConfigRelativePath } from '@craft-agent/shared/designs'
 import { initializeReleaseNotes } from '@craft-agent/shared/release-notes'
 import { ensureDefaultPermissions } from '@craft-agent/shared/agent/permissions-config'
 import { ensureToolIcons, ensurePresetThemes } from '@craft-agent/shared/config'
-import { setBundledAssetsRoot } from '@craft-agent/shared/utils'
+import { setBundledAssetsRoot, getBundledAssetsDir } from '@craft-agent/shared/utils'
 import { initializeBackendHostRuntime } from '@craft-agent/shared/agent/backend'
 import { setPowerShellValidatorRoot } from '@craft-agent/shared/agent'
 import { handleDeepLink } from './deep-link'
@@ -120,6 +120,7 @@ import { createTray, destroyTray } from './tray'
 import { checkForUpdatesOnLaunch, setAutoUpdateEventSink, isUpdating, setBeforeUpdateQuitHook, setBeforeUpdateInstallHook, setInstallQuitFailedHook } from './auto-update'
 import type { EventSink } from '@craft-agent/server-core/transport'
 import { validateGitBashPath, checkVCRedistInstalled } from '@craft-agent/server-core/services'
+import { createWebuiHandler, nodeHttpAdapter, validateSession, type WebuiHandler } from '@craft-agent/server-core/webui'
 
 // Initialize electron-log for renderer process support
 log.initialize()
@@ -271,6 +272,43 @@ function normalizeOriginForCert(urlStr: string): string {
   if (u.protocol === 'wss:') u.protocol = 'https:'
   else if (u.protocol === 'ws:') u.protocol = 'http:'
   return u.origin
+}
+
+/**
+ * Probe whether a TCP port is free on the given host by attempting a bind and
+ * releasing it. Used at startup so a taken configured port degrades to a random
+ * one instead of failing to launch. Startup-only by design — the settings page
+ * does not pre-probe ports.
+ */
+async function isPortAvailable(port: number, host: string): Promise<boolean> {
+  const { createServer } = await import('node:net')
+  return await new Promise<boolean>((resolve) => {
+    const probe = createServer()
+    probe.once('error', () => resolve(false))
+    probe.once('listening', () => probe.close(() => resolve(true)))
+    probe.listen(port, host)
+  })
+}
+
+/**
+ * Ranges virtual adapters commonly hold and other devices cannot reach:
+ * link-local (169.254/16), CGNAT (100.64/10, e.g. Tailscale), and the
+ * benchmarking block (198.18/15) that TUN proxies hand out.
+ */
+function isVirtualOrReservedIpv4(address: string): boolean {
+  const [a, b] = address.split('.').map(Number)
+  if (a === 198 && (b === 18 || b === 19)) return true
+  if (a === 169 && b === 254) return true
+  if (a === 100 && b !== undefined && b >= 64 && b <= 127) return true
+  return false
+}
+
+/** RFC 1918 private ranges — the ones a phone/laptop on the same LAN can reach. */
+function isPrivateIpv4(address: string): boolean {
+  const [a, b] = address.split('.').map(Number)
+  return a === 10
+    || (a === 192 && b === 168)
+    || (a === 172 && b !== undefined && b >= 16 && b <= 31)
 }
 
 if (process.env.CRAFT_SERVER_URL) {
@@ -659,11 +697,24 @@ app.whenReady().then(async () => {
       const serverToken = serverModeEnabled && embeddedServerConfig.token
         ? embeddedServerConfig.token
         : randomUUID()
+      // External binding is its own switch: server mode on + allowExternal (default true).
+      const allowExternal = serverModeEnabled && embeddedServerConfig.allowExternal !== false
       const rpcHost = process.env.CRAFT_RPC_HOST
-        ?? (serverModeEnabled ? '0.0.0.0' : '127.0.0.1')
-      const rpcPort = process.env.CRAFT_RPC_PORT
+        ?? (allowExternal ? '0.0.0.0' : '127.0.0.1')
+      const configuredPort = process.env.CRAFT_RPC_PORT
         ? parseInt(process.env.CRAFT_RPC_PORT, 10)
         : (serverModeEnabled ? embeddedServerConfig.port : 0)
+
+      // Port conflict handling (startup only): a taken configured port degrades to
+      // a random one instead of failing startup, and is surfaced in ServerStatus.
+      let rpcPort = configuredPort
+      let bindError: string | undefined
+      if (serverModeEnabled && !process.env.CRAFT_RPC_PORT && configuredPort > 0
+        && !(await isPortAvailable(configuredPort, rpcHost))) {
+        rpcPort = 0
+        bindError = `Port ${configuredPort} is in use`
+        mainLog.warn(`[server-mode] Port ${configuredPort} is in use — falling back to a random port`)
+      }
 
       // Load TLS certificates if configured
       let tls: import('@craft-agent/server-core/transport').WsRpcTlsOptions | undefined
@@ -683,12 +734,49 @@ app.whenReady().then(async () => {
         mainLog.info(`[server-mode] Enabled — binding ${rpcHost}:${rpcPort}${tls ? ' (TLS)' : ''}`)
       }
 
+      // ---------------------------------------------------------------------
+      // WebUI static serving — the Electron server also serves the browser UI on
+      // the RPC port so a browser/mobile client can connect without the desktop
+      // app. Mirrors the headless server (packages/server/src/index.ts).
+      // ---------------------------------------------------------------------
+      let webuiDir: string | undefined
+      if (serverModeEnabled) {
+        const webuiCandidates = [
+          process.env.CRAFT_WEBUI_DIR,
+          getBundledAssetsDir('webui'),
+          // Dev: running from the repo root without a built dist/resources tree.
+          join(process.cwd(), 'apps', 'webui', 'dist'),
+        ].filter((p): p is string => !!p)
+        webuiDir = webuiCandidates.find((p) => existsSync(join(p, 'index.html')))
+        if (!webuiDir) {
+          mainLog.warn('[server-mode] WebUI assets not found — browser clients will have no UI (run `bun run webui:build`)')
+        }
+      }
+
+      // The WebUI handler is created after bootstrap so the real bound port is
+      // known; the dispatcher forwards once it exists. No HTTP request can arrive
+      // before listen(), so the handler is always ready by the first request.
+      let serverWebuiHandler: WebuiHandler | null = null
+      let serverWebuiHttpHandler: ((req: any, res: any) => void) | undefined
+      let webuiHealthCheck: (() => { status: string }) | null = null
+      const webuiHttpDispatcher = webuiDir
+        ? (req: any, res: any) => {
+            if (serverWebuiHttpHandler) serverWebuiHttpHandler(req, res)
+            else { res.statusCode = 404; res.end() }
+          }
+        : undefined
+
       // Bootstrap the WS RPC server via shared bootstrap function.
       const instance = await bootstrapServer<SessionManager, HandlerDeps>({
         serverToken,
         rpcHost,
         rpcPort,
         tls,
+        httpHandler: webuiHttpDispatcher,
+        // Accept the WebUI session cookie on WebSocket upgrade (cookie auth).
+        validateSessionCookie: webuiDir
+          ? async (cookieHeader: string | null) => (await validateSession(cookieHeader, serverToken)) !== null
+          : undefined,
         bundledAssetsRoot: __dirname,
         serverId: 'local',
         serverVersion: app.getVersion(),
@@ -821,6 +909,47 @@ app.whenReady().then(async () => {
       oauthFlowStore = instance.oauthFlowStore
       moduleSink = instance.wsServer.push.bind(instance.wsServer)
       moduleClientResolver = resolveClientId
+
+      // -----------------------------------------------------------------------
+      // WebUI — now that the server is listening, build the handler with the real
+      // bound port, then wire the health check and OAuth callback deps (mirrors
+      // the headless server in packages/server/src/index.ts).
+      // -----------------------------------------------------------------------
+      if (webuiDir) {
+        serverWebuiHandler = createWebuiHandler({
+          webuiDir,
+          secret: serverToken,
+          // Reverse-proxy / port-mapping support comes from config, not env vars.
+          publicWsUrl: embeddedServerConfig.publicWsUrl || undefined,
+          wsProtocol: tls ? 'wss' : 'ws',
+          wsPort: instance.port,
+          getHealthCheck: () => webuiHealthCheck?.() ?? { status: 'starting' },
+          logger: {
+            info: (m: string) => mainLog.info(m),
+            warn: (m: string) => mainLog.warn(m),
+            error: (m: string) => mainLog.error(m),
+          } as any,
+        })
+        serverWebuiHttpHandler = nodeHttpAdapter(serverWebuiHandler.fetch)
+
+        const { getHealthCheck } = await import('@craft-agent/server-core/handlers/rpc/server')
+        webuiHealthCheck = () => getHealthCheck({ sessionManager: instance.sessionManager } as any)
+
+        const { getSourceCredentialManager, loadWorkspaceSources } = await import('@craft-agent/shared/sources')
+        const { pushTyped } = await import('@craft-agent/server-core/transport')
+        const { RPC_CHANNELS } = await import('@craft-agent/shared/protocol')
+        serverWebuiHandler.setOAuthCallbackDeps({
+          flowStore: instance.oauthFlowStore,
+          credManager: getSourceCredentialManager(),
+          sessionManager: instance.sessionManager,
+          pushSourcesChanged: (workspaceId: string) => {
+            const ws = getWorkspaceByNameOrId(workspaceId)
+            const sources = ws ? loadWorkspaceSources(ws.rootPath) : []
+            pushTyped(instance.wsServer, RPC_CHANNELS.sources.CHANGED, { to: 'workspace', workspaceId }, workspaceId, sources)
+          },
+        })
+        mainLog.info(`[server-mode] WebUI serving from ${webuiDir}`)
+      }
 
       // What to write on the tab rail's group headers. A tab says whose work it is, and the
       // window is one window for the whole workspace — so the rail
@@ -1059,6 +1188,9 @@ app.whenReady().then(async () => {
         tls: !!tls,
         token: serverToken,
         enabled: serverModeEnabled,
+        allowExternal,
+        bindError,
+        publicWsUrl: embeddedServerConfig.publicWsUrl || undefined,
       }
 
       instance.wsServer.handle(RPC_CHANNELS.settings.GET_SERVER_CONFIG, async () => {
@@ -1072,6 +1204,10 @@ app.whenReady().then(async () => {
         // Validate port range
         if (cfg.port < 1024 || cfg.port > 65535) {
           throw new Error(`Port must be between 1024 and 65535, got ${cfg.port}`)
+        }
+        // Validate the public WS URL scheme when set (reverse-proxy override)
+        if (cfg.publicWsUrl && !/^wss?:\/\//i.test(cfg.publicWsUrl)) {
+          throw new Error('Public WebSocket URL must start with ws:// or wss://')
         }
         // Validate cert/key files exist if provided
         if (cfg.tlsCertPath && !existsSync(cfg.tlsCertPath)) {
@@ -1088,28 +1224,35 @@ app.whenReady().then(async () => {
         const saved = getConfig()
         const protocol = runningServerState.tls ? 'wss' : 'ws'
 
-        // Determine display host (LAN IP if bound to 0.0.0.0)
+        // Determine display host (LAN IP if bound to 0.0.0.0). Skip loopback and
+        // virtual adapters, and prefer a private-range address — the one other
+        // devices on the network can actually reach.
         let displayHost = runningServerState.host
         if (displayHost === '0.0.0.0' || displayHost === '::') {
           const os = await import('os')
-          const nets = os.networkInterfaces()
-          for (const name of Object.keys(nets)) {
-            for (const net of nets[name] ?? []) {
-              if (net.family === 'IPv4' && !net.internal) {
-                displayHost = net.address
-                break
-              }
+          const candidates: string[] = []
+          for (const nets of Object.values(os.networkInterfaces())) {
+            for (const net of nets ?? []) {
+              if (net.family !== 'IPv4' || net.internal) continue
+              if (isVirtualOrReservedIpv4(net.address)) continue
+              candidates.push(net.address)
             }
-            if (displayHost !== '0.0.0.0' && displayHost !== '::') break
           }
+          displayHost = candidates.find(isPrivateIpv4) ?? candidates[0] ?? '127.0.0.1'
         }
 
         // Only compare port/tls/token when at least one side has server mode enabled.
         // When both are disabled, the running port is random — comparing it to the
         // saved default (9100) would always produce a false "restart required" banner.
+        // A port fallback (bindError) is intentional, so it does not imply a restart.
+        const portChanged = !runningServerState.bindError && saved.port !== runningServerState.port
+        const allowExternalChanged = (saved.allowExternal ?? true) !== runningServerState.allowExternal
+        const publicWsUrlChanged = (saved.publicWsUrl ?? '') !== (runningServerState.publicWsUrl ?? '')
         const needsRestart = saved.enabled !== runningServerState.enabled
           || ((saved.enabled || runningServerState.enabled) && (
-            saved.port !== runningServerState.port
+            portChanged
+            || allowExternalChanged
+            || publicWsUrlChanged
             || (!!saved.tlsCertPath) !== runningServerState.tls
             || (saved.token ?? '') !== runningServerState.token
           ))
@@ -1123,6 +1266,9 @@ app.whenReady().then(async () => {
           token: runningServerState.token,
           needsRestart,
           insecureWarning: isInsecureBind,
+          allowExternal: runningServerState.allowExternal,
+          bindError: runningServerState.bindError,
+          publicWsUrl: runningServerState.publicWsUrl,
         }
       })
 

@@ -57,6 +57,11 @@ export interface ApiKeySubmitData {
    * is, `null` = follow the default model, an id = the user's pick.
    */
   connectionFastModel?: string | null
+  /**
+   * Vision model for this connection (reads images for call_llm / video
+   * understanding). Absent = leave as is, `null` = no pick, an id = the pick.
+   */
+  connectionVisionModel?: string | null
   /** Model ids, or ids with per-model parameters for custom endpoints. */
   models?: ConnectionModelEntry[]
   piAuthProvider?: string
@@ -95,6 +100,8 @@ export interface ApiKeyInputProps {
     connectionDefaultModel?: string
     /** Small/fast model; unset = not picked (a custom endpoint then follows the default). */
     fastModel?: string
+    /** Vision model; unset = not picked (the chain follows the small/current model). */
+    visionModel?: string
     activePreset?: string
     /** Model ids, or ids with per-model parameters for custom endpoints. */
     models?: ConnectionModelEntry[]
@@ -228,6 +235,9 @@ export function ApiKeyInput({
   // (follow the default model), a string = the pick. Custom endpoints have no
   // name-based guess, so "not set" already means "follow the default".
   const [connectionFastModel, setConnectionFastModel] = useState<string | null | undefined>(initialValues?.fastModel)
+  // Vision model pick. Same tri-state as the fast model: `undefined` untouched,
+  // `null` cleared, a string the pick.
+  const [connectionVisionModel, setConnectionVisionModel] = useState<string | null | undefined>(initialValues?.visionModel)
   const [customApi, setCustomApi] = useState<CustomEndpointApi>(initialValues?.customApi ?? 'openai-completions')
   // Custom endpoint connections edit models as rows (id + parameters), so the
   // stored entries are kept as-is instead of being flattened to a comma list.
@@ -560,6 +570,7 @@ export function ApiKeyInput({
       // Absent = the user did not touch it (leave the connection as it is),
       // `null` = cleared, i.e. follow the default model.
       connectionFastModel: isCustomEndpointForm ? connectionFastModel : undefined,
+      connectionVisionModel: isCustomEndpointForm ? connectionVisionModel : undefined,
       models: modelsPayload,
       piAuthProvider: resolvedPiAuthProvider,
       modelSelectionMode: isPiApiKeyFlow
@@ -953,6 +964,8 @@ export function ApiKeyInput({
             onDefaultModelChange={setConnectionDefaultModel}
             fastModel={effectiveFastModel}
             onFastModelChange={setConnectionFastModel}
+            visionModel={connectionVisionModel ?? ''}
+            onVisionModelChange={setConnectionVisionModel}
             disabled={isDisabled}
             error={modelError}
           />

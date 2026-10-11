@@ -142,6 +142,8 @@ export function apiSetupMethodToConnectionSetup(
     connectionDefaultModel?: string
     /** Explicit small/fast model; absent = not picked, null = cleared. */
     connectionFastModel?: string | null
+    /** Explicit vision model; absent = not picked, null = cleared. */
+    connectionVisionModel?: string | null
     /** Model ids, or ids with per-model parameters for custom endpoints. */
     models?: ConnectionModelEntry[]
     piAuthProvider?: string
@@ -165,6 +167,7 @@ export function apiSetupMethodToConnectionSetup(
         baseUrl: options.baseUrl,
         defaultModel: options.connectionDefaultModel,
         fastModel: options.connectionFastModel,
+        visionModel: options.connectionVisionModel,
         models: options.models,
         customEndpoint: options.customEndpoint,
       }
@@ -187,6 +190,7 @@ export function apiSetupMethodToConnectionSetup(
         baseUrl: options.baseUrl,
         defaultModel: options.connectionDefaultModel,
         fastModel: options.connectionFastModel,
+        visionModel: options.connectionVisionModel,
         models: options.models,
         piAuthProvider: options.piAuthProvider,
         modelSelectionMode: options.modelSelectionMode,
@@ -254,6 +258,8 @@ export function useOnboarding({
       connectionDefaultModel?: string
       /** Explicit small/fast model; absent = not picked, null = cleared. */
       connectionFastModel?: string | null
+      /** Explicit vision model; absent = not picked, null = cleared. */
+      connectionVisionModel?: string | null
       /** Model ids, or ids with per-model parameters for custom endpoints. */
       models?: ConnectionModelEntry[]
       piAuthProvider?: string
@@ -282,6 +288,7 @@ export function useOnboarding({
         baseUrl: options?.baseUrl,
         connectionDefaultModel: options?.connectionDefaultModel,
         connectionFastModel: options?.connectionFastModel,
+        connectionVisionModel: options?.connectionVisionModel,
         models: options?.models,
         piAuthProvider: options?.piAuthProvider,
         modelSelectionMode: options?.modelSelectionMode,
@@ -407,6 +414,7 @@ export function useOnboarding({
           baseUrl: data.baseUrl,
           connectionDefaultModel: data.connectionDefaultModel,
           connectionFastModel: data.connectionFastModel,
+          connectionVisionModel: data.connectionVisionModel,
           models: data.models,
           piAuthProvider: data.piAuthProvider,
           modelSelectionMode: data.modelSelectionMode,
@@ -428,6 +436,7 @@ export function useOnboarding({
           baseUrl: data.baseUrl,
           connectionDefaultModel: data.connectionDefaultModel,
           connectionFastModel: data.connectionFastModel,
+          connectionVisionModel: data.connectionVisionModel,
           models: data.models,
           piAuthProvider: data.piAuthProvider,
           modelSelectionMode: data.modelSelectionMode,
@@ -496,6 +505,7 @@ export function useOnboarding({
         baseUrl: data.baseUrl,
         connectionDefaultModel: data.connectionDefaultModel,
         connectionFastModel: data.connectionFastModel,
+        connectionVisionModel: data.connectionVisionModel,
         models: data.models,
         piAuthProvider: data.piAuthProvider,
         modelSelectionMode: data.modelSelectionMode,

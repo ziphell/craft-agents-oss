@@ -131,6 +131,7 @@ interface InitMessage {
   workingDirectory: string;
   plansFolderPath: string;
   miniModel?: string;
+  imageModel?: string;
   agentDir?: string;
   providerType?: string;
   authType?: string;
@@ -1210,7 +1211,11 @@ async function preExecuteCallLlm(input: Record<string, unknown>): Promise<LLMQue
   const sessionPath = initConfig
     ? getSessionPath(initConfig.workspaceRootPath, initConfig.sessionId)
     : undefined;
-  const request = await buildCallLlmRequest(input, { backendName: 'Pi', sessionPath });
+  const request = await buildCallLlmRequest(input, {
+    backendName: 'Pi',
+    sessionPath,
+    getImageModel: () => initConfig?.imageModel,
+  });
   return runEphemeralLlmQuery(nextLocalEphemeralQueryId('callback'), request);
 }
 

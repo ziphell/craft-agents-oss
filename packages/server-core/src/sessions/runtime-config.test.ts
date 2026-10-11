@@ -140,4 +140,28 @@ describe('filterAttachmentsForModelInput', () => {
     expect(result.omittedImages).toEqual([imageAttachment])
     expect(result.attachments).toBeUndefined()
   })
+
+  it('keeps a path shell for images when a vision model can read them', () => {
+    const stored: FileAttachment = {
+      ...imageAttachment,
+      storedPath: '/session/attachments/image.png',
+      thumbnailBase64: 'thumb',
+    }
+    const result = filterAttachmentsForModelInput(
+      [stored, textAttachment],
+      { ...baseCompat, visionModel: 'qwen-vl', models: [{ id: 'gemma', supportsImages: false }, { id: 'qwen-vl', supportsImages: true }] },
+      'gemma',
+    )
+
+    // Still omitted from the model payload (no pixels sent)...
+    expect(result.omittedImages.map(a => a.name)).toEqual(['image.png'])
+    // ...but a path shell survives so the agent can hand the file to call_llm.
+    expect(result.attachments?.map(a => a.name)).toEqual(['image.png', 'note.txt'])
+    const shell = result.attachments!.find(a => a.name === 'image.png')!
+    expect(shell.type).toBe('image')
+    expect(shell.base64).toBeUndefined()
+    expect(shell.thumbnailBase64).toBeUndefined()
+    expect(shell.path).toBe('/tmp/image.png')
+    expect(shell.storedPath).toBe('/session/attachments/image.png')
+  })
 })

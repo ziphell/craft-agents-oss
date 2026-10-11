@@ -584,6 +584,10 @@ export interface FileAttachment {
   text?: string
   size: number
   thumbnailBase64?: string
+  /** Path where the file is stored in the session attachments folder (set by the Electron app). */
+  storedPath?: string
+  /** Path to a converted markdown version (for office files). */
+  markdownPath?: string
 }
 
 export interface SessionFile {
@@ -623,6 +627,8 @@ export interface LlmConnectionSetup {
   defaultModel?: string | null
   /** Explicit small/fast model (title generation, summarization, mini agents). Absent = not picked, `null` = cleared. */
   fastModel?: string | null
+  /** Explicit vision model for call_llm / video_tool understand. Absent = not picked, `null` = cleared. */
+  visionModel?: string | null
   /** Model ids, or ids with per-model parameters for custom endpoints. */
   models?: ConnectionModelEntry[] | null
   piAuthProvider?: string

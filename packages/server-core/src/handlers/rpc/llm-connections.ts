@@ -117,6 +117,11 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
         // guess), `''` is stored as-is and means "follow the default model".
         updates.fastModel = setup.fastModel ?? null
       }
+      if (setup.visionModel !== undefined) {
+        // Merge semantics: `null` deletes the key (back to the chain's next
+        // candidate), `''` is stored as-is.
+        updates.visionModel = setup.visionModel ?? null
+      }
       if (setup.models !== undefined) {
         updates.models = setup.models ?? null
       }

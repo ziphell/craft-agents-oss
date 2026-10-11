@@ -612,6 +612,7 @@ export class PiAgent extends BaseAgent {
       workingDirectory,
       plansFolderPath,
       miniModel: this.config.miniModel,
+      imageModel: this.config.imageModel,
       providerType: this.config.providerType,
       authType: this.config.authType,
       workspaceId: this.config.workspace.id,
@@ -1632,6 +1633,9 @@ export class PiAgent extends BaseAgent {
             // *these* callbacks rather than a second lookup — they are one object, and
             // dropping this half is what made `understand` answer "no model is configured".
             queryLlm: callbacks?.queryFn,
+            // The image model rides the same registry: `understand` defaults to it when the
+            // caller names no model, so the frames reach something that can actually see them.
+            imageModel: callbacks?.getImageModelFn?.(),
           });
 
           let content = result.output;

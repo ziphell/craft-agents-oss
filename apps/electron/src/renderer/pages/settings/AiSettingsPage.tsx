@@ -870,6 +870,7 @@ export default function AiSettingsPage() {
         ? (connection.defaultModel ?? '')
         : modelStr,
       fastModel: connection.fastModel,
+      visionModel: connection.visionModel,
       activePreset: isCustomEndpointConnection ? 'custom' : (connection.piAuthProvider || undefined),
       // Pass the stored entries themselves (not just ids): the custom endpoint
       // editor edits per-model parameters, and unknown keys must survive a save.

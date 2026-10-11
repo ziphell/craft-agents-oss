@@ -29,9 +29,20 @@
 
 /* Shared components own responsive layout. The web host alone follows the
  * visible viewport (keyboard resize/pan), via viewport.ts. Dynamic viewport units
- * are the pre-bootstrap/no-VisualViewport fallback, not the keyboard solution. */
+ * are the pre-bootstrap/no-VisualViewport fallback, not the keyboard solution.
+ *
+ * `clip`, not `hidden` — and this repeats the renderer's own rule on purpose.
+ * `hidden` still makes the box a scroll container, and the compact panel stack
+ * overflows this box by exactly PANEL_EDGE_INSET (6px: PanelStackContainer's
+ * `marginBottom: -6 / paddingBottom: 6`, which is what puts the compact panel
+ * flush with the window floor and clips its bottom edge). With `hidden` those
+ * 6px are *scrollable*, so any scroll that lands on this ancestor — the chat's
+ * scroll-to-bottom, a caret/focus scroll, scroll anchoring — silently scrolls
+ * the whole app up by 6px and never gets reset, which reads as the strip under
+ * the TopBar (and the gap below the composer) changing size after a resize.
+ * Unlayered so it holds regardless of where the imported renderer CSS sits. */
 html, body, #root {
-  overflow: hidden;
+  overflow: clip;
 }
 
 html {
@@ -51,12 +62,4 @@ html {
   padding-right: calc(env(safe-area-inset-right, 0px) / var(--webui-css-zoom));
   padding-bottom: calc(env(safe-area-inset-bottom, 0px) / var(--webui-css-zoom));
   padding-left: calc(env(safe-area-inset-left, 0px) / var(--webui-css-zoom));
-}
-
-/* Preserve the current mobile readability zoom; sizing converts it exactly once. */
-@media (max-width: 768px) {
-  html {
-    zoom: 1.2;
-    --webui-css-zoom: 1.2;
-  }
 }

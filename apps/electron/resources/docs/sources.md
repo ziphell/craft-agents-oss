@@ -47,6 +47,8 @@ integration. Prefer `type: "web"` when:
 - The page itself is the payload — an article, a spec, a changelog, reference docs
 - It sits behind a login, or a script builds it after load (so fetching the url would not work)
 - It is worth reading again, but not worth an API integration
+- **It is a page you use rather than read** — a tool, a dashboard, an app. The value is the address
+  and the guide; the capture is only evidence (a picture of it, and whatever text came with it)
 
 A web source captures the page once into `snapshot.md` and reads it as a file; refresh it by running
 the browser commands again. See [Web Page Sources](#web-page-sources).
@@ -765,14 +767,18 @@ with the note's links rewritten to those relative paths. Each is fetched in the 
 page's own referrer — what some hosts require), and, when the browser refuses to let script read a
 cross-origin response, again through the window's own session, which carries its cookies and is not
 subject to the page's CORS. An image that could not be fetched at all keeps its remote url, and the
-reply says so. A web source folder looks like this:
+reply says so. **A picture of the page itself is kept there too** (`page-<hash>.png`), taken at the
+same moment as the read so the note and the picture are one page, and the note leads with it — for a
+page that is *used* rather than read, that is the half that carries information, and the extracted
+text may be thin or empty. A capture that finds no text is not a failure; a capture that cannot take
+the picture leaves the note intact and says so. A web source folder looks like this:
 
 ```
 {workspace}/sources/{slug}/
   config.json        # type: "web", web: { url }
-  guide.md           # what this page is, and how to refresh it
-  snapshot.md        # the page, as markdown
-  snapshot.assets/   # the images snapshot.md uses (only when it has any)
+  guide.md           # what this page is and how you use it — the meaning, not the capture
+  snapshot.md        # the page, as markdown (leading with a picture of the page, when one was kept)
+  snapshot.assets/   # the images snapshot.md uses, and a picture of the page itself
 ```
 
 The snapshot is a YAML frontmatter note followed by the article as markdown:
@@ -792,19 +798,25 @@ tags: clippings
 ```
 
 It is a **point-in-time** capture, and nothing refreshes it on its own — re-run the two commands to
-take a new one. Edit it by hand if you like; the folder is the source of truth. One known gap: text
-inside shadow roots is not part of the page's HTML, so web-component-heavy pages capture thin.
+take a new one (the note, its pictures, and the page's own picture). Edit it by hand if you like;
+the folder is the source of truth. One known gap: text inside shadow roots is not part of the page's
+HTML, so web-component-heavy pages capture thin — which is exactly the case the page's own picture
+is for.
 
 The source's own page reads that folder back in two parts, the way a skill's page reads `SKILL.md`:
 **Snapshot** shows what the capture says about itself — the page's title, author, published date and
 word count, then the note, its size, when it was written and how many images came with it (and an
 empty state before anything has been captured) — and **Captured page** draws the note itself, capped
-and expandable, with the pictures beside it resolved from the folder. Its **Refresh** button starts
-the capture again; it does **not** send anything by itself, it puts the line into a conversation's
-draft, because taking a page again needs the browser window and a command.
+and expandable, with the pictures beside it resolved from the folder (a kept picture of the page is
+the first thing drawn). Its **Refresh** button starts the capture again; it does **not** send
+anything by itself, it puts the line into a conversation's draft, because taking a page again needs
+the browser window and a command.
 
-**guide.md for a web source** should say what the page is and why it matters, point at `snapshot.md`
-by name, and repeat the refresh recipe — so a later session knows how to bring it up to date.
+**guide.md for a web source** carries the meaning: what the page is, how the person uses it, its
+entry points and key paths, which controls matter and what changes. For a page you *use*, that
+understanding **is** the source — the capture is only evidence. When the captured text is not worth
+reading (a script-built page often gives little), say so plainly: the capture is whatever the
+extractor got, and a thin one is expected.
 
 ## guide.md Format
 

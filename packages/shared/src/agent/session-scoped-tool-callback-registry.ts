@@ -39,6 +39,15 @@ export interface SessionScopedToolCallbacks {
   queryFn?: (request: LLMQueryRequest) => Promise<LLMQueryResult>;
 
   /**
+   * Resolve the model that reads images / video frames when a tool is handed
+   * pictures and the caller named none (see `resolveImageModel`). Wired by
+   * SessionManager so it re-resolves the effective connection + model at call
+   * time (the session may switch connection or model between calls); absent
+   * means no image-capable model is configured, so image tools refuse.
+   */
+  getImageModelFn?: () => string | undefined;
+
+  /**
    * Callback for spawn_session tool — creates an independent session and sends initial prompt.
    * Each agent backend delegates to its onSpawnSession callback.
    */

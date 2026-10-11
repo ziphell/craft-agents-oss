@@ -33,18 +33,22 @@ export const meta: DetailsPageMeta = {
 interface ServerFormState {
   enabled: boolean
   port: string
+  allowExternal: boolean
   tlsCertPath: string
   tlsKeyPath: string
   token: string
+  publicWsUrl: string
 }
 
 function configToForm(config: ServerConfig): ServerFormState {
   return {
     enabled: config.enabled,
     port: String(config.port),
+    allowExternal: config.allowExternal !== false,
     tlsCertPath: config.tlsCertPath ?? '',
     tlsKeyPath: config.tlsKeyPath ?? '',
     token: config.token ?? '',
+    publicWsUrl: config.publicWsUrl ?? '',
   }
 }
 
@@ -52,9 +56,11 @@ function formToConfig(form: ServerFormState): ServerConfig {
   return {
     enabled: form.enabled,
     port: parseInt(form.port, 10) || 9100,
+    allowExternal: form.allowExternal,
     tlsCertPath: form.tlsCertPath.trim() || undefined,
     tlsKeyPath: form.tlsKeyPath.trim() || undefined,
     token: form.token || undefined,
+    publicWsUrl: form.publicWsUrl.trim() || undefined,
   }
 }
 
@@ -64,9 +70,11 @@ export default function ServerSettingsPage() {
   const [form, setForm] = useState<ServerFormState>({
     enabled: false,
     port: '9100',
+    allowExternal: true,
     tlsCertPath: '',
     tlsKeyPath: '',
     token: '',
+    publicWsUrl: '',
   })
   const [savedForm, setSavedForm] = useState<ServerFormState>(form)
   const [status, setStatus] = useState<ServerStatus | null>(null)
@@ -165,6 +173,9 @@ export default function ServerSettingsPage() {
   const hasTls = !!(form.tlsCertPath && form.tlsKeyPath)
   const needsRestart = status?.needsRestart ?? false
   const showServerDetails = form.enabled || savedForm.enabled
+  // Public (reverse-proxy / port-mapping) address, shown alongside the LAN one.
+  const publicWsUrl = status?.publicWsUrl
+  const publicHttpUrl = publicWsUrl ? publicWsUrl.replace(/^ws/, 'http') : ''
 
   return (
     <div className="flex flex-col h-full">
@@ -212,7 +223,7 @@ export default function ServerSettingsPage() {
 
                 {status && form.enabled && (
                   <>
-                    <SettingsRow label={t("common.url")}>
+                    <SettingsRow label={t("settings.server.wsUrl")}>
                       <div className="flex items-center gap-1.5">
                         <code className="text-xs font-mono text-muted-foreground bg-muted px-2 py-0.5 rounded">
                           {status.url}
@@ -222,6 +233,44 @@ export default function ServerSettingsPage() {
                         </Button>
                       </div>
                     </SettingsRow>
+
+                    <SettingsRow label={t("settings.server.browserUrl")}>
+                      <div className="flex items-center gap-1.5">
+                        {/* Same host:port, HTTP(S) for the browser (the WS URL is the client endpoint). */}
+                        <code className="text-xs font-mono text-muted-foreground bg-muted px-2 py-0.5 rounded">
+                          {status.url.replace(/^ws/, 'http')}
+                        </code>
+                        <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => handleCopy(status.url.replace(/^ws/, 'http'), t("settings.server.browserUrl"))}>
+                          <Copy className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    </SettingsRow>
+
+                    {publicWsUrl && (
+                      <>
+                        <SettingsRow label={t("settings.server.publicWsUrl")}>
+                          <div className="flex items-center gap-1.5">
+                            <code className="text-xs font-mono text-muted-foreground bg-muted px-2 py-0.5 rounded">
+                              {publicWsUrl}
+                            </code>
+                            <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => handleCopy(publicWsUrl, t("settings.server.publicWsUrl"))}>
+                              <Copy className="h-3 w-3" />
+                            </Button>
+                          </div>
+                        </SettingsRow>
+
+                        <SettingsRow label={t("settings.server.publicBrowserUrl")}>
+                          <div className="flex items-center gap-1.5">
+                            <code className="text-xs font-mono text-muted-foreground bg-muted px-2 py-0.5 rounded">
+                              {publicHttpUrl}
+                            </code>
+                            <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => handleCopy(publicHttpUrl, t("settings.server.publicBrowserUrl"))}>
+                              <Copy className="h-3 w-3" />
+                            </Button>
+                          </div>
+                        </SettingsRow>
+                      </>
+                    )}
 
                     <SettingsRow label={t("settings.server.token")}>
                       <div className="flex items-center gap-1.5">
@@ -260,7 +309,22 @@ export default function ServerSettingsPage() {
                     </Button>
                   </div>
                 </SettingsRow>
+
+                <SettingsInputRow
+                  label={t("settings.server.publicWsUrl")}
+                  description={t("settings.server.publicWsUrlDesc")}
+                  value={form.publicWsUrl}
+                  onChange={(publicWsUrl) => setForm(f => ({ ...f, publicWsUrl }))}
+                  placeholder="wss://agents.example.com"
+                />
               </SettingsCard>
+
+              {status?.bindError && (
+                <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-warning/10 border border-warning/20 text-xs text-warning">
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                  <span>{t("settings.server.bindError")}</span>
+                </div>
+              )}
 
               {form.enabled && !hasTls && (
                 <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-warning/10 border border-warning/20 text-xs text-warning">

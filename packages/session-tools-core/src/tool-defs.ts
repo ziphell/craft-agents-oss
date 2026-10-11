@@ -734,6 +734,7 @@ Examples:
 
 Put text/content directly in the 'prompt' parameter. Do NOT pass inline text via attachments.
 Only use 'attachments' for existing file paths on disk - the tool loads file content automatically.
+Images are supported: give an image's file path and a model that can see reads it (the connection's vision model, or this model when it can see). Use this when the image cannot be sent to you directly.
 For large files (>2000 lines), use {path, startLine, endLine} to select a portion.`,
 
   decide: `Ask the decision model (Jev, TypeSafe System One) typed questions about text or JSON. It answers with probabilities, never prose: 'choice' picks one of your named options, 'score' places the state on an ordered rubric, 'noul' gives a yes/no probability. Fast (~0.1–0.5 s per call) and cheap; batch mode judges up to 200 items in one call.

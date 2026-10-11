@@ -177,15 +177,15 @@ export function CompactWorkspaceSwitcher({
           <button
             type="button"
             data-workspace-switcher="topbar"
-            className="titlebar-no-drag ml-1 h-9 flex-1 min-w-0 flex items-center justify-start gap-1 px-3 rounded-[8px] border border-foreground/6 text-sm text-foreground/55 hover:bg-foreground/5 hover:text-foreground transition-colors cursor-pointer data-[state=open]:bg-foreground/5 data-[state=open]:text-foreground"
+            className="titlebar-no-drag ml-1 h-[30px] flex-1 min-w-0 flex items-center justify-start gap-1 px-3 rounded-[8px] border border-foreground/6 text-[13px] text-foreground/55 hover:bg-foreground/5 hover:text-foreground transition-colors cursor-pointer data-[state=open]:bg-foreground/5 data-[state=open]:text-foreground"
             aria-label={t('workspace.selectWorkspace')}
           >
             <WorkspaceAvatar
               workspaceId={selectedWorkspace?.id}
               workspaceName={selectedWorkspace?.name}
               src={selectedWorkspace ? workspaceIconMap.get(selectedWorkspace.id) : undefined}
-              className="h-5 w-5 mr-1.5 rounded-full ring-1 ring-border/50"
-              fallbackClassName="rounded-full text-[11px]"
+              className="h-4 w-4 mr-1.5 rounded-full ring-1 ring-border/50"
+              fallbackClassName="rounded-full"
             />
             <span className="truncate min-w-0 flex-1 text-left">{selectedWorkspace?.name || 'Workspace'}</span>
             {selectedWorkspace?.remoteServer && (

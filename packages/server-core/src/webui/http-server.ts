@@ -13,13 +13,12 @@
 import { join, extname } from 'node:path'
 import {
   RateLimiter,
-  initPasswordHash,
-  verifyPassword,
   createSessionToken,
   validateSession,
   buildSessionCookie,
   buildLogoutCookie,
 } from './auth'
+import { createDefaultWebuiRuntime, type WebuiRuntime } from './runtime'
 import { generateCallbackPage } from '@craft-agent/shared/auth'
 import type { PlatformServices } from '../runtime/platform'
 
@@ -145,6 +144,11 @@ export interface WebuiHandlerOptions {
    * and 'direct' is used as the rate-limit key.
    */
   trustedProxies?: string[]
+  /**
+   * Runtime adapter for asset streaming and password hashing. When omitted it is
+   * chosen from the current runtime (Bun or Node) — see `createDefaultWebuiRuntime`.
+   */
+  runtime?: WebuiRuntime
 }
 
 // ---------------------------------------------------------------------------
@@ -180,6 +184,8 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
     trustedProxies,
   } = options
 
+  const runtime = options.runtime ?? createDefaultWebuiRuntime()
+
   const rateLimiter = new RateLimiter(5, 60_000)
   const cleanupTimer = setInterval(() => rateLimiter.cleanup(), 120_000)
 
@@ -187,7 +193,7 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
   const trustedProxySet = new Set(trustedProxies ?? [])
 
   // Hash the login password at startup (async, but resolves before first auth attempt in practice)
-  const passwordReady = initPasswordHash(loginPassword)
+  const passwordReady = runtime.hashPassword(loginPassword)
 
   /** Extract client IP — only trusts proxy headers when trustedProxies is configured. */
   function getClientIp(req: Request): string {
@@ -214,8 +220,8 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
 
     // ── Login page (no auth) ──
     if (path === '/login' || path === '/login/') {
-      const loginFile = Bun.file(join(webuiDir, 'login.html'))
-      if (await loginFile.exists()) {
+      const loginFile = await runtime.openAsset(join(webuiDir, 'login.html'))
+      if (loginFile) {
         return new Response(loginFile, {
           headers: { 'Content-Type': 'text/html; charset=utf-8' },
         })
@@ -225,8 +231,8 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
 
     // ── Static assets that login page needs (no auth) ──
     if (path === '/favicon.ico' || path.startsWith('/login-assets/')) {
-      const file = Bun.file(join(webuiDir, path))
-      if (await file.exists()) {
+      const file = await runtime.openAsset(join(webuiDir, path))
+      if (file) {
         return new Response(file, {
           headers: { 'Content-Type': getMimeType(path) },
         })
@@ -236,7 +242,7 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
 
     // ── Auth endpoint ──
     if (path === '/api/auth' && req.method === 'POST') {
-      await passwordReady
+      const passwordHash = await passwordReady
       const ip = getClientIp(req)
 
       if (!rateLimiter.check(ip)) {
@@ -258,7 +264,7 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
         return Response.json({ error: 'Password is required' }, { status: 400 })
       }
 
-      if (!await verifyPassword(body.password)) {
+      if (!await runtime.verifyPassword(body.password, passwordHash)) {
         logger.warn(`[webui] Failed auth attempt from ${ip}`)
         return Response.json({ error: 'Invalid credentials' }, { status: 401 })
       }
@@ -376,15 +382,18 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
     if (!session) {
       const accept = req.headers.get('accept') ?? ''
       if (accept.includes('text/html') || path === '/' || path === '') {
-        return Response.redirect('/login', 302)
+        // A relative `Location` is valid HTTP, but `Response.redirect()` demands an
+        // absolute URL and throws `ERR_INVALID_URL` under Node's undici (Bun is
+        // lenient) — so build the redirect response directly.
+        return new Response(null, { status: 302, headers: { Location: '/login' } })
       }
       return Response.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
     // ── Serve SPA static files ──
     if (path !== '/') {
-      const file = Bun.file(join(webuiDir, path))
-      if (await file.exists()) {
+      const file = await runtime.openAsset(join(webuiDir, path))
+      if (file) {
         return new Response(file, {
           headers: { 'Content-Type': getMimeType(path) },
         })
@@ -392,8 +401,8 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
     }
 
     // SPA fallback — serve index.html for all non-file routes
-    const indexFile = Bun.file(join(webuiDir, 'index.html'))
-    if (await indexFile.exists()) {
+    const indexFile = await runtime.openAsset(join(webuiDir, 'index.html'))
+    if (indexFile) {
       return new Response(indexFile, {
         headers: { 'Content-Type': 'text/html; charset=utf-8' },
       })

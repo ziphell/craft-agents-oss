@@ -104,7 +104,7 @@ import { messageToStored, storedToMessage, type Message, type StoredAttachment, 
 import { formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrlAsync, getEmojiIcon, resetSummarizationClient, resolveToolIcon, readFileAttachment, selectSpreadMessages, normalizePath } from '@craft-agent/shared/utils'
 import { loadAllSkills, loadSkillBySlug, invalidateSkillsCache, type LoadedSkill } from '@craft-agent/shared/skills'
 import { invalidateContextFileCache } from '@craft-agent/shared/prompts/system'
-import { getToolIconsDir, getMiniModel } from '@craft-agent/shared/config'
+import { getToolIconsDir, getMiniModel, resolveImageModel } from '@craft-agent/shared/config'
 import { getDefaultSummarizationModel } from '@craft-agent/shared/config/models'
 import type { SummarizeCallback } from '@craft-agent/shared/sources'
 import { type ThinkingLevel, DEFAULT_THINKING_LEVEL, normalizeThinkingLevel } from '@craft-agent/shared/agent/thinking-levels'
@@ -3457,6 +3457,9 @@ export class SessionManager implements ISessionManager {
 
       // Per-session env overrides
       const miniModel = connection ? (getMiniModel(connection) ?? connection.defaultModel) : undefined
+      // Which model reads images / frames for this session (see resolveImageModel).
+      // Fed to the Pi subprocess so its call_llm resolves the same model.
+      const imageModel = connection ? resolveImageModel(connection, backendContext.resolvedModel) : undefined
       const envOverrides: Record<string, string> = {
         CRAFT_WORKSPACE_PATH: managed.workspace.rootPath,
         // Pass mini model to SDK subprocess so built-in tools like WebFetch
@@ -3595,6 +3598,7 @@ export class SessionManager implements ISessionManager {
         coreConfig: {
         workspace: managed.workspace,
         miniModel,
+        imageModel,
         thinkingLevel: managed.thinkingLevel,
         session: sessionConfig,
         onSdkSessionIdUpdate,
@@ -4784,6 +4788,17 @@ export class SessionManager implements ISessionManager {
 
       // Wire up session self-management tools (set_session_labels, set_session_status, etc.)
       mergeSessionScopedToolCallbacks(managed.id, {
+        // Which model reads images / frames for this session (call_llm,
+        // video_tool understand). Re-resolved per call so switching connection
+        // or model between calls is honoured.
+        getImageModelFn: () => {
+          const ctx = resolveBackendContext({
+            sessionConnectionSlug: managed.llmConnection,
+            workspaceDefaultConnectionSlug: loadWorkspaceConfig(managed.workspace.rootPath)?.defaults?.defaultLlmConnection,
+            managedModel: managed.model,
+          })
+          return ctx.connection ? resolveImageModel(ctx.connection, ctx.resolvedModel) : undefined
+        },
         setSessionLabelsFn: async (sessionId: string | undefined, labels: string[]) => {
           await this.setSessionLabels(sessionId ?? managed.id, labels)
         },
@@ -7343,7 +7358,34 @@ export class SessionManager implements ISessionManager {
       this.applyExternalSessionMetadata(managed, pendingHeader)
     }
 
-    // 5. Check queue and process or complete
+    // 5. Emit the turn-complete event to the UI / messaging gateway
+    //    UNCONDITIONALLY — exactly once per turn, before dispatching any queued
+    //    message.
+    //
+    //    The messaging gateway renders a turn's final reply ONLY on `complete`
+    //    (progress mode rewrites its bubble, final_only sends, streaming
+    //    flushes). Emitting it from inside the queue-empty branch below stranded
+    //    a finished turn's reply whenever another message was already queued —
+    //    which, on a platform that redelivers an unacked message (Lark: ~19s),
+    //    is nearly always — leaving progress mode's bubble frozen and
+    //    final_only silent.
+    //
+    //    Do NOT also emit it in the `else` branch: the gateway handles events
+    //    concurrently (`renderer.handle(...)` is fire-and-forget), so a second
+    //    emit would send every reply twice.
+    this.sendEvent({
+      type: 'complete',
+      sessionId,
+      tokenUsage: managed.tokenUsage,
+      hasUnread: managed.hasUnread,  // Propagate unread state to renderer
+      // WS2: when keep-alive keeps the persistent query open across turns, the
+      // turn ending does NOT kill background sub-agents. Tell the renderer so its
+      // chip orphan-backstop does not falsely flip live tasks to `orphaned`; a
+      // real `task_completed` will arrive when the agent actually finishes.
+      backgroundTasksAlive: this.keepBackgroundTasksAlive,
+    }, managed.workspace.id)
+
+    // 6. Dispatch the next queued message, or tear the session down if truly done.
     if (managed.messageQueue.length > 0) {
       // Has queued messages - process next
       this.processNextQueuedMessage(sessionId)
@@ -7365,19 +7407,6 @@ export class SessionManager implements ISessionManager {
         }
       }
 
-      // No queue - emit complete to UI (include tokenUsage and hasUnread for state updates)
-      this.sendEvent({
-        type: 'complete',
-        sessionId,
-        tokenUsage: managed.tokenUsage,
-        hasUnread: managed.hasUnread,  // Propagate unread state to renderer
-        // WS2: when keep-alive keeps the persistent query open across turns, the
-        // turn ending does NOT kill background sub-agents. Tell the renderer so its
-        // chip orphan-backstop does not falsely flip live tasks to `orphaned`; a
-        // real `task_completed` will arrive when the agent actually finishes.
-        backgroundTasksAlive: this.keepBackgroundTasksAlive,
-      }, managed.workspace.id)
-
       // Tasks Conductor seam: signal true completion (queue empty) with the stop
       // reason + this turn's final assistant message, so the Conductor can advance
       // the corresponding node. In-process only; never sent to the renderer/agents.
@@ -7393,7 +7422,7 @@ export class SessionManager implements ISessionManager {
       })
     }
 
-    // 6. Always persist
+    // 7. Always persist
     this.persistSession(managed)
   }
 
