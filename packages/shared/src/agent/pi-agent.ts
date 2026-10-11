@@ -197,6 +197,7 @@ export class PiAgent extends BaseAgent {
   private readline: ReadlineInterface | null = null;
   private subprocessReady: Promise<void> | null = null;
   private subprocessReadyResolve: (() => void) | null = null;
+  private subprocessReadyReject: ((error: Error) => void) | null = null;
 
   // Pi session ID (managed by subprocess, reported back)
   private piSessionId: string | null = null;
@@ -275,6 +276,22 @@ export class PiAgent extends BaseAgent {
   private resetSubprocessErrorDedup(): void {
     this.lastSubprocessError = null;
     this.subprocessErrorRepeatCount = 0;
+  }
+
+  /**
+   * Reject a pending `subprocessReady` await.
+   *
+   * No-op once the child has reported `ready` (the reject handle is cleared at
+   * that point), so a normal exit after a successful startup is unaffected. Used
+   * to surface a startup failure (spawn error or an exit before `ready`) as a
+   * fast, clear error instead of hanging until the caller's own timeout.
+   */
+  private failSubprocessStartup(error: Error): void {
+    const reject = this.subprocessReadyReject;
+    if (!reject) return;
+    this.subprocessReadyResolve = null;
+    this.subprocessReadyReject = null;
+    reject(error);
   }
 
   private clearPinnedPromptSnapshot(): void {
@@ -494,9 +511,13 @@ export class PiAgent extends BaseAgent {
     this.debug(`Spawning Pi subprocess: ${nodePath} ${piServerPath}`);
     this.resetSubprocessErrorDedup();
 
-    // Set up ready promise before spawning
-    this.subprocessReady = new Promise<void>((resolve) => {
+    // Set up ready promise before spawning. It rejects (not only resolves) so a
+    // runtime that never reaches `ready` — e.g. a packaged build that shipped
+    // without the bundled Bun and fell back to the Electron binary — fails fast
+    // with a clear cause instead of hanging until the caller's own timeout.
+    this.subprocessReady = new Promise<void>((resolve, reject) => {
       this.subprocessReadyResolve = resolve;
+      this.subprocessReadyReject = reject;
     });
 
     // Build session ID and session dir path upfront (used for spawn env + init command)
@@ -541,12 +562,23 @@ export class PiAgent extends BaseAgent {
     // Derive AWS env vars from the piAuth credential (single fetch, no race).
     const awsEnv = this.buildAwsEnv(piAuth, runtime);
 
+    // When no bundled Bun resolves, the runtime resolver falls back to
+    // process.execPath — which in a packaged Electron app is the Electron
+    // binary. Electron must be told to behave as plain Node, otherwise it boots
+    // a second app instance that never speaks our JSONL protocol. Scoped to the
+    // Electron binary itself so a real Bun/Node path never receives it.
+    const isElectronFallback = nodePath === process.execPath && typeof process.versions?.electron === 'string';
+    if (isElectronFallback) {
+      this.debug('No bundled Bun runtime resolved — running the Pi subprocess with the Electron binary as Node (ELECTRON_RUN_AS_NODE=1)');
+    }
+
     // Spawn the subprocess
     const child = spawn(nodePath, args, {
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: {
         ...process.env,
+        ...(isElectronFallback ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
         ...getProxyEnvVars(),
         ...this.config.envOverrides,
         ...awsEnv,
@@ -589,6 +621,12 @@ export class PiAgent extends BaseAgent {
     child.on('error', (error) => {
       this.debug(`Subprocess error: ${error.message}`);
       this.resetSubprocessErrorDedup();
+      // Reject the startup promise so a caller awaiting `ready` fails fast with
+      // the real cause (e.g. ENOENT/EACCES on the resolved runtime) rather than
+      // hanging until its own timeout.
+      this.failSubprocessStartup(new Error(
+        `Failed to start the Pi runtime (${nodePath}): ${error.message}`,
+      ));
       this.eventQueue.enqueue({ type: 'error', message: `Pi subprocess error: ${error.message}` });
       this.eventQueue.complete();
     });
@@ -976,6 +1014,10 @@ export class PiAgent extends BaseAgent {
           this.config.onSdkSessionIdUpdate?.(this.piSessionId!);
         }
         this.subprocessReadyResolve?.();
+        // Clear both handles: startup succeeded, so a later exit must not be
+        // reported as a startup failure.
+        this.subprocessReadyResolve = null;
+        this.subprocessReadyReject = null;
         break;
 
       case 'event':
@@ -1871,11 +1913,24 @@ export class PiAgent extends BaseAgent {
   private handleSubprocessExit(code: number | null, signal: string | null): void {
     this.debug(`Pi subprocess exited: code=${code}, signal=${signal}`);
 
+    // A child that exits before `ready` never spoke the protocol — surface it as
+    // a startup failure so the awaiting caller fails fast with a clear cause
+    // (plus any captured stderr) instead of waiting for its own timeout.
+    if (this.subprocessReadyReject) {
+      const reason = signal ? `signal ${signal}` : `code ${code}`;
+      const startupStderr = this.getRecentStderr().trim();
+      this.failSubprocessStartup(new Error(
+        `Pi runtime exited during startup (${reason}) before becoming ready.` +
+        (startupStderr ? `\n--- subprocess stderr ---\n${startupStderr}` : ''),
+      ));
+    }
+
     this.subprocess = null;
     this.readline = null;
     this.resetSubprocessErrorDedup();
     this.subprocessReady = null;
     this.subprocessReadyResolve = null;
+    this.subprocessReadyReject = null;
 
     // If we were processing, emit error + complete
     if (this._isProcessing) {

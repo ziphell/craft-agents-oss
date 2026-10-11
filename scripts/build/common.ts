@@ -150,9 +150,23 @@ export async function downloadBun(config: BuildConfig): Promise<void> {
     }
     console.log('  Checksum verified ✓');
 
-    // Extract
+    // Extract. The extraction tool depends on the HOST this runs on, not the
+    // target: `unzip` exists on macOS/Linux, while Windows ships PowerShell and
+    // has no `unzip`. (Cross-platform: building a Linux artifact on a Windows
+    // host would still extract with PowerShell, which is correct.)
     console.log('  Extracting...');
-    await $`unzip -o ${zipPath} -d ${tempDir}`.quiet();
+    if (process.platform === 'win32') {
+      const proc = Bun.spawn(
+        [
+          'powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
+          `Expand-Archive -LiteralPath '${zipPath}' -DestinationPath '${tempDir}' -Force`,
+        ],
+        { stdout: 'inherit', stderr: 'inherit' },
+      );
+      if ((await proc.exited) !== 0) throw new Error('Expand-Archive failed');
+    } else {
+      await $`unzip -o ${zipPath} -d ${tempDir}`.quiet();
+    }
 
     // Copy binary
     const bunBinary = platform === 'win32' ? 'bun.exe' : 'bun';
@@ -161,8 +175,8 @@ export async function downloadBun(config: BuildConfig): Promise<void> {
 
     copyFileSync(sourcePath, destPath);
 
-    // Make executable on Unix
-    if (platform !== 'win32') {
+    // Make executable on Unix (skip when the running host is Windows)
+    if (platform !== 'win32' && process.platform !== 'win32') {
       await $`chmod +x ${destPath}`.quiet();
     }
 

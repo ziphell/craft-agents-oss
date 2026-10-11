@@ -1,7 +1,7 @@
 # 开发环境运行指南（Craft Agents）
 
 > 覆盖：monorepo 结构、各子组件如何消费依赖、开发命令与执行目录、常见坑。
-> 配套文档：[Windows 安装包构建指南](build-windows.md)、[渲染层的导入边界](renderer-imports.md)
+> 配套文档：[macOS 安装包构建指南](build-macos.md)、[Windows 安装包构建指南](build-windows.md)、[渲染层的导入边界](renderer-imports.md)
 
 ## 1. 仓库结构（bun workspaces monorepo）
 

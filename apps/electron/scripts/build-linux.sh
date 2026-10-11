@@ -62,9 +62,6 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Configuration
-BUN_VERSION="bun-v1.3.9"  # Pinned version for reproducible builds
-
 echo "=== Building Craft Agents AppImage (${ARCH}) using electron-builder ==="
 if [ "$UPLOAD" = true ]; then
     echo "Will upload to S3 after build"
@@ -82,36 +79,13 @@ echo "Installing dependencies..."
 cd "$ROOT_DIR"
 bun install
 
-# 3. Download Bun binary with checksum verification
-echo "Downloading Bun ${BUN_VERSION} for linux-${ARCH}..."
-mkdir -p "$ELECTRON_DIR/vendor/bun"
-
-# Map architecture names (electron uses x64/arm64, bun uses x64/aarch64)
-if [ "$ARCH" = "arm64" ]; then
-    BUN_DOWNLOAD="bun-linux-aarch64"
-else
-    BUN_DOWNLOAD="bun-linux-x64-baseline"
-fi
-
-# Create temp directory to avoid race conditions
-TEMP_DIR=$(mktemp -d)
-trap "rm -rf $TEMP_DIR" EXIT
-
-# Download binary and checksums
-curl -fSL "https://github.com/oven-sh/bun/releases/download/${BUN_VERSION}/${BUN_DOWNLOAD}.zip" -o "$TEMP_DIR/${BUN_DOWNLOAD}.zip"
-curl -fSL "https://github.com/oven-sh/bun/releases/download/${BUN_VERSION}/SHASUMS256.txt" -o "$TEMP_DIR/SHASUMS256.txt"
-
-# Verify checksum
-echo "Verifying checksum..."
-cd "$TEMP_DIR"
-# Use sha256sum on Linux (not shasum)
-grep "${BUN_DOWNLOAD}.zip" SHASUMS256.txt | sha256sum -c -
-cd - > /dev/null
-
-# Extract and install
-unzip -o "$TEMP_DIR/${BUN_DOWNLOAD}.zip" -d "$TEMP_DIR"
-cp "$TEMP_DIR/${BUN_DOWNLOAD}/bun" "$ELECTRON_DIR/vendor/bun/"
-chmod +x "$ELECTRON_DIR/vendor/bun/bun"
+# 3. Stage the bundled Bun runtime into vendor/bun.
+#    Shared, cached step (scripts/fetch-bun.ts -> scripts/build/common.ts):
+#    pinned version + checksum verification live in ONE place and are reused
+#    offline, so this script and every other dist path cannot drift apart.
+echo "Staging bundled Bun for linux-${ARCH}..."
+cd "$ROOT_DIR"
+bun run scripts/fetch-bun.ts linux "$ARCH"
 
 # 4. Copy SDK from root node_modules (monorepo hoisting).
 # Since SDK 0.2.113: thin core + per-platform binary package.

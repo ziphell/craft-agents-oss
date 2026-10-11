@@ -7,9 +7,6 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ElectronDir = Split-Path -Parent $ScriptDir
 $RootDir = Split-Path -Parent (Split-Path -Parent $ElectronDir)
 
-# Configuration
-$BunVersion = "bun-v1.3.9"  # Pinned version for reproducible builds
-
 Write-Host "=== Building Craft Agents Windows Installer using electron-builder ===" -ForegroundColor Cyan
 
 # Debug: System information
@@ -100,58 +97,19 @@ try {
     Pop-Location
 }
 
-# 3. Download Bun binary for Windows
-# Use baseline build - works on all x64 CPUs (no AVX2 requirement)
-Write-Host "Downloading Bun $BunVersion for Windows x64 (baseline)..."
-New-Item -ItemType Directory -Force -Path "$ElectronDir\vendor\bun" | Out-Null
-
-$BunDownload = "bun-windows-x64-baseline"
-$TempDir = Join-Path $env:TEMP "bun-download-$(Get-Random)"
-New-Item -ItemType Directory -Force -Path $TempDir | Out-Null
-
+# 3. Stage the bundled Bun runtime into vendor\bun.
+#    Shared, cached step (scripts/fetch-bun.ts -> scripts/build/common.ts):
+#    pinned version + checksum verification live in ONE place and are reused
+#    offline. fetch-bun retries the copy to ride out transient Windows file
+#    locks (Defender / a previous build holding bun.exe).
+Write-Host "Staging bundled Bun for win32 x64..."
+Push-Location $RootDir
 try {
-    # Download binary and checksums
-    $ZipUrl = "https://github.com/oven-sh/bun/releases/download/$BunVersion/$BunDownload.zip"
-    $ChecksumUrl = "https://github.com/oven-sh/bun/releases/download/$BunVersion/SHASUMS256.txt"
-
-    Write-Host "Downloading from $ZipUrl..."
-    Invoke-WebRequest -Uri $ZipUrl -OutFile "$TempDir\$BunDownload.zip"
-    Invoke-WebRequest -Uri $ChecksumUrl -OutFile "$TempDir\SHASUMS256.txt"
-
-    # Verify checksum
-    Write-Host "Verifying checksum..."
-    $ExpectedHash = (Get-Content "$TempDir\SHASUMS256.txt" | Select-String "$BunDownload.zip").ToString().Split(" ")[0]
-    $ActualHash = (Get-FileHash "$TempDir\$BunDownload.zip" -Algorithm SHA256).Hash.ToLower()
-
-    if ($ActualHash -ne $ExpectedHash) {
-        throw "Checksum verification failed! Expected: $ExpectedHash, Got: $ActualHash"
-    }
-    Write-Host "Checksum verified successfully" -ForegroundColor Green
-
-    # Extract and install using robocopy for better file handle management
-    Write-Host "Extracting Bun..."
-    Expand-Archive -Path "$TempDir\$BunDownload.zip" -DestinationPath $TempDir -Force
-
-    # Unblock in temp first (before copy)
-    Unblock-File -Path "$TempDir\$BunDownload\bun.exe" -ErrorAction SilentlyContinue
-
-    # Use robocopy with retries - handles transient file locks better than Copy-Item
-    # /R:5 = 5 retries, /W:3 = 3 second wait between retries, /NP = no progress, /NFL /NDL = quiet
-    Write-Host "Copying bun.exe with robocopy..."
-    $robocopyResult = robocopy "$TempDir\$BunDownload" "$ElectronDir\vendor\bun" "bun.exe" /R:5 /W:3 /NP /NFL /NDL
-    # Robocopy exit codes: 0-7 are success, 8+ are errors
-    if ($LASTEXITCODE -ge 8) {
-        throw "robocopy failed with exit code $LASTEXITCODE"
-    }
-
-    $BunExePath = "$ElectronDir\vendor\bun\bun.exe"
-    Write-Host "Bun extracted to: $BunExePath" -ForegroundColor Green
-
-    # Give Windows time to release any file handles from the copy
-    Write-Host "Waiting for file handles to release..."
-    Start-Sleep -Seconds 3
+    bun run scripts/fetch-bun.ts win32 x64
+    if ($LASTEXITCODE -ne 0) { throw "fetch-bun failed with exit code $LASTEXITCODE" }
+    Write-Host "Bun staged to: $ElectronDir\vendor\bun\bun.exe" -ForegroundColor Green
 } finally {
-    Remove-Item -Recurse -Force $TempDir -ErrorAction SilentlyContinue
+    Pop-Location
 }
 
 # 4. Copy SDK from root node_modules (monorepo hoisting).

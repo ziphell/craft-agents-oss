@@ -51,6 +51,9 @@ files:
   - resources/bin/linux-x64/**/*
   # Include bundled Bun runtime (platform-specific, set by build script)
   - vendor/bun/**/*
+  # `fetch-bun.ts` writes this staging marker next to the binary; it is build
+  # detail, not app content, so keep it out of the package.
+  - "!vendor/bun/.staged"
   # Exclude everything from node_modules (will use extraResources for SDK)
   - "!node_modules/**/*"
 
@@ -190,8 +193,12 @@ win:
     # ripgrep from root node_modules
     - from: ../../node_modules/@vscode/ripgrep
       to: app/node_modules/@vscode/ripgrep
+    # `to: app/...` keeps Bun at `Resources/app/vendor/bun/`, exactly where the
+    # runtime resolves it (CRAFT_BUN / runtime-resolver) — the same layout as
+    # macOS and Linux. Without the `app/` prefix it landed at
+    # `Resources/vendor/bun/` and only worked via the resolver's fallback scan.
     - from: vendor/bun/bun.exe
-      to: vendor/bun/bun.exe
+      to: app/vendor/bun/bun.exe
     - from: resources/bin/win32-x64
       to: app/resources/bin/win32-x64
     # WhatsApp worker subprocess (self-contained; Baileys bundled in).
