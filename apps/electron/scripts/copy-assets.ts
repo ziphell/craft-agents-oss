@@ -11,8 +11,14 @@
  * Run: bun scripts/copy-assets.ts
  */
 
-import { cpSync, copyFileSync, mkdirSync } from 'fs';
+import { cpSync, copyFileSync, mkdirSync, rmSync } from 'fs';
 import { join, relative, sep } from 'path';
+
+// Start from a clean slate. cpSync merges into the destination and never deletes,
+// so without this a dist/resources/ left over from an older build (e.g. the
+// bin/scripts/pi-agent-server copies excluded below) would linger and still be
+// packaged via `dist/**/*`.
+rmSync('dist/resources', { recursive: true, force: true });
 
 // Copy all resources (icons, themes, docs, permissions, tool-icons, etc.)
 //
