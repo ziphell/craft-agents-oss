@@ -12,12 +12,23 @@
  */
 
 import { cpSync, copyFileSync, mkdirSync } from 'fs';
-import { join } from 'path';
+import { join, relative, sep } from 'path';
 
 // Copy all resources (icons, themes, docs, permissions, tool-icons, etc.)
-cpSync('resources', 'dist/resources', { recursive: true });
+//
+// `bin`, `scripts` and `pi-agent-server` are intentionally skipped: the runtime
+// reads those from resources/ directly (CRAFT_RESOURCES_BASE / resolveServerPath's
+// primary path), never from dist/resources/. They still reach the package via the
+// explicit `files: resources/...` entries in electron-builder.yml, so copying them
+// here would only duplicate ~89 MB (uv.exe, pi-agent-server) because `dist/**/*`
+// already ships dist/resources.
+const NOT_IN_DIST_RESOURCES = new Set(['bin', 'scripts', 'pi-agent-server']);
+cpSync('resources', 'dist/resources', {
+  recursive: true,
+  filter: (src) => !NOT_IN_DIST_RESOURCES.has(relative('resources', src).split(sep)[0]),
+});
 
-console.log('✓ Copied resources/ → dist/resources/');
+console.log('✓ Copied resources/ → dist/resources/ (excluding bin, scripts, pi-agent-server)');
 
 // Copy PowerShell parser script (for Windows command validation in Explore mode)
 // Source: packages/shared/src/agent/powershell-parser.ps1
