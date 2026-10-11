@@ -104,16 +104,22 @@ mac:
   entitlementsInherit: build/entitlements.mac.plist
   extraResources:
     # Thin core SDK (sdk.mjs + types). ~4 MB — present on every platform.
-    - from: node_modules/@anthropic-ai/claude-agent-sdk
+    # Sourced from the hoisted ROOT node_modules; apps/electron has no own
+    # node_modules in this monorepo (that's why the packaged app previously
+    # shipped without the SDK when built via `electron:dist:mac`).
+    - from: ../../node_modules/@anthropic-ai/claude-agent-sdk
       to: app/node_modules/@anthropic-ai/claude-agent-sdk
-    # Stable alias pointing at the target-arch native binary package.
-    # Populated by build-dmg.sh / build-linux.sh / build-win.ps1 before
-    # electron-builder runs (`apps/electron/node_modules/@anthropic-ai/claude-agent-sdk-binary/`).
-    # The runtime resolver (runtime-resolver.ts) looks here first.
-    - from: node_modules/@anthropic-ai/claude-agent-sdk-binary
-      to: app/node_modules/@anthropic-ai/claude-agent-sdk-binary
+    # Per-platform native `claude` binary package, matched to the build target
+    # arch via the ${arch} macro (e.g. claude-agent-sdk-darwin-arm64).
+    # The runtime resolver (runtime-resolver.ts) looks this package up at
+    # app/node_modules/@anthropic-ai/claude-agent-sdk-darwin-${arch}/claude.
+    # NOTE: for a target arch whose binary is absent from root node_modules the
+    # copy is skipped (electron-builder warns) and that artifact runs without
+    # the native binary — build-dmg.sh remains the canonical cross-arch path.
+    - from: ../../node_modules/@anthropic-ai/claude-agent-sdk-darwin-${arch}
+      to: app/node_modules/@anthropic-ai/claude-agent-sdk-darwin-${arch}
     # ripgrep (used by packages/server-core/src/services/search.ts).
-    - from: node_modules/@vscode/ripgrep
+    - from: ../../node_modules/@vscode/ripgrep
       to: app/node_modules/@vscode/ripgrep
     # WhatsApp worker subprocess (self-contained; Baileys bundled in).
     - from: ../../packages/messaging-whatsapp-worker/dist/worker.cjs
