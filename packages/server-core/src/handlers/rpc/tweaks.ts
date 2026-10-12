@@ -92,7 +92,7 @@ export function registerTweaksHandlers(server: RpcServer, deps: HandlerDeps): vo
       const workspace = getWorkspaceByNameOrId(workspaceId)
       if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
       if (!destParent) throw new Error('Choose a folder to export into.')
-      const { loadTweak, tweaksExtensionFolderName, exportTweaksExtension } = await import(
+      const { loadTweak, tweaksExtensionName, exportTweaksExtension } = await import(
         '@craft-agent/shared/tweaks'
       )
       const tweak = loadTweak(workspace.rootPath, tweakSlug)
@@ -100,7 +100,7 @@ export function registerTweaksHandlers(server: RpcServer, deps: HandlerDeps): vo
       return exportTweaksExtension({
         workspaceRootPath: workspace.rootPath,
         destParent,
-        folderName: tweaksExtensionFolderName(tweak.config.name),
+        folderName: tweaksExtensionName(tweak.config.name),
         overwrite,
       })
     },

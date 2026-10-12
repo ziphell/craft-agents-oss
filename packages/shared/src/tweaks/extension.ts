@@ -26,14 +26,8 @@ import { loadWorkspaceTweaks, readTweakSources } from './storage.ts'
 import { tweakRunAt, type TweakRunAt } from './run-at.ts'
 import type { LoadedTweak } from './types.ts'
 
-/**
- * The manifest `name` every export carries.
- *
- * The export lands in whatever folder the person picks, so there is no folder name of ours to
- * recognise a build by — this is what marks a folder as one of ours, so a re-export refreshes
- * it in place instead of writing into (or over) somebody else's folder.
- */
-export const TWEAKS_EXTENSION_NAME = 'Craft tweaks'
+/** The brand every export carries — in its folder name, and in what the browser lists it as. */
+const EXTENSION_BRAND = 'Craft tweaks'
 
 /** One file of the built extension, `/`-separated from its root. */
 export interface TweaksExtensionFile {
@@ -96,13 +90,21 @@ function contentScriptsFor(
 }
 
 /**
- * Build the extension for a set of loaded tweaks.
+ * Build the extension for a set of loaded tweaks, listed under `extensionName`.
  *
  * Only **enabled** tweaks are built. A tweak nobody switched on must not quietly become a
  * content script in an extension somebody else installs — the app not running it is not
  * the same as it being wanted everywhere.
+ *
+ * `extensionName` is what the browser lists the build as. It is the tweak the export came from
+ * (the same string the folder is named with), so two exports are told apart instead of both
+ * reading the same fixed "Craft tweaks".
  */
-export function buildTweaksExtension(tweaks: LoadedTweak[], builtAt: Date): TweaksExtensionBuild {
+export function buildTweaksExtension(
+  tweaks: LoadedTweak[],
+  builtAt: Date,
+  extensionName: string,
+): TweaksExtensionBuild {
   const files: TweaksExtensionFile[] = []
   const skipped: TweaksExtensionBuild['skipped'] = []
   const contentScripts: Record<string, unknown>[] = []
@@ -142,11 +144,11 @@ export function buildTweaksExtension(tweaks: LoadedTweak[], builtAt: Date): Twea
 
   files.push({
     path: 'manifest.json',
-    content: `${JSON.stringify(buildManifest({ contentScripts, version, builtAt, count: included.length }), null, 2)}\n`,
+    content: `${JSON.stringify(buildManifest({ contentScripts, version, builtAt, count: included.length, name: extensionName }), null, 2)}\n`,
   })
   files.push({
     path: 'README.md',
-    content: buildTweaksReadme({ version, builtAt, tweaks: tweaks.filter((tweak) => included.includes(tweak.config.slug)), skipped }),
+    content: buildTweaksReadme({ version, builtAt, name: extensionName, tweaks: tweaks.filter((tweak) => included.includes(tweak.config.slug)), skipped }),
   })
 
   return { files, version, included, skipped }
@@ -157,10 +159,11 @@ function buildManifest(input: {
   version: string
   builtAt: Date
   count: number
+  name: string
 }): Record<string, unknown> {
   return {
     manifest_version: 3,
-    name: TWEAKS_EXTENSION_NAME,
+    name: input.name,
     version: input.version,
     description:
       `${input.count} tweak${input.count === 1 ? '' : 's'} for the pages they name · built ${input.builtAt.toISOString()}`,
@@ -178,6 +181,7 @@ function buildManifest(input: {
 function buildTweaksReadme(input: {
   version: string
   builtAt: Date
+  name: string
   tweaks: LoadedTweak[]
   skipped: TweaksExtensionBuild['skipped']
 }): string {
@@ -194,7 +198,7 @@ function buildTweaksReadme(input: {
       ? ''
       : `\nLeft out of this build:\n${input.skipped.map((s) => `- \`${s.slug}\` — ${s.why}`).join('\n')}\n`
 
-  return `# Craft tweaks
+  return `# ${input.name}
 
 These are tweaks: for the pages they name, the CSS and JavaScript in this extension. They
 were written in Craft Agents and built here so they can run in your own browser.
@@ -228,19 +232,24 @@ Built ${input.builtAt.toISOString()} (version ${input.version}).
 }
 
 /**
- * The folder an export creates, named after the tweak it was exported from.
+ * What an export is called: the brand, then the tweak it was exported from.
+ *
+ * This one string is used twice — as the folder the build is written into, and as the manifest's
+ * `name`, which is what the browser lists it under. They are the same on purpose: exports are told
+ * apart by the tweak, and both still read as Craft's.
  *
  * A folder name has to survive a filesystem, so the characters none of them want are replaced,
  * whitespace is collapsed, and Windows' dislike of a trailing dot or space is respected. Only a
- * name that was nothing but those characters comes out empty, and `tweaks` answers that.
+ * tweak name that was nothing but those characters comes out empty, and the brand is then the
+ * whole name.
  */
-export function tweaksExtensionFolderName(tweakName: string): string {
+export function tweaksExtensionName(tweakName: string): string {
   const cleaned = tweakName
     .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-')
     .replace(/\s+/g, ' ')
     .trim()
     .replace(/[. ]+$/, '')
-  return cleaned === '' ? 'tweaks' : cleaned
+  return cleaned === '' ? EXTENSION_BRAND : `${EXTENSION_BRAND} — ${cleaned}`
 }
 
 export interface TweaksExportRequest {
@@ -261,20 +270,22 @@ export type TweaksExportResult =
 /**
  * Write the extension into a folder named after the tweak, inside the folder the person picked.
  *
- * The name is the tweak's (`tweaksExtensionFolderName`), so it is never a fixed one of ours and
- * nobody has to invent it; that folder **is** the extension, so `Load unpacked` points straight at
- * it. An existing export of the same name is **asked** about rather than written over — replacing
- * it means deleting somebody's folder, so the person answers and `overwrite` is their yes. A folder
- * that is neither empty nor one of our exports is refused: a build dropped among somebody's
- * documents is an extension nobody can load, and nothing here is ever merged.
+ * The name is the branded tweak name (`tweaksExtensionName`), so it carries both the brand and the
+ * tweak, and nobody has to invent it; that folder **is** the extension, so `Load unpacked` points
+ * straight at it. An existing export of the same name is **asked** about rather than written over —
+ * replacing it means deleting somebody's folder, so the person answers and `overwrite` is their
+ * yes. A folder that is neither empty nor one of our exports is refused: a build dropped among
+ * somebody's documents is an extension nobody can load, and nothing here is ever merged.
  */
 export function exportTweaksExtension(request: TweaksExportRequest): TweaksExportResult {
   const tweaks = loadWorkspaceTweaks(request.workspaceRootPath)
-  const build = buildTweaksExtension(tweaks, request.builtAt ?? new Date())
+  // The build carries the tweak's name as its own, so the browser lists it by that name — the
+  // same string the folder gets, and the one {@link isExistingExport} checks a folder against.
+  const build = buildTweaksExtension(tweaks, request.builtAt ?? new Date(), request.folderName)
 
   const dest = join(resolve(request.destParent), request.folderName)
   if (existsSync(dest)) {
-    if (isExistingExport(dest)) {
+    if (isExistingExport(dest, request.folderName)) {
       if (!request.overwrite) return { status: 'exists', dir: dest }
       // Their yes: the old build goes wholesale, so a removed tweak's script cannot linger.
       rmSync(dest, { recursive: true, force: true })
@@ -293,13 +304,17 @@ export function exportTweaksExtension(request: TweaksExportRequest): TweaksExpor
   return { status: 'exported', dir: dest, files: build.files.length, tweaks: build.included.length, skipped: build.skipped }
 }
 
-/** True when `dir` holds an export we made — a `manifest.json` whose name is ours. */
-function isExistingExport(dir: string): boolean {
+/**
+ * True when `dir` holds an export we made — a `manifest.json` named the same as the build we are
+ * about to write (`name`, which is the tweak's). A folder whose manifest says anything else is
+ * somebody's, and is never written into, let alone deleted.
+ */
+function isExistingExport(dir: string, name: string): boolean {
   const manifestPath = join(dir, 'manifest.json')
   if (!existsSync(manifestPath)) return false
   try {
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as { name?: unknown }
-    return manifest.name === TWEAKS_EXTENSION_NAME
+    return manifest.name === name
   } catch {
     return false
   }

@@ -21,7 +21,7 @@
 | `targets.ts` | `@target` 标记的解析与 `hits.json` 的读/合并/写（`recordTweakHits` 合并而从不从空开始 —— 旧时间正是"停止匹配"可见的唯一依据） |
 | `run-at.ts` | `@run-at` 的读取。三个值就是浏览器自己的 `content_scripts.run_at`（`document_start` / `document_end` / `document_idle`），**缺省 `document_end`** —— 平台的缺省是 `idle`，那是为了不拖慢页面，而 tweak 存在的意义是改页面。先读 `tweak.js` 再读 `tweak.css`；读不出三个值之一就当没声明 |
 | `summary.ts` | 展示形状：`TweakSummary` / `TweakDetails` / `toTweakSummary` / `toTweakDetails` / `toTweakTargets`（**agent 的工具与 app 的页面共读这一份**） |
-| `extension.ts` | 第二个 carrier：`buildTweaksExtension` / `exportTweaksExtension` / `tweaksExtensionFolderName`。只构建**开着的** tweak，产物是静态字节（`tweaks/{slug}.css|js`），写进所选文件夹下**以 tweak 命名的子目录**（那目录本身就是扩展，`Load unpacked` 直接指向它）；同名旧导出先问再整目录重建，非本扩展的同名目录直接拒绝 |
+| `extension.ts` | 第二个 carrier：`buildTweaksExtension` / `exportTweaksExtension` / `tweaksExtensionName`。只构建**开着的** tweak，产物是静态字节（`tweaks/{slug}.css|js`），写进所选文件夹下**以品牌+tweak 命名的子目录**（`Craft tweaks — <tweak>`：目录名与 manifest 的 `name` 都是这个字符串——浏览器里两次导出能区分，也都带着品牌；那目录本身就是扩展，`Load unpacked` 直接指向它）；同名旧导出先问再整目录重建，非本扩展的同名目录直接拒绝 |
 | `index.ts` | barrel |
 
 ### agent 面
