@@ -98,13 +98,13 @@ The record is written **only by the app's own carrier**, and only for the pages 
 
 ## Reaching a real browser
 
-Inside this app a tweak runs only in the app's own browser window. The browser somebody actually works in gets it through **the tweak page's own action**: open a tweak and press **Export as extension…** — the app asks for a folder and writes a loadable Chrome extension built from the workspace's **enabled** tweaks into `craft-tweaks/` inside it.
+Inside this app a tweak runs only in the app's own browser window. The browser somebody actually works in gets it through **the tweak page's own action**: open a tweak and press **Export as extension…** — the app asks for a folder and writes a loadable Chrome extension built from the workspace's **enabled** tweaks into a folder named after this tweak inside it, so that folder **is** the extension and **Load unpacked** points right at it.
 
 Exporting is the person's to do, not a command for you: the one question it asks — where the folder goes — is answered by them, in a folder picker. Say what the action is for, and what to do with what it writes:
 
 - The build is **static**: it ships the tweak's own bytes (`tweaks/{slug}.css`, `tweaks/{slug}.js`), and its `README.md` says which pages it is for and how to remove it. Nothing updates itself — change a tweak here, export again, and the person presses **Reload** on the extension's card.
 - Each tweak becomes **two content scripts**: its stylesheet at the earliest moment, its JavaScript at the `@run-at` it declares. That is why a tweak behaves the same in their browser as it does in this app's window.
-- It **refuses** to write over an existing `craft-tweaks/`, and refuses to build at all when no enabled tweak has code. Both are reported with the reason.
+- Exporting again finds the folder of that name already there and **asks before replacing it** — replacing deletes that folder and writes the build afresh, after which **Reload** on the extension's card picks it up. A same-named folder that is not one of its exports is refused, and so is exporting when no enabled tweak has code. Both are reported with the reason.
 - What they do with it: load the folder **unpacked** (`chrome://extensions` → Developer mode → Load unpacked), and reload the pages they have open — a page picks a tweak up when it **loads**, which is equally true after a re-export and after pressing Reload on the extension's card. Deleting the extension is how it is turned off, and nothing else on their machine is touched.
 
 ## Recipes

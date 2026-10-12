@@ -43,10 +43,15 @@ import {
 import { permissionsConfigCache, getAppPermissionsDir } from '../agent/permissions-config.ts';
 import { getWorkspacePath, getWorkspaceSourcesPath, getWorkspaceSkillsPath } from '../workspaces/storage.ts';
 import type { LoadedSkill } from '../skills/types.ts';
-import { loadWorkspaceTweaks } from '../tweaks/storage.ts';
+import { loadWorkspaceTweaks, readTweakSources } from '../tweaks/storage.ts';
 import { loadWorkspaceDesigns } from '../designs/storage.ts';
 import { toTweakSummary } from '../tweaks/summary.ts';
-import { TWEAK_CONFIG_FILENAME, TWEAK_CSS_FILENAME, TWEAK_JS_FILENAME } from '../tweaks/types.ts';
+import {
+  TWEAK_CONFIG_FILENAME,
+  TWEAK_CSS_FILENAME,
+  TWEAK_JS_FILENAME,
+  type LoadedTweak,
+} from '../tweaks/types.ts';
 import { loadSkill, loadAllSkills, invalidateSkillsCache, skillNeedsIconDownload, downloadSkillIcon } from '../skills/storage.ts';
 import {
   loadStatusConfig,
@@ -164,10 +169,12 @@ export interface ConfigWatcherCallbacks {
    * installer have to follow — the fresh list is handed over because that is what the app's
    * own designs show.
    *
-   * `hits.json` is deliberately not watched, and neither is the folder itself: only the
-   * applier writes `hits.json`, and it writes it *because* the rules were just installed —
-   * following it (or the folder event an atomic write also raises) would have the applier
-   * re-install the rules it has just run, once per debounce, forever.
+   * What counts as a change is judged by the tweaks themselves, not by which path moved: the
+   * watcher follows the three files **and** the folder they sit in (on this platform a plain
+   * write to a file that already existed is reported only as a folder change), then compares a
+   * signature of the record and the code. Only a real change is delivered, which is what keeps
+   * the applier's own `hits.json` write — and the folder event its atomic write raises — from
+   * re-installing the rules it has just run.
    */
   onTweaksListChange?: (tweaks: import('../tweaks/summary.ts').TweakSummary[]) => void;
 
@@ -239,6 +246,11 @@ export class ConfigWatcher {
 
   // Track LLM connections for change detection (JSON string for deep comparison)
   private lastLlmConnectionsHash: string = '';
+
+  // The last tweaks signature seen. A tweak's record plus its code, as one string, so a write
+  // that does not change what a tweak *is* — the applier's own `hits.json`, or the folder event
+  // an atomic write raises — is not mistaken for a change to the rules.
+  private lastTweaksSignature: string | null = null;
 
   // Computed paths
   private workspaceDir: string;
@@ -321,6 +333,13 @@ export class ConfigWatcher {
 
     this.scanAppThemes();
     span.mark('scanAppThemes');
+
+    // Seed the tweaks signature so the first event is compared against the state as it is now,
+    // rather than against nothing — otherwise the applier's own startup install would look like
+    // a change on the first write that lands in a tweak's folder.
+    if (this.callbacks.onTweaksListChange) {
+      this.lastTweaksSignature = tweaksSignature(this.workspaceDir);
+    }
 
     // Initialize LLM connections hash for change detection
     this.initLlmConnectionsHash();
@@ -501,19 +520,20 @@ export class ConfigWatcher {
     // out-of-band edit to any of them (the agent's own tools, or a hand edit) is what the app
     // has to follow.
     //
-    // Those three files, and nothing else under `tweaks/` — least of all the folder itself.
-    // The applier writes `hits.json` into a tweak's own folder *because* the rules were just
-    // installed, and an atomic write also reports the slug directory; following either would
-    // re-install the rules that wrote it, once per debounce, forever. The folder carries no
-    // news the files do not: creating, deleting or renaming a tweak moves one of the three
-    // either way, and our own writers poke a `tweak.json` path besides.
+    // Those three files, **and** the folder they sit in. The folder event is not noise to skip:
+    // a plain write to a file that already existed is reported here only as a change to the
+    // folder, so following the files alone silently misses an edit to a tweak written in an
+    // earlier run. What keeps that from re-installing over the applier's own `hits.json` write
+    // (which also raises the folder event) is not the path filter but the signature compared in
+    // {@link handleTweaksChange} — only a change to the record or the code is passed on.
     if (parts[0] === 'tweaks' && parts.length >= 2) {
       const file = parts[2];
-      const followed =
-        parts.length === 3 &&
-        (file === TWEAK_CONFIG_FILENAME || file === TWEAK_CSS_FILENAME || file === TWEAK_JS_FILENAME);
-      if (followed) {
-        debug('[ConfigWatcher] tweak file changed:', relativePath);
+      const relevant =
+        parts.length === 2 ||
+        (parts.length === 3 &&
+          (file === TWEAK_CONFIG_FILENAME || file === TWEAK_CSS_FILENAME || file === TWEAK_JS_FILENAME));
+      if (relevant) {
+        debug('[ConfigWatcher] tweak path changed:', relativePath);
         this.debounce('tweaks-dir', () => this.handleTweaksChange());
       }
       return;
@@ -1013,13 +1033,21 @@ export class ConfigWatcher {
    * A tweak changed on disk: its record, or the code beside it. The list is re-derived from the
    * record and handed to the callback — that is what the app's own designs show — and the code
    * files are left to whoever installs the tweak, which reads them from disk itself.
+   *
+   * The signature check is what keeps "something moved in the folder" from meaning "the rules
+   * changed": the event that got us here may be the applier's own `hits.json` write, and passing
+   * that on would re-install the rules that just ran, forever. Only a change to the record or the
+   * code gets through.
    */
   private handleTweaksChange(): void {
     if (!this.callbacks.onTweaksListChange) return;
     try {
-      const tweaks = loadWorkspaceTweaks(this.workspaceDir).map(toTweakSummary);
+      const tweaks = loadWorkspaceTweaks(this.workspaceDir);
+      const signature = tweaksSignature(this.workspaceDir, tweaks);
+      if (signature === this.lastTweaksSignature) return;
+      this.lastTweaksSignature = signature;
       debug('[ConfigWatcher] tweaks changed:', this.workspaceId, `(${tweaks.length} tweaks)`);
-      this.callbacks.onTweaksListChange(tweaks);
+      this.callbacks.onTweaksListChange(tweaks.map(toTweakSummary));
     } catch (error) {
       debug('[ConfigWatcher] Failed to reload tweaks:', error);
     }
@@ -1209,6 +1237,27 @@ export class ConfigWatcher {
     const allThemes = loadPresetThemes();
     this.callbacks.onPresetThemesListChange?.(allThemes);
   }
+}
+
+// ============================================================
+// Tweak signature
+// ============================================================
+
+/**
+ * A workspace's tweaks, as one comparable string: every tweak's record plus the code beside it.
+ *
+ * Its job is to tell a change to the rules from an event that only moved inside a tweak's folder
+ * — the applier writing `hits.json` right after an install. It reads the code rather than trusting
+ * an mtime, because the question is whether the bytes changed, not when.
+ */
+function tweaksSignature(workspaceDir: string, tweaks?: LoadedTweak[]): string {
+  const list = tweaks ?? loadWorkspaceTweaks(workspaceDir);
+  return list
+    .map((tweak) => {
+      const sources = readTweakSources(tweak);
+      return `${JSON.stringify(tweak.config)}\u0000${sources.css ?? ''}\u0000${sources.js ?? ''}`;
+    })
+    .join('\u0001');
 }
 
 // ============================================================

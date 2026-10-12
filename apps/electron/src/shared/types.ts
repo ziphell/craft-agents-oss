@@ -772,7 +772,7 @@ export interface ElectronAPI {
   updateTweak(workspaceId: string, tweakSlug: string, patch: import('@craft-agent/shared/tweaks').UpdateTweakPatch): Promise<import('@craft-agent/shared/tweaks').TweakDetails | null>
   deleteTweak(workspaceId: string, tweakSlug: string): Promise<void>
   /** Build the loadable extension into a folder the person picked. */
-  exportTweaks(workspaceId: string, destParent: string): Promise<import('@craft-agent/shared/tweaks').TweaksExportResult>
+  exportTweaks(workspaceId: string, destParent: string, tweakSlug: string, overwrite?: boolean): Promise<import('@craft-agent/shared/tweaks').TweaksExportResult>
   onTweaksChanged(callback: (workspaceId: string, tweaks: import('@craft-agent/shared/tweaks').TweakSummary[]) => void): () => void
 
   // Designs (workspace-scoped mini web pages)

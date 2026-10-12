@@ -97,8 +97,10 @@ export {
   buildTweaksExtension,
   exportTweaksExtension,
   tweakExtensionFilePath,
-  TWEAKS_EXTENSION_DIRNAME,
+  tweaksExtensionFolderName,
+  TWEAKS_EXTENSION_NAME,
   type TweaksExtensionBuild,
   type TweaksExtensionFile,
+  type TweaksExportRequest,
   type TweaksExportResult,
 } from './extension.ts'

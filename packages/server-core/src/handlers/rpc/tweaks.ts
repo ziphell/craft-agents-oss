@@ -81,14 +81,28 @@ export function registerTweaksHandlers(server: RpcServer, deps: HandlerDeps): vo
     log.info(`Deleted tweak ${slug}`)
   })
 
-  // Export — build the loadable extension into the folder the person picked. Where it
-  // lands is a question only a person can answer, and on a remote host that folder is
-  // beside the tweaks, which is where the build has to happen.
-  server.handle(RPC_CHANNELS.tweaks.EXPORT, async (_ctx, workspaceId: string, destParent: string) => {
-    const workspace = getWorkspaceByNameOrId(workspaceId)
-    if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
-    if (!destParent) throw new Error('Choose a folder to export into.')
-    const { exportTweaksExtension } = await import('@craft-agent/shared/tweaks')
-    return exportTweaksExtension(workspace.rootPath, destParent)
-  })
+  // Export — build the loadable extension into a folder named after the tweak, inside the
+  // folder the person picked. Where it lands is a question only a person can answer, and on
+  // a remote host that folder is beside the tweaks, which is where the build has to happen.
+  // The name comes from the tweak itself, so nobody has to invent one; an existing export of
+  // that name comes back as `exists` and is only replaced when the person confirms (`overwrite`).
+  server.handle(
+    RPC_CHANNELS.tweaks.EXPORT,
+    async (_ctx, workspaceId: string, destParent: string, tweakSlug: string, overwrite?: boolean) => {
+      const workspace = getWorkspaceByNameOrId(workspaceId)
+      if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
+      if (!destParent) throw new Error('Choose a folder to export into.')
+      const { loadTweak, tweaksExtensionFolderName, exportTweaksExtension } = await import(
+        '@craft-agent/shared/tweaks'
+      )
+      const tweak = loadTweak(workspace.rootPath, tweakSlug)
+      if (!tweak) throw new Error(`Tweak not found: ${tweakSlug}`)
+      return exportTweaksExtension({
+        workspaceRootPath: workspace.rootPath,
+        destParent,
+        folderName: tweaksExtensionFolderName(tweak.config.name),
+        overwrite,
+      })
+    },
+  )
 }

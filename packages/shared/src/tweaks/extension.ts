@@ -19,15 +19,21 @@
  * credential it has.
  */
 
-import { existsSync, mkdirSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 import { extensionVersion } from '../extension-version.ts'
 import { loadWorkspaceTweaks, readTweakSources } from './storage.ts'
 import { tweakRunAt, type TweakRunAt } from './run-at.ts'
 import type { LoadedTweak } from './types.ts'
 
-/** The folder an export lands in, inside whichever folder the person picked. */
-export const TWEAKS_EXTENSION_DIRNAME = 'craft-tweaks'
+/**
+ * The manifest `name` every export carries.
+ *
+ * The export lands in whatever folder the person picks, so there is no folder name of ours to
+ * recognise a build by — this is what marks a folder as one of ours, so a re-export refreshes
+ * it in place instead of writing into (or over) somebody else's folder.
+ */
+export const TWEAKS_EXTENSION_NAME = 'Craft tweaks'
 
 /** One file of the built extension, `/`-separated from its root. */
 export interface TweaksExtensionFile {
@@ -154,7 +160,7 @@ function buildManifest(input: {
 }): Record<string, unknown> {
   return {
     manifest_version: 3,
-    name: 'Craft tweaks',
+    name: TWEAKS_EXTENSION_NAME,
     version: input.version,
     description:
       `${input.count} tweak${input.count === 1 ? '' : 's'} for the pages they name · built ${input.builtAt.toISOString()}`,
@@ -221,38 +227,89 @@ Built ${input.builtAt.toISOString()} (version ${input.version}).
 `
 }
 
-export interface TweaksExportResult {
-  dir: string
-  files: number
-  tweaks: number
-  skipped: TweaksExtensionBuild['skipped']
+/**
+ * The folder an export creates, named after the tweak it was exported from.
+ *
+ * A folder name has to survive a filesystem, so the characters none of them want are replaced,
+ * whitespace is collapsed, and Windows' dislike of a trailing dot or space is respected. Only a
+ * name that was nothing but those characters comes out empty, and `tweaks` answers that.
+ */
+export function tweaksExtensionFolderName(tweakName: string): string {
+  const cleaned = tweakName
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[. ]+$/, '')
+  return cleaned === '' ? 'tweaks' : cleaned
 }
 
-/**
- * Write the extension into the folder the person picked.
- *
- * Landing in its own folder, because the destination is usually a
- * place with other things in it — and refusing an existing one rather than merging, since
- * a half-overwritten extension is a build nobody has.
- */
-export function exportTweaksExtension(
-  workspaceRootPath: string,
-  destParent: string,
-  builtAt: Date = new Date(),
-): TweaksExportResult {
-  const tweaks = loadWorkspaceTweaks(workspaceRootPath)
-  const build = buildTweaksExtension(tweaks, builtAt)
+export interface TweaksExportRequest {
+  workspaceRootPath: string
+  /** The folder the extension folder is created inside. */
+  destParent: string
+  /** The extension folder's own name — the tweak's, never a fixed one of ours. */
+  folderName: string
+  /** Replace an existing export of the same name. Without it, one is reported instead. */
+  overwrite?: boolean
+  builtAt?: Date
+}
 
-  const dest = join(resolve(destParent), TWEAKS_EXTENSION_DIRNAME)
+export type TweaksExportResult =
+  | { status: 'exported'; dir: string; files: number; tweaks: number; skipped: TweaksExtensionBuild['skipped'] }
+  | { status: 'exists'; dir: string }
+
+/**
+ * Write the extension into a folder named after the tweak, inside the folder the person picked.
+ *
+ * The name is the tweak's (`tweaksExtensionFolderName`), so it is never a fixed one of ours and
+ * nobody has to invent it; that folder **is** the extension, so `Load unpacked` points straight at
+ * it. An existing export of the same name is **asked** about rather than written over — replacing
+ * it means deleting somebody's folder, so the person answers and `overwrite` is their yes. A folder
+ * that is neither empty nor one of our exports is refused: a build dropped among somebody's
+ * documents is an extension nobody can load, and nothing here is ever merged.
+ */
+export function exportTweaksExtension(request: TweaksExportRequest): TweaksExportResult {
+  const tweaks = loadWorkspaceTweaks(request.workspaceRootPath)
+  const build = buildTweaksExtension(tweaks, request.builtAt ?? new Date())
+
+  const dest = join(resolve(request.destParent), request.folderName)
   if (existsSync(dest)) {
-    throw new Error(`"${dest}" already exists. Choose another folder, or remove it first.`)
+    if (isExistingExport(dest)) {
+      if (!request.overwrite) return { status: 'exists', dir: dest }
+      // Their yes: the old build goes wholesale, so a removed tweak's script cannot linger.
+      rmSync(dest, { recursive: true, force: true })
+    } else if (!isEmptyDir(dest)) {
+      throw new Error(`"${dest}" already exists and isn't a tweak export. Choose another folder.`)
+    }
   }
 
+  mkdirSync(dest, { recursive: true })
   for (const file of build.files) {
     const target = join(dest, ...file.path.split('/'))
     mkdirSync(dirname(target), { recursive: true })
     writeFileSync(target, file.content, 'utf-8')
   }
 
-  return { dir: dest, files: build.files.length, tweaks: build.included.length, skipped: build.skipped }
+  return { status: 'exported', dir: dest, files: build.files.length, tweaks: build.included.length, skipped: build.skipped }
+}
+
+/** True when `dir` holds an export we made — a `manifest.json` whose name is ours. */
+function isExistingExport(dir: string): boolean {
+  const manifestPath = join(dir, 'manifest.json')
+  if (!existsSync(manifestPath)) return false
+  try {
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as { name?: unknown }
+    return manifest.name === TWEAKS_EXTENSION_NAME
+  } catch {
+    return false
+  }
+}
+
+/** True when `dir` exists and holds nothing. */
+function isEmptyDir(dir: string): boolean {
+  try {
+    return readdirSync(dir).length === 0
+  } catch {
+    return false
+  }
 }

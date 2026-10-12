@@ -21,7 +21,7 @@
 | `targets.ts` | `@target` 标记的解析与 `hits.json` 的读/合并/写（`recordTweakHits` 合并而从不从空开始 —— 旧时间正是"停止匹配"可见的唯一依据） |
 | `run-at.ts` | `@run-at` 的读取。三个值就是浏览器自己的 `content_scripts.run_at`（`document_start` / `document_end` / `document_idle`），**缺省 `document_end`** —— 平台的缺省是 `idle`，那是为了不拖慢页面，而 tweak 存在的意义是改页面。先读 `tweak.js` 再读 `tweak.css`；读不出三个值之一就当没声明 |
 | `summary.ts` | 展示形状：`TweakSummary` / `TweakDetails` / `toTweakSummary` / `toTweakDetails` / `toTweakTargets`（**agent 的工具与 app 的页面共读这一份**） |
-| `extension.ts` | 第二个 carrier：`buildTweaksExtension` / `exportTweaksExtension` / `TWEAKS_EXTENSION_DIRNAME`（`craft-tweaks`）。只构建**开着的** tweak，产物是静态字节（`tweaks/{slug}.css|js`），拒绝覆盖已存在的目录 |
+| `extension.ts` | 第二个 carrier：`buildTweaksExtension` / `exportTweaksExtension` / `tweaksExtensionFolderName`。只构建**开着的** tweak，产物是静态字节（`tweaks/{slug}.css|js`），写进所选文件夹下**以 tweak 命名的子目录**（那目录本身就是扩展，`Load unpacked` 直接指向它）；同名旧导出先问再整目录重建，非本扩展的同名目录直接拒绝 |
 | `index.ts` | barrel |
 
 ### agent 面
@@ -47,7 +47,7 @@
 地址移动（handleStateChange）→ 同样重装注册
 ```
 
-- `packages/shared/src/config/watcher.ts`：跟随 `tweak.json` **和** `tweak.css` / `tweak.js`（`hits.json` 明确不跟随）。`notifyFileChange` 是给"原子重命名在某些平台收不到 fs 事件"准备的手动 poke。
+- `packages/shared/src/config/watcher.ts`：跟随 `tweak.json` **和** `tweak.css` / `tweak.js`，**以及**它们所在的文件夹（`tweaks/<slug>` —— 对已存在文件的普通写在某些平台只报目录）。`hits.json` 不参与：是否算变化由 `tweaksSignature`（记录 + 代码）判断，签名没变就不广播、不重装。`notifyFileChange` 是给"原子重命名在某些平台收不到 fs 事件"准备的手动 poke。
 - `packages/server-core/src/handlers/rpc/tweaks.ts`：`tweaks:update`（开关）/ `tweaks:delete` / `GET` / `GET_ONE` / `EXPORT`。**不自己广播也不自己安装** —— 写 + poke，剩下的归监听器。
 - `apps/electron/src/main/index.ts`：`sm.setTweaksInstaller(requestTweaksForWorkspace)`。
 
@@ -92,7 +92,7 @@
 
 - **注入器只在地址变了时动。** `observedByInstance` 的标记是 `tabId|url`，相同就 return —— 所以**同 URL 的 reload 不触发任何主机动作**。那次 reload 拿到的是**它出生之前装好的**注册。
 - **导航触发的重装，对新文档来说晚一步。** 地址变化是 `did-navigate`（提交之后），此时新文档已经创建、init script 已经跑过。所以真正让"改完下一次加载就看到"成立的，是**规则一变就重装**那条路：注册在写入那一刻就是新的。没有它，工具写入和手改都要隔一次导航，而且纯 reload 永远不会生效。（这也是 `notifyConfigFileChange` 手动 poke 存在的原因之一。）
-- **安装会写进被监听的目录 —— 所以监听器绝不能跟随那个文件，也不能跟随目录本身。** 每次安装都以 `recordTweakHitsForTab` 收尾，它把 `hits.json` 写进 tweak 自己的文件夹；而原子写在这个平台还会**额外报一次目录**（`tweaks/<slug>`）。两条都跟就是：事件 → 安装 → 写 `hits.json` → 事件 …… 每 100ms（debounce）一轮，日志刷屏、界面被反复广播。所以 tweaks 分支只认 `tweaks/<slug>/` 下那三个文件（`parts.length === 3`），一切目录级事件都不看 —— 文件夹没有那三个文件之外的消息：新建、删除、改名都会带上其中一个文件的事件，而我们自己的写者另外还会 poke `tweak.json`。`__tests__/watcher-tweaks-events.test.ts` 钉住这条。
+- **安装会写进被监听的目录 —— 所以判据是 tweak 本身，不是路径。** 每次安装都以 `recordTweakHitsForTab` 收尾，它把 `hits.json` 写进 tweak 自己的文件夹；而写完这个文件在这个平台还会（只）报一次目录（`tweaks/<slug>`）。所以 tweaks 分支跟随那三个文件**和**它们所在的文件夹，再由 `handleTweaksChange` 比较一份「记录 + 代码」的签名（`tweaksSignature`），只有**真变了**才广播 + 重装。这一条同时挡住两件事：`hits.json` 的写（以及它引发的目录事件）不会重装刚跑完的规则；而**「对已存在文件的普通写只报目录事件」**这类情况也不会被漏掉——旧规矩只认三个文件路径（`parts.length === 3`），恰好漏掉它（改完 `tweak.js` 刷新不生效的根因）。`__tests__/watcher-tweaks-events.test.ts` 钉住这两面。
 - **注册成对操作。** 每次安装都 `clearInitScripts('tweak:')` 再 `addInitScript`。少一步清理，同一个文档就会跑两遍脚本。
 - **后台 tab 不被前移就拿不到注册**；前移本身是一次 state change，所以"人在看的那一个"始终覆盖。
 - **`.js` 的每个 body 各自 IIFE + try/catch，但整段脚本是一个 source** —— 一个 body 的**解析**错误会带走后面的（这是诚实的极限；用 `Function` 构造器可以逐条兜住，代价是 `eval`，页面 CSP 可能拒绝）。

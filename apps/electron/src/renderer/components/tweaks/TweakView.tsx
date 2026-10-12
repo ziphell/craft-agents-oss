@@ -33,6 +33,7 @@ import { ServerDirectoryBrowser } from '@/components/ServerDirectoryBrowser'
 import { cn } from '@/lib/utils'
 import type { TweakDetails, TweakRunAt } from '@craft-agent/shared/tweaks'
 import { DeleteTweakDialog } from './DeleteTweakDialog'
+import { ExportOverwriteDialog } from './ExportOverwriteDialog'
 
 /** The app's own translation signature, so the helpers below can take `t`. */
 type Translate = (key: string, options?: Record<string, unknown>) => string
@@ -100,14 +101,24 @@ export function TweakView({ tweakSlug }: TweakViewProps) {
   }, [activeWorkspaceId, details, toggling, tweakSlug, t])
 
   // ------------------------------------------------------------------
-  // Export — the same folder picker an export uses
+  // Export — the folder is named after the tweak; replacing one is asked about
   // ------------------------------------------------------------------
-  const exportTo = React.useCallback(async (destParent: string) => {
+  const [exportPending, setExportPending] = React.useState<{ destParent: string; dir: string } | null>(null)
+
+  const exportTo = React.useCallback(async (destParent: string, overwrite = false) => {
     if (!activeWorkspaceId || !details) return
     try {
-      const result = await window.electronAPI.exportTweaks(activeWorkspaceId, destParent)
+      const result = await window.electronAPI.exportTweaks(activeWorkspaceId, destParent, details.slug, overwrite)
+      if (result.status === 'exists') {
+        // A previous export of this tweak is already there; replacing it deletes that folder,
+        // so it is the person's call, not ours.
+        setExportPending({ destParent, dir: result.dir })
+        return
+      }
+      setExportPending(null)
       toast.success(t('toast.tweakExported', { files: result.files }), { description: result.dir })
     } catch (err) {
+      setExportPending(null)
       toast.error(t('toast.tweakExportFailed'), {
         description: err instanceof Error ? err.message : String(err),
       })
@@ -118,6 +129,10 @@ export function TweakView({ tweakSlug }: TweakViewProps) {
     (destParent: string) => void exportTo(destParent),
     [exportTo],
   )
+
+  const handleConfirmExportOverwrite = React.useCallback(() => {
+    if (exportPending) void exportTo(exportPending.destParent, true)
+  }, [exportPending, exportTo])
 
   const {
     pickDirectory: pickExportFolder,
@@ -303,6 +318,11 @@ export function TweakView({ tweakSlug }: TweakViewProps) {
         tweakName={confirmingDelete ? details?.name ?? null : null}
         onConfirm={handleConfirmDelete}
         onCancel={() => setConfirmingDelete(false)}
+      />
+      <ExportOverwriteDialog
+        folderPath={exportPending?.dir ?? null}
+        onConfirm={handleConfirmExportOverwrite}
+        onCancel={() => setExportPending(null)}
       />
       {activeWorkspaceId && (
         <ServerDirectoryBrowser
