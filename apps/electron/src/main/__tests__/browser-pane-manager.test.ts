@@ -2119,6 +2119,7 @@ describe('BrowserPaneManager', () => {
     expect(parking).toBeTruthy()
     expect(parking._options.frame).toBe(false)
     expect(parking._options.enableLargerThanScreen).toBe(true)
+    expect(parking._options.alwaysOnTop).toBe(true)
   })
 
   /**

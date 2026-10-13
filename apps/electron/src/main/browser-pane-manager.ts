@@ -2989,6 +2989,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         // this, or macOS pulls a window it judges unreachable back onto a display — and this one is
         // shown (`showInactive`), so it would be a window nobody may see appearing on screen.
         enableLargerThanScreen: true,
+        // Same reason as the parking window that holds parked tabs (`parkingWindowFor`): the level has
+        // to be there at construction for AppKit to default the window's collection behaviour to
+        // `transient` (which is what Exposé / "Show All Windows" hides).
+        alwaysOnTop: true,
         skipTaskbar: true,
         backgroundColor: getBackgroundColor(nativeTheme.shouldUseDarkColors),
       })
@@ -4853,6 +4857,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // frameless window that asked for this (measured in `electron_ns_window.mm`). Without it the
       // spot below is a request the OS overrules — the person's report: "停车窗被系统拉到可见区域了".
       enableLargerThanScreen: true,
+      // AppKit decides a window's default collection behaviour (and so whether Exposé / "Show All
+      // Windows" hides it) from its level **when the window is created**; raising the level later is
+      // not enough. So the float level is part of the construction, and `hideFromWindowLists` below
+      // only repeats it for the Window menu flag.
+      alwaysOnTop: true,
       skipTaskbar: true,
       backgroundColor: getBackgroundColor(nativeTheme.shouldUseDarkColors),
     })
