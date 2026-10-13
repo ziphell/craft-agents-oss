@@ -221,6 +221,12 @@ function createMockWindow(opts?: { width?: number; height?: number; minWidth?: n
 
   const win = {
     webContents,
+    /**
+     * What the window was built with. A parking window's "off every display" is a claim about how it
+     * was constructed (`frame: false` + `enableLargerThanScreen`), not about anything it does later,
+     * so the tests read it back from here.
+     */
+    _options: opts,
     on: (event: string, cb: Function) => {
       if (!listeners[event]) listeners[event] = []
       listeners[event].push(cb)
@@ -256,6 +262,10 @@ function createMockWindow(opts?: { width?: number; height?: number; minWidth?: n
     }),
     isVisible: mock(() => visible),
     setWindowButtonVisibility: mock((_visible: boolean) => {}),
+    // Out of the app's window surfaces: the Window menu flag, and the level Mission Control reads to
+    // decide a window is `transient` (`hideFromWindowLists`).
+    excludedFromShownWindowsMenu: false,
+    setAlwaysOnTop: mock((_flag: boolean, _level?: string) => {}),
     // The window's place, for a parking window that has to stay off every display whatever the
     // person does to their screens (`keepOffEveryDisplay`), and its taskbar flag.
     getBounds: mock(() => ({ x: winX, y: winY, width: contentWidth, height: contentHeight })),
@@ -2087,6 +2097,50 @@ describe('BrowserPaneManager', () => {
     instance.window.isMinimized.mockImplementation(() => false)
     instance.window._emit('restore')
     expect(onScreen.tabView.setBounds).toHaveBeenLastCalledWith({ x: 201, y: 49, width: 803, height: 845 })
+  })
+
+  /**
+   * A parking window the OS cannot pull back on screen.
+   *
+   * macOS brings a window it judges unreachable back onto a display, and what it consults is AppKit's
+   * `constrainFrameRect:toScreen:` — which Electron leaves alone **only** for a frameless window that
+   * set `enableLargerThanScreen` (`electron_ns_window.mm`). Both halves are load-bearing: frameless
+   * alone, or the flag alone, and the spot `offscreenSpot` asks for is a request the desktop
+   * overrules, so the parking window would appear on screen. The person's report: "macos 浏览器窗口
+   * 多标签，停车窗被系统拉到可见区域了".
+   */
+  it('builds the parking window frameless and larger-than-screen, so the OS leaves it off every display', () => {
+    manager.createInstance('parking-unconstrainable')
+    const instance = (manager as any).instances.get('parking-unconstrainable')
+    instance.tabs[0].currentUrl = 'https://front.example.com/'
+    manager.createTab('parking-unconstrainable', { url: 'https://behind.example.com/', activate: false })
+
+    const parking = instance.parkingWindow
+    expect(parking).toBeTruthy()
+    expect(parking._options.frame).toBe(false)
+    expect(parking._options.enableLargerThanScreen).toBe(true)
+  })
+
+  /**
+   * …and it may not turn up in the app's own window surfaces either.
+   *
+   * macOS lists every *shown* window in the application's Window menu (which the dock's window list
+   * mirrors) and in Mission Control / "Show All Windows", and the parking window is shown
+   * (`showInactive`) — so without this the person sees a grey rectangle they can do nothing with.
+   * `excludedFromShownWindowsMenu` takes it out of the menu; the float level is what makes AppKit
+   * default its collection behaviour to `transient`, which Mission Control hides. Reported by the
+   * person: "显示所有窗口里还是能看到停车窗".
+   */
+  it('keeps the parking window out of the Window menu and Mission Control', () => {
+    manager.createInstance('parking-unlisted')
+    const instance = (manager as any).instances.get('parking-unlisted')
+    instance.tabs[0].currentUrl = 'https://front.example.com/'
+    manager.createTab('parking-unlisted', { url: 'https://behind.example.com/', activate: false })
+
+    const parking = instance.parkingWindow
+    expect(parking).toBeTruthy()
+    expect(parking.excludedFromShownWindowsMenu).toBe(true)
+    expect(parking.setAlwaysOnTop).toHaveBeenCalledWith(true, 'floating')
   })
 
   /**

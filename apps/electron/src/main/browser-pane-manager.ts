@@ -499,9 +499,11 @@ interface BrowserInstance {
    * not composited has **no viewport at all** (`innerWidth` 0, no layout, input landing nowhere), so
    * a tab parked in an unshown window would lose the very layout the freeze keeps
    * (`apps/electron/spike/background-viewport.ts` section E). Outside every display, because a tab
-   * that is not on screen must not be visible whatever size the person's window is; `skipTaskbar`,
-   * because it is not a window of theirs. One per browser window, made when the first tab is parked
-   * and destroyed with the window (`parkingWindowFor`).
+   * that is not on screen must not be visible whatever size the person's window is — and *kept* out
+   * there by `frame: false` + `enableLargerThanScreen`, without which macOS pulls a window it judges
+   * unreachable back onto one (`parkingWindowFor`); `skipTaskbar`, because it is not a window of
+   * theirs. One per browser window, made when the first tab is parked and destroyed with the window
+   * (`parkingWindowFor`).
    */
   parkingWindow: BrowserWindow | null
   /** The address bar, across the top of the window. */
@@ -2983,11 +2985,16 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         height: own.height,
         show: false,
         frame: false,
+        // Same pair as the parking window that holds parked tabs (`parkingWindowFor`): frameless plus
+        // this, or macOS pulls a window it judges unreachable back onto a display — and this one is
+        // shown (`showInactive`), so it would be a window nobody may see appearing on screen.
+        enableLargerThanScreen: true,
         skipTaskbar: true,
         backgroundColor: getBackgroundColor(nativeTheme.shouldUseDarkColors),
       })
       parking.contentView.addChildView(tab.tabView)
       tab.tabView.setBounds({ x: 0, y: 0, width: own.width, height: own.height })
+      this.hideFromWindowLists(parking)
       parking.showInactive()
       // Shown for one frame and lived in for less than a shot, but it is shown: where it ended up may
       // not be on a display (`keepOffEveryDisplay`).
@@ -3091,6 +3098,25 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       return
     }
     mainLog.warn(`[browser-pane] a window nobody may see was on a display at ${rect.x},${rect.y}; moved it back off every display to ${landed.x},${landed.y}`)
+  }
+
+  /**
+   * Take a window nobody may see out of the app's own window surfaces.
+   *
+   * macOS lists every *shown* window in two places the person reads: the application's Window menu
+   * (which the dock's window list mirrors) and Mission Control / "Show All Windows". The parking
+   * windows are shown on purpose (`showInactive`), so without this they are a grey rectangle the
+   * person can see and do nothing with. The person's report: "显示所有窗口里还是能看到停车窗".
+   *
+   * `excludedFromShownWindowsMenu` takes it out of the menu. Mission Control hides a window whose
+   * AppKit collection behaviour is `transient`, which is the default for any level other than
+   * `normal` — hence the float level. Neither call places the window; staying off every display is
+   * `enableLargerThanScreen` at construction (`parkingWindowFor`, `captureWhileParked`) plus
+   * `keepOffEveryDisplay`.
+   */
+  private hideFromWindowLists(window: BrowserWindow): void {
+    window.excludedFromShownWindowsMenu = true
+    window.setAlwaysOnTop(true, 'floating')
   }
 
   /**
@@ -4785,10 +4811,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * is not "moved out of the window's way"; it is *housed* somewhere it can keep its layout.
    *
    * Off every display (`offscreenSpot`), `skipTaskbar`, shown without being activated: nothing of it
-   * is visible, it is never in the taskbar, and it never takes anyone's focus. One per browser window,
-   * made when the first tab is parked and destroyed with the window. It **follows the views in it** in
-   * both directions — `parkedViewsFit` — because a window clips its children and a clipped view is a
-   * view with a smaller viewport, while anything larger than what it holds is space nobody sees.
+   * is visible, it is never in the taskbar, and it never takes anyone's focus. `frame: false` together
+   * with `enableLargerThanScreen` is part of *off every display* rather than a detail of the look: on
+   * macOS AppKit's `constrainFrameRect:toScreen:` brings a window it judges unreachable back onto a
+   * display, and Electron returns the frame untouched there **only** for a frameless window that set
+   * the flag (measured in `electron_ns_window.mm`) — either of the two alone and the OS owns the spot.
+   * One per browser window, made when the first tab is parked and destroyed with the window. It
+   * **follows the views in it** in both directions — `parkedViewsFit` — because a window clips its
+   * children and a clipped view is a view with a smaller viewport, while anything larger than what it
+   * holds is space nobody sees.
    *
    * "Off every display" is then **kept true** rather than assumed (`keepOffEveryDisplay`): the spot
    * is only what the desktop was asked for, and the person can change their screens out from under it.
@@ -4816,10 +4847,17 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       height: wanted.height,
       show: false,
       frame: false,
+      // Frameless **and** `enableLargerThanScreen`: on macOS these two are what let a window stay
+      // where it was put. AppKit's `constrainFrameRect:toScreen:` is what brings a window it judges
+      // unreachable back onto a display, and Electron returns the frame untouched there only for a
+      // frameless window that asked for this (measured in `electron_ns_window.mm`). Without it the
+      // spot below is a request the OS overrules — the person's report: "停车窗被系统拉到可见区域了".
+      enableLargerThanScreen: true,
       skipTaskbar: true,
       backgroundColor: getBackgroundColor(nativeTheme.shouldUseDarkColors),
     })
     instance.parkingWindow = parking
+    this.hideFromWindowLists(parking)
     // Shown, or nothing inside it is composited — and never activated, so it cannot take the focus.
     parking.showInactive()
     // Wherever it ended up (the desktop may have capped the spot), it may not be on a display; and it
