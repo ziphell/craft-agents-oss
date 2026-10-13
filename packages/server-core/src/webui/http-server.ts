@@ -49,6 +49,19 @@ function getMimeType(path: string): string {
   return MIME_TYPES[extname(path).toLowerCase()] ?? 'application/octet-stream'
 }
 
+/**
+ * Assets the browser fetches without a session cookie. The web app manifest and
+ * its icons are requested with `credentials: omit`, so gating them behind the
+ * session cookie would 302 the browser to the login page and break PWA
+ * installability.
+ */
+const UNAUTHENTICATED_ASSET_PATHS = new Set([
+  '/manifest.json',
+  '/icon-192.png',
+  '/icon-512.png',
+  '/apple-touch-icon.png',
+])
+
 function getForwardedValue(req: Request, key: 'proto' | 'host'): string | null {
   const forwarded = req.headers.get('forwarded')
   if (!forwarded) return null
@@ -229,8 +242,8 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
       return new Response('Login page not found', { status: 404 })
     }
 
-    // ── Static assets that login page needs (no auth) ──
-    if (path === '/favicon.ico' || path.startsWith('/login-assets/')) {
+    // ── Static assets that login page + PWA install need (no auth) ──
+    if (path === '/favicon.ico' || UNAUTHENTICATED_ASSET_PATHS.has(path) || path.startsWith('/login-assets/')) {
       const file = await runtime.openAsset(join(webuiDir, path))
       if (file) {
         return new Response(file, {
