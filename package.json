@@ -77,7 +77,7 @@
     "fresh-start:token": "bun run scripts/fresh-start.ts --token-only",
     "print:system-prompt": "bun run packages/shared/src/prompts/print-system-prompt.ts",
     "browser-tool": "bun run scripts/browser-tool.ts",
-    "electron:dist": "bun run webui:build && bun run electron:build && bun run scripts/fetch-bun.ts && cd apps/electron && electron-builder --config electron-builder.yml",
+    "electron:dist": "bun run webui:build && bun run electron:build && bun run scripts/electron-dist.ts",
     "electron:dist:mac": "bun run scripts/stage-claude-sdk-binaries.ts darwin arm64 x64 && bun run webui:build && bun run electron:build && bun run scripts/fetch-bun.ts darwin arm64 && (cd apps/electron && electron-builder --config electron-builder.yml --mac --arm64) && bun run scripts/fetch-bun.ts darwin x64 && (cd apps/electron && electron-builder --config electron-builder.yml --mac --x64)",
     "electron:dist:win": "bun run webui:build && bun run electron:build && bun run scripts/fetch-bun.ts win32 x64 && cd apps/electron && electron-builder --config electron-builder.yml --win",
     "electron:dist:linux": "bun run webui:build && bun run electron:build && bun run scripts/fetch-bun.ts linux x64 && cd apps/electron && electron-builder --config electron-builder.yml --linux",

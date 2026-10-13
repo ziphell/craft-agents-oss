@@ -13,7 +13,7 @@
  * and passed to the subprocess during initialization.
  */
 
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createInterface, type Interface as ReadlineInterface } from 'node:readline';
 import type { AgentEvent } from '@craft-agent/core/types';
 import type { FileAttachment } from '../utils/files.ts';
@@ -169,6 +169,28 @@ function mapBrowserToolErrorCode(code: string): string | null {
         'agents. Ask the user to enable it in settings.';
     default:
       return null;
+  }
+}
+
+/**
+ * Best-effort Mach-O architecture of a runtime binary, via `file(1)`.
+ *
+ * Returns 'arm64' | 'x64' for a single-arch executable, or null when the
+ * architecture is irrelevant/unknown: a fat (universal) binary runs natively on
+ * either arch, and a non-Mach-O file (script, missing file) is not ours to
+ * judge. Only ever called on macOS.
+ */
+function runtimeBinaryArch(path: string): 'arm64' | 'x64' | null {
+  try {
+    const out = execFileSync('/usr/bin/file', ['-b', path], { encoding: 'utf8' }).toLowerCase();
+    if (out.includes('universal')) return null;
+    const x64 = out.includes('x86_64');
+    const arm = out.includes('arm64');
+    if (x64 && !arm) return 'x64';
+    if (arm && !x64) return 'arm64';
+    return null;
+  } catch {
+    return null;
   }
 }
 
@@ -507,6 +529,9 @@ export class PiAgent extends BaseAgent {
 
     const nodePath = runtime.paths?.node || process.execPath;
     const cwd = this.resolvedCwd();
+
+    // Refuse a wrong-arch runtime (macOS) before it can fall into Rosetta.
+    this.assertRuntimeArch(nodePath);
 
     this.debug(`Spawning Pi subprocess: ${nodePath} ${piServerPath}`);
     this.resetSubprocessErrorDedup();
@@ -2842,6 +2867,29 @@ export class PiAgent extends BaseAgent {
   // ============================================================
   // Helpers
   // ============================================================
+
+  /**
+   * On macOS, refuse to spawn a runtime whose architecture differs from the app's.
+   *
+   * An arm64 app that spawns an x86_64 binary runs it under Rosetta 2; when
+   * Rosetta is stale/absent the child aborts with a bare SIGABRT
+   * ("... runtime library is newer than runtime", Library.cpp) that tells the
+   * user nothing. Catching the mismatch up front turns it into an actionable
+   * error. No-op off macOS, or when the arch is unknown/universal.
+   */
+  private assertRuntimeArch(nodePath: string): void {
+    if (process.platform !== 'darwin') return;
+    // Only the arm64-app → x86_64-runtime direction needs Rosetta (an arm64
+    // runtime from an x64 app runs natively), so flag exactly that pair.
+    if (process.arch !== 'arm64') return;
+    if (runtimeBinaryArch(nodePath) !== 'x64') return;
+    throw new Error(
+      `Pi runtime architecture mismatch: this app is arm64 but the runtime at ${nodePath} ` +
+      `is x86_64. On Apple Silicon an x86_64 child runs under Rosetta 2 and aborts when ` +
+      `Rosetta is stale. Install the arm64 build of Craft Agents, or run ` +
+      `'softwareupdate --install-rosetta --agree-to-license'.`,
+    );
+  }
 
   /**
    * Resolve working directory to an absolute path.
