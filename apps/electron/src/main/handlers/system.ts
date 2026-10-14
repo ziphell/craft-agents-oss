@@ -42,6 +42,7 @@ export const GUI_HANDLED_CHANNELS = [
   RPC_CHANNELS.badge.REFRESH,
   RPC_CHANNELS.badge.SET_ICON,
   RPC_CHANNELS.window.GET_FOCUS_STATE,
+  RPC_CHANNELS.window.GET_MAXIMIZED_STATE,
   RPC_CHANNELS.notification.SHOW,
   RPC_CHANNELS.notification.GET_ENABLED,
   RPC_CHANNELS.notification.SET_ENABLED,
@@ -422,14 +423,22 @@ export function registerSystemGuiHandlers(server: RpcServer, deps: HandlerDeps):
     sessionManager.refreshBadge()
   })
 
-  server.handle(RPC_CHANNELS.badge.SET_ICON, async (_ctx, dataUrl: string) => {
+  server.handle(RPC_CHANNELS.badge.SET_ICON, async (_ctx, dataUrl: string, count?: number) => {
     const { setDockIconWithBadge } = await import('../notifications')
-    setDockIconWithBadge(dataUrl)
+    setDockIconWithBadge(dataUrl, count)
   })
 
   server.handle(RPC_CHANNELS.window.GET_FOCUS_STATE, async () => {
     const { isAnyWindowFocused } = require('../notifications')
     return isAnyWindowFocused()
+  })
+
+  // Whether the calling window is maximized. The app draws the Windows caption buttons itself
+  // (`window-manager.ts` drops the OS overlay), so the maximize button has to say which of the two
+  // it is, and a window that mounts after the last change asks rather than waits for an event.
+  server.handle(RPC_CHANNELS.window.GET_MAXIMIZED_STATE, async (ctx) => {
+    if (!windowManager) return false
+    return windowManager.getWindowByWebContentsId(ctx.webContentsId!)?.isMaximized() ?? false
   })
 }
 

@@ -56,7 +56,7 @@ import {
 } from './browser-tabs-state'
 import { CodedError, RPC_CHANNELS, describeWork, sameWork, tabSectionOf } from '@craft-agent/shared/protocol'
 import type { PickedElement, PickedElementOrigin, BrowserToolbarAction, BrowserTabSummary, TabBelongsTo } from '@craft-agent/shared/protocol'
-import { PAGE_PANEL_RING, resolvePagePanelRing } from '../shared/browser-live-fx'
+import { PAGE_PANEL_RING, resolvePagePanelRing, resolvePagePanelShadow } from '../shared/browser-live-fx'
 import { PANEL_EDGE_INSET, PANEL_RADIUS_INNER } from '../shared/panel-geometry'
 import type {
   IBrowserPaneManager,
@@ -189,6 +189,39 @@ const THEME_OBSERVER_MIN_INTERVAL_MS = 120
 const EARLY_THEME_EXTRACTION_DELAY_MS = 100
 const BROWSER_EMPTY_STATE_FILE = 'browser-empty-state.html'
 const CRAFT_DEEPLINK_SCHEME_PREFIX = `${process.env.CRAFT_DEEPLINK_SCHEME || 'craftagents'}://`
+
+/** The browser window's own title, shown in the taskbar and the window switcher. */
+const BROWSER_WINDOW_TITLE = 'Craft Browser'
+
+/**
+ * The browser window's taskbar identity on Windows.
+ *
+ * Every window in the process shares one App User Model ID, so the taskbar groups
+ * the browser in with the workspace windows — a single button with several
+ * previews. A different id puts this window in a taskbar group of its own, so it
+ * can be found, pinned and switched to on its own (see `setAppDetails` at window
+ * creation). Distinct from the packaged app id in electron-builder.yml
+ * (`com.lukilabs.craft-agent`), which the rest of the windows share.
+ */
+const BROWSER_WINDOW_APP_ID = 'com.lukilabs.craft-agent.browser'
+
+/**
+ * The browser window's icon: the Craft glyph in blue, so the standalone browser
+ * window is told apart from the app's own (purple) one at a glance.
+ *
+ * Resolved the same way the workspace windows resolve theirs — packaged assets
+ * live at `dist/resources/`, dev ones at `resources/` — and per platform, since
+ * the formats differ. Returns undefined when the asset is missing, so the window
+ * simply falls back to the app icon rather than carrying a broken path. macOS
+ * ignores a BrowserWindow icon entirely (it uses the app icon).
+ */
+function browserWindowIconPath(): string | undefined {
+  const name = process.platform === 'win32' ? 'browser-icon.ico' : 'browser-icon.png'
+  return [
+    join(__dirname, 'resources', name),
+    join(__dirname, '../resources', name),
+  ].find((candidate) => existsSync(candidate))
+}
 
 /**
  * A load that a **newer navigation aborted**, as opposed to one that failed.
@@ -578,6 +611,14 @@ interface BrowserInstance {
   toolbarMenuOpen: boolean
   toolbarMenuHeight: number
   toolbarMenuOverlayActive: boolean
+  /**
+   * How many times this window has asked for the caret in the address bar.
+   *
+   * Counted rather than flagged because it is a request, not a state: the bar focuses its
+   * input on each new number, so two new tabs in a row are two requests (see
+   * {@link focusAddressBar}).
+   */
+  urlBarFocusToken: number
   showOnCreate: boolean
   pendingShowOnReady: boolean
   pendingShowToken: number
@@ -1156,6 +1197,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       height: 900,
       minWidth: 700,
       minHeight: 500,
+      // Its own name and icon, not the app's: this window is the browser, and it
+      // is told apart from the workspace windows by both (taskbar, window switcher).
+      title: BROWSER_WINDOW_TITLE,
+      icon: browserWindowIconPath(),
       show: false, // Always hidden until toolbar is painted (ready-to-show)
       backgroundColor: bgColor,
       // Fully chromeless — toolbar is rendered in a dedicated BrowserView
@@ -1168,6 +1213,25 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         sandbox: true,
       },
     })
+
+    // Give the window its own taskbar button on Windows. Without this it shares the
+    // process's App User Model ID with the workspace windows and the taskbar folds
+    // it into their button; a distinct id lifts it into a group of its own, so it can
+    // be found and switched to on its own. The icon is repeated because the taskbar
+    // draws that group's button from here, not from the window's own icon.
+    //
+    // The relaunch properties (`relaunchCommand`/`relaunchDisplayName`) are left
+    // unset — the window is a place to look at, not an app to launch, so there is no
+    // relaunch target of our own to offer. Note Windows still lists "Pin to taskbar"
+    // for any window that has a taskbar button; dropping that entry needs the
+    // AppUserModel.PreventPinning window property, which Electron does not expose.
+    if (process.platform === 'win32') {
+      window.setAppDetails({
+        appId: BROWSER_WINDOW_APP_ID,
+        appIconPath: browserWindowIconPath(),
+        appIconIndex: 0,
+      })
+    }
 
     const toolbarView = new BrowserView({
       webPreferences: {
@@ -1243,6 +1307,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       toolbarMenuOpen: false,
       toolbarMenuHeight: 0,
       toolbarMenuOverlayActive: false,
+      urlBarFocusToken: 0,
       showOnCreate: shouldShow,
       pendingShowOnReady: false,
       pendingShowToken: 0,
@@ -1354,6 +1419,16 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     instanceId: string,
     options?: {
       url?: string
+      /**
+       * The address this tab is being made **for**, when the caller will load it itself.
+       *
+       * A tab's own address is what says whether it is the new-tab page, and that has to be readable
+       * from the moment the tab is made (`isNewTabPage`). `url` records the address *and* loads it
+       * here; a caller that must run the load itself — `navigate`, which normalises the input and
+       * reports a failure — cannot have it loaded twice, so it says the address with this and loads
+       * it in the same breath. Recording only: nothing is loaded here.
+       */
+      address?: string
       activate?: boolean
       /**
        * Whose tab this is: the **work** of the conversation asking for it, or `null` for a
@@ -1420,8 +1495,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         }
       }
       if (options?.disposition !== undefined) unwritten.disposition = options.disposition
-      if (options?.url) this.loadTab(instance, unwritten, options.url)
-      else {
+      if (options?.url) {
+        // Written with the load, so the tab reads as a page from here (`isNewTabPage`).
+        unwritten.currentUrl = options.url
+        this.loadTab(instance, unwritten, options.url)
+      } else {
+        if (options?.address) unwritten.currentUrl = options.address
         this.pushToolbarState(instance)
         this.emitStateChange(instance)
       }
@@ -1430,6 +1509,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
 
     const tab = this.buildTab(session.fromPartition(SESSION_PARTITION))
+    // The address is written **now**, not when the page commits — the same reason `restoreTabs`
+    // writes it: the moment this tab is put on screen has to read it as a page rather than as the
+    // blank tab it started as (`isNewTabPage`). A caller that loads the address itself says it with
+    // `address`; anything else leaves the tab reading as blank, which is what a new tab is.
+    if (options?.url) tab.currentUrl = options.url
+    else if (options?.address) tab.currentUrl = options.address
     if (options?.belongsTo !== undefined) {
       tab.belongsTo = options.belongsTo ?? null
     }
@@ -1511,6 +1596,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   /** Send a tab somewhere without waiting: a tab is opened before it is read. */
   private loadTab(instance: BrowserInstance, tab: BrowserTab, url: string): void {
+    // A page is about to be here, so the backdrop behind its own paint is the browser's canvas —
+    // set as the load begins, before any frame can show the tab's previous backdrop (`tabBackdropFor`).
+    tab.tabView.setBackgroundColor(this.tabBackdropFor(tab))
     void tab.tabView.webContents.loadURL(url).catch((error) => {
       mainLog.warn(`[browser-pane] new tab failed to load id=${instance.id} tab=${tab.id}: ${String(error)}`)
     })
@@ -1540,8 +1628,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     if (instance.activeTabId === tab.id) {
       // A tab that is already showing still has to be handed the keyboard — that is what a person
-      // clicking their own tab means — and nothing about it moves.
-      this.focusTheTabOnScreen(instance, tab)
+      // clicking their own tab means — and nothing about it moves. Where that keyboard goes is the
+      // same decision as anywhere the shown tab is named (`focusShownTab`): the bar for a new-tab
+      // page, the page otherwise.
+      this.focusShownTab(instance, tab)
       return
     }
 
@@ -1564,7 +1654,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // parking window and raised in this one, and a view that is about to be handed to another window
     // cannot hold the keyboard — asking for it first is asking the wrong view (measured: the focus
     // is lost by the move).
-    this.focusTheTabOnScreen(instance, tab)
+    //
+    // The keyboard goes where the tab on screen says it goes: the address bar when it is the
+    // new-tab page, the page otherwise (`focusShownTab`). A brand-new tab's empty-state document
+    // commits a beat later and hands the page the focus as it does, so `did-navigate` puts the
+    // caret back in the bar when that document is the one that arrives.
+    this.focusShownTab(instance, tab)
     mainLog.info(`[browser-pane] Tab activated instance=${instance.id} tab=${tab.id} url=${tab.currentUrl}`)
   }
 
@@ -1592,6 +1687,57 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const tabWc = tab.tabView.webContents
     if (tabWc.isDestroyed() || tabWc.isFocused()) return
     tabWc.focus()
+  }
+
+  /**
+   * Put the caret in the address bar.
+   *
+   * A new tab has no page to type into — it exists to be given an address — so the keyboard
+   * belongs in the bar rather than in the empty document. That is two moves, because the bar
+   * is a webContents of its own: the count in the state push tells the bar's renderer to put
+   * the caret in its input, and focusing that webContents is what actually hands the keyboard
+   * over. Either alone is not enough — a focused webContents with no focused element still
+   * swallows the typing, and a focused element in a webContents nobody handed the keyboard to
+   * never sees a keystroke.
+   *
+   * Left alone for a window nobody is looking at — the same rule the page obeys
+   * ({@link focusTheTabOnScreen}): focusing another window's webContents is what brings that
+   * window forward, and a caret nobody can see is not worth moving.
+   */
+  private focusAddressBar(instance: BrowserInstance): void {
+    if (instance.window.isDestroyed() || instance.toolbarView.webContents.isDestroyed()) return
+    if (!instance.window.isFocused()) return
+    instance.urlBarFocusToken += 1
+    this.pushToolbarState(instance)
+    instance.toolbarView.webContents.focus()
+  }
+
+  /**
+   * Whether a tab is the **new-tab page** — a tab nobody pointed anywhere.
+   *
+   * Read from the tab's address rather than from the document it is showing: a new tab's
+   * empty-state document only commits a beat after the tab is made, and both the moment a tab is
+   * put on screen ({@link focusShownTab}) and the moment that document arrives (`did-navigate`)
+   * have to answer this. The address is written when the tab is made (`createTab`, the way
+   * {@link restoreTabs} has always written it), so a tab that was given an address reads as a page
+   * from the start and only a tab given none reads as blank — which is also the notion of "blank
+   * tab" the untouched-window rule already uses, and what makes this work even when the empty-state
+   * document fails to load and the tab falls back to `about:blank`.
+   */
+  private isNewTabPage(tab: BrowserTab): boolean {
+    return tab.currentUrl === 'about:blank'
+  }
+
+  /**
+   * Where the keyboard belongs when a tab is put on screen.
+   *
+   * Into the address bar when the tab is the new-tab page — it exists to be given an address, and
+   * there is no page to type into — and into the page otherwise. The single decision, so the paths
+   * that put a tab on screen (a switch, a close handing over) cannot disagree about it.
+   */
+  private focusShownTab(instance: BrowserInstance, tab: BrowserTab): void {
+    if (this.isNewTabPage(tab)) this.focusAddressBar(instance)
+    else this.focusTheTabOnScreen(instance, tab)
   }
 
   /**
@@ -1685,8 +1831,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         // Whatever tab the window shows next is where an armed picker belongs.
         if (instance.picking) this.armPickerOn(instance, next)
         // The keyboard goes with the display here too, and **after** the layout for the same reason
-        // as `activateTab`: the tab that takes over has just been moved into this window.
-        this.focusTheTabOnScreen(instance, next)
+        // as `activateTab`: the tab that takes over has just been moved into this window. And, again
+        // like `activateTab`, the decision is the shown tab's — the bar for a new-tab page, the page
+        // otherwise (`focusShownTab`).
+        this.focusShownTab(instance, next)
       }
     } else {
       // Closing a tab the window was not showing still shrinks the chrome when it
@@ -4192,6 +4340,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
          page's corner exactly. It is a real border rather than a pseudo-element masked into a
          ring: same pixel, but a border's arcs are anti-aliased by the browser.
 
+         The soft layers beneath it are the app's own panel edge (--shadow-middle) — three of them,
+         one more than the address bar's field edge (--shadow-minimal) carries — so the page reads a
+         touch heavier than the field beside it, the same relation a panel has to a field in the app
+         (resolvePagePanelShadow).
+
          Only ever visible while nothing is happening on this tab: a held tab drops it for the
          agent's own frame below. */
       #frame {
@@ -4202,6 +4355,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         bottom: ${inset.bottom - 1}px;
         border-radius: ${PANEL_RADIUS_INNER + 1}px;
         border: ${PAGE_PANEL_RING.width} solid transparent;
+        box-shadow: ${resolvePagePanelShadow(false)};
         box-sizing: border-box;
         pointer-events: none;
       }
@@ -4623,6 +4777,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // OS/app theme and the window outlives a theme switch.
     const surface = getBackgroundColor(nativeTheme.shouldUseDarkColors)
     const ring = resolvePagePanelRing(nativeTheme.shouldUseDarkColors)
+    const frameShadow = resolvePagePanelShadow(nativeTheme.shouldUseDarkColors)
     const accent = this.getResolvedAccentColor()
     const lockedGlow = `inset 0 0 0 1px color-mix(in oklab, ${accent} 45%, transparent), inset 0 0 24px color-mix(in oklab, ${accent} 28%, transparent)`
 
@@ -4649,6 +4804,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // same ink, and both would be on screen at once.
       frame.style.display = locked ? 'none' : 'block';
       frame.style.borderColor = ${JSON.stringify(ring)};
+      // Re-set with the ring, per mode: the blur's opacity is --shadow-blur-opacity, which the app
+      // raises in dark mode, and the address bar beside this line is drawn from that same variable.
+      frame.style.boxShadow = ${JSON.stringify(frameShadow)};
 
       lock.style.display = locked ? 'block' : 'none';
       lock.style.borderColor = ${JSON.stringify(accent)};
@@ -5049,6 +5207,20 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.raiseChromeViews(instance)
   }
 
+  /**
+   * The colour behind a tab's document — what shows until it paints, and wherever it is transparent.
+   *
+   * The browser's own canvas — white — for a **page**: a page that leaves its background to the
+   * browser is a light page whatever theme the app is wearing, so the canvas is the right guess for
+   * it. But the **new-tab page is our own document** and paints the app's own surface, and a white
+   * canvas behind it is a flash of the wrong colour every time a tab is opened in a dark theme —
+   * measured on the empty-state document, whose first paint waits on a remote font stylesheet. The
+   * surface is what that document is about to paint, so there is nothing to flash.
+   */
+  private tabBackdropFor(tab: BrowserTab): string {
+    return this.isNewTabPage(tab) ? getBackgroundColor(nativeTheme.shouldUseDarkColors) : PAGE_VIEW_BACKDROP
+  }
+
   private layoutAllViews(instance: BrowserInstance): void {
     this.layoutToolbarView(instance)
     this.layoutRailView(instance)
@@ -5103,6 +5275,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   private async loadEmptyStateDocument(instance: BrowserInstance, tab: BrowserTab = activeTab(instance)): Promise<void> {
+    // The new-tab page is our own document and paints the app's surface, so the view behind it is
+    // that surface too — otherwise a new tab flashes the browser's white canvas until this document
+    // paints, which waits on a remote font stylesheet (`tabBackdropFor`).
+    tab.tabView.setBackgroundColor(this.tabBackdropFor(tab))
     if (VITE_DEV_SERVER_URL) {
       await tab.tabView.webContents.loadURL(`${VITE_DEV_SERVER_URL}/${BROWSER_EMPTY_STATE_FILE}`)
       return
@@ -5354,6 +5530,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
        * them away (`toggleTabDevTools`).
        */
       devTools: activeTab(instance).tabView.webContents.isDevToolsOpened(),
+      /**
+       * How many times this window has asked for the caret in the address bar.
+       *
+       * A number rather than a flag — it is a request, not a state, so two new tabs in a row
+       * are two of them (see `focusAddressBar`). Sent with the rest of the state so the bar
+       * focuses its input in the same commit that gives it the new tab's address, never
+       * before it: focusing early would leave the previous tab's address on screen.
+       */
+      urlBarFocusToken: instance.urlBarFocusToken,
       /**
        * The window's tabs.
        *
@@ -6919,7 +7104,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // and the tabs stacked below it, and neither is what this page is meant to look like. What
     // replaces them is the browser's own canvas (`PAGE_VIEW_BACKDROP`), **not** the app's surface:
     // the app's colours belong outside the page's rectangle, and a page that leaves the canvas to
-    // the browser is a light page whatever theme the app is wearing.
+    // the browser is a light page whatever theme the app is wearing. This is only the value a view
+    // *starts* with — every load re-sets it from the document being loaded, because the new-tab page
+    // paints the app's surface and not the canvas (`tabBackdropFor`).
     tab.tabView.setBackgroundColor(PAGE_VIEW_BACKDROP)
     this.applyPageCornerRadius(tab)
 
@@ -6994,6 +7181,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       const normalized = this.normalizeTabState(url, tabWc.getTitle())
       tab.currentUrl = normalized.url
       tab.title = normalized.title
+      // The document that arrived decides what backs it: a page by the browser's canvas, the new-tab
+      // page by the app's surface (`tabBackdropFor`).
+      tab.tabView.setBackgroundColor(this.tabBackdropFor(tab))
       mainLog.info(`[browser-pane] did-navigate id=${instance.id} from=${previousUrl} to=${tab.currentUrl}`)
       this.tabRecorder.noteEvent(tab.id, { type: 'navigate', url: tab.currentUrl })
       tab.canGoBack = tabWc.canGoBack()
@@ -7010,6 +7200,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // address bar and the rail are the person's to type in, and a page committing behind
       // their back is no reason to take that away from them.
       const tabOnScreen = activeTab(instance)
+      // The new-tab page has just arrived on the tab on screen, and the commit handed the *page* the
+      // keyboard as it did — so the caret goes back where the shown tab says it belongs, the address
+      // bar (`focusShownTab`). Read from the tab, not from the document that committed: the address
+      // is what says this is a new-tab page, and it is what survives the empty-state document failing
+      // to load.
+      if (tab.id === tabOnScreen.id && this.isNewTabPage(tab)) {
+        this.focusAddressBar(instance)
+        return
+      }
       const anotherTabHoldsIt = instance.tabs.some(
         (candidate) => candidate.id !== tabOnScreen.id && candidate.tabView.webContents.isFocused(),
       )

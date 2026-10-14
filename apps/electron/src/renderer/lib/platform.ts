@@ -51,6 +51,18 @@ export function getFileManagerName(): string {
   return 'File Manager'
 }
 
+/**
+ * Width (CSS px) the app's own caption buttons occupy at the top-right, where the app
+ * draws its title bar (`titleBarStyle: 'hidden'`). This was the room Windows'
+ * `titleBarOverlay` needed when the OS painted minimize/maximize/close there; the app draws
+ * them itself now (`WindowControls`), so it is the room those buttons occupy — everything
+ * that stepped around the OS buttons (the TopBar row, full-screen pages' close buttons,
+ * the preview header) still steps around these. Zero everywhere else: macOS puts its
+ * controls on the left (handled by the stoplight padding), and the Web UI has no caption
+ * buttons at all.
+ */
+export const titleBarCaptionInset = isWindows && !isWebUI ? 138 : 0
+
 /** Native path separator for current OS */
 export const PATH_SEP = isWindows ? '\\' : '/'
 

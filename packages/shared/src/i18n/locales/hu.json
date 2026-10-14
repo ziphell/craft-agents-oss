@@ -697,6 +697,7 @@
   "menu.resetToDefaultsDetail": "A Craft Agent alapértelmezett állapotba való visszaállításához lépj ki az alkalmazásból, majd futtasd:\n\nbun run fresh-start\n\nEz törli az összes konfigurációt, hitelesítő adatot, munkaterületet és munkamenetet.",
   "menu.resetToDefaultsTitle": "Visszaállítás alapértelmezettre",
   "menu.resetZoom": "Zoom visszaállítása",
+  "menu.restore": "Visszaállítás",
   "menu.selectAll": "Összes kijelölése",
   "menu.settings": "Beállítások...",
   "menu.toggleDevTools": "DevTools be-/kikapcsolása",

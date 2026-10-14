@@ -67,6 +67,16 @@ export interface BrowserControlsProps {
   trailingContent?: ReactNode
   /** Show animated loading progress bar (default true) */
   showProgressBar?: boolean
+  /**
+   * Bump to move the caret into the address bar.
+   *
+   * The bar lives in its own webContents, so "focus the bar" cannot ride the host's
+   * own focus handling: the host counts the times it has asked — a new tab, or coming
+   * back to one — and this focuses on each new number. A number rather than a boolean
+   * because it is a request, not a state: two new tabs in a row are two requests, and
+   * a flag that was already set would say nothing about the second.
+   */
+  focusAddressBarToken?: number
   /** Additional CSS classes on the URL bar group (reload + form) */
   urlBarClassName?: string
   /**
@@ -159,6 +169,7 @@ export function BrowserControls({
   leadingContent,
   trailingContent,
   showProgressBar = true,
+  focusAddressBarToken,
   urlBarClassName,
   leftClearance,
   themeColor,
@@ -168,6 +179,14 @@ export function BrowserControls({
   const [localUrl, setLocalUrl] = useState(controlledUrl ?? '')
   const [isFocused, setIsFocused] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+  /**
+   * The highest focus request this input has already honoured.
+   *
+   * Seeded with whatever arrived with the first render, so a bar whose document mounts
+   * *after* the new tab that asked for it — the token already bumped — does not read
+   * mounting as a request to focus.
+   */
+  const honoredFocusToken = useRef(focusAddressBarToken ?? 0)
 
   // Sync with controlled url when not focused
   useEffect(() => {
@@ -175,6 +194,21 @@ export function BrowserControls({
       setLocalUrl(controlledUrl === 'about:blank' ? '' : controlledUrl)
     }
   }, [controlledUrl, isFocused])
+
+  /**
+   * Move the caret into the address bar when the host asks (see `focusAddressBarToken`).
+   *
+   * Declared **after** the URL sync above on purpose: both effects run in the same
+   * commit, and the sync has to run while `isFocused` is still false — focusing is what
+   * makes it stop running, so a new tab whose bar was focused too early would keep
+   * showing the previous tab's address instead of its own empty one.
+   */
+  useEffect(() => {
+    if (focusAddressBarToken === undefined) return
+    if (focusAddressBarToken <= honoredFocusToken.current) return
+    honoredFocusToken.current = focusAddressBarToken
+    inputRef.current?.focus()
+  }, [focusAddressBarToken])
 
   const handleSubmit = useCallback(
     (e: React.FormEvent) => {
@@ -253,9 +287,12 @@ export function BrowserControls({
           className={cn(
             'w-full rounded-[8px] bg-transparent px-3 pl-8 text-[13px] text-foreground/70 outline-none transition-all',
             compact ? 'h-[28px]' : 'h-[30px]',
-            !safeThemeColor && (isFocused
-              ? 'bg-background border border-transparent shadow-minimal'
-              : 'border border-foreground/5'),
+            // The field wears the app's own edge (`shadow-minimal`: a ring plus soft blur), resting
+            // and focused alike — a bare `border-foreground/5` read thinner than the panels beside
+            // it, because an app edge is not a hairline (the page's own ring matches it; see
+            // `shared/browser-live-fx.ts`). Focusing only fills the field in.
+            !safeThemeColor && 'border border-transparent shadow-minimal',
+            !safeThemeColor && isFocused && 'bg-background',
             safeThemeColor && 'border border-transparent',
           )}
           style={safeThemeColor ? {

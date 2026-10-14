@@ -233,23 +233,39 @@ function updateBadgeCountLinux(count: number): void {
 
 /**
  * Set the dock/taskbar icon with a pre-rendered badge image (cross-platform)
- * Called from IPC when renderer has drawn the badge
+ * Called from IPC when renderer has drawn the badge.
+ *
+ * `count` is the badge count the image was drawn for. The image reaches us
+ * through a round trip (main → renderer draws → renderer → main applies), so by
+ * the time it arrives the count may have changed — and been cleared — already.
+ * Applying such a stale image would put an old number back on the taskbar with
+ * nothing left to correct it (the dedupe in `updateBadgeCount` means no further
+ * clear follows), which is exactly the "badge that will not go away" case.
+ * Drop anything that is not the current count; a fresh draw always follows a
+ * real change.
  */
-export function setDockIconWithBadge(dataUrl: string): void {
+export function setDockIconWithBadge(dataUrl: string, count?: number): void {
   try {
+    if (count !== undefined && count !== currentBadgeCount) {
+      mainLog.info('Ignoring stale badge draw:', { drawn: count, current: currentBadgeCount })
+      return
+    }
+
     const icon = nativeImage.createFromDataURL(dataUrl)
 
     if (process.platform === 'darwin') {
       app.dock?.setIcon(icon)
       mainLog.info('Dock icon updated with badge (macOS)')
     } else if (process.platform === 'win32') {
-      // On Windows, set the taskbar overlay icon
-      const windows = BrowserWindow.getAllWindows()
-      const window = windows[0]
-      if (window && !window.isDestroyed()) {
-        window.setOverlayIcon(icon, `${currentBadgeCount} notifications`)
-        mainLog.info('Taskbar overlay updated with badge (Windows)')
+      // Apply to every window, not just the first: which window's taskbar
+      // button the person is looking at is not ours to know, and clearing
+      // already touches them all, so set and clear stay symmetric.
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed()) {
+          window.setOverlayIcon(icon, `${currentBadgeCount} notifications`)
+        }
       }
+      mainLog.info('Taskbar overlay updated with badge (Windows)')
     }
   } catch (error) {
     mainLog.error('Failed to set dock/taskbar icon with badge:', error)

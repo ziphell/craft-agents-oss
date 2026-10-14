@@ -62,6 +62,7 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
   const windowWithTab = (
     ctx: { workspaceId?: string | null },
     input?: BrowserPaneCreateOptions,
+    openAt?: string,
   ): string => {
     // Stamp the window with the requester's workspace so manual UI-opened
     // tabs stay scoped to the workspace where the user clicked. If
@@ -90,6 +91,9 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
       browserPaneManager.createTab(instanceId, {
         activate: true,
         ...(windowWasOpen ? {} : { reuseUntouchedWindow: true }),
+        // The tab reads as a page from the moment it is made, even though the caller loads the
+        // address itself (see `openAt` / `openInWindow`).
+        ...(openAt ? { address: openAt } : {}),
       })
     }
 
@@ -117,7 +121,12 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
    * person can see and reload rather than a failure that happened behind their back.
    */
   const openInWindow = async (ctx: { workspaceId?: string | null }, url: string) => {
-    const instanceId = windowWithTab(ctx, { show: true, newTab: true })
+    // The address goes into the create, not only into the `navigate` that follows: the tab has to
+    // read as a page from the moment it is made, or it would be treated as a new-tab page and take
+    // the caret in the address bar before the page it was opened for has even started (`openAt`).
+    // `navigate` still does the loading — it normalises and reports a failure — the tab is just told
+    // where it is going first.
+    const instanceId = windowWithTab(ctx, { show: true, newTab: true }, url)
     browserPaneManager.focus(instanceId)
     await browserPaneManager.navigate(instanceId, url)
   }

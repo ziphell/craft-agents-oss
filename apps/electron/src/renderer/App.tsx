@@ -11,6 +11,7 @@ import { generateMessageId } from '../shared/types'
 import { useEventProcessor } from './event-processor'
 import type { AgentEvent, Effect } from './event-processor'
 import { AppShell } from '@/components/app-shell/AppShell'
+import { WindowControls } from '@/components/app-shell/WindowControls'
 import { DesignWindow } from '@/components/designs/DesignWindow'
 import { AppShellProvider, type AppShellContextType } from '@/context/AppShellContext'
 import { parseRouteToNavigationState } from '../shared/route-parser'
@@ -86,7 +87,7 @@ import {
   markBackgroundTaskSignal,
   markLiveBackgroundTasksOrphaned,
 } from '@/components/app-shell/background-task-chip-state'
-import { getFileManagerName } from '@/lib/platform'
+import { getFileManagerName, titleBarCaptionInset } from '@/lib/platform'
 import { rendererLog } from '@/lib/logger'
 import { ActionRegistryProvider } from '@/actions'
 import { toast } from 'sonner'
@@ -2074,6 +2075,9 @@ export default function App() {
     onSetTrafficLightsVisible: (visible: boolean) => {
       window.electronAPI.setTrafficLightsVisible(visible)
     },
+    // The OS caption-button strip over the app's own title bar (Windows) — overlays
+    // keep their close button clear of it (see titleBarCaptionInset).
+    windowControlsInset: titleBarCaptionInset,
   }), [handleOpenFile, handleOpenUrl, openFileInBrowser, linkInterceptor.openFileExternal, sendHtmlSelectionToChat])
 
   // Loading state - show splash screen
@@ -2221,6 +2225,9 @@ export default function App() {
                 />
               )}
             </div>
+            {/* The window's own caption buttons, on Windows only. A design window keeps the
+                standard title bar, so it wears the OS's buttons and must not get these on top. */}
+            {!designWindowSlug && <WindowControls />}
             <ResetConfirmationDialog
               open={showResetDialog}
               onConfirm={executeReset}

@@ -186,7 +186,7 @@ export function useNotifications({
     const cleanup = window.electronAPI.onBadgeDraw(async (data) => {
       try {
         const badgedIconDataUrl = await drawBadgeOnIcon(data.iconDataUrl, data.count)
-        await window.electronAPI.setDockIconWithBadge(badgedIconDataUrl)
+        await window.electronAPI.setDockIconWithBadge(badgedIconDataUrl, data.count)
       } catch (error) {
         console.error('[Notifications] Failed to draw badge:', error)
       }
@@ -205,7 +205,7 @@ export function useNotifications({
     const cleanup = window.electronAPI.onBadgeDrawWindows(async (data) => {
       try {
         const overlayDataUrl = drawWindowsBadgeOverlay(data.count)
-        await window.electronAPI.setDockIconWithBadge(overlayDataUrl)
+        await window.electronAPI.setDockIconWithBadge(overlayDataUrl, data.count)
       } catch (error) {
         console.error('[Notifications] Failed to draw Windows badge overlay:', error)
       }

@@ -77,6 +77,14 @@ interface ToolbarState {
    */
   devTools?: boolean
   /**
+   * How many times the host has asked for the caret in the address bar.
+   *
+   * A new tab exists to be given an address, so the caret belongs in the bar rather than in
+   * the empty page it opened — and coming back to that tab asks again. A number because it is
+   * a request, not a state; `undefined` until the first push, which reads as "nothing asked".
+   */
+  urlBarFocusToken?: number
+  /**
    * The window's tabs, in the order they were opened.
    *
    * `undefined` for a window that has not pushed state yet — the rail draws no
@@ -946,6 +954,7 @@ function BrowserToolbarApp() {
         onGoForward={handleGoForward}
         onReload={handleReload}
         onStop={handleStop}
+        focusAddressBarToken={state.urlBarFocusToken}
         trailingContent={(
           <div className="ml-2 flex items-center gap-1.5 titlebar-no-drag">
             {/*

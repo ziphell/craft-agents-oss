@@ -37,6 +37,8 @@ export const LOCAL_ONLY_CHANNELS = new Set<string>([
   RPC_CHANNELS.window.SET_TRAFFIC_LIGHTS,
   RPC_CHANNELS.window.FOCUS_STATE,
   RPC_CHANNELS.window.GET_FOCUS_STATE,
+  RPC_CHANNELS.window.MAXIMIZED_STATE,
+  RPC_CHANNELS.window.GET_MAXIMIZED_STATE,
 
   // file — native file dialog
   RPC_CHANNELS.file.OPEN_DIALOG,

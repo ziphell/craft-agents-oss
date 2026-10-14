@@ -697,6 +697,7 @@
   "menu.resetToDefaultsDetail": "要将 Craft Agent 恢复为默认设置，请退出应用并运行:\n\nbun run fresh-start\n\n这将删除所有配置、凭证、Workspace 和会话。",
   "menu.resetToDefaultsTitle": "恢复默认设置",
   "menu.resetZoom": "重置缩放",
+  "menu.restore": "还原",
   "menu.selectAll": "全选",
   "menu.settings": "设置...",
   "menu.toggleDevTools": "切换开发者工具",

@@ -175,6 +175,16 @@ export interface PlatformActions {
    * No-op on non-macOS platforms or in web viewer.
    */
   onSetTrafficLightsVisible?: (visible: boolean) => void
+
+  /**
+   * Width (CSS px) reserved at the window's top-right for the caption buttons, when the
+   * app draws its own title bar (the Electron desktop window on Windows, via
+   * `titleBarStyle: 'hidden'`; the app draws the buttons itself, see `WindowControls`).
+   * A surface whose own top-right control must stay clickable — a preview overlay's close
+   * button — pads itself by this so it does not land under them. Absent (0) where there is
+   * no such strip: macOS keeps its controls on the left, and a browser tab has none.
+   */
+  windowControlsInset?: number
 }
 
 const PlatformContext = createContext<PlatformActions>({})

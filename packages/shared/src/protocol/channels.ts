@@ -93,6 +93,16 @@ export const RPC_CHANNELS = {
     SET_TRAFFIC_LIGHTS: 'window:setTrafficLights',
     FOCUS_STATE: 'window:focusState',
     GET_FOCUS_STATE: 'window:getFocusState',
+    /**
+     * Whether the window is maximized — pushed on every change and answered on demand.
+     *
+     * The Windows caption buttons are drawn by the app (the OS's own are not painted over the
+     * bar any more), and a maximize button has to say which of the two it is: the icon for
+     * "maximize" or the one for "restore". Doubled behavior is the same treatment `FOCUS_STATE`
+     * gets: a window that mounts after the last change asks once.
+     */
+    MAXIMIZED_STATE: 'window:maximizedState',
+    GET_MAXIMIZED_STATE: 'window:getMaximizedState',
   },
   file: {
     READ: 'file:read',

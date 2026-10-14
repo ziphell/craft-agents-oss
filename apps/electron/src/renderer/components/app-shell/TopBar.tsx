@@ -13,7 +13,7 @@ import { Tooltip, TooltipTrigger, TooltipContent } from "@craft-agent/ui"
 import { PanelLeftRounded } from "../icons/PanelLeftRounded"
 import { TopBarButton } from "../ui/TopBarButton"
 import { cn } from "@/lib/utils"
-import { isMac, isWebUI } from "@/lib/platform"
+import { isMac, isWebUI, titleBarCaptionInset } from "@/lib/platform"
 import { useActionLabel } from "@/actions"
 import {
   DropdownMenu,
@@ -139,7 +139,12 @@ export function TopBar({
       className="fixed top-0 left-0 right-0 z-panel titlebar-drag-region"
       style={{ height: 'var(--topbar-height)' }}
     >
-      <div className="flex h-full w-full items-center justify-between gap-2">
+      {/* On Windows the OS paints the caption buttons over this bar's right end, so
+          the whole row steps left of that strip (see titleBarCaptionInset). */}
+      <div
+        className="flex h-full w-full items-center justify-between gap-2"
+        style={{ paddingRight: titleBarCaptionInset || undefined }}
+      >
       {/* === LEFT: Sidebar + Menu + Navigation + Workspace === */}
       {/* Keep this container draggable. Only individual interactive controls should use titlebar-no-drag. */}
       {/* In compact mode the right slot is hidden, so we add right padding here

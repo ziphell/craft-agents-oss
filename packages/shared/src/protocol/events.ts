@@ -55,6 +55,7 @@ export interface BroadcastEventMap {
 
   // Window events (per-window)
   [RPC_CHANNELS.window.FOCUS_STATE]: [isFocused: boolean]
+  [RPC_CHANNELS.window.MAXIMIZED_STATE]: [isMaximized: boolean]
   [RPC_CHANNELS.window.CLOSE_REQUESTED]: []
 
   // Browser pane events (global)

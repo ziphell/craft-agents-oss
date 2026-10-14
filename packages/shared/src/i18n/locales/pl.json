@@ -697,6 +697,7 @@
   "menu.resetToDefaultsDetail": "Aby przywrócić Craft Agent do ustawień domyślnych, zamknij aplikację i uruchom:\n\nbun run fresh-start\n\nSpowoduje to usunięcie całej konfiguracji, danych uwierzytelniających, Workspace i sesji.",
   "menu.resetToDefaultsTitle": "Przywróć ustawienia domyślne",
   "menu.resetZoom": "Resetuj zoom",
+  "menu.restore": "Przywróć",
   "menu.selectAll": "Zaznacz wszystko",
   "menu.settings": "Ustawienia...",
   "menu.toggleDevTools": "Przełącz DevTools",

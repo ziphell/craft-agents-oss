@@ -347,6 +347,8 @@ export const CHANNEL_MAP = {
   // Window focus
   getWindowFocusState: invoke(RPC_CHANNELS.window.GET_FOCUS_STATE),
   onWindowFocusChange: listener(RPC_CHANNELS.window.FOCUS_STATE),
+  getWindowMaximizedState: invoke(RPC_CHANNELS.window.GET_MAXIMIZED_STATE),
+  onWindowMaximizedChange: listener(RPC_CHANNELS.window.MAXIMIZED_STATE),
   onNotificationNavigate: listener(RPC_CHANNELS.notification.NAVIGATE),
 
   // Git

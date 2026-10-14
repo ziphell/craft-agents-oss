@@ -54,6 +54,9 @@ export function WorkspacePicker({ onSelectWorkspace }: WorkspacePickerProps) {
   if (loading) {
     return (
       <div className="flex h-screen items-center justify-center bg-sidebar px-4">
+        {/* The window is frameless where the app draws its own title bar, so this
+            screen needs a draggable strip of its own. */}
+        <div className="titlebar-drag-region fixed top-0 left-0 right-0 h-[50px] z-titlebar" />
         <AddWorkspaceContainer>
           <Spinner className="h-6 w-6" />
           <p className="mt-3 text-sm text-muted-foreground">{t("workspace.loadingWorkspaces")}</p>
@@ -64,6 +67,9 @@ export function WorkspacePicker({ onSelectWorkspace }: WorkspacePickerProps) {
 
   return (
     <div className="flex h-screen items-center justify-center bg-sidebar px-4">
+      {/* The window is frameless where the app draws its own title bar, so this
+          screen needs a draggable strip of its own. */}
+      <div className="titlebar-drag-region fixed top-0 left-0 right-0 h-[50px] z-titlebar" />
       <AddWorkspaceContainer>
         <AddWorkspaceStepHeader
           title={t("workspace.selectWorkspace")}

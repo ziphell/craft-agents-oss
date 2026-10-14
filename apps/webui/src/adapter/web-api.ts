@@ -128,6 +128,9 @@ export function createWebApi(options: WebApiOptions): {
     cancelCloseWindow: () => Promise.resolve(),
     onCloseRequested: () => () => {},
     getWindowFocusState: () => Promise.resolve(document.hasFocus()),
+    // No window to maximize here — the caption buttons are the browser's own.
+    getWindowMaximizedState: () => Promise.resolve(false),
+    onWindowMaximizedChange: () => () => {},
     onWindowFocusChange: (cb: (focused: boolean) => void) => {
       const onFocus = () => cb(true)
       const onBlur = () => cb(false)

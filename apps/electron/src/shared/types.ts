@@ -657,11 +657,14 @@ export interface ElectronAPI {
   setNetworkProxySettings(settings: NetworkProxySettings): Promise<void>
 
   refreshBadge(): Promise<void>
-  setDockIconWithBadge(dataUrl: string): Promise<void>
+  setDockIconWithBadge(dataUrl: string, count?: number): Promise<void>
   onBadgeDraw(callback: (data: { count: number; iconDataUrl: string }) => void): () => void
   onBadgeDrawWindows(callback: (data: { count: number }) => void): () => void
   getWindowFocusState(): Promise<boolean>
   onWindowFocusChange(callback: (isFocused: boolean) => void): () => void
+  /** Whether this window is maximized — the app draws the Windows caption buttons itself. */
+  getWindowMaximizedState(): Promise<boolean>
+  onWindowMaximizedChange(callback: (isMaximized: boolean) => void): () => void
   onNotificationNavigate(callback: (data: { workspaceId: string; sessionId: string }) => void): () => void
 
   // Theme preferences sync across windows

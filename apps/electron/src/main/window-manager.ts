@@ -38,7 +38,6 @@ function getWindowsBackgroundMaterial(): 'mica' | 'acrylic' | undefined {
   return undefined
 }
 
-
 interface ManagedWindow {
   window: BrowserWindow
   workspaceId: string
@@ -282,11 +281,27 @@ export class WindowManager {
         vibrancy: 'under-window',
         visualEffectState: 'active',
       }),
-      // Windows: use native frame with Mica/Acrylic transparency (Windows 10/11)
-      ...(isWindows && {
-        frame: true, // Keep native frame for better UX
+      // Windows: a self-drawn bar with self-drawn caption buttons.
+      // `titleBarStyle: 'hidden'` takes the native title bar away and leaves the top strip to the
+      // app's own header (TopBar); the minimize/maximize/close buttons are drawn by the app too
+      // (`WindowControls`), so they belong to the bar rather than sitting on it in the OS's own
+      // style. The trade is Snap Layouts — the hover-the-maximize-button layout flyout is the OS's,
+      // and there is no API for a button we draw ourselves — while dragging to a screen edge,
+      // Win+arrows, double-click-to-maximize and the resize borders are all unaffected. A design
+      // window keeps the standard title bar: it has no in-app header, and the system title bar is
+      // what the window is dragged by (docs/design-plan.md §2.7).
+      ...(isWindows && !designSlug && {
+        titleBarStyle: 'hidden',
         autoHideMenuBar: true, // Menu is null on Windows, this is just for safety
         // Note: Don't use transparent:true with backgroundMaterial - it hides the window frame
+        ...(windowsBackgroundMaterial && {
+          backgroundMaterial: windowsBackgroundMaterial,
+        }),
+      }),
+      // Windows design window: the standard title bar, as above.
+      ...(isWindows && designSlug && {
+        frame: true,
+        autoHideMenuBar: true,
         ...(windowsBackgroundMaterial && {
           backgroundMaterial: windowsBackgroundMaterial,
         }),
@@ -467,7 +482,9 @@ export class WindowManager {
       })
     }
 
-    // Listen for system theme changes and notify this window's renderer
+    // Listen for system theme changes and notify this window's renderer. The Windows caption
+    // buttons are the app's own now (`WindowControls`), so there is no OS overlay left to
+    // re-theme here — the buttons follow the app's colours with the rest of the bar.
     const themeHandler = () => {
       this.pushToWindow(window, RPC_CHANNELS.theme.SYSTEM_CHANGED, nativeTheme.shouldUseDarkColors)
     }
@@ -483,6 +500,15 @@ export class WindowManager {
     window.on('blur', () => {
       this.pushToWindow(window, RPC_CHANNELS.window.FOCUS_STATE, false)
     })
+
+    // Whether the window is maximized, for the app's own maximize/restore button (`WindowControls`).
+    // Pushed on the two events that change it; a window that mounts after the last change asks
+    // (`window:getMaximizedState`) rather than relying on a push it may have missed.
+    const pushMaximized = () => {
+      this.pushToWindow(window, RPC_CHANNELS.window.MAXIMIZED_STATE, window.isMaximized())
+    }
+    window.on('maximize', pushMaximized)
+    window.on('unmaximize', pushMaximized)
 
     // Detect Cmd/Ctrl+W before close events so renderer can distinguish close source.
     // Intent is short-lived to avoid stale classification.

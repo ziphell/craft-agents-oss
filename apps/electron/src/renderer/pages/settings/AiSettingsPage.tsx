@@ -16,6 +16,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Button } from '@/components/ui/button'
 import { HeaderMenu } from '@/components/ui/HeaderMenu'
 import { routes } from '@/lib/navigate'
+import { titleBarCaptionInset } from '@/lib/platform'
 import { X, MoreHorizontal, Pencil, Trash2, Star, ChevronDown, ChevronRight, CheckCircle2, AlertTriangle, RefreshCcw, Settings2, MessageSquareMore, Zap, Clock, Check } from 'lucide-react'
 import type { CredentialHealthStatus, CredentialHealthIssue } from '../../../shared/types'
 import { Spinner, FullscreenOverlayBase, Tooltip, TooltipTrigger, TooltipContent } from '@craft-agent/ui'
@@ -1574,7 +1575,7 @@ export default function AiSettingsPage() {
                 />
                 <div
                   className="fixed top-0 right-0 h-[50px] flex items-center pr-5 [-webkit-app-region:no-drag]"
-                  style={{ zIndex: 'var(--z-fullscreen, 350)' }}
+                  style={{ zIndex: 'var(--z-fullscreen, 350)', paddingRight: titleBarCaptionInset ? titleBarCaptionInset + 20 : undefined }}
                 >
                   <button
                     onClick={handleCloseApiSetup}

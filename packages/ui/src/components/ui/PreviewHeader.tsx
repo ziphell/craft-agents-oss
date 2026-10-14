@@ -12,6 +12,7 @@ import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { X, type LucideIcon } from 'lucide-react'
 import { cn } from '../../lib/utils'
+import { usePlatform } from '../../context/PlatformContext'
 
 /**
  * Badge variants using semantic colors
@@ -131,13 +132,21 @@ export function PreviewHeader({
   style,
 }: PreviewHeaderProps) {
   const { t } = useTranslation()
+  // On Windows the OS paints its caption buttons over the app's own title bar (the
+  // preview overlays are full-window surfaces, so their header sits under that strip).
+  // Step the close button left of it or it would be unclickable there.
+  const { windowControlsInset } = usePlatform()
   return (
     <div
       className={cn(
         'shrink-0 flex items-center justify-between px-3',
         className
       )}
-      style={{ height, ...style }}
+      style={{
+        height,
+        ...style,
+        ...(windowControlsInset ? { paddingRight: windowControlsInset + 12 } : {}),
+      }}
     >
       {/* Left side - space for traffic lights on macOS, flex-1 to balance with right side */}
       <div className="flex-1 min-w-[70px]" />

@@ -288,6 +288,10 @@ function createMockWindow(opts?: { width?: number; height?: number; minWidth?: n
     // only goes back to the tab on screen inside the window that already has it
     // (`focusTheTabOnScreen`).
     isFocused: mock(() => true),
+    // Windows taskbar identity (App User Model ID + icon) — the browser window takes its own
+    // group. Windows-only in production, but the call is unconditional from the test's point of
+    // view, so the mock has to exist.
+    setAppDetails: mock((_details: unknown) => {}),
     destroy: mock(() => {
       destroyed = true
       win._emit('closed')
@@ -1596,6 +1600,8 @@ describe('BrowserPaneManager', () => {
         picking: false,
         // …and so are the tab's developer tools, which the bar's own button toggles.
         devTools: false,
+        // Nobody has asked for the caret in the address bar.
+        urlBarFocusToken: 0,
         tabs: [
           tabSummary({ id: instance.tabs[0].id, url: 'https://example.com', title: 'Example', active: true }),
         ],
@@ -1637,6 +1643,8 @@ describe('BrowserPaneManager', () => {
         canGoForward: true,
         picking: false,
         devTools: false,
+        // Nobody has asked for the caret in the address bar.
+        urlBarFocusToken: 0,
         tabs: [
           tabSummary({ id: instance.tabs[0].id, url: 'https://craft.do', title: 'Craft', isLoading: true, active: true }),
         ],
@@ -2691,17 +2699,40 @@ describe('BrowserPaneManager', () => {
     // (no `theme-color`, `html`/`body` transparent, no full-width bar): backing it with the
     // app's own surface put `#080a10` behind the page's black text in dark mode and the whole
     // page read as black-on-black — a page that looks broken, not a page that is dark.
+    // A **page** — one given an address — not the new-tab page, which is our own document and
+    // paints the app's surface (see the test below).
     it('backs a page with the browser canvas in dark mode too', () => {
       mockNativeTheme.shouldUseDarkColors = true
       try {
         manager.createInstance('tabs-backdrop-dark')
         const instance = (manager as any).instances.get('tabs-backdrop-dark')
-        const first = instance.tabs[0]
+        // Make the window "in use", so the tab below is a real one and not the blank it came with.
+        instance.tabs[0].currentUrl = 'https://first.example.com/'
+        const pageId = manager.createTab('tabs-backdrop-dark', { url: 'https://dark.example.com/' })
+        const page = instance.tabs.find((tab: any) => tab.id === pageId)
 
-        expect(first.tabView.setBackgroundColor).toHaveBeenCalledWith('#ffffff')
+        expect(page.tabView.setBackgroundColor).toHaveBeenCalledWith('#ffffff')
         // The app's dark surface is the one thing it must *not* be: it is what painted the
         // page black.
-        expect(first.tabView.setBackgroundColor).not.toHaveBeenCalledWith(BACKGROUND_HEX.dark)
+        expect(page.tabView.setBackgroundColor).not.toHaveBeenCalledWith(BACKGROUND_HEX.dark)
+      } finally {
+        mockNativeTheme.shouldUseDarkColors = false
+      }
+    })
+
+    // The new-tab page is our own document and paints the app's surface, so the view behind it is
+    // that surface too — a white canvas behind it is a flash of the wrong colour every time a tab
+    // is opened in a dark theme, for as long as the document takes to paint (it blocks on a remote
+    // font stylesheet).
+    it('backs the new-tab page with the app surface, not the white canvas', () => {
+      mockNativeTheme.shouldUseDarkColors = true
+      try {
+        manager.createInstance('tabs-backdrop-newtab')
+        const instance = (manager as any).instances.get('tabs-backdrop-newtab')
+        const first = instance.tabs[0]
+
+        // The last word on a tab's backdrop is the document being loaded — here the new-tab page.
+        expect(first.tabView.setBackgroundColor.mock.calls.at(-1)).toEqual([BACKGROUND_HEX.dark])
       } finally {
         mockNativeTheme.shouldUseDarkColors = false
       }
@@ -2845,6 +2876,9 @@ describe('BrowserPaneManager', () => {
       const first = instance.tabs[0]
       const secondId = manager.createTab('tabs-focus-switch', { activate: false })
       const second = instance.tabs.find((tab: any) => tab.id === secondId)
+      // A tab with an address is a page, so its own page takes the keyboard; a new-tab page would
+      // hand the caret to the address bar instead (see the focus tests below).
+      second.currentUrl = 'https://second.example.com/'
       second.tabView.webContents.focus.mockClear()
 
       manager.activateTab('tabs-focus-switch', secondId)
@@ -2866,13 +2900,105 @@ describe('BrowserPaneManager', () => {
       manager.createInstance('tabs-focus-close')
       const instance = (manager as any).instances.get('tabs-focus-close')
       const onScreen = instance.tabs[0]
-      manager.createTab('tabs-focus-close', { activate: false })
+      // The successor has an address, so it is a page and its page takes the keyboard.
+      const nextId = manager.createTab('tabs-focus-close', { activate: false })
+      const successor = instance.tabs.find((tab: any) => tab.id === nextId)
+      successor.currentUrl = 'https://next.example.com/'
 
       manager.closeTab('tabs-focus-close', onScreen.id)
 
       // The tab that went away had the keyboard; what the window shows next takes it.
       const next = instance.tabs.find((tab: any) => tab.id === instance.activeTabId)
       expect(next.tabView.webContents.focus).toHaveBeenCalled()
+    })
+
+    // A new tab has no page to type into — it exists to be given an address — so its bar asks for
+    // the caret, and coming back to it asks again. The bar is a webContents of its own, so the host
+    // does both halves: the request travels in the state push (a bumped count) and the bar's
+    // webContents is focused. Which tab is "new" is read from the tab's **address**, so it is known
+    // the moment the tab is made, not when its empty-state document commits.
+    it('puts the caret in the address bar when a new tab is put on screen', () => {
+      manager.createInstance('tabs-focus-newpage')
+      const instance = (manager as any).instances.get('tabs-focus-newpage')
+      // The window is in use, so the new tab is a second one rather than the blank it came with.
+      instance.tabs[0].currentUrl = 'https://first.example.com/'
+      instance.toolbarView.webContents.focus.mockClear()
+
+      manager.createTab('tabs-focus-newpage')
+
+      expect(instance.toolbarView.webContents.focus).toHaveBeenCalled()
+      expect(instance.urlBarFocusToken).toBe(1)
+    })
+
+    it('puts the caret back in the address bar when the new tab’s own document commits', () => {
+      manager.createInstance('tabs-focus-commit')
+      const instance = (manager as any).instances.get('tabs-focus-commit')
+      instance.tabs[0].currentUrl = 'https://first.example.com/'
+      const newId = manager.createTab('tabs-focus-commit')
+      const newTab = instance.tabs.find((tab: any) => tab.id === newId)
+      const tokenBeforeCommit = instance.urlBarFocusToken
+      instance.toolbarView.webContents.focus.mockClear()
+
+      // Committing a page is where Chromium hands the keyboard to the page; the new-tab page is the
+      // one case where it belongs in the bar instead.
+      newTab.tabView.webContents._emit('did-navigate', 'file:///app/renderer/browser-empty-state.html')
+
+      expect(instance.toolbarView.webContents.focus).toHaveBeenCalled()
+      expect(instance.urlBarFocusToken).toBeGreaterThan(tokenBeforeCommit)
+    })
+
+    it('leaves the address bar alone when a tab is made at an address', () => {
+      manager.createInstance('tabs-focus-link')
+      const instance = (manager as any).instances.get('tabs-focus-link')
+      instance.tabs[0].currentUrl = 'https://first.example.com/'
+      instance.toolbarView.webContents.focus.mockClear()
+
+      // A link opens a tab **at** an address — Chromium's `window.open` path — so the tab reads as a
+      // page from the moment it is made and the caret stays out of the bar, without waiting for the
+      // page to commit.
+      manager.createTab('tabs-focus-link', {
+        url: 'https://link.example.com/',
+        afterTabId: instance.tabs[0].id,
+        disposition: 'link',
+      })
+
+      expect(instance.toolbarView.webContents.focus).not.toHaveBeenCalled()
+      expect(instance.urlBarFocusToken).toBe(0)
+    })
+
+    it('puts the caret in the address bar when the person switches back to a new tab', () => {
+      manager.createInstance('tabs-focus-back')
+      const instance = (manager as any).instances.get('tabs-focus-back')
+      const first = instance.tabs[0]
+      first.currentUrl = 'https://first.example.com/'
+
+      const newId = manager.createTab('tabs-focus-back', { activate: false })
+
+      manager.activateTab('tabs-focus-back', first.id)
+      instance.toolbarView.webContents.focus.mockClear()
+      const tokenBefore = instance.urlBarFocusToken
+
+      manager.activateTab('tabs-focus-back', newId)
+
+      // The tab on screen is the new-tab page, so the caret goes to the bar rather than the empty
+      // document — and the ask is a new number, so the bar focuses again.
+      expect(instance.toolbarView.webContents.focus).toHaveBeenCalled()
+      expect(instance.urlBarFocusToken).toBeGreaterThan(tokenBefore)
+    })
+
+    it('puts the caret in the address bar when closing a tab falls back to a new tab', () => {
+      manager.createInstance('tabs-focus-close-new')
+      const instance = (manager as any).instances.get('tabs-focus-close-new')
+      const real = instance.tabs[0]
+      real.currentUrl = 'https://first.example.com/'
+      manager.createTab('tabs-focus-close-new', { activate: false })
+
+      // The real tab is on screen; closing it hands the window over to the new-tab page behind it.
+      instance.toolbarView.webContents.focus.mockClear()
+      manager.closeTab('tabs-focus-close-new', real.id)
+
+      expect(instance.toolbarView.webContents.focus).toHaveBeenCalled()
+      expect(instance.urlBarFocusToken).toBe(1)
     })
 
     it('rounds the page itself, so any page is a rounded panel the person can click', () => {
