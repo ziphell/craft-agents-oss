@@ -1220,11 +1220,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // be found and switched to on its own. The icon is repeated because the taskbar
     // draws that group's button from here, not from the window's own icon.
     //
-    // The relaunch properties (`relaunchCommand`/`relaunchDisplayName`) are left
-    // unset — the window is a place to look at, not an app to launch, so there is no
-    // relaunch target of our own to offer. Note Windows still lists "Pin to taskbar"
-    // for any window that has a taskbar button; dropping that entry needs the
-    // AppUserModel.PreventPinning window property, which Electron does not expose.
+    // The relaunch properties (`relaunchCommand`/`relaunchDisplayName`) are
+    // deliberately left unset: setting them is what makes the taskbar offer "Pin to
+    // taskbar". The window is a place, not an app to launch, so the button carries
+    // only "Close window".
     if (process.platform === 'win32') {
       window.setAppDetails({
         appId: BROWSER_WINDOW_APP_ID,
