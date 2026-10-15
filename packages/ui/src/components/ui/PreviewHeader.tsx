@@ -12,7 +12,6 @@ import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { X, type LucideIcon } from 'lucide-react'
 import { cn } from '../../lib/utils'
-import { usePlatform } from '../../context/PlatformContext'
 
 /**
  * Badge variants using semantic colors
@@ -127,6 +126,12 @@ export interface PreviewHeaderProps {
  * `document.body`, so nothing above the header is inside the window's drag region and without this
  * the window could not be moved while the overlay was open. The two sides are the handle; the badge
  * row and the actions opt out (`no-drag`) so they stay clickable.
+ *
+ * No room is kept at the right for the window's own caption buttons. This header only appears inside
+ * a fullscreen overlay, and an open overlay is exactly what puts those buttons away for as long as it
+ * is up (see `FullscreenOverlayBase`) — so the corner belongs to the close button. The overlay asks
+ * before it paints, so the header is laid out knowing the corner is free rather than being told
+ * afterwards and having to move.
  */
 export function PreviewHeader({
   children,
@@ -137,10 +142,6 @@ export function PreviewHeader({
   style,
 }: PreviewHeaderProps) {
   const { t } = useTranslation()
-  // On Windows the OS paints its caption buttons over the app's own title bar (the
-  // preview overlays are full-window surfaces, so their header sits under that strip).
-  // Step the close button left of it or it would be unclickable there.
-  const { windowControlsInset } = usePlatform()
   return (
     <div
       className={cn(
@@ -150,7 +151,6 @@ export function PreviewHeader({
       style={{
         height,
         ...style,
-        ...(windowControlsInset ? { paddingRight: windowControlsInset + 12 } : {}),
         // Last, so a caller's own style cannot drop the handle: dragging is this row's job.
         WebkitAppRegion: 'drag',
       } as React.CSSProperties}

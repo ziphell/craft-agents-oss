@@ -16,7 +16,6 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Button } from '@/components/ui/button'
 import { HeaderMenu } from '@/components/ui/HeaderMenu'
 import { routes } from '@/lib/navigate'
-import { titleBarCaptionInset } from '@/lib/platform'
 import { X, MoreHorizontal, Pencil, Trash2, Star, ChevronDown, ChevronRight, CheckCircle2, AlertTriangle, RefreshCcw, Settings2, MessageSquareMore, Zap, Clock, Check } from 'lucide-react'
 import type { CredentialHealthStatus, CredentialHealthIssue } from '../../../shared/types'
 import { Spinner, FullscreenOverlayBase, Tooltip, TooltipTrigger, TooltipContent } from '@craft-agent/ui'
@@ -1573,9 +1572,11 @@ export default function AiSettingsPage() {
                   editInitialValues={editInitialValues}
                   className="h-full"
                 />
+                {/* The window's own caption buttons are away for as long as this overlay is up (see
+                    `FullscreenOverlayBase`), so the close button takes the corner itself. */}
                 <div
                   className="fixed top-0 right-0 h-[50px] flex items-center pr-5 [-webkit-app-region:no-drag]"
-                  style={{ zIndex: 'var(--z-fullscreen, 350)', paddingRight: titleBarCaptionInset ? titleBarCaptionInset + 20 : undefined }}
+                  style={{ zIndex: 'var(--z-fullscreen, 350)' }}
                 >
                   <button
                     onClick={handleCloseApiSetup}

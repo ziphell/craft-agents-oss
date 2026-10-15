@@ -5,7 +5,6 @@ import { motion } from "motion/react"
 import { Dithering } from "@paper-design/shaders-react"
 import { FullscreenOverlayBase } from "@craft-agent/ui"
 import { cn } from "@/lib/utils"
-import { titleBarCaptionInset } from "@/lib/platform"
 import { overlayTransitionIn } from "@/lib/animations"
 import { AddWorkspaceStep_Choice } from "./AddWorkspaceStep_Choice"
 import { AddWorkspaceStep_CreateNew } from "./AddWorkspaceStep_CreateNew"
@@ -191,12 +190,10 @@ export function WorkspaceCreationScreen({
           />
         </motion.div>
 
-        {/* Header with drag region and close button. On Windows the OS caption
-            buttons sit over the top-right, so the close button steps left of them. */}
-        <header
-          className="titlebar-drag-region relative h-[50px] shrink-0 flex items-center justify-end px-6"
-          style={titleBarCaptionInset ? { paddingRight: titleBarCaptionInset + 16 } : undefined}
-        >
+        {/* Header with drag region and close button. No room is kept at the right for the window's
+            own caption buttons: this screen is a fullscreen overlay, and one being open is what puts
+            those buttons away for as long as it is up (see `FullscreenOverlayBase`). */}
+        <header className="titlebar-drag-region relative h-[50px] shrink-0 flex items-center justify-end px-6">
           {/* Close button - explicitly no-drag */}
           <motion.button
             initial={{ opacity: 0 }}

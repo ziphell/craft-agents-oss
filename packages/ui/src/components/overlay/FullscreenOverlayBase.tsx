@@ -35,7 +35,7 @@
  * Used by: PreviewOverlay, DocumentFormattedMarkdownOverlay, WorkspaceCreationScreen
  */
 
-import { useEffect, useRef, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, type ReactNode } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import { usePlatform } from '../../context/PlatformContext'
 import { cn } from '../../lib/utils'
@@ -170,8 +170,10 @@ export function FullscreenOverlayBase({
 
   // Traffic lights (macOS — a no-op elsewhere) step aside for as long as any overlay is open, so a
   // click meant for the overlay cannot land on the window's controls instead. Counted rather than
-  // set: see `requestWindowControlsHidden`.
-  useEffect(() => {
+  // set: see `requestWindowControlsHidden`. A *layout* effect, so the ask lands in the same commit
+  // as the overlay: the header is drawn knowing the corner is free, instead of reserving room for
+  // buttons that are about to go away and then moving when the state catches up one commit later.
+  useLayoutEffect(() => {
     if (!isOpen) return
 
     if (requestWindowControlsHidden()) setTrafficLightsVisible.current?.(false)

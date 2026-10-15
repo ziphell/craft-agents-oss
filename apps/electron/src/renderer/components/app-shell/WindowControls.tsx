@@ -20,10 +20,11 @@ import { cn } from '@/lib/utils'
  *
  * They sit on `--z-caption`, above every surface the app can draw — including the fullscreen
  * overlays, which portal to `document.body` and reach as high as `--z-splash` (600). Those overlays
- * are content: they may cover the app, never the window's own buttons. A button of ours that a
- * fullscreen overlay could paint over would be a button nobody can press, so the ordering is the
- * guarantee, not the per-overlay padding (see `PreviewHeader` for how an overlay keeps clear of
- * this strip instead).
+ * are content: the ones not built on `FullscreenOverlayBase` (the splash screen, the workspace
+ * picker, reauth) leave these buttons up, and a button of ours underneath one of them would be a
+ * button nobody can press. An overlay out of that base puts them away for as long as it is open
+ * instead — it brings its own close button, and two of them side by side read as two ways to close
+ * two different things (see `captionButtonsVisible` in App).
  */
 export function WindowControls() {
   const { t } = useTranslation()

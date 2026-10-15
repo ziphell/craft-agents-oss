@@ -87,7 +87,7 @@ import {
   markBackgroundTaskSignal,
   markLiveBackgroundTasksOrphaned,
 } from '@/components/app-shell/background-task-chip-state'
-import { getFileManagerName, titleBarCaptionInset } from '@/lib/platform'
+import { getFileManagerName } from '@/lib/platform'
 import { rendererLog } from '@/lib/logger'
 import { ActionRegistryProvider } from '@/actions'
 import { toast } from 'sonner'
@@ -2035,6 +2035,14 @@ export default function App() {
     dispatchFocusInputEvent({ sessionId })
   }, [sessionSelection.selected, getDraft, handleInputChange])
 
+  // The window's own controls step aside while a fullscreen overlay is open: the overlay brings its
+  // own close button, and the two side by side read as two ways to close two different things. On
+  // Windows that is the app's own caption buttons (`WindowControls`); on macOS it is the traffic
+  // lights, which belong to the OS and are hidden by the main process instead. Overlays that are not
+  // built on `FullscreenOverlayBase` — the splash screen, the workspace picker, reauth — never ask,
+  // so the buttons stay, which is also where macOS keeps its lights.
+  const [captionButtonsVisible, setCaptionButtonsVisible] = useState(true)
+
   // Platform actions for @craft-agent/ui components (overlays, etc.)
   // Memoized to prevent re-renders when these callbacks don't change
   // NOTE: Must be defined before early returns to maintain consistent hook order
@@ -2071,13 +2079,13 @@ export default function App() {
     },
     // Platform-specific file manager name for UI labels
     fileManagerName: getFileManagerName(),
-    // Hide/show macOS traffic lights when fullscreen overlays are open
+    // The window's own controls, shown or put away for as long as an overlay asks (see
+    // `captionButtonsVisible` above). The IPC reaches the macOS traffic lights; on Windows the
+    // buttons are ours, so the same call also hides them in the renderer.
     onSetTrafficLightsVisible: (visible: boolean) => {
+      setCaptionButtonsVisible(visible)
       window.electronAPI.setTrafficLightsVisible(visible)
     },
-    // The OS caption-button strip over the app's own title bar (Windows) — overlays
-    // keep their close button clear of it (see titleBarCaptionInset).
-    windowControlsInset: titleBarCaptionInset,
   }), [handleOpenFile, handleOpenUrl, openFileInBrowser, linkInterceptor.openFileExternal, sendHtmlSelectionToChat])
 
   // Loading state - show splash screen
@@ -2226,8 +2234,11 @@ export default function App() {
               )}
             </div>
             {/* The window's own caption buttons, on Windows only. A design window keeps the
-                standard title bar, so it wears the OS's buttons and must not get these on top. */}
-            {!designWindowSlug && <WindowControls />}
+                standard title bar, so it wears the OS's buttons and must not get these on top.
+                Hidden for as long as a fullscreen overlay is open — that overlay has its own close
+                button, and two of them next to each other read as two ways to close two different
+                things. */}
+            {!designWindowSlug && captionButtonsVisible && <WindowControls />}
             <ResetConfirmationDialog
               open={showResetDialog}
               onConfirm={executeReset}
