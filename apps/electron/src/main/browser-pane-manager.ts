@@ -4751,6 +4751,17 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // that tab is the held one, or a menu of ours is open above it. Switching to another tab
     // therefore hands the keyboard and mouse straight back.
     const shieldActive = locked || menuActive
+    /**
+     * Whether the overlay ends up *above* the page — the one question the mask's fill answers.
+     *
+     * Stated from `restackViews`, which is what decides the order, rather than guessed here: a
+     * held tab raises the overlay (the agent's frame and shield have to be over the page), and an
+     * open menu of ours takes the top for the chrome, which puts the overlay back *under* the page
+     * even while the tab is held. The two used to disagree — the fill followed "a menu is up" and
+     * went clear, which is exactly when the overlay is under the page and the fill is what covers
+     * the notches the page's cut corners leave in this document.
+     */
+    const overlayOverPage = locked && !(instance.toolbarMenuOpen || menuActive)
 
     const overlay = instance.nativeOverlayView
 
@@ -4806,6 +4817,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
       const locked = ${locked};
       const shieldActive = ${shieldActive};
+      const overlayOverPage = ${overlayOverPage};
 
       // The panel's rectangle and the two frames around it, placed from the gutter above. The
       // frames sit one pixel outside it, so their arcs stay concentric with the page's cut corner.
@@ -4826,9 +4838,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // it, but its corners are cut out of the page's own view (applyPageCornerRadius) and those
       // notches fall *inside* this rectangle — filled here, they show this surface; left clear, they
       // would show the window's material behind the whole document, which is not what the panel sits
-      // on. While the overlay is over the page (a lock, or one of our menus) the rectangle must stay
-      // clear, or it would cover the page.
-      mask.style.background = shieldActive ? 'transparent' : ${JSON.stringify(surface)};
+      // on. Only a held tab with no menu of ours up puts the overlay over the page, and then the
+      // rectangle must stay clear, or it would cover the page (overlayOverPage).
+      mask.style.background = overlayOverPage ? 'transparent' : ${JSON.stringify(surface)};
 
       // Which of the two frames is drawn: the resting line outside the page while nothing is
       // happening here, and — once this tab is held — the agent's own frame over the page's edge,

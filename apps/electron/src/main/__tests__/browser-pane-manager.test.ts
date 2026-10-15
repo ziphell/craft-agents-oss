@@ -2460,6 +2460,53 @@ describe('BrowserPaneManager', () => {
       expect(overlayScript(instance)).toContain('const shieldActive = true;')
     })
 
+    /**
+     * The mask's fill follows the **layer order**, not "is a menu of ours up".
+     *
+     * The rectangle's fill is what covers the notches the page's cut corners leave in this
+     * document, so it has to be on whenever the overlay is *under* the page — and that includes
+     * every menu, because a menu takes the top for the chrome and puts the overlay back under the
+     * page (`restackViews`). Reading "a menu is up" as "the overlay is over the page" — the old
+     * condition, `shieldActive` — cleared the fill exactly when it was needed, and the page's four
+     * corners showed the window's material instead of the surface.
+     */
+    it("keeps the mask's fill while one of our menus is over the page", async () => {
+      /** Enough microtasks for the window's overlay document to finish loading. */
+      const settle = async (): Promise<void> => {
+        for (let i = 0; i < 4; i += 1) await Promise.resolve()
+      }
+
+      manager.createInstance('ac-menu')
+      manager.registerToolbarIpc()
+      const instance = (manager as any).instances.get('ac-menu')
+      await settle()
+
+      const menuGeometry = (
+        mockIpcMainHandle.mock.calls as unknown as Array<[string, (...args: any[]) => Promise<void>]>
+      ).find(([name]) => name === 'browser-toolbar:menu-geometry')?.[1]
+      if (!menuGeometry) throw new Error('Expected browser-toolbar:menu-geometry IPC registration')
+
+      // Nothing held, no menu up: the overlay is under the page, so the rectangle is filled.
+      expect(overlayScript(instance)).toContain('const overlayOverPage = false;')
+
+      // A held tab is the one case that raises the overlay *over* the page — there the rectangle
+      // has to stay clear, or it would cover the page.
+      drive('ac-menu', 'sess-menu')
+      manager.setAgentControl('sess-menu', { displayName: 'Click', intent: 'Pressing Buy' })
+      holdActiveTab('ac-menu', 'sess-menu')
+      await settle()
+      expect(overlayScript(instance)).toContain('const overlayOverPage = true;')
+
+      // A menu hands the top back to the chrome, which puts the overlay under the page again — and
+      // the fill has to come back with it.
+      await menuGeometry({}, 'ac-menu', true, 120)
+      expect(instance.window.setTopBrowserView).toHaveBeenLastCalledWith(instance.chromeView)
+      expect(overlayScript(instance)).toContain('const overlayOverPage = false;')
+
+      // Read off the layer order, never off the shield: the fill is not the shield's answer.
+      expect(overlayScript(instance)).not.toContain('mask.style.background = shieldActive')
+    })
+
     it('emits state change when agent control is set and cleared', () => {
       const stateEvents: any[] = []
       manager.onStateChange((info) => stateEvents.push(info))
@@ -3782,6 +3829,9 @@ describe('BrowserPaneManager', () => {
         instanceId: 'pick-origin',
         element: ELEMENT,
         origin: {
+          // The tab travels with the pick (`PickedElementOrigin.tabId`): the conversation acts on
+          // the tab the person pointed at, not on the one it happens to be working from.
+          tabId: tab.id,
           url: 'https://shop.example.com/cart',
           title: 'Cart',
         },
