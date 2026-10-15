@@ -112,6 +112,21 @@ try {
     Pop-Location
 }
 
+# 3b. Fetch the vendored drawio webapp.
+#     gitignored and produced only by this script; it must be on disk before
+#     copy-assets.ts copies resources\ -> dist\resources\, or the packaged app
+#     ships without the diagram editor. A failed fetch exits non-zero, which
+#     $ErrorActionPreference = "Stop" turns into a failed build. It writes to
+#     apps\electron\resources\drawio regardless of the current directory.
+Write-Host "Fetching drawio assets..."
+Push-Location $RootDir
+try {
+    bun run apps/electron/scripts/fetch-drawio-assets.ts
+    if ($LASTEXITCODE -ne 0) { throw "fetch-drawio-assets failed with exit code $LASTEXITCODE" }
+} finally {
+    Pop-Location
+}
+
 # 4. Copy SDK from root node_modules (monorepo hoisting).
 # Since SDK 0.2.113: thin core + per-platform binary package.
 # See apps/electron/scripts/build-dmg.sh for the full rationale.

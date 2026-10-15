@@ -181,17 +181,38 @@ function keep(relativePath: string): boolean {
   return KEEP_ROOT_FILES.has(relativePath) && !DROP_ROOT_FILES.has(relativePath)
 }
 
-/** Download one file, creating its directory. Errors name the file, not the batch. */
-async function download(ref: string, relativePath: string): Promise<number> {
-  const url = `https://raw.githubusercontent.com/jgraph/drawio/${ref}/${WEBAPP_PREFIX}${relativePath}`
-  const response = await fetch(url, { headers: { 'user-agent': 'craft-agent-fetch-drawio-assets' } })
-  if (!response.ok) throw new Error(`${relativePath}: ${response.status} ${response.statusText}`)
-
-  const bytes = Buffer.from(await response.arrayBuffer())
+/**
+ * Download one file, creating its directory. Errors name the file, not the batch.
+ *
+ * Retried with backoff, and resumable, because this now runs on the packaging path
+ * (build-dmg.sh / electron:dist): a single transient socket reset used to fail the
+ * whole release, and every failed run threw away the ~68 MB already fetched. A file
+ * whose size already matches the listing is skipped, so re-running a failed fetch
+ * continues rather than restarts. A genuine failure — 404, unreachable host — still
+ * throws on the last attempt and stops the build.
+ */
+async function download(ref: string, relativePath: string, expectedSize?: number): Promise<number> {
   const target = join(OUT_DIR, relativePath)
-  mkdirSync(dirname(target), { recursive: true })
-  writeFileSync(target, bytes)
-  return bytes.byteLength
+  if (expectedSize !== undefined && existsSync(target) && statSync(target).size === expectedSize) {
+    return expectedSize
+  }
+
+  const url = `https://raw.githubusercontent.com/jgraph/drawio/${ref}/${WEBAPP_PREFIX}${relativePath}`
+  const attempts = 3
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const response = await fetch(url, { headers: { 'user-agent': 'craft-agent-fetch-drawio-assets' } })
+      if (!response.ok) throw new Error(`${relativePath}: ${response.status} ${response.statusText}`)
+
+      const bytes = Buffer.from(await response.arrayBuffer())
+      mkdirSync(dirname(target), { recursive: true })
+      writeFileSync(target, bytes)
+      return bytes.byteLength
+    } catch (error) {
+      if (attempt >= attempts) throw error
+      await new Promise((resolve) => setTimeout(resolve, attempt * 500))
+    }
+  }
 }
 
 /** Run `worker` over `items` with a bounded number in flight. */
@@ -264,7 +285,7 @@ async function main(): Promise<void> {
 
   let done = 0
   await pooled(kept, 8, async (entry) => {
-    await download(ref, entry.path)
+    await download(ref, entry.path, entry.size)
     done += 1
     if (done % 50 === 0) console.log(`  … ${done}/${kept.length}`)
   })

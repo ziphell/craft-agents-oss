@@ -87,6 +87,14 @@ echo "Staging bundled Bun for linux-${ARCH}..."
 cd "$ROOT_DIR"
 bun run scripts/fetch-bun.ts linux "$ARCH"
 
+# 3b. Fetch the vendored drawio webapp.
+#     gitignored and produced only by this script; it must be on disk before
+#     `electron:build` copies resources/ -> dist/resources/, or the packaged app
+#     ships without the diagram editor. A failed fetch exits non-zero, which
+#     `set -e` turns into a failed build rather than a silent missing bundle.
+echo "Fetching drawio assets..."
+bun run apps/electron/scripts/fetch-drawio-assets.ts
+
 # 4. Copy SDK from root node_modules (monorepo hoisting).
 # Since SDK 0.2.113: thin core + per-platform binary package.
 # See apps/electron/scripts/build-dmg.sh for the full rationale.
