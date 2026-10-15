@@ -163,9 +163,14 @@ export function PreviewHeader({
         {children}
       </div>
 
-      {/* Right side - actions + close button. no-drag so actions are clickable in the window drag region. */}
-      <div className="flex-1 min-w-[70px] flex items-center gap-2 justify-end" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-        {rightActions}
+      {/* Right side - actions + close button. This side is a handle as well: only the controls opt
+          out (`no-drag`), and the stretch they are pushed away from stays draggable. Marking the whole
+          side `no-drag`, which is what this used to do, made half the bar dead to the cursor. */}
+      <div className="flex-1 min-w-[70px] flex items-center gap-2 justify-end">
+        {/* `empty:hidden` so a header with no right-hand controls spends no gap on this wrapper. */}
+        <div className="flex items-center gap-2 empty:hidden" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+          {rightActions}
+        </div>
         {onClose && (
           <button
             onClick={onClose}
@@ -175,6 +180,7 @@ export function PreviewHeader({
               'focus:outline-none focus-visible:ring-1 focus-visible:ring-ring'
             )}
             title={t('common.closeEsc')}
+            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           >
             <X className="w-4 h-4" />
           </button>
