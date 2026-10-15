@@ -15,7 +15,6 @@ import { Check, Circle, Code, Copy, Download, EyeOff, Globe, Lock, MessageSquare
 import { BrowserControls, Spinner, useReleaseStaleInteraction } from '@craft-agent/ui'
 import { HeaderIconButton } from '@/components/ui/HeaderIconButton'
 import { PanelLeftRounded } from '@/components/icons/PanelLeftRounded'
-import { isMac } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import { getHostname } from '@/components/browser/utils'
 import { groupTabsByWork, shouldShowGroupHeaders, type TabGroup } from '@/components/browser/tab-groups'
@@ -212,12 +211,14 @@ const BAR_HEIGHT_PX = TOOLBAR_HEIGHT
 /**
  * Where the leftmost control of the top band starts.
  *
- * The macOS traffic lights sit in that corner of a chromeless window, so the band begins past
- * them; everywhere else it is the same margin the rail's tabs start at. Used by the rail's own
- * header *and* by the bar's left end once the rail is folded away — the toggle changes host but
- * not position.
+ * There is nothing to steer around: the window is chromeless (`frame: false`), and a frameless
+ * window wears no OS caption buttons on any platform — the macOS traffic lights included, since
+ * they belong to the native title bar this window does not have (the workspace windows get theirs
+ * from `titleBarStyle: 'hiddenInset'`; this one asks for neither). The value is therefore just the
+ * margin the rail's own rows start at — 6px of list padding plus the 8px inside a row — which is
+ * what lines the toggle up with the column beneath it.
  */
-const RAIL_TOGGLE_INSET = isMac ? 86 : 14
+const RAIL_TOGGLE_INSET = 14
 
 /**
  * The rail's toggle: fold the rail away, or bring it back.
