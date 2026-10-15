@@ -99,16 +99,25 @@ appId / appIconPath / appIconIndex / relaunchCommand / relaunchDisplayName
 
 本仓库 `electron-builder.yml` 设了 **`asar: false`**，且 `files` 里有 `!node_modules/**/*`——原生依赖一律走 `extraResources`（SDK、ripgrep、bun 都是这么发的）。
 
-于是 Windows 目标加：
+koffi 要发的是**两个包**：`koffi` 只是 JS 壳，预编译二进制在按平台拆分的 `@koromix/koffi-*` 包里。koffi **2.x** 曾把它放在 `koffi/build/koffi/<triplet>/`，**3.x 已移出**——这是本方案第一版踩过的坑。koffi 的加载器按这个顺序找（`node_modules/koffi/src/koffi/index.cjs` 的 `loadDynamic`）：
+
+```
+${__dirname}/../../../@koromix/koffi-${platform}-${arch}   →  app/node_modules/@koromix/…
+<koffi>/../../build/koffi/<triplet>/koffi.node             →  3.x 下该目录不存在
+```
+
+于是 Windows 目标加**两条**：
 
 ```yaml
 win:
   extraResources:
     - from: ../../node_modules/koffi
       to: app/node_modules/koffi
+    - from: ../../node_modules/@koromix/koffi-win32-x64
+      to: app/node_modules/@koromix/koffi-win32-x64
 ```
 
-运行时 `dist/main.cjs` 里 `require('koffi')` 会向上解析到 `app/node_modules/koffi`（与 SDK 的落位一致）。mac/linux 目标**不加**这条——那边根本不加载它。
+运行时 `dist/main.cjs` 里 `require('koffi')` 会向上解析到 `app/node_modules/koffi`（与 SDK 的落位一致），再从上面第 1 条路径取二进制。**只拷壳会静默失效**：加载器抛 `Cannot find the native Koffi module; did you bundle it correctly?`，被 `preventTaskbarPinning` 的 `try/catch` 吞掉。dev 下根 `node_modules/@koromix/` 在，解析得到，所以症状是「开发环境生效、打包版不生效」。mac/linux 目标**不加**这两条——那边根本不加载 koffi。
 
 ---
 
@@ -116,7 +125,8 @@ win:
 
 - **非 Windows 是空实现**：macOS / Linux 没有该概念，且 macOS 会忽略 `BrowserWindow` 的 icon；本方案只在 Windows 生效。
 - **无法在本机验证**：FFI 的 vtable 调用、`PROPVARIANT` 布局属底层细节，需在真实 Windows 会话里实测；失败是**优雅降级**——窗口仍有独立按钮与图标，只是「固定」入口还在。
-- **第三方二进制**：koffi 会带入各平台的预编译 `.node`（仅 Windows 目标会随包发出，可在打包时裁剪）。
+- **第三方二进制**：koffi 的二进制是按平台拆分的可选依赖包，只会随包发出 Windows x64 那一份（`@koromix/koffi-win32-x64/win32_x64/koffi.node`，约 1 MB），无需再裁剪。
+- **打包版静默失效**：失败只走 `mainLog.warn`，而打包版默认关掉了 file / console transport（见 `logger.ts` 的 debug 判定），产物里不留痕迹。排查时用 `--debug` 启动，warn 会写进 electron-log 的 `main.log`。
 - **与 `setAppDetails` 的关系**：先 `PreventPinning` 再 `appId`，顺序不可调换（§3.2）。
 - **开发模式**：dev 下 exe 是 `electron.exe`，本就「可固定」；本方案对 dev 与打包版一视同仁地设 PreventPinning。
 
@@ -124,6 +134,5 @@ win:
 
 ## 7. 开放问题
 
-1. 打包时是否裁剪 koffi 里非 `win32-x64` 的二进制，减小产物体积。
-2. 若某天 Electron 原生暴露 `PreventPinning`（或 `AppDetailsOptions` 增加该字段），应删掉本模块、直接走官方 API。
-3. 是否需要给其它「辅助窗口」（如 design 独立窗口）套用同一处理——目前只做浏览器窗口。
+1. 若某天 Electron 原生暴露 `PreventPinning`（或 `AppDetailsOptions` 增加该字段），应删掉本模块、直接走官方 API。
+2. 是否需要给其它「辅助窗口」（如 design 独立窗口）套用同一处理——目前只做浏览器窗口。

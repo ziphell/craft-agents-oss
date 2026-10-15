@@ -207,10 +207,21 @@ win:
       to: app/resources/pi-agent-server
     # koffi — a Win32 FFI used only on Windows, to set the browser window's
     # AppUserModel.PreventPinning property (see docs/browser-taskbar-plan.md).
-    # It ships native .node binaries; asar is off and node_modules is excluded
-    # from `files`, so like the SDK it travels as a resource instead.
+    # asar is off and node_modules is excluded from `files`, so like the SDK it
+    # travels as a resource instead.
+    #
+    # Both halves of koffi must ship: `koffi` is only the JS wrapper, and the
+    # prebuilt binary lives in the per-platform `@koromix/koffi-*` package —
+    # koffi 3.x moved the .node out of `koffi/build`, where koffi 2.x kept it.
+    # koffi resolves the binary at `<koffi>/../../../@koromix/koffi-${platform}-
+    # ${arch}`, i.e. `app/node_modules/@koromix/...`, and throws if it is absent.
+    # Shipping the wrapper alone is what made PreventPinning work in dev (where
+    # the binary resolves from the root node_modules) but silently do nothing in
+    # the packaged app.
     - from: ../../node_modules/koffi
       to: app/node_modules/koffi
+    - from: ../../node_modules/@koromix/koffi-win32-x64
+      to: app/node_modules/@koromix/koffi-win32-x64
 
 nsis:
   oneClick: true
