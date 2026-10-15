@@ -6,12 +6,11 @@
 import { spawn } from "bun";
 import { existsSync, readFileSync, statSync, mkdirSync, copyFileSync } from "fs";
 import { dirname, join } from "path";
-import { preparePhotonWasm, reportPhotonWasm } from "./build/photon-wasm";
+import { buildInterceptorBundle, stagePiSubprocess } from "./build/pi-subprocess";
 
 const ROOT_DIR = join(import.meta.dir, "..");
 const DIST_DIR = join(ROOT_DIR, "apps/electron/dist");
 const OUTPUT_FILE = join(DIST_DIR, "main.cjs");
-const INTERCEPTOR_SOURCE = join(ROOT_DIR, "packages/shared/src/unified-network-interceptor.ts");
 const INTERCEPTOR_OUTPUT = join(DIST_DIR, "interceptor.cjs");
 /**
  * The win `files:` section loads the interceptor (and its sibling modules) from
@@ -160,34 +159,10 @@ function verifySessionToolsCore(): void {
 }
 
 // Build the unified network interceptor (bundled CJS loaded via --require into Node-based SDK subprocesses)
-async function buildInterceptor(): Promise<void> {
+function buildInterceptor(): void {
   console.log("🔌 Building unified network interceptor...");
 
-  const proc = spawn({
-    cmd: [
-      "bun", "run", "esbuild",
-      INTERCEPTOR_SOURCE,
-      "--bundle",
-      "--platform=node",
-      "--format=cjs",
-      `--outfile=${INTERCEPTOR_OUTPUT}`,
-    ],
-    cwd: ROOT_DIR,
-    stdout: "inherit",
-    stderr: "inherit",
-  });
-
-  const exitCode = await proc.exited;
-
-  if (exitCode !== 0) {
-    console.error("❌ Interceptor build failed with exit code", exitCode);
-    process.exit(exitCode);
-  }
-
-  if (!existsSync(INTERCEPTOR_OUTPUT)) {
-    console.error("❌ Interceptor output not found at", INTERCEPTOR_OUTPUT);
-    process.exit(1);
-  }
+  buildInterceptorBundle({ rootDir: ROOT_DIR, outfile: INTERCEPTOR_OUTPUT });
 
   // Stage the TS sources the packaged app loads at runtime (electron-builder's
   // `files:` list references them under apps/electron/packages/shared/src/).
@@ -260,15 +235,12 @@ async function buildPiAgentServer(): Promise<void> {
   // Stage it where electron-builder copies it from, so the installer ships this
   // build. Without this step `electron:dist:win` (which does not run
   // build-win.ps1) packages a stale copy — or nothing at all.
-  mkdirSync(dirname(PI_AGENT_SERVER_STAGED), { recursive: true });
-  copyFileSync(PI_AGENT_SERVER_OUTPUT, PI_AGENT_SERVER_STAGED);
+  // Copy the bundle into `resources/pi-agent-server/` and bring the wasm with
+  // it, repairing the build-machine path the bundler inlined. Both halves are
+  // required for image attachments to reach the model on another machine — see
+  // scripts/build/pi-subprocess.ts.
+  stagePiSubprocess({ bundle: PI_AGENT_SERVER_OUTPUT, destDir: dirname(PI_AGENT_SERVER_STAGED) });
   console.log("✅ Pi agent server built and staged to", PI_AGENT_SERVER_STAGED);
-
-  // The bundle loads its image-processing WASM from a directory the bundler
-  // inlined at build time, so it must be repaired and the wasm must travel with
-  // it — otherwise every image attachment is dropped on any other machine.
-  // See scripts/build/photon-wasm.ts.
-  reportPhotonWasm(preparePhotonWasm(PI_AGENT_SERVER_STAGED));
 }
 
 // Build the WhatsApp worker (Baileys-backed subprocess spawned by WhatsAppAdapter)

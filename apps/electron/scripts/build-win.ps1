@@ -214,6 +214,19 @@ foreach ($dep in @("interceptor-common.ts", "feature-flags.ts", "interceptor-req
     }
 }
 
+# Build the bundled interceptor the Pi subprocess --requires at runtime. Packaged,
+# resolveInterceptorBundlePath looks for <app>/dist/interceptor.cjs; this script
+# builds the app itself (not via electron:build:main), so it must build this too —
+# otherwise the packaged app has no interceptor and silently loses tool metadata.
+Write-Host "  Building interceptor bundle..."
+Push-Location $RootDir
+try {
+    bun run scripts/build/pi-subprocess.ts interceptor apps/electron/dist/interceptor.cjs
+    if ($LASTEXITCODE -ne 0) { throw "Interceptor bundle build failed" }
+} finally {
+    Pop-Location
+}
+
 # 6. Build subprocess servers (Pi agent server)
 Write-Host "  Building subprocess servers..."
 Push-Location $RootDir
@@ -326,6 +339,16 @@ foreach ($server in $SubprocessServers) {
         New-Item -ItemType Directory -Force -Path $DestDir | Out-Null
         Copy-Item $server.Source "$DestDir\index.js"
         Write-Host "    Copied $($server.Name)/index.js" -ForegroundColor Green
+        # The bundle resolves its image-processing wasm from a path beside index.js
+        # (see scripts/build/photon-wasm.ts). Without it next to the staged copy,
+        # every image attachment is dropped on any machine that did not build it.
+        $WasmSource = Join-Path (Split-Path $server.Source -Parent) "photon_rs_bg.wasm"
+        if (Test-Path $WasmSource) {
+            Copy-Item $WasmSource "$DestDir\photon_rs_bg.wasm"
+            Write-Host "    Copied $($server.Name)/photon_rs_bg.wasm" -ForegroundColor Green
+        } else {
+            Write-Host "    WARNING: photon_rs_bg.wasm not found at $WasmSource" -ForegroundColor Yellow
+        }
     } else {
         Write-Host "    WARNING: $($server.Name) build not found at $($server.Source)" -ForegroundColor Yellow
     }

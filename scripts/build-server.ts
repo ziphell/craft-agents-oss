@@ -57,6 +57,7 @@ import {
   buildMcpServers,
   getPlatformKey,
 } from './build/common';
+import { buildInterceptorBundle, stagePiSubprocess, PI_SERVER_DIRNAME } from './build/pi-subprocess';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -162,6 +163,45 @@ function assembleResources(config: ServerBuildConfig): void {
       }
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Pi subprocess and its runtime companions
+// ---------------------------------------------------------------------------
+
+/**
+ * Stage everything the spawned `pi-agent-server` resolves at runtime.
+ *
+ * The generated entry script runs with `CRAFT_IS_PACKAGED=true`, so
+ * `runtime-resolver.ts` derives two locations from the app root, and both have
+ * to exist:
+ *
+ *   resources/pi-agent-server/index.js  (+ the photon wasm beside it)
+ *   dist/interceptor.cjs
+ *
+ * Without the first pair the server cannot run Pi sessions at all (and would
+ * drop every image if it could); without the interceptor the subprocess still
+ * starts but silently loses tool-metadata injection and API error capture.
+ *
+ * The bundle comes from {@link buildMcpServers}, which already repaired the
+ * inlined wasm path — {@link stagePiSubprocess} only moves it, with the wasm,
+ * into place. Both halves live in scripts/build/pi-subprocess.ts, the same
+ * module the Electron build stages through.
+ */
+function stagePiRuntime(config: ServerBuildConfig): void {
+  const { rootDir, outputDir } = config;
+  const bundle = join(rootDir, 'packages', 'pi-agent-server', 'dist', 'index.js');
+
+  if (!existsSync(bundle)) {
+    console.warn(`  Warning: Pi agent server not found at ${bundle}. Pi SDK sessions will not work.`);
+    return;
+  }
+
+  stagePiSubprocess({ bundle, destDir: join(outputDir, 'resources', PI_SERVER_DIRNAME) });
+  console.log(`  Pi subprocess staged (resources/${PI_SERVER_DIRNAME}/index.js + photon wasm)`);
+
+  buildInterceptorBundle({ rootDir, outfile: join(outputDir, 'dist', 'interceptor.cjs') });
+  console.log('  Interceptor bundle staged (dist/interceptor.cjs)');
 }
 
 // ---------------------------------------------------------------------------
@@ -836,6 +876,9 @@ async function main(): Promise<void> {
     electronDir,
   };
   buildMcpServers(buildConfig);
+
+  // Stage the subprocess and its companions where the packaged runtime resolves them.
+  stagePiRuntime(config);
 
   // Build the WhatsApp worker bundle. Must happen before copyWorkspacePackages
   // so dist/worker.cjs exists when we copy the messaging-whatsapp-worker package.

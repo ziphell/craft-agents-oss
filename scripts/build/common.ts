@@ -15,6 +15,7 @@ import {
 } from 'fs';
 import { join } from 'path';
 import { createHash } from 'crypto';
+import { preparePhotonWasm, reportPhotonWasm } from './photon-wasm';
 
 export type Platform = 'darwin' | 'win32' | 'linux';
 export type Arch = 'x64' | 'arm64';
@@ -580,16 +581,24 @@ export function buildMcpServers(config: BuildConfig): void {
   // --target=node --format=cjs leaves ESM deps as external require() calls that fail at runtime.
   // koffi is marked external because it's a native N-API module — bun can't inline .node binaries
   // and inlining its JS breaks the native binary resolution paths.
+  // electron / electron-log are Electron-main-only: this subprocess runs on bun and every caller
+  // treats them as absent, so bundling them can only inline a build-machine __dirname. It must
+  // match the flags in electron-build-main.ts and packages/pi-agent-server's own build script.
   // Optional: skip if package directory is missing (e.g., not synced to OSS).
   if (existsSync(join(piDir, 'src'))) {
     mkdirSync(join(piDir, 'dist'), { recursive: true });
     execSync(
-      `bun build ${join(piDir, 'src', 'index.ts')} --outdir ${join(piDir, 'dist')} --target bun --format esm --external koffi`,
+      `bun build ${join(piDir, 'src', 'index.ts')} --outdir ${join(piDir, 'dist')} --target bun --format esm --external koffi --external electron --external electron-log`,
       { cwd: rootDir, stdio: 'inherit', shell: true }
     );
     if (!existsSync(piOut)) {
       throw new Error(`Pi agent server output not found at ${piOut}`);
     }
+    // The bundle loads its image-processing wasm from a directory the bundler
+    // inlined at build time, so it has to be repaired and the wasm has to sit
+    // beside the bundle — otherwise every image attachment is dropped on any
+    // machine that did not build it. See scripts/build/photon-wasm.ts.
+    reportPhotonWasm(preparePhotonWasm(piOut));
   } else {
     console.warn('Warning: Pi agent server package not found. Pi SDK sessions will not work.');
   }
