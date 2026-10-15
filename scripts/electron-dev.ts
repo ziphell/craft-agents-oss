@@ -8,6 +8,7 @@ import { existsSync, rmSync, cpSync, readFileSync, statSync, mkdirSync } from "f
 import { join, basename } from "path";
 import * as esbuild from "esbuild";
 import { downloadUv, type Platform, type Arch } from "./build/common";
+import { preparePhotonWasm, reportPhotonWasm } from "./build/photon-wasm";
 
 const ROOT_DIR = join(import.meta.dir, "..");
 const ELECTRON_DIR = join(ROOT_DIR, "apps/electron");
@@ -313,7 +314,20 @@ async function runEsbuild(
 async function buildPiAgentServer(): Promise<{ success: boolean; error?: string }> {
   try {
     const proc = spawn({
-      cmd: ["bun", "build", "src/index.ts", "--outdir=dist", "--target=bun", "--format=esm"],
+      // electron / electron-log are Electron-only (see electron-build-main.ts):
+      // absent here by design, and every caller handles that.
+      cmd: [
+        "bun",
+        "build",
+        "src/index.ts",
+        "--outdir=dist",
+        "--target=bun",
+        "--format=esm",
+        "--external",
+        "electron",
+        "--external",
+        "electron-log",
+      ],
       cwd: PI_AGENT_SERVER_DIR,
       stdout: "pipe",
       stderr: "pipe",
@@ -323,6 +337,9 @@ async function buildPiAgentServer(): Promise<{ success: boolean; error?: string 
     if (exitCode !== 0) {
       return { success: false, error: stderr };
     }
+    // Dev resolves this bundle straight from dist/, so it needs the same repair
+    // and the same neighbouring wasm as the packaged copy.
+    reportPhotonWasm(preparePhotonWasm(PI_AGENT_SERVER_OUTPUT));
     return { success: true };
   } catch (err) {
     return { success: false, error: String(err) };

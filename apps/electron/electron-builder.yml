@@ -11,13 +11,22 @@ directories:
   output: release
   buildResources: resources
 
+# This list is the app-content allowlist, and it only holds while NO
+# platform-level list (mac.files / win.files / linux.files) exists.
+# electron-builder >= 26 normalizes this list into a *secondary* FileSet matcher
+# (util/config/config.js -> normalizeFiles/mergeFileSets) and feeds the
+# platform-level lists into the *primary* one. A primary matcher that contains
+# nothing but `!` rules is treated as "exclude a few, keep the rest":
+# electron-builder then prepends `**/*` (fileMatcher.js, containsOnlyIgnore()),
+# which silently bypasses this allowlist and packs the whole app directory
+# (src/, spike/, scripts/, eslint-rules/, ...).
+# Platform-specific binaries (Bun, uv, Pi subprocess) therefore ship through the
+# per-platform `extraResources` blocks below, never through a `files` list.
 files:
   - dist/**/*
   - "!dist/renderer/src/**"
   - "!**/*.map"
   - package.json
-  # Include Pi agent server subprocess for Pi SDK sessions
-  - resources/pi-agent-server/**/*
   # Note: Bundled assets (docs, themes, permissions, tool-icons) are in resources/
   # and copied to dist/resources/ by build:copy. They're included via dist/**/* above.
   # Include network interceptor for API error capture and MCP schema injection
@@ -44,24 +53,15 @@ files:
   - resources/bin/pptx-tool.cmd
   - resources/bin/ical-tool
   - resources/bin/ical-tool.cmd
-  # Include bundled uv binary (platform-specific, only the relevant one ships per build)
-  - resources/bin/darwin-arm64/**/*
-  - resources/bin/darwin-x64/**/*
-  - resources/bin/win32-x64/**/*
-  - resources/bin/linux-x64/**/*
-  # Include bundled Bun runtime (platform-specific, set by build script)
-  - vendor/bun/**/*
-  # `fetch-bun.ts` writes this staging marker next to the binary; it is build
-  # detail, not app content, so keep it out of the package.
-  - "!vendor/bun/.staged"
+  # Platform-specific binaries (Bun runtime, uv, Pi subprocess) are NOT listed
+  # here — they ship via the per-platform `extraResources` blocks below.
   # Exclude everything from node_modules (will use extraResources for SDK)
   - "!node_modules/**/*"
 
 # Since SDK 0.2.113 the SDK ships a thin core (`@anthropic-ai/claude-agent-sdk`)
 # and a per-platform optional dependency (`-darwin-arm64`, `-darwin-x64`, etc.)
 # containing the ~210 MB native `claude` binary. We bundle both as extraResources
-# below — only the binary matching the build target is shipped per artifact, so
-# the platform `files` rules below also exclude the wrong-platform binaries.
+# below — only the binary matching the build target is shipped per artifact.
 #
 # Why extraResources instead of `files`: since electron-builder v20.15.2,
 # `node_modules` directories are auto-excluded from `files`. extraResources
@@ -125,10 +125,18 @@ mac:
     # WhatsApp worker subprocess (self-contained; Baileys bundled in).
     - from: ../../packages/messaging-whatsapp-worker/dist/worker.cjs
       to: messaging-whatsapp-worker/worker.cjs
-  # Exclude binaries for other platforms
-  files:
-    - "!**/resources/bin/win32-*/**"
-    - "!**/resources/bin/linux-*/**"
+    # Bundled Bun runtime, staged by scripts/fetch-bun.ts for the target arch.
+    # `to: app/...` keeps it at Resources/app/vendor/bun, exactly where the
+    # runtime resolves it (CRAFT_BUN / runtime-resolver).
+    - from: vendor/bun/bun
+      to: app/vendor/bun/bun
+    # Bundled uv binary for the target arch (resources/bin/<platform>-<arch>/).
+    - from: resources/bin/darwin-${arch}
+      to: app/resources/bin/darwin-${arch}
+    # Pi agent server subprocess (for Pi SDK sessions).
+    - from: resources/pi-agent-server
+      to: app/resources/pi-agent-server
+  # No platform-level `files` list here on purpose — see the note above `files`.
   # Use predictable naming for macOS packages (applies to zip; dmg uses its own config below)
   artifactName: "Craft-Agents-${arch}.${ext}"
   # Code signing & notarization (disabled by default for local builds)
@@ -171,21 +179,12 @@ win:
         - x64
   # Use predictable naming: Craft-Agents-x64.exe / Craft-Agents-x64.zip
   artifactName: "Craft-Agents-${arch}.${ext}"
-  files:
-    # Exclude binaries for other platforms
-    - "!**/resources/bin/darwin-*/**"
-    - "!**/resources/bin/linux-*/**"
-    # WORKAROUND: Exclude bun and uv from regular files on Windows.
-    # electron-builder's npm node module collector causes EBUSY errors when copying
-    # .exe files because it scans/locks files while simultaneously trying to copy them.
-    # Moving them to extraResources avoids this by copying before the collector runs.
-    # See: https://github.com/electron-userland/electron-builder/issues/8250
-    - "!vendor/bun/**/*"
-    - "!**/resources/bin/win32-x64/**"
-    # Exclude subprocess servers from regular files — moved to extraResources
-    # to avoid EBUSY file locking (same as bun.exe above).
-    - "!**/resources/pi-agent-server/**/*"
-  # Copy executables as extraResources to avoid EBUSY file locking (see comment above)
+  # No platform-level `files` list here on purpose — see the note above `files`.
+  # Copy executables as extraResources instead of `files`: electron-builder's npm
+  # node module collector causes EBUSY errors when copying .exe files because it
+  # scans/locks files while simultaneously trying to copy them. Moving them to
+  # extraResources avoids this by copying before the collector runs.
+  # See: https://github.com/electron-userland/electron-builder/issues/8250
   extraResources:
     # SDK core from root node_modules (monorepo hoisting — no node_modules in apps/electron/)
     - from: ../../node_modules/@anthropic-ai/claude-agent-sdk
@@ -256,7 +255,13 @@ linux:
     # WhatsApp worker subprocess (self-contained; Baileys bundled in).
     - from: ../../packages/messaging-whatsapp-worker/dist/worker.cjs
       to: messaging-whatsapp-worker/worker.cjs
-  # Exclude binaries for other platforms
-  files:
-    - "!**/resources/bin/darwin-*/**"
-    - "!**/resources/bin/win32-*/**"
+    # Bundled Bun runtime, staged by scripts/fetch-bun.ts for the target arch.
+    - from: vendor/bun/bun
+      to: app/vendor/bun/bun
+    # Bundled uv binary for the target arch (resources/bin/<platform>-<arch>/).
+    - from: resources/bin/linux-${arch}
+      to: app/resources/bin/linux-${arch}
+    # Pi agent server subprocess (for Pi SDK sessions).
+    - from: resources/pi-agent-server
+      to: app/resources/pi-agent-server
+  # No platform-level `files` list here on purpose — see the note above `files`.

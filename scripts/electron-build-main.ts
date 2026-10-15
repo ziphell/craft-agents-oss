@@ -6,6 +6,7 @@
 import { spawn } from "bun";
 import { existsSync, readFileSync, statSync, mkdirSync, copyFileSync } from "fs";
 import { dirname, join } from "path";
+import { preparePhotonWasm, reportPhotonWasm } from "./build/photon-wasm";
 
 const ROOT_DIR = join(import.meta.dir, "..");
 const DIST_DIR = join(ROOT_DIR, "apps/electron/dist");
@@ -230,6 +231,13 @@ async function buildPiAgentServer(): Promise<void> {
       "--target", "bun",
       "--format", "esm",
       "--external", "koffi",
+      // Electron-provided / Electron-main-only modules. This subprocess runs on
+      // bun and every caller already treats them as absent (`try { … } catch {}`),
+      // so bundling them can only add weight — and a build-machine path: the
+      // bundler inlines their `__dirname`, which is how the photon wasm ended up
+      // unfindable off the build machine (scripts/build/photon-wasm.ts).
+      "--external", "electron",
+      "--external", "electron-log",
     ],
     cwd: ROOT_DIR,
     stdout: "inherit",
@@ -255,6 +263,12 @@ async function buildPiAgentServer(): Promise<void> {
   mkdirSync(dirname(PI_AGENT_SERVER_STAGED), { recursive: true });
   copyFileSync(PI_AGENT_SERVER_OUTPUT, PI_AGENT_SERVER_STAGED);
   console.log("✅ Pi agent server built and staged to", PI_AGENT_SERVER_STAGED);
+
+  // The bundle loads its image-processing WASM from a directory the bundler
+  // inlined at build time, so it must be repaired and the wasm must travel with
+  // it — otherwise every image attachment is dropped on any other machine.
+  // See scripts/build/photon-wasm.ts.
+  reportPhotonWasm(preparePhotonWasm(PI_AGENT_SERVER_STAGED));
 }
 
 // Build the WhatsApp worker (Baileys-backed subprocess spawned by WhatsAppAdapter)
