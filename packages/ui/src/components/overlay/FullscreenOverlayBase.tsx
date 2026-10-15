@@ -8,10 +8,14 @@
  * - Accessibility (role="dialog", aria-modal)
  *
  * Additionally handles:
- * - macOS traffic light hiding (via PlatformContext)
+ * - macOS traffic light hiding for as long as any overlay is open (via PlatformContext)
  * - Default scenic background (bg-foreground-3 + fullscreen-overlay-background blur)
  *   Callers can override via className (twMerge resolves conflicts)
  * - Optional structured header with badges (typeBadge, filePath, title, subtitle)
+ *   That header row is also the window's drag handle — this overlay portals to `document.body`, so
+ *   nothing above it is inside the app's own title-bar strip (see `PreviewHeader`). An overlay with
+ *   no header has to draw its own top drag row: `WorkspaceCreationScreen` and `OnboardingWizard`
+ *   each bring one.
  * - Optional built-in copy button (copyContent prop)
  * - Full-viewport scroll container with edge-to-edge gradient fade mask (iOS-style contentInset).
  *   The scroll area covers the entire viewport — content scrolls behind the floating header.
@@ -96,6 +100,29 @@ export function handleFullscreenEscapeWithStack(): boolean {
   return bridge.handleEscape()
 }
 
+/**
+ * How many overlays are asking for the window's own controls to be put away.
+ *
+ * macOS's traffic lights belong to the OS and are painted over the page, so no z-index can hold an
+ * overlay off them — taking them away while one is open is the only lever (the call is a no-op on
+ * the other platforms). But overlays nest: a second one can open on top of the first, and a lone
+ * boolean cannot say what two overlays need — the first one to close would put the lights back over
+ * an overlay still on screen. So requests are counted, and the platform is told only on an edge.
+ */
+let windowControlsHideRequests = 0
+
+/** One overlay asks. Returns true on the 0 → 1 edge — the point at which they need hiding. */
+export function requestWindowControlsHidden(): boolean {
+  windowControlsHideRequests += 1
+  return windowControlsHideRequests === 1
+}
+
+/** That overlay is done asking. Returns true on the 1 → 0 edge — the point at which they can return. */
+export function releaseWindowControlsHidden(): boolean {
+  windowControlsHideRequests = Math.max(0, windowControlsHideRequests - 1)
+  return windowControlsHideRequests === 0
+}
+
 export function FullscreenOverlayBase({
   isOpen,
   onClose,
@@ -132,14 +159,26 @@ export function FullscreenOverlayBase({
     })
   }, [isOpen, onClose])
 
-  // Hide macOS traffic lights when overlay opens, restore when it closes
-  // This prevents accidental clicks on window controls behind the fullscreen overlay
+  // The platform actions object is rebuilt whenever one of App's callbacks changes identity —
+  // opening another file is enough — so `onSetTrafficLightsVisible` is not a stable dependency. The
+  // effect below keys off `isOpen` alone and reads the action through a ref: an identity change
+  // mid-overlay would otherwise drop the request count to zero and back, flashing the lights.
+  const setTrafficLightsVisible = useRef(onSetTrafficLightsVisible)
+  useEffect(() => {
+    setTrafficLightsVisible.current = onSetTrafficLightsVisible
+  }, [onSetTrafficLightsVisible])
+
+  // Traffic lights (macOS — a no-op elsewhere) step aside for as long as any overlay is open, so a
+  // click meant for the overlay cannot land on the window's controls instead. Counted rather than
+  // set: see `requestWindowControlsHidden`.
   useEffect(() => {
     if (!isOpen) return
 
-    onSetTrafficLightsVisible?.(false)
-    return () => onSetTrafficLightsVisible?.(true)
-  }, [isOpen, onSetTrafficLightsVisible])
+    if (requestWindowControlsHidden()) setTrafficLightsVisible.current?.(false)
+    return () => {
+      if (releaseWindowControlsHidden()) setTrafficLightsVisible.current?.(true)
+    }
+  }, [isOpen])
 
   // Content padding clears the floating header at rest (when present), and keeps the gutter below.
   // Without a header the gutter is all there is.

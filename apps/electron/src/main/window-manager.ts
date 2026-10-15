@@ -14,6 +14,15 @@ import type { SavedWindow } from './window-state'
 // Vite dev server URL for hot reload
 const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL
 
+/**
+ * Where the macOS traffic lights sit, in window coordinates. The window opens with this position,
+ * and `setWindowButtonVisibility` drops the buttons at the OS default when they are shown again, so
+ * the restore path has to re-apply it. One constant for both, because the two had drifted: the
+ * window opened at y 16, and the first fullscreen overlay to close put them at y 19 — 3px low, and
+ * that is where they stayed for the rest of the session.
+ */
+const MAC_TRAFFIC_LIGHT_POSITION = { x: 18, y: 16 }
+
 interface ManagedWindow {
   window: BrowserWindow
   workspaceId: string
@@ -253,7 +262,7 @@ export class WindowManager {
       // the system title bar is what the window is dragged by (docs/design-plan.md §2.7).
       ...(isMac && !designSlug && {
         titleBarStyle: 'hiddenInset',
-        trafficLightPosition: { x: 18, y: 16 },
+        trafficLightPosition: MAC_TRAFFIC_LIGHT_POSITION,
         vibrancy: 'under-window',
         visualEffectState: 'active',
       }),
@@ -999,11 +1008,11 @@ export class WindowManager {
     const managed = this.windows.get(webContentsId)
     if (managed && !managed.window.isDestroyed()) {
       managed.window.setWindowButtonVisibility(visible)
-      // Re-apply custom traffic light position after showing buttons
-      // setWindowButtonVisibility can reset position to default, so we need
-      // to restore the custom position using the modern setWindowButtonPosition API
+      // Showing them again drops them at the OS's default position, so the custom one has to be put
+      // back — via the modern setWindowButtonPosition API, which is also what keeps it custom once
+      // the OS has reset it.
       if (visible) {
-        managed.window.setWindowButtonPosition({ x: 18, y: 19 })
+        managed.window.setWindowButtonPosition(MAC_TRAFFIC_LIGHT_POSITION)
       }
     }
   }

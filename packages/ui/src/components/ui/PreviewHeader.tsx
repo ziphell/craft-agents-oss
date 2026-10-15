@@ -122,6 +122,11 @@ export interface PreviewHeaderProps {
  * - Left: 70px spacer (for macOS traffic lights in Electron)
  * - Center: Badges row
  * - Right: Close button (if onClose provided) or 70px spacer
+ *
+ * The row is also the handle: every fullscreen overlay that carries one of these portal-renders to
+ * `document.body`, so nothing above the header is inside the window's drag region and without this
+ * the window could not be moved while the overlay was open. The two sides are the handle; the badge
+ * row and the actions opt out (`no-drag`) so they stay clickable.
  */
 export function PreviewHeader({
   children,
@@ -146,7 +151,9 @@ export function PreviewHeader({
         height,
         ...style,
         ...(windowControlsInset ? { paddingRight: windowControlsInset + 12 } : {}),
-      }}
+        // Last, so a caller's own style cannot drop the handle: dragging is this row's job.
+        WebkitAppRegion: 'drag',
+      } as React.CSSProperties}
     >
       {/* Left side - space for traffic lights on macOS, flex-1 to balance with right side */}
       <div className="flex-1 min-w-[70px]" />

@@ -17,6 +17,13 @@ import { cn } from '@/lib/utils'
  * frame, the Web UI has no window, and a design window keeps the standard title bar — so it wears
  * the OS's buttons, not these. The room reserved is `titleBarCaptionInset`, the same measure the OS
  * overlay needed, so everything that stepped around those buttons still steps around these.
+ *
+ * They sit on `--z-caption`, above every surface the app can draw — including the fullscreen
+ * overlays, which portal to `document.body` and reach as high as `--z-splash` (600). Those overlays
+ * are content: they may cover the app, never the window's own buttons. A button of ours that a
+ * fullscreen overlay could paint over would be a button nobody can press, so the ordering is the
+ * guarantee, not the per-overlay padding (see `PreviewHeader` for how an overlay keeps clear of
+ * this strip instead).
  */
 export function WindowControls() {
   const { t } = useTranslation()
@@ -44,7 +51,7 @@ export function WindowControls() {
   return (
     <div
       className="titlebar-no-drag fixed right-0 top-0 flex items-stretch"
-      style={{ height: 'var(--topbar-height)', width: titleBarCaptionInset, zIndex: 400 }}
+      style={{ height: 'var(--topbar-height)', width: titleBarCaptionInset, zIndex: 'var(--z-caption, 1000)' }}
     >
       {/* A short rule on the strip's left edge, so the window's buttons read as the
           window's own and not as one more control of the bar's. */}

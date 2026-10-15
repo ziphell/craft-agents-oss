@@ -239,6 +239,8 @@
      island             400     Annotation island menu surface
      island-popover     410     Popovers/dropdowns opened from island content
      splash             600     Splash screen, workspace creation
+     caption            1000    Window caption buttons (min/max/close). Above every overlay:
+                                a frameless window's own buttons are chrome, never content.
   */
   --z-base: 0;
   --z-local: 10;
@@ -256,6 +258,7 @@
   --z-island: 400;
   --z-island-popover: 410;
   --z-splash: 600;
+  --z-caption: 1000;
 
 }
 
@@ -489,6 +492,7 @@ html[data-font="inter"] {
   --z-index-island: var(--z-island);
   --z-index-island-popover: var(--z-island-popover);
   --z-index-splash: var(--z-splash);
+  --z-index-caption: var(--z-caption);
 
   --shadow-2xs: var(--shadow-2xs);
   --shadow-xs: var(--shadow-xs);
