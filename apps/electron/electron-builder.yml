@@ -162,7 +162,14 @@ win:
     - target: nsis
       arch:
         - x64
-  # Use predictable naming: Craft-Agents-x64.exe
+    # Portable / "green" build: zips the contents of win-unpacked (same layout
+    # mac's zip target produces), so it unpacks straight to `Craft Agents.exe`.
+    # The archive target does not write update info, so this adds no entry to
+    # latest.yml — and the portable build therefore never auto-updates.
+    - target: zip
+      arch:
+        - x64
+  # Use predictable naming: Craft-Agents-x64.exe / Craft-Agents-x64.zip
   artifactName: "Craft-Agents-${arch}.${ext}"
   files:
     # Exclude binaries for other platforms
