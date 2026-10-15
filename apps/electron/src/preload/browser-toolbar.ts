@@ -19,6 +19,8 @@ const CHANNELS = {
   FORCE_CLOSE_MENU: 'browser-toolbar:force-close-menu',
   HIDE: 'browser-toolbar:hide',
   DESTROY: 'browser-toolbar:destroy',
+  MINIMIZE: 'browser-toolbar:minimize',
+  MAXIMIZE: 'browser-toolbar:maximize',
   STATE_UPDATE: 'browser-toolbar:state-update',
   PICK_ELEMENT: 'browser-toolbar:pick-element',
   CANCEL_PICK: 'browser-toolbar:cancel-pick',
@@ -27,6 +29,7 @@ const CHANNELS = {
   RECORD: 'browser-toolbar:record',
   RECORD_CHUNK: 'browser-toolbar:record-chunk',
   DOWNLOAD_REVEAL: 'browser-toolbar:download-reveal',
+  RAIL_TOGGLE: 'browser-toolbar:rail-toggle',
 } as const
 
 // Instance ID is passed via query parameter by BrowserPaneManager
@@ -63,6 +66,15 @@ contextBridge.exposeInMainWorld('browserToolbar', {
   setMenuGeometry: (open: boolean, height = 0) => ipcRenderer.invoke(CHANNELS.MENU_GEOMETRY, instanceId, open, height),
   hideWindow: () => ipcRenderer.invoke(CHANNELS.HIDE, instanceId),
   closeWindowEntirely: () => ipcRenderer.invoke(CHANNELS.DESTROY, instanceId),
+  /**
+   * The window's own minimize and maximize/restore.
+   *
+   * The window is chromeless, so it has no OS caption buttons — these are its own. The
+   * maximize state is not answered here: it comes back through `onStateUpdate` (the window
+   * can also be maximized from outside the bar), and the button draws from that.
+   */
+  minimize: () => ipcRenderer.invoke(CHANNELS.MINIMIZE, instanceId),
+  toggleMaximize: () => ipcRenderer.invoke(CHANNELS.MAXIMIZE, instanceId),
   /**
    * Turn the window's element picker on — and leave it on.
    *
@@ -133,6 +145,14 @@ contextBridge.exposeInMainWorld('browserToolbar', {
    * a path it recorded itself, so this cannot be turned into "open anything".
    */
   revealDownload: (savePath: string) => ipcRenderer.invoke(CHANNELS.DOWNLOAD_REVEAL, instanceId, savePath),
+  /**
+   * Fold this window's rail away, or bring it back.
+   *
+   * The rail's room is part of the tab area, so this is not a renderer's decision to keep: the
+   * host flips its own flag, re-places the page and tells us the new state. Not remembered
+   * outside the window — a window opened later starts with the rail out.
+   */
+  toggleRailCollapsed: () => ipcRenderer.invoke(CHANNELS.RAIL_TOGGLE, instanceId),
   onStateUpdate: (callback: (state: unknown) => void) => {
     if (lastState !== undefined) callback(lastState)
     stateListeners.add(callback)

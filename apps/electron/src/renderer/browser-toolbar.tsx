@@ -11,12 +11,15 @@ import ReactDOM from 'react-dom/client'
 import { useTranslation, initReactI18next } from 'react-i18next'
 import LanguageDetector from 'i18next-browser-languagedetector'
 import { setupI18n } from '@craft-agent/shared/i18n'
-import { Check, Circle, Code, Download, EyeOff, Globe, Lock, MessageSquare, MousePointerClick, Plus, Square, X, XCircle } from 'lucide-react'
-import { BrowserControls, Spinner } from '@craft-agent/ui'
+import { Check, Circle, Code, Copy, Download, EyeOff, Globe, Lock, MessageSquare, Minus, MousePointerClick, Plus, Square, X, XCircle } from 'lucide-react'
+import { BrowserControls, Spinner, useReleaseStaleInteraction } from '@craft-agent/ui'
 import { HeaderIconButton } from '@/components/ui/HeaderIconButton'
+import { PanelLeftRounded } from '@/components/icons/PanelLeftRounded'
+import { isMac } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import { getHostname } from '@/components/browser/utils'
 import { groupTabsByWork, shouldShowGroupHeaders, type TabGroup } from '@/components/browser/tab-groups'
+import { TAB_RAIL_WIDTH, TOOLBAR_HEIGHT } from '../shared/panel-geometry'
 import type { BrowserTabSummary, TabBelongsTo } from '../shared/types'
 import { RECORDING_FORMATS, pickRecordingFormat } from '../shared/recording-formats'
 import {
@@ -61,6 +64,14 @@ interface ToolbarState {
   canGoBack: boolean
   canGoForward: boolean
   /**
+   * Whether the window is maximized, for the minimize/maximize-restore buttons.
+   *
+   * The window's fact, not the button's memory: it can be maximized from outside the bar
+   * (a double-click on the drag region, the OS's own window menu), so the icon has to say
+   * which of the two a press will do.
+   */
+  maximized?: boolean
+  /**
    * Whether the window's element picker is on.
    *
    * The window's mode, reported rather than guessed: it can also end from inside
@@ -101,6 +112,15 @@ interface ToolbarState {
    */
   sessionLabels?: Record<string, string>
   /**
+   * Whether the person has folded the rail away.
+   *
+   * The window's flag, not this document's: the rail's room is part of the tab area, so the page
+   * has already been placed without it by the time this arrives — the chrome draws the state
+   * rather than deciding it. Absent (`undefined`) until the first push reads as "out", which is
+   * what a window is born with.
+   */
+  railCollapsed?: boolean
+  /**
    * The recording the person started from this window, if one is running.
    *
    * `null` (or no state yet) is the ordinary case. The window reports it rather than the
@@ -138,6 +158,10 @@ declare global {
       setMenuGeometry: (open: boolean, height?: number) => Promise<void>
       hideWindow: () => Promise<void>
       closeWindowEntirely: () => Promise<void>
+      /** Minimize the window — it is chromeless, so this is its own caption button. */
+      minimize: () => Promise<void>
+      /** Maximize if restored, restore if maximized: one button, the window says which. */
+      toggleMaximize: () => Promise<void>
       /**
        * The label is the caller's: the bar is drawn in the page, which has no i18n.
        */
@@ -164,6 +188,8 @@ declare global {
       sendRecordingChunk: (chunk: ArrayBuffer) => void
       /** Show a finished download in its folder, by the `savePath` the state carried. */
       revealDownload: (savePath: string) => Promise<void>
+      /** Fold the rail away, or bring it back — the window re-places the page and says so. */
+      toggleRailCollapsed: () => Promise<void>
       onStateUpdate: (callback: (state: ToolbarState) => void) => () => void
       onForceCloseMenu: (callback: (payload: { reason?: string }) => void) => () => void
     }
@@ -171,17 +197,56 @@ declare global {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Which surface this is                                              */
+/*  The chrome's own shape                                             */
 /* ------------------------------------------------------------------ */
 
 /**
- * Whether this document is the tab rail rather than the address bar.
+ * The rail's width and the bar's height, from the one place both sides read them.
  *
- * The window's chrome is an L — a row and a column — and one `BrowserView` is one
- * rectangle, so the host loads this same bundle twice and says which surface each
- * copy is. The document is identical; only the shape of the surface differs.
+ * The main process places the page as a view rectangle off these same numbers
+ * (`panel-geometry.ts`), so the slot this document leaves for it is the slot the page lands in.
  */
-const IS_RAIL = new URLSearchParams(window.location.search).get('view') === 'rail'
+const RAIL_WIDTH_PX = TAB_RAIL_WIDTH
+const BAR_HEIGHT_PX = TOOLBAR_HEIGHT
+
+/**
+ * Where the leftmost control of the top band starts.
+ *
+ * The macOS traffic lights sit in that corner of a chromeless window, so the band begins past
+ * them; everywhere else it is the same margin the rail's tabs start at. Used by the rail's own
+ * header *and* by the bar's left end once the rail is folded away — the toggle changes host but
+ * not position.
+ */
+const RAIL_TOGGLE_INSET = isMac ? 86 : 14
+
+/**
+ * The rail's toggle: fold the rail away, or bring it back.
+ *
+ * The one control in the chrome that is not about a tab or an address. Drawn by whichever surface
+ * is at the window's left edge — the rail's header while the rail is out, the bar's own left end
+ * once it is folded (`BrowserToolbarApp`) — which is what keeps it on the same pixel in both
+ * states, and what makes it the way *back* from a folded rail.
+ */
+function RailToggle({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
+  const { t } = useTranslation()
+  const label = t('menu.toggleSidebar')
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      aria-pressed={collapsed}
+      className={cn(
+        'titlebar-no-drag grid h-6 w-6 shrink-0 place-items-center rounded-[6px] transition-colors',
+        'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+        'text-foreground/65 hover:bg-foreground/[0.06] hover:text-foreground',
+      )}
+      onClick={onToggle}
+    >
+      <PanelLeftRounded className="h-[18px] w-[18px]" />
+    </button>
+  )
+}
 
 /** `0:07` — a recording's length, in the form a person reads a stopwatch in. */
 function formatElapsed(ms: number): string {
@@ -265,7 +330,6 @@ function TabRail({
   sessionLabels,
   onSelect,
   onClose,
-  onNew,
   onNewFor,
   onRelease,
 }: {
@@ -273,7 +337,6 @@ function TabRail({
   sessionLabels: Record<string, string>
   onSelect: (tabId: string) => void
   onClose: (tabId: string) => void
-  onNew: () => void
   /**
    * One more tab **for this work** — the `+` on a section's header, rather than the rail's
    * own `+` above it. The tab is the work's and joins its section.
@@ -290,8 +353,6 @@ function TabRail({
      * not one of them — but not so quiet that a section reads as a divider.
      */
     group: 'text-foreground/55',
-    /** The rail's own label and a tab's second line: there when looked for. */
-    faint: 'text-foreground/45',
     /** The tab on screen: solid text over a tint the row keeps while it is current. */
     active: 'bg-foreground/[0.08] text-foreground',
     hover: 'hover:bg-foreground/[0.04]',
@@ -356,36 +417,11 @@ function TabRail({
   }
 
   return (
-    // `h-screen`, not `h-full`: the rail's document has no height of its own to
-    // inherit (`#root` is auto-height so the bar's own 48px row needs nothing from
-    // it), and the rail is the view's whole height.
-    <div className="flex h-screen flex-col bg-background">
-      {/*
-        The rail's own header row: what the column is, and the way to add to it. `+`
-        lives here rather than beside the tabs because it must stay reachable however
-        long the list gets. Same height as the address bar next to it, so the two read
-        as one band across the window's top — and the same left edge the tabs and their
-        section headers start at, so the column has one margin instead of three.
-      */}
-      <div className="titlebar-drag-region flex h-[48px] shrink-0 items-center justify-between pl-3.5 pr-2">
-        <span className={cn('select-none text-[11px] font-medium', tone.faint)}>{t('browser.tabs')}</span>
-        <button
-          type="button"
-          aria-label={t('browser.newTab')}
-          title={t('browser.newTab')}
-          className={cn(
-            'titlebar-no-drag grid h-6 w-6 shrink-0 place-items-center rounded-[6px] transition-colors',
-            'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
-            tone.text,
-            'hover:bg-foreground/[0.06] hover:text-foreground',
-          )}
-          onClick={onNew}
-        >
-          <Plus className="h-3.5 w-3.5" />
-        </button>
-      </div>
-
-      <div className="titlebar-drag-region scrollbar-hide flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-1.5 pb-1.5">
+    // The rail is the chrome's left column, under the window's title bar in the same document
+    // (`BrowserToolbarApp`): its own width is the host's `TAB_RAIL_WIDTH`, so it takes its room
+    // from the window rather than inheriting a view's rectangle.
+    <div className="flex h-full shrink-0 flex-col browser-chrome-surface" style={{ width: RAIL_WIDTH_PX }}>
+      <div className="titlebar-drag-region scrollbar-hide flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-1.5 pb-1.5 pt-1.5">
         {groups.map((group) => (
           <div key={group.key} className="relative flex flex-col gap-0.5">
             {/*
@@ -393,8 +429,8 @@ function TabRail({
               past it. A name in a slightly different grey is not enough to read as a
               section on its own — it says "these belong together" only to somebody who
               already knew. The step in and the line are the two cues that do not have to
-              be read. Drawn before the header so the header's opaque band, which sticks,
-              paints over whatever the line would otherwise show behind it.
+              be read. Drawn before the header so the header's band, which sticks, paints
+              over whatever the line would otherwise show behind it.
             */}
             {showHeaders && (
               <span
@@ -416,7 +452,7 @@ function TabRail({
               */
               <div
                 className={cn(
-                  'sticky top-0 z-10 -mx-1.5 flex min-h-8 items-center gap-1 bg-background px-3.5 py-1 text-[10px] font-medium',
+                  'sticky top-0 z-10 -mx-1.5 flex min-h-8 items-center gap-1 browser-chrome-surface px-3.5 py-1 text-[10px] font-medium',
                   tone.group,
                 )}
               >
@@ -574,8 +610,26 @@ function BrowserToolbarApp() {
    * from their own window, and switching tabs puts them away.
    */
   const devTools = state.devTools === true
+  /**
+   * Whether the rail is folded away — the window's flag, drawn rather than kept here. A state
+   * that has not arrived yet reads as "out", which is what a window is born with.
+   */
+  const railCollapsed = state.railCollapsed === true
+  /**
+   * Whether the window is maximized, as the window reports it.
+   *
+   * Not this renderer's state for the same reason as `picking`: it can also change from
+   * outside the bar (a double-click on the drag region), so the button draws the window's
+   * fact rather than the last thing it asked for.
+   */
+  const maximized = state.maximized === true
 
   const api = window.browserToolbar
+
+  // The chrome drops its hover state when the window loses focus — the pointer is still on some
+  // button, and nothing would otherwise clear it, so a hover would still be there when the window
+  // comes back (`useReleaseStaleInteraction`).
+  useReleaseStaleInteraction()
 
   /**
    * The recording, as the window reports it.
@@ -620,13 +674,12 @@ function BrowserToolbarApp() {
   /**
    * The open menu's geometry, whichever menu it is.
    *
-   * Both menus are drawn in this same 48-pixel-tall view, so both have to tell the host
-   * how tall their content is or the host cannot grow the region the overlay covers —
-   * one slot, because only one of them can be open at a time. The rail never opens one,
-   * and must not report the bar's menu closed behind its back.
+   * Both menus are drawn in this same document, so both have to tell the host one is open or it
+   * does not know to lift the chrome over the page for the menu to hang across — and the height
+   * says how far down it hangs. One slot, because only one of them can be open at a time.
    */
   useEffect(() => {
-    if (!api || IS_RAIL) return
+    if (!api) return
 
     // "A menu is open" is the *state*, never the presence of its content element. The
     // content mounts a beat after the state flips, and reading that beat as "no menu" is
@@ -729,6 +782,14 @@ function BrowserToolbarApp() {
   const handleCloseWindowEntirely = useCallback(() => {
     setWindowMenuOpen(false)
     void api?.closeWindowEntirely()
+  }, [api])
+
+  const handleMinimize = useCallback(() => {
+    void api?.minimize()
+  }, [api])
+
+  const handleToggleMaximize = useCallback(() => {
+    void api?.toggleMaximize()
   }, [api])
 
   /**
@@ -905,46 +966,70 @@ function BrowserToolbarApp() {
   }, [api])
 
   /**
-   * The rail draws the tabs; the bar draws the address.
+   * Fold the rail away, or bring it back.
    *
-   * Both surfaces exist in every window and both are told everything, so the two
-   * cannot drift apart — but each draws only what it is. Placed after the hooks so
-   * the two surfaces run the same hook list in the same order.
+   * Asked for rather than done: the rail's room is part of the tab area, so the window is what
+   * re-places the page — and it answers by pushing the new state, which is what this renderer
+   * draws. Nothing here remembers the flag, because nothing here owns it.
    */
-  if (IS_RAIL) {
-    return (
-      <TabRail
-        tabs={state.tabs ?? []}
-        sessionLabels={state.sessionLabels ?? {}}
-        onSelect={handleSelectTab}
-        onClose={handleCloseTab}
-        onNew={handleNewTab}
-        onNewFor={handleNewTabForWork}
-        onRelease={handleReleaseLock}
-      />
-    )
-  }
+  const handleToggleRail = useCallback(() => {
+    void api?.toggleRailCollapsed()
+  }, [api])
 
+  /**
+   * The window's chrome, one document: the title bar across the whole window, and under it the rail
+   * down the left edge with the page's slot beside it.
+   *
+   * The title bar runs edge to edge on purpose — the rail is *under* it, not beside it, so nothing
+   * cuts the band the address sits in. The slot is left bare (the page is a view of its own, on top
+   * of this one), which is also what lets a menu hang down across the page while the host has the
+   * chrome lifted over it (`restackViews`). Placed after the hooks so one document runs one hook
+   * list in one order.
+   */
   return (
-    <>
+    <div className="fixed inset-0 flex flex-col">
       {/*
-        Full-window outside-tap catcher while a menu is open.
-        Critical for draggable titlebar windows (Windows) where outside-click
-        dismissal can be unreliable if events fall into app-region: drag zones.
-        One catcher for both menus: either way the tap means "put it away".
+        The window's own top band, the whole width: the rail's toggle at the window's left edge
+        (past the traffic lights on macOS), then the address and the window's actions. It wears the
+        chrome surface, like the column under it, so the band is one piece with the rest of the
+        chrome rather than a panel beside it.
       */}
-      {(windowMenuOpen || downloadsMenuOpen) && (
+      <div
+        className="titlebar-drag-region browser-chrome-surface flex shrink-0 items-center"
+        style={{ height: BAR_HEIGHT_PX }}
+      >
         <div
-          className="fixed inset-0 z-[90] titlebar-no-drag bg-black/[0.0039215686]"
-          onPointerDown={(event) => {
-            event.preventDefault()
-            setWindowMenuOpen(false)
-            setDownloadsMenuOpen(false)
+          className="titlebar-drag-region flex h-full shrink-0 items-center"
+          style={{
+            // The rail's own room in the band: the toggle at the window's left edge (past the
+            // traffic lights on macOS) and the `+` at its right, so both stay on the pixels they
+            // had while the rail's column sat beside the bar. Folded away the `+` follows the
+            // toggle — the way to add a tab cannot go away with the rail.
+            width: railCollapsed ? undefined : RAIL_WIDTH_PX,
+            paddingLeft: RAIL_TOGGLE_INSET,
+            paddingRight: 8,
+            justifyContent: railCollapsed ? 'flex-start' : 'space-between',
           }}
-        />
-      )}
+        >
+          <RailToggle collapsed={railCollapsed} onToggle={handleToggleRail} />
+          <button
+            type="button"
+            aria-label={t('browser.newTab')}
+            title={t('browser.newTab')}
+            className={cn(
+              'titlebar-no-drag grid h-6 w-6 shrink-0 place-items-center rounded-[6px] transition-colors',
+              'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+              'text-foreground/65 hover:bg-foreground/[0.06] hover:text-foreground',
+              railCollapsed && 'ml-1',
+            )}
+            onClick={handleNewTab}
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </button>
+        </div>
 
-      <BrowserControls
+        <div className="min-w-0 flex-1">
+          <BrowserControls
         url={state.url}
         loading={state.isLoading}
         canGoBack={state.canGoBack}
@@ -966,11 +1051,17 @@ function BrowserToolbarApp() {
               </span>
             )}
 
+            {/*
+              These buttons say what they do through the browser's native `title`, not the
+              app's tooltip: this bar is a 48px-tall view and a popup of ours is clipped by
+              it — the OS's own tooltip is not (the rail's rows do the same).
+            */}
             <HeaderIconButton
               icon={picking
                 ? <X className="h-3.5 w-3.5" />
                 : <MousePointerClick className="h-3.5 w-3.5" />}
               aria-label={picking ? t('browser.cancelPick') : t('browser.pickElement')}
+              title={picking ? t('browser.cancelPick') : t('browser.pickElement')}
               className={picking ? 'bg-accent/15 text-accent' : undefined}
               // One door for everything done *with* the page: click an element, or box
               // several, and the bar on the page is where the selection is handed to the
@@ -986,6 +1077,7 @@ function BrowserToolbarApp() {
             <HeaderIconButton
               icon={<Code className="h-3.5 w-3.5" />}
               aria-label={t('browser.devTools')}
+              title={t('browser.devTools')}
               className={devTools ? 'bg-foreground/10 text-foreground' : undefined}
               onClick={handleToggleDevTools}
             />
@@ -1007,6 +1099,7 @@ function BrowserToolbarApp() {
                       ? <Spinner className="h-3.5 w-3.5" />
                       : <Download className="h-3.5 w-3.5" />}
                     aria-label={t('browser.downloads')}
+                    title={t('browser.downloads')}
                     className={unseenDownload ? 'bg-accent/15 text-accent' : undefined}
                   />
                 </DropdownMenuTrigger>
@@ -1059,6 +1152,7 @@ function BrowserToolbarApp() {
                 ? <Square className="h-3 w-3 fill-current" />
                 : <Circle className="h-3.5 w-3.5" />}
               aria-label={recording ? t('browser.stopRecording') : t('browser.startRecording')}
+              title={recording ? t('browser.stopRecording') : t('browser.startRecording')}
               className={recording ? 'bg-destructive/15 text-destructive' : undefined}
               onClick={() => void handleToggleRecord()}
             />
@@ -1087,6 +1181,32 @@ function BrowserToolbarApp() {
                 {t('browser.recordFailed')}
               </span>
             )}
+
+            {/*
+              The window's own minimize and maximize/restore.
+
+              The window is chromeless, so it wears no OS caption buttons on any platform —
+              these are them, drawn on the app's own surface like the workspace window's own
+              (see `WindowControls`). The second button's mark is the window's state, so a
+              maximize from outside the bar (a double-click on the drag region) turns it into
+              a restore here.
+            */}
+            <HeaderIconButton
+              icon={<Minus className="h-3.5 w-3.5" />}
+              aria-label={t('menu.minimize')}
+              title={t('menu.minimize')}
+              className="bg-background shadow-minimal hover:bg-foreground/5"
+              onClick={handleMinimize}
+            />
+            <HeaderIconButton
+              icon={maximized
+                ? <Copy className="h-3.5 w-3.5" />
+                : <Square className="h-3 w-3" />}
+              aria-label={maximized ? t('menu.restore') : t('menu.maximize')}
+              title={maximized ? t('menu.restore') : t('menu.maximize')}
+              className="bg-background shadow-minimal hover:bg-foreground/5"
+              onClick={handleToggleMaximize}
+            />
 
             <DropdownMenu open={windowMenuOpen} onOpenChange={setWindowMenuOpen}>
               <DropdownMenuTrigger asChild>
@@ -1118,9 +1238,49 @@ function BrowserToolbarApp() {
           </div>
         )}
         urlBarClassName="max-w-[600px]"
-        className="titlebar-drag-region bg-background"
-      />
-    </>
+        className="titlebar-drag-region"
+            />
+          </div>
+        </div>
+
+        {/*
+          Full-window outside-tap catcher while a menu is open.
+          Critical for draggable titlebar windows (Windows) where outside-click
+          dismissal can be unreliable if events fall into app-region: drag zones.
+          One catcher for both menus: either way the tap means "put it away".
+        */}
+        {(windowMenuOpen || downloadsMenuOpen) && (
+          <div
+            className="fixed inset-0 z-[90] titlebar-no-drag bg-black/[0.0039215686]"
+            onPointerDown={(event) => {
+              event.preventDefault()
+              setWindowMenuOpen(false)
+              setDownloadsMenuOpen(false)
+            }}
+          />
+        )}
+
+        {/*
+          Under the title bar: the rail down the left edge, and the page's slot beside it. Folded
+          away, the rail is not drawn at all — its room is the window's now, and the page has
+          already been placed without it.
+        */}
+        <div className="flex min-h-0 flex-1">
+          {!railCollapsed && (
+            <TabRail
+              tabs={state.tabs ?? []}
+              sessionLabels={state.sessionLabels ?? {}}
+              onSelect={handleSelectTab}
+              onClose={handleCloseTab}
+              onNewFor={handleNewTabForWork}
+              onRelease={handleReleaseLock}
+            />
+          )}
+
+          {/* The page's slot: the page is a view of its own, on top of this document. */}
+          <div className="min-w-0 flex-1" />
+        </div>
+    </div>
   )
 }
 

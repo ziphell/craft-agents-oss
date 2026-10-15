@@ -93,6 +93,7 @@ import { getSessionTitle } from "@/utils/session"
 import { useSetAtom } from "jotai"
 import type { Session, Workspace, FileAttachment, PermissionRequest, LoadedSource, LoadedSkill, PermissionMode, SourceFilter, AutomationFilter } from "../../../shared/types"
 import { sessionMetaMapAtom, sendToWorkspaceAtom, type SessionMeta } from "@/atoms/sessions"
+import { filterInstancesForWorkspace } from "@/atoms/browser-pane"
 import { sourcesAtom } from "@/atoms/sources"
 import { skillsAtom } from "@/atoms/skills"
 import { panelStackAtom, panelCountAtom, focusedPanelIdAtom, focusedSessionIdAtom, focusNextPanelAtom, focusPrevPanelAtom, parseSessionIdFromRoute } from "@/atoms/panel-stack"
@@ -2173,28 +2174,33 @@ function AppShellContent({
     setTimeout(() => focusZone('chat', { intent: 'programmatic' }), 50)
   }, [activeWorkspace, focusZone, navigate, resolveInheritedNewSessionParams])
 
-  // Open a tab in the browser.
+  // Open the browser.
   //
-  // This used to make a window of its own. There is one browser window now — the
-  // workspace's, used by every conversation and by the user — so "a new
-  // browser" means a tab in it, and the window comes up if it was not open yet.
-  //
-  // `newTab` is one request rather than "create the window, then add a tab to it":
-  // a window that was not up yet already holds the blank tab being asked for, so
-  // adding beside it would open two of them. The host decides, because it
-  // is the only side that knows whether the window it just handed back is new.
-  const handleNewBrowserWindow = useCallback(async () => {
+  // One window per workspace is the model, so this brings the window up rather than adding
+  // a tab to it: a window this workspace already has is raised (and un-minimized) instead
+  // of being joined by a second. Only when there is none does a window get made — and it
+  // comes back with the pages it had last time when the restore setting is on, and with the
+  // single empty-state tab when it is not. The host decides both (see `createInstance`),
+  // which is why nothing about tabs is asked for here.
+  const handleOpenBrowser = useCallback(async () => {
     try {
-      const instanceId = await window.electronAPI.browserPane.create({
-        show: true,
-        newTab: true,
-      })
+      const instances = await window.electronAPI.browserPane.list()
+      const existing = filterInstancesForWorkspace(
+        instances,
+        activeWorkspaceId,
+        remoteWorkspaceId ?? null,
+      )[0]
+      if (existing) {
+        await window.electronAPI.browserPane.focus(existing.id)
+        return
+      }
+      const instanceId = await window.electronAPI.browserPane.create({ show: true })
       await window.electronAPI.browserPane.focus(instanceId)
     } catch (error) {
-      console.error('[Chat] Failed to open a browser tab:', error)
+      console.error('[Chat] Failed to open the browser:', error)
       toast.error(t('toast.failedToCreateBrowser'))
     }
-  }, [])
+  }, [activeWorkspaceId, remoteWorkspaceId, t])
 
   // Delete Source - simplified since agents system is removed
   const handleDeleteSource = useCallback(async (sourceSlug: string) => {
@@ -2518,7 +2524,7 @@ function AppShellContent({
           onToggleSidebar={handleToggleSidebar}
           onToggleFocusMode={() => setIsSidebarAndNavigatorHidden(prev => !prev)}
           onAddSessionPanel={() => handleNewChat(true)}
-          onAddBrowserPanel={() => { void handleNewBrowserWindow() }}
+          onAddBrowserPanel={() => { void handleOpenBrowser() }}
           onAddTabToConversation={handleAddTabToConversation}
           isCompact={isAutoCompact}
         />

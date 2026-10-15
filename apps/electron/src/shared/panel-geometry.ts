@@ -16,6 +16,18 @@
 /** Gap between adjacent surfaces (sidebar ↔ navigator ↔ content, and the rail ↔ the page). */
 export const PANEL_GAP = 6
 
+/**
+ * The browser window's chrome, in the one place both sides read it.
+ *
+ * The window's chrome — the rail down its left edge and the bar across its top — is drawn by
+ * a renderer (one document, laid out in CSS pixels: `renderer/browser-toolbar.tsx`) while the
+ * page it frames is placed by the main process (a view rectangle: `pageAreaBounds`). The two
+ * have to agree about the rail's width and the bar's height or the page lands over its own
+ * chrome, so the numbers live here rather than twice.
+ */
+export const TAB_RAIL_WIDTH = 200
+export const TOOLBAR_HEIGHT = 48
+
 /** Inset from the window's edge to the surface nearest it (right, and the bottom). */
 export const PANEL_EDGE_INSET = 6
 

@@ -407,6 +407,7 @@ export const CHANNEL_MAP = {
   getProjects: invoke(RPC_CHANNELS.projects.GET),
   getProject: invoke(RPC_CHANNELS.projects.GET_ONE),
   getProjectLayers: invoke(RPC_CHANNELS.projects.LAYERS),
+  getProjectFiles: invoke(RPC_CHANNELS.projects.FILES),
   createProject: invoke(RPC_CHANNELS.projects.CREATE),
   updateProject: invoke(RPC_CHANNELS.projects.UPDATE),
   deleteProject: invoke(RPC_CHANNELS.projects.DELETE),

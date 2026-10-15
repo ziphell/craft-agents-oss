@@ -46,6 +46,13 @@ export function WindowControls() {
       className="titlebar-no-drag fixed right-0 top-0 flex items-stretch"
       style={{ height: 'var(--topbar-height)', width: titleBarCaptionInset, zIndex: 400 }}
     >
+      {/* A short rule on the strip's left edge, so the window's buttons read as the
+          window's own and not as one more control of the bar's. */}
+      <span
+        aria-hidden
+        className="pointer-events-none absolute left-0 top-1/2 h-4 w-px -translate-y-1/2 bg-foreground/15"
+      />
+
       <button
         type="button"
         aria-label={t('menu.minimize')}

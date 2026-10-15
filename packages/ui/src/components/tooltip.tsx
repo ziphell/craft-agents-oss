@@ -1,11 +1,16 @@
 import * as React from "react"
 import * as TooltipPrimitive from "@radix-ui/react-tooltip"
 import { cn } from "../lib/utils"
+import { useReleaseStaleInteraction } from "../hooks/useReleaseStaleInteraction"
 
 function TooltipProvider({
   delayDuration = 300,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
+  // A tooltip is opened by hovering (or focusing) its trigger, and none of that is undone when the
+  // window goes away — nor does the window coming back ask first (`useReleaseStaleInteraction`).
+  useReleaseStaleInteraction()
+
   return (
     <TooltipPrimitive.Provider
       delayDuration={delayDuration}
@@ -17,7 +22,15 @@ function TooltipProvider({
 
 const Tooltip = TooltipPrimitive.Root
 
-const TooltipTrigger = TooltipPrimitive.Trigger
+/**
+ * The trigger, marked so the window-blur reset can find a tooltip the focus is holding open
+ * (`useReleaseStaleInteraction`).
+ */
+const TooltipTrigger = React.forwardRef<
+  HTMLButtonElement,
+  React.ComponentPropsWithoutRef<typeof TooltipPrimitive.Trigger>
+>((props, ref) => <TooltipPrimitive.Trigger ref={ref} data-tooltip-trigger="" {...props} />)
+TooltipTrigger.displayName = 'TooltipTrigger'
 
 function TooltipContent({
   className,

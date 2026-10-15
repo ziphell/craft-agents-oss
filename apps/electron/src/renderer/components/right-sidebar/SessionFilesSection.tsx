@@ -6,7 +6,10 @@
  * - File watcher for auto-refresh when files change
  * - Click to preview in-app, double-click to open
  * - Right-click context menu with "Open" / "Show in {file manager}" actions
- * - Persisted expanded folder state per session
+ * - Persisted expanded folder state per source
+ *
+ * The same view renders a project folder's files (`projectFolder`) — the session info panel
+ * uses it for the project files tab — through the identical tree, minus the session watcher.
  *
  * Styling matches LeftSidebar patterns:
  * - Chevron hidden by default, shown on hover
@@ -75,6 +78,16 @@ export interface SessionFilesSectionProps {
   sessionFolderPath?: string
   /** Hide section header when embedded inside compact containers (e.g. popovers) */
   hideHeader?: boolean
+  /**
+   * When set, lists this project's own folder instead of a session folder. The tree, icons
+   * and header actions are the same; only the data source and title differ.
+   */
+  projectFolder?: {
+    workspaceId: string
+    projectSlug: string
+    /** Absolute project folder path, for the header action */
+    folderPath?: string
+  }
 }
 
 /**
@@ -418,23 +431,32 @@ function FileTreeItem({
 }
 
 /**
- * Section displaying session files as a tree
+ * Section displaying a session's (or a project's) files as a tree
  */
-export function SessionFilesSection({ sessionId, className, sessionFolderPath, hideHeader = false }: SessionFilesSectionProps) {
+export function SessionFilesSection({ sessionId, className, sessionFolderPath, hideHeader = false, projectFolder }: SessionFilesSectionProps) {
   const { t } = useTranslation()
+  const isProject = !!projectFolder
+  const projectWorkspaceId = projectFolder?.workspaceId
+  const projectSlug = projectFolder?.projectSlug
+  // The identity of the listed tree: a session id, or a namespaced project key. Used for the
+  // early-return guard and for persisting the expanded folders.
+  const sourceId = isProject ? `project:${projectWorkspaceId}:${projectSlug}` : sessionId
+  const folderPath = isProject ? projectFolder?.folderPath : sessionFolderPath
+  const headerLabel = isProject ? t('chat.projectFiles') : t('chat.sessionFiles')
+  const emptyLabel = isProject ? t('chat.projectFilesEmpty') : t('chat.sessionFilesEmpty')
   const [files, setFiles] = useState<SessionFile[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set())
   const [hasSavedExpandedState, setHasSavedExpandedState] = useState(false)
   const mountedRef = useRef(true)
 
-  // Load expanded paths from storage when session changes.
+  // Load expanded paths from storage when the source changes.
   // If no value exists yet, we default to "expand all" after files load.
   useEffect(() => {
-    if (sessionId) {
-      const raw = storage.getRaw(storage.KEYS.sessionFilesExpandedFolders, sessionId)
+    if (sourceId) {
+      const raw = storage.getRaw(storage.KEYS.sessionFilesExpandedFolders, sourceId)
       if (raw !== null) {
-        const saved = storage.get<string[]>(storage.KEYS.sessionFilesExpandedFolders, [], sessionId)
+        const saved = storage.get<string[]>(storage.KEYS.sessionFilesExpandedFolders, [], sourceId)
         setExpandedPaths(new Set(saved))
         setHasSavedExpandedState(true)
       } else {
@@ -445,31 +467,33 @@ export function SessionFilesSection({ sessionId, className, sessionFolderPath, h
       setExpandedPaths(new Set())
       setHasSavedExpandedState(false)
     }
-  }, [sessionId])
+  }, [sourceId])
 
   // Save expanded paths to storage when they change
   const saveExpandedPaths = useCallback((paths: Set<string>) => {
-    if (sessionId) {
-      storage.set(storage.KEYS.sessionFilesExpandedFolders, Array.from(paths), sessionId)
+    if (sourceId) {
+      storage.set(storage.KEYS.sessionFilesExpandedFolders, Array.from(paths), sourceId)
     }
-  }, [sessionId])
+  }, [sourceId])
 
   // Load files
   const loadFiles = useCallback(async () => {
-    if (!sessionId) {
+    if (!sourceId) {
       setFiles([])
       return
     }
 
     setIsLoading(true)
     try {
-      const sessionFiles = await window.electronAPI.getSessionFiles(sessionId)
+      const nextFiles = isProject && projectWorkspaceId && projectSlug
+        ? await window.electronAPI.getProjectFiles(projectWorkspaceId, projectSlug)
+        : await window.electronAPI.getSessionFiles(sessionId!)
       if (mountedRef.current) {
-        setFiles(sessionFiles)
+        setFiles(nextFiles)
 
         // Default behavior: expand the entire folder tree when there's no saved state yet.
         if (!hasSavedExpandedState) {
-          const allDirectoryPaths = new Set(collectDirectoryPaths(sessionFiles))
+          const allDirectoryPaths = new Set(collectDirectoryPaths(nextFiles))
           if (allDirectoryPaths.size > 0) {
             setExpandedPaths(allDirectoryPaths)
             saveExpandedPaths(allDirectoryPaths)
@@ -478,7 +502,7 @@ export function SessionFilesSection({ sessionId, className, sessionFolderPath, h
         }
       }
     } catch (error) {
-      console.error('Failed to load session files:', error)
+      console.error('Failed to load files:', error)
       if (mountedRef.current) {
         setFiles([])
       }
@@ -487,7 +511,7 @@ export function SessionFilesSection({ sessionId, className, sessionFolderPath, h
         setIsLoading(false)
       }
     }
-  }, [sessionId, hasSavedExpandedState, saveExpandedPaths])
+  }, [sourceId, isProject, projectWorkspaceId, projectSlug, sessionId, hasSavedExpandedState, saveExpandedPaths])
 
   // Initial load and file watcher setup
   useEffect(() => {
@@ -567,7 +591,7 @@ export function SessionFilesSection({ sessionId, className, sessionFolderPath, h
     })
   }, [saveExpandedPaths])
 
-  if (!sessionId) {
+  if (!sourceId) {
     return null
   }
 
@@ -576,12 +600,12 @@ export function SessionFilesSection({ sessionId, className, sessionFolderPath, h
       {/* Header - matches sidebar styling with select-none, extra top padding for visual balance */}
       {!hideHeader && (
         <div className="flex items-center justify-between px-4 pt-4 pb-2 shrink-0 select-none">
-          <span className="text-xs font-medium text-muted-foreground">{t("chat.sessionFiles")}</span>
-          {sessionFolderPath && (
+          <span className="text-xs font-medium text-muted-foreground">{headerLabel}</span>
+          {folderPath && (
             <button
               type="button"
               // eslint-disable-next-line craft-links/no-direct-file-open -- directories can't be previewed in-app
-              onClick={() => window.electronAPI.openFile(sessionFolderPath)}
+              onClick={() => window.electronAPI.openFile(folderPath)}
               className="text-xs text-foreground/50 hover:text-foreground/80 hover:underline underline-offset-2 transition-colors"
             >
               {t("chat.viewInFileManager", { fileManager: fileManagerName })}
@@ -596,7 +620,7 @@ export function SessionFilesSection({ sessionId, className, sessionFolderPath, h
         {files.length === 0 ? (
           <div className="px-4 text-muted-foreground select-none">
             <p className="text-xs">
-              {isLoading ? t('chat.sessionFilesLoading') : t('chat.sessionFilesEmpty')}
+              {isLoading ? t('chat.sessionFilesLoading') : emptyLabel}
             </p>
           </div>
         ) : (

@@ -227,7 +227,9 @@ $MainArgs = @(
     # the app on load (ERR_INVALID_ARG_VALUE). Externalize it so Node loads it natively
     # as ESM — the SDK core is staged into the app's node_modules above (step 4).
     # Must stay in sync with package.json build:main and scripts/electron-dev.ts.
-    "--external:@anthropic-ai/claude-agent-sdk"
+    "--external:@anthropic-ai/claude-agent-sdk",
+    # koffi is a native FFI (Windows-only); keep it external so Node loads the .node at runtime.
+    "--external:koffi"
 )
 # Add OAuth defines if env vars are set
 if ($env:GOOGLE_OAUTH_CLIENT_ID) {

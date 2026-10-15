@@ -343,6 +343,14 @@ Output is deterministic JSON (`href`, `protocol`, `host`, `hostname`, `pathname`
 
 ---
 
+## Permissions in the browser window
+
+The window's pages are driven by automation, so **nobody is there to answer a permission prompt** — a page that asked would wait forever. Every permission a page requests is therefore granted outright, with no prompt and no per-site memory: camera and microphone (`media`), geolocation, notifications, clipboard read and write, pointer lock, fullscreen, window management, idle detection, and the rest. A page probing a permission sees it as granted, so a flow that needs one never stalls on a dialog.
+
+**Screen capture is the one exception, and it is on the source side rather than the permission.** A page may call `getDisplayMedia` — the permission is granted — but what it gets back is **its own tab** (Electron's tab capture), never the desktop, a window, or another tab. Granting the permission does not hand out the screen. The only caller answered with a *different* tab is our own **record button**: it gets the tab a person armed, and an empty answer when nothing is armed. A page can record itself, and nothing beyond it.
+
+---
+
 ## Recipe: Canvas-based UIs (Google Sheets, etc.)
 
 Canvas-based web apps (Google Sheets, Google Docs, some map/chart UIs) render content as pixels on `<canvas>` — individual cells or elements are not DOM nodes and won't appear in `snapshot`. Use these patterns instead:

@@ -4,11 +4,11 @@
 /* Tell Tailwind where to scan for utility classes */
 @source "../renderer/App.tsx";
 @source "../renderer/main.tsx";
-/* The renderer's other entry points, which sit beside `App.tsx` rather than under a
-   folder: `browser-toolbar.tsx` (the browser window's own chrome) and
-   `browser-empty-state.tsx`. They were missing, so the classes only they use —
-   `-mx-1.5`, `h-5 w-5`, `hover:bg-black/10` before that — were never generated and
-   the chrome drew itself with whatever happened to be shared with the rest of the app. */
+/* The renderer's other entry point, which sits beside `App.tsx` rather than under a
+   folder: `browser-toolbar.tsx` (the browser window's own chrome). It was missing, so
+   the classes only it uses — `-mx-1.5`, `h-5 w-5`, `hover:bg-black/10` before that —
+   were never generated and the chrome drew itself with whatever happened to be shared
+   with the rest of the app. */
 @source "../renderer/*.{ts,tsx}";
 @source "../renderer/components/**/*.{ts,tsx,jsx}";
 @source "../renderer/contexts/**/*.{ts,tsx,jsx}";
@@ -334,6 +334,18 @@ html[data-theme-override]::before {
   background: color-mix(in srgb, var(--background) 50%, transparent);
   z-index: -1;
   pointer-events: none;
+}
+
+/* The browser window's own chrome — the rail and the bar, one document — wears the app surface
+   the way the workspace shell does: half the background colour, so the window's Mica/vibrancy
+   reads through it and both windows are the same grey (the rule above does this for the
+   workspace). The chrome is a document of its own and cannot inherit the workspace's
+   `data-theme-override`, so it states the surface itself — `browser-chrome-surface` is on the
+   chrome's surfaces in `browser-toolbar.tsx`, and the overlay tints the gutter to match
+   (`updateNativeOverlayState`). Without a material behind it this is a flat half-tint, which is
+   why the browser window sets one (`browser-pane-manager.createInstance`). */
+html.browser-chrome .browser-chrome-surface {
+  background: color-mix(in srgb, var(--background) 50%, transparent);
 }
 
 /* Theme Mismatch - Solid background when theme doesn't support current mode

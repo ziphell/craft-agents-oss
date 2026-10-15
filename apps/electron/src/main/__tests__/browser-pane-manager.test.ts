@@ -83,21 +83,17 @@ function createMockWebContents() {
     loadURL: mock(async (url: string) => {
       currentUrl = url
       maybeFailEmptyStateLoad(url)
-      // The bar's own document, and only the bar's: every chrome surface loads the same
-      // `browser-toolbar.html`, so the rail — which loads it with `view=rail` — used to swallow the
-      // failures meant for the bar and make the retry tests count whatever the two of them did
-      // together.
-      const isBarDocument = typeof url === 'string'
-        && url.includes('browser-toolbar.html')
-        && url.includes('view=bar')
-      if (isBarDocument && toolbarLoadFailuresRemaining > 0) {
+      // The chrome's own document, and only it: a tab's page is a different webContents, so a
+      // failure meant for the chrome must not be counted against a page load.
+      const isChromeDocument = typeof url === 'string' && url.includes('browser-toolbar.html')
+      if (isChromeDocument && toolbarLoadFailuresRemaining > 0) {
         toolbarLoadFailuresRemaining--
         throw new Error('mock toolbar load failure')
       }
     }),
     loadFile: mock(async (path: string, opts?: any) => {
       maybeFailEmptyStateLoad(path)
-      if (opts?.query?.view === 'bar' && toolbarLoadFailuresRemaining > 0) {
+      if (typeof path === 'string' && path.includes('browser-toolbar.html') && toolbarLoadFailuresRemaining > 0) {
         toolbarLoadFailuresRemaining--
         throw new Error('mock toolbar load failure')
       }
@@ -137,6 +133,9 @@ function createMockWebContents() {
     isFocused: mock(() => false),
     setWindowOpenHandler: mock((_handler: any) => {}),
     send: mock((_channel: string, _payload?: unknown) => {}),
+    // The manager tells the chrome's pages the pointer has left when the window comes or goes
+    // (`releaseChromePointer`); a native input event, so this is where the test sees it.
+    sendInputEvent: mock((_event: unknown) => {}),
     debugger: {
       attach: mock(() => {}),
       detach: mock(() => {}),
@@ -215,6 +214,7 @@ function createMockWindow(opts?: { width?: number; height?: number; minWidth?: n
   let skipTaskbar = false
   let visible = false
   let minimized = false
+  let maximized = false
   let destroyed = false
   const minWidth = opts?.minWidth ?? 0
   const minHeight = opts?.minHeight ?? 0
@@ -251,6 +251,17 @@ function createMockWindow(opts?: { width?: number; height?: number; minWidth?: n
     minimize: mock(() => {
       minimized = true
       win._emit('minimize')
+    }),
+    // Maximize/restore, the other caption verb the bar asks for: the state is the
+    // window's, and the events are what the manager pushes it back on.
+    isMaximized: mock(() => maximized),
+    maximize: mock(() => {
+      maximized = true
+      win._emit('maximize')
+    }),
+    unmaximize: mock(() => {
+      maximized = false
+      win._emit('unmaximize')
     }),
     show: mock(() => {
       visible = true
@@ -543,8 +554,8 @@ function tab(instance: any): any {
  * test that wants the window on screen says so by finishing the bar's load.
  */
 function finishLoadingTheBar(instance: any): void {
-  instance.toolbarView.webContents.getURL = mock(() => 'file:///mock/renderer/browser-toolbar.html')
-  instance.toolbarView.webContents._emit('did-finish-load')
+  instance.chromeView.webContents.getURL = mock(() => 'file:///mock/renderer/browser-toolbar.html')
+  instance.chromeView.webContents._emit('did-finish-load')
 }
 
 /**
@@ -1475,9 +1486,9 @@ describe('BrowserPaneManager', () => {
     await Bun.sleep(1400)
 
     // The bar's own page, not the window's: the bar is a `BrowserView`, so its document is loaded
-    // into a webContents of its own (`instance.toolbarView`) — the app window's webContents never
+    // into a webContents of its own (`instance.chromeView`) — the app window's webContents never
     // sees it.
-    const bar = instance.toolbarView.webContents
+    const bar = instance.chromeView.webContents
     const fileAttempts = bar.loadFile.mock.calls.length
     const toolbarUrlAttempts = bar.loadURL.mock.calls
       .filter((args: [string]) => args[0]?.includes('browser-toolbar.html')).length
@@ -1496,7 +1507,7 @@ describe('BrowserPaneManager', () => {
 
     await Bun.sleep(3200)
 
-    const bar = instance.toolbarView.webContents
+    const bar = instance.chromeView.webContents
     const fileAttempts = bar.loadFile.mock.calls.length
     const toolbarUrlAttempts = bar.loadURL.mock.calls
       .filter((args: [string]) => args[0]?.includes('browser-toolbar.html')).length
@@ -1583,10 +1594,10 @@ describe('BrowserPaneManager', () => {
     tab(instance).canGoBack = true
     tab(instance).canGoForward = false
 
-    const sendsBeforeShow = instance.toolbarView.webContents.send.mock.calls.length
+    const sendsBeforeShow = instance.chromeView.webContents.send.mock.calls.length
     instance.window._emit('show')
 
-    const sendCallsAfterShow = instance.toolbarView.webContents.send.mock.calls.slice(sendsBeforeShow)
+    const sendCallsAfterShow = instance.chromeView.webContents.send.mock.calls.slice(sendsBeforeShow)
     expect(sendCallsAfterShow).toContainEqual([
       'browser-toolbar:state-update',
       {
@@ -1595,6 +1606,8 @@ describe('BrowserPaneManager', () => {
         isLoading: false,
         canGoBack: true,
         canGoForward: false,
+        // The window is not maximized, so its second caption button offers "maximize".
+        maximized: false,
         // The picker is off, and the window has one tab — which the rail draws and
         // the bar leaves alone.
         picking: false,
@@ -1602,6 +1615,8 @@ describe('BrowserPaneManager', () => {
         devTools: false,
         // Nobody has asked for the caret in the address bar.
         urlBarFocusToken: 0,
+        // The rail is out: a window is born with it out, and nothing has folded it away.
+        railCollapsed: false,
         tabs: [
           tabSummary({ id: instance.tabs[0].id, url: 'https://example.com', title: 'Example', active: true }),
         ],
@@ -1627,12 +1642,12 @@ describe('BrowserPaneManager', () => {
     tab(instance).canGoBack = true
     tab(instance).canGoForward = true
 
-    instance.toolbarView.webContents.getURL = mock(() => 'http://localhost:5173/browser-toolbar.html?instanceId=toolbar-finish-load-replay')
+    instance.chromeView.webContents.getURL = mock(() => 'http://localhost:5173/browser-toolbar.html?instanceId=toolbar-finish-load-replay')
 
-    const sendsBeforeFinishLoad = instance.toolbarView.webContents.send.mock.calls.length
-    instance.toolbarView.webContents._emit('did-finish-load')
+    const sendsBeforeFinishLoad = instance.chromeView.webContents.send.mock.calls.length
+    instance.chromeView.webContents._emit('did-finish-load')
 
-    const sendCallsAfterFinishLoad = instance.toolbarView.webContents.send.mock.calls.slice(sendsBeforeFinishLoad)
+    const sendCallsAfterFinishLoad = instance.chromeView.webContents.send.mock.calls.slice(sendsBeforeFinishLoad)
     expect(sendCallsAfterFinishLoad).toContainEqual([
       'browser-toolbar:state-update',
       {
@@ -1641,10 +1656,14 @@ describe('BrowserPaneManager', () => {
         isLoading: true,
         canGoBack: true,
         canGoForward: true,
+        // The window is not maximized, so its second caption button offers "maximize".
+        maximized: false,
         picking: false,
         devTools: false,
         // Nobody has asked for the caret in the address bar.
         urlBarFocusToken: 0,
+        // The rail is out: a window is born with it out, and nothing has folded it away.
+        railCollapsed: false,
         tabs: [
           tabSummary({ id: instance.tabs[0].id, url: 'https://craft.do', title: 'Craft', isLoading: true, active: true }),
         ],
@@ -1662,8 +1681,8 @@ describe('BrowserPaneManager', () => {
     manager.createInstance('toolbar-ignore-about-blank')
     const instance = (manager as any).instances.get('toolbar-ignore-about-blank')
 
-    instance.toolbarView.webContents.getURL = mock(() => 'about:blank')
-    instance.toolbarView.webContents._emit('did-finish-load')
+    instance.chromeView.webContents.getURL = mock(() => 'about:blank')
+    instance.chromeView.webContents._emit('did-finish-load')
 
     expect(instance.toolbarReady).toBe(false)
   })
@@ -1673,8 +1692,8 @@ describe('BrowserPaneManager', () => {
     manager.createInstance('toolbar-fallback-ready')
     const instance = (manager as any).instances.get('toolbar-fallback-ready')
 
-    instance.toolbarView.webContents.getURL = mock(() => 'data:text/html;charset=UTF-8,%3Chtml%3E%3C%2Fhtml%3E')
-    instance.toolbarView.webContents._emit('did-finish-load')
+    instance.chromeView.webContents.getURL = mock(() => 'data:text/html;charset=UTF-8,%3Chtml%3E%3C%2Fhtml%3E')
+    instance.chromeView.webContents._emit('did-finish-load')
 
     expect(instance.toolbarReady).toBe(true)
   })
@@ -1688,12 +1707,12 @@ describe('BrowserPaneManager', () => {
     expect(instance.pendingShowOnReady).toBe(true)
     expect(instance.window.show).toHaveBeenCalledTimes(0)
 
-    instance.toolbarView.webContents.getURL = mock(() => 'about:blank')
-    instance.toolbarView.webContents._emit('did-finish-load')
+    instance.chromeView.webContents.getURL = mock(() => 'about:blank')
+    instance.chromeView.webContents._emit('did-finish-load')
     expect(instance.window.show).toHaveBeenCalledTimes(0)
 
-    instance.toolbarView.webContents.getURL = mock(() => 'file:///mock/renderer/browser-toolbar.html')
-    instance.toolbarView.webContents._emit('did-finish-load')
+    instance.chromeView.webContents.getURL = mock(() => 'file:///mock/renderer/browser-toolbar.html')
+    instance.chromeView.webContents._emit('did-finish-load')
 
     expect(instance.toolbarReady).toBe(true)
     expect(instance.window.show).toHaveBeenCalledTimes(1)
@@ -2922,11 +2941,11 @@ describe('BrowserPaneManager', () => {
       const instance = (manager as any).instances.get('tabs-focus-newpage')
       // The window is in use, so the new tab is a second one rather than the blank it came with.
       instance.tabs[0].currentUrl = 'https://first.example.com/'
-      instance.toolbarView.webContents.focus.mockClear()
+      instance.chromeView.webContents.focus.mockClear()
 
       manager.createTab('tabs-focus-newpage')
 
-      expect(instance.toolbarView.webContents.focus).toHaveBeenCalled()
+      expect(instance.chromeView.webContents.focus).toHaveBeenCalled()
       expect(instance.urlBarFocusToken).toBe(1)
     })
 
@@ -2937,13 +2956,13 @@ describe('BrowserPaneManager', () => {
       const newId = manager.createTab('tabs-focus-commit')
       const newTab = instance.tabs.find((tab: any) => tab.id === newId)
       const tokenBeforeCommit = instance.urlBarFocusToken
-      instance.toolbarView.webContents.focus.mockClear()
+      instance.chromeView.webContents.focus.mockClear()
 
       // Committing a page is where Chromium hands the keyboard to the page; the new-tab page is the
       // one case where it belongs in the bar instead.
       newTab.tabView.webContents._emit('did-navigate', 'file:///app/renderer/browser-empty-state.html')
 
-      expect(instance.toolbarView.webContents.focus).toHaveBeenCalled()
+      expect(instance.chromeView.webContents.focus).toHaveBeenCalled()
       expect(instance.urlBarFocusToken).toBeGreaterThan(tokenBeforeCommit)
     })
 
@@ -2951,7 +2970,7 @@ describe('BrowserPaneManager', () => {
       manager.createInstance('tabs-focus-link')
       const instance = (manager as any).instances.get('tabs-focus-link')
       instance.tabs[0].currentUrl = 'https://first.example.com/'
-      instance.toolbarView.webContents.focus.mockClear()
+      instance.chromeView.webContents.focus.mockClear()
 
       // A link opens a tab **at** an address — Chromium's `window.open` path — so the tab reads as a
       // page from the moment it is made and the caret stays out of the bar, without waiting for the
@@ -2962,7 +2981,7 @@ describe('BrowserPaneManager', () => {
         disposition: 'link',
       })
 
-      expect(instance.toolbarView.webContents.focus).not.toHaveBeenCalled()
+      expect(instance.chromeView.webContents.focus).not.toHaveBeenCalled()
       expect(instance.urlBarFocusToken).toBe(0)
     })
 
@@ -2975,14 +2994,14 @@ describe('BrowserPaneManager', () => {
       const newId = manager.createTab('tabs-focus-back', { activate: false })
 
       manager.activateTab('tabs-focus-back', first.id)
-      instance.toolbarView.webContents.focus.mockClear()
+      instance.chromeView.webContents.focus.mockClear()
       const tokenBefore = instance.urlBarFocusToken
 
       manager.activateTab('tabs-focus-back', newId)
 
       // The tab on screen is the new-tab page, so the caret goes to the bar rather than the empty
       // document — and the ask is a new number, so the bar focuses again.
-      expect(instance.toolbarView.webContents.focus).toHaveBeenCalled()
+      expect(instance.chromeView.webContents.focus).toHaveBeenCalled()
       expect(instance.urlBarFocusToken).toBeGreaterThan(tokenBefore)
     })
 
@@ -2994,10 +3013,10 @@ describe('BrowserPaneManager', () => {
       manager.createTab('tabs-focus-close-new', { activate: false })
 
       // The real tab is on screen; closing it hands the window over to the new-tab page behind it.
-      instance.toolbarView.webContents.focus.mockClear()
+      instance.chromeView.webContents.focus.mockClear()
       manager.closeTab('tabs-focus-close-new', real.id)
 
-      expect(instance.toolbarView.webContents.focus).toHaveBeenCalled()
+      expect(instance.chromeView.webContents.focus).toHaveBeenCalled()
       expect(instance.urlBarFocusToken).toBe(1)
     })
 
@@ -3179,38 +3198,34 @@ describe('BrowserPaneManager', () => {
 
     /** The last state the window pushed to its own toolbar. */
     function lastToolbarState(instance: any): any {
-      const calls = instance.toolbarView.webContents.send.mock.calls.filter(
+      const calls = instance.chromeView.webContents.send.mock.calls.filter(
         (call: unknown[]) => call[0] === 'browser-toolbar:state-update',
       )
       return calls[calls.length - 1]?.[1]
     }
 
-    // The window's chrome is an L and the tab sits inside it: the rail's width comes
-    // off the left, the bar's height off the top. Neither depends on how many tabs
-    // there are — the room belongs to the window, not to the list.
+    // The window's chrome is one document laid over the window's whole rectangle, and the page
+    // sits inside it: the rail's width comes off the left, the bar's height off the top. Neither
+    // depends on how many tabs there are — the room belongs to the window, not to the list.
     it("keeps the rail's room whatever the list does, so its `+` is always reachable", () => {
       manager.createInstance('tabs-room')
       const instance = (manager as any).instances.get('tabs-room')
       instance.window._emit('show')
 
-      // The rail itself: the window's whole left column, and the bar starts where it
-      // ends — so the back button and the address bar are all to the right of the
-      // tabs, and nothing of the bar sits over them.
-      expect(instance.railView.setBounds).toHaveBeenCalledWith({
-        x: 0, y: 0, width: 200, height: expect.anything(),
-      })
-      expect(instance.toolbarView.setBounds).toHaveBeenCalledWith({
-        x: 200, y: 0, width: 1031, height: 48,
+      // The chrome: one view over the window's whole rectangle, so the rail and the bar are one
+      // surface rather than two documents that have to be kept looking alike.
+      expect(instance.chromeView.setBounds).toHaveBeenCalledWith({
+        x: 0, y: 0, width: 1231, height: 900,
       })
 
-      // And the rail is the topmost view in the window: tabs and the agent's overlay
-      // are added over it, and raising the chrome leaves the rail on top — so nothing
-      // can cover the tabs or swallow the clicks meant for them.
-      const raised = instance.window.setTopBrowserView.mock.calls.map((call: unknown[]) => call[0])
-      expect(raised[raised.length - 1]).toBe(instance.railView)
+      // And the page is over the chrome: the chrome covers the window, so a chrome left on top
+      // would swallow the page's clicks — the page is the last thing put back over it.
+      const children = instance.window.contentView.children
+      expect(children.indexOf(tab(instance).tabView))
+        .toBeGreaterThan(children.indexOf(instance.chromeView))
 
-      // One tab: the rail is still there, because that is when somebody wants a
-      // second one and the `+` is the only way to make it.
+      // One tab: the page is the tab area inset by the panel's gutter — right of the rail (200)
+      // and below the bar (48), by the 1px the panel's line sits in.
       expect(tab(instance).tabView.setBounds).toHaveBeenCalledWith({
         x: 201, y: 49, width: expect.anything(), height: expect.anything(),
       })
@@ -3228,6 +3243,46 @@ describe('BrowserPaneManager', () => {
       expect(instance.tabs[0].tabView.setBounds).toHaveBeenCalledWith({
         x: 201, y: 49, width: expect.anything(), height: expect.anything(),
       })
+    })
+
+    // The toggle in the window's top-left: folding the rail away hands its room to the page. The
+    // flag is the window's own and lives only here — in memory, for this window, never written
+    // down — because the rail's room is part of the tab area the page is placed in.
+    it('gives the rail’s room to the page when the rail is folded away', async () => {
+      const fold = (): Promise<void> => {
+        const registration = (
+          mockIpcMainHandle.mock.calls as unknown as Array<[string, (...args: any[]) => Promise<void>]>
+        ).find(([name]) => name === 'browser-toolbar:rail-toggle')
+        if (!registration) throw new Error('Expected browser-toolbar:rail-toggle IPC registration')
+        return registration[1]({}, 'tabs-fold')
+      }
+
+      manager.registerToolbarIpc()
+      manager.createInstance('tabs-fold')
+      const instance = (manager as any).instances.get('tabs-fold')
+      instance.window._emit('show')
+
+      // Out: the page starts right of the rail, one pixel into the panel's gutter.
+      expect(tab(instance).tabView.setBounds).toHaveBeenLastCalledWith({
+        x: 201, y: 49, width: 1024, height: 845,
+      })
+
+      // Folded: there is no chrome on the left to hug, so the page is placed from the window's own
+      // edge — the panel's edge inset, as on its right and bottom — and takes the rail's width.
+      await fold()
+
+      expect(tab(instance).tabView.setBounds).toHaveBeenLastCalledWith({
+        x: 6, y: 49, width: 1219, height: 845,
+      })
+      expect(lastToolbarState(instance).railCollapsed).toBe(true)
+
+      // And back: the same flag, the geometry the window started with.
+      await fold()
+
+      expect(tab(instance).tabView.setBounds).toHaveBeenLastCalledWith({
+        x: 201, y: 49, width: 1024, height: 845,
+      })
+      expect(lastToolbarState(instance).railCollapsed).toBe(false)
     })
 
     // The three parts of a tab's metadata, in one payload: what the tab reports,
@@ -3517,7 +3572,7 @@ describe('BrowserPaneManager', () => {
   describe('developer tools', () => {
     /** The last state the window pushed to its own toolbar. */
     function lastToolbarState(instance: any): any {
-      const calls = instance.toolbarView.webContents.send.mock.calls.filter(
+      const calls = instance.chromeView.webContents.send.mock.calls.filter(
         (call: unknown[]) => call[0] === 'browser-toolbar:state-update',
       )
       return calls[calls.length - 1]?.[1]
@@ -3600,7 +3655,7 @@ describe('BrowserPaneManager', () => {
 
     /** The last state the window pushed to its own toolbar. */
     function lastToolbarState(instance: any): any {
-      const calls = instance.toolbarView.webContents.send.mock.calls.filter(
+      const calls = instance.chromeView.webContents.send.mock.calls.filter(
         (call: unknown[]) => call[0] === 'browser-toolbar:state-update',
       )
       return calls[calls.length - 1]?.[1]
@@ -3854,7 +3909,7 @@ describe('BrowserPaneManager', () => {
       manager.registerToolbarIpc()
 
       const sent = () =>
-        instance.toolbarView.webContents.send.mock.calls
+        instance.chromeView.webContents.send.mock.calls
           .filter((call: unknown[]) => call[0] === 'browser-toolbar:state-update')
           .map((call: unknown[]) => (call[1] as { recording: unknown }).recording)
 

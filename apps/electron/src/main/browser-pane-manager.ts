@@ -17,6 +17,7 @@ import {
 } from '@craft-agent/server-core/handlers'
 import { BrowserView, BrowserWindow, WebContentsView, app, ipcMain, nativeTheme, screen, session, shell, type Session as ElectronSession } from 'electron'
 import { mainLog } from './logger'
+import { preventTaskbarPinning } from './windows-prevent-pinning'
 import type { WindowManager } from './window-manager'
 import { BrowserCDP, type AccessibilitySnapshot, type ElementGeometry, type OverlayLabels } from './browser-cdp'
 import { registerLocalOriginHandler } from './local-origin-router'
@@ -57,7 +58,8 @@ import {
 import { CodedError, RPC_CHANNELS, describeWork, sameWork, tabSectionOf } from '@craft-agent/shared/protocol'
 import type { PickedElement, PickedElementOrigin, BrowserToolbarAction, BrowserTabSummary, TabBelongsTo } from '@craft-agent/shared/protocol'
 import { PAGE_PANEL_RING, resolvePagePanelRing, resolvePagePanelShadow } from '../shared/browser-live-fx'
-import { PANEL_EDGE_INSET, PANEL_RADIUS_INNER } from '../shared/panel-geometry'
+import { PANEL_EDGE_INSET, PANEL_RADIUS_INNER, TAB_RAIL_WIDTH, TOOLBAR_HEIGHT } from '../shared/panel-geometry'
+import { getWindowsBackgroundMaterial } from './window-material'
 import type {
   IBrowserPaneManager,
   BrowserInstanceSnapshot,
@@ -72,26 +74,6 @@ export type { BrowserInstanceInfo }
 const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL
 const TOOLBAR_LOAD_MAX_RETRIES = 4
 const TOOLBAR_LOAD_RETRY_DELAY_MS = 500
-/**
- * The toolbar's own height: the row with the address bar and the window's buttons.
- *
- * That row is a `BrowserView` at the top of the window, and every layout in this
- * file has to agree with it — the tab starts below it, the overlay is inset by
- * it, `viewport-resize` adds it back. Which is why its height is one constant
- * rather than a number written out where it is needed.
- */
-const TOOLBAR_HEIGHT = 48
-/**
- * The tab rail's width: the strip of tabs down the window's left edge.
- *
- * The tabs are a **column, not a row**, so the chrome takes its room from the
- * window's width instead of its height: a tab keeps every pixel of height it had
- * (which is what a page's layout, a screenshot and the agent's viewport all
- * care about), and the rail is where a person's `+`, the tab chips and their close
- * buttons live. A row across the top ate the tab's height and its own content
- * scrolled sideways, which is how it ended up unusable.
- */
-const TAB_RAIL_WIDTH = 200
 /**
  * The width a browser window's **page** opens at.
  *
@@ -199,7 +181,7 @@ const BROWSER_WINDOW_TITLE = 'Craft Browser'
  * Every window in the process shares one App User Model ID, so the taskbar groups
  * the browser in with the workspace windows — a single button with several
  * previews. A different id puts this window in a taskbar group of its own, so it
- * can be found, pinned and switched to on its own (see `setAppDetails` at window
+ * can be found and switched to on its own (see `setAppDetails` at window
  * creation). Distinct from the packaged app id in electron-builder.yml
  * (`com.lukilabs.craft-agent`), which the rest of the windows share.
  */
@@ -312,6 +294,16 @@ const TOOLBAR_CHANNELS = {
   FORCE_CLOSE_MENU: 'browser-toolbar:force-close-menu',
   HIDE: 'browser-toolbar:hide',
   DESTROY: 'browser-toolbar:destroy',
+  /**
+   * The window's own caption verbs.
+   *
+   * The window is chromeless (`frame: false`), so it wears no OS caption buttons on any
+   * platform — minimizing and maximizing are things only the bar can ask for. `MAXIMIZE`
+   * toggles rather than sets: one button both maximizes and restores, and which it does is
+   * read from the window.
+   */
+  MINIMIZE: 'browser-toolbar:minimize',
+  MAXIMIZE: 'browser-toolbar:maximize',
   STATE_UPDATE: 'browser-toolbar:state-update',
   PICK_ELEMENT: 'browser-toolbar:pick-element',
   CANCEL_PICK: 'browser-toolbar:cancel-pick',
@@ -334,6 +326,15 @@ const TOOLBAR_CHANNELS = {
    * thing it cannot do itself, because a reveal is the OS's.
    */
   DOWNLOAD_REVEAL: 'browser-toolbar:download-reveal',
+  /**
+   * Fold the rail away, or bring it back.
+   *
+   * The person's own toggle in the chrome's top-left. Nothing is sent with it: this flips the
+   * window's own flag, because the window — not the renderer — is what has to re-place the page
+   * (the rail's room is part of the tab area, `tabAreaBounds`). It is not remembered anywhere
+   * outside the window: a window opened later starts with the rail out.
+   */
+  RAIL_TOGGLE: 'browser-toolbar:rail-toggle',
 } as const
 export const BROWSER_PANE_SESSION_PARTITION = 'persist:browser-pane'
 const SESSION_PARTITION = BROWSER_PANE_SESSION_PARTITION
@@ -539,16 +540,17 @@ interface BrowserInstance {
    * (`parkingWindowFor`).
    */
   parkingWindow: BrowserWindow | null
-  /** The address bar, across the top of the window. */
-  toolbarView: BrowserView
   /**
-   * The tab rail, down the left edge — the tabs, vertically.
+   * The window's own chrome, as **one document in one view**: the rail down the left edge and
+   * the bar across the top are the same renderer (`renderer/browser-toolbar.tsx`), so they are
+   * one surface rather than two panels that have to be kept looking alike.
    *
-   * Its own view rather than part of the address bar's: one `BrowserView` is one
-   * rectangle, and the chrome is an L (a column and a row). Both are chrome and both
-   * stay above the tab, so neither can be covered by it.
+   * One view over the window's whole rectangle, not the two the L-shape used to need: a
+   * `BrowserView` is a rectangle, the chrome is an L, and two rectangles are two documents each
+   * painting its own background — which read as two surfaces however identical the colour. The
+   * page sits on top of this one, in the slot the document leaves for it.
    */
-  railView: BrowserView
+  chromeView: BrowserView
   /**
    * The ground the page sits on: the surface in the gutter around the page and the panel's
    * hairline, and — while a conversation holds the tab on screen — the agent's frame, chip and
@@ -611,6 +613,15 @@ interface BrowserInstance {
   toolbarMenuOpen: boolean
   toolbarMenuHeight: number
   toolbarMenuOverlayActive: boolean
+  /**
+   * Whether the person has folded the rail away.
+   *
+   * The rail's room is part of the tab area (`tabAreaBounds`), so this is the window's fact and
+   * not the chrome document's: the page has to be placed without it, which is the main process's
+   * job. In memory and per window, on purpose — the chrome's toggle is a view of this window now,
+   * not a preference, and a window opened tomorrow starts with the rail out.
+   */
+  railCollapsed: boolean
   /**
    * How many times this window has asked for the caret in the address bar.
    *
@@ -1185,13 +1196,20 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // about what "the surface" is.
     const bgColor = getBackgroundColor(nativeTheme.shouldUseDarkColors)
 
+    // The chrome this window wears is a half-tint (`browser-chrome-surface`), so it is the
+    // workspace window's own shell only when the same material sits behind it: vibrancy on macOS,
+    // Mica/acrylic on Windows. Without one the tint would be half a colour over nothing, so the
+    // flat colour is used instead — see `renderer/browser-toolbar.html`.
+    const winMaterial = getWindowsBackgroundMaterial()
+    const hasGlassBackdrop = process.platform === 'darwin' || Boolean(winMaterial)
+
     // Where it opens is left to Electron on purpose (the person's call): a window is something
     // they move, snap and maximise, and a position computed from a work area we read once would
     // fight that — and on a small display it can put the window's top edge off the screen.
     //
     // The width is not left to Electron: it opens around a page `DEFAULT_VIEWPORT_WIDTH` wide, and
     // the rail beside it and the panel's gutter are what the window adds to that.
-    const panelInset = this.pagePanelInsets()
+    const panelInset = this.pagePanelInsets(false)
     const window = new BrowserWindow({
       width: DEFAULT_VIEWPORT_WIDTH + TAB_RAIL_WIDTH + panelInset.left + panelInset.right,
       height: 900,
@@ -1202,7 +1220,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       title: BROWSER_WINDOW_TITLE,
       icon: browserWindowIconPath(),
       show: false, // Always hidden until toolbar is painted (ready-to-show)
-      backgroundColor: bgColor,
+      // `backgroundColor` is opaque and would cover the material, so a glass window leaves it
+      // unset — as the workspace window does — and lets the material be the surface. The flat
+      // colour is kept only where there is no material to fall back on.
+      ...(hasGlassBackdrop ? {} : { backgroundColor: bgColor }),
+      ...(process.platform === 'darwin' && {
+        vibrancy: 'under-window' as const,
+        visualEffectState: 'active' as const,
+      }),
+      ...(winMaterial && { backgroundMaterial: winMaterial }),
       // Fully chromeless — toolbar is rendered in a dedicated BrowserView
       frame: false,
       webPreferences: {
@@ -1220,11 +1246,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // be found and switched to on its own. The icon is repeated because the taskbar
     // draws that group's button from here, not from the window's own icon.
     //
-    // The relaunch properties (`relaunchCommand`/`relaunchDisplayName`) are
-    // deliberately left unset: setting them is what makes the taskbar offer "Pin to
-    // taskbar". The window is a place, not an app to launch, so the button carries
-    // only "Close window".
+    // A button of its own would otherwise carry a "Pin to taskbar" entry. The
+    // window is a place to look at, not an app to launch, so `preventTaskbarPinning`
+    // drops that entry — and it has to run first, before the app id is set.
     if (process.platform === 'win32') {
+      preventTaskbarPinning(window)
       window.setAppDetails({
         appId: BROWSER_WINDOW_APP_ID,
         appIconPath: browserWindowIconPath(),
@@ -1232,7 +1258,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       })
     }
 
-    const toolbarView = new BrowserView({
+    /**
+     * The window's chrome — the rail and the bar — in one view over the whole window. Its
+     * document lays the rail out down the left edge and the bar across the top, and leaves the
+     * page's slot transparent for the page view that sits on top of it (`restackViews`).
+     */
+    const chromeView = new BrowserView({
       webPreferences: {
         preload: join(__dirname, 'browser-toolbar-preload.cjs'),
         partition: SESSION_PARTITION,
@@ -1248,23 +1279,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       throw new Error('[browser-pane] Native overlay requires BrowserWindow.addBrowserView + setTopBrowserView')
     }
 
-    // The toolbar's own background, so its transparent chrome does not flash white.
+    // The chrome's own background, so the parts of it a tab does not cover do not flash white.
     // A tab's background is set by `attachTab` — it belongs to the tab.
-    toolbarView.setBackgroundColor('#00000000')
-
-    // The same document, told to render the tab rail instead of the bar: one entry
-    // point, one preload, one state channel, two surfaces.
-    const railView = new BrowserView({
-      webPreferences: {
-        preload: join(__dirname, 'browser-toolbar-preload.cjs'),
-        partition: SESSION_PARTITION,
-        session: ses,
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: false,
-      },
-    })
-    railView.setBackgroundColor('#00000000')
+    chromeView.setBackgroundColor('#00000000')
 
     /**
      * The ground the page sits on, built here rather than per tab: created before any page
@@ -1292,8 +1309,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       id: instanceId,
       window,
       parkingWindow: null,
-      toolbarView,
-      railView,
+      chromeView,
       nativeOverlayView,
       nativeOverlayReady: false,
       tabs: [tab],
@@ -1306,6 +1322,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       toolbarMenuOpen: false,
       toolbarMenuHeight: 0,
       toolbarMenuOverlayActive: false,
+      railCollapsed: false,
       urlBarFocusToken: 0,
       showOnCreate: shouldShow,
       pendingShowOnReady: false,
@@ -1331,12 +1348,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       },
     }
 
-    window.addBrowserView(toolbarView)
-    window.addBrowserView(railView)
+    window.addBrowserView(chromeView)
     // The ground goes in before the page does: a tab's page view is added *on top* of it
     // (`attachTab`), which is what makes the panel's line sit under the page's edge.
     window.addBrowserView(nativeOverlayView)
-    this.raiseChromeViews(instance)
+    this.restackViews(instance)
 
     this.attachTab(instance, tab)
 
@@ -1351,17 +1367,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     mainLog.info(`[browser-pane] toolbar version: v4-react-chromeless`)
     mainLog.info(`[browser-pane] Created instance: ${instanceId} (show=${shouldShow}, workspace=${workspaceId ?? 'none'})`)
 
-    void this.loadChromePage(instance, 'bar')
+    void this.loadChromePage(instance)
       .finally(() => {
         // Safety net: if Electron never fires ready-to-show, still unblock focus/show behavior.
         if (!instance.toolbarReady) {
           this.markToolbarReady(instance, 'toolbar-load-finalized')
         }
       })
-    // The rail is chrome too, and it is the only way a person adds or closes a tab
-    // from inside the window — so it gets the same load-and-retry the bar has. It does
-    // not gate showing the window: a window whose rail failed is still a window.
-    void this.loadChromePage(instance, 'rail')
     // A restored window is already loading its pages; the empty-state document is what a
     // window with nothing to restore opens with.
     if (!restored) {
@@ -1681,8 +1693,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * another window), and a conversation working in the background must never pull the window
    * in front of what the person is doing.
    */
-  private focusTheTabOnScreen(instance: BrowserInstance, tab: BrowserTab): void {
-    if (instance.window.isDestroyed() || !instance.window.isFocused()) return
+  private focusTheTabOnScreen(instance: BrowserInstance, tab: BrowserTab, force = false): void {
+    if (instance.window.isDestroyed()) return
+    // `force` is for the paths that *are* the window coming forward — `focus` and
+    // `markToolbarReady`, which have just asked for the native activation. Reading `isFocused`
+    // there would race that activation (and skip the hand-over for no reason); everywhere else
+    // the check stays, so a background push cannot pull the window in front.
+    if (!force && !instance.window.isFocused()) return
     const tabWc = tab.tabView.webContents
     if (tabWc.isDestroyed() || tabWc.isFocused()) return
     tabWc.focus()
@@ -1703,12 +1720,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * ({@link focusTheTabOnScreen}): focusing another window's webContents is what brings that
    * window forward, and a caret nobody can see is not worth moving.
    */
-  private focusAddressBar(instance: BrowserInstance): void {
-    if (instance.window.isDestroyed() || instance.toolbarView.webContents.isDestroyed()) return
-    if (!instance.window.isFocused()) return
+  private focusAddressBar(instance: BrowserInstance, force = false): void {
+    if (instance.window.isDestroyed() || instance.chromeView.webContents.isDestroyed()) return
+    if (!force && !instance.window.isFocused()) return
     instance.urlBarFocusToken += 1
     this.pushToolbarState(instance)
-    instance.toolbarView.webContents.focus()
+    instance.chromeView.webContents.focus()
   }
 
   /**
@@ -1732,11 +1749,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    *
    * Into the address bar when the tab is the new-tab page — it exists to be given an address, and
    * there is no page to type into — and into the page otherwise. The single decision, so the paths
-   * that put a tab on screen (a switch, a close handing over) cannot disagree about it.
+   * that put a tab on screen (a switch, a close handing over, and the window itself coming up —
+   * `focus` / `markToolbarReady`) cannot disagree about it. `force` is passed on by those
+   * window-coming-up paths; see {@link focusTheTabOnScreen}.
    */
-  private focusShownTab(instance: BrowserInstance, tab: BrowserTab): void {
-    if (this.isNewTabPage(tab)) this.focusAddressBar(instance)
-    else this.focusTheTabOnScreen(instance, tab)
+  private focusShownTab(instance: BrowserInstance, tab: BrowserTab, force = false): void {
+    if (this.isNewTabPage(tab)) this.focusAddressBar(instance, force)
+    else this.focusTheTabOnScreen(instance, tab, force)
   }
 
   /**
@@ -2500,6 +2519,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     instance.isVisible = true
     this.emitStateChange(instance)
+    // Bringing the window up also hands the keyboard to the tab it is showing — the address bar
+    // when that is the new-tab page, the page otherwise — the same decision a tab switch makes
+    // (`focusShownTab`). Forced, because the activation was just asked for above.
+    this.focusShownTab(instance, activeTab(instance), true)
   }
 
   hide(id: string): void {
@@ -3174,7 +3197,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         } else {
           this.parkTab(instance, tab, own)
         }
-        this.raiseActiveTab(instance)
+        this.restackViews(instance)
         this.updateNativeOverlayState(instance)
       }
       if (parking && !parking.isDestroyed()) parking.destroy()
@@ -3626,10 +3649,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
 
     // The tab on screen: the window grows by everything that tab does not get — the bar from the
-    // top, the rail from the side, and the panel's gutter (`pagePanelInsets`).
-    const inset = this.pagePanelInsets()
+    // top, the rail from the side (while it is out), the panel's gutter (`pagePanelInsets`), and
+    // the window's own edge on the side where the rail is not.
+    const inset = this.pagePanelInsets(instance.railCollapsed)
     instance.window.setContentSize(
-      requestedWidth + TAB_RAIL_WIDTH + inset.left + inset.right,
+      requestedWidth + (instance.railCollapsed ? 0 : TAB_RAIL_WIDTH) + inset.left + inset.right,
       requestedHeight + TOOLBAR_HEIGHT + inset.top + inset.bottom,
     )
 
@@ -4294,7 +4318,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   private async loadNativeOverlayDocument(instance: BrowserInstance): Promise<void> {
-    const inset = this.pagePanelInsets()
+    // Baked as the rail-out geometry — what a window is born with — and re-stated on every
+    // update, because folding the rail away moves the panel's left edge (`updateNativeOverlayState`).
+    const inset = this.pagePanelInsets(instance.railCollapsed)
 
     const html = `<!doctype html>
 <html>
@@ -4311,18 +4337,20 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       }
       /* The page's rectangle inside the tab area: the same gutter the tab is laid out with
-         (see pagePanelInsets in the main process). The surface behind the page is everything
-         *outside* this rectangle, filled by the spread shadow, and nothing inside it (the page
-         covers that, and where it does not — the notches its own corners are cut out of — the
-         window's own background is the same colour).
+         (see pagePanelInsets in the main process). The surface behind the page is this rectangle
+         plus everything outside it — the spread shadow fills the outside, and the rectangle itself
+         is filled from updateNativeOverlayState while the overlay is under the page. Filling the
+         rectangle is what covers the corners: they are cut out of the page's own view
+         (applyPageCornerRadius), and those notches fall *inside* this rectangle. It is left clear
+         while the overlay is over the page (a lock, or one of our menus), where a fill would cover
+         the page.
 
          Square on purpose, and the one place in this document that does not round anything: the
-         page's corner is cut by the page's own view (see applyPageCornerRadius in the main
-         process), and a second arc drawn here would be a second copy of that shape computed
-         differently (CSS pixels here, the display's metrics there). Where the two disagree the
-         page's own paint is what shows through — the page is above this document, so nothing here
-         can cover it — and a page that paints white shows a white edge along the corner in dark
-         mode, and eats the line's arcs at the four corners. */
+         page's corner is cut by the page's own view and a second arc drawn here would be a second
+         copy of that shape computed differently (CSS pixels here, the display's metrics there).
+         Where the two disagree the page's own paint is what shows through — the page is above this
+         document, so nothing here can cover it — and a page that paints white shows a white edge
+         along the corner in dark mode, and eats the line's arcs at the four corners. */
       #mask {
         position: fixed;
         left: ${inset.left}px;
@@ -4439,19 +4467,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * How much of a window the chrome takes off the top, in px: the address bar.
-   *
-   * The rail takes its room off the *side* (`TAB_RAIL_WIDTH`), so this is only the
-   * row — and every layout asks `tabAreaBounds`/`pageAreaBounds` rather than doing the
-   * sums, so a tab is never laid out over its own chrome, nor over the gutter its panel
-   * is inset by.
-   */
-  private toolbarChromeHeight(): number {
-    return TOOLBAR_HEIGHT
-  }
-
-  /**
-   * Where the tab area is: right of the rail, below the bar.
+   * Where the tab area is: right of the rail, below the bar — the whole window when the rail
+   * is folded away (`railCollapsed`), because there is nothing on the left to give room to.
    *
    * One answer for every reader — the agent overlay's bounds (it covers this and nothing else)
    * and the viewport `viewport-resize` promises — so they cannot disagree about how much window
@@ -4460,10 +4477,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    */
   private tabAreaBounds(instance: BrowserInstance): { x: number; y: number; width: number; height: number } {
     const [width, height] = instance.window.getContentSize()
+    const railWidth = instance.railCollapsed ? 0 : TAB_RAIL_WIDTH
     return {
-      x: TAB_RAIL_WIDTH,
+      x: railWidth,
       y: TOOLBAR_HEIGHT,
-      width: Math.max(200, width - TAB_RAIL_WIDTH),
+      width: Math.max(200, width - railWidth),
       height: Math.max(100, height - TOOLBAR_HEIGHT),
     }
   }
@@ -4472,17 +4490,23 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * The gutter between the tab area's edges and the page panel drawn inside it.
    *
    * The page hugs the chrome it sits against — the rail on its left and the bar above it — with
-   * exactly **1px** between them, and keeps `PANEL_EDGE_INSET` from the window's right and bottom
-   * edges, where there is nothing to hug (the app insets its own panels by that much).
+   * exactly **1px** between them, and keeps `PANEL_EDGE_INSET` from the window's edges where there
+   * is nothing to hug (the app insets its own panels by that much): the right and the bottom
+   * always, and the left too once the rail is folded away.
    *
    * Those 1px are not spacing (the person's call: the page stays flush against the chrome
-   * otherwise): the line is drawn just *outside* the page, and both chrome surfaces are views
-   * above this one — flush against them the line's top and left lines would be painted behind
-   * them and never seen. One pixel is all a line needs, and it is what the app gets for free by
-   * drawing its panels' lines in the same document as its chrome.
+   * otherwise): the line is drawn just *outside* the page, and the chrome's own document is on
+   * top of the page at that edge — flush against it the line's top and left lines would be
+   * painted behind the chrome and never seen. One pixel is all a line needs, and it is what the
+   * app gets for free by drawing its panels' lines in the same document as its chrome.
    */
-  private pagePanelInsets(): { left: number; top: number; right: number; bottom: number } {
-    return { left: 1, top: 1, right: PANEL_EDGE_INSET, bottom: PANEL_EDGE_INSET }
+  private pagePanelInsets(railCollapsed: boolean): { left: number; top: number; right: number; bottom: number } {
+    return {
+      left: railCollapsed ? PANEL_EDGE_INSET : 1,
+      top: 1,
+      right: PANEL_EDGE_INSET,
+      bottom: PANEL_EDGE_INSET,
+    }
   }
 
   /**
@@ -4494,7 +4518,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    */
   private pageAreaBounds(instance: BrowserInstance): { x: number; y: number; width: number; height: number } {
     const area = this.tabAreaBounds(instance)
-    const inset = this.pagePanelInsets()
+    const inset = this.pagePanelInsets(instance.railCollapsed)
     return {
       x: area.x + inset.left,
       y: area.y + inset.top,
@@ -4504,83 +4528,76 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Both chrome surfaces above the tab, the rail on top.
+   * Put the window's three layers in order for the state we are in.
    *
-   * The rail goes last so it is the topmost view in the window: it is the one surface
-   * a person must always be able to reach, so nothing — tab, agent overlay, or the
-   * bar while its menu is expanded over the tab — gets to sit over it. The tab's own
-   * geometry already stops where the rail starts, plus the panel's gutter
-   * (`pageAreaBounds`); this is the belt to that pair of braces.
+   * The order is not fixed, and it is one function because the three places that used to
+   * decide it (`raiseActiveTab`, the menu's layout, and `updateNativeOverlayState`) each had
+   * their own idea and could disagree:
+   *
+   * - the **chrome** — one view over the window, the rail and the bar in one document — sits
+   *   *under* the page: a view covers a rectangle whatever it paints, so a full-window chrome
+   *   left on top would take the page's clicks with it. It is raised above the page only while
+   *   one of its menus is open, because the menu is drawn in that same document and hangs down
+   *   over the page's slot;
+   * - the **page** is over the chrome, and under the overlay while a conversation holds it;
+   * - the **overlay** (the gutter's surface, the panel's line, and the agent's frame) is under
+   *   the page normally and over it while the tab on screen is held.
+   *
+   * Each layer is raised in turn, bottom to top, on the two z-order doors there are: the page
+   * is a `WebContentsView` (`contentView.addChildView`) and the other two are `BrowserView`s
+   * (`setTopBrowserView`). They share one tree, so the order they are given here holds.
    */
-  private raiseChromeViews(instance: BrowserInstance): void {
+  private restackViews(instance: BrowserInstance): void {
     if (instance.window.isDestroyed()) return
-    instance.window.setTopBrowserView(instance.toolbarView)
-    instance.window.setTopBrowserView(instance.railView)
-  }
+    const page = activeTab(instance).tabView
+    const overlay = instance.nativeOverlayView
+    const chrome = instance.chromeView
+    const held = activeTab(instance).heldBy !== null
+    const menuUp = instance.toolbarMenuOpen || instance.toolbarMenuOverlayActive
 
-  /**
-   * Tell the window's chrome something — the bar and the rail together.
-   *
-   * They are one surface split in two by the shape of a `BrowserView`, so a message
-   * that reached only one of them would leave the other showing yesterday's tabs,
-   * theme or menu state.
-   */
-  private sendToChrome(instance: BrowserInstance, channel: string, payload?: unknown): void {
-    if (instance.window.isDestroyed()) return
-    for (const view of [instance.toolbarView, instance.railView]) {
-      if (view.webContents.isDestroyed()) continue
-      view.webContents.send(channel, payload)
+    if (menuUp) {
+      // overlay < page < chrome: the menu has to be over the page it hangs across.
+      instance.window.setTopBrowserView(overlay)
+      instance.window.contentView.addChildView(page)
+      instance.window.setTopBrowserView(chrome)
+    } else if (held) {
+      // chrome < page < overlay: the agent's frame and shield are over the page.
+      instance.window.setTopBrowserView(chrome)
+      instance.window.contentView.addChildView(page)
+      instance.window.setTopBrowserView(overlay)
+    } else {
+      // overlay < chrome < page: the page is the person's.
+      instance.window.setTopBrowserView(overlay)
+      instance.window.setTopBrowserView(chrome)
+      instance.window.contentView.addChildView(page)
     }
   }
 
-  private getToolbarEffectiveHeight(instance: BrowserInstance): number {
-    const chrome = this.toolbarChromeHeight()
-    if (!instance.toolbarMenuOpen) return chrome
-
-    const [, contentHeight] = instance.window.getContentSize()
-    return Math.max(chrome, contentHeight)
+  /** Tell the window's chrome something — the rail and the bar, which are one document. */
+  private sendToChrome(instance: BrowserInstance, channel: string, payload?: unknown): void {
+    if (instance.window.isDestroyed()) return
+    const wc = instance.chromeView.webContents
+    if (wc.isDestroyed()) return
+    wc.send(channel, payload)
   }
 
   /**
-   * The bar: the window's *upper right* — everything to the right of the rail.
+   * The chrome: the window's whole rectangle.
    *
-   * Back button, address and actions all start where the rail ends, so the rail is one
-   * unbroken column from the window's top edge down and nothing of the bar sits over
-   * it. The bar still expands downwards over the tab while its menu is open; the rail
-   * is not part of that, and stays both visible and clickable.
+   * One view over the window, not the bar's row and the rail's column as two: the document
+   * lays the rail out down the left edge and the bar across the top, and the page's slot is
+   * the rest of it. Its size is the window's, so it is one surface from the window's top-left
+   * corner to its bottom-right whatever the two bands inside it are.
    */
-  private layoutToolbarView(instance: BrowserInstance): void {
-    const [width] = instance.window.getContentSize()
-    const toolbarHeight = this.getToolbarEffectiveHeight(instance)
-    const railWidth = Math.min(TAB_RAIL_WIDTH, width)
-
-    instance.toolbarView.setBounds({
-      x: railWidth,
-      y: 0,
-      width: Math.max(0, width - railWidth),
-      height: toolbarHeight,
-    })
-    instance.toolbarView.setAutoResize({ width: true, height: false })
-  }
-
-  /**
-   * The rail: the window's whole left column, top edge to bottom edge.
-   *
-   * Full height rather than starting below the bar, because the bar is beside it now:
-   * with the bar to its right there is nothing above the rail to give that row to, and
-   * a column that stops 48px short of the top reads as a panel somebody forgot to
-   * finish. The rail's own header row is the same height as the bar, so the two bands
-   * line up across the window.
-   */
-  private layoutRailView(instance: BrowserInstance): void {
+  private layoutChromeView(instance: BrowserInstance): void {
     const [width, height] = instance.window.getContentSize()
-    instance.railView.setBounds({
+    instance.chromeView.setBounds({
       x: 0,
       y: 0,
-      width: Math.min(TAB_RAIL_WIDTH, width),
-      height: Math.max(120, height),
+      width: Math.max(1, width),
+      height: Math.max(1, height),
     })
-    instance.railView.setAutoResize({ width: false, height: true })
+    instance.chromeView.setAutoResize({ width: true, height: true })
   }
 
   /**
@@ -4741,7 +4758,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       overlay.setBounds({ x: 0, y: 0, width: 0, height: 0 })
       overlay.setAutoResize({ width: false, height: false })
       if (!instance.window.isDestroyed()) {
-        this.raiseChromeViews(instance)
+        this.restackViews(instance)
       }
       return
     }
@@ -4759,26 +4776,25 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     overlay.setBounds(area)
     overlay.setAutoResize({ width: true, height: true })
 
-    // Which of the two is on top is the whole of "is this tab locked or not", and the page is
-    // on top whenever it can be: a view covers a rectangle whatever it paints, so an overlay
-    // left over the page takes the page's clicks with it — every click, not just the ones near
-    // the panel's ink. Everything the overlay draws is *around* the page (the gutter's surface,
-    // the panel's hairline) or belongs to a lock, so under the page it is invisible where it
-    // would matter and harmless where it is not.
-    if (shieldActive) {
-      instance.window.setTopBrowserView(overlay)
-    } else {
-      instance.window.contentView.addChildView(activeTab(instance).tabView)
-    }
-    this.raiseChromeViews(instance)
+    // Which layer is over which — the overlay over the page while this tab is held, and under it
+    // otherwise — is `restackViews`'s one job, so nothing here has its own idea of it.
+    this.restackViews(instance)
 
     // Resolved on every update rather than baked into the document, because both follow the
     // OS/app theme and the window outlives a theme switch.
-    const surface = getBackgroundColor(nativeTheme.shouldUseDarkColors)
+    //
+    // The surface is the **half-tint** the chrome draws (`browser-chrome-surface`): over the
+    // window's material the two have to agree exactly, and a solid colour here would read as a
+    // second surface beside the rail rather than the same one.
+    const surface = `color-mix(in srgb, ${getBackgroundColor(nativeTheme.shouldUseDarkColors)} 50%, transparent)`
     const ring = resolvePagePanelRing(nativeTheme.shouldUseDarkColors)
     const frameShadow = resolvePagePanelShadow(nativeTheme.shouldUseDarkColors)
     const accent = this.getResolvedAccentColor()
     const lockedGlow = `inset 0 0 0 1px color-mix(in oklab, ${accent} 45%, transparent), inset 0 0 24px color-mix(in oklab, ${accent} 28%, transparent)`
+    // The gutter the panel is drawn in, restated on every update: its left edge moves when the
+    // rail is folded away or brought back (`pagePanelInsets`), and it is the one piece of this
+    // document's geometry that is not fixed for the window's life.
+    const inset = this.pagePanelInsets(instance.railCollapsed)
 
     void overlay.webContents.executeJavaScript(`(() => {
       const mask = document.getElementById('mask');
@@ -4791,11 +4807,28 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       const locked = ${locked};
       const shieldActive = ${shieldActive};
 
+      // The panel's rectangle and the two frames around it, placed from the gutter above. The
+      // frames sit one pixel outside it, so their arcs stay concentric with the page's cut corner.
+      const gutter = ${JSON.stringify(inset)};
+      for (const [element, delta] of [[mask, 0], [frame, -1], [lock, -1]]) {
+        element.style.left = (gutter.left + delta) + 'px';
+        element.style.top = (gutter.top + delta) + 'px';
+        element.style.right = (gutter.right + delta) + 'px';
+        element.style.bottom = (gutter.bottom + delta) + 'px';
+      }
+
       // The surface the panel sits on, outside the page's rectangle — the colour the rail and the
       // bar beside it are drawn in, so the panel reads as a panel on this window's surface rather
-      // than on a second one. Nothing here decides the corner's shape: that is the page's own cut,
-      // and the stylesheet's #mask comment has why it is left to the page.
+      // than on a second one.
       mask.style.boxShadow = '0 0 0 9999px ' + ${JSON.stringify(surface)};
+
+      // …and the rectangle itself is filled while the overlay is *under* the page. The page covers
+      // it, but its corners are cut out of the page's own view (applyPageCornerRadius) and those
+      // notches fall *inside* this rectangle — filled here, they show this surface; left clear, they
+      // would show the window's material behind the whole document, which is not what the panel sits
+      // on. While the overlay is over the page (a lock, or one of our menus) the rectangle must stay
+      // clear, or it would cover the page.
+      mask.style.background = shieldActive ? 'transparent' : ${JSON.stringify(surface)};
 
       // Which of the two frames is drawn: the resting line outside the page while nothing is
       // happening here, and — once this tab is held — the agent's own frame over the page's edge,
@@ -4958,7 +4991,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       this.parkTab(instance, tab)
     }
 
-    this.raiseActiveTab(instance)
+    this.restackViews(instance)
     this.updateNativeOverlayState(instance)
   }
 
@@ -5192,21 +5225,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Put the page of the tab on screen above the other tabs, and the chrome above everything.
-   *
-   * The page is raised through `contentView` (it is a `WebContentsView`) while the chrome is
-   * raised through `setTopBrowserView` (still a `BrowserView`) — the two share one tree, so the
-   * order they are given here holds. The window's overlay is not part of this: whether it sits
-   * above or below the page depends on whether the tab on screen is locked, which is
-   * `updateNativeOverlayState`'s business.
-   */
-  private raiseActiveTab(instance: BrowserInstance): void {
-    if (instance.window.isDestroyed()) return
-    instance.window.contentView.addChildView(activeTab(instance).tabView)
-    this.raiseChromeViews(instance)
-  }
-
-  /**
    * The colour behind a tab's document — what shows until it paints, and wherever it is transparent.
    *
    * The browser's own canvas — white — for a **page**: a page that leaves its background to the
@@ -5220,11 +5238,17 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     return this.isNewTabPage(tab) ? getBackgroundColor(nativeTheme.shouldUseDarkColors) : PAGE_VIEW_BACKDROP
   }
 
+  /**
+   * Lay every view out from the window's current size.
+   *
+   * The chrome and the overlay size themselves natively (`setAutoResize`), so this is the page's
+   * rectangle — it alone cannot (`layoutTabView`) — and then the layers' order, which the resize
+   * did not change but the menu state might have (`restackViews`).
+   */
   private layoutAllViews(instance: BrowserInstance): void {
-    this.layoutToolbarView(instance)
-    this.layoutRailView(instance)
+    this.layoutChromeView(instance)
     this.layoutTabView(instance)
-    this.raiseChromeViews(instance)
+    this.restackViews(instance)
     this.reassertPageCornerRadii(instance)
   }
 
@@ -5372,41 +5396,35 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Load one of the window's two chrome surfaces.
+   * Load the window's chrome document.
    *
-   * Both are the same document (`browser-toolbar.html`) with a different `view`, so a
-   * window is not missing a surface because somebody forgot to add an entry point —
-   * and both get the same retry, because a chrome that failed to load is a window with
-   * a hole in it.
+   * Retried, because a chrome that failed to load is a window with a hole in it.
    */
-  private async loadChromePage(
-    instance: BrowserInstance,
-    surface: 'bar' | 'rail',
-  ): Promise<void> {
-    const view = surface === 'rail' ? instance.railView : instance.toolbarView
-    const query = `instanceId=${encodeURIComponent(instance.id)}&view=${surface}`
+  private async loadChromePage(instance: BrowserInstance): Promise<void> {
     let lastError: unknown = null
 
     for (let attempt = 0; attempt <= TOOLBAR_LOAD_MAX_RETRIES; attempt++) {
       try {
         if (VITE_DEV_SERVER_URL) {
-          await view.webContents.loadURL(`${VITE_DEV_SERVER_URL}/browser-toolbar.html?${query}`)
+          await instance.chromeView.webContents.loadURL(
+            `${VITE_DEV_SERVER_URL}/browser-toolbar.html?instanceId=${encodeURIComponent(instance.id)}`,
+          )
         } else {
-          await view.webContents.loadFile(
+          await instance.chromeView.webContents.loadFile(
             join(__dirname, 'renderer/browser-toolbar.html'),
-            { query: { instanceId: instance.id, view: surface } },
+            { query: { instanceId: instance.id } },
           )
         }
 
         if (attempt > 0) {
-          mainLog.info(`[browser-pane] ${surface} load recovered id=${instance.id} attempt=${attempt + 1}`)
+          mainLog.info(`[browser-pane] chrome load recovered id=${instance.id} attempt=${attempt + 1}`)
         }
         return
       } catch (error) {
         lastError = error
         const retrying = attempt < TOOLBAR_LOAD_MAX_RETRIES
         mainLog.warn(
-          `[browser-pane] ${surface} load failed id=${instance.id} attempt=${attempt + 1}/${TOOLBAR_LOAD_MAX_RETRIES + 1}: ${error instanceof Error ? error.message : String(error)}${retrying ? ' (retrying)' : ''}`,
+          `[browser-pane] chrome load failed id=${instance.id} attempt=${attempt + 1}/${TOOLBAR_LOAD_MAX_RETRIES + 1}: ${error instanceof Error ? error.message : String(error)}${retrying ? ' (retrying)' : ''}`,
         )
 
         if (retrying) {
@@ -5416,19 +5434,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
 
     const errorText = lastError instanceof Error ? lastError.message : String(lastError ?? 'unknown error')
-    await this.loadChromeFallback(instance, surface, errorText)
+    await this.loadChromeFallback(instance, errorText)
   }
 
-  private async loadChromeFallback(
-    instance: BrowserInstance,
-    surface: 'bar' | 'rail',
-    reason: string,
-  ): Promise<void> {
+  private async loadChromeFallback(instance: BrowserInstance, reason: string): Promise<void> {
     const safeReason = reason.replace(/[<>&]/g, (ch) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[ch] || ch))
-    const title = surface === 'rail' ? 'Browser tab rail failed to load' : 'Browser toolbar failed to load'
-    const body = surface === 'rail'
-      ? 'The tab area still works, but the tab rail is unavailable. Tabs can still be switched and added from the app, or by the agent.'
-      : 'The tab area still works, but toolbar UI is unavailable. Try reopening the browser window.'
     const html = `<!doctype html>
 <html>
   <head>
@@ -5447,20 +5457,19 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   <body>
     <div class="wrap">
       <div class="card">
-        <div class="title">${title}</div>
-        <div class="muted">${body}</div>
+        <div class="title">Browser chrome failed to load</div>
+        <div class="muted">The tab area still works, but the rail and the toolbar are unavailable. Tabs can still be switched and added from the app, or by the agent.</div>
         <div class="muted" style="margin-top: 8px; word-break: break-word;">Reason: ${safeReason}</div>
       </div>
     </div>
   </body>
 </html>`
 
-    const view = surface === 'rail' ? instance.railView : instance.toolbarView
     try {
-      await view.webContents.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(html)}`)
-      mainLog.warn(`[browser-pane] Loaded ${surface} fallback id=${instance.id}`)
+      await instance.chromeView.webContents.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(html)}`)
+      mainLog.warn(`[browser-pane] Loaded chrome fallback id=${instance.id}`)
     } catch (error) {
-      mainLog.error(`[browser-pane] Failed to load ${surface} fallback id=${instance.id}: ${error instanceof Error ? error.message : String(error)}`)
+      mainLog.error(`[browser-pane] Failed to load chrome fallback id=${instance.id}: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
@@ -5504,13 +5513,21 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   private pushToolbarState(instance: BrowserInstance): void {
-    if (instance.window.isDestroyed() || instance.toolbarView.webContents.isDestroyed()) return
+    if (instance.window.isDestroyed() || instance.chromeView.webContents.isDestroyed()) return
     const state = {
       url: activeTab(instance).currentUrl,
       title: activeTab(instance).title,
       isLoading: activeTab(instance).isLoading,
       canGoBack: activeTab(instance).canGoBack,
       canGoForward: activeTab(instance).canGoForward,
+      /**
+       * Whether the window is maximized, for the bar's maximize/restore button.
+       *
+       * Read from the window rather than remembered by the button: it can also be maximized
+       * from outside the bar — a double-click on the drag region, the OS's own window menu —
+       * and the icon has to say which of the two a press will do.
+       */
+      maximized: instance.window.isMaximized(),
       /**
        * Whether the element picker is on for this window.
        *
@@ -5539,13 +5556,22 @@ export class BrowserPaneManager implements IBrowserPaneManager {
        */
       urlBarFocusToken: instance.urlBarFocusToken,
       /**
+       * Whether the rail is folded away.
+       *
+       * The window's flag rather than the document's: the rail's room is part of the tab area
+       * (`tabAreaBounds`), so the page has already been placed without it by the time this is
+       * pushed — the chrome is being told what to draw, not asked. In memory and per window: a
+       * window opened later starts with the rail out.
+       */
+      railCollapsed: instance.railCollapsed,
+      /**
        * The window's tabs.
        *
        * `tabs` comes from the window itself rather than from the renderer's own
        * count: the rail is not told "show the tabs", it is told which tabs there
-       * are. Whether the rail exists is not a fact to agree about — it is the
-       * window's left column, laid out with `TAB_RAIL_WIDTH` before any of this was
-       * pushed, so there is no second answer to disagree with.
+       * are. Whether it is out at all is the window's other flag (`railCollapsed`),
+       * pushed beside this one — two facts, one push, so they cannot be drawn a
+       * beat apart.
        */
       tabs: instance.tabs.map((tab) => this.toTabSummary(instance, tab)),
       /**
@@ -5634,6 +5660,24 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       this.layoutAllViews(inst)
     })
 
+    /**
+     * Fold the rail away, or bring it back — the chrome's own toggle.
+     *
+     * One flag, one relayout: the rail's room is part of the tab area, so the page, the gutter,
+     * the overlay and the layer order are all said once here (`layoutAllViews`,
+     * `updateNativeOverlayState`) and the chrome is told the new state with them. Nothing is
+     * echoed back as an answer — the toggle draws from the push like every other control.
+     */
+    ipcMain.handle(TOOLBAR_CHANNELS.RAIL_TOGGLE, async (_event, instanceId: string) => {
+      const inst = findInstance(instanceId)
+      if (!inst || inst.window.isDestroyed()) return
+
+      inst.railCollapsed = !inst.railCollapsed
+      this.layoutAllViews(inst)
+      this.updateNativeOverlayState(inst)
+      this.pushToolbarState(inst)
+    })
+
     ipcMain.handle(TOOLBAR_CHANNELS.HIDE, async (_event, instanceId: string) => {
       const inst = findInstance(instanceId)
       mainLog.info(`[browser-pane] toolbar ipc hide requested instanceId=${instanceId} resolved=${inst?.id ?? 'none'}`)
@@ -5644,6 +5688,27 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       const inst = findInstance(instanceId)
       mainLog.info(`[browser-pane] toolbar ipc destroy requested instanceId=${instanceId} resolved=${inst?.id ?? 'none'}`)
       if (inst) this.destroyInstance(inst.id)
+    })
+
+    /**
+     * The window's caption verbs, from the bar.
+     *
+     * The window is chromeless on every platform, so it has no OS buttons: these are the
+     * only minimize/maximize it has besides the keyboard and the OS's own window menu. The
+     * new maximize state comes back through the `maximize`/`unmaximize` events
+     * (`setupWindowListeners`), so nothing is answered here — the button draws from the
+     * push, exactly like every other control in the bar.
+     */
+    ipcMain.handle(TOOLBAR_CHANNELS.MINIMIZE, async (_event, instanceId: string) => {
+      const inst = findInstance(instanceId)
+      if (inst) inst.window.minimize()
+    })
+
+    ipcMain.handle(TOOLBAR_CHANNELS.MAXIMIZE, async (_event, instanceId: string) => {
+      const inst = findInstance(instanceId)
+      if (!inst) return
+      if (inst.window.isMaximized()) inst.window.unmaximize()
+      else inst.window.maximize()
     })
 
     /**
@@ -5929,7 +5994,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    *
    * `this.getInstance(id)` returns the full instance, which has non-cloneable
    * Electron native references (`window: BrowserWindow`, `tabView: BrowserView`,
-   * `toolbarView`, ...). When we ship the result back over the `__browser:invoke`
+   * `chromeView`, ...). When we ship the result back over the `__browser:invoke`
    * IPC channel, Electron's structured-clone serializer throws
    * "An object could not be cloned" — see the user-reported bug on the remote
    * bridge path. Always pass the live instance through this helper before
@@ -6353,6 +6418,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     instance.window.focus()
     instance.isVisible = true
     this.emitStateChange(instance)
+    // A window being shown is also the tab on screen getting the keyboard (`focusShownTab`):
+    // the address bar for a new-tab page, the page for a real one. Forced — the window's own
+    // activation was just asked for.
+    this.focusShownTab(instance, activeTab(instance), true)
 
   }
 
@@ -6844,91 +6913,66 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     })
   }
 
-  private logPermissionDecision(kind: 'check' | 'request', permission: string, origin: string): void {
-    const isNonBlockingNoise = permission === 'background-sync'
-    const suffix = isNonBlockingNoise ? ' (non-blocking)' : ''
-    const message = `[browser-pane] permission denied (${kind}): ${permission} origin=${origin}${suffix}`
-    if (isNonBlockingNoise) {
-      mainLog.info(message)
-      return
-    }
-    mainLog.warn(message)
-  }
-
   private setupSessionPermissions(ses: ElectronSession): void {
     if (this.partitionPermissionsInitialized) return
     this.partitionPermissionsInitialized = true
 
-    const allow = new Set([
-      'fullscreen',
-      'pointerLock',
-      'window-management',
-      'notifications',
-      'geolocation',
-      'media',
-      'clipboard-read',
-      'clipboard-sanitized-write',
-      'idle-detection',
-    ])
-
     /**
-     * Screen capture is the one permission that is not a yes/no for the whole partition.
+     * Browser tabs here are driven by automation, so a permission prompt has no one to
+     * answer it — a page that asks would simply stall. Every permission is therefore
+     * granted outright, which is what lets automated flows use the camera, microphone,
+     * geolocation, clipboard, notifications and the rest without a prompt in the way.
      *
-     * The record button asks for it from our own chrome, and what it gets back is decided
-     * by {@link setupDisplayMediaHandler} — so our surface is allowed to ask, and a page
-     * in a tab is not (a page that could ask would be a page that could capture the window).
+     * Screen capture is the one exception on the *source* side: granting the permission
+     * does not hand out the desktop. {@link setupDisplayMediaHandler} answers every
+     * getDisplayMedia call with a tab — the asking page's own, never the screen.
      */
-    const mayAsk = (permission: string, webContents: Electron.WebContents | null): boolean =>
-      permission === 'display-capture' ? this.isChromeWebContents(webContents) : allow.has(permission)
-
     if (typeof ses.setPermissionCheckHandler === 'function') {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      ses.setPermissionCheckHandler((webContents, permission: string, requestingOrigin: string, _details: any) => {
-        const allowed = mayAsk(permission, webContents)
-        if (!allowed) {
-          this.logPermissionDecision('check', permission, requestingOrigin)
-        }
-        return allowed
-      })
+      ses.setPermissionCheckHandler(() => true)
     }
 
     if (typeof ses.setPermissionRequestHandler === 'function') {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      ses.setPermissionRequestHandler((webContents, permission: string, callback: (allow: boolean) => void, details: any) => {
-        const allowed = mayAsk(permission, webContents)
-        if (!allowed) {
-          this.logPermissionDecision('request', permission, details?.requestingOrigin ?? 'unknown')
-        }
-        callback(allowed)
+      ses.setPermissionRequestHandler((_webContents, _permission, callback) => {
+        callback(true)
       })
     }
   }
 
   /**
-   * Answer `getDisplayMedia` for this partition — the record button's one door onto a tab.
+   * Answer `getDisplayMedia` for this partition.
    *
-   * Every request in this partition lands here, ours and a page's alike, and the only
-   * thing that answers anything is an **armed recording**: the person pressed the button,
-   * which is what picked the tab. Nothing else is ever captured, and a page asking for the
-   * screen gets an empty answer rather than a picker.
+   * Two kinds of caller land here, and neither gets the desktop:
+   *
+   * - Our own chrome (the record button) asks on behalf of a tab a person armed, so it
+   *   gets that tab, and nothing at all when nothing is armed.
+   * - A page asking to record gets **itself** — the tab it lives in, which is what a
+   *   page-side recorder means by "the screen". The desktop is never on offer here, so a
+   *   page can capture its own tab and nothing else.
+   *
+   * Passing the requesting frame as the video source is Electron's tab capture: it streams
+   * that frame's own pixels, not a picked window.
    */
   private setupDisplayMediaHandler(ses: ElectronSession): void {
     if (this.partitionDisplayMediaInitialized) return
     this.partitionDisplayMediaInitialized = true
     if (typeof ses.setDisplayMediaRequestHandler !== 'function') return
 
-    ses.setDisplayMediaRequestHandler((_request, callback) => {
-      const source = this.tabRecorder.armedSource()
-      callback(source ? { video: source } : {})
+    ses.setDisplayMediaRequestHandler((request, callback) => {
+      if (this.isChromeFrame(request.frame)) {
+        const source = this.tabRecorder.armedSource()
+        callback(source ? { video: source } : {})
+        return
+      }
+      callback(request.frame ? { video: request.frame } : {})
     })
   }
 
-  /** Whether this is one of our own chrome surfaces — the address bar or the tab rail. */
-  private isChromeWebContents(webContents: Electron.WebContents | null | undefined): boolean {
-    if (!webContents || webContents.isDestroyed()) return false
+  /** Whether this frame is our own chrome document — the rail and the bar, which are one. */
+  private isChromeFrame(frame: Electron.WebFrameMain | null): boolean {
+    if (!frame || frame.detached) return false
+    const top = frame.top
     for (const instance of this.instances.values()) {
-      if (instance.toolbarView.webContents.id === webContents.id) return true
-      if (instance.railView.webContents.id === webContents.id) return true
+      if (instance.chromeView.webContents.mainFrame === top) return true
     }
     return false
   }
@@ -6947,11 +6991,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   /**
    * Wire the parts of a window that outlive any single tab: the window itself and
-   * the toolbar. Called once per window — the toolbar is shared by every tab, so
+   * the chrome. Called once per window — the chrome is shared by every tab, so
    * its listeners must not be installed again when a tab is added.
    */
   private setupWindowListeners(instance: BrowserInstance): void {
-    const toolbarWc = instance.toolbarView.webContents
+    const toolbarWc = instance.chromeView.webContents
 
     instance.window.on('close', (event) => {
       const explicitDestroy = this.destroyingIds.has(instance.id)
@@ -6999,10 +7043,33 @@ export class BrowserPaneManager implements IBrowserPaneManager {
      */
     const cameBack = () => {
       this.layoutAllViews(instance)
+      // The bar's maximize/restore button draws from `maximized`, and the window can be
+      // maximized from outside the bar too (a double-click on the drag region, or the OS's
+      // window menu) — so the state is re-sent here rather than only on the button's click.
+      this.pushToolbarState(instance)
     }
     instance.window.on('restore', cameBack)
     instance.window.on('maximize', cameBack)
     instance.window.on('unmaximize', cameBack)
+
+    /**
+     * Tell the chrome the pointer has left, on every way the window goes away or comes back.
+     *
+     * Chromium keeps the pointer where it last saw it and never delivers the `mouseleave` the
+     * window going away would have caused, so the button under it keeps its `:hover` — minimising
+     * from the bar's own minimise button shows that button hovered again on restore — and a tip
+     * stays open. A synthetic DOM event from the renderer does not clear `:hover`; an input event
+     * does, which is why it is sent from here.
+     */
+    const releaseChromePointer = () => {
+      const chromeWc = instance.chromeView.webContents
+      if (!chromeWc.isDestroyed()) chromeWc.sendInputEvent({ type: 'mouseLeave', x: 0, y: 0 })
+    }
+    instance.window.on('blur', releaseChromePointer)
+    instance.window.on('minimize', releaseChromePointer)
+    instance.window.on('hide', releaseChromePointer)
+    instance.window.on('restore', releaseChromePointer)
+    instance.window.on('show', releaseChromePointer)
 
     // Arriving on another display: the page's cut corner does not come with it, so it is said
     // again here (`reassertPageCornerRadii`). Only `moved` — `move` fires throughout a drag and
@@ -7026,15 +7093,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     toolbarWc.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
       if (!isMainFrame) return
       mainLog.warn(`[browser-pane] toolbar did-fail-load id=${instance.id} code=${errorCode} url=${validatedURL} error=${errorDescription}`)
-    })
-
-    // The rail is the window's other chrome surface: same pushes, and its own document
-    // — a push sent before it finished loading would be lost, so its own
-    // `did-finish-load` is where it catches up on the tabs it has to draw.
-    const railWc = instance.railView.webContents
-
-    railWc.on('did-finish-load', () => {
-      this.pushToolbarState(instance)
     })
 
     instance.window.on('focus', () => {
@@ -7124,8 +7182,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     } else {
       this.parkTab(instance, tab, bornAt)
     }
-    // The chrome stays on top of whatever tab is showing — both surfaces of it.
-    this.raiseChromeViews(instance)
+    // The layers go back in order around the new tab — the page over the chrome, and under the
+    // overlay while this tab is the one a conversation is holding.
+    this.restackViews(instance)
 
     tabWc.on('did-start-loading', () => {
       tab.isLoading = true

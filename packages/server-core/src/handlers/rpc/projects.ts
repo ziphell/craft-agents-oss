@@ -1,3 +1,4 @@
+import { join } from 'path'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
@@ -7,6 +8,7 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.projects.GET,
   RPC_CHANNELS.projects.GET_ONE,
   RPC_CHANNELS.projects.LAYERS,
+  RPC_CHANNELS.projects.FILES,
   RPC_CHANNELS.projects.CREATE,
   RPC_CHANNELS.projects.UPDATE,
   RPC_CHANNELS.projects.DELETE,
@@ -14,6 +16,47 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.projects.UPLOAD_ASSET,
   RPC_CHANNELS.projects.DELETE_ASSET,
 ] as const
+
+/**
+ * Names at the top of a project folder that belong to the app rather than to the author.
+ * The same rule the layers report applies (`specs.ts`), so the file tree shows the author's
+ * files and not the app's own bookkeeping.
+ */
+const APP_OWNED_NAMES = new Set(['config.json', 'MEMORY.md', 'assets'])
+
+/**
+ * Recursive file tree of a folder, for the session info panel's project files tab.
+ *
+ * Hidden entries and the app's own top-level names are skipped. Directories that end up empty
+ * are dropped, and each level is ordered directories-first then by name — the same shape the
+ * session file tree uses (`sessions.ts`), so both render through one view.
+ */
+async function scanProjectDirectory(dirPath: string): Promise<import('@craft-agent/shared/protocol').SessionFile[]> {
+  const { readdir, stat } = await import('fs/promises')
+  const entries = await readdir(dirPath, { withFileTypes: true })
+  const files: import('@craft-agent/shared/protocol').SessionFile[] = []
+
+  for (const entry of entries) {
+    if (entry.name.startsWith('.') || APP_OWNED_NAMES.has(entry.name)) continue
+
+    const fullPath = join(dirPath, entry.name)
+
+    if (entry.isDirectory()) {
+      const children = await scanProjectDirectory(fullPath)
+      if (children.length > 0) {
+        files.push({ name: entry.name, path: fullPath, type: 'directory', children })
+      }
+    } else if (entry.isFile()) {
+      const stats = await stat(fullPath)
+      files.push({ name: entry.name, path: fullPath, type: 'file', size: stats.size })
+    }
+  }
+
+  return files.sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'directory' ? -1 : 1
+    return a.name.localeCompare(b.name)
+  })
+}
 
 export function registerProjectsHandlers(server: RpcServer, deps: HandlerDeps): void {
   const log = deps.platform.logger
@@ -50,6 +93,21 @@ export function registerProjectsHandlers(server: RpcServer, deps: HandlerDeps): 
     if (!workspace) return null
     const { buildProjectLayers } = await import('@craft-agent/shared/projects')
     return buildProjectLayers(workspace.rootPath, projectSlug)
+  })
+
+  // List one project folder's files (recursive tree) for the session info panel
+  server.handle(RPC_CHANNELS.projects.FILES, async (_ctx, workspaceId: string, projectSlug: string) => {
+    const workspace = getWorkspaceByNameOrId(workspaceId)
+    if (!workspace) return []
+    const { loadProject } = await import('@craft-agent/shared/projects')
+    const project = loadProject(workspace.rootPath, projectSlug)
+    if (!project) return []
+    try {
+      return await scanProjectDirectory(project.folderPath)
+    } catch (error) {
+      log.error('Failed to get project files:', error)
+      return []
+    }
   })
 
   // Create a new project

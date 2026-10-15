@@ -753,6 +753,8 @@ export interface ElectronAPI {
   getProjects(workspaceId: string): Promise<unknown>
   getProject(workspaceId: string, projectIdOrSlug: string): Promise<unknown | null>
   getProjectLayers(workspaceId: string, projectSlug: string): Promise<import('@craft-agent/shared/projects').WorkLayers>
+  /** Recursive file tree of a project's own folder (project files tab in the session info panel). */
+  getProjectFiles(workspaceId: string, projectSlug: string): Promise<SessionFile[]>
   createProject(workspaceId: string, input: import('@craft-agent/shared/projects/types').CreateProjectInput): Promise<import('@craft-agent/shared/projects/types').ProjectConfig>
   updateProject(workspaceId: string, projectSlug: string, patch: Partial<Omit<import('@craft-agent/shared/projects/types').ProjectConfig, 'id' | 'slug' | 'createdAt'>>): Promise<import('@craft-agent/shared/projects/types').ProjectConfig>
   deleteProject(workspaceId: string, projectSlug: string): Promise<void>

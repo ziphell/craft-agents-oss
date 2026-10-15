@@ -434,6 +434,7 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.projects.GET,
   RPC_CHANNELS.projects.GET_ONE,
   RPC_CHANNELS.projects.LAYERS,
+  RPC_CHANNELS.projects.FILES,
   RPC_CHANNELS.projects.CREATE,
   RPC_CHANNELS.projects.UPDATE,
   RPC_CHANNELS.projects.DELETE,

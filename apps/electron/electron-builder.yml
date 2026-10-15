@@ -205,6 +205,12 @@ win:
     # Pi agent server subprocess (for Pi SDK sessions).
     - from: resources/pi-agent-server
       to: app/resources/pi-agent-server
+    # koffi — a Win32 FFI used only on Windows, to set the browser window's
+    # AppUserModel.PreventPinning property (see docs/browser-taskbar-plan.md).
+    # It ships native .node binaries; asar is off and node_modules is excluded
+    # from `files`, so like the SDK it travels as a resource instead.
+    - from: ../../node_modules/koffi
+      to: app/node_modules/koffi
 
 nsis:
   oneClick: true

@@ -142,10 +142,11 @@ export class TabRecorder {
   /**
    * What a display-media request should be answered with, or `null` to refuse it.
    *
-   * The single door onto the screen: every `getDisplayMedia` in this partition comes
-   * through here — a third-party page's included — and only the tab a person armed
-   * answers anything. That is why an armed recording is the *only* thing that can be
-   * captured, and why the permission is not left open for pages to ask for.
+   * What the display-media door hands our own chrome: every `getDisplayMedia` in this
+   * partition comes through here, but only the tab a person armed is answered with this.
+   * A page asking to record is answered with **itself** instead (see `BrowserPaneManager`),
+   * so nothing here can be reached by a page — the screen is never on offer, and an armed
+   * recording is what the record button captures.
    *
    * **The person's, and only the person's**: `getDisplayMedia` is the human door (the
    * agent's is CDP screencast), so a conversation's recording never answers here.

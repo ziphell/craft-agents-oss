@@ -458,6 +458,8 @@ export const RPC_CHANNELS = {
     GET: 'projects:get',
     GET_ONE: 'projects:getOne',
     LAYERS: 'projects:layers',
+    /** Recursive file tree of a project's own folder, for the session info panel. */
+    FILES: 'projects:getFiles',
     CREATE: 'projects:create',
     UPDATE: 'projects:update',
     DELETE: 'projects:delete',

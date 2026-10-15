@@ -150,10 +150,10 @@ export function TopBar({
       {/* In compact mode the right slot is hidden, so we add right padding here
           so the workspace pill doesn't run flush against the viewport edge. */}
       <div
-        className="pointer-events-auto flex min-w-0 flex-1 items-center gap-0.5"
+        className="pointer-events-auto flex min-w-0 flex-1 items-center gap-1"
         style={{ paddingLeft: menuLeftPadding, paddingRight: isCompact ? 12 : 0 }}
       >
-        <div className="flex items-center gap-0.5">
+        <div className="flex items-center gap-1">
         {!isCompact && (
         <Tooltip>
           <TooltipTrigger asChild>
@@ -182,7 +182,7 @@ export function TopBar({
             drill-in chevron in PanelHeader plus the browser's native back gesture
             cover that affordance, and the freed width lets the workspace pill
             actually fit on phone-width viewports. */}
-        <div className={cn("ml-1 flex min-w-0 items-center gap-1", isCompact ? "flex-1" : "w-[clamp(220px,42vw,640px)]")}>
+        <div className={cn("flex min-w-0 items-center gap-1.5", isCompact ? "flex-1" : "w-[clamp(220px,42vw,640px)]")}>
           {!isCompact && (
             <>
               <Tooltip>
@@ -230,7 +230,7 @@ export function TopBar({
         </div>
       </div>
 
-      {/* === RIGHT: Browser strip + add + help === */}
+      {/* === RIGHT: Browser strip + new tab + new conversation + help === */}
       {!isCompact && (
       <div ref={rightSlotRef} className="flex min-w-0 shrink-0 items-center justify-end gap-1" style={{ paddingRight: 12 }}>
         <div className="min-w-0">
@@ -240,29 +240,33 @@ export function TopBar({
             onAddTabToConversation={onAddTabToConversation}
           />
         </div>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <TopBarButton aria-label={t("menu.addPanelMenu")} className="ml-1 h-[26px] w-[26px] rounded-lg">
-              <Icons.Plus className="h-4 w-4 text-foreground/50" strokeWidth={1.5} />
+
+        {/* Open the browser: brings the workspace's window up when it already exists,
+            and makes one (restoring last time's pages, or a blank tab) when it does not. */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <TopBarButton onClick={onAddBrowserPanel} aria-label={t("browser.openBrowser")} className="h-7 w-7 rounded-lg">
+              <Icons.Globe className="h-4 w-4 text-foreground/70" strokeWidth={1.5} />
             </TopBarButton>
-          </DropdownMenuTrigger>
-          <StyledDropdownMenuContent align="end" minWidth="min-w-56">
-            <StyledDropdownMenuItem onClick={onAddSessionPanel}>
-              <SquarePenRounded className="h-3.5 w-3.5" />
-              {t("session.newSessionInPanel")}
-            </StyledDropdownMenuItem>
-            <StyledDropdownMenuItem onClick={onAddBrowserPanel}>
-              <Icons.Globe className="h-3.5 w-3.5" />
-              {t("browser.newTab")}
-            </StyledDropdownMenuItem>
-          </StyledDropdownMenuContent>
-        </DropdownMenu>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">{t("browser.openBrowser")}</TooltipContent>
+        </Tooltip>
+
+        {/* New conversation in the panel. */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <TopBarButton onClick={onAddSessionPanel} aria-label={t("session.newSessionInPanel")} className="h-7 w-7 rounded-lg">
+              <SquarePenRounded className="h-4 w-4 text-foreground/70" strokeWidth={1.5} />
+            </TopBarButton>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">{t("session.newSessionInPanel")}</TooltipContent>
+        </Tooltip>
 
         {/* Help button */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <TopBarButton aria-label={t("menu.helpAndDocs")} className="h-[26px] w-[26px] rounded-lg">
-              <Icons.HelpCircle className="h-4 w-4 text-foreground/50" strokeWidth={1.5} />
+            <TopBarButton aria-label={t("menu.helpAndDocs")} className="h-7 w-7 rounded-lg">
+              <Icons.HelpCircle className="h-4 w-4 text-foreground/70" strokeWidth={1.5} />
             </TopBarButton>
           </DropdownMenuTrigger>
           <StyledDropdownMenuContent align="end" minWidth="min-w-48">

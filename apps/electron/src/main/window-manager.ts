@@ -2,41 +2,17 @@ import { BrowserWindow, shell, nativeTheme, Menu, app } from 'electron'
 import { windowLog } from './logger'
 import { join, resolve, sep } from 'path'
 import { existsSync } from 'fs'
-import { release } from 'os'
 import { fileURLToPath } from 'url'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import { loadDesignConfig } from '@craft-agent/shared/designs'
 import { classifyExternalUrl, formatBlockedUrlError } from '@craft-agent/shared/utils/url-safety'
 import { RPC_CHANNELS, type WindowCloseRequestSource } from '../shared/types'
 import { routes } from '../shared/routes'
+import { getWindowsBackgroundMaterial } from './window-material'
 import type { SavedWindow } from './window-state'
 
 // Vite dev server URL for hot reload
 const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL
-
-/**
- * Get the appropriate background material for Windows transparency effects
- * - Windows 11 (build 22000+): Mica effect
- * - Windows 10 1809+ (build 17763+): Acrylic effect
- * - Older versions: No transparency
- */
-function getWindowsBackgroundMaterial(): 'mica' | 'acrylic' | undefined {
-  if (process.platform !== 'win32') return undefined
-
-  // os.release() returns "10.0.xxxxx" where xxxxx is the build number
-  const buildNumber = parseInt(release().split('.')[2] || '0', 10)
-
-  if (buildNumber >= 22000) {
-    windowLog.info('Windows 11 detected (build ' + buildNumber + '), using Mica')
-    return 'mica'
-  } else if (buildNumber >= 17763) {
-    windowLog.info('Windows 10 1809+ detected (build ' + buildNumber + '), using Acrylic')
-    return 'acrylic'
-  }
-
-  windowLog.info('Older Windows detected (build ' + buildNumber + '), no transparency')
-  return undefined
-}
 
 interface ManagedWindow {
   window: BrowserWindow
@@ -499,7 +475,26 @@ export class WindowManager {
     })
     window.on('blur', () => {
       this.pushToWindow(window, RPC_CHANNELS.window.FOCUS_STATE, false)
+      releasePointer()
     })
+
+    /**
+     * Tell the page the pointer has left, on every way the window goes away or comes back.
+     *
+     * Chromium keeps the pointer where it last saw it and never delivers the `mouseleave` that
+     * the window going away would have caused, so the control under it keeps its `:hover` — a
+     * window minimised from its own minimise button shows that button hovered again on restore —
+     * and an open tooltip stays open. A synthetic DOM event from the renderer does not clear
+     * `:hover`; an input event does, which is why it is sent from here.
+     */
+    const releasePointer = () => {
+      if (window.isDestroyed() || window.webContents.isDestroyed()) return
+      window.webContents.sendInputEvent({ type: 'mouseLeave', x: 0, y: 0 })
+    }
+    window.on('minimize', releasePointer)
+    window.on('hide', releasePointer)
+    window.on('restore', releasePointer)
+    window.on('show', releasePointer)
 
     // Whether the window is maximized, for the app's own maximize/restore button (`WindowControls`).
     // Pushed on the two events that change it; a window that mounts after the last change asks

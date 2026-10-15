@@ -172,6 +172,8 @@ export {
   TooltipProvider,
 } from './components/tooltip'
 
+export { useReleaseStaleInteraction } from './hooks/useReleaseStaleInteraction'
+
 // Code viewer components
 export {
   ShikiCodeViewer,

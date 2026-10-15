@@ -234,6 +234,7 @@ const EXPECTED_CHANNELS: string[] = [
   'projects:deleteAsset',
   'projects:filesChanged',
   'projects:get',
+  'projects:getFiles',
   'projects:getOne',
   'projects:layers',
   'projects:listAssets',
