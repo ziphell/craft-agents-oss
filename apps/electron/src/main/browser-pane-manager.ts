@@ -629,10 +629,18 @@ interface BrowserInstance {
   /**
    * Whether the window is **up** — shown, and not hidden since.
    *
-   * Deliberately not `window.isVisible()`: a **minimized** window counts as visible here, and that is
-   * the shape of the answer rather than a shortcut. Measured, a minimized window answers a shot from
-   * itself in ~15ms (`spike/capture-methods.cjs`, the `minimized` rows) while a *hidden* one answers
-   * nothing at all — so minimizing is not a state anything here has to react to, while hiding is.
+   * Deliberately not `window.isVisible()`: a **minimized** window is a home for its tab either way,
+   * and that is the shape of the answer rather than a shortcut. Measured, a minimized window answers a
+   * shot from itself in ~15ms on Windows and ~5–18ms on macOS (`spike/capture-methods.cjs`, the
+   * `minimized` rows, one per platform) while a *hidden* one answers the platform's full answer —
+   * nothing at all on Windows, its own pixels on macOS — so minimizing is not a state anything here
+   * has to react to, while hiding is.
+   *
+   * What it reads while the window *is* minimized is a fact about the platform's events, and the two do
+   * not agree: on macOS `minimize()` emits `hide` too (measured — `minimize`, then `hide` a few ms
+   * later), so this goes false there; the tab still stays home, through `tabHome`'s other branch
+   * (`hasBeenShown && canCaptureHiddenWindows`) rather than this one, so on macOS too a minimize parks
+   * nothing.
    */
   isVisible: boolean
   /**
@@ -643,10 +651,11 @@ interface BrowserInstance {
    * - `visible` — shown now;
    * - `hidden-after-show` — on a display once, hidden since; the surface it got there survives the
    *   hiding, and this is the state a platform's "hidden windows can be captured" claim is about
-   *   (`canCaptureHiddenWindows`);
+   *   (`canCaptureHiddenWindows` — which is what macOS answers with, and Windows does not; both are
+   *   measured rather than documented now);
    * - `**never shown**` — composited **nowhere**: measured, a capture of one answers at once with
-   *   "Current display surface not available for capture", on any platform
-   *   (`spike/capture-methods.cjs`, the `never-shown` rows), and a view in one has no viewport at all
+   *   "Current display surface not available for capture", on any platform — Windows and macOS both,
+   *   measured (`spike/capture-methods.cjs`, the `never-shown` rows), and a view in one has no viewport at all
    *   (`spike/background-viewport.ts`). So a window born hidden and never shown is not a home for a
    *   tab: the parking window is, because it *is* shown — off every display.
    */
@@ -1026,9 +1035,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * window goes straight to the parked view instead of paying the bound for an answer that is not
    * coming. On macOS Electron does answer for a hidden window — one that has **been on a display**
    * (`hasBeenShown`; a window that was never shown answers nothing on any platform, which is why the
-   * parking window is shown at all, so that is a different question from this one) — so it gets the
-   * first go there and the parked view is the fallback: that side is Electron's documented behaviour,
-   * not something this machine could measure.
+   * parking window is shown at all, so that is a different question from this one) — and that half
+   * was measured too rather than taken from the docs: a window that was shown and then hidden answers
+   * `capturePage` with its own pixels in 3–12ms, with or without `{stayHidden, stayAwake}`, and
+   * `Page.captureScreenshot` answers it as well (`capture-methods.cjs`, the `hidden-after-show` rows,
+   * macOS 15.6.1 / Electron 39.2.7). So it gets the first go there and the parked view is the fallback.
    */
   private canCaptureHiddenWindows = process.platform !== 'win32'
 
@@ -3131,7 +3142,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // by construction (`tabHome`): the parking window is shown and off every display, and a window
     // that holds its page is the one a person is looking at. What remains, and what the fall-through
     // below is for, is a view with no surface **anyway** — a page that has never painted, or a window
-    // the platform will not answer for (a minimized one on Windows).
+    // the platform will not answer for (on Windows that is a *hidden* one — measured, a minimized one
+    // answers there while a hidden one does not: `capture-methods.cjs`).
     const livesInTheWindow = this.tabHome(instance, tab) === 'window'
 
     // A parked tab's view can be under a sibling in its own window, or its window under another
@@ -3764,6 +3776,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    *   the bar above, the rail beside, the panel's gutter (`pagePanelInsets`).
    * - **The tab is somewhere else**: it lives in the parking window, so its size is nobody else's
    *   business. The view is sized where it is and the person's window is left alone.
+   *
+   * A **minimized** window is still this tab's window (`tabHome`) and is sized the same way: measured,
+   * macOS answers its size and lays the page out to it (`hidden-window-usability.cjs`, the `minimized`
+   * rows), so the request lands. Where the window reports no size — Windows minimized — the layout is
+   * refused (`windowHasSize`) and the tab keeps the viewport it had, which is what comes back here.
    *
    * Either way the answer is the tab's **actual** viewport — read back from what the view ended up
    * with, so OS window floors (min 700×500, test below) show up as a smaller number rather than a
@@ -5295,19 +5312,26 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   /**
    * Whether the window has a size to lay anything out to.
    *
-   * A **minimized** window on Windows reports `getContentSize()` 0×0 (measured), and a layout run made
-   * from that used to write a fiction into the page's view — the floors in `tabAreaBounds` read as a
-   * size (193×93) rather than as a mistake, and the page stayed that small after the window came back
-   * (measured: window 1200×900, page `innerWidth` 193, until the next layout — a tab switch — put it
-   * right. The person's report: "怎么用着用着浏览器窗口会变成一个很小的值 193×93。切换标签界面又恢复了").
-   * The size a window has while it is minimized is now read from what it last reported
-   * (`windowContentSize`), so that particular fiction is gone — but nothing laid out while the window
-   * is minimized is visible to anyone, so laying out is still left until there is a window to lay out
-   * into again: every view keeps what it has (a tab in the parking window keeps its viewport anyway)
-   * and the restore lays out again (`cameBack`).
+   * The reported size is the whole test, deliberately: what must never happen is laying a page out
+   * from a size the window does not have. A **minimized** window on Windows reports
+   * `getContentSize()` 0×0 (measured), and a layout run made from that used to write a fiction into
+   * the page's view — the floors in `tabAreaBounds` read as a size (193×93) rather than as a mistake,
+   * and the page stayed that small after the window came back (measured: window 1200×900, page
+   * `innerWidth` 193, until the next layout — a tab switch — put it right. The person's report:
+   * "怎么用着用着浏览器窗口会变成一个很小的值 193×93。切换标签界面又恢复了"). The size a window has
+   * while it has none to report is read from what it last reported (`windowContentSize`), so that
+   * fiction is impossible from here on: a window that reports nothing is not laid out from.
+   *
+   * "Minimized" is *not* asked separately any more, because minimized and sizeless are not the same
+   * state and only one of them is a reason to refuse. Measured (`hidden-window-usability.cjs`): a
+   * minimized window **on macOS** still reports its size — it answers the window branch of
+   * `resizeViewport` and lays its page out to it — so refusing it meant an agent's `viewport-resize`
+   * went unapplied *silently*, answering with the viewport it had asked for while the page kept the
+   * old one (`minimized (today)`: page 900×620, answered 1400×900; `reported-size`: page 1400×900).
+   * On Windows the 0×0 answer is what refuses it, exactly as before, and the tab keeps the size it had.
    */
   private windowHasSize(instance: BrowserInstance): boolean {
-    if (instance.window.isDestroyed() || instance.window.isMinimized()) return false
+    if (instance.window.isDestroyed()) return false
     const [width, height] = instance.window.getContentSize()
     return width > 0 && height > 0
   }
@@ -5373,9 +5397,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    *
    * **Minimized** is the third way of not being on screen, and it is the one that answers: measured,
    * `capturePage` returns the tab's own pixels in ~15ms while the window is minimized, both forms, one
-   * row per tab (`capture-methods.cjs`, the `minimized` rows) — where `hidden-after-show` returns
-   * nothing at all. So minimizing is deliberately *not* a reason to park: `isVisible` stays true for
-   * it, the shot is taken where the tab is, and no refusal is paid first.
+   * row per tab (`capture-methods.cjs`, the `minimized` rows on Windows and on macOS) — where a
+   * *hidden* window's answer is the platform's own, nothing at all on Windows. So minimizing is
+   * deliberately *not* a reason to park: the shot is taken where the tab is, and no refusal is paid
+   * first. Which branch below keeps it home is a fact about the platform's events rather than a choice:
+   * on macOS `minimize()` emits `hide` too (measured), so it is `canCaptureHiddenWindows` that answers
+   * there rather than `isVisible`.
    *
    * This is the agent's ordinary case. The window it works in is born hidden and mostly stays that
    * way, so the tab a command works from is already parked: a shot finds a surface where the tab is

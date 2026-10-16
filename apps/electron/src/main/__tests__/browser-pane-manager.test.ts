@@ -2051,6 +2051,36 @@ describe('BrowserPaneManager', () => {
   })
 
   /**
+   * A minimized window is not a **sizeless** one, and `viewport-resize` is about the size.
+   *
+   * Measured (`hidden-window-usability.cjs`, the `minimized` rows): macOS answers a minimized window's
+   * content size, so the window branch of `resizeViewport` can still give the page the viewport that
+   * was asked for. Before that was asked of the size itself, the resize was refused silently — the
+   * page kept the old viewport while the answer was the one that had been requested.
+   *
+   * (Windows minimizes to a 0×0 content size; the refusal there is *that*, and the test below pins it.)
+   */
+  it('resizes the viewport through a minimized window that still reports a size', () => {
+    manager.createInstance('resize-minimized')
+    const instance = (manager as any).instances.get('resize-minimized')
+    instance.window.show()
+    // The window's own tab, so the resize is about the page this window holds (`tabHome`).
+    instance.tabs[0].currentUrl = 'https://front.example.com/'
+    const front = instance.tabs[0]
+
+    // The person puts the window aside: it is still shown-once and still has a size of its own.
+    instance.window.minimize()
+    front.tabView.setBounds.mockClear()
+
+    const resized = manager.resizeViewport('resize-minimized', 1280, 720)
+
+    // The page was really given it — 1280×720 of page, at the place the chrome leaves it.
+    expect(instance.window.setContentSize).toHaveBeenCalledWith(1487, 775)
+    expect(front.tabView.setBounds).toHaveBeenCalledWith({ x: 201, y: 49, width: 1280, height: 720 })
+    expect(resized).toEqual({ width: 1280, height: 720 })
+  })
+
+  /**
    * The window being resized is what a person does with the window itself — and it is the
    * only thing that lays the page out again, because the page is the one view in the window
    * with no `setAutoResize` of its own (`buildTab`). So the page has to be laid out both

@@ -1,0 +1,449 @@
+SPIKE_STEP 11:15:48.873 usable • visible
+SPIKE_STEP 11:15:48.989 load visible
+SPIKE_ROW {"scenario":"visible","before":{"innerWidth":900,"innerHeight":620,"visibility":"visible","hidden":false,"resizes":1,"frames":43,"clicks":0},"framesOver700ms":43,"afterTheViewWasGivenAWantedSize":{"viewBounds":{"x":0,"y":0,"width":1400,"height":900},"innerWidth":1400,"resizesCaused":1},"executeJavaScriptRan":true,"cdpClickAtThePagesOwnCoordinates":1,"capturePage":"answered 2800x1800","windowAtEnd":{"visible":true,"minimized":false}}
+SPIKE_STEP 11:15:51.750 usable • minimized
+SPIKE_STEP 11:15:51.765 load minimized
+SPIKE_ROW {"scenario":"minimized","before":{"innerWidth":900,"innerHeight":620,"visibility":"visible","hidden":false,"resizes":1,"frames":116,"clicks":0},"framesOver700ms":42,"afterTheViewWasGivenAWantedSize":{"viewBounds":{"x":0,"y":0,"width":1400,"height":900},"innerWidth":1400,"resizesCaused":1},"executeJavaScriptRan":true,"cdpClickAtThePagesOwnCoordinates":1,"capturePage":"answered 2800x1800","windowAtEnd":{"visible":false,"minimized":true}}
+SPIKE_STEP 11:15:55.620 usable • hidden-after-show
+SPIKE_STEP 11:15:55.628 load hidden-after-show
+SPIKE_ROW {"scenario":"hidden-after-show","before":{"innerWidth":900,"innerHeight":620,"visibility":"visible","hidden":false,"resizes":0,"frames":84,"clicks":0},"framesOver700ms":42,"afterTheViewWasGivenAWantedSize":{"viewBounds":{"x":0,"y":0,"width":1400,"height":900},"innerWidth":1400,"resizesCaused":1},"executeJavaScriptRan":true,"cdpClickAtThePagesOwnCoordinates":1,"capturePage":"answered 2800x1800","windowAtEnd":{"visible":false,"minimized":false}}
+SPIKE_STEP 11:15:58.975 usable • never-shown
+SPIKE_STEP 11:15:58.990 load never-shown
+SPIKE_ROW {"scenario":"never-shown","before":{"innerWidth":900,"innerHeight":620,"visibility":"hidden","hidden":true,"resizes":0,"frames":1,"clicks":0},"framesOver700ms":0,"afterTheViewWasGivenAWantedSize":{"viewBounds":{"x":0,"y":0,"width":1400,"height":900},"innerWidth":1400,"resizesCaused":0},"executeJavaScriptRan":true,"cdpClickAtThePagesOwnCoordinates":1,"capturePage":"answered 0x0","windowAtEnd":{"visible":false,"minimized":false}}
+SPIKE_STEP 11:16:00.927 usable • parked
+SPIKE_STEP 11:16:00.939 load parked
+SPIKE_ROW {"scenario":"parked","before":{"innerWidth":900,"innerHeight":620,"visibility":"visible","hidden":false,"resizes":0,"frames":43,"clicks":0},"framesOver700ms":42,"afterTheViewWasGivenAWantedSize":{"viewBounds":{"x":0,"y":0,"width":1400,"height":900},"innerWidth":1400,"resizesCaused":1},"executeJavaScriptRan":true,"cdpClickAtThePagesOwnCoordinates":1,"capturePage":"answered 2800x1800","windowAtEnd":{"visible":true,"minimized":false}}
+SPIKE_STEP 11:16:03.589 resize • visible • today
+SPIKE_STEP 11:16:03.607 load visible (today)
+SPIKE_ROW {"scenario":"visible (today)","laidOut":true,"windowContentSize":[1480,802],"viewBounds":{"x":0,"y":0,"width":1400,"height":900},"answersWith":{"width":1400,"height":722},"pageActuallyHas":{"innerWidth":1400,"innerHeight":900,"visibility":"visible","hidden":false,"resizes":1,"frames":86,"clicks":0},"pageWantedIt":900}
+SPIKE_STEP 11:16:05.334 resize • visible • reported-size
+SPIKE_STEP 11:16:05.345 load visible (reported-size)
+SPIKE_ROW {"scenario":"visible (reported-size)","laidOut":true,"windowContentSize":[1480,802],"viewBounds":{"x":0,"y":0,"width":1400,"height":900},"answersWith":{"width":1400,"height":722},"pageActuallyHas":{"innerWidth":1400,"innerHeight":900,"visibility":"visible","hidden":false,"resizes":1,"frames":86,"clicks":0},"pageWantedIt":900}
+SPIKE_STEP 11:16:07.065 resize • minimized • today
+SPIKE_STEP 11:16:07.078 load minimized (today)
+SPIKE_ROW {"scenario":"minimized (today)","laidOut":false,"windowContentSize":[1480,980],"viewBounds":{"x":0,"y":0,"width":900,"height":620},"answersWith":{"width":1400,"height":900},"pageActuallyHas":{"innerWidth":900,"innerHeight":620,"visibility":"visible","hidden":false,"resizes":0,"frames":158,"clicks":0},"pageWantedIt":900}
+SPIKE_STEP 11:16:09.996 resize • minimized • reported-size
+SPIKE_STEP 11:16:10.013 load minimized (reported-size)
+SPIKE_ROW {"scenario":"minimized (reported-size)","laidOut":true,"windowContentSize":[1480,980],"viewBounds":{"x":0,"y":0,"width":1400,"height":900},"answersWith":{"width":1400,"height":900},"pageActuallyHas":{"innerWidth":1400,"innerHeight":900,"visibility":"visible","hidden":false,"resizes":2,"frames":158,"clicks":0},"pageWantedIt":900}
+SPIKE_STEP 11:16:12.936 resize • hidden-after-show • today
+SPIKE_STEP 11:16:12.953 load hidden-after-show (today)
+SPIKE_ROW {"scenario":"hidden-after-show (today)","laidOut":true,"windowContentSize":[1480,980],"viewBounds":{"x":0,"y":0,"width":1400,"height":900},"answersWith":{"width":1400,"height":900},"pageActuallyHas":{"innerWidth":1400,"innerHeight":900,"visibility":"visible","hidden":false,"resizes":1,"frames":128,"clicks":0},"pageWantedIt":900}
+SPIKE_STEP 11:16:15.386 resize • hidden-after-show • reported-size
+SPIKE_STEP 11:16:15.398 load hidden-after-show (reported-size)
+SPIKE_ROW {"scenario":"hidden-after-show (reported-size)","laidOut":true,"windowContentSize":[1480,980],"viewBounds":{"x":0,"y":0,"width":1400,"height":900},"answersWith":{"width":1400,"height":900},"pageActuallyHas":{"innerWidth":1400,"innerHeight":900,"visibility":"visible","hidden":false,"resizes":1,"frames":128,"clicks":0},"pageWantedIt":900}
+SPIKE_STEP 11:16:17.819 window events • does a minimize reach the flag the manager keeps?
+SPIKE_ROW {"scenario":"window events","minimizeReachesTheFlag":true,"afterRestore":{"isMinimized":false,"isVisible":true},"ourOwnHideWhileMinimized":{"isMinimized":true,"isVisible":false,"hidesFromOurOwnHide":0},"trail":[{"step":"a window a person puts aside","event":"show","atMs":45,"isMinimized":false,"isVisible":true,"flagIsVisible":true,"flagHasBeenShown":true},{"step":"a window a person puts aside","event":"minimize","atMs":1298,"isMinimized":true,"isVisible":false,"flagIsVisible":true,"flagHasBeenShown":true},{"step":"a window a person puts aside","event":"hide","atMs":1304,"isMinimized":true,"isVisible":false,"flagIsVisible":false,"flagHasBeenShown":true},{"step":"a window a person puts aside","event":"restore","atMs":2445,"isMinimized":false,"isVisible":true,"flagIsVisible":false,"flagHasBeenShown":true},{"step":"a window a person puts aside","event":"show","atMs":2446,"isMinimized":false,"isVisible":true,"flagIsVisible":true,"flagHasBeenShown":true}],"trailOfOurOwnHide":[{"step":"our own hide() while minimized","event":"show","atMs":3162,"isMinimized":false,"isVisible":true,"flagIsVisible":true,"flagHasBeenShown":true},{"step":"our own hide() while minimized","event":"minimize","atMs":4414,"isMinimized":true,"isVisible":false,"flagIsVisible":true,"flagHasBeenShown":true},{"step":"our own hide() while minimized","event":"hide","atMs":4417,"isMinimized":true,"isVisible":false,"flagIsVisible":false,"flagHasBeenShown":true}]}
+SPIKE_JSON {
+ "usable": [
+  {
+   "scenario": "visible",
+   "before": {
+    "innerWidth": 900,
+    "innerHeight": 620,
+    "visibility": "visible",
+    "hidden": false,
+    "resizes": 1,
+    "frames": 43,
+    "clicks": 0
+   },
+   "framesOver700ms": 43,
+   "afterTheViewWasGivenAWantedSize": {
+    "viewBounds": {
+     "x": 0,
+     "y": 0,
+     "width": 1400,
+     "height": 900
+    },
+    "innerWidth": 1400,
+    "resizesCaused": 1
+   },
+   "executeJavaScriptRan": true,
+   "cdpClickAtThePagesOwnCoordinates": 1,
+   "capturePage": "answered 2800x1800",
+   "windowAtEnd": {
+    "visible": true,
+    "minimized": false
+   }
+  },
+  {
+   "scenario": "minimized",
+   "before": {
+    "innerWidth": 900,
+    "innerHeight": 620,
+    "visibility": "visible",
+    "hidden": false,
+    "resizes": 1,
+    "frames": 116,
+    "clicks": 0
+   },
+   "framesOver700ms": 42,
+   "afterTheViewWasGivenAWantedSize": {
+    "viewBounds": {
+     "x": 0,
+     "y": 0,
+     "width": 1400,
+     "height": 900
+    },
+    "innerWidth": 1400,
+    "resizesCaused": 1
+   },
+   "executeJavaScriptRan": true,
+   "cdpClickAtThePagesOwnCoordinates": 1,
+   "capturePage": "answered 2800x1800",
+   "windowAtEnd": {
+    "visible": false,
+    "minimized": true
+   }
+  },
+  {
+   "scenario": "hidden-after-show",
+   "before": {
+    "innerWidth": 900,
+    "innerHeight": 620,
+    "visibility": "visible",
+    "hidden": false,
+    "resizes": 0,
+    "frames": 84,
+    "clicks": 0
+   },
+   "framesOver700ms": 42,
+   "afterTheViewWasGivenAWantedSize": {
+    "viewBounds": {
+     "x": 0,
+     "y": 0,
+     "width": 1400,
+     "height": 900
+    },
+    "innerWidth": 1400,
+    "resizesCaused": 1
+   },
+   "executeJavaScriptRan": true,
+   "cdpClickAtThePagesOwnCoordinates": 1,
+   "capturePage": "answered 2800x1800",
+   "windowAtEnd": {
+    "visible": false,
+    "minimized": false
+   }
+  },
+  {
+   "scenario": "never-shown",
+   "before": {
+    "innerWidth": 900,
+    "innerHeight": 620,
+    "visibility": "hidden",
+    "hidden": true,
+    "resizes": 0,
+    "frames": 1,
+    "clicks": 0
+   },
+   "framesOver700ms": 0,
+   "afterTheViewWasGivenAWantedSize": {
+    "viewBounds": {
+     "x": 0,
+     "y": 0,
+     "width": 1400,
+     "height": 900
+    },
+    "innerWidth": 1400,
+    "resizesCaused": 0
+   },
+   "executeJavaScriptRan": true,
+   "cdpClickAtThePagesOwnCoordinates": 1,
+   "capturePage": "answered 0x0",
+   "windowAtEnd": {
+    "visible": false,
+    "minimized": false
+   }
+  },
+  {
+   "scenario": "parked",
+   "before": {
+    "innerWidth": 900,
+    "innerHeight": 620,
+    "visibility": "visible",
+    "hidden": false,
+    "resizes": 0,
+    "frames": 43,
+    "clicks": 0
+   },
+   "framesOver700ms": 42,
+   "afterTheViewWasGivenAWantedSize": {
+    "viewBounds": {
+     "x": 0,
+     "y": 0,
+     "width": 1400,
+     "height": 900
+    },
+    "innerWidth": 1400,
+    "resizesCaused": 1
+   },
+   "executeJavaScriptRan": true,
+   "cdpClickAtThePagesOwnCoordinates": 1,
+   "capturePage": "answered 2800x1800",
+   "windowAtEnd": {
+    "visible": true,
+    "minimized": false
+   }
+  }
+ ],
+ "resize": [
+  {
+   "scenario": "visible (today)",
+   "laidOut": true,
+   "windowContentSize": [
+    1480,
+    802
+   ],
+   "viewBounds": {
+    "x": 0,
+    "y": 0,
+    "width": 1400,
+    "height": 900
+   },
+   "answersWith": {
+    "width": 1400,
+    "height": 722
+   },
+   "pageActuallyHas": {
+    "innerWidth": 1400,
+    "innerHeight": 900,
+    "visibility": "visible",
+    "hidden": false,
+    "resizes": 1,
+    "frames": 86,
+    "clicks": 0
+   },
+   "pageWantedIt": 900
+  },
+  {
+   "scenario": "visible (reported-size)",
+   "laidOut": true,
+   "windowContentSize": [
+    1480,
+    802
+   ],
+   "viewBounds": {
+    "x": 0,
+    "y": 0,
+    "width": 1400,
+    "height": 900
+   },
+   "answersWith": {
+    "width": 1400,
+    "height": 722
+   },
+   "pageActuallyHas": {
+    "innerWidth": 1400,
+    "innerHeight": 900,
+    "visibility": "visible",
+    "hidden": false,
+    "resizes": 1,
+    "frames": 86,
+    "clicks": 0
+   },
+   "pageWantedIt": 900
+  },
+  {
+   "scenario": "minimized (today)",
+   "laidOut": false,
+   "windowContentSize": [
+    1480,
+    980
+   ],
+   "viewBounds": {
+    "x": 0,
+    "y": 0,
+    "width": 900,
+    "height": 620
+   },
+   "answersWith": {
+    "width": 1400,
+    "height": 900
+   },
+   "pageActuallyHas": {
+    "innerWidth": 900,
+    "innerHeight": 620,
+    "visibility": "visible",
+    "hidden": false,
+    "resizes": 0,
+    "frames": 158,
+    "clicks": 0
+   },
+   "pageWantedIt": 900
+  },
+  {
+   "scenario": "minimized (reported-size)",
+   "laidOut": true,
+   "windowContentSize": [
+    1480,
+    980
+   ],
+   "viewBounds": {
+    "x": 0,
+    "y": 0,
+    "width": 1400,
+    "height": 900
+   },
+   "answersWith": {
+    "width": 1400,
+    "height": 900
+   },
+   "pageActuallyHas": {
+    "innerWidth": 1400,
+    "innerHeight": 900,
+    "visibility": "visible",
+    "hidden": false,
+    "resizes": 2,
+    "frames": 158,
+    "clicks": 0
+   },
+   "pageWantedIt": 900
+  },
+  {
+   "scenario": "hidden-after-show (today)",
+   "laidOut": true,
+   "windowContentSize": [
+    1480,
+    980
+   ],
+   "viewBounds": {
+    "x": 0,
+    "y": 0,
+    "width": 1400,
+    "height": 900
+   },
+   "answersWith": {
+    "width": 1400,
+    "height": 900
+   },
+   "pageActuallyHas": {
+    "innerWidth": 1400,
+    "innerHeight": 900,
+    "visibility": "visible",
+    "hidden": false,
+    "resizes": 1,
+    "frames": 128,
+    "clicks": 0
+   },
+   "pageWantedIt": 900
+  },
+  {
+   "scenario": "hidden-after-show (reported-size)",
+   "laidOut": true,
+   "windowContentSize": [
+    1480,
+    980
+   ],
+   "viewBounds": {
+    "x": 0,
+    "y": 0,
+    "width": 1400,
+    "height": 900
+   },
+   "answersWith": {
+    "width": 1400,
+    "height": 900
+   },
+   "pageActuallyHas": {
+    "innerWidth": 1400,
+    "innerHeight": 900,
+    "visibility": "visible",
+    "hidden": false,
+    "resizes": 1,
+    "frames": 128,
+    "clicks": 0
+   },
+   "pageWantedIt": 900
+  }
+ ],
+ "events": {
+  "scenario": "window events",
+  "minimizeReachesTheFlag": true,
+  "afterRestore": {
+   "isMinimized": false,
+   "isVisible": true
+  },
+  "ourOwnHideWhileMinimized": {
+   "isMinimized": true,
+   "isVisible": false,
+   "hidesFromOurOwnHide": 0
+  },
+  "trail": [
+   {
+    "step": "a window a person puts aside",
+    "event": "show",
+    "atMs": 45,
+    "isMinimized": false,
+    "isVisible": true,
+    "flagIsVisible": true,
+    "flagHasBeenShown": true
+   },
+   {
+    "step": "a window a person puts aside",
+    "event": "minimize",
+    "atMs": 1298,
+    "isMinimized": true,
+    "isVisible": false,
+    "flagIsVisible": true,
+    "flagHasBeenShown": true
+   },
+   {
+    "step": "a window a person puts aside",
+    "event": "hide",
+    "atMs": 1304,
+    "isMinimized": true,
+    "isVisible": false,
+    "flagIsVisible": false,
+    "flagHasBeenShown": true
+   },
+   {
+    "step": "a window a person puts aside",
+    "event": "restore",
+    "atMs": 2445,
+    "isMinimized": false,
+    "isVisible": true,
+    "flagIsVisible": false,
+    "flagHasBeenShown": true
+   },
+   {
+    "step": "a window a person puts aside",
+    "event": "show",
+    "atMs": 2446,
+    "isMinimized": false,
+    "isVisible": true,
+    "flagIsVisible": true,
+    "flagHasBeenShown": true
+   }
+  ],
+  "trailOfOurOwnHide": [
+   {
+    "step": "our own hide() while minimized",
+    "event": "show",
+    "atMs": 3162,
+    "isMinimized": false,
+    "isVisible": true,
+    "flagIsVisible": true,
+    "flagHasBeenShown": true
+   },
+   {
+    "step": "our own hide() while minimized",
+    "event": "minimize",
+    "atMs": 4414,
+    "isMinimized": true,
+    "isVisible": false,
+    "flagIsVisible": true,
+    "flagHasBeenShown": true
+   },
+   {
+    "step": "our own hide() while minimized",
+    "event": "hide",
+    "atMs": 4417,
+    "isMinimized": true,
+    "isVisible": false,
+    "flagIsVisible": false,
+    "flagHasBeenShown": true
+   }
+  ]
+ }
+}
+SPIKE_DONE

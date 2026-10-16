@@ -1,120 +1,120 @@
-SPIKE_STEP 09:06:07.967 window visible
-SPIKE_STEP 09:06:07.998 load visible • covered tab
-SPIKE_STEP 09:06:08.006 load visible • tab on top
-SPIKE_STEP 09:06:08.073 loaded visible • covered tab
-SPIKE_STEP 09:06:08.077 loaded visible • tab on top
-SPIKE_STEP 09:06:08.396 window minimized
-SPIKE_STEP 09:06:08.409 load minimized • covered tab
-SPIKE_STEP 09:06:08.414 load minimized • tab on top
-SPIKE_STEP 09:06:08.473 loaded minimized • covered tab
-SPIKE_STEP 09:06:08.474 loaded minimized • tab on top
-SPIKE_STEP 09:06:09.112 window hidden-after-show
-SPIKE_STEP 09:06:09.124 load hidden-after-show • covered tab
-SPIKE_STEP 09:06:09.128 load hidden-after-show • tab on top
-SPIKE_STEP 09:06:09.186 loaded hidden-after-show • covered tab
-SPIKE_STEP 09:06:09.189 loaded hidden-after-show • tab on top
-SPIKE_STEP 09:06:09.511 window never-shown
-SPIKE_STEP 09:06:09.533 load never-shown • covered tab
-SPIKE_STEP 09:06:09.539 load never-shown • tab on top
-SPIKE_STEP 09:06:09.595 loaded never-shown • covered tab
-SPIKE_STEP 09:06:09.602 loaded never-shown • tab on top
-SPIKE_STEP 09:06:09.910 measure visible • covered
-SPIKE_STEP 09:06:09.911 measure visible • covered
-SPIKE_STEP 09:06:09.916 → capturePage-hidden
-SPIKE_STEP 09:06:09.928 → capturePage-plain
-SPIKE_STEP 09:06:09.959 → cdp-screenshot
-SPIKE_STEP 09:06:12.464 → cdp-screenshot
-SPIKE_STEP 09:06:12.554 → capturePage-hidden
-SPIKE_STEP 09:06:12.775 → capturePage-hidden
-SPIKE_ROW {"scenario":"visible","tab":"covered","methods":[{"method":"capturePage-hidden","ms":11,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},{"method":"capturePage-plain","ms":31,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2505}],"probe":{"label":"visible • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","ms":90,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterReveal":{"method":"capturePage-hidden","ms":32,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterRaise":{"method":"capturePage-hidden","ms":29,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"}}
-SPIKE_STEP 09:06:12.807 measure visible • on-top
-SPIKE_STEP 09:06:12.807 measure visible • on-top
-SPIKE_STEP 09:06:12.808 → capturePage-hidden
-SPIKE_STEP 09:06:12.835 → capturePage-plain
-SPIKE_STEP 09:06:12.868 → cdp-screenshot
-SPIKE_ROW {"scenario":"visible","tab":"on-top","methods":[{"method":"capturePage-hidden","ms":27,"size":"600x420","bgra":[255,0,0,255],"verdict":"own-pixels"},{"method":"capturePage-plain","ms":33,"size":"600x420","bgra":[255,0,0,255],"verdict":"own-pixels"},{"method":"cdp-screenshot","ms":88,"size":"600x420","bgra":[255,0,0,255],"verdict":"own-pixels"}],"probe":{"label":"visible • tab on top","visibility":"visible","innerWidth":600,"innerHeight":420},"isPainting":false}
-SPIKE_STEP 09:06:12.956 measure minimized • covered
-SPIKE_STEP 09:06:12.957 measure minimized • covered
-SPIKE_STEP 09:06:12.961 → capturePage-hidden
-SPIKE_STEP 09:06:12.975 → capturePage-plain
-SPIKE_STEP 09:06:12.994 → cdp-screenshot
-SPIKE_STEP 09:06:15.710 → cdp-screenshot
-SPIKE_STEP 09:06:18.226 → capturePage-hidden
-SPIKE_STEP 09:06:18.460 → capturePage-hidden
-SPIKE_ROW {"scenario":"minimized","tab":"covered","methods":[{"method":"capturePage-hidden","ms":14,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},{"method":"capturePage-plain","ms":18,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2513}],"probe":{"label":"minimized • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2516},"afterReveal":{"method":"capturePage-hidden","ms":19,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterRaise":{"method":"capturePage-hidden","ms":29,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"}}
-SPIKE_STEP 09:06:18.491 measure minimized • on-top
-SPIKE_STEP 09:06:18.492 measure minimized • on-top
-SPIKE_STEP 09:06:18.500 → capturePage-hidden
-SPIKE_STEP 09:06:18.518 → capturePage-plain
-SPIKE_STEP 09:06:18.556 → cdp-screenshot
-SPIKE_ROW {"scenario":"minimized","tab":"on-top","methods":[{"method":"capturePage-hidden","ms":18,"size":"600x420","bgra":[255,0,0,255],"verdict":"own-pixels"},{"method":"capturePage-plain","ms":38,"size":"600x420","bgra":[255,0,0,255],"verdict":"own-pixels"},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2514}],"probe":{"label":"minimized • tab on top","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false}
-SPIKE_STEP 09:06:21.071 measure hidden-after-show • covered
-SPIKE_STEP 09:06:21.071 measure hidden-after-show • covered
-SPIKE_STEP 09:06:21.073 → capturePage-hidden
-SPIKE_STEP 09:06:23.575 → capturePage-plain
-SPIKE_STEP 09:06:26.092 → cdp-screenshot
-SPIKE_STEP 09:06:28.783 → cdp-screenshot
-SPIKE_STEP 09:06:28.853 → capturePage-hidden
-SPIKE_STEP 09:06:29.047 → capturePage-hidden
-SPIKE_ROW {"scenario":"hidden-after-show","tab":"covered","methods":[{"method":"capturePage-hidden","verdict":"TIMED-OUT","ms":2502},{"method":"capturePage-plain","verdict":"TIMED-OUT","ms":2517},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2504}],"probe":{"label":"hidden-after-show • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","ms":70,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterReveal":{"method":"capturePage-hidden","ms":7,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterRaise":{"method":"capturePage-hidden","verdict":"TIMED-OUT","ms":2508}}
-SPIKE_STEP 09:06:31.556 measure hidden-after-show • on-top
-SPIKE_STEP 09:06:31.556 measure hidden-after-show • on-top
-SPIKE_STEP 09:06:31.560 → capturePage-hidden
-SPIKE_STEP 09:06:34.075 → capturePage-plain
-SPIKE_STEP 09:06:36.583 → cdp-screenshot
-SPIKE_ROW {"scenario":"hidden-after-show","tab":"on-top","methods":[{"method":"capturePage-hidden","verdict":"TIMED-OUT","ms":2515},{"method":"capturePage-plain","verdict":"TIMED-OUT","ms":2508},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2512}],"probe":{"label":"hidden-after-show • tab on top","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false}
-SPIKE_STEP 09:06:39.095 measure never-shown • covered
-SPIKE_STEP 09:06:39.095 measure never-shown • covered
-SPIKE_STEP 09:06:39.097 → capturePage-hidden
-SPIKE_STEP 09:06:39.097 → capturePage-plain
-SPIKE_STEP 09:06:39.097 → cdp-screenshot
-SPIKE_STEP 09:06:41.800 → cdp-screenshot
-SPIKE_STEP 09:06:41.868 → capturePage-hidden
-SPIKE_STEP 09:06:42.065 → capturePage-hidden
-SPIKE_ROW {"scenario":"never-shown","tab":"covered","methods":[{"method":"capturePage-hidden","verdict":"error","ms":0,"detail":"Current display surface not available for capture"},{"method":"capturePage-plain","verdict":"error","ms":0,"detail":"Current display surface not available for capture"},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2515}],"probe":{"label":"never-shown • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","ms":67,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterReveal":{"method":"capturePage-hidden","ms":9,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterRaise":{"method":"capturePage-hidden","verdict":"TIMED-OUT","ms":2514}}
-SPIKE_STEP 09:06:44.580 measure never-shown • on-top
-SPIKE_STEP 09:06:44.580 measure never-shown • on-top
-SPIKE_STEP 09:06:44.581 → capturePage-hidden
-SPIKE_STEP 09:06:44.582 → capturePage-plain
-SPIKE_STEP 09:06:44.582 → cdp-screenshot
-SPIKE_ROW {"scenario":"never-shown","tab":"on-top","methods":[{"method":"capturePage-hidden","verdict":"error","ms":1,"detail":"Current display surface not available for capture"},{"method":"capturePage-plain","verdict":"error","ms":0,"detail":"Current display surface not available for capture"},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2508}],"probe":{"label":"never-shown • tab on top","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false}
+SPIKE_STEP 10:45:57.747 window visible
+SPIKE_STEP 10:45:57.860 load visible • covered tab
+SPIKE_STEP 10:45:57.872 load visible • tab on top
+SPIKE_STEP 10:45:58.012 loaded visible • tab on top
+SPIKE_STEP 10:45:58.012 loaded visible • covered tab
+SPIKE_STEP 10:45:58.315 window minimized
+SPIKE_STEP 10:45:58.335 load minimized • covered tab
+SPIKE_STEP 10:45:58.337 load minimized • tab on top
+SPIKE_STEP 10:45:58.423 loaded minimized • covered tab
+SPIKE_STEP 10:45:58.434 loaded minimized • tab on top
+SPIKE_STEP 10:45:59.308 window hidden-after-show
+SPIKE_STEP 10:45:59.324 load hidden-after-show • covered tab
+SPIKE_STEP 10:45:59.326 load hidden-after-show • tab on top
+SPIKE_STEP 10:45:59.416 loaded hidden-after-show • covered tab
+SPIKE_STEP 10:45:59.427 loaded hidden-after-show • tab on top
+SPIKE_STEP 10:45:59.730 window never-shown
+SPIKE_STEP 10:45:59.738 load never-shown • covered tab
+SPIKE_STEP 10:45:59.739 load never-shown • tab on top
+SPIKE_STEP 10:45:59.814 loaded never-shown • tab on top
+SPIKE_STEP 10:45:59.823 loaded never-shown • covered tab
+SPIKE_STEP 10:46:00.128 measure visible • covered
+SPIKE_STEP 10:46:00.128 measure visible • covered
+SPIKE_STEP 10:46:00.132 → capturePage-hidden
+SPIKE_STEP 10:46:00.171 → capturePage-plain
+SPIKE_STEP 10:46:00.175 → cdp-screenshot
+SPIKE_STEP 10:46:00.226 → cdp-screenshot
+SPIKE_STEP 10:46:00.268 → capturePage-hidden
+SPIKE_STEP 10:46:00.457 → capturePage-hidden
+SPIKE_ROW {"scenario":"visible","tab":"covered","methods":[{"method":"capturePage-hidden","ms":38,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"},{"method":"capturePage-plain","ms":3,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"},{"method":"cdp-screenshot","ms":50,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"}],"probe":{"label":"visible • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","ms":41,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"},"afterReveal":{"method":"capturePage-hidden","ms":4,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"},"afterRaise":{"method":"capturePage-hidden","ms":4,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"}}
+SPIKE_STEP 10:46:00.465 measure visible • on-top
+SPIKE_STEP 10:46:00.465 measure visible • on-top
+SPIKE_STEP 10:46:00.466 → capturePage-hidden
+SPIKE_STEP 10:46:00.483 → capturePage-plain
+SPIKE_STEP 10:46:00.501 → cdp-screenshot
+SPIKE_ROW {"scenario":"visible","tab":"on-top","methods":[{"method":"capturePage-hidden","ms":16,"size":"1200x840","bgra":[245,0,0,255],"verdict":"own-pixels"},{"method":"capturePage-plain","ms":17,"size":"1200x840","bgra":[245,0,0,255],"verdict":"own-pixels"},{"method":"cdp-screenshot","ms":59,"size":"1200x840","bgra":[245,0,0,255],"verdict":"own-pixels"}],"probe":{"label":"visible • tab on top","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false}
+SPIKE_STEP 10:46:00.561 measure minimized • covered
+SPIKE_STEP 10:46:00.561 measure minimized • covered
+SPIKE_STEP 10:46:00.563 → capturePage-hidden
+SPIKE_STEP 10:46:00.569 → capturePage-plain
+SPIKE_STEP 10:46:00.582 → cdp-screenshot
+SPIKE_STEP 10:46:01.195 → cdp-screenshot
+SPIKE_STEP 10:46:01.256 → capturePage-hidden
+SPIKE_STEP 10:46:01.823 → capturePage-hidden
+SPIKE_ROW {"scenario":"minimized","tab":"covered","methods":[{"method":"capturePage-hidden","ms":5,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"},{"method":"capturePage-plain","ms":12,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"},{"method":"cdp-screenshot","ms":73,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"}],"probe":{"label":"minimized • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","ms":61,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"},"afterReveal":{"method":"capturePage-hidden","ms":4,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"},"afterRaise":{"method":"capturePage-hidden","ms":4,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"}}
+SPIKE_STEP 10:46:01.829 measure minimized • on-top
+SPIKE_STEP 10:46:01.829 measure minimized • on-top
+SPIKE_STEP 10:46:01.831 → capturePage-hidden
+SPIKE_STEP 10:46:01.850 → capturePage-plain
+SPIKE_STEP 10:46:01.866 → cdp-screenshot
+SPIKE_ROW {"scenario":"minimized","tab":"on-top","methods":[{"method":"capturePage-hidden","ms":18,"size":"1200x840","bgra":[245,0,0,255],"verdict":"own-pixels"},{"method":"capturePage-plain","ms":16,"size":"1200x840","bgra":[245,0,0,255],"verdict":"own-pixels"},{"method":"cdp-screenshot","ms":52,"size":"1200x840","bgra":[245,0,0,255],"verdict":"own-pixels"}],"probe":{"label":"minimized • tab on top","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false}
+SPIKE_STEP 10:46:01.919 measure hidden-after-show • covered
+SPIKE_STEP 10:46:01.919 measure hidden-after-show • covered
+SPIKE_STEP 10:46:01.922 → capturePage-hidden
+SPIKE_STEP 10:46:01.926 → capturePage-plain
+SPIKE_STEP 10:46:01.933 → cdp-screenshot
+SPIKE_STEP 10:46:02.165 → cdp-screenshot
+SPIKE_STEP 10:46:02.208 → capturePage-hidden
+SPIKE_STEP 10:46:02.399 → capturePage-hidden
+SPIKE_ROW {"scenario":"hidden-after-show","tab":"covered","methods":[{"method":"capturePage-hidden","ms":3,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"},{"method":"capturePage-plain","ms":6,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"},{"method":"cdp-screenshot","ms":50,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"}],"probe":{"label":"hidden-after-show • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","ms":42,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"},"afterReveal":{"method":"capturePage-hidden","ms":3,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"},"afterRaise":{"method":"capturePage-hidden","ms":13,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"}}
+SPIKE_STEP 10:46:02.413 measure hidden-after-show • on-top
+SPIKE_STEP 10:46:02.413 measure hidden-after-show • on-top
+SPIKE_STEP 10:46:02.422 → capturePage-hidden
+SPIKE_STEP 10:46:02.436 → capturePage-plain
+SPIKE_STEP 10:46:02.450 → cdp-screenshot
+SPIKE_ROW {"scenario":"hidden-after-show","tab":"on-top","methods":[{"method":"capturePage-hidden","ms":12,"size":"1200x840","bgra":[245,0,0,255],"verdict":"own-pixels"},{"method":"capturePage-plain","ms":14,"size":"1200x840","bgra":[245,0,0,255],"verdict":"own-pixels"},{"method":"cdp-screenshot","ms":50,"size":"1200x840","bgra":[245,0,0,255],"verdict":"own-pixels"}],"probe":{"label":"hidden-after-show • tab on top","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false}
+SPIKE_STEP 10:46:02.501 measure never-shown • covered
+SPIKE_STEP 10:46:02.501 measure never-shown • covered
+SPIKE_STEP 10:46:02.503 → capturePage-hidden
+SPIKE_STEP 10:46:02.503 → capturePage-plain
+SPIKE_STEP 10:46:02.503 → cdp-screenshot
+SPIKE_STEP 10:46:02.783 → cdp-screenshot
+SPIKE_STEP 10:46:02.825 → capturePage-hidden
+SPIKE_STEP 10:46:03.013 → capturePage-hidden
+SPIKE_ROW {"scenario":"never-shown","tab":"covered","methods":[{"method":"capturePage-hidden","verdict":"error","ms":0,"detail":"Current display surface not available for capture"},{"method":"capturePage-plain","verdict":"error","ms":0,"detail":"Current display surface not available for capture"},{"method":"cdp-screenshot","ms":98,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"}],"probe":{"label":"never-shown • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","ms":42,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"},"afterReveal":{"method":"capturePage-hidden","ms":5,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"},"afterRaise":{"method":"capturePage-hidden","ms":5,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"}}
+SPIKE_STEP 10:46:03.019 measure never-shown • on-top
+SPIKE_STEP 10:46:03.019 measure never-shown • on-top
+SPIKE_STEP 10:46:03.020 → capturePage-hidden
+SPIKE_STEP 10:46:03.033 → capturePage-plain
+SPIKE_STEP 10:46:03.050 → cdp-screenshot
+SPIKE_ROW {"scenario":"never-shown","tab":"on-top","methods":[{"method":"capturePage-hidden","ms":13,"size":"1200x840","bgra":[245,0,0,255],"verdict":"own-pixels"},{"method":"capturePage-plain","ms":17,"size":"1200x840","bgra":[245,0,0,255],"verdict":"own-pixels"},{"method":"cdp-screenshot","ms":55,"size":"1200x840","bgra":[245,0,0,255],"verdict":"own-pixels"}],"probe":{"label":"never-shown • tab on top","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false}
 SPIKE_JSON [{"state":"visible","windowVisible":true},{"state":"minimized","windowVisible":false},{"state":"hidden-after-show","windowVisible":false},{"state":"never-shown","windowVisible":false}]
-SPIKE_JSON [{"scenario":"visible","tab":"covered","methods":[{"method":"capturePage-hidden","ms":11,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},{"method":"capturePage-plain","ms":31,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2505}],"probe":{"label":"visible • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","ms":90,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterReveal":{"method":"capturePage-hidden","ms":32,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterRaise":{"method":"capturePage-hidden","ms":29,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"}},{"scenario":"visible","tab":"on-top","methods":[{"method":"capturePage-hidden","ms":27,"size":"600x420","bgra":[255,0,0,255],"verdict":"own-pixels"},{"method":"capturePage-plain","ms":33,"size":"600x420","bgra":[255,0,0,255],"verdict":"own-pixels"},{"method":"cdp-screenshot","ms":88,"size":"600x420","bgra":[255,0,0,255],"verdict":"own-pixels"}],"probe":{"label":"visible • tab on top","visibility":"visible","innerWidth":600,"innerHeight":420},"isPainting":false},{"scenario":"minimized","tab":"covered","methods":[{"method":"capturePage-hidden","ms":14,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},{"method":"capturePage-plain","ms":18,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2513}],"probe":{"label":"minimized • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2516},"afterReveal":{"method":"capturePage-hidden","ms":19,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterRaise":{"method":"capturePage-hidden","ms":29,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"}},{"scenario":"minimized","tab":"on-top","methods":[{"method":"capturePage-hidden","ms":18,"size":"600x420","bgra":[255,0,0,255],"verdict":"own-pixels"},{"method":"capturePage-plain","ms":38,"size":"600x420","bgra":[255,0,0,255],"verdict":"own-pixels"},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2514}],"probe":{"label":"minimized • tab on top","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false},{"scenario":"hidden-after-show","tab":"covered","methods":[{"method":"capturePage-hidden","verdict":"TIMED-OUT","ms":2502},{"method":"capturePage-plain","verdict":"TIMED-OUT","ms":2517},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2504}],"probe":{"label":"hidden-after-show • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","ms":70,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterReveal":{"method":"capturePage-hidden","ms":7,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterRaise":{"method":"capturePage-hidden","verdict":"TIMED-OUT","ms":2508}},{"scenario":"hidden-after-show","tab":"on-top","methods":[{"method":"capturePage-hidden","verdict":"TIMED-OUT","ms":2515},{"method":"capturePage-plain","verdict":"TIMED-OUT","ms":2508},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2512}],"probe":{"label":"hidden-after-show • tab on top","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false},{"scenario":"never-shown","tab":"covered","methods":[{"method":"capturePage-hidden","verdict":"error","ms":0,"detail":"Current display surface not available for capture"},{"method":"capturePage-plain","verdict":"error","ms":0,"detail":"Current display surface not available for capture"},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2515}],"probe":{"label":"never-shown • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","ms":67,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterReveal":{"method":"capturePage-hidden","ms":9,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterRaise":{"method":"capturePage-hidden","verdict":"TIMED-OUT","ms":2514}},{"scenario":"never-shown","tab":"on-top","methods":[{"method":"capturePage-hidden","verdict":"error","ms":1,"detail":"Current display surface not available for capture"},{"method":"capturePage-plain","verdict":"error","ms":0,"detail":"Current display surface not available for capture"},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2508}],"probe":{"label":"never-shown • tab on top","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false}]
+SPIKE_JSON [{"scenario":"visible","tab":"covered","methods":[{"method":"capturePage-hidden","ms":38,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"},{"method":"capturePage-plain","ms":3,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"},{"method":"cdp-screenshot","ms":50,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"}],"probe":{"label":"visible • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","ms":41,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"},"afterReveal":{"method":"capturePage-hidden","ms":4,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"},"afterRaise":{"method":"capturePage-hidden","ms":4,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"}},{"scenario":"visible","tab":"on-top","methods":[{"method":"capturePage-hidden","ms":16,"size":"1200x840","bgra":[245,0,0,255],"verdict":"own-pixels"},{"method":"capturePage-plain","ms":17,"size":"1200x840","bgra":[245,0,0,255],"verdict":"own-pixels"},{"method":"cdp-screenshot","ms":59,"size":"1200x840","bgra":[245,0,0,255],"verdict":"own-pixels"}],"probe":{"label":"visible • tab on top","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false},{"scenario":"minimized","tab":"covered","methods":[{"method":"capturePage-hidden","ms":5,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"},{"method":"capturePage-plain","ms":12,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"},{"method":"cdp-screenshot","ms":73,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"}],"probe":{"label":"minimized • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","ms":61,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"},"afterReveal":{"method":"capturePage-hidden","ms":4,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"},"afterRaise":{"method":"capturePage-hidden","ms":4,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"}},{"scenario":"minimized","tab":"on-top","methods":[{"method":"capturePage-hidden","ms":18,"size":"1200x840","bgra":[245,0,0,255],"verdict":"own-pixels"},{"method":"capturePage-plain","ms":16,"size":"1200x840","bgra":[245,0,0,255],"verdict":"own-pixels"},{"method":"cdp-screenshot","ms":52,"size":"1200x840","bgra":[245,0,0,255],"verdict":"own-pixels"}],"probe":{"label":"minimized • tab on top","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false},{"scenario":"hidden-after-show","tab":"covered","methods":[{"method":"capturePage-hidden","ms":3,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"},{"method":"capturePage-plain","ms":6,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"},{"method":"cdp-screenshot","ms":50,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"}],"probe":{"label":"hidden-after-show • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","ms":42,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"},"afterReveal":{"method":"capturePage-hidden","ms":3,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"},"afterRaise":{"method":"capturePage-hidden","ms":13,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"}},{"scenario":"hidden-after-show","tab":"on-top","methods":[{"method":"capturePage-hidden","ms":12,"size":"1200x840","bgra":[245,0,0,255],"verdict":"own-pixels"},{"method":"capturePage-plain","ms":14,"size":"1200x840","bgra":[245,0,0,255],"verdict":"own-pixels"},{"method":"cdp-screenshot","ms":50,"size":"1200x840","bgra":[245,0,0,255],"verdict":"own-pixels"}],"probe":{"label":"hidden-after-show • tab on top","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false},{"scenario":"never-shown","tab":"covered","methods":[{"method":"capturePage-hidden","verdict":"error","ms":0,"detail":"Current display surface not available for capture"},{"method":"capturePage-plain","verdict":"error","ms":0,"detail":"Current display surface not available for capture"},{"method":"cdp-screenshot","ms":98,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"}],"probe":{"label":"never-shown • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","ms":42,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"},"afterReveal":{"method":"capturePage-hidden","ms":5,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"},"afterRaise":{"method":"capturePage-hidden","ms":5,"size":"1200x840","bgra":[35,51,234,255],"verdict":"WRONG-colour"}},{"scenario":"never-shown","tab":"on-top","methods":[{"method":"capturePage-hidden","ms":13,"size":"1200x840","bgra":[245,0,0,255],"verdict":"own-pixels"},{"method":"capturePage-plain","ms":17,"size":"1200x840","bgra":[245,0,0,255],"verdict":"own-pixels"},{"method":"cdp-screenshot","ms":55,"size":"1200x840","bgra":[245,0,0,255],"verdict":"own-pixels"}],"probe":{"label":"never-shown • tab on top","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false}]
 
 scenario            tab      vis      painting  method                                 verdict        time
-visible             covered  hidden   false     capturePage-hidden                     own-pixels       11ms [0,0,255,255] 600x420
-visible             covered  hidden   false     capturePage-plain                      own-pixels       31ms [0,0,255,255] 600x420
-visible             covered  hidden   false     cdp-screenshot                         TIMED-OUT      2505ms
-visible             covered  hidden   false     after reveal                           own-pixels       32ms [0,0,255,255] 600x420
-visible             covered  hidden   false     after reveal (cdp)                     own-pixels       90ms [0,0,255,255] 600x420
-visible             covered  hidden   false     raised to top                          own-pixels       29ms [0,0,255,255] 600x420
-visible             on-top   visible  false     capturePage-hidden                     own-pixels       27ms [255,0,0,255] 600x420
-visible             on-top   visible  false     capturePage-plain                      own-pixels       33ms [255,0,0,255] 600x420
-visible             on-top   visible  false     cdp-screenshot                         own-pixels       88ms [255,0,0,255] 600x420
-minimized           covered  hidden   false     capturePage-hidden                     own-pixels       14ms [0,0,255,255] 600x420
-minimized           covered  hidden   false     capturePage-plain                      own-pixels       18ms [0,0,255,255] 600x420
-minimized           covered  hidden   false     cdp-screenshot                         TIMED-OUT      2513ms
-minimized           covered  hidden   false     after reveal                           own-pixels       19ms [0,0,255,255] 600x420
-minimized           covered  hidden   false     after reveal (cdp)                     TIMED-OUT      2516ms
-minimized           covered  hidden   false     raised to top                          own-pixels       29ms [0,0,255,255] 600x420
-minimized           on-top   hidden   false     capturePage-hidden                     own-pixels       18ms [255,0,0,255] 600x420
-minimized           on-top   hidden   false     capturePage-plain                      own-pixels       38ms [255,0,0,255] 600x420
-minimized           on-top   hidden   false     cdp-screenshot                         TIMED-OUT      2514ms
-hidden-after-show   covered  hidden   false     capturePage-hidden                     TIMED-OUT      2502ms
-hidden-after-show   covered  hidden   false     capturePage-plain                      TIMED-OUT      2517ms
-hidden-after-show   covered  hidden   false     cdp-screenshot                         TIMED-OUT      2504ms
-hidden-after-show   covered  hidden   false     after reveal                           own-pixels        7ms [0,0,255,255] 600x420
-hidden-after-show   covered  hidden   false     after reveal (cdp)                     own-pixels       70ms [0,0,255,255] 600x420
-hidden-after-show   covered  hidden   false     raised to top                          TIMED-OUT      2508ms
-hidden-after-show   on-top   hidden   false     capturePage-hidden                     TIMED-OUT      2515ms
-hidden-after-show   on-top   hidden   false     capturePage-plain                      TIMED-OUT      2508ms
-hidden-after-show   on-top   hidden   false     cdp-screenshot                         TIMED-OUT      2512ms
+visible             covered  hidden   false     capturePage-hidden                     WRONG-colour     38ms [35,51,234,255] 1200x840
+visible             covered  hidden   false     capturePage-plain                      WRONG-colour      3ms [35,51,234,255] 1200x840
+visible             covered  hidden   false     cdp-screenshot                         WRONG-colour     50ms [35,51,234,255] 1200x840
+visible             covered  hidden   false     after reveal                           WRONG-colour      4ms [35,51,234,255] 1200x840
+visible             covered  hidden   false     after reveal (cdp)                     WRONG-colour     41ms [35,51,234,255] 1200x840
+visible             covered  hidden   false     raised to top                          WRONG-colour      4ms [35,51,234,255] 1200x840
+visible             on-top   hidden   false     capturePage-hidden                     own-pixels       16ms [245,0,0,255] 1200x840
+visible             on-top   hidden   false     capturePage-plain                      own-pixels       17ms [245,0,0,255] 1200x840
+visible             on-top   hidden   false     cdp-screenshot                         own-pixels       59ms [245,0,0,255] 1200x840
+minimized           covered  hidden   false     capturePage-hidden                     WRONG-colour      5ms [35,51,234,255] 1200x840
+minimized           covered  hidden   false     capturePage-plain                      WRONG-colour     12ms [35,51,234,255] 1200x840
+minimized           covered  hidden   false     cdp-screenshot                         WRONG-colour     73ms [35,51,234,255] 1200x840
+minimized           covered  hidden   false     after reveal                           WRONG-colour      4ms [35,51,234,255] 1200x840
+minimized           covered  hidden   false     after reveal (cdp)                     WRONG-colour     61ms [35,51,234,255] 1200x840
+minimized           covered  hidden   false     raised to top                          WRONG-colour      4ms [35,51,234,255] 1200x840
+minimized           on-top   hidden   false     capturePage-hidden                     own-pixels       18ms [245,0,0,255] 1200x840
+minimized           on-top   hidden   false     capturePage-plain                      own-pixels       16ms [245,0,0,255] 1200x840
+minimized           on-top   hidden   false     cdp-screenshot                         own-pixels       52ms [245,0,0,255] 1200x840
+hidden-after-show   covered  hidden   false     capturePage-hidden                     WRONG-colour      3ms [35,51,234,255] 1200x840
+hidden-after-show   covered  hidden   false     capturePage-plain                      WRONG-colour      6ms [35,51,234,255] 1200x840
+hidden-after-show   covered  hidden   false     cdp-screenshot                         WRONG-colour     50ms [35,51,234,255] 1200x840
+hidden-after-show   covered  hidden   false     after reveal                           WRONG-colour      3ms [35,51,234,255] 1200x840
+hidden-after-show   covered  hidden   false     after reveal (cdp)                     WRONG-colour     42ms [35,51,234,255] 1200x840
+hidden-after-show   covered  hidden   false     raised to top                          WRONG-colour     13ms [35,51,234,255] 1200x840
+hidden-after-show   on-top   hidden   false     capturePage-hidden                     own-pixels       12ms [245,0,0,255] 1200x840
+hidden-after-show   on-top   hidden   false     capturePage-plain                      own-pixels       14ms [245,0,0,255] 1200x840
+hidden-after-show   on-top   hidden   false     cdp-screenshot                         own-pixels       50ms [245,0,0,255] 1200x840
 never-shown         covered  hidden   false     capturePage-hidden                     error             0ms Current display surface not available for capture
 never-shown         covered  hidden   false     capturePage-plain                      error             0ms Current display surface not available for capture
-never-shown         covered  hidden   false     cdp-screenshot                         TIMED-OUT      2515ms
-never-shown         covered  hidden   false     after reveal                           own-pixels        9ms [0,0,255,255] 600x420
-never-shown         covered  hidden   false     after reveal (cdp)                     own-pixels       67ms [0,0,255,255] 600x420
-never-shown         covered  hidden   false     raised to top                          TIMED-OUT      2514ms
-never-shown         on-top   hidden   false     capturePage-hidden                     error             1ms Current display surface not available for capture
-never-shown         on-top   hidden   false     capturePage-plain                      error             0ms Current display surface not available for capture
-never-shown         on-top   hidden   false     cdp-screenshot                         TIMED-OUT      2508ms
+never-shown         covered  hidden   false     cdp-screenshot                         WRONG-colour     98ms [35,51,234,255] 1200x840
+never-shown         covered  hidden   false     after reveal                           WRONG-colour      5ms [35,51,234,255] 1200x840
+never-shown         covered  hidden   false     after reveal (cdp)                     WRONG-colour     42ms [35,51,234,255] 1200x840
+never-shown         covered  hidden   false     raised to top                          WRONG-colour      5ms [35,51,234,255] 1200x840
+never-shown         on-top   hidden   false     capturePage-hidden                     own-pixels       13ms [245,0,0,255] 1200x840
+never-shown         on-top   hidden   false     capturePage-plain                      own-pixels       17ms [245,0,0,255] 1200x840
+never-shown         on-top   hidden   false     cdp-screenshot                         own-pixels       55ms [245,0,0,255] 1200x840
