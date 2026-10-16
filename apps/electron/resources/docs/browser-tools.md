@@ -210,6 +210,10 @@ Convenience command: writes text to clipboard then triggers Ctrl+V (or Cmd+V on 
 ### `screenshot` / `screenshot --annotated` / `screenshot-region ...`
 Capture full-window or targeted screenshots. `--annotated` overlays `@eN` labels on interactive elements for easier ref debugging.
 
+Every shot reports its own size (`Image: <w>x<h> CSS px`). Those are **CSS pixels** — the same units `click-at` and `drag` take.
+
+**A large shot may be scaled before the model sees it**, which makes coordinates read off it inaccurate. If a coordinate seems off, shrink the shot (`viewport-resize`, or a `screenshot-region`) and take it again.
+
 A `--selector`/`--ref` region contains **only pixels the page has painted**, and it is all or nothing:
 if the region is bigger than that — measured: a 1440×900 element in a 900-wide viewport — the shot
 **fails**, and the error carries the numbers plus the size to give the tab (`viewport-resize <w> <h>`,

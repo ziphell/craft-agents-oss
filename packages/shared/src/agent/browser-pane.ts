@@ -33,6 +33,12 @@ export interface BrowserScreenshotArgs {
 export interface BrowserScreenshotResult {
   imageBuffer: Buffer
   imageFormat: 'png' | 'jpeg'
+  /**
+   * Pixel size of the image, in **CSS pixels** — the same units `click-at`/`drag` take.
+   * Present on every real shot; optional so test doubles need not state it.
+   */
+  imageWidth?: number
+  imageHeight?: number
   metadata?: Record<string, unknown>
 }
 

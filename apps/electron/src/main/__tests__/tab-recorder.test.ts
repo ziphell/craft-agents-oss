@@ -28,6 +28,20 @@ function fakeTab(id: number, destroyed = false): any {
   }
 }
 
+/** The one window these tests record in — a tab name belongs to a window (`tab-recorder.ts`). */
+const WINDOW = 'window-1'
+
+/**
+ * What a start is given, window included.
+ *
+ * A recording carries the window its tab is in (`tab-recorder.ts` why): `tab-1` names a tab **in
+ * a window**, so a stop that arrives with only a name still knows what it is stopping. These
+ * tests have one window, and every recording here is in it.
+ */
+function starting(dir: string, tabId: string, source: any, instanceId = WINDOW) {
+  return { tabId, instanceId, dir, source }
+}
+
 describe('TabRecorder', () => {
   let dir: string
 
@@ -41,7 +55,7 @@ describe('TabRecorder', () => {
 
   it('writes what it is given, and reports where it went', () => {
     const recorder = new TabRecorder()
-    const state = recorder.start({ tabId: 'tab-1', dir, source: fakeTab(1) })
+    const state = recorder.start(starting(dir, 'tab-1', fakeTab(1)))
 
     expect(state.file.startsWith(join(dir, ''))).toBe(true)
     expect(state.file.endsWith('.mp4')).toBe(true)
@@ -69,7 +83,7 @@ describe('TabRecorder', () => {
     // Nothing armed: a display-media request gets nothing back.
     expect(recorder.armedSource()).toBeNull()
 
-    recorder.start({ tabId: 'tab-1', dir, source: fakeTab(7) })
+    recorder.start(starting(dir, 'tab-1', fakeTab(7)))
     expect(recorder.state()).not.toBeNull()
     expect(recorder.armedSource()).not.toBeNull()
 
@@ -80,7 +94,7 @@ describe('TabRecorder', () => {
 
   it('ends the recording when the tab it was recording goes away, keeping what it captured', () => {
     const recorder = new TabRecorder()
-    const state = recorder.start({ tabId: 'tab-1', dir, source: fakeTab(1) })
+    const state = recorder.start(starting(dir, 'tab-1', fakeTab(1)))
     recorder.append(new Uint8Array([9]))
 
     // A different tab closing is not this recording's business.
@@ -94,16 +108,16 @@ describe('TabRecorder', () => {
 
   it('takes the whole window with it: any of its tabs ends the recording', () => {
     const recorder = new TabRecorder()
-    const state = recorder.start({ tabId: 'tab-1', dir, source: fakeTab(5) })
+    const state = recorder.start(starting(dir, 'tab-1', fakeTab(5)))
     expect(recorder.stopIfSource(1, 2, 5)[0]?.file).toBe(state.file)
     expect(recorder.state()).toBeNull()
   })
 
   it('two recordings in the same second are two files', () => {
     const recorder = new TabRecorder()
-    const first = recorder.start({ tabId: 'tab-1', dir, source: fakeTab(1) })
+    const first = recorder.start(starting(dir, 'tab-1', fakeTab(1)))
     recorder.stop()
-    const second = recorder.start({ tabId: 'tab-1', dir, source: fakeTab(1) })
+    const second = recorder.start(starting(dir, 'tab-1', fakeTab(1)))
     recorder.stop()
 
     expect(second.file).not.toBe(first.file)
@@ -112,10 +126,10 @@ describe('TabRecorder', () => {
 
   it('a second recording by the person finishes the first rather than dropping it', () => {
     const recorder = new TabRecorder()
-    const first = recorder.start({ tabId: 'tab-1', dir, source: fakeTab(1) })
+    const first = recorder.start(starting(dir, 'tab-1', fakeTab(1)))
     recorder.append(new Uint8Array([1]))
     // A different tab: the person still records one thing at a time.
-    const second = recorder.start({ tabId: 'tab-2', dir, source: fakeTab(2) })
+    const second = recorder.start(starting(dir, 'tab-2', fakeTab(2)))
 
     expect(second.file).not.toBe(first.file)
     expect(recorder.states().length).toBe(1)
@@ -124,7 +138,7 @@ describe('TabRecorder', () => {
 
   it('a destroyed tab is no source at all', () => {
     const recorder = new TabRecorder()
-    recorder.start({ tabId: 'tab-1', dir, source: fakeTab(3, true) })
+    recorder.start(starting(dir, 'tab-1', fakeTab(3, true)))
     expect(recorder.armedSource()).toBeNull()
   })
 })
@@ -144,8 +158,8 @@ describe('TabRecorder — more than one recording at a time', () => {
     const recorder = new TabRecorder()
     const source = fakeTab(1)
 
-    const person = recorder.start({ tabId: 'tab-1', dir, source })
-    const session = recorder.startFor('s1', { tabId: 'tab-1', dir, source })
+    const person = recorder.start(starting(dir, 'tab-1', source))
+    const session = recorder.startFor('s1', starting(dir, 'tab-1', source))
 
     expect(session.file).not.toBe(person.file)
     expect(recorder.states().length).toBe(2)
@@ -162,9 +176,9 @@ describe('TabRecorder — more than one recording at a time', () => {
 
   it('a conversation recording two tabs keeps both, and starting the second does not end the first', () => {
     const recorder = new TabRecorder()
-    const first = recorder.startFor('s1', { tabId: 'tab-1', dir, source: fakeTab(1) })
+    const first = recorder.startFor('s1', starting(dir, 'tab-1', fakeTab(1)))
     recorder.appendFor('s1', 'tab-1', new Uint8Array([1]))
-    const second = recorder.startFor('s1', { tabId: 'tab-2', dir, source: fakeTab(2) })
+    const second = recorder.startFor('s1', starting(dir, 'tab-2', fakeTab(2)))
 
     expect(second.file).not.toBe(first.file)
     expect(recorder.states().length).toBe(2)
@@ -179,9 +193,9 @@ describe('TabRecorder — more than one recording at a time', () => {
 
   it('the same conversation and tab again finishes that one recording rather than stacking', () => {
     const recorder = new TabRecorder()
-    const first = recorder.startFor('s1', { tabId: 'tab-1', dir, source: fakeTab(1) })
+    const first = recorder.startFor('s1', starting(dir, 'tab-1', fakeTab(1)))
     recorder.appendFor('s1', 'tab-1', new Uint8Array([1, 2]))
-    const second = recorder.startFor('s1', { tabId: 'tab-1', dir, source: fakeTab(1) })
+    const second = recorder.startFor('s1', starting(dir, 'tab-1', fakeTab(1)))
 
     expect(second.file).not.toBe(first.file)
     expect(recorder.states().length).toBe(1)
@@ -192,8 +206,8 @@ describe('TabRecorder — more than one recording at a time', () => {
   it('two conversations on one tab are two recordings', () => {
     const recorder = new TabRecorder()
     const source = fakeTab(1)
-    const a = recorder.startFor('s1', { tabId: 'tab-1', dir, source })
-    const b = recorder.startFor('s2', { tabId: 'tab-1', dir, source })
+    const a = recorder.startFor('s1', starting(dir, 'tab-1', source))
+    const b = recorder.startFor('s2', starting(dir, 'tab-1', source))
 
     expect(a.file).not.toBe(b.file)
     expect(recorder.states().length).toBe(2)
@@ -204,9 +218,9 @@ describe('TabRecorder — more than one recording at a time', () => {
   it('the tab going away ends every recording of it, whoever owns them', () => {
     const recorder = new TabRecorder()
     const source = fakeTab(1)
-    const person = recorder.start({ tabId: 'tab-1', dir, source })
-    const session = recorder.startFor('s1', { tabId: 'tab-1', dir, source })
-    const other = recorder.startFor('s1', { tabId: 'tab-2', dir, source: fakeTab(2) })
+    const person = recorder.start(starting(dir, 'tab-1', source))
+    const session = recorder.startFor('s1', starting(dir, 'tab-1', source))
+    const other = recorder.startFor('s1', starting(dir, 'tab-2', fakeTab(2)))
 
     const finished = recorder.stopIfSource(1)
 
@@ -239,7 +253,7 @@ describe('TabRecorder — the sidecar beside the film', () => {
 
   it('opens with the clock, and closes when the recording ends', () => {
     const recorder = new TabRecorder()
-    const state = recorder.start({ tabId: 'tab-1', dir, source: fakeTab(1) })
+    const state = recorder.start(starting(dir, 'tab-1', fakeTab(1)))
     const sidecar = sidecarPathFor(state.file)
 
     // The first line is what turns every later `ms` into a moment: the recording's start.
@@ -258,10 +272,10 @@ describe('TabRecorder — the sidecar beside the film', () => {
 
   it('logs what the page did, on the recording\'s own clock', () => {
     const recorder = new TabRecorder()
-    const state = recorder.start({ tabId: 'tab-1', dir, source: fakeTab(1) })
+    const state = recorder.start(starting(dir, 'tab-1', fakeTab(1)))
 
-    recorder.noteEvent('tab-1', { type: 'navigate', url: 'https://example.com/admin' })
-    recorder.noteEvent('tab-1', {
+    recorder.noteEvent(WINDOW, 'tab-1', { type: 'navigate', url: 'https://example.com/admin' })
+    recorder.noteEvent(WINDOW, 'tab-1', {
       type: 'request',
       method: 'POST',
       url: 'https://example.com/api/export',
@@ -280,11 +294,11 @@ describe('TabRecorder — the sidecar beside the film', () => {
 
   it('gives an event to every recording of that tab, and to no other tab', () => {
     const recorder = new TabRecorder()
-    const person = recorder.start({ tabId: 'tab-1', dir, source: fakeTab(1) })
-    const session = recorder.startFor('s1', { tabId: 'tab-1', dir, source: fakeTab(1) })
-    const other = recorder.startFor('s1', { tabId: 'tab-2', dir, source: fakeTab(2) })
+    const person = recorder.start(starting(dir, 'tab-1', fakeTab(1)))
+    const session = recorder.startFor('s1', starting(dir, 'tab-1', fakeTab(1)))
+    const other = recorder.startFor('s1', starting(dir, 'tab-2', fakeTab(2)))
 
-    recorder.noteEvent('tab-1', { type: 'navigate', url: 'https://example.com/' })
+    recorder.noteEvent(WINDOW, 'tab-1', { type: 'navigate', url: 'https://example.com/' })
 
     // The page did one thing and two recordings observed it; the other tab saw nothing.
     expect(linesOf(sidecarPathFor(person.file)).length).toBe(2)
@@ -292,24 +306,36 @@ describe('TabRecorder — the sidecar beside the film', () => {
     expect(linesOf(sidecarPathFor(other.file)).length).toBe(1)
   })
 
+  it("gives an event to no other window's tab of the same name", () => {
+    const recorder = new TabRecorder()
+    // Another window's first tab has the same name — ids are per window (`BrowserInstance.tabCounter`).
+    const person = recorder.start(starting(dir, 'tab-1', fakeTab(1), 'window-2'))
+
+    recorder.noteEvent(WINDOW, 'tab-1', { type: 'navigate', url: 'https://example.com/' })
+    expect(linesOf(sidecarPathFor(person.file)).length).toBe(1)
+
+    recorder.noteEvent('window-2', 'tab-1', { type: 'navigate', url: 'https://example.com/' })
+    expect(linesOf(sidecarPathFor(person.file)).length).toBe(2)
+  })
+
   it('writes nothing for a tab nobody is recording', () => {
     const recorder = new TabRecorder()
     // This sits on the ordinary navigation and network paths, which run either way.
-    recorder.noteEvent('tab-9', { type: 'navigate', url: 'https://example.com/' })
+    recorder.noteEvent(WINDOW, 'tab-9', { type: 'navigate', url: 'https://example.com/' })
     expect(readdirSync(dir)).toEqual([])
   })
 
   it('tells a conversation that a field was filled, but never what was typed', () => {
     const recorder = new TabRecorder()
-    const person = recorder.start({ tabId: 'tab-1', dir, source: fakeTab(1) })
-    const session = recorder.startFor('s1', { tabId: 'tab-1', dir, source: fakeTab(1) })
+    const person = recorder.start(starting(dir, 'tab-1', fakeTab(1)))
+    const session = recorder.startFor('s1', starting(dir, 'tab-1', fakeTab(1)))
 
-    recorder.noteEvent('tab-1', {
+    recorder.noteEvent(WINDOW, 'tab-1', {
       type: 'fill',
       target: { tag: 'input', role: 'textbox', name: 'Order id' },
       value: 'A-1',
     })
-    recorder.noteEvent('tab-1', { type: 'click', target: { tag: 'button', role: 'button', name: 'Export' } })
+    recorder.noteEvent(WINDOW, 'tab-1', { type: 'click', target: { tag: 'button', role: 'button', name: 'Export' } })
 
     // Whose recording it is decides what it may be told: nobody can be asked to consent to a
     // recording they are not watching.

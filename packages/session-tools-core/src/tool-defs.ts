@@ -634,6 +634,10 @@ Examples:
 - \`close [windowId]\` — close a window of your own; the shared window is refused
 - \`hide [windowId]\` — hide the window while preserving state
 
+**A screenshot may be scaled before the model sees it.** A large image can be downscaled by the
+vision input, which makes the coordinates read off it inaccurate. If a coordinate seems off, shrink
+the shot — \`viewport-resize\`, or a \`screenshot-region\` — and take it again.
+
 **Recording a tab.** \`record-start --tab <id> --ttl <dur> [--wait]\` records one named tab for at
 most <dur> and stops on its own when that is up (the ceiling is ten minutes). \`record-stop --tab
 <id>\` ends one early. Both name the tab: nothing is recorded by default, and a stop that guessed

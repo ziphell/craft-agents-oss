@@ -4,10 +4,14 @@ import { readJsonFileSync } from '@craft-agent/shared/utils/files'
 import { CONFIG_DIR } from '@craft-agent/shared/config/paths'
 import { mainLog } from './logger'
 
-/** One page, as it is remembered between runs. */
+/**
+ * One page, as it is remembered between runs.
+ *
+ * Only the page is remembered — deliberately **not** the tab's id. A name (`tab-3`) is the window's
+ * to hand out while it is open, and a window that comes back numbers its tabs afresh from `tab-1`,
+ * so nothing on disk can make the numbering creep upwards run after run.
+ */
 export interface SavedBrowserTab {
-  /** The tab's id — reused on restore so a name a message quoted still finds it. */
-  id: string
   url: string
   title: string
 }
@@ -16,7 +20,16 @@ export interface SavedBrowserTab {
 export interface SavedBrowserWindowTabs {
   workspaceId: string | null
   tabs: SavedBrowserTab[]
-  activeTabId: string
+  /** Which of `tabs` was on screen — an index, because the ids are handed out again on restore. */
+  activeIndex: number
+  /**
+   * The content size the window had.
+   *
+   * Optional, because an entry written before this existed has none. The **position** is deliberately
+   * not remembered: where the window opens is the person's (they move, snap and maximise it), so a
+   * window whose size comes back still opens where the OS puts it.
+   */
+  contentSize?: { width: number; height: number }
 }
 
 export interface BrowserTabsState {

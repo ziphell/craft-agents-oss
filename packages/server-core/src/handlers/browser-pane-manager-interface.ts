@@ -90,6 +90,9 @@ export interface BrowserScreenshotOptions {
 export interface BrowserScreenshotResult {
   imageBuffer: Buffer
   imageFormat: 'png' | 'jpeg'
+  /** Pixel size of the image, in CSS pixels (1:1 with `click-at` coordinates). */
+  imageWidth?: number
+  imageHeight?: number
   metadata?: Record<string, unknown>
 }
 

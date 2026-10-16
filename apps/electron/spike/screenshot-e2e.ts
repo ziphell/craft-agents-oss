@@ -77,7 +77,7 @@ function parkedSpot() {
 
 const FRONT = { hex: '#ff0000', bgra: [0, 0, 255, 255], label: 'the tab on screen' }
 const BACK = { hex: '#0000ff', bgra: [255, 0, 0, 255], label: 'the tab the agent works on' }
-const PARKED_WARNING = 'parked that tab in a window nobody can see'
+const PARKED_WARNING = 'parked that tab in the parking window'
 /** The app's own bound for waiting on that first frame (`SCREENSHOT_FIRST_FRAME_MS`). */
 const FIRST_FRAME_WAIT_MS = 16
 

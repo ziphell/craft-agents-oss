@@ -479,6 +479,8 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
     return {
       imageBuffer: buffer,
       imageFormat: wire.imageFormat,
+      imageWidth: wire.imageWidth,
+      imageHeight: wire.imageHeight,
       metadata: wire.metadata,
     }
   }

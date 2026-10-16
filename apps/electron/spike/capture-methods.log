@@ -1,80 +1,120 @@
-
-SPIKE_STEP 09:47:22.733 window visible
-SPIKE_STEP 09:47:22.766 load visible • covered tab
-SPIKE_STEP 09:47:22.777 load visible • tab on top
-SPIKE_STEP 09:47:22.847 loaded visible • covered tab
-SPIKE_STEP 09:47:22.861 loaded visible • tab on top
-SPIKE_STEP 09:47:23.191 window hidden-after-show
-SPIKE_STEP 09:47:23.222 load hidden-after-show • covered tab
-SPIKE_STEP 09:47:23.228 load hidden-after-show • tab on top
-SPIKE_STEP 09:47:23.290 loaded hidden-after-show • covered tab
-SPIKE_STEP 09:47:23.300 loaded hidden-after-show • tab on top
-SPIKE_STEP 09:47:23.626 window never-shown
-SPIKE_STEP 09:47:23.636 load never-shown • covered tab
-SPIKE_STEP 09:47:23.641 load never-shown • tab on top
-SPIKE_STEP 09:47:23.701 loaded never-shown • covered tab
-SPIKE_STEP 09:47:23.706 loaded never-shown • tab on top
-SPIKE_STEP 09:47:24.021 measure visible • covered
-SPIKE_STEP 09:47:24.026 → capturePage-hidden
-SPIKE_STEP 09:47:24.057 → capturePage-plain
-SPIKE_STEP 09:47:24.089 → cdp-screenshot
-SPIKE_STEP 09:47:26.600 → cdp-screenshot
-SPIKE_STEP 09:47:26.713 → capturePage-hidden
-SPIKE_STEP 09:47:26.912 → capturePage-hidden
-SPIKE_STEP 09:47:26.946 measure visible • on-top
-SPIKE_STEP 09:47:26.948 → capturePage-hidden
-SPIKE_STEP 09:47:26.960 → capturePage-plain
-SPIKE_STEP 09:47:26.991 → cdp-screenshot
-SPIKE_STEP 09:47:27.147 measure hidden-after-show • covered
-SPIKE_STEP 09:47:27.151 → capturePage-hidden
-SPIKE_STEP 09:47:29.657 → capturePage-plain
-SPIKE_STEP 09:47:32.166 → cdp-screenshot
-SPIKE_STEP 09:47:34.879 → cdp-screenshot
-SPIKE_STEP 09:47:34.995 → capturePage-hidden
-SPIKE_STEP 09:47:35.202 → capturePage-hidden
-SPIKE_STEP 09:47:37.709 measure hidden-after-show • on-top
-SPIKE_STEP 09:47:37.712 → capturePage-hidden
-SPIKE_STEP 09:47:40.222 → capturePage-plain
-SPIKE_STEP 09:47:42.725 → cdp-screenshot
-SPIKE_STEP 09:47:45.235 measure never-shown • covered
-SPIKE_STEP 09:47:45.237 → capturePage-hidden
-SPIKE_STEP 09:47:45.237 → capturePage-plain
-SPIKE_STEP 09:47:45.237 → cdp-screenshot
-SPIKE_STEP 09:47:47.940 → cdp-screenshot
-SPIKE_STEP 09:47:50.451 → capturePage-hidden
-SPIKE_STEP 09:47:50.668 → capturePage-hidden
-SPIKE_STEP 09:47:53.180 measure never-shown • on-top
-SPIKE_STEP 09:47:53.190 → capturePage-hidden
-SPIKE_STEP 09:47:55.696 → capturePage-plain
-SPIKE_STEP 09:47:58.205 → cdp-screenshot
-SPIKE_JSON [{"state":"visible","windowVisible":true},{"state":"hidden-after-show","windowVisible":false},{"state":"never-shown","windowVisible":false}]
-SPIKE_JSON [{"scenario":"visible","tab":"covered","methods":[{"method":"capturePage-hidden","ms":30,"size":"1200x840","bgra":[0,0,255,255],"verdict":"own-pixels"},{"method":"capturePage-plain","ms":30,"size":"1200x840","bgra":[0,0,255,255],"verdict":"own-pixels"},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2511}],"probe":{"label":"visible • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","ms":113,"size":"1200x840","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterReveal":{"method":"capturePage-hidden","ms":12,"size":"1200x840","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterRaise":{"method":"capturePage-hidden","ms":30,"size":"1200x840","bgra":[0,0,255,255],"verdict":"own-pixels"}},{"scenario":"visible","tab":"on-top","methods":[{"method":"capturePage-hidden","ms":10,"size":"1200x840","bgra":[255,0,0,255],"verdict":"own-pixels"},{"method":"capturePage-plain","ms":29,"size":"1200x840","bgra":[255,0,0,255],"verdict":"own-pixels"},{"method":"cdp-screenshot","ms":155,"size":"1200x840","bgra":[255,0,0,255],"verdict":"own-pixels"}],"probe":{"label":"visible • tab on top","visibility":"visible","innerWidth":600,"innerHeight":420},"isPainting":false},{"scenario":"hidden-after-show","tab":"covered","methods":[{"method":"capturePage-hidden","verdict":"TIMED-OUT","ms":2506},{"method":"capturePage-plain","verdict":"TIMED-OUT","ms":2509},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2512}],"probe":{"label":"hidden-after-show • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","ms":115,"size":"1200x840","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterReveal":{"method":"capturePage-hidden","ms":11,"size":"1200x840","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterRaise":{"method":"capturePage-hidden","verdict":"TIMED-OUT","ms":2507}},{"scenario":"hidden-after-show","tab":"on-top","methods":[{"method":"capturePage-hidden","verdict":"TIMED-OUT","ms":2510},{"method":"capturePage-plain","verdict":"TIMED-OUT","ms":2503},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2510}],"probe":{"label":"hidden-after-show • tab on top","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false},{"scenario":"never-shown","tab":"covered","methods":[{"method":"capturePage-hidden","verdict":"error","ms":0,"detail":"Current display surface not available for capture"},{"method":"capturePage-plain","verdict":"error","ms":0,"detail":"Current display surface not available for capture"},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2516}],"probe":{"label":"never-shown • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2511},"afterReveal":{"method":"capturePage-hidden","ms":18,"size":"1200x840","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterRaise":{"method":"capturePage-hidden","verdict":"TIMED-OUT","ms":2512}},{"scenario":"never-shown","tab":"on-top","methods":[{"method":"capturePage-hidden","verdict":"TIMED-OUT","ms":2506},{"method":"capturePage-plain","verdict":"TIMED-OUT","ms":2509},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2522}],"probe":{"label":"never-shown • tab on top","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false}]
+SPIKE_STEP 09:06:07.967 window visible
+SPIKE_STEP 09:06:07.998 load visible • covered tab
+SPIKE_STEP 09:06:08.006 load visible • tab on top
+SPIKE_STEP 09:06:08.073 loaded visible • covered tab
+SPIKE_STEP 09:06:08.077 loaded visible • tab on top
+SPIKE_STEP 09:06:08.396 window minimized
+SPIKE_STEP 09:06:08.409 load minimized • covered tab
+SPIKE_STEP 09:06:08.414 load minimized • tab on top
+SPIKE_STEP 09:06:08.473 loaded minimized • covered tab
+SPIKE_STEP 09:06:08.474 loaded minimized • tab on top
+SPIKE_STEP 09:06:09.112 window hidden-after-show
+SPIKE_STEP 09:06:09.124 load hidden-after-show • covered tab
+SPIKE_STEP 09:06:09.128 load hidden-after-show • tab on top
+SPIKE_STEP 09:06:09.186 loaded hidden-after-show • covered tab
+SPIKE_STEP 09:06:09.189 loaded hidden-after-show • tab on top
+SPIKE_STEP 09:06:09.511 window never-shown
+SPIKE_STEP 09:06:09.533 load never-shown • covered tab
+SPIKE_STEP 09:06:09.539 load never-shown • tab on top
+SPIKE_STEP 09:06:09.595 loaded never-shown • covered tab
+SPIKE_STEP 09:06:09.602 loaded never-shown • tab on top
+SPIKE_STEP 09:06:09.910 measure visible • covered
+SPIKE_STEP 09:06:09.911 measure visible • covered
+SPIKE_STEP 09:06:09.916 → capturePage-hidden
+SPIKE_STEP 09:06:09.928 → capturePage-plain
+SPIKE_STEP 09:06:09.959 → cdp-screenshot
+SPIKE_STEP 09:06:12.464 → cdp-screenshot
+SPIKE_STEP 09:06:12.554 → capturePage-hidden
+SPIKE_STEP 09:06:12.775 → capturePage-hidden
+SPIKE_ROW {"scenario":"visible","tab":"covered","methods":[{"method":"capturePage-hidden","ms":11,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},{"method":"capturePage-plain","ms":31,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2505}],"probe":{"label":"visible • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","ms":90,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterReveal":{"method":"capturePage-hidden","ms":32,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterRaise":{"method":"capturePage-hidden","ms":29,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"}}
+SPIKE_STEP 09:06:12.807 measure visible • on-top
+SPIKE_STEP 09:06:12.807 measure visible • on-top
+SPIKE_STEP 09:06:12.808 → capturePage-hidden
+SPIKE_STEP 09:06:12.835 → capturePage-plain
+SPIKE_STEP 09:06:12.868 → cdp-screenshot
+SPIKE_ROW {"scenario":"visible","tab":"on-top","methods":[{"method":"capturePage-hidden","ms":27,"size":"600x420","bgra":[255,0,0,255],"verdict":"own-pixels"},{"method":"capturePage-plain","ms":33,"size":"600x420","bgra":[255,0,0,255],"verdict":"own-pixels"},{"method":"cdp-screenshot","ms":88,"size":"600x420","bgra":[255,0,0,255],"verdict":"own-pixels"}],"probe":{"label":"visible • tab on top","visibility":"visible","innerWidth":600,"innerHeight":420},"isPainting":false}
+SPIKE_STEP 09:06:12.956 measure minimized • covered
+SPIKE_STEP 09:06:12.957 measure minimized • covered
+SPIKE_STEP 09:06:12.961 → capturePage-hidden
+SPIKE_STEP 09:06:12.975 → capturePage-plain
+SPIKE_STEP 09:06:12.994 → cdp-screenshot
+SPIKE_STEP 09:06:15.710 → cdp-screenshot
+SPIKE_STEP 09:06:18.226 → capturePage-hidden
+SPIKE_STEP 09:06:18.460 → capturePage-hidden
+SPIKE_ROW {"scenario":"minimized","tab":"covered","methods":[{"method":"capturePage-hidden","ms":14,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},{"method":"capturePage-plain","ms":18,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2513}],"probe":{"label":"minimized • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2516},"afterReveal":{"method":"capturePage-hidden","ms":19,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterRaise":{"method":"capturePage-hidden","ms":29,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"}}
+SPIKE_STEP 09:06:18.491 measure minimized • on-top
+SPIKE_STEP 09:06:18.492 measure minimized • on-top
+SPIKE_STEP 09:06:18.500 → capturePage-hidden
+SPIKE_STEP 09:06:18.518 → capturePage-plain
+SPIKE_STEP 09:06:18.556 → cdp-screenshot
+SPIKE_ROW {"scenario":"minimized","tab":"on-top","methods":[{"method":"capturePage-hidden","ms":18,"size":"600x420","bgra":[255,0,0,255],"verdict":"own-pixels"},{"method":"capturePage-plain","ms":38,"size":"600x420","bgra":[255,0,0,255],"verdict":"own-pixels"},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2514}],"probe":{"label":"minimized • tab on top","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false}
+SPIKE_STEP 09:06:21.071 measure hidden-after-show • covered
+SPIKE_STEP 09:06:21.071 measure hidden-after-show • covered
+SPIKE_STEP 09:06:21.073 → capturePage-hidden
+SPIKE_STEP 09:06:23.575 → capturePage-plain
+SPIKE_STEP 09:06:26.092 → cdp-screenshot
+SPIKE_STEP 09:06:28.783 → cdp-screenshot
+SPIKE_STEP 09:06:28.853 → capturePage-hidden
+SPIKE_STEP 09:06:29.047 → capturePage-hidden
+SPIKE_ROW {"scenario":"hidden-after-show","tab":"covered","methods":[{"method":"capturePage-hidden","verdict":"TIMED-OUT","ms":2502},{"method":"capturePage-plain","verdict":"TIMED-OUT","ms":2517},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2504}],"probe":{"label":"hidden-after-show • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","ms":70,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterReveal":{"method":"capturePage-hidden","ms":7,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterRaise":{"method":"capturePage-hidden","verdict":"TIMED-OUT","ms":2508}}
+SPIKE_STEP 09:06:31.556 measure hidden-after-show • on-top
+SPIKE_STEP 09:06:31.556 measure hidden-after-show • on-top
+SPIKE_STEP 09:06:31.560 → capturePage-hidden
+SPIKE_STEP 09:06:34.075 → capturePage-plain
+SPIKE_STEP 09:06:36.583 → cdp-screenshot
+SPIKE_ROW {"scenario":"hidden-after-show","tab":"on-top","methods":[{"method":"capturePage-hidden","verdict":"TIMED-OUT","ms":2515},{"method":"capturePage-plain","verdict":"TIMED-OUT","ms":2508},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2512}],"probe":{"label":"hidden-after-show • tab on top","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false}
+SPIKE_STEP 09:06:39.095 measure never-shown • covered
+SPIKE_STEP 09:06:39.095 measure never-shown • covered
+SPIKE_STEP 09:06:39.097 → capturePage-hidden
+SPIKE_STEP 09:06:39.097 → capturePage-plain
+SPIKE_STEP 09:06:39.097 → cdp-screenshot
+SPIKE_STEP 09:06:41.800 → cdp-screenshot
+SPIKE_STEP 09:06:41.868 → capturePage-hidden
+SPIKE_STEP 09:06:42.065 → capturePage-hidden
+SPIKE_ROW {"scenario":"never-shown","tab":"covered","methods":[{"method":"capturePage-hidden","verdict":"error","ms":0,"detail":"Current display surface not available for capture"},{"method":"capturePage-plain","verdict":"error","ms":0,"detail":"Current display surface not available for capture"},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2515}],"probe":{"label":"never-shown • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","ms":67,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterReveal":{"method":"capturePage-hidden","ms":9,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterRaise":{"method":"capturePage-hidden","verdict":"TIMED-OUT","ms":2514}}
+SPIKE_STEP 09:06:44.580 measure never-shown • on-top
+SPIKE_STEP 09:06:44.580 measure never-shown • on-top
+SPIKE_STEP 09:06:44.581 → capturePage-hidden
+SPIKE_STEP 09:06:44.582 → capturePage-plain
+SPIKE_STEP 09:06:44.582 → cdp-screenshot
+SPIKE_ROW {"scenario":"never-shown","tab":"on-top","methods":[{"method":"capturePage-hidden","verdict":"error","ms":1,"detail":"Current display surface not available for capture"},{"method":"capturePage-plain","verdict":"error","ms":0,"detail":"Current display surface not available for capture"},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2508}],"probe":{"label":"never-shown • tab on top","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false}
+SPIKE_JSON [{"state":"visible","windowVisible":true},{"state":"minimized","windowVisible":false},{"state":"hidden-after-show","windowVisible":false},{"state":"never-shown","windowVisible":false}]
+SPIKE_JSON [{"scenario":"visible","tab":"covered","methods":[{"method":"capturePage-hidden","ms":11,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},{"method":"capturePage-plain","ms":31,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2505}],"probe":{"label":"visible • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","ms":90,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterReveal":{"method":"capturePage-hidden","ms":32,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterRaise":{"method":"capturePage-hidden","ms":29,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"}},{"scenario":"visible","tab":"on-top","methods":[{"method":"capturePage-hidden","ms":27,"size":"600x420","bgra":[255,0,0,255],"verdict":"own-pixels"},{"method":"capturePage-plain","ms":33,"size":"600x420","bgra":[255,0,0,255],"verdict":"own-pixels"},{"method":"cdp-screenshot","ms":88,"size":"600x420","bgra":[255,0,0,255],"verdict":"own-pixels"}],"probe":{"label":"visible • tab on top","visibility":"visible","innerWidth":600,"innerHeight":420},"isPainting":false},{"scenario":"minimized","tab":"covered","methods":[{"method":"capturePage-hidden","ms":14,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},{"method":"capturePage-plain","ms":18,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2513}],"probe":{"label":"minimized • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2516},"afterReveal":{"method":"capturePage-hidden","ms":19,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterRaise":{"method":"capturePage-hidden","ms":29,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"}},{"scenario":"minimized","tab":"on-top","methods":[{"method":"capturePage-hidden","ms":18,"size":"600x420","bgra":[255,0,0,255],"verdict":"own-pixels"},{"method":"capturePage-plain","ms":38,"size":"600x420","bgra":[255,0,0,255],"verdict":"own-pixels"},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2514}],"probe":{"label":"minimized • tab on top","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false},{"scenario":"hidden-after-show","tab":"covered","methods":[{"method":"capturePage-hidden","verdict":"TIMED-OUT","ms":2502},{"method":"capturePage-plain","verdict":"TIMED-OUT","ms":2517},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2504}],"probe":{"label":"hidden-after-show • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","ms":70,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterReveal":{"method":"capturePage-hidden","ms":7,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterRaise":{"method":"capturePage-hidden","verdict":"TIMED-OUT","ms":2508}},{"scenario":"hidden-after-show","tab":"on-top","methods":[{"method":"capturePage-hidden","verdict":"TIMED-OUT","ms":2515},{"method":"capturePage-plain","verdict":"TIMED-OUT","ms":2508},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2512}],"probe":{"label":"hidden-after-show • tab on top","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false},{"scenario":"never-shown","tab":"covered","methods":[{"method":"capturePage-hidden","verdict":"error","ms":0,"detail":"Current display surface not available for capture"},{"method":"capturePage-plain","verdict":"error","ms":0,"detail":"Current display surface not available for capture"},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2515}],"probe":{"label":"never-shown • covered tab","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false,"afterRevealCdp":{"method":"cdp-screenshot","ms":67,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterReveal":{"method":"capturePage-hidden","ms":9,"size":"600x420","bgra":[0,0,255,255],"verdict":"own-pixels"},"afterRaise":{"method":"capturePage-hidden","verdict":"TIMED-OUT","ms":2514}},{"scenario":"never-shown","tab":"on-top","methods":[{"method":"capturePage-hidden","verdict":"error","ms":1,"detail":"Current display surface not available for capture"},{"method":"capturePage-plain","verdict":"error","ms":0,"detail":"Current display surface not available for capture"},{"method":"cdp-screenshot","verdict":"TIMED-OUT","ms":2508}],"probe":{"label":"never-shown • tab on top","visibility":"hidden","innerWidth":600,"innerHeight":420},"isPainting":false}]
 
 scenario            tab      vis      painting  method                                 verdict        time
-visible             covered  hidden   false     capturePage-hidden                     own-pixels       30ms [0,0,255,255] 1200x840
-visible             covered  hidden   false     capturePage-plain                      own-pixels       30ms [0,0,255,255] 1200x840
-visible             covered  hidden   false     cdp-screenshot                         TIMED-OUT      2511ms
-visible             covered  hidden   false     after reveal                           own-pixels       12ms [0,0,255,255] 1200x840
-visible             covered  hidden   false     after reveal (cdp)                     own-pixels      113ms [0,0,255,255] 1200x840
-visible             covered  hidden   false     raised to top                          own-pixels       30ms [0,0,255,255] 1200x840
-visible             on-top   visible  false     capturePage-hidden                     own-pixels       10ms [255,0,0,255] 1200x840
-visible             on-top   visible  false     capturePage-plain                      own-pixels       29ms [255,0,0,255] 1200x840
-visible             on-top   visible  false     cdp-screenshot                         own-pixels      155ms [255,0,0,255] 1200x840
-hidden-after-show   covered  hidden   false     capturePage-hidden                     TIMED-OUT      2506ms
-hidden-after-show   covered  hidden   false     capturePage-plain                      TIMED-OUT      2509ms
-hidden-after-show   covered  hidden   false     cdp-screenshot                         TIMED-OUT      2512ms
-hidden-after-show   covered  hidden   false     after reveal                           own-pixels       11ms [0,0,255,255] 1200x840
-hidden-after-show   covered  hidden   false     after reveal (cdp)                     own-pixels      115ms [0,0,255,255] 1200x840
-hidden-after-show   covered  hidden   false     raised to top                          TIMED-OUT      2507ms
-hidden-after-show   on-top   hidden   false     capturePage-hidden                     TIMED-OUT      2510ms
-hidden-after-show   on-top   hidden   false     capturePage-plain                      TIMED-OUT      2503ms
-hidden-after-show   on-top   hidden   false     cdp-screenshot                         TIMED-OUT      2510ms
+visible             covered  hidden   false     capturePage-hidden                     own-pixels       11ms [0,0,255,255] 600x420
+visible             covered  hidden   false     capturePage-plain                      own-pixels       31ms [0,0,255,255] 600x420
+visible             covered  hidden   false     cdp-screenshot                         TIMED-OUT      2505ms
+visible             covered  hidden   false     after reveal                           own-pixels       32ms [0,0,255,255] 600x420
+visible             covered  hidden   false     after reveal (cdp)                     own-pixels       90ms [0,0,255,255] 600x420
+visible             covered  hidden   false     raised to top                          own-pixels       29ms [0,0,255,255] 600x420
+visible             on-top   visible  false     capturePage-hidden                     own-pixels       27ms [255,0,0,255] 600x420
+visible             on-top   visible  false     capturePage-plain                      own-pixels       33ms [255,0,0,255] 600x420
+visible             on-top   visible  false     cdp-screenshot                         own-pixels       88ms [255,0,0,255] 600x420
+minimized           covered  hidden   false     capturePage-hidden                     own-pixels       14ms [0,0,255,255] 600x420
+minimized           covered  hidden   false     capturePage-plain                      own-pixels       18ms [0,0,255,255] 600x420
+minimized           covered  hidden   false     cdp-screenshot                         TIMED-OUT      2513ms
+minimized           covered  hidden   false     after reveal                           own-pixels       19ms [0,0,255,255] 600x420
+minimized           covered  hidden   false     after reveal (cdp)                     TIMED-OUT      2516ms
+minimized           covered  hidden   false     raised to top                          own-pixels       29ms [0,0,255,255] 600x420
+minimized           on-top   hidden   false     capturePage-hidden                     own-pixels       18ms [255,0,0,255] 600x420
+minimized           on-top   hidden   false     capturePage-plain                      own-pixels       38ms [255,0,0,255] 600x420
+minimized           on-top   hidden   false     cdp-screenshot                         TIMED-OUT      2514ms
+hidden-after-show   covered  hidden   false     capturePage-hidden                     TIMED-OUT      2502ms
+hidden-after-show   covered  hidden   false     capturePage-plain                      TIMED-OUT      2517ms
+hidden-after-show   covered  hidden   false     cdp-screenshot                         TIMED-OUT      2504ms
+hidden-after-show   covered  hidden   false     after reveal                           own-pixels        7ms [0,0,255,255] 600x420
+hidden-after-show   covered  hidden   false     after reveal (cdp)                     own-pixels       70ms [0,0,255,255] 600x420
+hidden-after-show   covered  hidden   false     raised to top                          TIMED-OUT      2508ms
+hidden-after-show   on-top   hidden   false     capturePage-hidden                     TIMED-OUT      2515ms
+hidden-after-show   on-top   hidden   false     capturePage-plain                      TIMED-OUT      2508ms
+hidden-after-show   on-top   hidden   false     cdp-screenshot                         TIMED-OUT      2512ms
 never-shown         covered  hidden   false     capturePage-hidden                     error             0ms Current display surface not available for capture
 never-shown         covered  hidden   false     capturePage-plain                      error             0ms Current display surface not available for capture
-never-shown         covered  hidden   false     cdp-screenshot                         TIMED-OUT      2516ms
-never-shown         covered  hidden   false     after reveal                           own-pixels       18ms [0,0,255,255] 1200x840
-never-shown         covered  hidden   false     after reveal (cdp)                     TIMED-OUT      2511ms
-never-shown         covered  hidden   false     raised to top                          TIMED-OUT      2512ms
-never-shown         on-top   hidden   false     capturePage-hidden                     TIMED-OUT      2506ms
-never-shown         on-top   hidden   false     capturePage-plain                      TIMED-OUT      2509ms
-never-shown         on-top   hidden   false     cdp-screenshot                         TIMED-OUT      2522ms
+never-shown         covered  hidden   false     cdp-screenshot                         TIMED-OUT      2515ms
+never-shown         covered  hidden   false     after reveal                           own-pixels        9ms [0,0,255,255] 600x420
+never-shown         covered  hidden   false     after reveal (cdp)                     own-pixels       67ms [0,0,255,255] 600x420
+never-shown         covered  hidden   false     raised to top                          TIMED-OUT      2514ms
+never-shown         on-top   hidden   false     capturePage-hidden                     error             1ms Current display surface not available for capture
+never-shown         on-top   hidden   false     capturePage-plain                      error             0ms Current display surface not available for capture
+never-shown         on-top   hidden   false     cdp-screenshot                         TIMED-OUT      2508ms

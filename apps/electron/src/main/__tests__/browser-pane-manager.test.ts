@@ -1787,41 +1787,48 @@ describe('BrowserPaneManager', () => {
     return image
   }
 
-  it('takes a hidden window\'s shot from a view parked in a window nobody can see', async () => {
+  it('takes a hidden window\'s shot from the parking window the tab already lives in', async () => {
     manager.createInstance('screenshot-parked-hidden')
     const instance = (manager as any).instances.get('screenshot-parked-hidden')
-    // On Windows a hidden window answers for nothing, so the shot goes straight to the parked view —
-    // and the one that keeps the tests the same everywhere is that answer, not the host's platform.
+    // On Windows a hidden window answers for nothing — and that is exactly where the tab lives: a tab
+    // whose window cannot hand out a surface belongs to the parking window (`tabHome`), so the shot is
+    // taken where it is, and nothing is moved for it. The one constant the tests keep everywhere is
+    // this answer, not the host's platform.
     ;(manager as any).canCaptureHiddenWindows = false
-    // The window is not on screen, so nothing inside it has a surface: the shot comes from the parked
-    // view, which is the only place this tab can be read at all.
     tab(instance).tabView.webContents.capturePage = mock(async () => answerWith('parked-png'))
 
     const windowsBefore = createdWindows.length
     const result = await manager.screenshot('screenshot-parked-hidden', { includeMetadata: true })
 
     expect(result.imageBuffer.toString()).toBe('parked-png')
-    expect(result.metadata?.warnings?.some((w: string) => w.includes('parked that tab in a window nobody can see'))).toBe(true)
-    // The window the person owns was neither shown nor moved: the parking window is the one that was.
+    // Nothing was parked *for the shot*: it was already there.
+    expect(result.metadata?.warnings?.some((w: string) => w.includes('parked that tab in the parking window'))).toBeFalsy()
+
+    // No window was made for the shot either: the parking window every parked tab lives in is the one
+    // that was used — kept up, not made and thrown away per shot.
+    expect(createdWindows.length).toBe(windowsBefore)
+    const parking = createdWindows[createdWindows.length - 1]
+    expect(instance.parkingWindow).toBeTruthy()
+    expect(parking.contentView.children).toContain(tab(instance).tabView)
+    expect(parking.showInactive).toHaveBeenCalled()
+    expect(parking.destroy).not.toHaveBeenCalled()
+
+    // The window the person owns was neither shown nor moved, and it never held the page.
     expect(instance.window.showInactive).not.toHaveBeenCalled()
     expect(instance.window.setPosition).not.toHaveBeenCalled()
     expect(instance.isVisible).toBe(false)
-
-    expect(createdWindows.length).toBe(windowsBefore + 1)
-    const parking = createdWindows[createdWindows.length - 1]
-    expect(parking.contentView.addChildView.mock.calls.some(([view]: any[]) => view === tab(instance).tabView)).toBe(true)
-    expect(parking.showInactive).toHaveBeenCalled()
-    expect(parking.destroy).toHaveBeenCalled()
-    // And the tab's view is back in the window it belongs to.
-    expect(instance.window.contentView.children).toContain(tab(instance).tabView)
+    expect(instance.window.contentView.children).not.toContain(tab(instance).tabView)
   })
 
   it('takes a hidden window\'s shot where it is, where that is known to answer', async () => {
     manager.createInstance('screenshot-hidden-in-place')
     const instance = (manager as any).instances.get('screenshot-hidden-in-place')
-    // macOS answers for a hidden window (Electron's own behaviour), so it gets the first go and no
-    // parking window is made at all.
+    // macOS answers for a hidden window (Electron's own behaviour) — for a window that **has been on
+    // a display**, where the surface survives the hiding. That is the state the platform claim is
+    // about (`hasBeenShown`), and it is the only one where a hidden window is still a home.
     ;(manager as any).canCaptureHiddenWindows = true
+    instance.window.show()
+    instance.window.hide()
     tab(instance).tabView.webContents.capturePage = mock(async () => answerWith('in-place-png'))
 
     const windowsBefore = createdWindows.length
@@ -1831,7 +1838,25 @@ describe('BrowserPaneManager', () => {
     expect(createdWindows.length).toBe(windowsBefore)
   })
 
-  it('shoots a tab that has never been composited from a parked view, and puts it straight back', async () => {
+  it('parks the tab of a window that has never been on a display, even where hidden windows answer', async () => {
+    manager.createInstance('screenshot-never-shown')
+    const instance = (manager as any).instances.get('screenshot-never-shown')
+    // The agent's ordinary case: born hidden, never shown. That is **not** `hidden-after-show` — a
+    // window that has never been on a display is composited nowhere, and a capture of it refuses at
+    // once ("Current display surface not available for capture", `capture-methods.cjs`), so the
+    // platform's answer about hidden windows does not reach it. Its tab lives in the parking window,
+    // which is the window that *is* shown.
+    ;(manager as any).canCaptureHiddenWindows = true
+    tab(instance).tabView.webContents.capturePage = mock(async () => answerWith('never-shown-png'))
+
+    const result = await manager.screenshot('screenshot-never-shown')
+
+    expect(result.imageBuffer.toString()).toBe('never-shown-png')
+    expect(instance.parkingWindow.contentView.children).toContain(tab(instance).tabView)
+    expect(instance.window.contentView.children).not.toContain(tab(instance).tabView)
+  })
+
+  it('shoots a tab that has never been composited from the parking window, and puts it straight back', async () => {
     manager.createInstance('screenshot-first-frame')
     const instance = (manager as any).instances.get('screenshot-first-frame')
     // The window's own tab has an address — written by hand because a mock tab never hears the
@@ -1839,7 +1864,7 @@ describe('BrowserPaneManager', () => {
     instance.tabs[0].currentUrl = 'https://front.example.com/'
     const onScreen = instance.tabs[0]
     // The agent's tab: opened behind the person's, so Chromium has never composited it and it has no
-    // surface to copy — the case the parked view exists for (`captureWhileParked`).
+    // surface to copy — the case the parking window's shot exists for.
     const behindId = manager.createTab('screenshot-first-frame', { url: 'https://behind.example.com/', activate: false })
     const behind = instance.tabs.find((candidate: any) => candidate.id === behindId)
 
@@ -1861,15 +1886,14 @@ describe('BrowserPaneManager', () => {
     const result = await manager.screenshot('screenshot-first-frame', { includeMetadata: true }, behindId)
 
     expect(result.imageBuffer.toString()).toBe('first-frame-png')
-    expect(result.metadata?.warnings?.some((w: string) => w.includes('parked that tab in a window nobody can see'))).toBe(true)
+    expect(result.metadata?.warnings?.some((w: string) => w.includes('parked that tab in the parking window'))).toBe(true)
     expect(captureCalls).toBe(2)
 
-    // A window nobody can see was made for it, the view was handed to it, and it is gone again.
-    expect(createdWindows.length).toBe(windowsBefore + 1)
-    const parking = createdWindows[createdWindows.length - 1]
-    expect(parking.contentView.addChildView.mock.calls.some(([view]: any[]) => view === behind.tabView)).toBe(true)
-    expect(parking.showInactive).toHaveBeenCalled()
-    expect(parking.destroy).toHaveBeenCalled()
+    // No window was built for the shot: this tab already lives in the parking window, so nothing had
+    // to be made — its view was brought to the top of that window instead.
+    expect(createdWindows.length).toBe(windowsBefore)
+    const resident = instance.parkingWindow
+    expect(resident.contentView.addChildView.mock.calls.some(([view]: any[]) => view === behind.tabView)).toBe(true)
 
     // The person's window: unchanged, their tab still on screen — and **only** theirs in it. The tab
     // that is not on screen lives in the parking window, so the window someone is looking at never
@@ -1884,10 +1908,9 @@ describe('BrowserPaneManager', () => {
     // not on screen, so the person dragging the window to 1000 while it was away does not reach it —
     // the tab on screen is the one that follows the window (`layoutTabView`), while every other tab
     // is parked at the size it had when it was last on screen (`parkTab`).
-    const resident = instance.parkingWindow
     expect(resident.contentView.children).toContain(behind.tabView)
-    expect(behind.tabView.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 1024, height: 845 })
-    expect(behind.tabView.getBounds()).toEqual({ x: 0, y: 0, width: 1024, height: 845 })
+    expect(behind.tabView.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 1100, height: 845 })
+    expect(behind.tabView.getBounds()).toEqual({ x: 0, y: 0, width: 1100, height: 845 })
   })
 
   it('treats a capture that never comes back as a miss, and the parked view answers instead', async () => {
@@ -1920,7 +1943,7 @@ describe('BrowserPaneManager', () => {
     tab(instance).tabView.webContents.capturePage = mock(() => new Promise(() => {}))
 
     await expect(manager.screenshot('screenshot-capture-never-answers')).rejects.toThrow(
-      'the page had no display surface to copy, even from a view of its own',
+      'the page had no display surface to copy, even parked in the parking window',
     )
   })
 
@@ -2002,9 +2025,12 @@ describe('BrowserPaneManager', () => {
 
   it('resizes browser window viewport and returns effective applied size', () => {
     manager.createInstance('resize-1')
+    const instance = (manager as any).instances.get('resize-1')
+    // The person's window is up (`tabHome`), which is the only state a viewport resize is about: the
+    // page is in the window, so giving it a size means sizing the window.
+    instance.window.show()
     const resized = manager.resizeViewport('resize-1', 1280, 720)
 
-    const instance = (manager as any).instances.get('resize-1')
     // 720 of page + everything the page does not get: the 48 address bar, the 200 tab rail, the
     // 1px the page keeps against each of them for the line's top and left edges, and 6px on the
     // right and below (`pagePanelInsets`).
@@ -2016,6 +2042,7 @@ describe('BrowserPaneManager', () => {
 
   it('returns effective viewport size when min window constraints apply', () => {
     manager.createInstance('resize-min')
+    ;(manager as any).instances.get('resize-min').window.show()
     const resized = manager.resizeViewport('resize-min', 200, 200)
 
     // BrowserWindow minWidth/minHeight is 700x500, and the chrome plus the panel's gutter takes
@@ -2033,6 +2060,8 @@ describe('BrowserPaneManager', () => {
   it('lays the page out on the size the window ends up with, not the last one it reported', () => {
     manager.createInstance('resize-by-hand')
     const instance = (manager as any).instances.get('resize-by-hand')
+    // The person is using the window, so the page is in it (`tabHome`) and the drag is about it.
+    instance.window.show()
     const tabView = tab(instance).tabView
     tabView.setBounds.mockClear()
 
@@ -2097,11 +2126,15 @@ describe('BrowserPaneManager', () => {
   it('lays nothing out from a window that has no size, and lays out again when it comes back', () => {
     manager.createInstance('minimized')
     const instance = (manager as any).instances.get('minimized')
+    // Minimizing is something a person does to a window they are using: it is shown, so the page is
+    // in it (`tabHome`), and what this test is about is what a minimized window may and may not be
+    // read for.
+    instance.window.show()
     instance.tabs[0].currentUrl = 'https://front.example.com/'
     const onScreen = instance.tabs[0]
     manager.createTab('minimized', { url: 'https://behind.example.com/', activate: false })
     const behind = instance.tabs[1]
-    expect(onScreen.tabView.getBounds()).toEqual({ x: 201, y: 49, width: 1024, height: 845 })
+    expect(onScreen.tabView.getBounds()).toEqual({ x: 201, y: 49, width: 1100, height: 845 })
 
     // Minimized — no size at all — and a layout asked for anyway, which is what the window's own
     // `resize` does on the way down.
@@ -2113,7 +2146,7 @@ describe('BrowserPaneManager', () => {
 
     // The page is left on the size it had, rather than on the size the window never had…
     expect(onScreen.tabView.setBounds).not.toHaveBeenCalled()
-    expect(onScreen.tabView.getBounds()).toEqual({ x: 201, y: 49, width: 1024, height: 845 })
+    expect(onScreen.tabView.getBounds()).toEqual({ x: 201, y: 49, width: 1100, height: 845 })
     // …and the tab that is not on screen is not touched either: it lives in the parking window, at
     // its own viewport.
     expect(behind.tabView.setBounds).not.toHaveBeenCalled()
@@ -2229,13 +2262,16 @@ describe('BrowserPaneManager', () => {
   it('keeps a tab that is not on screen out of the window, at the size it was opened at', () => {
     manager.createInstance('resize-frozen')
     const instance = (manager as any).instances.get('resize-frozen')
+    // The person's window is up: its own tab is in it (`tabHome`), and the one opened behind belongs
+    // to the parking window.
+    instance.window.show()
     instance.tabs[0].currentUrl = 'https://front.example.com/'
     const onScreen = instance.tabs[0]
     const behindId = manager.createTab('resize-frozen', { url: 'https://behind.example.com/', activate: false })
     const behind = instance.tabs.find((tab: any) => tab.id === behindId)
 
     // Born in the parking window, at the size the page area had then.
-    expect(behind.tabView.getBounds()).toEqual({ x: 0, y: 0, width: 1024, height: 845 })
+    expect(behind.tabView.getBounds()).toEqual({ x: 0, y: 0, width: 1100, height: 845 })
     expect(instance.parkingWindow.contentView.children).toContain(behind.tabView)
     expect(instance.window.contentView.children).not.toContain(behind.tabView)
     behind.tabView.setBounds.mockClear()
@@ -2248,8 +2284,8 @@ describe('BrowserPaneManager', () => {
     // …and the one that is not on screen is only ever told the size it already has: it is parked
     // again at the very viewport it was given, so the page is not laid out a second time, and it is
     // never given the window's area while it is not showing.
-    expect(behind.tabView.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 1024, height: 845 })
-    expect(behind.tabView.getBounds()).toEqual({ x: 0, y: 0, width: 1024, height: 845 })
+    expect(behind.tabView.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 1100, height: 845 })
+    expect(behind.tabView.getBounds()).toEqual({ x: 0, y: 0, width: 1100, height: 845 })
     expect(instance.window.contentView.children).not.toContain(behind.tabView)
 
     // Coming forward is where it gets the window's size — and the window holds it from then on.
@@ -2270,6 +2306,9 @@ describe('BrowserPaneManager', () => {
   it("resizes the view of a tab that is not on screen, and leaves the person's window alone", () => {
     manager.createInstance('resize-behind')
     const instance = (manager as any).instances.get('resize-behind')
+    // The person's window is up, so the tab it is on lives in it and the one behind lives in the
+    // parking window — the split this test is about.
+    instance.window.show()
     // The window's own tab has to be in use first: opening a tab into the untouched tab of a fresh
     // window opens *into* it rather than beside it, and then there would be no tab behind to size.
     instance.tabs[0].currentUrl = 'https://front.example.com/'
@@ -2279,7 +2318,7 @@ describe('BrowserPaneManager', () => {
     instance.window.setContentSize.mockClear()
 
     // Born in the parking window, which is the size of what it holds.
-    expect(parking.getContentSize()).toEqual([1024, 845])
+    expect(parking.getContentSize()).toEqual([1100, 845])
 
     const resized = manager.resizeViewport('resize-behind', 1280, 720, behindId)
 
@@ -2344,7 +2383,7 @@ describe('BrowserPaneManager', () => {
       // the agent's markings are drawn for. The panel's own line is up either way (the page's
       // corner comes from the page's view, not from this document).
       expect(tab(instance).heldBy ?? null).toBeNull()
-      expect(instance.nativeOverlayView.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 48, width: 1031, height: 852 })
+      expect(instance.nativeOverlayView.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 48, width: 1107, height: 852 })
       expect(overlayScript(instance)).toContain('const locked = false;')
       expect(overlayScript(instance)).toContain('const shieldActive = false;')
       expect(instance.nativeOverlayView.webContents.focus).not.toHaveBeenCalled()
@@ -2384,7 +2423,7 @@ describe('BrowserPaneManager', () => {
       await settle()
 
       // The held tab is on screen: covered, locked, and the pointer says so.
-      expect(instance.nativeOverlayView.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 48, width: 1031, height: 852 })
+      expect(instance.nativeOverlayView.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 48, width: 1107, height: 852 })
       expect(overlayScript(instance)).toContain('const shieldActive = true;')
       expect(overlayScript(instance)).toContain('const locked = true;')
       expect(manager.listTabs('ac-lock').find((tab) => tab.id === heldId)?.lockedBy).toBe('sess-lock')
@@ -2395,7 +2434,7 @@ describe('BrowserPaneManager', () => {
       // A tab the person switched to is not the agent's to hold. The panel comes forward with it
       // — same overlay, sized to the tab area, saying this tab's state — but nothing on it is a
       // lock: no accent, no dim, no chip, and the page takes input.
-      expect(instance.nativeOverlayView.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 48, width: 1031, height: 852 })
+      expect(instance.nativeOverlayView.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 48, width: 1107, height: 852 })
       expect(overlayScript(instance)).toContain('const locked = false;')
       expect(overlayScript(instance)).toContain('const shieldActive = false;')
       // …while the tab it *is* working on stays locked in the model.
@@ -2422,7 +2461,7 @@ describe('BrowserPaneManager', () => {
 
       const instance = (manager as any).instances.get('ac-idle')
       // The panel's line around the page is up, and it says no lock.
-      expect(instance.nativeOverlayView.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 48, width: 1031, height: 852 })
+      expect(instance.nativeOverlayView.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 48, width: 1107, height: 852 })
       expect(overlayScript(instance)).toContain('const locked = false;')
       expect(overlayScript(instance)).toContain('const shieldActive = false;')
       expect(instance.nativeOverlayView.webContents.focus).not.toHaveBeenCalled()
@@ -2726,17 +2765,19 @@ describe('BrowserPaneManager', () => {
     })
 
     // What a page opens at is the **page**, not the window: the rail takes its width off the side
-    // and the panel is inset by the gutter, so a 1024px viewport is a wider window. This is the one
+    // and the panel is inset by the gutter, so a 1100px viewport is a wider window. This is the one
     // place that says which of the two numbers is the intended one, so a window tweak cannot quietly
     // move the viewport with it.
-    it('opens around a 1024px page, not a 1024px window', () => {
+    it('opens around a 1100px page, not a 1100px window', () => {
       manager.createInstance('tabs-default-size')
       const instance = (manager as any).instances.get('tabs-default-size')
+      // Opened for the person: the window is up, so what it is sized around is a page in it.
+      instance.window.show()
 
       // The page itself — what a site sees as its viewport — is `DEFAULT_VIEWPORT_WIDTH` wide.
-      expect(instance.tabs[0].tabView.getBounds()).toEqual({ x: 201, y: 49, width: 1024, height: 845 })
+      expect(instance.tabs[0].tabView.getBounds()).toEqual({ x: 201, y: 49, width: 1100, height: 845 })
       // And the window is that plus the rail (200) and the panel's gutter (1 + 6).
-      expect(instance.window.getContentSize()).toEqual([1231, 900])
+      expect(instance.window.getContentSize()).toEqual([1307, 900])
     })
 
     // The backdrop belongs to the *view*: `webContents.setBackgroundColor` does not exist,
@@ -2874,7 +2915,7 @@ describe('BrowserPaneManager', () => {
       // screen where every tab that is not showing lives — at the size the page area had when it was
       // opened. That is its viewport until it comes forward, and it is what keeps the person's window
       // free of pages nobody asked to see.
-      expect(second.tabView.setBounds).toHaveBeenCalledWith({ x: 0, y: 0, width: 1024, height: 845 })
+      expect(second.tabView.setBounds).toHaveBeenCalledWith({ x: 0, y: 0, width: 1100, height: 845 })
       expect(instance.window.contentView.children).not.toContain(second.tabView)
       expect(instance.parkingWindow.contentView.children).toContain(second.tabView)
     })
@@ -2882,6 +2923,9 @@ describe('BrowserPaneManager', () => {
     it('switches tabs and reports the one that came forward', () => {
       manager.createInstance('tabs-switch')
       const instance = (manager as any).instances.get('tabs-switch')
+      // The window is up, so the tab it comes forward on is laid out in the window and switching is
+      // the stack change this test is about.
+      instance.window.show()
       const first = instance.tabs[0]
       first.currentUrl = 'https://first.example.com/'
       const secondId = manager.createTab('tabs-switch', { activate: false })
@@ -3070,6 +3114,9 @@ describe('BrowserPaneManager', () => {
     it('rounds the page itself, so any page is a rounded panel the person can click', () => {
       manager.createInstance('tabs-radius')
       const instance = (manager as any).instances.get('tabs-radius')
+      // The person is looking at the window, so the page is in it (`tabHome`) — which is where the
+      // frame it lands inside is.
+      instance.window.show()
       const first = instance.tabs[0]
 
       // Rounded by the page's own view rather than by ink over it: a view covers a rectangle
@@ -3262,7 +3309,7 @@ describe('BrowserPaneManager', () => {
       // The chrome: one view over the window's whole rectangle, so the rail and the bar are one
       // surface rather than two documents that have to be kept looking alike.
       expect(instance.chromeView.setBounds).toHaveBeenCalledWith({
-        x: 0, y: 0, width: 1231, height: 900,
+        x: 0, y: 0, width: 1307, height: 900,
       })
 
       // And the page is over the chrome: the chrome covers the window, so a chrome left on top
@@ -3311,7 +3358,7 @@ describe('BrowserPaneManager', () => {
 
       // Out: the page starts right of the rail, one pixel into the panel's gutter.
       expect(tab(instance).tabView.setBounds).toHaveBeenLastCalledWith({
-        x: 201, y: 49, width: 1024, height: 845,
+        x: 201, y: 49, width: 1100, height: 845,
       })
 
       // Folded: there is no chrome on the left to hug, so the page is placed from the window's own
@@ -3319,7 +3366,7 @@ describe('BrowserPaneManager', () => {
       await fold()
 
       expect(tab(instance).tabView.setBounds).toHaveBeenLastCalledWith({
-        x: 6, y: 49, width: 1219, height: 845,
+        x: 6, y: 49, width: 1295, height: 845,
       })
       expect(lastToolbarState(instance).railCollapsed).toBe(true)
 
@@ -3327,7 +3374,7 @@ describe('BrowserPaneManager', () => {
       await fold()
 
       expect(tab(instance).tabView.setBounds).toHaveBeenLastCalledWith({
-        x: 201, y: 49, width: 1024, height: 845,
+        x: 201, y: 49, width: 1100, height: 845,
       })
       expect(lastToolbarState(instance).railCollapsed).toBe(false)
     })
@@ -3983,11 +4030,11 @@ describe('BrowserPaneManager', () => {
    */
   describe("recording a conversation's tab", () => {
     /** The recorder proper is not what these tests are about: what it was *asked* is. */
-    function stubRecorder(): Array<{ tabId: string }> {
-      const asked: Array<{ tabId: string }> = []
+    function stubRecorder(): Array<{ tabId: string; instanceId: string }> {
+      const asked: Array<{ tabId: string; instanceId: string }> = []
       ;(manager as any).sessionRecordings = {
         start: async (options: any) => {
-          asked.push({ tabId: options.tabId })
+          asked.push({ tabId: options.tabId, instanceId: options.instanceId })
           return {
             ok: true,
             state: {
@@ -4018,23 +4065,39 @@ describe('BrowserPaneManager', () => {
 
       expect(result.started).toBe(true)
       expect(asked.map((one) => one.tabId)).toEqual([tabId])
+      // …and it is asked for **in the caller's window**: a tab is named in a window, and the window
+      // is the other half of that name (`tab-recorder.ts` why).
+      expect(asked.map((one) => one.instanceId)).toEqual([instanceId])
       // The window it recorded in is the caller's — not a second one conjured up for it.
       expect((manager as any).instances.size).toBe(1)
       expect((manager as any).instances.get(instanceId).workspaceId).toBe(workspaceId)
     })
 
-    it('does not reach a tab that lives in another workspace\'s window', async () => {
+    it("records in the caller's own window, not another window's tab of the same name", async () => {
+      // Ids are per window (`BrowserInstance.tabCounter`), so the other window's first tab is named
+      // the same as the caller's own will be: the name alone cannot tell them apart, and it is not
+      // asked to. What keeps them apart is that a conversation's command is resolved against **its
+      // own** window, and that the window travels with the recording.
       const other = manager.createInstance('recording-other-workspace', { workspaceId: 'workspace-other' })
-      const tabId = tab((manager as any).instances.get(other)).id
-      stubRecorder()
+      const otherTabId = tab((manager as any).instances.get(other)).id
+      const asked = stubRecorder()
 
-      await expect(
-        manager.startRecordingForSession(
-          'session-recording',
-          { tabId, ttlMs: 30_000 } as any,
-          { workspaceId: 'workspace-recording' },
-        ),
-      ).rejects.toThrow(/has no tab/)
+      const result = await manager.startRecordingForSession(
+        'session-recording',
+        { tabId: otherTabId, ttlMs: 30_000 } as any,
+        { workspaceId: 'workspace-recording' },
+      )
+
+      const own = [...(manager as any).instances.values()].find(
+        (one: any) => one.workspaceId === 'workspace-recording',
+      )
+      expect(result.started).toBe(true)
+      // The same name in both windows — and the recording is of the caller's own tab.
+      expect(otherTabId).toBe('tab-1')
+      expect(own.tabs[0].id).toBe('tab-1')
+      expect(asked).toEqual([{ tabId: 'tab-1', instanceId: own.id }])
+      expect(asked[0].instanceId).not.toBe(other)
+      expect(own.tabs[0]).not.toBe((manager as any).instances.get(other).tabs[0])
     })
   })
 })

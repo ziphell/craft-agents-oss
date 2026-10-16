@@ -58,6 +58,12 @@ export const PERSON_OWNER: RecordingOwner = { kind: 'person' }
 /** What the chrome shows while a recording is running. */
 export interface TabRecordingState {
   owner: RecordingOwner
+  /**
+   * The window the tab is in. Carried because a tab is named without its window — a stop says
+   * `tab-3` and nothing else — and that name is only unique **within** a window
+   * (`BrowserInstance.tabCounter`), so the window has to travel with it.
+   */
+  instanceId: string
   /** The tab being recorded. Part of the recording's identity, and what a command names. */
   tabId: string
   /** Absolute path the file is being written to. */
@@ -70,6 +76,8 @@ export interface TabRecordingState {
 /** What a finished recording was. */
 export interface FinishedRecording {
   owner: RecordingOwner
+  /** The window the tab was in — see {@link TabRecordingState.instanceId}. */
+  instanceId: string
   tabId: string
   file: string
   bytes: number
@@ -79,6 +87,8 @@ export interface FinishedRecording {
 export interface StartRecordingOptions {
   /** The tab being recorded. */
   tabId: string
+  /** The window that tab is in. Known wherever a recording starts — the caller resolved the tab. */
+  instanceId: string
   /** The directory the file goes in. Created if it is not there. */
   dir: string
   /** The tab's contents — the picture. */
@@ -136,8 +146,11 @@ export class TabRecorder {
    * deadline arrived, the tab went away, the session did — and every one of them has to run the
    * same follow-up: the page's observer comes back out (`recording-observer.ts`). Hooking only the
    * doors a caller happens to remember is exactly how a listener outlives its recording.
+   *
+   * The window comes along because these doors have only a tab name to offer, and a tab name is
+   * unique within its window and no further.
    */
-  onRecordingEnded: ((tabId: string) => void) | null = null
+  onRecordingEnded: ((tabId: string, instanceId: string) => void) | null = null
 
   /**
    * What a display-media request should be answered with, or `null` to refuse it.
@@ -224,14 +237,17 @@ export class TabRecorder {
    * recordings of one page, and the page did one thing. Nothing happens when no recording covers
    * the tab — this sits on the ordinary navigation and network paths, which run either way.
    *
+   * The window is part of which recording this is about, not a formality: `tab-1` is a name in a
+   * window, and another window recording its own `tab-1` must not be told about this page's work.
+   *
    * Called by the pane manager, which is where those facts arrive; written here, because the
    * recorder is the one thing that knows which files a recording owns.
    */
-  noteEvent(tabId: string, event: RecordingEvent): void {
+  noteEvent(instanceId: string, tabId: string, event: RecordingEvent): void {
     const now = Date.now()
     for (const tabs of this.live.values()) {
       const recording = tabs.get(tabId)
-      if (!recording) continue
+      if (!recording || recording.state.instanceId !== instanceId) continue
       // **Only the person's own recording is told what was typed.** A conversation records a tab
       // the person cannot see, and nobody can be asked to consent to a recording they are not
       // watching — the picture is already that price (video-plan §7); the keystrokes are not
@@ -304,6 +320,7 @@ export class TabRecorder {
 
     const state: TabRecordingState = {
       owner,
+      instanceId: options.instanceId,
       tabId: options.tabId,
       file,
       startedAt,
@@ -344,10 +361,11 @@ export class TabRecorder {
     closeSidecar(recording.sidecar, elapsedMs, Math.round(elapsedMs / 1000))
 
     // Every ending passes here — whoever asked for it, and for whatever reason.
-    this.onRecordingEnded?.(recording.state.tabId)
+    this.onRecordingEnded?.(recording.state.tabId, recording.state.instanceId)
 
     return {
       owner: recording.state.owner,
+      instanceId: recording.state.instanceId,
       tabId: recording.state.tabId,
       file: recording.state.file,
       bytes: recording.state.bytes,

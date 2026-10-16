@@ -30,6 +30,8 @@ export interface StartSessionRecordingOptions {
   sessionId: string
   /** The tab being recorded. Named, never guessed — this is what a stop has to match. */
   tabId: string
+  /** The window that tab is in — the half of the tab's identity its name does not carry. */
+  instanceId: string
   /** Where the file goes. The caller owns this convention (a session's `records/`). */
   dir: string
   /** The tab's contents — what the file's entry records as the source. */
@@ -164,6 +166,7 @@ export class SessionRecordings {
 
     const state = this.deps.recorder.startFor(options.sessionId, {
       tabId: options.tabId,
+      instanceId: options.instanceId,
       dir: options.dir,
       source: options.source,
       extension: encoder.extension,
@@ -260,14 +263,19 @@ export class SessionRecordings {
   }
 
   /**
-   * End every recording whose tab is one of these — the tab went away, or its window did.
+   * End every recording of one of these tabs **in this window** — the tab went away, or its
+   * window did.
+   *
+   * The window is part of the test, not a convenience: `tab-3` names a tab in the window it was
+   * said in, and another window's `tab-3` is another recording that this has no business ending.
    *
    * Returns whether anything was running, so the caller can decide whether the chrome needs
    * telling as well.
    */
-  endForTabs(tabIds: string[]): boolean {
+  endForTabs(instanceId: string, tabIds: string[]): boolean {
     let ended = false
     for (const [, live] of this.live) {
+      if (live.state.instanceId !== instanceId) continue
       if (!tabIds.includes(live.state.tabId)) continue
       ended = true
       const sessionId = live.state.owner.kind === 'session' ? live.state.owner.sessionId : ''

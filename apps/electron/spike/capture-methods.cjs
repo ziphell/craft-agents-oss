@@ -17,13 +17,20 @@
  * rescue (`showInactive` + a paint delay), after the same delay with a `capturePage`, and
  * after raising that tab's view over the other one.
  *
- * Three window states, because a `show: false` window is not the same thing as one that
- * was on screen and then hidden — the plan's `hidden-after-show`, for which the rescue
- * exists at all:
+ * Four window states, because a `show: false` window, a minimized one and one that was on
+ * screen and then hidden are three different things — `hidden-after-show` is the app's own
+ * case, the one the rescue exists for, and `minimized` is the state a person puts a window
+ * into rather than taking it away:
  *
  *   visible              shown, and left shown
+ *   minimized            shown once, then `minimize()` — a person putting it aside
  *   hidden-after-show    shown once, then `hide()` — the app's case
  *   never-shown          never shown (a window created for background work)
+ *
+ * The app does not act on `minimized` today: it counts as visible (`instance.isVisible`
+ * stays true), so the shot is attempted where the tab is and the parked view is only reached
+ * when that answers nothing. Whether that first attempt is worth paying at all is what this
+ * state answers.
  *
  * Every call is raced against a timeout, so "never comes back" is a result rather than a
  * hang. Timings are reported: a path that takes seconds is not a path to put on the
@@ -33,6 +40,8 @@
  *      (from the repo root)
  */
 const { app, BrowserWindow, WebContentsView, nativeImage, screen } = require('electron')
+const { appendFileSync, writeFileSync } = require('node:fs')
+const { join } = require('node:path')
 
 const W = 600
 const H = 420
@@ -45,7 +54,21 @@ const results = []
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-const progress = (message) => console.log(`SPIKE_STEP ${new Date().toISOString().slice(11, 23)} ${message}`)
+/**
+ * Say a line — to the console, and to this spike's own log beside it.
+ *
+ * The log is written by the script rather than by a shell redirect: this is a GUI process,
+ * whose stdout a `>` may never see at all, and the lines are flushed as they happen, so a
+ * stall shows up as the last line before it rather than as an empty file.
+ */
+const LOG_PATH = join(__dirname, 'capture-methods.log')
+writeFileSync(LOG_PATH, '')
+const say = (text) => {
+  try { console.log(text) } catch { /* no console attached */ }
+  try { appendFileSync(LOG_PATH, text + '\n') } catch { /* a spike's log is a convenience */ }
+}
+
+const progress = (message) => say(`SPIKE_STEP ${new Date().toISOString().slice(11, 23)} ${message}`)
 
 /** A page that paints one solid colour, so a captured pixel says which page it is. */
 function pageHtml(color, label) {
@@ -154,7 +177,14 @@ async function makeTabbedWindow(state, workArea) {
     load(onTop.webContents, '#0000ff', state + ' • tab on top'),
   ])
 
-  if (state !== 'never-shown') {
+  if (state === 'minimized') {
+    // On a display first — the surface a minimized window still answers with is the one it got
+    // there — then minimized, which is how a person puts a window aside.
+    win.showInactive()
+    await sleep(300)
+    win.minimize()
+    await sleep(300)
+  } else if (state !== 'never-shown') {
     win.showInactive()
     await sleep(300)
     if (state === 'hidden-after-show') win.hide()
@@ -166,6 +196,7 @@ async function makeTabbedWindow(state, workArea) {
 async function measureTab(state, where, view, expectedBgra, win, covered, onTop) {
   const wc = view.webContents
   const row = { scenario: state, tab: where, methods: [] }
+  progress(`measure ${state} • ${where}`)
 
   try {
     row.probe = await wc.executeJavaScript('window.__probe && window.__probe()')
@@ -184,14 +215,23 @@ async function measureTab(state, where, view, expectedBgra, win, covered, onTop)
 
   if (where === 'covered') {
     const wasVisible = win.isVisible()
-    // What the app's rescue does today: reveal the window, wait for a paint, shoot again.
+    const wasMinimized = win.isMinimized()
+    // What the app's rescue does today: put the window back on a display, wait for a paint, shoot
+    // again. A minimized window needs `restore()` — `showInactive()` on its own leaves it minimized
+    // on Windows, and the "after reveal" numbers would then just repeat the refusal.
     if (!wasVisible) {
+      if (wasMinimized) win.restore()
       win.showInactive()
       await sleep(PAINT_DELAY_MS)
     }
     row.afterRevealCdp = await attempt('cdp-screenshot', () => cdpScreenshot(wc), expectedBgra)
     row.afterReveal = await attempt('capturePage-hidden', () => wc.capturePage(undefined, CAPTURE_PAGE_OPTS), expectedBgra)
-    if (!wasVisible) win.hide()
+    // …and back to the state this scenario is about, so the raise below is measured in the same
+    // state the three methods above were.
+    if (!wasVisible) {
+      if (wasMinimized) win.minimize()
+      else win.hide()
+    }
     await sleep(PAINT_DELAY_MS)
 
     // And what raising this tab's view over the other one does, with no reveal at all.
@@ -204,20 +244,23 @@ async function measureTab(state, where, view, expectedBgra, win, covered, onTop)
   }
 
   results.push(row)
+  // Logged as it lands, one row at a time: if the next state never comes back, this is what says
+  // which measurement it was in.
+  say('SPIKE_ROW ' + JSON.stringify(row))
 }
 
 app.whenReady().then(async () => {
   // A stall anywhere above is a result; the watch ends the run rather than the shell's.
   setTimeout(() => {
-    console.log('SPIKE_WATCHDOG — still running; nothing more came back')
+    say('SPIKE_WATCHDOG — still running; nothing more came back')
     app.exit(3)
   }, 90000)
 
   try {
     const workArea = screen.getPrimaryDisplay().workArea
-    const states = ['visible', 'hidden-after-show', 'never-shown']
+    const states = ['visible', 'minimized', 'hidden-after-show', 'never-shown']
 
-    // All three windows up front and kept alive: a teardown while other windows are
+    // All of them up front and kept alive: a teardown while other windows are
     // still measuring can take a shared renderer down with it.
     const windows = []
     for (const state of states) {
@@ -233,10 +276,10 @@ app.whenReady().then(async () => {
       await measureTab(state, 'on-top', onTop, [255, 0, 0, 255], win, covered, onTop)
     }
 
-    console.log('SPIKE_JSON ' + JSON.stringify(windows.map(({ state, win }) => ({ state, windowVisible: win.isVisible() }))))
-    console.log('SPIKE_JSON ' + JSON.stringify(results))
+    say('SPIKE_JSON ' + JSON.stringify(windows.map(({ state, win }) => ({ state, windowVisible: win.isVisible() }))))
+    say('SPIKE_JSON ' + JSON.stringify(results))
 
-    console.log('\nscenario            tab      vis      painting  method                                 verdict        time')
+    say('\nscenario            tab      vis      painting  method                                 verdict        time')
     for (const row of results) {
       for (const method of row.methods) line(row, method)
       for (const [key, method] of [['after reveal', row.afterReveal], ['after reveal (cdp)', row.afterRevealCdp], ['raised to top', row.afterRaise]]) {
@@ -249,14 +292,14 @@ app.whenReady().then(async () => {
     }
     app.quit()
   } catch (error) {
-    console.log('SPIKE_ERROR ' + (error && error.stack ? error.stack : String(error)))
+    say('SPIKE_ERROR ' + (error && error.stack ? error.stack : String(error)))
     app.exit(1)
   }
 })
 
 function line(row, method) {
   const detail = method.detail ? ` ${method.detail}` : method.bgra ? ` ${JSON.stringify(method.bgra)} ${method.size}` : ''
-  console.log(
+  say(
     `${row.scenario.padEnd(19)} ${row.tab.padEnd(8)} ${String((row.probe && row.probe.visibility) ?? '-').padEnd(8)} ${String(row.isPainting).padEnd(9)} ${String(method.method).padEnd(38)} ${String(method.verdict).padEnd(13)} ${String(method.ms ?? '-').padStart(5)}ms${detail}`,
   )
 }

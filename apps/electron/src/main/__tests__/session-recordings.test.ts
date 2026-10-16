@@ -18,6 +18,8 @@ import type { RecordingEncoder } from '../recording-encoder'
 
 const SESSION = 'session-1'
 const TAB = 'tab-1'
+/** Recordings are of a tab **in a window**, and a stop carries both halves (`tab-recorder.ts`). */
+const WINDOW = 'browser-1'
 
 function fakeSource(id = 1): WebContents {
   return { id, isDestroyed: () => false, mainFrame: { detached: false } } as unknown as WebContents
@@ -89,6 +91,7 @@ function harness(encoderExtension = 'mp4') {
     const result = await service.start({
       sessionId: SESSION,
       tabId: TAB,
+      instanceId: WINDOW,
       dir,
       source: fakeSource(),
       ttlMs: 30_000,
@@ -262,6 +265,7 @@ describe('SessionRecordings', () => {
     const result = await service.start({
       sessionId: SESSION,
       tabId: TAB,
+      instanceId: WINDOW,
       dir,
       source: fakeSource(),
       ttlMs: 1000,
@@ -286,6 +290,7 @@ describe('SessionRecordings', () => {
     const result = await h.service.start({
       sessionId: SESSION,
       tabId: TAB,
+      instanceId: WINDOW,
       dir: h.dir,
       source: fakeSource(),
       ttlMs: 1000,
@@ -337,10 +342,15 @@ describe('SessionRecordings', () => {
     await h.start({ tabId: 'tab-1' })
     await h.start({ tabId: 'tab-2' })
 
-    expect(h.service.endForTabs(['tab-9'])).toBe(false)
+    // Another window's `tab-1` is another recording (`tab-recorder.ts` why): the window is part
+    // of what a stop names, so this is not this window's tab.
+    expect(h.service.endForTabs('browser-2', ['tab-1'])).toBe(false)
     expect(h.service.count()).toBe(2)
 
-    expect(h.service.endForTabs(['tab-1'])).toBe(true)
+    expect(h.service.endForTabs(WINDOW, ['tab-9'])).toBe(false)
+    expect(h.service.count()).toBe(2)
+
+    expect(h.service.endForTabs(WINDOW, ['tab-1'])).toBe(true)
     expect(h.service.count()).toBe(1)
   })
 

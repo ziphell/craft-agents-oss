@@ -476,6 +476,7 @@ export function getBrowserToolHelp(): string {
     '  screenshot-region <x> <y> <width> <height> [--png] [--force]',
     '  screenshot-region --ref <@eN> [--padding <px>] [--png] [--force]',
     '  screenshot-region --selector <css-selector> [--padding <px>] [--png] [--force]',
+    '                                                 shots are CSS pixels; a large image may be rescaled before the model sees it, so shrink the shot (viewport-resize) if coordinates are off',
     '  console [limit] [level]',
     '  viewport-resize <width> <height>                  size a tab\'s view; the window follows only when that tab is the one on screen',
     '  network [limit] [status]',
@@ -1475,6 +1476,9 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
         : `Screenshot captured (${formatBytes(buf.length)} ${ext})`,
       `Capture time: ${elapsedMs}ms`,
     ];
+    if (result.imageWidth && result.imageHeight) {
+      lines.push(`Image: ${result.imageWidth}x${result.imageHeight} CSS px`);
+    }
     const metadata = result.metadata as Record<string, unknown> | undefined;
     const viewport = metadata?.viewport as { width?: number; height?: number; dpr?: number } | undefined;
     if (viewport?.width && viewport?.height) {
@@ -1571,6 +1575,9 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
       `Target: ${targetDescription}${typeof padding === 'number' ? `, padding=${padding}` : ''}`,
       `Capture time: ${elapsedMs}ms`,
     ];
+    if (result.imageWidth && result.imageHeight) {
+      lines.push(`Image: ${result.imageWidth}x${result.imageHeight} CSS px`);
+    }
     if (result.metadata) {
       lines.push('', 'Metadata:', JSON.stringify(result.metadata, null, 2));
     }

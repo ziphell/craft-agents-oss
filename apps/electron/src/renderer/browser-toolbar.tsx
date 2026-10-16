@@ -357,7 +357,7 @@ function TabRail({
     /** The tab on screen: solid text over a tint the row keeps while it is current. */
     active: 'bg-foreground/[0.08] text-foreground',
     hover: 'hover:bg-foreground/[0.04]',
-    /** Held down anywhere on the row — the pill answers the click before the tab changes. */
+    /** Held down anywhere on the row — the pill is the same moment the tab answers (the switch is the press). */
     pressed: 'active:bg-foreground/[0.1]',
   }
 
@@ -496,7 +496,26 @@ function TabRail({
                     type="button"
                     className="titlebar-no-drag flex min-w-0 flex-1 items-start gap-1.5 rounded-[6px] px-2 py-1.5 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
                     title={tooltip}
-                    onClick={() => onSelect(tab.id)}
+                    /*
+                      The switch is on the **press**, not on the release: that is what a
+                      browser's own tab does — the tab answers the moment it is touched, and a
+                      press that ends somewhere else has still chosen it. Primary button only,
+                      so a right-press is left to be whatever it is elsewhere (the rail draws no
+                      menu of its own, and the row's other buttons are siblings, not inside this
+                      one, so neither reaches here).
+                    */
+                    onMouseDown={(event) => {
+                      if (event.button === 0) onSelect(tab.id)
+                    }}
+                    /*
+                      The keyboard has no press to give, so it keeps the click — and only the one
+                      it makes itself (`detail === 0`): a mouse click is the release of the press
+                      already answered above, and switching again on it would be the same act
+                      done twice.
+                    */
+                    onClick={(event) => {
+                      if (event.detail === 0) onSelect(tab.id)
+                    }}
                   >
                     {/*
                       Dimmed as a whole rather than letting the text do it twice: the

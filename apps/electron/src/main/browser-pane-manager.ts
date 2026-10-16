@@ -81,7 +81,14 @@ const TOOLBAR_LOAD_RETRY_DELAY_MS = 500
  * is inset by the gutter (`pageAreaBounds`), so the window opens that much wider — the same sum
  * `resizeViewport` does in reverse, for the size a window is born with.
  */
-const DEFAULT_VIEWPORT_WIDTH = 1024
+const DEFAULT_VIEWPORT_WIDTH = 1100
+/**
+ * The height a browser window is created with — the pair to `DEFAULT_VIEWPORT_WIDTH`.
+ *
+ * It is read back only for a tab **born** while the window has no size of its own (`attachTab`):
+ * the window is created at this height, so that is the viewport such a tab starts at.
+ */
+const DEFAULT_WINDOW_HEIGHT = 900
 const MAX_CONSOLE_LOG_ENTRIES = 500
 const MAX_NETWORK_LOG_ENTRIES = 500
 const MAX_DOWNLOAD_LOG_ENTRIES = 200
@@ -125,7 +132,8 @@ const SCREENSHOT_NETWORK_IDLE_MS = 300
  */
 const SCREENSHOT_CAPTURE_TIMEOUT_MS = 1_000
 /**
- * How long a parked view is given to produce its first frame (`captureWhileParked`).
+ * How long a view moved into the parking window for a shot is given to produce its first frame
+ * (the parked shot in `capturePageWithRecovery`).
  *
  * One frame at 60Hz, which is what the measurement showed is needed: nothing at all is not enough,
  * and 16ms, 32ms and 200ms all are. It is also the whole of what the shot waits on.
@@ -577,6 +585,18 @@ interface BrowserInstance {
   tabs: BrowserTab[]
   activeTabId: string
   /**
+   * How many tabs this window has named.
+   *
+   * Per window, because a tab is named **in a window**: `tab-3` means the third tab of the window
+   * the command was said in, and the caller always knows which window that is — a conversation's
+   * commands are resolved against its workspace's window before any tab is looked up
+   * (`resolveCommandTarget`), and the chrome speaks for the window it is drawn in. Counting here
+   * rather than app-wide is also what keeps the names steady where they are read: a window's first
+   * tab is `tab-1` whoever else happens to be running, and a window restored from disk keeps the
+   * names it had (`restoreTabs`). One app-wide counter made both depend on what else was open.
+   */
+  tabCounter: number
+  /**
    * The address and title of the tab on screen — read-only window-level views of
    * the active tab.
    *
@@ -606,7 +626,31 @@ interface BrowserInstance {
    * task's browsing happens.
    */
   workspaceId: string | null
+  /**
+   * Whether the window is **up** — shown, and not hidden since.
+   *
+   * Deliberately not `window.isVisible()`: a **minimized** window counts as visible here, and that is
+   * the shape of the answer rather than a shortcut. Measured, a minimized window answers a shot from
+   * itself in ~15ms (`spike/capture-methods.cjs`, the `minimized` rows) while a *hidden* one answers
+   * nothing at all — so minimizing is not a state anything here has to react to, while hiding is.
+   */
   isVisible: boolean
+  /**
+   * Whether this window has ever been on a display — the moment it acquired a surface.
+   *
+   * The three states are not the same thing, and only two of them have a surface anywhere:
+   *
+   * - `visible` — shown now;
+   * - `hidden-after-show` — on a display once, hidden since; the surface it got there survives the
+   *   hiding, and this is the state a platform's "hidden windows can be captured" claim is about
+   *   (`canCaptureHiddenWindows`);
+   * - `**never shown**` — composited **nowhere**: measured, a capture of one answers at once with
+   *   "Current display surface not available for capture", on any platform
+   *   (`spike/capture-methods.cjs`, the `never-shown` rows), and a view in one has no viewport at all
+   *   (`spike/background-viewport.ts`). So a window born hidden and never shown is not a home for a
+   *   tab: the parking window is, because it *is* shown — off every display.
+   */
+  hasBeenShown: boolean
   isHiding: boolean
   keepAliveOnWindowClose: boolean
   toolbarReady: boolean
@@ -622,6 +666,16 @@ interface BrowserInstance {
    * not a preference, and a window opened tomorrow starts with the rail out.
    */
   railCollapsed: boolean
+  /**
+   * The window's content size as last reported while it had one.
+   *
+   * A minimized window reports **no** size on Windows (`windowHasSize`), and minimizing does not
+   * change a window's size — only where it is (the person's point). So the last size it did report is
+   * kept here and read back when it has none to give (`windowContentSize`), which is what lets a tab
+   * **born** while the window is away be created at the size it would have had, with only its
+   * position different.
+   */
+  lastContentSize: { width: number; height: number }
   /**
    * How many times this window has asked for the caret in the address bar.
    *
@@ -800,6 +854,16 @@ export interface BrowserDownloadOptions {
 export interface BrowserScreenshotResult {
   imageBuffer: Buffer
   imageFormat: 'png' | 'jpeg'
+  /**
+   * Pixel size of the image as it comes back.
+   *
+   * These are **CSS pixels**, the same units `click-at`/`drag` take: the device-pixel
+   * shot is brought back to the page's CSS size in `capturePageImage`, so one image
+   * pixel is one page coordinate. Stating the numbers lets a caller notice a shot the
+   * model's own vision pipeline may have scaled before it reads a coordinate off it.
+   */
+  imageWidth: number
+  imageHeight: number
   metadata?: {
     mode: 'raw' | 'agent'
     viewport?: {
@@ -843,12 +907,6 @@ interface LastBrowserAction {
 }
 
 let instanceCounter = 0
-/**
- * Tab ids are unique across the app rather than per window, because a tab is what
- * the agent addresses: one name for one tab, with no "of which window" to carry
- * alongside it (the window is already implied by the tab).
- */
-let tabCounter = 0
 
 /**
  * Where the person's recordings go: **one fixed folder**, not configurable.
@@ -929,8 +987,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const recorder = new TabRecorder()
     // One place, not four call sites: the deadline and a tab going away never pass through the code
     // that started the recording, and those are the endings nobody is around to clean up after.
-    recorder.onRecordingEnded = (tabId) => {
-      void this.syncRecordingObserver(this.findInstanceByTabId(tabId)?.id ?? null, tabId)
+    recorder.onRecordingEnded = (tabId, instanceId) => {
+      void this.syncRecordingObserver(instanceId, tabId)
     }
     return recorder
   }
@@ -966,9 +1024,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * Not on Windows, where it was measured: a hidden window has no surface, and every path either
    * refuses or stops answering (`apps/electron/spike/capture-methods.cjs`), so a shot of a hidden
    * window goes straight to the parked view instead of paying the bound for an answer that is not
-   * coming. On macOS Electron does answer for a hidden window, so it gets the first go there and the
-   * parked view is the fallback — that side is Electron's documented behaviour, not something this
-   * machine could measure.
+   * coming. On macOS Electron does answer for a hidden window — one that has **been on a display**
+   * (`hasBeenShown`; a window that was never shown answers nothing on any platform, which is why the
+   * parking window is shown at all, so that is a different question from this one) — so it gets the
+   * first go there and the parked view is the fallback: that side is Electron's documented behaviour,
+   * not something this machine could measure.
    */
   private canCaptureHiddenWindows = process.platform !== 'win32'
 
@@ -1000,8 +1060,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * Build one tab: its page, its CDP session, and the state that starts empty. Nothing is
    * wired and nothing is laid out — `attachTab` does that, and every tab goes through both,
    * so a tab cannot be half-created.
+   *
+   * The id is the caller's, because numbering is the window's (`BrowserInstance.tabCounter`) and
+   * an id has to be settled before the tab exists: a window's first tab is `tab-1`, a restored one
+   * keeps the name it was remembered by.
    */
-  private buildTab(ses: ElectronSession, restoredId?: string): BrowserTab {
+  private buildTab(ses: ElectronSession, id: string): BrowserTab {
     /**
      * The page is a `WebContentsView` rather than the deprecated `BrowserView` for one reason:
      * only the former can round its own corners (`setBorderRadius`). The page's panel look —
@@ -1035,7 +1099,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     })
 
     return {
-      id: restoredId ?? `tab-${++tabCounter}`,
+      id,
       tabView,
       cdp: new BrowserCDP(tabView.webContents),
       currentUrl: 'about:blank',
@@ -1075,16 +1139,27 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * opened again (only blank tabs): a window with no real pages leaves no trace behind.
    */
   private snapshotTabsForRestore(instance: BrowserInstance): SavedBrowserWindowTabs | null {
-    const tabs: SavedBrowserTab[] = instance.tabs
+    const remembered = instance.tabs
       // `isBrowserUrl` is the gate the rest of the app opens a page through (http/https, and
       // the app's own origin). A `file://` a person opened once is deliberately *not* remembered:
       // reopening it here would be the one way in that skips `validateFilePath`.
       .filter((tab) => isBrowserUrl(tab.currentUrl))
-      .map((tab) => ({ id: tab.id, url: tab.currentUrl, title: tab.title }))
 
-    if (tabs.length === 0) return null
-    const active = tabs.find((tab) => tab.id === instance.activeTabId)
-    return { workspaceId: instance.workspaceId, tabs, activeTabId: active?.id ?? tabs[0].id }
+    if (remembered.length === 0) return null
+    const tabs: SavedBrowserTab[] = remembered.map((tab) => ({ url: tab.currentUrl, title: tab.title }))
+    // Which one was on screen — as an index, because the ids are not remembered: the window hands
+    // out names again from `tab-1` when it comes back.
+    const activeIndex = Math.max(0, remembered.findIndex((tab) => tab.id === instance.activeTabId))
+    // The window's size goes with it: a person who resized their browser finds it the size they left
+    // it, and a background tab's viewport has a known window to be a fraction of. Read through
+    // `windowContentSize`, because a window minimized at this moment reports none of its own.
+    const [width, height] = this.windowContentSize(instance)
+    return {
+      workspaceId: instance.workspaceId,
+      tabs,
+      activeIndex,
+      contentSize: { width, height },
+    }
   }
 
   /**
@@ -1131,17 +1206,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   /**
    * Open a window with the pages it had last time.
    *
-   * The first tab is already in the window (it was built with the remembered id); the rest are
-   * built and attached here, behind it, the same way a tab opened in the background is. Ids are
-   * kept so a name a message quoted (`@tab-3`) still finds its page, and the counter is seeded past
-   * them so the next tab a person opens cannot collide.
+   * The first tab is already in the window (it was built as `tab-1`); the rest are built and
+   * attached here, behind it, the same way a tab opened in the background is. The pages come back
+   * in order and are numbered afresh from `tab-1` up: what is remembered is the window's *pages*,
+   * not the names they were addressed by, so the numbering cannot creep upwards run after run.
    */
   private restoreTabs(instance: BrowserInstance, saved: SavedBrowserWindowTabs): void {
-    for (const id of saved.tabs.map((tab) => tab.id)) {
-      const seed = Number.parseInt(id.replace(/^tab-/, ''), 10)
-      if (Number.isFinite(seed) && seed > tabCounter) tabCounter = seed
-    }
-
     const [first, ...rest] = saved.tabs
     // The tab the window was built around is the first remembered one: give it its page back.
     // The address is written **now**, not when the page commits, so a request that opens something
@@ -1153,7 +1223,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.loadTab(instance, firstTab, first.url)
 
     for (const page of rest) {
-      const tab = this.buildTab(session.fromPartition(SESSION_PARTITION), page.id)
+      const tab = this.buildTab(session.fromPartition(SESSION_PARTITION), `tab-${++instance.tabCounter}`)
       if (page.title) tab.title = page.title
       tab.currentUrl = page.url
       instance.tabs.push(tab)
@@ -1161,9 +1231,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       this.loadTab(instance, tab, page.url)
     }
 
-    if (instance.tabs.some((tab) => tab.id === saved.activeTabId)) {
-      instance.activeTabId = saved.activeTabId
-    }
+    const active = instance.tabs[saved.activeIndex]
+    if (active) instance.activeTabId = active.id
     this.layoutAllViews(instance)
     mainLog.info(`[browser-pane] Restored ${saved.tabs.length} tab(s) instance=${instance.id} workspace=${instance.workspaceId ?? 'none'} active=${instance.activeTabId}`)
   }
@@ -1207,12 +1276,22 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // they move, snap and maximise, and a position computed from a work area we read once would
     // fight that — and on a small display it can put the window's top edge off the screen.
     //
-    // The width is not left to Electron: it opens around a page `DEFAULT_VIEWPORT_WIDTH` wide, and
-    // the rail beside it and the panel's gutter are what the window adds to that.
+    // The size is ours: the one this window had last time when there is one to come back to, and
+    // otherwise the size it opens around — a page `DEFAULT_VIEWPORT_WIDTH` wide, plus the rail beside
+    // it and the panel's gutter. It is also the first thing `lastContentSize` holds, so a tab born
+    // before the window has reported a size of its own still starts at a real viewport.
     const panelInset = this.pagePanelInsets(false)
+    const rememberedSize = restored?.contentSize
+    const createdContentSize =
+      rememberedSize && rememberedSize.width > 0 && rememberedSize.height > 0
+        ? { width: rememberedSize.width, height: rememberedSize.height }
+        : {
+            width: DEFAULT_VIEWPORT_WIDTH + TAB_RAIL_WIDTH + panelInset.left + panelInset.right,
+            height: DEFAULT_WINDOW_HEIGHT,
+          }
     const window = new BrowserWindow({
-      width: DEFAULT_VIEWPORT_WIDTH + TAB_RAIL_WIDTH + panelInset.left + panelInset.right,
-      height: 900,
+      width: createdContentSize.width,
+      height: createdContentSize.height,
       minWidth: 700,
       minHeight: 500,
       // Its own name and icon, not the app's: this window is the browser, and it
@@ -1301,9 +1380,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     nativeOverlayView.setBackgroundColor('#00000000')
 
     // A window is *opened on* something, so it starts with one tab; the tabs a
-    // user adds afterwards go through `createTab`. A window being restored opens on the
-    // first page it had, under the id it had.
-    const tab = this.buildTab(ses, restored?.tabs[0].id)
+    // user adds afterwards go through `createTab`. Whatever the window had last time, this one is
+    // `tab-1`: the names are handed out afresh here, and `restoreTabs` continues from it.
+    const tab = this.buildTab(ses, 'tab-1')
 
     const instance: BrowserInstance = {
       id: instanceId,
@@ -1314,8 +1393,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       nativeOverlayReady: false,
       tabs: [tab],
       activeTabId: tab.id,
+      // `tab-1` is what the tab built above was named, and the counter is the window's own: it
+      // starts here every time the window is built, so names never carry over from a past run.
+      tabCounter: 1,
       workspaceId,
       isVisible: false,
+      hasBeenShown: false,
       isHiding: false,
       keepAliveOnWindowClose: true,
       toolbarReady: false,
@@ -1323,6 +1406,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       toolbarMenuHeight: 0,
       toolbarMenuOverlayActive: false,
       railCollapsed: false,
+      lastContentSize: createdContentSize,
       urlBarFocusToken: 0,
       showOnCreate: shouldShow,
       pendingShowOnReady: false,
@@ -1519,7 +1603,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       return unwritten.id
     }
 
-    const tab = this.buildTab(session.fromPartition(SESSION_PARTITION))
+    const tab = this.buildTab(session.fromPartition(SESSION_PARTITION), `tab-${++instance.tabCounter}`)
     // The address is written **now**, not when the page commits — the same reason `restoreTabs`
     // writes it: the moment this tab is put on screen has to read it as a page rather than as the
     // blank tab it started as (`isNewTabPage`). A caller that loads the address itself says it with
@@ -1820,7 +1904,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     if (this.tabRecorder.stopIfSource(wcId).length) this.pushToolbarState(instance)
     // A conversation's recording of this tab ends here too, and through its own service — which
     // stops the capture and waits for the encoder before the file settles.
-    this.sessionRecordings.endForTabs([tab.id])
+    this.sessionRecordings.endForTabs(instance.id, [tab.id])
 
     // A lock never outlives what it locks: closing the tab a session was holding lets go
     // of it here, rather than leaving the window claiming a tab that is gone.
@@ -2210,7 +2294,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // A window takes its tabs with it, and a recording of one of them ends with what it
     // captured — there is no button left to press once the window is gone.
     this.tabRecorder.stopIfSource(...instance.tabs.map((tab) => tab.tabView.webContents.id))
-    this.sessionRecordings.endForTabs(instance.tabs.map((tab) => tab.id))
+    this.sessionRecordings.endForTabs(instance.id, instance.tabs.map((tab) => tab.id))
     instance.pendingShowOnReady = false
     instance.pendingShowToken += 1
 
@@ -2518,6 +2602,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     win.focus()
 
     instance.isVisible = true
+    instance.hasBeenShown = true
     this.emitStateChange(instance)
     // Bringing the window up also hands the keyboard to the tab it is showing — the address bar
     // when that is the new-tab page, the page otherwise — the same decision a tab switch makes
@@ -2770,6 +2855,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         mode,
         errorPrefix: 'screenshot',
         dpr: viewport.dpr,
+        cssSize: { width: viewport.width, height: viewport.height },
         format: options?.format,
         jpegQuality: options?.jpegQuality,
       })
@@ -2777,6 +2863,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       return {
         imageBuffer: captured.imageBuffer,
         imageFormat: captured.imageFormat,
+        imageWidth: captured.imageWidth,
+        imageHeight: captured.imageHeight,
         metadata: options?.includeMetadata
           ? {
             mode: 'raw',
@@ -2850,6 +2938,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         mode,
         errorPrefix: 'screenshot',
         dpr: viewport.dpr,
+        cssSize: { width: viewport.width, height: viewport.height },
         format: options?.format,
         jpegQuality: options?.jpegQuality,
       })
@@ -2861,6 +2950,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       return {
         imageBuffer: captured.imageBuffer,
         imageFormat: captured.imageFormat,
+        imageWidth: captured.imageWidth,
+        imageHeight: captured.imageHeight,
         metadata: {
           mode: 'agent',
           viewport,
@@ -2985,6 +3076,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         height: clippedHeight,
       },
       dpr: viewport.dpr,
+      cssSize: { width: clippedWidth, height: clippedHeight },
       format: target.format,
       jpegQuality: target.jpegQuality,
     })
@@ -2998,6 +3090,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     return {
       imageBuffer: captured.imageBuffer,
       imageFormat: captured.imageFormat,
+      imageWidth: captured.imageWidth,
+      imageHeight: captured.imageHeight,
       metadata: {
         mode: 'raw',
         viewport,
@@ -3023,82 +3117,126 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       errorPrefix: 'screenshot' | 'region screenshot' | 'recording seed'
       rect?: { x: number; y: number; width: number; height: number }
       dpr?: number
+      cssSize?: { width: number; height: number }
       format?: 'png' | 'jpeg'
       jpegQuality?: number
     },
-  ): Promise<{ imageBuffer: Buffer; imageFormat: 'png' | 'jpeg'; warnings: string[] }> {
+  ): Promise<{ imageBuffer: Buffer; imageFormat: 'png' | 'jpeg'; imageWidth: number; imageHeight: number; warnings: string[] }> {
     const tab = options.tab
     let sawNoSurface = false
     const warnings: string[] = []
-    const imageOpts = { dpr: options.dpr, format: options.format, jpegQuality: options.jpegQuality }
+    const imageOpts = { dpr: options.dpr, cssSize: options.cssSize, format: options.format, jpegQuality: options.jpegQuality }
 
-    // Where the tab already has something to copy, the shot is taken where it is: a few goes, because
-    // a page that has just been painted can still answer empty once. A window that is not on screen is
-    // skipped unless it is known to answer there (`canCaptureHiddenWindows`) — on Windows it has no
-    // surface at all, so the wait would buy nothing and the parked shot below is the way to any tab in
-    // it, the one on screen included.
-    if (instance.isVisible || this.canCaptureHiddenWindows) {
+    // Where the view *lives* decides whether it can be copied where it is — and its home is composited
+    // by construction (`tabHome`): the parking window is shown and off every display, and a window
+    // that holds its page is the one a person is looking at. What remains, and what the fall-through
+    // below is for, is a view with no surface **anyway** — a page that has never painted, or a window
+    // the platform will not answer for (a minimized one on Windows).
+    const livesInTheWindow = this.tabHome(instance, tab) === 'window'
+
+    // A parked tab's view can be under a sibling in its own window, or its window under another
+    // workspace's — either leaves it with no surface to copy (`raiseParkedView`). Bring it to the
+    // front, and give it the frame that raise needs **before the first look**: a view that was never
+    // the top one has never been composited, so a capture taken the instant it is raised is a picture
+    // of nothing, and the retry loop below would only be waiting that same frame anyway.
+    if (!livesInTheWindow) {
+      this.raiseParkedView(instance, tab)
+      await this.sleep(SCREENSHOT_FIRST_FRAME_MS)
+    }
+
+    // Shot where it lives: a few goes, because a page that has just been painted can still answer
+    // empty once. A platform that answers "no surface" is not going to change its mind inside this
+    // home — a page nobody has composited has nothing to copy — so that breaks straight through to
+    // the parked shot below.
+    for (let attempt = 1; attempt <= SCREENSHOT_CAPTURE_ATTEMPTS; attempt += 1) {
+      let result: { buffer: Buffer; format: 'png' | 'jpeg'; width: number; height: number } | null = null
+      try {
+        result = await this.capturePageImage({
+          tab,
+          rect: options.rect,
+          useHiddenCaptureOptions: true,
+          ...imageOpts,
+        })
+      } catch (error) {
+        if (this.isNoSurfaceCaptureError(error)) {
+          sawNoSurface = true
+          mainLog.warn(
+            `[browser-pane] ${options.errorPrefix} no surface to capture instance=${instance.id} mode=${options.mode} attempt=${attempt}/${SCREENSHOT_CAPTURE_ATTEMPTS} tab=${tab.id} url=${tab.currentUrl} detail=${error instanceof Error ? error.message : String(error)}`,
+          )
+          break
+        }
+        throw error
+      }
+
+      if (result) {
+        if (attempt > 1) {
+          warnings.push(`Capture recovered after ${attempt} attempt${attempt === 1 ? '' : 's'}.`)
+        }
+        return { imageBuffer: result.buffer, imageFormat: result.format, imageWidth: result.width, imageHeight: result.height, warnings }
+      }
+
+      mainLog.warn(
+        `[browser-pane] ${options.errorPrefix} empty capture attempt instance=${instance.id} mode=${options.mode} attempt=${attempt}/${SCREENSHOT_CAPTURE_ATTEMPTS} isLoading=${tab.isLoading} tab=${tab.id} url=${tab.currentUrl}`,
+      )
+
+      if (attempt < SCREENSHOT_CAPTURE_ATTEMPTS) {
+        await this.waitForScreenshotReadiness(instance.id)
+      }
+    }
+
+    // No surface where the view is — nothing there has been composited. The parking window is the one
+    // place that is composited without being seen, so the view is put there for the shot (a parked tab
+    // is already in it) and handed back to its home afterwards. No window is built for this: measured,
+    // a view moved into the parking window answers one frame later, and a window built for the shot
+    // answers no sooner — the frame is the wait, not the window (`parking-raise-capture.cjs`).
+    const own = tab.tabView.getBounds()
+    this.parkTabForShot(instance, tab, own)
+
+    let parked: { buffer: Buffer; format: 'png' | 'jpeg'; width: number; height: number } | null = null
+    try {
+      // Its first frame: a view that has just been moved in has nothing to copy until it is composited.
+      await this.sleep(SCREENSHOT_FIRST_FRAME_MS)
+
       for (let attempt = 1; attempt <= SCREENSHOT_CAPTURE_ATTEMPTS; attempt += 1) {
-        let result: { buffer: Buffer; format: 'png' | 'jpeg' } | null = null
+        let result: { buffer: Buffer; format: 'png' | 'jpeg'; width: number; height: number } | null = null
         try {
           result = await this.capturePageImage({
             tab,
             rect: options.rect,
-            useHiddenCaptureOptions: true,
+            useHiddenCaptureOptions: false,
             ...imageOpts,
           })
         } catch (error) {
           if (this.isNoSurfaceCaptureError(error)) {
             sawNoSurface = true
             mainLog.warn(
-              `[browser-pane] ${options.errorPrefix} no surface to capture instance=${instance.id} mode=${options.mode} attempt=${attempt}/${SCREENSHOT_CAPTURE_ATTEMPTS} tab=${tab.id} url=${tab.currentUrl} detail=${error instanceof Error ? error.message : String(error)}`,
+              `[browser-pane] ${options.errorPrefix} no surface to capture from the parking window instance=${instance.id} mode=${options.mode} attempt=${attempt}/${SCREENSHOT_CAPTURE_ATTEMPTS} tab=${tab.id} url=${tab.currentUrl} detail=${error instanceof Error ? error.message : String(error)}`,
             )
-            // Nothing inside this window will find one for this tab — a page that has never been
-            // composited has no surface to copy — so the parked shot below is the way to it.
             break
           }
           throw error
         }
 
         if (result) {
-          if (attempt > 1) {
-            warnings.push(`Capture recovered after ${attempt} attempt${attempt === 1 ? '' : 's'}.`)
-          }
-          return { imageBuffer: result.buffer, imageFormat: result.format, warnings }
+          parked = result
+          break
         }
 
         mainLog.warn(
-          `[browser-pane] ${options.errorPrefix} empty capture attempt instance=${instance.id} mode=${options.mode} attempt=${attempt}/${SCREENSHOT_CAPTURE_ATTEMPTS} isLoading=${tab.isLoading} tab=${tab.id} url=${tab.currentUrl}`,
+          `[browser-pane] ${options.errorPrefix} empty capture attempt from the parking window instance=${instance.id} mode=${options.mode} attempt=${attempt}/${SCREENSHOT_CAPTURE_ATTEMPTS} isLoading=${tab.isLoading} tab=${tab.id} url=${tab.currentUrl}`,
         )
 
         if (attempt < SCREENSHOT_CAPTURE_ATTEMPTS) {
           await this.waitForScreenshotReadiness(instance.id)
         }
       }
-    } else {
-      // A window that is not on screen has no surface at all — no attempt inside it can answer
-      // (measured: every hidden state missed on every path) — so the shot goes straight to the parked
-      // view, which is the only way to a background tab's pixels anyway.
-      mainLog.info(`[browser-pane] ${options.errorPrefix} window is not on screen; taking the shot from a parked view instance=${instance.id} mode=${options.mode} tab=${tab.id}`)
-    }
-
-    let parked: { buffer: Buffer; format: 'png' | 'jpeg' } | null = null
-    try {
-      parked = await this.captureWhileParked(instance, tab, options.rect, imageOpts)
-    } catch (error) {
-      if (this.isNoSurfaceCaptureError(error)) {
-        sawNoSurface = true
-        mainLog.warn(
-          `[browser-pane] ${options.errorPrefix} no surface to capture from a parked view instance=${instance.id} mode=${options.mode} tab=${tab.id} url=${tab.currentUrl} detail=${error instanceof Error ? error.message : String(error)}`,
-        )
-      } else {
-        throw error
-      }
+    } finally {
+      this.putTabBack(instance, tab, own)
     }
 
     if (parked) {
-      warnings.push('Capture parked that tab in a window nobody can see for the shot; it was put straight back.')
-      return { imageBuffer: parked.buffer, imageFormat: parked.format, warnings }
+      warnings.push('Capture parked that tab in the parking window for the shot; it was put straight back.')
+      return { imageBuffer: parked.buffer, imageFormat: parked.format, imageWidth: parked.width, imageHeight: parked.height, warnings }
     }
 
     mainLog.warn(
@@ -3107,7 +3245,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     if (sawNoSurface) {
       throw new Error(
-        `Failed to capture ${options.errorPrefix}: the page had no display surface to copy, even from a view of its own. `
+        `Failed to capture ${options.errorPrefix}: the page had no display surface to copy, even parked in the parking window. `
         + `Wait for it to paint ("browser_tool wait network-idle") and retry.`
       )
     }
@@ -3116,92 +3254,85 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Take the shot from a view parked in a window nobody can see.
+   * Put a tab's view in the shared parking window for a shot, at the size it has.
    *
-   * This is where a page gets its first frame. Chromium gives a page a surface when it is first
-   * composited, and both cases that need this have none: a window that is not on screen is not
-   * composited at all, and a tab opened behind the person's (`activate: false`, how an agent's tab is
-   * opened) has never been on screen. Nothing short of putting the view somewhere that gets
-   * composited changes that (`setVisible`, `invalidate`, `setBounds`, unthrottling and the window
-   * being up all missed; measured in `apps/electron/spike/screenshot-e2e.ts`).
+   * The parking window is the one place that is composited without being seen — shown, off every
+   * display — so it is where a view with no surface of its own gets one. A parked tab's view is
+   * already in it and is only brought to the top; the tab on screen is moved in, and the window is
+   * grown to hold it, because `parkedViewsFit` leaves the tab on screen out and would otherwise clip
+   * the very view it is being asked to hold.
    *
-   * "Somewhere that gets composited" does not have to be anywhere a person can see: the view is handed
-   * to a window parked outside every display — shown, because a window that is never shown is never
-   * composited either — and taken back a frame later. Their own window is not shown, moved or touched;
-   * nothing of it appears on screen, on the taskbar or in anyone's focus. Measured: 16ms of wait is
-   * enough, ~40ms for the shot from a parked view against ~355ms for the same tab through a revealed
-   * window, and the person's window's bounds and stacking unchanged.
+   * The window is not built here: it is the one every parked tab lives in (`parkingWindowFor`), kept
+   * up for as long as the instance is. **Measured** (`parking-raise-capture.cjs`): a view moved into it
+   * answers one frame later, and a window built for the shot answers no sooner — the wait is the
+   * frame, not the window.
    */
-  private async captureWhileParked(
-    instance: BrowserInstance,
-    tab: BrowserTab,
-    rect: { x: number; y: number; width: number; height: number } | undefined,
-    imageOpts: { dpr?: number; format?: 'png' | 'jpeg'; jpegQuality?: number },
-  ): Promise<{ buffer: Buffer; format: 'png' | 'jpeg' } | null> {
-    // This tab's own viewport: the page area while it is the one on screen, and the viewport it had
-    // the last time it *was* on screen otherwise (`layoutTabView` lays out only the tab on screen).
-    // The parking window is built to this size and the view keeps it while it is away, so the page's
-    // viewport never changes for a shot — making the window is cheap either way (~5–18ms, measured).
-    const own = tab.tabView.getBounds()
-    const size = { width: own.width, height: own.height }
-    const spot = this.offscreenSpot(size)
-    let parking: BrowserWindow | null = null
+  private parkTabForShot(instance: BrowserInstance, tab: BrowserTab, own: { width: number; height: number }): void {
+    const page = tab.tabView.webContents
+    if (!page || page.isDestroyed()) return
 
-    try {
-      parking = new BrowserWindow({
-        x: spot.x,
-        y: spot.y,
-        width: own.width,
-        height: own.height,
-        show: false,
-        frame: false,
-        // Same pair as the parking window that holds parked tabs (`parkingWindowFor`): frameless plus
-        // this, or macOS pulls a window it judges unreachable back onto a display — and this one is
-        // shown (`showInactive`), so it would be a window nobody may see appearing on screen.
-        enableLargerThanScreen: true,
-        // Same reason as the parking window that holds parked tabs (`parkingWindowFor`): the level has
-        // to be there at construction for AppKit to default the window's collection behaviour to
-        // `transient` (which is what Exposé / "Show All Windows" hides).
-        alwaysOnTop: true,
-        skipTaskbar: true,
-        backgroundColor: getBackgroundColor(nativeTheme.shouldUseDarkColors),
-      })
-      parking.contentView.addChildView(tab.tabView)
-      tab.tabView.setBounds({ x: 0, y: 0, width: own.width, height: own.height })
-      this.hideFromWindowLists(parking)
-      parking.showInactive()
-      // Shown for one frame and lived in for less than a shot, but it is shown: where it ended up may
-      // not be on a display (`keepOffEveryDisplay`).
+    tab.tabView.setBounds({ x: 0, y: 0, width: own.width, height: own.height })
+    const parking = this.parkingWindowFor(instance)
+    if (parking.isDestroyed()) return
+
+    const [width, height] = parking.getContentSize()
+    if (own.width > width || own.height > height) {
+      parking.setContentSize(Math.max(width, own.width), Math.max(height, own.height))
       this.keepOffEveryDisplay(parking)
-      await this.sleep(SCREENSHOT_FIRST_FRAME_MS)
-
-      return await this.capturePageImage({
-        tab,
-        rect,
-        useHiddenCaptureOptions: false,
-        ...imageOpts,
-      })
-    } finally {
-      // Handed back to wherever it belongs now, having kept the viewport the shot was taken at: the
-      // tab on screen goes back into the window (the person may have resized it while the page was
-      // away, and this is the tab they are looking at), and a tab that is not showing goes back to
-      // the window it lives in (`parkTab`). The overlay belongs above the page exactly when that page
-      // is the locked one, so it is told either way.
-      if (!instance.window.isDestroyed() && !tab.tabView.webContents.isDestroyed()) {
-        if (instance.activeTabId === tab.id) {
-          instance.window.contentView.addChildView(tab.tabView)
-          // The window's page area — unless the window has no size right now (it may be minimized,
-          // which is exactly how a shot of a hidden window is asked for): then this tab goes back to
-          // the viewport it already had, rather than to a made-up one (`windowHasSize`).
-          tab.tabView.setBounds(this.windowHasSize(instance) ? this.pageAreaBounds(instance) : own)
-        } else {
-          this.parkTab(instance, tab, own)
-        }
-        this.restackViews(instance)
-        this.updateNativeOverlayState(instance)
-      }
-      if (parking && !parking.isDestroyed()) parking.destroy()
     }
+    parking.contentView.addChildView(tab.tabView)
+    // …and bring it to the front: a sibling parked after it would otherwise be sitting on top, and a
+    // view that is never the top one is never composited (see `raiseParkedView`).
+    this.raiseParkedView(instance, tab)
+  }
+
+  /**
+   * Bring a parked tab's view to the front of its parking window, and that window to the front of any
+   * other parking window that shares its off-screen spot.
+   *
+   * Two things can hide a parked view, and either leaves it with **nothing to copy**: a sibling parked
+   * on top of it in the same window (every parked view sits at {0,0}), and another workspace's parking
+   * window on the same spot (`offscreenSpot` is a function of the size). What is lost is not the
+   * picture of a live page but the surface itself — a view that has never been the top one has never
+   * been composited, and a view with no surface answers no capture. A covered view that *had* been up
+   * before keeps answering, which is what a shot used to rely on by accident (measured in
+   * `parking-raise-capture.cjs`: the covered view there had been the only child when the window was
+   * first shown).
+   *
+   * `addChildView` raises a view among its siblings, `moveTop` raises a window among windows, and
+   * neither takes focus — the window is off every display, so raising it is invisible.
+   */
+  private raiseParkedView(instance: BrowserInstance, tab: BrowserTab): void {
+    const parking = instance.parkingWindow
+    if (!parking || parking.isDestroyed() || tab.tabView.webContents.isDestroyed()) return
+    try {
+      parking.contentView.addChildView(tab.tabView)
+      parking.moveTop()
+    } catch {
+      // A platform without one of these: nothing to do.
+    }
+  }
+
+  /**
+   * Hand a tab's view back where it belongs, having kept the viewport the shot was taken at: the tab
+   * this window holds goes back into it (they may have resized it while the view was away, and this is
+   * the tab they are looking at), and every other tab — including the one the window is *on* while it
+   * is away — goes back to the window it lives in (`parkTab`). Which of the two is `tabHome`'s
+   * answer, the same one the layout uses. The overlay belongs above the page exactly when that page is
+   * the locked one, so it is told either way.
+   */
+  private putTabBack(instance: BrowserInstance, tab: BrowserTab, own: { width: number; height: number }): void {
+    if (instance.window.isDestroyed() || tab.tabView.webContents.isDestroyed()) return
+    if (this.tabHome(instance, tab) === 'window') {
+      instance.window.contentView.addChildView(tab.tabView)
+      // The window's page area — the size it has, or the last size it reported while it is minimized
+      // (`windowContentSize`), which is the viewport the shot was taken at.
+      tab.tabView.setBounds(this.pageAreaBounds(instance))
+    } else {
+      this.parkTab(instance, tab, own)
+    }
+    this.restackViews(instance)
+    this.updateNativeOverlayState(instance)
   }
 
   /**
@@ -3285,8 +3416,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * `excludedFromShownWindowsMenu` takes it out of the menu. Mission Control hides a window whose
    * AppKit collection behaviour is `transient`, which is the default for any level other than
    * `normal` — hence the float level. Neither call places the window; staying off every display is
-   * `enableLargerThanScreen` at construction (`parkingWindowFor`, `captureWhileParked`) plus
-   * `keepOffEveryDisplay`.
+   * `enableLargerThanScreen` at construction (`parkingWindowFor`) plus `keepOffEveryDisplay`.
    */
   private hideFromWindowLists(window: BrowserWindow): void {
     window.excludedFromShownWindowsMenu = true
@@ -3372,10 +3502,16 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       rect?: { x: number; y: number; width: number; height: number }
       useHiddenCaptureOptions: boolean
       dpr?: number
+      /**
+       * The size the picture should come back at, in CSS pixels — the viewport for a full
+       * shot, the region for a clipped one. Given, the image is brought to exactly this
+       * size, which is what keeps its pixels the same coordinates `click-at` uses.
+       */
+      cssSize?: { width: number; height: number }
       format?: 'png' | 'jpeg'
       jpegQuality?: number
     },
-  ): Promise<{ buffer: Buffer; format: 'png' | 'jpeg' } | null> {
+  ): Promise<{ buffer: Buffer; format: 'png' | 'jpeg'; width: number; height: number } | null> {
     const captureOpts = options.useHiddenCaptureOptions
       ? { stayHidden: true, stayAwake: true }
       : undefined
@@ -3391,17 +3527,20 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       return null
     }
 
-    // Downscale from device pixels to CSS pixels so screenshot coordinates
-    // match click-at viewport coordinates (uses Skia Lanczos via 'best')
+    // Bring the shot back to the page's CSS pixels so its coordinates match `click-at`'s: the
+    // known CSS size (the viewport, or the region that was asked for) is used when it is there —
+    // the numbers the caller's coordinates already live in — with the device scale as the fallback.
     const dpr = options.dpr ?? 1
-    if (dpr > 1) {
-      const size = image.getSize()
-      image = image.resize({
-        width: Math.round(size.width / dpr),
-        height: Math.round(size.height / dpr),
-        quality: 'best',
-      })
+    const raw = image.getSize()
+    const target = options.cssSize && options.cssSize.width > 0 && options.cssSize.height > 0
+      ? { width: Math.round(options.cssSize.width), height: Math.round(options.cssSize.height) }
+      : { width: Math.round(raw.width / dpr), height: Math.round(raw.height / dpr) }
+
+    if (target.width > 0 && target.height > 0 && (target.width !== raw.width || target.height !== raw.height)) {
+      image = image.resize({ width: target.width, height: target.height, quality: 'best' })
     }
+
+    const size = image.getSize()
 
     const fmt = options.format ?? 'png'
     const encoded = fmt === 'jpeg'
@@ -3412,7 +3551,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       return null
     }
 
-    return { buffer: encoded, format: fmt }
+    return { buffer: encoded, format: fmt, width: size.width, height: size.height }
   }
 
   private async waitForScreenshotReadiness(instanceId: string): Promise<void> {
@@ -3638,10 +3777,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const requestedHeight = Math.max(240, Math.floor(height))
     const wanted = { width: requestedWidth, height: requestedHeight }
 
-    if (tab.id !== activeTab(instance).id) {
-      // Not the tab on screen: resize the view where it is parked. `parkTab` grows the parking window
+    if (this.tabHome(instance, tab) !== 'window') {
+      // Not the tab the window holds: resize the view where it lives. `parkTab` grows the parking window
       // to fit what it holds — a window clips its children, and a clipped view is a view with a
-      // smaller viewport — and leaves the person's window out of it entirely.
+      // smaller viewport — and leaves the person's window out of it entirely. This is the agent's
+      // ordinary case: the window it works in is hidden, so its tab lives in the parking window.
       this.parkTab(instance, tab, wanted)
       const parked = tab.tabView.getBounds()
       mainLog.info(`[browser-pane] resized a parked tab's view id=${id} tab=${tab.id} to=${parked.width}x${parked.height}`)
@@ -3812,6 +3952,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const result = await this.sessionRecordings.start({
       sessionId,
       tabId: tab.id,
+      instanceId: instance.id,
       dir: args.dir,
       ttlMs: args.ttlMs,
       source: tab.tabView.webContents,
@@ -3866,7 +4007,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     if (!finished) return { stopped: false, reason: 'not-recording' }
 
     // Silenced only if nothing else still covers this tab — the person may be recording it too.
-    void this.syncRecordingObserver(this.findInstanceByTabId(tabId)?.id ?? null, tabId)
+    // The window comes from the recording itself: a stop names the tab and never the window.
+    void this.syncRecordingObserver(finished.instanceId, tabId)
 
     return {
       stopped: true,
@@ -3896,7 +4038,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   private async syncRecordingObserver(instanceId: string | null, tabId: string): Promise<void> {
     if (!instanceId) return
 
-    const covered = this.tabRecorder.states().some((state) => state.tabId === tabId)
+    // Both halves of the name: a tab is `tab-3` **in its window**, and another window's `tab-3`
+    // is another tab — one that this recording has nothing to say about.
+    const covered = this.tabRecorder
+      .states()
+      .some((state) => state.instanceId === instanceId && state.tabId === tabId)
     try {
       if (covered) {
         const source = buildRecordingObserverSource()
@@ -3910,14 +4056,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // The tab may be gone, or the page may refuse the script. A recording without the page's own
       // report is still a recording: the navigations and requests are the host's, not the page's.
     }
-  }
-
-  /** The window holding a tab — for a stop, which names the tab and never the window. */
-  private findInstanceByTabId(tabId: string): BrowserInstance | null {
-    for (const instance of this.instances.values()) {
-      if (instance.tabs.some((tab) => tab.id === tabId)) return instance
-    }
-    return null
   }
 
   /** End everything a conversation is recording, because it is going away. */
@@ -4476,7 +4614,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * {@link pageAreaBounds}.
    */
   private tabAreaBounds(instance: BrowserInstance): { x: number; y: number; width: number; height: number } {
-    const [width, height] = instance.window.getContentSize()
+    const [width, height] = this.windowContentSize(instance)
     const railWidth = instance.railCollapsed ? 0 : TAB_RAIL_WIDTH
     return {
       x: railWidth,
@@ -4549,27 +4687,32 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    */
   private restackViews(instance: BrowserInstance): void {
     if (instance.window.isDestroyed()) return
-    const page = activeTab(instance).tabView
+    const page = activeTab(instance)
     const overlay = instance.nativeOverlayView
     const chrome = instance.chromeView
-    const held = activeTab(instance).heldBy !== null
+    const held = page.heldBy !== null
     const menuUp = instance.toolbarMenuOpen || instance.toolbarMenuOverlayActive
+    // A page whose home is the parking window is not this window's to place: `addChildView` here would
+    // move it back into a window that cannot hand it a surface (`tabHome`). What is left in that
+    // window is the chrome and the overlay — nobody is looking at it, and the coming back lays the
+    // page out again.
+    const pageHere = this.tabHome(instance, page) === 'window'
 
     if (menuUp) {
       // overlay < page < chrome: the menu has to be over the page it hangs across.
       instance.window.setTopBrowserView(overlay)
-      instance.window.contentView.addChildView(page)
+      if (pageHere) instance.window.contentView.addChildView(page.tabView)
       instance.window.setTopBrowserView(chrome)
     } else if (held) {
       // chrome < page < overlay: the agent's frame and shield are over the page.
       instance.window.setTopBrowserView(chrome)
-      instance.window.contentView.addChildView(page)
+      if (pageHere) instance.window.contentView.addChildView(page.tabView)
       instance.window.setTopBrowserView(overlay)
     } else {
       // overlay < chrome < page: the page is the person's.
       instance.window.setTopBrowserView(overlay)
       instance.window.setTopBrowserView(chrome)
-      instance.window.contentView.addChildView(page)
+      if (pageHere) instance.window.contentView.addChildView(page.tabView)
     }
   }
 
@@ -4980,26 +5123,30 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * person does to the window (measured in `apps/electron/spike/background-viewport.ts`).
    */
   private layoutTabView(instance: BrowserInstance): void {
-    // A window with no size of its own has no geometry to hand out: laying anything out from it would
-    // write the floors in `tabAreaBounds` into the page — 193×93, which looks like a size rather than
-    // a mistake (`windowHasSize`). The window coming back is what lays out again.
-    if (!this.windowHasSize(instance)) return
-
-    // The page panel, not the whole tab area: the gutter around it is the overlay's to paint
-    // (`pageAreaBounds`), and the page's own corners are cut out of its view
-    // (`applyPageCornerRadius`) so the surface behind them shows through.
-    const area = this.pageAreaBounds(instance)
     const onScreen = activeTab(instance)
+    const inTheWindow = this.tabHome(instance, onScreen) === 'window'
 
-    // **The tab on screen is the only one laid out**, and it is laid out to the window. Every other
-    // tab is parked in the window they live in, at the viewport it has — so the person dragging the
-    // window is not a reason for an agent's background page to reflow, and the agent measured that
+    // A window that holds its page is laid out **to** the window — and only that tab is. A window with
+    // no size of its own has no geometry to hand out: laying anything out from it would write the
+    // floors in `tabAreaBounds` into the page — 193×93, which looks like a size rather than a mistake
+    // (`windowHasSize`). The window coming back is what lays out again. Every *other* tab needs
+    // nothing from this window, so that check does not gate them: a window that is away is not a home
+    // (`tabHome`), and the tab it is on belongs in the parking window with them.
+    if (inTheWindow) {
+      if (!this.windowHasSize(instance)) return
+      // The page panel, not the whole tab area: the gutter around it is the overlay's to paint
+      // (`pageAreaBounds`), and the page's own corners are cut out of its view
+      // (`applyPageCornerRadius`) so the surface behind them shows through.
+      onScreen.tabView.setBounds(this.pageAreaBounds(instance))
+    }
+
+    // Everything the window is not holding is parked at the viewport it has — so the person dragging
+    // the window is not a reason for an agent's background page to reflow, and the agent measured that
     // page, its elements and their coordinates at the size it has. That a parked tab keeps its
     // viewport is the whole reason it is parked in a *shown* window rather than moved out of this
     // one (`parkTab`, `parkingWindowFor`).
-    onScreen.tabView.setBounds(area)
     for (const tab of instance.tabs) {
-      if (tab.id === onScreen.id) continue
+      if (this.tabHome(instance, tab) === 'window') continue
       this.parkTab(instance, tab)
     }
 
@@ -5148,21 +5295,39 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   /**
    * Whether the window has a size to lay anything out to.
    *
-   * A **minimized** window on Windows reports `getContentSize()` 0×0 (measured), and the floors in
-   * `tabAreaBounds` then turn that into a *plausible* 193×93 (200-7 by 100-7) instead of something
-   * obviously broken — so a layout run at that moment writes a fiction into the page's view, and the
-   * page stays that small after the window comes back (measured: window 1200×900, page `innerWidth`
-   * 193, until the next layout — a tab switch — put it right. The person's report: "怎么用着用着浏览器
-   * 窗口会变成一个很小的值 193×93。切换标签界面又恢复了").
-   *
-   * Nothing laid out while the window is minimized is visible to anyone, so the honest answer is to
-   * leave every view exactly as it is — a tab in the parking window keeps its viewport anyway — and
-   * lay out when there is a window to lay out into again.
+   * A **minimized** window on Windows reports `getContentSize()` 0×0 (measured), and a layout run made
+   * from that used to write a fiction into the page's view — the floors in `tabAreaBounds` read as a
+   * size (193×93) rather than as a mistake, and the page stayed that small after the window came back
+   * (measured: window 1200×900, page `innerWidth` 193, until the next layout — a tab switch — put it
+   * right. The person's report: "怎么用着用着浏览器窗口会变成一个很小的值 193×93。切换标签界面又恢复了").
+   * The size a window has while it is minimized is now read from what it last reported
+   * (`windowContentSize`), so that particular fiction is gone — but nothing laid out while the window
+   * is minimized is visible to anyone, so laying out is still left until there is a window to lay out
+   * into again: every view keeps what it has (a tab in the parking window keeps its viewport anyway)
+   * and the restore lays out again (`cameBack`).
    */
   private windowHasSize(instance: BrowserInstance): boolean {
     if (instance.window.isDestroyed() || instance.window.isMinimized()) return false
     const [width, height] = instance.window.getContentSize()
     return width > 0 && height > 0
+  }
+
+  /**
+   * The window's content size — the live one when it has one, and the last one it reported when it
+   * has none.
+   *
+   * Minimizing does not change a window's size, only where it is, so a window that reports 0×0 while
+   * minimized did have a size a moment ago and still does. Reading it here (and remembering it on the
+   * way past, which is also how it is refreshed as the person resizes the window) is what lets a tab
+   * **born** into that moment be created at the size it would have had otherwise.
+   */
+  private windowContentSize(instance: BrowserInstance): [number, number] {
+    const [width, height] = instance.window.getContentSize()
+    if (width > 0 && height > 0) {
+      instance.lastContentSize = { width, height }
+      return [width, height]
+    }
+    return [instance.lastContentSize.width, instance.lastContentSize.height]
   }
 
   /**
@@ -5182,12 +5347,50 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     let width = 1
     let height = 1
     for (const tab of instance.tabs) {
-      if (tab.id === activeTab(instance).id) continue
+      if (this.tabHome(instance, tab) === 'window') continue
       const bounds = tab.tabView.getBounds()
       width = Math.max(width, Math.ceil(bounds.width))
       height = Math.max(height, Math.ceil(bounds.height))
     }
     return { width, height }
+  }
+
+  /**
+   * Where a tab's view belongs: **in the window** when that window is the one showing this tab *and*
+   * can hand out a surface for it, and in the parking window otherwise.
+   *
+   * "Can hand out a surface for it" has two parts, and the second is the one that is easy to get
+   * wrong. **First**: a window that has never been on a display has a surface *nowhere*, on any
+   * platform — a capture of one answers at once with "no surface" (`capture-methods.cjs`, the
+   * `never-shown` rows), which is exactly why the parking window is *shown*. **Second**: a window that
+   * has been up and was hidden since keeps the surface it got there, but whether the platform lets it
+   * be copied while hidden is not universal — that is `canCaptureHiddenWindows`, and it is the only
+   * case that flag is about.
+   *
+   * Both parts matter here because the agent's window is **born hidden**. Asking only the platform
+   * half (true on macOS) would leave the tab in a window that has never been on a display: composited
+   * nowhere, so every shot would pay a refusal before being taken from the parking window anyway.
+   *
+   * **Minimized** is the third way of not being on screen, and it is the one that answers: measured,
+   * `capturePage` returns the tab's own pixels in ~15ms while the window is minimized, both forms, one
+   * row per tab (`capture-methods.cjs`, the `minimized` rows) — where `hidden-after-show` returns
+   * nothing at all. So minimizing is deliberately *not* a reason to park: `isVisible` stays true for
+   * it, the shot is taken where the tab is, and no refusal is paid first.
+   *
+   * This is the agent's ordinary case. The window it works in is born hidden and mostly stays that
+   * way, so the tab a command works from is already parked: a shot finds a surface where the tab is
+   * instead of moving it in and out around every capture (`parkTabForShot`), and the person's window
+   * — when they open it — is the one place the page is *not* until it is asked for.
+   */
+  private tabHome(instance: BrowserInstance, tab: BrowserTab): 'window' | 'parking' {
+    if (instance.activeTabId !== tab.id) return 'parking'
+    if (instance.isVisible) return 'window'
+    // Hidden — and the two ways of being hidden are not the same state. A window that has never been
+    // on a display is composited nowhere: a capture of it answers at once with "no surface", whatever
+    // the platform says about hidden windows (`capture-methods.cjs` — `never-shown` errors
+    // immediately, while `hidden-after-show` is the state that claim is about). Only for the second
+    // kind, and only where the platform answers for it, is a window that is away still a home.
+    return instance.hasBeenShown && this.canCaptureHiddenWindows ? 'window' : 'parking'
   }
 
   /**
@@ -5212,10 +5415,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       width: tab.tabView.getBounds().width,
       height: tab.tabView.getBounds().height,
     }
-    // At the window's corner: parked views sit at the same spot and overlap, which costs the ones
-    // underneath their *surface* (Chromium treats a covered view as hidden) and costs none of them
-    // their viewport — the layout is what the freeze is for, and a shot of a parked tab is taken in
-    // a window of its own anyway (`captureWhileParked`).
+    // At the window's corner: parked views sit at the same spot and overlap. That costs none of them
+    // their viewport — the layout is what the freeze is for — but it does cost the ones underneath
+    // their **surface**: a view that never becomes the top one is never composited, and a view with no
+    // surface answers no capture. So a shot brings the tab it wants to the front first
+    // (`raiseParkedView`) instead of trusting whatever happens to be on top.
     tab.tabView.setBounds({ x: 0, y: 0, width: own.width, height: own.height })
     const parking = this.parkingWindowFor(instance)
     if (parking.isDestroyed()) return
@@ -5868,8 +6072,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         const tab = activeTab(inst)
         const state = this.tabRecorder.start({
           // Which tab this is, is part of the recording's identity now: the person and a
-          // conversation may each be recording this same tab.
+          // conversation may each be recording this same tab. The window is the other half of
+          // that name, and it is the one the chrome spoke for.
           tabId: tab.id,
+          instanceId: inst.id,
           // **One fixed place, the app's own** — not the downloads folder, and not a conversation's.
           // It is still the person's file (a conversation is not what a demo is for), but downloads
           // is where files are handed around, and a recording now carries what was typed into the
@@ -6024,6 +6230,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const buf = result.imageBuffer
     return {
       imageFormat: result.imageFormat,
+      imageWidth: result.imageWidth,
+      imageHeight: result.imageHeight,
       imageBytes: new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength),
       metadata: result.metadata,
     }
@@ -6429,6 +6637,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     instance.window.show()
     instance.window.focus()
     instance.isVisible = true
+    instance.hasBeenShown = true
     this.emitStateChange(instance)
     // A window being shown is also the tab on screen getting the keyboard (`focusShownTab`):
     // the address bar for a new-tab page, the page for a real one. Forced — the window's own
@@ -6813,7 +7022,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       })
 
       // And into the recording's own log, if this tab is being recorded (`recording-sidecar.ts`).
-      this.tabRecorder.noteEvent(located.tab.id, {
+      this.tabRecorder.noteEvent(located.instance.id, located.tab.id, {
         type: 'request',
         method: details.method ?? 'GET',
         url: details.url ?? '',
@@ -6843,7 +7052,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       })
 
       // A request that never came back is still something the page did.
-      this.tabRecorder.noteEvent(located.tab.id, {
+      this.tabRecorder.noteEvent(located.instance.id, located.tab.id, {
         type: 'request',
         method: details.method ?? 'GET',
         url: details.url ?? '',
@@ -7113,6 +7322,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     instance.window.on('show', () => {
       instance.isVisible = true
+      // It has now been on a display, which is the moment this window acquired a surface — and the
+      // difference between it and one that has never been shown (`hasBeenShown`, `tabHome`).
+      instance.hasBeenShown = true
+      // The window can hand out a surface again, so the tab it is on comes back into it (`tabHome`) —
+      // laid out before anything below reads the window's state, and before the person can see it.
+      this.layoutAllViews(instance)
       this.emitStateChange(instance)
       this.pushToolbarState(instance)
       this.updateNativeOverlayState(instance)
@@ -7123,6 +7338,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     instance.window.on('hide', () => {
       instance.isVisible = false
+      // …and the tab goes back to the parking window, which is the one place a surface exists for it
+      // while the window is away (`tabHome`).
+      this.layoutAllViews(instance)
       this.emitStateChange(instance)
       this.updateNativeOverlayState(instance)
     })
@@ -7180,15 +7398,20 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.applyPageCornerRadius(tab)
 
     // A tab is **born at the window's current page area** — a viewport has to exist from the first
-    // frame — and where its view goes depends on whether it is the tab on screen. The one on screen
-    // goes in the window itself, above the overlay that is already there (everything the overlay
-    // draws is *around* the page, so below is where the page belongs; from here on
-    // `updateNativeOverlayState` decides which of the two is on top, because that is also what "this
-    // tab is locked" means). A tab opened behind the person's (`activate: false`, how an agent's tab
-    // is opened) is **created in the parking window** and stays there, at this size, until it comes
-    // forward — the window the person sees never holds a page that is not on screen.
+    // frame — and where its view goes depends on whether that window is the one holding it
+    // (`tabHome`): the tab that is both the window's and showable goes in the window itself, above the
+    // overlay that is already there (everything the overlay draws is *around* the page, so below is
+    // where the page belongs; from here on `updateNativeOverlayState` decides which of the two is on
+    // top, because that is also what "this tab is locked" means). Everything else — a tab opened
+    // behind the person's (`activate: false`, how an agent's tab is opened), and any tab whose window
+    // is not on screen — is **created in the parking window** and stays there at this size until it
+    // comes forward.
+    //
+    // A minimized window reports no size of its own on Windows, and minimizing does not change a
+    // window's size — only where it is — so the tab is born at the size the window would hand out if
+    // it were not minimized (`windowContentSize` keeps the last size it reported).
     const bornAt = this.pageAreaBounds(instance)
-    if (instance.activeTabId === tab.id) {
+    if (this.tabHome(instance, tab) === 'window') {
       tab.tabView.setBounds(bornAt)
       instance.window.contentView.addChildView(tab.tabView)
     } else {
@@ -7255,7 +7478,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // page by the app's surface (`tabBackdropFor`).
       tab.tabView.setBackgroundColor(this.tabBackdropFor(tab))
       mainLog.info(`[browser-pane] did-navigate id=${instance.id} from=${previousUrl} to=${tab.currentUrl}`)
-      this.tabRecorder.noteEvent(tab.id, { type: 'navigate', url: tab.currentUrl })
+      this.tabRecorder.noteEvent(instance.id, tab.id, { type: 'navigate', url: tab.currentUrl })
       tab.canGoBack = tabWc.canGoBack()
       tab.canGoForward = tabWc.canGoForward()
       // Drain in-flight count — prior page's requests are cancelled on navigation
@@ -7299,7 +7522,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       tab.canGoForward = tabWc.canGoForward()
       // A route change is a move worth recording: the address a step ended on is often the whole
       // answer to "where did this leave us" (`recording-sidecar.ts`).
-      this.tabRecorder.noteEvent(tab.id, { type: 'navigate', url: tab.currentUrl, inPage: true })
+      this.tabRecorder.noteEvent(instance.id, tab.id, { type: 'navigate', url: tab.currentUrl, inPage: true })
 
       void this.maybeHandleEmptyStateLaunch(instance, url).then((handled) => {
         if (handled) {
@@ -7380,7 +7603,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         // reason the theme signal above is: it is a signal, not something the page said
         // (`recording-observer.ts`).
         const reported = parseRecordingSignal(message)
-        if (reported) this.tabRecorder.noteEvent(tab.id, reported)
+        if (reported) this.tabRecorder.noteEvent(instance.id, tab.id, reported)
         return
       }
 
