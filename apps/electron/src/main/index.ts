@@ -257,7 +257,7 @@ if (process.defaultApp) {
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
 
 // Apply network proxy settings early (Node-level only — Electron sessions require app.whenReady)
-import { applyConfiguredProxySettings } from './network-proxy'
+import { applyConfiguredProxySettings, applyConfiguredProxyToSession } from './network-proxy'
 void applyConfiguredProxySettings()
 
 // Accept self-signed / untrusted certificates when connecting to a user-configured remote server.
@@ -548,6 +548,9 @@ app.whenReady().then(async () => {
     // Initialize browser pane manager (always — even in headless, for deps wiring)
     browserPaneManager = new BrowserPaneManager()
     browserPaneManager.setWindowManager(windowManager)
+    // A browser partition is created per workspace, on first use — after the proxy settings were
+    // applied. This is how such a partition still gets them.
+    browserPaneManager.setProxyApplier(applyConfiguredProxyToSession)
     browserPaneManager.registerToolbarIpc()
     browserPaneManager.registerCapabilityIpc()
 

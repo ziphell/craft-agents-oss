@@ -345,7 +345,37 @@ const TOOLBAR_CHANNELS = {
   RAIL_TOGGLE: 'browser-toolbar:rail-toggle',
 } as const
 export const BROWSER_PANE_SESSION_PARTITION = 'persist:browser-pane'
-const SESSION_PARTITION = BROWSER_PANE_SESSION_PARTITION
+
+/**
+ * The session partition one workspace's browser runs in — **one profile per workspace**.
+ *
+ * A partition is a Chromium profile: its own cookies, `localStorage`, caches and logins. Keying it
+ * by the workspace is what makes "which account is this window signed in as" a fact about the
+ * workspace rather than about the app, so two workspaces can hold two accounts of the same site at
+ * once and neither can see the other's session.
+ *
+ * `null` is its own bucket, the same convention windows and `downloadsByWorkspace` already use: a
+ * caller with no workspace context is not a workspace, and the profile it works in is nobody's. It
+ * also keeps the bare legacy name — the profile every workspace used to share — so that a caller
+ * with no workspace lands exactly where it always has.
+ */
+export function browserPanePartition(workspaceId: string | null): string {
+  return workspaceId ? `${BROWSER_PANE_SESSION_PARTITION}-${workspaceId}` : BROWSER_PANE_SESSION_PARTITION
+}
+
+/**
+ * Every browser partition this app has opened, by name.
+ *
+ * A partition is created lazily, when a workspace first opens its browser window, so there is no
+ * list to read anywhere else — and the proxy layer has to configure **all** of them, including a
+ * partition that did not exist when the settings were last applied.
+ */
+const browserPaneSessions = new Map<string, ElectronSession>()
+
+/** The browser sessions that exist, for layers that must configure every one of them. */
+export function listBrowserPaneSessions(): ElectronSession[] {
+  return [...browserPaneSessions.values()]
+}
 
 /**
  * The container the record button asked for, from the set it may ask for.
@@ -627,20 +657,29 @@ interface BrowserInstance {
    */
   workspaceId: string | null
   /**
+   * The session every view of this window is built on — the workspace's own profile.
+   *
+   * Held rather than re-derived from {@link workspaceId}, because the partition is a fact of the
+   * window: it is chosen once, when the window is created (`browserPanePartition`), and every view
+   * that comes later — a new tab, a restored tab — has to land on the profile the window is
+   * already signed into rather than on whatever the workspace resolves to by then.
+   */
+  session: ElectronSession
+  /**
    * Whether the window is **up** — shown, and not hidden since.
    *
-   * Deliberately not `window.isVisible()`: a **minimized** window is a home for its tab either way,
-   * and that is the shape of the answer rather than a shortcut. Measured, a minimized window answers a
-   * shot from itself in ~15ms on Windows and ~5–18ms on macOS (`spike/capture-methods.cjs`, the
-   * `minimized` rows, one per platform) while a *hidden* one answers the platform's full answer —
-   * nothing at all on Windows, its own pixels on macOS — so minimizing is not a state anything here
-   * has to react to, while hiding is.
+   * Deliberately not `window.isVisible()`: that one reads false while the window is minimized on both
+   * platforms (measured), and a minimized window can still answer a shot from itself — ~15ms on
+   * Windows, ~5–18ms on macOS (`spike/capture-methods.cjs`, the `minimized` rows) — so "minimized"
+   * must not be mistaken for "away" — but it is not a *home* either, and that question is asked
+   * separately rather than through this flag: `tabHome` parks a minimized window's tab, on either
+   * platform.
    *
-   * What it reads while the window *is* minimized is a fact about the platform's events, and the two do
-   * not agree: on macOS `minimize()` emits `hide` too (measured — `minimize`, then `hide` a few ms
-   * later), so this goes false there; the tab still stays home, through `tabHome`'s other branch
-   * (`hasBeenShown && canCaptureHiddenWindows`) rather than this one, so on macOS too a minimize parks
-   * nothing.
+   * What this reads while the window *is* minimized is a fact about the platform's events, and the two
+   * do not agree (`hidden-window-usability.cjs`): on macOS `minimize()` emits `hide` a few ms later, so
+   * this goes false there; on Windows it emits no `hide` at all, so this stays true — and hiding a
+   * *minimized* window, which does emit `hide` on Windows and does not on macOS, is the only thing
+   * that takes it false in that state.
    */
   isVisible: boolean
   /**
@@ -935,9 +974,31 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   private stateChangeCallback: ((info: BrowserInstanceInfo) => void) | null = null
   private removedCallback: ((id: string) => void) | null = null
   private interactedCallback: ((id: string) => void) | null = null
-  private partitionPermissionsInitialized = false
-  private partitionDisplayMediaInitialized = false
-  private partitionObserversInitialized = false
+  /**
+   * The partitions whose one-time session setup is already done, one set per kind of setup.
+   *
+   * Keyed by the session object because there is now **more than one** browser partition (one per
+   * workspace, `browserPanePartition`), and each needs its own permissions, display-media handler
+   * and observers. Electron creates a `Session` once per partition name and hands the same object
+   * back afterwards, so the object identifies the partition exactly.
+   *
+   * One boolean per setup said the same thing while the app had a single partition — the setup ran
+   * for the first window and every later one skipped it. That is the one reading that is now wrong:
+   * a second workspace's window is a *different* session, and skipping it would leave it with no
+   * observers (no network log, no `wait network-idle`), no display-media handler (no recording) and
+   * no download hook.
+   */
+  private readonly permissionsReady = new WeakSet<ElectronSession>()
+  private readonly displayMediaReady = new WeakSet<ElectronSession>()
+  private readonly observersReady = new WeakSet<ElectronSession>()
+  /**
+   * Applied to each partition as it is created — see {@link setProxyApplier}.
+   *
+   * A workspace's partition is born the moment its browser window is, which is almost always after
+   * the proxy settings were last applied. Without this, such a partition would keep Electron's
+   * default routing and quietly bypass a configured proxy.
+   */
+  private proxyApplier: ((ses: ElectronSession) => void) | null = null
   private inFlightRequestsByWebContentsId = new Map<number, number>()
   private lastNetworkActivityByWebContentsId = new Map<number, number>()
   /**
@@ -1055,6 +1116,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.sessionLabelResolver = fn
   }
 
+  /**
+   * Injected (see main/index.ts) — how the proxy layer reaches a partition created after its
+   * settings were last applied. A partition per workspace is created on first use, so "apply the
+   * settings when they change" alone would miss every workspace that opens its browser later.
+   */
+  setProxyApplier(fn: (ses: ElectronSession) => void): void {
+    this.proxyApplier = fn
+  }
+
   onStateChange(callback: (info: BrowserInstanceInfo) => void): void {
     this.stateChangeCallback = callback
   }
@@ -1086,7 +1156,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
      */
     const tabView = new WebContentsView({
       webPreferences: {
-        partition: SESSION_PARTITION,
+        // The partition is named once, where the window's session is created (`createInstance`),
+        // and every view of the window takes that session. Naming it again here would be a second
+        // copy of the same fact, free to drift — and it is not needed: `partition` is only the
+        // string form of the session, and Electron prefers `session` when both are given.
         session: ses,
         contextIsolation: true,
         nodeIntegration: false,
@@ -1234,7 +1307,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.loadTab(instance, firstTab, first.url)
 
     for (const page of rest) {
-      const tab = this.buildTab(session.fromPartition(SESSION_PARTITION), `tab-${++instance.tabCounter}`)
+      const tab = this.buildTab(instance.session, `tab-${++instance.tabCounter}`)
       if (page.title) tab.title = page.title
       tab.currentUrl = page.url
       instance.tabs.push(tab)
@@ -1261,7 +1334,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // The pages this workspace's window had last time, when the person asked for them back.
     const restored = this.restoredTabsForWorkspace(workspaceId)
 
-    const ses = session.fromPartition(SESSION_PARTITION)
+    // One profile per workspace, named here and nowhere else: every view this window builds takes
+    // this session (`BrowserInstance.session`).
+    const partition = browserPanePartition(workspaceId)
+    const ses = session.fromPartition(partition)
+    browserPaneSessions.set(partition, ses)
+    // The partition is almost always born after the proxy settings were last applied, so it goes to
+    // the proxy layer now rather than waiting for the next settings change (which may never come).
+    this.proxyApplier?.(ses)
     // Designs are served on this partition too, so a design can be opened as a tab and
     // read or driven with the browser tools. What a page here may reach is bounded by
     // the host, not by the partition: a design's `data/` is never served (see
@@ -1322,7 +1402,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // Fully chromeless — toolbar is rendered in a dedicated BrowserView
       frame: false,
       webPreferences: {
-        partition: SESSION_PARTITION,
         session: ses,
         contextIsolation: true,
         nodeIntegration: false,
@@ -1356,7 +1435,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const chromeView = new BrowserView({
       webPreferences: {
         preload: join(__dirname, 'browser-toolbar-preload.cjs'),
-        partition: SESSION_PARTITION,
         session: ses,
         contextIsolation: true,
         nodeIntegration: false,
@@ -1381,7 +1459,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
      */
     const nativeOverlayView = new BrowserView({
       webPreferences: {
-        partition: SESSION_PARTITION,
         session: ses,
         contextIsolation: true,
         nodeIntegration: false,
@@ -1408,6 +1485,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // starts here every time the window is built, so names never carry over from a past run.
       tabCounter: 1,
       workspaceId,
+      // The profile this window is signed into, fixed at birth — see the interface's own note.
+      session: ses,
       isVisible: false,
       hasBeenShown: false,
       isHiding: false,
@@ -1614,7 +1693,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       return unwritten.id
     }
 
-    const tab = this.buildTab(session.fromPartition(SESSION_PARTITION), `tab-${++instance.tabCounter}`)
+    const tab = this.buildTab(instance.session, `tab-${++instance.tabCounter}`)
     // The address is written **now**, not when the page commits — the same reason `restoreTabs`
     // writes it: the moment this tab is put on screen has to read it as a page rather than as the
     // blank tab it started as (`isNewTabPage`). A caller that loads the address itself says it with
@@ -5329,6 +5408,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * went unapplied *silently*, answering with the viewport it had asked for while the page kept the
    * old one (`minimized (today)`: page 900×620, answered 1400×900; `reported-size`: page 1400×900).
    * On Windows the 0×0 answer is what refuses it, exactly as before, and the tab keeps the size it had.
+   * Whether the window *holds* its tab is a different question, asked separately and directly
+   * (`tabHome` — a minimized window holds nothing, on either platform).
    */
   private windowHasSize(instance: BrowserInstance): boolean {
     if (instance.window.isDestroyed()) return false
@@ -5395,14 +5476,23 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * half (true on macOS) would leave the tab in a window that has never been on a display: composited
    * nowhere, so every shot would pay a refusal before being taken from the parking window anyway.
    *
-   * **Minimized** is the third way of not being on screen, and it is the one that answers: measured,
-   * `capturePage` returns the tab's own pixels in ~15ms while the window is minimized, both forms, one
-   * row per tab (`capture-methods.cjs`, the `minimized` rows on Windows and on macOS) — where a
-   * *hidden* window's answer is the platform's own, nothing at all on Windows. So minimizing is
-   * deliberately *not* a reason to park: the shot is taken where the tab is, and no refusal is paid
-   * first. Which branch below keeps it home is a fact about the platform's events rather than a choice:
-   * on macOS `minimize()` emits `hide` too (measured), so it is `canCaptureHiddenWindows` that answers
-   * there rather than `isVisible`.
+   * **Minimized** is the third way of not being on screen, and it is the one that parks its tab — on
+   * both platforms, as one rule. A shot is not the reason: measured, `capturePage` returns the tab's
+   * own pixels in ~15ms while the window is minimized, both forms, one row per tab (`capture-methods.cjs`,
+   * the `minimized` rows on Windows and on macOS). The reason is that a minimized window is not a home:
+   * it is not what the person is looking at, and on Windows it cannot hand out geometry either —
+   * measured with a view left inside one (`hidden-window-usability.cjs`), `view.setBounds` moves the
+   * view while the page's viewport stays put (no `resize`, the page keeps its size), so a
+   * `viewport-resize` asked then is lost and a shot comes back at the old viewport. macOS does follow
+   * `setBounds` there, so parking is not *needed* on that platform — it is kept anyway: the move costs
+   * the page nothing (the view keeps its size and the parking window grows to fit it, `parkTab`), and
+   * one rule is worth more than a behaviour that differs per platform *by accident* (which is what
+   * inferring "no size" would have been — only Windows reports none while minimized). The way back is
+   * `cameBack`, which lays the tab out again.
+   *
+   * Which branch below keeps a *hidden* window's tab home is a fact about the platform's events rather
+   * than a choice: on macOS `minimize()` emits `hide` too (measured — and on Windows it does not), so it
+   * is `canCaptureHiddenWindows` that answers there rather than `isVisible`.
    *
    * This is the agent's ordinary case. The window it works in is born hidden and mostly stays that
    * way, so the tab a command works from is already parked: a shot finds a surface where the tab is
@@ -5411,6 +5501,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    */
   private tabHome(instance: BrowserInstance, tab: BrowserTab): 'window' | 'parking' {
     if (instance.activeTabId !== tab.id) return 'parking'
+    // A minimized window does not hold its page, on either platform — asked directly rather than
+    // inferred from the window reporting no size, which only Windows does while minimized and which
+    // would have made this rule platform-shaped by accident.
+    if (instance.window.isDestroyed() || instance.window.isMinimized()) return 'parking'
     if (instance.isVisible) return 'window'
     // Hidden — and the two ways of being hidden are not the same state. A window that has never been
     // on a display is composited nowhere: a capture of it answers at once with "no surface", whatever
@@ -7003,8 +7097,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   private setupSessionObservers(ses: ElectronSession): void {
-    if (this.partitionObserversInitialized) return
-    this.partitionObserversInitialized = true
+    if (this.observersReady.has(ses)) return
+    this.observersReady.add(ses)
 
     // Put back the low-entropy client hints the tab's user-agent override leaves behind — the
     // engine's own values, so headers and `navigator.userAgentData` agree (`browser-client-hints.ts`
@@ -7162,8 +7256,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   private setupSessionPermissions(ses: ElectronSession): void {
-    if (this.partitionPermissionsInitialized) return
-    this.partitionPermissionsInitialized = true
+    if (this.permissionsReady.has(ses)) return
+    this.permissionsReady.add(ses)
 
     /**
      * Browser tabs here are driven by automation, so a permission prompt has no one to
@@ -7201,8 +7295,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * that frame's own pixels, not a picked window.
    */
   private setupDisplayMediaHandler(ses: ElectronSession): void {
-    if (this.partitionDisplayMediaInitialized) return
-    this.partitionDisplayMediaInitialized = true
+    if (this.displayMediaReady.has(ses)) return
+    this.displayMediaReady.add(ses)
     if (typeof ses.setDisplayMediaRequestHandler !== 'function') return
 
     ses.setDisplayMediaRequestHandler((request, callback) => {
@@ -7299,6 +7393,27 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     instance.window.on('restore', cameBack)
     instance.window.on('maximize', cameBack)
     instance.window.on('unmaximize', cameBack)
+
+    /**
+     * …and the tab goes to the parking window when the person minimizes the window.
+     *
+     * A minimized window is not a home, on either platform (`tabHome`), so this is what moves the tab
+     * out; the coming back is `cameBack` above. On macOS a minimize emits `hide` as well, which lays out
+     * already — this listener is for the platform where it does not — and laying out twice costs
+     * nothing.
+     *
+     * The move itself cannot be seen — the parking window is off every display — so it is logged. This
+     * line is the only evidence that it happened, and the only way to tell it apart from not doing it.
+     */
+    instance.window.on('minimize', () => {
+      this.layoutAllViews(instance)
+      const tab = activeTab(instance)
+      if (tab) {
+        mainLog.info(
+          `[browser-pane] minimized id=${instance.id} tab=${tab.id} home=${this.tabHome(instance, tab)}`,
+        )
+      }
+    })
 
     /**
      * Tell the chrome the pointer has left, on every way the window goes away or comes back.

@@ -17,7 +17,7 @@ import { parseNoProxyRules, parseResolvedProxy, shouldBypassProxy, splitCommaSep
 import { getLlmConnections, getNetworkProxySettings, setNetworkProxySettings } from '@craft-agent/shared/config/storage';
 import { setSystemProxyEnv } from '@craft-agent/shared/config/proxy-env';
 import type { NetworkProxySettings } from '@craft-agent/shared/config/types';
-import { BROWSER_PANE_SESSION_PARTITION } from './browser-pane-manager';
+import { listBrowserPaneSessions } from './browser-pane-manager';
 import log from './logger';
 
 /** The proxy a request should take, already narrowed to one address. */
@@ -121,25 +121,42 @@ function configureNodeProxy(proxy: EffectiveProxy | undefined): void {
   currentProxyDispatcher = dispatcher;
 }
 
+/** The Chromium proxy config the settings ask for. `direct` and `system` are Chromium's own modes:
+ *  one never proxies, the other asks the operating system. */
+function buildProxyConfig(settings: NetworkProxySettings | undefined): Electron.ProxyConfig {
+  return settings?.mode === 'custom'
+    ? buildElectronProxyConfig(settings)
+    : { mode: settings?.mode === 'system' ? 'system' : 'direct' };
+}
+
 /**
- * Configure Electron session proxies (default session + browser-pane partition).
+ * Configure Electron session proxies (the default session, and every browser partition).
  * Requires app to be ready.
  */
 async function configureElectronProxy(settings: NetworkProxySettings | undefined): Promise<void> {
   if (!app.isReady()) return;
 
-  // `direct` and `system` are Chromium's own modes: one never proxies, the other
-  // asks the operating system.
-  const proxyConfig: Electron.ProxyConfig = settings?.mode === 'custom'
-    ? buildElectronProxyConfig(settings)
-    : { mode: settings?.mode === 'system' ? 'system' : 'direct' };
-
-  const sessions = [
-    session.defaultSession,
-    session.fromPartition(BROWSER_PANE_SESSION_PARTITION),
-  ];
+  const proxyConfig = buildProxyConfig(settings);
+  // Every browser partition, not one: the browser holds a profile per workspace and creates each
+  // one on first use, so the set is not known in advance — `listBrowserPaneSessions` is that set.
+  const sessions = [session.defaultSession, ...listBrowserPaneSessions()];
 
   await Promise.all(sessions.map(ses => ses.setProxy(proxyConfig)));
+}
+
+/**
+ * Apply the persisted proxy settings to one session.
+ *
+ * For a browser partition that was created **after** the settings were last applied, which is the
+ * ordinary case for a workspace: its profile is born when its browser window is. Without this it
+ * would keep Electron's default routing and quietly bypass a configured proxy, so the pane manager
+ * is handed this as its `proxyApplier` and calls it for each new partition (see main/index.ts) —
+ * injected rather than imported there, so this module stays the only one that turns settings into a
+ * proxy config.
+ */
+export async function applyConfiguredProxyToSession(ses: Electron.Session): Promise<void> {
+  if (!app.isReady()) return;
+  await ses.setProxy(buildProxyConfig(getNetworkProxySettings()));
 }
 
 /**

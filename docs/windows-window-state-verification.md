@@ -1,5 +1,9 @@
 # Windows 窗口状态验证（交接）
 
+> **已在 Windows 上跑完（2026-10-16，Electron 39.2.7，见文末「结果」与「结论与改动」）。** 三问的答案：`minimized` 行有 ✗（几何：`setBounds` 只动 view、不动页面）→ 按判定表第 1 行**在 Windows 收窄 `tabHome`**；`windowHasSize` 的改动确认为 no-op；`minimize()` **不发** `hide`（与 macOS 相反）。
+>
+> 下面是原文，保留作为"当时怎么问的"记录。
+
 给**在 Windows 上开的那个新任务**：`docs/macos-capture-verification.md` 是 macOS 那一半，已经跑完（截图四态 × 三条路径、以及"隐藏/最小化时 view 留在窗口里还能不能做别的事"）。这份是它的 Windows 对照 —— **截图那半 Windows 早有基线**（那张表在 macOS 文档里），所以这里只量**第二轮留下的、Windows 还是空白的三个问题**，其中一个直接决定代码要不要再改。
 
 ## 为什么是这三件事
@@ -67,32 +71,56 @@ Windows 已有基线（截图，取自 macOS 文档）：`capturePage` 在 `mini
 | `window events`：`minimizeReachesTheFlag = false`（不发 `hide`） | `isVisible` 保持 true → `tabHome` = 'window' → 走"0×0 被拒"那条：最小化期间 resize 不生效但诚实。 |
 | `ourOwnHideWhileMinimized` 的 `hidesFromOurOwnHide ≠ 0`，或事后 `isMinimized` 变 false | 说明"最小化不当 hide"在 Windows 上语义不同 —— 改 `tabHome`/加守卫之前必须先考虑这条。 |
 
-## 结果（待填）
+## 结果（Windows 实测，2026-10-16）
 
 ```
-Windows 版本 / 机型：
-Electron 版本（node_modules/electron/package.json）：
-跑的命令：
+Windows 版本 / 机型：Microsoft Windows 11 专业版 / 10.0.26200.0
+Electron 版本（node_modules/electron/package.json）：39.2.7
+跑的命令：node_modules/electron/dist/electron.exe apps/electron/spike/hidden-window-usability.cjs
 ```
 
-| 状态 | usable：viewport 跟随 / resize 事件 / 帧 / 点击 / 截图 |
-|---|---|
-| visible |  |
-| minimized |  |
-| hidden-after-show |  |
-| never-shown |  |
-| parked |  |
+原始逐行日志见 `apps/electron/spike/hidden-window-usability.log`（已被本次 Windows 跑覆盖；macOS 那份在 `HEAD:apps/electron/spike/hidden-window-usability.log` 里，跑前也另存到了 `%TEMP%\hidden-window-usability.macos.log`）。
 
-| 状态 | `today` laidOut / 页面尺寸 / 答回尺寸 | `reported-size` 同上 |
+### 一、一个 view 留在窗口里够不够用（`usable`，每格都是"留在窗口里、未 park"）
+
+| 状态 | 页面 visibility | rAF/700ms | `view.setBounds` → innerWidth | 触发 resize 事件 | executeJavaScript | CDP 点击 | capturePage |
+|---|---|---|---|---|---|---|---|
+| visible | visible | 22 | 1400 ✔ | 1 ✔ | ✔ | ✔ | 1400×900 ✔ |
+| **minimized** | visible | 23 | **900 ✗** | **0 ✗** | ✔ | ✔ | 900×620（旧尺寸，不报错） |
+| hidden-after-show | visible | 22 | 1400 ✔ | 1 ✔ | ✔ | ✔ | **no answer ✗** |
+| never-shown | **hidden** | **0** | 1400（无事件） | 0 | ✔ | ✔ | **0×0 ✗** |
+| parked（屏外已显示） | visible | 23 | 1400 ✔ | 1 ✔ | ✔ | ✔ | 1400×900 ✔ |
+
+与 macOS 相比**唯一**不同的是 `minimized` 行：macOS 上 `setBounds` 会带动页面（innerWidth 1400、一个 resize 事件），Windows 上**只移动 view、不动页面**（无 resize 事件，页面保持原尺寸，截图也仍是旧尺寸）。其余逐格同向（`hidden-after-show` 在 Windows 上"活着但拍不到"，macOS 上拍得到；`never-shown` 两边都是死的）。
+
+### 二、`windowHasSize` 的改动在 Windows 上是不是 no-op —— 是
+
+| 状态 | `today` | `reported-size` |
 |---|---|---|
-| visible |  |  |
-| minimized |  |  |
-| hidden-after-show |  |  |
+| visible | laidOut ✓，窗口报 [1480,980]，页面 1400×900，答 1400×900 | 同左 |
+| **minimized** | laidOut ✗，窗口报 **[0,0]**，页面停在 900×620，答 **0×0** | **同左**（两种规则逐格相同） |
+| hidden-after-show | laidOut ✓，窗口报 [1480,980]，页面 1400×900，答 1400×900 | 同左 |
+
+### 三、窗口事件（两条都与 macOS **相反**）
 
 ```
-window events：minimize 是否发 hide =       afterRestore =
-              自己 hide 已最小化窗口：发第二次 hide 吗 =      isMinimized 仍为 =
+minimize 是否发 hide = 不发（minimizeReachesTheFlag = false，flag.isVisible 一路 true）
+               afterRestore = isMinimized false / isVisible true
+自己 hide 已最小化窗口：发第二次 hide 吗 = 发（hidesFromOurOwnHide = 1）   isMinimized 仍为 true
 ```
+
+- Windows：`minimize()` → `minimize`，**没有** `hide`（macOS 会在几 ms 后补一个 `hide`）。
+- Windows：对**已最小化**的窗口调 `hide()` **会**发 `hide`（macOS 不发第二次），且不会把它变回非最小化。
+
+## 结论与改动
+
+1. **判定表第 1 行命中**（`minimized` 的 `usable` 行有 ✗：几何）。后续讨论把结论定成**两个平台统一**：**最小化即回停车窗**，判据直接问"窗口最小化了没"（`tabHome` 里 `window.isMinimized()` → `parking`），而不是推断"窗口报不报得出尺寸"——那种推断只有 Windows 会命中，macOS 最小化照样报得出尺寸，于是同一条规则会按平台产生不同行为，而且是**隐式**的。实现：`minimize` → `layoutAllViews`（两个平台都接；macOS 上 `minimize` 另外还会补一个 `hide`，已经触发过一次布局，重复一次无成本），`restore` 走已有的 `cameBack`。搬移按设计**看不见**（停车窗在所有显示器之外），所以加了一行日志 `[browser-pane] minimized … home=parking` —— 它是唯一能观测到这件事的地方，也是"搬了"与"没搬"唯一的区分手段。
+   收益：最小化期间 `viewport-resize` 真的生效（走停车窗那一支，实测那里 `setBounds` 会带动页面、并发 `resize` 事件），截图也不会再给出"旧视口的像素配新视口的尺寸"。
+2. **判定表第 2 行命中**：Windows 上是 no-op ✔（最小化两种规则逐格相同）——`windowHasSize` 的改动只为 macOS 修 bug，Windows 行为未变；它现在只负责一件事：不从没有尺寸的窗口布局（193×93 那个病历）。
+3. **判定表第 3 行命中**（`minimizeReachesTheFlag = false`）：`isVisible` 在 Windows 最小化后**保持 true**，所以"最小化"这一维不能靠它表达 —— 这也正是新判据直接问 `isMinimized()` 的原因：macOS 上 `minimize` 会补一个 `hide`（`isVisible` 变 false）、Windows 上不会，两个平台的字段状态本来相反，靠它推断只能得到一个"按平台而变"的规则。`isVisible` 的文档已按实测补上 Windows 那一半（含"我们自己的 `hide()` 在 Windows 上会发 `hide`、macOS 不会"这条差别）。
+4. `hidden-after-show` 在 Windows 上"活着但拍不到"——绘制、`resize`、`executeJavaScript`、CDP 点击全 ✔，只有 `capturePage` 不答 —— 所以隐藏窗口里的 tab **必须** park，现状正确。
+5. `never-shown` 量到"不绘制（0 帧）、`document.hidden`、截图为 0×0"，与 macOS 同 → 停车窗对它是必须的 ✔
+6. 顺带回答原文"别做的事"里的第 4 条：`capture-hidden-frames.cjs` 的 `minimized` 状态这次**没补**（三问已经答完，且录制路径的最小化行为不在这三问的判定链上）。
 
 ## 别做的事
 

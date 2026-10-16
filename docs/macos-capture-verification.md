@@ -118,6 +118,7 @@ Electron 版本（node_modules/electron/package.json）：39.2.7
 - **但它不改变 `tabHome`**：macOS 上 `canCaptureHiddenWindows=true` 且 `hasBeenShown=true`，所以活动 tab 走另一支仍返回 `window` —— 不用 park、不先吃 refusal。判定表第 3 行猜的"每张截图先吃一次 refusal"在 macOS 上**不成立**。
 - **我们自己的 `hide()` 对已最小化窗口不发第二次 `hide`，且 `isMinimized()` 仍为 true**：所以"检测到最小化就不清 `isVisible`"的守卫会误伤我们自己的 hide 路径 —— 因此**没动行为**，只把注释改成实测口径。
 - 唯一可见差异：最小化期间上报的 `instance.isVisible=false`，于是 UI 里 `ToolbarStatusSlot` 的 agent 状态条会收起 —— 这是"窗口此刻是否真的在屏幕上"的诚实答案（Windows 侧的事件行为本机没有复测，只量了 macOS）。行为保留现状。
+- **后续改动（Windows 那轮之后）**：这条"最小化不 park"被统一掉了 —— 现在两个平台都是"最小化即回停车窗"，判据直接问 `window.isMinimized()`（详见 `windows-window-state-verification.md` 的结论第 1 条）。macOS 上多出的那次搬移按设计看不见，页面尺寸不变、也不重排。
 
 ### 补充（第二轮）：隐藏/最小化时 view 留在窗口里够不够用 —— `hidden-window-usability.cjs`
 

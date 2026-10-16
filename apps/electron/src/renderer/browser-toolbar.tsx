@@ -430,8 +430,7 @@ function TabRail({
               past it. A name in a slightly different grey is not enough to read as a
               section on its own — it says "these belong together" only to somebody who
               already knew. The step in and the line are the two cues that do not have to
-              be read. Drawn before the header so the header's band, which sticks, paints
-              over whatever the line would otherwise show behind it.
+              be read. It starts below the name (`top-8`), so the line never underlines it.
             */}
             {showHeaders && (
               <span
@@ -442,18 +441,25 @@ function TabRail({
 
             {showHeaders && (
               /*
-                Sticky, so a section goes on saying whose tabs these are while its own
-                tabs are scrolled through: with two conversations working in one window,
-                a name that scrolls out of sight leaves a list of anonymous rows. The
-                negative margin is what lets the band cover the scrollport's own gutter —
-                without it, rows would slide past it in the 6px beside it.
+                A name that scrolls away with its own tabs, not a sticky band. Sticking
+                would mean covering the rows sliding under it, and a cover drawn over the
+                column's own half-tint is a flatter grey — the column is translucent so the
+                window's material can read through it, and a second translucent layer on
+                top is the third grey nobody chose (`docs/browser-window-chrome.md`). The
+                name is worth less than the column being one piece; the hairline and the
+                step in already say where a section starts.
+
+                The negative margin takes the band out of the scrollport's own 6px list
+                padding, so the name starts on the column's 14px inset — the same one the
+                toggle above and a row's own text sit on (`RAIL_TOGGLE_INSET`), with the
+                rows stepped in past it.
 
                 One height for every section (`min-h-8`), button or no button: a band that
                 grew only where it holds one would read as two kinds of section.
               */
               <div
                 className={cn(
-                  'sticky top-0 z-10 -mx-1.5 flex min-h-8 items-center gap-1 browser-chrome-surface px-3.5 py-1 text-[10px] font-medium',
+                  '-mx-1.5 flex min-h-8 items-center gap-1 px-3.5 py-1 text-[10px] font-medium',
                   tone.group,
                 )}
               >

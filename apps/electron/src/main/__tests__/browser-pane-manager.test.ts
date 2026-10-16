@@ -368,6 +368,15 @@ function createMockWindow(opts?: { width?: number; height?: number; minWidth?: n
  */
 const mockNativeTheme = { shouldUseDarkColors: false }
 
+/**
+ * Every partition the manager has asked for, in order.
+ *
+ * The partition name is the only place a window's **profile** shows — one per workspace
+ * (`browserPanePartition`) — and a profile is what decides which login state a window has, so the
+ * tests below read it here rather than inferring it from anything else.
+ */
+const requestedPartitions: string[] = []
+
 mock.module('electron', () => ({
   app: {
     getPath: mock((name: string) => name === 'downloads' ? downloadsDir : `/tmp/mock-${name}`),
@@ -425,21 +434,26 @@ mock.module('electron', () => ({
     openExternal: mockShellOpenExternal,
   },
   session: {
-    fromPartition: mock(() => ({
-      setPermissionCheckHandler: mock(() => {}),
-      setPermissionRequestHandler: mock(() => {}),
-      // The manager installs the craft-local scheme handler on this session at instance
-      // creation (registerLocalOriginHandler), so a fake without `protocol` fails every
-      // test in this file — the mock has to model what the code actually uses.
-      protocol: { handle: mock(() => {}) },
-      webRequest: {
-        onBeforeRequest: mock((_cb: any) => {}),
-        onBeforeSendHeaders: mock((_cb: any) => {}),
-        onCompleted: mock((_cb: any) => {}),
-        onErrorOccurred: mock((_cb: any) => {}),
-      },
-      on: mock((_event: string, _cb: any) => {}),
-    })),
+    // The partition a window asks for is the only thing that says which profile it was built on —
+    // one per workspace (`browserPanePartition`) — so it is recorded, not just answered.
+    fromPartition: mock((partition: string) => {
+      requestedPartitions.push(partition)
+      return {
+        setPermissionCheckHandler: mock(() => {}),
+        setPermissionRequestHandler: mock(() => {}),
+        // The manager installs the craft-local scheme handler on this session at instance
+        // creation (registerLocalOriginHandler), so a fake without `protocol` fails every
+        // test in this file — the mock has to model what the code actually uses.
+        protocol: { handle: mock(() => {}) },
+        webRequest: {
+          onBeforeRequest: mock((_cb: any) => {}),
+          onBeforeSendHeaders: mock((_cb: any) => {}),
+          onCompleted: mock((_cb: any) => {}),
+          onErrorOccurred: mock((_cb: any) => {}),
+        },
+        on: mock((_event: string, _cb: any) => {}),
+      }
+    }),
   },
 }))
 
@@ -594,6 +608,7 @@ describe('BrowserPaneManager', () => {
 
   beforeEach(() => {
     createdWindows.length = 0
+    requestedPartitions.length = 0
     toolbarLoadFailuresRemaining = 0
     emptyStateLoadError = null
     mockShellOpenExternal.mockClear()
@@ -664,6 +679,42 @@ describe('BrowserPaneManager', () => {
     expect(first).toBe('same-id')
     expect(second).toBe('same-id')
     expect(manager.listInstances()).toHaveLength(1)
+  })
+
+  /**
+   * One profile per workspace — the whole of "two workspaces can be signed into the same site as
+   * two different accounts".
+   *
+   * A partition is a Chromium profile: its own cookies, `localStorage` and logins. The workspace id
+   * is what selects one, and a caller with no workspace keeps the bare legacy partition every
+   * caller used to share.
+   */
+  it('gives each workspace its own browser profile', () => {
+    manager.createInstance('window-a', { workspaceId: 'ws-a' })
+    manager.createInstance('window-b', { workspaceId: 'ws-b' })
+    manager.createInstance('window-of-nobody')
+
+    expect(requestedPartitions).toEqual([
+      'persist:browser-pane-ws-a',
+      'persist:browser-pane-ws-b',
+      'persist:browser-pane',
+    ])
+  })
+
+  /**
+   * A window's profile is settled when the window is built, and every view in it lands on that one.
+   *
+   * A tab opened later has to sit in the profile the window is already signed into, so it takes the
+   * window's session rather than resolving the workspace again — which is also what keeps a second
+   * tab from asking Electron for a partition of its own.
+   */
+  it("builds a later tab on its own window's profile", () => {
+    manager.createInstance('window-a', { workspaceId: 'ws-a' })
+    const asked = requestedPartitions.length
+
+    manager.createTab('window-a', {})
+
+    expect(requestedPartitions).toHaveLength(asked)
   })
 
   // Every request for a window of its own becomes a tab beside the one that asked,
@@ -2051,33 +2102,34 @@ describe('BrowserPaneManager', () => {
   })
 
   /**
-   * A minimized window is not a **sizeless** one, and `viewport-resize` is about the size.
+   * A minimized window has put its page away, and `viewport-resize` still gives the page the size it
+   * asks for — in the **parking window**, because the window nobody is looking at is not the one that
+   * decides, and on Windows it cannot hand out a viewport at all.
    *
-   * Measured (`hidden-window-usability.cjs`, the `minimized` rows): macOS answers a minimized window's
-   * content size, so the window branch of `resizeViewport` can still give the page the viewport that
-   * was asked for. Before that was asked of the size itself, the resize was refused silently — the
-   * page kept the old viewport while the answer was the one that had been requested.
-   *
-   * (Windows minimizes to a 0×0 content size; the refusal there is *that*, and the test below pins it.)
+   * Measured (`hidden-window-usability.cjs`, the `minimized` rows): a view left *inside* a minimized
+   * window does not take a new viewport on Windows — `setBounds` moves the view, the page keeps its
+   * size, no `resize` arrives — while the parking window, shown and off every display, does. Before the
+   * tab was parked there, the same command did something on macOS (which reports a size while
+   * minimized) and nothing on Windows (0×0), the latter silently.
    */
-  it('resizes the viewport through a minimized window that still reports a size', () => {
+  it('resizes the viewport of a minimized window\'s tab, in the parking window', () => {
     manager.createInstance('resize-minimized')
     const instance = (manager as any).instances.get('resize-minimized')
     instance.window.show()
-    // The window's own tab, so the resize is about the page this window holds (`tabHome`).
+    // The window's own tab, so this is about the page that window was holding (`tabHome`).
     instance.tabs[0].currentUrl = 'https://front.example.com/'
     const front = instance.tabs[0]
 
-    // The person puts the window aside: it is still shown-once and still has a size of its own.
+    // The person puts the window aside: the page goes to the parking window, where a viewport exists.
     instance.window.minimize()
-    front.tabView.setBounds.mockClear()
+    expect(instance.parkingWindow.contentView.children).toContain(front.tabView)
 
     const resized = manager.resizeViewport('resize-minimized', 1280, 720)
 
-    // The page was really given it — 1280×720 of page, at the place the chrome leaves it.
-    expect(instance.window.setContentSize).toHaveBeenCalledWith(1487, 775)
-    expect(front.tabView.setBounds).toHaveBeenCalledWith({ x: 201, y: 49, width: 1280, height: 720 })
+    // The page was really given it, where it lives — and the person's window is left alone, size and all.
+    expect(front.tabView.getBounds()).toEqual({ x: 0, y: 0, width: 1280, height: 720 })
     expect(resized).toEqual({ width: 1280, height: 720 })
+    expect(instance.window.setContentSize).not.toHaveBeenCalled()
   })
 
   /**
@@ -2148,38 +2200,43 @@ describe('BrowserPaneManager', () => {
   })
 
   /**
-   * A **minimized** window reports no size at all (measured: 0×0), and the floors in `tabAreaBounds`
-   * turn that into a plausible-looking 193×93 — which the page then keeps once the window is back, so
-   * the person sees a tiny page in a full-size window until something lays out again. Reported:
-   * "怎么用着用着浏览器窗口会变成一个很小的值 193×93。切换标签界面又恢复了".
+   * The window the person put aside does not hold its page any more — on either platform, and asked
+   * directly (`tabHome`), not inferred from the window reporting no size: **macOS reports a size while
+   * minimized**, so only Windows would have been parked that way.
+   *
+   * The other half of why: a minimized window reports no size *at all* on Windows (measured: 0×0), and
+   * the floors in `tabAreaBounds` turn that into a plausible-looking 193×93 — which the page then keeps
+   * once the window is back, so the person sees a tiny page in a full-size window until something lays
+   * out again. Reported: "怎么用着用着浏览器窗口会变成一个很小的值 193×93。切换标签界面又恢复了".
    */
-  it('lays nothing out from a window that has no size, and lays out again when it comes back', () => {
+  it('parks the tab a minimized window was holding, and lays out again when it comes back', () => {
     manager.createInstance('minimized')
     const instance = (manager as any).instances.get('minimized')
-    // Minimizing is something a person does to a window they are using: it is shown, so the page is
-    // in it (`tabHome`), and what this test is about is what a minimized window may and may not be
-    // read for.
+    // Minimizing is something a person does to a window they are using: it is shown, so the page is in
+    // it (`tabHome`) — until it is minimized, where the page goes to the parking window: measured, a
+    // view left inside a minimized window moves without its page's viewport following it on Windows
+    // (`hidden-window-usability.cjs`), and the parking window is shown, so it does follow there.
     instance.window.show()
     instance.tabs[0].currentUrl = 'https://front.example.com/'
     const onScreen = instance.tabs[0]
     manager.createTab('minimized', { url: 'https://behind.example.com/', activate: false })
     const behind = instance.tabs[1]
     expect(onScreen.tabView.getBounds()).toEqual({ x: 201, y: 49, width: 1100, height: 845 })
+    expect(instance.window.contentView.children).toContain(onScreen.tabView)
 
-    // Minimized — no size at all — and a layout asked for anyway, which is what the window's own
-    // `resize` does on the way down.
-    instance.window.getContentSize.mockImplementation(() => [0, 0])
+    // Minimized — and still reporting a size, as macOS does — with a layout asked for anyway, which is
+    // what the window's own `resize` does on the way down (`minimize` lays out too).
+    instance.window.getContentSize.mockImplementation(() => [1010, 900])
     instance.window.isMinimized.mockImplementation(() => true)
-    onScreen.tabView.setBounds.mockClear()
-    behind.tabView.setBounds.mockClear()
     instance.window._emit('resize')
 
-    // The page is left on the size it had, rather than on the size the window never had…
-    expect(onScreen.tabView.setBounds).not.toHaveBeenCalled()
-    expect(onScreen.tabView.getBounds()).toEqual({ x: 201, y: 49, width: 1100, height: 845 })
-    // …and the tab that is not on screen is not touched either: it lives in the parking window, at
-    // its own viewport.
-    expect(behind.tabView.setBounds).not.toHaveBeenCalled()
+    // The page goes where a viewport does exist — the parking window, which is shown — at the size it
+    // has, rather than being left in a window on a size the window never had.
+    expect(instance.parkingWindow.contentView.children).toContain(onScreen.tabView)
+    expect(onScreen.tabView.getBounds()).toEqual({ x: 0, y: 0, width: 1100, height: 845 })
+    // …and the tab that is not on screen keeps what it had: it lives in the parking window, at its own
+    // viewport.
+    expect(behind.tabView.getBounds()).toEqual({ x: 0, y: 0, width: 1100, height: 845 })
     expect(instance.parkingWindow.contentView.children).toContain(behind.tabView)
 
     // Coming back is where the page takes the window's size again — without a tab switch to rescue it.
@@ -2187,6 +2244,7 @@ describe('BrowserPaneManager', () => {
     instance.window.isMinimized.mockImplementation(() => false)
     instance.window._emit('restore')
     expect(onScreen.tabView.setBounds).toHaveBeenLastCalledWith({ x: 201, y: 49, width: 803, height: 845 })
+    expect(instance.window.contentView.children).toContain(onScreen.tabView)
   })
 
   /**
