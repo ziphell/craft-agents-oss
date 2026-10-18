@@ -232,7 +232,7 @@ export class SourceManager {
     // each. A guide is worth reading either way — it is where a source is described — but a call
     // can only be *rejected* for not having read it when there is a call to reject, and the gate
     // matches on tool name (`mcp__{slug}__*`, `api_{slug}`; see prerequisite-manager.ts). A source
-    // that provides none (a captured page, a folder) has no call to block, so promising a
+    // that provides none (a web source, a folder) has no call to block, so promising a
     // rejection there would be a rule the agent can watch fail and then stop believing.
     const activeSourcesWithGuides = activeSources.filter(
       (s) => s.guide?.raw && !GUIDE_EXEMPT_SLUGS.has(s.config.slug)

@@ -43,8 +43,7 @@ function tabRow(overrides: Partial<BrowserTabSummary> & { id: string }): Browser
 
 function createMockFns(): BrowserPaneFns {
   return {
-    openPanel: async () => ({ instanceId: 'browser-test-1' }),
-    navigate: async (url: string) => ({ url: `https://${url}`, title: 'Test Page' }),
+    navigate: async (url: string) => ({ url: `https://${url}`, title: 'Test Page', tabId: 'tab-1' }),
     snapshot: async () => ({
       url: 'https://example.com',
       title: 'Example',
@@ -104,7 +103,6 @@ function createMockFns(): BrowserPaneFns {
       path: null,
     }),
     listDrawioPages: async () => [{ id: 'p1', name: 'Checkout', compressed: false }],
-    focusWindow: async (instanceId?: string) => ({ instanceId: instanceId ?? 'browser-1', title: 'Example Domain', url: 'https://example.com' }),
     createTab: async () => 'tab-1',
     targetTab: async (_tabId: string) => {},
     activateTab: async (_tabId: string) => ({ movedView: true }),
@@ -114,17 +112,6 @@ function createMockFns(): BrowserPaneFns {
       tabRow({ id: 'tab-1', active: true }),
     ]),
     releaseControl: async (_instanceId?: string) => ({ action: 'released' as const, resolvedInstanceId: 'browser-1', affectedIds: ['browser-1'] }),
-    closeWindow: async (_instanceId?: string) => ({ action: 'closed' as const, resolvedInstanceId: 'browser-1', affectedIds: ['browser-1'] }),
-    hideWindow: async (_instanceId?: string) => ({ action: 'hidden' as const, resolvedInstanceId: 'browser-1', affectedIds: ['browser-1'] }),
-    listWindows: async () => ([
-      {
-        id: 'browser-1',
-        title: 'Example Domain',
-        url: 'https://example.com',
-        isVisible: true,
-        agentControlActive: true,
-      },
-    ]),
     detectChallenge: async () => ({ detected: false, provider: 'none', signals: [] }),
   }
 }
@@ -463,8 +450,11 @@ describe('the pane tools', () => {
       expect(result.content[0].text).toContain('get-clipboard')
       expect(result.content[0].text).toContain('paste <text>')
       expect(result.content[0].text).toContain('screenshot [--annotated|-a]')
-      expect(result.content[0].text).toContain('focus [windowId]')
+      expect(result.content[0].text).toContain('tab-select <id>')
       expect(result.content[0].text).toContain('tab-show <id>')
+      expect(result.content[0].text).toContain('tab-close <id>')
+      expect(result.content[0].text).not.toContain('focus [windowId]')
+      expect(result.content[0].text).not.toContain('release [windowId')
       expect(result.content[0].text).toContain('Array mode (JSON array input, no batch splitting/tokenization):')
       expect(result.content[0].text).not.toContain('When you are done using the browser')
     })
@@ -472,6 +462,8 @@ describe('the pane tools', () => {
     it('routes navigate command and appends release hint', async () => {
       const result = await executeTool(tools, 'browser_tool', { command: 'navigate example.com' })
       expect(result.content[0].text).toContain('Navigated to')
+      // The tab is named in the reply: `navigate` may have just made one.
+      expect(result.content[0].text).toContain('Tab: tab-1')
       expect(result.content[0].text).toContain('When you are done using the browser')
     })
 
@@ -490,105 +482,8 @@ describe('the pane tools', () => {
       const result = await executeTool(tools, 'browser_tool', { command: 'navigate example.com' })
       expect(releaseCalls).toBe(1)
       expect(result.content[0].text).toContain('Security verification detected (cloudflare).')
+      expect(result.content[0].text).toContain('Tab: tab-1')
       expect(result.content[0].text).not.toContain('When you are done using the browser')
-    })
-
-    it('routes open command in background by default', async () => {
-      let openOptions: { background?: boolean } | undefined
-      mockFns.openPanel = async (options) => {
-        openOptions = options
-        return { instanceId: 'browser-test-1' }
-      }
-
-      const result = await executeTool(tools, 'browser_tool', { command: 'open' })
-      expect(openOptions).toEqual({ background: true })
-      expect(result.content[0].text).toContain('Opened in-app browser window in background')
-      expect(result.content[0].text).toContain('browser-test-1')
-    })
-
-    it('routes open command with --foreground flag and reports settled visibility', async () => {
-      let openOptions: { background?: boolean } | undefined
-      let listCalls = 0
-      mockFns.openPanel = async (options) => {
-        openOptions = options
-        return { instanceId: 'browser-test-1' }
-      }
-      mockFns.listWindows = async () => {
-        listCalls += 1
-        const isVisible = listCalls >= 3
-        return [{
-          id: 'browser-test-1',
-          title: 'Example Domain',
-          url: 'https://example.com',
-          isVisible,
-          agentControlActive: true,
-        }]
-      }
-
-      const result = await executeTool(tools, 'browser_tool', { command: 'open --foreground' })
-      expect(openOptions).toEqual({ background: false })
-      expect(result.content[0].text).toContain('Opened in-app browser window in foreground')
-      expect(result.content[0].text).toContain('Visibility settle: wait-loop')
-      expect(result.content[0].text).toContain('Visible: true')
-    })
-
-    it('uses focus fallback when foreground open visibility does not settle in wait loop', async () => {
-      const previousTimeout = process.env.CRAFT_BROWSER_OPEN_SETTLE_TIMEOUT_MS
-      const previousPoll = process.env.CRAFT_BROWSER_OPEN_SETTLE_POLL_MS
-      process.env.CRAFT_BROWSER_OPEN_SETTLE_TIMEOUT_MS = '120'
-      process.env.CRAFT_BROWSER_OPEN_SETTLE_POLL_MS = '20'
-
-      try {
-        let focusCalls = 0
-        let listCalls = 0
-        mockFns.listWindows = async () => {
-          listCalls += 1
-          const isVisible = focusCalls > 0
-          return [{
-            id: 'browser-test-1',
-            title: 'Example Domain',
-            url: 'https://example.com',
-            isVisible,
-            agentControlActive: true,
-          }]
-        }
-        mockFns.focusWindow = async (instanceId?: string) => {
-          focusCalls += 1
-          return {
-            instanceId: instanceId ?? 'browser-test-1',
-            title: 'Example Domain',
-            url: 'https://example.com',
-          }
-        }
-
-        const result = await executeTool(tools, 'browser_tool', { command: 'open --foreground' })
-        expect(listCalls).toBeGreaterThan(2)
-        expect(focusCalls).toBe(1)
-        expect(result.content[0].text).toContain('Visibility settle: timeout + focus retry')
-        expect(result.content[0].text).toContain('Visible: true')
-      } finally {
-        if (previousTimeout === undefined) delete process.env.CRAFT_BROWSER_OPEN_SETTLE_TIMEOUT_MS
-        else process.env.CRAFT_BROWSER_OPEN_SETTLE_TIMEOUT_MS = previousTimeout
-
-        if (previousPoll === undefined) delete process.env.CRAFT_BROWSER_OPEN_SETTLE_POLL_MS
-        else process.env.CRAFT_BROWSER_OPEN_SETTLE_POLL_MS = previousPoll
-      }
-    })
-
-    it('does not use focus fallback for background open', async () => {
-      let focusCalls = 0
-      mockFns.focusWindow = async (instanceId?: string) => {
-        focusCalls += 1
-        return {
-          instanceId: instanceId ?? 'browser-test-1',
-          title: 'Example Domain',
-          url: 'https://example.com',
-        }
-      }
-
-      const result = await executeTool(tools, 'browser_tool', { command: 'open' })
-      expect(focusCalls).toBe(0)
-      expect(result.content[0].text).not.toContain('Visibility settle:')
     })
 
     it('routes snapshot command and formats nodes', async () => {
@@ -787,7 +682,7 @@ describe('the pane tools', () => {
       const calls: string[] = []
       mockFns.navigate = async (url) => {
         calls.push(`navigate:${url}`)
-        return { url, title: 'Page' }
+        return { url, title: 'Page', tabId: 'tab-1' }
       }
       mockFns.fill = async (ref, value) => { calls.push(`fill:${ref}:${value}`) }
 
@@ -1479,14 +1374,71 @@ describe('the pane tools', () => {
       expect(evaluated).toBe('document.title')
     })
 
-    it('brings a page up for the person only when asked to', async () => {
-      const activated: string[] = []
-      mockFns.activateTab = async (tabId) => { activated.push(tabId); return { movedView: true } }
+    it('brings a page up for the person without unlocking it', async () => {
+      const calls: Array<{ id: string; handover?: boolean }> = []
+      mockFns.activateTab = async (tabId, options) => { calls.push({ id: tabId, handover: options?.handover }); return { movedView: true } }
 
       const result = await executeTool(tools, 'browser_tool', { command: 'tab-show tab-2' })
 
-      expect(activated).toEqual(['tab-2'])
-      expect(result.content[0].text).toContain('tab-2')
+      expect(calls).toEqual([{ id: 'tab-2', handover: false }])
+      expect(result.content[0].text).toContain('Your overlay stays up')
+      expect(result.content[0].text).not.toContain('the page is theirs to use')
+    })
+
+    it('hands the page over when asked to, dropping the overlay and hold', async () => {
+      const calls: Array<{ id: string; handover?: boolean }> = []
+      mockFns.activateTab = async (tabId, options) => { calls.push({ id: tabId, handover: options?.handover }); return { movedView: true } }
+
+      const result = await executeTool(tools, 'browser_tool', { command: 'tab-show tab-2 --handover' })
+
+      expect(calls).toEqual([{ id: 'tab-2', handover: true }])
+      expect(result.content[0].text).toContain('the page is theirs to use')
+    })
+
+    // The cursor on its own: naming a page is how a conversation says where it works from, and
+    // this is that act with nothing else attached — no page action, and no move of the window.
+    it('makes a named page the one this conversation works from', async () => {
+      const targeted: string[] = []
+      const activated: string[] = []
+      mockFns.targetTab = async (tabId) => { targeted.push(tabId) }
+      mockFns.activateTab = async (tabId) => { activated.push(tabId); return { movedView: true } }
+
+      const result = await executeTool(tools, 'browser_tool', { command: 'tab-select tab-2' })
+
+      expect(targeted).toEqual(['tab-2'])
+      expect(activated).toEqual([])
+      expect(result.content[0].text).toContain('Tab tab-2 is now the tab you work from')
+      expect(result.content[0].text).toContain('still shows what it showed')
+    })
+
+    it('requires a tab id for tab-select', async () => {
+      const result = await executeTool(tools, 'browser_tool', { command: 'tab-select' })
+      expect(result.content[0].text).toContain('tab-select needs a tab id')
+    })
+
+    it('hands a tab over, and says the giver no longer works from it', async () => {
+      const handed: Array<[string, string]> = []
+      mockFns.assignTab = async (tabId, targetSessionId) => { handed.push([tabId, targetSessionId]) }
+
+      const result = await executeTool(tools, 'browser_tool', { command: 'tab-assign tab-2 child-1' })
+
+      expect(handed).toEqual([['tab-2', 'child-1']])
+      expect(result.content[0].text).toContain('You no longer work from it')
+    })
+
+    // The absence of a `your tab` line would otherwise read as "this output is not about me".
+    // Said out loud because it is the one place the reader learns it has nowhere to go, and
+    // what to do about it — the tab on screen is never the answer.
+    it('says so when no page is the one this conversation works from', async () => {
+      mockFns.listTabs = async () => ([
+        tabRow({ id: 'tab-1', url: 'https://app.example.com/', title: 'App', active: true }),
+      ])
+
+      const text = (await executeTool(tools, 'browser_tool', { command: 'tabs' })).content[0].text
+
+      expect(text).toContain('No tab here is one you work from')
+      expect(text).toContain('The tab on screen is not chosen for you')
+      expect(text).not.toContain('your tab:  yes')
     })
 
     it('refuses --tab without a tab id rather than acting on the tab on screen', async () => {
@@ -1501,9 +1453,15 @@ describe('the pane tools', () => {
       const result = await executeTool(tools, 'browser_tool', { command: 'tab-new https://docs.example.com' })
 
       // Behind whatever the person is reading: opening a page for the agent is not a reason to
-      // take their page away, and "tab-show" is how one is brought up.
+      // take their page away, and "tab-show" is how one is brought up. A url is required — the
+      // blank tab of your own is what `navigate` takes.
       expect(opened).toEqual([{ url: 'https://docs.example.com', activate: false }])
-      expect(result.content[0].text).toContain('tab-3')
+      expect(result.content[0].text).toContain('Tab: tab-3')
+    })
+
+    it('requires a url for tab-new', async () => {
+      const result = await executeTool(tools, 'browser_tool', { command: 'tab-new' })
+      expect(result.content[0].text).toContain('tab-new needs a URL')
     })
 
     it('requires a tab id for tab-close', async () => {
@@ -1519,91 +1477,6 @@ describe('the pane tools', () => {
 
       expect(closed).toEqual(['tab-2'])
       expect(result.content[0].text).toContain('the window went with it')
-    })
-
-    it('routes focus command and calls focusWindow', async () => {
-      let focusedId: string | undefined
-      mockFns.focusWindow = async (instanceId?: string) => {
-        focusedId = instanceId
-        return { instanceId: instanceId ?? 'browser-1', title: 'Focused Tab', url: 'https://focused.example' }
-      }
-
-      const result = await executeTool(tools, 'browser_tool', { command: 'focus browser-1' })
-
-      expect(focusedId).toBe('browser-1')
-      expect(result.content[0].text).toContain('Focused browser window browser-1')
-      expect(result.content[0].text).toContain('When you are done using the browser')
-    })
-
-    it('routes release command and calls releaseControl without hint', async () => {
-      let requestedId: string | undefined
-      mockFns.releaseControl = async (instanceId?: string) => {
-        requestedId = instanceId
-        return { action: 'released' as const, resolvedInstanceId: 'browser-1', affectedIds: ['browser-1'] }
-      }
-
-      const result = await executeTool(tools, 'browser_tool', { command: 'release' })
-
-      expect(requestedId).toBeUndefined()
-      expect(result.content[0].text).toContain('Browser control released')
-      expect(result.content[0].text).not.toContain('When you are done using the browser')
-    })
-
-    it('routes close command and calls closeWindow without hint', async () => {
-      let requestedId: string | undefined
-      mockFns.closeWindow = async (instanceId?: string) => {
-        requestedId = instanceId
-        return { action: 'closed' as const, resolvedInstanceId: 'browser-1', affectedIds: ['browser-1'] }
-      }
-
-      const result = await executeTool(tools, 'browser_tool', { command: 'close' })
-
-      expect(requestedId).toBeUndefined()
-      expect(result.content[0].text).toContain('Browser window closed and destroyed')
-      expect(result.content[0].text).not.toContain('When you are done using the browser')
-    })
-
-    it('routes hide command and calls hideWindow without hint', async () => {
-      let requestedId: string | undefined
-      mockFns.hideWindow = async (instanceId?: string) => {
-        requestedId = instanceId
-        return { action: 'hidden' as const, resolvedInstanceId: 'browser-1', affectedIds: ['browser-1'] }
-      }
-
-      const result = await executeTool(tools, 'browser_tool', { command: 'hide' })
-
-      expect(requestedId).toBeUndefined()
-      expect(result.content[0].text).toContain('Browser window hidden')
-      expect(result.content[0].text).not.toContain('When you are done using the browser')
-    })
-
-    it('routes close command with explicit window id', async () => {
-      let requestedId: string | undefined
-      mockFns.closeWindow = async (instanceId?: string) => {
-        requestedId = instanceId
-        return { action: 'closed' as const, requestedInstanceId: instanceId, resolvedInstanceId: instanceId, affectedIds: instanceId ? [instanceId] : [] }
-      }
-
-      const result = await executeTool(tools, 'browser_tool', { command: 'close browser-9' })
-
-      expect(requestedId).toBe('browser-9')
-      expect(result.content[0].text).toContain('Browser window closed and destroyed')
-      expect(result.content[0].text).toContain('requested=browser-9')
-    })
-
-    it('reports close no-op explicitly', async () => {
-      mockFns.closeWindow = async (instanceId?: string) => ({
-        action: 'noop' as const,
-        requestedInstanceId: instanceId,
-        affectedIds: [],
-        reason: 'No close target is currently associated with this session.',
-      })
-
-      const result = await executeTool(tools, 'browser_tool', { command: 'close' })
-
-      expect(result.content[0].text).toContain('No browser window was closed')
-      expect(result.content[0].text).toContain('No window state changed')
-      expect(result.content[0].text).toContain('No close target is currently associated with this session')
     })
 
     it('returns validation feedback for invalid command', async () => {

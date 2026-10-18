@@ -1069,6 +1069,22 @@ export function describeWork(work: TabBelongsTo | null): string {
 }
 
 /**
+ * Why a page did not load, as the host saw it.
+ *
+ * `code` is Chromium's own name (`ERR_NAME_NOT_RESOLVED`, `ERR_CONNECTION_REFUSED`, …) or
+ * `HTTP_ERROR` for a main-frame response the server itself refused with 5xx — that case
+ * does not fail the load, so it has no Chromium code to report. A reader turns this into a
+ * sentence; the raw code is not something to show a person.
+ */
+export interface BrowserLoadError {
+  code: string
+  /** The response status, for `HTTP_ERROR` alone. */
+  status?: number
+  /** The address that failed — what a retry re-opens. */
+  url: string
+}
+
+/**
  * One tab of a browser window.
  *
  * The fields are in three groups, because they are not equally trustworthy:
@@ -1104,6 +1120,32 @@ export interface BrowserTabSummary {
   title: string
   favicon: string | null
   isLoading: boolean
+  /**
+   * Whether the tab's document is still arriving, even when the bar draws no spinner for it.
+   *
+   * True while the built-in error page loads too: until it commits, the webContents holds
+   * Chromium's blank failure page, and a reader that starts now would read that instead of
+   * the document the tab is about to show.
+   */
+  documentLoading?: boolean
+  /**
+   * Why this tab's page failed to load, right now, or absent/null when it did not.
+   *
+   * A tab is not "broken" in any lasting sense: the next navigation clears this. It is here
+   * so the chrome can say *why* the page is blank instead of leaving a person with an empty
+   * rectangle and a URL that looks like it worked.
+   */
+  error?: BrowserLoadError | null
+  /**
+   * What the webContents actually has committed, when it is not {@link url}.
+   *
+   * `url` is the tab's logical address — what the address bar says, including an address
+   * whose load failed. A failed navigation never commits, so the previous document stays
+   * in the webContents; this field is how a reader tells that apart from the address the
+   * person asked for. The built-in error page is deliberately not reported: it is our own
+   * stand-in, not a document anyone asked for — {@link error} says why it is there.
+   */
+  documentUrl?: string
   /** Whether this is the tab the window is showing. */
   active: boolean
   /**
@@ -1151,7 +1193,9 @@ export interface BrowserTabSummary {
    * I name no tab?* Not "wherever the window is showing" — that tab belongs to the person, and
    * it moves the moment they click, which is how a user switching tabs used to silently retarget
    * somebody's work. One conversation, one entry: it moves when that conversation names another
-   * tab (or opens one), and is dropped when the conversation ceases to exist.
+   * tab (or opens one), and it ends with the tab it was on when that tab is closed — the
+   * conversation comes back with no tab of its own and is told to name one, rather than being
+   * pointed at whatever is on screen. It is dropped when the conversation ceases to exist.
    *
    * **Several conversations may hold one tab**, and that is the point rather than an accident:
    * a tab that is nobody's work (a person's) is where the person is looking, so whoever they are
@@ -1210,6 +1254,13 @@ export interface BrowserInstanceInfo {
   isLoading: boolean
   canGoBack: boolean
   canGoForward: boolean
+  /**
+   * Why the page on screen failed to load, if it did — the active tab's `error`.
+   *
+   * Optional the same way `tabs` is: a reader that pre-dates the field treats missing as
+   * "nothing went wrong", which is what an older host could have said anyway.
+   */
+  error?: BrowserLoadError | null
   /**
    * The window's tabs, in the order they were opened, with the active one marked.
    *

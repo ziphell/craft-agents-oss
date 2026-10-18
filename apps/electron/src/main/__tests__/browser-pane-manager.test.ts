@@ -579,7 +579,7 @@ function finishLoadingTheBar(instance: any): void {
  */
 function tabSummary(overrides: Partial<BrowserTabSummary> & { id: string }): BrowserTabSummary {
   return {
-    url: 'about:blank',
+    url: 'about:newtab',
     title: 'New Tab',
     favicon: null,
     isLoading: false,
@@ -756,21 +756,40 @@ describe('BrowserPaneManager', () => {
     manager.createInstance('window-open-inherit')
     drive('window-open-inherit', 'session-a')
     const instance = (manager as any).instances.get('window-open-inherit')
+    // The agent's tab is opened **behind** the one the window was born with, which stays the
+    // person's (and the one on screen) until a link in the agent's tab comes forward.
     const parentId = manager.createTab('window-open-inherit', {
       url: 'https://app.example.com/',
       belongsTo: work('session-a'),
     })
     const parent = instance.tabs.find((tab: any) => tab.id === parentId)
     const openHandler = parent.tabView.webContents.setWindowOpenHandler.mock.calls[0][0]
+    const before = new Set(instance.tabs.map((tab: any) => tab.id))
+
+    // The agent is working in the parent, which is what a held tab means — and, since a held tab
+    // takes no input from a person, it is also why nothing opening a tab from here can be theirs.
+    parent.heldBy = 'session-a'
 
     openHandler({ url: 'https://docs.example.com/', disposition: 'foreground-tab', frameName: '' })
 
-    const derived = instance.tabs.find((tab: any) => tab.id !== parentId)
+    const derived = instance.tabs.find((tab: any) => !before.has(tab.id))
     expect(derived?.belongsTo).toEqual({ kind: 'session', sessionId: 'session-a' })
     expect(derived?.cursorOf).toEqual([])
     expect(derived?.drivenBy).toBeNull()
+    // Opened while the agent is driving, so it lands **behind**: the person's view is not moved
+    // by work happening in a tab they cannot touch anyway.
+    expect(instance.activeTabId).toBe(instance.tabs[0].id)
+    expect(instance.activeTabId).not.toBe(derived!.id)
     // The parent is still the tab that conversation works from.
     expect(parent.cursorOf).toEqual(['session-a'])
+
+    // Take the tab back (which is what drops the hold) and the same link follows the browser
+    // again — a person's click is unaffected by any of the above.
+    parent.heldBy = null
+    const beforeThePersonsClick = new Set(instance.tabs.map((tab: any) => tab.id))
+    openHandler({ url: 'https://person.example.com/', disposition: 'foreground-tab', frameName: '' })
+    const personsTab = instance.tabs.find((tab: any) => !beforeThePersonsClick.has(tab.id))
+    expect(instance.activeTabId).toBe(personsTab!.id)
   })
 
   it('puts the new tab right after the tab it came from', () => {
@@ -1150,24 +1169,27 @@ describe('BrowserPaneManager', () => {
       /**
        * One command, as `SessionManager` runs it: resolve the window, resolve the tab it
        * acts on (the same rule — `pickCommandTarget`), then record that tab as the one
-       * this conversation works from. Two steps, because resolving a window no longer says
-       * which tab the command is about — and recording it does **not** move the window:
-       * the target is what the next command is told, not what the
+       * this conversation works from. A command names its tab (`--tab` / `tab-select`), or
+       * lands on the one the conversation already works from; with neither there is nowhere
+       * to go and it is refused — the tab on screen is never the answer. Recording it does
+       * **not** move the window: the target is what the next command is told, not what the
        * person is shown.
        */
       function command(sessionId: string, tabId?: string): { instanceId: string; tabId?: string } {
         const instanceId = manager.createForSession(sessionId, { workspaceId: 'ws-a' })
-        const target = tabId ?? pickCommandTarget(tabsOf(instanceId), sessionId)?.tab.id
-        if (target) manager.setSessionTab(instanceId, target, sessionId)
+        const target = tabId ?? pickCommandTarget(tabsOf(instanceId), sessionId)?.id
+        if (!target) throw new Error('No tab of this window is one you work from.')
+        manager.setSessionTab(instanceId, target, sessionId)
         return { instanceId, tabId: target }
       }
 
       it('records the driver on the tab a command reached, and releases the mark when the turn ends', () => {
-        const { instanceId } = command('sess-a')
+        const instanceId = manager.createForSession('sess-a', { workspaceId: 'ws-a' })
         const first = tabsOf(instanceId)[0]!.id
+        // A command names the tab it works from: there is no other way to get one, and the
+        // tab on screen is not picked for it.
+        command('sess-a', first)
 
-        // A command: the conversation resolves its window, then the tab it works from —
-        // with none yet, that is the tab on screen.
         expect(driverOf(instanceId, first)).toBe('sess-a')
         expect(cursorOf(instanceId, first)).toEqual(['sess-a'])
 
@@ -1184,11 +1206,12 @@ describe('BrowserPaneManager', () => {
         const instance = usedWindow('first', 'sess-a')
         const instanceId = instance.id
         const first = instance.tabs[0].id
-        command('sess-a')
+        command('sess-a', first)
         expect(cursorOf(instanceId, first)).toEqual(['sess-a'])
 
-        // The person switches to a tab of their own, and the conversation runs a command.
-        const other = manager.createTab(instanceId, { url: 'https://other.example.com/' })
+        // The person opens a tab of their own — their own act, so it comes to the front — and
+        // the conversation runs a command.
+        const other = manager.createTab(instanceId, { url: 'https://other.example.com/', activate: true })
         command('sess-a')
 
         // The window is left where the person put it — that is the half of this that used to
@@ -1202,22 +1225,22 @@ describe('BrowserPaneManager', () => {
       })
 
       // The case that used to be a wall (第二十四轮): a tab two conversations work from keeps
-      // **both** cursors, so the second one to take the person's tab does not send the first
+      // **both** cursors, so the second one to name the same tab does not send the first
       // one's next command off to whatever the person happens to be looking at.
       it('lets two conversations work from one tab, each keeping its own cursor', () => {
         const instance = usedWindow('first', 'sess-a')
         const instanceId = instance.id
         const first = instance.tabs[0].id
 
-        command('sess-a')
-        command('sess-b')
+        command('sess-a', first)
+        command('sess-b', first)
 
         expect(cursorOf(instanceId, first)).toEqual(['sess-a', 'sess-b'])
         expect(driverOf(instanceId, first)).toBe('sess-b')
 
         // And a command of the first conversation still lands there — its cursor was not
         // overwritten by the second one.
-        const persons = manager.createTab(instanceId, { url: 'https://person.example.com/' })
+        const persons = manager.createTab(instanceId, { url: 'https://person.example.com/', activate: true })
         expect(instance.activeTabId).toBe(persons)
 
         expect(command('sess-a').tabId).toBe(first)
@@ -1229,7 +1252,7 @@ describe('BrowserPaneManager', () => {
         const instance = usedWindow('first', 'sess-a')
         const instanceId = instance.id
         const mine = instance.tabs[0]
-        const persons = manager.createTab(instanceId, { url: 'https://person.example.com/' })
+        const persons = manager.createTab(instanceId, { url: 'https://person.example.com/', activate: true })
         expect(instance.activeTabId).toBe(persons)
 
         await manager.navigate(instanceId, 'https://work.example.com/', mine.id)
@@ -1266,7 +1289,7 @@ describe('BrowserPaneManager', () => {
         const instance = usedWindow('first', 'sess-a')
         const instanceId = instance.id
         const mine = instance.tabs[0]
-        const persons = manager.createTab(instanceId, { url: 'https://person.example.com/' })
+        const persons = manager.createTab(instanceId, { url: 'https://person.example.com/', activate: true })
 
         await invoke({ method: 'navigate', args: [instanceId, 'https://work.example.com/'], tabId: mine.id })
 
@@ -1280,7 +1303,7 @@ describe('BrowserPaneManager', () => {
       it('falls back to the tab on screen when the request names none', async () => {
         const instance = usedWindow('first', 'sess-a')
         const instanceId = instance.id
-        const personsId = manager.createTab(instanceId, { url: 'https://person.example.com/' })
+        const personsId = manager.createTab(instanceId, { url: 'https://person.example.com/', activate: true })
         const persons = instance.tabs.find((tab: any) => tab.id === personsId)
 
         await invoke({ method: 'navigate', args: [instanceId, 'https://work.example.com/'] })
@@ -1313,14 +1336,14 @@ describe('BrowserPaneManager', () => {
       })
 
       it('a conversation keeps driving its tab after another one takes the window', () => {
-        // The lease is per tab, so the window changing hands does not erase the fact
-        // that a tab is mid-work — the conversation's own tabs stay its own until its
-        // turn ends.
+        // The lease is per tab, so another conversation working elsewhere in the window does
+        // not erase the fact that a tab is mid-work — the conversation's own tabs stay its own
+        // until its turn ends.
         const instance = usedWindow('first', 'sess-a')
         const instanceId = instance.id
         const first = instance.tabs[0].id
 
-        command('sess-a')
+        command('sess-a', first)
         const second = manager.createTab(instanceId, {
           url: 'https://second.example.com/',
           belongsTo: work('sess-a'),
@@ -1328,24 +1351,30 @@ describe('BrowserPaneManager', () => {
         expect(driverOf(instanceId, first)).toBe('sess-a')
         expect(driverOf(instanceId, second)).toBe('sess-a')
 
-        // Another conversation's command takes the window, and — having no tab of its own
-        // — the tab on screen.
-        command('sess-b')
-        expect(driverOf(instanceId, second)).toBe('sess-b')
+        // Another conversation works from a tab of its own — it names it, because the tab on
+        // screen is not picked for it any more.
+        const theirs = manager.createTab(instanceId, {
+          url: 'https://theirs.example.com/',
+          belongsTo: work('sess-b'),
+        })
+        command('sess-b', theirs)
+        expect(driverOf(instanceId, theirs)).toBe('sess-b')
+        expect(driverOf(instanceId, second)).toBe('sess-a')
         expect(driverOf(instanceId, first)).toBe('sess-a')
 
-        // And the first conversation's turn ending clears *its* tab, wherever the
-        // window's lease has got to since.
+        // And the first conversation's turn ending clears *its* tabs, wherever the other
+        // conversation's mark has got to since.
         manager.unbindAllForSession('sess-a')
         expect(driverOf(instanceId, first)).toBeNull()
-        expect(driverOf(instanceId, second)).toBe('sess-b')
+        expect(driverOf(instanceId, second)).toBeNull()
+        expect(driverOf(instanceId, theirs)).toBe('sess-b')
       })
 
       it('lets a tab the reader is not looking at stay idle', () => {
         const instance = usedWindow('first', 'sess-a')
         const idle = manager.createTab(instance.id, { url: 'https://idle.example.com/', activate: false })
 
-        command('sess-a')
+        command('sess-a', instance.tabs[0].id)
 
         expect(driverOf(instance.id, idle)).toBeNull()
         expect(cursorOf(instance.id, idle)).toEqual([])
@@ -1353,11 +1382,11 @@ describe('BrowserPaneManager', () => {
     })
   })
 
-  it('navigate normalizes hostnames to https', async () => {
+  it('navigate normalizes hostnames to http', async () => {
     manager.createInstance('nav-1')
     await manager.navigate('nav-1', 'example.com')
     const instance = (manager as any).instances.get('nav-1')
-    expect(tab(instance).tabView.webContents.loadURL).toHaveBeenCalledWith('https://example.com')
+    expect(tab(instance).tabView.webContents.loadURL).toHaveBeenCalledWith('http://example.com')
   })
 
   it('navigate treats plain text as search query', async () => {
@@ -1774,6 +1803,7 @@ describe('BrowserPaneManager', () => {
     manager.createInstance('theme-early')
     const instance = (manager as any).instances.get('theme-early')
     tab(instance).tabView.webContents.executeJavaScript = mock(async () => '#0f1e2d')
+    tab(instance).tabView.webContents.loadURL('https://example.com')
 
     tab(instance).tabView.webContents._emit('did-navigate', 'https://example.com')
 
@@ -2384,6 +2414,30 @@ describe('BrowserPaneManager', () => {
   })
 
   /**
+   * The parking stack carries no "current tab" meaning: a tab is parked at the top (so it has a
+   * surface), and a shot that raises another tab leaves it there. The active tab may be covered —
+   * nothing in the parking window is being looked at.
+   */
+  it('parks a background tab at the top, and leaves a shot where it was raised', () => {
+    manager.createInstance('parking-top')
+    const instance = (manager as any).instances.get('parking-top')
+    const first = instance.tabs[0]
+    const behindId = manager.createTab('parking-top', { url: 'https://behind.example.com/', activate: false })
+    const behind = instance.tabs.find((tab: any) => tab.id === behindId)
+    const parking = instance.parkingWindow
+
+    // The tab just parked is the one with a surface.
+    expect(parking.contentView.children.at(-1)).toBe(behind.tabView)
+
+    // A shot raises another tab and leaves it there; there is no order to restore.
+    ;(manager as any).raiseParkedView(instance, first)
+    expect(parking.contentView.children.at(-1)).toBe(first.tabView)
+    ;(manager as any).putTabBack(instance, first, { width: 1100, height: 845 })
+    expect(parking.contentView.children.at(-1)).toBe(first.tabView)
+    expect(parking.contentView.children).toContain(behind.tabView)
+  })
+
+  /**
    * The unit of a resize is the **view**, so a tab working behind the person can be given a viewport
    * without the person's window moving.
    *
@@ -2649,6 +2703,32 @@ describe('BrowserPaneManager', () => {
       expect(acStateEvents.some((event) => event.agentControlActive === false)).toBe(true)
     })
 
+    it('releases the window it names, and no other window the session is in', () => {
+      manager.createInstance('ac-scope-a')
+      manager.createInstance('ac-scope-b')
+      drive('ac-scope-a', 'sess-scope')
+      drive('ac-scope-b', 'sess-scope')
+
+      // The same session is working in both windows. `setAgentControl` resolves one window, so
+      // the second one is put in the same state directly — the point of the test is what the
+      // release does, not how control was taken.
+      manager.setAgentControl('sess-scope', { displayName: 'Click' })
+      const b = (manager as any).instances.get('ac-scope-b')
+      b.controlBy.set('sess-scope', { displayName: 'Click' })
+      const bTab = b.tabs.find((tab: any) => tab.id === b.activeTabId)
+      bTab.heldBy = 'sess-scope'
+
+      expect(manager.listTabs('ac-scope-a').some((tab) => tab.lockedBy === 'sess-scope')).toBe(true)
+
+      const result = manager.clearAgentControlForInstance('ac-scope-a', 'sess-scope')
+
+      expect(result.released).toBe(true)
+      expect(manager.listTabs('ac-scope-a').some((tab) => tab.lockedBy === 'sess-scope')).toBe(false)
+      // The other window is untouched: it is not the one the call named.
+      expect(b.controlBy.has('sess-scope')).toBe(true)
+      expect(bTab.heldBy).toBe('sess-scope')
+    })
+
     it('reapplies native overlay after did-stop-loading while control is active', async () => {
       manager.createInstance('ac-reapply')
       drive('ac-reapply', 'sess-reapply')
@@ -2836,7 +2916,7 @@ describe('BrowserPaneManager', () => {
       // test below).
       first.currentUrl = 'https://first.example.com/'
 
-      const secondId = manager.createTab('tabs-basic', { url: 'https://second.example.com/' })
+      const secondId = manager.createTab('tabs-basic', { url: 'https://second.example.com/', activate: true })
       const second = instance.tabs.find((tab: any) => tab.id === secondId)
 
       expect(instance.tabs).toHaveLength(2)
@@ -2933,11 +3013,9 @@ describe('BrowserPaneManager', () => {
       }
     })
 
-    // A window is created holding one blank tab. That tab is what a window is
-    // made of rather than something a person put there, so opening into a fresh
-    // window opens *into* it: without this, a session that has just opened a
-    // page would carry its own blank tab beside it — a tab nobody made and
-    // nobody can name.
+    // A window is created holding one blank tab. A caller that says it wants **a** tab to use
+    // (`reuseUntouchedWindow`) opens *into* it: without this, a session that has just opened a
+    // page would carry its own blank tab beside it — a tab nobody made and nobody can close.
     it('opens into a window\'s untouched tab instead of beside it', () => {
       manager.createInstance('tabs-fresh')
       const instance = (manager as any).instances.get('tabs-fresh')
@@ -2945,12 +3023,28 @@ describe('BrowserPaneManager', () => {
 
       const tabId = manager.createTab('tabs-fresh', {
         url: 'https://fresh.example.com/',
+        reuseUntouchedWindow: true,
       })
 
       expect(tabId).toBe(only.id)
       expect(instance.tabs).toHaveLength(1)
       expect(instance.activeTabId).toBe(only.id)
       expect(only.tabView.webContents.loadURL).toHaveBeenCalledWith('https://fresh.example.com/')
+    })
+
+    // …and a url alone is **not** that: `tab-new <url>` means one more page, so a blank tab that
+    // was already in the window is left where it is. It may be the person's, and taking it is how
+    // "New tab" used to do nothing at all.
+    it('does not take an untouched tab for a caller that only wants one more', () => {
+      manager.createInstance('tabs-fresh-kept')
+      const instance = (manager as any).instances.get('tabs-fresh-kept')
+      const only = instance.tabs[0]
+
+      const tabId = manager.createTab('tabs-fresh-kept', { url: 'https://fresh.example.com/' })
+
+      expect(tabId).not.toBe(only.id)
+      expect(instance.tabs).toHaveLength(2)
+      expect(instance.activeTabId).toBe(only.id)
     })
 
     // The other half of that rule. A caller with neither a url nor an identity to put
@@ -2970,13 +3064,33 @@ describe('BrowserPaneManager', () => {
       expect(instance.activeTabId).toBe(only.id)
     })
 
+    // …and that blank tab is a perfectly good place for a conversation to work from: `tab-new`
+    // without an address asks for exactly this, and the tab it lands in is its own from then on.
+    // Nothing about a cursor requires the tab to have been anywhere.
+    it('lets a blank tab be the tab a conversation works from', () => {
+      manager.createInstance('tabs-adopt-blank-cursor')
+      const instance = (manager as any).instances.get('tabs-adopt-blank-cursor')
+      const only = instance.tabs[0]
+
+      const tabId = manager.createTab('tabs-adopt-blank-cursor', {
+        reuseUntouchedWindow: true,
+        belongsTo: work('session-a'),
+      })
+
+      expect(tabId).toBe(only.id)
+      expect(manager.listTabs('tabs-adopt-blank-cursor').map((tab) => tab.cursorOf)).toEqual([['session-a']])
+      // Its address is the empty state, not a page — that is what "blank" means, and the cursor
+      // does not care.
+      expect(manager.listTabs('tabs-adopt-blank-cursor')[0]!.url).not.toContain('http')
+    })
+
     it('adds a real tab for that caller when the window is already in use', () => {
       manager.createInstance('tabs-adopt-used')
       const instance = (manager as any).instances.get('tabs-adopt-used')
       const first = instance.tabs[0]
       first.currentUrl = 'https://first.example.com/'
 
-      const tabId = manager.createTab('tabs-adopt-used', { reuseUntouchedWindow: true })
+      const tabId = manager.createTab('tabs-adopt-used', { reuseUntouchedWindow: true, activate: true })
 
       expect(tabId).not.toBe(first.id)
       expect(instance.tabs).toHaveLength(2)
@@ -3122,7 +3236,7 @@ describe('BrowserPaneManager', () => {
       instance.tabs[0].currentUrl = 'https://first.example.com/'
       instance.chromeView.webContents.focus.mockClear()
 
-      manager.createTab('tabs-focus-newpage')
+      manager.createTab('tabs-focus-newpage', { activate: true })
 
       expect(instance.chromeView.webContents.focus).toHaveBeenCalled()
       expect(instance.urlBarFocusToken).toBe(1)
@@ -3132,7 +3246,7 @@ describe('BrowserPaneManager', () => {
       manager.createInstance('tabs-focus-commit')
       const instance = (manager as any).instances.get('tabs-focus-commit')
       instance.tabs[0].currentUrl = 'https://first.example.com/'
-      const newId = manager.createTab('tabs-focus-commit')
+      const newId = manager.createTab('tabs-focus-commit', { activate: true })
       const newTab = instance.tabs.find((tab: any) => tab.id === newId)
       const tokenBeforeCommit = instance.urlBarFocusToken
       instance.chromeView.webContents.focus.mockClear()
@@ -3413,7 +3527,7 @@ describe('BrowserPaneManager', () => {
       })
 
       instance.tabs[0].currentUrl = 'https://first.example.com/'
-      const secondId = manager.createTab('tabs-room', { url: 'https://second.example.com/' })
+      const secondId = manager.createTab('tabs-room', { url: 'https://second.example.com/', activate: true })
       const second = instance.tabs.find((tab: any) => tab.id === secondId)
 
       expect(second.tabView.setBounds).toHaveBeenCalledWith({
@@ -3481,13 +3595,14 @@ describe('BrowserPaneManager', () => {
       second.favicon = 'https://first.example.com/favicon.ico'
 
       expect(manager.listTabs('tabs-meta')).toEqual([
-        tabSummary({ id: instance.tabs[0].id, url: 'https://first.example.com/' }),
+        // The window still shows the tab it showed: an agent's tab lands behind the person's,
+        // even though opening it is what made this conversation work there.
+        tabSummary({ id: instance.tabs[0].id, url: 'https://first.example.com/', active: true }),
         tabSummary({
           id: second.id,
           title: 'Cart',
           isLoading: true,
           favicon: 'https://first.example.com/favicon.ico',
-          active: true,
           belongsTo: work('session-a'),
           // Whoever opened a tab is working on it: the lease starts where the tab
           // does.
@@ -3600,6 +3715,31 @@ describe('BrowserPaneManager', () => {
       expect(manager.listTabs('tabs-cursor').map((tab) => tab.cursorOf)).toEqual([[], ['session-a'], []])
     })
 
+    // A cursor is written on a tab and **ends with it**: closing the tab a conversation works
+    // from leaves it with no tab of its own rather than quietly handing it a neighbour. The
+    // next command says so and names the ways out — and the tab on screen is not one of them,
+    // which is the whole point of not re-pointing anything here.
+    it('does not move a conversation\'s cursor to another tab when its tab is closed', () => {
+      manager.createInstance('tabs-cursor-close')
+      const instance = (manager as any).instances.get('tabs-cursor-close')
+      instance.tabs[0].currentUrl = 'https://first.example.com/'
+
+      const closing = manager.createTab('tabs-cursor-close', { activate: false, belongsTo: work('session-a') })
+      manager.createTab('tabs-cursor-close', { activate: false, belongsTo: work('session-a') })
+      // Two conversations may work from one tab (a route, not a claim), so a close takes both
+      // of their cursors away rather than moving one.
+      manager.setSessionTab('tabs-cursor-close', closing, 'session-a')
+      manager.setSessionTab('tabs-cursor-close', closing, 'session-b')
+
+      expect(manager.listTabs('tabs-cursor-close').map((tab) => tab.cursorOf))
+        .toEqual([[], ['session-a', 'session-b'], []])
+
+      manager.closeTab('tabs-cursor-close', closing)
+
+      expect(manager.listTabs('tabs-cursor-close').map((tab) => tab.cursorOf)).toEqual([[], []])
+      expect(instance.tabs[0].cursorOf).toEqual([])
+    })
+
     /**
      * Handing a tab over: the orchestrator's half of "a DAG's nodes each get their own tab".
      * Who may give a tab away is decided here, because only the tab
@@ -3623,6 +3763,45 @@ describe('BrowserPaneManager', () => {
       // The giver is out of it: it can neither work there any more nor pass it on again.
       expect(whyTabIsOutOfReach(tab(), work('parent'))).not.toBeNull()
       expect(() => manager.assignTab('tabs-assign', handedTab, work('child-2'), work('parent'))).toThrow(/child-1/)
+    })
+
+    it('refuses to give away a tab the person opened', () => {
+      manager.createInstance('tabs-assign-person')
+      const personTab = manager.createTab('tabs-assign-person', { url: 'https://person.example.com/' })
+
+      expect(() => manager.assignTab('tabs-assign-person', personTab, work('child-1'), work('parent')))
+        .toThrow(/the person's/)
+    })
+
+    it('refuses a tab somebody else is holding', () => {
+      manager.createInstance('tabs-assign-held')
+      const heldTab = manager.createTab('tabs-assign-held', { belongsTo: work('parent') })
+      const instance = (manager as any).instances.get('tabs-assign-held')
+      instance.tabs.find((tab: any) => tab.id === heldTab).heldBy = 'other'
+
+      expect(() => manager.assignTab('tabs-assign-held', heldTab, work('child-1'), work('parent')))
+        .toThrow(/held by other/)
+    })
+
+    it('refuses to hand a tab to the conversation that already has it', () => {
+      manager.createInstance('tabs-assign-self')
+      const tabId = manager.createTab('tabs-assign-self', { belongsTo: work('parent') })
+
+      expect(() => manager.assignTab('tabs-assign-self', tabId, work('parent'), work('parent')))
+        .toThrow(/already/)
+    })
+
+    it('leaves only the receiver working from the tab it was given', () => {
+      manager.createInstance('tabs-assign-cursors')
+      const tabId = manager.createTab('tabs-assign-cursors', { belongsTo: work('parent') })
+      const instance = (manager as any).instances.get('tabs-assign-cursors')
+      const tab = instance.tabs.find((candidate: any) => candidate.id === tabId)
+      tab.cursorOf = ['parent', 'someone-else']
+
+      manager.assignTab('tabs-assign-cursors', tabId, work('child-1'), work('parent'))
+
+      expect(manager.listTabs('tabs-assign-cursors').find((candidate) => candidate.id === tabId)!.cursorOf)
+        .toEqual(['child-1'])
     })
 
     // What a DAG needs of a tab's owner: a tab handed to a node belongs to that
@@ -3731,7 +3910,7 @@ describe('BrowserPaneManager', () => {
     })
 
     // The `+` on a window that has only its own blank tab. That tab reads as
-    // `about:blank` (that is how the empty state is normalized), which is also what the
+    // `about:newtab` (that is how the empty state is normalized), which is also what the
     // "open into an untouched window" reuse looks for — but that reuse needs something
     // to *put in* the window, and "a new tab" is not content, it is the request. With
     // the reuse applying here, nothing appeared to happen: the window kept its one tab
@@ -3741,7 +3920,7 @@ describe('BrowserPaneManager', () => {
       const instance = (manager as any).instances.get('tabs-ipc-fresh')
       manager.registerToolbarIpc()
 
-      expect(instance.tabs[0].currentUrl).toBe('about:blank')
+      expect(instance.tabs[0].currentUrl).toBe('about:newtab')
 
       await tabsHandler()({}, 'tabs-ipc-fresh', 'new')
 
@@ -3776,7 +3955,7 @@ describe('BrowserPaneManager', () => {
       manager.createInstance(id)
       const instance = (manager as any).instances.get(id)
       instance.tabs[0].currentUrl = 'https://first.example.com/'
-      manager.createTab(id, { url: 'https://second.example.com/' })
+      manager.createTab(id, { url: 'https://second.example.com/', activate: true })
       return instance
     }
 

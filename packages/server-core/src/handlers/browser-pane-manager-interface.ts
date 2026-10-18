@@ -336,20 +336,11 @@ export interface IBrowserPaneManager {
    */
   listInstancesAsync(): Promise<BrowserInstanceInfo[]>
 
-  /** Focus the bound browser instance for a session, creating if needed */
-  focusBoundForSession(sessionId: string, options?: { workspaceId?: string | null }): string
-
-  /** Async equivalent of {@link focusBoundForSession}. */
-  focusBoundForSessionAsync(sessionId: string, options?: { workspaceId?: string | null }): Promise<string>
-
   /** Focus a browser instance window */
   focus(id: string): void
 
   /** Destroy a browser instance */
   destroyInstance(id: string): void
-
-  /** Hide a browser instance window */
-  hide(id: string): void
 
   /** Clear agent control overlay for all instances in a session */
   clearAgentControl(sessionId: string): void

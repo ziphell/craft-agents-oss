@@ -19,7 +19,7 @@ import { cn } from '@/lib/utils'
 import { getHostname } from '@/components/browser/utils'
 import { groupTabsByWork, shouldShowGroupHeaders, type TabGroup } from '@/components/browser/tab-groups'
 import { TAB_RAIL_WIDTH, TOOLBAR_HEIGHT } from '../shared/panel-geometry'
-import type { BrowserTabSummary, TabBelongsTo } from '../shared/types'
+import type { BrowserLoadError, BrowserTabSummary, TabBelongsTo } from '../shared/types'
 import { RECORDING_FORMATS, pickRecordingFormat } from '../shared/recording-formats'
 import {
   DropdownMenu,
@@ -60,6 +60,14 @@ interface ToolbarState {
   url: string
   title: string
   isLoading: boolean
+  /**
+   * Why the tab on screen failed to load, if it did.
+   *
+   * The bar shows it only as a red mark in the address's icon slot; the page area draws
+   * the explanation and the retry. Absent/null is the ordinary case; the host clears it
+   * when the next load starts.
+   */
+  error?: BrowserLoadError | null
   canGoBack: boolean
   canGoForward: boolean
   /**
@@ -155,6 +163,11 @@ declare global {
       reload: () => Promise<void>
       stop: () => Promise<void>
       setMenuGeometry: (open: boolean, height?: number) => Promise<void>
+      /**
+       * Render the built-in error page into the tab that failed. The copy travels with
+       * the call — this document is the side that has i18n.
+       */
+      showErrorPage: (copy: { message: string; url: string; retry: string }) => Promise<void>
       hideWindow: () => Promise<void>
       closeWindowEntirely: () => Promise<void>
       /** Minimize the window — it is chromeless, so this is its own caption button. */
@@ -285,8 +298,8 @@ function downloadPercent(entry: Pick<ToolbarDownloadEntry, 'bytesReceived' | 'to
  * icon is the thing the eye can use instead — the window's chip in the top bar draws the
  * same image from the same field, so a tab looks like itself in both places.
  *
- * Three states, in the order they can be trusted: a tab that is loading says so (the
- * spinner is the only mark on the row about work in progress), a tab with an icon shows
+ * Three states, in the order they can be trusted: a tab that is loading says so with a
+ * thin ring — the site's icon, once in hand, stays inside it — a tab with an icon shows
  * it, and everything else gets a globe — including an icon that failed to load, which is
  * what a site with none amounts to anyway. `failed` is cleared when the address changes,
  * because the next page's icon is a different request and one 404 is not a verdict on the
@@ -299,14 +312,34 @@ function TabIcon({ src, loading }: { src: string | null; loading: boolean }) {
     setFailed(false)
   }, [src])
 
-  if (loading) return <Spinner className="text-[10px] leading-none" />
-  if (!src || failed) return <Globe className="h-3.5 w-3.5" />
+  const icon = src && !failed ? src : null
+
+  if (loading) {
+    if (!icon) {
+      // Nothing to sit inside the ring: a square skeleton in the icon slot's shape, so an
+      // empty load is not a large empty circle.
+      return <span className="h-3.5 w-3.5 animate-pulse rounded-[3px] bg-current opacity-20" />
+    }
+    return (
+      <span className="relative flex h-4 w-4 items-center justify-center">
+        <span className="absolute inset-0 rounded-full border border-current opacity-20" />
+        <span className="absolute inset-0 animate-spin rounded-full border border-transparent border-t-current opacity-60" />
+        <img
+          src={icon}
+          alt=""
+          className="h-2.5 w-2.5 rounded-full object-cover"
+          onError={() => setFailed(true)}
+        />
+      </span>
+    )
+  }
+  if (!icon) return <Globe className="h-4 w-4" />
 
   return (
     <img
-      src={src}
+      src={icon}
       alt=""
-      className="h-3.5 w-3.5 rounded-[3px] object-cover"
+      className="h-4 w-4 rounded-[3px] object-cover"
       onError={() => setFailed(true)}
     />
   )
@@ -532,7 +565,7 @@ function TabRail({
                     */}
                     <span
                       className={cn(
-                        'mt-px flex h-3.5 w-3.5 shrink-0 items-center justify-center text-foreground',
+                        'flex h-4 w-4 shrink-0 items-center justify-center text-foreground',
                         tab.active ? 'opacity-100' : 'opacity-70',
                       )}
                     >
@@ -781,8 +814,70 @@ function BrowserToolbarApp() {
   }, [savedFile])
 
   const handleNavigate = useCallback((url: string) => {
-    void api?.navigate(url)
+    // The failure is reported through state (`error`), not a rejection this side could
+    // draw — the host knows the code and pushes it with the next state update.
+    void api?.navigate(url)?.catch(() => undefined)
   }, [api])
+
+  /**
+   * The failure as a sentence, for the built-in error page.
+   *
+   * Chromium groups a family under one meaning — every certificate problem is the same
+   * thing to the person reading it — so this maps families rather than enumerating every
+   * code. The address below the sentence is the full one, for what the sentence cannot
+   * cover.
+   */
+  const browserErrorMessage = useCallback((failure: BrowserLoadError): string => {
+    switch (failure.code) {
+      case 'ERR_NAME_NOT_RESOLVED':
+      case 'ERR_NAME_RESOLUTION_FAILED':
+        return t('browser.error.nameNotResolved')
+      case 'ERR_CONNECTION_REFUSED':
+      case 'ERR_CONNECTION_RESET':
+      case 'ERR_CONNECTION_CLOSED':
+      case 'ERR_ADDRESS_UNREACHABLE':
+      case 'ERR_EMPTY_RESPONSE':
+        return t('browser.error.connectionRefused')
+      case 'ERR_CONNECTION_TIMED_OUT':
+      case 'ERR_TIMED_OUT':
+        return t('browser.error.timeout')
+      case 'ERR_INTERNET_DISCONNECTED':
+      case 'ERR_NETWORK_CHANGED':
+        return t('browser.error.offline')
+      case 'ERR_CERT_AUTHORITY_INVALID':
+      case 'ERR_CERT_COMMON_NAME_INVALID':
+      case 'ERR_CERT_DATE_INVALID':
+      case 'ERR_SSL_PROTOCOL_ERROR':
+        return t('browser.error.certificate')
+      case 'HTTP_ERROR':
+        return t('browser.error.httpStatus', { status: failure.status ?? '' })
+      default:
+        return t('browser.error.unknown')
+    }
+  }, [t])
+
+  /**
+   * Hand the failure to the host, which renders the built-in error page into the tab.
+   *
+   * The copy is ours (this is the side with i18n). Once per failure: the host has
+   * already put the page in place, and a state replay must not reload it.
+   */
+  const shownErrorKey = useRef<string | null>(null)
+  useEffect(() => {
+    if (!api) return
+    if (!state.error) {
+      shownErrorKey.current = null
+      return
+    }
+    const key = `${state.error.code}:${state.error.status ?? ''}:${state.error.url}`
+    if (shownErrorKey.current === key) return
+    shownErrorKey.current = key
+    void api.showErrorPage({
+      message: browserErrorMessage(state.error),
+      url: state.error.url,
+      retry: t('browser.retry'),
+    }).catch(() => undefined)
+  }, [api, state.error, browserErrorMessage, t])
 
   const handleGoBack = useCallback(() => {
     void api?.goBack()
@@ -1058,6 +1153,7 @@ function BrowserToolbarApp() {
           <BrowserControls
         url={state.url}
         loading={state.isLoading}
+        error={state.error ?? null}
         canGoBack={state.canGoBack}
         canGoForward={state.canGoForward}
         onNavigate={handleNavigate}

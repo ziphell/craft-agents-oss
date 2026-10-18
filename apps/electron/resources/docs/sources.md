@@ -44,14 +44,14 @@ If you choose browser-first, still offer optional source setup later when the us
 
 **A web source is the third path**, for when the thing worth reusing is a *page* rather than an
 integration. Prefer `type: "web"` when:
-- The page itself is the payload — an article, a spec, a changelog, reference docs
+- The page itself is the entry point — an article, a spec, a changelog, reference docs
 - It sits behind a login, or a script builds it after load (so fetching the url would not work)
-- It is worth reading again, but not worth an API integration
+- It is worth returning to, but not worth an API integration
 - **It is a page you use rather than read** — a tool, a dashboard, an app. The value is the address
-  and the guide; the capture is only evidence (a picture of it, and whatever text came with it)
+  and the guide; the browser reads the page when it is needed
 
-A web source captures the page once into `snapshot.md` and reads it as a file; refresh it by running
-the browser commands again. See [Web Page Sources](#web-page-sources).
+A web source stores the address and a `guide.md` saying what the page is and how to work with it.
+Nothing is captured or copied into the source folder. See [Web Page Sources](#web-page-sources).
 
 ### 1. Understand User Intent
 
@@ -81,7 +81,7 @@ Use available tools to learn about the service:
 - **Gmail/Microsoft setup keeps failing auth:** attempt source setup, but confirm browser fallback for immediate task completion.
 - **Need a one-off export from an admin UI:** use browser directly; skip full source setup unless recurring.
 - **API lacks the required endpoint but UI supports it:** use browser as preferred path and document limitation.
-- **A logged-in or script-built page worth re-reading:** make a web source — the browser captures it once, and the snapshot is there next session without signing in again.
+- **A logged-in or script-built page worth returning to:** make a web source — the address and its guide are there next session, and the browser opens the page already signed in.
 
 ### 3. Configure Intelligently
 
@@ -94,7 +94,7 @@ Based on research and user intent, create `config.json` with **ALL required fiel
 - `icon` - **RECOMMENDED**: URL to the service's favicon, logo, or app icon. The icon is auto-downloaded and cached locally. Use an emoji as fallback.
 - `tagline` - **RECOMMENDED**: Short description for agent context (e.g., "Issue tracking, sprint planning, and project management")
 - Type-specific config (`mcp`, `api`, `local`, or `web`)
-- Authentication method appropriate for the service — a **web** source declares none of its own: it captures through the browser window's existing session, so a page behind a login is captured already signed in.
+- Authentication method appropriate for the service — a **web** source declares none of its own: it is opened in the browser window, which already carries the person's session.
 
 ### 4. Configure Explore Mode Permissions (REQUIRED)
 
@@ -137,7 +137,7 @@ Sources should work in Explore mode by default. Create `permissions.json` to all
 }
 ```
 
-**For web page sources:** none — a web source has no tools and no endpoints, so there is no `permissions.json` to write. Reading its snapshot is an ordinary file read, governed by the workspace's own permissions rather than by the source's.
+**For web page sources:** none — a web source has no tools and no endpoints, so there is no `permissions.json` to write. Working with the page goes through `browser_tool`, governed by the workspace's own permissions rather than by the source's.
 
 > **Goal:** Sources should be fully functional in Explore mode. Allow all read operations by default. Only block actual mutations (create, update, delete).
 
@@ -152,7 +152,7 @@ Create a guide.md tailored to the user's context:
 
 ### 6. Test and Validate (MANDATORY)
 
-**You MUST use the `source_test` tool after creating any source that has a server** — MCP, API, and local filesystem sources. This is not optional. A **web page source is the exception**: it has no server and no tools, so `source_test` has nothing to test, and writing a `permissions.json` for it would be writing a file about nothing. What validates a web source is capturing the page (see [Web Page Sources](#web-page-sources)).
+**You MUST use the `source_test` tool after creating any source that has a server** — MCP, API, and local filesystem sources. This is not optional. A **web page source is the exception**: it has no server and no tools, so `source_test` has nothing to test, and writing a `permissions.json` for it would be writing a file about nothing. What validates a web source is opening the page in the browser and checking the result against its guide (see [Web Page Sources](#web-page-sources)).
 
 ```
 mcp__session__source_test({ sourceSlug: "{slug}" })
@@ -257,8 +257,6 @@ Sources are stored as folders under:
 Each source folder contains:
 - `config.json` - Source configuration (required)
 - `guide.md` - Usage documentation for Claude (optional)
-- `snapshot.md` - A web source's captured page (optional; web sources only)
-- `snapshot.assets/` - The images that captured page uses, when it has any (optional; web sources only)
 - `permissions.json` - Custom permission rules for Explore mode (optional)
 - `icon.svg`, `icon.png`, `icon.jpg`, or `icon.jpeg` - Source icon (optional)
 
@@ -298,7 +296,7 @@ Each source folder contains:
     "path": "/path/to/folder"
   },
 
-  // For web sources (a bookmark; the captured page lives in snapshot.md):
+  // For web sources (a bookmark; the page is opened in the browser when needed):
   "web": {
     "url": "https://example.com/article"
   },
@@ -723,15 +721,15 @@ Filesystem access for local folders.
 
 ### Web Page Sources
 
-A single web page kept as a **bookmark plus a snapshot**. The `url` is the entry point; the page
-itself is captured into `snapshot.md` beside `config.json`, and it is that snapshot the agent reads
-— the url only says where to refresh it from.
+A single web page kept as a **bookmark plus a guide**. The `url` is the entry point, and `guide.md`
+says what the page is and how to work with it. Nothing is captured or copied into the source folder:
+the built-in browser window opens the page when it is needed, carrying the person's session, and the
+agent reads or drives it there.
 
-Use one when a page is worth keeping and re-reading: an article, a spec, a dashboard you check,
-reference documentation that sits behind a login. Capture goes through the built-in browser window,
-so a page the user is signed in to — or one a script builds after load — is captured as the page
-actually renders. A plain HTTP fetch would get the empty shell instead, which is the whole reason
-this reads through the window.
+Use one when a page is worth returning to: an article, a spec, a dashboard you check, reference
+documentation that sits behind a login. Because the browser renders the page, one the user is signed
+in to — or one a script builds after load — is available as the person sees it; a plain HTTP fetch
+would get the empty shell instead.
 
 ```json
 {
@@ -747,76 +745,37 @@ this reads through the window.
 }
 ```
 
-**No server, so there is no `source_test`.** A web source provides no tools — it is read as a file.
-`source_test` answers "no connection test available for this source type", which is expected here.
+**No server, so there is no `source_test`.** A web source provides no tools — it is opened in the
+browser. `source_test` answers "no connection test available for this source type", which is expected
+here.
 
-**Capturing and refreshing.** Load the page in the browser window, then read it into the snapshot:
+**Using the page.** Open it in the browser window and work from there:
 
 ```
 browser_tool: navigate https://developer.chrome.com/release-notes
 browser_tool: wait network-idle 8000        # only when the page builds itself client-side
-browser_tool: read --save sources/chrome-release-notes/snapshot.md
+browser_tool: read                          # the page as markdown, when the text is what you need
+browser_tool: snapshot                      # the controls, when the page is what you operate
 ```
 
-A relative path counts from the workspace root, which is why the whole path is
-`sources/<slug>/snapshot.md`. `read --save` writes the note and hands back only a summary; plain
-`read` returns the note instead, capped, which is for reading once rather than keeping.
-
-`read --save` also **keeps the article's images**, written into `snapshot.assets/` beside the note,
-with the note's links rewritten to those relative paths. Each is fetched in the page first (with the
-page's own referrer — what some hosts require), and, when the browser refuses to let script read a
-cross-origin response, again through the window's own session, which carries its cookies and is not
-subject to the page's CORS. An image that could not be fetched at all keeps its remote url, and the
-reply says so. **A picture of the page itself is kept there too** (`page-<hash>.png`), taken at the
-same moment as the read so the note and the picture are one page, and the note leads with it — for a
-page that is *used* rather than read, that is the half that carries information, and the extracted
-text may be thin or empty. A capture that finds no text is not a failure; a capture that cannot take
-the picture leaves the note intact and says so. A web source folder looks like this:
+A web source folder holds only:
 
 ```
 {workspace}/sources/{slug}/
   config.json        # type: "web", web: { url }
-  guide.md           # what this page is and how you use it — the meaning, not the capture
-  snapshot.md        # the page, as markdown (leading with a picture of the page, when one was kept)
-  snapshot.assets/   # the images snapshot.md uses, and a picture of the page itself
+  guide.md           # what this page is and how to work with it
 ```
 
-The snapshot is a YAML frontmatter note followed by the article as markdown:
-
-```markdown
----
-title: Release notes
-source: https://developer.chrome.com/release-notes
-created: 2026-10-07
-site: Chrome for Developers
-language: en
-wordCount: 4210
-tags: clippings
----
-
-…the page, as markdown…
-```
-
-It is a **point-in-time** capture, and nothing refreshes it on its own — re-run the two commands to
-take a new one (the note, its pictures, and the page's own picture). Edit it by hand if you like;
-the folder is the source of truth. One known gap: text inside shadow roots is not part of the page's
-HTML, so web-component-heavy pages capture thin — which is exactly the case the page's own picture
-is for.
-
-The source's own page reads that folder back in two parts, the way a skill's page reads `SKILL.md`:
-**Snapshot** shows what the capture says about itself — the page's title, author, published date and
-word count, then the note, its size, when it was written and how many images came with it (and an
-empty state before anything has been captured) — and **Captured page** draws the note itself, capped
-and expandable, with the pictures beside it resolved from the folder (a kept picture of the page is
-the first thing drawn). Its **Refresh** button starts the capture again; it does **not** send
-anything by itself, it puts the line into a conversation's draft, because taking a page again needs
-the browser window and a command.
+`read --save <path>` is still there when a page is worth keeping as a file: it writes the page as
+markdown, and `read --save <path> --images` also keeps its images beside it. The result can be read
+or edited later. That is an ordinary workspace file, not part of the source — put it wherever the
+work belongs.
 
 **guide.md for a web source** carries the meaning: what the page is, how the person uses it, its
 entry points and key paths, which controls matter and what changes. For a page you *use*, that
-understanding **is** the source — the capture is only evidence. When the captured text is not worth
-reading (a script-built page often gives little), say so plainly: the capture is whatever the
-extractor got, and a thin one is expected.
+understanding **is** the source. When the extracted text is thin (a script-built page often gives
+little), say so plainly and lean on `snapshot` and `screenshot`; a thin extraction is expected rather
+than a failure.
 
 ## guide.md Format
 
@@ -1000,7 +959,7 @@ Technical steps:
 
 4. **Create `permissions.json` for Explore mode** - List the source's tools, identify read-only operations (list, get, search), and add simple patterns. Patterns are auto-scoped to this source. *(Not for a web source — it has no tools. See [Web Page Sources](#web-page-sources).)*
 
-5. Run `source_test` to validate configuration and test connection *(a web source has no server to test; capture the page instead)*
+5. Run `source_test` to validate configuration and test connection *(a web source has no server to test; open the page in the browser instead)*
 
 6. If auth is required, trigger the appropriate flow:
    - `source_oauth_trigger` for MCP OAuth

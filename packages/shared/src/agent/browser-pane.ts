@@ -243,8 +243,7 @@ export type BrowserFetchedResource =
   | { ok: false; error: string }
 
 export interface BrowserPaneFns {
-  openPanel: (options?: { background?: boolean }) => Promise<{ instanceId: string }>;
-  navigate: (url: string) => Promise<{ url: string; title: string }>;
+  navigate: (url: string) => Promise<{ url: string; title: string; tabId: string }>;
   snapshot: () => Promise<{ url: string; title: string; nodes: Array<{ ref: string; role: string; name: string; value?: string; description?: string; focused?: boolean; checked?: boolean; disabled?: boolean }> }>;
   click: (ref: string, options?: { waitFor?: 'none' | 'navigation' | 'network-idle'; timeoutMs?: number }) => Promise<void>;
   clickAt: (x: number, y: number) => Promise<void>;
@@ -392,10 +391,11 @@ export interface BrowserPaneFns {
    * the pages of a file are otherwise only visible to whoever reads its XML.
    */
   listDrawioPages: (args: { path: string }) => Promise<DrawioPage[]>;
-  focusWindow: (instanceId?: string) => Promise<{ instanceId: string; title: string; url: string }>;
+  /**
+   * Take this session's overlay off the window — what a CAPTCHA hand-off needs, and the
+   * only caller left: `tab-show` drops the overlay as part of handing the page over.
+   */
   releaseControl: (instanceId?: string) => Promise<BrowserLifecycleActionResult>;
-  closeWindow: (instanceId?: string) => Promise<BrowserLifecycleActionResult>;
-  hideWindow: (instanceId?: string) => Promise<BrowserLifecycleActionResult>;
   /**
    * Add a tab to this session's window — what makes several pages workable
    * at once, since the window is one and its tabs are many. Returns
@@ -419,10 +419,18 @@ export interface BrowserPaneFns {
    * Bring a tab up for the person — `tab-show` — and make it the tab this conversation works
    * from, because a tab brought up is one it is about to work on with them.
    *
+   * The window is **not** raised: taking over the person's screen and focus is the thing the
+   * conversation's own reply is for ("the browser is on tab X — please …"), and the top bar's
+   * browser badge is how they open it themselves.
+   *
+   * `handover` is the explicit "you take it from here": the overlay and the hold are dropped,
+   * so the page is the person's to use. Without it, showing a tab does not unlock it — the
+   * person may look while the conversation goes on working there.
+   *
    * `movedView` is false for a child session: it takes the tab as its own but does not move what
    * the person is looking at. An unknown id throws.
    */
-  activateTab: (tabId: string) => Promise<{ movedView: boolean }>;
+  activateTab: (tabId: string, options?: { handover?: boolean }) => Promise<{ movedView: boolean }>;
   /** Close one tab. Closing a window's last tab closes the window. */
   closeTab: (tabId: string) => Promise<{ remaining: number }>;
   /**
@@ -433,27 +441,15 @@ export interface BrowserPaneFns {
   /** This session's window's tabs, in the order they were opened. */
   listTabs: () => Promise<BrowserTabInfo[]>;
   /**
-   * The windows this session can reach, with whether each is visible and who is driving it.
+   * Wait for this session's command target to stop loading, at most `timeoutMs`.
    *
-   * Not a listing an agent reads — there is **one window per workspace**, shared by every
-   * conversation in it and by the person, so "which window" is not a question.
-   * The app-side flows use it as a *read of the window's state*: `open` waits for a
-   * foregrounded window to become visible, `close`/`hide`/`focus` report what changed, and
-   * a tab-level question ("which tabs does this window have") is `listTabs`.
+   * A navigation in flight still has the **previous** document in the webContents: the
+   * address has moved on, the content has not. A reader that starts now would describe
+   * the old page under the new address. Resolves `false` when the wait timed out.
+   *
+   * Optional: a host with no live tab has nothing to wait for.
    */
-  listWindows: () => Promise<Array<{
-    id: string;
-    title: string;
-    /** The tab this window is actually showing. */
-    url: string;
-    isVisible: boolean;
-    /**
-     * Which conversation is working in it right now, when one is — the window-level
-     * indicator. Which tab each conversation holds is per tab (`tabs`, `lockedBy`),
-     * because a parent and its child sessions work in one window in parallel.
-     */
-    agentControlActive?: boolean;
-  }>>;
+  waitForIdle?: (timeoutMs?: number) => Promise<boolean>;
   detectChallenge: () => Promise<{ detected: boolean; provider: string; signals: string[] }>;
   /**
    * Record a tab — `record-start`.

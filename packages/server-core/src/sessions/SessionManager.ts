@@ -10,13 +10,14 @@ import { readFile, writeFile, mkdir } from 'fs/promises'
 import { randomUUID } from 'node:crypto'
 import { type AgentEvent, setPermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserPaneFns, generateConversationSummary, resolveKeepBackgroundTasksAlive, resolveToolName } from '@craft-agent/shared/agent'
 import type { BrowserInstanceInfo, BrowserTabSummary, TabBelongsTo } from '@craft-agent/shared/protocol'
-import { sameTask, sameWork, workOfSession } from '@craft-agent/shared/protocol'
+import { sameTask, workOfSession } from '@craft-agent/shared/protocol'
 import { drawioDocument, drawioPages } from '@craft-agent/shared/drawio/types'
 import {
   pickCommandTarget,
   whyTabIsLocked,
   whyTabIsNotMineToClose,
   whyTabIsOutOfReach,
+  whyThereIsNoWorkingTab,
 } from '../domain/tab-access'
 import {
   resolveSessionConnection,
@@ -3811,11 +3812,12 @@ export class SessionManager implements ISessionManager {
          *
          * Split out from the tab resolution below because one command needs a window and not a
          * tab: `tab-new` is how a conversation with no tab gets one, so it cannot require a
-         * tab first.
+         * tab first. A window is always opened **behind** the person: nothing a conversation
+         * starts does is worth taking their screen for, and `tab-show` is the one verb that does.
          */
-        const resolveWorkspaceWindow = async (options?: { show?: boolean }): Promise<string> => {
+        const resolveWorkspaceWindow = async (): Promise<string> => {
           const instanceId = await bpm.createForSessionAsync(sid, {
-            show: options?.show ?? false,
+            show: false,
             workspaceId,
           })
           const info = await bpm.getInstanceAsync(instanceId)
@@ -3826,11 +3828,14 @@ export class SessionManager implements ISessionManager {
         /**
          * Which window a command acts on, and which tab of it.
          *
-         * The tab is settled here, once, and handed on to the command — the conversation's
-         * own tab when it has one, and the tab on screen only when it has none, which is
-         * the takeover. Naming it once and passing it is what keeps the
-         * decision in one place: every browser method below takes the tab it acts on, and
-         * none of them has to read `activeTabId` and hope it is the right one.
+         * The tab is settled here, once, and handed on to the command: the conversation's own
+         * tab — its cursor — and nothing else. A conversation that has none is **refused**
+         * rather than pointed at the tab on screen (`whyThereIsNoWorkingTab`): what the person
+         * is looking at changes with their next click, and letting it answer "where does this
+         * command go" is the coupling the cursor exists to remove. Naming a tab is how a
+         * conversation gets one, and settling it once here is what keeps the decision in one
+         * place: every browser method below takes the tab it acts on, and none of them reads
+         * `activeTabId` and hopes it is the right one.
          *
          * Recording it is a cursor write (`setSessionTab`) rather than a window switch
          * (第十二轮): the window is shared with the person, and taking them off the tab they
@@ -3840,36 +3845,42 @@ export class SessionManager implements ISessionManager {
          */
         const resolveCommandTarget = async (
           toolName: string,
-          options?: { show?: boolean },
-        ): Promise<{ instanceId: string; tabId: string | undefined }> => {
-          const instanceId = await resolveWorkspaceWindow(options)
+          options?: { takeATab?: boolean },
+        ): Promise<{ instanceId: string; tabId: string }> => {
+          // Asked **before** the window is resolved, because afterwards the answer is always yes.
+          // It is what tells a tab this command may take (the one the window was born with, in
+          // this very call) from a tab that was already there (somebody's).
+          const existedBefore = options?.takeATab
+            ? (await resolveWorkspaceWindowId()) !== null
+            : false
+          const instanceId = await resolveWorkspaceWindow()
 
           const tabs = await bpm.listTabsAsync(instanceId).catch(() => [])
           const target = pickCommandTarget(tabs, sid)
-          if (!target) return { instanceId, tabId: undefined }
 
-          assertTabUsable(target.tab)
-          if (target.because === 'on-screen') {
-            // No tab of its own yet: adopting the tab in front of the person is the takeover
-            // case, and it is also where "you open it, the agent takes over" starts. Recording
-            // the cursor here is what makes it the conversation's tab from now on, so the
-            // person's next click cannot pull the work away.
-            //
-            // A **child session** does not get this move: it works in the
-            // tab it was given, and a parent's and siblings' tabs are lined up in this window —
-            // taking whatever is in front would walk into them, or take the person's tab.
-            if (isChildSession) {
-              throw new Error(
-                `You have no tab of your own in this workspace's window yet — tab ${target.tab.id} is the one on screen, and taking it over is not yours to do. ` +
-                'Open one with "tab-new [url]", or ask the conversation that spawned you to hand you one with "tab-assign <tab-id> <your-session>".',
-              )
-            }
-            sessionLog.info(`[browser-pane] tool target adopted the tab on screen: ${target.tab.id}`)
+          if (target) {
+            assertTabUsable(target)
+            bpm.setSessionTab(instanceId, target.id, sid)
+            sessionLog.info(`[browser-pane] tool target resolved: ${toolName} session=${sid} instance=${instanceId} tab=${target.id}`)
+            return { instanceId, tabId: target.id }
           }
-          bpm.setSessionTab(instanceId, target.tab.id, sid)
-          sessionLog.info(`[browser-pane] tool target resolved: ${toolName} session=${sid} instance=${instanceId} tab=${target.tab.id} because=${target.because}`)
 
-          return { instanceId, tabId: target.tab.id }
+          // `navigate` is the entry point — "go to this url" — so it is the one command that
+          // **takes** a tab instead of refusing: a new tab behind the person's, or — when this
+          // command is what opened the window — the tab the window was born with, which is what
+          // keeps a fresh window at one tab instead of leaving an orphan beside it. Same rule as
+          // `tab-new` and the app's "New tab"; a blank tab that was already in the window is never
+          // taken, even if it is the only one, because it may be the person's.
+          if (options?.takeATab) {
+            const created = await bpm.createTabAsync(instanceId, {
+              ...(existedBefore ? {} : { reuseUntouchedWindow: true }),
+              belongsTo: work,
+            })
+            sessionLog.info(`[browser-pane] tool target created: ${toolName} session=${sid} instance=${instanceId} tab=${created} windowWasNew=${!existedBefore}`)
+            return { instanceId, tabId: created }
+          }
+
+          throw new Error(whyThereIsNoWorkingTab(tabs.length > 0, isChildSession))
         }
 
         /**
@@ -3906,11 +3917,11 @@ export class SessionManager implements ISessionManager {
           return windows[0]?.id ?? null
         }
 
-        const resolveLifecycleWindowTarget = async (command: 'release' | 'close' | 'hide', requestedInstanceId?: string) => {
+        const resolveLifecycleWindowTarget = async (requestedInstanceId?: string) => {
           const windows = await sessionWindows()
 
           if (windows.length === 0) {
-            return { windows, reason: 'No browser window is available. Use "open" first.' }
+            return { windows, reason: 'No browser window is available. "navigate <url>" or "tab-new <url>" opens one.' }
           }
 
           /**
@@ -3926,8 +3937,8 @@ export class SessionManager implements ISessionManager {
             return {
               ok: false as const,
               reason: requestedInstanceId
-                ? `Browser window "${requestedInstanceId}" not found. Use "windows" to list available windows.`
-                : `No ${command} target is currently associated with this session. Use "windows", then "${command} <id>".`,
+                ? `Browser window "${requestedInstanceId}" not found.`
+                : 'No browser window is associated with this workspace.',
             }
           }
 
@@ -3943,21 +3954,12 @@ export class SessionManager implements ISessionManager {
         sessionLog.info('[browser-pane] BPF registering browserPaneFns', { sessionId: sid })
         mergeSessionScopedToolCallbacks(sid, {
           browserPaneFns: {
-            openPanel: async (options) => {
-              // A child session never brings the window up: the person may be working in it, and
-              // a DAG's nodes starting in parallel would take turns stealing their view.
-              // It still gets the window and its tab.
-              const foreground = !isChildSession && !options?.background
-              const instanceId = foreground
-                ? await bpm.focusBoundForSessionAsync(sid, { workspaceId })
-                : await bpm.createForSessionAsync(sid, { show: false, workspaceId })
-              const info = await bpm.getInstanceAsync(instanceId)
-              sessionLog.info(`[browser-pane] route decision: browser_open session=${sid} instance=${instanceId} background=${!foreground} child=${isChildSession} visible=${info?.isVisible ?? false}`)
-              return { instanceId }
-            },
             navigate: async (url) => {
-              const { instanceId, tabId } = await resolveCommandTarget('browser_navigate')
-              return bpm.navigate(instanceId, url, tabId)
+              const { instanceId, tabId } = await resolveCommandTarget('browser_navigate', { takeATab: true })
+              const result = await bpm.navigate(instanceId, url, tabId)
+              // The tab is part of the answer: this command may have just made one, and the
+              // caller should not have to run `tabs` to find out where it landed.
+              return { ...result, tabId }
             },
             snapshot: async () => {
               const { instanceId, tabId } = await resolveCommandTarget('browser_snapshot')
@@ -4028,9 +4030,11 @@ export class SessionManager implements ISessionManager {
               return bpm.sendKey(instanceId, options, tabId)
             },
             getDownloads: async (options) => {
-              // The window is resolved, and no tab is passed on: downloads are the
-              // window's — a `--tab` names nothing here (`getDownloads`).
-              const { instanceId } = await resolveCommandTarget('browser_downloads')
+              // The window is resolved, and no tab is passed on: downloads are the window's, not
+              // a tab's — the list outlives the tab it started in, and a `--tab` names nothing
+              // here (`getDownloads`). So this one asks for a window and stops there, rather than
+              // being refused for having no tab of its own.
+              const instanceId = await resolveWorkspaceWindow()
               return bpm.getDownloads(instanceId, options)
             },
             upload: async (ref, filePaths) => {
@@ -4209,39 +4213,6 @@ export class SessionManager implements ISessionManager {
               }
               return drawioPages(await readFile(path, 'utf-8'))
             },
-            focusWindow: async (targetInstanceId) => {
-              // Bringing the window up is about the person's view: a child session does not do it
-              // — the window is theirs and it shows their tab.
-              if (isChildSession) {
-                throw new Error(
-                  'Bringing the browser window to the front is not a child session\'s to do: the person may be working in it. ' +
-                  'Work in your own tab ("tabs" lists them) — the window goes on showing theirs.',
-                )
-              }
-
-              const windows = await sessionWindows()
-              if (windows.length === 0) {
-                throw new Error('No browser window is open in this workspace to focus. Use "open" first.')
-              }
-
-              // A named window has to exist, and that is the only refusal left: every
-              // window in this workspace is the workspace's one window, and a window is
-              // never locked — a *tab* is what a session holds.
-              if (targetInstanceId && !windows.some((w) => w.id === targetInstanceId)) {
-                throw new Error(`Browser window "${targetInstanceId}" not found. Use "windows" to list available windows.`)
-              }
-
-              // Focusing brings the workspace's window forward and writes nothing about
-              // this conversation: which conversations are working in it is per tab.
-              const instanceId = await bpm.focusBoundForSessionAsync(sid, { workspaceId })
-              const focused = await bpm.getInstanceAsync(instanceId)
-              const info = windows.find((w) => w.id === instanceId)
-              return {
-                instanceId,
-                title: focused?.title ?? info?.title ?? '',
-                url: focused?.currentUrl ?? info?.url ?? '',
-              }
-            },
             releaseControl: async (requestedInstanceId) => {
               if (requestedInstanceId === 'all') {
                 const before = await bpm.listInstancesAsync()
@@ -4261,7 +4232,7 @@ export class SessionManager implements ISessionManager {
                 }
               }
 
-              const resolution = await resolveLifecycleWindowTarget('release', requestedInstanceId)
+              const resolution = await resolveLifecycleWindowTarget(requestedInstanceId)
               if (!resolution.target) {
                 sessionLog.info(`[browser-pane] lifecycle release session=${sid} requested=${requestedInstanceId ?? 'auto'} result=noop reason=${resolution.reason}`)
                 return {
@@ -4284,89 +4255,6 @@ export class SessionManager implements ISessionManager {
                 reason: result.reason,
               }
             },
-            closeWindow: async (requestedInstanceId) => {
-              const resolution = await resolveLifecycleWindowTarget('close', requestedInstanceId)
-              if (!resolution.target) {
-                sessionLog.info(`[browser-pane] lifecycle close session=${sid} requested=${requestedInstanceId ?? 'auto'} result=noop reason=${resolution.reason}`)
-                return {
-                  action: 'noop',
-                  requestedInstanceId,
-                  affectedIds: [],
-                  reason: resolution.reason,
-                }
-              }
-
-              // The window is never closed on a conversation's say-so —
-              // but the tabs it opened in it are its own to clean up, and with
-              // tab-level occupation `close` means exactly that instead of refusing
-              // everything. There is no window kind this could
-              // destroy instead: it is the workspace's, the only one there is.
-              const tabs = await bpm.listTabsAsync(resolution.target.id).catch(() => [])
-              // The task's tabs, not just this session's: a node opened its tabs and
-              // has stopped by now, and the orchestrator that ran the whole DAG is the one that
-              // gets to tidy them away. Same task = same housekeeping.
-              const mine = tabs.filter((tab) => sameTask(tab.belongsTo, work) || sameWork(tab.belongsTo, work))
-
-              if (mine.length === 0) {
-                sessionLog.info(`[browser-pane] lifecycle close session=${sid} resolved=${resolution.target.id} result=noop reason=no-own-tabs`)
-                return {
-                  action: 'noop',
-                  requestedInstanceId,
-                  resolvedInstanceId: resolution.target.id,
-                  affectedIds: [],
-                  reason: 'This browser window belongs to the whole workspace, so it is not yours to close, and none of its tabs are ones you opened. "tabs" lists them; "release" drops your overlay.',
-                }
-              }
-
-              // A window is never left with no tabs, so when the tabs being closed
-              // are all of them, a fresh one takes their place first: the window goes
-              // back to what a window is made of rather than to nothing.
-              if (mine.length === tabs.length) {
-                await bpm.createTabAsync(resolution.target.id, { activate: false })
-              }
-
-              for (const tab of mine) bpm.closeTab(resolution.target.id, tab.id)
-
-              sessionLog.info(`[browser-pane] lifecycle close session=${sid} resolved=${resolution.target.id} result=pages-closed tabs=${mine.map((tab) => tab.id).join(',')}`)
-              return {
-                action: 'pages-closed',
-                requestedInstanceId,
-                resolvedInstanceId: resolution.target.id,
-                affectedIds: mine.map((tab) => tab.id),
-              }
-            },
-            hideWindow: async (requestedInstanceId) => {
-              // Hiding it takes the person's view away, which a child session does not do.
-              if (isChildSession) {
-                return {
-                  action: 'noop',
-                  requestedInstanceId,
-                  affectedIds: [],
-                  reason: 'Hiding the browser window is not a child session\'s to do: the person may be working in it.',
-                }
-              }
-
-              const resolution = await resolveLifecycleWindowTarget('hide', requestedInstanceId)
-              if (!resolution.target) {
-                sessionLog.info(`[browser-pane] lifecycle hide session=${sid} requested=${requestedInstanceId ?? 'auto'} result=noop reason=${resolution.reason}`)
-                return {
-                  action: 'noop',
-                  requestedInstanceId,
-                  affectedIds: [],
-                  reason: resolution.reason,
-                }
-              }
-
-              bpm.hide(resolution.target.id)
-              sessionLog.info(`[browser-pane] lifecycle hide session=${sid} requested=${requestedInstanceId ?? 'auto'} resolved=${resolution.target.id} result=hidden`)
-
-              return {
-                action: 'hidden',
-                requestedInstanceId,
-                resolvedInstanceId: resolution.target.id,
-                affectedIds: [resolution.target.id],
-              }
-            },
             // Tabs, not windows: this session's window holds them, and a command
             // acts on the tab that is on screen unless it names one with `--tab`.
             // Creating a tab is the one tab operation that may open a
@@ -4381,17 +4269,27 @@ export class SessionManager implements ISessionManager {
             createTab: async (options) => {
               // A window, not a tab: this is the one command a conversation with no tab of its
               // own can still run.
+              const existedBefore = (await resolveWorkspaceWindowId()) !== null
               const instanceId = await resolveWorkspaceWindow()
-              return await bpm.createTabAsync(instanceId, { ...options, belongsTo: work })
+              return await bpm.createTabAsync(instanceId, {
+                ...options,
+                // A blank tab that was **already** in the window is not this command's to take —
+                // "new tab" means one more. The exception is a window this very call creates: then
+                // the tab it was born with *is* the tab being asked for, and taking it is what
+                // keeps a fresh window at one tab instead of leaving an orphan beside it.
+                ...(existedBefore ? {} : { reuseUntouchedWindow: true }),
+                belongsTo: work,
+              })
             },
             /**
              * Hand a tab to another conversation — the orchestrator's half of "a DAG's nodes each
              * get their own tab".
              *
              * Checked here rather than in the browser because only this side knows the sessions:
-             * the tab has to be one this conversation may give away (nobody's, or its own), and
-             * the receiver has to be a session of **this workspace** — a tab is not a thing to
-             * hand across workspaces.
+             * the tab has to be one this conversation owns (the browser side checks that), and the
+             * receiver has to be a conversation this one spawned (any depth) or one of the same
+             * task — not any session in the workspace. A tab is not a thing to push into somebody
+             * else's conversation.
              *
              * The receiver's **work** is resolved here too, and passed whole: whether the new tab
              * belongs to a conversation or to a DAG node is a fact about the session being handed
@@ -4400,7 +4298,7 @@ export class SessionManager implements ISessionManager {
             assignTab: async (tabId, targetSessionId) => {
               const instanceId = await resolveWorkspaceWindowId()
               if (!instanceId) {
-                throw new Error('No browser window is open for this workspace, so there is no tab to hand over. Use "open" first.')
+                throw new Error('No browser window is open for this workspace, so there is no tab to hand over. "tab-new <url>" opens one.')
               }
               const target = this.sessions.get(targetSessionId)
               if (!target || target.workspace.id !== workspaceId) {
@@ -4409,12 +4307,34 @@ export class SessionManager implements ISessionManager {
                   '"spawn-session" (or the task\'s own report) says which child sessions exist.',
                 )
               }
+              if (targetSessionId === sid) {
+                throw new Error('A tab cannot be handed to the conversation that already has it.')
+              }
+              // A child of this conversation (any depth), or a session of the same task. Anything
+              // else is another conversation's business.
+              let ancestorId = target.parentSessionId
+              let isDescendant = false
+              const visited = new Set<string>()
+              while (ancestorId && !visited.has(ancestorId)) {
+                if (ancestorId === sid) {
+                  isDescendant = true
+                  break
+                }
+                visited.add(ancestorId)
+                ancestorId = this.sessions.get(ancestorId)?.parentSessionId
+              }
+              if (!isDescendant && !sameTask(workOfSession(target), work)) {
+                throw new Error(
+                  `"${targetSessionId}" was not spawned by this conversation and is not part of this task, so it cannot be given this tab. ` +
+                  'Hand a tab to a child session you spawned ("spawn-session"), or let the task orchestrate its own.',
+                )
+              }
               bpm.assignTab(instanceId, tabId, workOfSession(target), work)
             },
             targetTab: async (tabId) => {
               const instanceId = await resolveWorkspaceWindowId()
               if (!instanceId) {
-                throw new Error('No browser window is open for this workspace, so there is no tab to name. Use "open" first.')
+                throw new Error('No browser window is open for this workspace, so there is no tab to name. "tab-new <url>" opens one.')
               }
               // Checked on the *named* tab, before anything is written: naming somebody else's
               // work is refused here rather than after the window has been repointed at it.
@@ -4426,10 +4346,10 @@ export class SessionManager implements ISessionManager {
               // command's to move (第十二轮).
               bpm.setSessionTab(instanceId, tabId, sid)
             },
-            activateTab: async (tabId) => {
+            activateTab: async (tabId, options) => {
               const instanceId = await resolveWorkspaceWindowId()
               if (!instanceId) {
-                throw new Error('No browser window is open for this workspace, so there is no tab to show. Use "open" first.')
+                throw new Error('No browser window is open for this workspace, so there is no tab to show. "tab-new <url>" opens one.')
               }
               // Checked on the *named* tab, before the window is moved to it: showing somebody
               // else's work is refused here rather than after the switch.
@@ -4443,7 +4363,17 @@ export class SessionManager implements ISessionManager {
               // the person sees. Said out loud rather than done quietly:
               // the answer to "show it to them" is about the person's view.
               if (isChildSession) return { movedView: false }
+              // Showing a tab to the person is not unlocking it: they can look while the
+              // conversation goes on working there. `--handover` is the other request — "you
+              // take it from here" — and only then do the overlay and the hold go, before the
+              // tab comes up so they see the page rather than a shield that is about to leave.
+              if (options?.handover) bpm.clearAgentControlForInstance(instanceId, sid)
               bpm.activateTab(instanceId, tabId)
+              // The window is deliberately **not** brought to the front. Raising it steals the
+              // person's screen and focus with no explanation; the conversation's reply is the
+              // prompt ("the browser is on tab X — I need you to …"), and the top bar's browser
+              // badge is how they open it themselves. Same rule as every other command: an
+              // automatic action does not move the person's view.
               return { movedView: true }
             },
             closeTab: async (tabId) => {
@@ -4466,10 +4396,22 @@ export class SessionManager implements ISessionManager {
               if (!instanceId) return []
               return await bpm.listTabsAsync(instanceId)
             },
-            listWindows: async () => {
-              // The windows as the browser side reports them: what each holds is a fact about
-              // its tabs (`listTabs`), so there is nothing for the session layer to add here.
-              return sessionWindows()
+            waitForIdle: async (timeoutMs = 5_000) => {
+              const instanceId = await resolveWorkspaceWindowId()
+              if (!instanceId) return true
+              const deadline = Date.now() + timeoutMs
+              // The same tab `pickCommandTarget` gives this session's commands — read,
+              // not assigned: waiting must not take a tab or move a cursor.
+              while (Date.now() < deadline) {
+                const tabs = await bpm.listTabsAsync(instanceId).catch(() => [])
+                const target = pickCommandTarget(tabs, sid)
+                // `documentLoading` matters for the one document the bar draws no spinner
+                // for — our own error page: a reader must wait for it, or it reads
+                // Chromium's blank failure page in the meantime.
+                if (!target || (!target.isLoading && !target.documentLoading)) return true
+                await new Promise((resolve) => setTimeout(resolve, 100))
+              }
+              return false
             },
             detectChallenge: async () => {
               const { instanceId, tabId } = await resolveCommandTarget('browser_detect_challenge')

@@ -245,7 +245,7 @@ export function TopBar({
             and makes one (restoring last time's pages, or a blank tab) when it does not. */}
         <Tooltip>
           <TooltipTrigger asChild>
-            <TopBarButton onClick={onAddBrowserPanel} aria-label={t("browser.openBrowser")} className="h-7 w-7 rounded-lg">
+            <TopBarButton onClick={onAddBrowserPanel} aria-label={t("browser.openBrowser")} className="ml-1 h-7 w-7 rounded-lg">
               <Icons.Globe className="h-4 w-4 text-foreground/70" strokeWidth={1.5} />
             </TopBarButton>
           </TooltipTrigger>

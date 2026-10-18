@@ -16,6 +16,7 @@ const CHANNELS = {
   RELOAD: 'browser-toolbar:reload',
   STOP: 'browser-toolbar:stop',
   MENU_GEOMETRY: 'browser-toolbar:menu-geometry',
+  SHOW_ERROR_PAGE: 'browser-toolbar:show-error-page',
   FORCE_CLOSE_MENU: 'browser-toolbar:force-close-menu',
   HIDE: 'browser-toolbar:hide',
   DESTROY: 'browser-toolbar:destroy',
@@ -64,6 +65,14 @@ contextBridge.exposeInMainWorld('browserToolbar', {
   reload: () => ipcRenderer.invoke(CHANNELS.RELOAD, instanceId),
   stop: () => ipcRenderer.invoke(CHANNELS.STOP, instanceId),
   setMenuGeometry: (open: boolean, height = 0) => ipcRenderer.invoke(CHANNELS.MENU_GEOMETRY, instanceId, open, height),
+  /**
+   * Ask the host to render the built-in error page into the tab that failed.
+   *
+   * The copy travels with the call — this document is the side that has i18n, and the
+   * main process owns the page and where it goes.
+   */
+  showErrorPage: (copy: { message: string; url: string; retry: string }) =>
+    ipcRenderer.invoke(CHANNELS.SHOW_ERROR_PAGE, instanceId, copy),
   hideWindow: () => ipcRenderer.invoke(CHANNELS.HIDE, instanceId),
   closeWindowEntirely: () => ipcRenderer.invoke(CHANNELS.DESTROY, instanceId),
   /**

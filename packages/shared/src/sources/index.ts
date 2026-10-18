@@ -20,7 +20,6 @@ export type {
   FolderSourceConfig,
   SourceGuide,
   LoadedSource,
-  LoadedSourceSnapshot,
   WebSnapshotMeta,
   CreateSourceInput,
   ApiRenewEndpoint,
@@ -29,7 +28,6 @@ export type {
 // Constants and helpers
 export {
   API_OAUTH_PROVIDERS,
-  WEB_SNAPSHOT_FILE,
   snapshotAssetsDirName,
   splitWebSnapshotNote,
   webSnapshotBody,

@@ -8,15 +8,7 @@
 
 import { resolveToolName } from '@craft-agent/shared/agent'
 
-const BROWSER_TOOL_OVERLAY_EXCLUDED_COMMANDS = new Set([
-  '--help',
-  '-h',
-  'help',
-  'open',
-  'release',
-  'close',
-  'hide',
-])
+const BROWSER_TOOL_OVERLAY_EXCLUDED_COMMANDS = new Set(['--help', '-h', 'help'])
 
 export function getBrowserToolCommandVerb(toolInput: unknown): string {
   if (!toolInput || typeof toolInput !== 'object') return ''

@@ -8,7 +8,7 @@ import {
 describe('tool detection', () => {
   describe('getBrowserToolCommandVerb', () => {
     it('extracts normalized command verbs', () => {
-      expect(getBrowserToolCommandVerb({ command: 'release' })).toBe('release')
+      expect(getBrowserToolCommandVerb({ command: 'tab-show' })).toBe('tab-show')
       expect(getBrowserToolCommandVerb({ command: '  SNAPSHOT   ' })).toBe('snapshot')
       expect(getBrowserToolCommandVerb({ command: '--help' })).toBe('--help')
       expect(getBrowserToolCommandVerb({ command: 'navigate https://example.com' })).toBe('navigate')
@@ -29,14 +29,9 @@ describe('tool detection', () => {
       expect(shouldActivateBrowserOverlay('write', {})).toBe(false)
     })
 
-    it('does not activate for browser_tool help/open/release/teardown commands', () => {
+    it('does not activate for browser_tool help commands', () => {
       expect(shouldActivateBrowserOverlay('browser_tool', { command: '--help' })).toBe(false)
       expect(shouldActivateBrowserOverlay('browser_tool', { command: 'help' })).toBe(false)
-      expect(shouldActivateBrowserOverlay('browser_tool', { command: 'open' })).toBe(false)
-      expect(shouldActivateBrowserOverlay('browser_tool', { command: 'open --foreground' })).toBe(false)
-      expect(shouldActivateBrowserOverlay('mcp__session__browser_tool', { command: 'release' })).toBe(false)
-      expect(shouldActivateBrowserOverlay('browser_tool', { command: 'close' })).toBe(false)
-      expect(shouldActivateBrowserOverlay('browser_tool', { command: 'hide' })).toBe(false)
     })
 
     it('does not activate when browser_tool command is missing', () => {

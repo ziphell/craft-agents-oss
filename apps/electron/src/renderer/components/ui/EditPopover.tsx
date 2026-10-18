@@ -387,13 +387,12 @@ const EDIT_CONFIGS: Record<EditContextKey, (location: string) => EditConfig> = {
       label: 'Add Web Page',
       filePath: `${location}/sources/`,
       context:
-        'The user is viewing web sources and wants to save a page. ' +
-        'A web source is a bookmark: type "web" with a web.url field, and the page itself is captured ' +
-        'into snapshot.md beside config.json. ' +
+        'The user is viewing web sources and wants to keep a page. ' +
+        'A web source is a bookmark: type "web" with a web.url field. Nothing is captured or stored — ' +
+        'the browser reads the page when it is needed. ' +
         'Create the source folder and config.json in the workspace sources directory. ' +
-        'Then capture the page in the browser: navigate to the url, and run ' +
-        'browser_tool with command "read --save sources/<slug>/snapshot.md". ' +
-        'Write a guide.md saying what the page is and why it matters, and repeat that refresh recipe. ' +
+        'Write a guide.md saying what the page is, why it matters, and how to work with it in the ' +
+        'browser: its entry points, key sections or controls, and what changes. ' +
         'There is no server, so do not call source_test. ' +
         'Follow the patterns in ~/.craft-agent/docs/sources.md.',
     },

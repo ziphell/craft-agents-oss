@@ -89,11 +89,8 @@ export class NullBrowserPaneManager implements IBrowserPaneManager {
   /** No windows means no tabs: an empty list is the true answer, not a failure. */
   listTabs(_instanceId: string): BrowserTabSummary[] { return [] }
   async listTabsAsync(_instanceId: string): Promise<BrowserTabSummary[]> { return [] }
-  focusBoundForSession(_sessionId: string, _options?: { workspaceId?: string | null }): string { return unavailable('focusBoundForSession') }
-  async focusBoundForSessionAsync(_sessionId: string, _options?: { workspaceId?: string | null }): Promise<string> { return unavailable('focusBoundForSession') }
   focus(_id: string): void { unavailable('focus') }
   destroyInstance(_id: string): void {}
-  hide(_id: string): void {}
   clearAgentControl(_sessionId: string): void {}
   clearAgentControlForInstance(_instanceId: string, _sessionId?: string): { released: boolean; reason?: string } {
     return { released: false, reason: NOT_AVAILABLE }

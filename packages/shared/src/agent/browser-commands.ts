@@ -6,7 +6,7 @@
  * own `*-commands.ts` files, and the CLI all of them read their command line with is `command-cli.ts`.
  *
  * This door's own runtime lives here too, because only this door has it: batching (the other door
- * takes one command per call), `evaluate --file`, and the settle timings `open` waits on.
+ * takes one command per call), `evaluate --file`, and the waiting a command does for its page.
  * This file imports `command-cli.ts` and nothing else of ours except types — `command-cli.ts` does
  * not import it back, which is what keeps the CLI free of either door.
  */
@@ -27,7 +27,6 @@ import { getSessionPath } from '../sessions/storage.ts';
 import {
   buildWebSnapshot,
   findMarkdownImages,
-  pageShotFileName,
   renderWebSnapshotNote,
   rewriteMarkdownImages,
   snapshotImageFileName,
@@ -51,28 +50,6 @@ import {
 // ============================================================================
 // This door's runtime
 // ============================================================================
-
-export function getOpenVisibilitySettleTimeoutMs(override?: number): number {
-  if (typeof override === 'number' && Number.isFinite(override)) {
-    return Math.max(100, override);
-  }
-  const envValue = Number(process.env.CRAFT_BROWSER_OPEN_SETTLE_TIMEOUT_MS);
-  if (Number.isFinite(envValue) && envValue > 0) {
-    return Math.max(100, envValue);
-  }
-  return 1500;
-}
-
-export function getOpenVisibilitySettlePollMs(override?: number): number {
-  if (typeof override === 'number' && Number.isFinite(override)) {
-    return Math.max(25, override);
-  }
-  const envValue = Number(process.env.CRAFT_BROWSER_OPEN_SETTLE_POLL_MS);
-  if (Number.isFinite(envValue) && envValue > 0) {
-    return Math.max(25, envValue);
-  }
-  return 100;
-}
 
 const NAVIGATION_COMMANDS = new Set([
   'navigate',
@@ -235,7 +212,7 @@ export function readEvaluateFile(filePath: string, workspaceRootPath?: string): 
 }
 
 /**
- * What one `read --save` may pull down, so a gallery page cannot run away with the capture.
+ * What one `read --save --images` may pull down, so a gallery page cannot run away with the capture.
  * Counted here rather than in the page: the ceiling is about what lands on disk.
  */
 const MAX_SNAPSHOT_IMAGES = 100;
@@ -328,6 +305,42 @@ async function fetchImage(
 }
 
 /**
+ * Wait for a reader's page to stop moving, and say so when it does not.
+ *
+ * A navigation in flight leaves the previous document in the tab until the new one commits, so a
+ * read taken now would describe the old page under the new address. The timeout is reported rather
+ * than hidden: the answer names the document it is actually about.
+ */
+async function loadingNote(fns: BrowserPaneFns, action: string): Promise<string[]> {
+  if (!fns.waitForIdle) return [];
+  const settled = await fns.waitForIdle(5_000).catch(() => true);
+  return settled
+    ? []
+    : [`Status: still loading — this is the document that was on screen when ${action}.`];
+}
+
+/**
+ * A reader must not read the built-in error page.
+ *
+ * When a navigation fails, the tab keeps the failed address and shows a page **we** wrote in
+ * place of the document that never arrived. Reading that page would describe our own copy —
+ * the last thing the caller asked about — so the failure is stated instead. The tab is found
+ * the same way the command targets one: by its `--tab`, or by this conversation's cursor.
+ */
+async function refuseFailedDocument(fns: BrowserPaneFns, ctx: ToolCommandContext): Promise<void> {
+  const tabs = await fns.listTabs().catch(() => []);
+  const target = ctx.tabId
+    ? tabs.find((tab) => tab.id === ctx.tabId)
+    : tabs.find((tab) => tab.cursorOf.includes(ctx.sessionId));
+  if (!target?.error) return;
+  const http = target.error.status ? ` (HTTP ${target.error.status})` : '';
+  throw new Error(
+    `This tab is showing the built-in error page: ${target.error.url} failed to load — ` +
+      `${target.error.code}${http}. Nothing was read. Retry or navigate elsewhere, then run this command again.`,
+  );
+}
+
+/**
  * Keep a note's images beside it and point the note at them.
  *
  * An image that could not be kept **keeps its remote url** — a capture is not improved by turning a
@@ -383,22 +396,6 @@ async function localizeSnapshotImages(args: {
     saved: replacements.size,
     left,
   };
-}
-
-/**
- * Keep a picture of the page itself beside the note, and answer with the path to point at it.
- *
- * It goes into the same folder the article's images do (`snapshot.assets/`), so a note resolves
- * both the same way — a renderer drawing the note with the source folder as its base shows the
- * picture without having to know it is a different kind of image.
- */
-function savePageShot(notePath: string, bytes: Buffer): string {
-  const dirName = snapshotAssetsDirName(basename(notePath));
-  const fileName = pageShotFileName(bytes);
-  const dir = join(dirname(notePath), dirName);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, fileName), bytes);
-  return `${dirName}/${fileName}`;
 }
 
 /** The reasons images were left as links, counted — one URL each would be a wall. */
@@ -457,10 +454,9 @@ export function getBrowserToolHelp(): string {
     '',
     'Usage:',
     '  --help',
-    '  open [--foreground|-f]                         open browser (background by default)',
-    '  navigate <url>',
+    '  navigate <url>                                 go here in your tab; with none, one is made for you (safe to repeat)',
     '  snapshot',
-    '  read [--save <path>]                           read this page as an article (markdown + stated facts); --save writes it, keeping its images beside it',
+    '  read [--save <path>] [--images]                read this page as an article (markdown + stated facts); --save keeps it in a file, --images also keeps its images beside it',
     '  find <query>                                   search elements by keyword (matches role, name, value)',
     '  click <ref> [none|navigation|network-idle] [timeoutMs]',
     '  click-at <x> <y>                               click at pixel coordinates (canvas elements)',
@@ -491,42 +487,46 @@ export function getBrowserToolHelp(): string {
     '  evaluate --file <path>                         run a script from disk (the source stays in the file)',
     '  pick [--timeout <ms>]                          ask the user to click an element; returns a stable selector',
     '  tabs                                           this window\'s tabs: what each one is, whose task it is in, who is working on it',
-    '  tab-new [url]                                  add a tab to this window, behind the person\'s',
-    '  tab-show <id>                                  bring a tab up for the person to look at',
-    '  tab-assign <id> <session>                      hand a tab of your task to another conversation (a child session you spawned)',
+    '  tab-new <url>                                  add a tab to this window, behind the person\'s',
+    '  tab-select <id>                                make a tab the one you work from (the window shows what it showed)',
+    '  tab-show <id> [--handover]                     make a tab the one the window shows (it is not raised); --handover also drops your overlay and hold so they can use it',
+    '  tab-assign <id> <session>                      hand one of your own tabs to a conversation you spawned',
     '  record-start --tab <id> --ttl <dur> [--wait]   record a tab for at most <dur>, then stop on its own',
     '  record-stop --tab <id>                         end a recording early',
     '  tab-close <id>                                 close a tab of your task (the last one closes the window)',
-    '  focus [windowId]                               focus a browser window (no new window)',
-    '  release [windowId|all]                         dismiss agent overlay, and unlock the tab it held',
-    '  close [windowId]                               close a window of your own; on the workspace\'s, close your own tabs',
-    '  hide [windowId]                                hide the window (keeps state, "open" re-shows)',
     '',
     'There is one browser window per workspace, used by every conversation in it and by the user, for any',
-    'task: "open" adds a tab to it rather than making a second window. The window',
-    'itself is nobody\'s to close; the tabs in your task are — "close" and "tab-close <id>" do that, and',
-    '"release" drops your overlay and unlocks the tab it was holding — the window, the other',
-    'tabs and the person\'s chrome were never held by it.',
+    'task: "tab-new" adds a tab to it rather than making a second window, and a workspace with no window',
+    'gets one when a tab is first opened. The window',
+    'itself is nobody\'s to close; the tabs in your task are — "tab-close <id>" does that. "tab-show <id>"',
+    'makes a tab the one the window shows, without raising the window — say so in your reply if they should look.',
+    'Add "--handover" when they are meant to take over: that drops your overlay and hold, so the page is theirs',
+    'to use until your next command takes it back.',
     '',
     'This is the window\'s own surface: pages, refs, input, screenshots, console, network, tabs.',
     '',
     'The window is one and its tabs are many, so every command can name the tab it acts on:',
     '"--tab <id>" ("tabs" lists them). Without one it acts on **your** tab — the tab you have been',
-    'working from ("tabs" marks it "your tab"), and only the tab on screen when you have none yet.',
-    'That is deliberate: the person switching tabs does not move your commands. Naming a tab makes it',
-    'yours and stays behind whatever the person is reading — they share the window, and your work does not',
-    'need their eyes on it. "tab-show <id>" is the one command that brings a tab up for them.',
+    'working from ("tabs" marks it "your tab"). With none yet, **"navigate <url>" gives you one** —',
+    'a new tab behind the person\'s, or, when this command is what opens the window, the tab it was born',
+    'with — and every other command says so and',
+    'names the ways out: name one ("--tab <id>", "tab-select <id>"), or open one ("tab-new <url>").',
+    'That is deliberate: the person switching tabs does not move your commands, and the tab they happen to',
+    'be looking at never decides where yours land. Naming a tab makes it yours and stays behind whatever the',
+    'person is reading — they share the window, and your work does not need their eyes on it.',
+    '"tab-show <id>" is the one command that makes a tab the window\'s shown tab; the window is not raised,',
+    'so the reply is what tells them. "--handover" on it is how you let them use the page.',
     'A tab is yours to work on when it belongs to your task — the tabs you opened, the ones assigned to you,',
     'plus the ones opened from them — or when it is nobody\'s work: a tab the person opened, which you may',
     'take over. That includes a tab another conversation works from: the tab is the person\'s, and whoever',
     'they are talking to works there (a command of theirs does not move because you are in it — each',
     'conversation keeps its own tab). Another conversation\'s own tab is refused, whatever it holds: sessions',
     'running in parallel (a parent and the children it spawned) each work in their own tab, and',
-    '"tab-assign <id> <session>" is how a parent hands one over.',
+    '"tab-assign <id> <session>" is how a parent hands one of its own over.',
     'While you work on a tab it is **held** — the person cannot click or type there, and another',
     'conversation\'s command that names it is refused until your turn ends (or the person clicks the lock in',
     'the tab rail to let go of it). Other conversations hold their own tabs at the same time.',
-    'A session spawned by another one does not take over the tab on screen and does not move what the person',
+    'A session spawned by another one takes no tab of its own choosing and does not move what the person',
     'sees: it works in the tab it was given ("tab-assign"), or opens one with "tab-new".',
     'Full rules and examples: docs/browser-tools.md.',
     '',
@@ -539,7 +539,8 @@ export function getBrowserToolHelp(): string {
     '',
     'Examples:',
     '  navigate https://example.com',
-    '  read --save sources/my-page/snapshot.md',
+    '  read --save notes/my-page.md',
+    '  read --save notes/my-page.md --images',
     '  click @e12',
     '  click-at 350 200',
     '  drag 100 200 300 400',
@@ -555,7 +556,8 @@ export function getBrowserToolHelp(): string {
     '  pick',
     '  tabs                                            (which tabs the window has, and which is on screen)',
     '  snapshot --tab tab-3                            (act on a named tab, wherever the window is)',
-    '  tab-show tab-3                                  (bring a tab up for the person to look at)',
+    '  tab-show tab-3                                  (make it the tab the window shows)',
+    '  tab-show tab-3 --handover                       (make it the shown tab and let them use it)',
     '  tab-assign tab-3 260915-brave-fox               (hand a tab to a child session you spawned)',
     '  tab-close tab-3                                 (close one tab; the last one closes the window)',
     '  screenshot --annotated',
@@ -568,8 +570,6 @@ export function getBrowserToolHelp(): string {
     '  wait network-idle 8000',
     '  key Enter',
     '  downloads wait 15000',
-    '  focus',
-    '  focus browser-1',
   ].join('\n');
 }
 
@@ -646,86 +646,6 @@ const ACTIONABLE_AX_ROLES = new Set([
 
 function countActionableNodes(nodes: Array<{ role: string; disabled?: boolean }>): number {
   return nodes.filter((node) => ACTIONABLE_AX_ROLES.has((node.role || '').toLowerCase()) && !node.disabled).length;
-}
-
-function summarizeWindows(windows: Awaited<ReturnType<BrowserPaneFns['listWindows']>>): string {
-  const visible = windows.filter((w) => w.isVisible).length;
-  // "Working", not "locked": a window is one its workspace shares, and what this counts is
-  // conversations at work in it right now. Which tab each one holds is the
-  // tab's own answer, printed by `tabs`.
-  const working = windows.filter((w) => w.agentControlActive).length;
-  return `total=${windows.length}, visible=${visible}, working=${working}`;
-}
-
-async function waitForForegroundOpenVisibility(args: {
-  fns: BrowserPaneFns;
-  instanceId: string;
-  timeoutMs?: number;
-  pollMs?: number;
-}): Promise<{
-  windows: Awaited<ReturnType<BrowserPaneFns['listWindows']>>;
-  win: Awaited<ReturnType<BrowserPaneFns['listWindows']>>[number] | undefined;
-  settledByWait: boolean;
-  usedFocusFallback: boolean;
-}> {
-  const timeoutMs = getOpenVisibilitySettleTimeoutMs(args.timeoutMs);
-  const pollMs = getOpenVisibilitySettlePollMs(args.pollMs);
-  const started = Date.now();
-
-  const readWindowState = async () => {
-    const windows = await args.fns.listWindows();
-    const win = windows.find((w) => w.id === args.instanceId);
-    return { windows, win };
-  };
-
-  let state = await readWindowState();
-  while (Date.now() - started < timeoutMs) {
-    if (!state.win || state.win.isVisible) {
-      return {
-        ...state,
-        settledByWait: true,
-        usedFocusFallback: false,
-      };
-    }
-    await new Promise((resolve) => setTimeout(resolve, pollMs));
-    state = await readWindowState();
-  }
-
-  let usedFocusFallback = false;
-  if (state.win && !state.win.isVisible) {
-    try {
-      await args.fns.focusWindow(args.instanceId);
-      usedFocusFallback = true;
-      state = await readWindowState();
-    } catch {
-      // Keep existing state if focus fallback fails; caller output will surface visibility.
-    }
-  }
-
-  return {
-    ...state,
-    settledByWait: false,
-    usedFocusFallback,
-  };
-}
-
-function formatLifecycleResultLine(result: BrowserLifecycleActionResult): string {
-  if (result.action === 'noop') {
-    return [
-      'No window state changed.',
-      result.reason ? `Reason: ${result.reason}` : undefined,
-      result.requestedInstanceId ? `Requested window: ${result.requestedInstanceId}` : undefined,
-    ].filter(Boolean).join(' ');
-  }
-
-  const affected = result.affectedIds.length > 0 ? result.affectedIds.join(', ') : 'none';
-  const resolved = result.resolvedInstanceId ?? 'none';
-  return [
-    `Action: ${result.action}`,
-    `resolved=${resolved}`,
-    `affected=[${affected}]`,
-    result.requestedInstanceId ? `requested=${result.requestedInstanceId}` : undefined,
-  ].filter(Boolean).join(', ');
 }
 
 interface ParsedSelectCommand {
@@ -869,47 +789,6 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
   // Only the record commands read these: everything else works on the tab that is on screen.
   const { sessionId, workspaceRootPath } = ctx;
 
-  if (cmd === 'open') {
-    const foreground = parts.includes('--foreground') || parts.includes('-f');
-    const windowsBefore = await fns.listWindows();
-    const result = await fns.openPanel({ background: !foreground });
-
-    let windowsAfter = await fns.listWindows();
-    let win = windowsAfter.find((w) => w.id === result.instanceId);
-    let settledByWait = true;
-    let usedFocusFallback = false;
-
-    if (foreground) {
-      const visibilityResult = await waitForForegroundOpenVisibility({
-        fns,
-        instanceId: result.instanceId,
-      });
-      windowsAfter = visibilityResult.windows;
-      win = visibilityResult.win;
-      settledByWait = visibilityResult.settledByWait;
-      usedFocusFallback = visibilityResult.usedFocusFallback;
-    }
-
-    const reused = windowsBefore.some((w) => w.id === result.instanceId);
-    const mode = foreground ? 'foreground' : 'background';
-
-    const lines = [
-      `Opened in-app browser window in ${mode} (instance: ${result.instanceId})`,
-      `Window state: ${reused ? 'reused existing window' : 'created new window'}`,
-      `Session windows: ${summarizeWindows(windowsAfter)}`,
-    ];
-    if (foreground) {
-      lines.push(`Visibility settle: ${settledByWait ? 'wait-loop' : 'timeout'}${usedFocusFallback ? ' + focus retry' : ''}`);
-    }
-    if (win) {
-      lines.push(
-        `Visible: ${win.isVisible}, working: ${win.agentControlActive ? 'yes' : 'no'}`,
-      );
-    }
-
-    return { output: lines.join('\n'), appendReleaseHint: true };
-  }
-
   if (cmd === 'navigate') {
     const url = parts.slice(1).join(' ').trim();
     if (!url) throw new Error('navigate requires a URL. Example: navigate https://example.com');
@@ -930,8 +809,9 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
           `Security verification detected (${challenge.provider}).`,
           `Signals: ${challenge.signals.join(', ')}`,
           `URL: ${result.url}`,
+          `Tab: ${result.tabId}`,
           '',
-          'Browser shown — please complete the verification check.',
+          'I have let go of the page — tell the person to open the browser and complete the verification check (the window is not raised for them).',
           'After verification, run "snapshot" to continue.',
         ].join('\n'),
         appendReleaseHint: false,
@@ -940,6 +820,7 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
 
     const lines = [
       `Navigated to: ${result.url}`,
+      `Tab: ${result.tabId}`,
       `Title: ${result.title}`,
       `Elapsed: ${elapsedMs}ms`,
       `URL changed: ${before ? before.url !== result.url : 'unknown'}`,
@@ -953,6 +834,9 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
   }
 
   if (cmd === 'snapshot') {
+    // A snapshot taken mid-navigation would describe the previous document.
+    const status = await loadingNote(fns, 'the snapshot was taken');
+    await refuseFailedDocument(fns, ctx);
     const snapshot = await fns.snapshot();
     const roles = new Map<string, number>();
     let focusedRef: string | null = null;
@@ -974,6 +858,7 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
       `Title: ${snapshot.title}`,
       `Elements: ${snapshot.nodes.length}${roleSummary ? ` (${roleSummary})` : ''}`,
       `Focused ref: ${focusedRef ?? 'none'}, disabled: ${disabledCount}`,
+      ...status,
       '',
       `Elements (${snapshot.nodes.length}):`,
     ];
@@ -1010,10 +895,11 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
           `Security verification detected (${challenge.provider}).`,
           `Signals: ${challenge.signals.join(', ')}`,
           `URL: ${snapshot.url}`,
+          ...status,
           '',
           `Detected only ${actionableCount} actionable element(s) out of ${snapshot.nodes.length} accessibility nodes.`,
           'This is consistent with a security challenge page blocking normal interaction.',
-          'Browser shown — please complete the verification check.',
+          'I have let go of the page — tell the person to open the browser and complete the verification check (the window is not raised for them).',
           'After verification, run "snapshot" to continue.',
         ];
 
@@ -1036,25 +922,41 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
 
   if (cmd === 'read') {
     // Read the page that is loaded *now* — an article as markdown plus whatever the page states
-    // about itself. Nothing navigates and nothing waits: "navigate" put the page there, and the
-    // window is already showing it.
-    const saveAt = parts.indexOf('--save');
+    // about itself. Nothing navigates: "navigate" put the page there, and the window is already
+    // showing it.
+    //
+    // `--save` writes the note; `--images` is the opt-in for the article's images. A page can
+    // reference a whole gallery, and the file is what was asked for, so downloading a page's media
+    // is never implied by keeping its text.
+    const withImages = parts.includes('--images');
+    const args = parts.slice(1).filter((part) => part !== '--images');
+
+    const saveAt = args.indexOf('--save');
     let savePath: string | null = null;
     if (saveAt !== -1) {
-      const requested = parts[saveAt + 1]?.trim();
+      const requested = args[saveAt + 1]?.trim();
       if (!requested || requested.startsWith('--')) {
-        throw new Error('--save needs a path. Example: read --save sources/my-page/snapshot.md');
+        throw new Error('--save needs a path. Example: read --save notes/my-page.md');
       }
       savePath = resolveLocalPath(requested, ctx.workspaceRootPath);
     }
 
-    const extra = parts.slice(1);
-    if (saveAt !== -1) extra.splice(saveAt - 1, 2);
+    const extra = [...args];
+    if (saveAt !== -1) extra.splice(saveAt, 2);
     if (extra.length > 0) {
       throw new Error(
-        `read takes no arguments besides "--save <path>" ("${extra.join(' ')}" would be ignored).`,
+        `read takes no arguments besides "--save <path>" and "--images" ("${extra.join(' ')}" would be ignored).`,
       );
     }
+    if (withImages && !savePath) {
+      throw new Error('--images only applies with --save: images are written beside the saved note.');
+    }
+
+    // Wait out an in-flight navigation: the webContents still holds the previous
+    // document until the new one commits, and reading now would describe the old page
+    // under the new address.
+    const status = await loadingNote(fns, 'the read started');
+    await refuseFailedDocument(fns, ctx);
 
     // One round trip, so the HTML and the address it was read at are the same moment of the same
     // tab. The expression is wrapped in parens to be an expression rather than a statement.
@@ -1068,19 +970,6 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
     const rawUrl = (page as { url?: unknown }).url;
     const url = typeof rawUrl === 'string' && rawUrl.length > 0 ? rawUrl : 'about:blank';
 
-    // The page's own picture, taken pressed against the read that just happened: the note and the
-    // shot are then the same page at (nearly) the same moment. Waiting until the note is written
-    // would let a navigation or a repaint in between make the two disagree. Only when the note is
-    // kept — a throwaway read has nothing to keep a picture with, and a capture is not free — and a
-    // capture that fails is not an error: the note is the point.
-    let shot: Buffer | null = null;
-    if (savePath) {
-      shot = await fns
-        .screenshot({ format: 'png' })
-        .then((result) => (result.imageBuffer.length > 0 ? result.imageBuffer : null))
-        .catch(() => null);
-    }
-
     const snapshot = await buildWebSnapshot({ html, url });
     const note = renderWebSnapshotNote(snapshot);
 
@@ -1088,30 +977,39 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
       `Read: ${snapshot.title || '(untitled)'}`,
       `URL: ${url}`,
       `Words: ${snapshot.meta.wordCount ?? 'unknown'}${snapshot.meta.author ? ` · Author: ${snapshot.meta.author}` : ''}`,
+      ...status,
     ];
 
     if (savePath) {
-      // Keeping the note is what makes its images worth keeping too: a file somebody reads later
-      // should not be half a link. Read-only `read` skips this — there is nothing to keep it with.
-      // The page's own picture is kept first, so the note can lead with it; the article's images
-      // follow and are rewritten in place (a relative path is left alone — only `http(s)` is
-      // localized), so the two never touch each other.
-      const relShot = shot ? savePageShot(savePath, shot) : null;
-      const savedNote = relShot ? renderWebSnapshotNote({ ...snapshot, leadImage: relShot }) : note;
-      const localized = await localizeSnapshotImages({ note: savedNote, notePath: savePath, pageUrl: url, fns });
-      mkdirSync(dirname(savePath), { recursive: true });
-      writeFileSync(savePath, localized.note, 'utf8');
-      summary.push(
-        `Saved: ${savePath} (${formatBytes(new TextEncoder().encode(localized.note).length)})`,
-      );
-      summary.push(relShot ? `Shot: ${relShot}` : 'Shot: not captured');
-      if (localized.dirName) {
-        summary.push(`Images: ${localized.saved} saved to ${localized.dirName}/`);
-      }
-      if (localized.left.length > 0) {
+      if (withImages) {
+        // The article's images are rewritten in place (a relative path is left alone — only
+        // `http(s)` is localized), so the note points at the copies that were kept.
+        const localized = await localizeSnapshotImages({ note, notePath: savePath, pageUrl: url, fns });
+        mkdirSync(dirname(savePath), { recursive: true });
+        writeFileSync(savePath, localized.note, 'utf8');
         summary.push(
-          `Images left as links (${localized.left.length}): ${summarizeImageFailures(localized.left)}`,
+          `Saved: ${savePath} (${formatBytes(new TextEncoder().encode(localized.note).length)})`,
         );
+        if (localized.dirName) {
+          summary.push(`Images: ${localized.saved} saved to ${localized.dirName}/`);
+        }
+        if (localized.left.length > 0) {
+          summary.push(
+            `Images left as links (${localized.left.length}): ${summarizeImageFailures(localized.left)}`,
+          );
+        }
+      } else {
+        mkdirSync(dirname(savePath), { recursive: true });
+        writeFileSync(savePath, note, 'utf8');
+        summary.push(`Saved: ${savePath} (${formatBytes(new TextEncoder().encode(note).length)})`);
+        // Said only when the note actually points at pictures: a page without any has nothing to
+        // offer the flag, and a line about images would be noise.
+        const linkedImages = findMarkdownImages(note);
+        if (linkedImages.length > 0) {
+          summary.push(
+            `Images: ${linkedImages.length} left as links (pass --images to keep them beside the note)`,
+          );
+        }
       }
       return { output: summary.join('\n'), appendReleaseHint: true };
     }
@@ -1129,6 +1027,9 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
     const query = parts.slice(1).join(' ').trim();
     if (!query) throw new Error('find requires a search query. Example: find login button');
 
+    // A find taken mid-navigation would search the previous document.
+    const status = await loadingNote(fns, 'the search ran');
+    await refuseFailedDocument(fns, ctx);
     const snapshot = await fns.snapshot();
     const queryLower = query.toLowerCase();
     const keywords = queryLower.split(/\s+/).filter(Boolean);
@@ -1154,7 +1055,11 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
 
     if (scored.length === 0) {
       return {
-        output: `No elements found matching "${query}" (searched ${snapshot.nodes.length} elements).\nTry a broader search or run "snapshot" to see all elements.`,
+        output: [
+          `No elements found matching "${query}" (searched ${snapshot.nodes.length} elements).`,
+          ...status,
+          'Try a broader search or run "snapshot" to see all elements.',
+        ].join('\n'),
         appendReleaseHint: true,
       };
     }
@@ -1168,6 +1073,7 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
     if (scored.length > 20) {
       lines.push(`  ... and ${scored.length - 20} more. Narrow your search.`);
     }
+    lines.push(...status);
     return { output: lines.join('\n'), appendReleaseHint: true };
   }
 
@@ -1205,7 +1111,7 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
           `URL changed: ${urlChanged}`,
           `Signals: ${challenge.signals.join(', ')}`,
           '',
-          'Browser shown — please complete the verification check.',
+          'I have let go of the page — tell the person to open the browser and complete the verification check (the window is not raised for them).',
           'After verification, run "snapshot" to continue.',
         ].join('\n'),
         appendReleaseHint: false,
@@ -1459,6 +1365,9 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
     const usePng = parts.includes('--png');
     const format = usePng ? 'png' as const : 'jpeg' as const;
 
+    // Capture what the address is about, not the document it replaced.
+    const status = await loadingNote(fns, 'the screenshot was taken');
+    await refuseFailedDocument(fns, ctx);
     const started = Date.now();
     const result = await fns.screenshot({ annotate, format });
     const elapsedMs = Date.now() - started;
@@ -1475,6 +1384,7 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
         ? `Annotated screenshot captured (${formatBytes(buf.length)} ${ext}) — element refs (@eN) are overlaid on interactive elements`
         : `Screenshot captured (${formatBytes(buf.length)} ${ext})`,
       `Capture time: ${elapsedMs}ms`,
+      ...status,
     ];
     if (result.imageWidth && result.imageHeight) {
       lines.push(`Image: ${result.imageWidth}x${result.imageHeight} CSS px`);
@@ -1558,6 +1468,9 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
       targetDescription = `box (${x}, ${y}, ${width}x${height})`;
     }
 
+    // Capture what the address is about, not the document it replaced.
+    const status = await loadingNote(fns, 'the screenshot was taken');
+    await refuseFailedDocument(fns, ctx);
     const started = Date.now();
     screenshotArgs.force = force;
     const result = await fns.screenshotRegion(screenshotArgs);
@@ -1574,6 +1487,7 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
       `Region screenshot captured (${formatBytes(buf.length)} ${ext})`,
       `Target: ${targetDescription}${typeof padding === 'number' ? `, padding=${padding}` : ''}`,
       `Capture time: ${elapsedMs}ms`,
+      ...status,
     ];
     if (result.imageWidth && result.imageHeight) {
       lines.push(`Image: ${result.imageWidth}x${result.imageHeight} CSS px`);
@@ -1952,35 +1866,11 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
     };
   }
 
-  if (cmd === 'focus') {
-    const instanceId = parts[1];
-    const result = await fns.focusWindow(instanceId);
-    const windows = await fns.listWindows();
-    const target = windows.find((w) => w.id === result.instanceId);
-
-    const lines = [
-      `Focused browser window ${result.instanceId}`,
-      `Title: ${result.title || 'New Tab'}`,
-      `URL: ${result.url || 'about:blank'}`,
-      `Session windows: ${summarizeWindows(windows)}`,
-    ];
-    if (target) {
-      // Who is working in it is per tab, so the window-level answer is just whether it is
-      // visible — "tabs" says which tab each conversation holds.
-      lines.push(`Visible: ${target.isVisible}, working: ${target.agentControlActive ? 'yes' : 'no'}`);
-    }
-
-    return {
-      output: lines.join('\n'),
-      appendReleaseHint: true,
-    };
-  }
-
   if (cmd === 'tabs') {
     const tabs = await fns.listTabs();
     if (tabs.length === 0) {
       return {
-        output: 'No browser window is open for this session yet, so there are no tabs to list. "open" starts one.',
+        output: 'No browser window is open for this session yet, so there are no tabs to list. "navigate <url>" or "tab-new <url>" opens one.',
         appendReleaseHint: false,
       };
     }
@@ -1995,6 +1885,18 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
       lines.push('');
       lines.push(`  ${tab.active ? '*' : ' '} ${tab.id}  ${tab.title.trim() || tab.url || '(untitled)'}`);
       lines.push(`      url:        ${tab.url || 'about:blank'}${tab.isLoading ? '  (loading)' : ''}`);
+      // The address is where the tab was sent; a page that did not arrive is a fact
+      // about that address, and the document (when it is not the address) is what is
+      // actually on screen — the previous page. Our error page is not reported as a
+      // document; `failed` is what says why it is there.
+      if (tab.error) {
+        lines.push(
+          `      failed:     ${tab.error.code}${tab.error.status ? ` (HTTP ${tab.error.status})` : ''}`,
+        );
+      }
+      if (tab.documentUrl) {
+        lines.push(`      document:   ${tab.documentUrl}`);
+      }
       // Whose tab it is, and who is on it — two different questions, and the second
       // one is the answer to "is somebody mid-work here".
       if (tab.disposition) {
@@ -2034,6 +1936,18 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
       }
     }
 
+    // Said out loud when it is missing. The absence of a `your tab` line is otherwise
+    // indistinguishable from this output simply not being about you, and "which tab do I act on"
+    // is not a question to leave the reader guessing at: it is where the next command goes.
+    if (!tabs.some((tab) => tab.cursorOf.includes(ctx.sessionId))) {
+      lines.push(
+        '',
+        'No tab here is one you work from, so a command that names no tab has nowhere to go. "navigate <url>"',
+        'takes a tab for you; or name one ("--tab <id>", "tab-select <id>") or open one ("tab-new <url>").',
+        'The tab on screen is not chosen for you.',
+      )
+    }
+
     lines.push(
       '',
       'Everything above "belongs to" is what the tab itself reports. "belongs to" and "driven by" are',
@@ -2050,24 +1964,59 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
 
   if (cmd === 'tab-new') {
     const url = parts.slice(1).join(' ').trim();
-    const tabId = await fns.createTab({ ...(url ? { url } : {}), activate: false });
+    if (!url) {
+      // A tab exists to hold a page: a blank one of your own is what `navigate` takes for you,
+      // and there is no state a conversation wants an empty tab in (`tab-new` with no address
+      // used to leave one behind beside the window's own).
+      throw new Error('tab-new needs a URL. Example: tab-new https://example.com');
+    }
+
+    // Behind whatever the person is reading, and **into the window's own untouched tab** when
+    // there is one: a blank tab nobody has used *is* the tab being asked for, so the conversation
+    // takes it — and the cursor with it — rather than leaving an orphan blank tab beside a new one.
+    const tabId = await fns.createTab({ url, activate: false });
     return {
-      output: url
-        ? `Opened a new tab ${tabId} in the workspace's browser window, on ${url} — behind whatever the person is reading, since the window is shared. "tab-show ${tabId}" brings it up for them; "tabs" lists the others.`
-        : `Opened a blank tab ${tabId} in the workspace's browser window, behind whatever the person is reading. "navigate <url>" fills it; "tab-show ${tabId}" brings it up for them.`,
+      output: [
+        `Tab: ${tabId}`,
+        `Opened a new tab in the workspace's browser window, on ${url} — behind whatever the person is reading, since the window is shared. "tab-show ${tabId}" brings it up for them; "tabs" lists the others.`,
+      ].join('\n'),
       appendReleaseHint: false,
     };
   }
 
   if (cmd === 'tab-show') {
-    const id = parts[1]?.trim();
-    if (!id) throw new Error('tab-show needs a tab id. "tabs" lists them. Example: tab-show tab-3');
+    const rest = parts.slice(1)
+    // Showing a tab is not by itself handing it over: the person can look at a page the
+    // conversation is still working in, and the hold goes on protecting it. `--handover` is
+    // the other request — "you take it from here" — and only then does the overlay go away.
+    const handover = rest.includes('--handover')
+    const id = rest.find((part) => part !== '--handover')?.trim()
+    if (!id) throw new Error('tab-show needs a tab id. "tabs" lists them. Example: tab-show tab-3 [--handover]');
 
-    const { movedView } = await fns.activateTab(id);
+    const { movedView } = await fns.activateTab(id, { handover });
     return {
       output: movedView
-        ? `Tab ${id} is now the tab the window shows — and the one your unnamed commands act on from here.`
-        : `Tab ${id} is now the tab you work from, but the window still shows the person's tab: a session spawned by another one does not move what they are looking at. The conversation that spawned you can bring a tab up if they should see it.`,
+        ? handover
+          ? `Tab ${id} is now the tab the window shows, and the page is theirs to use: your overlay and hold are gone until your next command takes them back. The window was not brought forward — tell the person what you need and that the browser is ready on that tab.`
+          : `Tab ${id} is now the tab the window shows — and the one your unnamed commands act on from here. Your overlay stays up: the page is still held while you work. The window was not brought forward — say so in your reply if they should look.`
+        : `Tab ${id} is now the tab you work from, but the window still shows the person's tab: a session spawned by another one does not move what they are looking at. The conversation that spawned you can point the person at it.`,
+      appendReleaseHint: false,
+    };
+  }
+
+  if (cmd === 'tab-select') {
+    const id = parts[1]?.trim();
+    if (!id) throw new Error('tab-select needs a tab id. "tabs" lists them. Example: tab-select tab-3');
+
+    // The cursor alone: naming a tab is how a conversation says "this is where I work from", and
+    // this is that act with nothing else attached to it. No page action, and no window move —
+    // `tab-show` is the command that moves what the person sees, and it is a different request.
+    await fns.targetTab(id);
+    return {
+      output:
+        `Tab ${id} is now the tab you work from — a command that names no tab acts here, and stays here ` +
+        'until you name another. The window still shows what it showed; "tab-show <id>" is how a tab is brought ' +
+        'up for the person.',
       appendReleaseHint: false,
     };
   }
@@ -2086,7 +2035,8 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
     return {
       output:
         `Tab ${tabId} is now that conversation's task, and the tab it works from — it can start working there ` +
-        'without naming a tab. Hand over one tab per session you want working in parallel: they share this window, ' +
+        'without naming a tab. You no longer work from it: name another tab ("tab-select <id>" or "--tab <id>") ' +
+        'for your own commands. Hand over one tab per session you want working in parallel: they share this window, ' +
         'and each works in its own tab.',
       appendReleaseHint: false,
     };
@@ -2190,85 +2140,6 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
       output: remaining > 0
         ? `Closed tab ${tabId}; ${remaining} tab${remaining === 1 ? '' : 's'} left in the workspace's browser window.`
         : `Closed tab ${tabId} — it was the window's last tab, so the window went with it.`,
-      appendReleaseHint: false,
-    };
-  }
-
-  if (cmd === 'release') {
-    const targetArg = parts[1];
-    if (parts.length > 2) {
-      throw new Error('release accepts at most one optional argument: [windowId|all]');
-    }
-
-    const before = await fns.listWindows();
-    const activeOverlays = before.filter((w) => !!w.agentControlActive).length;
-    const lifecycle = await fns.releaseControl(targetArg);
-    const after = await fns.listWindows();
-    const activeAfter = after.filter((w) => !!w.agentControlActive).length;
-
-    const title = lifecycle.action === 'released'
-      ? 'Browser control released. Agent overlay dismissed.'
-      : 'No browser overlay was released.';
-
-    return {
-      output: [
-        title,
-        formatLifecycleResultLine(lifecycle),
-        `Overlays active: ${activeOverlays} → ${activeAfter}`,
-      ].join('\n'),
-      appendReleaseHint: false,
-    };
-  }
-
-  if (cmd === 'close') {
-    const targetArg = parts[1];
-    if (parts.length > 2) {
-      throw new Error('close accepts at most one optional argument: [windowId]');
-    }
-
-    const before = await fns.listWindows();
-    const lifecycle = await fns.closeWindow(targetArg);
-    const after = await fns.listWindows();
-
-    // Three outcomes, and the middle one is the interesting one: the workspace's
-    // window cannot be closed by a conversation, so `close` there means "close the
-    // tabs I opened".
-    const title = lifecycle.action === 'closed'
-      ? 'Browser window closed and destroyed.'
-      : lifecycle.action === 'pages-closed'
-        ? 'Closed the tabs this conversation opened. The window stays — it is the whole workspace\'s.'
-        : 'No browser window was closed.';
-
-    return {
-      output: [
-        title,
-        formatLifecycleResultLine(lifecycle),
-        `Session windows: ${summarizeWindows(before)} → ${summarizeWindows(after)}`,
-      ].join('\n'),
-      appendReleaseHint: false,
-    };
-  }
-
-  if (cmd === 'hide') {
-    const targetArg = parts[1];
-    if (parts.length > 2) {
-      throw new Error('hide accepts at most one optional argument: [windowId]');
-    }
-
-    const before = await fns.listWindows();
-    const lifecycle = await fns.hideWindow(targetArg);
-    const after = await fns.listWindows();
-
-    const title = lifecycle.action === 'hidden'
-      ? 'Browser window hidden. Use "open" to show it again.'
-      : 'No browser window was hidden.';
-
-    return {
-      output: [
-        title,
-        formatLifecycleResultLine(lifecycle),
-        `Session windows: ${summarizeWindows(before)} → ${summarizeWindows(after)}`,
-      ].join('\n'),
       appendReleaseHint: false,
     };
   }

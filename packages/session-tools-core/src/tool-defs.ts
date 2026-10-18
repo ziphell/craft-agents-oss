@@ -572,29 +572,39 @@ Detailed rules and the full command reference: docs/browser-tools.md — read it
 
 The window is one and its tabs are many: every command can name the tab it acts on with \`--tab <id>\`
 (\`tabs\` lists them). Without one it acts on **your** tab — the tab you have been working from, which
-\`tabs\` marks as \`your tab\` — and only on the tab on screen when you have none yet; the person
-switching tabs does not move your commands. A session spawned by another one is the exception: it works
-in the tab it was given (\`tab-assign\`) or opens one with \`tab-new\`, and never takes over the tab on
-screen.
+\`tabs\` marks as \`your tab\` and \`tab-select <id>\` sets. With none yet, \`navigate <url>\` **gives you one of
+your own** (a new tab behind the person's — or the tab the window was born with, when the command is what
+opens it) — that is the usual first command, and it
+is the recommended one because it is **idempotent**: calling it again acts in the same tab, where
+\`tab-new <url>\` adds a tab every time. If the page you need is already open on the person's tab, \`tabs\` shows
+it — \`tab-select <id>\` first, or \`--tab <id>\` on the command itself, works in *their* tab, as something said
+rather than something that happened by itself. Every other command, with no tab of yours, says so instead of
+picking one and names the ways out. What the person happens to be looking at never decides where your commands
+land. A session spawned by another one takes no tab of its own choosing: it works in the tab the parent
+handed over (\`tab-assign\`) or opens one with \`tab-new <url>\`.
 
-There is **one browser window per workspace**, shared by every conversation in it and by the user — so \`open\`
-adds a tab to it instead of making a window, and the window is not yours to close: use \`tab-close <id>\` for
+There is **one browser window per workspace**, shared by every conversation in it and by the user — so \`tab-new\`
+adds a tab to it instead of making a window (a workspace with no window gets one when a tab is first opened),
+and the window is not yours to close: use \`tab-close <id>\` for
 the tabs of your task (the ones you opened, the ones handed to you, and the tabs opened from them — a Task's
-node tabs included, so a finished DAG can be tidied up), or \`release\` to drop your overlay. \`tabs\` says
+node tabs included, so a finished DAG can be tidied up). \`tab-show <id>\` makes a tab the one the window
+shows, without raising the window — your reply is what tells the person to look; \`tab-show <id> --handover\`
+also drops your overlay and hold, so the page is theirs to use until your next command takes it back. \`tabs\` says
 what each tab is, whose work it is in and who is working on it — another conversation's **work** is refused
 (a tab the person opened is nobody's work, and another conversation working from it does not
-change that), and \`tab-assign <tab-id> <session>\` is how a parent hands a tab to a session it spawned,
+change that), and \`tab-assign <tab-id> <session>\` is how a parent hands one of its own tabs to a session it spawned,
 so that parallel sessions each work in their own tab. A tab's work outlives the session that opened it: a
 Task node's tab belongs to that node, so a re-run of a node finds its predecessor's tab in \`tabs\` — read it
-before opening one, because \`tab-new\` always adds a tab. There is no window list to read, because there is
+before opening one, because \`tab-new\` always gives you a tab of your own (when it is what opens the window it
+opens into the tab that window was born with; a window that already exists gets one more). There is no window list to read, because there is
 one window.
 
 Examples:
 - \`--help\`
-- \`open\`
-- \`navigate https://example.com\`
+- \`navigate https://example.com\` — go there in your tab, taking one if you have none yet (this also opens the window)
+- \`tab-new https://example.com\` — one more page, in a tab of its own behind the person's
 - \`snapshot\`
-- \`read --save sources/my-page/snapshot.md\` — read the page as an article (markdown + the facts it states); \`--save\` writes it and keeps its images beside it in \`snapshot.assets/\`; without \`--save\` the note comes back instead of being written
+- \`read --save notes/my-page.md\` — read the page as an article (markdown + the facts it states); \`--save\` keeps it in a file, and \`--images\` also keeps its images beside it in \`notes/my-page.assets/\`; without \`--save\` the note comes back instead of being written
 - \`find login button\` — search elements by keyword
 - \`click @e12\`
 - \`click-at 350 200\` — click at pixel coordinates (for canvas elements)
@@ -613,9 +623,12 @@ Examples:
 - \`evaluate --file scripts/probe.js\` — a script kept in a file
 - \`pick\` — ask the user to click an element; returns a stable selector + geometry
 - \`tabs\` — which tabs this window has, each with what it is and whose work it is in
-- \`snapshot --tab tab-3\` — act on a named tab (the window shows it while the command runs)
-- \`tab-new https://example.com\` — add a tab to the window
-- \`tab-assign tab-3 260915-brave-fox\` — hand a tab to a session you spawned
+- \`snapshot --tab tab-3\` — act on a named tab (it becomes the tab you work from; the window is not moved)
+- \`tab-new https://example.com\` — one more tab for you, behind the person's
+- \`tab-select tab-3\` — make a tab the one you work from (the window shows what it showed)
+- \`tab-show tab-3\` — make it the tab the window shows, without raising the window
+- \`tab-show tab-3 --handover\` — make it the shown tab and drop your overlay and hold so they can use it
+- \`tab-assign tab-3 260915-brave-fox\` — hand one of your own tabs to a session you spawned
 - \`tab-close tab-2\` — close one tab (closing the last one closes the window)
 - \`console 50 error\`
 - \`screenshot\` — raw screenshot
@@ -629,10 +642,6 @@ Examples:
 - \`key Enter\`
 - \`key k meta\`
 - \`downloads wait 15000\`
-- \`focus [windowId]\` — focus a browser window (no new window)
-- \`release [windowId|all]\` — dismiss the agent control overlay when done
-- \`close [windowId]\` — close a window of your own; the shared window is refused
-- \`hide [windowId]\` — hide the window while preserving state
 
 **A screenshot may be scaled before the model sees it.** A large image can be downscaled by the
 vision input, which makes the coordinates read off it inaccurate. If a coordinate seems off, shrink

@@ -18,7 +18,6 @@ export type BrowserCapabilityMethod =
   // Lifecycle / instances
   | 'createForSession'
   | 'getOrCreateForSession'
-  | 'focusBoundForSession'
   | 'destroyInstance'
   | 'destroyForSession'
   | 'getInstance'
@@ -36,7 +35,6 @@ export type BrowserCapabilityMethod =
   | 'clearAgentControlForInstance'
   | 'clearVisualsForSession'
   | 'focus'
-  | 'hide'
   // Navigation
   | 'navigate'
   | 'goBack'

@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect, forwardRef, type ReactNode } from 'react'
-import { ChevronLeft, ChevronRight, RotateCw, X, Globe } from 'lucide-react'
+import { ChevronLeft, ChevronRight, RotateCw, X, Globe, AlertCircle } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import { cn } from '../../lib/utils'
 import { useTranslation } from 'react-i18next'
@@ -43,6 +43,13 @@ export interface BrowserControlsProps {
   url?: string
   /** Whether page is loading (toggles Stop/Reload, shows progress) */
   loading?: boolean
+  /**
+   * Why the page on screen did not load, if it did.
+   *
+   * The bar draws it in the icon slot — a red mark instead of the globe — and leaves the
+   * explanation itself to the page area, where a whole page can say it in words.
+   */
+  error?: { code: string; status?: number; url: string } | null
   /** Enable back button */
   canGoBack?: boolean
   /** Enable forward button */
@@ -157,6 +164,7 @@ const HALF_MAX_WIDTH = 300
 export function BrowserControls({
   url: controlledUrl,
   loading = false,
+  error,
   canGoBack = false,
   canGoForward = false,
   onNavigate,
@@ -191,7 +199,7 @@ export function BrowserControls({
   // Sync with controlled url when not focused
   useEffect(() => {
     if (!isFocused && controlledUrl != null) {
-      setLocalUrl(controlledUrl === 'about:blank' ? '' : controlledUrl)
+      setLocalUrl(controlledUrl === 'about:blank' || controlledUrl === 'about:newtab' ? '' : controlledUrl)
     }
   }, [controlledUrl, isFocused])
 
@@ -244,7 +252,7 @@ export function BrowserControls({
     (e: React.KeyboardEvent) => {
       if (e.key === 'Escape') {
         if (controlledUrl != null) {
-          setLocalUrl(controlledUrl === 'about:blank' ? '' : controlledUrl)
+          setLocalUrl(controlledUrl === 'about:blank' || controlledUrl === 'about:newtab' ? '' : controlledUrl)
         }
         inputRef.current?.blur()
       }
@@ -310,6 +318,11 @@ export function BrowserControls({
             <span className="flex items-center justify-center h-3.5 w-3.5" style={safeThemeColor ? { color: isFocused ? 'var(--tb-fg)' : 'var(--tb-fg-muted)' } : undefined}>
               <Spinner className="text-[11px] text-foreground/40" />
             </span>
+          ) : error ? (
+            <AlertCircle
+              className="h-3.5 w-3.5 text-destructive"
+              style={safeThemeColor ? { color: '#ff6369' } : undefined}
+            />
           ) : (
             <Globe className="h-3.5 w-3.5 text-foreground/30" style={safeThemeColor ? { color: isFocused ? 'var(--tb-fg)' : 'var(--tb-fg-muted)' } : undefined} />
           )}

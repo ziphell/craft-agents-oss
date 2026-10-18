@@ -5,6 +5,7 @@ import {
   whyTabIsLocked,
   whyTabIsNotMineToClose,
   whyTabIsOutOfReach,
+  whyThereIsNoWorkingTab,
 } from '../tab-access'
 
 /** A tab as the target rule sees it: what it is, who works from it, what is on screen. */
@@ -26,29 +27,20 @@ describe('pickCommandTarget', () => {
   // The conversation's own tab wins, even though the person is looking at another one:
   // what they are looking at is theirs to change at any moment, and it must not move
   // somebody else's command.
-  it("prefers the conversation's own tab over the one on screen", () => {
-    const target = pickCommandTarget([page('tab-1', [], true), page('tab-2', ['session-a'])], 'session-a')
-
-    expect(target?.tab.id).toBe('tab-2')
-    expect(target?.because).toBe('cursor')
-  })
-
-  it('does not answer with a tab that merely happens to be on screen', () => {
-    // The person clicking through the window does not change the answer.
+  it("answers with the conversation's own tab, not the one on screen", () => {
     const before = pickCommandTarget([page('tab-1', [], true), page('tab-2', ['session-a'])], 'session-a')
     const after = pickCommandTarget([page('tab-1', []), page('tab-2', ['session-a'], true)], 'session-a')
 
-    expect(before?.tab.id).toBe('tab-2')
-    expect(after?.tab.id).toBe('tab-2')
+    expect(before?.id).toBe('tab-2')
+    expect(after?.id).toBe('tab-2')
   })
 
-  // …and with no tab of its own, the tab in front is the takeover case: a person opens
-  // something, the conversation starts there.
-  it('falls back to the tab on screen when the conversation has none', () => {
-    const target = pickCommandTarget([page('tab-1', []), page('tab-2', [], true)], 'session-a')
-
-    expect(target?.tab.id).toBe('tab-2')
-    expect(target?.because).toBe('on-screen')
+  // …and with no tab of its own the answer is **nothing at all**, not the tab in front. The
+  // tab on screen used to be the takeover — a person opens something, the conversation starts
+  // there — and that is the same coupling one level down: the person's click deciding where an
+  // agent's command lands. It says so instead, and names the ways out.
+  it('has no answer for a conversation with no tab of its own, whatever is on screen', () => {
+    expect(pickCommandTarget([page('tab-1', []), page('tab-2', [], true)], 'session-a')).toBeNull()
   })
 
   // Several conversations may work from one tab (第二十四轮), so "mine" is a question about my
@@ -59,18 +51,42 @@ describe('pickCommandTarget', () => {
       'session-a',
     )
 
-    expect(target?.tab.id).toBe('tab-2')
-    expect(target?.because).toBe('cursor')
+    expect(target?.id).toBe('tab-2')
   })
 
   it("does not read another conversation's tab as its own", () => {
     // Whose tab it is, is not this rule's question: another session's cursor on a tab is simply
-    // not *mine*, and with nothing on screen there is no target at all.
+    // not *mine*, so there is no target at all.
     expect(pickCommandTarget([page('tab-1', ['session-b'])], 'session-a')).toBeNull()
   })
 
   it('has no answer for a window with no tabs', () => {
     expect(pickCommandTarget([], 'session-a')).toBeNull()
+  })
+})
+
+describe('whyThereIsNoWorkingTab', () => {
+  it('says the browser has to be opened when there is no window yet', () => {
+    const why = whyThereIsNoWorkingTab(false, false)
+
+    expect(why).toContain('No browser window is open')
+    expect(why).toContain('tab-new')
+  })
+
+  // The three ways out, in one sentence, and the one thing it must not do said out loud.
+  it('names the ways to a tab, and says the tab on screen is not one of them', () => {
+    const why = whyThereIsNoWorkingTab(true, false)
+
+    expect(why).toContain('tab-select')
+    expect(why).toContain('--tab')
+    expect(why).toContain('tab-new')
+    expect(why).toContain('tab on screen is not chosen for you')
+  })
+
+  // A child session is refused exactly what everyone else is refused now, so what it needs on
+  // top is the one way it is meant to get a tab.
+  it('tells a spawned session to be handed a tab', () => {
+    expect(whyThereIsNoWorkingTab(true, true)).toContain('tab-assign')
   })
 })
 

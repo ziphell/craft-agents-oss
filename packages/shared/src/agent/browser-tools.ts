@@ -38,7 +38,7 @@ function successResponse(text: string): ToolResult {
   };
 }
 
-const BROWSER_RELEASE_HINT = '\n\nWhen you are done using the browser, call browser_tool with command "close" to close the window entirely, or "release" to dismiss the overlay and let the user continue browsing.';
+const BROWSER_RELEASE_HINT = '\n\nWhen you are done using the browser, hand the page back with "tab-show <id> --handover" — it makes that tab the window\'s shown tab and drops your overlay and hold — and say so in your reply (the window is not raised for them). Or close the tabs you opened with "tab-close <id>".';
 
 // ============================================================================
 // Tool Descriptions

@@ -16,8 +16,7 @@ describe('session-scoped tool callback merge', () => {
 
   it('preserves existing browserPaneFns when merging turn-level callbacks', () => {
     const browserPaneFns: BrowserPaneFns = {
-      openPanel: async () => ({ instanceId: 'browser-1' }),
-      navigate: async () => ({ url: 'https://example.com', title: 'Example' }),
+      navigate: async () => ({ url: 'https://example.com', title: 'Example', tabId: 'tab-1' }),
       snapshot: async () => ({ url: 'https://example.com', title: 'Example', nodes: [] }),
       click: async () => {},
       clickAt: async () => {},
@@ -57,7 +56,6 @@ describe('session-scoped tool callback merge', () => {
         path: null,
       }),
       listDrawioPages: async () => [],
-      focusWindow: async () => ({ instanceId: 'browser-1', title: 'Example', url: 'https://example.com' }),
       createTab: async () => 'tab-1',
       targetTab: async () => {},
       activateTab: async () => ({ movedView: true }),
@@ -65,9 +63,6 @@ describe('session-scoped tool callback merge', () => {
       assignTab: async () => {},
       listTabs: async () => [],
       releaseControl: async () => ({ action: 'released' as const, affectedIds: [] }),
-      closeWindow: async () => ({ action: 'closed' as const, affectedIds: [] }),
-      hideWindow: async () => ({ action: 'hidden' as const, affectedIds: [] }),
-      listWindows: async () => [],
       detectChallenge: async () => ({ detected: false, provider: 'none', signals: [] }),
     };
 

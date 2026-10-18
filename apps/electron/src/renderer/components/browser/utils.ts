@@ -7,7 +7,7 @@ import type { TabRef } from '@craft-agent/shared/mentions'
 
 export function getHostname(url: string): string {
   try {
-    if (url === 'about:blank' || !url) return 'New Tab'
+    if (url === 'about:blank' || url === 'about:newtab' || !url) return 'New Tab'
     const parsed = new URL(url)
 
     if (parsed.protocol === 'file:') {

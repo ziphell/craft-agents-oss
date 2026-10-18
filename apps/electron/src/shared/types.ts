@@ -255,6 +255,7 @@ import type {
   WorkspaceSettings,
   PermissionModeState,
   BrowserInstanceInfo,
+  BrowserLoadError,
   BrowserToolbarAction,
   DeepLinkNavigation,
   TestAutomationPayload,

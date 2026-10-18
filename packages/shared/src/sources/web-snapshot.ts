@@ -1,5 +1,5 @@
 /**
- * A web page → the snapshot a `web` source keeps.
+ * A web page → the note `browser_tool read` produces.
  *
  * Extraction is Defuddle's — the same library the Obsidian Web Clipper uses — over the HTML the
  * workspace's browser window already rendered, so a logged-in, JavaScript-built page is read the
@@ -27,12 +27,6 @@ export interface WebSnapshot {
   meta: WebSnapshotMeta;
   /** When it was taken, ms since epoch. */
   capturedAt: number;
-  /**
-   * Relative path to a picture of the page itself, when one was kept beside the note
-   * (`snapshot.assets/page-<hash>.png`). The text a machine extracts from an app-like page is often
-   * thin; the picture is the half that always says something.
-   */
-  leadImage?: string;
 }
 
 /** What every snapshot carries, so a folder of them is findable. */
@@ -101,11 +95,7 @@ export function renderWebSnapshotNote(snapshot: WebSnapshot): string {
 
   // lineWidth 0: a long url or description is one line in frontmatter, not a folded scalar.
   const front = stringifyYaml(defined, { lineWidth: 0 }).trimEnd();
-  // The page's own picture leads the body, when one was kept: it is what the page looked like, and
-  // for a page that is *used* rather than read it is the half that carries information. The alt is
-  // a fixed line rather than the title — a title can carry `]` or `(` and break the image markup.
-  const lead = snapshot.leadImage ? `![The page as captured](${snapshot.leadImage})\n\n` : '';
-  return `---\n${front}\n---\n\n${lead}${snapshot.markdown}\n`;
+  return `---\n${front}\n---\n\n${snapshot.markdown}\n`;
 }
 
 function trimOrUndefined(value: string | null | undefined): string | undefined {
@@ -209,19 +199,6 @@ const IMAGE_EXTENSIONS: Record<string, string> = {
 export function snapshotImageFileName(url: string, bytes: Uint8Array, mimeType: string): string {
   const hash = createHash('sha1').update(bytes).digest('hex').slice(0, 8);
   return `${urlStem(url)}-${hash}.${imageExtension(url, mimeType)}`;
-}
-
-/**
- * A file name for the page's own picture, kept beside the note like any other image.
- *
- * Deliberately not {@link snapshotImageFileName}: that one stems from the image's url, and the page
- * has no url of its own as an image — `http://127.0.0.1:8188/` would come out `image-…`, which
- * tells nobody anything. `page-<hash>` says what it is, and the content hash keeps it stable: a
- * second capture of an unchanged page lands on the same name instead of accumulating copies.
- */
-export function pageShotFileName(bytes: Uint8Array): string {
-  const hash = createHash('sha1').update(bytes).digest('hex').slice(0, 8);
-  return `page-${hash}.png`;
 }
 
 function imageExtension(url: string, mimeType: string): string {

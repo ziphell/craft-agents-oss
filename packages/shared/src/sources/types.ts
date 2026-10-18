@@ -415,24 +415,21 @@ export interface LocalSourceConfig {
 /**
  * Web page configuration
  *
- * A web source is a bookmark: the url is the entry point, and the workspace
- * browser window (with its own logged-in session) captures the page into a
- * snapshot file next to this config. The snapshot is what gets reused across
- * sessions — the url only says where to refresh it from.
+ * A web source is a bookmark: the url is the entry point, and `guide.md` carries what the page is
+ * and how to work with it. Nothing is captured or stored here — the browser reads the page when it
+ * is needed.
  */
 export interface WebSourceConfig {
   url: string;
 }
 
-/** The note a captured page is written to, beside `config.json`. */
-export const WEB_SNAPSHOT_FILE = 'snapshot.md';
-
 /**
- * The folder a note's images live in — named after the note, so a folder on disk says which file it
- * belongs to without either of them being read. `snapshot.md` → `snapshot.assets`.
+ * The folder a saved note's images live in — named after the note, so a folder on disk says which
+ * file it belongs to without either of them being read. `page.md` → `page.assets`.
  *
- * A naming convention rather than a secret, and one the writer and the reader share: `read --save`
- * writes into it, and a source's detail page counts what is in it.
+ * A naming convention rather than a secret, and one the writer and the reader share:
+ * `read --save --images` writes into it, and anything reading the note later resolves its pictures
+ * from it.
  */
 export function snapshotAssetsDirName(noteFileName: string): string {
   const stem = noteFileName.replace(/\.[a-z0-9]+$/i, '');
@@ -530,13 +527,12 @@ export interface SourceGuide {
 }
 
 /**
- * A captured page's note, split into the block that describes it and the page itself.
+ * A saved page's note, split into the block that describes it and the page itself.
  *
  * The note's shape is fixed and written by `renderWebSnapshotNote`; this is the reader's half of
- * it, shared by the loader (which reads the fields back) and by anything drawing the note (which
- * wants the page, not the envelope — a markdown renderer has no concept of frontmatter, and would
- * set `---` as a rule and `title: …` as a run-on paragraph). Only the leading block counts: a
- * `---` line further down is a horizontal rule.
+ * it, for anything working with a note `read --save` wrote (a markdown renderer has no concept of
+ * frontmatter, and would set `---` as a rule and `title: …` as a run-on paragraph). Only the
+ * leading block counts: a `---` line further down is a horizontal rule.
  */
 export function splitWebSnapshotNote(note: string): { frontmatter: string; body: string } {
   const match = note.match(/^\uFEFF?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*\r?\n?/)
@@ -552,10 +548,10 @@ export function webSnapshotBody(note: string): string {
 /**
  * Page facts worth keeping, as much as the page was willing to state them.
  *
- * One type for both halves: extraction fills it in (`extractWebSnapshot`, from the page's own
- * metadata) and it is written into the note's frontmatter, from which the loader reads it back.
- * Where it lives is why it is here rather than beside the extractor — a source's detail page shows
- * these fields, and that page may not import a Node-only module (the extractor pulls in Defuddle).
+ * One type for both halves: extraction fills it in (`buildWebSnapshot`, from the page's own
+ * metadata) and it is written into the note's frontmatter, from which a later reader can read it
+ * back. It lives here rather than beside the extractor because the extractor pulls in Defuddle,
+ * which a renderer should not have to load.
  */
 export interface WebSnapshotMeta {
   author?: string
@@ -564,28 +560,6 @@ export interface WebSnapshotMeta {
   site?: string
   language?: string
   wordCount?: number
-}
-
-/**
- * The captured page a **web** source keeps.
- *
- * Pre-computed while the source is loaded, for the same reason `iconPath` is: a source's detail
- * page has to say what was captured, how big it is and when, and the renderer has no filesystem of
- * its own. Absent means nothing has been captured yet — or this is not a web source.
- */
-export interface LoadedSourceSnapshot {
-  /** Absolute path to the note. */
-  path: string;
-  /** What the capture called the page. */
-  title?: string;
-  /** Bytes, as written. */
-  bytes: number;
-  /** When the note was last written, ms since epoch. */
-  writtenAt: number;
-  /** How many images sit beside it, when any do. */
-  imageCount: number;
-  /** What the capture wrote about itself. Absent when the note carries no frontmatter. */
-  meta?: WebSnapshotMeta;
 }
 
 /**
@@ -612,9 +586,6 @@ export interface LoadedSource {
    * Computed during source loading so renderer doesn't need filesystem access.
    */
   iconPath?: string;
-
-  /** The captured page, for a web source that has one. See {@link LoadedSourceSnapshot}. */
-  snapshot?: LoadedSourceSnapshot;
 }
 
 /**

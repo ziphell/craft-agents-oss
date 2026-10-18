@@ -56,7 +56,7 @@ import {
   type SavedBrowserWindowTabs,
 } from './browser-tabs-state'
 import { CodedError, RPC_CHANNELS, describeWork, sameWork, tabSectionOf } from '@craft-agent/shared/protocol'
-import type { PickedElement, PickedElementOrigin, BrowserToolbarAction, BrowserTabSummary, TabBelongsTo } from '@craft-agent/shared/protocol'
+import type { PickedElement, PickedElementOrigin, BrowserToolbarAction, BrowserTabSummary, TabBelongsTo, BrowserLoadError } from '@craft-agent/shared/protocol'
 import { PAGE_PANEL_RING, resolvePagePanelRing, resolvePagePanelShadow } from '../shared/browser-live-fx'
 import { PANEL_EDGE_INSET, PANEL_RADIUS_INNER, TAB_RAIL_WIDTH, TOOLBAR_HEIGHT } from '../shared/panel-geometry'
 import { getWindowsBackgroundMaterial } from './window-material'
@@ -236,6 +236,132 @@ function abortedLoad(error: unknown): { url: string | null } | null {
   return aborted ? { url: fields?.url ?? null } : null
 }
 
+/**
+ * Chromium's own code, read out of a `loadURL` rejection.
+ *
+ * `did-fail-load` normally writes the tab's error first and this is only a fallback — the
+ * 30-second timeout has no Chromium event behind it — so the worst case is the generic
+ * `ERR_FAILED` rather than nothing at all.
+ */
+function chromiumErrorCode(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  return /\b(ERR_[A-Z0-9_]+)\b/.exec(message)?.[1] ?? 'ERR_FAILED'
+}
+
+/** A token inside the error page's own URL, so the host can tell what is on screen. */
+const ERROR_PAGE_MARKER = 'craft-browser-error'
+
+/** Text placed in our own error page, escaped for HTML. */
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (ch) => {
+    switch (ch) {
+      case '&': return '&amp;'
+      case '<': return '&lt;'
+      case '>': return '&gt;'
+      case '"': return '&quot;'
+      default: return '&#39;'
+    }
+  })
+}
+
+/**
+ * The built-in load-error page.
+ *
+ * A real page inside the tab rather than an overlay: it replaces the document the
+ * browser could not get, the tab keeps the failed address around it, and Back reaches
+ * whatever was there before. The copy comes from the toolbar (this process has no
+ * i18n); the colours follow the window's theme.
+ */
+function browserErrorPageHtml(copy: { message: string; url: string; retry: string }): string {
+  const dark = nativeTheme.shouldUseDarkColors
+  const bg = dark ? '#080a10' : '#f7f8fa'
+  const fg = dark ? '#fafafa' : '#1d1d1f'
+  const muted = dark ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.5)'
+  const faint = dark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.3)'
+  const iconBg = dark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.05)'
+  const iconFg = dark ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.4)'
+  const buttonBg = dark ? '#fafafa' : '#1d1d1f'
+  const buttonFg = dark ? '#111111' : '#ffffff'
+  // Through JSON, and `<` escaped so a URL can never close the script element.
+  const retryUrl = JSON.stringify(copy.url).replace(/</g, '\\u003c')
+
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>Error</title>
+<!-- ${ERROR_PAGE_MARKER} -->
+<style>
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    background: ${bg}; color: ${fg};
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    -webkit-user-select: none; user-select: none;
+  }
+  .wrap { max-width: 360px; padding: 0 24px; text-align: center; }
+  .icon {
+    width: 40px; height: 40px; margin: 0 auto 16px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    background: ${iconBg}; color: ${iconFg}; font-size: 18px; font-weight: 600;
+  }
+  h1 { margin: 0 0 6px; font-size: 15px; font-weight: 600; }
+  p { margin: 0 0 4px; font-size: 12px; color: ${muted}; }
+  .url { margin-top: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: ${faint}; word-break: break-all; }
+  button {
+    margin-top: 24px; border: 0; border-radius: 10px; padding: 8px 16px;
+    font-size: 13px; font-weight: 500; cursor: pointer;
+    background: ${buttonBg}; color: ${buttonFg};
+  }
+  button:hover { opacity: 0.85; }
+</style></head>
+<body><div class="wrap">
+  <div class="icon">!</div>
+  <h1>${escapeHtml(copy.message)}</h1>
+  <p class="url">${escapeHtml(copy.url)}</p>
+  <button id="retry">${escapeHtml(copy.retry)}</button>
+</div>
+<script>
+  document.getElementById('retry').addEventListener('click', function () {
+    location.href = ${retryUrl}
+  })
+</script>
+</body></html>`
+}
+
+/**
+ * What `navigate` was asked to open.
+ *
+ * A supported scheme loads as typed. A bare host (domain, IPv4/IPv6, localhost, optional port)
+ * gets `http://` — LAN services commonly have no TLS, and plain HTTP is the standard reading
+ * of a bare address; a site that only speaks HTTPS answers with its own redirect. Everything
+ * else, including an unknown scheme, becomes a search instead of a load that quietly does
+ * nothing.
+ */
+type AddressTarget = { url: string } | { search: string }
+
+function readAddressTarget(raw: string): AddressTarget {
+  const text = raw.trim()
+  if (/^(https?|file|about|craft-local):/i.test(text)) {
+    return { url: text }
+  }
+  const looksLikeHost =
+    /^(localhost|\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-f:]+\]|[\w-]+(?:\.[\w-]+)+)(?::\d+)?(?:[/?#]|$)/i.test(text)
+  if (looksLikeHost) {
+    return { url: `http://${text}` }
+  }
+  return { search: text }
+}
+
+const searchUrlFor = (query: string): string =>
+  `https://duckduckgo.com/?q=${encodeURIComponent(query)}`
+
+/** Whether two addresses belong to the same site (scheme, host and port). */
+function sameOrigin(a: string, b: string): boolean {
+  try {
+    return new URL(a).origin === new URL(b).origin
+  } catch {
+    return false
+  }
+}
+
 const THEME_COLOR_EXTRACTOR_FN = String.raw`
 () => {
   const toHex = (r, g, b) => '#' + [r, g, b].map(c => c.toString(16).padStart(2, '0')).join('');
@@ -299,6 +425,13 @@ const TOOLBAR_CHANNELS = {
   RELOAD: 'browser-toolbar:reload',
   STOP: 'browser-toolbar:stop',
   MENU_GEOMETRY: 'browser-toolbar:menu-geometry',
+  /**
+   * Render the built-in load-error page into the tab that failed.
+   *
+   * The copy is the toolbar's (only that document has i18n); this side owns the page and
+   * puts it in place of the document that never arrived, the way a browser does.
+   */
+  SHOW_ERROR_PAGE: 'browser-toolbar:show-error-page',
   FORCE_CLOSE_MENU: 'browser-toolbar:force-close-menu',
   HIDE: 'browser-toolbar:hide',
   DESTROY: 'browser-toolbar:destroy',
@@ -453,6 +586,34 @@ interface BrowserTab {
   title: string
   favicon: string | null
   isLoading: boolean
+  /**
+   * Whether a document is still arriving, whether or not the bar draws a spinner for it.
+   *
+   * `isLoading` is what the chrome shows, and loading our own error page deliberately does
+   * not flash a spinner over the failure it reports. A reader still has to wait for that
+   * document: until it commits, the webContents holds Chromium's blank failure page, which
+   * is not what anyone asked to read.
+   */
+  documentLoading: boolean
+  /**
+   * Why the page failed to load, or `null` while none has.
+   *
+   * Kept on the tab because it is that tab's answer to "what is on screen": a failed page
+   * still has a URL and a title (often the one asked for), and the chrome drawing those
+   * alone is what leaves a person staring at a blank rectangle. Cleared when the next load
+   * starts, so a retry that works leaves nothing behind.
+   */
+  loadError: BrowserLoadError | null
+  /**
+   * Whether the tab is showing one of our own documents — the built-in error page or
+   * the new-tab page.
+   *
+   * The tab keeps describing its logical address (`currentUrl`, and the toolbar's
+   * address): the failed address for an error page, `about:newtab` for the new-tab page.
+   * `about:newtab` is a legal address in its own right, which is why this is a marker
+   * rather than a URL test.
+   */
+  internalPage?: 'error' | 'newtab'
   canGoBack: boolean
   canGoForward: boolean
   /**
@@ -533,6 +694,18 @@ interface BrowserTab {
    * lock — which is exactly what parallel children ran into.
    */
   heldBy: string | null
+  /**
+   * Whether the input being dispatched **right now** came from a command rather than from the
+   * person. Set around a command's click or key by the manager, and read by the window-open
+   * handler.
+   *
+   * Two facts decide where a page-requested tab lands, and neither is inferred from the tab's
+   * ownership or from what is on screen: this flag, and {@link heldBy}. A held tab takes no input
+   * from a person — taking it back is what drops the hold — so anything opening a tab from it is
+   * the agent's. The flag covers the one moment the hold cannot: a turn's first command can run
+   * before the overlay that takes it arrives.
+   */
+  commandInput: boolean
   /**
    * How this tab came to exist, when the browser asked for it rather than a command
    * doing so.
@@ -1190,6 +1363,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       title: 'New Tab',
       favicon: null,
       isLoading: false,
+      documentLoading: false,
+      loadError: null,
       canGoBack: false,
       canGoForward: false,
       // A tab nobody said they asked for is nobody's: only the opener writes this,
@@ -1198,6 +1373,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       drivenBy: null,
       cursorOf: [],
       heldBy: null,
+      commandInput: false,
       disposition: null,
       themeColor: null,
       inPageThemeTimer: null,
@@ -1551,6 +1727,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // A restored window is already loading its pages; the empty-state document is what a
     // window with nothing to restore opens with.
     if (!restored) {
+      // The window's birth tab is the new-tab page until something navigates it.
+      tab.internalPage = 'newtab'
+      tab.currentUrl = 'about:newtab'
       void this.loadEmptyStateDocument(instance).catch((error) => {
         mainLog.warn(`[browser-pane] empty-state load failed id=${instance.id}: ${error instanceof Error ? error.message : String(error)}`)
 
@@ -1614,6 +1793,16 @@ export class BrowserPaneManager implements IBrowserPaneManager {
        * it in the same breath. Recording only: nothing is loaded here.
        */
       address?: string
+      /**
+       * Whether the new tab is **put on screen**, and the default is not.
+       *
+       * The window is shared, so a tab that appears behind the one the person is reading is the
+       * ordinary case — an agent's tab, a link followed on an agent's page. Only an act that means
+       * "show this" says `true`: the person's own `+` in the tab strip, the bar's new-tab button,
+       * and a link clicked on a tab that is nobody's work *and* that nobody works from
+       * ({@link attachTab}'s window-open handler). `tab-show` is the verb for bringing one up
+       * afterwards, and the rail is always there to click.
+       */
       activate?: boolean
       /**
        * Whose tab this is: the **work** of the conversation asking for it, or `null` for a
@@ -1649,22 +1838,30 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       /**
        * The caller wants *a* tab to use, not *another* tab — see the note above.
        *
-       * It has nothing to put in the window and no identity to give the tab, so this
-       * is the only way it can say what it means; a window that has never been used
-       * already holds the blank tab it is asking for.
+       * Only a caller that knows the window was **born for this very call** says this: `navigate`
+       * (which needs a tab and is the entry point), and "New tab" / `tab-new` when they are what
+       * opened the window. A caller that merely wants one more tab does not, even if the window
+       * happens to be holding a single blank tab — that one may be somebody's.
        */
       reuseUntouchedWindow?: boolean
     },
   ): string {
     const instance = this.requireAliveInstance(instanceId)
 
-    // "Untouched" only counts when the request is for a tab rather than for one more
-    // tab. A tab the browser asked for belongs *beside* the one that asked for it, and
-    // that tab is in use by definition — reusing it would take away the tab the link
-    // was clicked on.
-    const wantsATab = Boolean(options?.url) || options?.reuseUntouchedWindow === true
+    // "Untouched" is only ever taken by a caller that **says** it wants *a* tab rather than
+    // *another* tab (`reuseUntouchedWindow`). A url does not say it: `tab-new <url>` is "one
+    // more page", and a blank tab that was already in the window is not its to take — that is
+    // exactly how "New tab" used to do nothing on a window holding one blank tab.
+    //
+    // **One tab, and it is empty** is the whole test, and deliberately not "who caused the
+    // window": a window outlives the commands that made it (an agent's tab is closed, the
+    // person opens tabs of their own), so its history is not knowable later — and a blank tab
+    // among several is somebody's, with nothing to say whose. One empty tab is unambiguous:
+    // there is no page to take away and nobody is reading anything. Anything else is one more
+    // tab, added behind whatever the person has.
     const unwritten =
-      wantsATab && !options?.afterTabId && instance.tabs.length === 1 && instance.tabs[0].currentUrl === 'about:blank'
+      options?.reuseUntouchedWindow === true
+      && !options?.afterTabId && instance.tabs.length === 1 && this.isNewTabPage(instance.tabs[0])
         ? instance.tabs[0]
         : null
 
@@ -1682,10 +1879,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       if (options?.disposition !== undefined) unwritten.disposition = options.disposition
       if (options?.url) {
         // Written with the load, so the tab reads as a page from here (`isNewTabPage`).
+        unwritten.internalPage = undefined
         unwritten.currentUrl = options.url
         this.loadTab(instance, unwritten, options.url)
       } else {
+        // A named address is a page from here; none leaves it the new-tab page.
+        unwritten.internalPage = options?.address ? undefined : 'newtab'
         if (options?.address) unwritten.currentUrl = options.address
+        else unwritten.currentUrl = 'about:newtab'
         this.pushToolbarState(instance)
         this.emitStateChange(instance)
       }
@@ -1700,6 +1901,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // `address`; anything else leaves the tab reading as blank, which is what a new tab is.
     if (options?.url) tab.currentUrl = options.url
     else if (options?.address) tab.currentUrl = options.address
+    else {
+      tab.internalPage = 'newtab'
+      tab.currentUrl = 'about:newtab'
+    }
     if (options?.belongsTo !== undefined) {
       tab.belongsTo = options.belongsTo ?? null
     }
@@ -1739,7 +1944,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     this.attachTab(instance, tab)
 
-    if (options?.activate ?? true) {
+    if (options?.activate ?? false) {
       this.activateTab(instanceId, tab.id)
     } else {
       // A tab added behind the one on screen still changes the window's chrome:
@@ -1905,17 +2110,28 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   /**
    * Whether a tab is the **new-tab page** — a tab nobody pointed anywhere.
    *
-   * Read from the tab's address rather than from the document it is showing: a new tab's
-   * empty-state document only commits a beat after the tab is made, and both the moment a tab is
-   * put on screen ({@link focusShownTab}) and the moment that document arrives (`did-navigate`)
-   * have to answer this. The address is written when the tab is made (`createTab`, the way
-   * {@link restoreTabs} has always written it), so a tab that was given an address reads as a page
-   * from the start and only a tab given none reads as blank — which is also the notion of "blank
-   * tab" the untouched-window rule already uses, and what makes this work even when the empty-state
-   * document fails to load and the tab falls back to `about:blank`.
+   * A marker rather than an address test: `about:newtab` is a real address, and the
+   * empty-state document is our own stand-in, not a page. The marker is
+   * written where the tab is made (`createTab` / `createInstance`), so the moment a tab is put
+   * on screen ({@link focusShownTab}) already knows, before that document commits — and it
+   * survives the fallback to `about:blank` when the empty-state document cannot load.
    */
   private isNewTabPage(tab: BrowserTab): boolean {
-    return tab.currentUrl === 'about:blank'
+    // Both facts: a marker with a real address is a page (a test fixture or a state
+    // written by hand), and `about:newtab` without the marker is a page that navigated
+    // there on purpose.
+    return tab.internalPage === 'newtab' && tab.currentUrl === 'about:newtab'
+  }
+
+  /**
+   * Whether the keyboard belongs in the address bar rather than in the page.
+   *
+   * The new-tab page and a real `about:blank` document both have nothing to type into.
+   * `about:blank` is deliberately *not* a new tab (it is a real page): this answers only
+   * the focus question, while reuse and restore keep asking {@link isNewTabPage}.
+   */
+  private wantsAddressBarFocus(tab: BrowserTab): boolean {
+    return this.isNewTabPage(tab) || tab.currentUrl === 'about:blank'
   }
 
   /**
@@ -1928,7 +2144,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * window-coming-up paths; see {@link focusTheTabOnScreen}.
    */
   private focusShownTab(instance: BrowserInstance, tab: BrowserTab, force = false): void {
-    if (this.isNewTabPage(tab)) this.focusAddressBar(instance, force)
+    if (this.wantsAddressBarFocus(tab)) this.focusAddressBar(instance, force)
     else this.focusTheTabOnScreen(instance, tab, force)
   }
 
@@ -1966,7 +2182,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * the rest of this file would know how to be in, and "no tabs" is what closing
    * the last tab means to a person anyway.
    *
-   * Which tab takes over is {@link successorOf}'s to decide.
+   * Which tab takes over is {@link successorOf}'s to decide — for the display. The conversations
+   * that were working in the closed tab are **not** moved with it: a cursor ends with its tab,
+   * and one that wants another names it.
    */
   closeTab(instanceId: string, tabId: string): void {
     const instance = this.instances.get(instanceId)
@@ -1998,7 +2216,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     // A lock never outlives what it locks: closing the tab a session was holding lets go
     // of it here, rather than leaving the window claiming a tab that is gone.
-    // The cursor needs no such care — it lived on the tab and went with it.
+    // The cursor ends with the tab, and is deliberately **not** handed to a successor: a cursor
+    // is written by a conversation working somewhere, so moving it here would write one nobody
+    // asked for — on the tab that happened to be next, or worse, on whatever is on screen. A
+    // conversation whose tab is closed comes back with no tab of its own and is told to name one
+    // (`whyThereIsNoWorkingTab`): it may take the person's tab, but it has to say so.
     this.releaseHeldTab(instance, tab.id)
 
     // A mode armed on a tab that is going away goes with it: leaving the picker
@@ -2298,15 +2520,18 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    *
    * The orchestrator's verb — a parent's child sessions each need a tab of their own, and
    * "whose work is this tab" is what decides who may work there. Giving a tab away is
-   * therefore only possible for a tab that is **the caller's own work or nobody's**: a
-   * conversation cannot hand on work it does not have, and it cannot take another's tab and
-   * pass it along. Whether the receiver is a session worth handing to (same workspace, actually
-   * exists) is `SessionManager`'s call — it is the side that knows the conversations, and it is
-   * also the side that can resolve the receiver's **work**, which is why `to` is passed whole
-   * rather than as a session id the browser side could only guess a task from.
+   * therefore only possible for a tab that is **the caller's own work**: a conversation
+   * cannot hand on work it does not have, and a tab nobody owns (one the person opened) is
+   * not the caller's to transfer — the receiver can name it itself, reaching it as nobody's
+   * work. Whether the receiver is a session worth handing to (spawned by the giver, or one of
+   * the same task) is `SessionManager`'s call — it is the side that knows the conversations,
+   * and it is also the side that can resolve the receiver's **work**, which is why `to` is
+   * passed whole rather than as a session id the browser side could only guess a task from.
    *
-   * The tab also stops being the giver's in every other sense: its cursor and its hold move with
-   * the work, or the giver would keep working from a tab it just gave away.
+   * A tab somebody else is holding is refused: the handover would leave the receiver with a
+   * tab it cannot use until that turn ends, and the holder working from a tab that just left
+   * its reach. On success every other conversation's cursor on the tab is cleared, because the
+   * tab's work changed and they may no longer work there; the giver's hold, if any, goes too.
    */
   assignTab(instanceId: string, tabId: string, to: TabBelongsTo, by: TabBelongsTo): void {
     const instance = this.requireAliveInstance(instanceId)
@@ -2315,15 +2540,26 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     if (!to?.sessionId) {
       throw new Error('Handing a tab over needs the conversation to hand it to.')
     }
-    if (tab.belongsTo && !sameWork(tab.belongsTo, by)) {
+    if (to.sessionId === by.sessionId) {
+      throw new Error(`Tab ${tabId} is already ${to.sessionId}'s — there is nothing to hand over.`)
+    }
+    if (!tab.belongsTo) {
+      throw new Error(
+        `Tab ${tabId} is the person's, so ${by.sessionId} cannot give it away. The conversation that should work there ` +
+        `can name it itself ("tab-select ${tabId}"), or open a tab of its own with "tab-new <url>".`,
+      )
+    }
+    if (!sameWork(tab.belongsTo, by)) {
       throw new Error(
         `Tab ${tabId} is ${describeWork(tab.belongsTo)}'s, so ${by.sessionId} cannot hand it on.`,
       )
     }
-
-    if (tab.cursorOf.includes(by.sessionId)) {
-      tab.cursorOf = tab.cursorOf.filter((session) => session !== by.sessionId)
+    if (tab.heldBy && tab.heldBy !== by.sessionId) {
+      throw new Error(
+        `Tab ${tabId} is held by ${tab.heldBy} until that turn ends, so it cannot be handed over right now.`,
+      )
     }
+
     if (tab.drivenBy === by.sessionId) tab.drivenBy = null
     if (tab.heldBy === by.sessionId) this.setHeldBy(tab, null)
 
@@ -2334,7 +2570,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       if (other.id === tabId || !other.cursorOf.includes(to.sessionId)) continue
       other.cursorOf = other.cursorOf.filter((session) => session !== to.sessionId)
     }
-    if (!tab.cursorOf.includes(to.sessionId)) tab.cursorOf = [...tab.cursorOf, to.sessionId]
+    // The work changed, so every cursor on this tab belonged to someone who may no longer work
+    // here — the giver's included. The receiver is the only one left.
+    tab.cursorOf = [to.sessionId]
 
     this.updateNativeOverlayState(instance)
     this.pushToolbarState(instance)
@@ -2582,13 +2820,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     return this.getOrCreateForSession(sessionId, options)
   }
 
-  async focusBoundForSessionAsync(
-    sessionId: string,
-    options?: { workspaceId?: string | null },
-  ): Promise<string> {
-    return this.focusBoundForSession(sessionId, options)
-  }
-
   getWindowCount(): number {
     return this.instances.size
   }
@@ -2603,25 +2834,18 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const instance = this.requireAliveInstance(id)
     const tab = this.tabOf(instance, tabId)
 
-    let normalizedUrl = url.trim()
-    const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(normalizedUrl)
-    const isAbout = normalizedUrl.startsWith('about:')
-    if (!hasScheme && !isAbout) {
-      const looksLikeHost = /^(localhost|\d{1,3}(?:\.\d{1,3}){3}|[\w-]+(?:\.[\w-]+)+)(?::\d+)?(?:\/|$)/i.test(normalizedUrl)
-      if (looksLikeHost) {
-        normalizedUrl = `https://${normalizedUrl}`
-      } else {
-        normalizedUrl = `https://duckduckgo.com/?q=${encodeURIComponent(normalizedUrl)}`
-      }
-    }
+    const target = readAddressTarget(url)
+    const normalizedUrl = 'search' in target ? searchUrlFor(target.search) : target.url
 
     const timeoutMs = 30_000
     let timeoutHandle: ReturnType<typeof setTimeout> | null = null
-
     try {
       const loaded = tab.tabView.webContents.loadURL(normalizedUrl)
       const timeout = new Promise<never>((_, reject) => {
-        timeoutHandle = setTimeout(() => reject(new Error(`Navigation to "${normalizedUrl}" timed out after ${timeoutMs / 1000}s`)), timeoutMs)
+        timeoutHandle = setTimeout(
+          () => reject(new Error(`Navigation to "${normalizedUrl}" timed out after ${timeoutMs / 1000}s`)),
+          timeoutMs,
+        )
       })
       await Promise.race([loaded, timeout])
     } catch (error) {
@@ -2630,12 +2854,21 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // already on the page we asked for (see `abortedLoad`). An abort of the URL
       // we asked for is a real "did not get there" — and so is anything else.
       const superseded = abortedLoad(error)
-      if (!superseded || superseded.url === normalizedUrl) throw error
-      mainLog.info(`[browser-pane] navigation superseded a pending load id=${id} aborted=${superseded.url ?? 'unknown'}`)
-    } finally {
-      if (timeoutHandle) {
-        clearTimeout(timeoutHandle)
+      if (!superseded || superseded.url === normalizedUrl) {
+        // The tab's own `did-fail-load` is the better record (it knows Chromium's code);
+        // this is the fallback for the failures that never reach it, such as the timeout.
+        if (!superseded && !tab.loadError) {
+          tab.loadError = { code: chromiumErrorCode(error), url: tab.currentUrl || normalizedUrl }
+          this.emitStateChange(instance)
+          void this.pushToolbarState(instance)
+        }
+        throw error
       }
+      mainLog.info(
+        `[browser-pane] navigation superseded a pending load id=${id} aborted=${superseded.url ?? 'unknown'}`,
+      )
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle)
     }
 
     this.pushToolbarState(instance)
@@ -2661,7 +2894,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   reload(id: string, tabId?: string): void {
     const instance = this.instances.get(id)
     if (!instance || instance.window.isDestroyed()) return
-    this.tabOf(instance, tabId).tabView.webContents.reload()
+    const tab = this.tabOf(instance, tabId)
+    // On the built-in error page "reload" means what the person means: try the address
+    // that failed again, not re-render the news about it.
+    if (tab.internalPage === 'error' && tab.loadError) {
+      void tab.tabView.webContents.loadURL(tab.loadError.url).catch(() => undefined)
+      return
+    }
+    tab.tabView.webContents.reload()
   }
 
   stop(id: string): void {
@@ -2755,11 +2995,28 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     return this.tabOf(instance, tabId).cdp.getAccessibilitySnapshot()
   }
 
+  /**
+   * Run one dispatch of a command's own input with the tab marked as receiving it.
+   *
+   * The mark lives only for the dispatch — it cannot outlive the command or be read as a claim on
+   * the tab — and it is what tells a page-requested tab (a link's `target="_blank"`, a scripted
+   * `window.open`) that the agent, not the person, caused it. See {@link BrowserTab.commandInput}.
+   */
+  private async withCommandInput<T>(tab: BrowserTab, run: () => Promise<T>): Promise<T> {
+    tab.commandInput = true
+    try {
+      return await run()
+    } finally {
+      tab.commandInput = false
+    }
+  }
+
   async clickAtCoordinates(id: string, x: number, y: number, tabId?: string): Promise<void> {
     const instance = this.requireAliveInstance(id)
 
     try {
-      await this.tabOf(instance, tabId).cdp.clickAtCoordinates(x, y)
+      const tab = this.tabOf(instance, tabId)
+      await this.withCommandInput(tab, () => tab.cdp.clickAtCoordinates(x, y))
       instance.lastAction = {
         tool: 'browser_click_at',
         status: 'succeeded',
@@ -2835,7 +3092,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const tab = this.tabOf(instance, tabId)
 
     try {
-      const geometry = await tab.cdp.clickElement(ref)
+      const geometry = await this.withCommandInput(tab, () => tab.cdp.clickElement(ref))
       instance.lastAction = {
         tool: 'browser_click',
         ref,
@@ -3420,6 +3677,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // (`windowContentSize`), which is the viewport the shot was taken at.
       tab.tabView.setBounds(this.pageAreaBounds(instance))
     } else {
+      // Its home is the parking window and it is already there, raised by the shot. Parking it again
+      // appends it at the top — the same view, the same place in a stack nobody is looking at.
       this.parkTab(instance, tab, own)
     }
     this.restackViews(instance)
@@ -3781,7 +4040,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     if (!key) throw new Error('browser_key requires key')
 
     const modifiers = (args.modifiers ?? []) as Array<'shift' | 'control' | 'alt' | 'meta'>
-    const { delivered } = await tab.cdp.pressKey(key, modifiers)
+    const { delivered } = await this.withCommandInput(tab, () => tab.cdp.pressKey(key, modifiers))
     if (delivered === 0) {
       // "Sent" and "arrived" are different facts, and the failure this tool used
       // to have was reporting the first as if it were the second. A frame that
@@ -4429,24 +4688,30 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    */
   private clearControl(sessionId: string): void {
     for (const instance of this.instances.values()) {
-      let changed = instance.controlBy.delete(sessionId)
-      for (const tab of instance.tabs) {
-        if (tab.heldBy !== sessionId) continue
-        this.setHeldBy(tab, null)
-        changed = true
-      }
-      if (!changed) continue
-      this.updateNativeOverlayState(instance)
-      this.pushToolbarState(instance)
-      this.emitStateChange(instance)
-      mainLog.info(`[browser-pane] Released session ${sessionId}'s overlay and holds on ${instance.id}`)
+      this.clearControlInInstance(instance, sessionId)
     }
   }
 
-  focusBoundForSession(sessionId: string, options?: { workspaceId?: string | null }): string {
-    const id = this.createForSession(sessionId, { show: true, workspaceId: options?.workspaceId })
-    this.focus(id)
-    return id
+  /**
+   * The same release, for **one** window — what `clearAgentControlForInstance` names.
+   *
+   * Kept apart from {@link clearControl} so that scoping is a fact about the call and not
+   * about the caller remembering to iterate: `tab-show` hands over the window whose tab it
+   * shows, and a session's other windows (there is one per workspace, but the layer does not
+   * assume it) are not part of that hand-over.
+   */
+  private clearControlInInstance(instance: BrowserInstance, sessionId: string): void {
+    let changed = instance.controlBy.delete(sessionId)
+    for (const tab of instance.tabs) {
+      if (tab.heldBy !== sessionId) continue
+      this.setHeldBy(tab, null)
+      changed = true
+    }
+    if (!changed) return
+    this.updateNativeOverlayState(instance)
+    this.pushToolbarState(instance)
+    this.emitStateChange(instance)
+    mainLog.info(`[browser-pane] Released session ${sessionId}'s overlay and holds on ${instance.id}`)
   }
 
   getOrCreateForSession(sessionId: string, options?: { workspaceId?: string | null }): string {
@@ -4844,8 +5109,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    *
    * Split out of {@link recordSessionTab} because the two halves of that write do not always
    * belong together: a conversation's own work takes the tab *and* the driven-by mark, while a
-   * tab that was nobody's, set up for it by the person (the same terms `assignTab` hands one
-   * over on) takes only the cursor. One conversation has one cursor, so pointing at this tab
+   * tab that was nobody's, set up for it by the person, takes only the cursor. One conversation
+   * has one cursor, so pointing at this tab
    * releases whatever tab it meant before — **without** touching the other conversations that
    * work from this one (第二十四轮): the list holds one entry each, and taking the tab never
    * takes anybody else's route away.
@@ -5524,6 +5789,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * The view is sized **before** the window is asked for, so the window is fitted to what it will
    * hold at the size it is about to have — including a view the agent just made larger or smaller
    * (`parkedViewsFit`).
+   *
+   * Parked views go in at the **top** of the parking window (appended). The order is not a statement
+   * about which tab is "current" — nothing here is being looked at — so the simplest rule wins: the
+   * tab just parked is the one with a surface, and a shot that raises another tab is allowed to leave
+   * it there. The real window is a tab's home; the parking stack is only where its view can stay
+   * composited.
    */
   private parkTab(instance: BrowserInstance, tab: BrowserTab, size?: { width: number; height: number }): void {
     // A tab whose page is gone is not parked anywhere: there is nothing left to size, and no reason to
@@ -5544,6 +5815,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     tab.tabView.setBounds({ x: 0, y: 0, width: own.width, height: own.height })
     const parking = this.parkingWindowFor(instance)
     if (parking.isDestroyed()) return
+    // Appended, so it is the top one: the tab just parked is the one that gets a surface, and the
+    // active tab may be covered by it — the parking stack carries no "current tab" meaning.
     parking.contentView.addChildView(tab.tabView)
   }
 
@@ -5629,7 +5902,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   private normalizeTabState(url: string, title: string): { url: string; title: string } {
     if (this.isBrowserEmptyStateUrl(url)) {
-      return { url: 'about:blank', title: 'New Tab' }
+      // A legal new-tab address, and the value every part of the UI hides.
+      return { url: 'about:newtab', title: 'New Tab' }
     }
     return { url, title }
   }
@@ -5855,6 +6129,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       url: activeTab(instance).currentUrl,
       title: activeTab(instance).title,
       isLoading: activeTab(instance).isLoading,
+      ...(activeTab(instance).loadError ? { error: activeTab(instance).loadError } : {}),
       canGoBack: activeTab(instance).canGoBack,
       canGoForward: activeTab(instance).canGoForward,
       /**
@@ -5998,6 +6273,49 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     })
 
     /**
+     * Render the built-in load-error page into the tab that failed.
+     *
+     * The page replaces the tab's document, the way a browser's own error page does —
+     * the tab still describes the failed address around it (`internalPage`), so the
+     * address bar and the rail keep naming where the person was going.
+     */
+    ipcMain.handle(
+      TOOLBAR_CHANNELS.SHOW_ERROR_PAGE,
+      async (
+        _event,
+        instanceId: string,
+        copy: { message?: string; url?: string; retry?: string },
+      ) => {
+        const inst = findInstance(instanceId)
+        if (!inst || inst.window.isDestroyed()) return
+
+        const tab = activeTab(inst)
+        if (!tab || tab.tabView.webContents.isDestroyed() || !tab.loadError) return
+        // Already standing on this failure's page (a replay, or the error restored
+        // after a cancelled navigation): do not load it again.
+        if (tab.internalPage === 'error' && tab.tabView.webContents.getURL().includes(ERROR_PAGE_MARKER)) {
+          return
+        }
+
+        tab.internalPage = 'error'
+        tab.title = ''
+        tab.favicon = null
+        const html = browserErrorPageHtml({
+          message: String(copy?.message ?? ''),
+          url: String(copy?.url ?? tab.loadError.url),
+          retry: String(copy?.retry ?? ''),
+        })
+        try {
+          await tab.tabView.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+        } catch {
+          tab.internalPage = undefined
+        }
+        this.emitStateChange(inst)
+        void this.pushToolbarState(inst)
+      },
+    )
+
+    /**
      * Fold the rail away, or bring it back — the chrome's own toggle.
      *
      * One flag, one relayout: the rail's room is part of the tab area, so the page, the gutter,
@@ -6083,8 +6401,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         if (action === 'release') {
           // The person taking a locked tab back. The overlay is what holds the tab, so
           // dropping the overlay *is* the unlock — and it is the
-          // same act as the agent's own `release`, only sent from the other side. No
-          // session is named: whoever is working here lets go.
+          // same act `tab-show` performs when it hands the page over, only sent from the
+          // other side. No session is named: whoever is working here lets go.
           const result = this.clearAgentControlForInstance(inst.id)
           mainLog.info(
             `[browser-pane] tab lock released by hand instance=${inst.id} tab=${tabId ?? 'unstated'} released=${result.released}${result.reason ? ` reason=${result.reason}` : ''}`,
@@ -6402,14 +6720,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
           show: false,
           workspaceId,
         })
-      case 'focusBoundForSession': {
-        const id = this.createForSession(sessionId, {
-          show: true,
-          workspaceId,
-        })
-        this.focus(id)
-        return id
-      }
       case 'destroyForSession':
         this.destroyForSession(sessionId)
         return undefined
@@ -6478,12 +6788,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         const [instanceId] = args as [string]
         this.requireInstanceInWorkspace(instanceId, workspaceId)
         this.focus(instanceId)
-        return undefined
-      }
-      case 'hide': {
-        const [instanceId] = args as [string]
-        this.requireInstanceInWorkspace(instanceId, workspaceId)
-        this.hide(instanceId)
         return undefined
       }
       case 'destroyInstance': {
@@ -6823,7 +7127,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   /**
    * Take a session's overlay off every window it has one in.
-   * Called on explicit browser_tool release and session/window teardown.
+   * Called on session/window teardown.
    */
   clearAgentControl(sessionId: string): void {
     this.clearControl(sessionId)
@@ -6848,7 +7152,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       if (!held && !instance.controlBy.has(sessionId)) {
         return { released: false, reason: `No active agent overlay for session ${sessionId} on this window.` }
       }
-      this.clearControl(sessionId)
+      this.clearControlInInstance(instance, sessionId)
       mainLog.info(`[browser-pane] agent control released instance=${instanceId} session=${sessionId}`)
       return { released: true }
     }
@@ -7141,6 +7445,28 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         resourceType: String(details.resourceType ?? 'unknown'),
         ok: (details.statusCode ?? 0) >= 200 && (details.statusCode ?? 0) < 400,
       })
+
+      // A 5xx is served, not failed: the page commits with the server's own error body and
+      // Chromium reports no `did-fail-load` for it. The status is the only signal, and the
+      // person deserves it — "502" is a fact, a blank page is not an explanation.
+      if (
+        details.resourceType === 'mainFrame' &&
+        (details.statusCode ?? 0) >= 500 &&
+        // Our error page has no main-frame request of its own; anything arriving now
+        // belongs to the attempt it is already reporting.
+        located.tab.internalPage !== 'error'
+      ) {
+        located.tab.loadError = {
+          code: 'HTTP_ERROR',
+          status: details.statusCode ?? 0,
+          url: details.url || located.tab.currentUrl,
+        }
+        mainLog.info(
+          `[browser-pane] page answered ${details.statusCode} id=${located.instance.id} tab=${located.tab.id} url=${details.url}`,
+        )
+        this.emitStateChange(located.instance)
+        void this.pushToolbarState(located.instance)
+      }
 
       // And into the recording's own log, if this tab is being recorded (`recording-sidecar.ts`).
       this.tabRecorder.noteEvent(located.instance.id, located.tab.id, {
@@ -7564,13 +7890,111 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.restackViews(instance)
 
     tabWc.on('did-start-loading', () => {
+      // A document is arriving, whoever asked for it.
+      tab.documentLoading = true
+      // Loading our own error page is not a new attempt at the address: the failure it
+      // reports is still true, and the tab must not flash a spinner over it.
+      if (tab.internalPage === 'error') {
+        tab.canGoBack = tabWc.canGoBack()
+        tab.canGoForward = tabWc.canGoForward()
+        this.emitStateChange(instance)
+        void this.pushToolbarState(instance)
+        return
+      }
       tab.isLoading = true
+      // A load that starts is the end of the previous failure: whatever the new attempt
+      // does, it will report for itself.
+      tab.loadError = null
+      this.emitStateChange(instance)
+      void this.pushToolbarState(instance)
+    })
+
+    /**
+     * A real navigation away from our error page — the failure is over.
+     *
+     * The tab then describes the new document again; the error page's title and icon
+     * must not follow it. The `data:` document itself is the error page.
+     */
+    tabWc.on('did-start-navigation', (_event, url, isInPlace, isMainFrame) => {
+      if (!isMainFrame || isInPlace) return
+      const next = String(url ?? '')
+      if (!next) return
+      // Our new-tab page is a stand-in for `about:newtab`, not an address.
+      if (this.isBrowserEmptyStateUrl(next)) return
+      // A real navigation away from the new-tab page: it is a document now.
+      if (tab.internalPage === 'newtab') tab.internalPage = undefined
+      if (tab.internalPage === 'error') {
+        if (next.startsWith('data:')) return
+        tab.internalPage = undefined
+        tab.loadError = null
+        tab.title = ''
+        tab.favicon = null
+      }
+      if (next === tab.currentUrl) {
+        this.emitStateChange(instance)
+        void this.pushToolbarState(instance)
+        return
+      }
+      // The icon belongs to the *site*, not to one of its documents: a same-origin move
+      // usually keeps it, so it stays until the new page advertises one (or never
+      // does). A different site must not keep the old site's icon.
+      const sameSite = sameOrigin(tab.currentUrl, next)
+      // The tab now describes where the person asked to go, even if the navigation
+      // never commits. `documentUrl` reports the committed document when it differs.
+      tab.currentUrl = next
+      tab.title = ''
+      if (!sameSite) tab.favicon = null
+      this.emitStateChange(instance)
+      void this.pushToolbarState(instance)
+    })
+
+    /**
+     * The page's own refusal to load — a name that does not resolve, a connection
+     * refused, a timeout. Chromium answers those with a blank error document and an
+     * event; without this the tab would keep the URL and title it asked for and look
+     * like it was working. `-3` is `ERR_ABORTED`, which is what a newer navigation
+     * hands to the load it replaced — not a failure of the page that stayed.
+     */
+    tabWc.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      if (!isMainFrame || errorCode === -3) return
+      // Our own error page failing to load says nothing new about the failed address; the
+      // new-tab page failing is its own fallback's business, not a page failure.
+      if (tab.internalPage === 'error' || tab.internalPage === 'newtab') return
+      tab.loadError = {
+        code: errorDescription || `ERR_${errorCode}`,
+        url: validatedURL || tab.currentUrl,
+      }
+      mainLog.info(
+        `[browser-pane] page load failed id=${instance.id} tab=${tab.id} code=${tab.loadError.code} url=${tab.loadError.url}`,
+      )
       this.emitStateChange(instance)
       void this.pushToolbarState(instance)
     })
 
     tabWc.on('did-stop-loading', () => {
       tab.isLoading = false
+      tab.documentLoading = false
+      // A stopped navigation leaves the previous document on screen — that is what Stop
+      // means. The tab must name what is actually there again rather than the address
+      // that was cancelled. A failure keeps its address (the error page is its news).
+      if (tab.internalPage !== 'error' && !tab.loadError) {
+        try {
+          // Normalized, because `currentUrl` is the tab's *address*: our empty-state
+          // document is a `file:` / dev-server document standing in for `about:newtab`,
+          // and writing its real URL here is what made a new tab show that path.
+          const normalized = this.normalizeTabState(tabWc.getURL(), tabWc.getTitle())
+          if (
+            normalized.url
+            && !normalized.url.startsWith('about:blank')
+            && normalized.url !== tab.currentUrl
+          ) {
+            tab.currentUrl = normalized.url
+            tab.title = normalized.title
+          }
+        } catch {
+          /* the view went away */
+        }
+      }
       tab.canGoBack = tabWc.canGoBack()
       tab.canGoForward = tabWc.canGoForward()
       // Drain in-flight count — all pending requests are settled once loading stops
@@ -7578,11 +8002,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       this.lastNetworkActivityByWebContentsId.set(tabWc.id, Date.now())
       this.emitStateChange(instance)
       void this.pushToolbarState(instance)
-      void this.extractThemeColor(instance, tab)
+      // Our own error page must not repaint the window with its own (neutral) surface.
+      if (tab.internalPage !== 'error') void this.extractThemeColor(instance, tab)
       this.updateNativeOverlayState(instance)
     })
 
     tabWc.on('dom-ready', () => {
+      // The error page is ours: it has no site theme to observe.
+      if (tab.internalPage === 'error') return
       this.installThemeObserver(instance, tab)
       void this.extractThemeColor(instance, tab)
     })
@@ -7603,19 +8030,36 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // installed where that view is (`loadNativeOverlay`).
 
     tabWc.on('did-navigate', (_event, urlFromEvent) => {
+      // Our error page is standing in for the failed document: it must not become the
+      // tab's address or replace the title/icon that describe the failure.
+      if (tab.internalPage === 'error') {
+        tab.canGoBack = tabWc.canGoBack()
+        tab.canGoForward = tabWc.canGoForward()
+        this.emitStateChange(instance)
+        void this.pushToolbarState(instance)
+        return
+      }
       const url = typeof tabWc.getURL === 'function' ? tabWc.getURL() : (urlFromEvent || tab.currentUrl)
+      // Our own new-tab document — or the `about:blank` fallback it degrades to — is the
+      // new-tab page. Anything else is a real document.
+      const isNewTabDocument =
+        this.isBrowserEmptyStateUrl(url) || (url === 'about:blank' && tab.internalPage === 'newtab')
+      tab.internalPage = isNewTabDocument ? 'newtab' : undefined
       const previousUrl = tab.currentUrl
       this.clearInPageThemeTimer(tab)
       tab.themeObserverToken = null
       tab.themeColor = null // reset for new page (batched with state push below)
-      // The icon belongs to the document that is being replaced, and the only thing
-      // that ever writes one is this tab's `page-favicon-updated` — a page that
-      // reports no icon reports nothing at all, so without this reset the previous
-      // site's icon would stay on the tab after the address bar moved on.
-      tab.favicon = null
+      // The icon belongs to the document that is being replaced. A navigation to a
+      // different address cleared it when it started; a **reload** keeps it, because
+      // Chromium does not re-advertise an unchanged icon. A redirect inside the same
+      // origin keeps it too — the site's icon is the same — while a cross-origin
+      // redirect clears it.
+      if (url !== previousUrl && !sameOrigin(previousUrl, url)) tab.favicon = null
       const normalized = this.normalizeTabState(url, tabWc.getTitle())
-      tab.currentUrl = normalized.url
-      tab.title = normalized.title
+      // The `about:blank` fallback used when the empty-state document cannot load is
+      // still the new-tab page, and it keeps the new-tab address too.
+      tab.currentUrl = tab.internalPage === 'newtab' ? 'about:newtab' : normalized.url
+      tab.title = tab.internalPage === 'newtab' ? 'New Tab' : normalized.title
       // The document that arrived decides what backs it: a page by the browser's canvas, the new-tab
       // page by the app's surface (`tabBackdropFor`).
       tab.tabView.setBackgroundColor(this.tabBackdropFor(tab))
@@ -7635,12 +8079,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // address bar and the rail are the person's to type in, and a page committing behind
       // their back is no reason to take that away from them.
       const tabOnScreen = activeTab(instance)
-      // The new-tab page has just arrived on the tab on screen, and the commit handed the *page* the
-      // keyboard as it did — so the caret goes back where the shown tab says it belongs, the address
-      // bar (`focusShownTab`). Read from the tab, not from the document that committed: the address
-      // is what says this is a new-tab page, and it is what survives the empty-state document failing
-      // to load.
-      if (tab.id === tabOnScreen.id && this.isNewTabPage(tab)) {
+      // The new-tab page (or a real `about:blank`) has just arrived on the tab on screen,
+      // and the commit handed the *page* the keyboard as it did — so the caret goes back
+      // where the shown tab says it belongs, the address bar (`focusShownTab`). Read from
+      // the tab, not from the document that committed: the address is what says this is
+      // the new-tab page, and it is what survives the empty-state document failing to load.
+      if (tab.id === tabOnScreen.id && this.wantsAddressBarFocus(tab)) {
         this.focusAddressBar(instance)
         return
       }
@@ -7688,7 +8132,17 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     })
 
     tabWc.on('page-title-updated', (_event, title) => {
-      const normalized = this.normalizeTabState(tabWc.getURL(), title)
+      // A `data:` document announces its own URL as the title before its `<title>` is
+      // parsed. A tab standing on a failed address is named by that address instead —
+      // a real URL, not the stand-in page's own; the new-tab page keeps its name.
+      const normalized = this.normalizeTabState(
+        tabWc.getURL(),
+        tab.internalPage === 'error'
+          ? tab.currentUrl
+          : tab.internalPage === 'newtab'
+            ? 'New Tab'
+            : title,
+      )
       tab.title = normalized.title
       this.emitStateChange(instance)
       void this.pushToolbarState(instance)
@@ -7812,11 +8266,19 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // a group rather than a list of tabs it happened to open: the link it could not
       // follow itself still lands in its group, and `close` cleans up the whole task.
       // A tab opened from a tab nobody owns stays nobody's: no owner is invented.
+      // Where a page-requested tab lands is decided by **who produced the input**, and that is
+      // known rather than inferred. A held tab takes no input from a person — taking it back is
+      // what drops the hold — so while the agent works there, anything that opens a tab from it
+      // is the agent's and lands behind. `commandInput` covers the one moment the hold cannot: a
+      // turn's first command can run before its overlay arrives.
+      //
+      // Everywhere else the person is the only possible source, so the browser's own answer
+      // stands: a `target="_blank"` click comes forward, a `background-tab` request does not.
+      // This is what covers `window.open` too, which reads no modifier keys at all.
+      const agentDriving = tab.heldBy !== null || tab.commandInput
       const openedTabId = this.createTab(instance.id, {
         url: details.url,
-        // A link is clicked in order to be looked at; a tab the site opened in the
-        // background asked not to be brought forward.
-        activate: details.disposition !== 'background-tab',
+        activate: !agentDriving && details.disposition !== 'background-tab',
         afterTabId: tab.id,
         disposition: details.disposition === 'new-window' ? 'popup' : 'link',
         belongsTo: tab.belongsTo,
@@ -7860,11 +8322,25 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   private toTabSummary(instance: BrowserInstance, tab: BrowserTab): BrowserTabSummary {
     // The location's `tabId` is the summary's `id`: one fact, named once per shape.
     const { tabId, ...location } = this.describeTabLocation(tab)
+    // What the webContents actually has, when it is not the address the tab describes:
+    // a failed navigation leaves the previous document in place. Our own documents (the
+    // error page, the new-tab page) are stand-ins and are never reported as a document;
+    // `error` says why an error page is there.
+    const live = tab.tabView.webContents.isDestroyed() ? '' : tab.tabView.webContents.getURL()
+    const documentUrl = tab.internalPage || !live || live === location.url || live.startsWith('about:blank')
+      ? ''
+      : live
     return {
       id: tabId,
       ...location,
+      ...(documentUrl ? { documentUrl } : {}),
       favicon: tab.favicon,
       isLoading: tab.isLoading,
+      // Only while it is true: an ordinary summary stays the shape it was.
+      ...(tab.documentLoading ? { documentLoading: true } : {}),
+      // Absent rather than null when the page is fine: the wire shape stays what it was,
+      // and a reader that never heard of this field needs nothing new.
+      ...(tab.loadError ? { error: tab.loadError } : {}),
       active: tab.id === instance.activeTabId,
       // -- Declaration: whose work it is --
       belongsTo: tab.belongsTo,
@@ -7886,6 +8362,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       title: activeTab(instance).title,
       favicon: activeTab(instance).favicon,
       isLoading: activeTab(instance).isLoading,
+      ...(activeTab(instance).loadError ? { error: activeTab(instance).loadError } : {}),
       canGoBack: activeTab(instance).canGoBack,
       canGoForward: activeTab(instance).canGoForward,
       tabs: instance.tabs.map((tab) => this.toTabSummary(instance, tab)),

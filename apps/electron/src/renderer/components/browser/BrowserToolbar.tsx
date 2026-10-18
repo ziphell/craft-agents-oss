@@ -31,6 +31,7 @@ export function BrowserToolbar({
     <BrowserControls
       url={instanceInfo?.url ?? ''}
       loading={instanceInfo?.isLoading ?? false}
+      error={instanceInfo?.error ?? null}
       canGoBack={instanceInfo?.canGoBack ?? false}
       canGoForward={instanceInfo?.canGoForward ?? false}
       onNavigate={onNavigate}

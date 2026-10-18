@@ -217,25 +217,12 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
     return await this.invoke('listInstances', [])
   }
 
-  focusBoundForSession(sessionId: string, _options?: { workspaceId?: string | null }): string {
-    this.invokeSync('focusBoundForSession', [sessionId])
-    return `remote-pending:${sessionId}`
-  }
-
-  async focusBoundForSessionAsync(sessionId: string, _options?: { workspaceId?: string | null }): Promise<string> {
-    return await this.invoke('focusBoundForSession', [sessionId])
-  }
-
   focus(id: string): void {
     this.invokeSync('focus', [id])
   }
 
   destroyInstance(id: string): void {
     this.invokeSync('destroyInstance', [id])
-  }
-
-  hide(id: string): void {
-    this.invokeSync('hide', [id])
   }
 
   clearAgentControl(sessionId: string): void {

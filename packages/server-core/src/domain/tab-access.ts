@@ -93,30 +93,58 @@ export function whyTabIsOutOfReach(
 /**
  * Which tab a command from this conversation means, when it names none.
  *
- * The conversation's **own tab first** — the one it has been working from, its cursor
- * (`cursorOf`) — and only then the tab on screen. The order is the whole point of the
- * cursor: what the person is looking at is theirs to change at any
- * moment, and it must not move somebody else's command. The other way round is what made
- * "the user switched tabs" silently retarget a conversation's work — and it is why the
- * window model (one window or one per conversation) does not matter here: any window
- * with several tabs has this problem.
+ * The conversation's **own tab** — the one it has been working from, its cursor
+ * (`cursorOf`) — and nothing else. Not the tab on screen: what the person is looking at is
+ * theirs to change at any moment, and it must not move somebody else's command. That rule
+ * is the whole reason the cursor exists.
  *
- * Falling back to the tab on screen is not a compromise, it is the takeover case: a
- * conversation with no tab of its own acting on what the person has in front of them.
+ * The tab on screen used to be the answer when there was no cursor — the takeover — which
+ * is the same rule one level down: a person's click deciding where an agent's command
+ * lands. It is gone: a conversation with no tab of its own is told to name one instead
+ * ({@link whyThereIsNoWorkingTab}), and the tab it names becomes its own from then on. So
+ * this returns `null` rather than a compromise, and the caller's job is to say so — never to
+ * pick the tab that happens to be in front.
  *
  * The cursor is sticky across turns, unlike the driven-by mark: a conversation that comes
- * back after its turn ended is still working from the same tab. `null` only when the
- * window has no tabs at all.
+ * back after its turn ended is still working from the same tab. `null` when no tab of this
+ * window carries this conversation — a window with no tabs at all included, which is the one
+ * difference {@link whyThereIsNoWorkingTab} has to tell apart.
  */
-export function pickCommandTarget<T extends Pick<BrowserTabSummary, 'id' | 'cursorOf' | 'active'>>(
+export function pickCommandTarget<T extends Pick<BrowserTabSummary, 'id' | 'cursorOf'>>(
   tabs: T[],
   sessionId: string,
-): { tab: T; because: 'cursor' | 'on-screen' } | null {
-  const ownPage = tabs.find((tab) => tab.cursorOf.includes(sessionId))
-  if (ownPage) return { tab: ownPage, because: 'cursor' }
+): T | null {
+  return tabs.find((tab) => tab.cursorOf.includes(sessionId)) ?? null
+}
 
-  const onScreen = tabs.find((tab) => tab.active)
-  return onScreen ? { tab: onScreen, because: 'on-screen' } : null
+/**
+ * Why a command from this conversation has no tab to act on, and what to do about it.
+ *
+ * An ordinary state rather than a fault: a conversation that has never worked in this window
+ * has no cursor, and neither does one whose tab was closed — a cursor is a fact written on a
+ * tab, so it ends with the tab it was written on.
+ *
+ * What must not happen is acting anyway. Falling back to the tab on screen would hand the
+ * person's own view the decision of where an agent's command goes, which is the one thing
+ * this rule exists to prevent; so the answer to "nowhere to go" is to say so, and to name
+ * the ways out in the order that costs least.
+ */
+export function whyThereIsNoWorkingTab(hasTabs: boolean, isChildSession: boolean): string {
+  if (!hasTabs) {
+    return 'No browser window is open for this workspace yet, so there is no page to act on. "tab-new <url>" opens one.'
+  }
+
+  return (
+    'No tab of this window is one you work from, so a command that names no tab has nowhere to go — and the ' +
+    'tab on screen is not chosen for you, because what the person is looking at must not decide where your ' +
+    'commands land. "navigate <url>" gives you one of your own (a new tab behind theirs — or the tab the ' +
+    'window was born with, when the command is what opens it); "tabs" lists what is there, and you can name ' +
+    'one with "--tab <id>" (or "tab-select <id>"), or open one of your own with "tab-new <url>".' +
+    (isChildSession
+      ? ' A session spawned by another one does not take a tab of its own choosing: ask the conversation that ' +
+        'spawned you to hand one over with "tab-assign <tab-id> <your-session>".'
+      : '')
+  )
 }
 
 /**
