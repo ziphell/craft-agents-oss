@@ -3954,7 +3954,37 @@ export class SessionManager implements ISessionManager {
         sessionLog.info('[browser-pane] BPF registering browserPaneFns', { sessionId: sid })
         mergeSessionScopedToolCallbacks(sid, {
           browserPaneFns: {
-            navigate: async (url) => {
+            navigate: async (url, requestedTabId) => {
+              if (requestedTabId) {
+                // Naming a tab is working in it. A name that no longer exists is not an
+                // error for "go here": open a tab for this conversation instead — never
+                // adopt some other tab, which may be a step's page — and say so in the
+                // answer. Asked before the window is resolved, for the same reason as
+                // `resolveCommandTarget`: afterwards the window always exists.
+                const existedBefore = (await resolveWorkspaceWindowId()) !== null
+                const instanceId = await resolveWorkspaceWindow()
+                const tabs = await bpm.listTabsAsync(instanceId).catch(() => [])
+                const named = tabs.find((t) => t.id === requestedTabId)
+                if (named) {
+                  assertTabUsable(named)
+                  bpm.setSessionTab(instanceId, named.id, sid)
+                  const result = await bpm.navigate(instanceId, url, named.id)
+                  return { ...result, tabId: named.id }
+                }
+                const created = await bpm.createTabAsync(instanceId, {
+                  ...(existedBefore ? {} : { reuseUntouchedWindow: true }),
+                  belongsTo: work,
+                })
+                bpm.setSessionTab(instanceId, created, sid)
+                const result = await bpm.navigate(instanceId, url, created)
+                return {
+                  ...result,
+                  tabId: created,
+                  note:
+                    `Requested tab "${requestedTabId}" was closed; allocated a new tab ` +
+                    `"${created}" instead. Use "${created}" for later calls.`,
+                }
+              }
               const { instanceId, tabId } = await resolveCommandTarget('browser_navigate', { takeATab: true })
               const result = await bpm.navigate(instanceId, url, tabId)
               // The tab is part of the answer: this command may have just made one, and the

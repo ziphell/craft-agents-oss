@@ -795,7 +795,7 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
 
     const before = await getPageMetrics(fns);
     const started = Date.now();
-    const result = await fns.navigate(url);
+    const result = await fns.navigate(url, ctx.tabId);
     const elapsedMs = Date.now() - started;
     const after = await getPageMetrics(fns);
     const failed = await fns.getNetworkLogs({ limit: 200, status: 'failed' });
@@ -810,6 +810,7 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
           `Signals: ${challenge.signals.join(', ')}`,
           `URL: ${result.url}`,
           `Tab: ${result.tabId}`,
+          ...(result.note ? [`Note: ${result.note}`] : []),
           '',
           'I have let go of the page — tell the person to open the browser and complete the verification check (the window is not raised for them).',
           'After verification, run "snapshot" to continue.',
@@ -821,6 +822,7 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
     const lines = [
       `Navigated to: ${result.url}`,
       `Tab: ${result.tabId}`,
+      ...(result.note ? [`Note: ${result.note}`] : []),
       `Title: ${result.title}`,
       `Elapsed: ${elapsedMs}ms`,
       `URL changed: ${before ? before.url !== result.url : 'unknown'}`,

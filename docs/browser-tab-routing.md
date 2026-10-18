@@ -46,7 +46,7 @@
 | 入口 | 行为 |
 |---|---|
 | `navigate <url>`（无自己的 tab） | 取一张自己的 tab，并把 cursor 写上去（见 §6） |
-| `--tab <id>`（任何命令） | 先写 cursor，再执行该命令 |
+| `--tab <id>`（任何命令） | 先写 cursor，再执行该命令；`navigate` 例外：id 已不存在时新开一张属于该会话的 tab，cursor 写上去，并在结果里说明（见 §6） |
 | `tab-select <id>` | 只写 cursor |
 | `tab-show <id>` | 写 cursor **并且**切显示（子会话只写 cursor） |
 | `tab-new <url>` | 新 tab 属于该会话，同时成为 cursor |
@@ -54,6 +54,8 @@
 | 人从 tab 栏某个 section 的 `+` 开 tab | 写**那个 section 对应会话**的 cursor（人不替它"工作"，只替它"备好一页"） |
 
 除此之外没有别的来源。**关闭 tab 不移动任何人的 cursor**（见 §5）。
+
+`navigate` 指名一张已不存在的 tab 时不报错，而是为该会话新开一张（不回落 cursor，也不采用在屏那张——那可能是另一段工作的页面），并在结果里用 `Note:` 给出新 id。原因是导航通常是起手动作：人重启客户端后 tab 已不在，而 agent 按历史记录很可能继续带旧 id；报错只会让它再发一次不带 id 的同一地址，多一个往返。
 
 ### active 只由四件事产生
 

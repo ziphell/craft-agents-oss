@@ -266,6 +266,7 @@ A browser **window** is a container and a **tab** is the thing in it, so several
 - `tab-assign <id> <session>` — hand one of **your own** tabs to a conversation you spawned (or one of the same task): it becomes that conversation's task and the tab it works from, and you stop working from it. It is how a parent gives each child session a tab of its own to work in, with the live page state kept (see "Sessions that share a window").
 - `tab-close <id>` — close one tab **of your task**. Closing the last tab closes the window, and the output says which of the two happened.
 - `--tab <id>` on **any command that acts on a tab** — name the tab it acts on, without moving the window. Naming a tab also makes it the tab you work from, so it is the same act as `tab-select <id>` attached to a command; a command that names none acts on the tab you have been working from (see "Where a command lands" below). `downloads` is the one that acts on none: it lists the window's, not a tab's.
+- `navigate` with `--tab <id>`: if that tab was closed, the address is still attempted — in a new tab for this conversation — and the reply names it with `Tab:` and a `Note:` saying the old tab was closed.
 
 **What `tabs` prints is in three kinds, and the difference matters:**
 

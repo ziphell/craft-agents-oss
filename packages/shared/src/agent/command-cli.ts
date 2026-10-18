@@ -407,7 +407,9 @@ export function createCommandRunner(
     // here. It does *not* bring the tab forward (第十二轮): the window is
     // shared with the person, who may be reading another one of its tabs, and a target is not
     // a request to move them. "tab-show <id>" is how a tab is deliberately brought up.
-    if (tabId) await fns.targetTab(tabId);
+    // "navigate" takes the name itself: a tab that no longer exists is allocated anew
+    // rather than failing the command (see `navigate`), so it must not be refused here.
+    if (tabId && cmd !== 'navigate') await fns.targetTab(tabId);
 
     const ctx: ToolCommandContext = {
       fns,

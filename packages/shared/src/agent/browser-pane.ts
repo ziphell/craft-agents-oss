@@ -243,7 +243,7 @@ export type BrowserFetchedResource =
   | { ok: false; error: string }
 
 export interface BrowserPaneFns {
-  navigate: (url: string) => Promise<{ url: string; title: string; tabId: string }>;
+  navigate: (url: string, tabId?: string) => Promise<{ url: string; title: string; tabId: string; note?: string }>;
   snapshot: () => Promise<{ url: string; title: string; nodes: Array<{ ref: string; role: string; name: string; value?: string; description?: string; focused?: boolean; checked?: boolean; disabled?: boolean }> }>;
   click: (ref: string, options?: { waitFor?: 'none' | 'navigation' | 'network-idle'; timeoutMs?: number }) => Promise<void>;
   clickAt: (x: number, y: number) => Promise<void>;
