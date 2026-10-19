@@ -26,6 +26,14 @@
  *   2. `photon_rs_bg.wasm` is placed next to the bundle (which is what that
  *      directory resolves to).
  *
+ * The same pass also takes image resizing off the Pi SDK's worker path
+ * (`resizeImage` → `resizeImageInWorker`). Neither worker entrypoint exists in
+ * this bundle, so every image read spawned a worker that could not load, and on
+ * Windows Bun 1.3.9 leaks the dying thread and then segfaults — the subprocess
+ * dies mid-turn ("Pi subprocess exited unexpectedly (code 3)"). Resizing
+ * in-process is what the SDK falls back to anyway, so the dead attempts only
+ * cost a crash.
+ *
  * Callers: `scripts/electron-build-main.ts` (the installer's copy of the
  * bundle), `scripts/electron-dev.ts` (dev) and `packages/pi-agent-server`'s own
  * `build` script (headless server, CI, `bundle-smoke.test.ts`). Run it directly
@@ -73,6 +81,28 @@ const RUNTIME_DIRNAME =
 const RUNTIME_MARKER = 'fileURLToPath(import.meta.url)';
 
 /**
+ * Marker left by the resize-worker patch (see below).
+ */
+const INLINE_RESIZE_MARKER = 'craft-agent: resize in-process';
+
+/**
+ * The SDK resizes images in a Worker (`resizeImageInWorker`) and falls back to
+ * `resizeImageInProcess` when the worker cannot be created. Neither worker
+ * entrypoint exists in this bundle — `./src/utils/image-resize-worker.ts` is a
+ * source path, and `./image-resize-worker.js` beside the bundle was never
+ * emitted — so **every** image read first spawns a worker that cannot load, and
+ * Bun on Windows leaks the thread it was tearing down: after a few images a
+ * `panic(main thread): Segmentation fault` takes the whole subprocess with it
+ * (`workers_spawned(6) workers_terminated(5)` in Bun's own crash banner), which
+ * the app surfaces as "Pi subprocess exited unexpectedly (code 3)".
+ *
+ * Nothing is gained by those attempts — the resize happens in-process either
+ * way — so point `resizeImage` straight at `resizeImageInProcess`. The dead
+ * worker code stays in the bundle, unreachable.
+ */
+const RESIZE_IMAGE_SIGNATURE = /async function resizeImage\((\w+), (\w+), (\w+)\) \{/;
+
+/**
  * Where the wasm lives in the build tree.
  *
  * `@silvia-odwyer/photon-node` is a dependency of the Pi SDK, not of this repo,
@@ -103,6 +133,29 @@ export function resolvePhotonWasm(): string | undefined {
   return candidates.find((candidate) => existsSync(candidate));
 }
 
+/** Whether the bundle still routes image resizing through a Worker. */
+export function hasWorkerResize(source: string): boolean {
+  return !source.includes(INLINE_RESIZE_MARKER) && RESIZE_IMAGE_SIGNATURE.test(source);
+}
+
+/** Route `resizeImage` straight at the in-process implementation. */
+function inlineResizeImage(source: string): { source: string; patched: boolean } {
+  if (source.includes(INLINE_RESIZE_MARKER)) return { source, patched: false };
+
+  const match = RESIZE_IMAGE_SIGNATURE.exec(source);
+  if (!match) return { source, patched: false };
+
+  const [signature, inputArg, mimeArg, optionsArg] = match;
+  const replacement =
+    `${signature}\n` +
+    `  // ${INLINE_RESIZE_MARKER}: the bundle ships no worker entrypoint, and a\n` +
+    `  // Worker that cannot load crashes Bun on Windows (segfault in its worker\n` +
+    `  // teardown). The resize happens here either way.\n` +
+    `  return resizeImageInProcess(${inputArg}, ${mimeArg}, ${optionsArg});`;
+
+  return { source: source.replace(signature, replacement), patched: true };
+}
+
 export interface PhotonWasmResult {
   /** The bundle that was prepared. */
   bundle: string;
@@ -110,6 +163,8 @@ export interface PhotonWasmResult {
   wasm: string;
   /** Whether the inlined build-machine directory had to be rewritten. */
   patched: boolean;
+  /** Whether image resizing was moved off the (missing) worker entrypoint. */
+  workersInlined: boolean;
 }
 
 /**
@@ -122,17 +177,31 @@ export function preparePhotonWasm(bundlePath: string): PhotonWasmResult {
     throw new Error(`photon-wasm: no bundle at ${bundlePath}`);
   }
 
-  const source = readFileSync(bundlePath, 'utf8');
+  let source = readFileSync(bundlePath, 'utf8');
   const patched = INLINED_DIRNAME.test(source);
+  const inlined = inlineResizeImage(source);
+
+  if (!inlined.patched && !source.includes(INLINE_RESIZE_MARKER)) {
+    console.warn(
+      `⚠️  photon-wasm: no \`resizeImage\` in ${bundlePath} — the Pi SDK changed how it resizes images; verify that reading several images in one session does not crash the subprocess`,
+    );
+  }
+  source = inlined.source;
 
   if (patched) {
-    writeFileSync(bundlePath, source.replace(INLINED_DIRNAME, RUNTIME_DIRNAME));
+    source = source.replace(INLINED_DIRNAME, RUNTIME_DIRNAME);
   } else if (!source.includes(RUNTIME_MARKER)) {
     // Neither form: a warning, not a failure — an SDK update that loads the wasm
     // some other way would land here, and the wasm is still worth shipping.
     console.warn(
       `⚠️  photon-wasm: no inlined photon __dirname in ${bundlePath} — the Pi SDK changed how it loads the wasm; check that images still work on a machine that did not build this bundle`,
     );
+  }
+
+  // One write for both patches, so a bundle that only needs one of them is
+  // still saved.
+  if (patched || inlined.patched) {
+    writeFileSync(bundlePath, source);
   }
 
   const wasmSource = resolvePhotonWasm();
@@ -145,13 +214,16 @@ export function preparePhotonWasm(bundlePath: string): PhotonWasmResult {
   const wasm = join(dirname(bundlePath), PHOTON_WASM_FILENAME);
   copyFileSync(wasmSource, wasm);
 
-  return { bundle: bundlePath, wasm, patched };
+  return { bundle: bundlePath, wasm, patched, workersInlined: inlined.patched };
 }
 
 /** Log what happened, in the shape the surrounding build scripts log in. */
 export function reportPhotonWasm(result: PhotonWasmResult): void {
   const action = result.patched ? 'patched and staged' : 'already patched, staged';
   console.log(`🖼️  Photon wasm ${action}: ${result.wasm}`);
+  if (result.workersInlined) {
+    console.log('🖼️  Image resize inlined (no worker entrypoint in the bundle)');
+  }
 }
 
 if (import.meta.main) {

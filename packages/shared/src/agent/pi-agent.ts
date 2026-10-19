@@ -329,6 +329,8 @@ export class PiAgent extends BaseAgent {
   private stderrBuffer: string[] = [];
   private stderrBufferBytes = 0;
   private static readonly STDERR_BUFFER_MAX_BYTES = 8 * 1024;
+  /** How much of the stderr tail a mid-run crash message carries (kept short so the UI stays readable). */
+  private static readonly MAX_CRASH_STDERR_CHARS = 2000;
 
   private recordStderr(chunk: string): void {
     if (!chunk) return;
@@ -1960,9 +1962,16 @@ export class PiAgent extends BaseAgent {
     // If we were processing, emit error + complete
     if (this._isProcessing) {
       const exitReason = signal ? `signal ${signal}` : `code ${code}`;
+      // A mid-run crash is otherwise a bare exit code with no cause. The
+      // subprocess's last stderr lines (a Bun abort, a native crash, a fatal
+      // error log) are the only evidence left, so carry a bounded tail into
+      // the error the user sees instead of dropping it.
+      const crashStderr = this.getRecentStderr().trim().slice(-PiAgent.MAX_CRASH_STDERR_CHARS);
       this.eventQueue.enqueue({
         type: 'error',
-        message: `Pi subprocess exited unexpectedly (${exitReason})`,
+        message:
+          `Pi subprocess exited unexpectedly (${exitReason})` +
+          (crashStderr ? `\n--- subprocess stderr (tail) ---\n${crashStderr}` : ''),
       });
       this.eventQueue.complete();
     }

@@ -10,7 +10,7 @@ electron-builder 的 `files` / `extraResources` 相对路径**都以配置文件
 | --- | --- | --- |
 | `dist/**/*` | main.cjs / preload / renderer | `electron:build` |
 | `resources/pi-agent-server/index.js` | Pi 子进程（win 段 extraResources） | `electron:build:main` 自动 stage（同 build-win.ps1） |
-| `vendor/bun/bun.exe` | bun 运行时（extraResources，Pi 子进程依赖） | 只有 `build-win.ps1`（固定下载 bun-v1.3.9 baseline） |
+| `vendor/bun/bun.exe` | bun 运行时（extraResources，Pi 子进程依赖） | 只有 `build-win.ps1`（固定下载 bun-v1.3.14 baseline） |
 | `packages/shared/src/unified-network-interceptor.ts` 等 4 个 ts | interceptor（`files` 段） | `electron:build:main` 自动 stage（同 build-win.ps1） |
 
 另外：
@@ -38,7 +38,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-win.ps1
 1. 杀掉 node / npm / electron / electron-builder 残留进程（Windows 文件锁）
 2. 清理 `apps/electron\vendor`、`node_modules\@anthropic-ai`、`packages`、`release`
 3. 在仓库根执行 `bun install`
-4. 下载固定版本 bun（`bun-v1.3.9`，x64 baseline）→ `apps/electron\vendor\bun\bun.exe`，校验 SHA256
+4. 下载固定版本 bun（`bun-v1.3.14`，x64 baseline）→ `apps/electron\vendor\bun\bun.exe`，校验 SHA256
 5. stage SDK：core + `claude-agent-sdk-win32-x64` → `apps/electron\node_modules\@anthropic-ai\`，并建 `claude-agent-sdk-binary` alias（缺包时自动 `npm pack` 跨架构拉取）
 6. 拷贝 ripgrep、interceptor 4 个 ts → `apps/electron\packages\shared\src\`
 7. 构建 subprocess servers（`bun run server:build:subprocess`）、main（esbuild）、preload、renderer（vite）、copy-assets

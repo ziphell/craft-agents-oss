@@ -4,7 +4,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { deflateSync } from 'node:zlib';
-import { hasInlinedPhotonDirname, PHOTON_WASM_FILENAME } from '../../../scripts/build/photon-wasm.ts';
+import { hasInlinedPhotonDirname, hasWorkerResize, PHOTON_WASM_FILENAME } from '../../../scripts/build/photon-wasm.ts';
 
 /**
  * The image pipeline, against the BUILT bundle, from a directory outside the repo.
@@ -223,6 +223,13 @@ describe('pi-agent-server bundle: images', () => {
   it('ships the photon wasm beside the bundle, with no build-machine path', () => {
     expect(existsSync(join(shippedDir, PHOTON_WASM_FILENAME))).toBe(true);
     expect(hasInlinedPhotonDirname(readFileSync(join(shippedDir, 'index.js'), 'utf8'))).toBe(false);
+  });
+
+  it('resizes images in-process instead of spawning a worker that cannot load', () => {
+    // The SDK's worker entrypoints are never shipped beside the bundle, and a
+    // Worker that cannot load leaks a thread and segfaults Bun on Windows —
+    // which takes the whole subprocess down mid-turn.
+    expect(hasWorkerResize(readFileSync(join(shippedDir, 'index.js'), 'utf8'))).toBe(false);
   });
 
   it('sends image bytes to the model instead of the omission placeholder', async () => {
