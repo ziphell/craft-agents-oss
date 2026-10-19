@@ -715,7 +715,10 @@ describe('the pane tools', () => {
     it('routes reload, and says the load is not waited for', async () => {
       let reloaded = 0
       mockFns.reload = async () => { reloaded += 1 }
-      mockFns.evaluate = async () => ({ url: 'https://example.com/cart', title: 'Cart' })
+      // The address is the tab's own report — reload does not need to ask the page.
+      mockFns.listTabs = async () => ([
+        tabRow({ id: 'tab-1', url: 'https://example.com/cart', title: 'Cart', cursorOf: ['test-session'] }),
+      ])
 
       const result = await executeTool(tools, 'browser_tool', { command: 'reload' })
 

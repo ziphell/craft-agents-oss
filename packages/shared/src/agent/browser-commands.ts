@@ -22,7 +22,7 @@ import type {
   BrowserScreenshotRegionArgs,
   BrowserWaitArgs,
 } from './browser-pane.ts';
-import { describeWork } from '../protocol/dto.ts';
+import { describeWork, type BrowserTabSummary } from '../protocol/dto.ts';
 import { getSessionPath } from '../sessions/storage.ts';
 import {
   buildWebSnapshot,
@@ -320,6 +320,22 @@ async function loadingNote(fns: BrowserPaneFns, action: string): Promise<string[
 }
 
 /**
+ * The tab a command acts on: the one it names with `--tab`, or this conversation's cursor.
+ *
+ * Read from the tab list rather than the page: a tab already reports its own address and
+ * title, so asking the document would be a second, slower answer to the same question.
+ */
+async function tabThisCommandActsOn(
+  fns: BrowserPaneFns,
+  ctx: Pick<ToolCommandContext, 'tabId' | 'sessionId'>,
+): Promise<BrowserTabSummary | undefined> {
+  const tabs = await fns.listTabs().catch(() => []);
+  return ctx.tabId
+    ? tabs.find((tab) => tab.id === ctx.tabId)
+    : tabs.find((tab) => tab.cursorOf.includes(ctx.sessionId));
+}
+
+/**
  * A reader must not read the built-in error page.
  *
  * When a navigation fails, the tab keeps the failed address and shows a page **we** wrote in
@@ -328,10 +344,7 @@ async function loadingNote(fns: BrowserPaneFns, action: string): Promise<string[
  * the same way the command targets one: by its `--tab`, or by this conversation's cursor.
  */
 async function refuseFailedDocument(fns: BrowserPaneFns, ctx: ToolCommandContext): Promise<void> {
-  const tabs = await fns.listTabs().catch(() => []);
-  const target = ctx.tabId
-    ? tabs.find((tab) => tab.id === ctx.tabId)
-    : tabs.find((tab) => tab.cursorOf.includes(ctx.sessionId));
+  const target = await tabThisCommandActsOn(fns, ctx);
   if (!target?.error) return;
   const http = target.error.status ? ` (HTTP ${target.error.status})` : '';
   throw new Error(
@@ -793,7 +806,6 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
     const url = parts.slice(1).join(' ').trim();
     if (!url) throw new Error('navigate requires a URL. Example: navigate https://example.com');
 
-    const before = await getPageMetrics(fns);
     const started = Date.now();
     const result = await fns.navigate(url, ctx.tabId);
     const elapsedMs = Date.now() - started;
@@ -825,7 +837,6 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
       ...(result.note ? [`Note: ${result.note}`] : []),
       `Title: ${result.title}`,
       `Elapsed: ${elapsedMs}ms`,
-      `URL changed: ${before ? before.url !== result.url : 'unknown'}`,
       `Recent failed requests: ${failed.length}`,
     ];
     if (after) {
@@ -1742,28 +1753,35 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
   }
 
   if (cmd === 'back') {
-    const before = await getPageMetrics(fns);
+    const beforeTab = await tabThisCommandActsOn(fns, ctx);
     await fns.goBack();
-    const after = await getPageMetrics(fns);
+    // Going back starts a load nothing waits for. Reading the page here could describe the
+    // document being left, so wait for the tab to settle — and say so when it does not.
+    const status = await loadingNote(fns, 'the back navigation was reported');
+    const afterTab = status.length > 0 ? undefined : await tabThisCommandActsOn(fns, ctx);
 
     const lines = ['Navigated back'];
-    if (before && after) {
-      lines.push(`URL: ${before.url} → ${after.url}`);
-      lines.push(`Title: ${before.title || '(untitled)'} → ${after.title || '(untitled)'}`);
+    if (beforeTab && afterTab) {
+      lines.push(`URL: ${beforeTab.url} → ${afterTab.url}`);
+      lines.push(`Title: ${beforeTab.title || '(untitled)'} → ${afterTab.title || '(untitled)'}`);
     }
+    lines.push(...status);
     return { output: lines.join('\n'), appendReleaseHint: true };
   }
 
   if (cmd === 'forward') {
-    const before = await getPageMetrics(fns);
+    const beforeTab = await tabThisCommandActsOn(fns, ctx);
     await fns.goForward();
-    const after = await getPageMetrics(fns);
+    // Same as `back`: the new document is loading, and the old one is what is still on screen.
+    const status = await loadingNote(fns, 'the forward navigation was reported');
+    const afterTab = status.length > 0 ? undefined : await tabThisCommandActsOn(fns, ctx);
 
     const lines = ['Navigated forward'];
-    if (before && after) {
-      lines.push(`URL: ${before.url} → ${after.url}`);
-      lines.push(`Title: ${before.title || '(untitled)'} → ${after.title || '(untitled)'}`);
+    if (beforeTab && afterTab) {
+      lines.push(`URL: ${beforeTab.url} → ${afterTab.url}`);
+      lines.push(`Title: ${beforeTab.title || '(untitled)'} → ${afterTab.title || '(untitled)'}`);
     }
+    lines.push(...status);
     return { output: lines.join('\n'), appendReleaseHint: true };
   }
 
@@ -1772,11 +1790,11 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
     // fire-and-forget (nothing waits for a document to load), so reading the page here
     // would answer with the old one or with a half-loaded one, and reporting either as
     // "the page now" would be wrong. What the caller does next is `wait`, which is said.
-    const before = await getPageMetrics(fns);
+    const beforeTab = await tabThisCommandActsOn(fns, ctx);
     await fns.reload();
 
     const lines = ['Reloading this page'];
-    if (before) lines.push(`URL: ${before.url}`);
+    if (beforeTab?.url) lines.push(`URL: ${beforeTab.url}`);
     lines.push(
       'Nothing waits for it to load — before reading the page, "wait network-idle <ms>" or ' +
       '"wait <selector|text|url> <value> <ms>". Every @eN ref from before is stale: re-"snapshot".',

@@ -239,6 +239,7 @@ agent 通过一个状态面读环境：`tabs`。
 - 超时后照读，并在回复里标注 `Status: still loading — this is the document that was on screen when …`。**不**等待 network-idle：文档 load 之后仍可能挂着长连接或埋点，那个等待没有上界。
 - 发现 tab 在错误页（`error` 非空 / `internalPage === 'error'`）时，五个读取命令都**拒绝读替身页**，直接报告失败的地址、code 与 HTTP 状态；`reload` / `navigate` 是重试路径。
 - `evaluate` 不参与这套等待：它的语义是"在当前文档执行 JS"，不是读取页面内容。
+- `back` / `forward` 报告的是动作后的 tab 状态，所以也先等停稳（同样上限 5 秒）；没停稳就只报动作本身，不报可能属于旧文档的 URL/标题。`reload` 仍是 fire-and-forget，只报动作前的地址并提示用 `wait`。
 
 ### 15.3 为什么这样拆
 

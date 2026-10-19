@@ -3850,10 +3850,19 @@ export class SessionManager implements ISessionManager {
           // Asked **before** the window is resolved, because afterwards the answer is always yes.
           // It is what tells a tab this command may take (the one the window was born with, in
           // this very call) from a tab that was already there (somebody's).
-          const existedBefore = options?.takeATab
-            ? (await resolveWorkspaceWindowId()) !== null
-            : false
-          const instanceId = await resolveWorkspaceWindow()
+          //
+          // Only a command that says `takeATab` may open the window. One that cannot take a tab
+          // has nothing to do in a window it just made, and making one here would also make this
+          // command look like the window's creator to a `navigate` in the same call (its
+          // pre-flight `evaluate`): that navigate would then add a second tab instead of using
+          // the birth tab, leaving a stray New Tab beside its page.
+          const existingInstanceId = await resolveWorkspaceWindowId()
+          const existedBefore = options?.takeATab ? existingInstanceId !== null : false
+          const instanceId = existingInstanceId
+            ?? (options?.takeATab ? await resolveWorkspaceWindow() : null)
+          if (!instanceId) {
+            throw new Error(whyThereIsNoWorkingTab(false, isChildSession))
+          }
 
           const tabs = await bpm.listTabsAsync(instanceId).catch(() => [])
           const target = pickCommandTarget(tabs, sid)
@@ -3902,10 +3911,11 @@ export class SessionManager implements ISessionManager {
         /**
          * This workspace's browser window, if it is open — without making one.
          *
-         * Every other command opens a browser when there is none, because reading a
-         * tab requires one to read. Naming a tab does not: tabs live in that
-         * window, so a workspace with no window has none, and creating an empty one
-         * to report that would be the tool inventing the state it was asked about.
+         * Only the commands that can take a tab open a browser when there is none: `navigate`
+         * (its entry point) and `tab-new`. The rest have no tab to read without one, and
+         * creating an empty window to report that would be the tool inventing the state it was
+         * asked about. Naming a tab does not open one either: tabs live in that window, so a
+         * workspace with no window has none.
          *
          * Found by what it is rather than by who is asking: it belongs to
          * the workspace, and nothing on the window names a conversation — which
@@ -4060,11 +4070,13 @@ export class SessionManager implements ISessionManager {
               return bpm.sendKey(instanceId, options, tabId)
             },
             getDownloads: async (options) => {
-              // The window is resolved, and no tab is passed on: downloads are the window's, not
-              // a tab's — the list outlives the tab it started in, and a `--tab` names nothing
-              // here (`getDownloads`). So this one asks for a window and stops there, rather than
-              // being refused for having no tab of its own.
-              const instanceId = await resolveWorkspaceWindow()
+              // Downloads are the window's, not a tab's — the list outlives the tab it
+              // started in, and a `--tab` names nothing here (`getDownloads`). Asking for
+              // them must not open a window either: a workspace with no window has no
+              // downloads to report, and inventing one to say "none" is a side effect a
+              // read must not have.
+              const instanceId = await resolveWorkspaceWindowId()
+              if (!instanceId) return []
               return bpm.getDownloads(instanceId, options)
             },
             upload: async (ref, filePaths) => {
