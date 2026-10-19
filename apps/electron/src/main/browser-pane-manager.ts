@@ -1854,22 +1854,35 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // so a fresh unseen window comes up with one tab instead of an orphan beside the one that
     // was asked for.
     //
-    // **One tab, it is empty, and the window has never been on screen** is the whole
-    // test — not "who caused the window". A window outlives the commands that made it,
-    // so its history is not knowable later; but whether the person has ever *seen* it is
-    // (`hasBeenShown`). A window born behind them — by `navigate`, or by the turn's
-    // control overlay, which brings the workspace's window up before the first browser
-    // command so it can show whose work it is — is still untouched: its birth tab is
-    // nobody's, and taking it is what keeps a window at one tab instead of leaving an
-    // orphan New Tab beside the page. Once shown, that blank tab may be the person's and
-    // is never taken.
+    // **One tab, empty, never shown, and not already claimed** is the whole test — not
+    // "who caused the window". A window outlives the commands that made it, so its history
+    // is not knowable later; but whether the person has ever *seen* it is (`hasBeenShown`).
+    // A window born behind them — by `navigate`, or by the turn's control overlay, which
+    // brings the workspace's window up before the first browser command so it can show
+    // whose work it is — is still untouched: its birth tab is nobody's, and taking it is
+    // what keeps a window at one tab instead of leaving an orphan New Tab beside the page.
+    // Once shown, that blank tab may be the person's and is never taken.
+    //
+    // "Not already claimed" matters because a hidden tab can still be named, selected or
+    // handed to a conversation (`--tab`, `tab-select`, `tab-assign`) while the window stays
+    // unseen. Taking it then would rewrite `belongsTo` and the cursor under that
+    // conversation. Only the tab's own prior claims — by the conversation now asking for it
+    // (`belongsTo`), or by nobody at all — are allowed.
+    const candidate = instance.tabs.length === 1 ? instance.tabs[0] : null
+    const asker = options?.belongsTo?.sessionId ?? null
+    const claimedBySomebodyElse = candidate !== null && (
+      (candidate.belongsTo !== null && candidate.belongsTo.sessionId !== asker)
+      || candidate.cursorOf.some((sessionId) => sessionId !== asker)
+      || (candidate.heldBy !== null && candidate.heldBy !== asker)
+    )
     const unwritten =
       options?.reuseUntouchedWindow === true
       && !options?.afterTabId
-      && instance.tabs.length === 1
-      && this.isNewTabPage(instance.tabs[0])
+      && candidate !== null
+      && this.isNewTabPage(candidate)
       && !instance.hasBeenShown
-        ? instance.tabs[0]
+      && !claimedBySomebodyElse
+        ? candidate
         : null
 
     if (unwritten) {

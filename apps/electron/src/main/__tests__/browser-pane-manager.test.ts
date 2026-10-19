@@ -3112,6 +3112,25 @@ describe('BrowserPaneManager', () => {
       expect(instance.tabs).toHaveLength(2)
     })
 
+    // "Not seen" is not the same as "unowned": a hidden window's blank tab can still have
+    // been named, selected or handed to another conversation. Taking it would rewrite that
+    // conversation's `belongsTo` and cursor, so the asking conversation gets its own tab.
+    it('does not take an unseen blank tab another conversation already works from', () => {
+      manager.createInstance('tabs-adopt-claimed')
+      const instance = (manager as any).instances.get('tabs-adopt-claimed')
+      const only = instance.tabs[0]
+      manager.setSessionTab('tabs-adopt-claimed', only.id, 'session-b')
+
+      const tabId = manager.createTab('tabs-adopt-claimed', {
+        reuseUntouchedWindow: true,
+        belongsTo: work('session-a'),
+      })
+
+      expect(tabId).not.toBe(only.id)
+      expect(instance.tabs).toHaveLength(2)
+      expect(only.cursorOf).toEqual(['session-b'])
+    })
+
     // The reason the wiring had to move onto the tab: a hidden tab keeps loading,
     // and its events must land on itself rather than on whoever is on screen.
     it('keeps a background tab\'s navigation on itself', () => {

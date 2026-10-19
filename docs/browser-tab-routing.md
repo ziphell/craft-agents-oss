@@ -101,7 +101,8 @@ and the tab on screen is not chosen for you … "navigate <url>" takes a tab for
 | **从未显示过**，且只有一张 New Tab | 窗口自带的那张 tab 还没有主人，拿它——否则一次动作会得到两张空白 tab |
 | **显示过**（哪怕只有一张空白 tab） | **一律新建**。那张可能是人的，"new / 给我一张"都不是"拿你的" |
 
-- 判据是 `instance.hasBeenShown` + "只有一张 New Tab"，不是"本次调用是否创建了窗口"。窗口的生命周期不归命令管：回合开始时 control overlay 会先把工作区窗口建起来（为了显示谁在工作），等 `navigate` 真正执行时窗口已经存在——按"创建时机"判断会把出生 tab 留成孤儿。
+- 判据是 `instance.hasBeenShown` + "只有一张 New Tab" + **尚未被别的会话认领**，不是"本次调用是否创建了窗口"。窗口的生命周期不归命令管：回合开始时 control overlay 会先把工作区窗口建起来（为了显示谁在工作），等 `navigate` 真正执行时窗口已经存在——按"创建时机"判断会把出生 tab 留成孤儿。
+- "无主"还包括归属：隐藏窗口里的出生 tab 仍可被 `--tab` / `tab-select` / `tab-assign` 认领。它已经属于别的会话（`belongsTo` / cursor / lock）时不会被拿走——否则就会在对方名下改写 `belongsTo` 和 cursor。
 - 人看过的窗口**不看它的 tab 是否空白**：空白不代表无主，可能是人开在那儿准备用的。显示过之后，agent **从不**碰一张已经存在的 tab。
 - `tab-new` 总是要求 URL，本身**不会**产生空 tab；它走这条规则只是为了在未显示过的窗口里直接载入出生 tab，而不是在旁边再开一张、把出生 tab 留成孤儿。真正可能留下空 tab 的是 `navigate`（无 tab 时取一张）和顶栏 "New tab"。
 
