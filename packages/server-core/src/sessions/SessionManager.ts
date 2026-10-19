@@ -119,7 +119,7 @@ import { buildBackendRuntimeSignature, buildRestartRequiredSignature, filterAtta
 import { validateArchiveTarget } from './archive-guards'
 
 // Import from server-core domain utilities
-import { sanitizeForTitle, shouldActivateBrowserOverlay, rollbackFailedBranchCreation, releaseBrowserOnForcedStop } from '@craft-agent/server-core/domain'
+import { sanitizeForTitle, shouldActivateBrowserOverlay, browserToolOpensWindow, rollbackFailedBranchCreation, releaseBrowserOnForcedStop } from '@craft-agent/server-core/domain'
 import { resizeImageForAPI, resizeIconBuffer } from '@craft-agent/server-core/services'
 export { sanitizeForTitle }
 
@@ -4337,7 +4337,7 @@ export class SessionManager implements ISessionManager {
             assignTab: async (tabId, targetSessionId) => {
               const instanceId = await resolveWorkspaceWindowId()
               if (!instanceId) {
-                throw new Error('No browser window is open for this workspace, so there is no tab to hand over. "tab-new <url>" opens one.')
+                throw new Error('No browser window is open for this workspace, so there is no tab to hand over. "navigate <url>" or "tab-new <url>" opens one.')
               }
               const target = this.sessions.get(targetSessionId)
               if (!target || target.workspace.id !== workspaceId) {
@@ -4373,7 +4373,7 @@ export class SessionManager implements ISessionManager {
             targetTab: async (tabId) => {
               const instanceId = await resolveWorkspaceWindowId()
               if (!instanceId) {
-                throw new Error('No browser window is open for this workspace, so there is no tab to name. "tab-new <url>" opens one.')
+                throw new Error('No browser window is open for this workspace, so there is no tab to name. "navigate <url>" or "tab-new <url>" opens one.')
               }
               // Checked on the *named* tab, before anything is written: naming somebody else's
               // work is refused here rather than after the window has been repointed at it.
@@ -4388,7 +4388,7 @@ export class SessionManager implements ISessionManager {
             activateTab: async (tabId, options) => {
               const instanceId = await resolveWorkspaceWindowId()
               if (!instanceId) {
-                throw new Error('No browser window is open for this workspace, so there is no tab to show. "tab-new <url>" opens one.')
+                throw new Error('No browser window is open for this workspace, so there is no tab to show. "navigate <url>" or "tab-new <url>" opens one.')
               }
               // Checked on the *named* tab, before the window is moved to it: showing somebody
               // else's work is refused here rather than after the switch.
@@ -8562,8 +8562,14 @@ export class SessionManager implements ISessionManager {
 
         const overlayBpm = this.getBrowserPaneManagerForSession(sessionId)
         if (overlayBpm && shouldActivateOverlay) {
-          // Ensure first browser action in a turn gets an instance before overlay activation.
-          overlayBpm.getOrCreateForSession(sessionId, { workspaceId })
+          // Only a command that would open the window anyway (`navigate`, `tab-new`) may
+          // bring it up here: for those the overlay has to exist *before* the command, so
+          // the tab they take starts held. For every other command a window that is not
+          // there yet is not the overlay's to make — a read would look like it opened a
+          // browser, and a command that then fails would leave an empty window behind.
+          if (browserToolOpensWindow(formattedToolInput)) {
+            overlayBpm.getOrCreateForSession(sessionId, { workspaceId })
+          }
 
           const resolvedDisplayName = toolDisplayMeta?.displayName
             ?? event.displayName

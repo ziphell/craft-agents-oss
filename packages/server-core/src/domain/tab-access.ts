@@ -131,7 +131,7 @@ export function pickCommandTarget<T extends Pick<BrowserTabSummary, 'id' | 'curs
  */
 export function whyThereIsNoWorkingTab(hasTabs: boolean, isChildSession: boolean): string {
   if (!hasTabs) {
-    return 'No browser window is open for this workspace yet, so there is no page to act on. "tab-new <url>" opens one.'
+    return 'No browser window is open for this workspace yet, so there is no page to act on. "navigate <url>" opens one and gives you its tab; "tab-new <url>" opens one too.'
   }
 
   return (

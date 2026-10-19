@@ -70,6 +70,7 @@ describe('whyThereIsNoWorkingTab', () => {
     const why = whyThereIsNoWorkingTab(false, false)
 
     expect(why).toContain('No browser window is open')
+    expect(why).toContain('navigate')
     expect(why).toContain('tab-new')
   })
 
