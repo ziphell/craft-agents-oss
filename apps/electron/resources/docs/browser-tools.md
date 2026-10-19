@@ -31,7 +31,7 @@ Use browser workflows when creating a source would add unnecessary overhead for 
 There is one browser window per workspace, so there is no window to choose: opening a tab opens the window if it is not up.
 
 Recommended flow:
-1. `navigate <url>` — go there in your tab; with none it gives you one (the window is created if it is not up, and the tab it was born with becomes yours — an existing window gets a new tab behind the person's)
+1. `navigate <url>` — go there in your tab; with none it gives you one (the window is created if it is not up, and the tab it was born with becomes yours — a window that has been shown gets a new tab behind the person's)
 2. `snapshot` — inspect accessible elements and get refs (`@e1`, `@e2`, ...)
 3. `find <query>` — quickly narrow to matching refs by keyword
 4. `click` / `fill` / `select` — interact using refs
@@ -107,7 +107,7 @@ Use backslash escaping when needed:
 
 ## Key commands
 
-A window is opened by opening a tab: `navigate <url>` takes a tab of the conversation's own if it has none, creating the workspace's window if it is not up yet; `tab-new <url>` adds one more page in a tab of its own. Both name the tab they used in the reply (`Tab: <id>`), so a tab that was just created does not need a `tabs` call to be found. There is no separate "open the browser" command — a window with nobody's tab in it is not a state a conversation asks for.
+A window is opened by opening a tab: `navigate <url>` takes a tab of the conversation's own if it has none, creating the workspace's window if it is not up yet; `tab-new <url>` adds one more page in a tab of its own. Both name the tab they used in the reply (`Tab: <id>`), so a tab that was just created does not need a `tabs` call to be found. A window nobody has seen yet gives its birth tab to the first `navigate` (or `tab-new`), so it comes up with one tab rather than an empty one beside the page. There is no separate "open the browser" command — a window with nobody's tab in it is not a state a conversation asks for.
 
 ### `snapshot`
 Returns an accessibility tree with refs and element metadata.
@@ -260,7 +260,7 @@ There is exactly **one browser window per workspace**, and every conversation in
 A browser **window** is a container and a **tab** is the thing in it, so several pages are looked at at once by being several tabs of one window rather than by being several windows. A tab carries its own address, title, console and theme colour.
 
 - `tabs` — this window's tabs in the order they were opened, each with what it is, whose task it is in and who is working on it. This is also how tab ids are discovered.
-- `tab-new <url>` — add a tab to the window, **behind whatever the person is reading**, and load the url. It becomes the tab you work from, and the reply names it (`Tab: <id>`). A url is required: a tab exists to hold a page, and `navigate` is what takes a blank one for you. When this command is what opens the window, it opens into the tab that window was born with (so a fresh window is one tab); a window that already exists always gets one **more** tab, even if it is holding a blank one.
+- `tab-new <url>` — add a tab to the window, **behind whatever the person is reading**, and load the url. It becomes the tab you work from, and the reply names it (`Tab: <id>`). A url is required: a tab exists to hold a page, and `navigate` is what takes a blank one for you. When the window has never been shown (this command opens it, or the turn's overlay did), it opens into the tab that window was born with (so a fresh window is one tab); a window the person has seen always gets one **more** tab, even if it is holding a blank one.
 - `tab-select <id>` — make a tab **the one you work from**, and nothing else: no page action, and no move of the window (that is `tab-show`). It is the same act `--tab <id>` performs, said on its own.
 - `tab-show <id>` — make a tab the one the window shows. This is the **only** command that changes which tab the window shows, and it does **not** raise the window: taking over the person's screen and focus is not an automatic action's to do, so the conversation's reply is what tells them to look (the app's browser strip is how they open it themselves). It also does **not** unlock the page — the overlay and hold stay, so the person can watch while you go on working there. Add `--handover` when they are meant to take over: that drops your overlay and hold, so the page is theirs to use until your next command takes it back (there is no separate `release`).
 - `tab-assign <id> <session>` — hand one of **your own** tabs to a conversation you spawned (or one of the same task): it becomes that conversation's task and the tab it works from, and you stop working from it. It is how a parent gives each child session a tab of its own to work in, with the live page state kept (see "Sessions that share a window").

@@ -53,11 +53,11 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
    * - everything else lands in the workspace's **browser window** — the one window every
    *   conversation and the user work in. Opening "a new browser" adds a tab to it rather than
    *   making a second window, and `bindToSessionId` only says which conversation is driving;
-   * - **`newTab` means another tab** as soon as the window is already up. A window somebody
-   *   has is not the blank one it was constructed with, however empty its one tab still looks —
-   *   reading it as untouched swallowed the request and nothing at all happened. A request that
-   *   *is* what opens the window still lands in that tab, which is what keeps a fresh window
-   *   from coming up with two blank ones.
+   * - **`newTab` means another tab** as soon as the window is already up. A window the
+   *   person has seen is not the blank one it was constructed with, however empty its one
+   *   tab still looks — reading it as untouched swallowed the request and nothing at all
+   *   happened. A window nobody has seen yet (this request opened it, or a turn's control
+   *   overlay did) still has only its birth tab, and the browser side takes that one.
    */
   const windowWithTab = (
     ctx: { workspaceId?: string | null },
@@ -73,13 +73,6 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
     // A window the caller pinned by id, as opposed to the workspace's own window.
     const pinnedWindowId = input?.id && !input?.bindToSessionId ? input.id : null
 
-    // Was the window already up? Asked **before** it is resolved, because afterwards the
-    // answer is always "yes" — including for the window this very call brings up.
-    const windowWasOpen = Boolean(input?.newTab)
-      && browserPaneManager.listInstances().some((info) =>
-        pinnedWindowId ? info.id === pinnedWindowId : info.workspaceId === workspaceId,
-      )
-
     const instanceId = pinnedWindowId
       ? browserPaneManager.createInstance(pinnedWindowId, { show: input?.show, workspaceId })
       : browserPaneManager.createForSession(input?.bindToSessionId ?? null, {
@@ -90,7 +83,9 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
     if (input?.newTab) {
       browserPaneManager.createTab(instanceId, {
         activate: true,
-        ...(windowWasOpen ? {} : { reuseUntouchedWindow: true }),
+        // The browser side takes the birth tab only when the window has never been shown,
+        // so a window the person has seen gets a real new tab and nowhere else does.
+        reuseUntouchedWindow: true,
         // The tab reads as a page from the moment it is made, even though the caller loads the
         // address itself (see `openAt` / `openInWindow`).
         ...(openAt ? { address: openAt } : {}),

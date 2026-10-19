@@ -200,10 +200,10 @@ describe('browser handler — workspace filtering', () => {
     })
 
     // The other half of the same rule, and the bug a person found: a window that is already
-    // up is one somebody has, so "New tab" there means one **more** tab. Reading its single
-    // untouched blank tab as "untouched" reused it, and since there was nothing to load, the
-    // click did nothing at all.
-    it('asks for one more tab when the window is already up', async () => {
+    // up may be somebody's, so "New tab" there must mean one **more** tab. Whether it does is
+    // the browser side's call — it is the one that knows whether the person has ever seen the
+    // window (`hasBeenShown`) — so the handler always asks for *a* tab and lets that rule run.
+    it('asks for a tab to use, and lets the browser side decide about a blank one', async () => {
       const calls: string[] = []
       const { registerBrowserHandlers } = await import('../browser')
       const deps = makeDeps({ instances: [makeInstance('browser-1', { workspaceId: null })] })
@@ -220,7 +220,7 @@ describe('browser handler — workspace filtering', () => {
 
       callCreate({ show: true, newTab: true })
 
-      expect(calls).toEqual(['window', 'tab:browser-1:{"activate":true}'])
+      expect(calls).toEqual(['window', 'tab:browser-1:{"activate":true,"reuseUntouchedWindow":true}'])
     })
 
     // A create that pins its own window id and asks for no new tab makes only that window.

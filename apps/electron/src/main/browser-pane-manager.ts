@@ -1838,10 +1838,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       /**
        * The caller wants *a* tab to use, not *another* tab — see the note above.
        *
-       * Only a caller that knows the window was **born for this very call** says this: `navigate`
-       * (which needs a tab and is the entry point), and "New tab" / `tab-new` when they are what
-       * opened the window. A caller that merely wants one more tab does not, even if the window
-       * happens to be holding a single blank tab — that one may be somebody's.
+       * Said by the commands that are the entry point to a page (`navigate`, `tab-new`, the
+       * app's "New tab"): they can take the birth tab of a window nobody has seen yet. The
+       * browser side is what decides — one empty new-tab page **and** `!hasBeenShown` — so
+       * a window the person has ever seen keeps its blank tab; that one may be theirs.
        */
       reuseUntouchedWindow?: boolean
     },
@@ -1849,19 +1849,26 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const instance = this.requireAliveInstance(instanceId)
 
     // "Untouched" is only ever taken by a caller that **says** it wants *a* tab rather than
-    // *another* tab (`reuseUntouchedWindow`). A url does not say it: `tab-new <url>` is "one
-    // more page", and a blank tab that was already in the window is not its to take — that is
-    // exactly how "New tab" used to do nothing on a window holding one blank tab.
+    // *another* tab (`reuseUntouchedWindow`); a url alone does not say it. The callers that
+    // say it are the entry points to a page — `navigate`, `tab-new` and the app's "New tab" —
+    // so a fresh unseen window comes up with one tab instead of an orphan beside the one that
+    // was asked for.
     //
-    // **One tab, and it is empty** is the whole test, and deliberately not "who caused the
-    // window": a window outlives the commands that made it (an agent's tab is closed, the
-    // person opens tabs of their own), so its history is not knowable later — and a blank tab
-    // among several is somebody's, with nothing to say whose. One empty tab is unambiguous:
-    // there is no page to take away and nobody is reading anything. Anything else is one more
-    // tab, added behind whatever the person has.
+    // **One tab, it is empty, and the window has never been on screen** is the whole
+    // test — not "who caused the window". A window outlives the commands that made it,
+    // so its history is not knowable later; but whether the person has ever *seen* it is
+    // (`hasBeenShown`). A window born behind them — by `navigate`, or by the turn's
+    // control overlay, which brings the workspace's window up before the first browser
+    // command so it can show whose work it is — is still untouched: its birth tab is
+    // nobody's, and taking it is what keeps a window at one tab instead of leaving an
+    // orphan New Tab beside the page. Once shown, that blank tab may be the person's and
+    // is never taken.
     const unwritten =
       options?.reuseUntouchedWindow === true
-      && !options?.afterTabId && instance.tabs.length === 1 && this.isNewTabPage(instance.tabs[0])
+      && !options?.afterTabId
+      && instance.tabs.length === 1
+      && this.isNewTabPage(instance.tabs[0])
+      && !instance.hasBeenShown
         ? instance.tabs[0]
         : null
 

@@ -3097,6 +3097,21 @@ describe('BrowserPaneManager', () => {
       expect(instance.activeTabId).toBe(tabId)
     })
 
+    // The other half of "untouched", and the reason it is not "did this call create the
+    // window": a window the person has seen is theirs, even if its only tab still reads as
+    // New Tab. Taking it would type the agent's page over a tab they opened on purpose.
+    it('leaves the blank tab of a window the person has seen where it is', () => {
+      manager.createInstance('tabs-adopt-shown')
+      const instance = (manager as any).instances.get('tabs-adopt-shown')
+      const only = instance.tabs[0]
+      instance.hasBeenShown = true
+
+      const tabId = manager.createTab('tabs-adopt-shown', { reuseUntouchedWindow: true })
+
+      expect(tabId).not.toBe(only.id)
+      expect(instance.tabs).toHaveLength(2)
+    })
+
     // The reason the wiring had to move onto the tab: a hidden tab keeps loading,
     // and its events must land on itself rather than on whoever is on screen.
     it('keeps a background tab\'s navigation on itself', () => {

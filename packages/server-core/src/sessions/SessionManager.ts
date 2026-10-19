@@ -3847,17 +3847,10 @@ export class SessionManager implements ISessionManager {
           toolName: string,
           options?: { takeATab?: boolean },
         ): Promise<{ instanceId: string; tabId: string }> => {
-          // Asked **before** the window is resolved, because afterwards the answer is always yes.
-          // It is what tells a tab this command may take (the one the window was born with, in
-          // this very call) from a tab that was already there (somebody's).
-          //
-          // Only a command that says `takeATab` may open the window. One that cannot take a tab
-          // has nothing to do in a window it just made, and making one here would also make this
-          // command look like the window's creator to a `navigate` in the same call (its
-          // pre-flight `evaluate`): that navigate would then add a second tab instead of using
-          // the birth tab, leaving a stray New Tab beside its page.
+          // Looked up before it is resolved, because afterwards the window always exists.
+          // Only a command that says `takeATab` may open the window: one that cannot take a
+          // tab has nothing to do in a window it just made.
           const existingInstanceId = await resolveWorkspaceWindowId()
-          const existedBefore = options?.takeATab ? existingInstanceId !== null : false
           const instanceId = existingInstanceId
             ?? (options?.takeATab ? await resolveWorkspaceWindow() : null)
           if (!instanceId) {
@@ -3882,10 +3875,14 @@ export class SessionManager implements ISessionManager {
           // taken, even if it is the only one, because it may be the person's.
           if (options?.takeATab) {
             const created = await bpm.createTabAsync(instanceId, {
-              ...(existedBefore ? {} : { reuseUntouchedWindow: true }),
+              // "A tab to use", not "one more": the browser side takes the window's birth tab
+              // while it is untouched — one new-tab page, and the window never shown — whether
+              // this call opened the window or the turn's control overlay did it a moment
+              // earlier. A window the person has seen is never taken from.
+              reuseUntouchedWindow: true,
               belongsTo: work,
             })
-            sessionLog.info(`[browser-pane] tool target created: ${toolName} session=${sid} instance=${instanceId} tab=${created} windowWasNew=${!existedBefore}`)
+            sessionLog.info(`[browser-pane] tool target created: ${toolName} session=${sid} instance=${instanceId} tab=${created} windowWasNew=${existingInstanceId === null}`)
             return { instanceId, tabId: created }
           }
 
@@ -3969,9 +3966,7 @@ export class SessionManager implements ISessionManager {
                 // Naming a tab is working in it. A name that no longer exists is not an
                 // error for "go here": open a tab for this conversation instead — never
                 // adopt some other tab, which may be a step's page — and say so in the
-                // answer. Asked before the window is resolved, for the same reason as
-                // `resolveCommandTarget`: afterwards the window always exists.
-                const existedBefore = (await resolveWorkspaceWindowId()) !== null
+                // answer.
                 const instanceId = await resolveWorkspaceWindow()
                 const tabs = await bpm.listTabsAsync(instanceId).catch(() => [])
                 const named = tabs.find((t) => t.id === requestedTabId)
@@ -3982,7 +3977,9 @@ export class SessionManager implements ISessionManager {
                   return { ...result, tabId: named.id }
                 }
                 const created = await bpm.createTabAsync(instanceId, {
-                  ...(existedBefore ? {} : { reuseUntouchedWindow: true }),
+                  // Same rule as the unnamed path: take the birth tab of a window that has
+                  // never been shown, leave a window the person has seen alone.
+                  reuseUntouchedWindow: true,
                   belongsTo: work,
                 })
                 bpm.setSessionTab(instanceId, created, sid)
@@ -4311,15 +4308,15 @@ export class SessionManager implements ISessionManager {
             createTab: async (options) => {
               // A window, not a tab: this is the one command a conversation with no tab of its
               // own can still run.
-              const existedBefore = (await resolveWorkspaceWindowId()) !== null
               const instanceId = await resolveWorkspaceWindow()
               return await bpm.createTabAsync(instanceId, {
                 ...options,
-                // A blank tab that was **already** in the window is not this command's to take —
-                // "new tab" means one more. The exception is a window this very call creates: then
-                // the tab it was born with *is* the tab being asked for, and taking it is what
-                // keeps a fresh window at one tab instead of leaving an orphan beside it.
-                ...(existedBefore ? {} : { reuseUntouchedWindow: true }),
+                // A blank tab the person has seen is theirs — "new tab" means one more there.
+                // A window nobody has seen yet (opened by this call or by the turn's control
+                // overlay) has only its birth tab, and taking it is what keeps that window at
+                // one tab instead of leaving an orphan beside it. The browser side decides,
+                // from `hasBeenShown`.
+                reuseUntouchedWindow: true,
                 belongsTo: work,
               })
             },
