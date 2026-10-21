@@ -370,6 +370,20 @@ export function groupMessagesByTurn(messages: Message[], options: GroupTurnsOpti
   const turns: Turn[] = []
   let currentTurn: AssistantTurn | null = null
 
+  // Messages sent while a turn is running are queued for replay after that
+  // turn ends, but they keep the timestamp from the moment they were typed —
+  // an instant that falls in the MIDDLE of the in-flight turn. Rendering them
+  // chronologically would split the ongoing response in half, so hold them
+  // aside and emit them only once the current turn has been flushed.
+  const deferredQueuedMessages: Message[] = []
+
+  const flushDeferredQueuedMessages = () => {
+    for (const queued of deferredQueuedMessages) {
+      turns.push({ type: 'user', message: queued, timestamp: queued.timestamp })
+    }
+    deferredQueuedMessages.length = 0
+  }
+
   const flushCurrentTurn = (interrupted = false) => {
     if (currentTurn) {
       // Sort activities by timestamp to ensure correct chronological order
@@ -426,12 +440,18 @@ export function groupMessagesByTurn(messages: Message[], options: GroupTurnsOpti
     }
   }
 
+  /** Flush the open assistant turn, then any queued user messages waiting behind it. */
+  const flushTurns = (interrupted = false) => {
+    flushCurrentTurn(interrupted)
+    flushDeferredQueuedMessages()
+  }
+
   for (const message of sortedMessages) {
     // Auth-request messages are standalone turns (credential input, OAuth flows)
     if (message.role === 'auth-request') {
       // If there's a current turn, it's complete (something follows it)
       if (currentTurn) currentTurn.isComplete = true
-      flushCurrentTurn()
+      flushTurns()
       turns.push({
         type: 'auth-request',
         message,
@@ -442,9 +462,15 @@ export function groupMessagesByTurn(messages: Message[], options: GroupTurnsOpti
 
     // User messages are their own turn
     if (message.role === 'user') {
+      // Queued mid-stream sends belong after the running turn, not inside it.
+      // The backend replays them as a new turn once the current one finishes.
+      if (message.isQueued) {
+        deferredQueuedMessages.push(message)
+        continue
+      }
       // If there's a current turn, it's complete (something follows it)
       if (currentTurn) currentTurn.isComplete = true
-      flushCurrentTurn()
+      flushTurns()
       turns.push({
         type: 'user',
         message,
@@ -505,7 +531,7 @@ export function groupMessagesByTurn(messages: Message[], options: GroupTurnsOpti
       const isInterruption = message.role === 'info'
       // For error/warning (not info), the previous turn is complete
       if (currentTurn && !isInterruption) currentTurn.isComplete = true
-      flushCurrentTurn(isInterruption)
+      flushTurns(isInterruption)
       turns.push({
         type: 'system',
         message,
@@ -543,7 +569,7 @@ export function groupMessagesByTurn(messages: Message[], options: GroupTurnsOpti
       })
       currentTurn.isStreaming = false
       currentTurn.isComplete = true
-      flushCurrentTurn()
+      flushTurns()
       continue
     }
 
@@ -646,7 +672,7 @@ export function groupMessagesByTurn(messages: Message[], options: GroupTurnsOpti
 
       // Flush when turn is complete (non-streaming = final response received)
       if (!message.isStreaming) {
-        flushCurrentTurn()
+        flushTurns()
       }
       continue
     }
@@ -665,8 +691,8 @@ export function groupMessagesByTurn(messages: Message[], options: GroupTurnsOpti
     (currentTurn as AssistantTurn).isComplete = true
   }
 
-  // Flush any remaining turn
-  flushCurrentTurn()
+  // Flush any remaining turn (and queued sends that trail it)
+  flushTurns()
 
   return turns
 }

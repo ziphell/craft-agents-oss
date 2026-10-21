@@ -25,6 +25,11 @@ import { parsePermissionMode, PERMISSION_MODE_ORDER } from '../agent/mode-types.
 import { type ConfigDefaults } from './config-defaults-schema.ts';
 import { isValidThemeFile } from './validators.ts';
 import {
+  DEFAULT_BROWSER_PROFILE_ID,
+  normalizeBrowserProfiles,
+  type BrowserProfile,
+} from './browser-profiles.ts';
+import {
   mergeDecisionLayerSettings,
   normalizeDecisionLayerSettings,
   type DecisionLayerSettings,
@@ -63,6 +68,14 @@ export interface StoredConfig {
   llmConnections?: LlmConnection[];
   defaultLlmConnection?: string;  // Slug of default connection for new sessions
   defaultThinkingLevel?: ThinkingLevel;  // App-level default thinking level for new sessions
+
+  /**
+   * Browser profiles — the named Chromium sessions a workspace or a conversation can work in.
+   *
+   * `default` is always present (see `normalizeBrowserProfiles`) and owns the profile every login
+   * lived in before profiles existed, so an upgrade keeps its sessions.
+   */
+  browserProfiles?: BrowserProfile[];
 
   workspaces: Workspace[];
   activeWorkspaceId: string | null;
@@ -287,6 +300,11 @@ export function loadStoredConfig(): StoredConfig | null {
       workspace.rootPath = expandPath(workspace.rootPath);
     }
 
+    // The built-in browser profile is always there, whatever the file says: it owns the session
+    // every login lived in before profiles existed, so a config that predates them still answers
+    // with one profile rather than none.
+    config.browserProfiles = normalizeBrowserProfiles(config.browserProfiles);
+
     // Validate active workspace exists
     const activeWorkspace = config.workspaces.find(w => w.id === config.activeWorkspaceId);
     if (!activeWorkspace) {
@@ -331,6 +349,74 @@ export function saveConfig(config: StoredConfig): void {
 
   writeFileSync(CONFIG_FILE, JSON.stringify(storageConfig, null, 2), 'utf-8');
 }
+
+/**
+ * Every browser profile this app has — the built-in `default` always present and first.
+ *
+ * Never empty: a config with no registry at all answers with just `default`, which is also the
+ * answer for "no config yet". Callers therefore never have to handle "there is no profile".
+ *
+ * Cached briefly because routing asks for it on every command, and `loadStoredConfig` reads and
+ * parses the whole app config. A registry write clears the cache, so a create/rename/delete is
+ * visible immediately; the TTL only bounds staleness from a config edited outside the app.
+ */
+let browserProfilesCache: { readAt: number; profiles: BrowserProfile[] } | null = null;
+const BROWSER_PROFILES_TTL_MS = 1_000;
+
+export function getBrowserProfiles(): BrowserProfile[] {
+  const now = Date.now();
+  if (browserProfilesCache && now - browserProfilesCache.readAt < BROWSER_PROFILES_TTL_MS) {
+    return browserProfilesCache.profiles;
+  }
+  const profiles = normalizeBrowserProfiles(loadStoredConfig()?.browserProfiles);
+  browserProfilesCache = { readAt: now, profiles };
+  return profiles;
+}
+
+/**
+ * The effective browser profile for a conversation.
+ *
+ * The conversation's **own** pick is kept even when its profile was deleted: that is an explicit
+ * "invalid reference" the UI shows, and sending is blocked until the person picks a valid one. The
+ * project and workspace defaults, which the conversation only inherits, skip ids that no longer
+ * exist and fall through to the next level — so a deleted project/workspace default never strands
+ * a conversation that never chose it.
+ */
+export function resolveConversationBrowserProfileId(
+  sessionProfileId?: string | null,
+  projectProfileId?: string | null,
+  workspaceDefaultProfileId?: string | null,
+): string {
+  const sessionPick = sessionProfileId?.trim()
+  if (sessionPick) return sessionPick;
+
+  const profiles = getBrowserProfiles();
+  const existing = (id?: string | null): string | undefined => {
+    const trimmed = id?.trim();
+    return trimmed && profiles.some((profile) => profile.id === trimmed) ? trimmed : undefined;
+  };
+  return (
+    existing(projectProfileId)
+    ?? existing(workspaceDefaultProfileId)
+    ?? DEFAULT_BROWSER_PROFILE_ID
+  );
+}
+
+/**
+ * Replace the profile registry.
+ *
+ * `default` is kept whatever the caller passes — it is the profile the pre-profile session lives
+ * in, so removing it would strand that session rather than delete it.
+ */
+export function saveBrowserProfiles(profiles: BrowserProfile[]): boolean {
+  const config = loadStoredConfig();
+  if (!config) return false;
+  config.browserProfiles = normalizeBrowserProfiles(profiles);
+  saveConfig(config);
+  browserProfilesCache = null;
+  return true;
+}
+
 
 // Legacy updateApiKey() removed - use setupLlmConnection IPC handler instead.
 

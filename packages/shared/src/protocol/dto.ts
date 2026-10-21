@@ -80,6 +80,11 @@ export interface Session {
   sharedId?: string
   model?: string
   llmConnection?: string
+  /**
+   * Browser profile this conversation's browser work runs in (`undefined` = its workspace's
+   * default). A profile is a window: switching it moves the conversation to that profile's window.
+   */
+  browserProfile?: string
   thinkingLevel?: ThinkingLevel
   lastMessageRole?: 'user' | 'assistant' | 'plan' | 'tool' | 'error'
   lastFinalMessageId?: string
@@ -170,6 +175,14 @@ export interface CreateSessionOptions {
   branchFromSessionId?: string
   /** Bind the new session to a workspace project (inherits project's workingDirectory). */
   projectId?: string
+  /**
+   * The browser profile (account) this session's browser work starts in.
+   *
+   * Set by the parent when a session is spawned — like the working directory, it is inherited, so
+   * a child works in the same account as the conversation that spawned it. Omitted means "whatever
+   * the workspace defaults to".
+   */
+  browserProfile?: string
   /** The layer the new session is working in (its home is the owning project's folder). */
   mode?: SessionMode
   /** Mark the new session as a subtask of this parent session (undefined = top-level task). */
@@ -437,6 +450,7 @@ export type SessionEvent =
   | { type: 'project_id_changed'; sessionId: string; projectId: string | null }
   | { type: 'mode_changed'; sessionId: string; mode: SessionMode | null }
   | { type: 'connection_changed'; sessionId: string; connectionSlug: string; supportsBranching?: boolean }
+  | { type: 'browser_profile_changed'; sessionId: string; profileId: string | null }
   | { type: 'task_backgrounded'; sessionId: string; toolUseId: string; taskId: string; intent?: string; turnId?: string; kind?: 'workflow'; workflowId?: string }
   | { type: 'shell_backgrounded'; sessionId: string; toolUseId: string; shellId: string; intent?: string; command?: string; turnId?: string }
   | { type: 'task_progress'; sessionId: string; toolUseId: string; elapsedSeconds: number; turnId?: string }
@@ -444,6 +458,7 @@ export type SessionEvent =
   | { type: 'workflow_agent_completed'; sessionId: string; workflowId: string; agentId: string; turnId?: string }
   | { type: 'shell_killed'; sessionId: string; shellId: string }
   | { type: 'user_message'; sessionId: string; message: Message; status: 'accepted' | 'queued' | 'processing'; optimisticMessageId?: string }
+  | { type: 'queued_message_cancelled'; sessionId: string; messageId: string; optimisticMessageId?: string }
   | { type: 'session_flagged'; sessionId: string }
   | { type: 'session_unflagged'; sessionId: string }
   | { type: 'session_archived'; sessionId: string }
@@ -505,6 +520,7 @@ export type SessionCommand =
   | { type: 'revokeShare' }
   | { type: 'refreshTitle' }
   | { type: 'setConnection'; connectionSlug: string }
+  | { type: 'setBrowserProfile'; profileId: string | null }
   | { type: 'setPendingPlanExecution'; planPath: string; draftInputSnapshot?: string }
   | { type: 'markCompactionComplete' }
   | { type: 'markPendingPlanExecutionDispatched' }
@@ -800,6 +816,11 @@ export interface WorkspaceSettings {
   workingDirectory?: string
   localMcpEnabled?: boolean
   defaultLlmConnection?: string
+  /**
+   * Browser profile this workspace's browser work runs in by default (`undefined` = the built-in
+   * `default`). A conversation can override it; switching moves it to that profile's window.
+   */
+  browserProfile?: string
   enabledSourceSlugs?: string[]
 }
 
@@ -1114,6 +1135,14 @@ export interface BrowserLoadError {
 export interface BrowserTabSummary {
   /** Stable across the tab's life; what `--tab` and the toolbar name it by. */
   id: string
+  /**
+   * The browser profile this tab is signed into (see `browser-profiles.ts`).
+   *
+   * A window's profile, reported per tab because that is where a reader looks: one window is one
+   * account, so every tab of a window answers the same. Printed by `tabs` so an agent can tell which
+   * account it is looking at.
+   */
+  profileId: string
 
   // -- Observation ---------------------------------------------------------
   url: string
@@ -1274,8 +1303,8 @@ export interface BrowserInstanceInfo {
   themeColor: string | null
   /**
    * The workspace whose browser window this is, or `null` for a window opened
-   * with no workspace context. It is the **whole** of the boundary: one window per
-   * workspace, shared by every conversation in it, and no session owns it — which
+   * with no workspace context. A workspace holds **one window per profile**, shared by every
+   * conversation working in that profile, and no session owns it — which
    * conversation is working where is a fact about its **tabs** (`lockedBy`,
    * `cursorOf`, `belongsTo`), because a parent and its child sessions can be
    * in it at once (Conductor). Renderers
@@ -1286,6 +1315,14 @@ export interface BrowserInstanceInfo {
    * and main processes that pre-date the field working unchanged.
    */
   workspaceId?: string | null
+  /**
+   * The browser profile this window is signed into — the other half of its identity.
+   *
+   * What the top bar's badge needs to tell two windows apart: two profiles of the same site draw
+   * the same favicon and title, so without this they are indistinguishable. Optional for the same
+   * reason as `workspaceId` — a reader that pre-dates it treats the window as the built-in profile.
+   */
+  profileId?: string
 }
 
 export interface DeepLinkNavigation {

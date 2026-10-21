@@ -8,7 +8,8 @@ import { basename, dirname, join, resolve } from 'path'
 import { existsSync } from 'fs'
 import { readFile, writeFile, mkdir } from 'fs/promises'
 import { randomUUID } from 'node:crypto'
-import { type AgentEvent, setPermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserPaneFns, generateConversationSummary, resolveKeepBackgroundTasksAlive, resolveToolName } from '@craft-agent/shared/agent'
+import { type AgentEvent, setPermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserPaneFns, generateConversationSummary, resolveKeepBackgroundTasksAlive, resolveToolName, setBrowserProfilePromptState, clearBrowserProfilePromptState } from '@craft-agent/shared/agent'
+import type { BrowserTabInfo } from '@craft-agent/shared/agent/browser-pane'
 import type { BrowserInstanceInfo, BrowserTabSummary, TabBelongsTo } from '@craft-agent/shared/protocol'
 import { sameTask, workOfSession } from '@craft-agent/shared/protocol'
 import { drawioDocument, drawioPages } from '@craft-agent/shared/drawio/types'
@@ -30,7 +31,7 @@ import {
   type BackendHostRuntimeContext,
   type PostInitResult,
 } from '@craft-agent/shared/agent/backend'
-import { getLlmConnection, getLlmConnections, getDefaultLlmConnection, getDefaultThinkingLevel, resetManagedAnthropicAuthEnvVars, resolveMidStreamBehavior, getPersistedUiLanguage, resolveTitleLanguageName, toCustomEndpointModels } from '@craft-agent/shared/config'
+import { getLlmConnection, getLlmConnections, getDefaultLlmConnection, getDefaultThinkingLevel, resetManagedAnthropicAuthEnvVars, resolveMidStreamBehavior, getPersistedUiLanguage, resolveTitleLanguageName, toCustomEndpointModels, getBrowserProfiles, resolveBrowserProfileRef, resolveConversationBrowserProfileId, DEFAULT_BROWSER_PROFILE_ID } from '@craft-agent/shared/config'
 import type { MidStreamBehavior } from '@craft-agent/shared/config'
 import { PrivilegedExecutionBroker } from '@craft-agent/server-core/services'
 import { isValidWorkingDirectory } from '../utils/path-validation'
@@ -102,7 +103,7 @@ import { getCredentialManager } from '@craft-agent/shared/credentials'
 import { CraftMcpClient, McpClientPool, McpPoolServer } from '@craft-agent/shared/mcp'
 import { type Session, type SessionEvent, type FileAttachment, type SendMessageOptions, type UnreadSummary, type RemoteSessionTransferPayload, type ImportRemoteSessionTransferResult, RPC_CHANNELS, generateMessageId } from '@craft-agent/shared/protocol'
 import { messageToStored, storedToMessage, type Message, type StoredAttachment, type ToolDisplayMeta, type TokenUsage } from '@craft-agent/core/types'
-import { formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrlAsync, getEmojiIcon, resetSummarizationClient, resolveToolIcon, readFileAttachment, selectSpreadMessages, normalizePath } from '@craft-agent/shared/utils'
+import { formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrlAsync, getEmojiIcon, resetSummarizationClient, resolveToolIcon, readFileAttachment, selectSpreadMessages, normalizePath, expandPath } from '@craft-agent/shared/utils'
 import { loadAllSkills, loadSkillBySlug, invalidateSkillsCache, type LoadedSkill } from '@craft-agent/shared/skills'
 import { invalidateContextFileCache } from '@craft-agent/shared/prompts/system'
 import { getToolIconsDir, getMiniModel, resolveImageModel } from '@craft-agent/shared/config'
@@ -797,6 +798,9 @@ interface ManagedSession {
   model?: string
   // LLM connection slug for this session (auto-pinned on first agent creation)
   llmConnection?: string
+  // Browser profile this conversation's browser work runs in (one window per profile). Unset = the workspace's default,
+  // then the built-in `default` (see `browser-profiles.ts`).
+  browserProfile?: string
   // Whether the connection is pinned. Only guards *implicit* rewrites (model-change
   // events carrying a connection, task reconcile) — explicit user switches go
   // through setSessionConnection() and are honored at any point in the session.
@@ -1384,6 +1388,9 @@ export class SessionManager implements ISessionManager {
         const live = this.sessions.get(sid)
         return live ? workOfSession(live) : null
       },
+      // Read per call for the same reason: a conversation can switch profiles between two commands,
+      // and its next command has to land in that profile's window.
+      getProfileId: () => this.getBrowserProfileForSession(sid),
     })
     this.remoteBpms.set(sid, bridge)
     return bridge
@@ -2948,6 +2955,9 @@ export class SessionManager implements ISessionManager {
       isFlagged: options?.isFlagged,
       projectId: resolvedProjectId,
       mode: options?.mode,
+      // Inherited by child sessions (see `CreateSessionOptions.browserProfile`); a top-level
+      // session leaves it unset so the workspace default stays dynamic.
+      browserProfile: options?.browserProfile,
       parentSessionId: options?.parentSessionId,
       taskSlug: options?.taskSlug,
       taskRunId: options?.taskRunId,
@@ -3160,6 +3170,12 @@ export class SessionManager implements ISessionManager {
    *  sessions inherit the orchestrator's cwd). Undefined if the session has none or is unknown. */
   getSessionWorkingDirectory(sessionId: string): string | undefined {
     return this.sessions.get(sessionId)?.workingDirectory
+  }
+
+  /** The browser profile a session picked (not the effective one), so children inherit it the
+   *  same way they inherit the working directory. Undefined means "follow the workspace default". */
+  getSessionBrowserProfile(sessionId: string): string | undefined {
+    return this.sessions.get(sessionId)?.browserProfile
   }
 
   private async disposeManagedAgentRuntime(managed: ManagedSession, reason: string): Promise<void> {
@@ -3746,6 +3762,11 @@ export class SessionManager implements ISessionManager {
          */
         const isChildSession = !!managed.parentSessionId
 
+        // The prompt learns which profile this conversation works in. It rides the volatile
+        // `<session_state>` tail (never the cached system prefix), so a switch made between turns
+        // is visible to the next one without invalidating anything already cached.
+        setBrowserProfilePromptState(sid, this.browserProfileName(this.getBrowserProfileForSession(sid)))
+
         /**
          * The **work** this conversation is part of — what its tabs say they are for, and what
          * its commands are judged against.
@@ -3808,7 +3829,51 @@ export class SessionManager implements ISessionManager {
         }
 
         /**
-         * The window this conversation works in — its workspace's, opened if it is not up yet.
+         * Everything a conversation can do in the browser, bound to **one profile**.
+         *
+         * `--profile` names the profile; a command that names none uses the conversation's own
+         * selection — its own pick, then its project's default, then the workspace's default,
+         * then the built-in **Default**. It never falls back to the profile of the tab it is on.
+         * A name that does not exist is refused by `resolveProfileIdOrThrow`, never quietly
+         * replaced.
+         *
+         * Built per command rather than mutated: a conversation can work in two profiles at once
+         * (`--profile`), so the profile a command acts in is part of the command and never state
+         * two calls could race on. The profile is what picks the window: one workspace holds one
+         * window per profile.
+         */
+        const buildBrowserPaneFns = (profileId?: string): BrowserPaneFns => {
+          // `--profile` binds this command; without one the profile is the conversation's own
+          // selection (its pick, the workspace default, then Default). Read per call rather than
+          // captured, because the person can switch it between turns — or mid-turn — and the next
+          // command has to land in the profile selected now. It never falls back to Default while
+          // the conversation has selected another one.
+          const namedProfileId = profileId?.trim()
+          const scopedProfileId = (): string =>
+            namedProfileId || this.getBrowserProfileForSession(sid)
+
+          /** The profile a window is signed into; the built-in one for a window that predates profiles. */
+          const profileOf = (window: BrowserInstanceInfo): string =>
+            window.profileId ?? DEFAULT_BROWSER_PROFILE_ID
+
+          const profileNameOf = (id: string): string =>
+            getBrowserProfiles().find((profile) => profile.id === id)?.name ?? id
+
+          /**
+           * The profile a reply should name — only when there is a choice to get wrong.
+           *
+           * One window needs no label; two do, because the answer says which window the tab landed
+           * in and the agent can then name the other one with `--profile`.
+           */
+          const replyProfileName = async (instanceId: string): Promise<string | undefined> => {
+            const windows = await sessionWindows()
+            if (windows.length <= 1) return undefined
+            const window = windows.find((candidate) => candidate.id === instanceId)
+            return window ? profileNameOf(profileOf(window)) : undefined
+          }
+
+        /**
+         * The window this profile's work lives in — opened if it is not up yet.
          *
          * Split out from the tab resolution below because one command needs a window and not a
          * tab: `tab-new` is how a conversation with no tab gets one, so it cannot require a
@@ -3816,12 +3881,17 @@ export class SessionManager implements ISessionManager {
          * starts does is worth taking their screen for, and `tab-show` is the one verb that does.
          */
         const resolveWorkspaceWindow = async (): Promise<string> => {
+          const existing = await resolveWorkspaceWindowId()
+          if (existing) return existing
           const instanceId = await bpm.createForSessionAsync(sid, {
             show: false,
             workspaceId,
+            // The profile the command named (or the conversation's own), stated rather than
+            // resolved from the session: a command never guesses.
+            profileId: scopedProfileId(),
           })
           const info = await bpm.getInstanceAsync(instanceId)
-          sessionLog.info(`[browser-pane] workspace window resolved: session=${sid} instance=${instanceId} visible=${info?.isVisible ?? false}`)
+          sessionLog.info(`[browser-pane] window resolved: session=${sid} instance=${instanceId} profile=${scopedProfileId()} visible=${info?.isVisible ?? false}`)
           return instanceId
         }
 
@@ -3906,26 +3976,45 @@ export class SessionManager implements ISessionManager {
         }
 
         /**
-         * This workspace's browser window, if it is open — without making one.
+         * Which window this command acts on — without making one.
+         *
+         * The window of the profile the command bound itself to: `--profile` when it named one,
+         * the conversation's own selection otherwise. Never "the first window" and never a window
+         * inferred from the tab it was working in: with one window per profile that guess handed a
+         * command to a profile nobody chose.
          *
          * Only the commands that can take a tab open a browser when there is none: `navigate`
-         * (its entry point) and `tab-new`. The rest have no tab to read without one, and
-         * creating an empty window to report that would be the tool inventing the state it was
-         * asked about. Naming a tab does not open one either: tabs live in that window, so a
-         * workspace with no window has none.
-         *
-         * Found by what it is rather than by who is asking: it belongs to
-         * the workspace, and nothing on the window names a conversation — which
-         * conversation is where is a fact about its tabs. The workspace is what keeps
-         * two of them apart.
+         * (its entry point) and `tab-new`. The rest have no tab to read without one, and creating
+         * an empty window to report that would be the tool inventing the state it was asked about.
          */
         const resolveWorkspaceWindowId = async (): Promise<string | null> => {
           const windows = await sessionWindows()
-          return windows[0]?.id ?? null
+          return windows.find((window) => profileOf(window) === scopedProfileId())?.id ?? null
+        }
+
+        /**
+         * Where a named tab is: the profile's window, and the tab itself.
+         *
+         * A tab id is unique inside a window, and a window is one profile, so `tab-1` can be two
+         * tabs. Which one is meant follows the same rule as the command: `--profile`, or the
+         * conversation's own profile.
+         * A tab in another profile is reached by naming that profile, never by guessing.
+         */
+        const findTabWindow = async (
+          tabId: string,
+        ): Promise<{ instanceId: string; tab: BrowserTabSummary } | null> => {
+          const windows = await sessionWindows()
+          const window = windows.find((candidate) => profileOf(candidate) === scopedProfileId())
+          if (!window) return null
+          const tabs = await bpm.listTabsAsync(window.id).catch(() => [])
+          const tab = tabs.find((candidate) => candidate.id === tabId)
+          return tab ? { instanceId: window.id, tab } : null
         }
 
         const resolveLifecycleWindowTarget = async (requestedInstanceId?: string) => {
-          const windows = await sessionWindows()
+          const all = await sessionWindows()
+          // The profile's window, even for a lifecycle verb: the same rule as every other command.
+          const windows = all.filter((window) => profileOf(window) === scopedProfileId())
 
           if (windows.length === 0) {
             return { windows, reason: 'No browser window is available. "navigate <url>" or "tab-new <url>" opens one.' }
@@ -3949,32 +4038,37 @@ export class SessionManager implements ISessionManager {
             }
           }
 
-          // Which window it means when none is named: the workspace's, which is the
-          // only one there is.
-          const resolved = requestedInstanceId
-            ? resolveTarget(windows.find((w) => w.id === requestedInstanceId))
-            : resolveTarget(windows[0])
+          // Which window it means when none is named: the profile's own (the command's
+          // `--profile`, or the conversation's selection), falling back to what is open only when
+          // that profile has no window in this workspace.
+          const preferredId = requestedInstanceId ?? (await resolveWorkspaceWindowId()) ?? windows[0]?.id
+          const resolved = resolveTarget(windows.find((w) => w.id === preferredId))
 
           return resolved.ok ? { windows, target: resolved.target } : { windows, reason: resolved.reason }
         }
 
         sessionLog.info('[browser-pane] BPF registering browserPaneFns', { sessionId: sid })
-        mergeSessionScopedToolCallbacks(sid, {
-          browserPaneFns: {
+
+          return {
             navigate: async (url, requestedTabId) => {
               if (requestedTabId) {
                 // Naming a tab is working in it. A name that no longer exists is not an
                 // error for "go here": open a tab for this conversation instead — never
                 // adopt some other tab, which may be a step's page — and say so in the
                 // answer.
-                const instanceId = await resolveWorkspaceWindow()
-                const tabs = await bpm.listTabsAsync(instanceId).catch(() => [])
-                const named = tabs.find((t) => t.id === requestedTabId)
+                //
+                // The name is looked up across this workspace's windows (one per profile), so
+                // `--tab tab-3 --profile Work` works in Work while the unnamed form would have
+                // stayed in the cursor's profile.
+                const located = await findTabWindow(requestedTabId)
+                const instanceId = located?.instanceId ?? await resolveWorkspaceWindow()
+                const named = located?.tab
                 if (named) {
                   assertTabUsable(named)
                   bpm.setSessionTab(instanceId, named.id, sid)
                   const result = await bpm.navigate(instanceId, url, named.id)
-                  return { ...result, tabId: named.id }
+                  const profileName = await replyProfileName(instanceId)
+                  return { ...result, tabId: named.id, ...(profileName ? { profileName } : {}) }
                 }
                 const created = await bpm.createTabAsync(instanceId, {
                   // Same rule as the unnamed path: take the birth tab of a window that has
@@ -3984,9 +4078,11 @@ export class SessionManager implements ISessionManager {
                 })
                 bpm.setSessionTab(instanceId, created, sid)
                 const result = await bpm.navigate(instanceId, url, created)
+                const profileName = await replyProfileName(instanceId)
                 return {
                   ...result,
                   tabId: created,
+                  ...(profileName ? { profileName } : {}),
                   note:
                     `Requested tab "${requestedTabId}" was closed; allocated a new tab ` +
                     `"${created}" instead. Use "${created}" for later calls.`,
@@ -3994,9 +4090,10 @@ export class SessionManager implements ISessionManager {
               }
               const { instanceId, tabId } = await resolveCommandTarget('browser_navigate', { takeATab: true })
               const result = await bpm.navigate(instanceId, url, tabId)
+              const profileName = await replyProfileName(instanceId)
               // The tab is part of the answer: this command may have just made one, and the
               // caller should not have to run `tabs` to find out where it landed.
-              return { ...result, tabId }
+              return { ...result, tabId, ...(profileName ? { profileName } : {}) }
             },
             snapshot: async () => {
               const { instanceId, tabId } = await resolveCommandTarget('browser_snapshot')
@@ -4176,10 +4273,18 @@ export class SessionManager implements ISessionManager {
             // by the door that asks (a session's `records/`), so this only forwards — what it
             // owns is the conversation's half of the identity, `(sessionId, tabId)`.
             startRecording: async (args) => {
-              // The window to record in is the workspace's, resolved the same way every other
-              // command resolves it — the manager picks a window by workspace alone, so leaving
-              // it out lands on the `null`-workspace window, which has none of this session's tabs.
-              const result = await bpm.startRecordingForSession(sid, args, { workspaceId })
+              // The window to record in is the one holding the named tab — a tab id names a tab
+              // inside one profile's window, and `--profile` may have put this command in another
+              // profile than the cursor's.
+              const located = await findTabWindow(args.tabId)
+              if (!located) {
+                throw new Error(`No browser window has a tab "${args.tabId}". "tabs" lists them.`)
+              }
+              const window = (await sessionWindows()).find((candidate) => candidate.id === located.instanceId)
+              const result = await bpm.startRecordingForSession(sid, args, {
+                workspaceId,
+                ...(window ? { profileId: profileOf(window) } : {}),
+              })
 
               // The non-waiting form answers at the start, so the *end* has to be delivered
               // separately — otherwise the file lands on disk and nobody is ever told. Nobody
@@ -4295,7 +4400,7 @@ export class SessionManager implements ISessionManager {
               }
             },
             // Tabs, not windows: this session's window holds them, and a command
-            // acts on the tab that is on screen unless it names one with `--tab`.
+            // acts on this conversation's cursor tab unless it names one with `--tab`.
             // Creating a tab is the one tab operation that may open a
             // window — there is nothing to add a tab to otherwise — so it goes
             // through the same resolver every browser command uses.
@@ -4335,10 +4440,11 @@ export class SessionManager implements ISessionManager {
              * to, which the browser side has no way to look up.
              */
             assignTab: async (tabId, targetSessionId) => {
-              const instanceId = await resolveWorkspaceWindowId()
-              if (!instanceId) {
-                throw new Error('No browser window is open for this workspace, so there is no tab to hand over. "navigate <url>" or "tab-new <url>" opens one.')
+              const located = await findTabWindow(tabId)
+              if (!located) {
+                throw new Error(`No browser window has a tab "${tabId}". "tabs" lists them. "navigate <url>" or "tab-new <url>" opens one.`)
               }
+              const instanceId = located.instanceId
               const target = this.sessions.get(targetSessionId)
               if (!target || target.workspace.id !== workspaceId) {
                 throw new Error(
@@ -4371,13 +4477,14 @@ export class SessionManager implements ISessionManager {
               bpm.assignTab(instanceId, tabId, workOfSession(target), work)
             },
             targetTab: async (tabId) => {
-              const instanceId = await resolveWorkspaceWindowId()
-              if (!instanceId) {
-                throw new Error('No browser window is open for this workspace, so there is no tab to name. "navigate <url>" or "tab-new <url>" opens one.')
+              const located = await findTabWindow(tabId)
+              if (!located) {
+                throw new Error(`No browser window has a tab "${tabId}". "tabs" lists them. "navigate <url>" or "tab-new <url>" opens one.`)
               }
+              const { instanceId, tab } = located
               // Checked on the *named* tab, before anything is written: naming somebody else's
               // work is refused here rather than after the window has been repointed at it.
-              assertTabUsable(await requireTab(instanceId, tabId))
+              assertTabUsable(tab)
               // Naming a tab is how a conversation says "this is where I work from" — the cursor
               // moves with it, so the rest of the command (and the next one, and the one after the
               // person clicks around) stays on this tab. Nothing is shown:
@@ -4386,13 +4493,14 @@ export class SessionManager implements ISessionManager {
               bpm.setSessionTab(instanceId, tabId, sid)
             },
             activateTab: async (tabId, options) => {
-              const instanceId = await resolveWorkspaceWindowId()
-              if (!instanceId) {
-                throw new Error('No browser window is open for this workspace, so there is no tab to show. "navigate <url>" or "tab-new <url>" opens one.')
+              const located = await findTabWindow(tabId)
+              if (!located) {
+                throw new Error(`No browser window has a tab "${tabId}". "tabs" lists them. "navigate <url>" or "tab-new <url>" opens one.`)
               }
+              const { instanceId, tab } = located
               // Checked on the *named* tab, before the window is moved to it: showing somebody
               // else's work is refused here rather than after the switch.
-              assertTabUsable(await requireTab(instanceId, tabId))
+              assertTabUsable(tab)
               // The one command that moves the window's tab, because that is what it is called
               // (`tab-show`): every other command works where its tab is, behind the person's if
               // they are reading another one (第十二轮) — and a tab brought up is a tab about to
@@ -4416,11 +4524,11 @@ export class SessionManager implements ISessionManager {
               return { movedView: true }
             },
             closeTab: async (tabId) => {
-              const instanceId = await resolveWorkspaceWindowId()
-              if (!instanceId) {
-                throw new Error('No browser window is open for this workspace, so there is no tab to close.')
+              const located = await findTabWindow(tabId)
+              if (!located) {
+                throw new Error(`No browser window has a tab "${tabId}". "tabs" lists them.`)
               }
-              const target = await requireTab(instanceId, tabId)
+              const { instanceId, tab: target } = located
               assertTabIsMineToClose(target)
               assertTabUnlocked(target)
               bpm.closeTab(instanceId, tabId)
@@ -4431,9 +4539,24 @@ export class SessionManager implements ISessionManager {
               return { remaining: remaining.length }
             },
             listTabs: async () => {
-              const instanceId = await resolveWorkspaceWindowId()
-              if (!instanceId) return []
-              return await bpm.listTabsAsync(instanceId)
+              // Every window of this workspace, unless `--profile` names one. A conversation can
+              // hold tabs in several profiles at once, and `tabs` is how it finds them again —
+              // so the list carries the window (`instanceId`) and its profile (`profileName`)
+              // beside each id, which is what makes a colliding `tab-1` nameable.
+              const windows = (await sessionWindows())
+                .filter((window) => !profileId || profileOf(window) === profileId)
+              const tabs: BrowserTabInfo[] = []
+              for (const window of windows) {
+                const listed = await bpm.listTabsAsync(window.id).catch(() => [])
+                for (const tab of listed) {
+                  tabs.push({
+                    ...tab,
+                    instanceId: window.id,
+                    profileName: profileNameOf(profileOf(window)),
+                  })
+                }
+              }
+              return tabs
             },
             waitForIdle: async (timeoutMs = 5_000) => {
               const instanceId = await resolveWorkspaceWindowId()
@@ -4456,7 +4579,30 @@ export class SessionManager implements ISessionManager {
               const { instanceId, tabId } = await resolveCommandTarget('browser_detect_challenge')
               return bpm.detectSecurityChallenge(instanceId, tabId)
             },
-          } satisfies BrowserPaneFns,
+            // `--profile`: the same surface, bound to one profile. Present on a scoped surface too,
+            // so a command that names a profile twice (or a host that asks) still resolves.
+            withProfile: (ref: string) => buildBrowserPaneFns(resolveProfileIdOrThrow(ref)),
+            listProfiles: async () => getBrowserProfiles().map(({ id, name }) => ({ id, name })),
+          } satisfies BrowserPaneFns
+        }
+
+        /**
+         * The profile a `--profile` names, by display name or id.
+         *
+         * Only the host knows the registry, so this is where a name becomes an id — before any
+         * command runs, so a typo is refused with the profiles that exist rather than turning
+         * into a window nobody meant to open.
+         */
+        const resolveProfileIdOrThrow = (ref: string): string => {
+          const profiles = getBrowserProfiles()
+          const match = resolveBrowserProfileRef(ref, profiles)
+          if (match) return match.id
+          const known = profiles.map((profile) => `${profile.name} (${profile.id})`).join(', ')
+          throw new Error(`No browser profile "${ref}". Profiles: ${known}.`)
+        }
+
+        mergeSessionScopedToolCallbacks(sid, {
+          browserPaneFns: buildBrowserPaneFns(),
         })
       }
 
@@ -4723,6 +4869,9 @@ export class SessionManager implements ISessionManager {
           projectId: request.projectId ?? managed.projectId,
           // A subtask of a session working in a mode keeps working in it.
           mode: managed.mode,
+          // …and in the same browser profile, like its working directory: a child that fell back
+          // to the workspace default would land in another profile's window than its parent's.
+          ...(managed.browserProfile ? { browserProfile: managed.browserProfile } : {}),
           // Spawned sessions become subtasks of the spawning session.
           parentSessionId: managed.id,
         })
@@ -5333,6 +5482,85 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
+   * The browser profile this conversation is set to: its own pick, its project's default, its
+   * workspace's default, then the built-in one. Read per call — any level can change while the
+   * conversation exists.
+   *
+   * This is the profile the composer and the top-bar badge show, the prompt names, and the default
+   * for a browser command that names no profile.
+   */
+  getBrowserProfileForSession(sessionId: string): string {
+    const session = this.sessions.get(sessionId)
+    if (!session) return DEFAULT_BROWSER_PROFILE_ID
+    const projectProfile = session.projectId
+      ? loadProjectById(session.workspace.rootPath, session.projectId)?.config.browserProfile
+      : undefined
+    const workspaceDefault = loadWorkspaceConfig(session.workspace.rootPath)?.defaults?.browserProfile
+    return resolveConversationBrowserProfileId(session.browserProfile, projectProfile, workspaceDefault)
+  }
+
+  /** The display name of a profile id — what `--profile` accepts and the prompt shows. */
+  private browserProfileName(profileId: string): string {
+    return getBrowserProfiles().find((profile) => profile.id === profileId)?.name ?? profileId
+  }
+
+  /**
+   * Set (or clear, with `null`) the browser profile this conversation works in.
+   *
+   * The profile is the conversation's own default: the composer's picker and the top-bar badge
+   * read it, the prompt names it, and a browser command that names no `--profile` uses it (read per
+   * command, so a switch applies to the next one). Nothing is torn down and no tab is recreated: a
+   * profile is a window, and the tabs already open stay in the window they are in — a Chromium
+   * session cannot be swapped under a live page.
+   */
+  async setSessionBrowserProfile(sessionId: string, profileId: string | null): Promise<void> {
+    const managed = this.sessions.get(sessionId)
+    if (!managed) {
+      sessionLog.warn(`setSessionBrowserProfile: session ${sessionId} not found`)
+      throw new Error(`Session ${sessionId} not found`)
+    }
+
+    const next = profileId?.trim() || undefined
+    if (next && !getBrowserProfiles().some((profile) => profile.id === next)) {
+      sessionLog.warn(`setSessionBrowserProfile: browser profile "${next}" not found`)
+      throw new Error(`Browser profile "${next}" not found`)
+    }
+
+    const previous = managed.browserProfile
+    if (previous === next) return
+
+    // The effective profile before and after (the workspace default fills in when cleared), so
+    // the prompt and the event can say what actually changed rather than what was picked.
+    const previousEffective = this.getBrowserProfileForSession(sessionId)
+
+    if (next) managed.browserProfile = next
+    else delete managed.browserProfile
+    const effective = this.getBrowserProfileForSession(sessionId)
+    const previousName = this.browserProfileName(previousEffective)
+    const name = this.browserProfileName(effective)
+
+    if (name !== previousName) {
+      // A switch in a fresh conversation is just "where this chat works" — announcing it as a
+      // change would tell the model about a move nobody made. Only a conversation with history
+      // gets the one-shot notice; both get the profile line.
+      setBrowserProfilePromptState(
+        sessionId,
+        name,
+        managed.messages.length > 0 ? { announceFrom: previousName } : undefined,
+      )
+    }
+
+    this.persistSession(managed)
+    await this.flushSession(managed.id)
+    sessionLog.info(`Set browser profile for session ${sessionId} to ${next ?? 'workspace default'} (was ${previous ?? 'workspace default'})`)
+
+    this.sendEvent(
+      { type: 'browser_profile_changed', sessionId, profileId: next ?? null },
+      managed.workspace.id,
+    )
+  }
+
+  /**
    * Whether a turn is currently running for this session — the session-level
    * flag is checked alongside the agent's stream flag because the window between
    * SDK messages (tool execution, permission waits) is still the same turn, and
@@ -5340,6 +5568,11 @@ export class SessionManager implements ISessionManager {
    */
   private isSessionInTurn(managed: ManagedSession): boolean {
     return managed.isProcessing || Boolean(managed.agent?.isProcessing())
+  }
+
+  /** Keep the prompt's volatile profile line in step with the effective profile (workspace default included). */
+  private syncBrowserProfilePromptState(sessionId: string): void {
+    setBrowserProfilePromptState(sessionId, this.browserProfileName(this.getBrowserProfileForSession(sessionId)))
   }
 
   // ============================================
@@ -6316,6 +6549,7 @@ export class SessionManager implements ISessionManager {
       this.deltaFlushTimers.delete(sessionId)
     }
     this.pendingDeltas.delete(sessionId)
+    clearBrowserProfilePromptState(sessionId)
     this.clearAdminRememberApprovalsForSession(sessionId)
     this.clearPendingPermissionRequestsForSession(sessionId)
 
@@ -6401,6 +6635,27 @@ export class SessionManager implements ISessionManager {
       throw new Error(`Session ${sessionId} not found`)
     }
     this.setLastMessageClientId(sessionId, rpcContext?.callerClientId)
+
+    // A conversation whose own pick was deleted keeps that id as an explicit invalid reference
+    // (the UI shows it, and its window stays usable), but it must not start a turn: the person has
+    // to choose an existing profile first. Hidden system messages are not a person sending.
+    const pickedProfile = managed.browserProfile?.trim()
+    if (!options?.hidden && pickedProfile && !getBrowserProfiles().some((profile) => profile.id === pickedProfile)) {
+      throw new Error(
+        `This conversation's browser profile "${pickedProfile}" was deleted. Choose a valid profile before sending.`,
+      )
+    }
+
+    // Same rule for the folder this conversation works in. The path stays in the header
+    // (it is still shown, and re-creating the folder makes it valid again), but no turn may
+    // start against a directory that is gone: Claude would silently fall back to the session
+    // folder while the prompt still names the old path, and Pi would fail with a raw ENOENT.
+    const sessionWorkingDirectory = managed.workingDirectory?.trim()
+    if (!options?.hidden && sessionWorkingDirectory && !isValidWorkingDirectory(expandPath(sessionWorkingDirectory)).valid) {
+      throw new Error(
+        `This conversation's working directory "${sessionWorkingDirectory}" no longer exists. Choose a working directory before sending.`,
+      )
+    }
 
     // Source-activation auto-retry dedup (craft-agents-oss#804). When the server
     // has just scheduled or committed a "[<slug> activated]" retry, drop a matching
@@ -6617,6 +6872,8 @@ export class SessionManager implements ISessionManager {
     }
 
     managed.lastMessageAt = Date.now()
+    // …the volatile prompt line follows the workspace default too, when it changed.
+    this.syncBrowserProfilePromptState(managed.id)
     this.setProcessing(managed, true)
     managed.streamingText = ''
     managed.streamingTurnId = undefined
@@ -7097,6 +7354,50 @@ export class SessionManager implements ISessionManager {
 
     // NOTE: We don't clear isProcessing or send complete event here anymore.
     // The event loop will drain remaining events and call onProcessingStopped when done.
+  }
+
+  /**
+   * Cancel a single queued message that has not started processing yet.
+   *
+   * Queued messages are appended to the transcript immediately (so the bubble
+   * is visible while the agent finishes the current turn), therefore removing
+   * one has to drop it from both the replay queue and `managed.messages`.
+   * Returns `cancelled: false` when the message is unknown or already replaying.
+   */
+  async cancelQueuedMessage(sessionId: string, messageId: string): Promise<{ cancelled: boolean }> {
+    const managed = this.sessions.get(sessionId)
+    if (!managed) return { cancelled: false }
+
+    // The renderer identifies its own optimistic bubble, while a reloaded
+    // session identifies the canonical message id — accept either.
+    const queueIndex = managed.messageQueue.findIndex(
+      q => q.messageId === messageId || q.optimisticMessageId === messageId
+    )
+    if (queueIndex === -1) return { cancelled: false }
+
+    const [queued] = managed.messageQueue.splice(queueIndex, 1)
+    if (queued.messageId) {
+      managed.messages = managed.messages.filter(m => m.id !== queued.messageId)
+    }
+
+    sessionLog.info('cancel queued message', {
+      sessionId,
+      messageId: queued.messageId,
+      queueLengthAfterCancel: managed.messageQueue.length,
+    })
+
+    this.persistSession(managed)
+    await this.flushSession(managed.id)
+
+    // Drop the bubble in every window and tell them which persisted row went away.
+    this.sendEvent({
+      type: 'queued_message_cancelled',
+      sessionId,
+      messageId: queued.messageId ?? messageId,
+      ...(queued.optimisticMessageId ? { optimisticMessageId: queued.optimisticMessageId } : {}),
+    }, managed.workspace.id)
+
+    return { cancelled: true }
   }
 
   /**

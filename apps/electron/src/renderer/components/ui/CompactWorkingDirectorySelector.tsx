@@ -22,6 +22,8 @@ export interface CompactWorkingDirectorySelectorProps {
   sessionFolderPath?: string
   isEmptySession?: boolean
   workspaceId?: string
+  /** The selected folder was removed; the picker stays usable so it can be replaced. */
+  missing?: boolean
 }
 
 /**
@@ -42,6 +44,7 @@ export function CompactWorkingDirectorySelector({
   sessionFolderPath,
   isEmptySession = false,
   workspaceId,
+  missing = false,
 }: CompactWorkingDirectorySelectorProps) {
   const { t } = useTranslation()
   const [open, setOpen] = React.useState(false)
@@ -91,20 +94,29 @@ export function CompactWorkingDirectorySelector({
 
   const showNothingMatches = !!filter.trim() && filteredRecent.length === 0
 
-  const displayFolderName = folderName ?? t('chat.chooseWorkingDirectory')
+  const displayFolderName = missing
+    ? t('composer.workingDirectoryMissing', 'Deleted folder')
+    : (folderName ?? t('chat.chooseWorkingDirectory'))
 
   return (
     <>
       <FreeFormInputContextBadge
-        icon={<Icon_Home className="h-4 w-4" />}
+        icon={<Icon_Home className={cn('h-4 w-4', missing && 'text-destructive')} />}
         label={displayFolderName}
         isExpanded={isEmptySession}
         hasSelection={hasFolder}
         showChevron={true}
         isOpen={open}
+        className={missing ? 'text-destructive' : undefined}
         onClick={() => setOpen((prev) => !prev)}
         tooltip={
-          hasFolder ? (
+          missing ? (
+            <span className="flex flex-col gap-0.5">
+              <span className="font-medium text-destructive">{t('composer.workingDirectoryMissing', 'Deleted folder')}</span>
+              <span className="text-xs opacity-70">{formatPath(workingDirectory, homeDir)}</span>
+              <span className="text-xs opacity-70">{t('composer.workingDirectoryMissingHint', 'This folder no longer exists. Choose an existing working directory before sending.')}</span>
+            </span>
+          ) : hasFolder ? (
             <span className="flex flex-col gap-0.5">
               <span className="font-medium">{t('chat.workingDirectory')}</span>
               <span className="text-xs opacity-70">{formatPath(workingDirectory, homeDir)}</span>

@@ -469,8 +469,8 @@ export function getBrowserToolHelp(): string {
     '  --help',
     '  navigate <url>                                 go here in your tab; with none, one is made for you (safe to repeat)',
     '  snapshot',
-    '  read [--save <path>] [--images]                read this page as an article (markdown + stated facts); --save keeps it in a file, --images also keeps its images beside it',
-    '  find <query>                                   search elements by keyword (matches role, name, value)',
+    '  read [--save <path> [--images]]                read this page as an article (markdown + stated facts); --save keeps it in a file, and --images (with --save) also keeps its images beside it',
+    '  find <query>                                   search elements by keyword (matches role, name, value, description)',
     '  click <ref> [none|navigation|network-idle] [timeoutMs]',
     '  click-at <x> <y>                               click at pixel coordinates (canvas elements)',
     '  drag <x1> <y1> <x2> <y2>                      drag from (x1,y1) to (x2,y2)',
@@ -495,11 +495,12 @@ export function getBrowserToolHelp(): string {
     '  scroll <up|down|left|right> [amount]',
     '  back',
     '  forward',
-    '  reload                                         reload this page (nothing waits for it to load)',
+    '  reload                                         reload this page (returns at once; the next reader waits up to 5s)',
     '  evaluate <expression>',
     '  evaluate --file <path>                         run a script from disk (the source stays in the file)',
     '  pick [--timeout <ms>]                          ask the user to click an element; returns a stable selector',
-    '  tabs                                           this window\'s tabs: what each one is, whose task it is in, who is working on it',
+    '  tabs                                           the tabs of this workspace: what each one is, whose task it is in, who is working on it',
+    '  profiles                                       the browser profiles: name and id, for --profile',
     '  tab-new <url>                                  add a tab to this window, behind the person\'s',
     '  tab-select <id>                                make a tab the one you work from (the window shows what it showed)',
     '  tab-show <id> [--handover]                     make a tab the one the window shows (it is not raised); --handover also drops your overlay and hold so they can use it',
@@ -508,13 +509,13 @@ export function getBrowserToolHelp(): string {
     '  record-stop --tab <id>                         end a recording early',
     '  tab-close <id>                                 close a tab of your task (the last one closes the window)',
     '',
-    'There is one browser window per workspace, used by every conversation in it and by the user, for any',
-    'task: "tab-new" adds a tab to it rather than making a second window, and a workspace with no window',
-    'gets one when a tab is first opened. The window',
-    'itself is nobody\'s to close; the tabs in your task are — "tab-close <id>" does that. "tab-show <id>"',
-    'makes a tab the one the window shows, without raising the window — say so in your reply if they should look.',
-    'Add "--handover" when they are meant to take over: that drops your overlay and hold, so the page is theirs',
-    'to use until your next command takes it back.',
+    'There is one browser window per workspace and **profile**, used by every conversation working in',
+    'that profile and by the user, for any task: "tab-new" adds a tab to the window you are working in',
+    'rather than making a second one, and a profile with no window gets one when a tab is first opened.',
+    'The window itself is nobody\'s to close; the tabs in your task are — "tab-close <id>" does that.',
+    '"tab-show <id>" makes a tab the one the window shows, without raising the window — say so in your',
+    'reply if they should look. Add "--handover" when they are meant to take over: that drops your overlay',
+    'and hold, so the page is theirs to use until your next command takes it back.',
     '',
     'This is the window\'s own surface: pages, refs, input, screenshots, console, network, tabs.',
     '',
@@ -541,6 +542,15 @@ export function getBrowserToolHelp(): string {
     'the tab rail to let go of it). Other conversations hold their own tabs at the same time.',
     'A session spawned by another one takes no tab of its own choosing and does not move what the person',
     'sees: it works in the tab it was given ("tab-assign"), or opens one with "tab-new".',
+    '',
+    'Every command can also name the **profile** it works in: "--profile <name-or-id>" ("profiles" lists them).',
+    'Without it, a command uses the profile this conversation is set to (its own pick, then its project\'s',
+    'default, then the workspace default, then Default) — it does not fall back to Default while another one',
+    'is selected. "navigate" and "tab-new" open that profile\'s window when it is not up; the other commands',
+    'say there is no window instead of opening one. Two profiles',
+    'can be driven at once by naming one on the commands meant for it, and an unknown name is refused',
+    'rather than mapped to Default. A tab id is unique inside its window, so two profiles can both have a',
+    '"tab-1"; "--profile" says which one a "--tab" names.',
     'Full rules and examples: docs/browser-tools.md.',
     '',
     'Batching (string mode, semicolon-separated, stops after navigation commands):',
@@ -799,7 +809,8 @@ async function verifySelectResult(args: {
 
 export async function runBrowserCommand(ctx: ToolCommandContext): Promise<BrowserCommandResult | null> {
   const { fns, parts, cmd } = ctx;
-  // Only the record commands read these: everything else works on the tab that is on screen.
+  // Only file-taking commands (`read --save`, `evaluate --file`) and the record commands
+  // read these; tab targeting is settled by the host before the command runs.
   const { sessionId, workspaceRootPath } = ctx;
 
   if (cmd === 'navigate') {
@@ -822,6 +833,7 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
           `Signals: ${challenge.signals.join(', ')}`,
           `URL: ${result.url}`,
           `Tab: ${result.tabId}`,
+          ...(result.profileName ? [`Profile: ${result.profileName}`] : []),
           ...(result.note ? [`Note: ${result.note}`] : []),
           '',
           'I have let go of the page — tell the person to open the browser and complete the verification check (the window is not raised for them).',
@@ -834,6 +846,9 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
     const lines = [
       `Navigated to: ${result.url}`,
       `Tab: ${result.tabId}`,
+      // Named only when several profiles are open: the reply then says which window the tab
+      // landed in, and the other one is a `--profile` away.
+      ...(result.profileName ? [`Profile: ${result.profileName}`] : []),
       ...(result.note ? [`Note: ${result.note}`] : []),
       `Title: ${result.title}`,
       `Elapsed: ${elapsedMs}ms`,
@@ -1886,22 +1901,62 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
     };
   }
 
-  if (cmd === 'tabs') {
-    const tabs = await fns.listTabs();
-    if (tabs.length === 0) {
+  if (cmd === 'profiles') {
+    if (!fns.listProfiles) {
       return {
-        output: 'No browser window is open for this session yet, so there are no tabs to list. "navigate <url>" or "tab-new <url>" opens one.',
+        output: 'This browser host has no profile registry, so "--profile" cannot be used here.',
         appendReleaseHint: false,
       };
     }
 
+    const profiles = await fns.listProfiles();
     const lines = [
-      `This window has ${tabs.length} tab${tabs.length === 1 ? '' : 's'}. "*" marks the one on screen;`,
-      '"--tab <id>" names one for any command — which targets it without moving the window, since the',
-      'person reading another tab is not in your way. "tab-show <id>" shows one to them.',
+      `Browser profiles (${profiles.length}): each is a window of its own, with its own cookies and logins.`,
+      '',
+      ...profiles.map((profile) => `  ${profile.name}  (${profile.id})`),
+      '',
+      'Name one with "--profile <name-or-id>" on any command. Without it, a command uses the profile this',
+      'conversation is set to (its own pick, then its project\'s default, then the workspace default, then',
+      'Default), so one conversation can work in two profiles at once.',
     ];
 
+    return { output: lines.join('\n'), appendReleaseHint: false };
+  }
+
+  if (cmd === 'tabs') {
+    const tabs = await fns.listTabs();
+    if (tabs.length === 0) {
+      return {
+        output: 'No browser window is open for this workspace yet, so there are no tabs to list. "navigate <url>" or "tab-new <url>" opens one.',
+        appendReleaseHint: false,
+      };
+    }
+
+    // One workspace holds one window per profile, so a tab list can span several profiles. A tab
+    // id is only unique inside its window, and the list has to say which window each belongs to
+    // for "--tab" to be usable at all when two profiles both hold a "tab-1".
+    const windowIds = [...new Set(tabs.map((tab) => tab.instanceId).filter((id): id is string => !!id))];
+    const spansWindows = windowIds.length > 1;
+
+    const lines = spansWindows
+      ? [
+          `These ${tabs.length} tabs are in ${windowIds.length} browser windows (one per profile). "*" marks the one on screen;`,
+          '"--tab <id>" names one for any command, and a tab id is unique inside its window — two profiles can both have',
+          'a "tab-1", so name the profile with "--profile <name>" when it matters ("profiles" lists them).',
+        ]
+      : [
+          `This window has ${tabs.length} tab${tabs.length === 1 ? '' : 's'}. "*" marks the one on screen;`,
+          '"--tab <id>" names one for any command — which targets it without moving the window, since the',
+          'person reading another tab is not in your way. "tab-show <id>" shows one to them.',
+        ];
+
+    let lastInstanceId: string | undefined;
     for (const tab of tabs) {
+      if (spansWindows && tab.instanceId && tab.instanceId !== lastInstanceId) {
+        lastInstanceId = tab.instanceId;
+        lines.push('');
+        lines.push(`  ${tab.profileName ?? 'Browser'}  (${tab.instanceId})`);
+      }
       lines.push('');
       lines.push(`  ${tab.active ? '*' : ' '} ${tab.id}  ${tab.title.trim() || tab.url || '(untitled)'}`);
       lines.push(`      url:        ${tab.url || 'about:blank'}${tab.isLoading ? '  (loading)' : ''}`);
@@ -1991,14 +2046,14 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
       throw new Error('tab-new needs a URL. Example: tab-new https://example.com');
     }
 
-    // Behind whatever the person is reading, and **into the window's own untouched tab** when
-    // there is one: a blank tab nobody has used *is* the tab being asked for, so the conversation
-    // takes it — and the cursor with it — rather than leaving an orphan blank tab beside a new one.
+    // Behind whatever the person is reading. A window nobody has seen yet gives this tab its
+    // birth tab (so a fresh window is one tab, not two); a window the person has seen always
+    // gets one more tab — a blank tab that was already there may be theirs.
     const tabId = await fns.createTab({ url, activate: false });
     return {
       output: [
         `Tab: ${tabId}`,
-        `Opened a new tab in the workspace's browser window, on ${url} — behind whatever the person is reading, since the window is shared. "tab-show ${tabId}" brings it up for them; "tabs" lists the others.`,
+        `Opened a new tab in the browser window for this profile, on ${url} — behind whatever the person is reading, since the window is shared. "tab-show ${tabId}" brings it up for them; "tabs" lists the others.`,
       ].join('\n'),
       appendReleaseHint: false,
     };
@@ -2158,7 +2213,7 @@ export async function runBrowserCommand(ctx: ToolCommandContext): Promise<Browse
     const { remaining } = await fns.closeTab(tabId);
     return {
       output: remaining > 0
-        ? `Closed tab ${tabId}; ${remaining} tab${remaining === 1 ? '' : 's'} left in the workspace's browser window.`
+        ? `Closed tab ${tabId}; ${remaining} tab${remaining === 1 ? '' : 's'} left in the browser window for this profile.`
         : `Closed tab ${tabId} — it was the window's last tab, so the window went with it.`,
       appendReleaseHint: false,
     };

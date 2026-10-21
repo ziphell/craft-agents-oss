@@ -48,6 +48,12 @@ export interface WorkspaceConfig {
     workingDirectory?: string;
     thinkingLevel?: ThinkingLevel; // Default thinking level for new sessions (default: 'medium')
     colorTheme?: string; // Color theme override for this workspace (preset ID). Undefined = inherit from app default.
+    /**
+     * Browser profile new tabs in this workspace run in (see `browser-profiles.ts`).
+     * Undefined = the built-in `default` profile, which is also the profile every login
+     * lived in before profiles existed.
+     */
+    browserProfile?: string;
   };
 
   /**

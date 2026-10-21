@@ -74,10 +74,15 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
     const pinnedWindowId = input?.id && !input?.bindToSessionId ? input.id : null
 
     const instanceId = pinnedWindowId
-      ? browserPaneManager.createInstance(pinnedWindowId, { show: input?.show, workspaceId })
+      ? browserPaneManager.createInstance(pinnedWindowId, {
+          show: input?.show,
+          workspaceId,
+          ...(input?.profileId ? { profileId: input.profileId } : {}),
+        })
       : browserPaneManager.createForSession(input?.bindToSessionId ?? null, {
           show: input?.show ?? false,
           workspaceId,
+          ...(input?.profileId ? { profileId: input.profileId } : {}),
         })
 
     if (input?.newTab) {

@@ -115,6 +115,7 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
       workingDirectory: config?.defaults?.workingDirectory,
       localMcpEnabled: config?.localMcpServers?.enabled ?? true,
       defaultLlmConnection: config?.defaults?.defaultLlmConnection,
+      browserProfile: config?.defaults?.browserProfile,
       enabledSourceSlugs: config?.defaults?.enabledSourceSlugs ?? [],
     }
   })
@@ -127,7 +128,7 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
       : value
 
     // Validate key is a known workspace setting
-    const validKeys = ['name', 'model', 'enabledSourceSlugs', 'permissionMode', 'cyclablePermissionModes', 'thinkingLevel', 'workingDirectory', 'localMcpEnabled', 'defaultLlmConnection']
+    const validKeys = ['name', 'model', 'enabledSourceSlugs', 'permissionMode', 'cyclablePermissionModes', 'thinkingLevel', 'workingDirectory', 'localMcpEnabled', 'defaultLlmConnection', 'browserProfile']
     if (!validKeys.includes(key)) {
       throw new Error(`Invalid workspace setting key: ${key}. Valid keys: ${validKeys.join(', ')}`)
     }
@@ -137,6 +138,14 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
       const { getLlmConnection } = await import('@craft-agent/shared/config/storage')
       if (!getLlmConnection(normalizedValue as string)) {
         throw new Error(`LLM connection "${normalizedValue}" not found`)
+      }
+    }
+
+    // A workspace may name a profile; clearing it means "the built-in one".
+    if (key === 'browserProfile' && normalizedValue !== undefined && normalizedValue !== null) {
+      const { getBrowserProfiles } = await import('@craft-agent/shared/config/storage')
+      if (!getBrowserProfiles().some((profile) => profile.id === normalizedValue)) {
+        throw new Error(`Browser profile "${normalizedValue}" not found`)
       }
     }
 

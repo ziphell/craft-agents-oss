@@ -19,6 +19,10 @@
 import { describe, it, expect, afterEach, beforeEach, setSystemTime } from 'bun:test'
 import { TestAgent, createMockBackendConfig } from './test-utils.ts'
 import { cleanupModeState, initializeModeState, setPermissionMode } from '../mode-manager.ts'
+import {
+  clearBrowserProfilePromptState,
+  setBrowserProfilePromptState,
+} from '../browser-profile-prompt-state.ts'
 
 // Matches createMockSession() in test-utils.ts
 const SESSION_ID = 'test-session-id'
@@ -37,6 +41,7 @@ describe('PromptBuilder volatile/stable context split (issue #862)', () => {
   afterEach(() => {
     setSystemTime()
     cleanupModeState(SESSION_ID)
+    clearBrowserProfilePromptState(SESSION_ID)
   })
 
   it('buildContextParts equals [...volatile, ...stable] (Claude path stays byte-identical)', () => {
@@ -84,5 +89,28 @@ describe('PromptBuilder volatile/stable context split (issue #862)', () => {
     const second = builder.buildVolatileContextParts(OPTS, SOURCE_BLOCK).join('\n')
     expect(first).toContain('modeChangeUserSignal:')
     expect(second).not.toContain('modeChangeUserSignal:')
+  })
+
+  // Switching profiles must not touch the cached prefix: the profile is volatile state, and the
+  // switch is announced once — on the first turn after it, not on every turn that follows.
+  it('keeps the browser profile on the volatile tail, and announces a switch once', () => {
+    setBrowserProfilePromptState(SESSION_ID, 'Default')
+    const builder = makeBuilder()
+
+    // The stable half (the system prefix on Pi) never carries it.
+    expect(builder.buildStableContextParts().join('\n')).not.toContain('browserProfile')
+
+    const first = builder.buildVolatileContextParts(OPTS, SOURCE_BLOCK).join('\n')
+    expect(first).toContain('browserProfile: Default')
+    expect(first).not.toContain('browserProfileChanged:')
+
+    setBrowserProfilePromptState(SESSION_ID, 'Work', { announceFrom: 'Default' })
+    const afterSwitch = builder.buildVolatileContextParts(OPTS, SOURCE_BLOCK).join('\n')
+    expect(afterSwitch).toContain('browserProfile: Work')
+    expect(afterSwitch).toContain('browserProfileChanged:')
+
+    const nextTurn = builder.buildVolatileContextParts(OPTS, SOURCE_BLOCK).join('\n')
+    expect(nextTurn).toContain('browserProfile: Work')
+    expect(nextTurn).not.toContain('browserProfileChanged:')
   })
 })

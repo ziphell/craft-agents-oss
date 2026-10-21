@@ -59,6 +59,13 @@ interface ToolbarState {
   /** What the URL bar shows: the address of the tab on screen. */
   url: string
   title: string
+  /**
+   * Which browser profile this window is signed into.
+   *
+   * A profile is a window: the window answers "which profile am I" with one value, and the chrome is
+   * where a person looks to check. Absent until the host's first push.
+   */
+  profileName?: string
   isLoading: boolean
   /**
    * Why the tab on screen failed to load, if it did.
@@ -1133,6 +1140,22 @@ function BrowserToolbarApp() {
           }}
         >
           <RailToggle collapsed={railCollapsed} onToggle={handleToggleRail} />
+          {/*
+            Which profile this window uses — right of the rail's toggle, where the eye already
+            goes to orient itself in the window. Folded, the rail's own room is gone, so the chip
+            keeps a fixed width instead of stretching the band.
+          */}
+          {state.profileName && (
+            <span
+              title={state.profileName}
+              className={cn(
+                'titlebar-no-drag min-w-0 flex-1 truncate px-2 text-[11px] leading-none text-foreground/55',
+                railCollapsed && 'max-w-[110px] flex-none',
+              )}
+            >
+              {state.profileName}
+            </span>
+          )}
           <button
             type="button"
             aria-label={t('browser.newTab')}

@@ -500,6 +500,40 @@ export function setWorkspaceColorTheme(rootPath: string, themeId: string | undef
   saveWorkspaceConfig(rootPath, config);
 }
 
+/**
+ * The browser profile this workspace's new tabs run in.
+ *
+ * `undefined` means "not chosen": the caller resolves that to the built-in `default` profile, which
+ * is also the profile the session lived in before profiles existed — so an unchanged workspace
+ * keeps its logins.
+ */
+export function getWorkspaceBrowserProfile(rootPath: string): string | undefined {
+  return loadWorkspaceConfig(rootPath)?.defaults?.browserProfile;
+}
+
+/**
+ * Set (or clear) the workspace's default browser profile.
+ *
+ * A profile id becomes part of a partition name, so it is validated like a slug rather than trusted:
+ * an id with a separator or whitespace in it would name a partition nobody else can reach.
+ */
+export function setWorkspaceBrowserProfile(rootPath: string, profileId: string | undefined): void {
+  const config = loadWorkspaceConfig(rootPath);
+  if (!config) return;
+
+  if (profileId && !/^[A-Za-z0-9_-]{1,64}$/.test(profileId)) {
+    console.warn(`[workspace-storage] Invalid browser profile id rejected: ${profileId}`);
+    return;
+  }
+
+  if (!config.defaults) config.defaults = {};
+
+  if (profileId) config.defaults.browserProfile = profileId;
+  else delete config.defaults.browserProfile;
+
+  saveWorkspaceConfig(rootPath, config);
+}
+
 // ============================================================
 // Local MCP Configuration
 // ============================================================

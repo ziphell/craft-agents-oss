@@ -26,13 +26,14 @@
 2. **Websites 这个功能一度就叫 "Pages"**（后来改名）。同一个词换过一次所指。
 3. **`isPageUrl` 曾把"地址"和"页"压成一个词**：它其实只问 scheme（是不是 http/https），与你打不打算把它显示成什么无关。现在叫 `isBrowserUrl`。
 
-外加一条：`page` 在浏览器侧本来就有精确含义（Electron 的 `capturePage`、"the page's viewport"）。两种含义并存时，读代码的人只能靠猜，而猜错的代价是实打实的——例如界面文案写成 "Open pages in the app's browser" 之后，"浏览器装 page"读起来像窗口的输入是 page，而它的输入是地址。
+外加一条：`page` 在浏览器侧本来就有精确含义（Electron 的 `capturePage`、"the page's viewport"）。两种含义并存时，读代码的人只能靠猜，而猜错的代价是bun electron:dist:win
+实打实的——例如界面文案写成 "Open pages in the app's browser" 之后，"浏览器装 page"读起来像窗口的输入是 page，而它的输入是地址。
 
 ## 3. 那个窗口不叫"画布"
 
-它是**工作区的浏览器窗口**：一个工作区一个，工作区里的每个对话和每个人都用它，**通用任务（查资料、填表、看后台）也用它**——跟某一个具体功能没有必然关系。
+它是**工作区里某个账号的浏览器窗口**：一个工作区里每个 profile 一个，同一 profile 的每个对话和每个人都用它，**通用任务（查资料、填表、看后台）也用它**——跟某一个具体功能没有必然关系。完整模型见 [浏览器多 profile](browser-profiles.md)。
 
-窗口的**身份是作用域**（工作区 vs 会话），不是用途。所以代码里**没有** `isCanvas` 这样的字段：解析"这个对话在哪个窗口干活"的是 `resolveWorkspaceWindow` / `resolveWorkspaceWindowId`（[SessionManager.ts](file:///c:/Users/Ryan/code/craft-agents-oss/packages/server-core/src/sessions/SessionManager.ts#L3738)），注释一律写 "the workspace's window"；助手的 `tabs` 输出里 `belongs to:` / `driven by:` 谈的都是**tab**，窗口本身不署任何会话的名——那才是一个工作区只留一个窗口还能让多个对话并用的前提。
+窗口的**身份是作用域**（工作区 + profile vs 会话），不是用途。所以代码里**没有** `isCanvas` 这样的字段：解析"这个对话在哪个窗口干活"的是 `resolveWorkspaceWindow` / `resolveWorkspaceWindowId`（[SessionManager.ts](file:///c:/Users/Ryan/code/craft-agents-oss/packages/server-core/src/sessions/SessionManager.ts#L3738)），注释一律写 "the workspace's window"；助手的 `tabs` 输出里 `belongs to:` / `driven by:` 谈的都是**tab**，窗口本身不署任何会话的名——那才是一个账号只留一个窗口还能让多个对话并用的前提。
 
 判据：**问"通用任务会不会用到它"。** 会用到的，就不能用某一个功能自己的名字 / 画布的一套词。
 

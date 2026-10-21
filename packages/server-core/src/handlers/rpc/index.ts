@@ -3,6 +3,7 @@ import type { HandlerDeps } from '../handler-deps'
 
 import { registerAuthHandlers } from './auth'
 import { registerAutomationsHandlers } from './automations'
+import { registerBrowserProfileHandlers } from './browser-profiles'
 import { registerDecisionsHandlers } from './decisions'
 import { registerFilesHandlers } from './files'
 import { registerLabelsHandlers } from './labels'
@@ -39,6 +40,7 @@ export function registerCoreRpcHandlers(
 ): void {
   registerAuthHandlers(server, deps)
   registerAutomationsHandlers(server, deps)
+  registerBrowserProfileHandlers(server, deps)
   registerDecisionsHandlers(server, deps)
   registerFilesHandlers(server, deps)
   registerLabelsHandlers(server, deps)

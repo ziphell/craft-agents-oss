@@ -47,7 +47,7 @@ import {
   type BrowserEmptyStateLaunchResult,
   type BrowserInstanceInfo,
 } from '../shared/types'
-import { BACKGROUND_HEX, DEFAULT_THEME, getBackgroundColor, loadAppTheme, getAllowRemoteEvaluate, loadPreferences, CONFIG_DIR } from '@craft-agent/shared/config'
+import { BACKGROUND_HEX, DEFAULT_THEME, getBackgroundColor, loadAppTheme, getAllowRemoteEvaluate, loadPreferences, CONFIG_DIR, DEFAULT_BROWSER_PROFILE_ID, getBrowserProfiles } from '@craft-agent/shared/config'
 import { isBrowserUrl } from '@craft-agent/shared/utils/url-safety'
 import {
   loadBrowserTabsState,
@@ -154,6 +154,14 @@ const SCREENSHOT_FIRST_FRAME_MS = 16
  * "more than any desk", and `keepOffEveryDisplay` is what actually holds the window off the screens.
  */
 const OFFSCREEN_PARK_MARGIN = 20_000
+/**
+ * How long a profile's display name is trusted before the registry is read again.
+ *
+ * The name travels with every toolbar push (a navigation, a tab switch), and the registry is a file;
+ * reading it per push would be a disk read per event. A rename therefore lands in an open window
+ * within a couple of seconds rather than instantly — the right trade for a label.
+ */
+const PROFILE_NAMES_TTL_MS = 2_000
 /** Only ever seen inside this file: how a capture that never answered names its own error. */
 const SCREENSHOT_CAPTURE_TIMEOUT_MARKER = 'capture did not come back'
 
@@ -480,20 +488,20 @@ const TOOLBAR_CHANNELS = {
 export const BROWSER_PANE_SESSION_PARTITION = 'persist:browser-pane'
 
 /**
- * The session partition one workspace's browser runs in — **one profile per workspace**.
+ * The session partition one browser **profile** runs in.
  *
  * A partition is a Chromium profile: its own cookies, `localStorage`, caches and logins. Keying it
- * by the workspace is what makes "which account is this window signed in as" a fact about the
- * workspace rather than about the app, so two workspaces can hold two accounts of the same site at
- * once and neither can see the other's session.
+ * by the profile is what makes "which account is this tab signed in as" a fact about the profile
+ * rather than about the app or the workspace — two profiles (two windows) can hold two accounts of
+ * the same site, and neither can see the other's session.
  *
- * `null` is its own bucket, the same convention windows and `downloadsByWorkspace` already use: a
- * caller with no workspace context is not a workspace, and the profile it works in is nobody's. It
- * also keeps the bare legacy name — the profile every workspace used to share — so that a caller
- * with no workspace lands exactly where it always has.
+ * The built-in profile keeps the bare legacy name, because that is the profile every login lived in
+ * before profiles existed: an upgrade keeps its sessions instead of signing out.
  */
-export function browserPanePartition(workspaceId: string | null): string {
-  return workspaceId ? `${BROWSER_PANE_SESSION_PARTITION}-${workspaceId}` : BROWSER_PANE_SESSION_PARTITION
+export function browserPanePartition(profileId: string): string {
+  return profileId === DEFAULT_BROWSER_PROFILE_ID
+    ? BROWSER_PANE_SESSION_PARTITION
+    : `${BROWSER_PANE_SESSION_PARTITION}-${profileId}`
 }
 
 /**
@@ -830,6 +838,14 @@ interface BrowserInstance {
    */
   workspaceId: string | null
   /**
+   * The browser profile every tab of this window is signed into — part of the window's identity.
+   *
+   * One workspace holds **one window per profile in use**, so a window answers "which profile am I"
+   * with one value: its chrome, its tabs and its downloads all belong to that profile. Two
+   * conversations that picked two profiles get two windows rather than one strip holding both.
+   */
+  profileId: string
+  /**
    * The session every view of this window is built on — the workspace's own profile.
    *
    * Held rather than re-derived from {@link workspaceId}, because the partition is a fact of the
@@ -980,6 +996,18 @@ function tabById(instance: BrowserInstance, tabId: string | null | undefined): B
 interface CreateBrowserInstanceOptions {
   show?: boolean
   workspaceId?: string | null
+  /**
+   * The conversation that asked for the window, when one did — its profile becomes the window's
+   * starting profile, so the blank tab a fresh window holds is already the right cookie jar.
+   */
+  sessionId?: string | null
+  /**
+   * Which profile's cookies this window's tabs start on.
+   *
+   * Omitted → the workspace's default, then the built-in one: a person's own window means "whatever
+   * this workspace works in", and only a conversation that picked a profile names one.
+   */
+  profileId?: string
 }
 
 export interface BrowserScreenshotOptions {
@@ -1141,6 +1169,16 @@ function getPersonRecordsDir(): string {
   return join(CONFIG_DIR, 'records')
 }
 
+/**
+ * How one remembered window is identified in the tabs file.
+ *
+ * A workspace holds **one window per profile**, so the pair is the window: `workspaceId` alone would
+ * make two profiles' windows overwrite each other's pages on every quit.
+ */
+function rememberedWindowKey(workspaceId: string | null, profileId: string): string {
+  return `${workspaceId ?? ''}\u0000${profileId}`
+}
+
 export class BrowserPaneManager implements IBrowserPaneManager {
   private instances: Map<string, BrowserInstance> = new Map()
   private destroyingIds: Set<string> = new Set()
@@ -1172,6 +1210,17 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * default routing and quietly bypass a configured proxy.
    */
   private proxyApplier: ((ses: ElectronSession) => void) | null = null
+  /**
+   * Resolves the browser profile for a conversation (or, with no conversation, for a workspace):
+   * the conversation's own pick, its workspace's default, then the built-in profile.
+   *
+   * Injected (see main/index.ts) so this layer never reads session files. Asked per tab rather than
+   * captured, because a conversation can switch profiles while it exists and its next tab has to
+   * land on the new one. Omitted → the built-in profile.
+   */
+  private profileResolver: ((sessionId: string | null, workspaceId: string | null) => string) | null = null
+  /** Display names by profile id, re-read at most every {@link PROFILE_NAMES_TTL_MS}. */
+  private profileNamesCache: { readAt: number; names: Map<string, string> } | null = null
   private inFlightRequestsByWebContentsId = new Map<number, number>()
   private lastNetworkActivityByWebContentsId = new Map<number, number>()
   /**
@@ -1298,6 +1347,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.proxyApplier = fn
   }
 
+  /**
+   * Injected (see main/index.ts) — how a conversation's profile is answered. A tab is built long
+   * after any startup work, so this is the only place the browser layer learns which cookie jar a
+   * conversation works in.
+   */
+  setProfileResolver(fn: (sessionId: string | null, workspaceId: string | null) => string): void {
+    this.profileResolver = fn
+  }
+
   onStateChange(callback: (info: BrowserInstanceInfo) => void): void {
     this.stateChangeCallback = callback
   }
@@ -1416,6 +1474,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const [width, height] = this.windowContentSize(instance)
     return {
       workspaceId: instance.workspaceId,
+      // The profile is what makes this entry *one window* rather than one workspace: a workspace
+      // holds a window per profile in use, each remembered on its own.
+      profileId: instance.profileId,
       tabs,
       activeIndex,
       contentSize: { width, height },
@@ -1423,43 +1484,60 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Remember these windows' tabs, leaving every other workspace's entry alone.
+   * Remember these windows' tabs, leaving every other window's entry alone.
    *
-   * One entry per workspace, replaced whole: the file is a picture of "what to reopen", so a
-   * window with nothing left to reopen drops its entry rather than keeping a stale one.
+   * One entry per **(workspace, profile)** — one per window, since that is what a window is now —
+   * replaced whole: the file is a picture of "what to reopen", so a window with nothing left to
+   * reopen drops its entry rather than keeping a stale one.
    */
   private persistInstancesTabsForRestore(instances: Iterable<BrowserInstance>): void {
     if (!this.restoreTabsEnabled()) return
 
-    const byWorkspace = new Map<string | null, SavedBrowserWindowTabs>()
+    const byWindow = new Map<string, SavedBrowserWindowTabs>()
     for (const saved of loadBrowserTabsState().windows) {
-      byWorkspace.set(saved.workspaceId, saved)
+      byWindow.set(
+        rememberedWindowKey(saved.workspaceId, saved.profileId ?? DEFAULT_BROWSER_PROFILE_ID),
+        saved,
+      )
     }
     for (const instance of instances) {
       const snapshot = this.snapshotTabsForRestore(instance)
-      if (snapshot) byWorkspace.set(snapshot.workspaceId, snapshot)
-      else byWorkspace.delete(instance.workspaceId)
+      const key = rememberedWindowKey(instance.workspaceId, instance.profileId)
+      if (snapshot) byWindow.set(key, snapshot)
+      else byWindow.delete(key)
     }
-    saveBrowserTabsState({ windows: [...byWorkspace.values()] })
+    saveBrowserTabsState({ windows: [...byWindow.values()] })
   }
 
   /**
-   * Forget a workspace's tabs — what closing the window's last tab means.
+   * Forget one window's remembered pages — what closing that window's last tab means.
+   *
+   * Scoped to the window rather than the workspace: another profile's window in the same workspace
+   * is a different set of pages and has to survive this one being emptied.
    *
    * Written regardless of the setting, so a preference turned off and on again cannot resurrect a
    * window the person had emptied.
    */
-  private forgetTabsForWorkspace(workspaceId: string | null): void {
+  private forgetTabsForWindow(workspaceId: string | null, profileId: string): void {
     const state = loadBrowserTabsState()
-    const kept = state.windows.filter((saved) => saved.workspaceId !== workspaceId)
+    const kept = state.windows.filter(
+      (saved) => rememberedWindowKey(saved.workspaceId, saved.profileId ?? DEFAULT_BROWSER_PROFILE_ID)
+        !== rememberedWindowKey(workspaceId, profileId),
+    )
     if (kept.length === state.windows.length) return
     saveBrowserTabsState({ windows: kept })
   }
 
-  /** This workspace's remembered pages, when there are any and the person asked for them. */
-  private restoredTabsForWorkspace(workspaceId: string | null): SavedBrowserWindowTabs | null {
+  /** This window's remembered pages, when there are any and the person asked for them. */
+  private restoredTabsForWindow(
+    workspaceId: string | null,
+    profileId: string,
+  ): SavedBrowserWindowTabs | null {
     if (!this.restoreTabsEnabled()) return null
-    const saved = loadBrowserTabsState().windows.find((entry) => entry.workspaceId === workspaceId)
+    const saved = loadBrowserTabsState().windows.find(
+      (entry) => entry.workspaceId === workspaceId
+        && (entry.profileId ?? DEFAULT_BROWSER_PROFILE_ID) === profileId,
+    )
     return saved && saved.tabs.length > 0 ? saved : null
   }
 
@@ -1497,6 +1575,78 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     mainLog.info(`[browser-pane] Restored ${saved.tabs.length} tab(s) instance=${instance.id} workspace=${instance.workspaceId ?? 'none'} active=${instance.activeTabId}`)
   }
 
+  /**
+   * Which profile a tab built by this call lands on, the caller's explicit pick winning.
+   *
+   * `sessionId` is the conversation behind the tab, when there is one — the resolver turns that into
+   * the conversation's profile, its workspace's default, or the built-in one. A person's own tab has
+   * no conversation, so it gets the workspace's answer.
+   */
+  private resolveProfileId(
+    sessionId: string | null,
+    workspaceId: string | null,
+    explicit?: string | null,
+  ): string {
+    const picked = explicit?.trim()
+    if (picked) return picked
+    return this.profileResolver?.(sessionId, workspaceId) ?? DEFAULT_BROWSER_PROFILE_ID
+  }
+
+  /** A profile's display name, re-reading the registry at most every {@link PROFILE_NAMES_TTL_MS}. */
+  private profileNameFor(profileId: string): string {
+    const now = Date.now()
+    if (!this.profileNamesCache || now - this.profileNamesCache.readAt > PROFILE_NAMES_TTL_MS) {
+      this.profileNamesCache = {
+        readAt: now,
+        names: new Map(getBrowserProfiles().map((profile) => [profile.id, profile.name])),
+      }
+    }
+    return this.profileNamesCache.names.get(profileId) ?? profileId
+  }
+
+  /**
+   * Name each window in the operating system's own lists — taskbar, alt-tab, task manager.
+   *
+   * One window is just "Craft Browser". Several are named after the profile each works in and
+   * nothing else: the window already carries this app's icon and group, so a "Craft Browser —"
+   * prefix would leave less room for the one word that tells the windows apart (用户报告). The
+   * window is frameless, so this is not a title bar anyone sees; it is the name the system shows.
+   */
+  private syncWindowTitles(): void {
+    const alive = Array.from(this.instances.values()).filter((instance) => !instance.window.isDestroyed())
+    for (const instance of alive) {
+      const title = alive.length > 1
+        ? this.profileNameFor(instance.profileId)
+        : BROWSER_WINDOW_TITLE
+      if (instance.window.getTitle() !== title) instance.window.setTitle(title)
+    }
+  }
+
+  /**
+   * The session one profile's tabs run on, set up the first time that profile is used.
+   *
+   * A profile is born the moment a tab needs it, which is usually long after the app started — so the
+   * session-scoped setup (local origins, permissions, display media, observers, proxy) happens here
+   * rather than once at startup. Every piece of it is idempotent per session, and the registry makes
+   * the proxy step happen once per partition rather than per tab.
+   */
+  private ensureProfileSession(profileId: string): ElectronSession {
+    const partition = browserPanePartition(profileId)
+    let ses = browserPaneSessions.get(partition)
+    if (!ses) {
+      ses = session.fromPartition(partition)
+      browserPaneSessions.set(partition, ses)
+      // The partition is almost always born after the proxy settings were last applied, so it goes
+      // to the proxy layer now rather than waiting for a settings change that may never come.
+      this.proxyApplier?.(ses)
+    }
+    registerLocalOriginHandler(ses)
+    this.setupSessionPermissions(ses)
+    this.setupDisplayMediaHandler(ses)
+    this.setupSessionObservers(ses)
+    return ses
+  }
+
   createInstance(id?: string, options?: CreateBrowserInstanceOptions): string {
     const instanceId = id || `browser-${++instanceCounter}`
     const shouldShow = options?.show ?? false
@@ -1507,25 +1657,16 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       return instanceId
     }
 
-    // The pages this workspace's window had last time, when the person asked for them back.
-    const restored = this.restoredTabsForWorkspace(workspaceId)
-
-    // One profile per workspace, named here and nowhere else: every view this window builds takes
-    // this session (`BrowserInstance.session`).
-    const partition = browserPanePartition(workspaceId)
-    const ses = session.fromPartition(partition)
-    browserPaneSessions.set(partition, ses)
-    // The partition is almost always born after the proxy settings were last applied, so it goes to
-    // the proxy layer now rather than waiting for the next settings change (which may never come).
-    this.proxyApplier?.(ses)
-    // Designs are served on this partition too, so a design can be opened as a tab and
-    // read or driven with the browser tools. What a page here may reach is bounded by
-    // the host, not by the partition: a design's `data/` is never served (see
-    // design-preview-host).
-    registerLocalOriginHandler(ses)
-    this.setupSessionPermissions(ses)
-    this.setupDisplayMediaHandler(ses)
-    this.setupSessionObservers(ses)
+    // Which profile this window is: one workspace holds one window per profile in use, so this is
+    // part of the window's identity rather than a per-tab setting. Every view it builds takes it.
+    const profileId = this.resolveProfileId(options?.sessionId ?? null, workspaceId, options?.profileId)
+    // The pages this window had last time, when the person asked for them back — this profile's,
+    // never another profile's.
+    const restored = this.restoredTabsForWindow(workspaceId, profileId)
+    const ses = this.ensureProfileSession(profileId)
+    // Designs are served on this partition too, so a design can be opened as a tab and read or
+    // driven with the browser tools. What a page here may reach is bounded by the host, not by the
+    // partition: a design's `data/` is never served (see design-preview-host).
 
     // Match background to current OS theme to prevent black/white flash on open. The same
     // value paints the page panel's surroundings in the overlay, so the two cannot disagree
@@ -1661,6 +1802,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // starts here every time the window is built, so names never carry over from a past run.
       tabCounter: 1,
       workspaceId,
+      profileId,
       // The profile this window is signed into, fixed at birth — see the interface's own note.
       session: ses,
       isVisible: false,
@@ -1710,6 +1852,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     this.setupWindowListeners(instance)
     this.instances.set(instanceId, instance)
+    // A second window makes "which one?" a question the OS asks too (taskbar, alt-tab).
+    this.syncWindowTitles()
     // The rest of the remembered pages, once the window is registered and can take tabs.
     if (restored) this.restoreTabs(instance, restored)
     this.loadNativeOverlay(instance)
@@ -1914,6 +2058,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       return unwritten.id
     }
 
+    // A tab is always the window's: one window is one profile, so the tab inherits it — there is no
+    // per-tab profile to resolve.
     const tab = this.buildTab(instance.session, `tab-${++instance.tabCounter}`)
     // The address is written **now**, not when the page commits — the same reason `restoreTabs`
     // writes it: the moment this tab is put on screen has to read it as a page rather than as the
@@ -2624,7 +2770,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       return
     }
 
-    if (options?.forgetTabs) this.forgetTabsForWorkspace(instance.workspaceId)
+    if (options?.forgetTabs) this.forgetTabsForWindow(instance.workspaceId, instance.profileId)
     else this.persistInstancesTabsForRestore([instance])
 
     const destroyedBefore = instance.window.isDestroyed()
@@ -2828,14 +2974,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   async createForSessionAsync(
     sessionId: string,
-    options?: { show?: boolean; workspaceId?: string | null },
+    options?: { show?: boolean; workspaceId?: string | null; profileId?: string },
   ): Promise<string> {
     return this.createForSession(sessionId, options)
   }
 
   async getOrCreateForSessionAsync(
     sessionId: string,
-    options?: { workspaceId?: string | null },
+    options?: { workspaceId?: string | null; profileId?: string },
   ): Promise<string> {
     return this.getOrCreateForSession(sessionId, options)
   }
@@ -4192,15 +4338,16 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * address is not this design's — including the diagram editor's origin — is left alone.
    */
   async pushDesignSnapshot(workspaceId: string, label: string, snapshotJson: string): Promise<void> {
-    const instance = this.findWindowForWorkspace(workspaceId)
-    if (!instance) return
-    const tabs = await this.listTabsAsync(instance.id)
-    const expression =
-      `window.postMessage({ protocol: 'craft-designs/v1', type: 'data', ` +
-      `payload: { snapshot: ${snapshotJson} } }, '*')`
-    for (const tab of tabs) {
-      if (!tab.url || !tab.url.startsWith(`craft-local://${label}/`)) continue
-      await this.evaluate(instance.id, expression, tab.id)
+    // Every window of the workspace: a design can be open in any profile's window.
+    for (const instance of this.windowsForWorkspace(workspaceId)) {
+      const tabs = await this.listTabsAsync(instance.id)
+      const expression =
+        `window.postMessage({ protocol: 'craft-designs/v1', type: 'data', ` +
+        `payload: { snapshot: ${snapshotJson} } }, '*')`
+      for (const tab of tabs) {
+        if (!tab.url || !tab.url.startsWith(`craft-local://${label}/`)) continue
+        await this.evaluate(instance.id, expression, tab.id)
+      }
     }
   }
 
@@ -4301,18 +4448,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   async startRecordingForSession(
     sessionId: string,
     args: BrowserStartRecordingArgs,
-    options?: { workspaceId?: string | null },
+    options?: { workspaceId?: string | null; profileId?: string },
   ): Promise<BrowserStartRecordingResult> {
-    // The workspace's window, which is the one every conversation in it works in — asking for it
-    // is what every other browser command does, and a conversation with no window has no tab to
-    // record anyway (the lookup below is what says so).
-    //
-    // `workspaceId` has to be carried in rather than left out: it is the whole of a window's
-    // identity to `findWindowForWorkspace`, so omitting it drops the lookup into the
-    // `workspaceId === null` bucket — a *different* window, which then has none of the caller's
-    // tabs and answers `has no tab "…"` about a window the caller never worked in.
+    // The window named by `profileId` (the tab's own, when the caller resolved it) or the
+    // conversation's own profile — the wrong window would have none of the caller's tabs.
     const instanceId = await this.getOrCreateForSessionAsync(sessionId, {
       workspaceId: options?.workspaceId,
+      ...(options?.profileId ? { profileId: options.profileId } : {}),
     })
     const instance = this.requireAliveInstance(instanceId)
     const tab = tabById(instance, args.tabId)
@@ -4594,60 +4736,89 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * The window a session works in — its **workspace's browser window**.
+   * The window a session works in — its workspace's window **for that session's profile**.
    *
-   * One window per workspace, shared by every conversation in it and by the user, whatever
-   * the work is. Resolving it depends on the **workspace** alone; `sessionId` names who is
-   * asking, and nothing about the window is written from it — which conversations are working
-   * in it is
-   * per tab (`BrowserTab.cursorOf` / `heldBy`), because a parent and its child sessions can
-   * be in it at once (Conductor).
+   * A workspace holds one window per profile, shared by every conversation working in that profile
+   * and by the person. Which window a call resolves to therefore depends on the **profile** the
+   * conversation works in (its own pick, its workspace's default, then the built-in one) — a
+   * conversation that switched profiles gets another window rather than a window with two profiles.
+   * `sessionId` also names who is asking, but nothing about the window is written from it: which
+   * conversations are working in it is per tab (`BrowserTab.cursorOf` / `heldBy`), because a parent
+   * and its child sessions can be in it at once (Conductor).
    *
-   * `sessionId` may be null: opening a browser by hand is the same window.
+   * `sessionId` may be null: opening a browser by hand is the workspace's default profile's window.
    */
   createForSession(
     sessionId: string | null,
-    options?: { show?: boolean; workspaceId?: string | null },
+    options?: { show?: boolean; workspaceId?: string | null; profileId?: string },
   ): string {
     const workspaceId = options?.workspaceId ?? null
-    const existing = this.findWindowForWorkspace(workspaceId)
+    // A workspace holds one window per profile, so which window a conversation gets is decided by
+    // the profile it works in: a conversation that switched profiles lands in (or opens) another one.
+    const profileId = this.resolveProfileId(sessionId, workspaceId, options?.profileId)
+    const existing = this.findWindow(workspaceId, profileId)
 
     if (existing) {
       if (options?.show) {
         this.focus(existing.id)
       }
-      mainLog.info(`[browser-pane] Workspace window resolved instance=${existing.id} workspace=${workspaceId ?? 'none'} askedBy=${sessionId ?? 'a person'} tabs=${existing.tabs.length}`)
+      mainLog.info(`[browser-pane] Window resolved instance=${existing.id} workspace=${workspaceId ?? 'none'} profile=${profileId} askedBy=${sessionId ?? 'a person'} tabs=${existing.tabs.length}`)
       return existing.id
     }
 
     const id = this.createInstance(undefined, {
       show: options?.show ?? false,
       workspaceId,
+      sessionId,
+      // Already resolved above: the window is created for exactly the profile this call landed on.
+      profileId,
     })
-    mainLog.info(`[browser-pane] Workspace window created instance=${id} workspace=${workspaceId ?? 'none'} askedBy=${sessionId ?? 'a person'}`)
+    mainLog.info(`[browser-pane] Window created instance=${id} workspace=${workspaceId ?? 'none'} profile=${profileId} askedBy=${sessionId ?? 'a person'}`)
     return id
   }
 
   /**
-   * This workspace's browser window, or null when none is open yet.
+   * The window a conversation would work in, when it already exists — nothing is created.
    *
-   * Found by the workspace it was stamped with, which is the whole of a window's
-   * identity now that there is one window per workspace: `workspaceId`
-   * is stamped at create-time and never rewritten, so two workspaces' windows cannot
-   * be confused for each other and neither needs an owner. `workspaceId === null` is
-   * a bucket of its own (a caller with no workspace context), which keeps such a
-   * window from being handed to a workspace that has none of its own.
+   * A workspace holds one window per profile, so "is the browser open?" is a question about the
+   * caller's profile rather than about the workspace: a conversation on another profile has no
+   * window even though one is on screen for somebody else.
    */
-  private findWindowForWorkspace(workspaceId: string | null): BrowserInstance | null {
+  findWindowForSession(sessionId: string | null, workspaceId: string | null): string | null {
+    return this.findWindow(workspaceId, this.resolveProfileId(sessionId, workspaceId))?.id ?? null
+  }
+
+  /**
+   * One window of this workspace for one profile, or null when it has none.
+   *
+   * Found by the workspace **and the profile** it was stamped with: those two are the window's
+   * whole identity, stamped at create-time and never rewritten, so two workspaces' windows and two
+   * profiles' windows cannot be confused for each other and neither needs an owner.
+   * `workspaceId === null` is a bucket of its own (a caller with no workspace context), which keeps
+   * such a window from being handed to a workspace that has none of its own.
+   */
+  private findWindow(workspaceId: string | null, profileId: string): BrowserInstance | null {
+    return this.windowsForWorkspace(workspaceId).find((instance) => instance.profileId === profileId) ?? null
+  }
+
+  /**
+   * Every browser window this workspace has — one per profile in use.
+   *
+   * Ordered by instance id, which is creation order: the window that was opened first reads first,
+   * so the built-in profile's window (the ordinary case) leads unless a conversation opened another
+   * before it.
+   */
+  private windowsForWorkspace(workspaceId: string | null): BrowserInstance[] {
+    const windows: BrowserInstance[] = []
     for (const instance of this.instances.values()) {
       if (instance.workspaceId !== workspaceId) continue
       if (instance.window.isDestroyed()) {
-        this.cleanupDestroyedInstance(instance, 'findWindowForWorkspace')
+        this.cleanupDestroyedInstance(instance, 'windowsForWorkspace')
         continue
       }
-      return instance
+      windows.push(instance)
     }
-    return null
+    return windows.sort((a, b) => a.id.localeCompare(b.id))
   }
 
   /**
@@ -4734,8 +4905,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     mainLog.info(`[browser-pane] Released session ${sessionId}'s overlay and holds on ${instance.id}`)
   }
 
-  getOrCreateForSession(sessionId: string, options?: { workspaceId?: string | null }): string {
-    return this.createForSession(sessionId, { show: false, workspaceId: options?.workspaceId })
+  getOrCreateForSession(
+    sessionId: string,
+    options?: { workspaceId?: string | null; profileId?: string },
+  ): string {
+    return this.createForSession(sessionId, {
+      show: false,
+      workspaceId: options?.workspaceId,
+      ...(options?.profileId ? { profileId: options.profileId } : {}),
+    })
   }
 
   /**
@@ -5485,6 +5663,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     })
     instance.parkingWindow = null
     this.instances.delete(instance.id)
+    // One fewer window may mean there is nothing left to tell apart by profile.
+    this.syncWindowTitles()
     this.removedCallback?.(instance.id)
     mainLog.info(`[browser-pane] Destroyed instance: ${instance.id} (${source})`)
   }
@@ -6148,6 +6328,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const state = {
       url: activeTab(instance).currentUrl,
       title: activeTab(instance).title,
+      // Which profile this window uses — the chrome says so beside the rail's toggle.
+      profileName: this.profileNameFor(instance.profileId),
       isLoading: activeTab(instance).isLoading,
       ...(activeTab(instance).loadError ? { error: activeTab(instance).loadError } : {}),
       canGoBack: activeTab(instance).canGoBack,
@@ -6733,12 +6915,17 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         return this.createForSession(sessionId, {
           show: options?.show ?? false,
           workspaceId,
+          // Which cookie jar the caller works in travels with the request: the desktop side cannot
+          // read a session's profile, and the workspace default is not the answer for a conversation
+          // that picked one.
+          profileId: req.profileId,
         })
       }
       case 'getOrCreateForSession':
         return this.createForSession(sessionId, {
           show: false,
           workspaceId,
+          profileId: req.profileId,
         })
       case 'destroyForSession':
         this.destroyForSession(sessionId)
@@ -6767,7 +6954,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // envelope's — never read from `args`, so a caller cannot pick somebody else's window.
       case 'startRecordingForSession': {
         const [, recordingArgs] = args as [string, BrowserStartRecordingArgs]
-        return this.startRecordingForSession(sessionId, recordingArgs, { workspaceId })
+        return this.startRecordingForSession(sessionId, recordingArgs, {
+          workspaceId,
+          ...(req.profileId ? { profileId: req.profileId } : {}),
+        })
       }
       case 'stopRecordingForSession': {
         const [, tabId] = args as [string, string]
@@ -7111,7 +7301,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     meta: { displayName?: string; intent?: string },
     options?: { workspaceId?: string | null },
   ): void {
-    const instance = this.findWindowForWorkspace(options?.workspaceId ?? null)
+    const workspaceId = options?.workspaceId ?? null
+    const instance = this.findWindow(workspaceId, this.resolveProfileId(sessionId, workspaceId))
     if (!instance) return
 
     // Re-inserted, so the last entry is the one that started working most recently — that is
@@ -8352,6 +8543,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       : live
     return {
       id: tabId,
+      // The window's profile: one window is one profile, so every tab in it answers the same.
+      profileId: instance.profileId,
       ...location,
       ...(documentUrl ? { documentUrl } : {}),
       favicon: tab.favicon,
@@ -8392,6 +8585,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       agentControlActive: instance.controlBy.size > 0,
       themeColor: activeTab(instance).themeColor,
       workspaceId: instance.workspaceId,
+      profileId: instance.profileId,
     }
   }
 

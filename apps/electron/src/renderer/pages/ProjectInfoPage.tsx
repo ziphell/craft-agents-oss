@@ -17,7 +17,7 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { useEffect, useState, useCallback, useMemo } from 'react'
-import { useAtomValue } from 'jotai'
+import { useAtomValue, useSetAtom } from 'jotai'
 import { FileText, FolderKanban, FolderOpen, Plus, Trash2, TriangleAlert, Upload } from 'lucide-react'
 import { toast } from 'sonner'
 import { useActiveWorkspace, useAppShellContext } from '@/context/AppShellContext'
@@ -25,6 +25,8 @@ import { navigate, routes } from '@/lib/navigate'
 import { useAskAgent } from '@/hooks/useAskAgent'
 import { sessionMetaMapAtom } from '@/atoms/sessions'
 import { designsAtom } from '@/atoms/designs'
+import { browserProfilesAtom, refreshBrowserProfilesAtom } from '@/atoms/browser-profiles'
+import { SettingsMenuSelect } from '@/components/settings'
 import { DesignKindBadge } from '@/components/designs/design-visuals'
 import {
   Info_Alert,
@@ -58,6 +60,13 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
   const designs = useAtomValue(designsAtom)
   const { onCreateSession, onOpenFile } = useAppShellContext()
 
+  const browserProfiles = useAtomValue(browserProfilesAtom)
+  const refreshBrowserProfiles = useSetAtom(refreshBrowserProfilesAtom)
+
+  useEffect(() => {
+    void refreshBrowserProfiles()
+  }, [refreshBrowserProfiles])
+
   const [project, setProject] = useState<LoadedProject | null>(null)
   const [layers, setLayers] = useState<WorkLayers | null>(null)
   const [loading, setLoading] = useState(true)
@@ -67,9 +76,19 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
   const [editName, setEditName] = useState('')
   const [editDescription, setEditDescription] = useState('')
   const [editWorkingDir, setEditWorkingDir] = useState('')
+  const [editBrowserProfile, setEditBrowserProfile] = useState('')
   const [editDetails, setEditDetails] = useState('')
   const [editColor, setEditColor] = useState<string>('')
   const [saving, setSaving] = useState(false)
+
+  // A saved pick may name a profile that has since been deleted. The picker only lists what exists,
+  // so show the inherited (empty) choice rather than a value with no matching option.
+  useEffect(() => {
+    if (!editBrowserProfile || browserProfiles.length === 0) return
+    if (!browserProfiles.some((profile) => profile.id === editBrowserProfile)) {
+      setEditBrowserProfile('')
+    }
+  }, [browserProfiles, editBrowserProfile])
 
   // Load project (and re-load on broadcast)
   const loadProject = useCallback(async () => {
@@ -88,6 +107,7 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
       setEditName(loaded.config.name)
       setEditDescription(loaded.config.description ?? '')
       setEditWorkingDir(loaded.config.workingDirectory ?? '')
+      setEditBrowserProfile(loaded.config.browserProfile ?? '')
       setEditDetails(loaded.config.details ?? '')
       setEditColor(loaded.config.color ?? '')
     } catch (err) {
@@ -206,6 +226,7 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
         // JSON, which drops undefined keys, and the old value would come straight back.
         description: editDescription.trim(),
         workingDirectory: editWorkingDir.trim(),
+        browserProfile: editBrowserProfile.trim(),
         details: editDetails.trim(),
         color: editColor.trim(),
       })
@@ -216,7 +237,7 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
     } finally {
       setSaving(false)
     }
-  }, [workspaceId, project, editName, editDescription, editWorkingDir, editDetails, editColor, t])
+  }, [workspaceId, project, editName, editDescription, editWorkingDir, editBrowserProfile, editDetails, editColor, t])
 
   const handleDeleteProject = useCallback(async () => {
     if (!workspaceId || !project) return
@@ -589,6 +610,21 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
                       {t('projectInfo.workingDirectoryPicker')}
                     </Button>
                   </div>
+                </Field>
+                <Field
+                  label={t('projectInfo.browserProfile')}
+                  hint={t('projectInfo.browserProfileHint')}
+                >
+                  <SettingsMenuSelect
+                    value={editBrowserProfile}
+                    onValueChange={setEditBrowserProfile}
+                    options={[
+                      { value: '', label: t('projectInfo.browserProfileInherit') },
+                      ...browserProfiles.map((profile) => ({ value: profile.id, label: profile.name })),
+                    ]}
+                    className="w-full justify-between"
+                    menuWidth={240}
+                  />
                 </Field>
                 <Field
                   label={t('projectInfo.color')}

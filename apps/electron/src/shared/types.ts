@@ -68,7 +68,7 @@ import type { ExportResourcesOptions, ExportResult, ResourceImportMode, Resource
 export type { ExportResourcesOptions, ExportResult, ResourceImportMode, ResourceBundle, ResourceImportResult };
 
 // LLM connection types
-import type { LlmConnection, LlmConnectionWithStatus, LlmAuthType, LlmProviderType, NetworkProxyMode, NetworkProxySettings } from '@craft-agent/shared/config';
+import type { LlmConnection, LlmConnectionWithStatus, LlmAuthType, LlmProviderType, NetworkProxyMode, NetworkProxySettings, BrowserProfile } from '@craft-agent/shared/config';
 export type { LlmConnection, LlmConnectionWithStatus, LlmAuthType, LlmProviderType, NetworkProxyMode, NetworkProxySettings };
 import type {
   DecisionLayerSettings,
@@ -119,6 +119,14 @@ export interface BrowserPaneCreateOptions {
   id?: string
   show?: boolean
   bindToSessionId?: string
+  /**
+   * Which profile's window to open, by id.
+   *
+   * The window is the profile (one per workspace and profile), so this says *which* window
+   * the person asked for. Left out, the workspace's own answer is used — the same window
+   * "Open browser" has always brought up.
+   */
+  profileId?: string
   /**
    * Give me a tab to use, opening the window if it is not up yet.
    *
@@ -276,6 +284,7 @@ export interface ElectronAPI {
   deleteSession(sessionId: string): Promise<void>
   sendMessage(sessionId: string, message: string, attachments?: FileAttachment[], storedAttachments?: StoredAttachmentType[], options?: SendMessageOptions): Promise<void>
   cancelProcessing(sessionId: string, silent?: boolean): Promise<void>
+  cancelQueuedMessage(sessionId: string, messageId: string): Promise<{ cancelled: boolean }>
   killShell(sessionId: string, shellId: string): Promise<{ success: boolean; error?: string }>
   getTaskOutput(taskId: string): Promise<string | null>
 
@@ -401,6 +410,8 @@ export interface ElectronAPI {
 
   // Server filesystem browsing (remote mode)
   listServerDirectory(dirPath: string): Promise<DirectoryListingResult>
+  /** Whether `dirPath` currently exists as a directory on the server. */
+  checkServerDirectory(dirPath: string): Promise<boolean>
   // Debug: send renderer logs to main process log file
   debugLog(...args: unknown[]): void
 
@@ -699,6 +710,29 @@ export interface ElectronAPI {
   menuCopy(): Promise<void>
   menuPaste(): Promise<void>
   menuSelectAll(): Promise<void>
+
+  /**
+   * Browser profiles — the named Chromium sessions a browser window can be signed into.
+   *
+   * `default` is always present and cannot be removed: it owns the session every login lived in
+   * before profiles existed.
+   */
+  browserProfiles: {
+    list(): Promise<BrowserProfile[]>
+    create(name: string): Promise<BrowserProfile>
+    rename(id: string, name: string): Promise<void>
+    delete(id: string): Promise<void>
+    /**
+     * Which profile a conversation works in — its own pick, and what it would inherit.
+     * `sessionProfileId` is null when the conversation follows its project or workspace.
+     */
+    resolve(sessionId: string): Promise<{
+      sessionProfileId: string | null
+      projectProfileId: string | null
+      workspaceDefaultProfileId: string | null
+      effectiveProfileId: string
+    }>
+  }
 
   // Browser pane management
   browserPane: {

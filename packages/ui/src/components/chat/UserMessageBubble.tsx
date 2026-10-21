@@ -12,7 +12,7 @@
  */
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Clock } from 'lucide-react'
+import { Clock, Trash2, Undo2 } from 'lucide-react'
 import type { StoredAttachment, ContentBadge } from '@craft-agent/core'
 import { normalizePath } from '@craft-agent/core/utils'
 import { cn } from '../../lib/utils'
@@ -279,6 +279,10 @@ export interface UserMessageBubbleProps {
   isPending?: boolean
   /** Whether the message is queued (badge shown) */
   isQueued?: boolean
+  /** Delete a queued message without restoring it to the composer */
+  onDeleteQueued?: () => void
+  /** Undo a queued message and put its text back in the composer (overwrites) */
+  onUndoQueued?: () => void
   /** Compact mode - reduces padding for popover embedding */
   compactMode?: boolean
 }
@@ -297,6 +301,8 @@ export function UserMessageBubble({
   attachments,
   badges,
   isQueued,
+  onDeleteQueued,
+  onUndoQueued,
   compactMode,
 }: UserMessageBubbleProps) {
   const { t } = useTranslation()
@@ -451,13 +457,37 @@ export function UserMessageBubble({
         )}
       >
         {showQueued && (
-          <div
-            className="flex items-center gap-1.5 text-foreground/55 mb-1.5"
-            role="status"
-            aria-live="polite"
-          >
-            <Clock className="h-3 w-3 animate-pulse" aria-hidden="true" />
-            <span className="text-[11px] italic">{t('chat.queuedBadge')}</span>
+          <div className="flex items-center gap-1.5 text-foreground/55 mb-1.5">
+            <span className="flex items-center gap-1.5" role="status" aria-live="polite">
+              <Clock className="h-3 w-3 animate-pulse" aria-hidden="true" />
+              <span className="text-[11px] italic">{t('chat.queuedBadge')}</span>
+            </span>
+            {(onUndoQueued || onDeleteQueued) && (
+              <span className="flex items-center gap-0.5 ml-1">
+                {onUndoQueued && (
+                  <button
+                    type="button"
+                    onClick={onUndoQueued}
+                    className="rounded-sm p-0.5 -my-0.5 transition-colors hover:bg-foreground/10 hover:text-foreground cursor-pointer"
+                    title={t('chat.undoQueued')}
+                    aria-label={t('chat.undoQueued')}
+                  >
+                    <Undo2 className="h-3 w-3" aria-hidden="true" />
+                  </button>
+                )}
+                {onDeleteQueued && (
+                  <button
+                    type="button"
+                    onClick={onDeleteQueued}
+                    className="rounded-sm p-0.5 -my-0.5 transition-colors hover:bg-foreground/10 hover:text-foreground cursor-pointer"
+                    title={t('chat.deleteQueued')}
+                    aria-label={t('chat.deleteQueued')}
+                  >
+                    <Trash2 className="h-3 w-3" aria-hidden="true" />
+                  </button>
+                )}
+              </span>
+            )}
           </div>
         )}
         {hasInlineBadges

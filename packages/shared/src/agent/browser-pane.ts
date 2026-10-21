@@ -109,7 +109,24 @@ export interface BrowserLifecycleActionResult {
 }
 
 /** One tab of this session's window, as `tabs` reports it. */
-export type BrowserTabInfo = BrowserTabSummary
+export type BrowserTabInfo = BrowserTabSummary & {
+  /**
+   * The window the tab is in, when `listTabs` answered across windows.
+   *
+   * A tab id is unique **inside a window**, and a workspace holds one window per profile, so
+   * `tab-1` can exist in two of them. The id is what `--tab` speaks, so the window has to be
+   * printable beside it for a caller to be able to say which one it means (`--profile`).
+   */
+  instanceId?: string
+  /** The profile that window uses, as the profile registry names it. */
+  profileName?: string
+}
+
+/** One browser profile, for `profiles` — the name a person uses and the id a command may also use. */
+export interface BrowserProfileInfo {
+  id: string
+  name: string
+}
 
 export interface BrowserTabOpenOptions {
   /** Where the tab starts. Omitted → blank, for a caller that navigates itself. */
@@ -243,7 +260,21 @@ export type BrowserFetchedResource =
   | { ok: false; error: string }
 
 export interface BrowserPaneFns {
-  navigate: (url: string, tabId?: string) => Promise<{ url: string; title: string; tabId: string; note?: string }>;
+  /**
+   * The same surface, bound to one profile — `--profile <name|id>`.
+   *
+   * A conversation can work in several profiles at once: a profile is a window, so a command that
+   * names one lands in that profile's window, while a command that names none lands in the profile
+   * the conversation is set to. The host resolves the reference (by display name or id) and answers
+   * with methods bound to it; an unknown name is refused there, naming the profiles that exist.
+   *
+   * Optional because a host without a profile registry has nothing to bind to: `--profile` on such
+   * a host is refused rather than silently ignored.
+   */
+  withProfile?: (ref: string) => BrowserPaneFns;
+  /** The profiles a browser window can be opened as — `profiles`. */
+  listProfiles?: () => Promise<BrowserProfileInfo[]>;
+  navigate: (url: string, tabId?: string) => Promise<{ url: string; title: string; tabId: string; profileName?: string; note?: string }>;
   snapshot: () => Promise<{ url: string; title: string; nodes: Array<{ ref: string; role: string; name: string; value?: string; description?: string; focused?: boolean; checked?: boolean; disabled?: boolean }> }>;
   click: (ref: string, options?: { waitFor?: 'none' | 'navigation' | 'network-idle'; timeoutMs?: number }) => Promise<void>;
   clickAt: (x: number, y: number) => Promise<void>;

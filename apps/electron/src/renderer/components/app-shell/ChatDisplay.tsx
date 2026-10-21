@@ -1327,6 +1327,20 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     })
   }
 
+  // Remove a queued message. "撤销" also puts its text back in the composer,
+  // replacing whatever draft is there; "删除" leaves the composer untouched.
+  const handleRemoveQueuedMessage = React.useCallback((message: Message, restoreInput: boolean) => {
+    const sessionId = session?.id
+    if (!sessionId) return
+
+    window.electronAPI.cancelQueuedMessage(sessionId, message.id).then(result => {
+      if (!result?.cancelled || !restoreInput) return
+      onInputChange?.(coerceInputText(message.content))
+    }).catch(error => {
+      console.error('[ChatDisplay] Failed to cancel queued message:', error)
+    })
+  }, [session?.id, onInputChange])
+
   // Per-frame scroll compensation during input height animation
   // Only compensate when user is "stuck to bottom" - otherwise let them control their scroll position
   const handleAnimatedHeightChange = React.useCallback((delta: number) => {
@@ -1710,6 +1724,8 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                             onOpenUrl={onOpenUrl}
                             sessionId={session?.id}
                             compactMode={compactMode}
+                            onDeleteQueued={() => handleRemoveQueuedMessage(turn.message, false)}
+                            onUndoQueued={() => handleRemoveQueuedMessage(turn.message, true)}
                           />
                         </div>
                       )
@@ -2229,6 +2245,10 @@ interface MessageBubbleProps {
   compactMode?: boolean
   /** Callback to resend the user message that preceded an error */
   onRetry?: () => void
+  /** Delete a queued message without touching the composer */
+  onDeleteQueued?: () => void
+  /** Undo a queued message and put its text back in the composer */
+  onUndoQueued?: () => void
 }
 
 /**
@@ -2316,6 +2336,8 @@ function MessageBubble({
   onPopOut,
   compactMode,
   onRetry,
+  onDeleteQueued,
+  onUndoQueued,
 }: MessageBubbleProps) {
   const { t } = useTranslation()
 
@@ -2328,6 +2350,8 @@ function MessageBubble({
         badges={message.badges}
         isPending={message.isPending}
         isQueued={message.isQueued}
+        onDeleteQueued={onDeleteQueued}
+        onUndoQueued={onUndoQueued}
         onUrlClick={onOpenUrl}
         onFileClick={onOpenFile}
         compactMode={compactMode}
@@ -2466,6 +2490,10 @@ const MemoizedMessageBubble = React.memo(MessageBubble, (prev, next) => {
     prev.message.id === next.message.id &&
     prev.message.content === next.message.content &&
     prev.message.role === next.message.role &&
+    // Queued/pending flags drive the queued chip (and its cancel button), so a
+    // flip must re-render even though the bubble content is unchanged.
+    prev.message.isQueued === next.message.isQueued &&
+    prev.message.isPending === next.message.isPending &&
     prev.sessionId === next.sessionId &&
     prev.compactMode === next.compactMode
   )

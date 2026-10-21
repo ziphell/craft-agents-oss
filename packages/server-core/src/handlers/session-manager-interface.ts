@@ -53,6 +53,8 @@ export interface ISessionManager {
   /** Resolved working directory of a live session (Tasks Conductor uses it so children inherit
    *  the orchestrator's cwd). */
   getSessionWorkingDirectory(sessionId: string): string | undefined
+  /** The browser profile a live session picked, so children inherit the orchestrator's account. */
+  getSessionBrowserProfile(sessionId: string): string | undefined
   deleteSession(sessionId: string): Promise<void>
 
   // ---------------------------------------------------------------------------
@@ -105,6 +107,11 @@ export interface ISessionManager {
     reconcile?: { name?: string; projectId?: string; workingDirectory?: string; model?: string; llmConnection?: string; permissionMode?: PermissionMode },
   ): Promise<boolean>
   setSessionConnection(sessionId: string, connectionSlug: string): Promise<void>
+  /**
+   * Set (or clear, with `null`) the browser profile this conversation's new tabs run in.
+   * A tab already open keeps the profile it was born on; the pick applies from the next one.
+   */
+  setSessionBrowserProfile(sessionId: string, profileId: string | null): Promise<void>
   updateSessionModel(sessionId: string, workspaceId: string, model: string | null, connection?: string): Promise<void>
 
   // ---------------------------------------------------------------------------
@@ -123,6 +130,7 @@ export interface ISessionManager {
     rpcContext?: { callerClientId?: string },
   ): Promise<void>
   cancelProcessing(sessionId: string, silent?: boolean): Promise<void>
+  cancelQueuedMessage(sessionId: string, messageId: string): Promise<{ cancelled: boolean }>
   killShell(sessionId: string, shellId: string): Promise<{ success: boolean; error?: string }>
   getTaskOutput(taskId: string): Promise<string | null>
 

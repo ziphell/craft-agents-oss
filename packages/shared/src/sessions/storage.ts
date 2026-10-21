@@ -183,6 +183,7 @@ export async function createSession(
     enabledSourceSlugs?: string[];
     model?: string;
     llmConnection?: string;
+    browserProfile?: string;
     hidden?: boolean;
     sessionStatus?: SessionConfig['sessionStatus'];
     labels?: string[];
@@ -222,6 +223,7 @@ export async function createSession(
     enabledSourceSlugs: options?.enabledSourceSlugs,
     model: options?.model,
     llmConnection: options?.llmConnection,
+    browserProfile: options?.browserProfile,
     hidden: options?.hidden,
     sessionStatus: options?.sessionStatus,
     labels: options?.labels,
@@ -347,6 +349,18 @@ export function loadSession(workspaceRootPath: string, sessionId: string): Store
 
   end();
   return null;
+}
+
+/**
+ * Load only a session's header (the first JSONL line), without parsing its messages.
+ *
+ * For callers that need a routing fact — the browser profile, the project — from a conversation
+ * that may be long: `loadSession` reads every message, which is the wrong cost for one field.
+ */
+export function loadSessionHeader(workspaceRootPath: string, sessionId: string): SessionHeader | null {
+  const jsonlPath = getSessionFilePath(workspaceRootPath, sessionId);
+  if (!existsSync(jsonlPath)) return null;
+  return readSessionHeader(jsonlPath);
 }
 
 /**

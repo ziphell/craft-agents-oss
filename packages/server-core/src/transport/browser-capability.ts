@@ -90,6 +90,15 @@ export interface BrowserCapabilityRequest {
   /** Owning workspace — the boundary a call may act inside. */
   workspaceId: string
   /**
+   * The browser profile the caller works in — which cookie jar a new tab or window lands in.
+   *
+   * Routing context next to `sessionId`/`workspaceId`, and resolved on **this** side because the
+   * desktop client cannot read a session: the conversation's own pick, its workspace's default, then
+   * the built-in profile. Absent means "the desktop side's default", which is what a person's own new
+   * tab means.
+   */
+  profileId?: string
+  /**
    * The **work** the asking session is part of.
    *
    * Identity next to `sessionId` rather than in `args`, for the same reason `createTab`'s
@@ -105,11 +114,11 @@ export interface BrowserCapabilityRequest {
    *
    * Routing context, next to `sessionId` and `workspaceId` rather than in `args`, because
    * it says the same kind of thing: not *what* to do but *where*. The caller resolves it
-   * with `pickCommandTarget` — the conversation's own tab, and only the tab on screen
-   * when it has none — and passes it here, so the dispatcher never has to guess from what
-   * the person happens to be looking at. Absent means the tab
-   * on screen: a caller with no routing (the person's own toolbar calls never come through
-   * here at all) and the commands that are about a window rather than a tab.
+   * with `pickCommandTarget` — the conversation's own cursor tab — and refuses the command
+   * when it has none rather than falling back to the tab on screen. It passes the id here, so
+   * the dispatcher never has to guess from what the person happens to be looking at. Absent
+   * means the tab on screen: a caller with no routing (the person's own toolbar calls never
+   * come through here at all) and the commands that are about a window rather than a tab.
    */
   tabId?: string
 }

@@ -284,13 +284,19 @@ export interface IBrowserPaneManager {
   unbindAllForSession(sessionId: string): void
 
   /** Get or create a browser instance for a session, returning the instance ID */
-  getOrCreateForSession(sessionId: string, options?: { workspaceId?: string | null }): string
+  getOrCreateForSession(
+    sessionId: string,
+    options?: { workspaceId?: string | null; profileId?: string },
+  ): string
 
   /**
    * Async equivalent of {@link getOrCreateForSession}. Required for the remote
    * bridge — the WS round-trip can't fit into a sync return.
    */
-  getOrCreateForSessionAsync(sessionId: string, options?: { workspaceId?: string | null }): Promise<string>
+  getOrCreateForSessionAsync(
+    sessionId: string,
+    options?: { workspaceId?: string | null; profileId?: string },
+  ): Promise<string>
 
   /** Activate or update the agent control overlay for a session */
   setAgentControl(
@@ -311,12 +317,18 @@ export interface IBrowserPaneManager {
    *
    * `sessionId` may be null: opening a browser by hand is the same window.
    */
-  createForSession(sessionId: string | null, options?: { show?: boolean; workspaceId?: string | null }): string
+  createForSession(
+    sessionId: string | null,
+    options?: { show?: boolean; workspaceId?: string | null; profileId?: string },
+  ): string
 
   /**
    * Async equivalent of {@link createForSession}. Required for the remote bridge.
    */
-  createForSessionAsync(sessionId: string | null, options?: { show?: boolean; workspaceId?: string | null }): Promise<string>
+  createForSessionAsync(
+    sessionId: string | null,
+    options?: { show?: boolean; workspaceId?: string | null; profileId?: string },
+  ): Promise<string>
 
   /** Get instance info by ID (sync; local-only). For remote-aware code use {@link getInstanceAsync}. */
   getInstance(id: string): BrowserInstanceSnapshot | undefined
@@ -520,7 +532,7 @@ export interface IBrowserPaneManager {
      * Required in practice: the window is picked by workspace alone, so omitting it resolves (and
      * creates) the `workspaceId === null` window instead of the one the caller works in.
      */
-    options?: { workspaceId?: string | null },
+    options?: { workspaceId?: string | null; profileId?: string },
   ): Promise<BrowserStartRecordingResult>
 
   /** End one early. `--ttl` is the ordinary end; this is "it is done now". */

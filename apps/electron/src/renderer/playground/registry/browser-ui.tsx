@@ -532,6 +532,7 @@ function tabOf(sessionId: string | null): Pick<BrowserInstanceInfo, 'tabs'> {
       id: 'tab-mock',
       url: '',
       title: '',
+      profileId: 'default',
       favicon: null,
       isLoading: false,
       active: true,
@@ -831,21 +832,12 @@ function BrowserTabStripPlayground({
     ? (hasBrowserPaneBridge ? 'live' : 'mock')
     : mode
 
-  const mockInstances = useMemo(() => {
-    const items = [...(MOCK_BROWSER_PRESETS[mockPreset] ?? MOCK_BROWSER_PRESETS.default)]
-    if (!activeSessionId) return items
-
-    // The same rule the strip uses: the window holding this conversation's tabs comes first
-    // — and "this conversation's" is a tab's answer, not the window's.
-    items.sort((a, b) => {
-      const aInActiveSession = a.tabs?.some(tab => tab.belongsTo?.sessionId === activeSessionId) ? 0 : 1
-      const bInActiveSession = b.tabs?.some(tab => tab.belongsTo?.sessionId === activeSessionId) ? 0 : 1
-      if (aInActiveSession !== bInActiveSession) return aInActiveSession - bInActiveSession
-      return a.id.localeCompare(b.id)
-    })
-
-    return items
-  }, [activeSessionId, mockPreset])
+  // The control orders the windows itself (the one in use, then the conversation's, then profile
+  // order), so a mock only has to supply the windows.
+  const mockInstances = useMemo(
+    () => MOCK_BROWSER_PRESETS[mockPreset] ?? MOCK_BROWSER_PRESETS.default,
+    [mockPreset],
+  )
 
   if (resolvedMode === 'live' && !hasBrowserPaneBridge) {
     return (

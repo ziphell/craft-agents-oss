@@ -36,6 +36,16 @@ export {
   type CredentialInputMode,
 } from './session-scoped-tools.ts';
 
+// The browser profile a session works in, as the prompt needs it — volatile context, never the
+// cached system prefix.
+export {
+  setBrowserProfilePromptState,
+  getBrowserProfilePromptState,
+  consumeBrowserProfileChange,
+  clearBrowserProfilePromptState,
+  type BrowserProfilePromptState,
+} from './browser-profile-prompt-state.ts';
+
 // Export mode-manager - Centralized mode management
 export {
   // Permission Mode API (primary)

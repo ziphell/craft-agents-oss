@@ -26,6 +26,7 @@ export const CHANNEL_MAP = {
   deleteSession: invoke(RPC_CHANNELS.sessions.DELETE),
   sendMessage: invoke(RPC_CHANNELS.sessions.SEND_MESSAGE),
   cancelProcessing: invoke(RPC_CHANNELS.sessions.CANCEL),
+  cancelQueuedMessage: invoke(RPC_CHANNELS.sessions.CANCEL_QUEUED_MESSAGE),
   killShell: invoke(RPC_CHANNELS.sessions.KILL_SHELL),
   getTaskOutput: invoke(RPC_CHANNELS.tasks.GET_OUTPUT),
 
@@ -197,6 +198,10 @@ export const CHANNEL_MAP = {
 
   // Server filesystem browsing (remote mode)
   listServerDirectory: invoke(RPC_CHANNELS.fs.LIST_DIRECTORY),
+
+  // Does a path still exist as a directory on the server? (composer guard for a
+  // conversation whose picked working directory was removed)
+  checkServerDirectory: invoke(RPC_CHANNELS.fs.CHECK_DIRECTORY),
 
   // Debug logging
   debugLog: invoke(RPC_CHANNELS.debug.LOG),
@@ -372,6 +377,13 @@ export const CHANNEL_MAP = {
   menuCopy: invoke(RPC_CHANNELS.menu.COPY),
   menuPaste: invoke(RPC_CHANNELS.menu.PASTE),
   menuSelectAll: invoke(RPC_CHANNELS.menu.SELECT_ALL),
+
+  // Browser profiles — the named cookie jars a window can be signed into
+  'browserProfiles.list': invoke(RPC_CHANNELS.browserProfiles.LIST),
+  'browserProfiles.create': invoke(RPC_CHANNELS.browserProfiles.CREATE),
+  'browserProfiles.rename': invoke(RPC_CHANNELS.browserProfiles.RENAME),
+  'browserProfiles.delete': invoke(RPC_CHANNELS.browserProfiles.DELETE),
+  'browserProfiles.resolve': invoke(RPC_CHANNELS.browserProfiles.RESOLVE),
 
   // Browser pane management
   'browserPane.create': invoke(RPC_CHANNELS.browserPane.CREATE),

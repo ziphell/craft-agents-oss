@@ -44,7 +44,9 @@ import {
   handlePermissionModeChanged,
   handleSessionModelChanged,
   handleConnectionChanged,
+  handleBrowserProfileChanged,
   handleUserMessage,
+  handleQueuedMessageCancelled,
   handleMessageAnnotationsUpdated,
   handleSessionShared,
   handleSessionUnshared,
@@ -165,6 +167,9 @@ export function processEvent(
     case 'connection_changed':
       return handleConnectionChanged(state, event)
 
+    case 'browser_profile_changed':
+      return handleBrowserProfileChanged(state, event)
+
     case 'sources_changed':
       return handleSourcesChanged(state, event)
 
@@ -209,6 +214,9 @@ export function processEvent(
 
     case 'user_message':
       return handleUserMessage(state, event)
+
+    case 'queued_message_cancelled':
+      return handleQueuedMessageCancelled(state, event)
 
     case 'message_annotations_updated':
       return handleMessageAnnotationsUpdated(state, event)

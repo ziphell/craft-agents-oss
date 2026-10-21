@@ -204,11 +204,12 @@ function createMockWebContentsView(options?: any) {
  */
 const viewParent = new WeakMap<object, any[]>()
 
-function createMockWindow(opts?: { width?: number; height?: number; minWidth?: number; minHeight?: number }) {
+function createMockWindow(opts?: { width?: number; height?: number; minWidth?: number; minHeight?: number; title?: string }) {
   const listeners: Record<string, Function[]> = {}
   const webContents = createMockWebContents()
   let contentWidth = opts?.width ?? 1200
   let contentHeight = opts?.height ?? 900
+  let windowTitle = opts?.title ?? 'Craft Browser'
   let winX = 40
   let winY = 40
   let skipTaskbar = false
@@ -243,6 +244,13 @@ function createMockWindow(opts?: { width?: number; height?: number; minWidth?: n
       for (const cb of listeners[event] || []) cb(...args)
     },
     isDestroyed: mock(() => destroyed),
+    // What the OS lists the window as (taskbar, alt-tab) — not a title bar, since the
+    // window is frameless.
+    getTitle: mock(() => windowTitle),
+    setTitle: mock((next: string) => {
+      windowTitle = next
+    }),
+    _title: () => windowTitle,
     isMinimized: mock(() => minimized),
     restore: mock(() => {
       minimized = false
@@ -544,7 +552,7 @@ mock.module('../browser-tabs-state', () => ({
   saveBrowserTabsState: () => {},
 }))
 
-const { BrowserPaneManager } = await import('../browser-pane-manager')
+const { BrowserPaneManager, browserPanePartition } = await import('../browser-pane-manager')
 
 /**
  * The tab a window is showing.
@@ -581,6 +589,7 @@ function tabSummary(overrides: Partial<BrowserTabSummary> & { id: string }): Bro
   return {
     url: 'about:newtab',
     title: 'New Tab',
+    profileId: 'default',
     favicon: null,
     isLoading: false,
     active: false,
@@ -682,39 +691,69 @@ describe('BrowserPaneManager', () => {
   })
 
   /**
-   * One profile per workspace — the whole of "two workspaces can be signed into the same site as
-   * two different accounts".
-   *
-   * A partition is a Chromium profile: its own cookies, `localStorage` and logins. The workspace id
-   * is what selects one, and a caller with no workspace keeps the bare legacy partition every
-   * caller used to share.
+   * With nothing to say otherwise, every tab lands on the **built-in** profile — and that profile is
+   * the bare legacy partition, which is where every login lived before profiles existed. An upgrade
+   * therefore keeps its sessions instead of signing out.
    */
-  it('gives each workspace its own browser profile', () => {
+  it('runs tabs on the built-in profile when nothing says otherwise', () => {
     manager.createInstance('window-a', { workspaceId: 'ws-a' })
-    manager.createInstance('window-b', { workspaceId: 'ws-b' })
-    manager.createInstance('window-of-nobody')
+    manager.createTab('window-a', {})
 
-    expect(requestedPartitions).toEqual([
-      'persist:browser-pane-ws-a',
-      'persist:browser-pane-ws-b',
-      'persist:browser-pane',
-    ])
+    for (const tab of manager.listTabs('window-a')) {
+      expect(tab.profileId).toBe('default')
+    }
+  })
+
+  /** The name a profile's cookie jar is kept under — the built-in one keeps the legacy name. */
+  it('names the built-in profile after the legacy partition', () => {
+    expect(browserPanePartition('default')).toBe('persist:browser-pane')
+    expect(browserPanePartition('work')).toBe('persist:browser-pane-work')
   })
 
   /**
-   * A window's profile is settled when the window is built, and every view in it lands on that one.
-   *
-   * A tab opened later has to sit in the profile the window is already signed into, so it takes the
-   * window's session rather than resolving the workspace again — which is also what keeps a second
-   * tab from asking Electron for a partition of its own.
+   * A profile is a **window**: one workspace holds one window per profile, and a conversation works
+   * in the window of the profile it picked. That is the whole of "two accounts of the same site at
+   * once" — two cookie jars in two windows, never two accounts in one tab strip.
    */
-  it("builds a later tab on its own window's profile", () => {
-    manager.createInstance('window-a', { workspaceId: 'ws-a' })
-    const asked = requestedPartitions.length
+  it('gives each profile its own window', () => {
+    manager.setProfileResolver((sessionId) => (sessionId?.startsWith('sess-work') ? 'work' : 'default'))
 
-    manager.createTab('window-a', {})
+    const personal = manager.createForSession('sess-personal', { workspaceId: 'ws-a' })
+    const personalWindow = (manager as any).instances.get(personal).window
+    // One window needs no account in its name.
+    expect(personalWindow._title()).toBe('Craft Browser')
 
-    expect(requestedPartitions).toHaveLength(asked)
+    const work = manager.createForSession('sess-work', { workspaceId: 'ws-a' })
+    // Same profile, same window — a second conversation in it does not open a third.
+    const workAgain = manager.createForSession('sess-work-2', { workspaceId: 'ws-a' })
+
+    expect(work).not.toBe(personal)
+    expect(workAgain).toBe(work)
+    expect(requestedPartitions.filter((p) => p === 'persist:browser-pane-work')).toHaveLength(1)
+
+    // A second window makes the OS's own lists name each by the account it works in.
+    expect(personalWindow._title()).toContain('Default')
+    expect((manager as any).instances.get(work).window._title()).toContain('work')
+
+    // Every tab answers with its own window's profile.
+    expect(manager.listTabs(personal).every((tab) => tab.profileId === 'default')).toBe(true)
+    expect(manager.listTabs(work).every((tab) => tab.profileId === 'work')).toBe(true)
+  })
+
+  /**
+   * Switching a conversation's profile moves it to another window rather than mixing accounts in
+   * the one it was in: resolution happens per call, so the next browser command lands in the new
+   * profile's window (opening it when it does not exist yet).
+   */
+  it('moves a conversation to another window when it switches profile', () => {
+    manager.setProfileResolver(() => 'default')
+    const before = manager.createForSession('sess-a', { workspaceId: 'ws-a' })
+
+    manager.setProfileResolver(() => 'work')
+    const after = manager.createForSession('sess-a', { workspaceId: 'ws-a' })
+
+    expect(after).not.toBe(before)
+    expect(manager.listTabs(after)[0]?.profileId).toBe('work')
   })
 
   // Every request for a window of its own becomes a tab beside the one that asked,
@@ -1683,6 +1722,8 @@ describe('BrowserPaneManager', () => {
       {
         url: 'https://example.com',
         title: 'Example',
+        // The account this window works in, so the bar can say whose browser it is.
+        profileName: 'Default',
         isLoading: false,
         canGoBack: true,
         canGoForward: false,
@@ -1733,6 +1774,8 @@ describe('BrowserPaneManager', () => {
       {
         url: 'https://craft.do',
         title: 'Craft',
+        // The account this window works in, so the bar can say whose browser it is.
+        profileName: 'Default',
         isLoading: true,
         canGoBack: true,
         canGoForward: true,

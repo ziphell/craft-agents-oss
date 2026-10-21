@@ -73,6 +73,14 @@ export interface RemoteBrowserPaneManagerDeps {
    * ordinary conversation is.
    */
   readonly getWork?: () => TabBelongsTo | null
+  /**
+   * The browser profile this session's new tabs should run in.
+   *
+   * Asked per call rather than captured: a conversation can switch profiles, and the next tab it
+   * opens has to land on the new one. Omitted → the desktop side answers with the workspace's
+   * default.
+   */
+  readonly getProfileId?: () => string | null
 }
 
 export class RemoteBrowserPaneManager implements IBrowserPaneManager {
@@ -81,6 +89,7 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
   private readonly rpcServer: RpcServer
   private readonly getHostClient: () => string | null
   private readonly getWork: () => TabBelongsTo | null
+  private readonly getProfileId: (() => string | null) | null
 
   constructor(deps: RemoteBrowserPaneManagerDeps) {
     this.sessionId = deps.sessionId
@@ -88,6 +97,7 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
     this.rpcServer = deps.rpcServer
     this.getHostClient = deps.getHostClient
     this.getWork = deps.getWork ?? (() => null)
+    this.getProfileId = deps.getProfileId ?? null
   }
 
   /** Who is asking: the session, and the work it is part of. */
@@ -99,7 +109,12 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
   // Internal: package and ship one IBrowserPaneManager call.
   // ---------------------------------------------------------------------------
 
-  private async invoke<T>(method: BrowserCapabilityMethod, args: unknown[], tabId?: string): Promise<T> {
+  private async invoke<T>(
+    method: BrowserCapabilityMethod,
+    args: unknown[],
+    tabId?: string,
+    profileId?: string,
+  ): Promise<T> {
     const clientId = this.getHostClient()
     if (!clientId) {
       throw new CodedError(
@@ -120,6 +135,10 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
       args,
       sessionId: this.sessionId,
       workspaceId: this.workspaceId,
+      // Which cookie jar the caller works in. Usually read per call — a conversation can switch
+      // profiles between two commands — but a command may name one (`--profile`), and then that
+      // is what the window is resolved from.
+      profileId: profileId ?? this.getProfileId?.() ?? undefined,
       // The caller's work travels as identity, not in `args`: the far side stamps a new
       // tab's `belongsTo` from it rather than from a value the caller could name.
       // Asked per call — a session can be bound to a task later.
@@ -132,8 +151,13 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
 
   /** Synchronous methods on IBPM are emulated by awaiting in callers; here we
    * preserve a `void` return for fire-and-forget paths used by SessionManager. */
-  private invokeSync(method: BrowserCapabilityMethod, args: unknown[], tabId?: string): void {
-    this.invoke<unknown>(method, args, tabId).catch(() => {
+  private invokeSync(
+    method: BrowserCapabilityMethod,
+    args: unknown[],
+    tabId?: string,
+    profileId?: string,
+  ): void {
+    this.invoke<unknown>(method, args, tabId, profileId).catch(() => {
       // Swallow — callers like setAgentControl / unbindAllForSession don't await.
       // The remote agent will surface the error on the next awaited call if
       // something is genuinely broken.
@@ -164,17 +188,23 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
    * Callers that need the actual instanceId should use the async-friendly
    * `createForSession` path via the command-runtime, which awaits.
    */
-  getOrCreateForSession(sessionId: string, _options?: { workspaceId?: string | null }): string {
+  getOrCreateForSession(
+    sessionId: string,
+    options?: { workspaceId?: string | null; profileId?: string },
+  ): string {
     // The remote bridge can't synchronously block on a WS round-trip. Return
     // an opaque sentinel — async-aware callers should use `getOrCreateForSessionAsync`.
     // workspaceId is carried on the wire via `BrowserCapabilityRequest.workspaceId`
     // (set from `this.workspaceId`), so the dispatcher already knows it.
-    this.invokeSync('getOrCreateForSession', [sessionId])
+    this.invokeSync('getOrCreateForSession', [sessionId], undefined, options?.profileId)
     return `remote-pending:${sessionId}`
   }
 
-  async getOrCreateForSessionAsync(sessionId: string, _options?: { workspaceId?: string | null }): Promise<string> {
-    return await this.invoke('getOrCreateForSession', [sessionId])
+  async getOrCreateForSessionAsync(
+    sessionId: string,
+    options?: { workspaceId?: string | null; profileId?: string },
+  ): Promise<string> {
+    return await this.invoke('getOrCreateForSession', [sessionId], undefined, options?.profileId)
   }
 
   setAgentControl(
@@ -189,13 +219,19 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
   // IBrowserPaneManager — instance management
   // ---------------------------------------------------------------------------
 
-  createForSession(sessionId: string | null, options?: { show?: boolean; workspaceId?: string | null }): string {
-    this.invokeSync('createForSession', [sessionId, options])
+  createForSession(
+    sessionId: string | null,
+    options?: { show?: boolean; workspaceId?: string | null; profileId?: string },
+  ): string {
+    this.invokeSync('createForSession', [sessionId, options], undefined, options?.profileId)
     return `remote-pending:${sessionId ?? 'workspace'}`
   }
 
-  async createForSessionAsync(sessionId: string | null, options?: { show?: boolean; workspaceId?: string | null }): Promise<string> {
-    return await this.invoke('createForSession', [sessionId, options])
+  async createForSessionAsync(
+    sessionId: string | null,
+    options?: { show?: boolean; workspaceId?: string | null; profileId?: string },
+  ): Promise<string> {
+    return await this.invoke('createForSession', [sessionId, options], undefined, options?.profileId)
   }
 
   getInstance(_id: string): BrowserInstanceSnapshot | undefined {
@@ -389,8 +425,14 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
   async startRecordingForSession(
     sessionId: string,
     args: BrowserStartRecordingArgs,
+    options?: { workspaceId?: string | null; profileId?: string },
   ): Promise<BrowserStartRecordingResult> {
-    return await this.invoke<BrowserStartRecordingResult>('startRecordingForSession', [sessionId, args])
+    return await this.invoke<BrowserStartRecordingResult>(
+      'startRecordingForSession',
+      [sessionId, args],
+      undefined,
+      options?.profileId,
+    )
   }
 
   async stopRecordingForSession(sessionId: string, tabId: string): Promise<BrowserStopRecordingResult> {

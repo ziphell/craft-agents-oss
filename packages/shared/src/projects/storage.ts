@@ -32,6 +32,16 @@ import type {
   CreateProjectInput,
 } from './types.ts';
 
+/**
+ * Short-lived cache for `loadProjectById`.
+ *
+ * Browser routing asks the same question on every command, and resolving an id means scanning the
+ * workspace's projects. Writes through this module clear the cache; the TTL only bounds staleness
+ * from a config.json edited outside the app.
+ */
+const projectByIdCache = new Map<string, { readAt: number; project: LoadedProject | null }>();
+const PROJECT_BY_ID_TTL_MS = 1_000;
+
 // ============================================================
 // Directory Utilities
 // ============================================================
@@ -137,6 +147,7 @@ export function saveProjectConfig(workspaceRootPath: string, config: ProjectConf
   }
 
   atomicWriteFileSync(join(dir, 'config.json'), JSON.stringify(storageConfig, null, 2));
+  projectByIdCache.clear();
 }
 
 // ============================================================
@@ -216,13 +227,23 @@ export function loadProject(
  * Load a project by id (scans workspace projects for a matching id).
  * Slugs are unique within a workspace, but callers may persist the project id
  * on a session (more stable across renames).
+ *
+ * Cached briefly: browser routing asks for the same project on every command, and the scan reads
+ * every project's config.json. Writes through this module invalidate the cache, so a settings
+ * change is visible immediately; the TTL only bounds staleness from edits made outside the app.
  */
 export function loadProjectById(
   workspaceRootPath: string,
   projectId: string,
 ): LoadedProject | null {
-  const projects = loadWorkspaceProjects(workspaceRootPath);
-  return projects.find((p) => p.config.id === projectId) ?? null;
+  const key = `${workspaceRootPath}\u0000${projectId}`;
+  const now = Date.now();
+  const cached = projectByIdCache.get(key);
+  if (cached && now - cached.readAt < PROJECT_BY_ID_TTL_MS) return cached.project;
+
+  const project = loadWorkspaceProjects(workspaceRootPath).find((p) => p.config.id === projectId) ?? null;
+  projectByIdCache.set(key, { readAt: now, project });
+  return project;
 }
 
 /**
@@ -302,7 +323,7 @@ export function createProject(
  * so it would beat the project folder) — so `''` is the clear, and the empty string is
  * dropped here rather than written.
  */
-const CLEARABLE_TEXT_FIELDS = ['description', 'details', 'color', 'workingDirectory'] as const;
+const CLEARABLE_TEXT_FIELDS = ['description', 'details', 'color', 'workingDirectory', 'browserProfile'] as const;
 
 /**
  * Update a project's config with a partial patch.
@@ -346,6 +367,7 @@ export function deleteProject(workspaceRootPath: string, projectSlug: string): v
   if (existsSync(dir)) {
     rmSync(dir, { recursive: true });
   }
+  projectByIdCache.clear();
 }
 
 /**

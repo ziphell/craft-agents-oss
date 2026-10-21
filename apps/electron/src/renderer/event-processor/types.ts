@@ -362,6 +362,15 @@ export interface LLMConnectionChangedEvent {
 }
 
 /**
+ * Browser profile changed event - the account this conversation's browser work uses
+ */
+export interface BrowserProfileChangedEvent {
+  type: 'browser_profile_changed'
+  sessionId: string
+  profileId: string | null
+}
+
+/**
  * Credential request event - prompts user for credentials
  */
 export interface CredentialRequestEvent {
@@ -445,6 +454,18 @@ export interface UserMessageEvent {
   sessionId: string
   message: Message
   status: 'accepted' | 'queued' | 'processing'
+  /** Frontend's optimistic message ID for reliable matching */
+  optimisticMessageId?: string
+}
+
+/**
+ * Queued message cancelled event - a message that was waiting for replay was
+ * removed from the transcript (so it can be edited and re-sent).
+ */
+export interface QueuedMessageCancelledEvent {
+  type: 'queued_message_cancelled'
+  sessionId: string
+  messageId: string
   /** Frontend's optimistic message ID for reliable matching */
   optimisticMessageId?: string
 }
@@ -559,12 +580,14 @@ export type AgentEvent =
   | PermissionModeChangedEvent
   | SessionModelChangedEvent
   | LLMConnectionChangedEvent
+  | BrowserProfileChangedEvent
   | TaskBackgroundedEvent
   | ShellBackgroundedEvent
   | TaskProgressEvent
   | TaskCompletedEvent
   | WorkflowAgentCompletedEvent
   | UserMessageEvent
+  | QueuedMessageCancelledEvent
   | MessageAnnotationsUpdatedEvent
   | SessionSharedEvent
   | SessionUnsharedEvent

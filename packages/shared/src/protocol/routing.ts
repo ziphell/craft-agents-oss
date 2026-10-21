@@ -249,6 +249,7 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.sessions.GET_MESSAGES,
   RPC_CHANNELS.sessions.SEND_MESSAGE,
   RPC_CHANNELS.sessions.CANCEL,
+  RPC_CHANNELS.sessions.CANCEL_QUEUED_MESSAGE,
   RPC_CHANNELS.sessions.KILL_SHELL,
   RPC_CHANNELS.sessions.RESPOND_TO_PERMISSION,
   RPC_CHANNELS.sessions.RESPOND_TO_CREDENTIAL,
@@ -387,6 +388,12 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.workspace.WRITE_IMAGE,
   RPC_CHANNELS.workspace.SETTINGS_GET,
   RPC_CHANNELS.workspace.SETTINGS_UPDATE,
+  // browserProfiles — app-level profile registry (routes with the server that owns the config)
+  RPC_CHANNELS.browserProfiles.LIST,
+  RPC_CHANNELS.browserProfiles.CREATE,
+  RPC_CHANNELS.browserProfiles.RENAME,
+  RPC_CHANNELS.browserProfiles.DELETE,
+  RPC_CHANNELS.browserProfiles.RESOLVE,
 
   // permissions — workspace permissions
   RPC_CHANNELS.permissions.GET_DEFAULTS,

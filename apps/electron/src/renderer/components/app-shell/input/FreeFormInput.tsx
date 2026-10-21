@@ -38,7 +38,8 @@ import { parseMentions } from '@/lib/mentions'
 import type { TabRef } from '@craft-agent/shared/mentions'
 import { designsAtom } from '@/atoms/designs'
 import { browserInstancesAtom, filterInstancesForWorkspace } from '@/atoms/browser-pane'
-import { sessionMetaMapAtom } from '@/atoms/sessions'
+import { browserProfilesAtom } from '@/atoms/browser-profiles'
+import { sessionAtomFamily, sessionMetaMapAtom } from '@/atoms/sessions'
 import { tabRefOf } from '@/components/browser/utils'
 import { RichTextInput, type RichTextInputHandle } from '@/components/ui/rich-text-input'
 import { useInputAvailableHeight } from '@/hooks/useInputAvailableHeight'
@@ -101,6 +102,7 @@ import {
 import { WorkingDirectorySelector, formatPathForDisplay } from './WorkingDirectorySelector'
 import { CompactPermissionModeSelector } from './CompactPermissionModeSelector'
 import { CompactModelSelector } from './CompactModelSelector'
+import { CompactProfileSelector } from './CompactProfileSelector'
 import {
   groupConnectionsByProvider,
   modelLabel,
@@ -472,6 +474,60 @@ export function FreeFormInput({
    * means (see design-mention).
    */
   const designs = useAtomValue(designsAtom)
+
+  /**
+   * A conversation can keep a pick whose profile has since been deleted (the window stays usable),
+   * but it cannot send: the person has to choose an existing profile first. Derived from the live
+   * session + registry so the guard updates the moment either changes.
+   */
+  const sessionForProfile = useAtomValue(sessionAtomFamily(sessionId ?? ''))
+  const browserProfiles = useAtomValue(browserProfilesAtom)
+  const pickedBrowserProfile = sessionForProfile?.browserProfile?.trim()
+  const browserProfileMissing =
+    !!pickedBrowserProfile
+    && browserProfiles.length > 0
+    && !browserProfiles.some((profile) => profile.id === pickedBrowserProfile)
+
+  /**
+   * The same holds for the folder this conversation works in: the path stays in the header, but
+   * once its folder is gone no turn may start. The check runs where the path lives (the server),
+   * so remote workspaces answer for their own disk. A folder that is re-created makes it valid
+   * again; the next send re-checks server-side regardless.
+   */
+  const pickedWorkingDirectory = workingDirectory?.trim()
+  const [workingDirectoryCheck, setWorkingDirectoryCheck] = React.useState<
+    { path: string; exists: boolean } | null
+  >(null)
+  React.useEffect(() => {
+    if (!pickedWorkingDirectory) {
+      setWorkingDirectoryCheck(null)
+      return
+    }
+    let cancelled = false
+    const check = () => {
+      void window.electronAPI
+        .checkServerDirectory(pickedWorkingDirectory)
+        .then((exists) => {
+          if (!cancelled) setWorkingDirectoryCheck({ path: pickedWorkingDirectory, exists })
+        })
+        .catch(() => {
+          // Unknown is not missing: the server rejects a send against a vanished folder anyway.
+        })
+    }
+    check()
+    // The folder can be removed or re-created outside the app while this conversation stays open.
+    window.addEventListener('focus', check)
+    document.addEventListener('visibilitychange', check)
+    return () => {
+      cancelled = true
+      window.removeEventListener('focus', check)
+      document.removeEventListener('visibilitychange', check)
+    }
+  }, [pickedWorkingDirectory, sessionId])
+  const workingDirectoryMissing =
+    !!pickedWorkingDirectory
+    && workingDirectoryCheck?.path === pickedWorkingDirectory
+    && !workingDirectoryCheck.exists
 
   // The layer this conversation works on (`goal`/`spec`/`plan`) — session state, read
   // from the atom the server's `mode_changed` broadcast feeds. Only conversations
@@ -1260,6 +1316,14 @@ export function FreeFormInput({
     // Tutorial may disable sending to guide user through specific steps
     if (disableSend) return false
 
+    // The conversation's browser profile no longer exists. Keep the reference visible (its window
+    // stays usable), but no turn may start until the person picks a valid one.
+    if (browserProfileMissing) return false
+
+    // The conversation's working directory was removed. Keep the path visible, but the person has
+    // to point the conversation at an existing folder before a turn can start.
+    if (workingDirectoryMissing) return false
+
     // Parse all @mentions (skills, sources, folders)
     const skillSlugs = skills.map(s => s.slug)
     const sourceSlugs = sources.map(s => s.config.slug)
@@ -1295,7 +1359,7 @@ export function FreeFormInput({
     })
 
     return true
-  }, [input, attachments, followUpItems, disabled, disableSend, onInputChange, onAttachmentsChange, onSubmit, skills, sources, optimisticSourceSlugs, onSourcesChange, onWorkingDirectoryChange, homeDir])
+  }, [input, attachments, followUpItems, disabled, disableSend, browserProfileMissing, workingDirectoryMissing, onInputChange, onAttachmentsChange, onSubmit, skills, sources, optimisticSourceSlugs, onSourcesChange, onWorkingDirectoryChange, homeDir])
 
   // Listen for craft:submit-input events (simulate pressing the Send button)
   React.useEffect(() => {
@@ -1946,8 +2010,11 @@ export function FreeFormInput({
               sessionFolderPath={sessionFolderPath}
               isEmptySession={false}
               workspaceId={workspaceId}
+              missing={workingDirectoryMissing}
             />
           )}
+          {/* The conversation's browser profile, right of the folder it works in. */}
+          {sessionId && <CompactProfileSelector sessionId={sessionId} />}
           </div>
           )}
 
@@ -2052,8 +2119,11 @@ export function FreeFormInput({
               sessionFolderPath={sessionFolderPath}
               isEmptySession={isEmptySession}
               workspaceId={workspaceId}
+              missing={workingDirectoryMissing}
             />
           )}
+          {/* The conversation's browser profile, right of the folder it works in. */}
+          {sessionId && <CompactProfileSelector sessionId={sessionId} />}
 
           </div>
           )}
@@ -2493,7 +2563,12 @@ export function FreeFormInput({
               size="icon"
               aria-label={t('shortcuts.sendMessage')}
               className="send-btn h-7 w-7 rounded-full shrink-0 ml-2"
-              disabled={!hasContent || disabled || disableSend}
+              disabled={!hasContent || disabled || disableSend || browserProfileMissing || workingDirectoryMissing}
+              title={browserProfileMissing
+                ? t('composer.browserProfileMissingHint', 'This profile was deleted. Choose a valid profile before sending.')
+                : workingDirectoryMissing
+                  ? t('composer.workingDirectoryMissingHint', 'This folder no longer exists. Choose an existing working directory before sending.')
+                  : undefined}
               data-tutorial="send-button"
             >
               <ArrowUp className="h-4 w-4" />
@@ -2521,12 +2596,15 @@ function WorkingDirectoryBadge({
   sessionFolderPath,
   isEmptySession = false,
   workspaceId,
+  missing = false,
 }: {
   workingDirectory?: string
   onWorkingDirectoryChange: (path: string) => void
   sessionFolderPath?: string
   isEmptySession?: boolean
   workspaceId?: string
+  /** The selected folder was removed; the picker stays usable so it can be replaced. */
+  missing?: boolean
 }) {
   const { t } = useTranslation()
   return (
@@ -2538,14 +2616,21 @@ function WorkingDirectoryBadge({
       renderTrigger={({ open, hasFolder, folderName, workingDirectory: wd, homeDir, gitBranch }) => (
         <span className="shrink min-w-0 overflow-hidden">
           <FreeFormInputContextBadge
-            icon={<Icon_Home className="h-4 w-4" />}
-            label={folderName ?? t('chat.workInFolder')}
+            icon={<Icon_Home className={cn('h-4 w-4', missing && 'text-destructive')} />}
+            label={missing ? t('composer.workingDirectoryMissing', 'Deleted folder') : (folderName ?? t('chat.workInFolder'))}
             isExpanded={isEmptySession}
             hasSelection={hasFolder}
             showChevron={true}
             isOpen={open}
+            className={missing ? 'text-destructive' : undefined}
             tooltip={
-              hasFolder ? (
+              missing ? (
+                <span className="flex flex-col gap-0.5">
+                  <span className="font-medium text-destructive">{t('composer.workingDirectoryMissing', 'Deleted folder')}</span>
+                  <span className="text-xs opacity-70">{formatPathForDisplay(wd, homeDir)}</span>
+                  <span className="text-xs opacity-70">{t('composer.workingDirectoryMissingHint', 'This folder no longer exists. Choose an existing working directory before sending.')}</span>
+                </span>
+              ) : hasFolder ? (
                 <span className="flex flex-col gap-0.5">
                   <span className="font-medium">{t("chat.workingDirectory")}</span>
                   <span className="text-xs opacity-70">{formatPathForDisplay(wd, homeDir)}</span>

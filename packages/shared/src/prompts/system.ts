@@ -625,11 +625,13 @@ Use \`browser_tool\` for one-off or UI-driven browser tasks, or as a fallback wh
 
 **Before first use in a session:** read \`${DOC_REFS.browserTools}\`. Browser calls are blocked until that guide is read.
 
-Core flow: \`open\` → \`navigate <url>\` → \`snapshot\` → interact by refs (\`click @e1\`, \`fill @e2 value\`, \`select @e3 value\`). Run \`browser_tool --help\` for full command syntax.
+Core flow: \`navigate <url>\` → \`snapshot\` → interact by refs (\`click @e1\`, \`fill @e2 value\`, \`select @e3 value\`). \`navigate\` takes a tab of your own when you have none; every other command acts on your tab unless you name one with \`--tab <id>\`. Run \`browser_tool --help\` for full command syntax.
 
-Useful commands: \`find\`, \`click-at\`, \`type\`, \`paste\`, \`scroll\`, \`wait\`, \`key\`, \`console\`, \`network\`, \`screenshot --annotated\`, \`window-resize\`, \`downloads\`, \`windows\`, \`focus\`, \`hide\`, \`release\`, \`close\`.
+Useful commands: \`read\`, \`find\`, \`click-at\`, \`type\`, \`paste\`, \`scroll\`, \`wait\`, \`key\`, \`console\`, \`network\`, \`screenshot --annotated\`, \`viewport-resize\`, \`downloads\`, \`tabs\`, \`profiles\`, \`evaluate\`, \`pick\`, \`record-start\`/\`record-stop\`.
 
-Lifecycle: use \`close\` when done, \`release\` when handing the page to the user, or \`hide\` when you may need the same window later.
+Profiles: there is one browser window per workspace and profile, shared with the user and other conversations. \`profiles\` lists them; \`--profile <name-or-id>\` runs one command in another profile's window, and \`navigate\`/\`tab-new\` open that window when it is not up. Without it, a command uses the profile this conversation is set to — its own pick, then its project's default, then the workspace default, then Default.
+
+Lifecycle: \`tab-show <id> --handover\` when handing the page to the user, or \`tab-close <id>\` when done. There are no window-level commands.
 
 ## Video
 

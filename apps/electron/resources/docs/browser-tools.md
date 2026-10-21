@@ -7,7 +7,7 @@ Use `browser_tool` to control built-in browser windows (Chromium) inside Craft A
 ## Browser usage paths
 
 1. **Primary and only in-session tool surface:** `browser_tool`
-2. **Secondary helper CLI:** `bun run browser-tool --help` for command discovery/templates, and `bun run browser-tool parse-url <url>` for safe URL diagnostics outside agent turns
+2. **Secondary helper CLI:** `bun run browser-tool --help` for `browser_tool` command templates (`bun run browser-tool template navigate`), and `bun run browser-tool parse-url <url>` for safe URL diagnostics outside agent turns
 
 ---
 
@@ -28,10 +28,10 @@ Use browser workflows when creating a source would add unnecessary overhead for 
 
 ## Core workflow
 
-There is one browser window per workspace, so there is no window to choose: opening a tab opens the window if it is not up.
+There is one browser window per **workspace and browser profile**. A command with no `--profile <name-or-id>` works in the profile this conversation is set to — its own pick, then its project's default, then the workspace default, then the built-in **Default** — and does not fall back to Default while another one is selected. Never in the profile of the tab it is on, either. That is how **one conversation drives two profiles at once**: name a profile on the commands meant for it, and the unnamed ones stay in the conversation's profile. `profiles` lists the names and ids; an unknown name is refused rather than falling back to Default.
 
 Recommended flow:
-1. `navigate <url>` — go there in your tab; with none it gives you one (the window is created if it is not up, and the tab it was born with becomes yours — a window that has been shown gets a new tab behind the person's)
+1. `navigate <url>` — go there in your tab; with none it gives you one (that profile's window is created if it is not up, and the tab it was born with becomes yours — a window that has been shown gets a new tab behind the person's)
 2. `snapshot` — inspect accessible elements and get refs (`@e1`, `@e2`, ...)
 3. `find <query>` — quickly narrow to matching refs by keyword
 4. `click` / `fill` / `select` — interact using refs
@@ -44,6 +44,9 @@ Recommended flow:
 ```text
 browser_tool({ command: "--help" })
 browser_tool({ command: "tab-new https://example.com" })
+browser_tool({ command: "profiles" })
+browser_tool({ command: "navigate https://app.example.com --profile Work" })
+browser_tool({ command: "snapshot --profile Work --tab tab-2" })
 browser_tool({ command: "navigate https://example.com" })
 browser_tool({ command: "snapshot" })
 browser_tool({ command: "read --save notes/my-page.md" })
@@ -78,6 +81,8 @@ browser_tool({ command: "snapshot --tab tab-2" })
 browser_tool({ command: "tab-new https://example.com" })
 browser_tool({ command: "tab-show tab-2" })
 browser_tool({ command: "tab-close tab-2" })
+browser_tool({ command: "record-start --tab tab-2 --ttl 30s" })
+browser_tool({ command: "record-stop --tab tab-2" })
 ```
 
 The wrapper validates commands and returns actionable errors when arguments are missing or invalid.
@@ -87,7 +92,7 @@ It also returns rich execution feedback for most commands, including before/afte
 You can batch commands with semicolons, for example:
 `fill @e1 user@example.com; fill @e2 password123; click @e3`
 
-Batches run left-to-right and stop automatically after navigation commands (`navigate`, `click`, `back`, `forward`) so refs don’t go stale silently.
+Batches run left-to-right and stop automatically after navigation commands (`navigate`, `click`, `back`, `forward`, `reload`) so refs don’t go stale silently.
 
 ### Quoting and escaping
 
@@ -107,7 +112,7 @@ Use backslash escaping when needed:
 
 ## Key commands
 
-A window is opened by opening a tab: `navigate <url>` takes a tab of the conversation's own if it has none, creating the workspace's window if it is not up yet; `tab-new <url>` adds one more page in a tab of its own. Both name the tab they used in the reply (`Tab: <id>`), so a tab that was just created does not need a `tabs` call to be found. A window nobody has seen yet gives its birth tab to the first `navigate` (or `tab-new`), so it comes up with one tab rather than an empty one beside the page. There is no separate "open the browser" command — a window with nobody's tab in it is not a state a conversation asks for.
+A window is opened by opening a tab: `navigate <url>` takes a tab of the conversation's own if it has none, creating that profile's window if it is not up yet; `tab-new <url>` adds one more page in a tab of its own. Both name the tab they used in the reply (`Tab: <id>`), so a tab that was just created does not need a `tabs` call to be found. A window nobody has seen yet gives its birth tab to the first `navigate` (or `tab-new`), so it comes up with one tab rather than an empty one beside the page. There is no separate "open the browser" command — a window with nobody's tab in it is not a state a conversation asks for.
 
 ### `snapshot`
 Returns an accessibility tree with refs and element metadata.
@@ -217,7 +222,7 @@ lazy images) has no pixels either way.
 ### `console`, `network`, `wait`, `downloads`
 Debug runtime issues, requests, synchronization points, and download progress.
 
-`downloads` lists what the **workspace's browser window** has fetched, oldest first. Not one tab's: a download is not the tab's, it keeps arriving if the window is closed while it runs, and a window opened later in the same workspace is still told what happened. For the same reason `--tab` names nothing here. The output includes the resolved local `savePath` when available so you can reference the downloaded file directly.
+`downloads` lists what the **window for this profile** has fetched, oldest first. Not one tab's: a download is not the tab's, it keeps arriving if the window is closed while it runs, and a window opened later in the same workspace and profile is still told what happened. For the same reason `--tab` names nothing here. The output includes the resolved local `savePath` when available so you can reference the downloaded file directly.
 
 ### `pick [--timeout <ms>]`
 Ask the user to click an element on the page. Blocks until they click, press `Escape`, or the timeout elapses (default 120s, min 1s).
@@ -246,20 +251,28 @@ Set the **viewport of the tab this command acts on** — your own tab, or the on
 - **A tab behind the person keeps its size to itself.** It lives in the window's parking window — a window kept off every display, which nobody can see and which takes exactly the size of the views in it — so only its own view is resized and the person's window is left alone. That is what lets you set a deterministic viewport for your own work without moving what they are reading. That tab comes forward at the **window's** size later, like every parked tab, so the size you set here is for the work you do behind them.
 - The OS window minimum (700×500 on this platform) can make the page area smaller than you asked for when the tab is on screen; the reply says what it actually became.
 
-### The window is shared: one per workspace
-There is exactly **one browser window per workspace**, and every conversation in that workspace — and you — work in it, whatever the task is. What used to be "my window" is now a **tab** in that window, which is why `tabs` exists and why nothing here is scoped to one conversation any more.
+### `record-start --tab <id> --ttl <dur> [--wait]` / `record-stop --tab <id>`
+Record one tab as a video, then read it with `video_tool`.
+
+- `record-start` records the **named** tab for at most `<dur>` (e.g. `30s`, `1m`; the ceiling is 10 minutes). The tab is required: nothing is recorded by default, and the recording stays on that tab even if you move to another one. Without `--wait` the reply comes back as soon as recording starts; with it, the reply is the finished recording.
+- `record-stop` ends a recording early. Its tab is required too — a stop that guessed would land on a different recording.
+- The file is written to the conversation's `records/` folder. Recording is not bound to a turn: it ends when its time is up, when the tab or its window goes away, or when you stop it. Recording two tabs at once is ordinary.
+
+### The window is shared: one per workspace and profile
+There is exactly **one browser window per workspace and browser profile** — one per profile in use — and every conversation working in that profile, and you, work in it, whatever the task is. What used to be "my window" is now a **tab** in that window, which is why `tabs` exists and why nothing here is scoped to one conversation any more. Which profile a conversation works in is its own pick, then its project's default, then its workspace's default, then the built-in `default` profile — that is what the composer and the top-bar badge show, what the prompt names, and where its commands land when they name no profile. A profile is a Chromium profile — its own cookies and logins — and the built-in `default` one is where every login lived before profiles existed.
 
 - **A window belongs to its workspace, not to a conversation.** Nothing on the window names a conversation: who is working where is a fact about its **tabs** — `driven by:` (which conversation moved it last, a trace and not a claim) and `locked:` (who holds it right now). That is what lets a parent and the child sessions it spawned work in one window at the same time, each in a tab of its own (see "Sessions that share a window" below).
 - **Workspaces stay apart.** Each has its own window; a session in one never sees or touches another's. That is the only boundary left, and it is the one that has to be.
+- **A command can name the profile it works in.** `--profile <name-or-id>` binds one command to another profile's window; `navigate`/`tab-new` open that window when it is not up, while the other commands report that there is no window instead of opening one. `profiles` prints the names and ids. Without it a command works in the profile the conversation is set to — its own pick, then its project's default, then the workspace default, then `default` — and never in the profile its tab happens to be in. A tab id is unique inside one window, so two profiles can both have `tab-1` — `--profile` says which one `--tab` means. `tabs` lists every window with its profile, grouped; `tabs --profile Work` lists only that profile's.
 - **Tabs opened by other conversations are in here, and `tabs` says whose.** That is the point of sharing, and it is also the boundary: each tab prints `belongs to: agent (<session>)`, `belongs to: the task <slug>'s node <node>` or `belongs to: a person`, and `driven by:` says who moved it last. Closing is limited to the tabs of **your task** — the ones you opened, the ones handed to you, and the ones opened from them (see below) — and working on another conversation's **work** is refused, so `--tab <id>` is a name, not a claim on somebody else's work. A tab that is **nobody's work** — a tab the person opened — is open to you whether or not another conversation works from it (`locked:` is the only thing that can keep you out, and only for a turn).
 - **A tab's task is inherited.** A tab a link or popup opened belongs to whatever the tab it came from belongs to — not to whoever clicked (an agent's click and a person's look the same from here, so that question has no answer). A link on your task's tab therefore lands *in your task*: it is listed under the same section, and cleaning up your tabs closes it too. A tab opened from a tab nobody owns stays nobody's.
 - **A tab belongs to a piece of work, not to a conversation.** When you are part of a Task (a Conductor DAG node), your tabs say which task and which **node** they are for, not which session opened them — a tab has to outlive the session that made it. The reward is that a node **re-run** after a FAIL verdict (repair spawns a *new* child session for the *same* node) finds its predecessor's tab still in reach: `tabs` lists it (`belongs to:` names your task and your node), and `--tab <id>` carries on in it — nothing hands it to you automatically, so **read `tabs` before opening a tab**: `tab-new` always adds one. A sibling node, and the next run of the same task, are still refused: one tab, one node.
-- **The window itself is nobody's to close.** `tab-close <id>` closes **the tabs of your task** — a DAG's node tabs included, because the orchestrator that ran the task is who tidies it up — and closing the last tab takes the window with it: the window stays while there is work in it, because it is the whole workspace's.
+- **The window itself is nobody's to close.** `tab-close <id>` closes **the tabs of your task** — a DAG's node tabs included, because the orchestrator that ran the task is who tidies it up — and closing the last tab takes the window with it: the window stays while there is work in it, because it is that profile's window for the whole workspace.
 
 ### Tabs in a window: `tabs`, `tab-new`, `tab-select`, `tab-show`, `tab-assign`, `tab-close`, `--tab <id>`
 A browser **window** is a container and a **tab** is the thing in it, so several pages are looked at at once by being several tabs of one window rather than by being several windows. A tab carries its own address, title, console and theme colour.
 
-- `tabs` — this window's tabs in the order they were opened, each with what it is, whose task it is in and who is working on it. This is also how tab ids are discovered.
+- `tabs` — the tabs of every browser window this workspace has (one per profile), grouped by profile, each with what it is, whose task it is in and who is working on it. This is also how tab ids are discovered; two windows can both hold `tab-1`, so the profile names the one you mean. `tabs --profile <name>` lists one profile's window.
 - `tab-new <url>` — add a tab to the window, **behind whatever the person is reading**, and load the url. It becomes the tab you work from, and the reply names it (`Tab: <id>`). A url is required: a tab exists to hold a page, and `navigate` is what takes a blank one for you. When the window has never been shown (this command opens it, or the turn's overlay did), it opens into the tab that window was born with (so a fresh window is one tab); a window the person has seen always gets one **more** tab, even if it is holding a blank one.
 - `tab-select <id>` — make a tab **the one you work from**, and nothing else: no page action, and no move of the window (that is `tab-show`). It is the same act `--tab <id>` performs, said on its own.
 - `tab-show <id>` — make a tab the one the window shows. This is the **only** command that changes which tab the window shows, and it does **not** raise the window: taking over the person's screen and focus is not an automatic action's to do, so the conversation's reply is what tells them to look (the app's browser strip is how they open it themselves). It also does **not** unlock the page — the overlay and hold stay, so the person can watch while you go on working there. Add `--handover` when they are meant to take over: that drops your overlay and hold, so the page is theirs to use until your next command takes it back (there is no separate `release`).
@@ -287,10 +300,10 @@ Three URLs can be in play at once, and telling them apart is what makes a loadin
 
 **A tab can be held; the window cannot.** While a conversation is working on a tab — its overlay is up for that turn and that tab is the one it holds — **that tab is held**: a person cannot click or type into it, and another conversation's command that names it is refused with "it is held while session-… works on it, until that turn ends". Everything around it stays free, for the user and for other conversations alike: the tab rail, the address bar, the window's size, and every other tab — and **several conversations can hold their own tabs at the same time**, which is what makes parallel work possible. The hold names **one tab id** rather than being derived from wherever a command landed, which is what keeps it off the tab the person happens to be looking at; it is dropped when that tab is closed, and the person can drop it themselves — the lock mark in the rail is a button, and clicking it releases the overlay that holds the tab. So the lock in the rail is not the only way out, and a hold can end earlier than your turn: do not assume the tab is still yours between two commands. `tab-show <id> --handover` drops it too, as the explicit "you take it from here".
 
-That is deliberately narrower than locking the window, which is what this used to do: one window is shared by the whole workspace, so holding *the window* held the user's own browsing and everybody else's tabs with it. Holding the tab you are actually working on costs nobody anything but a wait — and a command that would rather not wait can name another tab with `--tab <id>`.
+That is deliberately narrower than locking the window, which is what this used to do: one window is shared by every conversation in its profile, so holding *the window* held the user's own browsing and everybody else's tabs with it. Holding the tab you are actually working on costs nobody anything but a wait — and a command that would rather not wait can name another tab with `--tab <id>`.
 
 ### Sessions that share a window: parents, children, and `tab-assign`
-A session spawned by another one (a Task's DAG node, or a session an agent delegated to with `spawn-session`) shares its parent's browser window — there is one per workspace — and works in **a tab of its own**. Two rules make that work instead of interfering:
+A session spawned by another one (a Task's DAG node, or a session an agent delegated to with `spawn-session`) shares its parent's browser window — one per workspace and profile — because it **inherits the parent's browser profile** the same way it inherits the working directory, so its unnamed commands land in the same profile. It works in **a tab of its own**. Two rules make that work instead of interfering:
 
 - **It does not take a tab of its own choosing.** No conversation adopts the tab in front of the person any more — one with no tab of its own is told to name one (`tab-select <id>`, or `--tab <id>` on the command at hand), and a child session has one more way in and one fewer guess to make: the conversation that spawned it hands one over with `tab-assign <tab-id> <child-session>`, or it opens one with `tab-new <url>`. (`navigate <url>` gives a session with no cursor a tab of its own — the window's birth tab only when this command is what creates the window, never a blank tab that was already there.) That is what a parent does before starting several nodes at once — one tab each, handed over before the node runs.
 - **It does not move what the person sees.** `tab-show` on a child session makes the tab its own but leaves the window showing the person's tab, and the output says so. A child's work happens behind them; if the person should look at something, the parent brings it up.
@@ -299,7 +312,7 @@ A session spawned by another one (a Task's DAG node, or a session an agent deleg
 
 **A click that wants its own window opens a tab.** `target="_blank"`, `window.open` and popups all become tabs of the same window, inserted right after the tab that asked, so nothing ever opens a bare Electron window with no toolbar. **Where it lands follows whether the tab is being driven.** While a tab is held by a conversation or is in the middle of one of its commands, a popup it opens stays **behind** — that work is the agent's, and the person is not watching it. When the person drives their own tab (no hold, no command in flight), ordinary browser behavior applies: a plain `target="_blank"` click comes to the front, and a `background-tab` request stays behind. A scripted `window.open` reads no keys at all, which is why the tab's driving state — not a modifier key — is what decides where its tab lands. Nothing here guesses *who* clicked: the tab's own state says whether it is being driven, and the person's clicks leave it false. Two more consequences worth knowing: such a tab has no `window.opener` (a popup waiting for a `postMessage` from the tab that opened it — Google's sign-in is the usual one — waits forever), and it cannot close itself (Chromium only lets scripts close windows that scripts opened), so it stays in the strip until you or the user closes it. `tabs` says which way a tab was asked for (`opened as: …`) when it was the browser that asked.
 
-`--tab` is read off the command before the command parses its own arguments, so it never becomes part of an argument: `evaluate document.title --tab tab-2` evaluates `document.title`. A `--tab` with no id is refused rather than falling back to the tab on screen — running somewhere else is the one outcome a named target exists to prevent.
+`--tab` is read off the command before the command parses its own arguments, so it never becomes part of an argument: `evaluate document.title --tab tab-2` evaluates `document.title`. A `--tab` with no id is refused rather than falling back to the tab on screen — running somewhere else is the one outcome a named target exists to prevent. `--profile` is read the same way, so `evaluate document.title --profile Work` runs in Work's window.
 
 **Where a command lands is your tab, not the tab on screen.** A command that names no tab acts on the tab this conversation has been working from — its **cursor**, marked in `tabs` as `your tab: …`, and named in the summary as `cursorOf` (one tab may be worked from by several conversations, so the summary's field is a list and yours is the entry with your session in it). You get one by naming a tab (`--tab <id>` or `tab-select <id>`), by opening one (`tab-new <url>`), by being handed one (`tab-assign`), or — for the usual first command — by **`navigate <url>` taking one for you**.
 
@@ -329,16 +342,20 @@ There is nothing to focus, hide or close at the window level: `tab-show <id>` on
 
 ---
 
-## Secondary helper: `browser-tool parse-url`
+## Secondary helper: `browser-tool`
 
-Use this for safe URL debugging in Explore mode without running a generic interpreter snippet:
+`bun run browser-tool` is a thin, deterministic helper for use outside agent turns:
+
+- `bun run browser-tool --help` — usage and the commands it offers
+- `bun run browser-tool list` / `template <command>` / `all-templates` — JSON templates for `browser_tool` commands (for example `bun run browser-tool template navigate`)
+- `bun run browser-tool parse-url <url>` — safe URL debugging in Explore mode without running a generic interpreter snippet
 
 ```bash
 bun run browser-tool parse-url https://example.com/path?q=1#hash
 bun run browser-tool parse-url file:///Users/me/Desktop/report.html
 ```
 
-Output is deterministic JSON (`href`, `protocol`, `host`, `hostname`, `pathname`, `search`, `hash`, `origin`, plus `basename` for `file://` URLs).
+Output is deterministic JSON (`href`, `protocol`, `host`, `hostname`, `pathname`, `search`, `hash`, `origin`, plus `basename` and `decodedPath` for `file://` URLs).
 
 ---
 

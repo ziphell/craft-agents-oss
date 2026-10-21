@@ -16,9 +16,17 @@ export interface SavedBrowserTab {
   title: string
 }
 
-/** One workspace's browser window, as it is remembered between runs. */
+/** One browser window, as it is remembered between runs. */
 export interface SavedBrowserWindowTabs {
   workspaceId: string | null
+  /**
+   * The browser profile the window was signed into.
+   *
+   * The pair `(workspaceId, profileId)` is the window: a workspace holds one window per profile in
+   * use. Optional because an entry written before profiles existed has none — that is the built-in
+   * profile, which is where every window used to be.
+   */
+  profileId?: string
   tabs: SavedBrowserTab[]
   /** Which of `tabs` was on screen — an index, because the ids are handed out again on restore. */
   activeIndex: number

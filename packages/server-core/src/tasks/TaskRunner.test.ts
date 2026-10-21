@@ -72,6 +72,10 @@ class MockHost implements ConductorSessionHost {
   getSessionWorkingDirectory(sessionId: string): string | undefined {
     return this.workingDirById.get(sessionId);
   }
+  browserProfileById = new Map<string, string>();
+  getSessionBrowserProfile(sessionId: string): string | undefined {
+    return this.browserProfileById.get(sessionId);
+  }
 
   // --- test helpers (sessionId is derived from the node title, which defaults to the node id) ---
   sessionIdFor(nodeId: string): string {

@@ -36,6 +36,10 @@ import {
 } from './powershell-validator.ts';
 import { sanitizePromptLine } from '../prompts/prompt-sanitize.ts';
 import {
+  consumeBrowserProfileChange,
+  getBrowserProfilePromptState,
+} from './browser-profile-prompt-state.ts';
+import {
   type PermissionMode,
   type ModeConfig,
   type CompiledApiEndpointRule,
@@ -2204,6 +2208,24 @@ export function formatSessionState(
 
     if (options?.consumeModeChangeUserSignal) {
       consumeUserModeSignal(sessionId);
+    }
+  }
+
+  // The browser profile this conversation works in. Volatile by nature — the user can switch it
+  // between turns — so it rides the user tail with the rest of `<session_state>` instead of the
+  // cached system prefix. `browserProfileChanged` is a one-shot: it belongs to the first turn
+  // after a switch, and repeating it would claim the user switched again.
+  const browserProfile = getBrowserProfilePromptState(sessionId);
+  if (browserProfile) {
+    result += `\nbrowserProfile: ${sanitizePromptLine(browserProfile.name, sessionStateTags)}`;
+    result +=
+      '\nbrowserProfileNote: browser work that names no profile lands in this profile; ' +
+      '"--profile <name>" reaches another profile, and tabs already open stay in their own window.';
+    const change = consumeBrowserProfileChange(sessionId);
+    if (change) {
+      result +=
+        `\nbrowserProfileChanged: the user switched this conversation's browser profile from ` +
+        `${sanitizePromptLine(change.from, sessionStateTags)} to ${sanitizePromptLine(change.to, sessionStateTags)}.`;
     }
   }
 

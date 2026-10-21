@@ -40,6 +40,12 @@ export interface ProjectConfig {
   description?: string;
   /** Absolute path bound to this project; new sessions inherit it when not overridden */
   workingDirectory?: string;
+  /**
+   * Browser profile conversations in this project use by default.
+   *
+   * Optional: empty means "follow the workspace default". A conversation can still pick its own.
+   */
+  browserProfile?: string;
   /** Free-form text injected into the system prompt as project context */
   details?: string;
   /** Optional color theme ID for project-branded UI */

@@ -94,8 +94,10 @@ import { setSearchPlatform, setImageProcessor } from '@craft-agent/server-core/s
 import { createApplicationMenu } from './menu'
 import { WindowManager } from './window-manager'
 import { loadWindowState, saveWindowState } from './window-state'
-import { getWorkspaces, getWorkspaceByNameOrId, loadStoredConfig, addWorkspace, saveConfig } from '@craft-agent/shared/config'
-import { getDefaultWorkspacesDir } from '@craft-agent/shared/workspaces'
+import { getWorkspaces, getWorkspaceByNameOrId, loadStoredConfig, addWorkspace, saveConfig, resolveConversationBrowserProfileId } from '@craft-agent/shared/config'
+import { getDefaultWorkspacesDir, getWorkspaceBrowserProfile } from '@craft-agent/shared/workspaces'
+import { loadSessionHeader } from '@craft-agent/shared/sessions'
+import { loadProjectById } from '@craft-agent/shared/projects'
 import { initializeDocs } from '@craft-agent/shared/docs'
 import { getDesignConfigRelativePath } from '@craft-agent/shared/designs'
 import { initializeReleaseNotes } from '@craft-agent/shared/release-notes'
@@ -551,6 +553,22 @@ app.whenReady().then(async () => {
     // A browser partition is created per workspace, on first use — after the proxy settings were
     // applied. This is how such a partition still gets them.
     browserPaneManager.setProxyApplier(applyConfiguredProxyToSession)
+    // A tab's profile is a fact about the conversation (or, with no conversation, the workspace).
+    // Resolved here because this is the side that can read both — and asked per tab, so a
+    // conversation that switches profiles lands on the new one with its next tab.
+    browserPaneManager.setProfileResolver((sessionId, workspaceId) => {
+      const workspace = workspaceId ? getWorkspaces().find((w) => w.id === workspaceId) : undefined
+      if (!workspace) return resolveConversationBrowserProfileId(undefined, undefined, undefined)
+      const session = sessionId ? loadSessionHeader(workspace.rootPath, sessionId) : undefined
+      const projectProfile = session?.projectId
+        ? loadProjectById(workspace.rootPath, session.projectId)?.config.browserProfile
+        : undefined
+      return resolveConversationBrowserProfileId(
+        session?.browserProfile,
+        projectProfile,
+        getWorkspaceBrowserProfile(workspace.rootPath),
+      )
+    })
     browserPaneManager.registerToolbarIpc()
     browserPaneManager.registerCapabilityIpc()
 

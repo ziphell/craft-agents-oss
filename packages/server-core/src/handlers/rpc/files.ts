@@ -1,11 +1,11 @@
 import { readFile, writeFile, unlink, mkdir, readdir, stat } from 'fs/promises'
 import { isAbsolute, join, resolve, dirname, parse as parsePath } from 'path'
 import { homedir } from 'os'
-import { validatePathFormat } from '../../utils/path-validation'
+import { validatePathFormat, isValidWorkingDirectory } from '../../utils/path-validation'
 import { randomUUID } from 'crypto'
 import { RPC_CHANNELS, type FileAttachment, type DirectoryListingResult } from '@craft-agent/shared/protocol'
 import type { StoredAttachment } from '@craft-agent/core/types'
-import { readFileAttachment, validateImageForClaudeAPI, IMAGE_LIMITS } from '@craft-agent/shared/utils'
+import { readFileAttachment, validateImageForClaudeAPI, IMAGE_LIMITS, expandPath } from '@craft-agent/shared/utils'
 import { getSessionAttachmentsPath, validateSessionId } from '@craft-agent/shared/sessions'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import { resizeImageForAPI, inspectImageBuffer } from '@craft-agent/server-core/services'
@@ -28,6 +28,7 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.file.GENERATE_THUMBNAIL,
   RPC_CHANNELS.fs.SEARCH,
   RPC_CHANNELS.fs.LIST_DIRECTORY,
+  RPC_CHANNELS.fs.CHECK_DIRECTORY,
 ] as const
 
 export function registerFilesHandlers(server: RpcServer, deps: HandlerDeps): void {
@@ -551,6 +552,14 @@ export function registerFilesHandlers(server: RpcServer, deps: HandlerDeps): voi
       deps.platform.logger.error('[FS_SEARCH] error:', err)
       return []
     }
+  })
+
+  // Whether a path is currently an existing directory on this server.
+  // The composer asks before enabling send for a conversation whose working
+  // directory was picked earlier and may since have been removed.
+  server.handle(RPC_CHANNELS.fs.CHECK_DIRECTORY, async (_ctx, dirPath: string) => {
+    if (!dirPath?.trim()) return false
+    return isValidWorkingDirectory(expandPath(dirPath)).valid
   })
 
   // List directories in a given path (for remote directory browsing).

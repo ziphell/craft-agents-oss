@@ -15,6 +15,7 @@ import type {
   LabelsChangedEvent,
   ProjectIdChangedEvent,
   ModeChangedEvent,
+  BrowserProfileChangedEvent,
   SessionStatusChangedEvent,
   SessionMetadataChangedEvent,
   SessionFlaggedEvent,
@@ -37,6 +38,7 @@ import type {
   SessionModelChangedEvent,
   LLMConnectionChangedEvent,
   UserMessageEvent,
+  QueuedMessageCancelledEvent,
   MessageAnnotationsUpdatedEvent,
   SessionSharedEvent,
   SessionUnsharedEvent,
@@ -93,8 +95,19 @@ export function handleComplete(
   // a safe no-op for that case.
   const hasQueuedUserBubbles = updatedMessages.some(m => m.role === 'user' && m.isQueued)
   if (hasQueuedUserBubbles) {
+    // Re-stamp in the same pass. A queued message was created mid-turn, so its
+    // timestamp points into the middle of the turn that just finished. Leaving
+    // it there while clearing `isQueued` would splice the bubble into that
+    // completed response until the replay event re-stamps it (or forever, if
+    // the replay never happens). The backend does the same re-stamp when it
+    // dequeues (SessionManager.processNextQueuedMessage).
+    const latestTimestamp = updatedMessages.reduce((max, m) => Math.max(max, m.timestamp), 0)
+    const restampBase = Math.max(Date.now(), latestTimestamp) + 1
+    let restampOffset = 0
     updatedMessages = updatedMessages.map(m =>
-      m.role === 'user' && m.isQueued ? { ...m, isQueued: false } : m
+      m.role === 'user' && m.isQueued
+        ? { ...m, isQueued: false, timestamp: restampBase + restampOffset++ }
+        : m
     )
   }
 
@@ -542,6 +555,27 @@ export function handleConnectionChanged(
 }
 
 /**
+ * Handle browser_profile_changed - sync the session's account to renderer state
+ *
+ * No notice: the composer's badge already shows the account, and a switch made here is the
+ * person's own action — saying it back to them is noise.
+ */
+export function handleBrowserProfileChanged(
+  state: SessionState,
+  event: BrowserProfileChangedEvent
+): ProcessResult {
+  const { session, streaming } = state
+
+  return {
+    state: {
+      session: { ...session, browserProfile: event.profileId ?? undefined },
+      streaming,
+    },
+    effects: [],
+  }
+}
+
+/**
  * Handle user_message - confirms optimistic user message from backend
  *
  * Three statuses:
@@ -625,6 +659,34 @@ export function handleUserMessage(
         // Set isProcessing when message is accepted/processing (enables multi-window sync)
         isProcessing: status === 'accepted' || status === 'processing',
       },
+      streaming,
+    },
+    effects: [],
+  }
+}
+
+/**
+ * Handle queued_message_cancelled - drop a queued bubble the backend removed.
+ *
+ * The text is restored to the composer by the renderer that initiated the
+ * cancel, so this stays a pure transcript edit and syncs other windows.
+ */
+export function handleQueuedMessageCancelled(
+  state: SessionState,
+  event: QueuedMessageCancelledEvent
+): ProcessResult {
+  const { session, streaming } = state
+  const messages = session.messages.filter(
+    m => m.id !== event.messageId && m.id !== event.optimisticMessageId
+  )
+
+  if (messages.length === session.messages.length) {
+    return { state, effects: [] }
+  }
+
+  return {
+    state: {
+      session: { ...session, messages },
       streaming,
     },
     effects: [],

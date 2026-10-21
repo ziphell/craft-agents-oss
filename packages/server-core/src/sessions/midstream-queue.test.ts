@@ -135,6 +135,38 @@ describe('mid-stream queue runtime invariants', () => {
     expect(replay.mock.calls[0]).toEqual([managed.id, 'inspect image', attachments, storedAttachments, options, managed.messages[0]!.id])
   })
 
+  it('cancels one queued message and leaves the rest of the queue intact', async () => {
+    const managed = buildSession('cancel-queued')
+    const queued = [
+      { message: 'first', messageId: 'm1', optimisticMessageId: 'o1' },
+      { message: 'second', messageId: 'm2', optimisticMessageId: 'o2' },
+    ]
+    managed.messageQueue = queued
+    managed.messages = queued.map((p, i) => ({
+      id: p.messageId,
+      role: 'user' as const,
+      content: p.message,
+      timestamp: i + 1,
+      isQueued: true,
+    }))
+    ;(sm as any).persistSession = () => {}
+    ;(sm as any).flushSession = async () => {}
+    const events: any[] = []
+    sm.setEventSink((_channel, _target, event) => events.push(event))
+
+    // The renderer sends its own optimistic id; both ids must resolve.
+    await expect(sm.cancelQueuedMessage(managed.id, 'o2')).resolves.toEqual({ cancelled: true })
+    expect(managed.messageQueue).toEqual([queued[0]])
+    expect(managed.messages.map(m => m.id)).toEqual(['m1'])
+    expect(events.find(e => e.type === 'queued_message_cancelled')).toMatchObject({
+      messageId: 'm2',
+      optimisticMessageId: 'o2',
+    })
+
+    // Unknown or already-replaying messages are a no-op.
+    await expect(sm.cancelQueuedMessage(managed.id, 'missing')).resolves.toEqual({ cancelled: false })
+  })
+
   it('marks Accept & Compact ready only after a manual compaction success and preserves the fresh snapshot', async () => {
     const managed = buildSession('manual-compact-ready')
     managed.isProcessing = true

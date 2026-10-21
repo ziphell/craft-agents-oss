@@ -36,6 +36,8 @@ export const SESSION_PERSISTENT_FIELDS = [
   'enabledSourceSlugs', 'permissionMode', 'previousPermissionMode', 'workingDirectory',
   // Model/Connection
   'model', 'llmConnection', 'connectionLocked', 'thinkingLevel',
+  // Browser profile this conversation's browser work runs in (one window per profile)
+  'browserProfile',
   // Sharing
   'sharedUrl', 'sharedId',
   // Plan execution
@@ -171,6 +173,14 @@ export interface SessionConfig {
   model?: string;
   /** LLM connection slug for this session (auto-pinned on first agent creation) */
   llmConnection?: string;
+  /**
+   * Browser profile this conversation picked (see `browser-profiles.ts`).
+   *
+   * Unset means "the project's default, then the workspace's, then the built-in `default`". A
+   * profile is a window: the conversation's unnamed commands use that profile's window, while the
+   * tabs it already had stay where they are — a Chromium session cannot be swapped under a live page.
+   */
+  browserProfile?: string;
   /** Whether the connection is pinned against *implicit* rewrites; explicit user switches are still allowed */
   connectionLocked?: boolean;
   /** Thinking level for this session ('off', 'think', 'max') */
@@ -305,6 +315,8 @@ export interface SessionHeader {
   enabledSourceSlugs?: string[];
   /** Working directory for this session (used by agent for bash commands and context) */
   workingDirectory?: string;
+  /** Browser profile this conversation picked (see `Session.browserProfile`). */
+  browserProfile?: string;
   /** SDK cwd for session storage - set once at creation, never changes */
   sdkCwd?: string;
   /** Shared viewer URL (if shared via viewer) */
@@ -422,6 +434,8 @@ export interface SessionMetadata {
   sharedId?: string;
   /** Working directory for this session */
   workingDirectory?: string;
+  /** Browser profile this conversation picked (see `Session.browserProfile`). */
+  browserProfile?: string;
   /** SDK cwd for session storage - set once at creation, never changes */
   sdkCwd?: string;
   /** Role/type of the last message (for badge display without loading messages) */

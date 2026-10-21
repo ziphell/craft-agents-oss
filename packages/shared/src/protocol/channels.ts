@@ -27,6 +27,7 @@ export const RPC_CHANNELS = {
     GET_MESSAGES: 'sessions:getMessages',
     SEND_MESSAGE: 'sessions:sendMessage',
     CANCEL: 'sessions:cancel',
+    CANCEL_QUEUED_MESSAGE: 'sessions:cancelQueuedMessage',
     KILL_SHELL: 'sessions:killShell',
     RESPOND_TO_PERMISSION: 'sessions:respondToPermission',
     RESPOND_TO_CREDENTIAL: 'sessions:respondToCredential',
@@ -119,6 +120,7 @@ export const RPC_CHANNELS = {
   fs: {
     SEARCH: 'fs:search',
     LIST_DIRECTORY: 'fs:listDirectory',
+    CHECK_DIRECTORY: 'fs:checkDirectory',
   },
   debug: {
     LOG: 'debug:log',
@@ -279,6 +281,20 @@ export const RPC_CHANNELS = {
     WRITE_IMAGE: 'workspace:writeImage',
     SETTINGS_GET: 'workspaceSettings:get',
     SETTINGS_UPDATE: 'workspaceSettings:update',
+  },
+  browserProfiles: {
+    /** Every profile this app has — the built-in `default` always first. */
+    LIST: 'browserProfiles:list',
+    CREATE: 'browserProfiles:create',
+    RENAME: 'browserProfiles:rename',
+    DELETE: 'browserProfiles:delete',
+    /**
+     * Which profile a conversation works in, and what it is inheriting.
+     *
+     * The picker needs two facts it cannot derive: the conversation's own pick and its workspace's
+     * default. Asking here keeps the resolution in one place (the server, which owns both files).
+     */
+    RESOLVE: 'browserProfiles:resolve',
   },
   permissions: {
     GET_DEFAULTS: 'permissions:getDefaults',

@@ -2176,14 +2176,24 @@ function AppShellContent({
 
   // Open the browser.
   //
-  // One window per workspace is the model, so this brings the window up rather than adding
-  // a tab to it: a window this workspace already has is raised (and un-minimized) instead
+  // One window per workspace and profile is the model, so this brings the window up rather than
+  // adding a tab to it: a window this workspace already has is raised (and un-minimized) instead
   // of being joined by a second. Only when there is none does a window get made — and it
   // comes back with the pages it had last time when the restore setting is on, and with the
   // single empty-state tab when it is not. The host decides both (see `createInstance`),
   // which is why nothing about tabs is asked for here.
-  const handleOpenBrowser = useCallback(async () => {
+  //
+  // `profileId` says which profile's window the person picked in the top bar. Left out, the
+  // workspace's own answer is used — and the window already up is raised, whichever one it is.
+  const handleOpenBrowser = useCallback(async (profileId?: string) => {
     try {
+      if (profileId) {
+        // A profile names its window: the host brings that one up, opening it when the
+        // workspace has none for the account yet.
+        const instanceId = await window.electronAPI.browserPane.create({ show: true, profileId })
+        await window.electronAPI.browserPane.focus(instanceId)
+        return
+      }
       const instances = await window.electronAPI.browserPane.list()
       const existing = filterInstancesForWorkspace(
         instances,
@@ -2524,7 +2534,7 @@ function AppShellContent({
           onToggleSidebar={handleToggleSidebar}
           onToggleFocusMode={() => setIsSidebarAndNavigatorHidden(prev => !prev)}
           onAddSessionPanel={() => handleNewChat(true)}
-          onAddBrowserPanel={() => { void handleOpenBrowser() }}
+          onAddBrowserPanel={(profileId) => { void handleOpenBrowser(profileId) }}
           onAddTabToConversation={handleAddTabToConversation}
           isCompact={isAutoCompact}
         />

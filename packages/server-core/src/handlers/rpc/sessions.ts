@@ -110,6 +110,7 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.sessions.GET_MESSAGES,
   RPC_CHANNELS.sessions.SEND_MESSAGE,
   RPC_CHANNELS.sessions.CANCEL,
+  RPC_CHANNELS.sessions.CANCEL_QUEUED_MESSAGE,
   RPC_CHANNELS.sessions.KILL_SHELL,
   RPC_CHANNELS.tasks.GET_OUTPUT,
   RPC_CHANNELS.sessions.RESPOND_TO_PERMISSION,
@@ -263,6 +264,11 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
     return sessionManager.cancelProcessing(sessionId, silent)
   })
 
+  // Cancel one queued (not yet replaying) message so the user can edit it
+  server.handle(RPC_CHANNELS.sessions.CANCEL_QUEUED_MESSAGE, async (_ctx, sessionId: string, messageId: string) => {
+    return sessionManager.cancelQueuedMessage(sessionId, messageId)
+  })
+
   // Kill background shell
   server.handle(RPC_CHANNELS.sessions.KILL_SHELL, async (_ctx, sessionId: string, shellId: string) => {
     return sessionManager.killShell(sessionId, shellId)
@@ -367,6 +373,10 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
       case 'setConnection':
         log.info(`IPC: setConnection received for session ${sessionId}, connection: ${command.connectionSlug}`)
         return sessionManager.setSessionConnection(sessionId, command.connectionSlug)
+      // Explicit browser profile switch — the conversation's *next* tabs open in it
+      case 'setBrowserProfile':
+        log.info(`IPC: setBrowserProfile received for session ${sessionId}, profile: ${command.profileId ?? 'workspace default'}`)
+        return sessionManager.setSessionBrowserProfile(sessionId, command.profileId)
       // Pending plan execution (Accept & Compact flow)
       case 'setPendingPlanExecution':
         return sessionManager.setPendingPlanExecution(sessionId, command.planPath, command.draftInputSnapshot)

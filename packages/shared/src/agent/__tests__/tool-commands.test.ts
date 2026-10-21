@@ -25,6 +25,7 @@ function tabRow(overrides: Partial<BrowserTabSummary> & { id: string }): Browser
   return {
     url: 'about:blank',
     title: 'New Tab',
+    profileId: 'default',
     favicon: null,
     isLoading: false,
     active: false,
@@ -1305,6 +1306,64 @@ describe('the pane tools', () => {
       // The two halves are named, because a reader that takes a declaration for a
       // measurement is the failure this split exists to prevent.
       expect(text).toContain('"belongs to" and "driven by" are')
+    })
+
+    // One workspace holds a window per profile, so a tab list can span profiles — and a tab id
+    // is unique only inside one window, so the list has to say which window each one is in.
+    it('lists tabs across profiles, and names the window each belongs to', async () => {
+      mockFns.listTabs = async () => ([
+        {
+          ...tabRow({ id: 'tab-1', url: 'https://mail.example.com', title: 'Inbox', active: true, profileId: 'work' }),
+          instanceId: 'browser-2',
+          profileName: 'Work',
+        },
+        {
+          ...tabRow({ id: 'tab-1', url: 'https://personal.example.com', title: 'Personal', profileId: 'default' }),
+          instanceId: 'browser-1',
+          profileName: 'Default',
+        },
+      ])
+
+      const text = (await executeTool(tools, 'browser_tool', { command: 'tabs' })).content[0].text
+
+      expect(text).toContain('2 browser windows')
+      expect(text).toContain('Work  (browser-2)')
+      expect(text).toContain('Default  (browser-1)')
+      expect(text).toContain('--profile <name>')
+    })
+
+    // The registry is the host's, and `--profile` takes either spelling the registry prints.
+    it('lists the profiles a command can name', async () => {
+      mockFns.listProfiles = async () => ([
+        { id: 'default', name: 'Default' },
+        { id: 'bp-work', name: 'Work' },
+      ])
+
+      const text = (await executeTool(tools, 'browser_tool', { command: 'profiles' })).content[0].text
+
+      expect(text).toContain('Default  (default)')
+      expect(text).toContain('Work  (bp-work)')
+      expect(text).toContain('--profile <name-or-id>')
+    })
+
+    // `--profile` binds one command to one profile; it is lifted off the command line the same
+    // way `--tab` is, so no command body sees it as an argument.
+    it('binds a command to the profile it names', async () => {
+      let scopedTo: string | undefined
+      mockFns.withProfile = (ref: string) => {
+        scopedTo = ref
+        return {
+          ...mockFns,
+          navigate: async (url: string) => ({ url, title: 'Scoped', tabId: 'tab-9' }),
+        }
+      }
+
+      const result = await executeTool(tools, 'browser_tool', {
+        command: 'navigate https://app.example.com --profile Work',
+      })
+
+      expect(scopedTo).toBe('Work')
+      expect(result.content[0].text).toContain('tab-9')
     })
 
     // A page that is held right now says so — and says it about *that page*, since with a

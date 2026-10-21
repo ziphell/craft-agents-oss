@@ -26,10 +26,16 @@ import { RenameDialog } from '@/components/ui/rename-dialog'
 import type { PermissionMode, WorkspaceSettings, LoadedSource } from '../../../shared/types'
 import { useDirectoryPicker } from '@/hooks/useDirectoryPicker'
 import { ServerDirectoryBrowser } from '@/components/ServerDirectoryBrowser'
+import { useAtomValue, useSetAtom } from 'jotai'
 import { PERMISSION_MODE_CONFIG } from '@craft-agent/shared/agent/mode-types'
 import type { DetailsPageMeta } from '@/lib/navigation-registry'
 import { SourceAvatar } from '@/components/ui/source-avatar'
 import { toast } from 'sonner'
+import {
+  DEFAULT_BROWSER_PROFILE_ID,
+  browserProfilesAtom,
+  refreshBrowserProfilesAtom,
+} from '@/atoms/browser-profiles'
 
 import {
   SettingsSection,
@@ -65,7 +71,12 @@ export default function WorkspaceSettingsPage() {
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('ask')
   const [workingDirectory, setWorkingDirectory] = useState('')
   const [localMcpEnabled, setLocalMcpEnabled] = useState(true)
+  /** Undefined = the built-in `default` profile. */
+  const [browserProfile, setBrowserProfile] = useState<string | undefined>(undefined)
   const [isLoadingWorkspace, setIsLoadingWorkspace] = useState(true)
+
+  const profiles = useAtomValue(browserProfilesAtom)
+  const refreshProfiles = useSetAtom(refreshBrowserProfilesAtom)
 
   // Default sources state
   const [availableSources, setAvailableSources] = useState<LoadedSource[]>([])
@@ -92,6 +103,7 @@ export default function WorkspaceSettingsPage() {
           setPermissionMode(settings.permissionMode || 'ask')
           setWorkingDirectory(settings.workingDirectory || '')
           setLocalMcpEnabled(settings.localMcpEnabled ?? true)
+          setBrowserProfile(settings.browserProfile)
           // Load cyclable permission modes from workspace settings
           if (settings.cyclablePermissionModes && settings.cyclablePermissionModes.length >= 2) {
             setEnabledModes(settings.cyclablePermissionModes)
@@ -185,6 +197,24 @@ export default function WorkspaceSettingsPage() {
       }
     },
     [activeWorkspaceId, t]
+  )
+
+  // The profile list is global; this page only picks one of it.
+  useEffect(() => {
+    void refreshProfiles()
+  }, [refreshProfiles])
+
+  const handleBrowserProfileChange = useCallback(
+    async (profileId: string) => {
+      setBrowserProfile(profileId)
+      // Clearing the field (rather than storing `default`) keeps "follow the built-in one" and
+      // "explicitly chose the built-in one" the same thing.
+      await updateWorkspaceSetting(
+        'browserProfile',
+        profileId === DEFAULT_BROWSER_PROFILE_ID ? undefined : profileId,
+      )
+    },
+    [updateWorkspaceSetting],
   )
 
   // Workspace icon upload handler
@@ -483,6 +513,30 @@ export default function WorkspaceSettingsPage() {
                   </motion.p>
                 )}
               </AnimatePresence>
+            </SettingsSection>
+
+            {/* Browser profile */}
+            <SettingsSection
+              title={t("settings.browser.workspaceTitle", "Browser profile")}
+              description={t(
+                "settings.browser.workspaceDesc",
+                "Which account this workspace's browser windows are signed into. A conversation can override it.",
+              )}
+            >
+              <SettingsCard>
+                <SettingsMenuSelectRow
+                  label={t("settings.browser.workspaceProfile", "Profile")}
+                  value={browserProfile || DEFAULT_BROWSER_PROFILE_ID}
+                  onValueChange={handleBrowserProfileChange}
+                  options={profiles.map((profile) => ({
+                    value: profile.id,
+                    label: profile.name,
+                    ...(profile.id === DEFAULT_BROWSER_PROFILE_ID
+                      ? { description: t("settings.browser.builtInDesc", "The built-in profile — where every login already lives.") }
+                      : {}),
+                  }))}
+                />
+              </SettingsCard>
             </SettingsSection>
 
             {/* Default Sources */}

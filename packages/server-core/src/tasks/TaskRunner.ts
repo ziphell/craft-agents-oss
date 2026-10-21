@@ -73,6 +73,13 @@ export interface ConductorSessionHost {
   getSessionFinalText(sessionId: string): string | undefined;
   /** Resolved working directory of a session, so children inherit the orchestrator's cwd. */
   getSessionWorkingDirectory(sessionId: string): string | undefined;
+  /**
+   * The browser profile a session picked, so children inherit the orchestrator's account.
+   *
+   * Undefined when the session made no pick — the child then follows the workspace default, which
+   * is what the orchestrator is doing too.
+   */
+  getSessionBrowserProfile(sessionId: string): string | undefined;
 }
 
 export interface TaskRunnerDeps {
@@ -509,6 +516,11 @@ class ActiveRun {
         (this.opts.orchestratorSessionId
           ? this.deps.host.getSessionWorkingDirectory(this.opts.orchestratorSessionId)
           : undefined) ?? this.spec.cwd;
+      // The browser account is inherited the same way the directory is: a node works in the
+      // window its orchestrator works in, rather than falling back to the workspace default.
+      const browserProfile = this.opts.orchestratorSessionId
+        ? this.deps.host.getSessionBrowserProfile(this.opts.orchestratorSessionId)
+        : undefined;
       const options: CreateSessionOptions = {
         parentSessionId: this.opts.orchestratorSessionId,
         // Link the child back to the task / run / node so the manual subtask composer can
@@ -531,6 +543,7 @@ class ActiveRun {
         ...(this.spec.sources?.length ? { enabledSourceSlugs: this.spec.sources } : {}),
         projectId: this.spec.project,
         ...(cwd ? { workingDirectory: cwd } : {}),
+        ...(browserProfile ? { browserProfile } : {}),
         sessionStatus: RUNNING_STATUS,
       };
       // createSession announces the child to the renderer by default, so it nests under the task

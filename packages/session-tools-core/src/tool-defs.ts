@@ -570,7 +570,7 @@ never spelled out a second time in a command. Use it for anything longer than a 
 runs is **not registered**, so a reload drops it.
 Detailed rules and the full command reference: docs/browser-tools.md — read it before using this tool.
 
-The window is one and its tabs are many: every command can name the tab it acts on with \`--tab <id>\`
+The window is one profile's and its tabs are many: every command can name the tab it acts on with \`--tab <id>\`
 (\`tabs\` lists them). Without one it acts on **your** tab — the tab you have been working from, which
 \`tabs\` marks as \`your tab\` and \`tab-select <id>\` sets. With none yet, \`navigate <url>\` **gives you one of
 your own** (a new tab behind the person's — or the tab the window was born with, when the command is what
@@ -583,9 +583,10 @@ picking one and names the ways out. What the person happens to be looking at nev
 land. A session spawned by another one takes no tab of its own choosing: it works in the tab the parent
 handed over (\`tab-assign\`) or opens one with \`tab-new <url>\`.
 
-There is **one browser window per workspace**, shared by every conversation in it and by the user — so \`tab-new\`
-adds a tab to it instead of making a window (a workspace with no window gets one when a tab is first opened),
-and the window is not yours to close: use \`tab-close <id>\` for
+There is **one browser window per workspace and browser profile**, shared by every conversation
+working in that profile and by the user — so \`tab-new\` adds a tab to the window you are working in instead
+of making a window (a profile with no window gets one when a tab is first opened), and the window is not yours
+to close: use \`tab-close <id>\` for
 the tabs of your task (the ones you opened, the ones handed to you, and the tabs opened from them — a Task's
 node tabs included, so a finished DAG can be tidied up). \`tab-show <id>\` makes a tab the one the window
 shows, without raising the window — your reply is what tells the person to look; \`tab-show <id> --handover\`
@@ -596,13 +597,26 @@ change that), and \`tab-assign <tab-id> <session>\` is how a parent hands one of
 so that parallel sessions each work in their own tab. A tab's work outlives the session that opened it: a
 Task node's tab belongs to that node, so a re-run of a node finds its predecessor's tab in \`tabs\` — read it
 before opening one, because \`tab-new\` always gives you a tab of your own (when it is what opens the window it
-opens into the tab that window was born with; a window that already exists gets one more). There is no window list to read, because there is
-one window.
+opens into the tab that window was born with; a window that already exists gets one more).
+
+Every command can also name the **profile** it works in: \`--profile <name-or-id>\` (\`profiles\` lists them by
+name and id) moves that one command to that profile's window; \`navigate\`/\`tab-new\` open that window when it
+is not up, while the other commands report that there is no window instead of opening one. A command that
+names no profile uses the profile this conversation is set to — its own pick, then its project's default,
+then the workspace default, then Default — and does not fall back to Default while another one is selected.
+A name that does not exist is refused rather than mapped to Default. That is how **one conversation can drive
+two profiles at once**. \`tabs\`
+lists every window with its profile; a tab id is unique inside one window, so two profiles can both have a
+\`tab-1\`, and \`--profile\` says which one \`--tab\` means.
+A spawned session inherits its parent's browser profile the way it inherits the parent's working directory, so
+its unnamed commands keep working in that profile.
 
 Examples:
 - \`--help\`
 - \`navigate https://example.com\` — go there in your tab, taking one if you have none yet (this also opens the window)
 - \`tab-new https://example.com\` — one more page, in a tab of its own behind the person's
+- \`profiles\` — the browser profiles a command can name
+- \`navigate https://app.example.com --profile Work\` — work in that profile's window (opened if needed)
 - \`snapshot\`
 - \`read --save notes/my-page.md\` — read the page as an article (markdown + the facts it states); \`--save\` keeps it in a file, and \`--images\` also keeps its images beside it in \`notes/my-page.assets/\`; without \`--save\` the note comes back instead of being written
 - \`find login button\` — search elements by keyword

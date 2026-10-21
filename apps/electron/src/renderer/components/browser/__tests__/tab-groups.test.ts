@@ -7,6 +7,7 @@ function tab(id: string, belongsTo: TabBelongsTo | null): BrowserTabSummary {
     id,
     url: `https://${id}.example.com/`,
     title: id,
+    profileId: 'default',
     favicon: null,
     isLoading: false,
     active: false,

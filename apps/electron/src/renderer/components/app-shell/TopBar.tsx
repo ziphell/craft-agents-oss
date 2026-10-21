@@ -1,7 +1,7 @@
 /**
  * TopBar - Persistent top bar above all panels (Slack-style)
  *
- * Layout: [Sidebar] [Menu] [Back] [Forward] [Workspace selector] ... [Browser strip] [+] [Help]
+ * Layout: [Sidebar] [Menu] [Back] [Forward] [Workspace selector] ... [Browser] [+] [Help]
  *
  * Fixed at top of window, 48px tall.
  * macOS: offset left to avoid stoplight controls.
@@ -24,7 +24,6 @@ import {
 } from "@/components/ui/styled-dropdown"
 import type { SettingsMenuItem } from "../../../shared/menu-schema"
 import { SquarePenRounded } from "../icons/SquarePenRounded"
-import { useEffect, useRef, useState } from "react"
 import { BrowserTabStrip } from "../browser/BrowserTabStrip"
 import type { Workspace } from "../../../shared/types"
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher"
@@ -32,9 +31,6 @@ import { CompactWorkspaceSwitcher } from "./CompactWorkspaceSwitcher"
 import { getDocUrl } from "@craft-agent/shared/docs/doc-links"
 import { AppMenu } from "../AppMenu"
 import type { TabRef } from "@craft-agent/shared/mentions"
-
-const RIGHT_SLOT_FULL_BADGES_THRESHOLD = 420
-const RIGHT_SLOT_TWO_BADGES_THRESHOLD = 300
 
 interface TopBarProps {
   workspaces: Workspace[]
@@ -57,7 +53,13 @@ interface TopBarProps {
   onToggleSidebar: () => void
   onToggleFocusMode: () => void
   onAddSessionPanel: () => void
-  onAddBrowserPanel: () => void
+  /**
+   * Open the workspace's browser, or the window of the profile named.
+   *
+   * A window is a profile (one per workspace and profile), so choosing an account here is
+   * choosing which window to bring up — and opening it when it does not exist yet.
+   */
+  onAddBrowserPanel: (profileId?: string) => void
   /** Hand one of a browser window's tabs to a conversation, as a composer chip. */
   onAddTabToConversation?: (tab: TabRef) => void
   /** When true, hides controls that don't apply in compact/mobile layout */
@@ -90,43 +92,9 @@ export function TopBar({
   isCompact,
 }: TopBarProps) {
   const { t } = useTranslation()
-  const [maxVisibleBrowserBadges, setMaxVisibleBrowserBadges] = useState(3)
-  const rightSlotRef = useRef<HTMLDivElement | null>(null)
 
   const goBackHotkey = useActionLabel('nav.goBackAlt').hotkey
   const goForwardHotkey = useActionLabel('nav.goForwardAlt').hotkey
-
-  useEffect(() => {
-    const slotEl = rightSlotRef.current
-    if (!slotEl) return
-
-    let frame = 0
-
-    const updateBadgeDensity = () => {
-      const slotWidth = slotEl.getBoundingClientRect().width
-      const nextMaxVisibleBadges = slotWidth >= RIGHT_SLOT_FULL_BADGES_THRESHOLD
-        ? 3
-        : slotWidth >= RIGHT_SLOT_TWO_BADGES_THRESHOLD
-          ? 2
-          : 1
-
-      setMaxVisibleBrowserBadges((prev) => (prev === nextMaxVisibleBadges ? prev : nextMaxVisibleBadges))
-    }
-
-    const schedule = () => {
-      if (frame) cancelAnimationFrame(frame)
-      frame = requestAnimationFrame(updateBadgeDensity)
-    }
-
-    const observer = new ResizeObserver(schedule)
-    observer.observe(slotEl)
-    updateBadgeDensity()
-
-    return () => {
-      if (frame) cancelAnimationFrame(frame)
-      observer.disconnect()
-    }
-  }, [workspaces.length, activeWorkspaceId])
 
   // Stoplight padding clears macOS traffic-light controls, which only exist
   // in the Electron desktop window. The webui runs in a regular browser tab
@@ -230,27 +198,22 @@ export function TopBar({
         </div>
       </div>
 
-      {/* === RIGHT: Browser strip + new tab + new conversation + help === */}
+      {/* === RIGHT: browser + new conversation + help === */}
       {!isCompact && (
-      <div ref={rightSlotRef} className="flex min-w-0 shrink-0 items-center justify-end gap-1" style={{ paddingRight: 12 }}>
+      <div className="flex min-w-0 shrink-0 items-center justify-end gap-1" style={{ paddingRight: 12 }}>
+        {/*
+          The browser, as one control: the window in use on the trigger, and every window, every
+          profile and the settings page inside its menu. It used to be a row of badges plus a
+          globe — the same jobs in two places, and a "+N" menu for the windows that did not fit.
+          `onAddBrowserPanel` keeps the open-in-a-profile call (and its failure toast) in AppShell.
+        */}
         <div className="min-w-0">
           <BrowserTabStrip
             activeSessionId={activeSessionId}
-            maxVisibleBadges={maxVisibleBrowserBadges}
             onAddTabToConversation={onAddTabToConversation}
+            onOpenBrowser={onAddBrowserPanel}
           />
         </div>
-
-        {/* Open the browser: brings the workspace's window up when it already exists,
-            and makes one (restoring last time's pages, or a blank tab) when it does not. */}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <TopBarButton onClick={onAddBrowserPanel} aria-label={t("browser.openBrowser")} className="ml-1 h-7 w-7 rounded-lg">
-              <Icons.Globe className="h-4 w-4 text-foreground/70" strokeWidth={1.5} />
-            </TopBarButton>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">{t("browser.openBrowser")}</TooltipContent>
-        </Tooltip>
 
         {/* New conversation in the panel. */}
         <Tooltip>

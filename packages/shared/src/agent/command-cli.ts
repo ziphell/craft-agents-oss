@@ -271,7 +271,7 @@ export function requiredDurationOption(parts: string[], flag: string, example: s
  * It is lifted out before any command parses its own arguments, because it says
  * *where* rather than *what*: every command shares it, and none of them should
  * have to know about it. A `--tab` with no id is refused here instead of silently
- * acting on the tab that happened to be on screen.
+ * acting on some other tab.
  */
 function extractTabTarget(parts: string[]): { parts: string[]; tabId: string | null } {
   const at = parts.indexOf('--tab');
@@ -283,6 +283,25 @@ function extractTabTarget(parts: string[]): { parts: string[]; tabId: string | n
   }
 
   return { parts: [...parts.slice(0, at), ...parts.slice(at + 2)], tabId };
+}
+
+/**
+ * Read the global `--profile <name-or-id>` scope off a command, and hand back the command without it.
+ *
+ * Lifted out for the same reason as `--tab`: it says *where* rather than *what*. The name is the
+ * profile's display name or its id (`profiles` prints both); resolving it to an actual profile is
+ * the host's job, because only the host knows the registry.
+ */
+function extractProfileTarget(parts: string[]): { parts: string[]; profile: string | null } {
+  const at = parts.indexOf('--profile');
+  if (at === -1) return { parts, profile: null };
+
+  const profile = parts[at + 1]?.trim();
+  if (!profile || profile.startsWith('--')) {
+    throw new Error('--profile needs a profile name or id. "profiles" lists them. Example: navigate https://example.com --profile Work');
+  }
+
+  return { parts: [...parts.slice(0, at), ...parts.slice(at + 2)], profile };
 }
 
 /**
@@ -351,6 +370,14 @@ export interface ToolCommandContext {
    * name back to stop the thing it started (`record-stop --tab`).
    */
   tabId?: string
+  /**
+   * The profile `--profile` named, when the command named one.
+   *
+   * The raw spelling (`Work`, `bp-…`), and the `fns` handed to the body are already bound to that
+   * profile — so a command never resolves it again, and a command that names none works in the
+   * profile its conversation is set to.
+   */
+  profile?: string
   parts: string[]
   cmd: string
 }
@@ -393,14 +420,25 @@ export function createCommandRunner(
     const raw = Array.isArray(args.command)
       ? args.command
       : tokenizeCommand(args.command.trim());
-    const { parts, tabId } = extractTabTarget(raw);
+    const withoutTab = extractTabTarget(raw);
+    const { parts, profile } = extractProfileTarget(withoutTab.parts);
+    const { tabId } = withoutTab;
     const cmd = parts[0]?.toLowerCase();
 
     if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') {
       return { output: spec.help(), appendReleaseHint: false };
     }
 
-    const { fns } = args;
+    // `--profile` binds the whole command to one profile: every method below resolves windows and
+    // tabs against that profile instead of the profile the conversation is set to. The host owns
+    // the registry, so it owns the resolution — a name this command has never heard of is refused
+    // there, with the profiles that exist.
+    const fns = profile ? args.fns.withProfile?.(profile) : args.fns;
+    if (!fns) {
+      throw new Error(
+        `--profile is not supported by this browser host (it cannot resolve "${profile}").`,
+      );
+    }
 
     // Naming a tab targets it: it becomes the tab this conversation works from — so the rest
     // of the command, and the next one, and the one after the person clicks around, all stay
@@ -419,6 +457,7 @@ export function createCommandRunner(
       queryLlm: args.queryLlm,
       imageModel: args.imageModel,
       ...(tabId ? { tabId } : {}),
+      ...(profile ? { profile } : {}),
       parts,
       cmd,
     };
