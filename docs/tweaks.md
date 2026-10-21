@@ -33,8 +33,8 @@
 
 ### 主进程 carrier
 
-- `apps/electron/src/main/tweaks-injector.ts`：`applyTweaksToInstance`（**只安装**：`clearInitScripts('tweak:')` + `addInitScript`，再无别的）、`requestTweaksForWorkspace`、`attachTweaksInjector`。它同时也是 `hits.json` 的唯一写入者（`recordTweakHitsForTab`，靠页面的探针回答）。
-- attach 在 `apps/electron/src/main/handlers/browser.ts`：pane manager 只有**一个** `onStateChange` 回调，渲染层的地址栏已经占了它，所以注入器是被那个回调**调用**，而不是自己去注册（模块头上写了原因）。
+- `apps/electron/src/main/tweaks-injector.ts`：`applyTweaksToInstance`（**只安装**：`clearInitScripts('tweak:')` + `addInitScript`，再无别的）、`requestTweaksForWorkspace`、`attachTweaksInjector`、`installBeforeReload`（reload 之前的那一次安装，见 §3）。它同时也是 `hits.json` 的唯一写入者（`recordTweakHitsForTab`，靠页面的探针回答）。安装本身按窗口串行（`serial`/`installTails`）：清注册与写注册不能交错，否则会漏下一个再也没人替换的旧注册。
+- attach 在 `apps/electron/src/main/handlers/browser.ts`：pane manager 只有**一个** `onStateChange` 回调，渲染层的地址栏已经占了它，所以注入器是被那个回调**调用**，而不是自己去注册（模块头上写了原因）。另有一个只服务 reload 的挂点 `setBeforeReload`（`browser-pane-manager.ts` 的 `reload()` 里 await 它）——它不是第二个 `onStateChange`，因为 reload 必须发生在**新文档出生之前**，而 `did-navigate` 报的是提交之后。
 
 ### 通道与装配（一条链）
 
@@ -90,8 +90,8 @@
 
 ## 3. 时序（踩过的坑）
 
-- **注入器只在地址变了时动。** `observedByInstance` 的标记是 `tabId|url`，相同就 return —— 所以**同 URL 的 reload 不触发任何主机动作**。那次 reload 拿到的是**它出生之前装好的**注册。
-- **导航触发的重装，对新文档来说晚一步。** 地址变化是 `did-navigate`（提交之后），此时新文档已经创建、init script 已经跑过。所以真正让"改完下一次加载就看到"成立的，是**规则一变就重装**那条路：注册在写入那一刻就是新的。没有它，工具写入和手改都要隔一次导航，而且纯 reload 永远不会生效。（这也是 `notifyConfigFileChange` 手动 poke 存在的原因之一。）
+- **注入器只在地址变了时动。** `observedByInstance` 的标记是 `tabId|url`，相同就 return —— 所以**同 URL 的 reload 不触发任何主机动作**。那次 reload 拿到的是**它出生之前装好的**注册。这条去重是给"标题/图标/加载标志也在发状态变化"用的，reload 只是被一起吞掉的副作用；所以 reload 不能走这条路：它需要的是**新文档出生之前**的那一次安装，而 `did-navigate` 已经是提交之后。现在由 `BrowserPaneManager.reload()` 在 `webContents.reload()` 之前 await `setBeforeReload`（注入器给的是 `installBeforeReload`），第一次 reload 就能带上写入时的最新代码；它只替换注册，仍然不碰已存在的文档。
+- **导航触发的重装，对新文档来说晚一步。** 地址变化是 `did-navigate`（提交之后），此时新文档已经创建、init script 已经跑过。所以真正让"改完下一次加载就看到"成立的，是**规则一变就重装**那条路：注册在写入那一刻就是新的。没有它，工具写入和手改都要隔一次导航；而只靠 `did-navigate` 的重装，纯 reload 永远不会生效 —— 这一半现在由 reload 前的 `installBeforeReload` 补上（上一条）。`notifyConfigFileChange` 的手动 poke 依然是为写入那一刻准备的。
 - **安装会写进被监听的目录 —— 所以判据是 tweak 本身，不是路径。** 每次安装都以 `recordTweakHitsForTab` 收尾，它把 `hits.json` 写进 tweak 自己的文件夹；而写完这个文件在这个平台还会（只）报一次目录（`tweaks/<slug>`）。所以 tweaks 分支跟随那三个文件**和**它们所在的文件夹，再由 `handleTweaksChange` 比较一份「记录 + 代码」的签名（`tweaksSignature`），只有**真变了**才广播 + 重装。这一条同时挡住两件事：`hits.json` 的写（以及它引发的目录事件）不会重装刚跑完的规则；而**「对已存在文件的普通写只报目录事件」**这类情况也不会被漏掉——旧规矩只认三个文件路径（`parts.length === 3`），恰好漏掉它（改完 `tweak.js` 刷新不生效的根因）。`__tests__/watcher-tweaks-events.test.ts` 钉住这两面。
 - **注册成对操作。** 每次安装都 `clearInitScripts('tweak:')` 再 `addInitScript`。少一步清理，同一个文档就会跑两遍脚本。
 - **后台 tab 不被前移就拿不到注册**；前移本身是一次 state change，所以"人在看的那一个"始终覆盖。
@@ -115,6 +115,6 @@
 - `bun test packages/shared/src/tweaks` —— 语法 parity 表、脚本跑在页面替身上（"每个文档都拿到，互相没有记忆"）、`@target` 与 `hits.json` 的合并。
 - `bun test packages/server-core/src/tweaks` —— 工具的落盘语义（`create_tweak` 写代码、`update_tweak` 只改配置并 poke）。
 - 手动的三条，对应 §2①②：
-  1. 改 `tweak.css` → **同地址 reload 就应生效**（注册在写入时已换）。
+  1. 改 `tweak.css` → **同地址 reload 就应生效**（写入时已换注册；即使那次写入被监听器漏掉，reload 前的 `installBeforeReload` 也会重读一次）。
   2. 改完**不** reload → 页面不变；`browser_tool reload` 才看到。
   3. 拨开关 on → 已打开的页面**不变**；reload 之后才有。

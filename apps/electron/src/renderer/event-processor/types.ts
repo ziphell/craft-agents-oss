@@ -55,6 +55,22 @@ export interface TextCompleteEvent {
 }
 
 /**
+ * Thinking complete event - a finished model reasoning block. Persisted as an
+ * intermediate assistant message flagged with isThinking.
+ */
+export interface ThinkingCompleteEvent {
+  type: 'thinking_complete'
+  sessionId: string
+  text: string
+  turnId?: string
+  parentToolUseId?: string
+  /** Timestamp from main process for consistent ordering with session.jsonl */
+  timestamp?: number
+  /** Authoritative message ID from main process for persistence/branching parity */
+  messageId?: string
+}
+
+/**
  * Tool start event - begins tool execution
  * Field names match SessionEvent from shared/types.ts
  */
@@ -561,6 +577,7 @@ export type AgentEvent =
   | RetryEvent
   | TextDeltaEvent
   | TextCompleteEvent
+  | ThinkingCompleteEvent
   | ToolStartEvent
   | ToolResultEvent
   | CompleteEvent

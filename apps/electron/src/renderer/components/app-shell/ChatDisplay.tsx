@@ -2010,7 +2010,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                           // markdown, not a code view) instead of the tool-output
                           // heuristics (JSON / code / terminal), which can present
                           // only part of a long passage.
-                          if (activity.type === 'intermediate') {
+                          if (activity.type === 'intermediate' || activity.type === 'thinking') {
                             setOverlayState({
                               type: 'markdown',
                               content: activity.content || '',

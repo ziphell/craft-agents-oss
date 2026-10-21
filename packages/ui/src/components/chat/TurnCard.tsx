@@ -12,6 +12,7 @@ import {
   XCircle,
   Circle,
   MessageCircleDashed,
+  Brain,
   FileText,
   ArrowUpRight,
   Ban,
@@ -738,12 +739,12 @@ export function getPreviewText(
     return runningTask.toolInput.description as string
   }
 
-  // While still streaming, show the latest intermediate message content
+  // While still streaming, show the latest reasoning or intermediate content
   // This gives visibility into what the LLM is "thinking"
   if (isStreaming && !isComplete) {
     const latestIntermediate = [...activities]
       .reverse()
-      .find(a => a.type === 'intermediate' && a.content)
+      .find(a => (a.type === 'thinking' || a.type === 'intermediate') && a.content)
     if (latestIntermediate?.content) {
       return latestIntermediate.content
     }
@@ -906,9 +907,11 @@ function TreeViewConnector({ depth }: { depth: number; isLastChild?: boolean }) 
 function ActivityRow({ activity, onOpenDetails, isLastChild, sessionFolderPath, displayMode = 'detailed' }: ActivityRowProps) {
   const depth = activity.depth || 0
 
-  // Intermediate messages (LLM commentary) - render with dashed circle icon
-  // Show "Thinking" while streaming, stripped markdown content when complete
-  if (activity.type === 'intermediate') {
+  // Intermediate messages (LLM commentary) and reasoning blocks share one row
+  // shape: dashed circle / brain icon, one-line preview, click for the details
+  // overlay (rendered as markdown). Reasoning arrives complete, so it never
+  // shows the streaming "Thinking..." placeholder.
+  if (activity.type === 'intermediate' || activity.type === 'thinking') {
     const isThinking = activity.status === 'running'
     const displayContent = isThinking ? 'Thinking...' : stripMarkdown(activity.content || '')
     const isComplete = activity.status === 'completed'
@@ -926,6 +929,8 @@ function ActivityRow({ activity, onOpenDetails, isLastChild, sessionFolderPath, 
             <div className={cn(SIZE_CONFIG.iconSize, "flex items-center justify-center shrink-0")}>
               <Spinner className={SIZE_CONFIG.spinnerSize} />
             </div>
+          ) : activity.type === 'thinking' ? (
+            <Brain className={cn(SIZE_CONFIG.iconSize, "shrink-0 opacity-70")} />
           ) : (
             <MessageCircleDashed className={cn(SIZE_CONFIG.iconSize, "shrink-0")} />
           )}
@@ -989,8 +994,7 @@ function ActivityRow({ activity, onOpenDetails, isLastChild, sessionFolderPath, 
   // - Intent: For MCP tools (activity.intent), for Bash (toolInput.description)
   // - Params: Remaining tool input summary
   const toolDisplay = formatToolDisplay(activity)
-  const fullDisplayName = toolDisplay.name
-    || (activity.type === 'thinking' ? 'Thinking' : 'Processing')
+  const fullDisplayName = toolDisplay.name || 'Processing'
 
   // Detect MCP/API tools (toolName starts with "mcp__")
   const isMcpOrApiTool = activity.toolName?.startsWith('mcp__') ?? false
@@ -2920,8 +2924,8 @@ export const TurnCard = React.memo(function TurnCard({
     && activities.every(a => {
       // Tool activities must be errors (interrupted/failed)
       if (a.type === 'tool') return a.status === 'error'
-      // Intermediate activities must have no meaningful content
-      if (a.type === 'intermediate') return !a.content?.trim()
+      // Intermediate / reasoning activities must have no meaningful content
+      if (a.type === 'intermediate' || a.type === 'thinking') return !a.content?.trim()
       // Plan activities are meaningful work
       if (a.type === 'plan') return false
       // Other activity types - consider as no meaningful work

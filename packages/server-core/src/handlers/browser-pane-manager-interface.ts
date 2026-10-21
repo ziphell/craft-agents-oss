@@ -496,6 +496,20 @@ export interface IBrowserPaneManager {
    */
   clearInitScripts(id: string, keyPrefix: string, tabId?: string): Promise<string[]>
 
+  /**
+   * Run `fn` immediately before this manager reloads a tab, and wait for it.
+   *
+   * A reload is the one request that cannot be answered after it starts: the event a caller
+   * learns about is `did-navigate`, which is the commit — the document already exists, and
+   * its init scripts have already run. So whatever has to be inside that document (the
+   * tweaks carrier's registration) is written here, before the reload is issued. The reload
+   * itself stays fire-and-forget; this only delays it by the work the hook does.
+   *
+   * Optional: hosts with no in-process browser (the null and remote managers) have no reload
+   * to hold, and no carrier to answer it.
+   */
+  setBeforeReload?(fn: (instanceId: string, tabId: string) => Promise<void>): void
+
   // -- Video frames ---------------------------------------------------------
 
   /**

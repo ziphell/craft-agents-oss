@@ -604,7 +604,7 @@ export function groupMessagesByTurn(messages: Message[], options: GroupTurnsOpti
         // Include parentId for intermediate messages to support nesting within subagents
         const intermediateActivity: ActivityItem = {
           id: message.id,
-          type: 'intermediate',
+          type: message.isThinking ? 'thinking' : 'intermediate',
           status: message.isPending ? 'running' : 'completed',
           content: message.content,
           timestamp: message.timestamp,
@@ -753,9 +753,9 @@ export function formatTurnAsMarkdown(turn: AssistantTurn): string {
     lines.push('')
 
     for (const activity of turn.activities) {
-      if (activity.type === 'intermediate') {
-        // Intermediate text (thinking/commentary)
-        lines.push(`### 💭 Commentary`)
+      if (activity.type === 'intermediate' || activity.type === 'thinking') {
+        // Model reasoning vs. commentary between tool calls
+        lines.push(activity.type === 'thinking' ? `### 🧠 Reasoning` : `### 💭 Commentary`)
         lines.push('')
         if (activity.content) {
           lines.push(activity.content)
@@ -840,9 +840,9 @@ export function formatTurnAsMarkdown(turn: AssistantTurn): string {
 export function formatActivityAsMarkdown(activity: ActivityItem): string {
   const lines: string[] = []
 
-  if (activity.type === 'intermediate') {
-    // Commentary/thinking
-    lines.push('# Commentary')
+  if (activity.type === 'intermediate' || activity.type === 'thinking') {
+    // Model reasoning vs. commentary between tool calls
+    lines.push(activity.type === 'thinking' ? '# Reasoning' : '# Commentary')
     lines.push('')
     if (activity.content) {
       lines.push(activity.content)

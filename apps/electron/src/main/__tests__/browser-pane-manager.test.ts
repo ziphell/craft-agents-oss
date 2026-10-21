@@ -4007,6 +4007,52 @@ describe('BrowserPaneManager', () => {
     })
   })
 
+  describe('reloading', () => {
+    /**
+     * The hook exists for the work that has to be in the next document — a tweak's
+     * registration. Its whole contract is *before*, so the test holds it open and checks that
+     * nothing has been reloaded while it is still unanswered.
+     */
+    it('answers the hook before reloading, so the next document is born with it', async () => {
+      manager.createInstance('reload-hook')
+      const instance = (manager as any).instances.get('reload-hook')
+      const first = instance.tabs[0]
+
+      const asked: Array<[string, string]> = []
+      let answer: (() => void) | null = null
+      manager.setBeforeReload((instanceId, tabId) => {
+        asked.push([instanceId, tabId])
+        return new Promise<void>((resolve) => {
+          answer = resolve
+        })
+      })
+
+      manager.reload('reload-hook')
+
+      expect(asked).toEqual([['reload-hook', first.id]])
+      expect(first.tabView.webContents.reload).not.toHaveBeenCalled()
+
+      answer!()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(first.tabView.webContents.reload).toHaveBeenCalledTimes(1)
+    })
+
+    // The page is the person's, the hook is ours: whatever it could not read is not a reason
+    // to leave them looking at a reload that never happened.
+    it('reloads anyway when the hook fails', async () => {
+      manager.createInstance('reload-hook-fails')
+      const instance = (manager as any).instances.get('reload-hook-fails')
+      manager.setBeforeReload(async () => {
+        throw new Error('install failed')
+      })
+
+      manager.reload('reload-hook-fails')
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      expect(instance.tabs[0].tabView.webContents.reload).toHaveBeenCalledTimes(1)
+    })
+  })
+
   describe('developer tools', () => {
     /** The last state the window pushed to its own toolbar. */
     function lastToolbarState(instance: any): any {

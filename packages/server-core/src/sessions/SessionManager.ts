@@ -8837,6 +8837,36 @@ export class SessionManager implements ISessionManager {
         break
       }
 
+      case 'thinking_complete': {
+        // Reasoning is stored as an intermediate assistant message flagged with
+        // isThinking: every "final response" consumer already filters on
+        // isIntermediate, so it can never leak into replies, titles, IM or CLI.
+        const thinkingMessage: Message = {
+          id: generateMessageId(),
+          role: 'assistant',
+          content: event.text,
+          timestamp: this.monotonic(),
+          isIntermediate: true,
+          isThinking: true,
+          turnId: event.turnId,
+          parentToolUseId: event.parentToolUseId,
+        }
+        managed.messages.push(thinkingMessage)
+
+        this.sendEvent({
+          type: 'thinking_complete',
+          sessionId,
+          text: event.text,
+          turnId: event.turnId,
+          parentToolUseId: event.parentToolUseId,
+          timestamp: thinkingMessage.timestamp,
+          messageId: thinkingMessage.id,
+        }, workspaceId)
+
+        this.persistSession(managed)
+        break
+      }
+
       case 'pi_turn_anchor': {
         // Follow-up to a `text_complete` from the Pi backend, carrying the
         // correct leaf id captured AFTER the SDK appended its assistant entry

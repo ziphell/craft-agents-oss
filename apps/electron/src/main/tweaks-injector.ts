@@ -39,6 +39,13 @@
  * `HandlerDeps.onTweaksChanged` and the config watcher), and an address moving. Neither is
  * about the page in front of the person; both are about the next one.
  *
+ * A **reload** is the third, and the only one that has to run before its document exists: it is
+ * the action a person reaches for after editing a tweak, and `did-navigate` reports the commit —
+ * by then the reloaded document has already run whatever was registered. So the host reserves
+ * that moment (`setBeforeReload`), and {@link installBeforeReload} refreshes the registration in
+ * it. That is what makes "reload shows the newest code" true even when the write path missed an
+ * event; it still installs only, and still touches no existing document.
+ *
  * ## What is per tab, not per window
  *
  * Init scripts live on a tab's CDP session, so everything here acts on the window's
@@ -106,6 +113,14 @@ const observedByInstance = new Map<string, string>()
 const applying = new Set<string>()
 /** Windows that changed while they were busy: at most one more run is queued. */
 const requeued = new Set<string>()
+/**
+ * The tail of each window's install work.
+ *
+ * Installs must not overlap: each one is `clearInitScripts` + `addInitScript`, and two of them
+ * interleaving can leave the first script registered under a key the second no longer tracks —
+ * a registration nobody will ever replace, which is exactly "the old code keeps running".
+ */
+const installTails = new Map<string, Promise<void>>()
 
 /** What an attached injector offers its host. */
 export interface TweaksInjector {
@@ -146,15 +161,17 @@ function activeTabOf(bpm: IBrowserPaneManager, instanceId: string): { id: string
 export async function applyTweaksToInstance(
   instanceId: string,
   workspaceRootPath: string,
+  tabId?: string,
 ): Promise<void> {
   const bpm = manager
   if (!bpm) return
 
   const tweaks = enabledTweaksWithCode(workspaceRootPath)
-  const tab = activeTabOf(bpm, instanceId)
-  const tabId = tab?.id
+  const active = activeTabOf(bpm, instanceId)
+  const targetTabId = tabId ?? active?.id
+  const url = active && active.id === targetTabId ? active.url : undefined
 
-  const cleared = await bpm.clearInitScripts(instanceId, INIT_SCRIPT_PREFIX, tabId)
+  const cleared = await bpm.clearInitScripts(instanceId, INIT_SCRIPT_PREFIX, targetTabId)
 
   if (tweaks.length === 0) {
     // Nothing to register, so the next document gets nothing. The page that is open right now
@@ -182,12 +199,12 @@ export async function applyTweaksToInstance(
   )
 
   // The whole of an install: a registration for the documents that do not exist yet.
-  await bpm.addInitScript(instanceId, INIT_SCRIPT_KEY, script, tabId)
+  await bpm.addInitScript(instanceId, INIT_SCRIPT_KEY, script, targetTabId)
 
   const slugs = tweaks.map((tweak) => tweak.config.slug).join(', ')
-  mainLog.info(`[tweaks] installed [${slugs}] for ${instanceId}${tab ? ` (${tab.url})` : ''}`)
+  mainLog.info(`[tweaks] installed [${slugs}] for ${instanceId}${url ? ` (${url})` : ''}`)
 
-  await recordTweakHitsForTab(instanceId, workspaceRootPath, tabId, tab?.url)
+  await recordTweakHitsForTab(instanceId, workspaceRootPath, targetTabId, url)
 }
 
 /**
@@ -296,13 +313,50 @@ async function readSelectorMatches(
   return out
 }
 
+/** One install against the folder the window belongs to. */
+async function installForInstance(instanceId: string, tabId?: string): Promise<void> {
+  const bpm = manager
+  if (!bpm) return
+
+  // Resolved from the window rather than carried from the event: a window belongs to one
+  // workspace, and this lookup is the only thing that turns its id into the folder the
+  // tweaks live in. An instance with no workspace is not ours to inject into.
+  const workspaceId = bpm.listInstances().find((info) => info.id === instanceId)?.workspaceId ?? null
+  if (!workspaceId) return
+
+  const workspaceRootPath = getWorkspaceByNameOrId(workspaceId)?.rootPath
+  if (!workspaceRootPath) {
+    mainLog.warn(`[tweaks] no workspace folder for ${workspaceId}; nothing injected into ${instanceId}`)
+    return
+  }
+
+  await applyTweaksToInstance(instanceId, workspaceRootPath, tabId)
+}
+
+/**
+ * Put one install on a window's queue, so two of them can never interleave.
+ *
+ * The queue is per window and unbounded on purpose for the reload path — that caller has to be
+ * *answered* before it reloads — while the state-change path keeps its own coalescing above.
+ */
+function serial(instanceId: string, job: () => Promise<void>): Promise<void> {
+  const previous = installTails.get(instanceId) ?? Promise.resolve()
+  const tail = previous.then(job, job).catch((err) => {
+    mainLog.warn(`[tweaks] install failed for ${instanceId}: ${err instanceof Error ? err.message : String(err)}`)
+  })
+  installTails.set(instanceId, tail)
+  void tail.finally(() => {
+    if (installTails.get(instanceId) === tail) installTails.delete(instanceId)
+  })
+  return tail
+}
+
 /**
  * One install, with the re-entrancy guard: a window whose rules change while it is being
  * installed is marked, and re-run **once** afterwards rather than queued N times.
  */
 async function scheduleApply(instanceId: string): Promise<void> {
-  const bpm = manager
-  if (!bpm) return
+  if (!manager) return
 
   if (applying.has(instanceId)) {
     requeued.add(instanceId)
@@ -311,25 +365,25 @@ async function scheduleApply(instanceId: string): Promise<void> {
   applying.add(instanceId)
 
   try {
-    // Resolved from the window rather than carried from the event: a window belongs to one
-    // workspace, and this lookup is the only thing that turns its id into the folder the
-    // tweaks live in. An instance with no workspace is not ours to inject into.
-    const workspaceId = bpm.listInstances().find((info) => info.id === instanceId)?.workspaceId ?? null
-    if (!workspaceId) return
-
-    const workspaceRootPath = getWorkspaceByNameOrId(workspaceId)?.rootPath
-    if (!workspaceRootPath) {
-      mainLog.warn(`[tweaks] no workspace folder for ${workspaceId}; nothing injected into ${instanceId}`)
-      return
-    }
-
-    await applyTweaksToInstance(instanceId, workspaceRootPath)
-  } catch (err) {
-    mainLog.warn(`[tweaks] install failed for ${instanceId}: ${err instanceof Error ? err.message : String(err)}`)
+    await serial(instanceId, () => installForInstance(instanceId))
   } finally {
     applying.delete(instanceId)
     if (requeued.delete(instanceId)) void scheduleApply(instanceId)
   }
+}
+
+/**
+ * What a reload asks for, and why it has to run *before* the reload.
+ *
+ * A reload is the one action whose promise is "the next document carries the newest rules". By
+ * the time the browser tells us the address changed (`did-navigate` is the commit), the
+ * document exists and its init script has already run — so an install at that point is one
+ * document too late, and the same-URL reload is skipped by {@link TweaksInjector.handleStateChange}
+ * anyway. Installing here only replaces the registration; nothing is evaluated into the document
+ * that is on screen (see the module note).
+ */
+async function installBeforeReload(instanceId: string, tabId: string): Promise<void> {
+  await serial(instanceId, () => installForInstance(instanceId, tabId))
 }
 
 /**
@@ -368,6 +422,11 @@ export function requestTweaksForWorkspace(workspaceId: string): void {
 export function attachTweaksInjector(bpm: IBrowserPaneManager): TweaksInjector {
   manager = bpm
   observedByInstance.clear()
+
+  // A reload is the reset a person reaches for after editing a tweak, so it has to be the one
+  // moment the registration is refreshed *before* the document exists — see
+  // {@link installBeforeReload}. The browser side reserves the moment; it knows nothing else.
+  bpm.setBeforeReload?.((instanceId, tabId) => installBeforeReload(instanceId, tabId))
 
   // Windows that already exist when this attaches — a late attach, or one opened before
   // this ran. Same request as the navigation path, so the two cannot diverge.

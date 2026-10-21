@@ -289,6 +289,9 @@ export interface Message {
   isQueued?: boolean;
   // Intermediate text (commentary between tool calls, not final response)
   isIntermediate?: boolean;
+  // Model reasoning (chain-of-thought) for this assistant message. Always paired
+  // with isIntermediate so it can never leak into final-response consumers.
+  isThinking?: boolean;
   // Hidden: a system-generated message that must reach the model (it drives a
   // turn) but must NOT render as a bubble in the transcript — e.g. the WS2
   // background-task-completion nudge that wakes an idle session to present a
@@ -375,6 +378,8 @@ export interface StoredMessage {
   annotations?: AnnotationV1[];
   // Turn grouping - critical for TurnCard rendering after reload
   isIntermediate?: boolean;
+  /** Model reasoning block (rendered as its own step, never as a reply) */
+  isThinking?: boolean;
   turnId?: string;
   // Status type (retry progress is not persisted by the session manager)
   statusType?: 'compacting' | 'compaction_complete' | 'retrying';
@@ -561,6 +566,7 @@ export type AgentEvent =
   | { type: 'info'; message: string; compactionTrigger?: 'manual' | 'auto' }
   | { type: 'text_delta'; text: string; turnId?: string; parentToolUseId?: string }
   | { type: 'text_complete'; text: string; isIntermediate?: boolean; turnId?: string; parentToolUseId?: string; sdkMessageId?: string }
+  | { type: 'thinking_complete'; text: string; turnId?: string; parentToolUseId?: string }
   | { type: 'pi_turn_anchor'; sdkMessageId: string; sdkTurnAnchor: string }
   | { type: 'tool_start'; toolName: string; toolUseId: string; input: Record<string, unknown>; intent?: string; displayName?: string; turnId?: string; parentToolUseId?: string; toolDisplayMeta?: ToolDisplayMeta }
   | { type: 'tool_result'; toolUseId: string; toolName?: string; result: string; isError: boolean; input?: Record<string, unknown>; turnId?: string; parentToolUseId?: string }

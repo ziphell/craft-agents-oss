@@ -1185,6 +1185,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   private stateChangeCallback: ((info: BrowserInstanceInfo) => void) | null = null
   private removedCallback: ((id: string) => void) | null = null
   private interactedCallback: ((id: string) => void) | null = null
+  /** Awaited before a reload is issued — see {@link setBeforeReload}. */
+  private beforeReload: ((instanceId: string, tabId: string) => Promise<void>) | null = null
   /**
    * The partitions whose one-time session setup is already done, one set per kind of setup.
    *
@@ -1358,6 +1360,19 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   onStateChange(callback: (info: BrowserInstanceInfo) => void): void {
     this.stateChangeCallback = callback
+  }
+
+  /**
+   * Something that must be written before a reload's document exists.
+   *
+   * Injected by the tweaks carrier (`tweaks-injector.ts`). A reload is the one action whose
+   * promise is "the next document carries the newest rules", and the registration has to be
+   * replaced *before* `webContents.reload()` — anything registered afterwards is a document
+   * too late, because `did-navigate` reports the commit, not the start. Held here rather than
+   * as a second listener because this is the one call site that issues the reload.
+   */
+  setBeforeReload(fn: (instanceId: string, tabId: string) => Promise<void>): void {
+    this.beforeReload = fn
   }
 
   onRemoved(callback: (id: string) => void): void {
@@ -3061,13 +3076,27 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const instance = this.instances.get(id)
     if (!instance || instance.window.isDestroyed()) return
     const tab = this.tabOf(instance, tabId)
-    // On the built-in error page "reload" means what the person means: try the address
-    // that failed again, not re-render the news about it.
-    if (tab.internalPage === 'error' && tab.loadError) {
-      void tab.tabView.webContents.loadURL(tab.loadError.url).catch(() => undefined)
+
+    const reloadNow = () => {
+      // The hook reads files before it answers, so the window or the tab may be gone by now.
+      if (instance.window.isDestroyed() || tab.tabView.webContents.isDestroyed()) return
+      // On the built-in error page "reload" means what the person means: try the address
+      // that failed again, not re-render the news about it.
+      if (tab.internalPage === 'error' && tab.loadError) {
+        void tab.tabView.webContents.loadURL(tab.loadError.url).catch(() => undefined)
+        return
+      }
+      tab.tabView.webContents.reload()
+    }
+
+    // Before the reload, not after: a registration written once `did-navigate` arrives is one
+    // document too late — the document this reload is about would already be running.
+    const hook = this.beforeReload
+    if (!hook) {
+      reloadNow()
       return
     }
-    tab.tabView.webContents.reload()
+    void hook(id, tab.id).catch(() => undefined).finally(reloadNow)
   }
 
   stop(id: string): void {
