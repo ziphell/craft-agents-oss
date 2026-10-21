@@ -72,6 +72,9 @@ export interface PreviewOverlayProps {
 
   /** Custom class names for the overlay container (e.g., to override bg-background) */
   className?: string
+
+  /** Close when the empty space around the content card is clicked (fullscreen mode) */
+  closeOnBackdropClick?: boolean
 }
 
 export function PreviewOverlay({
@@ -88,6 +91,7 @@ export function PreviewOverlay({
   children,
   embedded = false,
   className,
+  closeOnBackdropClick = false,
 }: PreviewOverlayProps) {
   // Use custom className if provided, otherwise fall back to default bg
   const bgClass = className || OVERLAY_BG
@@ -199,6 +203,7 @@ export function PreviewOverlay({
           subtitle={subtitle}
           headerActions={headerActionsWithFileState}
           error={error}
+          closeOnBackdropClick={closeOnBackdropClick}
         >
           {children}
         </FullscreenOverlayBase>

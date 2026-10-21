@@ -190,6 +190,7 @@ export function ActivityCardsOverlay({
       typeBadge={{ icon: Layers, label: 'Activity', variant: 'blue' }}
       title={title}
       className="bg-foreground-3"
+      closeOnBackdropClick
     >
       <div className="w-full space-y-6 py-1">
         {cards.map((card) => (

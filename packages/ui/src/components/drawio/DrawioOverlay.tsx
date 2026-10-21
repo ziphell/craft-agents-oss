@@ -177,7 +177,13 @@ export function DrawioOverlay({
       headerActions={headerActions}
     >
       {/* The pages, as a row of their own at the top of the window — flush with its edges, the way the
-          block's row is, because the gutter below belongs to the drawing. Looking only: see `pages`. */}
+          block's row is, because the gutter below belongs to the drawing. Looking only: see `pages`.
+          `sticky top-0` keeps the row at the top of the scroll content: its resting place is the
+          overlay's 48px top padding, and sticky offsets resolve against the content box, so the row
+          holds that line instead of scrolling up into the window's drag strip (where it is visible
+          but unclickable). `shrink-0` keeps a tall drawing from compressing it; the background is
+          opaque because content passes underneath while it is stuck. `no-drag` is the belt-and-
+          braces: even inside a drag region its buttons still take clicks. */}
       {!editing && (
         <DrawioPages
           pages={pages}
@@ -186,6 +192,7 @@ export function DrawioOverlay({
             const page = pages[index]
             if (page) onSelectPage?.(page.id)
           }}
+          className="sticky top-0 z-[1] shrink-0 bg-background [-webkit-app-region:no-drag]"
         />
       )}
 

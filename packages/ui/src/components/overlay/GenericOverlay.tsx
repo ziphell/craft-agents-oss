@@ -153,6 +153,7 @@ export function GenericOverlay({
       embedded={embedded}
       error={error ? { label: 'Tool Failed', message: error } : undefined}
       className="bg-foreground-3"
+      closeOnBackdropClick
     >
       <ContentFrame title={t('overlay.preview')}>
         <div className="flex-1 overflow-y-auto min-h-0">

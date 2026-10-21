@@ -92,6 +92,12 @@ export interface FullscreenOverlayBaseProps {
 
   /** Optional error banner — rendered between header and children */
   error?: OverlayErrorBannerProps
+
+  /**
+   * Close when the empty space around the content is clicked. The content itself
+   * must be marked with `data-overlay-card` — clicks inside a card never close.
+   */
+  closeOnBackdropClick?: boolean
 }
 
 export function handleFullscreenEscapeWithStack(): boolean {
@@ -137,6 +143,7 @@ export function FullscreenOverlayBase({
   headerActions,
   copyContent,
   error,
+  closeOnBackdropClick = false,
 }: FullscreenOverlayBaseProps) {
   const { onSetTrafficLightsVisible } = usePlatform()
 
@@ -186,6 +193,17 @@ export function FullscreenOverlayBase({
   // Without a header the gutter is all there is.
   const contentPaddingTop = hasHeader ? HEADER_HEIGHT : CONTENT_GUTTER
 
+  // Backdrop clicks. The fullscreen dialog has no separate backdrop element — the
+  // scroll surface *is* the background — so a click counts as "outside" when its
+  // target is not inside a `data-overlay-card`. The press must also have started
+  // there: dragging a text selection out of the card must not close the overlay.
+  const pressedOnBackdrop = useRef(false)
+  const isBackdropTarget = (target: EventTarget | null): boolean =>
+    !(target instanceof Element) || !target.closest('[data-overlay-card]')
+  // Clicks in the scrollbar gutter belong to the scroll surface, not the backdrop.
+  const isInScrollbar = (el: HTMLDivElement, clientX: number): boolean =>
+    clientX - el.getBoundingClientRect().left >= el.clientWidth
+
   return (
     <Dialog.Root open={isOpen} onOpenChange={(open) => !open && onClose()}>
       <Dialog.Portal>
@@ -218,6 +236,19 @@ export function FullscreenOverlayBase({
             <div
               className="h-full overflow-y-auto"
               style={{ paddingTop: contentPaddingTop, paddingBottom: CONTENT_GUTTER, scrollPaddingTop: contentPaddingTop }}
+              onPointerDown={(e) => {
+                if (!closeOnBackdropClick) return
+                if (isInScrollbar(e.currentTarget, e.clientX)) return
+                pressedOnBackdrop.current = isBackdropTarget(e.target)
+              }}
+              onClick={(e) => {
+                if (!closeOnBackdropClick) return
+                if (!pressedOnBackdrop.current) return
+                pressedOnBackdrop.current = false
+                if (isInScrollbar(e.currentTarget, e.clientX)) return
+                if (!isBackdropTarget(e.target)) return
+                onClose()
+              }}
             >
               {/* Centering wrapper — error + content move together as a unit.
                   min-h-full ensures centering when content is small; content can grow beyond. */}

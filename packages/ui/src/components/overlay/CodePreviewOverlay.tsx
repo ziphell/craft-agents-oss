@@ -79,6 +79,7 @@ export function CodePreviewOverlay({
       error={error ? { label: mode === 'write' ? 'Write Failed' : 'Read Failed', message: error } : undefined}
       embedded={embedded}
       className="bg-foreground-3"
+      closeOnBackdropClick
     >
       {/* Show command if present (Codex reads via shell commands) */}
       {command && (

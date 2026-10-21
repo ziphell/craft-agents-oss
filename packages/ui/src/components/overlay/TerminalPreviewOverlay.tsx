@@ -78,6 +78,7 @@ export function TerminalPreviewOverlay({
       error={error ? { label: 'Command Failed', message: error } : undefined}
       embedded={embedded}
       className="bg-foreground-3"
+      closeOnBackdropClick
     >
       <ContentFrame title={t('overlay.terminal')}>
         <div className="flex-1 overflow-y-auto min-h-0">
