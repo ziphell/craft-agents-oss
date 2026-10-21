@@ -1,17 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getPendingPlanExecution, saveSession } from '../../../shared/src/sessions/storage.ts'
-import * as backendFactory from '../../../shared/src/agent/backend/factory.ts'
 import { ClaudeAgent } from '../../../shared/src/agent/claude-agent.ts'
 import { PendingSteers } from '../../../shared/src/agent/backend/claude/pending-steers.ts'
+import { AbortReason } from '../../../shared/src/agent/backend/types.ts'
 import {
   SessionManager,
   createManagedSession,
-  resolveMidStreamDeliveryOutcome,
-  shouldAttemptMidStreamSteer,
-  canSteerTextPayload,
 } from './SessionManager.ts'
 
 describe('mid-stream queue runtime invariants', () => {
@@ -44,45 +41,76 @@ describe('mid-stream queue runtime invariants', () => {
     return managed
   }
 
-  it('distinguishes non-interrupting queue mode from a failed steer', () => {
-    expect(resolveMidStreamDeliveryOutcome('queue', false)).toEqual({
-      shouldQueue: true,
-      wasInterrupted: false,
+  it('always queues a mid-stream send, regardless of the provider', async () => {
+    const managed = buildSession('always-queue')
+    managed.isProcessing = true
+    const redirect = mock(() => true)
+    managed.agent = { redirect } as any
+    ;(sm as any).persistSession = () => {}
+    ;(sm as any).flushSession = async () => {}
+    const events: any[] = []
+    sm.setEventSink((_channel, _target, event) => events.push(event))
+
+    await sm.sendMessage(managed.id, 'plain text')
+
+    expect(redirect).not.toHaveBeenCalled()
+    expect(managed.messageQueue).toHaveLength(1)
+    expect(managed.messages.at(-1)!.isQueued).toBe(true)
+    expect(events.find(e => e.type === 'user_message').status).toBe('queued')
+  })
+
+  it('sends a queued message now by stopping the turn and putting it first', async () => {
+    const managed = buildSession('send-now')
+    managed.isProcessing = true
+    const forceAbort = mock(() => {})
+    managed.agent = { forceAbort } as any
+    ;(sm as any).persistSession = () => {}
+    ;(sm as any).flushSession = async () => {}
+    const events: any[] = []
+    sm.setEventSink((_channel, _target, event) => events.push(event))
+
+    await sm.sendMessage(managed.id, 'first')
+    await sm.sendMessage(managed.id, 'second')
+    const [firstId, secondId] = managed.messages.map(m => m.id)
+
+    // The renderer may send its own optimistic id; both ids must resolve.
+    await expect(sm.sendQueuedMessageNow(managed.id, secondId)).resolves.toEqual({ sent: true })
+    expect(forceAbort).toHaveBeenCalledWith(AbortReason.Redirect)
+    expect(managed.messageQueue.map(q => q.messageId)).toEqual([secondId, firstId])
+    // Still queued until the replay turns it into an accepted turn.
+    expect(managed.messages.find(m => m.id === secondId)!.isQueued).toBe(true)
+    // Silent interruption: no "Response interrupted" bubble.
+    expect(events.find(e => e.type === 'interrupted')).toMatchObject({ sessionId: managed.id })
+    expect(events.find(e => e.type === 'interrupted')!.message).toBeUndefined()
+
+    await expect(sm.sendQueuedMessageNow(managed.id, 'missing')).resolves.toEqual({
+      sent: false,
+      reason: 'not-queued',
     })
-    expect(resolveMidStreamDeliveryOutcome('steer', false)).toEqual({
-      shouldQueue: true,
-      wasInterrupted: true,
-    })
-    expect(resolveMidStreamDeliveryOutcome('steer', true)).toEqual({
-      shouldQueue: false,
-      wasInterrupted: false,
+    managed.isProcessing = false // Disarm the production Stop backstop timer.
+    await expect(sm.sendQueuedMessageNow(managed.id, secondId)).resolves.toEqual({
+      sent: false,
+      reason: 'not-processing',
     })
   })
 
-  it('queues instead of steering while a manual compaction owns the turn (#1058)', () => {
-    const compacting = { isCompactionInFlight: () => true }
-    const idle = { isCompactionInFlight: () => false }
-    expect(shouldAttemptMidStreamSteer('steer', true, compacting)).toBe(false)
-    expect(shouldAttemptMidStreamSteer('steer', true, idle)).toBe(true)
-    // Backends without the concept behave as before.
-    expect(shouldAttemptMidStreamSteer('steer', true, {})).toBe(true)
-    expect(shouldAttemptMidStreamSteer('queue', true, idle)).toBe(false)
-    expect(shouldAttemptMidStreamSteer('steer', false, idle)).toBe(false)
-    expect(shouldAttemptMidStreamSteer('steer', true, undefined)).toBe(false)
-    // The forced queue path is not an interruption: the compaction runs to
-    // completion and the replayed turn must not claim it was cut off.
-    expect(resolveMidStreamDeliveryOutcome('queue', false)).toEqual({ shouldQueue: true, wasInterrupted: false })
+  it('keeps the message queued while a manual compaction owns the turn', async () => {
+    const managed = buildSession('send-now-compacting')
+    managed.isProcessing = true
+    const forceAbort = mock(() => {})
+    managed.agent = { forceAbort, isCompactionInFlight: () => true } as any
+    ;(sm as any).persistSession = () => {}
+    ;(sm as any).flushSession = async () => {}
 
-    // Claude reports a live /compact turn through its event adapter; a bare
-    // prototype without an adapter reads as not compacting.
-    const claude = Object.create(ClaudeAgent.prototype) as any
-    claude.currentQuery = { interrupt: async () => {} }
-    expect(claude.isCompactionInFlight()).toBe(false)
-    claude.eventAdapter = { isManualCompactionRequested: () => true }
-    expect(claude.isCompactionInFlight()).toBe(true)
-    expect(shouldAttemptMidStreamSteer('steer', true, claude)).toBe(false)
-    claude.currentQuery = null
-    expect(claude.isCompactionInFlight()).toBe(false)
+    await sm.sendMessage(managed.id, 'wait for compaction')
+    const messageId = managed.messages.at(-1)!.id
+    await expect(sm.sendQueuedMessageNow(managed.id, messageId)).resolves.toEqual({
+      sent: false,
+      reason: 'compacting',
+    })
+    expect(forceAbort).not.toHaveBeenCalled()
+    expect(managed.messageQueue).toHaveLength(1)
+    managed.isProcessing = false
   })
 
   it('recovers distinct identical-text steers by identity without interrupting or duplicating', async () => {
@@ -100,16 +128,7 @@ describe('mid-stream queue runtime invariants', () => {
     expect(managed.messageQueue).toHaveLength(3)
   })
 
-  it('allows empty presentation metadata but queues semantic and future options', () => {
-    expect(canSteerTextPayload([], [], { skillSlugs: [], badges: [], hidden: false, optimisticMessageId: 'id' })).toBe(true)
-    expect(canSteerTextPayload(undefined, undefined, { skillSlugs: ['skill'] })).toBe(false)
-    expect(canSteerTextPayload(undefined, undefined, { hidden: true })).toBe(false)
-    expect(canSteerTextPayload(undefined, undefined, { futureOption: false } as any)).toBe(false)
-    expect(canSteerTextPayload(undefined, [{ id: 'stored' }] as any)).toBe(false)
-  })
-
   it('queues attachments and semantic options intact without calling a text-only redirect', async () => {
-    spyOn(backendFactory, 'resolveSessionConnection').mockReturnValue({ providerType: 'pi', midStreamBehavior: 'steer' } as any)
     const managed = buildSession('attachments')
     managed.isProcessing = true
     const redirect = mock(() => true)
@@ -132,7 +151,16 @@ describe('mid-stream queue runtime invariants', () => {
     ;(sm as any).sendMessage = replay
     ;(sm as any).processNextQueuedMessage(managed.id)
     await new Promise<void>(resolve => setImmediate(resolve))
-    expect(replay.mock.calls[0]).toEqual([managed.id, 'inspect image', attachments, storedAttachments, options, managed.messages[0]!.id])
+    const replayTurn = managed.messages[managed.messages.length - 1]!
+    expect(replay.mock.calls[0]).toEqual([
+      managed.id,
+      'inspect image',
+      attachments,
+      storedAttachments,
+      // The preview is gone, so the replay must not carry its optimistic id.
+      { ...options, optimisticMessageId: undefined },
+      replayTurn.id,
+    ])
   })
 
   it('cancels one queued message and leaves the rest of the queue intact', async () => {
@@ -165,6 +193,89 @@ describe('mid-stream queue runtime invariants', () => {
 
     // Unknown or already-replaying messages are a no-op.
     await expect(sm.cancelQueuedMessage(managed.id, 'missing')).resolves.toEqual({ cancelled: false })
+  })
+
+  it('cancels a stale queued row that has no queue entry', async () => {
+    const managed = buildSession('cancel-stale')
+    managed.messages = [
+      { id: 'stale-1', role: 'user', content: 'orphaned queued text', timestamp: 1, isQueued: true },
+    ]
+    ;(sm as any).persistSession = () => {}
+    ;(sm as any).flushSession = async () => {}
+    const events: any[] = []
+    sm.setEventSink((_channel, _target, event) => events.push(event))
+
+    await expect(sm.cancelQueuedMessage(managed.id, 'missing', 'orphaned queued text')).resolves.toEqual({
+      cancelled: true,
+    })
+    expect(managed.messages).toEqual([])
+    expect(events.find(e => e.type === 'queued_message_cancelled')).toMatchObject({ messageId: 'stale-1' })
+  })
+
+  it('matches a queued entry by text only when it is unambiguous', async () => {
+    const managed = buildSession('cancel-by-text')
+    managed.messageQueue = [
+      { message: 'unique text', messageId: 'm1' },
+      { message: 'same text', messageId: 'm2' },
+      { message: 'same text', messageId: 'm3' },
+    ]
+    managed.messages = [
+      { id: 'm1', role: 'user', content: 'unique text', timestamp: 1, isQueued: true },
+      { id: 'm2', role: 'user', content: 'same text', timestamp: 2, isQueued: true },
+      { id: 'm3', role: 'user', content: 'same text', timestamp: 3, isQueued: true },
+    ]
+    ;(sm as any).persistSession = () => {}
+    ;(sm as any).flushSession = async () => {}
+
+    await expect(sm.cancelQueuedMessage(managed.id, 'unknown', 'unique text')).resolves.toEqual({ cancelled: true })
+    expect(managed.messageQueue.map(q => q.messageId)).toEqual(['m2', 'm3'])
+
+    // Duplicate text is ambiguous — leave the queue alone and report failure.
+    await expect(sm.cancelQueuedMessage(managed.id, 'unknown', 'same text')).resolves.toEqual({ cancelled: false })
+    expect(managed.messageQueue.map(q => q.messageId)).toEqual(['m2', 'm3'])
+  })
+
+  it('reorders the queue and keeps the persisted transcript order in sync', async () => {
+    const managed = buildSession('reorder-queue')
+    managed.isProcessing = true
+    ;(sm as any).persistSession = () => {}
+    ;(sm as any).flushSession = async () => {}
+    const events: any[] = []
+    sm.setEventSink((_channel, _target, event) => events.push(event))
+
+    await sm.sendMessage(managed.id, 'first')
+    await sm.sendMessage(managed.id, 'second')
+    const [firstId, secondId] = managed.messages.map(m => m.id)
+
+    await expect(sm.reorderQueuedMessage(managed.id, secondId, 0)).resolves.toEqual({ reordered: true })
+    expect(managed.messageQueue.map(q => q.messageId)).toEqual([secondId, firstId])
+    // Crash recovery re-queues from `messages`, so its order must match too.
+    expect(managed.messages.map(m => m.id)).toEqual([secondId, firstId])
+    expect(events.filter(e => e.type === 'queued_messages_state').at(-1)).toMatchObject({
+      sessionId: managed.id,
+      order: [{ messageId: secondId }, { messageId: firstId }],
+    })
+
+    // Unknown ids are a no-op.
+    await expect(sm.reorderQueuedMessage(managed.id, 'missing', 0)).resolves.toEqual({ reordered: false })
+  })
+
+  it('reorders by the renderer optimistic id', async () => {
+    const managed = buildSession('reorder-optimistic')
+    managed.isProcessing = true
+    ;(sm as any).persistSession = () => {}
+    ;(sm as any).flushSession = async () => {}
+    const events: any[] = []
+    sm.setEventSink((_channel, _target, event) => events.push(event))
+
+    await sm.sendMessage(managed.id, 'first', undefined, undefined, { optimisticMessageId: 'opt-1' })
+    await sm.sendMessage(managed.id, 'second', undefined, undefined, { optimisticMessageId: 'opt-2' })
+
+    await expect(sm.reorderQueuedMessage(managed.id, 'opt-2', 0)).resolves.toEqual({ reordered: true })
+    expect(managed.messageQueue.map(q => q.optimisticMessageId)).toEqual(['opt-2', 'opt-1'])
+    expect(events.filter(e => e.type === 'queued_messages_state').at(-1)!.order[0]).toMatchObject({
+      optimisticMessageId: 'opt-2',
+    })
   })
 
   it('marks Accept & Compact ready only after a manual compaction success and preserves the fresh snapshot', async () => {
@@ -229,7 +340,6 @@ describe('mid-stream queue runtime invariants', () => {
   })
 
   it('the actual host sendMessage loop consumes Claude recovery before stopping at complete', async () => {
-    spyOn(backendFactory, 'resolveSessionConnection').mockReturnValue({ providerType: 'pi', midStreamBehavior: 'steer' } as any)
     const managed = buildSession('host-completion')
     managed.sdkSessionId = 'offline-sdk'
     const agent = Object.create(ClaudeAgent.prototype) as any
@@ -347,7 +457,7 @@ describe('mid-stream queue runtime invariants', () => {
     managed.isProcessing = false // Disarm the production Stop backstop timer.
   })
 
-  it('re-stamps replay after the prior final response and emits that timestamp', async () => {
+  it('starts a fresh turn message after the prior final response instead of reusing the preview', async () => {
     const sessionId = 'queue-ordering'
     const managed = buildSession(sessionId)
     const priorFinalTimestamp = Date.now()
@@ -382,21 +492,42 @@ describe('mid-stream queue runtime invariants', () => {
     sm.setEventSink((_channel, _target, event) => events.push(event))
     ;(sm as unknown as { lastTimestamp: number }).lastTimestamp = priorFinalTimestamp
     ;(sm as unknown as { persistSession: () => void }).persistSession = () => {}
-    const sendMessage = mock(async () => {})
+    const sendMessage = mock(async (..._args: unknown[]) => {})
     ;(sm as unknown as { sendMessage: typeof sendMessage }).sendMessage = sendMessage
 
     ;(sm as unknown as { processNextQueuedMessage: (id: string) => void })
       .processNextQueuedMessage(sessionId)
     await new Promise<void>(resolve => setImmediate(resolve))
 
-    const replayed = managed.messages.find(message => message.id === 'queued-user')
-    expect(replayed?.isQueued).toBe(false)
-    expect(replayed?.timestamp).toBeGreaterThan(priorFinalTimestamp)
+    // The preview is gone; the turn is a fresh message appended after the answer.
+    expect(managed.messages.find(message => message.id === 'queued-user')).toBeUndefined()
+    const turn = managed.messages[managed.messages.length - 1]!
+    expect(turn.role).toBe('user')
+    expect(turn.content).toBe('follow up')
+    expect(turn.timestamp).toBeGreaterThan(priorFinalTimestamp)
+    expect(managed.messages.filter(m => m.role === 'user' && m.content === 'follow up')).toHaveLength(1)
 
-    const processingEvent = events.find(event => event.type === 'user_message')
-    expect(processingEvent?.status).toBe('processing')
-    expect(processingEvent?.message.timestamp).toBe(replayed?.timestamp)
-    expect(processingEvent?.optimisticMessageId).toBe('optimistic-user')
+    // Every window drops the preview row...
+    const cancellations = events.filter(event => event.type === 'queued_message_cancelled')
+    expect(cancellations).toHaveLength(1)
+    expect(cancellations[0]).toMatchObject({
+      messageId: 'queued-user',
+      optimisticMessageId: 'optimistic-user',
+    })
+
+    // ...then the turn is announced as a normal accepted message. No optimistic
+    // id: the preview no longer exists, so the renderer must append it.
+    const acceptedEvent = events.find(event => event.type === 'user_message')
+    expect(acceptedEvent?.status).toBe('accepted')
+    expect(acceptedEvent?.message.id).toBe(turn.id)
+    expect(acceptedEvent?.optimisticMessageId).toBeUndefined()
+
+    const stateEvent = events.find(event => event.type === 'queued_messages_state')
+    expect(stateEvent?.order).toEqual([])
+
     expect(sendMessage).toHaveBeenCalledTimes(1)
+    const call = sendMessage.mock.calls[0] as unknown[]
+    expect((call[4] as { optimisticMessageId?: string } | undefined)?.optimisticMessageId).toBeUndefined()
+    expect(call[5]).toBe(turn.id)
   })
 })

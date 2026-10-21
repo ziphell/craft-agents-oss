@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { groupMessagesByTurn } from '@craft-agent/ui/chat/turn-utils'
-import { handleComplete, handleQueuedMessageCancelled, handleUserMessage } from '../session'
+import { handleComplete, handleQueuedMessageCancelled, handleQueuedMessagesState, handleUserMessage } from '../session'
 import type { CompleteEvent, SessionState, UserMessageEvent } from '../../types'
 
 function makeState(messages: any[]): SessionState {
@@ -15,62 +15,42 @@ function makeState(messages: any[]): SessionState {
   }
 }
 
-function processingEvent(timestamp: number): UserMessageEvent {
+function acceptedEvent(timestamp = 300): UserMessageEvent {
   return {
     type: 'user_message',
     sessionId: 'session-1',
     message: {
-      id: 'backend-follow-up',
+      id: 'backend-turn',
       role: 'user',
       content: 'follow up',
       timestamp,
     },
-    status: 'processing',
-    optimisticMessageId: 'optimistic-follow-up',
+    status: 'accepted',
   }
 }
 
 describe('handleUserMessage queued replay', () => {
-  it('applies the canonical replay timestamp without replacing the optimistic id', () => {
+  it('adds the replayed turn as a new message even when the text matches an older one', () => {
     const state = makeState([
-      {
-        id: 'optimistic-follow-up',
-        role: 'user',
-        content: 'follow up',
-        timestamp: 200,
-        isPending: false,
-        isQueued: true,
-      },
+      { id: 'older-same-text', role: 'user', content: 'follow up', timestamp: 100 },
+      { id: 'prior-answer', role: 'assistant', content: 'answer', timestamp: 200 },
     ])
 
-    const next = handleUserMessage(state, processingEvent(300))
-    const message = next.state.session.messages[0]
+    const next = handleUserMessage(state, acceptedEvent())
+    const messages = next.state.session.messages
 
-    expect(message.id).toBe('optimistic-follow-up')
-    expect(message.timestamp).toBe(300)
-    expect(message.isPending).toBe(false)
-    expect(message.isQueued).toBe(false)
+    expect(messages.map(m => m.id)).toEqual(['older-same-text', 'prior-answer', 'backend-turn'])
+    // The older identical message is untouched.
+    expect(messages[0]!.timestamp).toBe(100)
   })
 
-  it('keeps the completed prior answer above the replayed message in live grouping', () => {
+  it('places the replayed turn after the completed prior answer', () => {
     const state = makeState([
       { id: 'initial-user', role: 'user', content: 'question', timestamp: 100 },
-      {
-        id: 'optimistic-follow-up',
-        role: 'user',
-        content: 'follow up',
-        timestamp: 200,
-        isQueued: true,
-      },
-      {
-        id: 'prior-answer',
-        role: 'assistant',
-        content: 'complete answer',
-        timestamp: 250,
-      },
+      { id: 'prior-answer', role: 'assistant', content: 'complete answer', timestamp: 250 },
     ])
 
-    const next = handleUserMessage(state, processingEvent(300))
+    const next = handleUserMessage(state, acceptedEvent(300))
     const turns = groupMessagesByTurn(next.state.session.messages)
 
     expect(turns.map(turn => turn.type)).toEqual(['user', 'assistant', 'user'])
@@ -81,10 +61,10 @@ describe('handleUserMessage queued replay', () => {
     }
   })
 
-  it('ignores a late queued event after the message is already processing', () => {
+  it('ignores a late queued event after the turn message is accepted', () => {
     const state = makeState([
       {
-        id: 'optimistic-follow-up',
+        id: 'backend-turn',
         role: 'user',
         content: 'follow up',
         timestamp: 300,
@@ -92,7 +72,7 @@ describe('handleUserMessage queued replay', () => {
       },
     ])
     const lateQueuedEvent: UserMessageEvent = {
-      ...processingEvent(200),
+      ...acceptedEvent(),
       status: 'queued',
     }
 
@@ -122,8 +102,63 @@ describe('handleQueuedMessageCancelled', () => {
   })
 })
 
-describe('handleComplete queued re-stamp', () => {
-  it('moves queued bubbles after the finished turn when clearing isQueued', () => {
+describe('handleQueuedMessagesState', () => {
+  it('reorders only the queued entries and leaves the rest in place', () => {
+    const state = makeState([
+      { id: 'prior-answer', role: 'assistant', content: 'answer', timestamp: 100 },
+      { id: 'q1', role: 'user', content: 'first', timestamp: 110, isQueued: true },
+      { id: 'q2', role: 'user', content: 'second', timestamp: 120, isQueued: true },
+    ])
+
+    const next = handleQueuedMessagesState(state, {
+      type: 'queued_messages_state',
+      sessionId: 'session-1',
+      order: [{ messageId: 'q2' }, { messageId: 'q1' }],
+    })
+
+    expect(next.state.session.messages.map(m => m.id)).toEqual(['prior-answer', 'q2', 'q1'])
+  })
+
+  it('matches the optimistic id and unqueues messages absent from the state', () => {
+    const state = makeState([
+      { id: 'optimistic-1', role: 'user', content: 'first', timestamp: 110, isQueued: true },
+      { id: 'q2', role: 'user', content: 'second', timestamp: 120, isQueued: true },
+      { id: 'q3', role: 'user', content: 'late arrival', timestamp: 130, isQueued: true },
+    ])
+
+    const next = handleQueuedMessagesState(state, {
+      type: 'queued_messages_state',
+      sessionId: 'session-1',
+      order: [
+        { messageId: 'backend-2', optimisticMessageId: 'q2' },
+        { messageId: 'backend-1', optimisticMessageId: 'optimistic-1' },
+      ],
+    })
+
+    const messages = next.state.session.messages
+    expect(messages.map(m => m.id)).toEqual(['q2', 'optimistic-1', 'q3'])
+    // Not in the authoritative queue => it has been sent; show it in the transcript.
+    expect(messages.find(m => m.id === 'q3')?.isQueued).toBe(false)
+    expect(messages.find(m => m.id === 'q2')?.isQueued).toBe(true)
+  })
+
+  it('clears a ghost queued flag when the state is empty', () => {
+    const state = makeState([
+      { id: 'ghost', role: 'user', content: 'already sent', timestamp: 110, isQueued: true },
+    ])
+
+    const next = handleQueuedMessagesState(state, {
+      type: 'queued_messages_state',
+      sessionId: 'session-1',
+      order: [],
+    })
+
+    expect(next.state.session.messages[0]?.isQueued).toBe(false)
+  })
+})
+
+describe('handleComplete queued state', () => {
+  it('leaves queued bubbles queued so the rest of the queue is not reported as sent', () => {
     const state = makeState([
       { id: 'initial-user', role: 'user', content: 'question', timestamp: 100 },
       { id: 'optimistic-follow-up', role: 'user', content: 'queued', timestamp: 150, isQueued: true },
@@ -134,7 +169,9 @@ describe('handleComplete queued re-stamp', () => {
     const next = handleComplete(state, event)
     const queued = next.state.session.messages.find(m => m.id === 'optimistic-follow-up')!
 
-    expect(queued.isQueued).toBe(false)
-    expect(queued.timestamp).toBeGreaterThan(200)
+    // Replays leave the queue as a separate accepted turn, never by
+    // unqueueing the preview here.
+    expect(queued.isQueued).toBe(true)
+    expect(queued.timestamp).toBe(150)
   })
 })

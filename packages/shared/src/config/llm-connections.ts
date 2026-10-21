@@ -328,22 +328,6 @@ export type CustomEndpointModelConfig = string | CustomEndpointModelEntry;
 export type ConnectionModelEntry = ModelDefinition | CustomEndpointModelEntry | string;
 
 /**
- * Per-connection behavior when the user sends a message while the agent is
- * still streaming/processing a previous turn.
- *
- * - 'steer': Try to deliver the message into the in-flight turn (Pi's native
- *   `.steer()` or Claude's PreToolUse `additionalContext` hook). Falls back to
- *   abort+queue when the backend can't steer.
- * - 'queue': Hold the message; let the current turn finish naturally; replay
- *   as a new turn afterwards. No abort, no destructive interruption.
- *
- * Default is per-`providerType` via {@link defaultMidStreamBehavior}; reads
- * everywhere should go through {@link resolveMidStreamBehavior} so connections
- * created before this field existed still pick up the right default.
- */
-export type MidStreamBehavior = 'steer' | 'queue';
-
-/**
  * LLM Connection configuration.
  * Stored in config.llmConnections array.
  */
@@ -422,14 +406,6 @@ export interface LlmConnection {
    * Determines which streaming adapter the Pi SDK uses for requests.
    */
   customEndpoint?: CustomEndpointConfig;
-
-  /**
-   * Behavior when the user sends a message while the agent is still streaming.
-   * Optional for backward compat with config.json from before this field existed —
-   * read via {@link resolveMidStreamBehavior} which falls back to a per-provider
-   * default ({@link defaultMidStreamBehavior}).
-   */
-  midStreamBehavior?: MidStreamBehavior;
 
   // --- Resolved Anthropic OAuth identity (issue #838) ---
   // Captured from the token-exchange response; lets the UI flag two Claude
@@ -771,38 +747,6 @@ export function isLocalConnection(conn: Pick<LlmConnection, 'baseUrl'>): boolean
  */
 export function isPiProvider(providerType: LlmProviderType): boolean {
   return providerType === 'pi' || providerType === 'pi_compat';
-}
-
-/**
- * Default mid-stream send behavior for a given provider type.
- *
- * - 'anthropic' → 'queue': Claude's emulated steer (PreToolUse hook injection)
- *   has a real failure mode — if no tool fires before the turn ends, the steer
- *   becomes `steer_undelivered` and gets re-queued anyway, paying for the
- *   original turn's tokens for nothing. Default to queue for predictability.
- * - 'pi' / 'pi_compat' → 'steer': Pi's native `.steer()` is non-destructive
- *   (delivers after the current tool finishes, keeps full context). No
- *   downside to defaulting to immediate steering.
- */
-export function defaultMidStreamBehavior(providerType: LlmProviderType): MidStreamBehavior {
-  return providerType === 'anthropic' ? 'queue' : 'steer';
-}
-
-/**
- * Read the effective mid-stream behavior for a connection.
- *
- * Single source of truth — every call site that needs to decide steer-vs-queue
- * should go through here so legacy connections (created before the field
- * existed) and connections with corrupt/unexpected values fall through to the
- * provider-appropriate default.
- */
-export function resolveMidStreamBehavior(
-  connection: Pick<LlmConnection, 'midStreamBehavior' | 'providerType'>,
-): MidStreamBehavior {
-  if (connection.midStreamBehavior === 'steer' || connection.midStreamBehavior === 'queue') {
-    return connection.midStreamBehavior;
-  }
-  return defaultMidStreamBehavior(connection.providerType);
 }
 
 /**

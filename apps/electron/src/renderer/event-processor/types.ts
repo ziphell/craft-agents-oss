@@ -471,6 +471,17 @@ export interface QueuedMessageCancelledEvent {
 }
 
 /**
+ * Queued messages state event - the authoritative queue after any change
+ * (enqueue, dequeue, cancel, reorder).
+ */
+export interface QueuedMessagesStateEvent {
+  type: 'queued_messages_state'
+  sessionId: string
+  /** Queue order, first to send first. */
+  order: Array<{ messageId: string; optimisticMessageId?: string }>
+}
+
+/**
  * Message annotation update event
  */
 export interface MessageAnnotationsUpdatedEvent {
@@ -588,6 +599,7 @@ export type AgentEvent =
   | WorkflowAgentCompletedEvent
   | UserMessageEvent
   | QueuedMessageCancelledEvent
+  | QueuedMessagesStateEvent
   | MessageAnnotationsUpdatedEvent
   | SessionSharedEvent
   | SessionUnsharedEvent

@@ -50,7 +50,6 @@ D1 是本文的分水岭：**参数面与 UI 是同一份配置的两个视图**
 | `defaultModel` | 同上 | 是 | 取文本框第 1 个 |
 | `piAuthProvider` | 同上 | 派生 | 无（由协议推导） |
 | `modelSelectionMode` | 同上 | — | 自定义端点流程不赋值 |
-| `midStreamBehavior` | 同上 | 是 | 卡片下拉菜单 |
 | `headers` / `compat` / `modelOverrides` | **不存在** | — | — |
 
 落盘约束：`packages/shared/src/config/validators.ts:LlmConnectionSchema` 以 `.passthrough()` 结尾（注释举了 `codexPath`/`awsRegion`/`gcpProjectId`），`models[]` 条目是 `z.string() | z.object({ id }).passthrough()`。**即：schema 允许写任意字段并保留，但代码不认识它们**——这一点在 §3 P0 会变成陷阱。

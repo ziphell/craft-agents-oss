@@ -31,8 +31,7 @@ import {
   type BackendHostRuntimeContext,
   type PostInitResult,
 } from '@craft-agent/shared/agent/backend'
-import { getLlmConnection, getLlmConnections, getDefaultLlmConnection, getDefaultThinkingLevel, resetManagedAnthropicAuthEnvVars, resolveMidStreamBehavior, getPersistedUiLanguage, resolveTitleLanguageName, toCustomEndpointModels, getBrowserProfiles, resolveBrowserProfileRef, resolveConversationBrowserProfileId, DEFAULT_BROWSER_PROFILE_ID } from '@craft-agent/shared/config'
-import type { MidStreamBehavior } from '@craft-agent/shared/config'
+import { getLlmConnection, getLlmConnections, getDefaultLlmConnection, getDefaultThinkingLevel, resetManagedAnthropicAuthEnvVars, getPersistedUiLanguage, resolveTitleLanguageName, toCustomEndpointModels, getBrowserProfiles, resolveBrowserProfileRef, resolveConversationBrowserProfileId, DEFAULT_BROWSER_PROFILE_ID } from '@craft-agent/shared/config'
 import { PrivilegedExecutionBroker } from '@craft-agent/server-core/services'
 import { isValidWorkingDirectory } from '../utils/path-validation'
 import { InitGate } from '@craft-agent/server-core/domain'
@@ -1120,55 +1119,6 @@ export interface SessionCompletionEvent {
   finalText?: string
   /** The session's cumulative token usage, so the Conductor can meter token_budget without re-fetching. */
   tokenUsage?: TokenUsage
-}
-
-export interface MidStreamDeliveryOutcome {
-  shouldQueue: boolean
-  wasInterrupted: boolean
-}
-
-/**
- * Translate backend delivery into queue/interruption semantics. Queue mode never
- * aborts the active turn; a failed steer does, and must annotate the replay.
- */
-export function resolveMidStreamDeliveryOutcome(
-  behavior: MidStreamBehavior,
-  steered: boolean,
-): MidStreamDeliveryOutcome {
-  return {
-    shouldQueue: !steered,
-    wasInterrupted: behavior === 'steer' && !steered,
-  }
-}
-
-/**
- * Whether a mid-stream text message should be steered into the live turn.
- * A manual compaction owns the turn without an agent loop to consume steers,
- * so the message is queued for replay after `complete` instead (OSS #1058).
- */
-export function shouldAttemptMidStreamSteer(
-  behavior: MidStreamBehavior,
-  textOnly: boolean,
-  agent: { isCompactionInFlight?: () => boolean } | null | undefined,
-): boolean {
-  if (behavior !== 'steer' || !textOnly || !agent) return false
-  return agent.isCompactionInFlight?.() !== true
-}
-
-/** Text redirects cannot carry attachments or options that affect model input. */
-export function canSteerTextPayload(
-  attachments?: FileAttachment[],
-  storedAttachments?: StoredAttachment[],
-  options?: SendMessageOptions,
-): boolean {
-  if (attachments?.length || storedAttachments?.length) return false
-  return !Object.entries(options ?? {}).some(([key, value]) => {
-    if (value === undefined || key === 'optimisticMessageId') return false
-    if ((key === 'skillSlugs' || key === 'badges') && Array.isArray(value) && !value.length) return false
-    if (key === 'hidden' && value === false) return false
-    // Unknown future options conservatively use the full-payload path.
-    return true
-  })
 }
 
 export class SessionManager implements ISessionManager {
@@ -6680,23 +6630,13 @@ export class SessionManager implements ISessionManager {
     // Ensure messages are loaded before we try to add new ones
     await this.ensureMessagesLoaded(managed)
 
-    // If currently processing, behavior depends on the connection's
-    // `midStreamBehavior` (resolved via {@link resolveMidStreamBehavior},
-    // defaults to provider-appropriate value):
-    //
-    // - 'steer': try to deliver into the in-flight turn. Pi steers natively;
-    //   Claude emulates via PreToolUse hook. If `redirect()` returns false
-    //   (Claude with no live query, or backend can't steer), the backend has
-    //   already called forceAbort(Redirect) and we queue for replay.
-    // - 'queue': hold the message untouched; the current turn keeps running
-    //   to natural completion; replay as a new turn afterwards. NO call to
-    //   `agent.redirect()`, NO forceAbort, NO interruption.
+    // A send that arrives while a turn is running is always queued. It becomes
+    // its own turn after `complete`, so the running turn is never interrupted and
+    // the message can still be edited, deleted, or sent immediately while it
+    // waits. "Send now" is opt-in per queued message (sendQueuedMessageNow), not a
+    // property of the connection: interaction behavior must not depend on the
+    // provider.
     if (managed.isProcessing) {
-      const connection = resolveSessionConnection(managed.llmConnection, undefined)
-      // Fallback to 'steer' when no connection is resolvable — preserves
-      // today's exact behavior (call redirect, take whatever it returns).
-      const behavior = connection ? resolveMidStreamBehavior(connection) : 'steer'
-
       // Create user message for UI
       const userMessage: Message = {
         id: generateMessageId(),
@@ -6710,54 +6650,25 @@ export class SessionManager implements ISessionManager {
         ...(options?.hidden ? { hidden: true } : {}),
       }
       managed.messages.push(userMessage)
-
-      const agent = managed.agent
-      // Redirect is text-only. Any semantic options/attachments use the normal
-      // host queue, without aborting the current turn or dropping the payload.
-      const textOnly = canSteerTextPayload(attachments, storedAttachments, options)
-      // A manual compaction owns the turn: nothing consumes steers, so queue for
-      // replay after `complete` instead of steering (OSS #1058). Not an interruption.
-      const compactionInFlight = agent?.isCompactionInFlight?.() === true
-      const attemptedSteer = shouldAttemptMidStreamSteer(behavior, textOnly, agent)
-      const steered = attemptedSteer && agent
-        ? agent.redirect(message, { messageId: userMessage.id })
-        : false
+      userMessage.isQueued = true
       const payload = { message, attachments, storedAttachments, options, messageId: userMessage.id, optimisticMessageId: options?.optimisticMessageId }
-      if (steered && agent?.takePendingSteers) {
-        (managed.acceptedSteers ??= new Map()).set(userMessage.id, payload)
-      }
-      sessionLog.info('mid-stream send', { sessionId, behavior, steered, textOnly, compactionInFlight, queueLengthBefore: managed.messageQueue.length })
+      sessionLog.info('mid-stream send queued', { sessionId, queueLengthBefore: managed.messageQueue.length })
 
-      const delivery = resolveMidStreamDeliveryOutcome(attemptedSteer ? 'steer' : 'queue', steered)
-      userMessage.isQueued = delivery.shouldQueue
-
-      // Emit to UI — 'accepted' iff a steer succeeded; 'queued' otherwise
-      // (covers both queue-direct and queue-after-abort paths).
       this.sendEvent({
         type: 'user_message',
         sessionId,
         message: userMessage,
-        status: delivery.shouldQueue ? 'queued' : 'accepted',
+        status: 'queued',
         optimisticMessageId: options?.optimisticMessageId
       }, managed.workspace.id)
 
-      if (delivery.shouldQueue) {
-        // Push for FIFO replay on next onProcessingStopped tick. Same shape
-        // for both queue-direct (current turn still running) and
-        // queue-after-abort (backend already aborted) — the replay path in
-        // processNextQueuedMessage is identical.
-        managed.messageQueue.push(payload)
-        // Only claim interruption when a steer attempt actually aborted the
-        // in-flight turn. In 'queue' mode the current turn runs to natural
-        // completion, so the replayed turn must NOT inject the "previous response
-        // was interrupted" reminder (it would falsely tell the model its own
-        // complete answer was cut off → confusion).
-        if (delivery.wasInterrupted) managed.wasInterrupted = true
-      }
+      // Push for FIFO replay on the next onProcessingStopped tick.
+      managed.messageQueue.push(payload)
+      this.sendQueueState(managed)
 
       this.persistSession(managed)
       // Force a synchronous flush so the user message is genuinely on disk
-      // before we tell the renderer "accepted" — `persistSession` only
+      // before we tell the renderer "queued" — `persistSession` only
       // enqueues with a 500ms debounce. (#616 reliability fix.)
       await this.flushSession(managed.id)
       onAck?.(userMessage.id)
@@ -6809,6 +6720,9 @@ export class SessionManager implements ISessionManager {
         status: 'accepted',
         optimisticMessageId: options?.optimisticMessageId
       }, managed.workspace.id)
+
+      // Reconcile any optimistic queued flag: this message is running now.
+      this.sendQueueState(managed)
 
       // If this is the first user message and no title exists, set one immediately
       // AI generation will enhance it later, but we always have a title from the start
@@ -7303,6 +7217,25 @@ export class SessionManager implements ISessionManager {
       managed.messages = managed.messages.filter(m => !queuedMessageIds.has(m.id))
     }
 
+    // The queue is empty now; reconcile any queued flags the renderer still has.
+    this.sendQueueState(managed)
+
+    this.interruptTurn(managed, { silent, abortReason: AbortReason.UserStop, queuedTexts })
+  }
+
+  /**
+   * Stop the running turn, sharing the bookkeeping between Stop and "send now".
+   *
+   * `queuedTexts` is present only for a user Stop — the queue was already
+   * cleared, and the renderer puts the text back in the composer.
+   */
+  private interruptTurn(
+    managed: ManagedSession,
+    opts: { silent: boolean; abortReason: AbortReason; queuedTexts?: string[] },
+  ): void {
+    const sessionId = managed.id
+    const { silent, abortReason, queuedTexts } = opts
+
     // Signal intent to stop - let the event loop drain remaining events before clearing isProcessing
     // This prevents losing in-flight messages after soft interrupt
     managed.stopRequested = true
@@ -7313,11 +7246,11 @@ export class SessionManager implements ISessionManager {
 
     // Force-abort via Query.close() - sends soft interrupt to the backend
     if (managed.agent) {
-      managed.agent.forceAbort(AbortReason.UserStop)
+      managed.agent.forceAbort(abortReason)
     }
 
     // Only show "Response interrupted" message when user explicitly clicked Stop
-    // Silent mode is used when redirecting (sending new message while processing)
+    // Silent mode is used when interrupting for a queued "send now".
     if (!silent) {
       const interruptedMessage: Message = {
         id: generateMessageId(),
@@ -7331,7 +7264,7 @@ export class SessionManager implements ISessionManager {
         sessionId,
         message: interruptedMessage,
         // Include queued texts so the UI can restore them to the input field
-        ...(queuedTexts.length > 0 ? { queuedMessages: queuedTexts } : {}),
+        ...(queuedTexts && queuedTexts.length > 0 ? { queuedMessages: queuedTexts } : {}),
       }, managed.workspace.id)
     } else {
       // Still send interrupted event but without the message (for UI state update)
@@ -7339,7 +7272,7 @@ export class SessionManager implements ISessionManager {
         type: 'interrupted',
         sessionId,
         // Include queued texts so the UI can restore them to the input field
-        ...(queuedTexts.length > 0 ? { queuedMessages: queuedTexts } : {}),
+        ...(queuedTexts && queuedTexts.length > 0 ? { queuedMessages: queuedTexts } : {}),
       }, managed.workspace.id)
     }
 
@@ -7364,16 +7297,57 @@ export class SessionManager implements ISessionManager {
    * one has to drop it from both the replay queue and `managed.messages`.
    * Returns `cancelled: false` when the message is unknown or already replaying.
    */
-  async cancelQueuedMessage(sessionId: string, messageId: string): Promise<{ cancelled: boolean }> {
+  async cancelQueuedMessage(
+    sessionId: string,
+    messageId: string,
+    content?: string,
+  ): Promise<{ cancelled: boolean }> {
     const managed = this.sessions.get(sessionId)
     if (!managed) return { cancelled: false }
 
     // The renderer identifies its own optimistic bubble, while a reloaded
     // session identifies the canonical message id — accept either.
-    const queueIndex = managed.messageQueue.findIndex(
+    let queueIndex = managed.messageQueue.findIndex(
       q => q.messageId === messageId || q.optimisticMessageId === messageId
     )
-    if (queueIndex === -1) return { cancelled: false }
+
+    // Last resort when the ids diverged: match by the text the user is looking
+    // at, but only when it is unambiguous inside the queue.
+    if (queueIndex === -1 && content) {
+      const matches = managed.messageQueue
+        .map((q, index) => ({ q, index }))
+        .filter(({ q }) => q.message === content)
+      if (matches.length === 1) queueIndex = matches[0].index
+    }
+
+    if (queueIndex === -1) {
+      // A queued-looking row without a queue entry (orphaned/recovered state).
+      // Removing it is still what the delete action means; an in-flight message
+      // has already had `isQueued` cleared by processNextQueuedMessage.
+      const staleById = managed.messages.find(m =>
+        m.role === 'user' && m.isQueued && m.id === messageId
+      )
+      const staleMatches = staleById
+        ? [staleById]
+        : content
+          ? managed.messages.filter(m => m.role === 'user' && m.isQueued && m.content === content)
+          : []
+      // Ambiguous text could delete the wrong row; refuse instead.
+      if (staleMatches.length !== 1) return { cancelled: false }
+
+      const stale = staleMatches[0]
+      managed.messages = managed.messages.filter(m => m.id !== stale.id)
+      sessionLog.info('cancel stale queued message', { sessionId, messageId: stale.id })
+      this.persistSession(managed)
+      await this.flushSession(managed.id)
+      this.sendEvent({
+        type: 'queued_message_cancelled',
+        sessionId,
+        messageId: stale.id,
+      }, managed.workspace.id)
+      this.sendQueueState(managed)
+      return { cancelled: true }
+    }
 
     const [queued] = managed.messageQueue.splice(queueIndex, 1)
     if (queued.messageId) {
@@ -7396,8 +7370,105 @@ export class SessionManager implements ISessionManager {
       messageId: queued.messageId ?? messageId,
       ...(queued.optimisticMessageId ? { optimisticMessageId: queued.optimisticMessageId } : {}),
     }, managed.workspace.id)
+    this.sendQueueState(managed)
 
     return { cancelled: true }
+  }
+
+  /**
+   * Move a queued message to a new position.
+   *
+   * The runtime queue is the send order; `managed.messages` is re-ordered in the
+   * same pass because crash recovery re-queues from the transcript, not from the
+   * runtime array. Every window gets the new order so their trays stay in sync.
+   */
+  async reorderQueuedMessage(
+    sessionId: string,
+    messageId: string,
+    toIndex: number,
+  ): Promise<{ reordered: boolean }> {
+    const managed = this.sessions.get(sessionId)
+    if (!managed) return { reordered: false }
+
+    const fromIndex = managed.messageQueue.findIndex(
+      q => q.messageId === messageId || q.optimisticMessageId === messageId
+    )
+    if (fromIndex === -1) return { reordered: false }
+
+    const targetIndex = Math.max(0, Math.min(toIndex, managed.messageQueue.length - 1))
+    if (targetIndex !== fromIndex) {
+      const [queued] = managed.messageQueue.splice(fromIndex, 1)
+      managed.messageQueue.splice(targetIndex, 0, queued)
+    }
+
+    // Persisted order is what recovery and a fresh renderer read.
+    const queuedMessages = managed.messageQueue.map(q =>
+      q.messageId ? managed.messages.find(m => m.id === q.messageId) : undefined
+    )
+    if (queuedMessages.every((m): m is Message => !!m)) {
+      const queuedIds = new Set(queuedMessages.map(m => m.id))
+      managed.messages = [
+        ...managed.messages.filter(m => !queuedIds.has(m.id)),
+        ...queuedMessages,
+      ]
+    }
+
+    sessionLog.info('reorder queued messages', {
+      sessionId,
+      messageId,
+      fromIndex,
+      targetIndex,
+    })
+
+    this.persistSession(managed)
+    await this.flushSession(managed.id)
+
+    this.sendQueueState(managed)
+
+    return { reordered: true }
+  }
+
+  /**
+   * Send one queued message now.
+   *
+   * The current turn is interrupted and the chosen message becomes the next
+   * turn — it is not injected into the reply. Because the target is a normal
+   * next-turn send it keeps its attachments and options, so multimodal queued
+   * messages work here (unlike a text-only redirect). A manual compaction is
+   * not interruptible this way, so the call declines (`reason: 'compacting'`);
+   * a steer sent into `/compact` has no agent loop to consume it (OSS #1058).
+   */
+  async sendQueuedMessageNow(
+    sessionId: string,
+    messageId: string,
+  ): Promise<{ sent: boolean; reason?: 'not-processing' | 'not-queued' | 'compacting' }> {
+    const managed = this.sessions.get(sessionId)
+    if (!managed?.isProcessing) return { sent: false, reason: 'not-processing' }
+    if (managed.agent?.isCompactionInFlight?.()) return { sent: false, reason: 'compacting' }
+
+    // Undelivered steers land in the queue first, so the explicit pick still wins.
+    this.recoverPendingSteers(managed)
+
+    // Accept either the persisted id or the renderer's optimistic id, like cancel.
+    const queueIndex = managed.messageQueue.findIndex(
+      q => q.messageId === messageId || q.optimisticMessageId === messageId
+    )
+    if (queueIndex === -1) return { sent: false, reason: 'not-queued' }
+
+    const [queued] = managed.messageQueue.splice(queueIndex, 1)
+    managed.messageQueue.unshift(queued)
+    // Show the promoted entry first in every window's tray.
+    this.sendQueueState(managed)
+
+    sessionLog.info('send queued message now', {
+      sessionId,
+      messageId: queued.messageId,
+      queueLength: managed.messageQueue.length,
+    })
+
+    // Silent: the reply simply stops and the chosen message starts the next turn.
+    this.interruptTurn(managed, { silent: true, abortReason: AbortReason.Redirect })
+    return { sent: true }
   }
 
   /**
@@ -7723,38 +7794,59 @@ export class SessionManager implements ISessionManager {
       queueLengthAfterShift: managed.messageQueue.length,
     })
 
-    // Update UI: queued → processing
+    // Queued rows are previews, not transcript messages. Drop the preview and
+    // append a fresh user message for the turn at the current end. Its position
+    // therefore never depends on the timestamp it had while queued, which
+    // points into the middle of the previous turn.
     if (next.messageId) {
-      const existingMessage = managed.messages.find(m => m.id === next.messageId)
-      if (existingMessage) {
-        // Clear isQueued flag and persist - prevents re-queueing if crash during processing
-        existingMessage.isQueued = false
-        // Re-stamp so this replayed message sorts AFTER the previous turn's
-        // finalized assistant reply. It was created mid-stream (an earlier
-        // timestamp) while queued; groupMessagesByTurn sorts by timestamp, so
-        // without this the prior turn's completed response would render BELOW it.
-        existingMessage.timestamp = this.monotonic()
-        this.persistSession(managed)
-
-        this.sendEvent({
-          type: 'user_message',
-          sessionId,
-          message: existingMessage,
-          status: 'processing',
-          optimisticMessageId: next.optimisticMessageId
-        }, managed.workspace.id)
-      }
+      managed.messages = managed.messages.filter(m => m.id !== next.messageId)
     }
+    const latestTimestamp = managed.messages.reduce((max, m) => Math.max(max, m.timestamp), 0)
+    const turnMessage: Message = {
+      id: generateMessageId(),
+      role: 'user',
+      content: next.message,
+      timestamp: Math.max(this.monotonic(), latestTimestamp + 1),
+      attachments: next.storedAttachments,
+      ...(next.options?.badges ? { badges: next.options.badges } : {}),
+      ...(next.options?.hidden ? { hidden: true } : {}),
+    }
+    managed.messages.push(turnMessage)
+    if (!next.options?.hidden) {
+      managed.lastMessageRole = 'user'
+    }
+    this.persistSession(managed)
 
-    // Process message (use setImmediate to allow current stack to clear)
+    // Remove the preview everywhere, then announce the turn message. The
+    // renderer adds it at the end like any other accepted send, so there is no
+    // timestamp to rewrite and no id to reconcile.
+    if (next.messageId) {
+      this.sendEvent({
+        type: 'queued_message_cancelled',
+        sessionId,
+        messageId: next.messageId,
+        ...(next.optimisticMessageId ? { optimisticMessageId: next.optimisticMessageId } : {}),
+      }, managed.workspace.id)
+    }
+    this.sendEvent({
+      type: 'user_message',
+      sessionId,
+      message: turnMessage,
+      status: 'accepted',
+    }, managed.workspace.id)
+    this.sendQueueState(managed)
+
     setImmediate(() => {
+      const replayOptions = next.options
+        ? { ...next.options, optimisticMessageId: undefined }
+        : undefined
       this.sendMessage(
         sessionId,
         next.message,
         next.attachments,
         next.storedAttachments,
-        next.options,
-        next.messageId
+        replayOptions,
+        turnMessage.id
       ).catch(err => {
         sessionLog.error('replay failed', {
           sessionId,
@@ -9507,6 +9599,25 @@ export class SessionManager implements ISessionManager {
       // Note: working_directory_changed is user-initiated only (via updateWorkingDirectory),
       // the agent no longer has a change_working_directory tool
     }
+  }
+
+  /**
+   * Broadcast the authoritative queue after any change (enqueue, dequeue,
+   * cancel, reorder). The renderer reconciles `isQueued` from this list, so a
+   * message that left the queue is shown in the transcript even if its own
+   * `processing` event was missed.
+   */
+  private sendQueueState(managed: ManagedSession): void {
+    this.sendEvent({
+      type: 'queued_messages_state',
+      sessionId: managed.id,
+      order: managed.messageQueue
+        .filter(q => !!q.messageId)
+        .map(q => ({
+          messageId: q.messageId!,
+          ...(q.optimisticMessageId ? { optimisticMessageId: q.optimisticMessageId } : {}),
+        })),
+    }, managed.workspace.id)
   }
 
   private sendEvent(event: SessionEvent, workspaceId?: string): void {

@@ -27,6 +27,7 @@ export const CHANNEL_MAP = {
   sendMessage: invoke(RPC_CHANNELS.sessions.SEND_MESSAGE),
   cancelProcessing: invoke(RPC_CHANNELS.sessions.CANCEL),
   cancelQueuedMessage: invoke(RPC_CHANNELS.sessions.CANCEL_QUEUED_MESSAGE),
+  sendQueuedMessageNow: invoke(RPC_CHANNELS.sessions.SEND_QUEUED_MESSAGE_NOW),
   killShell: invoke(RPC_CHANNELS.sessions.KILL_SHELL),
   getTaskOutput: invoke(RPC_CHANNELS.tasks.GET_OUTPUT),
 

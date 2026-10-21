@@ -471,9 +471,9 @@ describe('hidden messages', () => {
 })
 
 describe('queued mid-stream messages', () => {
-  it('renders after the in-flight turn instead of splitting it in half', () => {
-    // A message sent while the agent is running keeps the timestamp from the
-    // moment it was typed, which falls in the middle of the ongoing turn.
+  it('stays out of the transcript while it waits in the composer tray', () => {
+    // A message sent while the agent is running has not been sent yet. It lives
+    // in the composer's queued tray, not inside the in-flight turn.
     const messages: Message[] = [
       { id: 'u1', role: 'user', content: 'first', timestamp: 1000 },
       {
@@ -500,16 +500,17 @@ describe('queued mid-stream messages', () => {
 
     const turns = groupMessagesByTurn(messages)
 
-    expect(turns.map(t => t.type)).toEqual(['user', 'assistant', 'user'])
-    expect((turns[0] as { message: Message }).message.id).toBe('u1')
-    expect((turns[2] as { message: Message }).message.id).toBe('u2')
+    expect(turns.map(t => t.type)).toEqual(['user', 'assistant'])
+    expect(turns.some(t => t.type === 'user' && t.message.id === 'u2')).toBe(false)
   })
 
-  it('preserves queue order for multiple queued sends', () => {
+  it('enters the transcript in queue order once replay starts', () => {
+    // processNextQueuedMessage clears `isQueued` and re-stamps the timestamp, so
+    // the message sorts after the prior turn's finalized reply.
     const messages: Message[] = [
       { id: 'u1', role: 'user', content: 'first', timestamp: 1000 },
-      { id: 'u2', role: 'user', content: 'queued-1', timestamp: 1100, isQueued: true },
-      { id: 'u3', role: 'user', content: 'queued-2', timestamp: 1200, isQueued: true },
+      { id: 'u2', role: 'user', content: 'queued-1', timestamp: 1400 },
+      { id: 'u3', role: 'user', content: 'queued-2', timestamp: 1500 },
       {
         id: 'a1',
         role: 'assistant',

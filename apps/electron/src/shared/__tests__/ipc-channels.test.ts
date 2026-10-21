@@ -291,6 +291,7 @@ const EXPECTED_CHANNELS: string[] = [
   'sessions:respondToPermission',
   'sessions:searchContent',
   'sessions:sendMessage',
+  'sessions:sendQueuedMessageNow',
   'sessions:setNotes',
   'sessions:unreadSummaryChanged',
   'sessions:unwatchFiles',

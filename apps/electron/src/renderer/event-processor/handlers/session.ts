@@ -39,6 +39,7 @@ import type {
   LLMConnectionChangedEvent,
   UserMessageEvent,
   QueuedMessageCancelledEvent,
+  QueuedMessagesStateEvent,
   MessageAnnotationsUpdatedEvent,
   SessionSharedEvent,
   SessionUnsharedEvent,
@@ -87,29 +88,10 @@ export function handleComplete(
     })
   }
 
-  // Clear isQueued from any user messages once the turn completes. Pi's steer
-  // path never emits a 'processing' status update to clear it (the message is
-  // injected mid-stream and absorbed into the current response), so this is
-  // the natural place to drop the indicator. Claude's queued path has already
-  // cleared via the 'processing' status update before this fires; this is
-  // a safe no-op for that case.
-  const hasQueuedUserBubbles = updatedMessages.some(m => m.role === 'user' && m.isQueued)
-  if (hasQueuedUserBubbles) {
-    // Re-stamp in the same pass. A queued message was created mid-turn, so its
-    // timestamp points into the middle of the turn that just finished. Leaving
-    // it there while clearing `isQueued` would splice the bubble into that
-    // completed response until the replay event re-stamps it (or forever, if
-    // the replay never happens). The backend does the same re-stamp when it
-    // dequeues (SessionManager.processNextQueuedMessage).
-    const latestTimestamp = updatedMessages.reduce((max, m) => Math.max(max, m.timestamp), 0)
-    const restampBase = Math.max(Date.now(), latestTimestamp) + 1
-    let restampOffset = 0
-    updatedMessages = updatedMessages.map(m =>
-      m.role === 'user' && m.isQueued
-        ? { ...m, isQueued: false, timestamp: restampBase + restampOffset++ }
-        : m
-    )
-  }
+  // Queued bubbles stay queued until the backend says otherwise: either a
+  // 'processing' event when the message is replayed, or an 'accepted' event
+  // when the user steers it into the running turn. Clearing here would mark
+  // every queued message as sent at once and hide the rest of the queue.
 
   return {
     state: {
@@ -590,12 +572,13 @@ export function handleUserMessage(
   const { session, streaming } = state
   const { message, status } = event
 
-  // Find existing message by ID match (backend ID, optimistic ID, or content+timestamp fallback)
+  // Find existing message by id. Ids are authoritative: matching by content
+  // would collide when the same text is sent more than once (a queued replay
+  // and an older identical message are indistinguishable).
   const existingIndex = session.messages.findIndex(m =>
     m.role === 'user' && (
       m.id === message.id ||
-      (event.optimisticMessageId && m.id === event.optimisticMessageId) ||
-      (m.content === message.content && Math.abs(m.timestamp - message.timestamp) < 5000)
+      (event.optimisticMessageId ? m.id === event.optimisticMessageId : false)
     )
   )
 
@@ -659,6 +642,72 @@ export function handleUserMessage(
         // Set isProcessing when message is accepted/processing (enables multi-window sync)
         isProcessing: status === 'accepted' || status === 'processing',
       },
+      streaming,
+    },
+    effects: [],
+  }
+}
+
+/**
+ * Handle queued_messages_state - reconcile the tray with the backend's queue.
+ *
+ * The event is authoritative: a user message is queued iff its id appears in
+ * `order`. That clears ghosts whose `processing` event was missed (the message
+ * has been sent and must render in the transcript) and adopts messages whose
+ * `queued` event was missed. The listed messages are then placed into the
+ * previously queued slots in the backend's order.
+ */
+export function handleQueuedMessagesState(
+  state: SessionState,
+  event: QueuedMessagesStateEvent
+): ProcessResult {
+  const { session, streaming } = state
+
+  const findMessage = (entry: { messageId: string; optimisticMessageId?: string }) =>
+    session.messages.find(m =>
+      m.role === 'user' && (
+        m.id === entry.messageId ||
+        (entry.optimisticMessageId ? m.id === entry.optimisticMessageId : false)
+      )
+    )
+
+  const listed = new Set<Message>()
+  const ordered: Message[] = []
+  for (const entry of event.order) {
+    const message = findMessage(entry)
+    if (!message || listed.has(message)) continue
+    listed.add(message)
+    ordered.push(message)
+  }
+
+  let changed = false
+  let messages = session.messages.map(m => {
+    if (m.role !== 'user') return m
+    const shouldQueue = listed.has(m)
+    if (!!m.isQueued === shouldQueue) return m
+    changed = true
+    return { ...m, isQueued: shouldQueue }
+  })
+
+  // Fill the queued slots with the authoritative order. Non-queued messages
+  // keep their positions; queued ones are invisible in the transcript anyway.
+  const queuedNow = messages.filter(m => m.role === 'user' && m.isQueued)
+  if (queuedNow.length === ordered.length) {
+    let index = 0
+    messages = messages.map(m => {
+      if (m.role !== 'user' || !m.isQueued) return m
+      const next = ordered[index++]
+      if (next.id === m.id) return m
+      changed = true
+      // `ordered` holds pre-update objects; keep the authoritative flag.
+      return next.isQueued ? next : { ...next, isQueued: true }
+    })
+  }
+
+  if (!changed) return { state, effects: [] }
+  return {
+    state: {
+      session: { ...session, messages },
       streaming,
     },
     effects: [],

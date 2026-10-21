@@ -459,6 +459,14 @@ export type SessionEvent =
   | { type: 'shell_killed'; sessionId: string; shellId: string }
   | { type: 'user_message'; sessionId: string; message: Message; status: 'accepted' | 'queued' | 'processing'; optimisticMessageId?: string }
   | { type: 'queued_message_cancelled'; sessionId: string; messageId: string; optimisticMessageId?: string }
+  | {
+      type: 'queued_messages_state'
+      sessionId: string
+      /** The authoritative queue, first to send first. Each entry names the
+       *  persisted id and, when the renderer owns an optimistic bubble, that id
+       *  too. A message absent from this list is not queued. */
+      order: Array<{ messageId: string; optimisticMessageId?: string }>
+    }
   | { type: 'session_flagged'; sessionId: string }
   | { type: 'session_unflagged'; sessionId: string }
   | { type: 'session_archived'; sessionId: string }
@@ -528,6 +536,8 @@ export type SessionCommand =
   | { type: 'addAnnotation'; messageId: string; annotation: AnnotationV1 }
   | { type: 'removeAnnotation'; messageId: string; annotationId: string }
   | { type: 'updateAnnotation'; messageId: string; annotationId: string; patch: Partial<AnnotationV1> }
+  /** Move a queued message to a new position (0-based, after removal). */
+  | { type: 'reorderQueuedMessage'; messageId: string; toIndex: number }
 
 export interface NewChatActionParams {
   input?: string

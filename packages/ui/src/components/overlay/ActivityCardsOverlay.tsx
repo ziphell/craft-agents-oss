@@ -114,7 +114,9 @@ export function ActivityCardsOverlay({
                 <div className="text-xs font-semibold text-muted-foreground/70 mb-2 px-1">{t('activity.inputParams')}</div>
               )}
               <div className="p-4">
-                <JsonView value={processedData} style={jsonTheme} collapsed={false} enableClipboard displayDataTypes={false} shortenTextAfterLength={100}>
+                {/* 0 disables the library's string shortening: long commands/prompts
+                    must be readable in full, not cut at 100 chars. */}
+                <JsonView value={processedData} style={jsonTheme} collapsed={false} enableClipboard displayDataTypes={false} shortenTextAfterLength={0}>
                   <JsonView.Copied
                     render={(props) => {
                       const isCopied = (props as Record<string, unknown>)['data-copied']

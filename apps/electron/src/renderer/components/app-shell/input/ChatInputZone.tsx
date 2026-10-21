@@ -8,6 +8,8 @@ import type { BackgroundTask } from '../ActiveTasksBar'
 import { ActiveOptionBadges } from '../ActiveOptionBadges'
 import { InputContainer } from './InputContainer'
 import { InputErrorBoundary } from './InputErrorBoundary'
+import { QueuedMessagesTray } from './QueuedMessagesTray'
+import type { Message } from '../../../../shared/types'
 
 interface ChatInputZoneProps {
   compactMode?: boolean
@@ -26,6 +28,13 @@ interface ChatInputZoneProps {
   currentSessionStatus?: string
   onSessionStatusChange?: (stateId: string) => void
   className?: string
+  /** Messages waiting behind the running turn. */
+  queuedMessages?: Message[]
+  onEditQueued?: (message: Message) => void
+  onRemoveQueued?: (message: Message) => void
+  onSendQueuedNow?: (message: Message) => void
+  onReorderQueued?: (messageId: string, toIndex: number) => void
+  onReorderQueuedExpired?: () => void
   inputProps: React.ComponentProps<typeof InputContainer>
 }
 
@@ -46,6 +55,12 @@ export function ChatInputZone({
   currentSessionStatus = 'todo',
   onSessionStatusChange,
   className,
+  queuedMessages,
+  onEditQueued,
+  onRemoveQueued,
+  onSendQueuedNow,
+  onReorderQueued,
+  onReorderQueuedExpired,
   inputProps,
 }: ChatInputZoneProps) {
   const [autoOpenLabelId, setAutoOpenLabelId] = React.useState<string | null>(null)
@@ -76,6 +91,18 @@ export function ChatInputZone({
       compactMode ? 'px-2 pb-3' : 'px-3 @xs/panel:px-4 pb-4',
       className,
     )}>
+      {queuedMessages && queuedMessages.length > 0 && onEditQueued && onRemoveQueued && onSendQueuedNow && onReorderQueued && onReorderQueuedExpired && (
+        <QueuedMessagesTray
+          messages={queuedMessages}
+          isProcessing={!!inputProps.isProcessing}
+          onEdit={onEditQueued}
+          onRemove={onRemoveQueued}
+          onSendNow={onSendQueuedNow}
+          onReorder={onReorderQueued}
+          onReorderExpired={onReorderQueuedExpired}
+        />
+      )}
+
       {shouldShowOptionBadges && (
         <ActiveOptionBadges
           permissionMode={permissionMode}

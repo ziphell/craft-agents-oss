@@ -146,7 +146,7 @@ export function JSONPreviewOverlay({
               collapsed={false}
               enableClipboard={true}
               displayDataTypes={false}
-              shortenTextAfterLength={100}
+              shortenTextAfterLength={0}
             >
               {/* Custom copy icon using lucide-react */}
               <JsonView.Copied

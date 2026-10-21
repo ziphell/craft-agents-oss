@@ -28,6 +28,7 @@ export const RPC_CHANNELS = {
     SEND_MESSAGE: 'sessions:sendMessage',
     CANCEL: 'sessions:cancel',
     CANCEL_QUEUED_MESSAGE: 'sessions:cancelQueuedMessage',
+    SEND_QUEUED_MESSAGE_NOW: 'sessions:sendQueuedMessageNow',
     KILL_SHELL: 'sessions:killShell',
     RESPOND_TO_PERMISSION: 'sessions:respondToPermission',
     RESPOND_TO_CREDENTIAL: 'sessions:respondToCredential',

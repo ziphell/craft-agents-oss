@@ -130,7 +130,12 @@ export interface ISessionManager {
     rpcContext?: { callerClientId?: string },
   ): Promise<void>
   cancelProcessing(sessionId: string, silent?: boolean): Promise<void>
-  cancelQueuedMessage(sessionId: string, messageId: string): Promise<{ cancelled: boolean }>
+  cancelQueuedMessage(sessionId: string, messageId: string, content?: string): Promise<{ cancelled: boolean }>
+  reorderQueuedMessage(sessionId: string, messageId: string, toIndex: number): Promise<{ reordered: boolean }>
+  sendQueuedMessageNow(
+    sessionId: string,
+    messageId: string,
+  ): Promise<{ sent: boolean; reason?: 'not-processing' | 'not-queued' | 'compacting' }>
   killShell(sessionId: string, shellId: string): Promise<{ success: boolean; error?: string }>
   getTaskOutput(taskId: string): Promise<string | null>
 

@@ -11,7 +11,6 @@ import {
   type CustomEndpointApi,
   getDefaultModelsForConnection,
   getDefaultModelForConnection,
-  defaultMidStreamBehavior,
 } from '@craft-agent/shared/config'
 
 // ============================================================
@@ -294,7 +293,6 @@ export function createBuiltInConnection(slug: string, baseUrl?: string | null): 
     defaultModel: getDefaultModelForConnection(providerType, template.piAuthProvider),
     modelSelectionMode: providerType === 'pi' ? 'automaticallySyncedFromProvider' : undefined,
     piAuthProvider: template.piAuthProvider,
-    midStreamBehavior: defaultMidStreamBehavior(providerType),
     createdAt: Date.now(),
   }
 }

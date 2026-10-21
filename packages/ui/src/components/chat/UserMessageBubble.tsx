@@ -11,8 +11,7 @@
  * - Pending/queued states (Electron only)
  */
 
-import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Clock, Trash2, Undo2 } from 'lucide-react'
+import type { ReactNode } from 'react'
 import type { StoredAttachment, ContentBadge } from '@craft-agent/core'
 import { normalizePath } from '@craft-agent/core/utils'
 import { cn } from '../../lib/utils'
@@ -277,21 +276,9 @@ export interface UserMessageBubbleProps {
   badges?: ContentBadge[]
   /** Whether the message is awaiting backend confirmation. User bubbles stay visually stable. */
   isPending?: boolean
-  /** Whether the message is queued (badge shown) */
-  isQueued?: boolean
-  /** Delete a queued message without restoring it to the composer */
-  onDeleteQueued?: () => void
-  /** Undo a queued message and put its text back in the composer (overwrites) */
-  onUndoQueued?: () => void
   /** Compact mode - reduces padding for popover embedding */
   compactMode?: boolean
 }
-
-/** Minimum visible duration of the "Queued" chip. Both backends ack
- * mid-stream sends within ~50–150ms, which would otherwise make the chip
- * flash too briefly to register. Hold it long enough for the user to
- * actually read it. */
-const QUEUED_MIN_VISIBLE_MS = 2500
 
 export function UserMessageBubble({
   content,
@@ -300,61 +287,10 @@ export function UserMessageBubble({
   onFileClick,
   attachments,
   badges,
-  isQueued,
-  onDeleteQueued,
-  onUndoQueued,
   compactMode,
 }: UserMessageBubbleProps) {
   const { t } = useTranslation()
   const hasAttachments = attachments && attachments.length > 0
-
-  // Show the queued chip while `isQueued` is true AND for at least
-  // QUEUED_MIN_VISIBLE_MS after it first became true — even if the backend
-  // acks in <150ms. Pure UI state; `isQueued` remains the persisted source
-  // of truth.
-  const [showQueued, setShowQueued] = useState(isQueued ?? false)
-  const queuedShownAtRef = useRef<number | null>(isQueued ? Date.now() : null)
-  const clearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  useEffect(() => {
-    return () => {
-      if (clearTimerRef.current) clearTimeout(clearTimerRef.current)
-    }
-  }, [])
-
-  useEffect(() => {
-    if (clearTimerRef.current) {
-      clearTimeout(clearTimerRef.current)
-      clearTimerRef.current = null
-    }
-
-    if (isQueued) {
-      setShowQueued(true)
-      if (queuedShownAtRef.current === null) {
-        queuedShownAtRef.current = Date.now()
-      }
-      return
-    }
-
-    // isQueued flipped to false. Keep the chip up for the remainder of
-    // the minimum visible window, then clear.
-    if (queuedShownAtRef.current === null) return
-
-    const elapsed = Date.now() - queuedShownAtRef.current
-    const remaining = Math.max(0, QUEUED_MIN_VISIBLE_MS - elapsed)
-
-    if (remaining === 0) {
-      setShowQueued(false)
-      queuedShownAtRef.current = null
-      return
-    }
-
-    clearTimerRef.current = setTimeout(() => {
-      setShowQueued(false)
-      queuedShownAtRef.current = null
-      clearTimerRef.current = null
-    }, remaining)
-  }, [isQueued])
 
   // Separate edit_request badges (rendered above bubble) from other badges (rendered inline)
   const editRequestBadges = badges?.filter(isEditRequestBadge) ?? []
@@ -445,51 +381,13 @@ export function UserMessageBubble({
         </div>
       )}
 
-      {/* Text content bubble. Queued messages render an inline header chip
-          inside the bubble (Clock icon + 'Queued' italic) instead of a
-          separate pill below — keeps the chat to one bubble per message
-          while the chip and pulsing icon make the waiting state obvious
-          (#616 follow-up). */}
+      {/* Text content bubble */}
       <div
         className={cn(
           "max-w-[80%] bg-user-message-bubble rounded-[16px] break-words min-w-0 select-text [&_p]:m-0",
           compactMode ? "px-4 py-2" : "px-5 py-3.5"
         )}
       >
-        {showQueued && (
-          <div className="flex items-center gap-1.5 text-foreground/55 mb-1.5">
-            <span className="flex items-center gap-1.5" role="status" aria-live="polite">
-              <Clock className="h-3 w-3 animate-pulse" aria-hidden="true" />
-              <span className="text-[11px] italic">{t('chat.queuedBadge')}</span>
-            </span>
-            {(onUndoQueued || onDeleteQueued) && (
-              <span className="flex items-center gap-0.5 ml-1">
-                {onUndoQueued && (
-                  <button
-                    type="button"
-                    onClick={onUndoQueued}
-                    className="rounded-sm p-0.5 -my-0.5 transition-colors hover:bg-foreground/10 hover:text-foreground cursor-pointer"
-                    title={t('chat.undoQueued')}
-                    aria-label={t('chat.undoQueued')}
-                  >
-                    <Undo2 className="h-3 w-3" aria-hidden="true" />
-                  </button>
-                )}
-                {onDeleteQueued && (
-                  <button
-                    type="button"
-                    onClick={onDeleteQueued}
-                    className="rounded-sm p-0.5 -my-0.5 transition-colors hover:bg-foreground/10 hover:text-foreground cursor-pointer"
-                    title={t('chat.deleteQueued')}
-                    aria-label={t('chat.deleteQueued')}
-                  >
-                    <Trash2 className="h-3 w-3" aria-hidden="true" />
-                  </button>
-                )}
-              </span>
-            )}
-          </div>
-        )}
         {hasInlineBadges
           ? renderContentWithBadges(displayContent, inlineBadges, onUrlClick, onFileClick)
           : (

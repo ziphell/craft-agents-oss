@@ -111,6 +111,7 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.sessions.SEND_MESSAGE,
   RPC_CHANNELS.sessions.CANCEL,
   RPC_CHANNELS.sessions.CANCEL_QUEUED_MESSAGE,
+  RPC_CHANNELS.sessions.SEND_QUEUED_MESSAGE_NOW,
   RPC_CHANNELS.sessions.KILL_SHELL,
   RPC_CHANNELS.tasks.GET_OUTPUT,
   RPC_CHANNELS.sessions.RESPOND_TO_PERMISSION,
@@ -265,8 +266,13 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
   })
 
   // Cancel one queued (not yet replaying) message so the user can edit it
-  server.handle(RPC_CHANNELS.sessions.CANCEL_QUEUED_MESSAGE, async (_ctx, sessionId: string, messageId: string) => {
-    return sessionManager.cancelQueuedMessage(sessionId, messageId)
+  server.handle(RPC_CHANNELS.sessions.CANCEL_QUEUED_MESSAGE, async (_ctx, sessionId: string, messageId: string, content?: string) => {
+    return sessionManager.cancelQueuedMessage(sessionId, messageId, content)
+  })
+
+  // Send a queued message now: stop the running turn, then replay this one first
+  server.handle(RPC_CHANNELS.sessions.SEND_QUEUED_MESSAGE_NOW, async (_ctx, sessionId: string, messageId: string) => {
+    return sessionManager.sendQueuedMessageNow(sessionId, messageId)
   })
 
   // Kill background shell
@@ -392,6 +398,8 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
         return sessionManager.removeMessageAnnotation(sessionId, command.messageId, command.annotationId)
       case 'updateAnnotation':
         return sessionManager.updateMessageAnnotation(sessionId, command.messageId, command.annotationId, command.patch)
+      case 'reorderQueuedMessage':
+        return sessionManager.reorderQueuedMessage(sessionId, command.messageId, command.toIndex)
       default: {
         const _exhaustive: never = command
         throw new Error(`Unknown session command: ${JSON.stringify(command)}`)

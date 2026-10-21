@@ -67,6 +67,7 @@ import {
 } from "@craft-agent/ui"
 import { MemoizedAuthRequestCard } from "@/components/chat/AuthRequestCard"
 import { ChatInputZone, type StructuredInputState, type StructuredResponse, type PermissionResponse, type AdminApprovalResponse } from "./input"
+import { dispatchFocusInputEvent } from "./input/focus-input-events"
 import type { RichTextInputHandle } from "@/components/ui/rich-text-input"
 import { useBackgroundTasks } from "@/hooks/useBackgroundTasks"
 import { useTurnCardExpansion } from "@/hooks/useTurnCardExpansion"
@@ -1327,19 +1328,83 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     })
   }
 
-  // Remove a queued message. "撤销" also puts its text back in the composer,
-  // replacing whatever draft is there; "删除" leaves the composer untouched.
-  const handleRemoveQueuedMessage = React.useCallback((message: Message, restoreInput: boolean) => {
+  // Queued messages are not transcript turns — they wait in the composer tray.
+  const queuedMessages = React.useMemo(
+    () => session?.messages.filter(m => m.role === 'user' && m.isQueued) ?? [],
+    [session?.messages]
+  )
+
+  // Queued messages live in the composer tray until their turn starts.
+  const handleRemoveQueuedMessage = React.useCallback((message: Message) => {
     const sessionId = session?.id
     if (!sessionId) return
 
-    window.electronAPI.cancelQueuedMessage(sessionId, message.id).then(result => {
-      if (!result?.cancelled || !restoreInput) return
-      onInputChange?.(coerceInputText(message.content))
+    window.electronAPI.cancelQueuedMessage(sessionId, message.id, message.content).then(result => {
+      if (!result?.cancelled) toast.error(t('chat.queuedRemoveFailed'))
     }).catch(error => {
       console.error('[ChatDisplay] Failed to cancel queued message:', error)
+      toast.error(t('chat.queuedRemoveFailed'))
     })
-  }, [session?.id, onInputChange])
+  }, [session?.id, t])
+
+  // Take the message out of the queue and put its text in the composer so it
+  // can be rewritten before sending. Attachments stay with the removed entry.
+  const handleEditQueuedMessage = React.useCallback((message: Message) => {
+    const sessionId = session?.id
+    if (!sessionId) return
+
+    window.electronAPI.cancelQueuedMessage(sessionId, message.id, message.content).then(result => {
+      if (!result?.cancelled) {
+        toast.error(t('chat.queuedRemoveFailed'))
+        return
+      }
+      onInputChange?.(coerceInputText(message.content))
+      dispatchFocusInputEvent({ sessionId })
+    }).catch(error => {
+      console.error('[ChatDisplay] Failed to edit queued message:', error)
+    })
+  }, [session?.id, onInputChange, t])
+
+  // "Send now" is Stop + Send: the running turn is interrupted and this message
+  // starts the next one. It stays in the tray until the replay clears its flag.
+  const handleSendQueuedMessageNow = React.useCallback((message: Message) => {
+    const sessionId = session?.id
+    if (!sessionId) return
+
+    window.electronAPI.sendQueuedMessageNow(sessionId, message.id).then(result => {
+      if (!result?.sent) {
+        toast.error(t('chat.queuedSendNowFailed'))
+      }
+    }).catch(error => {
+      console.error('[ChatDisplay] Failed to send queued message now:', error)
+      toast.error(t('chat.queuedSendNowFailed'))
+    })
+  }, [session?.id, t])
+
+  // Drag-to-reorder identifies the entry by id: the queue keeps draining while
+  // the pointer is down, so indices can shift (or the entry can start sending).
+  const handleReorderQueuedMessage = React.useCallback((messageId: string, toIndex: number) => {
+    const sessionId = session?.id
+    if (!sessionId) return
+
+    window.electronAPI.sessionCommand(sessionId, {
+      type: 'reorderQueuedMessage',
+      messageId,
+      toIndex,
+    }).then(result => {
+      // The entry can be replayed between the drop and the backend call.
+      if (result && 'reordered' in result && !result.reordered) {
+        toast.info(t('chat.queuedReorderExpired'))
+      }
+    }).catch(error => {
+      console.error('[ChatDisplay] Failed to reorder queued messages:', error)
+      toast.error(t('chat.queuedReorderFailed'))
+    })
+  }, [session?.id, t])
+
+  const handleReorderQueuedExpired = React.useCallback(() => {
+    toast.info(t('chat.queuedReorderExpired'))
+  }, [t])
 
   // Per-frame scroll compensation during input height animation
   // Only compensate when user is "stuck to bottom" - otherwise let them control their scroll position
@@ -1724,8 +1789,6 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                             onOpenUrl={onOpenUrl}
                             sessionId={session?.id}
                             compactMode={compactMode}
-                            onDeleteQueued={() => handleRemoveQueuedMessage(turn.message, false)}
-                            onUndoQueued={() => handleRemoveQueuedMessage(turn.message, true)}
                           />
                         </div>
                       )
@@ -1942,6 +2005,20 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                           })
                         }}
                         onOpenActivityDetails={(activity) => {
+                          // Thinking/commentary is model-written markdown. Hand the raw
+                          // source to the document overlay (rendered as formatted
+                          // markdown, not a code view) instead of the tool-output
+                          // heuristics (JSON / code / terminal), which can present
+                          // only part of a long passage.
+                          if (activity.type === 'intermediate') {
+                            setOverlayState({
+                              type: 'markdown',
+                              content: activity.content || '',
+                              title: 'Thinking',
+                            })
+                            return
+                          }
+
                           // Write tool for .md/.txt → Document overlay (rendered markdown)
                           // rather than multi-diff, since these are better viewed as formatted documents
                           const isDocumentWrite = activity.toolName === 'Write' && (() => {
@@ -1993,7 +2070,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                 {/* Processing Indicator - always visible while processing */}
                 {session.isProcessing && (() => {
                   // Find the last user message timestamp for accurate elapsed time
-                  const lastUserMsg = [...session.messages].reverse().find(m => m.role === 'user')
+                  const lastUserMsg = [...session.messages].reverse().find(m => m.role === 'user' && !m.isQueued)
                   return (
                     <ProcessingIndicator
                       startTime={lastUserMsg?.timestamp}
@@ -2032,6 +2109,12 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
             sessionStatuses={sessionStatuses}
             currentSessionStatus={session.sessionStatus || 'todo'}
             onSessionStatusChange={onSessionStatusChange}
+            queuedMessages={queuedMessages}
+            onEditQueued={handleEditQueuedMessage}
+            onRemoveQueued={handleRemoveQueuedMessage}
+            onSendQueuedNow={handleSendQueuedMessageNow}
+            onReorderQueued={handleReorderQueuedMessage}
+            onReorderQueuedExpired={handleReorderQueuedExpired}
             inputProps={{
               placeholder,
               disabled: isInputDisabled,
@@ -2245,10 +2328,6 @@ interface MessageBubbleProps {
   compactMode?: boolean
   /** Callback to resend the user message that preceded an error */
   onRetry?: () => void
-  /** Delete a queued message without touching the composer */
-  onDeleteQueued?: () => void
-  /** Undo a queued message and put its text back in the composer */
-  onUndoQueued?: () => void
 }
 
 /**
@@ -2336,8 +2415,6 @@ function MessageBubble({
   onPopOut,
   compactMode,
   onRetry,
-  onDeleteQueued,
-  onUndoQueued,
 }: MessageBubbleProps) {
   const { t } = useTranslation()
 
@@ -2349,9 +2426,6 @@ function MessageBubble({
         attachments={message.attachments}
         badges={message.badges}
         isPending={message.isPending}
-        isQueued={message.isQueued}
-        onDeleteQueued={onDeleteQueued}
-        onUndoQueued={onUndoQueued}
         onUrlClick={onOpenUrl}
         onFileClick={onOpenFile}
         compactMode={compactMode}

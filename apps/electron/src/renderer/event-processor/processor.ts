@@ -47,6 +47,7 @@ import {
   handleBrowserProfileChanged,
   handleUserMessage,
   handleQueuedMessageCancelled,
+  handleQueuedMessagesState,
   handleMessageAnnotationsUpdated,
   handleSessionShared,
   handleSessionUnshared,
@@ -217,6 +218,9 @@ export function processEvent(
 
     case 'queued_message_cancelled':
       return handleQueuedMessageCancelled(state, event)
+
+    case 'queued_messages_state':
+      return handleQueuedMessagesState(state, event)
 
     case 'message_annotations_updated':
       return handleMessageAnnotationsUpdated(state, event)
