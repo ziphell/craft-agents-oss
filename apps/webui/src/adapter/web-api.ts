@@ -63,6 +63,17 @@ export interface WebApiOptions {
   workspaceId?: string
 }
 
+/**
+ * Per-tab memory of the workspace being viewed. sessionStorage (not localStorage) on purpose:
+ * a reload keeps the tab where it was, a brand new tab starts from the default workspace.
+ */
+export const WORKSPACE_STORAGE_KEY = 'craft:workspaceId'
+
+function rememberWorkspace(workspaceId: string | undefined) {
+  if (!workspaceId) return
+  sessionStorage.setItem(WORKSPACE_STORAGE_KEY, workspaceId)
+}
+
 export function createWebApi(options: WebApiOptions): {
   api: ElectronAPI
   client: WsRpcClient
@@ -70,6 +81,7 @@ export function createWebApi(options: WebApiOptions): {
   const { serverUrl, workspaceId } = options
   /** The workspace this tab speaks for now — `switchWorkspace` moves it with the connection. */
   let currentWorkspaceId = workspaceId
+  rememberWorkspace(workspaceId)
 
   const client = new WsRpcClient(serverUrl, {
     workspaceId,
@@ -172,6 +184,7 @@ export function createWebApi(options: WebApiOptions): {
     switchWorkspace: async (wsId: string) => {
       await client.invoke('window:switchWorkspace', wsId)
       currentWorkspaceId = wsId
+      rememberWorkspace(wsId)
       // The server's record is not the client's identity: a reconnect after this would offer the
       // workspace this tab was opened on, fail the server's identity check, and come back as a
       // different client on the old workspace.

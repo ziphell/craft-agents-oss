@@ -421,16 +421,19 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
       })
     }
 
-    // Return the default workspace ID so the webui can include it in the WS handshake
+    // Workspace IDs for the webui handshake. The first workspace is the default (stable, unlike
+    // `activeWorkspaceId` which only tracks the most recently created one); the full list lets a
+    // tab validate a workspace it remembered before using it.
     if (path === '/api/config/workspaces' && req.method === 'GET') {
       const configSession = await validateSession(req.headers.get('cookie'), secret)
       if (!configSession) {
         return Response.json({ error: 'Unauthorized' }, { status: 401 })
       }
-      const { getActiveWorkspace } = await import('@craft-agent/shared/config/storage')
-      const active = getActiveWorkspace()
+      const { loadStoredConfig } = await import('@craft-agent/shared/config/storage')
+      const workspaceIds = (loadStoredConfig()?.workspaces ?? []).map((w) => w.id)
       return Response.json({
-        defaultWorkspaceId: active?.id ?? null,
+        defaultWorkspaceId: workspaceIds[0] ?? null,
+        workspaceIds,
       })
     }
 

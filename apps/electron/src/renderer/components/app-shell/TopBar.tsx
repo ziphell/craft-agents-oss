@@ -232,7 +232,7 @@ export function TopBar({
 
       {/* === RIGHT: browser + new conversation + help === */}
       {!isCompact && (
-      <div className="flex min-w-0 shrink-0 items-center justify-end gap-1" style={{ paddingRight: 12 }}>
+      <div className="flex min-w-0 shrink-0 items-center justify-end gap-1.5" style={{ paddingRight: 12 }}>
         {/*
           The browser, as one control: the window in use on the trigger, and every window, every
           profile and the settings page inside its menu. It used to be a row of badges plus a
@@ -243,9 +243,9 @@ export function TopBar({
           the management is the server's either way — profiles, tabs, terminate — and `viewerOnly`
           changes just what "show" means, since there is no window on this machine to raise.
         */}
-        {/* The badge has its own padding but sits flush against the conversation button at
-            `gap-1`; the browser control is a different subject, so it gets air of its own. */}
-        <div className="mr-2 min-w-0">
+        {/* One gap for the whole group: the browser control, the conversation button and help
+            are evenly spaced. 4px read as flush and 8px as a seam; 6px is the middle. */}
+        <div className="min-w-0">
           <BrowserTabStrip
             activeSessionId={activeSessionId}
             onAddTabToConversation={onAddTabToConversation}
