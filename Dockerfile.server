@@ -76,6 +76,20 @@ RUN bun install --frozen-lockfile
 # Copy source
 COPY . .
 
+# Stage the bundled assets the runtime reads on launch (docs → ~/.craft-agent/docs,
+# plus themes, permissions, tool-icons, release-notes, config-defaults.json) into the
+# distribution's own resources/ — the same layout scripts/build-server.ts produces.
+# Without this the assets root would have to point at apps/electron/resources, which
+# is an Electron packaging detail the server does not otherwise depend on.
+RUN mkdir -p /app/resources && \
+    cp -R /app/apps/electron/resources/docs \
+          /app/apps/electron/resources/themes \
+          /app/apps/electron/resources/permissions \
+          /app/apps/electron/resources/tool-icons \
+          /app/apps/electron/resources/release-notes \
+          /app/resources/ && \
+    cp /app/apps/electron/resources/config-defaults.json /app/resources/
+
 # Build the Pi agent server (bundled CJS — required by runtime-resolver.ts)
 RUN bun build packages/pi-agent-server/src/index.ts \
       --outfile packages/pi-agent-server/dist/index.js --target node --format cjs
@@ -104,11 +118,13 @@ USER craftagents
 ENV CRAFT_RPC_HOST=0.0.0.0
 ENV CRAFT_RPC_PORT=9100
 ENV CRAFT_WEBUI_DIR=/app/apps/webui/dist
-ENV CRAFT_BUNDLED_ASSETS_ROOT=/app/apps/electron
+# Runtime bundled assets are the image's own resources/ staged above, not
+# apps/electron/resources — same layout as the tarball from scripts/build-server.ts.
+ENV CRAFT_BUNDLED_ASSETS_ROOT=/app
+ENV CRAFT_RESOURCES_PATH=/app/resources
 # WhatsApp worker — Bun cannot run the CJS worker, so we point the adapter at
-# system `node` (installed above). If CRAFT_BUNDLED_ASSETS_ROOT changes, update
-# CRAFT_MESSAGING_WA_WORKER to match; the default in packages/server resolves
-# against CRAFT_BUNDLED_ASSETS_ROOT, but the layout above flattens to /app.
+# system `node` (installed above). This now matches the path packages/server
+# derives from CRAFT_BUNDLED_ASSETS_ROOT, and stays explicit so it is visible here.
 ENV CRAFT_MESSAGING_WA_WORKER=/app/packages/messaging-whatsapp-worker/dist/worker.cjs
 ENV CRAFT_MESSAGING_NODE_BIN=node
 

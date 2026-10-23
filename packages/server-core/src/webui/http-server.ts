@@ -11,6 +11,9 @@
  */
 
 import { join, extname } from 'node:path'
+import { createReadStream } from 'node:fs'
+import { Readable } from 'node:stream'
+import { createHash, timingSafeEqual } from 'node:crypto'
 import {
   RateLimiter,
   createSessionToken,
@@ -19,6 +22,7 @@ import {
   buildLogoutCookie,
 } from './auth'
 import { createDefaultWebuiRuntime, type WebuiRuntime } from './runtime'
+import { findExport } from '../services/export-store'
 import { generateCallbackPage } from '@craft-agent/shared/auth'
 import type { PlatformServices } from '../runtime/platform'
 
@@ -47,6 +51,23 @@ const MIME_TYPES: Record<string, string> = {
 
 function getMimeType(path: string): string {
   return MIME_TYPES[extname(path).toLowerCase()] ?? 'application/octet-stream'
+}
+
+/** The hub token as a Bearer header — for native clients that hold it but have no cookie. */
+function bearerMatches(header: string | null, secret: string): boolean {
+  if (!header) return false
+  const match = /^Bearer\s+(.+)$/i.exec(header.trim())
+  if (!match) return false
+  // Hashed so the comparison never depends on the secret's length.
+  const given = createHash('sha256').update(match[1]).digest()
+  const expected = createHash('sha256').update(secret).digest()
+  return timingSafeEqual(given, expected)
+}
+
+/** `attachment`, with an ASCII fallback plus the real (possibly non-ASCII) name. */
+function contentDisposition(name: string): string {
+  const ascii = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_')
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`
 }
 
 /**
@@ -131,8 +152,14 @@ export interface OAuthCallbackDeps {
 }
 
 export interface WebuiHandlerOptions {
-  /** Path to built web UI dist/ directory. */
-  webuiDir: string
+  /**
+   * Path to the built web UI `dist/` directory.
+   *
+   * Optional, and deliberately independent of the handler existing: a hub serves its protocol
+   * routes (`/api/*`) whether or not the page bundle was built. Without it the request handler
+   * answers those and 404s everything else, with no login redirect to nowhere.
+   */
+  webuiDir?: string
   /** Secret used to sign JWTs — typically CRAFT_SERVER_TOKEN. */
   secret: string
   /** Optional separate web UI password. Falls back to `secret` for verification. */
@@ -233,6 +260,7 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
 
     // ── Login page (no auth) ──
     if (path === '/login' || path === '/login/') {
+      if (!webuiDir) return new Response('Web UI is not built', { status: 404 })
       const loginFile = await runtime.openAsset(join(webuiDir, 'login.html'))
       if (loginFile) {
         return new Response(loginFile, {
@@ -243,7 +271,7 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
     }
 
     // ── Static assets that login page + PWA install need (no auth) ──
-    if (path === '/favicon.ico' || UNAUTHENTICATED_ASSET_PATHS.has(path) || path.startsWith('/login-assets/')) {
+    if (webuiDir && (path === '/favicon.ico' || UNAUTHENTICATED_ASSET_PATHS.has(path) || path.startsWith('/login-assets/'))) {
       const file = await runtime.openAsset(join(webuiDir, path))
       if (file) {
         return new Response(file, {
@@ -388,13 +416,36 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
       })
     }
 
+    // ── Export downloads ──
+    // A file this hub produced for a caller that is not on this machine. The browser brings its
+    // session cookie; a native client brings the hub token as a bearer header. Either way the
+    // bytes travel here, not over the RPC socket.
+    if (path.startsWith('/api/exports/') && req.method === 'GET') {
+      const authorized = !!await validateSession(req.headers.get('cookie'), secret)
+        || bearerMatches(req.headers.get('authorization'), secret)
+      if (!authorized) return Response.json({ error: 'Unauthorized' }, { status: 401 })
+
+      const file = findExport(decodeURIComponent(path.slice('/api/exports/'.length)))
+      if (!file) return new Response('Not Found', { status: 404 })
+
+      return new Response(Readable.toWeb(createReadStream(file.path)) as unknown as ReadableStream, {
+        headers: {
+          'Content-Type': file.mime,
+          'Content-Length': String(file.size),
+          'Content-Disposition': contentDisposition(file.name),
+          'Cache-Control': 'no-store',
+        },
+      })
+    }
+
     // ── Everything below requires a valid session cookie ──
     const cookieHeader = req.headers.get('cookie')
     const session = await validateSession(cookieHeader, secret)
 
     if (!session) {
       const accept = req.headers.get('accept') ?? ''
-      if (accept.includes('text/html') || path === '/' || path === '') {
+      // Only a hub that actually has a page has somewhere to send the person.
+      if (webuiDir && (accept.includes('text/html') || path === '/' || path === '')) {
         // A relative `Location` is valid HTTP, but `Response.redirect()` demands an
         // absolute URL and throws `ERR_INVALID_URL` under Node's undici (Bun is
         // lenient) — so build the redirect response directly.
@@ -404,24 +455,26 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
     }
 
     // ── Serve SPA static files ──
-    if (path !== '/') {
-      const file = await runtime.openAsset(join(webuiDir, path))
-      if (file) {
-        return new Response(file, {
-          headers: { 'Content-Type': getMimeType(path) },
+    if (webuiDir) {
+      if (path !== '/') {
+        const file = await runtime.openAsset(join(webuiDir, path))
+        if (file) {
+          return new Response(file, {
+            headers: { 'Content-Type': getMimeType(path) },
+          })
+        }
+      }
+
+      // SPA fallback — serve index.html for all non-file routes
+      const indexFile = await runtime.openAsset(join(webuiDir, 'index.html'))
+      if (indexFile) {
+        return new Response(indexFile, {
+          headers: { 'Content-Type': 'text/html; charset=utf-8' },
         })
       }
     }
 
-    // SPA fallback — serve index.html for all non-file routes
-    const indexFile = await runtime.openAsset(join(webuiDir, 'index.html'))
-    if (indexFile) {
-      return new Response(indexFile, {
-        headers: { 'Content-Type': 'text/html; charset=utf-8' },
-      })
-    }
-
-    return new Response('Not Found', { status: 404 })
+    return new Response(webuiDir ? 'Not Found' : 'Web UI is not built', { status: 404 })
   }
 
   return {

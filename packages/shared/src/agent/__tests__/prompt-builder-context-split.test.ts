@@ -23,6 +23,10 @@ import {
   clearBrowserProfilePromptState,
   setBrowserProfilePromptState,
 } from '../browser-profile-prompt-state.ts'
+import {
+  clearBrowserHostState,
+  setBrowserHostState,
+} from '../browser-host-state.ts'
 
 // Matches createMockSession() in test-utils.ts
 const SESSION_ID = 'test-session-id'
@@ -42,6 +46,7 @@ describe('PromptBuilder volatile/stable context split (issue #862)', () => {
     setSystemTime()
     cleanupModeState(SESSION_ID)
     clearBrowserProfilePromptState(SESSION_ID)
+    clearBrowserHostState(SESSION_ID)
   })
 
   it('buildContextParts equals [...volatile, ...stable] (Claude path stays byte-identical)', () => {
@@ -112,5 +117,24 @@ describe('PromptBuilder volatile/stable context split (issue #862)', () => {
     const nextTurn = builder.buildVolatileContextParts(OPTS, SOURCE_BLOCK).join('\n')
     expect(nextTurn).toContain('browserProfile: Work')
     expect(nextTurn).not.toContain('browserProfileChanged:')
+  })
+
+  // A headless hub has no `browser_tool` to learn from; the host has to say so, or the agent reads
+  // the refusal as a broken setup and keeps retrying. Same volatile channel as the profile.
+  it('tells a browser-less server that it has no browser, on the volatile tail only', () => {
+    cleanupModeState(SESSION_ID)
+    const builder = makeBuilder()
+
+    expect(builder.buildVolatileContextParts(OPTS, SOURCE_BLOCK).join('\n')).not.toContain('browserHost')
+
+    setBrowserHostState(SESSION_ID, false)
+    const volatileText = builder.buildVolatileContextParts(OPTS, SOURCE_BLOCK).join('\n')
+    expect(volatileText).toContain('browserHost: none')
+    expect(volatileText).toContain('device_tool')
+    expect(builder.buildStableContextParts().join('\n')).not.toContain('browserHost')
+
+    // A server with its own browser needs no announcement.
+    setBrowserHostState(SESSION_ID, true)
+    expect(builder.buildVolatileContextParts(OPTS, SOURCE_BLOCK).join('\n')).not.toContain('browserHost')
   })
 })

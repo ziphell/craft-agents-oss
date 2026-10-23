@@ -15,6 +15,7 @@ import type {
   UnreadSummary,
   UpdateInfo,
   BrowserInstanceInfo,
+  BrowserStreamFrame,
   DeepLinkNavigation,
   TaskGenerateResult,
 } from './dto'
@@ -62,6 +63,10 @@ export interface BroadcastEventMap {
   [RPC_CHANNELS.browserPane.STATE_CHANGED]: [info: BrowserInstanceInfo]
   [RPC_CHANNELS.browserPane.REMOVED]: [id: string]
   [RPC_CHANNELS.browserPane.INTERACTED]: [id: string]
+  /** One frame, to the single client that is watching that tab (docs/browser-view-streaming.md). */
+  [RPC_CHANNELS.browserPane.STREAM_FRAME]: [frame: BrowserStreamFrame]
+  /** The watched stream ended on its own — the tab or window is gone. */
+  [RPC_CHANNELS.browserPane.STREAM_ENDED]: [streamId: string, reason: string]
 
   // Navigation events (per-window)
   [RPC_CHANNELS.notification.NAVIGATE]: [data: { workspaceId: string; sessionId: string }]

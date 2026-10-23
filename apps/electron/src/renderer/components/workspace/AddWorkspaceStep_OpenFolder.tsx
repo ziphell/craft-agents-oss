@@ -4,12 +4,14 @@ import { ArrowLeft } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Input } from "../ui/input"
 import { AddWorkspaceContainer, AddWorkspaceStepHeader, AddWorkspaceSecondaryButton, AddWorkspacePrimaryButton } from "./primitives"
+import { AddWorkspace_HostPicker, useWorkspaceHosts } from "./AddWorkspace_HostPicker"
 import { useDirectoryPicker } from "@/hooks/useDirectoryPicker"
 import { ServerDirectoryBrowser } from "@/components/ServerDirectoryBrowser"
 
 interface AddWorkspaceStep_OpenFolderProps {
   onBack: () => void
-  onCreate: (folderPath: string, name: string) => Promise<void>
+  /** `connectionId` names the host the folder lives on; `null`/omitted means this computer. */
+  onCreate: (folderPath: string, name: string, connectionId: string | null) => Promise<void>
   isCreating: boolean
 }
 
@@ -24,6 +26,9 @@ export function AddWorkspaceStep_OpenFolder({
   const { t } = useTranslation()
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [workspaceName, setWorkspaceName] = useState('')
+  // The host level: a folder here is on this computer until a server is picked.
+  const [hostConnectionId, setHostConnectionId] = useState<string | null>(null)
+  const hosts = useWorkspaceHosts()
 
   const handleFolderSelected = useCallback((path: string) => {
     setSelectedPath(path)
@@ -32,18 +37,26 @@ export function AddWorkspaceStep_OpenFolder({
     setWorkspaceName(folderName)
   }, [])
 
+  // A path only means something on the host it was picked on, so switching hosts clears it.
+  const handleHostChange = useCallback((connectionId: string | null) => {
+    setHostConnectionId(connectionId)
+    setSelectedPath(null)
+    setWorkspaceName('')
+  }, [])
+
   const {
     pickDirectory,
     showServerBrowser,
     serverBrowserMode,
+    serverConnectionId,
     cancelServerBrowser,
     confirmServerBrowser,
-  } = useDirectoryPicker(handleFolderSelected)
+  } = useDirectoryPicker(handleFolderSelected, { connectionId: hostConnectionId })
 
   const handleOpen = useCallback(async () => {
     if (!selectedPath || !workspaceName.trim()) return
-    await onCreate(selectedPath, workspaceName.trim())
-  }, [selectedPath, workspaceName, onCreate])
+    await onCreate(selectedPath, workspaceName.trim(), hostConnectionId)
+  }, [selectedPath, workspaceName, hostConnectionId, onCreate])
 
   const canOpen = selectedPath && workspaceName.trim()
 
@@ -69,6 +82,14 @@ export function AddWorkspaceStep_OpenFolder({
       />
 
       <div className="mt-6 w-full space-y-6">
+        {/* Host first: the folder that follows belongs to this machine or to that server. */}
+        <AddWorkspace_HostPicker
+          hosts={hosts}
+          value={hostConnectionId}
+          onChange={handleHostChange}
+          disabled={isCreating}
+        />
+
         {/* Browse folder row */}
         <div
           className={cn(
@@ -120,6 +141,7 @@ export function AddWorkspaceStep_OpenFolder({
       <ServerDirectoryBrowser
         open={showServerBrowser}
         mode={serverBrowserMode}
+        connectionId={serverConnectionId ?? undefined}
         onSelect={confirmServerBrowser}
         onCancel={cancelServerBrowser}
       />

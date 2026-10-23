@@ -242,14 +242,20 @@ export function DesignView({ designSlug, standalone = false }: DesignViewProps) 
       .catch(() => toast.error(t('toast.designPreviewFailed')))
   }, [activeWorkspaceId, design, t])
 
-  // The picker and the write both happen behind this call (the destination is
-  // chosen on this client); PDF/PNG render in a hidden window in the main process.
+  // The export runs where the design's server is. A caller on that machine picks the path in the
+  // native dialog; a caller elsewhere (webui, thin client) gets a download and saves it here.
   const handleExport = React.useCallback(async (format: DesignExportFormat) => {
     if (!activeWorkspaceId || !design) return
     setExporting(format)
     try {
       const result = await window.electronAPI.exportDesign(activeWorkspaceId, design.config.slug, format)
       if (result.canceled) return
+      if (result.download) {
+        const saved = await window.electronAPI.saveDesignExport(result.download)
+        if (saved.canceled) return
+        toast.success(t('designs.export.done', { path: saved.path }))
+        return
+      }
       toast.success(t('designs.export.done', { path: result.paths[0] ?? '' }))
     } catch (err) {
       toast.error(t('designs.export.failed'), {

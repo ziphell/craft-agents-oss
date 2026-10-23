@@ -39,6 +39,7 @@ import {
   consumeBrowserProfileChange,
   getBrowserProfilePromptState,
 } from './browser-profile-prompt-state.ts';
+import { getBrowserHostState } from './browser-host-state.ts';
 import {
   type PermissionMode,
   type ModeConfig,
@@ -2227,6 +2228,18 @@ export function formatSessionState(
         `\nbrowserProfileChanged: the user switched this conversation's browser profile from ` +
         `${sanitizePromptLine(change.from, sessionStateTags)} to ${sanitizePromptLine(change.to, sessionStateTags)}.`;
     }
+  }
+
+  // Whether this server has a browser of its own. On a headless hub `browser_tool` cannot run, and
+  // saying so is what turns "the tool refused" into "this deployment has no browser; use a device".
+  // Announced only when the answer is none — a server with a browser needs no line.
+  if (getBrowserHostState(sessionId) === false) {
+    result += '\nbrowserHost: none — this server has no browser of its own.';
+    result +=
+      '\nbrowserHostNote: browser_tool cannot run here. List devices with {"tool":"devices"} and drive ' +
+      'one that allows browser with device_tool {"device":"<id>","tool":"browser","args":{"command":"…"}}. ' +
+      'Pass "--help" as the command for the full syntax. This is expected for this deployment — not a ' +
+      'setup error, and not a reason to retry browser_tool.';
   }
 
   // Always include plans folder path so agent knows where plans are stored

@@ -9,6 +9,8 @@ import type { SettingsMenuItem } from '../../../shared/menu-schema'
 export interface AppMenuProps {
   onNewChat: () => void
   onNewWindow?: () => void
+  /** Open the "Connect to Server…" dialog — a hub window is an action, not a settings page. */
+  onConnectServer?: () => void
   onOpenSettings: () => void
   /** Navigate to a specific settings subpage */
   onOpenSettingsSubpage: (subpage: SettingsMenuItem['id']) => void

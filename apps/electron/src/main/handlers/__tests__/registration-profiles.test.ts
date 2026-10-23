@@ -70,9 +70,11 @@ function createMockDeps(): HandlerDeps {
     },
     windowManager: {} as HandlerDeps['windowManager'],
     browserPaneManager: {
+      listInstances: () => [],
       onStateChange: () => {},
       onRemoved: () => {},
       onInteracted: () => {},
+      setViewStreamEndedHandler: () => {},
     } as unknown as NonNullable<HandlerDeps['browserPaneManager']>,
     oauthFlowStore: {
       store: () => {},
@@ -111,6 +113,7 @@ async function getExpectedCoreChannels(): Promise<Set<string>> {
     tweaks,
     pages,
     decisions,
+    browserProfiles,
   ] = await Promise.all([
     import('@craft-agent/server-core/handlers/rpc/auth'),
     import('@craft-agent/server-core/handlers/rpc/automations'),
@@ -135,6 +138,7 @@ async function getExpectedCoreChannels(): Promise<Set<string>> {
     import('@craft-agent/server-core/handlers/rpc/tweaks'),
     import('@craft-agent/server-core/handlers/rpc/designs'),
     import('@craft-agent/server-core/handlers/rpc/decisions'),
+    import('@craft-agent/server-core/handlers/rpc/browser-profiles'),
   ])
 
   return new Set([
@@ -161,6 +165,7 @@ async function getExpectedCoreChannels(): Promise<Set<string>> {
     ...tweaks.HANDLED_CHANNELS,
     ...pages.HANDLED_CHANNELS,
     ...decisions.HANDLED_CHANNELS,
+    ...browserProfiles.HANDLED_CHANNELS,
   ])
 }
 

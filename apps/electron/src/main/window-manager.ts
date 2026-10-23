@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import { loadDesignConfig } from '@craft-agent/shared/designs'
 import { classifyExternalUrl, formatBlockedUrlError } from '@craft-agent/shared/utils/url-safety'
-import { RPC_CHANNELS, type WindowCloseRequestSource } from '../shared/types'
+import { RPC_CHANNELS, type WindowCloseRequestSource, type RemoteWindowTarget } from '../shared/types'
 import { routes } from '../shared/routes'
 import { getWindowsBackgroundMaterial } from './window-material'
 import type { SavedWindow } from './window-state'
@@ -27,17 +27,32 @@ interface ManagedWindow {
   window: BrowserWindow
   workspaceId: string
   /**
+   * The remote hub this window is connected to. Absent for a local window. The preload reads it
+   * during evaluation (`__get-client-mode`), so it is stored **before** loadURL.
+   */
+  remote?: RemoteWindowTarget
+  /**
    * The design this window belongs to, when it is a design's own window (a
    * temporary view opened from the tray — docs/design-plan.md §2.7). Absent for
    * ordinary workspace windows. Its presence is what makes the window temporary:
    * see the close handler, getWindowStates, getWindowByWorkspace.
    */
   designSlug?: string
+  /**
+   * A title the renderer chose, for a window whose subject this process cannot name.
+   *
+   * A remote window's workspace lives on the hub, so `getWorkspaceByNameOrId` (this machine's
+   * config) cannot resolve it. The renderer knows both halves — the workspace on screen and the
+   * server — and sets "<workspace> — <server>" through `window:set-title`.
+   */
+  customTitle?: string
 }
 
 export interface CreateWindowOptions {
   /** The workspace to open (empty string for onboarding) */
   workspaceId: string
+  /** The hub this window connects to; omitted means this machine's own server. */
+  remote?: RemoteWindowTarget
   /** Whether to open in focused mode (smaller window, no sidebars) */
   focused?: boolean
   /** Deep link URL to navigate to after window loads (without ?window= param) */
@@ -74,7 +89,6 @@ export class WindowManager {
    * stays a real close, or the app would sit invisible with nothing to bring back.
    */
   private resident = false
-  private workspaceWindowsClosedHandler: ((workspaceId: string) => void) | null = null  // Fired once a workspace has no managed window left
   /**
    * The window the person used most recently, and the workspace it was on. A
    * window close hides rather than destroys, so this is what the tray brings
@@ -83,6 +97,13 @@ export class WindowManager {
    */
   private lastActiveWebContentsId: number | null = null
   private lastActiveWorkspaceId: string | null = null
+  /**
+   * When each window was last used, as a monotonically increasing count. A workspace can have
+   * more than one window, and "that workspace's window" — what the tray and a notification
+   * click bring back — is the one used most recently, not the one created first.
+   */
+  private useCount = 0
+  private lastUsedAt: Map<number, number> = new Map()
 
   /**
    * Set the event sink and client resolver for pushing events via the RPC server
@@ -197,11 +218,11 @@ export class WindowManager {
     // they also do not count towards the "≥2 windows → workspace name" rule, which
     // is about disambiguating ordinary workspace windows.
     const showWorkspaceName = [...this.windows.values()].filter(m => !m.designSlug).length > 1
-    for (const { window, workspaceId, designSlug } of this.windows.values()) {
+    for (const { window, workspaceId, designSlug, customTitle } of this.windows.values()) {
       if (window.isDestroyed()) continue
       if (designSlug) continue
-      let title = defaultTitle
-      if (showWorkspaceName && workspaceId) {
+      let title = customTitle ?? defaultTitle
+      if (!customTitle && showWorkspaceName && workspaceId) {
         try {
           const ws = getWorkspaceByNameOrId(workspaceId)
           if (ws?.name) title = ws.name
@@ -214,11 +235,48 @@ export class WindowManager {
   }
 
   /**
+   * Let a window name itself. Passing an empty title hands the title back to `refreshWindowTitles`.
+   *
+   * Only used by remote windows: their workspace is not in this machine's config, so the
+   * workspace-name rule above would fall back to the app name and leave several remote windows
+   * indistinguishable.
+   */
+  setWindowTitle(webContentsId: number, title: string | null): void {
+    const managed = this.windows.get(webContentsId)
+    if (!managed) return
+    const trimmed = title?.trim()
+    if (trimmed) managed.customTitle = trimmed
+    else delete managed.customTitle
+    this.refreshWindowTitles()
+  }
+
+  /**
+   * A saved server was edited: every window bound to it takes the new address, token and name.
+   *
+   * Returns the windows affected so the caller can tell each one to rebuild its socket — the
+   * preload builds that socket from the target when it loads, not on every call.
+   */
+  updateRemoteTargetForConnection(
+    connectionId: string,
+    next: { url: string; token: string; name?: string },
+  ): number[] {
+    const affected: number[] = []
+    for (const [webContentsId, managed] of this.windows) {
+      if (!managed.remote || managed.remote.connectionId !== connectionId) continue
+      managed.remote.url = next.url
+      managed.remote.token = next.token
+      if (next.name) managed.remote.name = next.name
+      affected.push(webContentsId)
+    }
+    return affected
+  }
+
+  /**
    * Create a new window for a workspace
    * @param options - Window creation options
    */
   createWindow(options: CreateWindowOptions): BrowserWindow {
-    const { workspaceId, focused = false, initialDeepLink, restoreUrl, initialRoute, designSlug } = options
+    const { workspaceId, focused = false, initialDeepLink, restoreUrl, initialRoute, designSlug, remote } = options
 
     // Load platform-specific app icon
     // In packaged app, resources are at dist/resources/ (same level as __dirname)
@@ -354,7 +412,7 @@ export class WindowManager {
     // Store the window mapping BEFORE loadURL — bootstrap preload uses
     // __get-workspace-id (via sendSync) which reads this map during eval.
     const webContentsId = window.webContents.id
-    this.windows.set(webContentsId, { window, workspaceId, ...(designSlug ? { designSlug } : {}) })
+    this.windows.set(webContentsId, { window, workspaceId, ...(remote ? { remote } : {}), ...(designSlug ? { designSlug } : {}) })
 
     // Apply window-title policy now that the map size reflects this window —
     // covers both the new window and any existing windows that should switch
@@ -479,7 +537,13 @@ export class WindowManager {
     window.on('focus', () => {
       // Remember what was used last — the tray brings this one back (see raiseOrCreateWindow).
       this.lastActiveWebContentsId = webContentsId
-      this.lastActiveWorkspaceId = this.windows.get(webContentsId)?.workspaceId ?? workspaceId
+      this.markUsed(webContentsId)
+      const managed = this.windows.get(webContentsId)
+      // A remote window's workspace belongs to a hub, not to this machine's workspace list.
+      // Remembering it would point "open local window" and the tray fallback at an unknown id.
+      if (!managed?.remote) {
+        this.lastActiveWorkspaceId = managed?.workspaceId ?? workspaceId
+      }
       this.pushToWindow(window, RPC_CHANNELS.window.FOCUS_STATE, true)
     })
     window.on('blur', () => {
@@ -554,11 +618,10 @@ export class WindowManager {
 
     // Handle window close request (traffic-light button, menu close, Cmd/Ctrl+W).
     //
-    // A close **puts the window away** — the app lives in the tray, and the window
-    // keeps its state (panels, scroll) for when it is brought back — but only for the
-    // **last** window of its workspace. A workspace's other windows are temporary
-    // views, and closing one really closes it: otherwise a workspace's windows would
-    // pile up hidden, one renderer each, with no bound (see docs/tray-plan.md §3.7).
+    // Only the **last** main window is put away (hidden) — the app lives in the tray,
+    // and that window keeps its state for when it is brought back. Every other main
+    // window really closes (is destroyed) one by one: a workspace no longer keeps a
+    // hidden window (see docs/tray-plan.md §3.7).
     window.on('close', (event) => {
       // During app quit, let the native close flow run (Cmd+Q means quit, not hide).
       // This preserves expected Cmd+Q semantics (quit app instead of closing overlays/panels first).
@@ -579,17 +642,17 @@ export class WindowManager {
         return
       }
 
-      // A workspace keeps one window. Anything else closing is a temporary view: let
-      // the default close run, which destroys it.
-      const workspace = this.windows.get(webContentsId)?.workspaceId
-      const aliveForWorkspace = [...this.windows.values()].filter(
-        managed => managed.workspaceId === workspace && !managed.window.isDestroyed(),
+      // Only the last main window is put away; every other main window is a real close
+      // (destroyed). The count is across all workspaces — a workspace no longer keeps a
+      // window.
+      const aliveMainWindows = [...this.windows.values()].filter(
+        managed => !managed.designSlug && !managed.window.isDestroyed(),
       ).length
-      if (aliveForWorkspace > 1) {
+      if (aliveMainWindows > 1) {
         return
       }
 
-      // The workspace's last window: put it away, never destroy it here.
+      // The last main window: put it away, never destroy it here.
       event.preventDefault()
 
       if (!window.webContents.isDestroyed() && window.webContents.mainFrame) {
@@ -643,20 +706,11 @@ export class WindowManager {
       nativeTheme.removeListener('updated', themeHandler)
       this.windows.delete(webContentsId)
       this.focusedModeWindows.delete(webContentsId)
+      this.lastUsedAt.delete(webContentsId)
       // Re-apply window-title policy — surviving windows revert from workspace
       // name back to app name when the count drops from 2 → 1.
       this.refreshWindowTitles()
       windowLog.info(`Window closed for workspace ${workspaceId}`)
-
-      // That workspace is off the screen when no managed window of it is left. Anything
-      // the browser pane still holds for it is then a window with nothing to belong to —
-      // and it never closes itself, so it would sit there unreachable. See
-      // `setWorkspaceWindowsClosedHandler`. During an app quit the whole teardown is
-      // already under way, so this must not fire again.
-      const stillOnScreen = [...this.windows.values()].some((managed) => managed.workspaceId === workspaceId)
-      if (!stillOnScreen && !this.isAppQuitting) {
-        this.workspaceWindowsClosedHandler?.(workspaceId)
-      }
     })
 
     windowLog.info(`Created window for workspace ${workspaceId} (focused: ${focused})`)
@@ -672,20 +726,31 @@ export class WindowManager {
   }
 
   /**
-   * Get window by workspace ID (returns first match - for backwards compatibility)
+   * The window that stands for a workspace — the one used most recently among its windows.
+   *
+   * A workspace may have more than one window (File → New Window, a session opened in its own
+   * window). "That workspace's window" — what the tray entry and a notification click bring
+   * back, and what close-for-workspace closes — is therefore the most recently used one, not
+   * whichever was created first. Ties (a window never focused, e.g. created in the background)
+   * keep creation order.
    *
    * Design windows are skipped: they are temporary views, never the workspace's
    * home window, so the tray's workspace entry and close-for-workspace keep
    * targeting the real one (docs/design-plan.md §2.7).
    */
   getWindowByWorkspace(workspaceId: string): BrowserWindow | null {
+    let best: ManagedWindow | null = null
+    let bestUsedAt = -1
     for (const managed of this.windows.values()) {
       if (managed.designSlug) continue
-      if (managed.workspaceId === workspaceId && !managed.window.isDestroyed()) {
-        return managed.window
+      if (managed.workspaceId !== workspaceId || managed.window.isDestroyed()) continue
+      const usedAt = this.lastUsedAt.get(managed.window.webContents.id) ?? 0
+      if (usedAt > bestUsedAt) {
+        best = managed
+        bestUsedAt = usedAt
       }
     }
-    return null
+    return best?.window ?? null
   }
 
   /**
@@ -715,6 +780,63 @@ export class WindowManager {
     return managed?.workspaceId ?? null
   }
 
+  /** The remote hub this window is connected to, or null when it is a local window. */
+  getRemoteForWindow(webContentsId: number): RemoteWindowTarget | null {
+    return this.windows.get(webContentsId)?.remote ?? null
+  }
+
+  /**
+   * Re-point a remote window at another workspace on the same hub.
+   *
+   * This is an in-window workspace switch (VS Code's "Open Folder" in a remote window): the
+   * window and its hub stay, the workspace changes. The record is the window's, so the new
+   * workspace is what launch restores and what `client-mode:get` reports. Returns false when
+   * the window is not a remote one — the caller then has nothing to re-point.
+   */
+  setRemoteWorkspaceForWindow(webContentsId: number, workspaceId: string): boolean {
+    const managed = this.windows.get(webContentsId)
+    if (!managed?.remote) return false
+    managed.remote = { ...managed.remote, workspaceId }
+    managed.workspaceId = workspaceId
+    this.markUsed(webContentsId)
+    return true
+  }
+
+  /**
+   * Point a window at a hub, in place.
+   *
+   * Works from a local window too: that is how "this window moves to a server" starts. The window
+   * keeps its identity and its renderer; what changes is the server it speaks for — the same thing
+   * VS Code does when it reconnects a window to another host, minus the reload. The preload owns
+   * the socket and rebuilds it from the returned target.
+   */
+  switchWindowServer(webContentsId: number, target: RemoteWindowTarget): RemoteWindowTarget | null {
+    const managed = this.windows.get(webContentsId)
+    if (!managed) return null
+    managed.remote = { ...target }
+    managed.workspaceId = target.workspaceId ?? ''
+    this.markUsed(webContentsId)
+    return managed.remote
+  }
+
+  /**
+   * Bring a window back to this machine's server, in place.
+   *
+   * The inverse of {@link switchWindowServer}: the hub record goes away, so launch restores a
+   * local window, and the custom `<workspace> — <server>` title is dropped with it. Returns false
+   * when the window is not on a hub — there is nothing to release.
+   */
+  switchWindowToLocal(webContentsId: number, workspaceId: string): boolean {
+    const managed = this.windows.get(webContentsId)
+    if (!managed?.remote) return false
+    delete managed.remote
+    delete managed.customTitle
+    managed.workspaceId = workspaceId
+    this.markUsed(webContentsId)
+    this.refreshWindowTitles()
+    return true
+  }
+
   /**
    * Mark whether the app stays alive between windows (see `resident`). Set once at
    * startup, after the tray exists — nothing toggles it at runtime.
@@ -729,20 +851,6 @@ export class WindowManager {
    */
   setAppQuitting(isQuitting: boolean): void {
     this.isAppQuitting = isQuitting
-  }
-
-  /**
-   * Called when the last managed window of a workspace has closed — the moment that
-   * workspace stops being on screen.
-   *
-   * It carries the workspace id because a browser window belongs to its workspace (the
-   * window is the workspace's, not a session's): with no window of that workspace left,
-   * the browser window has nothing to belong to, and it never closes itself, so it would
-   * sit there holding renderers nobody can reach. Electron's `window-all-closed` cannot
-   * be the only trigger either — while such a window is up, it never fires.
-   */
-  setWorkspaceWindowsClosedHandler(handler: (workspaceId: string) => void): void {
-    this.workspaceWindowsClosedHandler = handler
   }
 
   /**
@@ -811,8 +919,10 @@ export class WindowManager {
       managed.workspaceId = workspaceId
       // The remembered workspace follows the window that was last used. An in-window
       // switch does not re-fire `focus`, so it has to be kept in step here — else
-      // `getLastActiveWorkspaceId()` keeps naming the workspace the window left.
-      if (this.lastActiveWebContentsId === webContentsId) {
+      // `getLastActiveWorkspaceId()` keeps naming the workspace the window left. A remote
+      // window's workspace belongs to its hub and must not become this machine's answer.
+      this.markUsed(webContentsId)
+      if (!managed.remote && this.lastActiveWebContentsId === webContentsId) {
         this.lastActiveWorkspaceId = workspaceId
       }
       // Re-apply window-title policy so in-window workspace switches update
@@ -834,7 +944,12 @@ export class WindowManager {
    */
   registerWindow(window: BrowserWindow, workspaceId: string): void {
     const webContentsId = window.webContents.id
-    this.windows.set(webContentsId, { window, workspaceId })
+    const existing = this.windows.get(webContentsId)
+    this.windows.set(webContentsId, {
+      window,
+      workspaceId,
+      ...(existing?.remote ? { remote: existing.remote } : {}),
+    })
     // Re-apply window-title policy after re-registration (e.g. post-refresh).
     this.refreshWindowTitles()
     windowLog.info(`Registered window ${webContentsId} for workspace ${workspaceId}`)
@@ -910,6 +1025,12 @@ export class WindowManager {
     return this.createWindow({ workspaceId: fallbackWorkspaceId })
   }
 
+  /** Record that a window was just used, for "that workspace's window" lookups. */
+  private markUsed(webContentsId: number): void {
+    this.useCount += 1
+    this.lastUsedAt.set(webContentsId, this.useCount)
+  }
+
   /** The window the person used most recently, if it is still alive. */
   private lastUsedWindow(): BrowserWindow | null {
     const remembered = this.lastActiveWebContentsId !== null
@@ -952,6 +1073,15 @@ export class WindowManager {
       return {
         type: 'main' as const,
         workspaceId: managed.workspaceId,
+        ...(managed.remote
+          ? {
+              remote: {
+                connectionId: managed.remote.connectionId,
+                ...(managed.remote.workspaceId ? { workspaceId: managed.remote.workspaceId } : {}),
+                ...(managed.remote.name ? { name: managed.remote.name } : {}),
+              },
+            }
+          : {}),
         bounds: managed.window.getBounds(),
         ...(isFocused && { focused: true }),
         ...(url && { url }),

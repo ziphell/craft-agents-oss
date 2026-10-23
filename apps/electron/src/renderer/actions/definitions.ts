@@ -53,6 +53,13 @@ export const actions = {
     defaultHotkey: 'mod+shift+n',
     category: 'General',
   },
+  'app.connectServer': {
+    id: 'app.connectServer',
+    label: 'Connect to Server',
+    description: 'Open a window on a hub server',
+    defaultHotkey: '',
+    category: 'General',
+  },
   'app.quit': {
     id: 'app.quit',
     label: 'Quit',

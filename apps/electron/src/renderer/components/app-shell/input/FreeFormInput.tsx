@@ -38,6 +38,7 @@ import { parseMentions } from '@/lib/mentions'
 import type { TabRef } from '@craft-agent/shared/mentions'
 import { designsAtom } from '@/atoms/designs'
 import { browserInstancesAtom, filterInstancesForWorkspace } from '@/atoms/browser-pane'
+import { windowIsRemoteAtom, windowServerScopeAtom } from '@/atoms/window-mode'
 import { browserProfilesAtom } from '@/atoms/browser-profiles'
 import { sessionAtomFamily, sessionMetaMapAtom } from '@/atoms/sessions'
 import { tabRefOf } from '@/components/browser/utils'
@@ -66,6 +67,10 @@ import { coerceInputText } from '@/lib/input-text'
 import { isMac } from '@/lib/platform'
 import { applySmartTypography } from '@/lib/smart-typography'
 import { AttachmentPreview } from '../AttachmentPreview'
+import { ServerDirectoryBrowser } from '@/components/ServerDirectoryBrowser'
+import { readServerAttachment } from '@/lib/server-attachments'
+import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
+import { toast } from 'sonner'
 import { ComposerPlusMenu } from './ComposerPlusMenu'
 import { ImageSupportWarningBanner } from './ImageSupportWarningBanner'
 import { ANTHROPIC_MODELS, getModelDisplayName, getModelContextWindow, type ModelDefinition } from '@config/models'
@@ -460,12 +465,12 @@ export function FreeFormInput({
    * window's, so this is one window's list, not every window's.
    */
   const allBrowserInstances = useAtomValue(browserInstancesAtom)
+  const serverScope = useAtomValue(windowServerScopeAtom)
   const browserTabs = React.useMemo((): TabRef[] => {
-    const remoteWorkspaceId = appShellCtx?.workspaces.find(w => w.id === workspaceId)?.remoteServer?.remoteWorkspaceId ?? null
-    return filterInstancesForWorkspace(allBrowserInstances, workspaceId ?? null, remoteWorkspaceId)
+    return filterInstancesForWorkspace(allBrowserInstances, workspaceId ?? null, serverScope)
       .flatMap(instance => instance.tabs ?? [])
       .map(tabRefOf)
-  }, [appShellCtx, allBrowserInstances, workspaceId])
+  }, [allBrowserInstances, workspaceId, serverScope])
 
   /**
    * The workspace's designs, so one can be referenced as the thing to work on — read
@@ -568,6 +573,13 @@ export function FreeFormInput({
   // Sync TO parent on blur/submit (debounced persistence)
   const [input, setInput] = React.useState(() => coerceInputText(inputValue))
   const [attachments, setAttachments] = React.useState<FileAttachment[]>(attachmentsValue ?? [])
+
+  // A remote window's files live on the hub. Attaching then means "a file that is already on
+  // the server" by default, with the hidden <input type="file"> kept as the way to push one up
+  // from this machine.
+  const isRemoteWindow = useAtomValue(windowIsRemoteAtom)
+  const [serverFilePickerOpen, setServerFilePickerOpen] = React.useState(false)
+  const canBrowseServerFiles = !!window.electronAPI?.isChannelAvailable?.(RPC_CHANNELS.fs.LIST_DIRECTORY)
 
   // Ref to track current attachments for use in event handlers (avoids stale closure issues)
   const attachmentsRef = React.useRef<FileAttachment[]>([])
@@ -1011,7 +1023,7 @@ export function FreeFormInput({
     setRecentFolders(getRecentWorkingDirs(workspaceId))
     window.electronAPI?.getHomeDir?.().then((dir: string) => {
       if (dir) setHomeDir(dir)
-    })
+    }).catch(() => {})
   }, [workspaceId])
 
   // Inline slash command hook (modes, features, and folders)
@@ -1140,7 +1152,33 @@ export function FreeFormInput({
   // File attachment handlers
   const handleAttachClick = () => {
     if (disabled) return
+    if (isRemoteWindow) {
+      setServerFilePickerOpen(true)
+      return
+    }
     fileInputRef.current?.click()
+  }
+
+  // The remote-only extra entry: pick on this machine, upload the bytes to the hub.
+  const handleAttachFromComputer = () => {
+    if (disabled) return
+    fileInputRef.current?.click()
+  }
+
+  // Read the picked server file through the hub so the attachment matches what the local
+  // picker would have produced (same shape, same downstream store/send path).
+  const handleServerFileSelected = async (path: string) => {
+    setServerFilePickerOpen(false)
+    setLoadingCount(prev => prev + 1)
+    try {
+      const attachment = await readServerAttachment(path)
+      setAttachments(prev => [...prev, attachment])
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      toast.error(t('toast.failedToAttachFile'), { description: message })
+    } finally {
+      setLoadingCount(prev => prev - 1)
+    }
   }
 
   const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1737,6 +1775,18 @@ export function FreeFormInput({
           loadingCount={loadingCount}
         />
 
+        {/* Where a remote window's "attach" lands: the workspace's own disk on the hub. */}
+        {serverFilePickerOpen && (
+          <ServerDirectoryBrowser
+            open={serverFilePickerOpen}
+            mode={canBrowseServerFiles ? 'browse' : 'manual'}
+            selectionKind="file"
+            initialPath={workingDirectory ?? workspaceRootPath ?? undefined}
+            onSelect={handleServerFileSelected}
+            onCancel={() => setServerFilePickerOpen(false)}
+          />
+        )}
+
         {/* Follow-up context chips */}
         <AnimatePresence initial={false}>
           {followUpItems.length > 0 && (
@@ -1929,6 +1979,7 @@ export function FreeFormInput({
             attachmentCount={attachments.length}
             isProcessing={isProcessing}
             onAttach={handleAttachClick}
+            onAttachFromComputer={isRemoteWindow ? handleAttachFromComputer : undefined}
             onSelectLayer={selectLayer}
             onCompact={handleCompactClick}
           />
@@ -2029,6 +2080,7 @@ export function FreeFormInput({
             attachmentCount={attachments.length}
             isProcessing={isProcessing}
             onAttach={handleAttachClick}
+            onAttachFromComputer={isRemoteWindow ? handleAttachFromComputer : undefined}
             onSelectLayer={selectLayer}
             onCompact={handleCompactClick}
             data-tutorial="composer-plus-menu"

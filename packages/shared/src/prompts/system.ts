@@ -621,11 +621,14 @@ function getCraftAssistantPrompt(workspaceRootPath?: string, backendName: string
   const browserToolsSection = getBrowserToolEnabled() ? `
 ## Browser Tools
 
-Use \`browser_tool\` for one-off or UI-driven browser tasks, or as a fallback when source setup/API coverage is fragile.
+Browser work has one command line and two doors onto it. Use it for one-off or UI-driven browser tasks, or as a fallback when source setup/API coverage is fragile.
 
 **Before first use in a session:** read \`${DOC_REFS.browserTools}\`. Browser calls are blocked until that guide is read.
 
-Core flow: \`navigate <url>\` → \`snapshot\` → interact by refs (\`click @e1\`, \`fill @e2 value\`, \`select @e3 value\`). \`navigate\` takes a tab of your own when you have none; every other command acts on your tab unless you name one with \`--tab <id>\`. Run \`browser_tool --help\` for full command syntax.
+- \`browser_tool\` — this server's own browser. A server with none (a headless hub) has no browser to drive there: the tool is missing or refuses, and that is final for this machine.
+- \`device_tool\` with \`{"device":"<id>","tool":"browser","args":{"command":"…"}}\` — another machine's browser, over the same command line and the same guide. Start with \`{"tool":"devices"}\`: each device says whether it allows \`browser\`, and only those can be used this way. Windows, tabs and profiles belong to the machine that runs the command, so a tab opened through one door does not exist through the other.
+
+Core flow: \`navigate <url>\` → \`snapshot\` → interact by refs (\`click @e1\`, \`fill @e2 value\`, \`select @e3 value\`). \`navigate\` takes a tab of your own when you have none; every other command acts on your tab unless you name one with \`--tab <id>\`. Run \`--help\` through either door (\`browser_tool --help\`, or \`{"tool":"browser","args":{"command":"--help"}}\`) for full command syntax.
 
 Useful commands: \`read\`, \`find\`, \`click-at\`, \`type\`, \`paste\`, \`scroll\`, \`wait\`, \`key\`, \`console\`, \`network\`, \`screenshot --annotated\`, \`viewport-resize\`, \`downloads\`, \`tabs\`, \`profiles\`, \`evaluate\`, \`pick\`, \`record-start\`/\`record-stop\`.
 

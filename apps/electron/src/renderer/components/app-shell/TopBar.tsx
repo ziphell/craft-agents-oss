@@ -28,6 +28,7 @@ import { BrowserTabStrip } from "../browser/BrowserTabStrip"
 import type { Workspace } from "../../../shared/types"
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher"
 import { CompactWorkspaceSwitcher } from "./CompactWorkspaceSwitcher"
+import { RemoteHostBadge } from "./RemoteHostBadge"
 import { getDocUrl } from "@craft-agent/shared/docs/doc-links"
 import { AppMenu } from "../AppMenu"
 import type { TabRef } from "@craft-agent/shared/mentions"
@@ -42,6 +43,8 @@ interface TopBarProps {
   activeSessionId?: string | null
   onNewChat: () => void
   onNewWindow?: () => void
+  /** Open the "Connect to Server…" dialog in the menu — a hub window is an action. */
+  onConnectServer?: () => void
   onOpenSettings: () => void
   onOpenSettingsSubpage: (subpage: SettingsMenuItem['id']) => void
   onOpenKeyboardShortcuts: () => void
@@ -76,6 +79,7 @@ export function TopBar({
   activeSessionId,
   onNewChat,
   onNewWindow,
+  onConnectServer,
   onOpenSettings,
   onOpenSettingsSubpage,
   onOpenKeyboardShortcuts,
@@ -136,6 +140,7 @@ export function TopBar({
         <AppMenu
           onNewChat={onNewChat}
           onNewWindow={onNewWindow}
+          onConnectServer={onConnectServer}
           onOpenSettings={onOpenSettings}
           onOpenSettingsSubpage={onOpenSettingsSubpage}
           onOpenKeyboardShortcuts={onOpenKeyboardShortcuts}
@@ -195,6 +200,12 @@ export function TopBar({
               />
             )}
           </div>
+
+          {/* Which server this window is on — nothing in a local window. */}
+          <RemoteHostBadge
+            compact={isCompact}
+            onOpenSettings={() => onOpenSettingsSubpage('server')}
+          />
         </div>
       </div>
 

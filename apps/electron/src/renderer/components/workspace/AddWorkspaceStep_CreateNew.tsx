@@ -7,6 +7,7 @@ import { Input } from "../ui/input"
 import { Button } from "../ui/button"
 import { AddWorkspaceContainer, AddWorkspaceStepHeader, AddWorkspaceSecondaryButton, AddWorkspacePrimaryButton } from "./primitives"
 import { AddWorkspace_RadioOption } from "./AddWorkspace_RadioOption"
+import { AddWorkspace_HostPicker, useWorkspaceHosts } from "./AddWorkspace_HostPicker"
 import { useDirectoryPicker } from "@/hooks/useDirectoryPicker"
 import { ServerDirectoryBrowser } from "@/components/ServerDirectoryBrowser"
 
@@ -14,7 +15,8 @@ type LocationOption = 'default' | 'custom'
 
 interface AddWorkspaceStep_CreateNewProps {
   onBack: () => void
-  onCreate: (folderPath: string, name: string) => Promise<void>
+  /** `connectionId` names the host the workspace lives on; `null`/omitted means this computer. */
+  onCreate: (folderPath: string, name: string, connectionId: string | null) => Promise<void>
   isCreating: boolean
 }
 
@@ -36,6 +38,9 @@ export function AddWorkspaceStep_CreateNew({
   const [customPath, setCustomPath] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isValidating, setIsValidating] = useState(false)
+  // The host level: this computer until a saved server is picked.
+  const [hostConnectionId, setHostConnectionId] = useState<string | null>(null)
+  const hosts = useWorkspaceHosts()
   // Where a "default location" workspace goes is the **server's** answer, not this window's guess:
   // the server owns the config directory (which `CRAFT_CONFIG_DIR` can move), and for a remote or
   // web client the browser has no home directory to speak of. `checkWorkspaceSlug` is already
@@ -49,7 +54,8 @@ export function AddWorkspaceStep_CreateNew({
       ? `${customPath}/${slug}`
       : null
 
-  // Validate slug uniqueness when name changes
+  // Validate slug uniqueness when name changes — against the host that will own the workspace,
+  // which is the server picked above rather than necessarily this window's.
   useEffect(() => {
     if (!slug) {
       setError(null)
@@ -60,7 +66,9 @@ export function AddWorkspaceStep_CreateNew({
     const validateSlug = async () => {
       setIsValidating(true)
       try {
-        const result = await window.electronAPI.checkWorkspaceSlug(slug)
+        const result = hostConnectionId
+          ? await window.electronAPI.checkRemoteWorkspaceSlug(hostConnectionId, slug)
+          : await window.electronAPI.checkWorkspaceSlug(slug)
         setDefaultPath(result.path)
         if (result.exists) {
           setError(`A workspace named "${slug}" already exists`)
@@ -77,24 +85,31 @@ export function AddWorkspaceStep_CreateNew({
     // Debounce validation
     const timeout = setTimeout(validateSlug, 300)
     return () => clearTimeout(timeout)
-  }, [slug])
+  }, [slug, hostConnectionId])
 
   const handleFolderSelected = useCallback((path: string) => {
     setCustomPath(path)
+  }, [])
+
+  // A path only means something on the host it was picked on, so switching hosts clears it.
+  const handleHostChange = useCallback((connectionId: string | null) => {
+    setHostConnectionId(connectionId)
+    setCustomPath(null)
   }, [])
 
   const {
     pickDirectory,
     showServerBrowser,
     serverBrowserMode,
+    serverConnectionId,
     cancelServerBrowser,
     confirmServerBrowser,
-  } = useDirectoryPicker(handleFolderSelected)
+  } = useDirectoryPicker(handleFolderSelected, { connectionId: hostConnectionId })
 
   const handleCreate = useCallback(async () => {
     if (!name.trim() || !finalPath || error) return
-    await onCreate(finalPath, name.trim())
-  }, [name, finalPath, error, onCreate])
+    await onCreate(finalPath, name.trim(), hostConnectionId)
+  }, [name, finalPath, error, hostConnectionId, onCreate])
 
   const canCreate = name.trim() && finalPath && !error && !isValidating && !isCreating
 
@@ -139,6 +154,16 @@ export function AddWorkspaceStep_CreateNew({
             <p className="text-xs text-destructive">{error}</p>
           )}
         </div>
+
+        {/* Host: the workspace lives on the machine that owns its folder. */}
+        {hosts.length > 0 && (
+          <AddWorkspace_HostPicker
+            hosts={hosts}
+            value={hostConnectionId}
+            onChange={handleHostChange}
+            disabled={isCreating}
+          />
+        )}
 
         {/* Location selection */}
         <div className="space-y-3">
@@ -191,6 +216,7 @@ export function AddWorkspaceStep_CreateNew({
       <ServerDirectoryBrowser
         open={showServerBrowser}
         mode={serverBrowserMode}
+        connectionId={serverConnectionId ?? undefined}
         onSelect={confirmServerBrowser}
         onCancel={cancelServerBrowser}
       />

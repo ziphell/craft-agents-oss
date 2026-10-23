@@ -4,6 +4,8 @@ export * from './conversation-summary.ts';
 
 // Export PiAgent for direct use
 export { PiAgent, PiBackend } from './pi-agent.ts';
+// Device meta-tool types (`device_tool` runs shell/files/browser on a named device)
+export * from './device-tool.ts';
 export * from './errors.ts';
 export * from './options.ts';
 
@@ -45,6 +47,13 @@ export {
   clearBrowserProfilePromptState,
   type BrowserProfilePromptState,
 } from './browser-profile-prompt-state.ts';
+
+// Whether this server has a browser of its own — same volatile channel, same reason.
+export {
+  setBrowserHostState,
+  getBrowserHostState,
+  clearBrowserHostState,
+} from './browser-host-state.ts';
 
 // Export mode-manager - Centralized mode management
 export {

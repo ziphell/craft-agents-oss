@@ -96,6 +96,7 @@ export function buildMobileMenuPages({ hasNewWindow, isDebugMode }: BuildOptions
     })
   }
 
+  const isElectron = window.electronAPI.getRuntimeEnvironment() === 'electron'
   const settingsRows: MobileMenuRow[] = [
     {
       id: 'settings-overview',
@@ -103,7 +104,8 @@ export function buildMobileMenuPages({ hasNewWindow, isDebugMode }: BuildOptions
       labelKey: 'menu.settings',
       action: { kind: 'callback', key: 'openSettings' },
     },
-    ...SETTINGS_ITEMS.map<MobileMenuRow>((item) => ({
+    ...SETTINGS_ITEMS
+      .map<MobileMenuRow>((item) => ({
       id: `settings-${item.id}`,
       iconName: item.icon,
       labelKey: item.labelKey,

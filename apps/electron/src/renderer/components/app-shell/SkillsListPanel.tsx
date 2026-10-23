@@ -8,11 +8,12 @@ import { EntityPanel } from '@/components/ui/entity-panel'
 import { EntityListEmptyScreen } from '@/components/ui/entity-list-empty'
 import { skillSelection } from '@/hooks/useEntitySelection'
 import { automationsAtom } from '@/atoms/automations'
+import { windowIsRemoteAtom } from '@/atoms/window-mode'
 import { skillSlugsWithEntries } from '@/lib/skill-entries'
 import { SkillMenu } from './SkillMenu'
 import { SendResourceToWorkspaceDialog } from './SendResourceToWorkspaceDialog'
 import { EditPopover, getEditConfig } from '@/components/ui/EditPopover'
-import { useActiveWorkspace, useAppShellContext } from '@/context/AppShellContext'
+import { useAppShellContext } from '@/context/AppShellContext'
 import { getFileManagerName } from '@/lib/platform'
 import type { LoadedSkill } from '../../../shared/types'
 
@@ -36,8 +37,8 @@ export function SkillsListPanel({
   className,
 }: SkillsListPanelProps) {
   const { t } = useTranslation()
-  const activeWorkspace = useActiveWorkspace()
-  const canRevealLocally = !activeWorkspace?.remoteServer
+  const isRemoteWindow = useAtomValue(windowIsRemoteAtom)
+  const canRevealLocally = !isRemoteWindow
   const { workspaces, activeWorkspaceId } = useAppShellContext()
   const hasOtherWorkspaces = workspaces.length > 1
 

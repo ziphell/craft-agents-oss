@@ -287,6 +287,8 @@ export {
   RenderTemplateSchema,
   // Browser tool schema
   BrowserToolSchema,
+  // Device meta-tool schema
+  DeviceToolSchema,
   // Developer feedback schema
   SendDeveloperFeedbackSchema,
   ListTweaksSchema,

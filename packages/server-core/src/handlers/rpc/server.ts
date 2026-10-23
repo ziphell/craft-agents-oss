@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
-import { addWorkspace, setActiveWorkspace } from '@craft-agent/shared/config'
+import { addWorkspace, removeWorkspace, setActiveWorkspace } from '@craft-agent/shared/config'
 import { getDefaultWorkspacesDir, ensureDefaultWorkspacesDir } from '@craft-agent/shared/workspaces'
 import type { ServerStatus, ServerHealth } from '@craft-agent/core/types'
 import type { RpcServer } from '@craft-agent/server-core/transport'
@@ -12,9 +12,11 @@ import type { ServerHandlerContext } from '../../bootstrap/headless-start'
 export const HANDLED_CHANNELS = [
   RPC_CHANNELS.server.GET_WORKSPACES,
   RPC_CHANNELS.server.CREATE_WORKSPACE,
+  RPC_CHANNELS.server.REMOVE_WORKSPACE,
   RPC_CHANNELS.server.GET_STATUS,
   RPC_CHANNELS.server.GET_HEALTH,
   RPC_CHANNELS.server.GET_ACTIVE_SESSIONS,
+  RPC_CHANNELS.server.GET_DEVICES,
   RPC_CHANNELS.server.HOME_DIR,
 ] as const
 
@@ -61,6 +63,13 @@ export function registerServerHandlers(
 
     const { rootPath: _rp, createdAt: _ca, ...info } = workspace
     return info
+  })
+
+  server.handle(RPC_CHANNELS.server.REMOVE_WORKSPACE, async (_ctx, workspaceId: string) => {
+    if (!workspaceId?.trim()) throw new Error('Workspace id is required')
+    const removed = await removeWorkspace(workspaceId.trim())
+    deps.platform.logger.info(`[server:removeWorkspace] ${removed ? 'removed' : 'not found'} ${workspaceId}`)
+    return removed
   })
 
   // -----------------------------------------------------------------------
@@ -112,6 +121,14 @@ export function registerServerHandlers(
 
   server.handle(RPC_CHANNELS.server.GET_ACTIVE_SESSIONS, async () => {
     return sessionManager.getActiveSessionsInfo()
+  })
+
+  // -----------------------------------------------------------------------
+  // Devices (the machines this hub can drive; its own tools are the default)
+  // -----------------------------------------------------------------------
+
+  server.handle(RPC_CHANNELS.server.GET_DEVICES, async () => {
+    return sessionManager.getConnectedDevices()
   })
 
   // -----------------------------------------------------------------------

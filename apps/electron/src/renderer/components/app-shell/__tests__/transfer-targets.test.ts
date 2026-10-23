@@ -2,33 +2,21 @@ import { describe, expect, it } from 'bun:test'
 import type { Workspace } from '../../../../shared/types'
 import { getTransferTargets, hasTransferTargets } from '../transfer-targets'
 
-function ws(id: string, remote = false): Workspace {
-  return {
-    id,
-    name: id,
-    ...(remote ? { remoteServer: { url: 'wss://example.test:9100', token: 't' } } : {}),
-  } as unknown as Workspace
+function ws(id: string): Workspace {
+  return { id, name: id } as unknown as Workspace
 }
 
 describe('getTransferTargets', () => {
-  it('offers every workspace except the active one, local and remote alike', () => {
-    const all = [ws('local-a'), ws('local-b'), ws('remote-a', true)]
+  it('offers every workspace except the active one', () => {
+    const all = [ws('workspace-a'), ws('workspace-b'), ws('workspace-c')]
 
-    const targets = getTransferTargets(all, 'local-a')
+    const targets = getTransferTargets(all, 'workspace-a')
 
-    expect(targets.map(w => w.id)).toEqual(['local-b', 'remote-a'])
-  })
-
-  it('includes local workspaces when the active workspace is remote (remote → local send)', () => {
-    const all = [ws('local-a'), ws('remote-a', true)]
-
-    const targets = getTransferTargets(all, 'remote-a')
-
-    expect(targets.map(w => w.id)).toEqual(['local-a'])
+    expect(targets.map(w => w.id)).toEqual(['workspace-b', 'workspace-c'])
   })
 
   it('offers everything when no active workspace is known', () => {
-    const all = [ws('local-a'), ws('remote-a', true)]
+    const all = [ws('workspace-a'), ws('workspace-b')]
 
     expect(getTransferTargets(all, null)).toHaveLength(2)
   })
@@ -36,11 +24,11 @@ describe('getTransferTargets', () => {
 
 describe('hasTransferTargets', () => {
   it('is false with a single (active-only) workspace', () => {
-    expect(hasTransferTargets([ws('local-a')])).toBe(false)
+    expect(hasTransferTargets([ws('workspace-a')])).toBe(false)
   })
 
-  it('is true with two local workspaces — no remote required', () => {
-    expect(hasTransferTargets([ws('local-a'), ws('local-b')])).toBe(true)
+  it('is true with two workspaces', () => {
+    expect(hasTransferTargets([ws('workspace-a'), ws('workspace-b')])).toBe(true)
   })
 
   it('handles missing workspace lists', () => {

@@ -22,6 +22,7 @@ import { cn } from '@/lib/utils'
 import { Kbd } from '@/components/ui/kbd'
 import { getHostname, getThemeLuminance } from '@/components/browser/utils'
 import { browserInstancesAtom, filterInstancesForWorkspace } from '@/atoms/browser-pane'
+import { windowServerScopeAtom } from '@/atoms/window-mode'
 import { useAppShellContext } from '@/context/AppShellContext'
 import type { BrowserInstanceInfo } from '../../../../shared/types'
 
@@ -38,15 +39,12 @@ export function ToolbarStatusSlot({
 }: ToolbarStatusSlotProps) {
   // Filter to the active workspace so a session here doesn't surface a
   // browser-status banner for an agent running in a different workspace.
-  // Accept both the local workspace id (manual tabs) and the remote-mirror
-  // workspace id (tabs stamped by the remote agent over the WS bridge).
-  const { activeWorkspaceId, workspaces } = useAppShellContext()
-  const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId)
-  const remoteWorkspaceId = activeWorkspace?.remoteServer?.remoteWorkspaceId ?? null
+  const { activeWorkspaceId } = useAppShellContext()
+  const serverScope = useAtomValue(windowServerScopeAtom)
   const allInstances = useAtomValue(browserInstancesAtom)
   const browserInstances = React.useMemo(
-    () => filterInstancesForWorkspace(allInstances, activeWorkspaceId, remoteWorkspaceId),
-    [allInstances, activeWorkspaceId, remoteWorkspaceId],
+    () => filterInstancesForWorkspace(allInstances, activeWorkspaceId, serverScope),
+    [allInstances, activeWorkspaceId, serverScope],
   )
 
   // Find the visible browser window this session is working in: one of its tabs is held by

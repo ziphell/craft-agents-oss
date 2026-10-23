@@ -388,9 +388,11 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
 
   const handleOpenUrl = React.useCallback(
     (url: string) => {
-      onOpenUrl(url)
+      // The conversation is the context the click came from: it names the browser profile
+      // the page opens in, so a link in this chat lands in this chat's own window.
+      onOpenUrl(url, sessionId)
     },
-    [onOpenUrl]
+    [onOpenUrl, sessionId]
   )
 
   // Perf: Mark when data is ready

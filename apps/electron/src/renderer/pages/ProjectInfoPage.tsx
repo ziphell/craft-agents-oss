@@ -26,6 +26,9 @@ import { useAskAgent } from '@/hooks/useAskAgent'
 import { sessionMetaMapAtom } from '@/atoms/sessions'
 import { designsAtom } from '@/atoms/designs'
 import { browserProfilesAtom, refreshBrowserProfilesAtom } from '@/atoms/browser-profiles'
+import { windowIsRemoteAtom } from '@/atoms/window-mode'
+import { useDirectoryPicker } from '@/hooks/useDirectoryPicker'
+import { ServerDirectoryBrowser } from '@/components/ServerDirectoryBrowser'
 import { SettingsMenuSelect } from '@/components/settings'
 import { DesignKindBadge } from '@/components/designs/design-visuals'
 import {
@@ -62,6 +65,8 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
 
   const browserProfiles = useAtomValue(browserProfilesAtom)
   const refreshBrowserProfiles = useSetAtom(refreshBrowserProfilesAtom)
+  // A remote window's project folder is on the hub: browsing and opening must happen there.
+  const isRemoteWindow = useAtomValue(windowIsRemoteAtom)
 
   useEffect(() => {
     void refreshBrowserProfiles()
@@ -204,16 +209,19 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
     }
   }, [workspaceId, project, onCreateSession, t])
 
-  const handlePickWorkingDirectory = useCallback(async () => {
-    try {
-      const picked = await window.electronAPI.openFolderDialog?.()
-      if (typeof picked === 'string' && picked.trim()) {
-        setEditWorkingDir(picked)
-      }
-    } catch (err) {
-      console.error('[ProjectInfoPage] Folder picker failed:', err)
-    }
-  }, [])
+  // The picker is the server's in a remote window (its folders are there) and the native dialog
+  // locally — the same helper the new-workspace flow uses.
+  const {
+    pickDirectory: pickWorkingDirectory,
+    showServerBrowser,
+    serverBrowserMode,
+    cancelServerBrowser,
+    confirmServerBrowser,
+  } = useDirectoryPicker(useCallback((path: string) => setEditWorkingDir(path), []))
+
+  const handlePickWorkingDirectory = useCallback(() => {
+    pickWorkingDirectory()
+  }, [pickWorkingDirectory])
 
   const handleSaveSettings = useCallback(async () => {
     if (!workspaceId || !project) return
@@ -674,25 +682,33 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
               <Info_Table.Row label={t('common.location')}>
                 <div className="flex items-center gap-2 min-w-0">
                   <span className="flex-1 min-w-0 truncate font-mono text-xs">{project.folderPath}</span>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        onClick={() => window.electronAPI.openFile(project.folderPath)}
-                        className="shrink-0 inline-flex h-6 w-6 items-center justify-center rounded text-foreground/50 hover:text-foreground hover:bg-foreground/5 transition-colors"
-                        aria-label={t('projectInfo.openLocation')}
-                      >
-                        <FolderOpen className="h-3.5 w-3.5" />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent>{t('projectInfo.openLocation')}</TooltipContent>
-                  </Tooltip>
+                  {!isRemoteWindow && (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          onClick={() => window.electronAPI.openFile(project.folderPath)}
+                          className="shrink-0 inline-flex h-6 w-6 items-center justify-center rounded text-foreground/50 hover:text-foreground hover:bg-foreground/5 transition-colors"
+                          aria-label={t('projectInfo.openLocation')}
+                        >
+                          <FolderOpen className="h-3.5 w-3.5" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent>{t('projectInfo.openLocation')}</TooltipContent>
+                    </Tooltip>
+                  )}
                 </div>
               </Info_Table.Row>
             </Info_Table>
           </Info_Section>
         </Info_Page.Content>
       )}
+      <ServerDirectoryBrowser
+        open={showServerBrowser}
+        mode={serverBrowserMode}
+        onSelect={confirmServerBrowser}
+        onCancel={cancelServerBrowser}
+      />
     </Info_Page>
   )
 }

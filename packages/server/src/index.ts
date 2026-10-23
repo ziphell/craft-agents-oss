@@ -26,7 +26,7 @@
  */
 
 import { join } from 'node:path'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { version as packageVersion } from '../package.json'
 import { enableDebug } from '@craft-agent/shared/utils/debug'
 import { bootstrapServer, startHealthHttpServer, generateServerToken } from '@craft-agent/server-core/bootstrap'
@@ -113,7 +113,6 @@ if (tlsCertPath || tlsKeyPath) {
 
 // Web UI configuration
 const webuiDir = process.env.CRAFT_WEBUI_DIR || undefined
-const webuiEnabled = webuiDir && existsSync(webuiDir)
 const webuiSecureCookies = parseOptionalBooleanEnv('CRAFT_WEBUI_SECURE_COOKIE', process.env.CRAFT_WEBUI_SECURE_COOKIE)
 const webuiWsUrl = parseOptionalWebSocketUrl('CRAFT_WEBUI_WS_URL', process.env.CRAFT_WEBUI_WS_URL)
 const serverToken = process.env.CRAFT_SERVER_TOKEN
@@ -131,12 +130,17 @@ let webuiNodeHandler: ReturnType<typeof nodeHttpAdapter> | undefined
 // after bootstrap completes, but the handler captures the closure.
 let healthCheckFn: (() => { status: string }) | null = null
 
-if (webuiEnabled && serverToken) {
+/**
+ * The HTTP handler exists because this process **is** a hub, not because the page bundle was
+ * found. Without assets it still serves the protocol routes (auth, config, exports) and 404s the
+ * rest — a headless deployment may have no UI and still hand out a design export.
+ */
+if (serverToken) {
   const rpcPort = parseInt(process.env.CRAFT_RPC_PORT ?? '9100', 10)
   const rpcProtocol = tls ? 'wss' as const : 'ws' as const
 
   webuiHandler = createWebuiHandler({
-    webuiDir: webuiDir!,
+    webuiDir,
     secret: serverToken,
     password: process.env.CRAFT_WEBUI_PASSWORD || undefined,
     secureCookies: webuiSecureCookies,
@@ -169,8 +173,9 @@ const instance = await (async () => {
       bundledAssetsRoot,
       serverVersion: process.env.CRAFT_VERSION ?? packageVersion,
       tls,
-      // When web UI is enabled, accept JWT session cookies on WebSocket upgrade
-      validateSessionCookie: webuiEnabled && serverToken
+      // Session cookies are a protocol credential: accept them whenever this hub has a token,
+      // whether or not a page bundle was found.
+      validateSessionCookie: serverToken
         ? async (cookieHeader) => {
             const session = await validateSession(cookieHeader, serverToken)
             return session !== null
@@ -269,9 +274,7 @@ if (messagingHandle !== null && !messagingDisabled) {
   const handle: MessagingBootstrapHandle = messagingHandle
   handle.setPublisher(instance.wsServer.push.bind(instance.wsServer))
   try {
-    const localWorkspaceIds = getWorkspaces()
-      .filter((ws) => !ws.remoteServer)
-      .map((ws) => ws.id)
+    const localWorkspaceIds = getWorkspaces().map((ws) => ws.id)
     await handle.initializeWorkspaces(localWorkspaceIds)
   } catch (error) {
     console.error('[messaging] Workspace initialization failed:', error)
@@ -320,27 +323,15 @@ if (webuiHandler) {
   console.log(`CRAFT_WEBUI_URL=${serverProto}://0.0.0.0:${instance.port}`)
 }
 
-// Block binding to a non-localhost address without TLS — tokens would be sent in cleartext.
-// Override with --allow-insecure-bind for explicitly trusted networks.
+// A network bind without TLS sends the token in cleartext. That is a valid setup when the
+// network is trusted (LAN, VPN, SSH tunnel, container network), so warn — the operator decides.
 const isLocalBind = instance.host === '127.0.0.1' || instance.host === 'localhost' || instance.host === '::1'
 if (!isLocalBind && instance.protocol === 'ws') {
-  if (process.argv.includes('--allow-insecure-bind')) {
-    console.warn(
-      '\n⚠️  WARNING: Server is listening on a network address without TLS.\n' +
-      '   Authentication tokens will be sent in cleartext.\n' +
-      '   Set CRAFT_RPC_TLS_CERT and CRAFT_RPC_TLS_KEY to enable wss://.\n'
-    )
-  } else {
-    console.error(
-      '\n❌  Refusing to bind to a network address without TLS.\n' +
-      '   Authentication tokens would be sent in cleartext.\n\n' +
-      '   Options:\n' +
-      '     1. Set CRAFT_RPC_TLS_CERT and CRAFT_RPC_TLS_KEY to enable wss://\n' +
-      '     2. Pass --allow-insecure-bind to override (NOT recommended for production)\n'
-    )
-    await instance.stop()
-    process.exit(1)
-  }
+  console.warn(
+    '\n⚠️  WARNING: Server is listening on a network address without TLS.\n' +
+    '   Authentication tokens will be sent in cleartext.\n' +
+    '   Set CRAFT_RPC_TLS_CERT and CRAFT_RPC_TLS_KEY to enable wss://.\n'
+  )
 }
 
 const shutdown = async () => {

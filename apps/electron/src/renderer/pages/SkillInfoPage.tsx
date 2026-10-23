@@ -18,8 +18,8 @@ import { SkillAvatar } from '@/components/ui/skill-avatar'
 import { routes, navigate } from '@/lib/navigate'
 import { automationsAtom } from '@/atoms/automations'
 import { entriesForSkill } from '@/lib/skill-entries'
-import { useActiveWorkspace } from '@/context/AppShellContext'
 import { getFileManagerName } from '@/lib/platform'
+import { windowIsRemoteAtom } from '@/atoms/window-mode'
 import {
   Info_Page,
   Info_Section,
@@ -39,8 +39,8 @@ export default function SkillInfoPage({ skillSlug, workspaceId, workingDirectory
   const [skill, setSkill] = useState<LoadedSkill | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const activeWorkspace = useActiveWorkspace()
-  const canRevealLocally = !activeWorkspace?.remoteServer
+  const isRemoteWindow = useAtomValue(windowIsRemoteAtom)
+  const canRevealLocally = !isRemoteWindow
 
   // The automations that run this skill on its own — the entry a playbook has.
   const automations = useAtomValue(automationsAtom)

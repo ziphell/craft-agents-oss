@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { Check, ChevronDown, ChevronRight, Clock, Flag, MessageSquare, Pencil, Play, Plus } from 'lucide-react'
+import { Brain, Check, ChevronDown, ChevronRight, Clock, Flag, MessageSquare, Pencil, Play, Plus } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useAtomValue } from 'jotai'
 import { formatDistanceToNowStrict, type Locale } from 'date-fns'
@@ -311,7 +311,7 @@ export function TaskTile({
         )}
 
         <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-border/40 pt-2">
-          <ModelChip model={task.model} />
+          <ModelChip model={task.model} connection={task.connection} />
           {(relativeTime || hasMessages) && (
             <div className="flex shrink-0 items-center gap-2 text-[11px] text-foreground/45">
               {relativeTime && (
@@ -500,35 +500,37 @@ function AddSubtask({
                 {selectedIcon ? (
                   <img src={selectedIcon} alt="" className="h-3 w-3 shrink-0 rounded-[2px]" aria-hidden />
                 ) : (
-                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-foreground/40" aria-hidden />
+                  <Brain className="h-3 w-3 shrink-0 text-foreground/40" strokeWidth={1.75} aria-hidden />
                 )}
                 <span className="truncate">{selectedName}</span>
                 <ChevronDown className="h-3 w-3 shrink-0 text-foreground/40" strokeWidth={2} />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="max-w-[240px]">
-              {modelGroups.map((group, gi) => (
-                <React.Fragment key={group.provider}>
-                  {gi > 0 && <DropdownMenuSeparator />}
-                  <DropdownMenuLabel className="flex items-center gap-1.5 text-[11px] text-foreground/50">
-                    {resolveProviderIcon(group.provider) && (
-                      <img
-                        src={resolveProviderIcon(group.provider)!}
-                        alt=""
-                        className="h-3 w-3 rounded-[2px]"
-                        aria-hidden
-                      />
-                    )}
-                    {group.label}
-                  </DropdownMenuLabel>
-                  {group.models.map(opt => (
-                    <DropdownMenuItem key={opt.id} className="text-xs" onSelect={() => setModel(opt.id)}>
-                      <span className="truncate">{opt.name}</span>
-                      {opt.id === model && <Check className="ml-auto h-3.5 w-3.5 shrink-0" strokeWidth={2} />}
-                    </DropdownMenuItem>
-                  ))}
-                </React.Fragment>
-              ))}
+              {modelGroups.map((group, gi) => {
+                const groupIcon = resolveProviderIcon(group.provider)
+                return (
+                  <React.Fragment key={group.provider}>
+                    {gi > 0 && <DropdownMenuSeparator />}
+                    <DropdownMenuLabel className="flex items-center gap-1.5 text-[11px] text-foreground/50">
+                      {groupIcon ? (
+                        <img src={groupIcon} alt="" className="h-3 w-3 rounded-[2px]" aria-hidden />
+                      ) : (
+                        // Custom endpoints have no brand mark — show the neutral glyph
+                        // instead of an empty header.
+                        <Brain className="h-3 w-3 text-foreground/40" strokeWidth={1.75} aria-hidden />
+                      )}
+                      {group.label}
+                    </DropdownMenuLabel>
+                    {group.models.map(opt => (
+                      <DropdownMenuItem key={opt.id} className="text-xs" onSelect={() => setModel(opt.id)}>
+                        <span className="truncate">{opt.name}</span>
+                        {opt.id === model && <Check className="ml-auto h-3.5 w-3.5 shrink-0" strokeWidth={2} />}
+                      </DropdownMenuItem>
+                    ))}
+                  </React.Fragment>
+                )
+              })}
             </DropdownMenuContent>
           </DropdownMenu>
         ) : (

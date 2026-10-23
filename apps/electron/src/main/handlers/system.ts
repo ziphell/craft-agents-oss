@@ -302,10 +302,12 @@ export function registerSystemGuiHandlers(server: RpcServer, deps: HandlerDeps):
 
   server.handle(RPC_CHANNELS.menu.NEW_WINDOW, async (ctx) => {
     if (!windowManager) return
-    const workspaceId = ctx.workspaceId ?? windowManager.getWorkspaceForWindow(ctx.webContentsId!)
-    if (workspaceId) {
-      windowManager.createWindow({ workspaceId })
-    }
+    const webContentsId = ctx.webContentsId!
+    const workspaceId = ctx.workspaceId ?? windowManager.getWorkspaceForWindow(webContentsId)
+    if (!workspaceId) return
+    // Remote is a window property: a new window from a remote window stays on that server.
+    const remote = windowManager.getRemoteForWindow(webContentsId)
+    windowManager.createWindow({ workspaceId, ...(remote ? { remote } : {}) })
   })
 
   server.handle(RPC_CHANNELS.menu.MINIMIZE, async (ctx) => {

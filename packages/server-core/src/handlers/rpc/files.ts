@@ -562,9 +562,10 @@ export function registerFilesHandlers(server: RpcServer, deps: HandlerDeps): voi
     return isValidWorkingDirectory(expandPath(dirPath)).valid
   })
 
-  // List directories in a given path (for remote directory browsing).
-  // Returns only directories (not files) — this is a folder picker.
-  server.handle(RPC_CHANNELS.fs.LIST_DIRECTORY, async (_ctx, dirPath: string) => {
+  // List a directory for the remote browser.
+  // Directories always; files only when the caller asks (`includeFiles`), because the
+  // folder pickers want a folder list and the attach picker wants to choose a file.
+  server.handle(RPC_CHANNELS.fs.LIST_DIRECTORY, async (_ctx, dirPath: string, options?: { includeFiles?: boolean }) => {
     // Resolve ~ to server's home directory (thin clients don't know the server's home)
     if (dirPath === '~' || dirPath.startsWith('~/')) {
       dirPath = dirPath === '~' ? homedir() : join(homedir(), dirPath.slice(2))
@@ -579,26 +580,31 @@ export function registerFilesHandlers(server: RpcServer, deps: HandlerDeps): voi
     // Normalize (collapses .. segments, trailing slashes, etc.)
     const resolved = resolve(dirPath)
 
-    // Read entries, filter to directories
+    // Read entries. Directories first, files only on request.
+    const includeFiles = options?.includeFiles === true
     const raw = await readdir(resolved, { withFileTypes: true })
 
-    const entries: Array<{ name: string; path: string; isSymlink: boolean }> = []
+    const entries: Array<{ name: string; path: string; isSymlink: boolean; isDirectory: boolean }> = []
     for (const entry of raw) {
       const fullPath = join(resolved, entry.name)
       const isSymlink = entry.isSymbolicLink()
 
       if (entry.isDirectory()) {
-        entries.push({ name: entry.name, path: fullPath, isSymlink: false })
+        entries.push({ name: entry.name, path: fullPath, isSymlink: false, isDirectory: true })
       } else if (isSymlink) {
-        // Follow symlink — check if target is a directory
+        // Follow symlink — check what it points at
         try {
           const target = await stat(fullPath)
           if (target.isDirectory()) {
-            entries.push({ name: entry.name, path: fullPath, isSymlink: true })
+            entries.push({ name: entry.name, path: fullPath, isSymlink: true, isDirectory: true })
+          } else if (includeFiles && target.isFile()) {
+            entries.push({ name: entry.name, path: fullPath, isSymlink: true, isDirectory: false })
           }
         } catch {
           // Broken symlink — skip silently
         }
+      } else if (includeFiles && entry.isFile()) {
+        entries.push({ name: entry.name, path: fullPath, isSymlink: false, isDirectory: false })
       }
     }
 

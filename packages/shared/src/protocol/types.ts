@@ -43,6 +43,8 @@ export interface MessageEnvelope {
   webContentsId?: number
   /** Client capabilities advertised on handshake. */
   clientCapabilities?: string[]
+  /** Client identity advertised on handshake — shown in the server's client list. */
+  clientInfo?: ClientInfo
   /** Server-registered channels, sent in handshake_ack. Clients use this to avoid calling unavailable channels. */
   registeredChannels?: string[]
 
@@ -60,6 +62,51 @@ export interface MessageEnvelope {
   stale?: boolean
   /** Server app version, sent in handshake_ack. Clients can use this for compatibility checks. */
   serverVersion?: string
+}
+
+/**
+ * Identity a client advertises on handshake. All fields are optional so older
+ * clients (and non-Electron transports such as the CLI) keep working; the
+ * server fills in sensible fallbacks for the client list.
+ */
+export interface ClientInfo {
+  /** Human-readable device name (hostname for desktop clients). */
+  name?: string
+  /** `process.platform` / browser platform string. */
+  platform?: string
+  /** Whether the client runs on the server's machine or connects from elsewhere. */
+  mode?: 'local' | 'remote'
+  /** Stable per-install id — survives reconnects, unlike `clientId`. */
+  deviceId?: string
+  /** Directories this device offers for remote shell/file access. */
+  workspaceRoots?: string[]
+  /**
+   * The directory under which this install keeps one working directory per (hub, workspace):
+   * `<hubRootBase>/<hub device id>/<workspace id>`. Advertised so the hub can name the directory
+   * a remote call will run in without asking the device first.
+   */
+  hubRootBase?: string
+}
+
+/** One live connection, as the server's transport sees it. */
+export interface ConnectedClientInfo {
+  clientId: string
+  /** Stable device identity, when the client advertises one. */
+  deviceId: string | null
+  /** Directories this device allows remote shell/file access inside. */
+  workspaceRoots: string[]
+  /** Root of the per-hub working directories this device offers remote calls (null for older clients). */
+  hubRootBase: string | null
+  /** Display name — `clientInfo.name`, or a neutral fallback. */
+  name: string
+  platform: string | null
+  /** Local clients are the hub's own windows; remote clients are thin clients elsewhere. */
+  mode: 'local' | 'remote'
+  workspaceId: string | null
+  webContentsId: number | null
+  capabilities: string[]
+  /** Unix epoch (ms) when the handshake completed. */
+  connectedAt: number
 }
 
 export interface WireError {

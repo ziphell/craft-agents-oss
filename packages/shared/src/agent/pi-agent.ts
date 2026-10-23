@@ -99,6 +99,7 @@ import { parseError, type AgentError } from './errors.ts';
 import { runPreToolUseChecks, type PreToolUseCheckResult } from './core/pre-tool-use.ts';
 import { getRtkPath } from './core/rtk-detector.ts';
 import { getRtkEnabled, getBrowserToolEnabled } from '../config/storage.ts';
+import { getBrowserHostState } from './browser-host-state.ts';
 import type { RtkContext } from './core/rtk-rewrite.ts';
 
 // Workspace slug extraction for skill qualification
@@ -107,8 +108,10 @@ import { extractWorkspaceSlug } from '../utils/workspace.ts';
 // LLM tool types
 import { LLM_QUERY_TIMEOUT_MS, type LLMQueryRequest, type LLMQueryResult } from './llm-tool.ts';
 import { executeBrowserToolCommand } from './browser-commands.ts';
+import type { BrowserCommandImage } from './command-cli.ts';
 import { executeVideoToolCommand } from './video-commands.ts';
 import { executeDrawioToolCommand } from './drawio-commands.ts';
+import { executeDeviceToolCommand, type DeviceToolName } from './device-tools.ts';
 import { saveBinaryResponse } from '../utils/binary-detection.ts';
 
 // ============================================================
@@ -120,6 +123,7 @@ export const PI_BACKEND_SESSION_TOOL_NAMES = new Set<string>([
   'call_llm',
   'spawn_session',
   'browser_tool',
+  'device_tool',
   'video_tool',
   'drawio_tool',
 ]);
@@ -713,8 +717,9 @@ export class PiAgent extends BaseAgent {
     // Mirror Claude's gate: hide `browser_tool` when the user has disabled
     // the built-in browser tool. Without this filter, Pi would still advertise
     // `mcp__session__browser_tool` while Claude doesn't — sessions would behave
-    // inconsistently depending on backend.
-    if (!getBrowserToolEnabled()) {
+    // inconsistently depending on backend. The same applies to a host with no browser of its own:
+    // there the tool could only refuse, and `device_tool` is the browser door.
+    if (!getBrowserToolEnabled() || getBrowserHostState(this._sessionId) === false) {
       sessionToolDefs = sessionToolDefs.filter(d => d.name !== 'mcp__session__browser_tool');
     }
 
@@ -1707,59 +1712,7 @@ export class PiAgent extends BaseAgent {
             imageModel: callbacks?.getImageModelFn?.(),
           });
 
-          let content = result.output;
-          if (result.image) {
-            const sessionPath = getSessionPath(this.config.workspace.rootPath, this._sessionId);
-            const imageBuffer = Buffer.from(result.image.data, 'base64');
-            const ext = result.image.mimeType === 'image/jpeg' ? 'jpg' : 'png';
-            const saved = saveBinaryResponse(sessionPath, `browser-screenshot.${ext}`, imageBuffer, result.image.mimeType);
-
-            if (saved.type === 'file_download') {
-              content += [
-                '',
-                `Saved screenshot: ${saved.path}`,
-                '',
-                '```image-preview',
-                JSON.stringify({
-                  src: saved.path,
-                  title: 'Browser Screenshot',
-                }, null, 2),
-                '```',
-              ].join('\n');
-            } else {
-              content += `\n\n[Screenshot captured (${Math.round(result.image.sizeBytes / 1024)}KB ${result.image.mimeType}) but failed to save: ${saved.error}]`;
-            }
-          }
-
-          // A frame that came back as a file is shown from that file — the file is the record,
-          // and saving a second copy would be a second record of the same moment. A frame that
-          // did not (`video_tool sample` without `--out`) has no file of its own, so it is saved
-          // here for the person to look at, the same way a screenshot is.
-          for (const [index, frame] of (result.images ?? []).entries()) {
-            let src = frame.path;
-            if (!src) {
-              const ext = frame.mimeType === 'image/jpeg' ? 'jpg' : 'png';
-              const saved = saveBinaryResponse(
-                getSessionPath(this.config.workspace.rootPath, this._sessionId),
-                `video-frame-${index + 1}.${ext}`,
-                Buffer.from(frame.data, 'base64'),
-                frame.mimeType,
-              );
-              if (saved.type !== 'file_download') continue;
-              src = saved.path;
-            }
-            content += [
-              '',
-              '```image-preview',
-              JSON.stringify({
-                src,
-                title: src.split(/[/\\]/).pop() ?? 'Frame',
-              }, null, 2),
-              '```',
-            ].join('\n');
-          }
-
-          return { content, isError: false };
+          return { content: this.withCommandImages(result.output, result), isError: false };
         } catch (error) {
           // Branch on `err.code` (string), not `instanceof CodedError` — the
           // transport reconstructs a plain Error on the receiving side, so
@@ -1769,6 +1722,32 @@ export class PiAgent extends BaseAgent {
           const msg = error instanceof Error ? error.message : String(error);
           const friendly = mapBrowserToolErrorCode(code) ?? msg;
           return { content: friendly, isError: true };
+        }
+      }
+
+      // The device meta-tool: the device is an argument of this one tool, and the nested
+      // tool name is resolved against the same callback registry the pane tools use.
+      if (toolName === 'device_tool') {
+        const deviceFns = getSessionScopedToolCallbacks(this._sessionId)?.deviceFns;
+        if (!deviceFns) {
+          return {
+            content: 'Devices are not available. This tool requires the desktop app connected to a hub.',
+            isError: true,
+          };
+        }
+        try {
+          const result = await executeDeviceToolCommand({
+            tool: args.tool as DeviceToolName,
+            device: typeof args.device === 'string' ? args.device : undefined,
+            args: (args.args as Record<string, unknown> | undefined) ?? undefined,
+            fns: deviceFns,
+            sessionId: this._sessionId,
+            workspaceRootPath: this.config.workspace.rootPath,
+          });
+          return { content: this.withCommandImages(result.output, result), isError: false };
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          return { content: `device_tool failed: ${msg}`, isError: true };
         }
       }
 
@@ -1796,7 +1775,68 @@ export class PiAgent extends BaseAgent {
     }
   }
 
+  /**
+   * Show a command result's images the way this backend does: written into the session folder and
+   * pointed at with an `image-preview` block. Shared by the pane doors and `device_tool`, because a
+   * screenshot means the same thing whichever door asked for it.
+   */
+  private withCommandImages(
+    content: string,
+    result: { image?: BrowserCommandImage; images?: BrowserCommandImage[] },
+  ): string {
+    let output = content
+    if (result.image) {
+      const sessionPath = getSessionPath(this.config.workspace.rootPath, this._sessionId);
+      const imageBuffer = Buffer.from(result.image.data, 'base64');
+      const ext = result.image.mimeType === 'image/jpeg' ? 'jpg' : 'png';
+      const saved = saveBinaryResponse(sessionPath, `browser-screenshot.${ext}`, imageBuffer, result.image.mimeType);
 
+      if (saved.type === 'file_download') {
+        output += [
+          '',
+          `Saved screenshot: ${saved.path}`,
+          '',
+          '```image-preview',
+          JSON.stringify({
+            src: saved.path,
+            title: 'Browser Screenshot',
+          }, null, 2),
+          '```',
+        ].join('\n');
+      } else {
+        output += `\n\n[Screenshot captured (${Math.round(result.image.sizeBytes / 1024)}KB ${result.image.mimeType}) but failed to save: ${saved.error}]`;
+      }
+    }
+
+    // A frame that came back as a file is shown from that file — the file is the record, and
+    // saving a second copy would be a second record of the same moment. A frame that did not
+    // (`video_tool sample` without `--out`) has no file of its own, so it is saved here for the
+    // person to look at, the same way a screenshot is.
+    for (const [index, frame] of (result.images ?? []).entries()) {
+      let src = frame.path;
+      if (!src) {
+        const ext = frame.mimeType === 'image/jpeg' ? 'jpg' : 'png';
+        const saved = saveBinaryResponse(
+          getSessionPath(this.config.workspace.rootPath, this._sessionId),
+          `video-frame-${index + 1}.${ext}`,
+          Buffer.from(frame.data, 'base64'),
+          frame.mimeType,
+        );
+        if (saved.type !== 'file_download') continue;
+        src = saved.path;
+      }
+      output += [
+        '',
+        '```image-preview',
+        JSON.stringify({
+          src,
+          title: src.split(/[/\\]/).pop() ?? 'Frame',
+        }, null, 2),
+        '```',
+      ].join('\n');
+    }
+    return output
+  }
 
   /**
    * Handle session_tool_completed from subprocess.

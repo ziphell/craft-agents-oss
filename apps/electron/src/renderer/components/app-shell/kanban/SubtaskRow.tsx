@@ -84,7 +84,7 @@ export function SubtaskRow({ subtask, className, onClick }: SubtaskRowProps) {
       <span className={cn('flex-1 truncate text-xs', isDone ? 'text-foreground/45 line-through' : 'text-foreground/80')}>
         {subtask.title}
       </span>
-      <ModelChip model={subtask.model} short className="w-20 shrink-0" />
+      <ModelChip model={subtask.model} connection={subtask.connection} short className="w-20 shrink-0" />
     </div>
   )
 }

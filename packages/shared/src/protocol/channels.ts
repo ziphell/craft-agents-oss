@@ -4,15 +4,14 @@
  * Key paths are internal and may be reorganized freely.
  */
 export const RPC_CHANNELS = {
-  remote: {
-    TEST_CONNECTION: 'remote:testConnection',
-  },
   server: {
     GET_WORKSPACES: 'server:getWorkspaces',
     CREATE_WORKSPACE: 'server:createWorkspace',
+    REMOVE_WORKSPACE: 'server:removeWorkspace',
     GET_STATUS: 'server:getStatus',
     GET_HEALTH: 'server:getHealth',
     GET_ACTIVE_SESSIONS: 'server:getActiveSessions',
+    GET_DEVICES: 'server:getDevices',
     SHUTTING_DOWN: 'server:shuttingDown',
     STATUS_CHANGED: 'server:statusChanged',
     HOME_DIR: 'server:homeDir',
@@ -80,7 +79,6 @@ export const RPC_CHANNELS = {
     GET: 'workspaces:get',
     CREATE: 'workspaces:create',
     CHECK_SLUG: 'workspaces:checkSlug',
-    UPDATE_REMOTE: 'workspaces:updateRemote',
   },
   window: {
     GET_WORKSPACE: 'window:getWorkspace',
@@ -444,6 +442,22 @@ export const RPC_CHANNELS = {
      */
     FETCH_RESOURCE: 'browser-pane:fetch-resource',
     SCROLL: 'browser-pane:scroll',
+    /**
+     * Watch one tab, in a viewer that is not the window it lives in.
+     *
+     * `stream-start` subscribes the calling client to that tab's frames; `stream-stop` ends it;
+     * `stream-input` sends pointer/keyboard back. Frames travel on `stream-frame` to **that one
+     * client** — see docs/browser-view-streaming.md.
+     */
+    STREAM_START: 'browser-pane:stream-start',
+    STREAM_STOP: 'browser-pane:stream-stop',
+    STREAM_INPUT: 'browser-pane:stream-input',
+    STREAM_FRAME: 'browser-pane:stream-frame',
+    /**
+     * The stream ended without the viewer asking — its tab or window went away, or the CDP
+     * session did. Without this the viewer would sit on the last frame it received.
+     */
+    STREAM_ENDED: 'browser-pane:stream-ended',
     LAUNCH: 'browser-empty-state:launch',
     STATE_CHANGED: 'browser-pane:state-changed',
     REMOVED: 'browser-pane:removed',

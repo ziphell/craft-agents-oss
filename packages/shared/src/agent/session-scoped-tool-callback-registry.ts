@@ -13,6 +13,7 @@
 import type { LLMQueryRequest, LLMQueryResult } from './llm-tool.ts';
 import type { SpawnSessionFn } from './spawn-session-tool.ts';
 import type { BrowserPaneFns } from './browser-pane.ts';
+import type { DeviceToolFns } from './device-tool.ts';
 import type { AuthRequest } from '@craft-agent/session-tools-core';
 import { debug } from '../utils/debug.ts';
 
@@ -59,6 +60,13 @@ export interface SessionScopedToolCallbacks {
    * with the session's bound browser instance.
    */
   browserPaneFns?: BrowserPaneFns;
+
+  /**
+   * Device functions for `device_tool` — shell/files/browser on this machine or another one
+   * connected to the hub. Set by SessionManager; absent means no device can be reached, and the
+   * tool says so instead of guessing.
+   */
+  deviceFns?: DeviceToolFns;
 
   /** Set labels on a session (defaults to current). */
   setSessionLabelsFn?: (sessionId: string | undefined, labels: string[]) => void | Promise<void>;

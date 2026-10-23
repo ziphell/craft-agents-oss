@@ -34,6 +34,17 @@ export type TaskEditorTarget =
   | { mode: 'create'; initialProjectId?: string }
   | { mode: 'edit'; sessionId: string; taskSlug?: string; initialTitle?: string }
 
+/**
+ * Minimal connection identity needed to resolve a model's brand icon.
+ * Mirrors the fields `getProviderIcon` consumes, so the board can resolve Pi /
+ * custom endpoints without shipping the whole connection object into view-models.
+ */
+export interface KanbanModelConnection {
+  providerType: string
+  baseUrl?: string | null
+  piAuthProvider?: string | null
+}
+
 export interface KanbanSubtask {
   /** Row key. A child session id, or `node:<nodeId>` for an authored-but-never-run spec node. */
   id: string
@@ -46,6 +57,8 @@ export interface KanbanSubtask {
   runState: SubtaskRunState
   /** Model id the orchestrator routed this subtask to (e.g. 'claude-haiku-4-5-20251001'). */
   model: string
+  /** Connection serving `model`; drives the brand icon (absent for synthetic spec rows). */
+  connection?: KanbanModelConnection
 }
 
 export interface KanbanTask {
@@ -57,6 +70,8 @@ export interface KanbanTask {
   statusId: string
   /** Orchestrator model id for the parent task. */
   model: string
+  /** Connection serving `model`; drives the brand icon. */
+  connection?: KanbanModelConnection
   /** Optional project binding; colors the tile. */
   projectId?: string
   /**

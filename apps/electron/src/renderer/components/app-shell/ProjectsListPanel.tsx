@@ -8,6 +8,7 @@
 
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
+import { useAtomValue } from 'jotai'
 import { FolderKanban, FolderOpen, MessageSquare, Plus, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
@@ -21,6 +22,7 @@ import {
   StyledContextMenuContent,
 } from '@/components/ui/styled-context-menu'
 import type { LoadedProject } from '@craft-agent/shared/projects/types'
+import { windowIsRemoteAtom } from '@/atoms/window-mode'
 
 export interface ProjectsListPanelProps {
   projects: LoadedProject[]
@@ -115,6 +117,8 @@ interface ProjectRowProps {
 function ProjectRow({ project, isSelected, isFirst, onClick, onDelete, onJumpToSessions }: ProjectRowProps) {
   const config = project.config
   const subtitle = config.description?.trim() || config.workingDirectory || ''
+  // The project folder lives on the workspace's server, so a remote window cannot open it here.
+  const canRevealLocally = !useAtomValue(windowIsRemoteAtom)
 
   // eslint-disable-next-line craft-links/no-direct-file-open -- directories can't be previewed in-app
   const handleOpenLocation = React.useCallback(() => window.electronAPI.openFile(project.folderPath), [project.folderPath])
@@ -139,7 +143,7 @@ function ProjectRow({ project, isSelected, isFirst, onClick, onDelete, onJumpToS
       <StyledContextMenuContent>
         <ContextMenuProvider>
           <ProjectRowMenu
-            onOpenLocation={handleOpenLocation}
+            onOpenLocation={canRevealLocally ? handleOpenLocation : undefined}
             onDelete={onDelete}
             onJumpToSessions={onJumpToSessions}
           />
@@ -149,7 +153,7 @@ function ProjectRow({ project, isSelected, isFirst, onClick, onDelete, onJumpToS
   )
 }
 
-function ProjectRowMenu({ onOpenLocation, onDelete, onJumpToSessions }: { onOpenLocation: () => void; onDelete: () => void; onJumpToSessions?: () => void }) {
+function ProjectRowMenu({ onOpenLocation, onDelete, onJumpToSessions }: { onOpenLocation?: () => void; onDelete: () => void; onJumpToSessions?: () => void }) {
   const { t } = useTranslation()
   const { MenuItem, Separator } = useMenuComponents()
   return (
@@ -160,10 +164,12 @@ function ProjectRowMenu({ onOpenLocation, onDelete, onJumpToSessions }: { onOpen
           <span className="flex-1">{t('projectsList.jumpToSessions')}</span>
         </MenuItem>
       )}
-      <MenuItem onClick={onOpenLocation}>
-        <FolderOpen className="h-3.5 w-3.5" />
-        <span className="flex-1">{t('projectInfo.openLocation')}</span>
-      </MenuItem>
+      {onOpenLocation && (
+        <MenuItem onClick={onOpenLocation}>
+          <FolderOpen className="h-3.5 w-3.5" />
+          <span className="flex-1">{t('projectInfo.openLocation')}</span>
+        </MenuItem>
+      )}
       <Separator />
       <MenuItem onClick={onDelete} variant="destructive">
         <Trash2 className="h-3.5 w-3.5" />

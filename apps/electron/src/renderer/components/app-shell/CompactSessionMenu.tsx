@@ -25,6 +25,7 @@
 
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
+import { useAtomValue } from 'jotai'
 import { motion } from 'motion/react'
 import {
   Archive,
@@ -74,6 +75,7 @@ import {
   type SessionStatusId,
 } from '@/config/session-status-config'
 import type { SessionMeta } from '@/atoms/sessions'
+import { windowIsRemoteAtom } from '@/atoms/window-mode'
 import { getSessionStatus, hasUnreadMeta, hasMessagesMeta } from '@/utils/session'
 import { getFileManagerName } from '@/lib/platform'
 import { useMessagingConnect, type MessagingPlatform } from '@/components/messaging/MessagingSessionMenuItem'
@@ -188,6 +190,8 @@ export function CompactSessionMenu({
   const sessionLabels = item.labels ?? []
   const _hasMessages = hasMessagesMeta(item)
   const _hasUnread = hasUnreadMeta(item)
+  // The session folder is on the workspace's server, so a remote window cannot reveal it here.
+  const canRevealLocally = !useAtomValue(windowIsRemoteAtom)
 
   const actions = useSessionMenuActions({ item, onLabelsChange })
 
@@ -329,7 +333,7 @@ export function CompactSessionMenu({
               onRefreshTitle={closeAfter(actions.refreshTitle)}
               onOpenInNewPanel={closeAfter(actions.openInNewPanel)}
               onOpenInNewWindow={closeAfter(onOpenInNewWindow)}
-              onShowInFinder={closeAfter(actions.showInFinder)}
+              onShowInFinder={canRevealLocally ? closeAfter(actions.showInFinder) : undefined}
               onCopyPath={closeAfter(actions.copyPath)}
               onDelete={closeAfter(onDelete)}
             />
@@ -547,11 +551,13 @@ function RootPane({
       {onOpenInNewWindow && (
         <Row icon={<AppWindow className="h-4 w-4" />} label={t('sessionMenu.openInNewWindow')} onTap={onOpenInNewWindow} />
       )}
-      <Row
-        icon={<FolderOpen className="h-4 w-4" />}
-        label={t('sessionMenu.showInFileManager', { fileManager: getFileManagerName() })}
-        onTap={onShowInFinder}
-      />
+      {onShowInFinder && (
+        <Row
+          icon={<FolderOpen className="h-4 w-4" />}
+          label={t('sessionMenu.showInFileManager', { fileManager: getFileManagerName() })}
+          onTap={onShowInFinder}
+        />
+      )}
       <Row icon={<Copy className="h-4 w-4" />} label={t('sessionMenu.copyPath')} onTap={onCopyPath} />
 
       <Separator />

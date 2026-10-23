@@ -20,6 +20,7 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { useState, useEffect, useCallback, useRef, memo } from 'react'
+import { useAtomValue } from 'jotai'
 import { AnimatePresence, motion, type Variants } from 'motion/react'
 import { File, Folder, FolderOpen, FileText, Image, FileCode, ChevronRight, ExternalLink } from 'lucide-react'
 import {
@@ -33,6 +34,7 @@ import { cn } from '@/lib/utils'
 import * as storage from '@/lib/local-storage'
 import { useAppShellContext } from '@/context/AppShellContext'
 import { getFileManagerName } from '@/lib/platform'
+import { windowIsRemoteAtom } from '@/atoms/window-mode'
 import { restoreSessionFileWatch } from './session-files-watch'
 
 /**
@@ -256,6 +258,8 @@ interface FileTreeItemProps {
   onFileClick: (file: SessionFile) => void
   onFileDoubleClick: (file: SessionFile) => void
   onRevealInFileManager: (path: string) => void
+  /** Whether this machine can reveal these files (false in a remote window — they are the hub's). */
+  canRevealLocally: boolean
   /** Whether this item is inside an expanded folder (for stagger animation) */
   isNested?: boolean
 }
@@ -275,6 +279,7 @@ function FileTreeItem({
   onFileClick,
   onFileDoubleClick,
   onRevealInFileManager,
+  canRevealLocally,
   isNested,
 }: FileTreeItemProps) {
   const { t } = useTranslation()
@@ -368,13 +373,15 @@ function FileTreeItem({
               {t("chat.openFile")}
             </StyledContextMenuItem>
           )}
-          {/* Show in file manager */}
-          <StyledContextMenuItem
-            onSelect={() => onRevealInFileManager(file.path)}
-          >
-            <FolderOpen className="h-3.5 w-3.5" />
-            {t("chat.showInFileManager", { fileManager: fileManagerName })}
-          </StyledContextMenuItem>
+          {/* Show in file manager — only where the files are on this machine */}
+          {canRevealLocally && (
+            <StyledContextMenuItem
+              onSelect={() => onRevealInFileManager(file.path)}
+            >
+              <FolderOpen className="h-3.5 w-3.5" />
+              {t("chat.showInFileManager", { fileManager: fileManagerName })}
+            </StyledContextMenuItem>
+          )}
         </StyledContextMenuContent>
       </ContextMenu>
       {/* Expandable children with framer-motion animation - matches LeftSidebar exactly */}
@@ -412,6 +419,7 @@ function FileTreeItem({
                         onFileClick={onFileClick}
                         onFileDoubleClick={onFileDoubleClick}
                         onRevealInFileManager={onRevealInFileManager}
+                        canRevealLocally={canRevealLocally}
                         isNested={true}
                       />
                     </motion.div>
@@ -551,31 +559,14 @@ export function SessionFilesSection({ sessionId, className, sessionFolderPath, h
   // instead of always opening in the file manager / default app.
   const { onOpenFile } = useAppShellContext()
   const fileManagerName = getFileManagerName()
+  // A remote window's files are on the hub: nothing here can be revealed or opened locally.
+  const canRevealLocally = !useAtomValue(windowIsRemoteAtom)
 
   // Reveal a file/folder in the system file manager
   const handleRevealInFileManager = useCallback((path: string) => {
+    if (!canRevealLocally) return
     window.electronAPI.showInFolder(path)
-  }, [])
-
-  // Handle file click — preview in-app if possible, open directory in file manager
-  const handleFileClick = useCallback((file: SessionFile) => {
-    if (file.type === 'directory') {
-      // eslint-disable-next-line craft-links/no-direct-file-open -- directories can't be previewed in-app
-      window.electronAPI.openFile(file.path)
-    } else {
-      onOpenFile(file.path)
-    }
-  }, [onOpenFile])
-
-  // Handle double-click — same as single click (interceptor decides preview vs external)
-  const handleFileDoubleClick = useCallback((file: SessionFile) => {
-    if (file.type === 'directory') {
-      // eslint-disable-next-line craft-links/no-direct-file-open -- directories can't be previewed in-app
-      window.electronAPI.openFile(file.path)
-    } else {
-      onOpenFile(file.path)
-    }
-  }, [onOpenFile])
+  }, [canRevealLocally])
 
   // Toggle folder expanded state
   const handleToggleExpand = useCallback((path: string) => {
@@ -591,6 +582,35 @@ export function SessionFilesSection({ sessionId, className, sessionFolderPath, h
     })
   }, [saveExpandedPaths])
 
+  // Handle file click — preview in-app if possible; a folder opens in the file manager locally,
+  // and expands in place when the files are on the server (there is nothing local to open).
+  const handleFileClick = useCallback((file: SessionFile) => {
+    if (file.type === 'directory') {
+      if (!canRevealLocally) {
+        handleToggleExpand(file.path)
+        return
+      }
+      // eslint-disable-next-line craft-links/no-direct-file-open -- directories can't be previewed in-app
+      window.electronAPI.openFile(file.path)
+    } else {
+      onOpenFile(file.path)
+    }
+  }, [onOpenFile, canRevealLocally, handleToggleExpand])
+
+  // Handle double-click — same as single click (interceptor decides preview vs external)
+  const handleFileDoubleClick = useCallback((file: SessionFile) => {
+    if (file.type === 'directory') {
+      if (!canRevealLocally) {
+        handleToggleExpand(file.path)
+        return
+      }
+      // eslint-disable-next-line craft-links/no-direct-file-open -- directories can't be previewed in-app
+      window.electronAPI.openFile(file.path)
+    } else {
+      onOpenFile(file.path)
+    }
+  }, [onOpenFile, canRevealLocally, handleToggleExpand])
+
   if (!sourceId) {
     return null
   }
@@ -601,7 +621,7 @@ export function SessionFilesSection({ sessionId, className, sessionFolderPath, h
       {!hideHeader && (
         <div className="flex items-center justify-between px-4 pt-4 pb-2 shrink-0 select-none">
           <span className="text-xs font-medium text-muted-foreground">{headerLabel}</span>
-          {folderPath && (
+          {canRevealLocally && folderPath && (
             <button
               type="button"
               // eslint-disable-next-line craft-links/no-direct-file-open -- directories can't be previewed in-app
@@ -636,6 +656,7 @@ export function SessionFilesSection({ sessionId, className, sessionFolderPath, h
                 onFileClick={handleFileClick}
                 onFileDoubleClick={handleFileDoubleClick}
                 onRevealInFileManager={handleRevealInFileManager}
+                canRevealLocally={canRevealLocally}
               />
             ))}
           </nav>

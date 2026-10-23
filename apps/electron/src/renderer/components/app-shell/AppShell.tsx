@@ -94,6 +94,7 @@ import { useSetAtom } from "jotai"
 import type { Session, Workspace, FileAttachment, PermissionRequest, LoadedSource, LoadedSkill, PermissionMode, SourceFilter, AutomationFilter } from "../../../shared/types"
 import { sessionMetaMapAtom, sendToWorkspaceAtom, type SessionMeta } from "@/atoms/sessions"
 import { filterInstancesForWorkspace } from "@/atoms/browser-pane"
+import { windowServerScopeAtom } from "@/atoms/window-mode"
 import { sourcesAtom } from "@/atoms/sources"
 import { skillsAtom } from "@/atoms/skills"
 import { panelStackAtom, panelCountAtom, focusedPanelIdAtom, focusedSessionIdAtom, focusNextPanelAtom, focusPrevPanelAtom, parseSessionIdFromRoute } from "@/atoms/panel-stack"
@@ -139,6 +140,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { PanelHeader } from "./PanelHeader"
 import { FabNewChat } from "./FabNewChat"
 import { SendToWorkspaceDialog } from "./SendToWorkspaceDialog"
+import { ConnectServerDialog } from "./ConnectServerDialog"
 import { CreateProjectDialog } from "../projects/CreateProjectDialog"
 import { useBrowserToolbarActions, type AddElementRequest } from "@/hooks/useBrowserToolbarActions"
 import { MessagingDialogHost } from "@/components/messaging/MessagingDialogHost"
@@ -610,6 +612,8 @@ function AppShellContent({
   const panelStack = useAtomValue(panelStackAtom)
   const panelCount = useAtomValue(panelCountAtom)
   const focusedSessionId = useAtomValue(focusedSessionIdAtom)
+  // The saved server this window works on, so its browser windows are never another hub's.
+  const serverScope = useAtomValue(windowServerScopeAtom)
 
   // Navigate the focused panel to a session.
   // If the session is already open in another panel, focus that panel instead.
@@ -829,6 +833,11 @@ function AppShellContent({
   // Search state for session list
   const [searchActive, setSearchActive] = React.useState(false)
   const [searchQuery, setSearchQuery] = React.useState('')
+
+  /** "Connect to Server…" — a hub window is an action, not a settings page. */
+  const [connectServerOpen, setConnectServerOpen] = React.useState(false)
+  /** Opening windows is the desktop app's business; a browser tab has no windows to open. */
+  const isElectronRuntime = window.electronAPI.getRuntimeEnvironment() === 'electron'
 
   // Grouping mode for chat list: per-view (stored in viewFiltersMap), forced to 'date' for state sub-views
   const isStateSubView = sessionFilter?.kind === 'state'
@@ -1362,6 +1371,9 @@ function AppShellContent({
   // New window
   useAction('app.newWindow', () => window.electronAPI.menuNewWindow())
 
+  // Connect to a hub (opens its own window)
+  useAction('app.connectServer', () => setConnectServerOpen(true))
+
   // Quit (note: also handled by native menu on macOS)
   useAction('app.quit', () => window.electronAPI.menuQuit())
 
@@ -1534,16 +1546,11 @@ function AppShellContent({
 
   // Filter session metadata by active workspace
   // Also exclude hidden sessions (mini-agent sessions) from all counts and lists
-  // For remote workspaces, sessions have the remote workspace ID (not the local one),
-  // so we match against both the local and remote workspace IDs.
-  const remoteWorkspaceId = activeWorkspace?.remoteServer?.remoteWorkspaceId
   const workspaceSessionMetas = useMemo(() => {
     const metas = Array.from(sessionMetaMap.values())
     if (!activeWorkspaceId) return metas.filter(s => !s.hidden)
-    return metas.filter(s =>
-      !s.hidden && (s.workspaceId === activeWorkspaceId || (remoteWorkspaceId && s.workspaceId === remoteWorkspaceId))
-    )
-  }, [sessionMetaMap, activeWorkspaceId, remoteWorkspaceId])
+    return metas.filter(s => !s.hidden && s.workspaceId === activeWorkspaceId)
+  }, [sessionMetaMap, activeWorkspaceId])
 
   // Active sessions exclude archived - use this for all counts and filters except archived view
   const activeSessionMetas = useMemo(() => {
@@ -2195,11 +2202,7 @@ function AppShellContent({
         return
       }
       const instances = await window.electronAPI.browserPane.list()
-      const existing = filterInstancesForWorkspace(
-        instances,
-        activeWorkspaceId,
-        remoteWorkspaceId ?? null,
-      )[0]
+      const existing = filterInstancesForWorkspace(instances, activeWorkspaceId, serverScope)[0]
       if (existing) {
         await window.electronAPI.browserPane.focus(existing.id)
         return
@@ -2210,7 +2213,7 @@ function AppShellContent({
       console.error('[Chat] Failed to open the browser:', error)
       toast.error(t('toast.failedToCreateBrowser'))
     }
-  }, [activeWorkspaceId, remoteWorkspaceId, t])
+  }, [activeWorkspaceId, serverScope, t])
 
   // Delete Source - simplified since agents system is removed
   const handleDeleteSource = useCallback(async (sourceSlug: string) => {
@@ -2522,7 +2525,8 @@ function AppShellContent({
           onWorkspaceRemoved={() => onRefreshWorkspaces?.()}
           activeSessionId={effectiveSessionId}
           onNewChat={() => handleNewChat()}
-          onNewWindow={() => window.electronAPI.menuNewWindow()}
+          onNewWindow={isElectronRuntime ? () => window.electronAPI.menuNewWindow() : undefined}
+          onConnectServer={isElectronRuntime ? () => setConnectServerOpen(true) : undefined}
           onOpenSettings={onOpenSettings}
           onOpenSettingsSubpage={handleSettingsClick}
           onOpenKeyboardShortcuts={onOpenKeyboardShortcuts}
@@ -4117,6 +4121,9 @@ function AppShellContent({
       {/* Messaging dialogs (pairing-code + WA connect) — driven by messagingDialogAtom.
           Mounted here so they survive context-menu / dropdown close. */}
       <MessagingDialogHost />
+
+      {/* Connect to a hub — opened from the app menu. */}
+      <ConnectServerDialog open={connectServerOpen} onOpenChange={setConnectServerOpen} />
 
     </AppShellProvider>
   )

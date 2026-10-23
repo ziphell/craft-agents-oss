@@ -1,5 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
+import { useAtomValue } from 'jotai'
 import { DatabaseZap } from 'lucide-react'
 import { SourceAvatar } from '@/components/ui/source-avatar'
 import { deriveConnectionStatus } from '@/components/ui/source-status-indicator'
@@ -10,6 +11,7 @@ import { sourceSelection } from '@/hooks/useEntitySelection'
 import { SourceMenu } from './SourceMenu'
 import { SendResourceToWorkspaceDialog } from './SendResourceToWorkspaceDialog'
 import { useAppShellContext } from '@/context/AppShellContext'
+import { windowIsRemoteAtom } from '@/atoms/window-mode'
 import { EditPopover, getEditConfig, type EditContextKey } from '@/components/ui/EditPopover'
 import type { LoadedSource, SourceConnectionStatus, SourceFilter } from '../../../shared/types'
 
@@ -61,6 +63,8 @@ export function SourcesListPanel({
   const { t } = useTranslation()
   const { workspaces, activeWorkspaceId } = useAppShellContext()
   const hasOtherWorkspaces = workspaces.length > 1
+  // A remote window's sources live on the hub, so their folders cannot be revealed here.
+  const canRevealLocally = !useAtomValue(windowIsRemoteAtom)
 
   // Send to Workspace dialog state
   const [sendDialogOpen, setSendDialogOpen] = React.useState(false)
@@ -139,6 +143,7 @@ export function SourcesListPanel({
               sourceName={source.config.name}
               onOpenInNewWindow={() => window.electronAPI.openUrl(`craftagents://sources/source/${source.config.slug}?window=focused`)}
               onShowInFinder={() => window.electronAPI.showInFolder(source.folderPath)}
+              canShowInFinder={canRevealLocally}
               onDelete={() => onDeleteSource(source.config.slug)}
               onSendToWorkspace={hasOtherWorkspaces ? () => {
                 setSendResourceSlug(source.config.slug)

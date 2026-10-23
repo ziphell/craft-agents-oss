@@ -22,6 +22,7 @@ import {
   type MessageEnvelope,
   type PushTarget,
   type ErrorCode,
+  type ConnectedClientInfo,
 } from '@craft-agent/shared/protocol'
 import type { RpcServer, HandlerFn, RequestContext } from './types'
 import { serializeEnvelope, deserializeEnvelope } from './codec'
@@ -44,6 +45,18 @@ interface ClientConnection {
   workspaceId: string | null
   webContentsId: number | null
   capabilities: Set<string>
+  /** Identity advertised on handshake — shown in the server's client list. */
+  name: string
+  /** Stable device identity (survives reconnects); null for clients that don't send one. */
+  deviceId: string | null
+  /** Directories this device allows remote shell/file access inside. */
+  workspaceRoots: string[]
+  /** Root of this device's per-hub working directories (`<base>/<hub device id>/<workspace id>`). */
+  hubRootBase: string | null
+  platform: string | null
+  /** Local = this server's own windows; remote = thin clients / browser clients. */
+  mode: 'local' | 'remote'
+  connectedAt: number
   missedPongs: number
   alive: boolean
   /** Ring buffer of recent events for replay on reconnect. */
@@ -100,7 +113,14 @@ export interface WsRpcServerOptions {
   /** Maximum concurrent clients. 0 = unlimited. Default: 50 */
   maxClients?: number
   /** Called when a client completes handshake. */
-  onClientConnected?: (info: { clientId: string; webContentsId: number | null; workspaceId: string | null; capabilities: string[] }) => void
+  onClientConnected?: (info: {
+    clientId: string
+    webContentsId: number | null
+    workspaceId: string | null
+    capabilities: string[]
+    mode: 'local' | 'remote'
+    name: string
+  }) => void
   /** Called when a client disconnects. */
   onClientDisconnected?: (clientId: string) => void
   /**
@@ -176,6 +196,32 @@ export class WsRpcServer implements RpcServer {
     return this.clients.size
   }
 
+  /**
+   * Snapshot of every live connection — windows, thin clients and app-level device links.
+   * Devices are derived from this in `SessionManager`, which is what the hub's UI and
+   * `device_tool` list.
+   */
+  getConnectedClients(): ConnectedClientInfo[] {
+    return [...this.clients.values()].map((client) => ({
+      clientId: client.id,
+      deviceId: client.deviceId,
+      workspaceRoots: client.workspaceRoots,
+      hubRootBase: client.hubRootBase,
+      name: client.name,
+      platform: client.platform,
+      mode: client.mode,
+      workspaceId: client.workspaceId,
+      webContentsId: client.webContentsId,
+      capabilities: [...client.capabilities],
+      connectedAt: client.connectedAt,
+    }))
+  }
+
+  /** Whether the client runs on this server's own machine (a local window). */
+  isLocalClient(clientId: string): boolean {
+    return this.clients.get(clientId)?.mode === 'local'
+  }
+
   // -------------------------------------------------------------------------
   // RpcServer interface
   // -------------------------------------------------------------------------
@@ -206,17 +252,33 @@ export class WsRpcServer implements RpcServer {
     return !!client && client.capabilities.has(capability)
   }
 
-  findClientsWithCapability(capability: string, opts?: { workspaceId?: string }): string[] {
+  findClientsWithCapability(capability: string, opts?: {
+    workspaceId?: string
+    deviceId?: string
+    includeWorkspaceAgnostic?: boolean
+  }): string[] {
     const results: string[] = []
     for (const [clientId, client] of this.clients) {
       if (!client.capabilities.has(capability)) continue
-      if (opts?.workspaceId !== undefined && client.workspaceId !== opts.workspaceId) continue
+      if (opts?.deviceId !== undefined && client.deviceId !== opts.deviceId) continue
+      if (opts?.workspaceId !== undefined && client.workspaceId !== opts.workspaceId) {
+        // Device links have no workspace of their own; they act in the workspace the call names.
+        if (!(opts.includeWorkspaceAgnostic && client.workspaceId === null)) continue
+      }
       results.push(clientId)
     }
     return results
   }
 
+  getClientDeviceId(clientId: string): string | null {
+    return this.clients.get(clientId)?.deviceId ?? null
+  }
+
   invokeClient(clientId: string, channel: string, ...args: any[]): Promise<any> {
+    return this.invokeClientWithTimeout(clientId, channel, args, 30_000)
+  }
+
+  invokeClientWithTimeout(clientId: string, channel: string, args: any[], timeoutMs: number): Promise<any> {
     return new Promise((resolve, reject) => {
       const client = this.clients.get(clientId)
 
@@ -239,10 +301,10 @@ export class WsRpcServer implements RpcServer {
       const id = randomUUID()
       const timeout = setTimeout(() => {
         this.pendingInvokes.delete(id)
-        const err = new Error(`Client request timeout: ${channel} (30000ms)`)
+        const err = new Error(`Client request timeout: ${channel} (${timeoutMs}ms)`)
         ;(err as any).code = 'CLIENT_REQUEST_TIMEOUT'
         reject(err)
-      }, 30_000)
+      }, timeoutMs)
 
       this.pendingInvokes.set(id, { clientId, resolve, reject, timeout })
 
@@ -471,6 +533,15 @@ export class WsRpcServer implements RpcServer {
               prevClient.ws = ws
               prevClient.alive = true
               prevClient.missedPongs = 0
+              // The handshake carries identity again; roots can change while a client was away
+              // (a workspace added, a config dir moved), so the reconnected connection takes the
+              // latest answer instead of the one it disconnected with.
+              if (envelope.clientInfo?.workspaceRoots) {
+                prevClient.workspaceRoots = envelope.clientInfo.workspaceRoots
+              }
+              if (envelope.clientInfo?.hubRootBase) {
+                prevClient.hubRootBase = envelope.clientInfo.hubRootBase
+              }
               handshakeCompleted = true
 
               // Determine replay vs stale using the per-client delivery sequence.
@@ -542,6 +613,8 @@ export class WsRpcServer implements RpcServer {
                 webContentsId: prevClient.webContentsId,
                 workspaceId: prevClient.workspaceId,
                 capabilities: [...prevClient.capabilities],
+                mode: prevClient.mode,
+                name: prevClient.name,
               })
               return
             }
@@ -562,6 +635,13 @@ export class WsRpcServer implements RpcServer {
           workspaceId: envelope.workspaceId ?? null,
           webContentsId: envelope.webContentsId ?? null,
           capabilities: new Set(envelope.clientCapabilities ?? []),
+          name: envelope.clientInfo?.name?.trim() || 'Unknown client',
+          deviceId: envelope.clientInfo?.deviceId?.trim() || null,
+          workspaceRoots: envelope.clientInfo?.workspaceRoots ?? [],
+          hubRootBase: envelope.clientInfo?.hubRootBase ?? null,
+          platform: envelope.clientInfo?.platform ?? null,
+          mode: envelope.clientInfo?.mode === 'local' ? 'local' : 'remote',
+          connectedAt: Date.now(),
           missedPongs: 0,
           alive: true,
           eventBuffer: [],
@@ -593,6 +673,8 @@ export class WsRpcServer implements RpcServer {
           webContentsId: client.webContentsId,
           workspaceId: client.workspaceId,
           capabilities: [...client.capabilities],
+          mode: client.mode,
+          name: client.name,
         })
 
         this.setupClientHandlers(ws, client)

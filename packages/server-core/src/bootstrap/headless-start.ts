@@ -42,7 +42,14 @@ export interface ServerBootstrapOptions<TSessionManager, THandlerDeps> {
   initModelRefreshService: () => ModelRefreshServiceLike
   cleanupSessionManager?: (sessionManager: TSessionManager) => Promise<void> | void
   cleanupClientResources?: (clientId: string) => void
-  onClientConnected?: (info: { clientId: string; webContentsId: number | null; workspaceId: string | null; capabilities: string[] }) => void
+  onClientConnected?: (info: {
+    clientId: string
+    webContentsId: number | null
+    workspaceId: string | null
+    capabilities: string[]
+    mode: 'local' | 'remote'
+    name: string
+  }) => void
   serverId?: string
   /** App version string, included in handshake_ack for client compatibility checks. */
   serverVersion?: string
@@ -59,6 +66,7 @@ export interface ServerBootstrapOptions<TSessionManager, THandlerDeps> {
 
 export interface ServerHandlerContext {
   getConnectedClientCount: () => number
+  getConnectedClients: () => import('@craft-agent/shared/protocol').ConnectedClientInfo[]
   serverId: string
   startedAt: number
 }
@@ -409,6 +417,7 @@ export async function bootstrapServer<TSessionManager, THandlerDeps>(
   const startedAt = Date.now()
   const serverHandlerContext: ServerHandlerContext = {
     getConnectedClientCount: () => wsServer.getConnectedClientCount(),
+    getConnectedClients: () => wsServer.getConnectedClients(),
     serverId: options.serverId ?? 'headless',
     startedAt,
   }

@@ -148,8 +148,6 @@ interface NavigationProviderProps {
   isReady?: boolean
   /** Whether session metadata has been initialized (required for deterministic route restoration) */
   isSessionsReady?: boolean
-  /** Remote workspace ID — when set, sessions with this ID are also considered part of the workspace */
-  remoteWorkspaceId?: string | null
 }
 
 export function NavigationProvider({
@@ -163,7 +161,6 @@ export function NavigationProvider({
   onAutoDeleteEmptySession,
   isReady = true,
   isSessionsReady = true,
-  remoteWorkspaceId,
 }: NavigationProviderProps) {
   const { t } = useTranslation()
   const [, setSession] = useSession()
@@ -628,9 +625,7 @@ export function NavigationProvider({
       if (isSessionsNavigation(nextState) && nextState.details) {
         const freshMetaMap = store.get(sessionMetaMapAtom)
         const meta = freshMetaMap.get(nextState.details.sessionId)
-        const matchesWorkspace = !workspaceId
-          || meta?.workspaceId === workspaceId
-          || (remoteWorkspaceId && meta?.workspaceId === remoteWorkspaceId)
+        const matchesWorkspace = !workspaceId || meta?.workspaceId === workspaceId
         if (!meta || !matchesWorkspace) {
           nextState = { ...nextState, details: null }
         }
@@ -673,7 +668,7 @@ export function NavigationProvider({
 
       return nextState
     },
-    [store, workspaceId, remoteWorkspaceId, getLastSelectedSessionId, getFirstSessionId, getFirstSourceSlug, getFirstSkillSlug]
+    [store, workspaceId, getLastSelectedSessionId, getFirstSessionId, getFirstSourceSlug, getFirstSkillSlug]
   )
 
   // Ref keeps resolveAutoSelection fresh for reconcileFromUrlParams (defined earlier in the file)

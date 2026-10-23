@@ -8,6 +8,8 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 
 type WebHandler = (req: Request) => Promise<Response> | Response
 
@@ -84,9 +86,15 @@ async function handleRequest(
 
   nodeRes.writeHead(response.status, resHeaders)
 
+  // Stream the body through: a download can be large, and buffering it whole would hold the
+  // entire file in memory before the first byte reaches the client.
   if (response.body) {
-    const buffer = Buffer.from(await response.arrayBuffer())
-    nodeRes.end(buffer)
+    try {
+      await pipeline(Readable.fromWeb(response.body as any), nodeRes)
+    } catch (err) {
+      // A client that walks away mid-download is not a server error.
+      if (!nodeRes.destroyed && !nodeRes.writableEnded) throw err
+    }
   } else {
     nodeRes.end()
   }

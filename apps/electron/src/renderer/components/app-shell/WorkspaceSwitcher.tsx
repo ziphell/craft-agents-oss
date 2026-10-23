@@ -1,26 +1,29 @@
 import * as React from "react"
 import { useTranslation } from "react-i18next"
-import { useState, useCallback, useRef } from "react"
-import { Check, FolderPlus, ExternalLink, ChevronDown, Cloud, CloudOff, Trash2 } from "lucide-react"
+import { useState, useCallback } from "react"
+import { Check, FolderPlus, ExternalLink, ChevronDown, Trash2, Server, Laptop } from "lucide-react"
 import { AnimatePresence } from "motion/react"
 import { useSetAtom } from "jotai"
 import { toast } from "sonner"
 
 import { cn } from "@/lib/utils"
 import { fullscreenOverlayOpenAtom } from "@/atoms/overlay"
+import type { RemoteConnection } from '@craft-agent/shared/config/client-config'
 import {
   DropdownMenu,
   DropdownMenuTrigger,
+  DropdownMenuSub,
   StyledDropdownMenuContent,
   StyledDropdownMenuItem,
   StyledDropdownMenuSeparator,
+  StyledDropdownMenuSubTrigger,
+  StyledDropdownMenuSubContent,
 } from "@/components/ui/styled-dropdown"
 import { WorkspaceAvatar } from "@/components/ui/workspace-avatar"
 import { FadingText } from "@/components/ui/fading-text"
 import { WorkspaceCreationScreen } from "@/components/workspace"
-import { waitForTransportConnected } from '@/lib/transport-wait'
 import { useWorkspaceIcons } from "@/hooks/useWorkspaceIcon"
-import { useTransportConnectionState } from "@/hooks/useTransportConnectionState"
+import { useRemoteWorkspaceGroups } from "@/hooks/useRemoteWorkspaceGroups"
 import type { Workspace } from "../../../shared/types"
 
 interface WorkspaceSwitcherProps {
@@ -54,75 +57,64 @@ export function WorkspaceSwitcher({
 }: WorkspaceSwitcherProps) {
   const { t } = useTranslation()
   const [showCreationScreen, setShowCreationScreen] = useState(false)
-  const [reconnectTarget, setReconnectTarget] = useState<Workspace | null>(null)
+  const [menuOpen, setMenuOpen] = useState(false)
   const setFullscreenOverlayOpen = useSetAtom(fullscreenOverlayOpenAtom)
   const selectedWorkspace = workspaces.find(w => w.id === activeWorkspaceId)
   const workspaceIconMap = useWorkspaceIcons(workspaces)
-  const connectionState = useTransportConnectionState()
-  const isRemote = connectionState?.mode === 'remote'
-
-  // Health check results for non-active remote workspaces (checked on dropdown open)
-  const [remoteHealthMap, setRemoteHealthMap] = useState<Map<string, 'ok' | 'error' | 'checking'>>(new Map())
-  const healthCheckAbort = useRef<AbortController | null>(null)
-
-  /** Check connectivity for all non-active remote workspaces when dropdown opens. */
-  const checkRemoteHealth = useCallback(() => {
-    // Cancel any in-flight checks
-    healthCheckAbort.current?.abort()
-    const abort = new AbortController()
-    healthCheckAbort.current = abort
-
-    const remoteWorkspaces = workspaces.filter(w => w.remoteServer && w.id !== activeWorkspaceId)
-    if (remoteWorkspaces.length === 0) return
-
-    // Mark all as checking
-    setRemoteHealthMap(prev => {
-      const next = new Map(prev)
-      for (const ws of remoteWorkspaces) next.set(ws.id, 'checking')
-      return next
-    })
-
-    // Fire parallel checks
-    for (const ws of remoteWorkspaces) {
-      window.electronAPI.testRemoteConnection(ws.remoteServer!.url, ws.remoteServer!.token)
-        .then(result => {
-          if (abort.signal.aborted) return
-          setRemoteHealthMap(prev => new Map(prev).set(ws.id, result.ok ? 'ok' : 'error'))
-        })
-        .catch(() => {
-          if (abort.signal.aborted) return
-          setRemoteHealthMap(prev => new Map(prev).set(ws.id, 'error'))
-        })
-    }
-  }, [workspaces, activeWorkspaceId])
-
-  /** Tooltip for disconnected remote workspaces — shows error kind. */
-  const getDisconnectTooltip = (workspaceId: string): string => {
-    if (workspaceId === activeWorkspaceId && connectionState?.lastError) {
-      const { kind } = connectionState.lastError
-      if (kind === 'auth') return t('toast.authenticationFailed')
-      if (kind === 'timeout') return t('toast.serverUnreachable')
-      if (kind === 'network') return t('toast.serverUnreachable')
-    }
-    return t('toast.disconnected')
-  }
-
-  /** True when we know a remote workspace is unreachable. */
-  const isRemoteDisconnected = (workspaceId: string) => {
-    // Active workspace: use live transport state
-    if (workspaceId === activeWorkspaceId) {
-      if (!isRemote || !connectionState) return false
-      const { status } = connectionState
-      return status !== 'connected' && status !== 'connecting' && status !== 'idle'
-    }
-    // Non-active: use health check result
-    return remoteHealthMap.get(workspaceId) === 'error'
-  }
-
+  // Servers with no window open are reached here: server, then workspace. A remote window also
+  // gets one group for this machine, which is how it comes back.
+  const { groups: remoteGroups } = useRemoteWorkspaceGroups(menuOpen)
   const hasUnreadInOtherWorkspaces = React.useMemo(() => {
     if (!activeWorkspaceId || !workspaceUnreadMap) return false
     return workspaces.some((workspace) => workspace.id !== activeWorkspaceId && workspaceUnreadMap[workspace.id])
   }, [workspaces, activeWorkspaceId, workspaceUnreadMap])
+
+  /** Open a second window on that server, leaving this one where it is. */
+  const openRemoteWorkspace = useCallback(async (connectionId: string, workspaceId: string) => {
+    try {
+      await window.electronAPI.connectToRemoteConnection(connectionId, workspaceId)
+    } catch (error) {
+      toast.error(t('toast.failedToOpenRemoteWindow'), {
+        description: error instanceof Error ? error.message : undefined,
+      })
+    }
+  }, [t])
+
+  /**
+   * What a pick in the remote section does.
+   *
+   * Both kinds of window move themselves: a local one builds the hub connection, a remote one
+   * swaps server (or workspace) — the way VS Code reconnects a window to another host, renderer
+   * intact. ⌘/Ctrl asks for a second window instead. `connection === null` is "this machine",
+   * which only appears in a remote window and is how it gets back.
+   */
+  const chooseRemoteWorkspace = useCallback(async (
+    connection: RemoteConnection | null,
+    workspaceId: string,
+    openInNewWindow: boolean,
+  ) => {
+    if (openInNewWindow) {
+      if (connection) await openRemoteWorkspace(connection.id, workspaceId)
+      else void window.electronAPI.openWorkspace(workspaceId)
+      return
+    }
+    // A switch waits for the new server to answer, so there is a real gap to fill: until it
+    // does, this window stays exactly where it is.
+    const pending = connection ? toast.loading(t('remote.connectingTo', { name: connection.name })) : null
+    try {
+      if (connection) await window.electronAPI.switchRemoteServer(connection.id, workspaceId)
+      else await window.electronAPI.switchLocalWorkspace(workspaceId)
+      if (pending) toast.dismiss(pending)
+      // The window is already there: selecting the workspace now only clears the state that
+      // belonged to the previous one, which App does at the end of `onSelect`.
+      await onSelect(workspaceId)
+    } catch (error) {
+      if (pending) toast.dismiss(pending)
+      toast.error(t('toast.failedToSwitchServer'), {
+        description: error instanceof Error ? error.message : undefined,
+      })
+    }
+  }, [onSelect, openRemoteWorkspace, t])
 
   const handleNewWorkspace = () => {
     setShowCreationScreen(true)
@@ -151,24 +143,8 @@ export function WorkspaceSwitcher({
 
   const handleCloseCreationScreen = useCallback(() => {
     setShowCreationScreen(false)
-    setReconnectTarget(null)
     setFullscreenOverlayOpen(false)
   }, [setFullscreenOverlayOpen])
-
-  const handleReconnectWorkspace = useCallback(async (workspaceId: string, remoteServer: { url: string; token: string; remoteWorkspaceId: string }) => {
-    await window.electronAPI.updateWorkspaceRemoteServer(workspaceId, remoteServer)
-
-    if (workspaceId === activeWorkspaceId) {
-      await window.electronAPI.reconnectTransport()
-      await waitForTransportConnected(window.electronAPI)
-    } else {
-      await Promise.resolve(onSelect(workspaceId))
-      await waitForTransportConnected(window.electronAPI)
-    }
-
-    handleCloseCreationScreen()
-    toast.success(t('toast.workspaceReconnected'))
-  }, [activeWorkspaceId, handleCloseCreationScreen, onSelect])
 
   return (
     <>
@@ -178,13 +154,11 @@ export function WorkspaceSwitcher({
           <WorkspaceCreationScreen
             onWorkspaceCreated={handleWorkspaceCreated}
             onClose={handleCloseCreationScreen}
-            reconnectWorkspace={reconnectTarget ?? undefined}
-            onReconnectWorkspace={handleReconnectWorkspace}
           />
         )}
       </AnimatePresence>
 
-      <DropdownMenu onOpenChange={(open) => { if (open) checkRemoteHealth() }}>
+      <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
         <DropdownMenuTrigger asChild>
           {variant === 'topbar' ? (
             <button
@@ -201,11 +175,6 @@ export function WorkspaceSwitcher({
                 fallbackClassName="rounded-full"
               />
               <span className="truncate min-w-0 flex-1 text-left">{selectedWorkspace?.name || 'Workspace'}</span>
-              {selectedWorkspace?.remoteServer && (
-                isRemoteDisconnected(selectedWorkspace.id)
-                  ? <CloudOff className="h-3 w-3 text-destructive shrink-0" />
-                  : <Cloud className="h-3 w-3 opacity-60 shrink-0" />
-              )}
               <ChevronDown data-slot="chevron" className="h-3 w-3 opacity-60 shrink-0" />
               {hasUnreadInOtherWorkspaces && <span className="h-2 w-2 rounded-full bg-accent shrink-0" />}
             </button>
@@ -231,11 +200,6 @@ export function WorkspaceSwitcher({
                   <FadingText className="ml-1 font-sans min-w-0 text-sm" fadeWidth={36}>
                     {selectedWorkspace?.name || 'Select workspace'}
                   </FadingText>
-                  {selectedWorkspace?.remoteServer && (
-                    isRemoteDisconnected(selectedWorkspace.id)
-                      ? <CloudOff className="h-3 w-3 text-destructive shrink-0" />
-                      : <Cloud className="h-3 w-3 text-muted-foreground shrink-0" />
-                  )}
                   <ChevronDown className="h-3 w-3 opacity-50 shrink-0" />
                 </>
               )}
@@ -249,25 +213,16 @@ export function WorkspaceSwitcher({
           minWidth={variant === 'topbar' ? 'min-w-64' : undefined}
         >
           {workspaces.map((workspace) => {
-            const disconnected = isRemoteDisconnected(workspace.id)
             return (
               <StyledDropdownMenuItem
                 key={workspace.id}
                 onClick={(e) => {
-                  if (disconnected && workspace.remoteServer) {
-                    setReconnectTarget(workspace)
-                    setShowCreationScreen(true)
-                    setFullscreenOverlayOpen(true)
-                    return
-                  }
-                  if (disconnected) return
                   const openInNewWindow = e.metaKey || e.ctrlKey
                   onSelect(workspace.id, openInNewWindow)
                 }}
                 className={cn(
                   "justify-between group",
                   activeWorkspaceId === workspace.id && "bg-foreground/10",
-                  disconnected && "opacity-60",
                 )}
               >
                 <div className="flex items-center gap-3 font-sans min-w-0 flex-1">
@@ -279,11 +234,6 @@ export function WorkspaceSwitcher({
                     fallbackClassName="rounded-full text-xs"
                   />
                   <span className="truncate">{workspace.name}</span>
-                  {workspace.remoteServer && (
-                    disconnected
-                      ? <span title={getDisconnectTooltip(workspace.id)} className="shrink-0"><CloudOff className="h-3.5 w-3.5 text-destructive" /></span>
-                      : <Cloud className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                  )}
                   {workspaceUnreadMap?.[workspace.id] && <span className="h-2 w-2 rounded-full bg-accent shrink-0" />}
                 </div>
                 <div className="flex items-center gap-1">
@@ -301,7 +251,7 @@ export function WorkspaceSwitcher({
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
                   )}
-                  {activeWorkspaceId !== workspace.id && !disconnected && (
+                  {activeWorkspaceId !== workspace.id && (
                     <button
                       data-touch-reveal="true"
                       className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-foreground/10 transition-opacity"
@@ -321,6 +271,58 @@ export function WorkspaceSwitcher({
               </StyledDropdownMenuItem>
             )
           })}
+
+          {/* Remote servers, one submenu each — the second level is that server's workspaces.
+              This window moves itself to the pick (a local window builds the hub connection, a
+              remote one swaps it); ⌘/Ctrl asks for a second window. In a remote window the first
+              group is "this machine", which is how the window comes back. */}
+          {remoteGroups.length > 0 && (
+            <>
+              <StyledDropdownMenuSeparator />
+              <div className="px-2 py-1 font-sans text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                {t('workspace.remoteServers')}
+              </div>
+              {remoteGroups.map((group) => {
+                const isLocal = group.connection === null
+                return (
+                  <DropdownMenuSub key={group.connection?.id ?? 'local'}>
+                    <StyledDropdownMenuSubTrigger className="font-sans">
+                      <span className="flex min-w-0 items-center gap-2">
+                        {isLocal
+                          ? <Laptop className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          : <Server className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+                        <span className="truncate">{group.connection?.name ?? t('workspace.thisComputer')}</span>
+                      </span>
+                    </StyledDropdownMenuSubTrigger>
+                    <StyledDropdownMenuSubContent>
+                      {group.workspaces.map((workspace) => (
+                        <StyledDropdownMenuItem
+                          key={workspace.id}
+                          className="font-sans"
+                          onClick={(e) => void chooseRemoteWorkspace(
+                            group.connection,
+                            workspace.id,
+                            e.metaKey || e.ctrlKey,
+                          )}
+                        >
+                          <span className="truncate">{workspace.name}</span>
+                        </StyledDropdownMenuItem>
+                      ))}
+                      {group.workspaces.length === 0 && (
+                        <StyledDropdownMenuItem disabled className="font-sans text-muted-foreground">
+                          {isLocal
+                            ? t('workspace.noLocalWorkspaces')
+                            : group.unavailable
+                              ? t('workspace.remoteUnavailable')
+                              : t('workspace.noRemoteWorkspaces')}
+                        </StyledDropdownMenuItem>
+                      )}
+                    </StyledDropdownMenuSubContent>
+                  </DropdownMenuSub>
+                )
+              })}
+            </>
+          )}
 
           {/* Separator and New Workspace option */}
           <StyledDropdownMenuSeparator />

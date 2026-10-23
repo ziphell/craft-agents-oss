@@ -1,7 +1,9 @@
 import * as React from 'react'
+import { useAtomValue } from 'jotai'
 
 import { useDirectoryPicker } from '@/hooks/useDirectoryPicker'
 import { getPathBasename } from '@/lib/platform'
+import { windowIsRemoteAtom } from '@/atoms/window-mode'
 
 import {
   addRecentWorkingDir,
@@ -96,12 +98,13 @@ export function useWorkingDirectoryState(
   const [homeDir, setHomeDir] = React.useState<string>('')
   const [gitBranch, setGitBranch] = React.useState<string | null>(null)
   const [filter, setFilter] = React.useState('')
+  const isRemoteWindow = useAtomValue(windowIsRemoteAtom)
 
   React.useEffect(() => {
     setRecentDirs(getRecentWorkingDirs(workspaceId))
     window.electronAPI?.getHomeDir?.().then((dir: string) => {
       if (dir) setHomeDir(dir)
-    })
+    }).catch(() => {})
   }, [workspaceId])
 
   React.useEffect(() => {
@@ -162,11 +165,11 @@ export function useWorkingDirectoryState(
   const openLocationPath = workingDirectory ?? sessionFolderPath
 
   const handleOpenLocation = React.useCallback(() => {
-    if (!openLocationPath) return
+    if (!openLocationPath || isRemoteWindow) return
     // eslint-disable-next-line craft-links/no-direct-file-open -- directories can't be previewed in-app
     window.electronAPI.openFile(openLocationPath)
     onClose()
-  }, [openLocationPath, onClose])
+  }, [openLocationPath, isRemoteWindow, onClose])
 
   const sortedRecent = React.useMemo(
     () => deriveSortedRecent(recentDirs, workingDirectory),
@@ -190,7 +193,8 @@ export function useWorkingDirectoryState(
     hasFolder,
     folderName,
     showReset,
-    canOpenLocation: !!openLocationPath,
+    // "Open location" reveals a folder on this machine; a remote window's folder is on the hub.
+    canOpenLocation: !!openLocationPath && !isRemoteWindow,
     showFilter,
     handleSelectRecent,
     handleReset,

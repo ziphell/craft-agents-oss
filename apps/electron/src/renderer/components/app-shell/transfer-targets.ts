@@ -1,11 +1,8 @@
 /**
  * Target eligibility for "Send to Workspace".
  *
- * A session can be sent to any workspace other than the one it lives in —
- * remote targets are pushed to over an outbound WS connection, local targets
- * import in-process on the embedded server. Remote targets additionally need a
- * connectivity check before they are selectable; local targets are always
- * reachable.
+ * A session can be sent to any other workspace **of the server this window is on**: both ends are
+ * calls on the same connection, so there is no cross-server reachability to check.
  */
 
 import type { Workspace } from '../../../shared/types'

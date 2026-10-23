@@ -23,12 +23,32 @@ type ApiToChannelMapKeys = Exclude<
   | 'isChannelAvailable'
   | 'getSystemWarnings' // reads env var set at startup — no IPC needed
   | 'relaunchApp' // direct IPC to main process — not through WS RPC
-  | 'removeWorkspace' // direct IPC to main process — modifies local config
-  | 'invokeOnServer' // direct IPC to main process — cross-server RPC
+  | 'getClientMode' // direct IPC to main process — this window's connection
+  | 'saveRemoteConnection' // direct IPC to main process — saved server list
+  | 'removeRemoteConnection' // direct IPC to main process — saved server list
+  | 'setDefaultRemoteConnection' // direct IPC to main process — launch behaviour
+  | 'connectToRemoteConnection' // direct IPC to main process — opens a window
+  | 'testClientModeConnection' // direct IPC to main process — tests a server not routed through WS
+  | 'listRemoteDirectories' // direct IPC — browses a saved server that may not be this window's
+  | 'getRemoteHomeDir' // direct IPC — that same server's home directory
+  | 'listRemoteWorkspaces' // direct IPC — the server's workspaces for the dropdown
+  | 'getRemoteConnectionStatuses' // direct IPC — app-level link state, not the window's
+  | 'setWindowTitle' // direct IPC — per-window title, not a WS call
+  | 'onRemoteTargetChanged' // preload-local listener — the edited server target
+  | 'checkRemoteWorkspaceSlug' // direct IPC — workspace creation targeted at that server
+  | 'createRemoteWorkspace' // direct IPC — registered on that server, not through the window
+  | 'openRemoteWindow' // direct IPC to main process — opens a window, not a WS call
+  | 'openLocalWindow' // direct IPC to main process — opens a window, not a WS call
+  | 'switchRemoteWorkspace' // direct IPC + a rebuilt hub connection, not a channel-map call
+  | 'switchRemoteServer' // direct IPC + a rebuilt hub connection, not a channel-map call
+  | 'switchLocalWorkspace' // direct IPC + a released hub connection, not a channel-map call
+  | 'getWebContentsId' // preload-local — current window identity, no IPC round-trip
+  | 'getClientIdentity' // preload-local — stable device identity, no IPC round-trip
   | 'transferSessionToWorkspace' // direct IPC to main process — orchestrated remote transfer
   | 'onTransferProgress' // direct IPC listener — chunk upload progress
   | 'changeLanguage' // direct IPC to main process — syncs i18n language
   | 'getFilePath' // renderer-local — webUtils.getPathForFile, no IPC round-trip
+  | 'saveDesignExport' // direct IPC to main — saves a hub-produced file, no WS payload
 > | BrowserPaneKeys
   | BrowserProfileKeys
 type ChannelMapKeys = keyof typeof CHANNEL_MAP & string

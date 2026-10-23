@@ -49,7 +49,8 @@ export type {
 // Auth types for onboarding
 import type { AuthState, SetupNeeds } from '@craft-agent/shared/auth/types';
 import type { AuthType } from '@craft-agent/shared/config/types';
-export type { AuthState, SetupNeeds, AuthType };
+import type { ClientConfig, RemoteConnection } from '@craft-agent/shared/config/client-config';
+export type { AuthState, SetupNeeds, AuthType, ClientConfig, RemoteConnection };
 
 // Credential health types
 import type { CredentialHealthStatus, CredentialHealthIssue, CredentialHealthIssueType } from '@craft-agent/shared/credentials/types';
@@ -264,6 +265,10 @@ import type {
   PermissionModeState,
   BrowserInstanceInfo,
   BrowserLoadError,
+  BrowserStreamFrame,
+  BrowserStreamInput,
+  BrowserStreamStartRequest,
+  BrowserStreamStartResult,
   BrowserToolbarAction,
   DeepLinkNavigation,
   TestAutomationPayload,
@@ -272,7 +277,62 @@ import type {
   DirectoryListingResult,
   RemoteSessionTransferPayload,
   ImportRemoteSessionTransferResult,
+  ConnectedClientInfo,
 } from '@craft-agent/shared/protocol'
+
+/** One device `device_tool` can name — also what Server → Devices lists. */
+export type { DeviceToolInfo } from '@craft-agent/shared/agent/device-tool'
+import type { DeviceToolInfo } from '@craft-agent/shared/agent/device-tool'
+
+/**
+ * What one window is connected to.
+ *
+ * Connection is a **window** property, not an install-wide mode: a window can be local while
+ * another one talks to a hub. The saved connection holds the URL and token; a window carries the
+ * resolved target for as long as it is open.
+ */
+export interface RemoteWindowTarget {
+  /** The saved connection this window was opened on. */
+  connectionId: string
+  /** Resolved from the saved connection when the window is created or restored. */
+  url: string
+  token: string
+  workspaceId?: string
+  /** Display name of the hub, when known (shown in the tray and the title). */
+  name?: string
+}
+
+/** This window's connection state, read by the server settings page and Connect to Server… */
+export interface ClientModeInfo {
+  /** Every server this app can open a window on. */
+  connections: RemoteConnection[]
+  /** The connection new windows open on, when one is set. */
+  defaultConnectionId?: string
+  /** The remote server **this window** is connected to (`null` = this window is local). */
+  running: RemoteWindowTarget | null
+  /** Server Mode is enabled in the local config. */
+  serverEnabled: boolean
+}
+
+export interface ClientModeTestResult {
+  ok: boolean
+  error?: string
+  serverVersion?: string
+  workspaces?: Array<{ id: string; name: string }>
+}
+
+/** One saved server's reachability right now (`unknown` = no link yet). */
+export interface RemoteConnectionStatus {
+  id: string
+  status: TransportConnectionStatus | 'unknown'
+}
+
+/** Stable identity of this install, as advertised on the WS handshake. */
+export interface ClientIdentity {
+  deviceId: string
+  name: string
+  platform: string
+}
 
 export interface ElectronAPI {
   // Session management
@@ -329,11 +389,86 @@ export interface ElectronAPI {
   getServerConfig(): Promise<import('@craft-agent/shared/config/server-config').ServerConfig>
   setServerConfig(config: import('@craft-agent/shared/config/server-config').ServerConfig): Promise<void>
   getServerStatus(): Promise<import('@craft-agent/shared/config/server-config').ServerStatus>
+  /** Devices other than this machine that this hub can drive (one row per machine). */
+  getConnectedDevices(): Promise<DeviceToolInfo[]>
+
+  // Remote connections (per window — direct IPC, works while connected to a remote server)
+  getClientMode(): Promise<ClientModeInfo>
+  /** Add or update a server this app can open windows on. */
+  saveRemoteConnection(connection: RemoteConnection): Promise<RemoteConnection>
+  removeRemoteConnection(connectionId: string): Promise<void>
+  /** `null` clears it: new windows stay local. */
+  setDefaultRemoteConnection(connectionId: string | null): Promise<void>
+  /** Open a window on a saved server, on `workspaceId` when given. */
+  connectToRemoteConnection(connectionId: string, workspaceId?: string): Promise<void>
+  testClientModeConnection(serverUrl: string, token: string): Promise<ClientModeTestResult>
+  /**
+   * Browse a **saved server's** filesystem, whichever server this window is on.
+   *
+   * Workspace creation is two-level (host, then folder): the host may be a server this window is
+   * not connected to, so these take the connection explicitly instead of riding the window's client.
+   */
+  listRemoteDirectories(connectionId: string, dirPath: string, options?: { includeFiles?: boolean }): Promise<DirectoryListingResult>
+  getRemoteHomeDir(connectionId: string): Promise<string>
+  /** The workspaces a saved server owns — the second level of the workspace dropdown. */
+  listRemoteWorkspaces(connectionId: string): Promise<WorkspaceInfo[]>
+  /** Reachability of every saved server, shown next to its name. */
+  getRemoteConnectionStatuses(): Promise<RemoteConnectionStatus[]>
+  /**
+   * Name this window's title. Only remote windows use it: their workspace is on the hub, so the
+   * main process cannot resolve its name; `null` hands the title back to the automatic rule.
+   */
+  setWindowTitle(title: string | null): Promise<void>
+  checkRemoteWorkspaceSlug(connectionId: string, slug: string): Promise<{ exists: boolean; path: string }>
+  /** Register a workspace on that server. Opening an existing folder there is the same call. */
+  createRemoteWorkspace(connectionId: string, folderPath: string, name: string): Promise<Workspace>
+  /** Open a window connected to the saved remote server (or the one this window is on). */
+  openRemoteWindow(workspaceId?: string): Promise<void>
+  /**
+   * Switch **this** remote window to another workspace on its hub, in place.
+   *
+   * The window and its connection stay; only the workspace the connection speaks for changes —
+   * a remote folder re-opened in the same window. Throws when this window is not a remote one
+   * (a local window switches with `switchWorkspace`).
+   */
+  switchRemoteWorkspace(workspaceId: string): Promise<void>
+  /**
+   * Point **this** window at a saved server, in place.
+   *
+   * Works from a local window as well: the hub connection is built and this window becomes a
+   * remote one, the way VS Code reconnects a window to another host without opening a second one.
+   */
+  switchRemoteServer(connectionId: string, workspaceId?: string): Promise<void>
+  /**
+   * Bring **this** window back to this machine's server, in place.
+   *
+   * The inverse of `switchRemoteServer`: the hub connection is released and the window answers
+   * from this machine again. Throws when the window is already local.
+   */
+  switchLocalWorkspace(workspaceId: string): Promise<void>
+  /**
+   * This machine's workspaces, whatever this window is currently on.
+   *
+   * `getWorkspaces` answers for the window's own server (the hub, in a remote window); the
+   * workspace dropdown needs this one to offer "back to this machine".
+   */
+  getLocalWorkspaces(): Promise<Workspace[]>
+  /** Open a window on this machine's own server. */
+  openLocalWindow(): Promise<void>
+  /** Electron webContents id of this window — used to mark "this window" in client lists. */
+  getWebContentsId(): number
+  /** This install's stable device identity — used to mark "this device" in browser-host pickers. */
+  getClientIdentity(): ClientIdentity
+  /**
+   * Where this window now points: a saved server (edited, joined, or switched to) or `null` when
+   * it is on this machine again. The transport has already been re-pointed; this only tells the
+   * renderer which scope its UI should answer for.
+   */
+  onRemoteTargetChanged(callback: (target: RemoteWindowTarget | null) => void): () => void
 
   // App lifecycle
   relaunchApp(): Promise<void>
   removeWorkspace(workspaceId: string): Promise<boolean>
-  invokeOnServer(url: string, token: string, channel: string, ...args: any[]): Promise<any>
 
   // Remote session transfer (main-process orchestrated, supports chunked upload)
   transferSessionToWorkspace(sessionId: string, targetWorkspaceId: string, sessionIndex?: number, sessionCount?: number): Promise<{ sessionId: string }>
@@ -352,23 +487,12 @@ export interface ElectronAPI {
 
   // Workspace management
   getWorkspaces(): Promise<Workspace[]>
-  createWorkspace(folderPath: string, name: string, remoteServer?: { url: string; token: string; remoteWorkspaceId: string }): Promise<Workspace>
+  createWorkspace(folderPath: string, name: string): Promise<Workspace>
   checkWorkspaceSlug(slug: string): Promise<{ exists: boolean; path: string }>
-  updateWorkspaceRemoteServer(workspaceId: string, remoteServer: { url: string; token: string; remoteWorkspaceId: string }): Promise<{ success: boolean }>
 
-  // Server-level workspace operations (for thin client / remote workspace discovery)
+  // Server-level workspace operations (for remote window discovery)
   getServerWorkspaces(): Promise<WorkspaceInfo[]>
   createServerWorkspace(name: string): Promise<WorkspaceInfo>
-
-  testRemoteConnection(url: string, token: string): Promise<{
-    ok: boolean
-    error?: string
-    needsWorkspace?: boolean
-    remoteWorkspaces?: Array<{ id: string; name: string }>
-    remoteWorkspaceId?: string   // auto-set when exactly one workspace
-    remoteWorkspaceName?: string // auto-set when exactly one workspace
-    serverVersion?: string       // server app version from handshake
-  }>
 
   // Window management
   getWindowWorkspace(): Promise<string | null>
@@ -413,7 +537,7 @@ export interface ElectronAPI {
   searchFiles(basePath: string, query: string): Promise<FileSearchResult[]>
 
   // Server filesystem browsing (remote mode)
-  listServerDirectory(dirPath: string): Promise<DirectoryListingResult>
+  listServerDirectory(dirPath: string, options?: { includeFiles?: boolean }): Promise<DirectoryListingResult>
   /** Whether `dirPath` currently exists as a directory on the server. */
   checkServerDirectory(dirPath: string): Promise<boolean>
   // Debug: send renderer logs to main process log file
@@ -751,15 +875,20 @@ export interface ElectronAPI {
      * A design belongs in that window because that is the surface the agent can keep
      * working on — `browser_tool` drives tabs, not frames inside this app.
      */
-    openFile(path: string): Promise<void>
+    openFile(path: string, sessionId?: string | null): Promise<void>
     /**
      * Open a link as a page, in a new tab of the workspace's browser window.
      *
      * Where a link the person clicked goes by default — see `openInAppBrowser` in their
      * preferences, which is what the caller reads before choosing this over `openUrl`. Its
      * sibling for a file is `openFile`.
+     *
+     * `sessionId` is the conversation the click came from, when there was one: it picks the
+     * profile, so a conversation that overrides the workspace profile keeps the page in its
+     * own window (the one its `browser_tool` commands work in). Omitted — a link clicked
+     * outside any conversation — falls back to the workspace's default profile.
      */
-    openUrl(url: string): Promise<void>
+    openUrl(url: string, sessionId?: string | null): Promise<void>
     goBack(id: string): Promise<void>
     goForward(id: string): Promise<void>
     reload(id: string): Promise<void>
@@ -767,6 +896,24 @@ export interface ElectronAPI {
     focus(id: string): Promise<void>
     /** Manage this window's tabs: switch, close, add (see `BrowserPaneTabAction`). */
     tabAction(input: BrowserPaneTabAction): Promise<void>
+    /**
+     * Watch one tab from outside its window — a viewer in webui, or another machine.
+     *
+     * Frames arrive on `onStreamFrame`, only to the client that asked (docs/browser-view-streaming.md).
+     * One watcher per tab: a second call for a tab already being watched is refused, as is a tab
+     * that is being recorded (recording owns the same stream at the source).
+     */
+    streamStart(input: BrowserStreamStartRequest): Promise<BrowserStreamStartResult>
+    streamStop(streamId: string): Promise<void>
+    /** Pointer/keyboard back to the tab being watched. Coordinates are the tab's CSS pixels. */
+    streamInput(streamId: string, events: BrowserStreamInput[]): Promise<void>
+    /** Frames for the stream this client started. Returns cleanup. */
+    onStreamFrame(callback: (frame: BrowserStreamFrame) => void): () => void
+    /**
+     * The stream ended without being asked — its tab or window is gone, or capture stopped.
+     * A viewer that does nothing here stays on the last frame it received.
+     */
+    onStreamEnded(callback: (streamId: string, reason: string) => void): () => void
     emptyStateLaunch(payload: BrowserEmptyStateLaunchPayload): Promise<BrowserEmptyStateLaunchResult>
     onStateChanged(callback: (info: BrowserInstanceInfo) => void): () => void
     onRemoved(callback: (id: string) => void): () => void
@@ -850,8 +997,18 @@ export interface ElectronAPI {
    * Export a design to a file the person picks. Opens the native picker, then
    * writes it — PDF/PNG/video need the desktop app's hidden-window renderer, so
    * they throw on a host that has none (HTML/ZIP work anywhere).
+   *
+   * When the caller is not on the exporting machine (webui, thin client) the result carries a
+   * `download` instead of a path; `saveDesignExport` fetches it.
    */
   exportDesign(workspaceId: string, designSlug: string, format: import('@craft-agent/shared/designs/types').DesignExportFormat): Promise<import('@craft-agent/shared/designs/types').DesignExportResult>
+  /**
+   * Fetch a hub-produced export and put it where the person asks.
+   *
+   * Electron: a native save dialog, then a streamed download from the window's hub. Web: the
+   * browser's own download of the same URL.
+   */
+  saveDesignExport(download: import('@craft-agent/shared/designs/types').DesignExportDownload): Promise<{ canceled: true } | { canceled: false; path: string }>
   onDesignsChanged(callback: (workspaceId: string, pages: import('@craft-agent/shared/designs/types').LoadedDesign[]) => void): () => void
 
   // Automations

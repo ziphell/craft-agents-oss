@@ -1,10 +1,11 @@
 import { statSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
-import { RPC_CHANNELS, type BrowserPaneCreateOptions, type BrowserPaneTabAction, type BrowserEmptyStateLaunchPayload } from '../../shared/types'
+import { RPC_CHANNELS, type BrowserPaneCreateOptions, type BrowserPaneTabAction, type BrowserEmptyStateLaunchPayload, type BrowserStreamInput, type BrowserStreamStartRequest } from '../../shared/types'
 import type { BrowserScreenshotOptions } from '../browser-pane-manager'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import { validateFilePath, getWorkspaceAllowedDirs } from '@craft-agent/server-core/handlers'
 import { isBrowserUrl } from '@craft-agent/shared/utils/url-safety'
+import { browserWorkspaceKey } from '@craft-agent/shared/config/client-config'
 import { attachTweaksInjector } from '../tweaks-injector'
 import type { HandlerDeps } from './handler-deps'
 
@@ -21,6 +22,9 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.browserPane.STOP,
   RPC_CHANNELS.browserPane.FOCUS,
   RPC_CHANNELS.browserPane.TAB_ACTION,
+  RPC_CHANNELS.browserPane.STREAM_START,
+  RPC_CHANNELS.browserPane.STREAM_STOP,
+  RPC_CHANNELS.browserPane.STREAM_INPUT,
   RPC_CHANNELS.browserPane.LAUNCH,
   RPC_CHANNELS.browserPane.SNAPSHOT,
   RPC_CHANNELS.browserPane.CLICK,
@@ -43,6 +47,21 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
   const tweaksInjector = attachTweaksInjector(browserPaneManager)
 
   /**
+   * The saved server this window is connected to, if it is a remote window.
+   *
+   * Browser windows are per workspace, and two servers may both own a workspace with the same id:
+   * filing a hub's workspace under its connection keeps the two from sharing a window — and
+   * keeps this window's tab strip from listing another server's tabs.
+   */
+  const serverScope = (webContentsId: number | null | undefined): string | null =>
+    (webContentsId == null ? null : windowManager?.getRemoteForWindow(webContentsId)?.connectionId) ?? null
+
+  // A viewer is told when its stream ends for a reason of its own — the tab or window went away.
+  browserPaneManager.setViewStreamEndedHandler((clientId, streamId, reason) => {
+    pushTyped(server, RPC_CHANNELS.browserPane.STREAM_ENDED, { to: 'client', clientId }, streamId, reason)
+  })
+
+  /**
    * The workspace's browser window, with a tab in it to work from.
    *
    * One place for the two rules a tab request carries, because three requests now ask for a
@@ -60,15 +79,17 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
    *   overlay did) still has only its birth tab, and the browser side takes that one.
    */
   const windowWithTab = (
-    ctx: { workspaceId?: string | null },
+    ctx: { workspaceId?: string | null; webContentsId?: number | null },
     input?: BrowserPaneCreateOptions,
     openAt?: string,
   ): string => {
     // Stamp the window with the requester's workspace so manual UI-opened
     // tabs stay scoped to the workspace where the user clicked. If
     // ctx.workspaceId is null (no workspace context — e.g. CLI / agent
-    // harness), the window stays globally visible (legacy behavior).
-    const workspaceId = ctx.workspaceId ?? null
+    // harness), the window stays globally visible (legacy behavior). A remote
+    // window's workspace is filed under its server, so two servers that both
+    // call their workspace `ws-1` still get two windows.
+    const workspaceId = browserWorkspaceKey(serverScope(ctx.webContentsId), ctx.workspaceId ?? null)
 
     // A window the caller pinned by id, as opposed to the workspace's own window.
     const pinnedWindowId = input?.id && !input?.bindToSessionId ? input.id : null
@@ -106,7 +127,9 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
 
   server.handle(RPC_CHANNELS.browserPane.CREATE, (ctx, input?: string | BrowserPaneCreateOptions) => {
     if (typeof input === 'string') {
-      return browserPaneManager.createInstance(input, { workspaceId: ctx.workspaceId ?? null })
+      return browserPaneManager.createInstance(input, {
+        workspaceId: browserWorkspaceKey(serverScope(ctx.webContentsId), ctx.workspaceId ?? null),
+      })
     }
 
     return windowWithTab(ctx, input)
@@ -120,13 +143,21 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
    * at it. Brought up **before** the load, so an address that never arrives is still a tab the
    * person can see and reload rather than a failure that happened behind their back.
    */
-  const openInWindow = async (ctx: { workspaceId?: string | null }, url: string) => {
+  const openInWindow = async (ctx: { workspaceId?: string | null; webContentsId?: number | null }, url: string, sessionId?: string | null) => {
     // The address goes into the create, not only into the `navigate` that follows: the tab has to
     // read as a page from the moment it is made, or it would be treated as a new-tab page and take
     // the caret in the address bar before the page it was opened for has even started (`openAt`).
     // `navigate` still does the loading — it normalises and reports a failure — the tab is just told
     // where it is going first.
-    const instanceId = windowWithTab(ctx, { show: true, newTab: true }, url)
+    //
+    // `sessionId` is the conversation the link was clicked in: it is what picks the profile, so the
+    // tab lands in the window that conversation already works in rather than in the workspace's
+    // default one. No session (a sidebar or settings link) leaves the workspace's answer in charge.
+    const instanceId = windowWithTab(ctx, {
+      show: true,
+      newTab: true,
+      ...(sessionId ? { bindToSessionId: sessionId } : {}),
+    }, url)
     browserPaneManager.focus(instanceId)
     await browserPaneManager.navigate(instanceId, url)
   }
@@ -156,7 +187,7 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
    * a frame in our own renderer at all. Drawing HTML inside a message is `html-preview`'s job and
    * stays that way.
    */
-  server.handle(RPC_CHANNELS.browserPane.OPEN_FILE, async (ctx, path: string) => {
+  server.handle(RPC_CHANNELS.browserPane.OPEN_FILE, async (ctx, path: string, sessionId?: string | null) => {
     const workspaceId = ctx.workspaceId ?? windowManager?.getWorkspaceForWindow(ctx.webContentsId!)
     const filePath = await validateFilePath(path, getWorkspaceAllowedDirs(workspaceId, { sessionManager: deps.sessionManager }))
     const info = statSync(filePath, { throwIfNoEntry: false })
@@ -164,7 +195,7 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
       throw new Error(`Not a file: ${path}`)
     }
 
-    await openInWindow(ctx, pathToFileURL(filePath).href)
+    await openInWindow(ctx, pathToFileURL(filePath).href, sessionId)
   })
 
   /**
@@ -177,24 +208,48 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
    * than trusted to the caller. `craftagents://` never arrives — deep links are the shell
    * opener's, which knows what they mean.
    */
-  server.handle(RPC_CHANNELS.browserPane.OPEN_URL, async (ctx, url: string) => {
+  server.handle(RPC_CHANNELS.browserPane.OPEN_URL, async (ctx, url: string, sessionId?: string | null) => {
     if (!isBrowserUrl(url)) {
       throw new Error(`Only http and https links open in the browser window: ${url}`)
     }
 
-    await openInWindow(ctx, url.trim())
+    await openInWindow(ctx, url.trim(), sessionId)
   })
 
   server.handle(RPC_CHANNELS.browserPane.DESTROY, (_ctx, id: string) => {
     browserPaneManager.destroyInstance(id)
   })
 
+  /**
+   * Watch one tab from outside its window (docs/browser-view-streaming.md).
+   *
+   * Frames go to **the client that asked** and nobody else: a stream is a viewer's, not a
+   * broadcast, and the page in it may be signed in. `streamStop` is the other half; the manager
+   * also ends the stream when the tab or its window goes away.
+   */
+  server.handle(RPC_CHANNELS.browserPane.STREAM_START, async (ctx, input: BrowserStreamStartRequest) => {
+    if (!input?.instanceId || !input?.tabId) {
+      throw new Error('A browser window and a tab are required')
+    }
+    const clientId = ctx.clientId
+    return await browserPaneManager.startViewStream(input.instanceId, input.tabId, clientId, (frame) => {
+      pushTyped(server, RPC_CHANNELS.browserPane.STREAM_FRAME, { to: 'client', clientId }, frame)
+    })
+  })
+
+  server.handle(RPC_CHANNELS.browserPane.STREAM_STOP, async (_ctx, streamId: string) => {
+    await browserPaneManager.stopViewStream(streamId)
+  })
+
+  server.handle(RPC_CHANNELS.browserPane.STREAM_INPUT, async (_ctx, streamId: string, events: BrowserStreamInput[]) => {
+    await browserPaneManager.dispatchStreamInput(streamId, Array.isArray(events) ? events : [])
+  })
+
   server.handle(RPC_CHANNELS.browserPane.LIST, () => {
-    // Return all instances. Workspace isolation is enforced renderer-side
-    // (filterInstancesForWorkspace), which knows BOTH the local workspace id
-    // and the remote-mirror workspace id for the active workspace. A server-
-    // side filter on ctx.workspaceId would miss remote-stamped tabs because
-    // ctx.workspaceId is always the local id (set by updateClientWorkspace).
+    // Return all instances; the renderer keeps only those of the workspace it shows
+    // (`filterInstancesForWorkspace`, which files a remote window's workspace under its
+    // server). Returning everything is what lets the same list serve a local window and a
+    // remote one without the main process having to know which window is asking.
     return browserPaneManager.listInstances()
   })
 
@@ -369,18 +424,10 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
     }
   })
 
-  // Forward browser events to all locally-connected renderers. Workspace
-  // isolation is enforced renderer-side (filterInstancesForWorkspace), which
-  // handles both the local workspace id and the remote-mirror workspace id.
-  //
-  // We can't route STATE_CHANGED to `{ to: 'workspace', workspaceId }` here
-  // because the broadcast routing uses the client's transport-level workspaceId
-  // (the local Craft Agents window's id, set by `updateClientWorkspace`),
-  // while remote-bridged instances are stamped with the remote server's
-  // workspaceId. The two never match, so a workspace-targeted broadcast would
-  // silently fail to reach the renderer. Broadcast to all + filter in the
-  // renderer is the contract that actually works in both local-only and
-  // remote-mirror deployments.
+  // Forward browser events to all locally-connected renderers. The renderer keeps only the
+  // windows of the workspace it shows — filed under its server when the window is remote — so
+  // the same broadcast serves every window without the hub's own workspace id leaking into a
+  // window on another hub.
   browserPaneManager.onStateChange((info) => {
     pushTyped(server, RPC_CHANNELS.browserPane.STATE_CHANGED, { to: 'all' }, info)
     // The tweaks carrier listens on the same subscription: the pane manager holds exactly

@@ -1,5 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
+import { useAtomValue } from 'jotai'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerTrigger } from '@/components/ui/drawer'
 import { Input } from '@/components/ui/input'
@@ -7,6 +8,7 @@ import { useAppShellContext, useSession } from '@/context/AppShellContext'
 import { cn } from '@/lib/utils'
 import { getFileManagerName } from '@/lib/platform'
 import { SessionFilesSection } from '../right-sidebar/SessionFilesSection'
+import { windowIsRemoteAtom } from '@/atoms/window-mode'
 // A type, so it is erased: the barrel reaches node fs, and a value imported from it could not be
 // bundled for the renderer.
 import type { LoadedProject } from '@craft-agent/shared/projects/types'
@@ -109,6 +111,8 @@ function SessionInfoPopoverContent({ sessionId, sessionFolderPath }: { sessionId
   const [name, setName] = React.useState('')
   const renameTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
   const fileManagerName = getFileManagerName()
+  // A remote window's files are on the hub, so this machine cannot reveal them.
+  const canRevealLocally = !useAtomValue(windowIsRemoteAtom)
 
   // The project this conversation belongs to (undefined = unbound). When it resolves, the panel
   // gains a second tab: the project's own folder beside the session's.
@@ -198,7 +202,7 @@ function SessionInfoPopoverContent({ sessionId, sessionFolderPath }: { sessionId
                 {t("chat.projectFiles")}
               </InfoTabButton>
             </div>
-            {revealFolderPath && (
+            {canRevealLocally && revealFolderPath && (
               <button
                 type="button"
                 // eslint-disable-next-line craft-links/no-direct-file-open -- directories can't be previewed in-app

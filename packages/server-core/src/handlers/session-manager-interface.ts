@@ -10,7 +10,7 @@ import type { Workspace, WorkspaceInfo, ActiveSessionInfo } from '@craft-agent/c
 import type { StoredAttachment, AnnotationV1 } from '@craft-agent/core/types'
 import type { PermissionMode } from '@craft-agent/shared/agent/mode-types'
 import type { ThinkingLevel } from '@craft-agent/shared/agent/thinking-levels'
-import type { AuthResult } from '@craft-agent/shared/agent'
+import type { AuthResult, DeviceToolInfo } from '@craft-agent/shared/agent'
 import type {
   Session,
   SessionStatus,
@@ -127,7 +127,6 @@ export interface ISessionManager {
     existingMessageId?: string,
     _isAuthRetry?: boolean,
     onAck?: (messageId: string) => void,
-    rpcContext?: { callerClientId?: string },
   ): Promise<void>
   cancelProcessing(sessionId: string, silent?: boolean): Promise<void>
   cancelQueuedMessage(sessionId: string, messageId: string, content?: string): Promise<{ cancelled: boolean }>
@@ -281,6 +280,11 @@ export interface ISessionManager {
   getWorkspaceAutomationSummary(workspaceId: string): { automationCount: number; schedulerRunning: boolean }
   /** Active sessions across all workspaces (sessions with running backend processes). */
   getActiveSessionsInfo(): ActiveSessionInfo[]
+  /**
+   * Devices other than this machine that this hub can drive, one row per machine.
+   * The same list `device_tool` names, so the UI and the agent agree.
+   */
+  getConnectedDevices(): DeviceToolInfo[]
 
   // ---------------------------------------------------------------------------
   // Auth

@@ -1,0 +1,178 @@
+# 浏览器画面流（Browser View Streaming）— 设计文档
+
+> **定位**：让"运行在另一台机器上的浏览器标签页"能在当前客户端里**被看见并被操作**。本文定协议、定边界、定分期；不重复 [浏览器 profile](browser-profiles.md) 与 [tab 路由](browser-tab-routing.md) 已经定下的东西。
+>
+> **一句话**：一个标签页 = 一路 JPEG 帧 + 一条输入回灌通道，走现有 WebSocket；**不是**远程桌面、**不是** VNC、**不是** WebRTC。
+
+---
+
+## 1. 判断：缺的是"人看着并接手"
+
+agent 对浏览器的控制一直有，走 RPC（click / fill / scroll / screenshot），**不需要任何窗口**。缺的是另一件事：
+
+| 场景 | 今天 |
+|---|---|
+| **webui** | 完全没有浏览器界面 —— `apps/webui` 不调用任何 `browserPane`，连截图都得由 agent 取 |
+| **远程窗口**（瘦客户端连 hub） | agent 驱动的是 **hub 的**浏览器，窗口出现在 hub 的桌面上；坐在瘦客户端的人看不到 |
+| **瘦客户端本机被 hub 驱动** | 浏览器窗口在这台设备上以独立窗口出现，但**别的客户端**（webui、另一台机器）看不到它 |
+
+三者是同一个洞：**浏览器画面没有离开它所在的机器**。
+
+---
+
+## 2. 是什么 / 不是什么
+
+**是**：一个**标签页**的帧流 + 输入回灌，观看端画在一个 pane 里。
+
+**不是**：
+
+- **不是远程桌面**。只流一个标签页，桌面上的其他应用、通知、系统弹窗都不在画面里。
+- **不是 VNC / noVNC**。见 §7 的对比。
+- **不是 WebRTC**（阶段 1）。部署上只需一条已鉴权的 `wss://`；用途只需 8–15fps。
+
+---
+
+## 3. 数据路径
+
+| 场景 | 路径 | 为什么 |
+|---|---|---|
+| 浏览器窗口就在你眼前（Electron 本机） | **不额外观看** | 那扇独立窗口本身就是视图；再做一个观看端只是同一页面的第二份拷贝 |
+| hub 的浏览器 → webui | 帧走 hub 的 WS 直接到观看端 | 一跳；阶段 1 |
+| 设备的浏览器 → 观看端 | 设备 → hub（中转）→ 观看端 | 两跳；hub 是权限与路由的权威；阶段 2 |
+
+**帧是唯一的跨端观看方式**，不做"同机直挂 `WebContentsView`"：把一个标签页的 view 从停车窗搬进主窗口，等于给它换父窗、换 viewport——用户和 agent 会因此互相改页面尺寸（媒体查询、响应式布局、滚动位置全变），还要额外交接"它现在归谁"。一页只有一份 view，谁看都走帧，就没有这个问题。
+
+一条 UI（pane + 工具栏），一种传输（frames）。
+
+**"同机"不等于"绕网卡"**：`ws://127.0.0.1` 是内核回环，不出网卡，也不经过物理链路。`device_tool` 只点名**别的机器**——hub 自己的 shell/files/browser 就是 agent 的默认工具，在 hub 进程内直接执行，不经过任何 socket；远端 hub 驱动这台机器才走 `main/hub-connection.ts` 的应用级链路。跨进程（webui 标签页 ↔ hub）没有共享内存可用，回环 WS 就是最短的一条；观看端与源在同一台机器时，走的也正是这条回环。
+
+---
+
+## 4. 为什么现在可行
+
+1. **后台标签页一直在画**。停车窗是故意保持 `showInactive()` 的（屏幕外、不进任务栏、从不激活，被最小化/隐藏还会拉回来），因为"不显示就不合成，不合成视图就丢 viewport"。`BrowserCDP.startScreencast` 的注释里记了实测：窗口在屏幕外、甚至被隐藏时，2 秒内仍能收到 120 帧。
+2. **帧管线已经存在**。录制就是在用同一条 `Page.startScreencast`（`session-recordings.ts`），带 ack 与会话保持。
+3. **每个标签页有自己的 CDP 会话**（`tab.cdp`），所以流是逐标签页的，不需要"切到前台才画"。
+
+---
+
+## 5. 协议
+
+### 5.1 通道
+
+| 通道 | 方向 | 作用 |
+|---|---|---|
+| `browser-pane:stream-start` | invoke | `{ instanceId, tabId }` → 开始流，返回 `{ streamId, tabId, width, height }` |
+| `browser-pane:stream-stop` | invoke | `streamId` → 停止 |
+| `browser-pane:stream-input` | invoke | `streamId`, 一批输入事件 |
+| `browser-pane:stream-frame` | event | 只推给**发起该流的那一个 client**，不广播 |
+
+### 5.2 帧
+
+```ts
+interface BrowserStreamFrame {
+  streamId: string
+  tabId: string
+  /** JPEG, base64. 与 `data:` URL 拼起来即可直接作为 <img> 的 src。 */
+  data: string
+  /** CSS 像素：坐标换算的基准，不是图片的像素尺寸。 */
+  width: number
+  height: number
+  /** Chromium 拍下这一帧的时间（ms epoch）。 */
+  atMs: number
+}
+```
+
+- **只推给订阅者**（`{ to: 'client', clientId }`），不广播：帧是观看者的，不是全体的。
+- 去重与限流在源头上做：静止页不产生新帧；连续帧按目标帧率丢弃（默认 15fps 上限，输入后 1.5s 内不额外降频）。
+
+### 5.3 输入
+
+坐标一律是**标签页 viewport 的 CSS 像素**（观看端按 `frame.width/height` 把自己的点击换算过去）。
+
+```ts
+type BrowserStreamInput =
+  | { type: 'mouse'; action: 'move' | 'down' | 'up'; x: number; y: number; button?: 'left' | 'right' | 'middle'; clickCount?: number }
+  | { type: 'wheel'; x: number; y: number; deltaX: number; deltaY: number }
+  | { type: 'key'; action: 'down' | 'up'; key: string; code?: string; text?: string; modifiers?: number }
+```
+
+落到设备侧：`Input.dispatchMouseEvent` / `Input.dispatchMouseWheel` / `Input.dispatchKeyEvent`（与 `webContents.sendInputEvent` 相比，CDP 用的是 viewport 坐标，窗口停在屏幕外也成立）。
+
+### 5.4 一条流 = 一个观看者
+
+Chromium 的 screencast 是**每个 CDP 会话一路**，且 `startScreencast` 会先停掉上一路。所以：
+
+- 同一标签页**同时只允许一个**观看者；第二个 `stream-start` 得到明确错误（谁在看由 `list` 的流状态告知）。
+- 同一标签页**不能同时录制和观看**（录制也占这条 screencast）。阶段 1 直接拒绝并说清楚，不做"帧分发器"。
+
+### 5.5 控制权
+
+"看"不等于"能操作"。输入转发只有在观看者显式**接管**后才生效：
+
+- 接管是一个动作（按钮/点击画面），结束后交还；
+- 与 agent 的 `agentControlActive` / 租约共存：agent 正在驱动时，接管要么排队要么拒绝（阶段 1：拒绝并提示，避免抢鼠标）。
+
+### 5.6 权限
+
+与现有 `browserPane.*` 一致：能调该工作区浏览器的客户端，才能看/接管它的标签页。帧里可能有登录态，所以**不新增匿名通道**，不加"分享链接"。
+
+---
+
+## 6. 分阶段
+
+| 阶段 | 范围 | 状态 |
+|---|---|---|
+| **1** | **hub 的浏览器 → webui 观看**：协议 + 服务端流 + 输入转发 + webui 观看 pane | 协议与服务端完成；webui pane 初版完成 |
+| 2 | 设备的浏览器 → hub 中转 → 任意观看端；复用同一观看组件与协议 | 未开始 |
+
+~~同机主窗口直挂 `WebContentsView`~~ **不做**——见 §3：搬 view 等于换 viewport，用户与 agent 会互相改页面尺寸，还要移交停车窗。本机会话的浏览器窗口本身就是视图。
+
+---
+
+## 7. 决定与代价
+
+| 方案 | 结论 | 理由 |
+|---|---|---|
+| **WS + JPEG 帧** | **选它** | 复用已鉴权、可穿透反代的 `wss://`；JPEG 已是 Chrome 产物，不重复编码；观看端 `<img>`/`createImageBitmap` 即可 |
+| WebRTC | 暂不 | 需要信令 + ICE/TURN（hub 多在 443 反代后，UDP 常不可用）；本用途 8–15fps 足够；要先把帧/输入协议定下来，将来只换传输层 |
+| noVNC | 不用 | 流的是整块桌面（含不该暴露的内容）；OS 依赖（Xvfb/x11vnc、macOS 录屏权限、Windows 第三方服务）；桌面绝对坐标对屏幕外的停车窗不成立 |
+| base64 over JSON | 阶段 1 接受 | 比二进制多约 33% 体积；换取不改 codec。帧率与质量先按"够用"设，实测不够再上二进制帧 |
+
+**代价**：
+
+- 10fps、JPEG q60 的 1280×800 大约 0.5–1.5 MB/s，一条观看流。
+- 画面是"够看"，不是"顺滑"；日常浏览仍应在本地窗口里做。
+- 同一标签页录制/观看互斥（§5.4）。
+
+---
+
+## 8. 代码位置
+
+- **协议**：`packages/shared/src/protocol/channels.ts`（通道）、`routing.ts`（REMOTE_ELIGIBLE）、`events.ts`（`stream-frame` 的推送类型）、`dto.ts`（帧与输入类型）。
+- **源**：`apps/electron/src/main/browser-pane-manager.ts`（`startViewStream` / `stopViewStream` / `dispatchStreamInput`）、`browser-cdp.ts`（已有的 `startScreencast` + 新增 `dispatchInput`）。
+- **入口**：`apps/electron/src/main/handlers/browser.ts`（三个 handler，帧只推给 `ctx.clientId`）。
+- **观看端**：`apps/webui`（阶段 1）。它复用 `CHANNEL_MAP` 生成的 API，新增通道后 `browserPane.*` 自动可用。面板在 `apps/webui/src/BrowserViewer.tsx`。
+
+---
+
+## 9. 不做
+
+- 不做整桌面串流、不做远程控制其他应用。
+- **不把标签页的 `WebContentsView` 搬进另一个窗口**（同机也一样）：换父窗就换 viewport，用户和 agent 会互相改页面布局，还要在停车窗与前台之间移交同一份 view（§3）。
+- 不做"分享给未登录用户"的观看链接。
+- 不在阶段 1 做多观看者、不做二进制帧、不做 WebRTC。
+- 不动窗口/连接模型（那是另一条线：窗口是视图，连接在应用级）。
+
+---
+
+## 10. 开放问题
+
+1. **多观看者**：真需要时，把 screencast 收成一路"帧分发器"（源侧一份，扇出给 N 个 client），顺带解决与录制的互斥。
+2. **键盘映射**：`key`/`code`/`text` 到 `windowsVirtualKeyCode` 的映射表要覆盖常用键；阶段 1 先支持可打印字符 + Enter/Tab/Escape/方向键/退格。
+3. **画质自适应**：按观看端上报的 RTT/丢帧调 quality 与帧率，还是固定档位由人切。
+4. **接管与 agent 的仲裁**：当前倾向"agent 驱动中拒绝人接管"，但更自然的是"人接管即暂停 agent 操作该标签页"。
+5. ~~**流的结束要告诉观看端**~~ **已补**：`browser-pane:stream-ended`（`streamId`, `reason`），只推给发起该流的 client；标签页关闭 / 窗口销毁 / CDP 会话丢失都会发。观看端收到后清掉画面并说明原因。
+6. ~~**webui 面板按什么过滤窗口**~~ **已补**：webui 把它连接的工作区传给面板，面板只列该工作区的窗口（无工作区标记的实例仍然可见）。局限：在 webui 里切换工作区后，面板仍按页面连接时的工作区过滤，刷新后才更新。
+7. ~~**输入覆盖面**~~ **已补**：单击、双击（`clickCount`）、右键/中键、拖拽选择（按下时的 `buttons` 位掩码）、滚轮、键盘（含修饰键）。仍未覆盖：输入法组合输入、文件拖放、触摸/手写笔。
+8. **多屏同时看**：`documentPictureInPicture`（Chrome）可以把面板搬进画中画窗口，仍是同一条流；比"新标签页"合适，但会多一条浏览器分支。

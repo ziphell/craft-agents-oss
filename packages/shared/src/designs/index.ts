@@ -33,6 +33,7 @@ export type {
   LoadedDesign,
   DesignExportFormat,
   DesignExportResult,
+  DesignExportDownload,
   DesignMotionSettings,
   DesignRenderExportRequest,
 } from './types.ts';

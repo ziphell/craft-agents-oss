@@ -3,7 +3,7 @@
 import { loadShellEnv } from './shell-env'
 loadShellEnv()
 
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, nativeTheme, session, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, nativeTheme, net, session, shell } from 'electron'
 import { createHash, randomUUID } from 'crypto'
 import { hostname, homedir } from 'os'
 import * as Sentry from '@sentry/electron/main'
@@ -75,7 +75,9 @@ const machineId = createHash('sha256').update(hostname() + homedir()).digest('he
 Sentry.setUser({ id: machineId })
 
 import { join, delimiter } from 'path'
-import { existsSync, readFileSync } from 'fs'
+import { createWriteStream, existsSync, readFileSync } from 'fs'
+import { Readable } from 'stream'
+import { pipeline } from 'stream/promises'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { SessionManager, setSessionPlatform, setSessionRuntimeHooks } from '@craft-agent/server-core/sessions'
 import { DesignThumbnailer } from './design-thumbnailer'
@@ -94,7 +96,10 @@ import { setSearchPlatform, setImageProcessor } from '@craft-agent/server-core/s
 import { createApplicationMenu } from './menu'
 import { WindowManager } from './window-manager'
 import { loadWindowState, saveWindowState } from './window-state'
-import { getWorkspaces, getWorkspaceByNameOrId, loadStoredConfig, addWorkspace, saveConfig, resolveConversationBrowserProfileId } from '@craft-agent/shared/config'
+import { syncHubConnections, stopHubConnections, getHubConnectionClient, getHubConnectionStatus, type HubClientIdentity } from './hub-connection'
+import type { RemoteWindowTarget } from '../shared/types'
+import { getWorkspaces, getWorkspaceByNameOrId, loadStoredConfig, addWorkspace, saveConfig, resolveConversationBrowserProfileId, getRemoteConnections, getRemoteConnection, saveRemoteConnection, removeRemoteConnection, setDefaultRemoteConnection, rememberRemoteWorkspace, migrateLegacyRemoteWorkspaces, getClientConfig, getDeviceId, HUB_ROOT_BASE } from '@craft-agent/shared/config'
+import { connectionNameFromUrl, type RemoteConnection } from '@craft-agent/shared/config/client-config'
 import { getDefaultWorkspacesDir, getWorkspaceBrowserProfile } from '@craft-agent/shared/workspaces'
 import { loadSessionHeader } from '@craft-agent/shared/sessions'
 import { loadProjectById } from '@craft-agent/shared/projects'
@@ -263,9 +268,10 @@ import { applyConfiguredProxySettings, applyConfiguredProxyToSession } from './n
 void applyConfiguredProxySettings()
 
 // Accept self-signed / untrusted certificates when connecting to a user-configured remote server.
-// Only bypasses cert validation for the exact CRAFT_SERVER_URL origin — all other connections
-// use standard certificate verification. Without this, wss:// to self-signed servers fails with
-// ERR_CERT_AUTHORITY_INVALID because Chromium's WebSocket rejects untrusted certs.
+// Only bypasses cert validation for configured hub origins (saved connection and every remote
+// window) — all other
+// connections use standard certificate verification. Without this, wss:// to self-signed servers
+// fails with ERR_CERT_AUTHORITY_INVALID because Chromium's WebSocket rejects untrusted certs.
 //
 // Electron's certificate-error always reports URLs with https:// scheme, so we normalize
 // wss:// → https:// (and ws:// → http://) to ensure origins compare correctly.
@@ -275,6 +281,121 @@ function normalizeOriginForCert(urlStr: string): string {
   else if (u.protocol === 'ws:') u.protocol = 'http:'
   return u.origin
 }
+
+// ---------------------------------------------------------------------------
+// Remote connections — a property of a window, not of this install
+// ---------------------------------------------------------------------------
+//
+// One window can be local while another talks to a hub (the way VS Code has local and
+// Remote-SSH windows side by side). The saved client config is the **default remote
+// connection**: what "open a remote window" uses, and what new windows open when
+// `enabled` says so. A running window carries its own target, read synchronously by
+// the preload through `__get-client-mode`.
+//
+// The answer comes from Connect to Server… and nowhere else. A desktop app is
+// configured by the person using it, not by environment variables they would
+// have to discover and set.
+/** A saved connection as a window target, with the credentials it holds now. */
+function remoteTarget(connection: RemoteConnection, workspaceId?: string): RemoteWindowTarget {
+  const targetWorkspaceId = workspaceId ?? connection.lastWorkspaceId
+  return {
+    connectionId: connection.id,
+    url: connection.url,
+    token: connection.token,
+    name: connection.name,
+    ...(targetWorkspaceId ? { workspaceId: targetWorkspaceId } : {}),
+  }
+}
+
+/** The saved connection new windows (and launch, with nothing to restore) open on. */
+function defaultRemoteConnection(): RemoteConnection | null {
+  const config = getClientConfig()
+  if (!config.defaultConnectionId) return null
+  return config.connections.find((connection) => connection.id === config.defaultConnectionId) ?? null
+}
+
+/**
+ * Which workspaces that server has, asked of its own app-level link.
+ *
+ * `null` means the question could not be answered (link down, older server, transient error).
+ * Callers must treat that as "unknown", never as "none": an unanswerable question must not
+ * discard the workspace a window was on.
+ */
+async function workspaceIdsOn(connectionId: string): Promise<Set<string> | null> {
+  const link = getHubConnectionClient(connectionId)
+  if (!link) return null
+  try {
+    const workspaces = await link.invoke(RPC_CHANNELS.server.GET_WORKSPACES) as Array<{ id: string }>
+    return new Set((workspaces ?? []).map((workspace) => workspace.id))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The first of `candidates` that still exists on that server.
+ *
+ * Used when a window is restored or re-pointed with a workspace remembered from an earlier
+ * session: the workspace may have been removed on the server since. When the server cannot be
+ * asked, the first candidate is kept — the connection's own failure is the honest answer then.
+ */
+async function firstExistingWorkspace(
+  connectionId: string,
+  candidates: Array<string | undefined>,
+): Promise<string | undefined> {
+  const wanted = candidates.filter((id): id is string => !!id)
+  if (wanted.length === 0) return undefined
+  const ids = await workspaceIdsOn(connectionId)
+  return ids ? wanted.find((id) => ids.has(id)) : wanted[0]
+}
+
+/**
+ * This install's identity as a hub sees it — advertised on every WS handshake, by a window's
+ * connection and by the app-level hub link alike, so both answer as one device.
+ */
+function clientIdentity(): HubClientIdentity {
+  return {
+    deviceId: getDeviceId(),
+    name: hostname(),
+    platform: process.platform,
+    workspaceRoots: getWorkspaces().map((workspace) => workspace.rootPath),
+    hubRootBase: HUB_ROOT_BASE,
+  }
+}
+
+/**
+ * The hub a window's calls go to, as an HTTP base URL plus the token to present.
+ *
+ * A remote window names its hub outright; `null` means the window's server is this machine —
+ * its exports are written here, so nothing has to be downloaded.
+ */
+function hubHttpForWindow(webContentsId: number): { baseUrl: string; token: string } | null {
+  const target = windowManager?.getRemoteForWindow(webContentsId) ?? null
+  return target ? { baseUrl: wsToHttpBase(target.url), token: target.token } : null
+}
+
+/** `ws://host:port` → `http://host:port` (the hub serves both on one port). */
+function wsToHttpBase(wsUrl: string): string {
+  const url = new URL(wsUrl)
+  url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:'
+  return url.toString().replace(/\/$/, '')
+}
+
+/** Origins whose (possibly self-signed) certificate is accepted — configured hubs only. */
+const trustedServerOrigins = new Set<string>()
+
+function trustServerOrigin(url: string): void {
+  try {
+    trustedServerOrigins.add(normalizeOriginForCert(url))
+  } catch {
+    // Invalid URL — the connection will fail on its own terms.
+  }
+}
+
+// Fold any legacy per-workspace remote entries into the saved-server list before anything reads
+// it, so the device links and the trust list below already include those servers.
+migrateLegacyRemoteWorkspaces()
+for (const connection of getRemoteConnections()) trustServerOrigin(connection.url)
 
 /**
  * Probe whether a TCP port is free on the given host by attempting a bind and
@@ -313,28 +434,22 @@ function isPrivateIpv4(address: string): boolean {
     || (a === 172 && b !== undefined && b >= 16 && b <= 31)
 }
 
-if (process.env.CRAFT_SERVER_URL) {
-  let serverOrigin: string | undefined
+// A user-configured hub often uses a self-signed certificate. Accept it **only** for origins the
+// person configured (the saved connection and any window target); everything else keeps the
+// standard verification. Without this, wss:// to a self-signed hub fails with
+// ERR_CERT_AUTHORITY_INVALID because Chromium's WebSocket rejects untrusted certs.
+app.on('certificate-error', (event, _webContents, url, _error, _certificate, callback) => {
   try {
-    serverOrigin = normalizeOriginForCert(process.env.CRAFT_SERVER_URL)
+    if (trustedServerOrigins.has(normalizeOriginForCert(url))) {
+      event.preventDefault()
+      callback(true)
+      return
+    }
   } catch {
-    // Invalid URL — will fail later during connection, no need to handle here
+    // URL parse failure — fall through to default rejection
   }
-  if (serverOrigin) {
-    app.on('certificate-error', (event, _webContents, url, _error, _certificate, callback) => {
-      try {
-        if (normalizeOriginForCert(url) === serverOrigin) {
-          event.preventDefault()
-          callback(true)
-          return
-        }
-      } catch {
-        // URL parse failure — fall through to default rejection
-      }
-      callback(false)
-    })
-  }
-}
+  callback(false)
+})
 
 // Register the app's privileged schemes (thumbnail://, and the app's own origin scheme).
 // Must happen before app.whenReady() — Electron allows one registration, and only early.
@@ -379,6 +494,23 @@ if (!gotTheLock) {
   })
 }
 
+/** Open a window connected to a hub. The target is trusted for TLS and persisted with the window. */
+function openRemoteWindow(target: RemoteWindowTarget): void {
+  if (!windowManager) return
+  trustServerOrigin(target.url)
+  windowManager.createWindow({
+    workspaceId: target.workspaceId ?? '',
+    remote: target,
+  })
+}
+
+/** Open a window on this machine's own server. */
+function openLocalWindow(): void {
+  if (!windowManager) return
+  const workspaceId = windowManager.getLastActiveWorkspaceId() ?? getWorkspaces()[0]?.id
+  if (workspaceId) windowManager.createWindow({ workspaceId })
+}
+
 // Helper to create initial windows on startup
 async function createInitialWindows(): Promise<void> {
   if (!windowManager) return
@@ -400,31 +532,60 @@ async function createInitialWindows(): Promise<void> {
   }
 
   const validWorkspaceIds = workspaces.map(ws => ws.id)
+  // A remote window's workspace belongs to its hub, not to this machine's list — but the saved
+  // connection it names must still exist, or there is nowhere to reconnect it.
+  const restorable = (w: { workspaceId: string; remote?: { connectionId: string } }): boolean =>
+    w.remote ? !!getRemoteConnection(w.remote.connectionId) : validWorkspaceIds.includes(w.workspaceId)
 
-  if (savedState?.windows.length) {
-    // **One** window: the workspace the person was last in. Not one per saved window —
-    // with the tray, a hidden window can survive per workspace (§3.7 bounds it to one
-    // per workspace, not one overall), and launching the app must not open all of them
-    // (see docs/tray-plan.md §3.4). Its bounds and route are restored, so "where you
-    // left off" still holds.
-    const saved =
-      savedState.windows.find(
-        w => w.workspaceId === savedState.lastFocusedWorkspaceId && validWorkspaceIds.includes(w.workspaceId),
-      ) ?? savedState.windows.find(w => validWorkspaceIds.includes(w.workspaceId))
+  // Every window that was not destroyed at quit reopens one-to-one — a local window
+  // and a remote window come back side by side. The last window closed is hidden, not
+  // destroyed, so it is here too and reopens as "the last closed workspace window".
+  const openWindows = (savedState?.windows ?? []).filter(restorable)
 
-    if (saved) {
-      mainLog.info(`Restoring window: workspaceId=${saved.workspaceId}, focused=${saved.focused ?? false}, url=${saved.url ?? 'none'}`)
+  if (openWindows.length) {
+    // Stacking: the window focused last is restored last, so it comes back on top;
+    // the rest sit beneath it in recorded order. This keeps "back where you left
+    // off" even when several windows return at once. (sort is stable, so ties keep
+    // their recorded order.)
+    const focusedWorkspaceId = savedState?.lastFocusedWorkspaceId
+    const ordered = [...openWindows].sort(
+      (a, b) =>
+        Number(a.workspaceId === focusedWorkspaceId) -
+        Number(b.workspaceId === focusedWorkspaceId),
+    )
+    for (const saved of ordered) {
+      const connection = saved.remote ? getRemoteConnection(saved.remote.connectionId) : null
+      // A workspace remembered from an earlier session may be gone on the server by now. Ask
+      // before naming it: a window pointed at a missing workspace comes up empty with a title it
+      // cannot resolve. If it is gone, open on the server with **no** workspace — the picker,
+      // which is what VS Code shows for a remote window without a folder.
+      const workspaceId = connection
+        ? await firstExistingWorkspace(connection.id, [saved.remote?.workspaceId, connection.lastWorkspaceId])
+        : saved.workspaceId || undefined
+      const target = connection ? remoteTarget(connection, workspaceId ?? '') : null
+      mainLog.info(`Restoring window: workspaceId=${saved.workspaceId}, resolved=${workspaceId ?? 'none'}, remote=${target?.url ?? 'none'}, focused=${saved.focused ?? false}, url=${saved.url ?? 'none'}`)
+      if (target) trustServerOrigin(target.url)
       const win = windowManager.createWindow({
-        workspaceId: saved.workspaceId,
+        workspaceId: workspaceId ?? '',
+        ...(target ? { remote: target } : {}),
         focused: saved.focused,
         restoreUrl: saved.url,
       })
       win.setBounds(saved.bounds)
-      return
     }
+    return
   }
 
-  // Nothing to restore: the first workspace.
+  // Nothing to restore: the default saved server if one is set, else the first workspace.
+  const remote = defaultRemoteConnection()
+  if (remote) {
+    const target = remoteTarget(remote)
+    trustServerOrigin(target.url)
+    windowManager.createWindow({ workspaceId: target.workspaceId ?? '', remote: target })
+    mainLog.info(`Created window for default remote server: ${remote.url}`)
+    return
+  }
+
   windowManager.createWindow({ workspaceId: workspaces[0].id })
   mainLog.info(`Created window for first workspace: ${workspaces[0].name}`)
 }
@@ -526,15 +687,9 @@ app.whenReady().then(async () => {
     // Create the application menu (needs windowManager for New Window action)
     createApplicationMenu(windowManager)
 
-    // When CRAFT_SERVER_URL is set, this Electron instance is a thin client —
-    // it only creates windows whose preload connects to the remote server.
-    // Skip server-side initialization (SessionManager, model refresh, platform injection).
-    const isClientOnly = !!process.env.CRAFT_SERVER_URL
+    // Windows are independent: a window can be local while another talks to a hub, so the local
+    // runtime below always starts. `savedRemoteConnection` only decides what a *new* window opens.
     const isHeadless = !!process.env.CRAFT_HEADLESS
-
-    if (isClientOnly) {
-      mainLog.info(`Client-only mode: CRAFT_SERVER_URL=${process.env.CRAFT_SERVER_URL} (server initialization skipped)`)
-    }
 
     // Initialize notification service (always — triggered by server push events)
     initNotificationService(windowManager)
@@ -543,7 +698,16 @@ app.whenReady().then(async () => {
     // The app only stays alive between windows where there is a way back to one —
     // the tray, or the macOS dock. Everywhere else a close stays a real close, so a
     // tray that failed to appear can never leave the app invisible (see §3.6).
-    const trayReady = !isHeadless && createTray(windowManager)
+    const trayReady = !isHeadless && createTray(windowManager, {
+      getConnections: () => getRemoteConnections(),
+      openRemote: (connectionId) => {
+        const connection = getRemoteConnection(connectionId)
+        if (!connection) return
+        const target = remoteTarget(connection)
+        trustServerOrigin(target.url)
+        openRemoteWindow(target)
+      },
+    })
     residentMode = trayReady || process.platform === 'darwin'
     windowManager.setResident(residentMode)
 
@@ -572,23 +736,12 @@ app.whenReady().then(async () => {
     browserPaneManager.registerToolbarIpc()
     browserPaneManager.registerCapabilityIpc()
 
-    // A browser window belongs to its workspace, so it goes when that workspace's last
-    // window does: left behind, it is a window nothing can reach — it never closes
-    // itself, only hides. That is also what lets the app quit, since such a window keeps
-    // `window-all-closed` from ever firing and would leave the process resident with
-    // nothing visible on screen.
-    windowManager.setWorkspaceWindowsClosedHandler((workspaceId) => {
-      // macOS keeps the app running with no windows (standard); a headless server has none.
-      if (process.platform === 'darwin' || process.env.CRAFT_HEADLESS) return
-
-      browserPaneManager?.destroyForWorkspace(workspaceId)
-
-      // And if that was the app's last window, nothing may be left at all — including a
-      // browser window created without a workspace context, which the line above skips.
-      if ((windowManager?.getAllWindows().length ?? 0) === 0) {
-        browserPaneManager?.destroyAll()
-      }
-    })
+    // A browser window outlives the workspace's main window. It is not tied to a window
+    // on screen: a device with no main window must still have a browser the hub can
+    // drive, and closing one main window must not throw away another workspace's tabs.
+    // Its lifetime is the process's — closing a browser window only hides it, and
+    // `performQuitCleanup()` destroys them. The tray's "Browser Windows" entry is the
+    // manual way to free one before that.
 
     // Build real PlatformServices from Electron APIs
     const platform: PlatformServices = createElectronPlatform({
@@ -608,6 +761,28 @@ app.whenReady().then(async () => {
     })
     ipcMain.on('__get-workspace-id', (e) => {
       e.returnValue = windowManager?.getWorkspaceForWindow(e.sender.id) ?? ''
+    })
+
+    // This window's connection target. Each window may point at a different server (or none),
+    // so it is resolved per webContents rather than once per process. Preload reads this
+    // synchronously during evaluation, before the first renderer tick.
+    ipcMain.on('__get-client-mode', (e) => {
+      e.returnValue = windowManager?.getRemoteForWindow(e.sender.id) ?? null
+    })
+
+    // This install's identity — advertised on the WS handshake so another
+    // machine can name it as a session's browser device.
+    ipcMain.on('__get-client-identity', (e) => {
+      e.returnValue = clientIdentity()
+    })
+
+    // One app-level link per saved server: shell, files and this machine's browser, offered by
+    // the **process** rather than by a window — so a hub can drive this device with nothing on
+    // screen, and no call lands on a window that happens to be closing. Windows keep their own
+    // connections for the workspace they show.
+    syncHubConnections(getRemoteConnections(), {
+      identity: clientIdentity,
+      browserPaneManager: () => browserPaneManager,
     })
 
     // Transport diagnostics bridge — preload reports remote WS connection state changes
@@ -669,7 +844,10 @@ app.whenReady().then(async () => {
       return { canceled: result.canceled, filePath: result.filePath ?? null }
     })
 
-    if (!isClientOnly) {
+    // The local runtime (server, SessionManager, model refresh) is always started: every window,
+    // local or remote, uses it for its window-local channels, and other devices may connect to it
+    // while this machine also has a window on someone else's hub.
+    if (windowManager || isHeadless) {
       // Restore persisted Git Bash path on Windows (must happen before any SDK subprocess spawn)
       if (process.platform === 'win32') {
         const { getGitBashPath, clearGitBashPath } = await import('@craft-agent/shared/config')
@@ -712,7 +890,7 @@ app.whenReady().then(async () => {
       // Read embedded server config (Server settings design)
       const { getServerConfig } = await import('@craft-agent/shared/config')
       const embeddedServerConfig = getServerConfig()
-      const serverModeEnabled = embeddedServerConfig.enabled && !isClientOnly
+      const serverModeEnabled = embeddedServerConfig.enabled
 
       // Derive host/port/token from server config (or env overrides)
       const serverToken = serverModeEnabled && embeddedServerConfig.token
@@ -770,17 +948,16 @@ app.whenReady().then(async () => {
         ].filter((p): p is string => !!p)
         webuiDir = webuiCandidates.find((p) => existsSync(join(p, 'index.html')))
         if (!webuiDir) {
-          mainLog.warn('[server-mode] WebUI assets not found — browser clients will have no UI (run `bun run webui:build`)')
+          mainLog.warn('[server-mode] WebUI assets not found — browser clients will have no UI (run `bun run webui:build`); protocol routes are still served')
         }
       }
 
-      // The WebUI handler is created after bootstrap so the real bound port is
-      // known; the dispatcher forwards once it exists. No HTTP request can arrive
-      // before listen(), so the handler is always ready by the first request.
+      // The HTTP handler exists because this instance is a hub (Server Mode), not because a page
+      // bundle was found: protocol routes must be reachable either way.
       let serverWebuiHandler: WebuiHandler | null = null
       let serverWebuiHttpHandler: ((req: any, res: any) => void) | undefined
       let webuiHealthCheck: (() => { status: string }) | null = null
-      const webuiHttpDispatcher = webuiDir
+      const webuiHttpDispatcher = serverModeEnabled
         ? (req: any, res: any) => {
             if (serverWebuiHttpHandler) serverWebuiHttpHandler(req, res)
             else { res.statusCode = 404; res.end() }
@@ -794,8 +971,9 @@ app.whenReady().then(async () => {
         rpcPort,
         tls,
         httpHandler: webuiHttpDispatcher,
-        // Accept the WebUI session cookie on WebSocket upgrade (cookie auth).
-        validateSessionCookie: webuiDir
+        // Accept the WebUI session cookie on WebSocket upgrade (cookie auth). This is a
+        // protocol concern, so it follows Server Mode rather than the page bundle.
+        validateSessionCookie: serverModeEnabled
           ? async (cookieHeader: string | null) => (await validateSession(cookieHeader, serverToken)) !== null
           : undefined,
         bundledAssetsRoot: __dirname,
@@ -914,7 +1092,11 @@ app.whenReady().then(async () => {
           }
         }),
         onClientConnected: ({ clientId, webContentsId }) => {
-          if (webContentsId != null) clientMap.set(webContentsId, clientId)
+          // Only this machine's windows are addressed by webContentsId here. A thin
+          // client's ids belong to its own process and must not overwrite ours.
+          if (webContentsId != null && windowManager?.getWindowByWebContentsId(webContentsId)) {
+            clientMap.set(webContentsId, clientId)
+          }
         },
         cleanupClientResources: (clientId) => {
           for (const [wcId, cId] of clientMap) {
@@ -932,11 +1114,9 @@ app.whenReady().then(async () => {
       moduleClientResolver = resolveClientId
 
       // -----------------------------------------------------------------------
-      // WebUI — now that the server is listening, build the handler with the real
-      // bound port, then wire the health check and OAuth callback deps (mirrors
-      // the headless server in packages/server/src/index.ts).
+      // Hub HTTP — protocol routes always; the page only when its bundle is there.
       // -----------------------------------------------------------------------
-      if (webuiDir) {
+      if (serverModeEnabled) {
         serverWebuiHandler = createWebuiHandler({
           webuiDir,
           secret: serverToken,
@@ -969,7 +1149,9 @@ app.whenReady().then(async () => {
             pushTyped(instance.wsServer, RPC_CHANNELS.sources.CHANGED, { to: 'workspace', workspaceId }, workspaceId, sources)
           },
         })
-        mainLog.info(`[server-mode] WebUI serving from ${webuiDir}`)
+        mainLog.info(webuiDir
+          ? `[server-mode] WebUI serving from ${webuiDir}`
+          : '[server-mode] Web UI bundle not found — serving protocol routes only')
       }
 
       // What to write on the tab rail's group headers. A tab says whose work it is, and the
@@ -997,10 +1179,8 @@ app.whenReady().then(async () => {
 
         messagingHandle.setPublisher(instance.wsServer.push.bind(instance.wsServer))
 
-        // Skip remote-owned workspaces — messaging runs on the remote server.
-        const localWorkspaceIds = getWorkspaces()
-          .filter((ws) => !ws.remoteServer)
-          .map((ws) => ws.id)
+        // Messaging runs on the server that owns the workspace — every workspace here is local.
+        const localWorkspaceIds = getWorkspaces().map((ws) => ws.id)
         await messagingHandle.initializeWorkspaces(localWorkspaceIds)
 
         // Compose fan-out event sink: RPC push + messaging gateway dispatch.
@@ -1017,150 +1197,39 @@ app.whenReady().then(async () => {
 
       // IPC handlers — preload uses sendSync to get WS connection details
 
-      // Remove workspace from config (cleanup stale entries)
-      ipcMain.handle('workspace:remove', async (_event, workspaceId: string) => {
-        const { removeWorkspace: remove } = await import('@craft-agent/shared/config')
-        return remove(workspaceId)
-      })
-
-      // Cross-server RPC — invoke a channel on an arbitrary remote server
-      ipcMain.handle('server:invokeOnServer', async (_event, url: string, token: string, channel: string, ...args: unknown[]) => {
-        const { connectToRemote } = await import('./handlers/workspace')
-        const { client, error } = await connectToRemote(url, token)
-        if (!client) throw new Error(error ?? 'Connection failed')
-        try {
-          return await client.invoke(channel, ...args)
-        } finally {
-          client.destroy()
-        }
-      })
-
-      // Transfer session to another workspace — orchestrated in main process so
-      // bundles can be moved directly between owning servers. Every connection is
-      // outbound from this process: remote sources/targets are reached over WS,
-      // a local target imports in-process on the embedded server — the local
-      // machine never needs to accept an inbound connection.
-      ipcMain.handle('session:transferToWorkspace', async (_event, sessionId: string, targetWorkspaceId: string, sessionIndex?: number, sessionCount?: number) => {
+      // Transfer a session to another workspace **of this window's server**. A remote window
+      // does the same over its hub connection (see preload), so this path is this machine's own.
+      ipcMain.handle('session:transferToWorkspace', async (event, sessionId: string, targetWorkspaceId: string, sessionIndex?: number, sessionCount?: number) => {
         const idx = sessionIndex ?? 0
         const count = sessionCount ?? 1
-        const { getWorkspaceByNameOrId } = await import('@craft-agent/shared/config')
-        const { connectToRemote } = await import('./handlers/workspace')
-        const { CHUNKED_TRANSFER_THRESHOLD, getChunkCount, invokeChunked, prepareChunkedPayload } = await import('./chunked-rpc')
-
-        // The pull side (sessions:export) returns the whole bundle as a single
-        // unchunked response frame — up to MAX_BUNDLE_SIZE_BYTES over WAN — so
-        // the 30s default request timeout is not enough for transfer clients.
-        const TRANSFER_REQUEST_TIMEOUT_MS = 120_000
-
-        const targetWorkspace = getWorkspaceByNameOrId(targetWorkspaceId)
-        if (!targetWorkspace) throw new Error(`Workspace ${targetWorkspaceId} not found`)
         if (!sessionManager) throw new Error('Session manager not initialized')
 
-        const sourceWorkspaceLocalId = windowManager?.getWorkspaceForWindow(_event.sender.id)
-        if (!sourceWorkspaceLocalId) throw new Error('Unable to resolve source workspace for transfer')
-
-        const sourceWorkspace = getWorkspaceByNameOrId(sourceWorkspaceLocalId)
-        if (!sourceWorkspace) throw new Error(`Source workspace ${sourceWorkspaceLocalId} not found`)
-
-        let bundle: any = null
-
-        if (sourceWorkspace.remoteServer) {
-          const { url: sourceUrl, token: sourceToken, remoteWorkspaceId: sourceRemoteWorkspaceId } = sourceWorkspace.remoteServer
-          console.log(`[Transfer] Exporting remote-owned session ${sessionId} from workspace ${sourceRemoteWorkspaceId}...`)
-          const { client: sourceClient, error: sourceError } = await connectToRemote(sourceUrl, sourceToken, sourceRemoteWorkspaceId, { requestTimeout: TRANSFER_REQUEST_TIMEOUT_MS })
-          if (!sourceClient) throw new Error(sourceError ?? 'Connection failed to source remote server')
-
-          try {
-            bundle = await sourceClient.invoke('sessions:export', sessionId)
-            if (!bundle) throw new Error(`Failed to export session ${sessionId}`)
-
-            try {
-              console.log('[Transfer] Generating conversation summary on source server...')
-              const transferPayload = await sourceClient.invoke('sessions:exportRemoteTransfer', sessionId)
-              if (transferPayload?.summary && bundle.session?.header) {
-                ;(bundle.session.header as any).transferredSessionSummary = transferPayload.summary
-                ;(bundle.session.header as any).transferredSessionSummaryApplied = false
-                console.log(`[Transfer] Summary generated: ${transferPayload.summary.length} chars`)
-              }
-            } catch (err) {
-              console.warn('[Transfer] Source-server summary generation failed:', err)
-            }
-          } finally {
-            sourceClient.destroy()
-          }
-        } else {
-          console.log(`[Transfer] Exporting local-owned session ${sessionId} from workspace ${sourceWorkspace.id}...`)
-          bundle = await sessionManager.exportSession(sessionId, sourceWorkspace.id)
-          if (!bundle) throw new Error(`Failed to export session ${sessionId}`)
-
-          try {
-            console.log('[Transfer] Generating conversation summary...')
-            const transferPayload = await sessionManager.exportRemoteSessionTransfer(sessionId, sourceWorkspace.id)
-            if (transferPayload?.summary && bundle.session?.header) {
-              ;(bundle.session.header as any).transferredSessionSummary = transferPayload.summary
-              ;(bundle.session.header as any).transferredSessionSummaryApplied = false
-              console.log(`[Transfer] Summary generated: ${transferPayload.summary.length} chars`)
-            }
-          } catch (err) {
-            console.warn('[Transfer] Summary generation failed:', err)
-          }
-        }
-
-        console.log(`[Transfer] Export complete: ${bundle.session?.messages?.length ?? 0} messages, ${bundle.files?.length ?? 0} files`)
+        const sourceWorkspaceId = windowManager?.getWorkspaceForWindow(event.sender.id)
+        if (!sourceWorkspaceId) throw new Error('Unable to resolve source workspace for transfer')
+        const targetWorkspace = getWorkspaceByNameOrId(targetWorkspaceId)
+        if (!targetWorkspace) throw new Error(`Workspace ${targetWorkspaceId} not found`)
 
         const emitProgress = (chunkSent: number, chunkTotal: number) => {
-          try { _event.sender.send('transfer:progress', { sessionIndex: idx, sessionCount: count, chunkSent, chunkTotal }) } catch { /* renderer may be gone */ }
+          try { event.sender.send('transfer:progress', { sessionIndex: idx, sessionCount: count, chunkSent, chunkTotal }) } catch { /* renderer may be gone */ }
         }
 
-        if (!targetWorkspace.remoteServer) {
-          // Local target — import in-process on the embedded server. Same method
-          // the sessions:import RPC handler runs on a remote target, so the
-          // result shape matches the remote path.
-          console.log(`[Transfer] Target workspace ${targetWorkspace.id} is local → importing in-process`)
-          emitProgress(0, 1)
-          const result = await sessionManager.importSession(targetWorkspace.id, bundle, 'fork')
-          emitProgress(1, 1)
-          return result
-        }
-
-        const { url, token, remoteWorkspaceId } = targetWorkspace.remoteServer
-        console.log(`[Transfer] Connecting to target remote server: ${url}`)
-        const { client, error } = await connectToRemote(url, token, remoteWorkspaceId, { requestTimeout: TRANSFER_REQUEST_TIMEOUT_MS })
-        if (!client) throw new Error(error ?? 'Connection failed to target remote server')
-        console.log('[Transfer] Connected to target remote server')
+        emitProgress(0, 1)
+        const bundle = await sessionManager.exportSession(sessionId, sourceWorkspaceId)
+        if (!bundle) throw new Error(`Failed to export session ${sessionId}`)
 
         try {
-          const preparedBundle = prepareChunkedPayload(bundle)
-          const payloadSize = preparedBundle.bytes.length
-          const payloadMB = (payloadSize / (1024 * 1024)).toFixed(1)
-
-          if (payloadSize < CHUNKED_TRANSFER_THRESHOLD) {
-            console.log(`[Transfer] Bundle size: ${payloadMB}MB (< 5MB threshold) → using direct RPC`)
-            emitProgress(0, 1)
-            const result = await client.invoke('sessions:import', remoteWorkspaceId, bundle, 'fork')
-            emitProgress(1, 1)
-            return result
+          const transferPayload = await sessionManager.exportRemoteSessionTransfer(sessionId, sourceWorkspaceId)
+          if (transferPayload?.summary && bundle.session?.header) {
+            ;(bundle.session.header as any).transferredSessionSummary = transferPayload.summary
+            ;(bundle.session.header as any).transferredSessionSummaryApplied = false
           }
-
-          const chunkCount = getChunkCount(payloadSize)
-          console.log(`[Transfer] Bundle size: ${payloadMB}MB (>= 5MB threshold) → using chunked transfer (${chunkCount} chunks)`)
-          return await invokeChunked(
-            client,
-            'sessions:import',
-            [remoteWorkspaceId, bundle, 'fork'],
-            1,
-            emitProgress,
-            preparedBundle,
-          )
-        } finally {
-          client.destroy()
+        } catch (err) {
+          console.warn('[Transfer] Summary generation failed:', err)
         }
-      })
 
-      // App relaunch (for server config changes — NOT an update install)
-      ipcMain.handle('app:relaunch', () => {
-        app.relaunch()
-        app.exit(0)
+        const result = await sessionManager.importSession(targetWorkspace.id, bundle, 'fork')
+        emitProgress(1, 1)
+        return result
       })
 
       // Language change: sync from renderer to main process, persist, and rebuild native menu.
@@ -1195,12 +1264,6 @@ app.whenReady().then(async () => {
       ipcMain.on('__get-ws-token', (e) => {
         e.returnValue = instance.token
       })
-      ipcMain.on('__get-workspace-remote-config', (e) => {
-        const wsId = windowManager?.getWorkspaceForWindow(e.sender.id)
-        if (!wsId) { e.returnValue = null; return }
-        const ws = getWorkspaceByNameOrId(wsId)
-        e.returnValue = ws?.remoteServer ?? null
-      })
 
       // Server config RPC handlers (LOCAL_ONLY — Electron-specific)
       const runningServerState = {
@@ -1214,6 +1277,12 @@ app.whenReady().then(async () => {
         publicWsUrl: embeddedServerConfig.publicWsUrl || undefined,
       }
 
+      // Server settings are part of the app's surface: whoever holds a valid credential is already
+      // at the app's top level (it can drive sessions and shell), so refusing a remote caller here
+      // would be a UI preference dressed up as a boundary. The settings page hides this section
+      // in a window connected to a hub so nobody edits the host's identity by accident; that is
+      // the guard this
+      // deserves. If a real admin role ever exists, it belongs with the credential model, not here.
       instance.wsServer.handle(RPC_CHANNELS.settings.GET_SERVER_CONFIG, async () => {
         const { getServerConfig: getConfig } = await import('@craft-agent/shared/config')
         return getConfig()
@@ -1248,8 +1317,11 @@ app.whenReady().then(async () => {
         // Determine display host (LAN IP if bound to 0.0.0.0). Skip loopback and
         // virtual adapters, and prefer a private-range address — the one other
         // devices on the network can actually reach.
-        let displayHost = runningServerState.host
-        if (displayHost === '0.0.0.0' || displayHost === '::') {
+        //
+        // Computed even when the listener is loopback-only: the settings page previews the URL of
+        // a config that has not been applied yet, and needs to know the address that config would
+        // expose. Binding to loopback is just "not exposed yet", not "no such address".
+        const lanHost = await (async () => {
           const os = await import('os')
           const candidates: string[] = []
           for (const nets of Object.values(os.networkInterfaces())) {
@@ -1259,8 +1331,11 @@ app.whenReady().then(async () => {
               candidates.push(net.address)
             }
           }
-          displayHost = candidates.find(isPrivateIpv4) ?? candidates[0] ?? '127.0.0.1'
-        }
+          return candidates.find(isPrivateIpv4) ?? candidates[0] ?? '127.0.0.1'
+        })()
+        const displayHost = runningServerState.host === '0.0.0.0' || runningServerState.host === '::'
+          ? lanHost
+          : runningServerState.host
 
         // Only compare port/tls/token when at least one side has server mode enabled.
         // When both are disabled, the running port is random — comparing it to the
@@ -1275,7 +1350,9 @@ app.whenReady().then(async () => {
             || allowExternalChanged
             || publicWsUrlChanged
             || (!!saved.tlsCertPath) !== runningServerState.tls
-            || (saved.token ?? '') !== runningServerState.token
+            // An empty saved token means "mint one at startup", not "a change is pending" —
+            // comparing it to the minted token would flag a restart that never converges.
+            || (!!saved.token && saved.token !== runningServerState.token)
           ))
 
         return {
@@ -1288,6 +1365,7 @@ app.whenReady().then(async () => {
           needsRestart,
           insecureWarning: isInsecureBind,
           allowExternal: runningServerState.allowExternal,
+          lanHost,
           bindError: runningServerState.bindError,
           publicWsUrl: runningServerState.publicWsUrl,
         }
@@ -1321,6 +1399,306 @@ app.whenReady().then(async () => {
       }
     }
 
+    // -----------------------------------------------------------------------
+    // Remote connections (per window)
+    // -----------------------------------------------------------------------
+    // Direct IPC (not WS RPC): these describe *this machine's* configuration and this window's
+    // connection, so they must work even when the window's WS connection points at another hub.
+    ipcMain.handle('client-mode:get', async (event) => {
+      const { getServerConfig } = await import('@craft-agent/shared/config')
+      const config = getClientConfig()
+      return {
+        connections: config.connections,
+        ...(config.defaultConnectionId ? { defaultConnectionId: config.defaultConnectionId } : {}),
+        // What **this window** is connected to — not an install-wide mode.
+        running: windowManager?.getRemoteForWindow(event.sender.id) ?? null,
+        serverEnabled: getServerConfig().enabled,
+      }
+    })
+
+    // Saving a server is what makes this machine a device for it — with or without a window open.
+    ipcMain.handle('client-mode:save-connection', async (_event, raw: unknown) => {
+      const input = (raw ?? {}) as Partial<RemoteConnection>
+      const url = typeof input.url === 'string' ? input.url.trim() : ''
+      const token = typeof input.token === 'string' ? input.token.trim() : ''
+      if (!url) throw new Error('Server URL is required')
+      let parsed: URL
+      try {
+        parsed = new URL(url)
+      } catch {
+        throw new Error('Server URL is not a valid URL')
+      }
+      if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') {
+        throw new Error('Server URL must start with ws:// or wss://')
+      }
+      // Plain ws:// to another machine is a real setup (LAN, VPN, SSH tunnel, container
+      // network), and the hub itself supports running without TLS. The choice is the
+      // person's; the dialog warns, this does not refuse.
+      if (!token) throw new Error('Token is required')
+
+      const existing = typeof input.id === 'string' ? getRemoteConnection(input.id) : null
+      const saved = saveRemoteConnection({
+        id: existing?.id ?? randomUUID(),
+        name: (typeof input.name === 'string' && input.name.trim()) || connectionNameFromUrl(url),
+        url,
+        token,
+        ...(existing?.lastWorkspaceId ? { lastWorkspaceId: existing.lastWorkspaceId } : {}),
+      })
+      trustServerOrigin(saved.url)
+      syncHubConnections(getRemoteConnections(), {
+        identity: clientIdentity,
+        browserPaneManager: () => browserPaneManager,
+      })
+
+      // Windows opened before the edit hold the target they loaded with. Hand them the new one
+      // and let each preload rebuild its socket — otherwise a rotated token would only take
+      // effect the next time that window was opened.
+      const changed = !!existing && (
+        existing.url !== saved.url || existing.token !== saved.token || existing.name !== saved.name
+      )
+      if (changed) {
+        const affected = windowManager?.updateRemoteTargetForConnection(saved.id, saved) ?? []
+        for (const webContentsId of affected) {
+          const target = windowManager?.getRemoteForWindow(webContentsId)
+          if (target) windowManager?.getWindowByWebContentsId(webContentsId)?.webContents.send('client-mode:target-changed', target)
+        }
+      }
+      return saved
+    })
+
+    ipcMain.handle('client-mode:remove-connection', async (_event, connectionId: string) => {
+      removeRemoteConnection(connectionId)
+      syncHubConnections(getRemoteConnections(), {
+        identity: clientIdentity,
+        browserPaneManager: () => browserPaneManager,
+      })
+    })
+
+    ipcMain.handle('client-mode:set-default', async (_event, connectionId: string | null) => {
+      setDefaultRemoteConnection(connectionId)
+    })
+
+    /** Open a window on a saved server. */
+    ipcMain.handle('client-mode:connect', async (_event, connectionId: string, workspaceId?: string) => {
+      const connection = getRemoteConnection(connectionId)
+      if (!connection) throw new Error('Unknown remote connection')
+      const target = remoteTarget(connection, workspaceId)
+      trustServerOrigin(target.url)
+      // A workspace opened here is the one that server should offer next time — including one
+      // just created on it, which is how "create on server" hands over to the new window.
+      if (workspaceId) rememberRemoteWorkspace(connectionId, workspaceId)
+      openRemoteWindow(target)
+    })
+
+    /**
+     * Open **another** window on the hub. It opens on the connection this window is on, else the
+     * default one; `workspaceId` names the workspace, and without it the connection's last one is
+     * used (the hub shows its picker when there is none). Switching the current window is
+     * `client-mode:switch-workspace`.
+     */
+    ipcMain.handle('client-mode:open-window', async (event, workspaceId?: string) => {
+      const current = windowManager?.getRemoteForWindow(event.sender.id) ?? null
+      const currentConnection = current ? getRemoteConnection(current.connectionId) : null
+      const connection = currentConnection ?? defaultRemoteConnection()
+      if (!connection) throw new Error('No remote server is configured. Use Connect to Server… first.')
+      const target = remoteTarget(
+        connection,
+        workspaceId ?? (currentConnection ? current?.workspaceId : undefined),
+      )
+      trustServerOrigin(target.url)
+      openRemoteWindow(target)
+    })
+
+    /** Open a window on this machine's own server. */
+    ipcMain.handle('client-mode:open-local', async () => {
+      openLocalWindow()
+    })
+
+    /**
+     * Let a remote window name itself (`<workspace> — <server>`).
+     *
+     * Its workspace is on the hub, so the main process's title rule — which looks the workspace up
+     * in this machine's config — cannot name it. The renderer can, and a title is worth keeping.
+     */
+    ipcMain.handle('window:set-title', async (event, title: string | null) => {
+      windowManager?.setWindowTitle(event.sender.id, typeof title === 'string' ? title : null)
+    })
+
+    /** Reachability of every saved server, for the saved-servers list. */
+    ipcMain.handle('client-mode:remote-status', async () => {
+      return getRemoteConnections().map((connection) => ({
+        id: connection.id,
+        status: getHubConnectionStatus(connection.id) ?? 'unknown',
+      }))
+    })
+
+    /**
+     * Re-point **this** remote window at another workspace on its hub — an in-window switch,
+     * the way a remote folder is re-opened in VS Code. The socket is the preload's to rebuild;
+     * main only keeps the window's record in step, so launch restores the workspace actually on
+     * screen and `client-mode:get` reports it.
+     */
+    ipcMain.handle('client-mode:switch-workspace', async (event, workspaceId: string) => {
+      if (!workspaceId) throw new Error('A workspace is required')
+      const remote = windowManager?.getRemoteForWindow(event.sender.id)
+      if (remote) {
+        windowManager?.setRemoteWorkspaceForWindow(event.sender.id, workspaceId)
+        rememberRemoteWorkspace(remote.connectionId, workspaceId)
+      } else {
+        // A local window told main where it is; the transport side already moved with it.
+        windowManager?.updateWindowWorkspace(event.sender.id, workspaceId)
+      }
+      captureAndSaveWindowState('window-change')
+    })
+
+    /**
+     * Resolve where a switch would go — **without moving anything**.
+     *
+     * The preload connects and handshakes before committing, so this is the read half: validate
+     * the workspace on that server (a pick from a menu fetched a moment ago can name one removed
+     * since) and hand back the target to dial. A refused resolve leaves the window untouched,
+     * which is what VS Code does for a folder that no longer exists.
+     */
+    ipcMain.handle('client-mode:resolve-switch', async (_event, connectionId: string, workspaceId?: string) => {
+      const connection = getRemoteConnection(connectionId)
+      if (!connection) throw new Error('Unknown remote connection')
+      if (workspaceId) {
+        const ids = await workspaceIdsOn(connectionId)
+        if (ids && !ids.has(workspaceId)) {
+          throw new Error(`That workspace no longer exists on ${connection.name}`)
+        }
+      }
+      const target = remoteTarget(connection, workspaceId)
+      trustServerOrigin(target.url)
+      return target
+    })
+
+    /**
+     * File an already-reached target as **this** window's, and persist that.
+     *
+     * Called by the preload *after* its new socket has handshaken, so a server that never answers
+     * leaves both the window record and the saved state alone. Nothing else moves: the server
+     * being left keeps its own app-level link (other windows on it, and its device capabilities,
+     * are untouched), and the server being joined already has one.
+     */
+    ipcMain.handle('client-mode:switch-server', async (event, connectionId: string, workspaceId?: string) => {
+      const connection = getRemoteConnection(connectionId)
+      if (!connection) throw new Error('Unknown remote connection')
+      const target = remoteTarget(connection, workspaceId)
+      trustServerOrigin(target.url)
+      const applied = windowManager?.switchWindowServer(event.sender.id, target) ?? null
+      if (!applied) throw new Error('This window is unknown to the app')
+      if (workspaceId) rememberRemoteWorkspace(connectionId, workspaceId)
+      captureAndSaveWindowState('window-change')
+      return applied
+    })
+
+    /**
+     * Bring **this** window back to this machine's server, in place.
+     *
+     * The workspace is validated here because the window is about to answer for it in this
+     * machine's config. The preload then releases the hub socket and routes through the local one,
+     * which it has kept open all along.
+     */
+    ipcMain.handle('client-mode:switch-local', async (event, workspaceId: string) => {
+      if (!workspaceId) throw new Error('A workspace is required')
+      if (!getWorkspaceByNameOrId(workspaceId)) throw new Error('Unknown workspace')
+      const released = windowManager?.switchWindowToLocal(event.sender.id, workspaceId) ?? false
+      if (!released) throw new Error('This window is not connected to a remote server')
+      // Same reason as switch-server: the saved mode must follow the window, so a restart does
+      // not bring back a remote window the person had already taken back to this machine.
+      captureAndSaveWindowState('window-change')
+    })
+
+    /**
+     * Fetch a hub-produced export and put it where the person asks.
+     *
+     * The renderer never sees the hub token: the download happens here, with the credential this
+     * window already holds, and the file streams straight to the chosen path.
+     */
+    ipcMain.handle('design-export:save', async (event, download: { id?: unknown; name?: unknown }) => {
+      const id = typeof download?.id === 'string' ? download.id : ''
+      const name = typeof download?.name === 'string' && download.name ? download.name : 'design-export'
+      if (!id) throw new Error('Missing export id')
+
+      const hub = hubHttpForWindow(event.sender.id)
+      if (!hub) throw new Error('This window is not connected to a hub')
+
+      const win = BrowserWindow.fromWebContents(event.sender)
+      const picked = win
+        ? await dialog.showSaveDialog(win, { defaultPath: name })
+        : await dialog.showSaveDialog({ defaultPath: name })
+      if (picked.canceled || !picked.filePath) return { canceled: true }
+
+      const response = await net.fetch(`${hub.baseUrl}/api/exports/${encodeURIComponent(id)}`, {
+        headers: { Authorization: `Bearer ${hub.token}` },
+      })
+      if (!response.ok || !response.body) {
+        throw new Error(`Export download failed (${response.status})`)
+      }
+      await pipeline(Readable.fromWeb(response.body as any), createWriteStream(picked.filePath))
+      shell.showItemInFolder(picked.filePath)
+      return { canceled: false, path: picked.filePath }
+    })
+
+    ipcMain.handle('client-mode:test', async (_event, serverUrl: string, token: string) => {
+      const { connectToRemote } = await import('./handlers/workspace')
+      const { client, error } = await connectToRemote(serverUrl, token)
+      if (!client) return { ok: false, error: error ?? 'Connection failed' }
+      try {
+        const workspaces = await client.invoke(RPC_CHANNELS.server.GET_WORKSPACES) as Array<{ id: string; name: string }>
+        return {
+          ok: true,
+          serverVersion: client.getServerVersion() ?? undefined,
+          workspaces: (workspaces ?? []).map((w) => ({ id: w.id, name: w.name })),
+        }
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : 'Connection failed' }
+      } finally {
+        client.destroy()
+      }
+    })
+
+    /**
+     * Workspace creation can target a **saved server this window is not on** — the two-level
+     * "host, then folder" the person picks in the dialog. These run on that server's app-level
+     * link, never on this window's client, and are deliberately one channel each rather than a
+     * generic proxy: the renderer can browse and create, nothing else.
+     */
+    const hubClientFor = (connectionId: string) => {
+      if (!connectionId || !getRemoteConnection(connectionId)) throw new Error('Unknown remote connection')
+      const client = getHubConnectionClient(connectionId)
+      if (!client) throw new Error('This server is not connected')
+      return client
+    }
+
+    ipcMain.handle('client-mode:remote-list-directory', async (_event, connectionId: string, dirPath: string, options?: { includeFiles?: boolean }) => {
+      return await hubClientFor(connectionId).invoke(RPC_CHANNELS.fs.LIST_DIRECTORY, dirPath, options)
+    })
+
+    ipcMain.handle('client-mode:remote-home-dir', async (_event, connectionId: string) => {
+      return await hubClientFor(connectionId).invoke(RPC_CHANNELS.server.HOME_DIR)
+    })
+
+    /** The workspaces a saved server has, for the workspace dropdown's remote section. */
+    ipcMain.handle('client-mode:remote-workspaces', async (_event, connectionId: string) => {
+      return await hubClientFor(connectionId).invoke(RPC_CHANNELS.server.GET_WORKSPACES)
+    })
+
+    ipcMain.handle('client-mode:remote-check-slug', async (_event, connectionId: string, slug: string) => {
+      return await hubClientFor(connectionId).invoke(RPC_CHANNELS.workspaces.CHECK_SLUG, slug)
+    })
+
+    ipcMain.handle('client-mode:remote-create-workspace', async (_event, connectionId: string, folderPath: string, name: string) => {
+      return await hubClientFor(connectionId).invoke(RPC_CHANNELS.workspaces.CREATE, folderPath, name)
+    })
+
+    // App relaunch — needed in both modes (server config changes, client mode changes)
+    ipcMain.handle('app:relaunch', () => {
+      app.relaunch()
+      app.exit(0)
+    })
+
     // Create initial windows (restores from saved state or opens first workspace)
     // In headless mode the server runs without any UI — skip window creation.
     if (!isHeadless) {
@@ -1328,20 +1706,18 @@ app.whenReady().then(async () => {
     }
 
     // Run credential health check at startup to detect issues early
-    // (corruption, machine migration, missing credentials for default connection)
-    // Skip in thin-client mode — credentials are managed by the remote server.
-    if (!isClientOnly) {
-      try {
-        const { getCredentialManager } = await import('@craft-agent/shared/credentials')
-        const credentialManager = getCredentialManager()
-        const health = await credentialManager.checkHealth()
-        if (!health.healthy) {
-          mainLog.warn('Credential health check failed:', health.issues)
-          // Issues will be displayed in Settings → AI when user navigates there
-        }
-      } catch (err) {
-        mainLog.error('Credential health check error:', err)
+    // (corruption, machine migration, missing credentials for default connection).
+    // The local runtime always exists now, even when a window is on another hub.
+    try {
+      const { getCredentialManager } = await import('@craft-agent/shared/credentials')
+      const credentialManager = getCredentialManager()
+      const health = await credentialManager.checkHealth()
+      if (!health.healthy) {
+        mainLog.warn('Credential health check failed:', health.issues)
+        // Issues will be displayed in Settings → AI when user navigates there
       }
+    } catch (err) {
+      mainLog.error('Credential health check error:', err)
     }
 
     // Initialize power manager (loads setting, must happen after config is available)
@@ -1455,21 +1831,25 @@ let isQuitting = false
 
 /**
  * Capture the current multi-window state and persist it to disk.
- * Called from two sites:
+ * Called from three sites:
  *   - before-quit (normal quit path, reason='before-quit')
  *   - installUpdate hook (auto-update path, reason='pre-update'), because
  *     electron-updater destroys BrowserWindows between quitAndInstall and
  *     before-quit firing — by the time before-quit runs, getWindowStates()
  *     returns an empty array and would clobber the on-disk state.
+ *   - a window changing where it points (reason='window-change'), so the mode on
+ *     disk is the mode on screen even if the process never reaches before-quit.
  * Returns the number of windows saved, or -1 if windowManager isn't ready.
  */
-function captureAndSaveWindowState(reason: 'before-quit' | 'pre-update'): number {
+function captureAndSaveWindowState(reason: 'before-quit' | 'pre-update' | 'window-change'): number {
   if (!windowManager) return -1
   const windows = windowManager.getWindowStates()
   const focusedWindow = BrowserWindow.getFocusedWindow()
+  // A switch can be triggered from an unfocused window (a dialog, a tray activation); falling
+  // back keeps the previous answer instead of blanking the stacking preference.
   const lastFocusedWorkspaceId = focusedWindow
     ? windowManager.getWorkspaceForWindow(focusedWindow.webContents.id) ?? undefined
-    : undefined
+    : windowManager.getLastActiveWorkspaceId() ?? undefined
   saveWindowState({ windows, lastFocusedWorkspaceId })
   mainLog.info('[window-state] saved', { windowCount: windows.length, reason })
   return windows.length
@@ -1503,6 +1883,9 @@ async function performQuitCleanup(): Promise<void> {
   if (browserPaneManager) {
     browserPaneManager.destroyAll()
   }
+
+  // Close the app-level hub link (window connections die with their windows)
+  stopHubConnections()
 
   // Take the tray icon down (Windows leaves it behind until the mouse passes over it otherwise)
   destroyTray()

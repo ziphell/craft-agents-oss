@@ -2,12 +2,25 @@ import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import { requestClientOpenFileDialog, requestClientSaveFileDialog } from '@craft-agent/server-core/transport'
+import { readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { basename, join } from 'node:path'
 import type { HandlerDeps } from '../handler-deps'
 import type { DesignActionRequest } from '@craft-agent/shared/designs'
 import { getDesignConfigRelativePath } from '@craft-agent/shared/designs'
 import type { DesignActionBroker, DesignActionExecutors } from '@craft-agent/shared/designs'
 import type { DesignExportFormat } from '@craft-agent/shared/designs/types'
+import { createExportDir, storeExport } from '../../services/export-store'
 import { assertDesignSourceUsable } from '../../designs/source-gate'
+
+/** What a produced export is served as when the caller downloads it. */
+const EXPORT_MIME: Record<DesignExportFormat, string> = {
+  pdf: 'application/pdf',
+  png: 'application/zip',
+  html: 'text/html; charset=utf-8',
+  zip: 'application/zip',
+  video: 'video/mp4',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+}
 
 export const HANDLED_CHANNELS = [
   RPC_CHANNELS.designs.GET,
@@ -502,6 +515,7 @@ export function registerDesignsHandlers(server: RpcServer, deps: HandlerDeps): v
       resolveMotionSettings,
       writeDesignHtmlExport,
       writeDesignZipExport,
+      createZipArchive,
     } = await import('@craft-agent/shared/designs')
 
     const config = loadDesignConfig(workspace.rootPath, designSlug)
@@ -530,6 +544,74 @@ export function registerDesignsHandlers(server: RpcServer, deps: HandlerDeps): v
       throw new Error('Video export is only available for motion designs.')
     }
 
+    // Where the file goes is the one thing the two kinds of caller disagree on:
+    // - a caller on this machine picks a path, and the write happens here (as it always has);
+    // - a caller elsewhere (webui, thin client) cannot name a path that exists here, so the file
+    //   lands in a scratch directory and travels as a download.
+    const callerIsLocal = server.isLocalClient?.(ctx.clientId) ?? true
+
+    // One write path for both: after the destination, every format is the same work.
+    const writeTo = async (destPath: string): Promise<string[]> => {
+      if (format === 'html') return [writeDesignHtmlExport(workspace.rootPath, designSlug, destPath)]
+      if (format === 'zip') return [writeDesignZipExport(workspace.rootPath, designSlug, destPath)]
+      if (format === 'video') return deps.designExportRender!({
+        format: 'video',
+        workspaceRootPath: workspace.rootPath,
+        slug: designSlug,
+        destPath,
+        aspect: motion!.aspect,
+        motion: motion!,
+      })
+      if (format === 'pptx') return deps.designExportRender!({
+        format: 'pptx',
+        workspaceRootPath: workspace.rootPath,
+        slug: designSlug,
+        destPath,
+        aspect,
+      })
+      return deps.designExportRender!({
+        format: 'pdf',
+        workspaceRootPath: workspace.rootPath,
+        slug: designSlug,
+        destPath,
+        aspect,
+      })
+    }
+
+    if (!callerIsLocal) {
+      const dir = createExportDir()
+      try {
+        if (format === 'png') {
+          const pages = await deps.designExportRender!({
+            format: 'png',
+            workspaceRootPath: workspace.rootPath,
+            slug: designSlug,
+            destPath: dir,
+            aspect,
+          })
+          // A set of images is still one download: the pages go in a zip named for the design.
+          const name = `${designSlug}-png.zip`
+          const archive = join(dir, name)
+          writeFileSync(archive, createZipArchive(
+            pages.map((page) => ({ path: basename(page), data: readFileSync(page) })),
+          ))
+          log.info(`Exported design ${designSlug} as ${pages.length} PNG(s) for download`)
+          return { canceled: false, paths: [], download: storeExport({ path: archive, name, mime: EXPORT_MIME.png }) }
+        }
+
+        const name = format === 'video'
+          ? designMotionFileName(designSlug)
+          : designExportFileName(designSlug, format)
+        const filePath = join(dir, name)
+        await writeTo(filePath)
+        log.info(`Exported design ${designSlug} as ${format} for download`)
+        return { canceled: false, paths: [], download: storeExport({ path: filePath, name, mime: EXPORT_MIME[format] }) }
+      } catch (error) {
+        rmSync(dir, { recursive: true, force: true })
+        throw error
+      }
+    }
+
     if (format === 'png') {
       const picked = await requestClientOpenFileDialog(server, ctx.clientId, {
         title: 'Choose a folder for the page images',
@@ -554,34 +636,8 @@ export function registerDesignsHandlers(server: RpcServer, deps: HandlerDeps): v
         : { defaultPath: designExportFileName(designSlug, format), filters: designExportFilters(format) }),
     })
     if (picked.canceled || !picked.filePath) return { canceled: true, paths: [] }
-    const destPath = picked.filePath
 
-    let paths: string[]
-    if (format === 'html') paths = [writeDesignHtmlExport(workspace.rootPath, designSlug, destPath)]
-    else if (format === 'zip') paths = [writeDesignZipExport(workspace.rootPath, designSlug, destPath)]
-    else if (format === 'video') paths = await deps.designExportRender!({
-      format: 'video',
-      workspaceRootPath: workspace.rootPath,
-      slug: designSlug,
-      destPath,
-      aspect: motion!.aspect,
-      motion: motion!,
-    })
-    else if (format === 'pptx') paths = await deps.designExportRender!({
-      format: 'pptx',
-      workspaceRootPath: workspace.rootPath,
-      slug: designSlug,
-      destPath,
-      aspect,
-    })
-    else paths = await deps.designExportRender!({
-      format: 'pdf',
-      workspaceRootPath: workspace.rootPath,
-      slug: designSlug,
-      destPath,
-      aspect,
-    })
-
+    const paths = await writeTo(picked.filePath)
     log.info(`Exported design ${designSlug} as ${format}`)
     return { canceled: false, paths }
   })

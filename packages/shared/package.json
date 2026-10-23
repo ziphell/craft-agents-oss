@@ -25,6 +25,7 @@
     "./branding": "./src/branding.ts",
     "./colors": "./src/colors/index.ts",
     "./config": "./src/config/index.ts",
+    "./config/client-config": "./src/config/client-config.ts",
     "./config/paths": "./src/config/paths.ts",
     "./config/types": "./src/config/types.ts",
     "./credentials": "./src/credentials/index.ts",

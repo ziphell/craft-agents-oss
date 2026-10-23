@@ -11,9 +11,19 @@ export interface WindowBounds {
   height: number
 }
 
+/** What window state keeps about a remote window: which saved server, and where on it. */
+export interface SavedRemoteWindow {
+  connectionId: string
+  workspaceId?: string
+  /** The server's name at quit time, so a window can be titled before it reconnects. */
+  name?: string
+}
+
 export interface SavedWindow {
   type: 'main'
   workspaceId: string
+  /** The saved server this window was on; absent means it was a local window. */
+  remote?: SavedRemoteWindow
   bounds: WindowBounds
   focused?: boolean
   // Full URL captured from webContents.getURL() at quit time.

@@ -107,8 +107,8 @@ export type FilePreviewState =
 interface LinkInterceptorOptions {
   /** Open file in default external application (e.g., VS Code) */
   openFileExternal: (path: string) => Promise<void>
-  /** Open URL in default browser */
-  openUrl: (url: string) => Promise<void>
+  /** Open URL in default browser. `sessionId` is the conversation the click came from, when known. */
+  openUrl: (url: string, sessionId?: string) => Promise<void>
   /** Reveal file in system file manager */
   showInFolder: (path: string) => Promise<void>
   /** Read file as UTF-8 text (for code, markdown, json, text and html previews) */
@@ -125,7 +125,7 @@ interface LinkInterceptorResult {
   /** Replacement for App.tsx handleOpenFile — classifies and routes */
   handleOpenFile: (path: string) => void
   /** Replacement for App.tsx handleOpenUrl — always opens externally */
-  handleOpenUrl: (url: string) => void
+  handleOpenUrl: (url: string, sessionId?: string) => void
   /** Open file directly in external app, bypassing classification/preview */
   openFileExternal: (path: string) => void
   /** Current preview state, drives which overlay renders in App.tsx */
@@ -210,8 +210,8 @@ export function useLinkInterceptor(options: LinkInterceptorOptions): LinkInterce
    * asked for that, and the shell opener for anything that is not a page. This hook only
    * carries the click.
    */
-  const handleOpenUrl = useCallback((url: string) => {
-    optionsRef.current.openUrl(url)
+  const handleOpenUrl = useCallback((url: string, sessionId?: string) => {
+    optionsRef.current.openUrl(url, sessionId)
   }, []) // Stable: uses optionsRef
 
   const closePreview = useCallback(() => {

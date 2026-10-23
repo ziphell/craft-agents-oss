@@ -8,6 +8,7 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { useEffect, useState, useMemo, useCallback } from 'react'
+import { useAtomValue } from 'jotai'
 import { AlertCircle } from 'lucide-react'
 import { EditPopover, EditButton, getEditConfig } from '@/components/ui/EditPopover'
 import { SourceAvatar } from '@/components/ui/source-avatar'
@@ -27,6 +28,7 @@ import {
   type ToolRow,
 } from '@/components/info'
 import type { LoadedSource, McpToolWithPermission } from '../../shared/types'
+import { windowIsRemoteAtom } from '@/atoms/window-mode'
 import type { PermissionsConfigFile } from '@craft-agent/shared/agent/modes'
 
 interface SourceInfoPageProps {
@@ -174,6 +176,8 @@ function getPermissionsDescription(source: LoadedSource, t: (key: string) => str
 export default function SourceInfoPage({ sourceSlug, workspaceId, onDelete }: SourceInfoPageProps) {
   const { t } = useTranslation()
   const { navigateToSource } = useNavigation()
+  // A remote window's source files are on the hub, so nothing here can reveal them.
+  const canRevealLocally = !useAtomValue(windowIsRemoteAtom)
   const [source, setSource] = useState<LoadedSource | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -325,10 +329,12 @@ export default function SourceInfoPage({ sourceSlug, workspaceId, onDelete }: So
     if (!window.electronAPI) return
     if (target.startsWith('http://') || target.startsWith('https://')) {
       await window.electronAPI.openUrl(target)
-    } else {
+    } else if (canRevealLocally) {
       await window.electronAPI.showInFolder(target)
+    } else {
+      toast.info(t('toast.fileOnServer'))
     }
-  }, [])
+  }, [canRevealLocally, t])
 
   // Handle opening URL (website or folder)
   const handleOpenUrl = useCallback(async () => {
@@ -338,11 +344,11 @@ export default function SourceInfoPage({ sourceSlug, workspaceId, onDelete }: So
 
   // Handle opening source folder
   const handleOpenSourceFolder = useCallback(async () => {
-    if (!source) return
+    if (!source || !canRevealLocally) return
     if (window.electronAPI) {
       await window.electronAPI.showInFolder(source.folderPath)
     }
-  }, [source])
+  }, [source, canRevealLocally])
 
   // Handle deleting source (navigates to source list, preserving current filter)
   const handleDelete = useCallback(async () => {
@@ -381,6 +387,7 @@ export default function SourceInfoPage({ sourceSlug, workspaceId, onDelete }: So
             sourceName={sourceName}
             onOpenInNewWindow={handleOpenInNewWindow}
             onShowInFinder={handleOpenSourceFolder}
+            canShowInFinder={canRevealLocally}
             onDelete={handleDelete}
           />
         }

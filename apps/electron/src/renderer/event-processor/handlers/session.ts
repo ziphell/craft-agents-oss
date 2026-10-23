@@ -639,8 +639,12 @@ export function handleUserMessage(
         messages: updatedMessages,
         lastMessageAt: Date.now(),
         lastMessageRole: 'user',  // Clear plan badge when user responds
-        // Set isProcessing when message is accepted/processing (enables multi-window sync)
-        isProcessing: status === 'accepted' || status === 'processing',
+        // A user_message event always means a turn is running. `queued` is only
+        // emitted while the current turn is still processing, so it must not
+        // clear the flag: doing so made a mid-stream send look like the turn had
+        // ended (streaming indicator, Stop and Send-now all disappear while the
+        // backend keeps working).
+        isProcessing: true,
       },
       streaming,
     },

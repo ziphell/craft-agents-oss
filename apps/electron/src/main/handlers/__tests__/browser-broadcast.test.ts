@@ -91,6 +91,7 @@ function makeDeps(opts: {
       onStateChange: (cb: (info: BrowserInstanceInfo) => void) => opts.captureStateCb?.(cb),
       onRemoved: (cb: (id: string) => void) => opts.captureRemovedCb?.(cb),
       onInteracted: (cb: (id: string) => void) => opts.captureInteractedCb?.(cb),
+      setViewStreamEndedHandler: () => {},
     } as unknown as NonNullable<HandlerDeps['browserPaneManager']>,
     oauthFlowStore: {} as HandlerDeps['oauthFlowStore'],
   }
@@ -338,5 +339,48 @@ describe('browser handler — workspace filtering', () => {
         'unbound',
       ])
     })
+  })
+})
+
+describe('browser handler — the profile a link opens in', () => {
+  /**
+   * A link clicked in a conversation belongs to that conversation: it must land in the
+   * window its `browser_tool` commands work in, whose profile it is. A link with no
+   * conversation behind it (sidebar, settings) keeps the workspace's default profile.
+   */
+  async function openUrl(incoming: unknown[]): Promise<string[]> {
+    const calls: string[] = []
+    const recorder = makeServer()
+    const { registerBrowserHandlers } = await import('../browser')
+    const deps = makeDeps({ instances: [] })
+    registerBrowserHandlers(recorder.server, {
+      ...deps,
+      browserPaneManager: {
+        listInstances: () => [],
+        onStateChange: () => {},
+        onRemoved: () => {},
+        onInteracted: () => {},
+        setViewStreamEndedHandler: () => {},
+        createForSession: (sessionId: string | null) => {
+          calls.push(sessionId ?? 'no-session')
+          return 'instance-1'
+        },
+        createTab: () => 'tab-1',
+        focus: () => {},
+        navigate: async () => ({ url: 'https://example.com', title: 'Example' }),
+        getActiveTab: () => null,
+      } as unknown as NonNullable<HandlerDeps['browserPaneManager']>,
+    })
+
+    await recorder.handlers.get('browser-pane:open-url')!({ workspaceId: 'ws-1' }, 'https://example.com', ...incoming)
+    return calls
+  }
+
+  it("opens a link from a conversation in that conversation's window", async () => {
+    expect(await openUrl(['sess-1'])).toEqual(['sess-1'])
+  })
+
+  it('falls back to the workspace window when no conversation is behind the click', async () => {
+    expect(await openUrl([])).toEqual(['no-session'])
   })
 })

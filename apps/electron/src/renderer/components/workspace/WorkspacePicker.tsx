@@ -1,5 +1,5 @@
 /**
- * WorkspacePicker — shown when a thin client connects without a workspace ID.
+ * WorkspacePicker — shown when a remote window connects without a workspace ID.
  * Lists remote server workspaces and allows selection or creation.
  */
 
@@ -11,8 +11,14 @@ import type { WorkspaceInfo } from '../../../shared/types'
 import {
   AddWorkspaceContainer,
   AddWorkspaceStepHeader,
+  AddWorkspaceSecondaryButton,
   AddWorkspacePrimaryButton,
 } from './primitives'
+import { AddWorkspace_RadioOption } from './AddWorkspace_RadioOption'
+import { ServerDirectoryBrowser } from '@/components/ServerDirectoryBrowser'
+import { useDirectoryPicker } from '@/hooks/useDirectoryPicker'
+
+type LocationOption = 'default' | 'folder'
 
 interface WorkspacePickerProps {
   onSelectWorkspace: (workspaceId: string) => void
@@ -25,6 +31,10 @@ export function WorkspacePicker({ onSelectWorkspace }: WorkspacePickerProps) {
   const [error, setError] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState('')
+  // The host is already settled here (this window's server), so only the workspace level is
+  // chosen: the server's default folder, or a folder picked on that same server.
+  const [location, setLocation] = useState<LocationOption>('default')
+  const [folderPath, setFolderPath] = useState<string | null>(null)
 
   // Load workspaces from server
   useEffect(() => {
@@ -39,17 +49,42 @@ export function WorkspacePicker({ onSelectWorkspace }: WorkspacePickerProps) {
       })
   }, [])
 
+  const handleFolderSelected = useCallback((path: string) => {
+    setFolderPath(path)
+    setLocation('folder')
+    // The folder's own name is the natural workspace name; keep a name already typed.
+    if (!newName.trim()) {
+      setNewName(path.split(/[\\/]/).pop() || path)
+    }
+  }, [newName])
+
+  const {
+    pickDirectory,
+    showServerBrowser,
+    serverBrowserMode,
+    cancelServerBrowser,
+    confirmServerBrowser,
+  } = useDirectoryPicker(handleFolderSelected)
+
   const handleCreate = useCallback(async () => {
     if (!newName.trim()) return
+    if (location === 'folder' && !folderPath) return
     setCreating(true)
+    setError(null)
     try {
-      const ws = await window.electronAPI.createServerWorkspace(newName.trim())
+      // Both calls run on this window's server: the default-location one there, and the folder
+      // one through workspace creation, which is registered on that server as well.
+      const ws = location === 'folder' && folderPath
+        ? await window.electronAPI.createWorkspace(folderPath, newName.trim())
+        : await window.electronAPI.createServerWorkspace(newName.trim())
       onSelectWorkspace(ws.id)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create workspace')
       setCreating(false)
     }
-  }, [newName, onSelectWorkspace])
+  }, [newName, location, folderPath, onSelectWorkspace])
+
+  const canCreate = !!newName.trim() && (location === 'default' || !!folderPath) && !creating
 
   if (loading) {
     return (
@@ -114,9 +149,39 @@ export function WorkspacePicker({ onSelectWorkspace }: WorkspacePickerProps) {
             placeholder={t("workspace.newWorkspaceName")}
             className="w-full rounded-md border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring"
           />
+
+          {/* Where on this server: its default folder, or any folder picked there. */}
+          <AddWorkspace_RadioOption
+            name="remote-location"
+            checked={location === 'default'}
+            onChange={() => setLocation('default')}
+            disabled={creating}
+            title={t("workspace.defaultLocation")}
+            subtitle={t("workspace.underDefaultFolder")}
+          />
+          <AddWorkspace_RadioOption
+            name="remote-location"
+            checked={location === 'folder'}
+            onChange={() => setLocation('folder')}
+            disabled={creating}
+            title={t("workspace.chooseLocation")}
+            subtitle={folderPath || t("workspace.pickLocation")}
+            action={location === 'folder' ? (
+              <AddWorkspaceSecondaryButton
+                onClick={(e) => {
+                  e.preventDefault()
+                  pickDirectory()
+                }}
+                disabled={creating}
+              >
+                {t("common.browse")}
+              </AddWorkspaceSecondaryButton>
+            ) : undefined}
+          />
+
           <AddWorkspacePrimaryButton
             onClick={handleCreate}
-            disabled={!newName.trim()}
+            disabled={!canCreate}
             loading={creating}
             loadingText={t("workspace.creating")}
             className="bg-accent hover:bg-accent/90 text-white"
@@ -126,6 +191,13 @@ export function WorkspacePicker({ onSelectWorkspace }: WorkspacePickerProps) {
           </AddWorkspacePrimaryButton>
         </div>
       </AddWorkspaceContainer>
+
+      <ServerDirectoryBrowser
+        open={showServerBrowser}
+        mode={serverBrowserMode}
+        onSelect={confirmServerBrowser}
+        onCancel={cancelServerBrowser}
+      />
     </div>
   )
 }

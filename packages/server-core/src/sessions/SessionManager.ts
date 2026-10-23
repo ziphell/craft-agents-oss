@@ -1,16 +1,17 @@
-import type { EventSink, RpcServer } from '@craft-agent/server-core/transport'
-import { CLIENT_BROWSER_INVOKE } from '@craft-agent/server-core/transport'
+import type { EventSink, RpcServer, DeviceFsRequest } from '@craft-agent/server-core/transport'
+import { CLIENT_BROWSER_INVOKE, CLIENT_DEVICE_EXEC, CLIENT_DEVICE_FS } from '@craft-agent/server-core/transport'
 import type { ISessionManager, IBrowserPaneManager, ExecutePromptAutomationInput } from '@craft-agent/server-core/handlers'
 import { RemoteBrowserPaneManager } from './RemoteBrowserPaneManager'
 import { validateFilePath, getWorkspaceAllowedDirs } from '@craft-agent/server-core/handlers'
 import { createScopedLogger, CONSOLE_LOGGER, type PlatformServices, type Logger } from '@craft-agent/server-core/runtime'
-import { basename, dirname, join, resolve } from 'path'
+import { basename, dirname, join, posix, resolve, win32 } from 'path'
+import { hostname } from 'node:os'
 import { existsSync } from 'fs'
 import { readFile, writeFile, mkdir } from 'fs/promises'
 import { randomUUID } from 'node:crypto'
-import { type AgentEvent, setPermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserPaneFns, generateConversationSummary, resolveKeepBackgroundTasksAlive, resolveToolName, setBrowserProfilePromptState, clearBrowserProfilePromptState } from '@craft-agent/shared/agent'
+import { type AgentEvent, setPermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserPaneFns, generateConversationSummary, resolveKeepBackgroundTasksAlive, resolveToolName, setBrowserProfilePromptState, setBrowserHostState, clearBrowserProfilePromptState, clearBrowserHostState, type DeviceToolFns, type DeviceToolInfo, type DeviceExecArgs, type DeviceExecResult, type DeviceFsArgs, type DeviceFsResult } from '@craft-agent/shared/agent'
 import type { BrowserTabInfo } from '@craft-agent/shared/agent/browser-pane'
-import type { BrowserInstanceInfo, BrowserTabSummary, TabBelongsTo } from '@craft-agent/shared/protocol'
+import type { BrowserInstanceInfo, BrowserTabSummary, TabBelongsTo, ConnectedClientInfo } from '@craft-agent/shared/protocol'
 import { sameTask, workOfSession } from '@craft-agent/shared/protocol'
 import { drawioDocument, drawioPages } from '@craft-agent/shared/drawio/types'
 import {
@@ -31,7 +32,7 @@ import {
   type BackendHostRuntimeContext,
   type PostInitResult,
 } from '@craft-agent/shared/agent/backend'
-import { getLlmConnection, getLlmConnections, getDefaultLlmConnection, getDefaultThinkingLevel, resetManagedAnthropicAuthEnvVars, getPersistedUiLanguage, resolveTitleLanguageName, toCustomEndpointModels, getBrowserProfiles, resolveBrowserProfileRef, resolveConversationBrowserProfileId, DEFAULT_BROWSER_PROFILE_ID } from '@craft-agent/shared/config'
+import { getLlmConnection, getLlmConnections, getDefaultLlmConnection, getDefaultThinkingLevel, resetManagedAnthropicAuthEnvVars, getPersistedUiLanguage, resolveTitleLanguageName, toCustomEndpointModels, getBrowserProfiles, resolveBrowserProfileRef, resolveConversationBrowserProfileId, DEFAULT_BROWSER_PROFILE_ID, getDeviceId } from '@craft-agent/shared/config'
 import { PrivilegedExecutionBroker } from '@craft-agent/server-core/services'
 import { isValidWorkingDirectory } from '../utils/path-validation'
 import { InitGate } from '@craft-agent/server-core/domain'
@@ -43,6 +44,7 @@ import {
   loadPreferences,
   migrateLegacyCredentials,
   migrateLegacyLlmConnectionsConfig,
+  migrateLegacyRemoteWorkspaces,
   migrateOrphanedDefaultConnections,
   MODEL_REGISTRY,
   type Workspace,
@@ -519,6 +521,7 @@ async function resolveToolDisplayMeta(
           'update_user_preferences': 'Update Preferences',
           'send_developer_feedback': 'Send Feedback',
           'browser_tool': 'Browser',
+          'device_tool': 'Device',
         },
       }
 
@@ -1229,9 +1232,8 @@ export class SessionManager implements ISessionManager {
   private browserPaneManager: IBrowserPaneManager | null = null
   private installTweaksFn?: (workspaceId: string) => void
   private rpcServer: RpcServer | null = null
-  private remoteBpms = new Map<string, RemoteBrowserPaneManager>()
-  /** Pinned desktop client per session for `client:browser:invoke` routing. */
-  private browserHostBySession = new Map<string, string>()
+  /** Browser bridges for one **named** device, for `device_tool`'s nested `browser`. */
+  private remoteDeviceBpms = new Map<string, RemoteBrowserPaneManager>()
   private eventSink: EventSink | null = null
   private enqueueDesignThumbnailFn?: (req: { workspaceId: string; workspaceRootPath: string; slug: string }) => void
   private designsChangedNotifierFn?: (workspaceId: string) => void
@@ -1291,106 +1293,278 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
-   * Provide the WS RPC server so remote clients can host browser tools.
+   * Provide the WS RPC server so `device_tool` can reach other machines.
    *
-   * When called, the SM activates the remote-bridge code path: per-session
-   * `RemoteBrowserPaneManager` instances are created lazily by
-   * {@link getBrowserPaneManagerForSession}, and the browser-host client is
-   * resolved via {@link getBrowserHostClient} with capability-aware fallback.
-   *
-   * Local Electron callers do not need to call this — they already
-   * call `setBrowserPaneManager(bpm)` with the in-process BPM, which takes
-   * precedence over the remote bridge in {@link getBrowserPaneManagerForSession}.
+   * This is the *other* door: `browser_tool` runs on this process's own browser and never
+   * follows a connected client. A headless server (no browser of its own) simply has no
+   * `browser_tool`; naming a device through `device_tool` is the only way to browse elsewhere.
    */
   setRpcServer(server: RpcServer): void {
     this.rpcServer = server
-    sessionLog.info('[browser-pane] setRpcServer called — remote browser bridge is now available')
+    sessionLog.info('[browser-pane] setRpcServer called — devices are reachable')
   }
 
   /**
-   * Resolve the {@link IBrowserPaneManager} that owns the user's local browser
-   * for a given session. Returns:
+   * The browser that serves a session's `browser_*` tools: this process's own, or nothing.
    *
-   * 1. The locally-injected `browserPaneManager` when present (Electron client co-located
-   *    with the agent), regardless of session.
-   * 2. A session-bound {@link RemoteBrowserPaneManager} when `rpcServer` is set.
-   *    Cached in `remoteBpms` so repeat lookups don't allocate.
-   * 3. `null` when there's neither a local BPM nor an RPC server.
+   * Which client sent the last message is not a routing decision. Thin clients come and go, and a
+   * conversation that moved its browser to whoever spoke last would leave its tabs on the machine
+   * it left behind. Other machines' browsers are reached by naming them through `device_tool`,
+   * which is likewise the only door when this process has no browser at all.
    */
-  getBrowserPaneManagerForSession(sid: string): IBrowserPaneManager | null {
-    if (this.browserPaneManager) return this.browserPaneManager
-    if (!this.rpcServer) return null
+  getBrowserPaneManagerForSession(_sid: string): IBrowserPaneManager | null {
+    return this.browserPaneManager
+  }
 
-    const cached = this.remoteBpms.get(sid)
+  /**
+   * Called by the transport bootstrap on `onClientDisconnected`. Drops the bridges held by
+   * `clientId` so the next `device_tool` call re-resolves the device (and says it is offline)
+   * rather than holding a socket-shaped memory of it.
+   */
+  onClientDisconnected(clientId: string): void {
+    for (const key of [...this.remoteDeviceBpms.keys()]) {
+      if (key.endsWith(`::${clientId}`)) this.remoteDeviceBpms.delete(key)
+    }
+  }
+
+  /** Whether `clientId` is one of this server's own windows rather than another machine. */
+  private isLocalClient(clientId: string): boolean {
+    return this.rpcServer?.isLocalClient?.(clientId) ?? false
+  }
+
+  // ---------------------------------------------------------------------------
+  // Devices — the machine-named door `device_tool` reaches through
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Every device the hub can reach, with the connections currently backing it.
+   *
+   * This server's own machine is deliberately **not** one of them: it is where the agent already
+   * runs, so its shell, files and browser need no name — `device_tool` names other machines. A
+   * machine can hold several connections (an app-level link, a window, a reconnect mid-flight);
+   * they are one device because they are one machine. Which connection answers a call is decided
+   * in {@link resolveDevice}.
+   */
+  private deviceEntries(): Array<{
+    info: DeviceToolInfo
+    clients: Array<{ clientId: string; workspaceId: string | null }>
+  }> {
+    const clients = this.rpcServer?.getConnectedClients?.() ?? []
+    const entries = new Map<string, {
+      info: DeviceToolInfo
+      clients: Array<{ clientId: string; workspaceId: string | null }>
+    }>()
+
+    for (const client of clients) {
+      if (this.isLocalClient(client.clientId)) continue
+
+      const id = client.deviceId ?? `client:${client.clientId}`
+      const capabilities = {
+        shell: client.capabilities.includes(CLIENT_DEVICE_EXEC),
+        files: client.capabilities.includes(CLIENT_DEVICE_FS),
+        browser: client.capabilities.includes(CLIENT_BROWSER_INVOKE),
+      }
+
+      const existing = entries.get(id)
+      const roots = this.deviceRoots(client)
+      if (existing) {
+        existing.info.capabilities.shell ||= capabilities.shell
+        existing.info.capabilities.files ||= capabilities.files
+        existing.info.capabilities.browser ||= capabilities.browser
+        for (const root of roots) {
+          if (!existing.info.workspaceRoots.includes(root)) existing.info.workspaceRoots.push(root)
+        }
+        existing.clients.push({ clientId: client.clientId, workspaceId: client.workspaceId })
+        continue
+      }
+
+      entries.set(id, {
+        info: {
+          id,
+          name: client.name,
+          platform: client.platform,
+          workspaceRoots: roots,
+          capabilities,
+        },
+        clients: [{ clientId: client.clientId, workspaceId: client.workspaceId }],
+      })
+    }
+
+    return [...entries.values()]
+      // A client that answers none of the three (a browser UI, say) is connected but is not a
+      // device this tool can do anything with — listing it would only invite calls that must fail.
+      .filter((entry) =>
+        entry.info.capabilities.shell || entry.info.capabilities.files || entry.info.capabilities.browser)
+      .sort((a, b) => a.info.name.localeCompare(b.info.name))
+  }
+
+  /**
+   * Devices other than this machine, one row per machine — what the hub's Server settings lists.
+   * This is the same list `device_tool` names, so the UI and the agent agree on what exists.
+   */
+  getConnectedDevices(): DeviceToolInfo[] {
+    return this.deviceEntries().map((entry) => entry.info)
+  }
+
+  /**
+   * The directory one connection offers to this hub.
+   *
+   * A device works in `<hubRootBase>/<this hub's device id>/<the connection's workspace id>`, which
+   * it creates on first use. That directory is the whole boundary: it does not depend on which
+   * local workspaces the client happens to have, and two hubs on one machine never share one.
+   */
+  private deviceRoots(client: ConnectedClientInfo): string[] {
+    const base = client.hubRootBase?.trim()
+    const workspaceId = client.workspaceId?.trim()
+    if (!base || !workspaceId) return []
+    // The base came from the device, so its separators are the device's — not this server's.
+    const joinPath = client.platform === 'win32' ? win32.join : posix.join
+    return [joinPath(base, getDeviceId(), workspaceId)]
+  }
+
+  /**
+   * A device by id, then by display name, and the connection that can serve `capability`.
+   *
+   * A name that fits two machines is refused rather than guessed — the whole point of naming a
+   * device is that the answer does not drift.
+   */
+  private resolveDevice(
+    ref: string,
+    capability: 'shell' | 'files' | 'browser',
+  ): { info: DeviceToolInfo; clientId: string } {
+    const wanted = ref.trim()
+    const entries = this.deviceEntries()
+    if (entries.length === 0) {
+      throw new Error('No devices are connected. Connect another client to this hub; this machine\'s own tools need no device.')
+    }
+
+    const named = entries.filter(
+      (entry) => entry.info.id === wanted || entry.info.name.toLowerCase() === wanted.toLowerCase(),
+    )
+    if (named.length === 0) {
+      const known = entries.map((entry) => `${entry.info.name} (${entry.info.id})`).join(', ')
+      throw new Error(`No device "${ref}". Devices: ${known}.`)
+    }
+    if (named.length > 1) {
+      const known = named.map((entry) => entry.info.id).join(', ')
+      throw new Error(`"${ref}" names more than one device (${known}); use the id.`)
+    }
+
+    const entry = named[0]!
+    if (!entry.info.capabilities[capability]) {
+      throw new Error(`Device "${entry.info.name}" does not allow ${capability} access.`)
+    }
+
+    // A device's capability is the union of its connections', but a call has to go to one that
+    // has it. A **workspace-free** connection first — that is the process-level device link, which
+    // no window owns and which therefore outlives every window and is never mid-close; a window's
+    // connection last.
+    const servers = entry.clients
+      .filter((client) => this.clientHasCapability(client.clientId, capability))
+      .sort((a, b) => Number(a.workspaceId !== null) - Number(b.workspaceId !== null))
+    const server = servers[0]
+    if (!server) {
+      throw new Error(`Device "${entry.info.name}" is connected but cannot serve ${capability} right now.`)
+    }
+    return { info: entry.info, clientId: server.clientId }
+  }
+
+  private clientHasCapability(clientId: string, capability: 'shell' | 'files' | 'browser'): boolean {
+    const channel = capability === 'shell'
+      ? CLIENT_DEVICE_EXEC
+      : capability === 'files' ? CLIENT_DEVICE_FS : CLIENT_BROWSER_INVOKE
+    return this.rpcServer?.hasClientCapability(clientId, channel) ?? false
+  }
+
+  /**
+   * The browser of one **named** device, for `device_tool`'s nested `browser`.
+   *
+   * The answer is a bridge pinned to that client, and there is no substitute when it has no
+   * browser.
+   */
+  private browserPaneManagerForClient(sid: string, clientId: string): IBrowserPaneManager {
+    if (!this.rpcServer) throw new Error('No browser is reachable from this server.')
+
+    const key = `${sid}::${clientId}`
+    const cached = this.remoteDeviceBpms.get(key)
     if (cached) return cached
 
     const session = this.sessions.get(sid)
-    if (!session) return null
-
     const bridge = new RemoteBrowserPaneManager({
       sessionId: sid,
-      workspaceId: session.workspace.id,
+      workspaceId: session?.workspace.id ?? '',
       rpcServer: this.rpcServer,
-      getHostClient: () => this.getBrowserHostClient(sid),
-      // Read per call rather than captured: a session can be bound to a task after it exists
-      // (`bindExistingSessionToTask`), and its tabs follow it.
+      getHostClient: () => clientId,
+      // Read per call: a session can be bound to a task after it exists, and its tabs follow it.
       getWork: () => {
         const live = this.sessions.get(sid)
         return live ? workOfSession(live) : null
       },
-      // Read per call for the same reason: a conversation can switch profiles between two commands,
-      // and its next command has to land in that profile's window.
       getProfileId: () => this.getBrowserProfileForSession(sid),
     })
-    this.remoteBpms.set(sid, bridge)
+    this.remoteDeviceBpms.set(key, bridge)
     return bridge
   }
 
   /**
-   * Record which desktop client should host this session's browser. Called
-   * with `ctx.clientId` from the `sessions.sendMessage` RPC handler so the
-   * agent's browser_* tools route back to the client that posted the message.
+   * Back `device_tool` for one conversation. Two surfaces, deliberately separate:
    *
-   * No-op when `callerClientId` is undefined — preserves the existing pin
-   * (lets reconnected clients continue holding the host role).
+   * - `list()` — **meta**: which devices exist.
+   * - `exec` / `fs` / `getBrowserFns` — **proxy**: each requires a device, resolves it through
+   *   {@link resolveDevice}, and sends the call to that device's connection.
+   *
+   * Nothing here reads the conversation's own browser ({@link getBrowserPaneManagerForSession}),
+   * which is this process's. A proxy names its machine, and when that machine cannot answer the
+   * call it fails rather than sliding to another one.
    */
-  private setLastMessageClientId(sid: string, callerClientId: string | undefined): void {
-    if (!callerClientId) return
-    this.browserHostBySession.set(sid, callerClientId)
-  }
-
-  /**
-   * Called by the transport bootstrap on `onClientDisconnected`. Drops any
-   * pins held by `clientId` so the next browser tool call re-resolves via
-   * {@link findClientsWithCapability} instead of trying to ship to a dead client.
-   */
-  onClientDisconnected(clientId: string): void {
-    for (const [sid, pinned] of this.browserHostBySession) {
-      if (pinned === clientId) this.browserHostBySession.delete(sid)
+  private createDeviceToolFns(
+    workspaceId: string,
+    getBrowserFnsForDevice: (clientId: string) => BrowserPaneFns,
+  ): DeviceToolFns {
+    const invoke = async <T>(clientId: string, channel: string, payload: unknown, timeoutMs: number): Promise<T> => {
+      const server = this.rpcServer
+      if (!server) throw new Error('Devices are not reachable from this server.')
+      return (server.invokeClientWithTimeout
+        ? server.invokeClientWithTimeout(clientId, channel, [payload], timeoutMs)
+        : server.invokeClient(clientId, channel, payload)) as Promise<T>
     }
-  }
 
-  /**
-   * Pinned client first, with fallback to any connected client for the workspace
-   * that advertises `client:browser:invoke`. The fallback handles reconnect-with-
-   * new-clientId so the agent isn't stuck waiting for another user message.
-   */
-  private getBrowserHostClient(sid: string): string | null {
-    if (!this.rpcServer) return null
-    const pinned = this.browserHostBySession.get(sid)
-    if (pinned && this.rpcServer.hasClientCapability(pinned, CLIENT_BROWSER_INVOKE)) {
-      return pinned
+    /**
+     * Which directory the call works in on the far side.
+     *
+     * The device is told which hub is asking and which workspace this conversation is in; it turns
+     * the pair into `<its hub root base>/<this hub>/<workspace>` and creates it.
+     */
+    const hubContext = workspaceId
+      ? { hubDeviceId: getDeviceId(), workspaceId }
+      : {}
+
+    return {
+      list: async () => this.getConnectedDevices(),
+      exec: async (device: string, args: DeviceExecArgs) => {
+        const { clientId } = this.resolveDevice(device, 'shell')
+        const timeoutMs = Math.min(Math.max(args.timeoutMs ?? 60_000, 1_000), 300_000)
+        return await invoke<DeviceExecResult>(
+          clientId,
+          CLIENT_DEVICE_EXEC,
+          { v: 1, ...hubContext, ...args, timeoutMs },
+          // The device answers when the command ends, so the reply deadline follows the command's
+          // own bound — otherwise the hub gives up while the device keeps running it.
+          timeoutMs + 15_000,
+        )
+      },
+      fs: async (device: string, args: DeviceFsArgs) => {
+        const { clientId } = this.resolveDevice(device, 'files')
+        const req: DeviceFsRequest = { v: 1, ...hubContext, ...args }
+        return await invoke<DeviceFsResult>(clientId, CLIENT_DEVICE_FS, req, 60_000)
+      },
+      getBrowserFns: async (device: string) => {
+        // Resolved to a connection first: a device that is offline, or that does not allow browser
+        // work, is an error here — never a reason to use this conversation's own browser instead.
+        const { clientId } = this.resolveDevice(device, 'browser')
+        return getBrowserFnsForDevice(clientId)
+      },
     }
-    const session = this.sessions.get(sid)
-    if (!session) return null
-    const candidates = this.rpcServer.findClientsWithCapability(
-      CLIENT_BROWSER_INVOKE,
-      { workspaceId: session.workspace.id },
-    )
-    const fallback = candidates[0]
-    if (!fallback) return null
-    this.browserHostBySession.set(sid, fallback)
-    return fallback
   }
 
   /** Returns a strictly increasing timestamp (ms). When Date.now() collides with
@@ -1943,6 +2117,10 @@ export class SessionManager implements ISessionManager {
 
       // Fix defaultLlmConnection if it points to a non-existent connection
       migrateOrphanedDefaultConnections()
+
+      // A workspace no longer carries a server of its own: legacy remote workspaces become
+      // saved connections (one per URL), and the workspace entries are dropped.
+      migrateLegacyRemoteWorkspaces()
 
       // Migrate legacy credentials to LLM connection format (one-time migration)
       // This ensures credentials saved before LLM connections are available via the new system
@@ -3680,26 +3858,24 @@ export class SessionManager implements ISessionManager {
       // Wire up browser pane tools — merge BrowserPaneFns into session callbacks
       // so browser_* tools can delegate to BrowserPaneManager.
       //
-      // Always register when EITHER a local BPM is set OR an RPC server is
-      // available (which lets `getBrowserPaneManagerForSession` lazily build a
-      // RemoteBrowserPaneManager). Calls fail per-method with
-      // BROWSER_NO_CAPABLE_CLIENT if no desktop client is connected, instead
-      // of "tool unavailable".
+      // A server with a local browser registers them; one without (headless, WebUI-only) does not,
+      // and `browser_tool` refuses instead of borrowing a connected client's browser. Other
+      // machines are reached only by naming them through `device_tool`.
       sessionLog.info('[browser-pane] BPF gate check', {
         sessionId: managed.id,
         hasLocalBpm: !!this.browserPaneManager,
-        hasRpcServer: !!this.rpcServer,
       })
-      if (this.browserPaneManager || this.rpcServer) {
+      // Tell the prompt whether this server has a browser of its own, and which profile the
+      // conversation works in. Both ride the volatile `<session_state>` tail, so neither
+      // invalidates the cached prefix. The profile matters even without a local browser: a
+      // device-driven browser resolves it the same way.
+      setBrowserHostState(managed.id, !!this.browserPaneManager)
+      setBrowserProfilePromptState(managed.id, this.browserProfileName(this.getBrowserProfileForSession(managed.id)))
+
+      if (this.browserPaneManager) {
         const sid = managed.id
-        const bpm = this.getBrowserPaneManagerForSession(sid)
-        if (!bpm) {
-          throw new Error('Browser pane manager unavailable despite passing the gate — this is a bug.')
-        }
-        sessionLog.info('[browser-pane] BPF block resolved BPM', {
-          sessionId: sid,
-          bpmKind: this.browserPaneManager === bpm ? 'local' : 'remote',
-        })
+        const sessionBpm = this.browserPaneManager
+        sessionLog.info('[browser-pane] BPF block resolved BPM', { sessionId: sid, bpmKind: 'local' })
 
         /**
          * Whether this conversation was spawned by another one — a DAG node, or a session an
@@ -3711,11 +3887,6 @@ export class SessionManager implements ISessionManager {
          * the two behaviours that would otherwise make them interfere.
          */
         const isChildSession = !!managed.parentSessionId
-
-        // The prompt learns which profile this conversation works in. It rides the volatile
-        // `<session_state>` tail (never the cached system prefix), so a switch made between turns
-        // is visible to the next one without invalidating anything already cached.
-        setBrowserProfilePromptState(sid, this.browserProfileName(this.getBrowserProfileForSession(sid)))
 
         /**
          * The **work** this conversation is part of — what its tabs say they are for, and what
@@ -3770,7 +3941,7 @@ export class SessionManager implements ISessionManager {
 
         /** One named tab of the workspace's window, or an error saying it is not there. */
         const requireTab = async (instanceId: string, tabId: string): Promise<BrowserTabSummary> => {
-          const tabs = await bpm.listTabsAsync(instanceId).catch(() => [])
+          const tabs = await sessionBpm.listTabsAsync(instanceId).catch(() => [])
           const tab = tabs.find((candidate) => candidate.id === tabId)
           if (!tab) {
             throw new Error(`This browser window has no tab "${tabId}". "tabs" lists them.`)
@@ -3792,7 +3963,7 @@ export class SessionManager implements ISessionManager {
          * two calls could race on. The profile is what picks the window: one workspace holds one
          * window per profile.
          */
-        const buildBrowserPaneFns = (profileId?: string): BrowserPaneFns => {
+        const buildBrowserPaneFns = (profileId?: string, bpm: IBrowserPaneManager = sessionBpm): BrowserPaneFns => {
           // `--profile` binds this command; without one the profile is the conversation's own
           // selection (its pick, the workspace default, then Default). Read per call rather than
           // captured, because the person can switch it between turns — or mid-turn — and the next
@@ -4531,7 +4702,7 @@ export class SessionManager implements ISessionManager {
             },
             // `--profile`: the same surface, bound to one profile. Present on a scoped surface too,
             // so a command that names a profile twice (or a host that asks) still resolves.
-            withProfile: (ref: string) => buildBrowserPaneFns(resolveProfileIdOrThrow(ref)),
+            withProfile: (ref: string) => buildBrowserPaneFns(resolveProfileIdOrThrow(ref), bpm),
             listProfiles: async () => getBrowserProfiles().map(({ id, name }) => ({ id, name })),
           } satisfies BrowserPaneFns
         }
@@ -4553,6 +4724,11 @@ export class SessionManager implements ISessionManager {
 
         mergeSessionScopedToolCallbacks(sid, {
           browserPaneFns: buildBrowserPaneFns(),
+          // The device door: shell/files reach the named device through the RPC bridge, and a
+          // nested `browser` command is bound to that device's own manager rather than to this
+          // server's browser.
+          deviceFns: this.createDeviceToolFns(managed.workspace.id, (clientId) =>
+            buildBrowserPaneFns(undefined, this.browserPaneManagerForClient(sid, clientId))),
         })
       }
 
@@ -6500,6 +6676,7 @@ export class SessionManager implements ISessionManager {
     }
     this.pendingDeltas.delete(sessionId)
     clearBrowserProfilePromptState(sessionId)
+    clearBrowserHostState(sessionId)
     this.clearAdminRememberApprovalsForSession(sessionId)
     this.clearPendingPermissionRequestsForSession(sessionId)
 
@@ -6514,9 +6691,10 @@ export class SessionManager implements ISessionManager {
     if (sessionBpm) {
       sessionBpm.destroyForSession(sessionId)
     }
-    // Drop the per-session remote bridge + host-client pin on destroy.
-    this.remoteBpms.delete(sessionId)
-    this.browserHostBySession.delete(sessionId)
+    // Drop the device bridges this session held on destroy.
+    for (const key of [...this.remoteDeviceBpms.keys()]) {
+      if (key.startsWith(`${sessionId}::`)) this.remoteDeviceBpms.delete(key)
+    }
 
     // Dispose agent to clean up ConfigWatchers, event listeners, MCP connections
     if (managed.agent) {
@@ -6572,19 +6750,11 @@ export class SessionManager implements ISessionManager {
      * (#616). Pre-persist errors still reject the outer promise as before.
      */
     onAck?: (messageId: string) => void,
-    /**
-     * Optional transport context. The `sessions.sendMessage` RPC handler passes
-     * `{ callerClientId: ctx.clientId }` so the SM can pin the desktop client
-     * that should host this session's browser tools. Pass undefined when calling
-     * directly (tests, intra-server flows) to leave the existing pin in place.
-     */
-    rpcContext?: { callerClientId?: string },
   ): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (!managed) {
       throw new Error(`Session ${sessionId} not found`)
     }
-    this.setLastMessageClientId(sessionId, rpcContext?.callerClientId)
 
     // A conversation whose own pick was deleted keeps that id as an explicit invalid reference
     // (the UI shows it, and its window stays usable), but it must not start a turn: the person has
@@ -7663,8 +7833,8 @@ export class SessionManager implements ISessionManager {
     // Full unbind happens below when the queue is empty (session truly done).
     const turnBpm = this.getBrowserPaneManagerForSession(sessionId)
     if (turnBpm) {
-      // Same guard as the queue-empty teardown below: a remote BPM throw on a
-      // headless server must not abort processing-stop handling.
+      // Same guard as the queue-empty teardown below: a browser throw must not
+      // abort processing-stop handling.
       try {
         await turnBpm.clearVisualsForSession(sessionId)
       } catch (err) {
@@ -7748,10 +7918,9 @@ export class SessionManager implements ISessionManager {
       // and the next command of this conversation writes its marks again.
       const doneBpm = this.getBrowserPaneManagerForSession(sessionId)
       if (doneBpm) {
-        // Teardown must never block completion. On a headless/WebUI server the BPM is
-        // remote and these calls throw (BROWSER_NO_CAPABLE_CLIENT) when no desktop
-        // browser client is connected — which previously aborted onProcessingStopped
-        // before emitSessionComplete, hanging the Tasks Conductor completion seam.
+        // Teardown must never block completion: a failing browser must not abort
+        // onProcessingStopped before emitSessionComplete, which would hang the Tasks
+        // Conductor completion seam.
         try {
           await doneBpm.clearVisualsForSession(sessionId)
           doneBpm.unbindAllForSession(sessionId)

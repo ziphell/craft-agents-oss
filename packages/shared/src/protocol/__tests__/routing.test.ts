@@ -68,4 +68,42 @@ describe('channel routing behavior', () => {
       }
     }
   })
+
+  /**
+   * A remote window's configuration belongs to the server that runs its work. These were local
+   * once, which made a checkbox in a remote window change this machine and leave the hub alone.
+   */
+  test('workspace creation and the agent host\'s settings travel with the workspace server', () => {
+    const serverOwned = [
+      RPC_CHANNELS.workspaces.CREATE,
+      RPC_CHANNELS.workspaces.CHECK_SLUG,
+      RPC_CHANNELS.server.REMOVE_WORKSPACE,
+      RPC_CHANNELS.onboarding.GET_AUTH_STATE,
+      RPC_CHANNELS.onboarding.DEFER_SETUP,
+      RPC_CHANNELS.onboarding.VALIDATE_MCP,
+      RPC_CHANNELS.tools.GET_BROWSER_TOOL_ENABLED,
+      RPC_CHANNELS.tools.SET_BROWSER_TOOL_ENABLED,
+      RPC_CHANNELS.appearance.GET_RICH_TOOL_DESCRIPTIONS,
+      RPC_CHANNELS.appearance.SET_RICH_TOOL_DESCRIPTIONS,
+      RPC_CHANNELS.caching.GET_EXTENDED_PROMPT_CACHE,
+      RPC_CHANNELS.caching.SET_EXTENDED_PROMPT_CACHE,
+      RPC_CHANNELS.caching.GET_ENABLE_1M_CONTEXT,
+      RPC_CHANNELS.caching.SET_ENABLE_1M_CONTEXT,
+      RPC_CHANNELS.rtk.GET_ENABLED,
+      RPC_CHANNELS.rtk.SET_ENABLED,
+      RPC_CHANNELS.rtk.GET_STATUS,
+      RPC_CHANNELS.rtk.GET_GAIN,
+      RPC_CHANNELS.decisions.GET_SETTINGS,
+      RPC_CHANNELS.decisions.SET_SETTINGS,
+      RPC_CHANNELS.decisions.GET_STATUS,
+      RPC_CHANNELS.decisions.SET_API_KEY,
+      RPC_CHANNELS.decisions.DELETE_API_KEY,
+      RPC_CHANNELS.decisions.TEST,
+      RPC_CHANNELS.decisions.PROBE_SERVER,
+    ]
+
+    for (const ch of serverOwned) {
+      expect(REMOTE_ELIGIBLE_CHANNELS.has(ch)).toBe(true)
+    }
+  })
 })

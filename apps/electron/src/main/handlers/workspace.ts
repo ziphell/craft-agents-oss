@@ -3,7 +3,6 @@ import type { RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from './handler-deps'
 
 export const GUI_HANDLED_CHANNELS = [
-  RPC_CHANNELS.remote.TEST_CONNECTION,
   RPC_CHANNELS.window.OPEN_WORKSPACE,
   RPC_CHANNELS.window.OPEN_SESSION_IN_NEW_WINDOW,
   RPC_CHANNELS.window.CLOSE,
@@ -58,44 +57,6 @@ export async function connectToRemote(url: string, token: string, workspaceId?: 
 export function registerWorkspaceGuiHandlers(server: RpcServer, deps: HandlerDeps): void {
   const windowManager = deps.windowManager
 
-  // Test connection to a remote Craft Agent Server.
-  // Pure discovery — returns list of existing workspaces or needsWorkspace flag.
-  // Workspace creation is handled separately via invokeOnServer → server:createWorkspace.
-  server.handle(RPC_CHANNELS.remote.TEST_CONNECTION, async (_ctx, url: string, token: string) => {
-    const { client, error } = await connectToRemote(url, token)
-    if (!client) return { ok: false, error }
-
-    // Read server version from handshake_ack (null for old servers)
-    const serverVersion = client.getServerVersion() ?? undefined
-
-    try {
-      console.log(`[TEST_CONNECTION] invoking ${RPC_CHANNELS.server.GET_WORKSPACES} on remote server...`)
-      const workspaces = await client.invoke(RPC_CHANNELS.server.GET_WORKSPACES) as Array<{ id: string; name: string }>
-      console.log(`[TEST_CONNECTION] remote returned ${workspaces?.length ?? 'null'} workspaces:`, JSON.stringify(workspaces?.map(w => ({ id: w.id, name: w.name }))))
-
-      if (workspaces.length === 0) {
-        console.log('[TEST_CONNECTION] → returning needsWorkspace=true')
-        return { ok: true, needsWorkspace: true, serverVersion }
-      }
-
-      const result = {
-        ok: true,
-        serverVersion,
-        remoteWorkspaces: workspaces,
-        // Convenience: auto-select if exactly one
-        remoteWorkspaceId: workspaces.length === 1 ? workspaces[0].id : undefined,
-        remoteWorkspaceName: workspaces.length === 1 ? workspaces[0].name : undefined,
-      }
-      console.log(`[TEST_CONNECTION] → returning ${workspaces.length} workspaces`)
-      return result
-    } catch (err) {
-      console.error('[TEST_CONNECTION] error:', err)
-      return { ok: false, error: err instanceof Error ? err.message : 'Unknown error' }
-    } finally {
-      client.destroy()
-    }
-  })
-
   // Open workspace in new window (or focus existing)
   server.handle(RPC_CHANNELS.window.OPEN_WORKSPACE, async (_ctx, workspaceId: string) => {
     if (!windowManager) return
@@ -103,11 +64,14 @@ export function registerWorkspaceGuiHandlers(server: RpcServer, deps: HandlerDep
   })
 
   // Open a session in a new window
-  server.handle(RPC_CHANNELS.window.OPEN_SESSION_IN_NEW_WINDOW, async (_ctx, workspaceId: string, sessionId: string) => {
+  server.handle(RPC_CHANNELS.window.OPEN_SESSION_IN_NEW_WINDOW, async (ctx, workspaceId: string, sessionId: string) => {
     if (!windowManager) return
     const deepLink = `craftagents://allSessions/session/${sessionId}`
+    // A remote window opens another window on **its** hub; a local one opens a local window.
+    const remote = ctx.webContentsId ? windowManager.getRemoteForWindow(ctx.webContentsId) : null
     windowManager.createWindow({
       workspaceId,
+      ...(remote ? { remote: { ...remote, workspaceId } } : {}),
       focused: true,
       initialDeepLink: deepLink,
     })

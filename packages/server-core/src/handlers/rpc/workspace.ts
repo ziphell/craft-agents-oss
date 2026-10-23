@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { join } from 'path'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
-import { getWorkspaceByNameOrId, addWorkspace, setActiveWorkspace, updateWorkspaceRemoteServer } from '@craft-agent/shared/config'
+import { getWorkspaceByNameOrId, addWorkspace, setActiveWorkspace } from '@craft-agent/shared/config'
 import { getDefaultWorkspacesDir } from '@craft-agent/shared/workspaces'
 import { perf } from '@craft-agent/shared/utils'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
@@ -12,7 +12,6 @@ export const CORE_HANDLED_CHANNELS = [
   RPC_CHANNELS.workspaces.GET,
   RPC_CHANNELS.workspaces.CREATE,
   RPC_CHANNELS.workspaces.CHECK_SLUG,
-  RPC_CHANNELS.workspaces.UPDATE_REMOTE,
   RPC_CHANNELS.window.GET_WORKSPACE,
   RPC_CHANNELS.window.GET_MODE,
   RPC_CHANNELS.window.SWITCH_WORKSPACE,
@@ -44,17 +43,17 @@ export function registerWorkspaceCoreHandlers(server: RpcServer, deps: HandlerDe
   })
 
   // Create a new workspace at a folder path (Obsidian-style: folder IS the workspace)
-  server.handle(RPC_CHANNELS.workspaces.CREATE, async (_ctx, folderPath: string, name: string, remoteServer?: { url: string; token: string; remoteWorkspaceId: string }) => {
+  server.handle(RPC_CHANNELS.workspaces.CREATE, async (_ctx, folderPath: string, name: string) => {
     const rootPath = folderPath.trim()
     const validation = isValidWorkspaceRootPath(rootPath)
     if (!validation.valid) {
       throw new Error(validation.reason!)
     }
 
-    const workspace = addWorkspace({ name, rootPath, ...(remoteServer && { remoteServer }) })
+    const workspace = addWorkspace({ name, rootPath })
     // Make it active
     setActiveWorkspace(workspace.id)
-    deps.platform.logger.info(`Created workspace "${name}" at ${rootPath}${remoteServer ? ` (remote: ${remoteServer.url})` : ''}`)
+    deps.platform.logger.info(`Created workspace "${name}" at ${rootPath}`)
     return workspace
   })
 
@@ -67,16 +66,12 @@ export function registerWorkspaceCoreHandlers(server: RpcServer, deps: HandlerDe
     return { exists, path: workspacePath }
   })
 
-  // Update remote server config for an existing workspace (reconnect flow)
-  server.handle(RPC_CHANNELS.workspaces.UPDATE_REMOTE, async (_ctx, workspaceId: string, remoteServer: { url: string; token: string; remoteWorkspaceId: string }) => {
-    updateWorkspaceRemoteServer(workspaceId, remoteServer)
-    deps.platform.logger.info(`Updated remote server for workspace ${workspaceId}: ${remoteServer.url}`)
-    return { success: true }
-  })
-
   // Get workspace ID for the calling window
   server.handle(RPC_CHANNELS.window.GET_WORKSPACE, (ctx) => {
-    const workspaceId = ctx.workspaceId ?? windowManager?.getWorkspaceForWindow(ctx.webContentsId!)
+    // A remote client's webContentsId belongs to its own process; only this
+    // machine's windows may be looked up in the window manager.
+    const isLocalWindow = server.isLocalClient?.(ctx.clientId) ?? true
+    const workspaceId = ctx.workspaceId ?? (isLocalWindow ? windowManager?.getWorkspaceForWindow(ctx.webContentsId!) : null)
     // Set up ConfigWatcher for live updates (labels, statuses, sources, themes)
     if (workspaceId) {
       const workspace = getWorkspaceByNameOrId(workspaceId)
@@ -99,7 +94,11 @@ export function registerWorkspaceCoreHandlers(server: RpcServer, deps: HandlerDe
     // Keep WS push routing in sync (works for both GUI and headless)
     server.updateClientWorkspace?.(ctx.clientId, workspaceId)
 
-    if (windowManager) {
+    // A thin client's webContentsId is its own; it must not steer this machine's
+    // window→workspace map. Its connection workspace is already updated above.
+    const isLocalWindow = server.isLocalClient?.(ctx.clientId) ?? true
+
+    if (windowManager && isLocalWindow) {
       const wcId = ctx.webContentsId!
 
       // Get the old workspace ID before updating
@@ -135,12 +134,8 @@ export function registerWorkspaceCoreHandlers(server: RpcServer, deps: HandlerDe
     }
     end()
 
-    // Return connection details so the preload RoutedClient can decide
-    // whether to connect directly to a remote server for this workspace.
-    return {
-      workspaceId,
-      remoteServer: workspace?.remoteServer ?? null,
-    }
+    // The window keeps its own connection; the workspace switch is purely a routing change.
+    return { workspaceId }
   })
 
   // ============================================================

@@ -11,6 +11,7 @@
 import React, { useState, useEffect, useRef, lazy, Suspense } from 'react'
 import { useTranslation } from 'react-i18next'
 import { createWebApi } from './adapter/web-api'
+import { BrowserViewer } from './BrowserViewer'
 import type { WsRpcClient } from '../../electron/src/transport/client'
 
 // Lazy-load the Electron App after window.electronAPI is set up.
@@ -144,6 +145,8 @@ export default function App() {
   return (
     <Suspense fallback={<LoadingScreen />}>
       <ElectronApp />
+      {/* The web UI has no browser window of its own; this watches the hub's (docs/browser-view-streaming.md). */}
+      <BrowserViewer />
     </Suspense>
   )
 }

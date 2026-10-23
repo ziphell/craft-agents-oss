@@ -63,14 +63,15 @@ export const CHANNEL_MAP = {
 
   // Workspace management
   getWorkspaces: invoke(RPC_CHANNELS.workspaces.GET),
+  /** This machine's list regardless of where the window is (LOCAL_ONLY, through the router). */
+  getLocalWorkspaces: invoke(RPC_CHANNELS.workspaces.GET),
   createWorkspace: invoke(RPC_CHANNELS.workspaces.CREATE),
   checkWorkspaceSlug: invoke(RPC_CHANNELS.workspaces.CHECK_SLUG),
-  updateWorkspaceRemoteServer: invoke(RPC_CHANNELS.workspaces.UPDATE_REMOTE),
-  testRemoteConnection: invoke(RPC_CHANNELS.remote.TEST_CONNECTION),
 
   // Server-level workspace operations (REMOTE_ELIGIBLE)
   getServerWorkspaces: invoke(RPC_CHANNELS.server.GET_WORKSPACES),
   createServerWorkspace: invoke(RPC_CHANNELS.server.CREATE_WORKSPACE),
+  removeWorkspace: invoke(RPC_CHANNELS.server.REMOVE_WORKSPACE),
 
   // Window management
   getWindowWorkspace: invoke(RPC_CHANNELS.window.GET_WORKSPACE),
@@ -164,6 +165,7 @@ export const CHANNEL_MAP = {
 
   // Server info (REMOTE_ELIGIBLE)
   getServerHomeDir: invoke(RPC_CHANNELS.server.HOME_DIR),
+  getConnectedDevices: invoke(RPC_CHANNELS.server.GET_DEVICES),
 
   // Server mode configuration
   getServerConfig: invoke(RPC_CHANNELS.settings.GET_SERVER_CONFIG),
@@ -399,6 +401,11 @@ export const CHANNEL_MAP = {
   'browserPane.stop': invoke(RPC_CHANNELS.browserPane.STOP),
   'browserPane.focus': invoke(RPC_CHANNELS.browserPane.FOCUS),
   'browserPane.tabAction': invoke(RPC_CHANNELS.browserPane.TAB_ACTION),
+  'browserPane.streamStart': invoke(RPC_CHANNELS.browserPane.STREAM_START),
+  'browserPane.streamStop': invoke(RPC_CHANNELS.browserPane.STREAM_STOP),
+  'browserPane.streamInput': invoke(RPC_CHANNELS.browserPane.STREAM_INPUT),
+  'browserPane.onStreamFrame': listener(RPC_CHANNELS.browserPane.STREAM_FRAME),
+  'browserPane.onStreamEnded': listener(RPC_CHANNELS.browserPane.STREAM_ENDED),
   'browserPane.emptyStateLaunch': invoke(RPC_CHANNELS.browserPane.LAUNCH),
   'browserPane.onStateChanged': listener(RPC_CHANNELS.browserPane.STATE_CHANGED),
   'browserPane.onRemoved': listener(RPC_CHANNELS.browserPane.REMOVED),

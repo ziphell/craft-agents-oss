@@ -592,10 +592,10 @@ export interface DirectoryListingResult {
   platform: 'win32' | 'darwin' | 'linux'
   /** Whether the server truncated the directory list for safety/performance. */
   truncated: boolean
-  /** Total number of matching child directories before truncation. */
+  /** Total number of matching entries before truncation. */
   totalEntries: number
-  /** Child directory entries. */
-  entries: Array<{ name: string; path: string; isSymlink: boolean }>
+  /** Child entries. Files are only listed when the caller asked for them. */
+  entries: Array<{ name: string; path: string; isSymlink: boolean; isDirectory: boolean }>
 }
 
 // ---------------------------------------------------------------------------
@@ -615,6 +615,14 @@ export interface FileAttachment {
   storedPath?: string
   /** Path to a converted markdown version (for office files). */
   markdownPath?: string
+  /**
+   * `path` names a file on the hub's filesystem, not this machine's.
+   *
+   * A remote window can attach a file that already sits on the server: its bytes are read
+   * from the hub, so `path` is meaningless to the local machine. Draft persistence keys off
+   * this flag, otherwise a later hydrate would read a same-named local file.
+   */
+  fromServer?: boolean
 }
 
 export interface SessionFile {
@@ -1335,6 +1343,57 @@ export interface BrowserInstanceInfo {
    */
   profileId?: string
 }
+
+/**
+ * One frame of a watched tab — see docs/browser-view-streaming.md.
+ *
+ * A viewer that is not the window the tab lives in subscribes to these; the frame is the tab's
+ * page, not the desktop, so nothing outside that page is ever in it.
+ */
+export interface BrowserStreamFrame {
+  streamId: string
+  tabId: string
+  /** JPEG bytes, base64. `data:image/jpeg;base64,` + this is an `<img>` src. */
+  data: string
+  /** CSS pixels of the tab's viewport — the basis every input coordinate is in. */
+  width: number
+  height: number
+  /** When Chromium took the frame (ms since epoch). */
+  atMs: number
+}
+
+export interface BrowserStreamStartRequest {
+  instanceId: string
+  tabId: string
+}
+
+export interface BrowserStreamStartResult {
+  streamId: string
+  tabId: string
+  /** CSS pixels of the tab's viewport, so a viewer can size itself before the first frame. */
+  width: number
+  height: number
+}
+
+/**
+ * One input event, forwarded from a viewer to the tab it is watching.
+ *
+ * Coordinates are CSS pixels in the tab's viewport. `key` follows `KeyboardEvent.key`; `modifiers`
+ * is the CDP bitmask (Alt=1, Ctrl=2, Meta=4, Shift=8).
+ */
+export type BrowserStreamInput =
+  | {
+      type: 'mouse'
+      action: 'move' | 'down' | 'up'
+      x: number
+      y: number
+      button?: 'left' | 'right' | 'middle'
+      clickCount?: number
+      /** Buttons held during the event (left=1, right=2, middle=4) — CDP's drag bitmask. */
+      buttons?: number
+    }
+  | { type: 'wheel'; x: number; y: number; deltaX: number; deltaY: number }
+  | { type: 'key'; action: 'down' | 'up'; key: string; code?: string; text?: string; modifiers?: number }
 
 export interface DeepLinkNavigation {
   view?: string

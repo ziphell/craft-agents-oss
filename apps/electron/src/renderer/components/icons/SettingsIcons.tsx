@@ -10,6 +10,7 @@ import {
   Building2,
   Globe,
   Keyboard,
+  Laptop,
   MessageSquare,
   Palette,
   Server,
@@ -33,6 +34,7 @@ export const PermissionsIcon = ({ className }: IconProps) => <ShieldCheck classN
 export const LabelsIcon = ({ className }: IconProps) => <Tag className={className} />
 export const MessagingSettingsIcon = ({ className }: IconProps) => <MessageSquare className={className} />
 export const ServerSettingsIcon = ({ className }: IconProps) => <Server className={className} />
+export const ClientSettingsIcon = ({ className }: IconProps) => <Laptop className={className} />
 export const ShortcutsIcon = ({ className }: IconProps) => <Keyboard className={className} />
 export const PreferencesIcon = ({ className }: IconProps) => <UserCircle className={className} />
 

@@ -27,6 +27,7 @@ import type { SpecNode } from './task-spec-form'
 import type {
   KanbanColumnId,
   KanbanColumnMeta,
+  KanbanModelConnection,
   KanbanModelProviderGroup,
   KanbanProject,
   KanbanTask,
@@ -162,6 +163,29 @@ export function KanbanBoardContainer() {
     [llmConnections]
   )
 
+  // Connections reduced to the fields the brand-icon lookup needs.
+  const connectionsBySlug = React.useMemo(() => {
+    const map = new Map<string, KanbanModelConnection>()
+    for (const conn of llmConnections) {
+      map.set(conn.slug, {
+        providerType: conn.providerType,
+        baseUrl: conn.baseUrl,
+        piAuthProvider: conn.piAuthProvider,
+      })
+    }
+    return map
+  }, [llmConnections])
+
+  // The session's pinned connection is authoritative; without one (or after it was
+  // deleted) fall back to the model→connection catalog, which also covers synthetic
+  // spec rows that have no session.
+  const resolveConnection = React.useCallback(
+    (model: string, slug?: string): KanbanModelConnection | undefined =>
+      (slug ? connectionsBySlug.get(slug) : undefined) ??
+      connectionsBySlug.get(modelToConnection.get(model) ?? ''),
+    [connectionsBySlug, modelToConnection]
+  )
+
   // Per-project columns apply only when exactly one project is in focus — the
   // cross-project "all tasks" view always uses the default 3 columns so it stays
   // coherent. `editingProject` is that single project (column editing is a project
@@ -253,24 +277,33 @@ export function KanbanBoardContainer() {
       // Validity against the *active* column set is enforced by KanbanBoard (unknown
       // ids fall back to the first column), so no built-in-only guard is needed here.
       const column = meta.kanbanColumn ?? statusToColumn(statusId)
-      const children: SubtaskChildRow[] = (childrenByParent.get(meta.id) ?? []).map(child => ({
-        id: child.id,
-        title: getSessionTitle(child),
-        runState: deriveRunState(child, statusesById),
-        model: child.model ?? DEFAULT_MODEL,
-        taskNodeId: child.taskNodeId,
-        createdAt: child.createdAt,
-      }))
+      const taskModel = meta.model ?? DEFAULT_MODEL
+      const children: SubtaskChildRow[] = (childrenByParent.get(meta.id) ?? []).map(child => {
+        const model = child.model ?? DEFAULT_MODEL
+        return {
+          id: child.id,
+          title: getSessionTitle(child),
+          runState: deriveRunState(child, statusesById),
+          model,
+          connection: resolveConnection(model, child.llmConnection),
+          taskNodeId: child.taskNodeId,
+          createdAt: child.createdAt,
+        }
+      })
       // Spec-backed tiles show one row per DAG node (bound to its latest child session,
       // or pending when never run) plus unadopted quick-adds; plain tiles show children.
       const specNodes = meta.taskSlug ? specNodesBySlug.get(meta.taskSlug) : undefined
-      const subtasks = mergeSubtaskRows(specNodes, children, DEFAULT_MODEL)
+      // Synthetic node rows carry no session — resolve their icon from the model catalog.
+      const subtasks = mergeSubtaskRows(specNodes, children, DEFAULT_MODEL).map(row =>
+        row.connection ? row : { ...row, connection: resolveConnection(row.model) }
+      )
       result.push({
         id: meta.id,
         title: getSessionTitle(meta),
         column,
         statusId,
-        model: meta.model ?? DEFAULT_MODEL,
+        model: taskModel,
+        connection: resolveConnection(taskModel, meta.llmConnection),
         projectId: meta.projectId,
         taskSlug: meta.taskSlug,
         subtasks,
@@ -288,7 +321,7 @@ export function KanbanBoardContainer() {
       })
     }
     return result
-  }, [metaMap, statusesById, specNodesBySlug])
+  }, [metaMap, statusesById, specNodesBySlug, resolveConnection])
 
   // Project filter: empty selection = show all. While a filter is active, tiles
   // with no project are hidden (an explicit "No project" option is a later add).

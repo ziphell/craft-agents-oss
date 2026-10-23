@@ -133,14 +133,6 @@ function parseInternalCraftAgentsDeepLink(parsed: URL): ParsedInternalDeepLink |
   return null
 }
 
-/** Guard: reject filesystem-path actions on remote workspaces where local paths are meaningless. */
-function assertLocalWorkspace(ctx: { workspaceId: string | null }, action: string): void {
-  const ws = getWorkspaceByNameOrId(ctx.workspaceId ?? '')
-  if (ws?.remoteServer) {
-    throw new Error(`${action} is not available for remote workspaces`)
-  }
-}
-
 export function registerSystemCoreHandlers(server: RpcServer, deps: HandlerDeps): void {
   const windowManager = deps.windowManager
 
@@ -330,7 +322,6 @@ export function registerSystemCoreHandlers(server: RpcServer, deps: HandlerDeps)
   })
 
   server.handle(RPC_CHANNELS.shell.OPEN_FILE, async (ctx, path: string) => {
-    assertLocalWorkspace(ctx, 'Open file')
     try {
       // Expand ~ before resolve() — resolve() treats ~ as a literal path component
       const expanded = path.startsWith('~') ? path.replace(/^~/, homedir()) : path
@@ -346,7 +337,6 @@ export function registerSystemCoreHandlers(server: RpcServer, deps: HandlerDeps)
   })
 
   server.handle(RPC_CHANNELS.shell.SHOW_IN_FOLDER, async (ctx, path: string) => {
-    assertLocalWorkspace(ctx, 'Show in folder')
     try {
       const expanded = path.startsWith('~') ? path.replace(/^~/, homedir()) : path
       const absolutePath = resolve(expanded)

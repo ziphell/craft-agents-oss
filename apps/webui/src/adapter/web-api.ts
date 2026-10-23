@@ -68,11 +68,17 @@ export function createWebApi(options: WebApiOptions): {
   client: WsRpcClient
 } {
   const { serverUrl, workspaceId } = options
+  /** The workspace this tab speaks for now — `switchWorkspace` moves it with the connection. */
+  let currentWorkspaceId = workspaceId
 
   const client = new WsRpcClient(serverUrl, {
     workspaceId,
     autoReconnect: true,
     mode: 'remote',
+    clientInfo: {
+      name: typeof navigator !== 'undefined' ? 'Web browser' : 'Web client',
+      platform: typeof navigator !== 'undefined' ? navigator.platform : undefined,
+    },
     // No token — auth is via session cookie sent on WebSocket upgrade
   })
 
@@ -84,7 +90,7 @@ export function createWebApi(options: WebApiOptions): {
   )
 
   // Override LOCAL_ONLY methods with web-compatible implementations
-  const webOverrides: Partial<ElectronAPI> = {
+  const webOverrides = {
     // Shell operations — use browser APIs
     openUrl: (url: string) => {
       const result = openExternalUrl(url)
@@ -105,6 +111,20 @@ export function createWebApi(options: WebApiOptions): {
     // File dialogs
     openFileDialog: webFilePicker,
     openFolderDialog: () => Promise.resolve(null), // not possible in browser
+    /**
+     * A hub-produced export: the browser fetches `/api/exports/<id>` itself, carrying its session
+     * cookie, and the response's `Content-Disposition` names the file. Long downloads keep going
+     * in the browser's own download UI — nothing is held in a JS buffer.
+     */
+    saveDesignExport: async (download) => {
+      const link = document.createElement('a')
+      link.href = `/api/exports/${encodeURIComponent(download.id)}`
+      link.download = download.name
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      return { canceled: false as const, path: download.name }
+    },
 
     // System info
     getVersions: () => ({ node: 'n/a', chrome: navigator.userAgent, electron: 'web' }),
@@ -143,12 +163,17 @@ export function createWebApi(options: WebApiOptions): {
     },
 
     // Workspace operations — web UI works with a single connection
-    getWindowWorkspace: () => Promise.resolve(workspaceId ?? null),
+    getWindowWorkspace: () => Promise.resolve(currentWorkspaceId ?? null),
     getWindowMode: () => Promise.resolve('main'),
     // switchWorkspace must call the server so it registers the client's
     // workspaceId — otherwise push events (session updates) won't arrive.
     switchWorkspace: async (wsId: string) => {
       await client.invoke('window:switchWorkspace', wsId)
+      currentWorkspaceId = wsId
+      // The server's record is not the client's identity: a reconnect after this would offer the
+      // workspace this tab was opened on, fail the server's identity check, and come back as a
+      // different client on the old workspace.
+      client.setWorkspace(wsId)
     },
     openWorkspace: async () => {},
     openSessionInNewWindow: async (_wsId: string, sessionId: string) => {
@@ -234,12 +259,56 @@ export function createWebApi(options: WebApiOptions): {
     // Relaunch — reload page
     relaunchApp: () => { window.location.reload(); return Promise.resolve() },
     removeWorkspace: () => Promise.resolve(false), // not supported in web UI
-    invokeOnServer: () => Promise.reject(new Error('Cross-server RPC not available in web UI')),
-  }
+
+    // Client connection management — these describe a *window's* transport and its hub config.
+    // The browser tab is the client: it connected to one hub when the page loaded, and a tab
+    // cannot open or re-point windows on that machine.
+    getClientMode: () => Promise.resolve({
+      connections: [],
+      running: null,
+      serverEnabled: false,
+    }),
+    saveRemoteConnection: () => Promise.reject(new Error('Connection settings are not available in the web UI')),
+    removeRemoteConnection: () => Promise.reject(new Error('Connection settings are not available in the web UI')),
+    setDefaultRemoteConnection: () => Promise.reject(new Error('Connection settings are not available in the web UI')),
+    connectToRemoteConnection: () => Promise.reject(new Error('Connection settings are not available in the web UI')),
+    testClientModeConnection: () => Promise.resolve({ ok: false, error: 'Not available in the web UI' }),
+    openRemoteWindow: () => Promise.resolve(),
+    switchRemoteWorkspace: () => Promise.resolve(),
+    switchRemoteServer: () => Promise.reject(new Error('Connection settings are not available in the web UI')),
+    switchLocalWorkspace: () => Promise.reject(new Error('Connection settings are not available in the web UI')),
+    openLocalWindow: () => Promise.resolve(),
+    getWebContentsId: () => -1,
+    getClientIdentity: () => ({ deviceId: '', name: 'Web browser', platform: navigator.platform }),
+
+    // Browsing / creating on some *other* saved server: there is no list of servers here, and no
+    // window to re-point, so every one of these is answered as absent rather than as a no-op that
+    // would look like it succeeded.
+    listRemoteDirectories: () => Promise.reject(new Error('Browsing a remote server is not available in the web UI')),
+    getRemoteHomeDir: () => Promise.reject(new Error('Browsing a remote server is not available in the web UI')),
+    listRemoteWorkspaces: () => Promise.reject(new Error('Browsing a remote server is not available in the web UI')),
+    checkRemoteWorkspaceSlug: () => Promise.reject(new Error('Remote workspaces are not available in the web UI')),
+    createRemoteWorkspace: () => Promise.reject(new Error('Remote workspaces are not available in the web UI')),
+    /** No saved servers, so no links to report on. */
+    getRemoteConnectionStatuses: () => Promise.resolve([]),
+    /** Nothing to rename: the browser tab's title is the page's. */
+    setWindowTitle: () => Promise.resolve(),
+    /** This tab is the target; it cannot be re-pointed from inside itself. */
+    onRemoteTargetChanged: () => () => {},
+
+    // Cross-machine session transfer and its progress stream — both need the desktop main process.
+    transferSessionToWorkspace: () => Promise.reject(new Error('Session transfer is not available in the web UI')),
+    onTransferProgress: () => () => {},
+
+    // A browser `File` has no path; attachments are uploaded by content instead.
+    getFilePath: () => null,
+    // No main process i18n instance to sync — the renderer's own change is the whole change.
+    changeLanguage: () => Promise.resolve(),
+  } satisfies Partial<ElectronAPI>
 
   // OAuth overrides — web-compatible browser opening
   // The Electron preload uses shell.openExternal() which isn't available in browsers.
-  const oauthOverrides: Partial<ElectronAPI> = {
+  const oauthOverrides = {
     // Generic source OAuth — server prepares the flow, we open the auth URL in a new tab.
     // The OAuth provider redirects through the relay to our server's /api/oauth/callback,
     // which completes the token exchange and pushes status via WebSocket.
@@ -331,7 +400,27 @@ export function createWebApi(options: WebApiOptions): {
         error: i18n.t('errors.chatGptOAuthNotAvailable'),
       }
     },
-  }
+  } satisfies Partial<ElectronAPI>
+
+  /**
+   * Compile-time guardrail: every `ElectronAPI` function is answered either by the channel map (a
+   * server call) or by an override here. Adding a method without either fails typecheck, instead
+   * of surfacing as `undefined is not a function` at the one click that needs it.
+   *
+   * Namespaced APIs (browserPane, browserProfiles) are flattened into CHANNEL_MAP keys, so they
+   * are counted through those rather than by their group name.
+   */
+  type AnyFn = (...args: any[]) => any
+  type FunctionKeys<T> = {
+    [K in keyof T]-?: Extract<T[K], AnyFn> extends never ? never : K
+  }[keyof T] & string
+  type UncoveredApi = Exclude<
+    FunctionKeys<ElectronAPI>,
+    keyof typeof CHANNEL_MAP | keyof typeof webOverrides | keyof typeof oauthOverrides
+  >
+  type AssertNever<T extends never> = true
+  const _allApiCovered: AssertNever<UncoveredApi> = true
+  void _allApiCovered
 
   const api = { ...baseApi, ...webOverrides, ...oauthOverrides } as ElectronAPI
 

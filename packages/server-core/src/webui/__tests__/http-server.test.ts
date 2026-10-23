@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { startWebuiHttpServer } from '../http-server'
+import { storeExport } from '../../services/export-store'
 
 const SECRET = 'test-server-secret'
 const PASSWORD = 'test-password'
@@ -29,10 +30,12 @@ async function createServer(overrides?: {
   publicWsUrl?: string
   wsProtocol?: 'ws' | 'wss'
   wsPort?: number
+  /** A hub whose page bundle is missing: protocol routes only. */
+  withoutWebui?: boolean
 }) {
   const server = await startWebuiHttpServer({
     port: 0,
-    webuiDir: createTestWebuiDir(),
+    ...(overrides?.withoutWebui ? {} : { webuiDir: createTestWebuiDir() }),
     secret: SECRET,
     password: PASSWORD,
     secureCookies: overrides?.secureCookies,
@@ -93,6 +96,74 @@ describe('startWebuiHttpServer', () => {
     expect(await configRes.json()).toEqual({
       wsUrl: 'wss://127.0.0.1:9100',
     })
+  })
+
+  it('serves a produced export to a cookie or a bearer-carrying client', async () => {
+    const { baseUrl } = await createServer()
+
+    const dir = mkdtempSync(join(tmpdir(), 'craft-export-test-'))
+    TEMP_DIRS.push(dir)
+    const file = join(dir, 'deck.pdf')
+    writeFileSync(file, 'pdf-bytes')
+    const { id } = storeExport({ path: file, name: 'deck.pdf', mime: 'application/pdf' })
+
+    const viaBearer = await fetch(`${baseUrl}/api/exports/${id}`, {
+      headers: { Authorization: `Bearer ${SECRET}` },
+    })
+    expect(viaBearer.status).toBe(200)
+    expect(viaBearer.headers.get('content-type')).toBe('application/pdf')
+    expect(viaBearer.headers.get('content-disposition')).toContain('attachment')
+    expect(await viaBearer.text()).toBe('pdf-bytes')
+
+    const authRes = await fetch(`${baseUrl}/api/auth`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: PASSWORD }),
+    })
+    const viaCookie = await fetch(`${baseUrl}/api/exports/${id}`, {
+      headers: { cookie: extractSessionCookie(authRes) },
+    })
+    expect(viaCookie.status).toBe(200)
+
+    // No credential, a wrong one, and an unknown id are three different answers.
+    expect((await fetch(`${baseUrl}/api/exports/${id}`)).status).toBe(401)
+    expect((await fetch(`${baseUrl}/api/exports/${id}`, {
+      headers: { Authorization: 'Bearer wrong' },
+    })).status).toBe(401)
+    expect((await fetch(`${baseUrl}/api/exports/unknown`, {
+      headers: { Authorization: `Bearer ${SECRET}` },
+    })).status).toBe(404)
+  })
+
+  it('serves protocol routes without a page bundle', async () => {
+    const { baseUrl } = await createServer({ withoutWebui: true })
+
+    const dir = mkdtempSync(join(tmpdir(), 'craft-export-test-'))
+    TEMP_DIRS.push(dir)
+    const file = join(dir, 'deck.pdf')
+    writeFileSync(file, 'pdf-bytes')
+    const { id } = storeExport({ path: file, name: 'deck.pdf', mime: 'application/pdf' })
+
+    const download = await fetch(`${baseUrl}/api/exports/${id}`, {
+      headers: { Authorization: `Bearer ${SECRET}` },
+    })
+    expect(download.status).toBe(200)
+    expect(await download.text()).toBe('pdf-bytes')
+
+    // No page bundle: there is nowhere to redirect a person, so the root answers 401 instead of
+    // bouncing to a login page that does not exist.
+    expect((await fetch(`${baseUrl}/`)).status).toBe(401)
+
+    const authRes = await fetch(`${baseUrl}/api/auth`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: PASSWORD }),
+    })
+    const root = await fetch(`${baseUrl}/`, {
+      headers: { cookie: extractSessionCookie(authRes) },
+    })
+    expect(root.status).toBe(404)
+    expect(await root.text()).toBe('Web UI is not built')
   })
 
   it('rejects invalid credentials', async () => {

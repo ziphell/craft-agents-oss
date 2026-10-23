@@ -82,6 +82,69 @@ describe('handleUserMessage queued replay', () => {
     expect(next.state.session.messages[0]?.timestamp).toBe(300)
     expect(next.state.session.messages[0]?.isQueued).toBe(false)
   })
+
+  it('keeps the session processing when a mid-turn send is queued', () => {
+    const state = makeState([
+      { id: 'initial-user', role: 'user', content: 'question', timestamp: 100 },
+      {
+        id: 'optimistic-follow-up',
+        role: 'user',
+        content: 'queued while streaming',
+        timestamp: 120,
+        isPending: true,
+        isQueued: true,
+      },
+    ])
+    const queuedEvent: UserMessageEvent = {
+      type: 'user_message',
+      sessionId: 'session-1',
+      message: {
+        id: 'backend-follow-up',
+        role: 'user',
+        content: 'queued while streaming',
+        timestamp: 130,
+      },
+      status: 'queued',
+      optimisticMessageId: 'optimistic-follow-up',
+    }
+
+    const next = handleUserMessage(state, queuedEvent)
+
+    // Queueing does not end the running turn: clearing this flag hid the
+    // streaming indicator, Stop and Send-now while the backend kept working.
+    expect(next.state.session.isProcessing).toBe(true)
+    const queued = next.state.session.messages.find(m => m.id === 'optimistic-follow-up')!
+    expect(queued.isQueued).toBe(true)
+    expect(queued.isPending).toBe(false)
+  })
+
+  it('does not clear processing when a queued event follows an already-unqueued bubble', () => {
+    const state = makeState([
+      {
+        id: 'optimistic-follow-up',
+        role: 'user',
+        content: 'resend after idle',
+        timestamp: 120,
+        isQueued: false,
+      },
+    ])
+    const queuedEvent: UserMessageEvent = {
+      type: 'user_message',
+      sessionId: 'session-1',
+      message: {
+        id: 'backend-follow-up',
+        role: 'user',
+        content: 'resend after idle',
+        timestamp: 130,
+      },
+      status: 'queued',
+      optimisticMessageId: 'optimistic-follow-up',
+    }
+
+    const next = handleUserMessage(state, queuedEvent)
+
+    expect(next.state.session.isProcessing).toBe(true)
+  })
 })
 
 describe('handleQueuedMessageCancelled', () => {

@@ -48,6 +48,7 @@ import {
   type BrowserInstanceInfo,
 } from '../shared/types'
 import { BACKGROUND_HEX, DEFAULT_THEME, getBackgroundColor, loadAppTheme, getAllowRemoteEvaluate, loadPreferences, CONFIG_DIR, DEFAULT_BROWSER_PROFILE_ID, getBrowserProfiles } from '@craft-agent/shared/config'
+import { browserWorkspaceKey } from '@craft-agent/shared/config/client-config'
 import { isBrowserUrl } from '@craft-agent/shared/utils/url-safety'
 import {
   loadBrowserTabsState,
@@ -56,7 +57,7 @@ import {
   type SavedBrowserWindowTabs,
 } from './browser-tabs-state'
 import { CodedError, RPC_CHANNELS, describeWork, sameWork, tabSectionOf } from '@craft-agent/shared/protocol'
-import type { PickedElement, PickedElementOrigin, BrowserToolbarAction, BrowserTabSummary, TabBelongsTo, BrowserLoadError } from '@craft-agent/shared/protocol'
+import type { PickedElement, PickedElementOrigin, BrowserToolbarAction, BrowserTabSummary, TabBelongsTo, BrowserLoadError, BrowserStreamFrame, BrowserStreamInput, BrowserStreamStartResult } from '@craft-agent/shared/protocol'
 import { PAGE_PANEL_RING, resolvePagePanelRing, resolvePagePanelShadow } from '../shared/browser-live-fx'
 import { PANEL_EDGE_INSET, PANEL_RADIUS_INNER, TAB_RAIL_WIDTH, TOOLBAR_HEIGHT } from '../shared/panel-geometry'
 import { getWindowsBackgroundMaterial } from './window-material'
@@ -835,6 +836,9 @@ interface BrowserInstance {
    *
    * A window's scope rather than its purpose: the same one is where a general
    * task's browsing happens.
+   *
+   * For a window driven by a saved server this is `hub:<connectionId>:<workspaceId>`, not the raw
+   * id: two servers may both own a `ws-1`, and their windows must stay apart.
    */
   workspaceId: string | null
   /**
@@ -1181,6 +1185,14 @@ function rememberedWindowKey(workspaceId: string | null, profileId: string): str
 
 export class BrowserPaneManager implements IBrowserPaneManager {
   private instances: Map<string, BrowserInstance> = new Map()
+  /**
+   * Tabs being watched from outside their window: stream id → what it is watching and when the
+   * last frame was sent (a ~15fps ceiling lives there). See docs/browser-view-streaming.md.
+   */
+  private viewStreams: Map<string, { instanceId: string; tabId: string; clientId: string; lastSentAt: number }> = new Map()
+  private viewStreamSeq = 0
+  /** Told when a stream ends on its own, so the viewer is not left on its last frame. */
+  private viewStreamEndedHandler: ((clientId: string, streamId: string, reason: string) => void) | null = null
   private destroyingIds: Set<string> = new Set()
   private stateChangeCallback: ((info: BrowserInstanceInfo) => void) | null = null
   private removedCallback: ((id: string) => void) | null = null
@@ -2373,6 +2385,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const index = instance.tabs.findIndex((candidate) => candidate.id === tabId)
     if (index === -1) return
 
+    // A watcher of this tab has nothing left to watch.
+    this.endViewStreams((stream) => stream.instanceId === instanceId && stream.tabId === tabId)
+
     if (instance.tabs.length === 1) {
       // Closing the last tab is a window emptied by hand: there is nothing to bring back next
       // time, so the remembered pages go with it (`forgetTabs`).
@@ -2788,6 +2803,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     if (options?.forgetTabs) this.forgetTabsForWindow(instance.workspaceId, instance.profileId)
     else this.persistInstancesTabsForRestore([instance])
 
+    // Anyone watching one of this window's tabs is watching something that is going away.
+    this.endViewStreams((stream) => stream.instanceId === id)
+
     const destroyedBefore = instance.window.isDestroyed()
     mainLog.info(`[browser-pane] destroy requested id=${id} destroyedBefore=${destroyedBefore} keepAlive=${instance.keepAliveOnWindowClose}`)
 
@@ -2965,6 +2983,121 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     await this.handleDeepLinkUrl(deepLink)
     return true
+  }
+
+  // ---------------------------------------------------------------------------
+  // Watching a tab from outside its window
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Send one tab's frames to a viewer that is not the window it lives in.
+   *
+   * One watcher per tab: Chromium's screencast is one stream per CDP session, and recording uses
+   * the same one — so a tab already being recorded or watched is refused rather than having its
+   * stream silently replaced. Frames are handed to `onFrame` already shaped for the wire; the
+   * caller decides which client sees them.
+   */
+  async startViewStream(
+    instanceId: string,
+    tabId: string,
+    clientId: string,
+    onFrame: (frame: BrowserStreamFrame) => void,
+  ): Promise<BrowserStreamStartResult> {
+    const instance = this.instances.get(instanceId)
+    if (!instance || instance.window.isDestroyed()) {
+      throw new Error(`Browser window "${instanceId}" is not open.`)
+    }
+    const tab = tabById(instance, tabId)
+    if (!tab) throw new Error(`Browser window "${instanceId}" has no tab "${tabId}".`)
+    if (tab.cdp.isScreencasting()) {
+      throw new Error('That tab is already being recorded or watched by someone else.')
+    }
+
+    const streamId = `stream-${++this.viewStreamSeq}`
+    const bounds = tab.tabView.getBounds()
+    const stream = { instanceId, tabId: tab.id, clientId, lastSentAt: 0 }
+    this.viewStreams.set(streamId, stream)
+
+    try {
+      await tab.cdp.startScreencast({
+        quality: 60,
+        // Cap at the source: a viewer is looking at a pane, not a poster.
+        maxWidth: 1600,
+        maxHeight: 1600,
+        // Capture lost its session (a detach out from under us): the viewer has to hear it,
+        // otherwise it sits on the last frame forever.
+        onEnd: (reason) => this.finishViewStream(streamId, reason || 'capture-ended'),
+        onFrame: (frame) => {
+          // ~15fps ceiling: Chromium paints faster than anyone needs to see, and every frame is
+          // bandwidth on a link that also carries the conversation.
+          const now = Date.now()
+          if (now - stream.lastSentAt < 66) return
+          stream.lastSentAt = now
+          onFrame({
+            streamId,
+            tabId: tab.id,
+            data: frame.bytes.toString('base64'),
+            width: frame.width ?? bounds.width,
+            height: frame.height ?? bounds.height,
+            atMs: now,
+          })
+        },
+      })
+    } catch (error) {
+      this.viewStreams.delete(streamId)
+      throw error
+    }
+
+    return { streamId, tabId: tab.id, width: bounds.width, height: bounds.height }
+  }
+
+  /** End a stream because the viewer asked. Safe to call for one that is already gone. */
+  async stopViewStream(streamId: string): Promise<void> {
+    const stream = this.viewStreams.get(streamId)
+    if (!stream) return
+    this.viewStreams.delete(streamId)
+    const tab = this.tabForStream(stream)
+    if (tab) await tab.cdp.stopScreencast()
+  }
+
+  /** Tell viewers when a stream ends for a reason of its own. Set once at registration. */
+  setViewStreamEndedHandler(handler: (clientId: string, streamId: string, reason: string) => void): void {
+    this.viewStreamEndedHandler = handler
+  }
+
+  /**
+   * End a stream that ended by itself — its tab or window went away, or capture lost its session.
+   * The viewer is told, because nothing else will tell it.
+   */
+  private finishViewStream(streamId: string, reason: string): void {
+    const stream = this.viewStreams.get(streamId)
+    if (!stream) return
+    this.viewStreams.delete(streamId)
+    const tab = this.tabForStream(stream)
+    if (tab) void tab.cdp.stopScreencast().catch(() => {})
+    this.viewStreamEndedHandler?.(stream.clientId, streamId, reason)
+  }
+
+  /** A viewer's pointer/keyboard, to the tab it is watching. */
+  async dispatchStreamInput(streamId: string, events: BrowserStreamInput[]): Promise<void> {
+    const stream = this.viewStreams.get(streamId)
+    if (!stream) throw new Error('That stream is not running.')
+    const tab = this.tabForStream(stream)
+    if (!tab) throw new Error('The tab being watched is gone.')
+    await tab.cdp.dispatchInput(events)
+  }
+
+  private tabForStream(stream: { instanceId: string; tabId: string }): BrowserTab | null {
+    const instance = this.instances.get(stream.instanceId)
+    if (!instance || instance.window.isDestroyed()) return null
+    return tabById(instance, stream.tabId) ?? null
+  }
+
+  /** Streams end with the thing they are watching. */
+  private endViewStreams(predicate: (stream: { instanceId: string; tabId: string }) => boolean): void {
+    for (const [streamId, stream] of [...this.viewStreams]) {
+      if (predicate(stream)) this.finishViewStream(streamId, 'closed')
+    }
   }
 
   listInstances(): BrowserInstanceInfo[] {
@@ -5612,27 +5745,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.stopWatchingDisplays()
   }
 
-  /**
-   * Destroy every browser window of a workspace.
-   *
-   * The window is the workspace's (not a session's), so this is what "that workspace is
-   * off the screen" means for the browser pane: the window has nothing left to belong
-   * to, and it never closes itself — left alone it would hold live renderers that nobody
-   * can reach, and keep `window-all-closed` from ever firing.
-   *
-   * A window created with no workspace context (`workspaceId` null) belongs to none and
-   * is not touched here.
-   */
-  destroyForWorkspace(workspaceId: string): void {
-    // Each window remembers its pages as it is destroyed (`destroyInstance`), so a workspace
-    // put away comes back the way it was left.
-    for (const instance of [...this.instances.values()]) {
-      if (instance.workspaceId === workspaceId) {
-        this.destroyInstance(instance.id)
-      }
-    }
-  }
-
   private finalizeDestroyedInstance(instance: BrowserInstance, source: 'destroy' | 'closed'): void {
     if (!this.instances.has(instance.id)) {
       return
@@ -6907,13 +7019,23 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
   }
 
-  /** Main dispatcher. Strongly-typed `switch` over `IBrowserPaneManager` methods. */
-  private async dispatchCapability(req: BrowserCapabilityRequest): Promise<unknown> {
+  /**
+   * Main dispatcher. Strongly-typed `switch` over `IBrowserPaneManager` methods.
+   *
+   * Public so the app-level hub connection can serve it without an IPC round-trip: the hub must
+   * be able to drive this machine's browser while no window exists (see `hub-connection.ts`).
+   *
+   * `connectionId` names the saved server the call came from, if any. A workspace id is only
+   * unique on the server that issued it — two servers may both own a `ws-1` — so a hub's
+   * workspace is filed under `hub:<connectionId>:<workspaceId>` and can never share a browser
+   * window (or a tab strip) with another server's. Local calls pass nothing and keep their ids.
+   */
+  async dispatchCapability(req: BrowserCapabilityRequest, connectionId?: string | null): Promise<unknown> {
     if (!req || req.v !== 1) {
       throw new CodedError('HANDLER_ERROR',
         `Unsupported browser capability request shape (v=${(req as { v?: unknown })?.v}).`)
     }
-    const workspaceId = req.workspaceId
+    const workspaceId = browserWorkspaceKey(connectionId, req.workspaceId ?? null)
     const sessionId = req.sessionId
     const args = req.args ?? []
     // The **work** the asking session is part of — the task's node for a Conductor child, the

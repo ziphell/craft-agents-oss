@@ -71,9 +71,11 @@ function createMockDeps(): HandlerDeps {
     },
     windowManager: {} as HandlerDeps['windowManager'],
     browserPaneManager: {
+      listInstances: () => [],
       onStateChange: () => {},
       onRemoved: () => {},
       onInteracted: () => {},
+      setViewStreamEndedHandler: () => {},
     } as unknown as NonNullable<HandlerDeps['browserPaneManager']>,
     oauthFlowStore: {
       store: () => {},
@@ -112,6 +114,7 @@ async function getExpectedChannels(): Promise<Set<string>> {
     tweaks,
     pages,
     decisions,
+    browserProfiles,
   ] = await Promise.all([
     import('@craft-agent/server-core/handlers/rpc/auth'),
     import('@craft-agent/server-core/handlers/rpc/automations'),
@@ -136,6 +139,7 @@ async function getExpectedChannels(): Promise<Set<string>> {
     import('@craft-agent/server-core/handlers/rpc/tweaks'),
     import('@craft-agent/server-core/handlers/rpc/designs'),
     import('@craft-agent/server-core/handlers/rpc/decisions'),
+    import('@craft-agent/server-core/handlers/rpc/browser-profiles'),
   ])
 
   // GUI handler channels (remain in electron)
@@ -170,6 +174,7 @@ async function getExpectedChannels(): Promise<Set<string>> {
     ...tweaks.HANDLED_CHANNELS,
     ...pages.HANDLED_CHANNELS,
     ...decisions.HANDLED_CHANNELS,
+    ...browserProfiles.HANDLED_CHANNELS,
     ...browser.HANDLED_CHANNELS,
     ...guiSystem.GUI_HANDLED_CHANNELS,
     ...guiWorkspace.GUI_HANDLED_CHANNELS,

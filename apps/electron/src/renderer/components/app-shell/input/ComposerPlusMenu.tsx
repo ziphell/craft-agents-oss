@@ -1,14 +1,17 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Check, Paperclip, Plus } from 'lucide-react'
+import { Check, HardDrive, Laptop, Paperclip, Plus } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@craft-agent/ui'
 
 import {
   DropdownMenu,
   DropdownMenuTrigger,
+  DropdownMenuSub,
   StyledDropdownMenuContent,
   StyledDropdownMenuItem,
   StyledDropdownMenuSeparator,
+  StyledDropdownMenuSubTrigger,
+  StyledDropdownMenuSubContent,
 } from '@/components/ui/styled-dropdown'
 import { COMPACT_COMMAND, LAYER_COMMANDS, type SlashCommand } from '@/components/ui/slash-command-menu'
 import { FreeFormInputContextBadge } from './FreeFormInputContextBadge'
@@ -45,6 +48,12 @@ export interface ComposerPlusMenuProps {
   attachmentCount: number
   isProcessing: boolean
   onAttach: () => void
+  /**
+   * Present in a remote window, where the workspace lives on the hub: `onAttach` then picks a
+   * file from the server's disk, and this is the extra way to push a file up from this machine.
+   * Offering both is the point — the same button means two different machines.
+   */
+  onAttachFromComputer?: () => void
   onSelectLayer: (layer: SessionMode) => void
   onCompact: () => void
   'data-tutorial'?: string
@@ -57,6 +66,7 @@ export function ComposerPlusMenu({
   attachmentCount,
   isProcessing,
   onAttach,
+  onAttachFromComputer,
   onSelectLayer,
   onCompact,
   'data-tutorial': dataTutorial,
@@ -151,6 +161,41 @@ export function ComposerPlusMenu({
       >
         {items.map(item => {
           const { label: itemLabel, icon } = describe(item)
+          // A remote window can attach from two machines, so "attach" opens a submenu instead
+          // of one action. Local windows keep the single item — there is only one disk to pick from.
+          if (item.id === 'attach' && onAttachFromComputer) {
+            return (
+              <React.Fragment key={item.id}>
+                {item.separatorBefore && <StyledDropdownMenuSeparator />}
+                <DropdownMenuSub>
+                  <StyledDropdownMenuSubTrigger disabled={item.disabled}>
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span className="shrink-0 text-muted-foreground">{icon}</span>
+                      <span className="truncate">{itemLabel}</span>
+                    </span>
+                  </StyledDropdownMenuSubTrigger>
+                  <StyledDropdownMenuSubContent>
+                    <StyledDropdownMenuItem onSelect={onAttach}>
+                      <span className="flex min-w-0 items-center gap-2">
+                        <span className="shrink-0 text-muted-foreground">
+                          <HardDrive className="h-3.5 w-3.5" />
+                        </span>
+                        <span className="truncate">{t('chat.attachFromServer')}</span>
+                      </span>
+                    </StyledDropdownMenuItem>
+                    <StyledDropdownMenuItem onSelect={onAttachFromComputer}>
+                      <span className="flex min-w-0 items-center gap-2">
+                        <span className="shrink-0 text-muted-foreground">
+                          <Laptop className="h-3.5 w-3.5" />
+                        </span>
+                        <span className="truncate">{t('chat.attachFromComputer')}</span>
+                      </span>
+                    </StyledDropdownMenuItem>
+                  </StyledDropdownMenuSubContent>
+                </DropdownMenuSub>
+              </React.Fragment>
+            )
+          }
           return (
             <React.Fragment key={item.id}>
               {item.separatorBefore && <StyledDropdownMenuSeparator />}

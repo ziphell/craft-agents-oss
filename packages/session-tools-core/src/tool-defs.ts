@@ -199,6 +199,26 @@ export const BrowserToolSchema = z.object({
   ]).describe('Browser command as a string (e.g., "click @e1") or array (e.g., ["evaluate", "var x = 1; x + 2"]). Array mode preserves semicolons and whitespace in arguments.'),
 });
 
+// Device tool schema — one meta-tool: name the device, then the tool to run there.
+export const DeviceToolSchema = z.object({
+  tool: z
+    .enum(['devices', 'bash', 'read', 'write', 'edit', 'list', 'stat', 'glob', 'grep', 'browser'])
+    .describe('The tool to run. Use "devices" first to see the devices you can reach.'),
+  device: z
+    .string()
+    .optional()
+    .describe('Device id (preferred) or display name, as "devices" reports them. Omit only for tool: "devices".'),
+  args: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe(
+      'Arguments for the nested tool. bash: {command, cwd?, timeoutMs?}. ' +
+      'read: {path, offset?, limit?}. write: {path, content}. edit: {path, oldString, newString, replaceAll?}. ' +
+      'list/stat: {path}. glob: {path, pattern}. grep: {path, pattern, glob?, ignoreCase?, maxResults?}. ' +
+      'browser: {command} — the same command line browser_tool takes.',
+    ),
+});
+
 // Video tool schema — the same CLI-like shape, one command per call (no batching).
 export const VideoToolSchema = z.object({
   command: z.union([
@@ -554,7 +574,53 @@ Use this when a source provides HTML templates for rich rendering of its data (e
 
 Templates use Mustache syntax — the tool handles rendering and writes the output HTML to the session data folder.`,
 
+  device_tool: `Run a tool on a named device — this machine or another one connected to this hub.
+
+If \`browser_tool\` is not in your tool list, this server has no browser of its own: the \`browser\`
+proxy below is the browser door here, and \`{"command":"--help"}\` is its command reference.
+
+Two kinds of call, and they are never mixed:
+- **Meta** — \`{"tool":"devices"}\` — what devices exist: id, name, platform, which capabilities each
+  one allows (shell / files / browser), and the workspace directories that may be touched. Names no
+  device.
+- **Proxy** — \`{"device":"…","tool":"bash"|…,"args":{…}}\` — runs exactly on the device that was
+  named, and nowhere else.
+
+**A proxy call never falls back.** The hub does not choose a device from who is asking, from the
+client that sent the conversation's last message, or from whatever else happens to be connected. If
+the named device is offline, its name fits more than one machine, or it does not allow that
+capability, the call fails and says so rather than running somewhere else. For the server's own
+machine, name that device's id exactly as \`devices\` reports it.
+
+Nested proxy tools (all in \`args\`):
+- \`bash\` — \`{command, cwd?, timeoutMs?}\` — run a shell command, cwd inside a workspace root
+- \`read\` — \`{path, offset?, limit?}\` — read a text file (offset/limit are 1-based lines)
+- \`write\` — \`{path, content}\` — write a file, creating parent directories
+- \`edit\` — \`{path, oldString, newString, replaceAll?}\` — replace text in a file
+- \`list\` — \`{path}\` — one directory's entries
+- \`stat\` — \`{path}\` — type, size and mtime
+- \`glob\` — \`{path, pattern}\` — files below \`path\` matching a glob (\`**\` supported)
+- \`grep\` — \`{path, pattern, glob?, ignoreCase?, maxResults?}\` — regex search in files
+- \`browser\` — \`{command}\` — the Browser Tools command line (same syntax, same guide, same
+  \`--help\`), run on that device's browser. Only a device whose \`devices\` row lists \`browser\` can
+  answer it; the connection does not fall back to this machine's browser when it cannot.
+
+Paths must be absolute and inside one of that device's workspace directories; the device checks this
+itself and refuses anything else. On another machine that directory is the one it keeps for this
+hub's workspace, and \`devices\` reports its exact path. Use the local shell/file tools when the work
+is on this machine — this one earns its keep when the machine is another one, or when two machines
+are compared.
+
+Examples:
+- \`{"tool":"devices"}\`
+- \`{"device":"office-mac","tool":"bash","args":{"command":"git status --short","cwd":"…/repo"}}\`
+- \`{"device":"office-mac","tool":"grep","args":{"path":"…/repo","pattern":"TODO","glob":"*.ts"}}\`
+- \`{"device":"build-pc","tool":"browser","args":{"command":"navigate https://example.com"}}\``,
+
   browser_tool: `Run browser actions using a CLI-like command (string or array input).
+
+This tool drives **this server's** browser only. Another machine's browser is \`device_tool\` with
+\`{"tool":"browser"}\` — same commands, but the machine is named and never chosen for you.
 
 All browser interactions use this single tool with strict validation and actionable feedback.
 String mode supports batching with semicolons: \`fill @e1 value; fill @e2 value; click @e3\`
@@ -965,6 +1031,8 @@ export const SESSION_TOOL_DEFS: SessionToolDef[] = [
   // Browser tool (backend-specific — requires BrowserPaneManager in Electron)
   // Single CLI-like tool that handles all browser actions via command string.
   { name: 'browser_tool', description: TOOL_DESCRIPTIONS.browser_tool, inputSchema: BrowserToolSchema, executionMode: 'backend', safeMode: 'allow', handler: null },
+  // Device tool (backend-specific — reaches shell/files/browser on any connected device)
+  { name: 'device_tool', description: TOOL_DESCRIPTIONS.device_tool, inputSchema: DeviceToolSchema, executionMode: 'backend', safeMode: 'block', handler: null },
   // Video tool (backend-specific — the same pane runtime, decoding a recording in a hidden window)
   { name: 'video_tool', description: TOOL_DESCRIPTIONS.video_tool, inputSchema: VideoToolSchema, executionMode: 'backend', safeMode: 'allow', handler: null },
   { name: 'drawio_tool', description: TOOL_DESCRIPTIONS.drawio_tool, inputSchema: DrawioToolSchema, executionMode: 'backend', safeMode: 'allow', handler: null },

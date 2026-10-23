@@ -18,6 +18,7 @@ import { i18n } from '@craft-agent/shared/i18n'
 import { getWorkspaces } from '@craft-agent/shared/config'
 import { loadWorkspaceDesigns } from '@craft-agent/shared/designs'
 import { mainLog } from './logger'
+import type { RemoteConnection } from '@craft-agent/shared/config/client-config'
 import type { WindowManager } from './window-manager'
 
 /** There is one tray per process — a second `new Tray` would stack a second icon. */
@@ -115,14 +116,19 @@ function pinnedDesigns(): Array<{ workspaceId: string; slug: string; name: strin
   return pinned.sort((a, b) => a.at - b.at).map(({ at: _at, ...rest }) => rest)
 }
 
+export interface TrayOptions {
+  /** Saved servers, offered as windows of their own. Read on every menu open. */
+  getConnections?: () => RemoteConnection[]
+  /** Open a window on one saved server. */
+  openRemote?: (connectionId: string) => void
+}
+
 /**
- * The menu, built fresh so it always matches what is open.
- *
- * It lists **workspaces**, not windows: a workspace's window is its home, and any
- * extra window is a temporary view the person is using right now — not the tray's
- * business (see docs/tray-plan.md §3.3).
+ * The tray menu. Connection is a window property now, so the tray lists both kinds of window:
+ * this machine's workspaces, and each saved server as its own window. There is no "mode" to
+ * switch — opening a local workspace window is how you get back to local work.
  */
-function buildMenu(windowManager: WindowManager): Menu {
+function buildMenu(windowManager: WindowManager, options: TrayOptions): Menu {
   const workspaces = getWorkspaces()
   const items: MenuItemConstructorOptions[] = []
 
@@ -149,6 +155,19 @@ function buildMenu(windowManager: WindowManager): Menu {
     })
   }
 
+  // Saved servers, each as its own window.
+  const connections = options.getConnections?.() ?? []
+  if (connections.length > 0) {
+    items.push({ type: 'separator' })
+    items.push({
+      label: i18n.t('menu.remoteServers'),
+      submenu: connections.map(connection => ({
+        label: connection.name,
+        click: () => options.openRemote?.(connection.id),
+      })),
+    })
+  }
+
   items.push({ type: 'separator' })
   items.push({ label: i18n.t('menu.quitCraftAgents'), click: () => app.quit() })
 
@@ -163,7 +182,7 @@ function buildMenu(windowManager: WindowManager): Menu {
  *   when there is a way back to it — a tray that could not be created means closing
  *   a window must still quit, or the app would sit invisible.
  */
-export function createTray(windowManager: WindowManager): boolean {
+export function createTray(windowManager: WindowManager, options: TrayOptions = {}): boolean {
   if (tray) return true
 
   try {
@@ -179,7 +198,7 @@ export function createTray(windowManager: WindowManager): boolean {
   tray.setToolTip(app.getName())
 
   const openMenu = () => {
-    if (tray && !tray.isDestroyed()) tray.popUpContextMenu(buildMenu(windowManager))
+    if (tray && !tray.isDestroyed()) tray.popUpContextMenu(buildMenu(windowManager, options))
   }
   const raiseApp = () => {
     const workspaceId = fallbackWorkspaceId(windowManager)

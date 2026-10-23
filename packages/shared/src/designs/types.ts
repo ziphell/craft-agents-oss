@@ -134,12 +134,31 @@ export interface DesignMotionSettings {
   aspect: DesignDeckAspect;
 }
 
+/**
+ * A hub-produced export the caller has to fetch, because the file was written on the
+ * machine that rendered it rather than on the machine that asked.
+ */
+export interface DesignExportDownload {
+  /** Opaque id, exchanged for the file at `/api/exports/<id>` (guarded by the caller's credentials). */
+  id: string;
+  /** Suggested file name, extension included. */
+  name: string;
+  /** Size in bytes, for a progress hint. */
+  size: number;
+  mime: string;
+}
+
 /** Outcome of a design export. */
 export interface DesignExportResult {
   /** The person dismissed the picker — nothing was written. */
   canceled: boolean;
-  /** Absolute paths written: one file, or many for the per-slide PNGs. */
+  /** Absolute paths written **on the exporting machine**: one file, or many for the per-slide PNGs. */
   paths: string[];
+  /**
+   * Set when the file was produced on a hub (webui, thin client): the caller downloads it with
+   * `saveDesignExport`, which asks where to put it and streams it there.
+   */
+  download?: DesignExportDownload;
 }
 
 /**

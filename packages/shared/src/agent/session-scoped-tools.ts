@@ -34,6 +34,8 @@ import {
 import { createLLMTool, type LLMQueryRequest, type LLMQueryResult } from './llm-tool.ts';
 import { createSpawnSessionTool, type SpawnSessionFn } from './spawn-session-tool.ts';
 import { createBrowserTools } from './browser-tools.ts';
+import { getBrowserHostState } from './browser-host-state.ts';
+import { createDeviceTools } from './device-tools.ts';
 import { createVideoTools } from './video-tools.ts';
 import { createDrawioTools } from './drawio-tools.ts';
 import type { BrowserPaneFns } from './browser-pane.ts';
@@ -82,6 +84,7 @@ export const CLAUDE_BACKEND_SESSION_TOOL_NAMES = new Set<string>([
   'call_llm',
   'spawn_session',
   'browser_tool',
+  'device_tool',
   'video_tool',
   'drawio_tool',
 ]);
@@ -306,8 +309,10 @@ export function getSessionScopedTools(
 
     // Add browser_* tools — backend-specific (requires BrowserPaneManager in Electron)
     // Gated by the "Built-in browser" setting so users with external browser tools
-    // (Playwright, Puppeteer, etc.) can disable the built-in one.
-    if (getBrowserToolEnabled()) {
+    // (Playwright, Puppeteer, etc.) can disable the built-in one, and by the host's own answer:
+    // a headless hub has no browser, so every call could only refuse. That machine's browser work
+    // is `device_tool`, which stays registered.
+    if (getBrowserToolEnabled() && getBrowserHostState(sessionId) !== false) {
       tools.push(
         ...createBrowserTools({
           sessionId,
@@ -319,6 +324,20 @@ export function getSessionScopedTools(
         }),
       );
     }
+
+    // Device meta-tool — one door onto this machine or another connected one. Not gated by the
+    // built-in browser setting: shell and files have nothing to do with that switch, and the
+    // nested `browser` command refuses by name when no browser runs here.
+    tools.push(
+      ...createDeviceTools({
+        sessionId,
+        workspaceRootPath,
+        getDeviceFns: () => {
+          const callbacks = getSessionScopedToolCallbacks(sessionId);
+          return callbacks?.deviceFns;
+        },
+      }),
+    );
 
     // Video frames are decoded by the app's browser (a hidden window of its own) and diagrams are
     // drawn by the app's own drawio (another hidden window), so both are on this runtime — but

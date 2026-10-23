@@ -153,15 +153,18 @@ export default function SettingsNavigator({
   onSelectSubpage,
 }: SettingsNavigatorProps) {
   const { t } = useTranslation()
+  // A browser client is inherently connected to a server; there is no mode to choose.
+  const isElectron = window.electronAPI.getRuntimeEnvironment() === 'electron'
 
   const settingsItems: SettingsItem[] = useMemo(() =>
-    SETTINGS_ITEMS.map((item) => ({
-      id: item.id,
-      label: t(item.labelKey),
-      icon: SETTINGS_ICONS[item.id],
-      description: t(item.descriptionKey),
-    })),
-    [t]
+    SETTINGS_ITEMS
+      .map((item) => ({
+        id: item.id,
+        label: t(item.labelKey),
+        icon: SETTINGS_ICONS[item.id],
+        description: t(item.descriptionKey),
+      })),
+    [t, isElectron]
   )
 
   return (

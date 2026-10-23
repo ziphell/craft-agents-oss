@@ -6,8 +6,10 @@ Use `browser_tool` to control built-in browser windows (Chromium) inside Craft A
 
 ## Browser usage paths
 
-1. **Primary and only in-session tool surface:** `browser_tool`
+1. **In-session tool surface:** `browser_tool` for this server's own browser; `device_tool` with `{"device":"<id>","tool":"browser","args":{"command":"…"}}` for a **named** device's browser, over the same command line and the same rules below. `{"tool":"devices"}` says which devices exist and whether each allows `browser`. On a server with no browser of its own (headless), `browser_tool` is unavailable and the device door is the only one.
 2. **Secondary helper CLI:** `bun run browser-tool --help` for `browser_tool` command templates (`bun run browser-tool template navigate`), and `bun run browser-tool parse-url <url>` for safe URL diagnostics outside agent turns
+
+Windows, tabs and profiles belong to the machine that runs the command: a tab opened through one door does not exist through the other.
 
 ---
 

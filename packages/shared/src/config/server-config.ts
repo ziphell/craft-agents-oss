@@ -3,7 +3,7 @@
  * accepts remote connections from other machines.
  *
  * When enabled, the app binds to 0.0.0.0 on a fixed port instead of
- * localhost on a random port, allowing thin clients to connect.
+ * localhost on a random port, allowing remote windows to connect.
  */
 
 export interface ServerConfig {
@@ -51,6 +51,13 @@ export interface ServerStatus {
   insecureWarning: boolean
   /** Whether the running server is bound to a network address (0.0.0.0) */
   allowExternal: boolean
+  /**
+   * Address other machines would use to reach this one.
+   *
+   * Reported even while the listener is loopback-only, because the settings page previews the URL
+   * of a config that has not been applied yet (Server Mode just turned on).
+   */
+  lanHost: string
   /** Configured public WS URL (reverse proxy / port mapping), when set */
   publicWsUrl?: string
   /** Set when the configured port was unavailable and a random one was used instead */

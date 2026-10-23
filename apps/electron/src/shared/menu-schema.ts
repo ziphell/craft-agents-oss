@@ -28,7 +28,7 @@ export interface MenuItemAction {
   shortcut: string              // Electron accelerator: 'CmdOrCtrl+B'
   shortcutDisplayMac: string    // Display on macOS: '⌘B'
   shortcutDisplayOther: string  // Display on Windows/Linux: 'Ctrl+B'
-  ipcChannel: string
+  ipcChannel?: string           // Optional: renderer-only actions dispatch via actionId
   icon: string                  // Lucide icon name
 }
 
@@ -259,6 +259,16 @@ export const ROOT_MENU = {
     shortcutDisplayOther: 'Ctrl+Shift+N',
     ipcChannel: RPC_CHANNELS.menu.NEW_WINDOW,
     icon: 'AppWindow',
+  },
+  connectServer: {
+    type: 'action',
+    id: 'connectServer',
+    actionId: 'app.connectServer',
+    labelKey: 'menu.connectServer',
+    shortcut: '',
+    shortcutDisplayMac: '',
+    shortcutDisplayOther: '',
+    icon: 'Server',
   },
   keyboardShortcuts: {
     type: 'action',

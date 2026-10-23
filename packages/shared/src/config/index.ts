@@ -1,7 +1,9 @@
 export * from './types.ts';
+export * from './client-config.ts';
 export { CONFIG_DIR, DEFAULT_CONFIG_DIR_NAME, resolveConfigDir } from './paths.ts';
 export * from './llm-connections.ts';
 export * from './browser-profiles.ts';
+export * from './device.ts';
 export * from './llm-validation.ts';
 export * from './models.ts';
 export * from './models-pi.ts';

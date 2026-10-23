@@ -11,6 +11,7 @@
 
 import type { WebContents } from 'electron'
 import type { PickedElement } from '@craft-agent/shared/protocol'
+import type { BrowserStreamInput } from '@craft-agent/shared/protocol'
 import { mainLog } from './logger'
 import { keyStroke, modifierMask, type BrowserKeyModifier } from './browser-key-map'
 
@@ -721,6 +722,9 @@ export interface ScreencastFrame {
   bytes: Buffer
   /** ms from the start of the stream — which is what this is a picture of. */
   offsetMs: number
+  /** CSS pixels of the viewport this frame shows (absent when Chromium omits the metadata). */
+  width?: number
+  height?: number
 }
 
 export interface ScreencastOptions {
@@ -738,6 +742,40 @@ export interface ScreencastOptions {
    */
   maxWidth?: number
   maxHeight?: number
+}
+
+/** Windows virtual key codes for the named keys a viewer's DOM event can carry. */
+const NAMED_VIRTUAL_KEYS: Record<string, number> = {
+  Enter: 13,
+  Tab: 9,
+  Escape: 27,
+  Backspace: 8,
+  Delete: 46,
+  Insert: 45,
+  ArrowLeft: 37,
+  ArrowUp: 38,
+  ArrowRight: 39,
+  ArrowDown: 40,
+  Home: 36,
+  End: 35,
+  PageUp: 33,
+  PageDown: 34,
+  ' ': 32,
+}
+
+/**
+ * The code CDP needs for *default* behaviour — focus moves, scrolling, ctrl+a.
+ *
+ * A viewer sends a DOM `key`/`code`; a plain character is its own code, and `code` covers the
+ * letter/digit keys whose `key` is layout-dependent.
+ */
+function virtualKeyCode(key: string, code?: string): number {
+  const named = NAMED_VIRTUAL_KEYS[key]
+  if (named) return named
+  if (key.length === 1) return key.toUpperCase().charCodeAt(0)
+  if (code && /^Key[A-Z]$/.test(code)) return code.charCodeAt(3)
+  if (code && /^Digit[0-9]$/.test(code)) return code.charCodeAt(5)
+  return 0
 }
 
 export class BrowserCDP {
@@ -941,6 +979,61 @@ export class BrowserCDP {
   // Screencast — the page as a stream of frames
   // ---------------------------------------------------------------------------
 
+  /** Whether a screencast is running on this page — a recording, or a viewer watching it. */
+  isScreencasting(): boolean {
+    return this.screencast !== null
+  }
+
+  /**
+   * A viewer's pointer and keyboard, delivered to the page itself.
+   *
+   * CDP rather than `webContents.sendInputEvent`: the latter sends keys to whatever widget the
+   * window has focused, which a background tab (or a window parked off every display) does not
+   * have — the same reason `key` uses CDP (see `browser-key-map`). Coordinates are CSS pixels in
+   * this page's viewport, which is what a viewer computes from the frame it is showing.
+   */
+  async dispatchInput(events: BrowserStreamInput[]): Promise<void> {
+    for (const event of events) {
+      if (event.type === 'mouse') {
+        const type = event.action === 'move' ? 'mouseMoved' : event.action === 'down' ? 'mousePressed' : 'mouseReleased'
+        await this.send('Input.dispatchMouseEvent', {
+          type,
+          x: event.x,
+          y: event.y,
+          // A move reports no button; a press/release names the one it used.
+          button: event.action === 'move' ? 'none' : event.button ?? 'left',
+          clickCount: event.action === 'move' ? 0 : event.clickCount ?? 1,
+          // Which buttons stay down for the whole gesture — a drag with the right button is not
+          // the same event stream as one with the left.
+          buttons: event.buttons ?? (event.action === 'down' ? 1 : 0),
+        })
+        continue
+      }
+
+      if (event.type === 'wheel') {
+        await this.send('Input.dispatchMouseWheel', {
+          type: 'mouseWheel',
+          x: event.x,
+          y: event.y,
+          deltaX: event.deltaX,
+          deltaY: event.deltaY,
+        })
+        continue
+      }
+
+      const virtual = virtualKeyCode(event.key, event.code)
+      await this.send('Input.dispatchKeyEvent', {
+        // `keyDown` (with `text`) inserts a character; `rawKeyDown` is the key without one.
+        type: event.action === 'down' ? (event.text ? 'keyDown' : 'rawKeyDown') : 'keyUp',
+        key: event.key,
+        ...(event.code ? { code: event.code } : {}),
+        ...(event.action === 'down' && event.text ? { text: event.text } : {}),
+        ...(virtual ? { windowsVirtualKeyCode: virtual, nativeVirtualKeyCode: virtual } : {}),
+        modifiers: event.modifiers ?? 0,
+      })
+    }
+  }
+
   /**
    * The page as frames, for as long as it is asked for.
    *
@@ -982,6 +1075,8 @@ export class BrowserCDP {
         current.onFrame({
           bytes: Buffer.from(data, 'base64'),
           offsetMs: Math.max(0, Math.round(atMs - startedAtMs)),
+          ...(typeof params?.metadata?.deviceWidth === 'number' ? { width: params.metadata.deviceWidth } : {}),
+          ...(typeof params?.metadata?.deviceHeight === 'number' ? { height: params.metadata.deviceHeight } : {}),
         })
       }
 

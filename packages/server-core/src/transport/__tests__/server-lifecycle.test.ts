@@ -27,7 +27,15 @@ function createServer(opts?: {
   })
 }
 
-function handshake(url: string, token: string): Promise<{ ws: WebSocket; clientId: string }> {
+function handshake(
+  url: string,
+  token: string,
+  extra?: {
+    workspaceId?: string
+    webContentsId?: number
+    clientInfo?: { name?: string; platform?: string; mode?: 'local' | 'remote'; deviceId?: string }
+  },
+): Promise<{ ws: WebSocket; clientId: string }> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(url)
     const timeout = setTimeout(() => {
@@ -41,6 +49,7 @@ function handshake(url: string, token: string): Promise<{ ws: WebSocket; clientI
         type: 'handshake',
         protocolVersion: PROTOCOL_VERSION,
         token,
+        ...extra,
       }))
     })
     ws.on('message', (data) => {
@@ -93,6 +102,33 @@ describe('WsRpcServer lifecycle', () => {
     expect(clientId).toBeTruthy()
     expect(ws.readyState).toBe(WebSocket.OPEN)
     expect(server.getConnectedClientCount()).toBe(1)
+  })
+
+  it('reports connected clients with the identity they advertised', async () => {
+    server = createServer()
+    await server.listen()
+    const url = `ws://127.0.0.1:${server.port}`
+
+    const { ws, clientId } = await handshake(url, TEST_TOKEN, {
+      workspaceId: 'ws-1',
+      webContentsId: 42,
+      clientInfo: { name: 'Office Mac', platform: 'darwin', mode: 'remote', deviceId: 'device-office' },
+    })
+    openSockets.push(ws)
+
+    const clients = server.getConnectedClients()
+    expect(clients).toHaveLength(1)
+    expect(clients[0]).toMatchObject({
+      clientId,
+      deviceId: 'device-office',
+      name: 'Office Mac',
+      platform: 'darwin',
+      mode: 'remote',
+      workspaceId: 'ws-1',
+      webContentsId: 42,
+    })
+    expect(clients[0]!.connectedAt).toBeGreaterThan(0)
+    expect(server.isLocalClient(clientId)).toBe(false)
   })
 
   it('rejects invalid token with 4005', async () => {

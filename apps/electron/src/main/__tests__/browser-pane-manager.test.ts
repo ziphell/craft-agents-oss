@@ -1186,6 +1186,35 @@ describe('BrowserPaneManager', () => {
         expect(instanceInfo(shared)?.agentControlActive).toBe(false)
       })
     })
+
+    // A hub's workspace id is only unique on that hub: two saved servers may both own a `ws-1`.
+    // A browser call names the server it came from, and that is half of the window's key.
+    describe('a call from a hub', () => {
+      const fromServer = (connectionId: string, workspaceId = 'ws-1') =>
+        manager.dispatchCapability({
+          v: 1,
+          method: 'getOrCreateForSession',
+          args: ['sess-a'],
+          sessionId: 'sess-a',
+          workspaceId,
+          work: work('sess-a'),
+        }, connectionId) as Promise<string>
+
+      it('keeps two servers that use the same workspace id apart', async () => {
+        const a = await fromServer('conn-a')
+        const b = await fromServer('conn-b')
+
+        expect(a).not.toBe(b)
+        expect(manager.listInstances().map((i) => i.workspaceId).sort()).toEqual([
+          'hub:conn-a:ws-1',
+          'hub:conn-b:ws-1',
+        ])
+      })
+
+      it('gives the same server the same window on every call', async () => {
+        expect(await fromServer('conn-a')).toBe(await fromServer('conn-a'))
+      })
+    })
     // Two facts live here and they are not the same one: the **cursor** (`cursorOf`) is the
     // tab a conversation works from — sticky, named, where its unnamed commands go — and the
     // **driven-by mark** (`drivenBy`) is the last tab a command actually reached,

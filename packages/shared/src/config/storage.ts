@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync, readdirSync } from 'fs';
+import { randomUUID } from 'node:crypto';
 import { join, dirname, basename } from 'path';
 import { getCredentialManager } from '../credentials/index.ts';
 import { getOrCreateLatestSession, type SessionConfig } from '../sessions/index.ts';
@@ -111,6 +112,8 @@ export interface StoredConfig {
   setupDeferred?: boolean;
   // Server mode — embedded remote server settings
   serverConfig?: import('./server-config.ts').ServerConfig;
+  // Remote servers this app can open windows on, independent of serverConfig.
+  clientConfig?: import('./client-config.ts').ClientConfig;
   // One-shot migration markers. Used by migrations that should run at most
   // once per user (e.g. restoring a previously-removed model to connection
   // lists without re-adding it if the user later removes it deliberately).
@@ -594,7 +597,7 @@ export function setBrowserToolEnabled(enabled: boolean): void {
  * dispatcher; the remote server cannot override it.
  *
  * Defaults to true. Users can flip it off in Settings → AI → Advanced if they don't
- * trust the remote workspaces they connect to.
+ * trust the hubs they connect to.
  */
 export function getAllowRemoteEvaluate(): boolean {
   const config = loadStoredConfig();
@@ -824,18 +827,6 @@ export function getWorkspaceByNameOrId(nameOrId: string): Workspace | null {
     w.id === nameOrId ||
     w.name.toLowerCase() === nameOrId.toLowerCase()
   ) || null;
-}
-
-export function updateWorkspaceRemoteServer(
-  workspaceId: string,
-  remoteServer: { url: string; token: string; remoteWorkspaceId: string },
-): void {
-  const config = loadStoredConfig();
-  if (!config) return;
-  const ws = config.workspaces.find(w => w.id === workspaceId);
-  if (!ws) throw new Error('Workspace not found');
-  ws.remoteServer = remoteServer;
-  saveConfig(config);
 }
 
 export function setActiveWorkspace(workspaceId: string): void {
@@ -1184,6 +1175,9 @@ export interface DraftAttachmentRef {
   /** Inline content for attachments without a real filesystem path (paste, web-drag).
    *  When present, hydrate reconstructs from these bytes and skips any disk read. */
   content?: DraftAttachmentContent;
+  /** `path` belongs to the hub's filesystem (picked from the server's disk in a remote
+   *  window), so hydrate must read it through the hub instead of this machine. */
+  fromServer?: boolean;
 }
 
 export interface SessionDraft {
@@ -1222,6 +1216,7 @@ function isDraftAttachmentRef(value: unknown): value is DraftAttachmentRef {
   const ref = value as DraftAttachmentRef;
   if (typeof ref.path !== 'string' || typeof ref.name !== 'string') return false;
   if (ref.content !== undefined && !isDraftAttachmentContent(ref.content)) return false;
+  if (ref.fromServer !== undefined && typeof ref.fromServer !== 'boolean') return false;
   // Post-migration guard: refs without content MUST have an absolute path. This rejects
   // the broken 0.8.11 shape (synthetic path === filename, no content) on first load —
   // user sees empty drafts once instead of attachments silently disappearing forever.
@@ -3270,7 +3265,7 @@ export function ensureToolIcons(): void {
 // ============================================
 
 import { DEFAULT_SERVER_CONFIG, type ServerConfig } from './server-config.ts';
-import { randomUUID } from 'crypto';
+import { connectionNameFromUrl, findConnectionByUrl, type ClientConfig, type RemoteConnection } from './client-config.ts';
 
 /**
  * Get the current server configuration.
@@ -3288,6 +3283,8 @@ export function getServerConfig(): ServerConfig {
 /**
  * Persist server configuration.
  * Auto-generates a stable auth token on first enable if none exists.
+ * Server Mode and remote windows are independent: this machine keeps serving while a window
+ * connects elsewhere, so saving server config leaves the remote connection untouched.
  */
 export function setServerConfig(serverConfig: ServerConfig): void {
   const config = loadStoredConfig();
@@ -3299,5 +3296,210 @@ export function setServerConfig(serverConfig: ServerConfig): void {
   }
 
   config.serverConfig = serverConfig;
+  saveConfig(config);
+}
+
+// ============================================
+// Remote connections — the servers windows can open on
+// ============================================
+
+/** Anything persisted for a connection is trusted only when it has an id and a URL. */
+function isRemoteConnection(value: unknown): value is RemoteConnection {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<RemoteConnection>;
+  return typeof candidate.id === 'string' && candidate.id.length > 0
+    && typeof candidate.url === 'string' && candidate.url.length > 0;
+}
+
+/**
+ * Read the saved connections, folding the old single-hub shape (`serverUrl`/`token`/`enabled`)
+ * into one entry so an install that predates the list keeps its server. The legacy id is derived
+ * from the URL so it stays stable until {@link migrateLegacyRemoteWorkspaces} persists a real one.
+ */
+function normalizeClientConfig(raw: unknown): ClientConfig {
+  const stored = (raw ?? {}) as {
+    connections?: unknown;
+    defaultConnectionId?: unknown;
+    enabled?: unknown;
+    serverUrl?: unknown;
+    token?: unknown;
+    workspaceId?: unknown;
+  };
+
+  const connections: RemoteConnection[] = Array.isArray(stored.connections)
+    ? stored.connections.filter(isRemoteConnection).map(connection => ({ ...connection }))
+    : [];
+
+  if (typeof stored.serverUrl === 'string' && stored.serverUrl.trim()) {
+    const url = stored.serverUrl.trim();
+    const known = findConnectionByUrl(connections, url);
+    if (!known) {
+      connections.push({
+        id: `legacy:${url}`,
+        name: connectionNameFromUrl(url),
+        url,
+        token: typeof stored.token === 'string' ? stored.token : '',
+        ...(typeof stored.workspaceId === 'string' ? { lastWorkspaceId: stored.workspaceId } : {}),
+      });
+    }
+  }
+
+  let defaultConnectionId = typeof stored.defaultConnectionId === 'string'
+    ? stored.defaultConnectionId
+    : undefined;
+  if (!defaultConnectionId && stored.enabled === true && connections.length > 0) {
+    defaultConnectionId = connections[0]!.id;
+  }
+  if (defaultConnectionId && !connections.some(connection => connection.id === defaultConnectionId)) {
+    defaultConnectionId = undefined;
+  }
+
+  return { connections, ...(defaultConnectionId ? { defaultConnectionId } : {}) };
+}
+
+/** Every server this app can open a window on. */
+export function getRemoteConnections(): RemoteConnection[] {
+  return getClientConfig().connections;
+}
+
+export function getRemoteConnection(connectionId: string): RemoteConnection | null {
+  return getRemoteConnections().find(connection => connection.id === connectionId) ?? null;
+}
+
+/**
+ * Add or update a connection. A URL that is already saved is the same server: the existing
+ * entry keeps its id (windows still point at it) and takes the new name/token.
+ *
+ * An edit carries only what it changes, so the entry's last workspace is kept when the caller
+ * does not name one — renaming a server or rotating its token must not forget "where I was".
+ */
+export function saveRemoteConnection(connection: RemoteConnection): RemoteConnection {
+  const config = getClientConfig();
+  const sameServer = findConnectionByUrl(config.connections, connection.url);
+  const resolvedId = sameServer?.id ?? connection.id;
+  const previous = config.connections.find(existing => existing.id === resolvedId);
+  const saved: RemoteConnection = {
+    ...connection,
+    id: resolvedId,
+    name: connection.name.trim() || connectionNameFromUrl(connection.url),
+    ...(!connection.lastWorkspaceId && previous?.lastWorkspaceId
+      ? { lastWorkspaceId: previous.lastWorkspaceId }
+      : {}),
+  };
+  config.connections = sameServer
+    ? config.connections.map(existing => existing.id === sameServer.id ? saved : existing)
+    : [...config.connections.filter(existing => existing.id !== saved.id), saved];
+  setClientConfig(config);
+  return saved;
+}
+
+export function removeRemoteConnection(connectionId: string): void {
+  const config = getClientConfig();
+  config.connections = config.connections.filter(connection => connection.id !== connectionId);
+  if (config.defaultConnectionId === connectionId) delete config.defaultConnectionId;
+  setClientConfig(config);
+}
+
+/** `null` clears the default, so new windows stay local. */
+export function setDefaultRemoteConnection(connectionId: string | null): void {
+  const config = getClientConfig();
+  if (connectionId && !config.connections.some(connection => connection.id === connectionId)) {
+    throw new Error('Unknown remote connection');
+  }
+  if (connectionId) config.defaultConnectionId = connectionId;
+  else delete config.defaultConnectionId;
+  setClientConfig(config);
+}
+
+/** Remember the workspace a server was last opened on, for the next window. */
+export function rememberRemoteWorkspace(connectionId: string, workspaceId: string | undefined): void {
+  const config = getClientConfig();
+  let changed = false;
+  config.connections = config.connections.map(connection => {
+    if (connection.id !== connectionId) return connection;
+    if (workspaceId) connection.lastWorkspaceId = workspaceId;
+    else delete connection.lastWorkspaceId;
+    changed = true;
+    return connection;
+  });
+  if (changed) setClientConfig(config);
+}
+
+/**
+ * Get the persisted remote connections.
+ * Returns defaults (none) if nothing has been configured yet.
+ */
+export function getClientConfig(): ClientConfig {
+  const config = loadStoredConfig();
+  return normalizeClientConfig(config?.clientConfig);
+}
+
+/** Persist the remote connections. */
+export function setClientConfig(clientConfig: ClientConfig): void {
+  const config = loadStoredConfig();
+  if (!config) return;
+
+  config.clientConfig = clientConfig;
+  saveConfig(config);
+}
+
+const LEGACY_REMOTE_WORKSPACES_MARKER = 'workspace-level-remote-removed';
+
+/**
+ * Workspaces used to be able to record a server of their own (`remoteServer`). A workspace now
+ * lives on the server that owns it, and reaching another server is a saved connection opening a
+ * remote window. This folds those entries into the connection list (one per URL) and drops them
+ * from the local workspace list, so no workspace points at a filesystem on another machine.
+ */
+export function migrateLegacyRemoteWorkspaces(): void {
+  const config = loadStoredConfig();
+  if (!config) return;
+  if (config.migrationsApplied?.includes(LEGACY_REMOTE_WORKSPACES_MARKER)) return;
+
+  type LegacyRemoteServer = { url?: string; token?: string; remoteWorkspaceId?: string };
+  type LegacyWorkspace = { id: string } & { remoteServer?: LegacyRemoteServer };
+  const workspaces = config.workspaces as LegacyWorkspace[];
+  const legacy = workspaces.filter(workspace => !!workspace.remoteServer?.url?.trim());
+
+  const normalized = normalizeClientConfig(config.clientConfig);
+  // A legacy id is a placeholder; persist a real one now that the config is being written.
+  const reissued = new Map<string, string>();
+  for (const connection of normalized.connections) {
+    if (!connection.id.startsWith('legacy:')) continue;
+    reissued.set(connection.id, randomUUID());
+    connection.id = reissued.get(connection.id)!;
+  }
+  if (normalized.defaultConnectionId && reissued.has(normalized.defaultConnectionId)) {
+    normalized.defaultConnectionId = reissued.get(normalized.defaultConnectionId);
+  }
+
+  for (const workspace of legacy) {
+    const remote = workspace.remoteServer!;
+    const url = remote.url!.trim();
+    const known = findConnectionByUrl(normalized.connections, url);
+    if (known) {
+      if (!known.token && remote.token) known.token = remote.token;
+      if (!known.lastWorkspaceId && remote.remoteWorkspaceId) known.lastWorkspaceId = remote.remoteWorkspaceId;
+    } else {
+      normalized.connections.push({
+        id: randomUUID(),
+        name: connectionNameFromUrl(url),
+        url,
+        token: remote.token ?? '',
+        ...(remote.remoteWorkspaceId ? { lastWorkspaceId: remote.remoteWorkspaceId } : {}),
+      });
+    }
+  }
+
+  if (legacy.length > 0) {
+    const removed = new Set(legacy.map(workspace => workspace.id));
+    config.workspaces = config.workspaces.filter(workspace => !removed.has(workspace.id));
+    if (config.activeWorkspaceId && removed.has(config.activeWorkspaceId)) {
+      config.activeWorkspaceId = config.workspaces[0]?.id ?? null;
+    }
+  }
+
+  config.clientConfig = normalized;
+  config.migrationsApplied = [...(config.migrationsApplied ?? []), LEGACY_REMOTE_WORKSPACES_MARKER];
   saveConfig(config);
 }

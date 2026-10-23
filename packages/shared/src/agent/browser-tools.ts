@@ -14,7 +14,7 @@ import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { TOOL_DESCRIPTIONS } from '@craft-agent/session-tools-core';
 import { requireBrowserPaneFns, type BrowserPaneToolOptions } from './browser-pane.ts';
-import { executeBrowserToolCommand } from './browser-commands.ts';
+import { executeBrowserToolCommand, BROWSER_RELEASE_HINT } from './browser-commands.ts';
 
 // Tool result type - matches MCP CallToolResult content blocks
 type ToolResult = {
@@ -37,12 +37,6 @@ function successResponse(text: string): ToolResult {
     content: [{ type: 'text', text }],
   };
 }
-
-const BROWSER_RELEASE_HINT = '\n\nWhen you are done using the browser, hand the page back with "tab-show <id> --handover" — it makes that tab the window\'s shown tab and drops your overlay and hold — and say so in your reply (the window is not raised for them). Or close the tabs you opened with "tab-close <id>".';
-
-// ============================================================================
-// Tool Descriptions
-// ============================================================================
 
 const BROWSER_TOOL_DESCRIPTION = TOOL_DESCRIPTIONS.browser_tool;
 

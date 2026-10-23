@@ -55,6 +55,7 @@ import {
 } from '@/atoms/browser-profiles'
 import { useAppShellContext } from '@/context/AppShellContext'
 import { sessionAtomFamily, sessionMetaMapAtom } from '@/atoms/sessions'
+import { windowServerScopeAtom } from '@/atoms/window-mode'
 import { groupTabsByWork, shouldShowGroupHeaders, type TabGroup } from './tab-groups'
 import { BrowserTabBadge } from './BrowserTabBadge'
 import { TopBarButton } from '../ui/TopBarButton'
@@ -121,14 +122,11 @@ export function BrowserTabStrip({
   onAddTabToConversation,
   onOpenBrowser,
 }: BrowserTabStripProps) {
-  // Filter the badge strip to the workspace currently in focus. Remote-connected
-  // workspaces have a different `remoteWorkspaceId` (what the remote agent
-  // stamps onto its tabs) than the local `activeWorkspaceId` (what locally-
-  // opened manual tabs use), so we accept either.
+  // Filter the badge strip to the workspace currently in focus. In a remote window the panes
+  // carry the hub's workspace id filed under its server, which is the key built here.
   const { t } = useTranslation()
-  const { activeWorkspaceId, workspaces } = useAppShellContext()
-  const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId)
-  const remoteWorkspaceId = activeWorkspace?.remoteServer?.remoteWorkspaceId ?? null
+  const { activeWorkspaceId } = useAppShellContext()
+  const serverScope = useAtomValue(windowServerScopeAtom)
   const allInstances = useAtomValue(browserInstancesAtom)
   /**
    * Conversation names for the tab list's group headers.
@@ -139,8 +137,8 @@ export function BrowserTabStrip({
    */
   const sessionMeta = useAtomValue(sessionMetaMapAtom)
   const instances = useMemo(
-    () => filterInstancesForWorkspace(allInstances, activeWorkspaceId, remoteWorkspaceId),
-    [allInstances, activeWorkspaceId, remoteWorkspaceId],
+    () => filterInstancesForWorkspace(allInstances, activeWorkspaceId, serverScope),
+    [allInstances, activeWorkspaceId, serverScope],
   )
   const setInstances = useSetAtom(setBrowserInstancesAtom)
   const updateInstance = useSetAtom(updateBrowserInstanceAtom)

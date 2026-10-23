@@ -15,14 +15,9 @@ import { RPC_CHANNELS } from './channels'
 // ---------------------------------------------------------------------------
 
 export const LOCAL_ONLY_CHANNELS = new Set<string>([
-  // remote — local connectivity management (reaches out to remote server from local app)
-  RPC_CHANNELS.remote.TEST_CONNECTION,
-
-  // workspaces — local workspace CRUD (workspace list is local config)
+  // workspaces — the local list (with rootPath) is this machine's; creation and slug checks
+  // belong to the server that will own the workspace, so they live in REMOTE_ELIGIBLE.
   RPC_CHANNELS.workspaces.GET,
-  RPC_CHANNELS.workspaces.CREATE,
-  RPC_CHANNELS.workspaces.CHECK_SLUG,
-  RPC_CHANNELS.workspaces.UPDATE_REMOTE,
 
   // window — Electron window management
   RPC_CHANNELS.window.GET_WORKSPACE,
@@ -146,34 +141,8 @@ export const LOCAL_ONLY_CHANNELS = new Set<string>([
   RPC_CHANNELS.power.GET_KEEP_AWAKE,
   RPC_CHANNELS.power.SET_KEEP_AWAKE,
 
-  // appearance — local UI preferences
-  RPC_CHANNELS.appearance.GET_RICH_TOOL_DESCRIPTIONS,
-  RPC_CHANNELS.appearance.SET_RICH_TOOL_DESCRIPTIONS,
-
-  // caching — prompt cache and context settings
-  RPC_CHANNELS.caching.GET_EXTENDED_PROMPT_CACHE,
-  RPC_CHANNELS.caching.SET_EXTENDED_PROMPT_CACHE,
-  RPC_CHANNELS.caching.GET_ENABLE_1M_CONTEXT,
-  RPC_CHANNELS.caching.SET_ENABLE_1M_CONTEXT,
-
-  // rtk — token-optimization opt-in
-  RPC_CHANNELS.rtk.GET_ENABLED,
-  RPC_CHANNELS.rtk.SET_ENABLED,
-  RPC_CHANNELS.rtk.GET_STATUS,
-  RPC_CHANNELS.rtk.GET_GAIN,
-
-  // decisions — Jev decision-layer opt-in (app-level settings + provider keys)
-  RPC_CHANNELS.decisions.GET_SETTINGS,
-  RPC_CHANNELS.decisions.SET_SETTINGS,
-  RPC_CHANNELS.decisions.GET_STATUS,
-  RPC_CHANNELS.decisions.SET_API_KEY,
-  RPC_CHANNELS.decisions.DELETE_API_KEY,
-  RPC_CHANNELS.decisions.TEST,
-  RPC_CHANNELS.decisions.PROBE_SERVER,
-
-  // tools — local tool settings
-  RPC_CHANNELS.tools.GET_BROWSER_TOOL_ENABLED,
-  RPC_CHANNELS.tools.SET_BROWSER_TOOL_ENABLED,
+  // appearance / caching / rtk / decisions / tools are settings the *agent host* reads, so they
+  // live in REMOTE_ELIGIBLE — a remote window must edit the server's policy, not this machine's.
 
   // browserPane — Electron BrowserView
   RPC_CHANNELS.browserPane.CREATE,
@@ -196,6 +165,11 @@ export const LOCAL_ONLY_CHANNELS = new Set<string>([
   RPC_CHANNELS.browserPane.EVALUATE,
   RPC_CHANNELS.browserPane.FETCH_RESOURCE,
   RPC_CHANNELS.browserPane.SCROLL,
+  RPC_CHANNELS.browserPane.STREAM_START,
+  RPC_CHANNELS.browserPane.STREAM_STOP,
+  RPC_CHANNELS.browserPane.STREAM_INPUT,
+  RPC_CHANNELS.browserPane.STREAM_FRAME,
+  RPC_CHANNELS.browserPane.STREAM_ENDED,
   RPC_CHANNELS.browserPane.LAUNCH,
   RPC_CHANNELS.browserPane.STATE_CHANGED,
   RPC_CHANNELS.browserPane.REMOVED,
@@ -210,11 +184,9 @@ export const LOCAL_ONLY_CHANNELS = new Set<string>([
   // debug — local debug logging
   RPC_CHANNELS.debug.LOG,
 
-  // onboarding — local auth setup flow
-  RPC_CHANNELS.onboarding.GET_AUTH_STATE,
-  RPC_CHANNELS.onboarding.VALIDATE_MCP,
+  // onboarding — the wizard that still runs here: it starts a loopback callback server on this
+  // machine. Whether the *server* needs setup, and recording the answer, live in REMOTE_ELIGIBLE.
   RPC_CHANNELS.onboarding.START_MCP_OAUTH,
-  RPC_CHANNELS.onboarding.DEFER_SETUP,
   RPC_CHANNELS.settings.GET_NETWORK_PROXY,
   RPC_CHANNELS.settings.SET_NETWORK_PROXY,
 
@@ -229,12 +201,19 @@ export const LOCAL_ONLY_CHANNELS = new Set<string>([
 // ---------------------------------------------------------------------------
 
 export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
+  // workspaces — creation and slug checks run where the workspace will live, so a remote
+  // window creates on its hub and a local window on this machine (workspaceClient is local).
+  RPC_CHANNELS.workspaces.CREATE,
+  RPC_CHANNELS.workspaces.CHECK_SLUG,
+
   // server — server-level operations (no workspace context needed)
   RPC_CHANNELS.server.GET_WORKSPACES,
   RPC_CHANNELS.server.CREATE_WORKSPACE,
+  RPC_CHANNELS.server.REMOVE_WORKSPACE,
   RPC_CHANNELS.server.GET_STATUS,
   RPC_CHANNELS.server.GET_HEALTH,
   RPC_CHANNELS.server.GET_ACTIVE_SESSIONS,
+  RPC_CHANNELS.server.GET_DEVICES,
   RPC_CHANNELS.server.SHUTTING_DOWN,
   RPC_CHANNELS.server.STATUS_CHANGED,
   RPC_CHANNELS.server.HOME_DIR,
@@ -307,6 +286,7 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   // fs — workspace filesystem
   RPC_CHANNELS.fs.SEARCH,
   RPC_CHANNELS.fs.LIST_DIRECTORY,
+  RPC_CHANNELS.fs.CHECK_DIRECTORY,
 
   // credentials — remote server's credential state
   RPC_CHANNELS.credentials.HEALTH_CHECK,
@@ -340,17 +320,42 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
 
   // Claude OAuth — runs on workspace server so credentials and connection config
   // end up on the same server that will use them. Browser opening is client-side.
-  // (ChatGPT OAuth stays LOCAL_ONLY — requires localhost callback server.)
   RPC_CHANNELS.onboarding.START_CLAUDE_OAUTH,
   RPC_CHANNELS.onboarding.EXCHANGE_CLAUDE_CODE,
   RPC_CHANNELS.onboarding.HAS_CLAUDE_OAUTH_STATE,
   RPC_CHANNELS.onboarding.CLEAR_CLAUDE_OAUTH_STATE,
+
+  // onboarding — whether this server still needs setup, and the answer it records
+  RPC_CHANNELS.onboarding.GET_AUTH_STATE,
+  RPC_CHANNELS.onboarding.VALIDATE_MCP,
+  RPC_CHANNELS.onboarding.DEFER_SETUP,
 
   // settings — workspace-level settings
   RPC_CHANNELS.settings.SETUP_LLM_CONNECTION,
   RPC_CHANNELS.settings.TEST_LLM_CONNECTION_SETUP,
   RPC_CHANNELS.settings.GET_DEFAULT_THINKING_LEVEL,
   RPC_CHANNELS.settings.SET_DEFAULT_THINKING_LEVEL,
+
+  // settings the agent host reads — tool policy, prompt cache, token optimization, decisions
+  RPC_CHANNELS.appearance.GET_RICH_TOOL_DESCRIPTIONS,
+  RPC_CHANNELS.appearance.SET_RICH_TOOL_DESCRIPTIONS,
+  RPC_CHANNELS.caching.GET_EXTENDED_PROMPT_CACHE,
+  RPC_CHANNELS.caching.SET_EXTENDED_PROMPT_CACHE,
+  RPC_CHANNELS.caching.GET_ENABLE_1M_CONTEXT,
+  RPC_CHANNELS.caching.SET_ENABLE_1M_CONTEXT,
+  RPC_CHANNELS.rtk.GET_ENABLED,
+  RPC_CHANNELS.rtk.SET_ENABLED,
+  RPC_CHANNELS.rtk.GET_STATUS,
+  RPC_CHANNELS.rtk.GET_GAIN,
+  RPC_CHANNELS.decisions.GET_SETTINGS,
+  RPC_CHANNELS.decisions.SET_SETTINGS,
+  RPC_CHANNELS.decisions.GET_STATUS,
+  RPC_CHANNELS.decisions.SET_API_KEY,
+  RPC_CHANNELS.decisions.DELETE_API_KEY,
+  RPC_CHANNELS.decisions.TEST,
+  RPC_CHANNELS.decisions.PROBE_SERVER,
+  RPC_CHANNELS.tools.GET_BROWSER_TOOL_ENABLED,
+  RPC_CHANNELS.tools.SET_BROWSER_TOOL_ENABLED,
 
   // pi — provider config on workspace server
   RPC_CHANNELS.pi.GET_API_KEY_PROVIDERS,

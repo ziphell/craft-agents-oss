@@ -28,16 +28,11 @@ export const CLIENT_SAVE_FILE_DIALOG = 'client:saveFileDialog'
 /** Capability: drive a local `BrowserPaneManager` instance for a remote agent. */
 export const CLIENT_BROWSER_INVOKE = 'client:browser:invoke'
 
-/** All capabilities a local Electron client advertises on handshake. */
-export const LOCAL_CLIENT_CAPABILITIES: readonly string[] = [
-  CLIENT_OPEN_EXTERNAL,
-  CLIENT_OPEN_PATH,
-  CLIENT_SHOW_IN_FOLDER,
-  CLIENT_CONFIRM_DIALOG,
-  CLIENT_OPEN_FILE_DIALOG,
-  CLIENT_SAVE_FILE_DIALOG,
-  CLIENT_BROWSER_INVOKE,
-]
+/** Capability: run a shell command on this device for a remote agent. */
+export const CLIENT_DEVICE_EXEC = 'client:device:exec'
+
+/** Capability: read/write/list/search files on this device for a remote agent. */
+export const CLIENT_DEVICE_FS = 'client:device:fs'
 
 // ---------------------------------------------------------------------------
 // Helper wrappers — thin error-handling around server.invokeClient()

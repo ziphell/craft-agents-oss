@@ -200,6 +200,12 @@ export function FullscreenOverlayBase({
   const pressedOnBackdrop = useRef(false)
   const isBackdropTarget = (target: EventTarget | null): boolean =>
     !(target instanceof Element) || !target.closest('[data-overlay-card]')
+  // Clicks inside an overlay opened *from* this content bubble here through React's
+  // portal tree even though they are not in this DOM subtree — treat those as unknown
+  // input rather than as a backdrop press. Without this, dragging inside a nested
+  // preview closes the overlay underneath it.
+  const isFromOwnSurface = (e: React.SyntheticEvent<HTMLDivElement>): boolean =>
+    e.target instanceof Node && e.currentTarget.contains(e.target)
   // Clicks in the scrollbar gutter belong to the scroll surface, not the backdrop.
   const isInScrollbar = (el: HTMLDivElement, clientX: number): boolean =>
     clientX - el.getBoundingClientRect().left >= el.clientWidth
@@ -238,11 +244,19 @@ export function FullscreenOverlayBase({
               style={{ paddingTop: contentPaddingTop, paddingBottom: CONTENT_GUTTER, scrollPaddingTop: contentPaddingTop }}
               onPointerDown={(e) => {
                 if (!closeOnBackdropClick) return
+                if (!isFromOwnSurface(e)) {
+                  pressedOnBackdrop.current = false
+                  return
+                }
                 if (isInScrollbar(e.currentTarget, e.clientX)) return
                 pressedOnBackdrop.current = isBackdropTarget(e.target)
               }}
               onClick={(e) => {
                 if (!closeOnBackdropClick) return
+                if (!isFromOwnSurface(e)) {
+                  pressedOnBackdrop.current = false
+                  return
+                }
                 if (!pressedOnBackdrop.current) return
                 pressedOnBackdrop.current = false
                 if (isInScrollbar(e.currentTarget, e.clientX)) return

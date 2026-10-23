@@ -31,6 +31,7 @@ import { useUpdateChecker } from '@/hooks/useUpdateChecker'
 import { NavigationProvider } from '@/contexts/NavigationContext'
 import { navigate, routes } from './lib/navigate'
 import { attachmentFromContentRef, toDraftRef } from './lib/drafts'
+import { readServerAttachment } from './lib/server-attachments'
 import { stripMarkdown } from './utils/text'
 import { coerceInputText, appendRestoredInput } from './lib/input-text'
 import { getSessionsToRefreshAfterStaleReconnect } from './lib/reconnect-recovery'
@@ -58,6 +59,7 @@ import {
 } from '@/atoms/sessions'
 import { sourcesAtom } from '@/atoms/sources'
 import { skillsAtom } from '@/atoms/skills'
+import { windowIsRemoteAtom, windowServerScopeAtom, windowRemoteTargetAtom } from '@/atoms/window-mode'
 import {
   showBackgroundFinishedChipAtom,
   pushBackgroundFinishedAtom,
@@ -327,6 +329,77 @@ export default function App() {
   // Window's workspace ID — shared atom so Root/ThemeProvider stays in sync on switch
   const [windowWorkspaceId, setWindowWorkspaceId] = useAtom(windowWorkspaceIdAtom)
 
+  // A window bound to a hub (opened by Connect to Server…). Its workspace belongs to that hub,
+  // and a switch re-points this window's connection in place (`switchRemoteWorkspace`) — the same
+  // way VS Code Remote reopens a folder in the same window.
+  const [isRemoteWindow, setIsRemoteWindow] = useState(false)
+  const setWindowIsRemote = useSetAtom(windowIsRemoteAtom)
+  const setWindowServerScope = useSetAtom(windowServerScopeAtom)
+  const setWindowRemoteTarget = useSetAtom(windowRemoteTargetAtom)
+  useEffect(() => {
+    if (window.electronAPI.getRuntimeEnvironment() !== 'electron') return
+    let cancelled = false
+    window.electronAPI.getClientMode()
+      .then((info) => {
+        if (cancelled) return
+        setIsRemoteWindow(!!info.running)
+        setWindowIsRemote(!!info.running)
+        setWindowServerScope(info.running?.connectionId ?? null)
+        setWindowRemoteTarget(info.running ?? null)
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [setWindowIsRemote, setWindowServerScope, setWindowRemoteTarget])
+
+  // A remote window names itself: its workspace lives on the hub, so main cannot look it up and
+  // every remote window would otherwise be titled with just the app name.
+  const remoteTarget = useAtomValue(windowRemoteTargetAtom)
+  const activeWorkspaceName = useMemo(
+    () => workspaces.find(w => w.id === windowWorkspaceId)?.name ?? null,
+    [workspaces, windowWorkspaceId],
+  )
+  useEffect(() => {
+    // A local window takes main's automatic title. A window that has just come back from a hub
+    // still carries the "<workspace> — <server>" custom title, so this hands it back.
+    if (!isRemoteWindow) {
+      void window.electronAPI.setWindowTitle(null).catch(() => {})
+      return
+    }
+    const label = [activeWorkspaceName, remoteTarget?.name].filter(Boolean).join(' — ')
+    void window.electronAPI.setWindowTitle(label || null).catch(() => {
+      // A title is a nicety; a window that cannot be renamed is still usable.
+    })
+  }, [isRemoteWindow, activeWorkspaceName, remoteTarget?.name])
+
+  // The saved server can be edited from under a running window, and a window can move to a saved
+  // server or back to this machine. All three arrive here: the preload has already re-pointed the
+  // transport, so the window keeps its renderer while everything the previous target answered for
+  // has to be replaced. `null` means "local again".
+  //
+  // The workspace list and the setup needs are the two answers no other effect refetches — a
+  // transport swap is not a workspace switch, so nothing keyed on the workspace re-runs. Everything
+  // else either follows `windowWorkspaceId` or is keyed by id and simply stops matching.
+  useEffect(() => {
+    const unsubscribe = window.electronAPI.onRemoteTargetChanged?.((target) => {
+      setWindowRemoteTarget(target)
+      setWindowServerScope(target?.connectionId ?? null)
+      setIsRemoteWindow(!!target)
+      setWindowIsRemote(!!target)
+      window.electronAPI.getWorkspaces().then(setWorkspaces).catch((err: unknown) => {
+        console.error('[App] Failed to reload workspaces for the new target:', err)
+      })
+      // A hub still waiting for onboarding has to say so here too, the way it would in a window
+      // opened on it. The other direction is the wizard's own business, not this listener's.
+      window.electronAPI.getSetupNeeds().then((needs) => {
+        setSetupNeeds(needs)
+        if (!needs.isFullyConfigured) setAppState('onboarding')
+      }).catch((err: unknown) => {
+        console.error('[App] Failed to read setup needs for the new target:', err)
+      })
+    })
+    return () => { unsubscribe?.() }
+  }, [setWindowRemoteTarget, setWindowServerScope, setWindowIsRemote])
+
   // Derive workspace slug for SDK skill qualification
   const windowWorkspaceSlug = useMemo(() => {
     if (!windowWorkspaceId) return null
@@ -356,13 +429,6 @@ export default function App() {
     if (state?.navigator !== 'designs') return null
     return state.details?.designSlug ?? null
   }, [isDesignWindow])
-
-  // Derive remote workspace ID for session matching in NavigationContext
-  const windowRemoteWorkspaceId = useMemo(() => {
-    if (!windowWorkspaceId) return null
-    const workspace = workspaces.find(w => w.id === windowWorkspaceId)
-    return workspace?.remoteServer?.remoteWorkspaceId ?? null
-  }, [windowWorkspaceId, workspaces])
 
   // LLM connections with authentication status (for provider selection)
   const [llmConnections, setLlmConnections] = useState<LlmConnectionWithStatus[]>([])
@@ -609,7 +675,6 @@ export default function App() {
         reason,
         removeMissing,
         windowWorkspaceId,
-        windowRemoteWorkspaceId,
         selectedSessionId,
         beforeCount: beforeIds.size,
         returnedCount: sessions.length,
@@ -646,7 +711,6 @@ export default function App() {
         reason,
         removeMissing,
         windowWorkspaceId,
-        windowRemoteWorkspaceId,
         selectedSessionId,
         beforeCount: beforeIds.size,
         beforeIds: summarizeIds(beforeIds),
@@ -656,7 +720,7 @@ export default function App() {
       })
       return null
     }
-  }, [store, syncSessionOptionsFromSession, reconcilePermissionModeState, windowWorkspaceId, windowRemoteWorkspaceId])
+  }, [store, syncSessionOptionsFromSession, reconcilePermissionModeState, windowWorkspaceId])
 
   // Stale session watchdog — catches stuck sessions that the reconnect protocol misses
   const { trackSessionActivity } = useStaleSessionRecovery({
@@ -688,8 +752,10 @@ export default function App() {
       // Reload workspaces after onboarding
       const ws = await window.electronAPI.getWorkspaces()
       if (ws.length > 0) {
-        // Switch to workspace in-place (no window close/reopen)
-        await window.electronAPI.switchWorkspace(ws[0].id)
+        // Switch to workspace in-place (no window close/reopen). A remote window completes the
+        // hub's setup, so its switch is the hub one — the local server never owned that workspace.
+        if (isRemoteWindow) await window.electronAPI.switchRemoteWorkspace(ws[0].id)
+        else await window.electronAPI.switchWorkspace(ws[0].id)
         setWindowWorkspaceId(ws[0].id)
         setWorkspaces(ws)
       } else {
@@ -700,7 +766,7 @@ export default function App() {
       // Still transition to ready — the app can recover via reconnect
     }
     setAppState('ready')
-  }, [])
+  }, [isRemoteWindow])
 
   // Onboarding hook — onConfigSaved fires immediately when billing is saved,
   // ensuring connection state updates before the wizard closes.
@@ -739,7 +805,7 @@ export default function App() {
         setSetupNeeds(needs)
 
         if (needs.isFullyConfigured) {
-          // If no workspace is selected (thin client without CRAFT_WORKSPACE_ID),
+          // If no workspace is selected (a remote window whose hub workspace is unset),
           // show workspace picker before entering the main app
           if (!wsId) {
             setAppState('workspace-picker')
@@ -1513,6 +1579,7 @@ export default function App() {
   // Hydrate persisted attachment refs into full FileAttachment objects.
   //  - Track C (ref.content set): reconstruct directly from the inlined bytes.
   //  - Track P (path-only): re-read from disk via the readUserAttachment RPC.
+  //  - Server-backed refs: read through the hub instead — their path is the server's.
   // Missing/moved files on Track P are silently dropped with a console warn — same
   // UX as any other editor draft restore when the backing file is gone.
   const hydrateDraftAttachments = useCallback(async (sessionId: string): Promise<FileAttachment[]> => {
@@ -1525,7 +1592,9 @@ export default function App() {
           return attachmentFromContentRef(ref)
         }
         try {
-          const attachment = await window.electronAPI.readUserAttachment(ref.path)
+          const attachment = ref.fromServer
+            ? await readServerAttachment(ref.path)
+            : await window.electronAPI.readUserAttachment(ref.path)
           if (!attachment) {
             console.warn('[drafts] Attachment missing on restore, dropping:', ref.path)
             return null
@@ -1699,6 +1768,11 @@ export default function App() {
   // handleOpenFile/handleOpenUrl that always opened in external apps.
   const linkInterceptor = useLinkInterceptor({
     openFileExternal: async (path) => {
+      // The path belongs to the hub in a remote window — this machine cannot open it.
+      if (isRemoteWindow) {
+        toast.info(t('toast.fileOnServer'))
+        return
+      }
       try {
         await window.electronAPI.openFile(path)
       } catch (error) {
@@ -1709,7 +1783,7 @@ export default function App() {
         })
       }
     },
-    openUrl: async (url) => {
+    openUrl: async (url, sessionId) => {
       // An address a browser window can hold goes to the app's own window unless the person
       // asked for their system browser (Settings → Links) — that window is the one the agent can
       // keep working on, which is why it is the default. Everything else — `mailto:`, someone
@@ -1717,7 +1791,9 @@ export default function App() {
       // opener's business: those answers, and their wording, live there.
       if (await shouldOpenLinkInAppBrowser(url)) {
         try {
-          await window.electronAPI.browserPane.openUrl(url)
+          // The session decides the browser profile, so a link clicked in a conversation opens
+          // in that conversation's own window rather than the workspace's default one.
+          await window.electronAPI.browserPane.openUrl(url, sessionId)
           return
         } catch (error) {
           // Falling through would put the link in the system browser, which is not what was
@@ -1746,6 +1822,11 @@ export default function App() {
       }
     },
     showInFolder: async (path) => {
+      // The path belongs to the hub in a remote window — this machine cannot reveal it.
+      if (isRemoteWindow) {
+        toast.info(t('toast.fileOnServer'))
+        return
+      }
       try {
         await window.electronAPI.showInFolder(path)
       } catch (error) {
@@ -1850,57 +1931,80 @@ export default function App() {
   }, [onboarding, initializeSessions])
 
   // Handle workspace selection
-  // - Default: switch workspace in same window (in-window switching)
-  // - With openInNewWindow=true: open in new window (or focus existing)
+  // - Default: switch workspace in same window (in-window switching, local or remote)
+  // - With openInNewWindow=true: open a window for that workspace instead
   const handleSelectWorkspace = useCallback(async (workspaceId: string, openInNewWindow = false) => {
     // If selecting current workspace, do nothing
     if (workspaceId === windowWorkspaceId) return
 
     if (openInNewWindow) {
-      // Open (or focus) the window for the selected workspace
-      window.electronAPI.openWorkspace(workspaceId)
+      // A remote window opens another remote window on the same hub; a local one opens (or
+      // focuses) the window that workspace already has.
+      if (isRemoteWindow) await window.electronAPI.openRemoteWindow(workspaceId)
+      else window.electronAPI.openWorkspace(workspaceId)
+      return
+    }
+
+    // Where the window is *now*, read from the atom rather than the rendered state: a server
+    // switch has just re-pointed the transport, and the state update may not have flushed yet.
+    // Taking the wrong branch here would ask a freshly-local window to switch hub workspace.
+    if (store.get(windowIsRemoteAtom)) {
+      // In place — the window and its hub connection stay; only the workspace that connection
+      // speaks for changes (no handshake, no replay). The hub is the authority, so a refused
+      // switch leaves the window where it was.
+      try {
+        await window.electronAPI.switchRemoteWorkspace(workspaceId)
+      } catch (err) {
+        toast.error(t('toast.failedToSwitchWorkspace'), {
+          description: err instanceof Error ? err.message : String(err),
+        })
+        return
+      }
     } else {
-      // Switch workspace in current window
       // 1. Update the main process's window-workspace mapping
       await window.electronAPI.switchWorkspace(workspaceId)
-
-      // 2. Update React state to trigger re-renders
-      setWindowWorkspaceId(workspaceId)
-
-      // 3. Clear selected session - the old session belongs to the previous workspace
-      // and should not remain selected when switching to a new workspace.
-      // This prevents showing stale session data from the wrong workspace.
-      setSession({ selected: null })
-
-      // 4. Clear pending permissions/credentials (not relevant to new workspace)
-      setPendingPermissions(new Map())
-      setPendingCredentials(new Map())
-
-      // 5. Clear session options from previous workspace
-      // (session IDs are unique UUIDs, but clearing prevents unbounded memory growth
-      // and ensures no stale state from old workspace persists)
-      setSessionOptions(new Map())
-
-      // 6. Clear message drafts from previous workspace
-      // (prevents memory growth on repeated workspace switches)
-      sessionDraftsRef.current.clear()
-
-      // 7. Reset sources and skills atoms to empty
-      // (prevents stale data flash during workspace switch - AppShell will reload)
-      store.set(sourcesAtom, [])
-      store.set(skillsAtom, [])
-
-      // 8. Clear session atoms BEFORE workspace switch
-      // This prevents stale session data from the previous workspace being visible.
-      store.set(sessionMetaMapAtom, new Map())
-      store.set(sessionIdsAtom, [])
-
-      // Note: NavigationContext detects the workspaceId change and handles
-      // panel restoration from the stored workspace URL (or defaults to allSessions).
-      // Sessions and theme will reload automatically due to windowWorkspaceId dependency
-      // in useEffect hooks.
     }
-  }, [windowWorkspaceId, setSession, store])
+
+    // 2. Update React state to trigger re-renders
+    setWindowWorkspaceId(workspaceId)
+
+    // 3. Clear selected session - the old session belongs to the previous workspace
+    // and should not remain selected when switching to a new workspace.
+    // This prevents showing stale session data from the wrong workspace.
+    setSession({ selected: null })
+
+    // 4. Clear pending permissions/credentials (not relevant to new workspace)
+    setPendingPermissions(new Map())
+    setPendingCredentials(new Map())
+
+    // 5. Clear session options from previous workspace
+    // (session IDs are unique UUIDs, but clearing prevents unbounded memory growth
+    // and ensures no stale state from old workspace persists)
+    setSessionOptions(new Map())
+
+    // 6. Clear message drafts from previous workspace
+    // (prevents memory growth on repeated workspace switches)
+    sessionDraftsRef.current.clear()
+
+    // 7. Reset sources and skills atoms to empty
+    // (prevents stale data flash during workspace switch - AppShell will reload)
+    store.set(sourcesAtom, [])
+    store.set(skillsAtom, [])
+
+    // 8. Clear session atoms BEFORE workspace switch
+    // This prevents stale session data from the previous workspace being visible.
+    store.set(sessionMetaMapAtom, new Map())
+    store.set(sessionIdsAtom, [])
+
+    // 9. Load the session list for where the window now is.
+    // A switch does not reliably produce a stale reconnect — a hub switch does, a local one does
+    // not, and a server switch produces one whose timing is not ours to depend on. Fetching here
+    // also settles the race where that reconnect's refresh lands before the atoms were cleared.
+    void refreshSessionListMetadataFromServer({ removeMissing: false, reason: 'workspace-switch' })
+
+    // Note: NavigationContext detects the workspaceId change and handles
+    // panel restoration from the stored workspace URL (or defaults to allSessions).
+  }, [windowWorkspaceId, isRemoteWindow, setSession, store, t, refreshSessionListMetadataFromServer])
 
   // Handle workspace switch by slug (called by NavigationContext on popstate when ?ws= changes)
   const handleSwitchWorkspaceBySlug = useCallback((slug: string) => {
@@ -2147,7 +2251,7 @@ export default function App() {
     )
   }
 
-  // Workspace picker — thin client with no workspace selected
+  // Workspace picker — remote window with no hub workspace selected
   if (appState === 'workspace-picker') {
     return (
       <DismissibleLayerProvider>
@@ -2155,7 +2259,12 @@ export default function App() {
           <WindowCloseHandler />
           <WorkspacePicker
             onSelectWorkspace={async (id) => {
-              await window.electronAPI.switchWorkspace(id)
+              if (isRemoteWindow) {
+                // The hub had no workspace yet: this window takes the picked one, in place.
+                await window.electronAPI.switchRemoteWorkspace(id)
+              } else {
+                await window.electronAPI.switchWorkspace(id)
+              }
               setWindowWorkspaceId(id)
               setAppState('ready')
             }}
@@ -2187,7 +2296,6 @@ export default function App() {
           onAutoDeleteEmptySession={handleAutoDeleteEmptySession}
           isReady={appState === 'ready'}
           isSessionsReady={sessionsLoaded}
-          remoteWorkspaceId={windowRemoteWorkspaceId}
         >
           {/* Handle window close requests (X button, Cmd+W) - close modal first if open */}
           <WindowCloseHandler />

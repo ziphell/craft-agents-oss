@@ -117,6 +117,8 @@ export interface WsRpcClientOptions {
   connectTimeout?: number
   /** Capabilities to advertise on handshake. Handlers must be registered via handleCapability(). */
   clientCapabilities?: string[]
+  /** Human-readable identity shown in the server's connected-client list. */
+  clientInfo?: { name?: string; platform?: string; deviceId?: string; workspaceRoots?: string[]; hubRootBase?: string }
   /** Runtime mode — local embedded or remote thin-client connection. */
   mode?: TransportMode
   /** Accept self-signed TLS certificates for wss:// connections. Default: false. Only works in Node.js (main process). */
@@ -158,10 +160,11 @@ export class WsRpcClient implements RpcClient {
   private serverChannels: Set<string> | null = null
 
   private readonly url: string
-  private readonly workspaceId: string | undefined
+  private workspaceId: string | undefined
   private readonly webContentsId: number | undefined
   private readonly token: string | undefined
   private readonly clientCapabilities: string[]
+  private readonly clientInfo: { name?: string; platform?: string; deviceId?: string; workspaceRoots?: string[] } | null
   private readonly requestTimeout: number
   private readonly maxReconnectDelay: number
   private readonly autoReconnect: boolean
@@ -175,6 +178,7 @@ export class WsRpcClient implements RpcClient {
     this.webContentsId = opts?.webContentsId
     this.token = opts?.token
     this.clientCapabilities = opts?.clientCapabilities ?? []
+    this.clientInfo = opts?.clientInfo ?? null
     this.requestTimeout = opts?.requestTimeout ?? REQUEST_TIMEOUT_MS
     this.maxReconnectDelay = opts?.maxReconnectDelay ?? 30_000
     this.autoReconnect = opts?.autoReconnect ?? true
@@ -260,6 +264,17 @@ export class WsRpcClient implements RpcClient {
   /** Server version from handshake_ack (null if server didn't send one / not yet connected). */
   getServerVersion(): string | null {
     return this._serverVersion
+  }
+
+  /**
+   * Change the workspace this connection speaks for, so the next handshake carries it.
+   *
+   * `window:switchWorkspace` updates the server's record but not this client's own identity. Left
+   * alone, a reconnect would present the workspace the connection was **created** with, fail the
+   * server's identity check, and come back as a different client on the old workspace.
+   */
+  setWorkspace(workspaceId: string): void {
+    this.workspaceId = workspaceId
   }
 
   getConnectionState(): TransportConnectionState {
@@ -430,6 +445,7 @@ export class WsRpcClient implements RpcClient {
         webContentsId: this.webContentsId,
         token: this.token,
         clientCapabilities: this.clientCapabilities.length > 0 ? this.clientCapabilities : undefined,
+        clientInfo: this.clientInfo ? { ...this.clientInfo, mode: this.mode } : { mode: this.mode },
         reconnectClientId: reconnectSnapshot?.clientId,
         lastSeq: reconnectSnapshot?.lastSeq,
       }
