@@ -482,6 +482,18 @@ mock.module('../logger', () => {
 mock.module('../browser-cdp', () => ({
   BrowserCDP: class MockBrowserCDP {
     detach = mock(() => {})
+    /** Watching a tab: the screencast the viewer subscribes to, and the input it sends back. */
+    isScreencasting = mock(() => false)
+    startScreencast = mock(async (_options: { onFrame?: (frame: unknown) => void }) => {})
+    stopScreencast = mock(async () => {})
+    /**
+     * A recording captures on its own flattened session (`startRecordingScreencast`), so these
+     * are separate from the viewer's pair above — recording and watching do not exclude each
+     * other any more.
+     */
+    startRecordingScreencast = mock(async (_options: { onFrame?: (frame: unknown) => void }) => {})
+    stopRecordingScreencast = mock(async () => {})
+    dispatchInput = mock(async (_events: unknown[]) => {})
     /**
      * What the page is told about being focused while a tab is held — the emulation, in order.
      * Nothing here moves a window: that is the whole reason this is a CDP call and not
@@ -4033,6 +4045,114 @@ describe('BrowserPaneManager', () => {
       expect(instance.tabs).toHaveLength(2)
       expect(instance.tabs[1].belongsTo).toBeNull()
       expect(instance.activeTabId).toBe(instance.tabs[1].id)
+    })
+  })
+
+  describe('watching a tab', () => {
+    const watchedTab = (id: string): any => (manager as any).instances.get(id).tabs[0]
+
+    it('is read-only until the viewer takes control', async () => {
+      const id = manager.createForSession(null, { workspaceId: 'ws-1' })
+      const watched = watchedTab(id)
+      const { streamId } = await manager.startViewStream(id, watched.id, 'client-1', () => {})
+
+      await expect(manager.dispatchStreamInput(streamId, 'client-1', [])).rejects.toThrow('Take control')
+      expect(watched.cdp.dispatchInput).not.toHaveBeenCalled()
+
+      await manager.setViewStreamControl(streamId, 'client-1', true)
+      await manager.dispatchStreamInput(streamId, 'client-1', [])
+      expect(watched.cdp.dispatchInput).toHaveBeenCalledTimes(1)
+    })
+
+    it('refuses control while the agent holds the tab, and drops it if the agent takes it later', async () => {
+      const id = manager.createForSession(null, { workspaceId: 'ws-1' })
+      const watched = watchedTab(id)
+      const { streamId } = await manager.startViewStream(id, watched.id, 'client-1', () => {})
+
+      watched.heldBy = 'sess-1'
+      await expect(manager.setViewStreamControl(streamId, 'client-1', true)).rejects.toThrow('agent is working')
+
+      // The person had it, then the agent took the tab: the hold outranks the viewer.
+      watched.heldBy = null
+      await manager.setViewStreamControl(streamId, 'client-1', true)
+      watched.heldBy = 'sess-1'
+      await expect(manager.dispatchStreamInput(streamId, 'client-1', [])).rejects.toThrow('agent is working')
+      await expect(manager.dispatchStreamInput(streamId, 'client-1', [])).rejects.toThrow('Take control')
+    })
+
+    it('belongs to the client that started it', async () => {
+      const id = manager.createForSession(null, { workspaceId: 'ws-1' })
+      const watched = watchedTab(id)
+      const { streamId } = await manager.startViewStream(id, watched.id, 'client-1', () => {})
+
+      await expect(manager.setViewStreamControl(streamId, 'client-2', true)).rejects.toThrow('another client')
+      await expect(manager.stopViewStream(streamId, 'client-2')).rejects.toThrow('another client')
+    })
+
+    /**
+     * A screencast belongs to the tab, a stream to the viewer: the second person to look at a
+     * tab joins the capture that is already running, and only the last one to leave stops it.
+     */
+    it('lets a second viewer share the tab’s capture, and stops it with the last', async () => {
+      const id = manager.createForSession(null, { workspaceId: 'ws-1' })
+      const watched = watchedTab(id)
+      const firstFrames: any[] = []
+      const secondFrames: any[] = []
+
+      const first = await manager.startViewStream(id, watched.id, 'client-1', (frame) => { firstFrames.push(frame) })
+      // The tab now has a capture; a second request must join it rather than start another.
+      watched.cdp.isScreencasting = mock(() => true)
+      const second = await manager.startViewStream(id, watched.id, 'client-2', (frame) => { secondFrames.push(frame) })
+
+      expect(watched.cdp.startScreencast).toHaveBeenCalledTimes(1)
+      expect(second.streamId).not.toBe(first.streamId)
+
+      // One frame, two viewers, each addressed by its own stream id.
+      const capture = (watched.cdp.startScreencast as any).mock.calls[0][0]
+      capture.onFrame({ bytes: Buffer.from('jpeg'), width: 1280, height: 800 })
+      expect(firstFrames).toHaveLength(1)
+      expect(secondFrames).toHaveLength(1)
+      expect(firstFrames[0].streamId).toBe(first.streamId)
+      expect(secondFrames[0].streamId).toBe(second.streamId)
+
+      // One viewer leaving is not the capture ending; the other keeps its picture.
+      await manager.stopViewStream(first.streamId, 'client-1')
+      expect(watched.cdp.stopScreencast).not.toHaveBeenCalled()
+      await new Promise((resolve) => setTimeout(resolve, 70))
+      capture.onFrame({ bytes: Buffer.from('jpeg'), width: 1280, height: 800 })
+      expect(secondFrames).toHaveLength(2)
+
+      await manager.stopViewStream(second.streamId, 'client-2')
+      expect(watched.cdp.stopScreencast).toHaveBeenCalledTimes(1)
+    })
+
+    it('ends every viewer when the tab’s capture goes away', async () => {
+      const ended: Array<{ clientId: string; streamId: string }> = []
+      manager.setViewStreamEndedHandler((clientId, streamId) => ended.push({ clientId, streamId }))
+
+      const id = manager.createForSession(null, { workspaceId: 'ws-1' })
+      const watched = watchedTab(id)
+      const first = await manager.startViewStream(id, watched.id, 'client-1', () => {})
+      watched.cdp.isScreencasting = mock(() => true)
+      const second = await manager.startViewStream(id, watched.id, 'client-2', () => {})
+
+      const capture = (watched.cdp.startScreencast as any).mock.calls[0][0]
+      capture.onEnd('the CDP session ended')
+
+      expect(ended.map((entry) => entry.streamId).sort()).toEqual([first.streamId, second.streamId].sort())
+      expect(ended.map((entry) => entry.clientId).sort()).toEqual(['client-1', 'client-2'])
+    })
+
+    it('refuses a capture the registry does not know about', async () => {
+      const id = manager.createForSession(null, { workspaceId: 'ws-1' })
+      const watched = watchedTab(id)
+      // Recording runs on its own session and is not seen here; a page that reports a capture
+      // while this manager holds none is a lost registration, and replacing it would strand
+      // whoever is waiting on it.
+      watched.cdp.isScreencasting = mock(() => true)
+
+      await expect(manager.startViewStream(id, watched.id, 'client-1', () => {}))
+        .rejects.toThrow('already has a capture running')
     })
   })
 

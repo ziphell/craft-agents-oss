@@ -107,6 +107,8 @@ export function createWebApi(options: WebApiOptions): {
     },
     openFile: () => Promise.resolve(), // no-op in browser
     showInFolder: () => Promise.resolve(), // no-op in browser
+    /** No sandboxed-preview navigation hook in a browser tab — there is no main process. */
+    onBrowserOpenLink: () => () => {},
 
     // File dialogs
     openFileDialog: webFilePicker,

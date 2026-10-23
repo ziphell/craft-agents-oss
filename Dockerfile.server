@@ -81,6 +81,10 @@ COPY . .
 # distribution's own resources/ — the same layout scripts/build-server.ts produces.
 # Without this the assets root would have to point at apps/electron/resources, which
 # is an Electron packaging detail the server does not otherwise depend on.
+#
+# The drawio editor is fetched rather than committed (`bun apps/electron/scripts/fetch-drawio-assets.ts`
+# on the build host). When fetched, it is staged too and the web UI serves it at `/drawio/`;
+# when it is not, the editor reports itself as not installed.
 RUN mkdir -p /app/resources && \
     cp -R /app/apps/electron/resources/docs \
           /app/apps/electron/resources/themes \
@@ -88,7 +92,8 @@ RUN mkdir -p /app/resources && \
           /app/apps/electron/resources/tool-icons \
           /app/apps/electron/resources/release-notes \
           /app/resources/ && \
-    cp /app/apps/electron/resources/config-defaults.json /app/resources/
+    cp /app/apps/electron/resources/config-defaults.json /app/resources/ && \
+    if [ -d /app/apps/electron/resources/drawio ]; then cp -R /app/apps/electron/resources/drawio /app/resources/; fi
 
 # Build the Pi agent server (bundled CJS — required by runtime-resolver.ts)
 RUN bun build packages/pi-agent-server/src/index.ts \

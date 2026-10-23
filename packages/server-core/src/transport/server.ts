@@ -18,6 +18,7 @@ import {
   EVENT_BUFFER_MAX_SIZE,
   EVENT_BUFFER_TTL_MS,
   DISCONNECTED_CLIENT_TTL_MS,
+  RPC_CHANNELS,
   isErrorCode,
   type MessageEnvelope,
   type PushTarget,
@@ -31,6 +32,17 @@ import { createLogger } from '@craft-agent/shared/utils'
 // ---------------------------------------------------------------------------
 // Client connection state
 // ---------------------------------------------------------------------------
+
+/**
+ * Events that are a live view rather than state: they go out and are never replayed.
+ *
+ * A browser frame is one picture of a tab. Buffering it would fill the replay window with
+ * megabytes no viewer can use after the fact, and a reconnecting client would receive a burst
+ * of stale pictures before the live one. Losing a frame is free — the next one lands.
+ */
+const EPHEMERAL_CHANNELS = new Set<string>([
+  RPC_CHANNELS.browserPane.STREAM_FRAME,
+])
 
 interface BufferedEvent {
   seq: number
@@ -54,6 +66,8 @@ interface ClientConnection {
   /** Root of this device's per-hub working directories (`<base>/<hub device id>/<workspace id>`). */
   hubRootBase: string | null
   platform: string | null
+  /** App version the client advertised; diagnostics only, never a compatibility gate. */
+  version: string | null
   /** Local = this server's own windows; remote = thin clients / browser clients. */
   mode: 'local' | 'remote'
   connectedAt: number
@@ -209,6 +223,7 @@ export class WsRpcServer implements RpcServer {
       hubRootBase: client.hubRootBase,
       name: client.name,
       platform: client.platform,
+      version: client.version,
       mode: client.mode,
       workspaceId: client.workspaceId,
       webContentsId: client.webContentsId,
@@ -474,7 +489,8 @@ export class WsRpcServer implements RpcServer {
         // Protocol version check (required)
         if (!envelope.protocolVersion || typeof envelope.protocolVersion !== 'string') {
           this.sendError(ws, envelope.id, 'PROTOCOL_VERSION_UNSUPPORTED',
-            `Missing protocolVersion. Server protocol ${PROTOCOL_VERSION}`)
+            `Missing protocolVersion. This server speaks protocol ${PROTOCOL_VERSION}; ` +
+            'upgrade the client — it predates version negotiation.')
           ws.close(4004, 'Protocol version unsupported')
           return
         }
@@ -482,8 +498,12 @@ export class WsRpcServer implements RpcServer {
         const clientMajor = parseInt(envelope.protocolVersion.split('.')[0] ?? '0', 10)
         const serverMajor = parseInt(PROTOCOL_VERSION.split('.')[0] ?? '0', 10)
         if (clientMajor !== serverMajor) {
+          // App versions are allowed to differ; only the wire shape has to agree. Say both numbers
+          // and the way out, because "protocol unsupported" alone leaves the person with no move.
           this.sendError(ws, envelope.id, 'PROTOCOL_VERSION_UNSUPPORTED',
-            `Server protocol ${PROTOCOL_VERSION}, client ${envelope.protocolVersion}`)
+            `Incompatible protocol: this server speaks ${PROTOCOL_VERSION}, the client speaks ` +
+            `${envelope.protocolVersion}. App versions may differ, but the protocol major must ` +
+            'match — upgrade either side.')
           ws.close(4004, 'Protocol version unsupported')
           return
         }
@@ -542,6 +562,10 @@ export class WsRpcServer implements RpcServer {
               if (envelope.clientInfo?.hubRootBase) {
                 prevClient.hubRootBase = envelope.clientInfo.hubRootBase
               }
+              // A device can be upgraded while its connection is merely asleep; the latest
+              // advertised version is the one the client list should show.
+              const advertisedVersion = envelope.clientInfo?.version?.trim()
+              if (advertisedVersion) prevClient.version = advertisedVersion
               handshakeCompleted = true
 
               // Determine replay vs stale using the per-client delivery sequence.
@@ -640,6 +664,7 @@ export class WsRpcServer implements RpcServer {
           workspaceRoots: envelope.clientInfo?.workspaceRoots ?? [],
           hubRootBase: envelope.clientInfo?.hubRootBase ?? null,
           platform: envelope.clientInfo?.platform ?? null,
+          version: envelope.clientInfo?.version?.trim() || null,
           mode: envelope.clientInfo?.mode === 'local' ? 'local' : 'remote',
           connectedAt: Date.now(),
           missedPongs: 0,
@@ -846,6 +871,13 @@ export class WsRpcServer implements RpcServer {
     }
 
     const data = serializeEnvelope(envelope)
+
+    // A live view goes out and is forgotten: no buffer entry, no replay after a reconnect.
+    if (EPHEMERAL_CHANNELS.has(channel)) {
+      if (shouldSend) this.safeSend(client.ws, data)
+      return
+    }
+
     client.eventBuffer.push({ seq, data, timestamp })
     this.evictBuffer(client)
 

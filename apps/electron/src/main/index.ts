@@ -120,6 +120,7 @@ import { registerLocalOriginHandler } from './local-origin-router'
 import { requestTweaksForWorkspace } from './tweaks-injector'
 import log, { isDebugMode, mainLog, getLogFilePath, getMessagingGatewayLogFilePath, messagingGatewayLog, autoUpdateLog } from './logger'
 import { setPerfEnabled, enableDebug } from '@craft-agent/shared/utils'
+import { isBrowserUrl } from '@craft-agent/shared/utils/url-safety'
 import { registerPiModelResolver } from '@craft-agent/shared/config'
 import { getPiModelsForAuthProvider, getAllPiModels } from '@craft-agent/shared/config'
 import { initNotificationService, initBadgeIcon, initInstanceBadge, updateBadgeCount } from './notifications'
@@ -358,6 +359,9 @@ function clientIdentity(): HubClientIdentity {
     deviceId: getDeviceId(),
     name: hostname(),
     platform: process.platform,
+    // Diagnostics only: the hub shows it beside this device. Compatibility is negotiated per
+    // channel, never by comparing app versions.
+    version: app.getVersion(),
     workspaceRoots: getWorkspaces().map((workspace) => workspace.rootPath),
     hubRootBase: HUB_ROOT_BASE,
   }
@@ -683,6 +687,16 @@ app.whenReady().then(async () => {
   try {
     // Initialize window manager
     windowManager = new WindowManager()
+
+    // A link React never saw — a sandboxed preview navigates the top frame — belongs to the
+    // workspace's browser in a remote window. Main only asks the renderer; the ordinary open
+    // path decides between the server's browser and the system browser.
+    windowManager.setInAppLinkOpener((url, win) => {
+      if (!windowManager?.getRemoteForWindow(win.webContents.id)) return false
+      if (!isBrowserUrl(url)) return false
+      win.webContents.send('browser:open-link', url)
+      return true
+    })
 
     // Create the application menu (needs windowManager for New Window action)
     createApplicationMenu(windowManager)
@@ -1104,6 +1118,9 @@ app.whenReady().then(async () => {
           }
           cleanupSessionFileWatchForClient(clientId)
           cleanupProjectFilesWatchForClient(clientId)
+          // A browser stream is a viewer, not a background job: the connection that asked for
+          // it is gone, so the capture it holds has no one to show.
+          browserPaneManager?.endViewStreamsForClient(clientId)
         },
       })
 
@@ -1119,6 +1136,8 @@ app.whenReady().then(async () => {
       if (serverModeEnabled) {
         serverWebuiHandler = createWebuiHandler({
           webuiDir,
+          // The same vendored editor the desktop windows use, at `/drawio/` on this origin.
+          drawioDir: getBundledAssetsDir('drawio') ?? undefined,
           secret: serverToken,
           // Reverse-proxy / port-mapping support comes from config, not env vars.
           publicWsUrl: embeddedServerConfig.publicWsUrl || undefined,

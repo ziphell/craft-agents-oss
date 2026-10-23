@@ -32,6 +32,8 @@ export interface HubClientIdentity {
   deviceId: string
   name: string
   platform: string
+  /** App version, shown beside this device on the hub; never used to gate compatibility. */
+  version?: string
   workspaceRoots: string[]
   hubRootBase?: string
 }

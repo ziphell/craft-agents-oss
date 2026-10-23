@@ -22,8 +22,9 @@ export const windowRemoteTargetAtom = atom<RemoteWindowTarget | null>(null)
 /**
  * The saved server this window is connected to, or `null` for a local window.
  *
- * Browser windows are filed per workspace, and two servers may both own a workspace with the same
- * id. This is the server half of the key the main process uses (`browserWorkspaceKey`), so a tab
- * strip shows only this window's server's browser windows — never another hub's.
+ * Browser windows belong to the workspace's own server now, so a remote window reads its hub's
+ * windows directly. The scope is still needed for one case: a browser this machine hosts **for**
+ * a hub through the device capability is filed under `hub:<connectionId>:<workspaceId>`, and a
+ * tab strip must not confuse it with a local workspace of the same id.
  */
 export const windowServerScopeAtom = atom<string | null>(null)

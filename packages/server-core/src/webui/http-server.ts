@@ -22,6 +22,7 @@ import {
   buildLogoutCookie,
 } from './auth'
 import { createDefaultWebuiRuntime, type WebuiRuntime } from './runtime'
+import { DRAWIO_ROUTE_BASE, serveDrawioRoute } from './drawio'
 import { findExport } from '../services/export-store'
 import { generateCallbackPage } from '@craft-agent/shared/auth'
 import type { PlatformServices } from '../runtime/platform'
@@ -160,6 +161,14 @@ export interface WebuiHandlerOptions {
    * answers those and 404s everything else, with no login redirect to nowhere.
    */
   webuiDir?: string
+  /**
+   * The vendored drawio directory, when this hub has one.
+   *
+   * Served at `/drawio/` on the app's own origin: the web UI has no Electron process to hand
+   * out a `craft-local://` address, and same-origin is what lets the editor sit behind the
+   * session cookie. No directory → the editor is reported as not installed.
+   */
+  drawioDir?: string
   /** Secret used to sign JWTs — typically CRAFT_SERVER_TOKEN. */
   secret: string
   /** Optional separate web UI password. Falls back to `secret` for verification. */
@@ -213,6 +222,7 @@ export interface WebuiHandler {
 export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
   const {
     webuiDir,
+    drawioDir,
     secret,
     password,
     secureCookies,
@@ -225,6 +235,14 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
   } = options
 
   const runtime = options.runtime ?? createDefaultWebuiRuntime()
+
+  // Said once, at startup: without the bundle every `/drawio/` request is a 404 that the
+  // app's loading overlay hides, which reads as "the editor is still loading" forever.
+  if (drawioDir) {
+    logger.info(`[webui] drawio editor: ${drawioDir}`)
+  } else {
+    logger.warn('[webui] drawio editor not installed (resources/drawio missing)')
+  }
 
   const rateLimiter = new RateLimiter(5, 60_000)
   const cleanupTimer = setInterval(() => rateLimiter.cleanup(), 120_000)
@@ -452,6 +470,17 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
         return new Response(null, { status: 302, headers: { Location: '/login' } })
       }
       return Response.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    // ── The bundled drawio editor, on this app's own origin ──
+    // After the session check on purpose: the assets are not a secret, but there is no reason
+    // for an anonymous visitor to use the hub as a static host either.
+    if (path === DRAWIO_ROUTE_BASE || path.startsWith(`${DRAWIO_ROUTE_BASE}/`)) {
+      if (!drawioDir) {
+        return new Response('The bundled drawio editor is not installed on this hub.', { status: 404 })
+      }
+      const drawioResponse = await serveDrawioRoute(req, path, { dir: drawioDir, runtime })
+      if (drawioResponse) return drawioResponse
     }
 
     // ── Serve SPA static files ──

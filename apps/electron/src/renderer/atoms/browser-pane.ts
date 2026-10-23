@@ -26,10 +26,11 @@ export const browserInstanceCountAtom = atom<number>(
  * Filter browser instances to those visible in the given workspace.
  *
  * An instance is visible when its `workspaceId` is null/undefined (truly unbound, visible
- * everywhere) or matches the workspace this window shows. A remote window's panes carry the
- * hub's workspace id **filed under its server** (`browserWorkspaceKey`), so this must be given
- * the same server scope — two hubs may both own a workspace called `ws-1`, and their windows
- * must not appear in each other's tab strips.
+ * everywhere) or matches the workspace this window shows. Two spellings are accepted: the raw
+ * workspace id — what a server returns now that panes belong to the workspace's own server — and
+ * the server-suffixed key (`browserWorkspaceKey`), which is how a pane driven through the device
+ * capability on this machine is filed. The suffix only differs from the raw id when this window
+ * is remote, so a local window behaves exactly as before.
  *
  * When neither a workspace nor a server is known (nothing resolved yet), returns the unfiltered
  * list — the same safe default as before.
@@ -40,12 +41,53 @@ export function filterInstancesForWorkspace(
   serverScope: string | null = null,
 ): BrowserInstanceInfo[] {
   if (!activeWorkspaceId && !serverScope) return all
-  const key = browserWorkspaceKey(serverScope, activeWorkspaceId)
-  return all.filter((i) => !i.workspaceId || i.workspaceId === key)
+  const scoped = browserWorkspaceKey(serverScope, activeWorkspaceId)
+  return all.filter((i) =>
+    !i.workspaceId || i.workspaceId === activeWorkspaceId || i.workspaceId === scoped)
 }
 
 /** Currently active browser instance ID (selected/focused by user interactions) */
 export const activeBrowserInstanceIdAtom = atom<string | null>(null)
+
+/** The tab a viewer should show when it opens. */
+export interface BrowserViewTarget {
+  instanceId: string
+  tabId: string
+}
+
+/**
+ * What the browser viewer should do — open, and which tab.
+ *
+ * One atom for both viewers (the Electron remote window's panel and the webui's), because the
+ * thing that asks for it is neither of them: a link the person clicked, or an HTML preview's
+ * "open in browser", was opened on the workspace's server and has to be *shown*. `nonce` makes
+ * the same tab requestable twice.
+ */
+export interface BrowserViewRequest {
+  open: boolean
+  target: BrowserViewTarget | null
+  nonce: number
+}
+
+export const browserViewRequestAtom = atom<BrowserViewRequest>({
+  open: false,
+  target: null,
+  nonce: 0,
+})
+
+/**
+ * Open the viewer, optionally at a tab that was just opened.
+ *
+ * No target — the top bar's globe — means "the workspace's browser", and the viewer picks the
+ * first tab it finds.
+ */
+export const openBrowserViewAtom = atom(null, (_get, set, target?: BrowserViewTarget) => {
+  set(browserViewRequestAtom, (prev) => ({ open: true, target: target ?? null, nonce: prev.nonce + 1 }))
+})
+
+export const closeBrowserViewAtom = atom(null, (_get, set) => {
+  set(browserViewRequestAtom, (prev) => ({ open: false, target: null, nonce: prev.nonce + 1 }))
+})
 
 /** Tombstones for instances removed from renderer state (guards against late out-of-order updates) */
 export const removedBrowserInstanceIdsAtom = atom<Set<string>>(new Set<string>())

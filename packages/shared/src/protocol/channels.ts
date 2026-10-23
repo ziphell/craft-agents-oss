@@ -427,6 +427,14 @@ export const RPC_CHANNELS = {
      * same window.
      */
     TAB_ACTION: 'browser-pane:tab-action',
+    /**
+     * Give one tab's page a viewport — the size a viewer draws it at.
+     *
+     * The unit is the tab, not the window: a viewer that wants the page to reflow to its own
+     * pane asks for that tab alone (docs/browser-view-streaming.md). Answers with the size the
+     * view actually ended up with, because OS window floors may refuse part of the request.
+     */
+    RESIZE_VIEWPORT: 'browser-pane:resize-viewport',
     SNAPSHOT: 'browser-pane:snapshot',
     CLICK: 'browser-pane:click',
     FILL: 'browser-pane:fill',
@@ -446,11 +454,12 @@ export const RPC_CHANNELS = {
      * Watch one tab, in a viewer that is not the window it lives in.
      *
      * `stream-start` subscribes the calling client to that tab's frames; `stream-stop` ends it;
-     * `stream-input` sends pointer/keyboard back. Frames travel on `stream-frame` to **that one
-     * client** — see docs/browser-view-streaming.md.
+     * `stream-control` says whether the viewer may send input; `stream-input` sends that input.
+     * Frames travel on `stream-frame` to **that one client** — see docs/browser-view-streaming.md.
      */
     STREAM_START: 'browser-pane:stream-start',
     STREAM_STOP: 'browser-pane:stream-stop',
+    STREAM_CONTROL: 'browser-pane:stream-control',
     STREAM_INPUT: 'browser-pane:stream-input',
     STREAM_FRAME: 'browser-pane:stream-frame',
     /**

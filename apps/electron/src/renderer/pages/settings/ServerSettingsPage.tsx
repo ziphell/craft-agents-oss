@@ -534,7 +534,11 @@ export default function ServerSettingsPage() {
                           )}
                         </span>
                       }
-                      description={device.platform ?? undefined}
+                      description={
+                        [device.platform, device.version ? `v${device.version}` : null]
+                          .filter(Boolean)
+                          .join(' · ') || undefined
+                      }
                     />
                   ))
                 )}

@@ -86,6 +86,14 @@ export interface ClientInfo {
    * a remote call will run in without asking the device first.
    */
   hubRootBase?: string
+  /**
+   * App version this client runs, for diagnostics only.
+   *
+   * Deliberately **not** a compatibility gate: two installs on different app versions are expected
+   * to work, and features that one side lacks are negotiated per channel ({@link
+   * MessageEnvelope.registeredChannels}), not by comparing versions.
+   */
+  version?: string
 }
 
 /** One live connection, as the server's transport sees it. */
@@ -100,6 +108,8 @@ export interface ConnectedClientInfo {
   /** Display name — `clientInfo.name`, or a neutral fallback. */
   name: string
   platform: string | null
+  /** App version the client advertised, when it sent one. Diagnostics, not a gate. */
+  version: string | null
   /** Local clients are the hub's own windows; remote clients are thin clients elsewhere. */
   mode: 'local' | 'remote'
   workspaceId: string | null

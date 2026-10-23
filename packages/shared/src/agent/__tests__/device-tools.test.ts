@@ -13,6 +13,7 @@ function makeFns(overrides: Partial<DeviceToolFns> = {}): DeviceToolFns {
       id: 'dev-1',
       name: 'office-mac',
       platform: 'darwin',
+      version: '0.9.3',
       workspaceRoots: ['/work'],
       capabilities: { shell: true, files: true, browser: true },
     }],
@@ -40,6 +41,7 @@ describe('device_tool', () => {
       sessionId: 's1',
     });
     expect(result.output).toContain('office-mac (dev-1)');
+    expect(result.output).toContain('v0.9.3');
     expect(result.output).toContain('/work');
   });
 

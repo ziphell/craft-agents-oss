@@ -59,6 +59,7 @@ import {
 } from '@/atoms/sessions'
 import { sourcesAtom } from '@/atoms/sources'
 import { skillsAtom } from '@/atoms/skills'
+import { openBrowserViewAtom } from '@/atoms/browser-pane'
 import { windowIsRemoteAtom, windowServerScopeAtom, windowRemoteTargetAtom } from '@/atoms/window-mode'
 import {
   showBackgroundFinishedChipAtom,
@@ -89,7 +90,7 @@ import {
   markBackgroundTaskSignal,
   markLiveBackgroundTasksOrphaned,
 } from '@/components/app-shell/background-task-chip-state'
-import { getFileManagerName } from '@/lib/platform'
+import { getFileManagerName, isWebUI } from '@/lib/platform'
 import { rendererLog } from '@/lib/logger'
 import { ActionRegistryProvider } from '@/actions'
 import { toast } from 'sonner'
@@ -333,9 +334,13 @@ export default function App() {
   // and a switch re-points this window's connection in place (`switchRemoteWorkspace`) — the same
   // way VS Code Remote reopens a folder in the same window.
   const [isRemoteWindow, setIsRemoteWindow] = useState(false)
+  /** Where an in-app page opens: a local window's own browser, or the server's (remote + webui). */
+  const usesServerBrowser = isRemoteWindow || isWebUI
   const setWindowIsRemote = useSetAtom(windowIsRemoteAtom)
   const setWindowServerScope = useSetAtom(windowServerScopeAtom)
   const setWindowRemoteTarget = useSetAtom(windowRemoteTargetAtom)
+  /** The viewer that shows a page opened on the workspace's server (remote window and webui). */
+  const openBrowserView = useSetAtom(openBrowserViewAtom)
   useEffect(() => {
     if (window.electronAPI.getRuntimeEnvironment() !== 'electron') return
     let cancelled = false
@@ -1793,7 +1798,12 @@ export default function App() {
         try {
           // The session decides the browser profile, so a link clicked in a conversation opens
           // in that conversation's own window rather than the workspace's default one.
-          await window.electronAPI.browserPane.openUrl(url, sessionId)
+          const opened = await window.electronAPI.browserPane.openUrl(url, sessionId)
+          // That window is on the workspace's server here, so the person sees it through the
+          // viewer — the same way the agent's pages are watched.
+          if (usesServerBrowser && opened.tabId) {
+            openBrowserView({ instanceId: opened.instanceId, tabId: opened.tabId })
+          }
           return
         } catch (error) {
           // Falling through would put the link in the system browser, which is not what was
@@ -1852,9 +1862,15 @@ export default function App() {
    * browser, at its own address, where all of that works.
    */
   const openFileInBrowser = useCallback(async (path: string) => {
-    if (await shouldOpenFileInAppBrowser()) {
+    // A file on the workspace's server has no local address to give the system browser: the
+    // server's browser is the only place it can become a page, so the setting only decides
+    // which browser a *local* file opens in.
+    if (usesServerBrowser || await shouldOpenFileInAppBrowser()) {
       try {
-        await window.electronAPI.browserPane.openFile(path)
+        const opened = await window.electronAPI.browserPane.openFile(path)
+        if (usesServerBrowser && opened.tabId) {
+          openBrowserView({ instanceId: opened.instanceId, tabId: opened.tabId })
+        }
         return
       } catch (error) {
         // Falling through would put the page in the system browser, which is not what was
@@ -1873,7 +1889,7 @@ export default function App() {
       console.error('Failed to open file:', error)
       toast.error(t('toast.failedToOpenFile'), { description: message })
     }
-  }, [t])
+  }, [t, usesServerBrowser, openBrowserView])
 
   const connectionState = useTransportConnectionState()
   const showTransportConnectionBanner = shouldShowTransportConnectionBanner(connectionState)
@@ -1887,6 +1903,15 @@ export default function App() {
 
   const handleOpenFile = linkInterceptor.handleOpenFile
   const handleOpenUrl = linkInterceptor.handleOpenUrl
+
+  /**
+   * A link clicked inside a sandboxed preview cannot reach React — the frame navigates the top
+   * window instead — so main hands it over here. The ordinary path decides where it goes: the
+   * workspace's browser by default, the system browser when the person asked for that.
+   */
+  useEffect(() => {
+    return window.electronAPI.onBrowserOpenLink?.((url) => handleOpenUrl(url))
+  }, [handleOpenUrl])
 
   const handleOpenSettings = useCallback(() => {
     navigate(routes.view.settings())
@@ -2171,8 +2196,12 @@ export default function App() {
     },
     // Hand an element from the visual HTML editor to the conversation's composer
     onSendToChat: sendHtmlSelectionToChat,
-    // The origin the bundled drawio editor is served at (used by drawio-preview blocks)
-    onGetDrawioOrigin: () => window.electronAPI.getDrawioOrigin(),
+    // The origin the bundled drawio editor is served at (used by drawio-preview blocks).
+    // The web UI has no local app to serve `craft-local://`; its hub serves the same bundle at
+    // `/drawio/` on the app's own origin.
+    onGetDrawioOrigin: () => isWebUI
+      ? Promise.resolve(`${window.location.origin}/drawio`)
+      : window.electronAPI.getDrawioOrigin(),
     // The project files tree changed on disk. The event's payload is dropped on purpose: what a
     // listener does with this is re-read the file (see PlatformActions).
     onProjectFilesChanged: (callback: () => void) =>

@@ -21,6 +21,7 @@ import {
   buildDrawioLoadMessage,
   buildDrawioRenderMessage,
   drawioEditorUrl,
+  drawioMessageOrigin,
   drawioViewerUrl,
   parseDrawioEmbedEvent,
   parseDrawioIncoming,
@@ -42,9 +43,9 @@ const VIEWER_HEIGHT = '400px'
 function isFromFrame(
   frame: HTMLIFrameElement | null,
   event: MessageEvent,
-  origin: string,
+  messageOrigin: string,
 ): boolean {
-  return !!frame && event.source === frame.contentWindow && event.origin === origin
+  return !!frame && event.source === frame.contentWindow && event.origin === messageOrigin
 }
 
 // ── Viewer: a drawing, produced by a frame that is never shown ───────────────
@@ -121,6 +122,7 @@ export function DrawioViewerShell({
   const [ready, setReady] = React.useState(false)
   const [svg, setSvg] = React.useState<string | null>(null)
   const { t, i18n } = useTranslation()
+  const messageOrigin = drawioMessageOrigin(origin)
 
   // A different document, page or theme invalidates the drawing: leaving the old one up would show
   // an edit — or another page — as the picture from before it.
@@ -128,7 +130,7 @@ export function DrawioViewerShell({
 
   React.useEffect(() => {
     const onMessage = (event: MessageEvent) => {
-      if (!isFromFrame(frameRef.current, event, origin)) return
+      if (!isFromFrame(frameRef.current, event, messageOrigin)) return
 
       const message = parseDrawioIncoming(event.data)
       if (!message) return
@@ -139,14 +141,14 @@ export function DrawioViewerShell({
 
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [origin, onProblem])
+  }, [messageOrigin, onProblem])
 
   // The shell asks for a document only once it says it is ready, so the handshake is what
   // orders these two. There is no retry and no queue to get wrong.
   React.useEffect(() => {
     if (!ready) return
-    frameRef.current?.contentWindow?.postMessage(buildDrawioRenderMessage(xml, dark, pageId), origin)
-  }, [ready, xml, dark, pageId, origin])
+    frameRef.current?.contentWindow?.postMessage(buildDrawioRenderMessage(xml, dark, pageId), messageOrigin)
+  }, [ready, xml, dark, pageId, messageOrigin])
 
   return (
     <div className="relative flex-1 min-h-0" style={svg ? undefined : { minHeight }}>
@@ -360,6 +362,7 @@ export function DrawioEditorFrame({
   const documentRef = React.useRef(onDocument)
   documentRef.current = onDocument
   const { t, i18n } = useTranslation()
+  const messageOrigin = drawioMessageOrigin(origin)
 
   // The editor is a ~10 MB application, so there is a real wait between the frame appearing
   // and the document being taken. This frame is the only thing that knows when `init`
@@ -381,7 +384,7 @@ export function DrawioEditorFrame({
 
   React.useEffect(() => {
     const onMessage = (event: MessageEvent) => {
-      if (!isFromFrame(frameRef.current, event, origin)) return
+      if (!isFromFrame(frameRef.current, event, messageOrigin)) return
 
       const message = parseDrawioEmbedEvent(event.data)
       if (!message) return
@@ -391,7 +394,7 @@ export function DrawioEditorFrame({
         // exchange carries no id, that sentence is the only signal there is.
         frameRef.current?.contentWindow?.postMessage(
           buildDrawioLoadMessage(initialXml.current),
-          origin,
+          messageOrigin,
         )
         setStarted(true)
         return
@@ -402,7 +405,7 @@ export function DrawioEditorFrame({
 
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [origin])
+  }, [messageOrigin])
 
   return (
     /* Fills the pane it is put in: the editor is the surface of the window, not a box inside it.

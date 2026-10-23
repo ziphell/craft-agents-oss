@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { startWebuiHttpServer } from '../http-server'
@@ -25,6 +25,16 @@ function createTestWebuiDir(): string {
   return dir
 }
 
+/** A stand-in for the vendored bundle: the editor document and one asset. */
+function createTestDrawioDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'craft-drawio-test-'))
+  TEMP_DIRS.push(dir)
+  writeFileSync(join(dir, 'index.html'), '<!doctype html><html><body>drawio-editor</body></html>')
+  mkdirSync(join(dir, 'js'), { recursive: true })
+  writeFileSync(join(dir, 'js', 'viewer-static.min.js'), 'window.GraphViewer = {}')
+  return dir
+}
+
 async function createServer(overrides?: {
   secureCookies?: boolean
   publicWsUrl?: string
@@ -32,10 +42,13 @@ async function createServer(overrides?: {
   wsPort?: number
   /** A hub whose page bundle is missing: protocol routes only. */
   withoutWebui?: boolean
+  /** A hub carrying the bundled drawio editor. */
+  withDrawio?: boolean
 }) {
   const server = await startWebuiHttpServer({
     port: 0,
     ...(overrides?.withoutWebui ? {} : { webuiDir: createTestWebuiDir() }),
+    ...(overrides?.withDrawio ? { drawioDir: createTestDrawioDir() } : {}),
     secret: SECRET,
     password: PASSWORD,
     secureCookies: overrides?.secureCookies,
@@ -52,6 +65,16 @@ async function createServer(overrides?: {
     server,
     baseUrl: `http://127.0.0.1:${server.port}`,
   }
+}
+
+async function login(baseUrl: string): Promise<string> {
+  const authRes = await fetch(`${baseUrl}/api/auth`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password: PASSWORD }),
+  })
+  expect(authRes.status).toBe(200)
+  return extractSessionCookie(authRes)
 }
 
 function extractSessionCookie(res: Response): string {
@@ -258,6 +281,35 @@ describe('startWebuiHttpServer', () => {
     expect(await configRes.json()).toEqual({
       wsUrl: 'wss://craft.example.com/ws',
     })
+  })
+
+  it('serves the bundled drawio editor at /drawio/ behind the session', async () => {
+    const { baseUrl } = await createServer({ withDrawio: true })
+
+    // No cookie: the editor is part of the app, not a public static host.
+    expect((await fetch(`${baseUrl}/drawio/__craft/viewer.html`)).status).toBe(401)
+
+    const cookie = await login(baseUrl)
+    const headers = { cookie }
+
+    const editor = await fetch(`${baseUrl}/drawio/`, { headers })
+    expect(editor.status).toBe(200)
+    expect(await editor.text()).toContain('drawio-editor')
+    expect(editor.headers.get('content-security-policy')).toContain("frame-ancestors 'self'")
+
+    const shell = await fetch(`${baseUrl}/drawio/__craft/viewer.html`, { headers })
+    expect(shell.status).toBe(200)
+    const html = await shell.text()
+    expect(html).toContain('<base href="/drawio/">')
+    expect(html).toContain('/drawio/__craft/viewer.js')
+    expect(html).toContain('/drawio/js/viewer-static.min.js')
+
+    const bridge = await fetch(`${baseUrl}/drawio/__craft/viewer.js`, { headers })
+    expect(await bridge.text()).toContain("window.STENCIL_PATH = '/drawio/stencils'")
+
+    const asset = await fetch(`${baseUrl}/drawio/js/viewer-static.min.js`, { headers })
+    expect(asset.status).toBe(200)
+    expect(asset.headers.get('content-type')).toContain('javascript')
   })
 
   it('redirects unauthenticated HTML requests to /login', async () => {

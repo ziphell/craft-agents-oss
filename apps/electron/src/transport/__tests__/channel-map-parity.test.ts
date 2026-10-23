@@ -46,6 +46,7 @@ type ApiToChannelMapKeys = Exclude<
   | 'getClientIdentity' // preload-local — stable device identity, no IPC round-trip
   | 'transferSessionToWorkspace' // direct IPC to main process — orchestrated remote transfer
   | 'onTransferProgress' // direct IPC listener — chunk upload progress
+  | 'onBrowserOpenLink' // direct IPC listener — a preview's top-frame link, handed to the renderer
   | 'changeLanguage' // direct IPC to main process — syncs i18n language
   | 'getFilePath' // renderer-local — webUtils.getPathForFile, no IPC round-trip
   | 'saveDesignExport' // direct IPC to main — saves a hub-produced file, no WS payload

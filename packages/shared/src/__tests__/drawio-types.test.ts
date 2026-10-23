@@ -8,6 +8,7 @@ import {
   drawioDocument,
   drawioEditorUrl,
   drawioLanguage,
+  drawioMessageOrigin,
   drawioViewerUrl,
   drawioPages,
   findDrawioPage,
@@ -19,7 +20,7 @@ import {
 
 describe('the render message', () => {
   // How big the diagram is drawn is CSS on the element that shows it, so it is not a message:
-  // the frame's job ends at handng back an SVG.
+  // the frame's job ends at handing back an SVG.
   it('asks for a drawing, and says nothing about size', () => {
     expect(buildDrawioRenderMessage('<xml/>', false)).toEqual({
       protocol: DRAWIO_BRIDGE_PROTOCOL,
@@ -179,6 +180,19 @@ describe('drawioEmbedEvent', () => {
     expect(drawioViewerUrl('craft-local://drawio-1a2b3c4d', 'zh-Hans')).toBe(
       'craft-local://drawio-1a2b3c4d/__craft/viewer.html?lang=zh',
     )
+  })
+})
+
+describe('the origin a frame posts from', () => {
+  it('takes the path off the address the web UI serves the editor under', () => {
+    // `postMessage` and `MessageEvent.origin` are scheme+host+port; a path would drop every
+    // message (and throw on the target), which is what left the web UI's editor loading.
+    expect(drawioMessageOrigin('https://craft.example.com/drawio')).toBe('https://craft.example.com')
+    expect(drawioMessageOrigin('http://127.0.0.1:9100/drawio/')).toBe('http://127.0.0.1:9100')
+  })
+
+  it('leaves a custom scheme whose parsed origin is opaque as it is', () => {
+    expect(drawioMessageOrigin('craft-local://drawio-1a2b3c4d')).toBe('craft-local://drawio-1a2b3c4d')
   })
 })
 

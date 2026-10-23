@@ -1183,13 +1183,48 @@ function rememberedWindowKey(workspaceId: string | null, profileId: string): str
   return `${workspaceId ?? ''}\u0000${profileId}`
 }
 
+/** One capture per tab: the key every viewer of that tab subscribes by. */
+function viewCaptureKey(instanceId: string, tabId: string): string {
+  return `${instanceId}\u0000${tabId}`
+}
+
+/** One viewer's subscription to a tab's capture — see `BrowserPaneManager.startViewStream`. */
+interface ViewStream {
+  instanceId: string
+  tabId: string
+  clientId: string
+  /** Watching is not controlling: input is refused until the viewer takes over. */
+  controlled: boolean
+  /** Where this viewer's frames go; the capture fans one screencast out to all of them. */
+  onFrame: (frame: BrowserStreamFrame) => void
+}
+
 export class BrowserPaneManager implements IBrowserPaneManager {
   private instances: Map<string, BrowserInstance> = new Map()
   /**
-   * Tabs being watched from outside their window: stream id → what it is watching and when the
-   * last frame was sent (a ~15fps ceiling lives there). See docs/browser-view-streaming.md.
+   * Tabs being watched from outside their window: stream id → one viewer's subscription.
+   *
+   * A stream is a **viewer**, not a capture: two people watching one tab share the tab's
+   * screencast (`viewCaptures`) and each keeps its own stream id, control flag and frame
+   * callback, because `stream-control` and `stream-input` are per client.
+   * See docs/browser-view-streaming.md.
    */
-  private viewStreams: Map<string, { instanceId: string; tabId: string; clientId: string; lastSentAt: number }> = new Map()
+  private viewStreams: Map<string, ViewStream> = new Map()
+  /**
+   * One screencast per tab, shared by every viewer of it.
+   *
+   * Chromium's screencast is one per CDP session and starting another silently stops the first
+   * — a limitation of the source, not a rule about how many people may look. The capture keeps
+   * the single stream alive, fans frames out to the streams in `streams`, and stops when the
+   * last viewer leaves.
+   */
+  private viewCaptures: Map<string, {
+    instanceId: string
+    tabId: string
+    /** When the last frame went out — the ~15fps ceiling is per tab, not per viewer. */
+    lastSentAt: number
+    streams: Set<string>
+  }> = new Map()
   private viewStreamSeq = 0
   /** Told when a stream ends on its own, so the viewer is not left on its last frame. */
   private viewStreamEndedHandler: ((clientId: string, streamId: string, reason: string) => void) | null = null
@@ -2992,10 +3027,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   /**
    * Send one tab's frames to a viewer that is not the window it lives in.
    *
-   * One watcher per tab: Chromium's screencast is one stream per CDP session, and recording uses
-   * the same one — so a tab already being recorded or watched is refused rather than having its
-   * stream silently replaced. Frames are handed to `onFrame` already shaped for the wire; the
-   * caller decides which client sees them.
+   * The capture belongs to the **tab** and the stream to the **viewer**: the first viewer starts
+   * the screencast, every later one joins it, and the last to leave stops it. That is what makes
+   * two people watching one tab cheap — one screencast, one encode, two sends.
+   *
+   * Recording is the one thing still exclusive: it owns the tab's screencast outright in this
+   * build, so a tab that is being recorded is refused rather than having its capture replaced.
    */
   async startViewStream(
     instanceId: string,
@@ -3009,14 +3046,27 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
     const tab = tabById(instance, tabId)
     if (!tab) throw new Error(`Browser window "${instanceId}" has no tab "${tabId}".`)
-    if (tab.cdp.isScreencasting()) {
-      throw new Error('That tab is already being recorded or watched by someone else.')
+
+    const key = viewCaptureKey(instanceId, tab.id)
+    const existing = this.viewCaptures.get(key)
+    // No capture of ours, yet the page says one is running: the registry lost track of it.
+    // Refusing is safer than silently replacing a stream somebody else is waiting on.
+    if (!existing && tab.cdp.isScreencasting()) {
+      throw new Error('That tab already has a capture running.')
     }
 
     const streamId = `stream-${++this.viewStreamSeq}`
     const bounds = tab.tabView.getBounds()
-    const stream = { instanceId, tabId: tab.id, clientId, lastSentAt: 0 }
-    this.viewStreams.set(streamId, stream)
+    this.viewStreams.set(streamId, { instanceId, tabId: tab.id, clientId, controlled: false, onFrame })
+
+    // Somebody is already watching this tab: one more seat, no second capture.
+    if (existing) {
+      existing.streams.add(streamId)
+      return { streamId, tabId: tab.id, width: bounds.width, height: bounds.height }
+    }
+
+    const capture = { instanceId, tabId: tab.id, lastSentAt: 0, streams: new Set([streamId]) }
+    this.viewCaptures.set(key, capture)
 
     try {
       await tab.cdp.startScreencast({
@@ -3024,26 +3074,33 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         // Cap at the source: a viewer is looking at a pane, not a poster.
         maxWidth: 1600,
         maxHeight: 1600,
-        // Capture lost its session (a detach out from under us): the viewer has to hear it,
-        // otherwise it sits on the last frame forever.
-        onEnd: (reason) => this.finishViewStream(streamId, reason || 'capture-ended'),
+        // Capture lost its session (a detach out from under us): every viewer has to hear it,
+        // otherwise each sits on its last frame forever.
+        onEnd: (reason) => this.finishViewCapture(key, reason || 'capture-ended'),
         onFrame: (frame) => {
-          // ~15fps ceiling: Chromium paints faster than anyone needs to see, and every frame is
-          // bandwidth on a link that also carries the conversation.
+          // ~15fps ceiling for the tab: Chromium paints faster than anyone needs to see, and
+          // every frame is bandwidth on a link that also carries the conversation.
           const now = Date.now()
-          if (now - stream.lastSentAt < 66) return
-          stream.lastSentAt = now
-          onFrame({
-            streamId,
-            tabId: tab.id,
-            data: frame.bytes.toString('base64'),
-            width: frame.width ?? bounds.width,
-            height: frame.height ?? bounds.height,
-            atMs: now,
-          })
+          if (now - capture.lastSentAt < 66) return
+          capture.lastSentAt = now
+          // Encoded once and shared: the only per-viewer work is its own stream id.
+          const data = frame.bytes.toString('base64')
+          const width = frame.width ?? bounds.width
+          const height = frame.height ?? bounds.height
+          for (const id of capture.streams) {
+            this.viewStreams.get(id)?.onFrame({
+              streamId: id,
+              tabId: tab.id,
+              data,
+              width,
+              height,
+              atMs: now,
+            })
+          }
         },
       })
     } catch (error) {
+      this.viewCaptures.delete(key)
       this.viewStreams.delete(streamId)
       throw error
     }
@@ -3052,12 +3109,52 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /** End a stream because the viewer asked. Safe to call for one that is already gone. */
-  async stopViewStream(streamId: string): Promise<void> {
+  async stopViewStream(streamId: string, clientId?: string): Promise<void> {
     const stream = this.viewStreams.get(streamId)
     if (!stream) return
-    this.viewStreams.delete(streamId)
+    // A stream belongs to the client that started it: another client naming the id is refused
+    // rather than allowed to stop somebody else's view.
+    if (clientId && stream.clientId !== clientId) {
+      throw new Error('That stream belongs to another client.')
+    }
+    this.detachViewStream(streamId)
+  }
+
+  /**
+   * Whether the viewer may send input to the tab it is watching.
+   *
+   * Watching is not controlling. Taking control is refused while the agent **holds** the tab:
+   * its turn is using the page, and a person's click landing in the middle of it is the thing
+   * the tab lock exists to prevent (docs/browser-view-streaming.md §5.5). Control ends with the
+   * stream, so a closed viewer cannot leave a tab claimed.
+   */
+  async setViewStreamControl(streamId: string, clientId: string, controlled: boolean): Promise<void> {
+    const stream = this.viewStreams.get(streamId)
+    if (!stream) throw new Error('That stream is not running.')
+    if (stream.clientId !== clientId) throw new Error('That stream belongs to another client.')
+
+    if (!controlled) {
+      stream.controlled = false
+      return
+    }
+
     const tab = this.tabForStream(stream)
-    if (tab) await tab.cdp.stopScreencast()
+    if (!tab) throw new Error('The tab being watched is gone.')
+    if (tab.heldBy) {
+      throw new Error(`The agent is working on this tab right now (${tab.heldBy}); wait for its turn to end.`)
+    }
+
+    stream.controlled = true
+  }
+
+  /**
+   * End every stream one client holds.
+   *
+   * A viewer is a connection: when it goes away the capture has no one to show, and leaving it
+   * running would keep the tab under a screencast and hold a slot no one can free.
+   */
+  endViewStreamsForClient(clientId: string): void {
+    this.endViewStreams((stream) => stream.clientId === clientId)
   }
 
   /** Tell viewers when a stream ends for a reason of its own. Set once at registration. */
@@ -3066,24 +3163,71 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * End a stream that ended by itself — its tab or window went away, or capture lost its session.
+   * End a stream that ended by itself — its tab or window went away, or its viewer left.
    * The viewer is told, because nothing else will tell it.
    */
   private finishViewStream(streamId: string, reason: string): void {
+    const stream = this.detachViewStream(streamId)
+    if (stream) this.viewStreamEndedHandler?.(stream.clientId, streamId, reason)
+  }
+
+  /**
+   * End a capture and every viewer on it — the tab's screencast went away, so none of them has
+   * a picture any more. Each client hears it for its own stream id.
+   */
+  private finishViewCapture(key: string, reason: string): void {
+    const capture = this.viewCaptures.get(key)
+    if (!capture) return
+    this.viewCaptures.delete(key)
+    for (const streamId of [...capture.streams]) {
+      const stream = this.viewStreams.get(streamId)
+      if (!stream) continue
+      this.viewStreams.delete(streamId)
+      this.viewStreamEndedHandler?.(stream.clientId, streamId, reason)
+    }
+    capture.streams.clear()
+    const tab = this.tabForStream(capture)
+    if (tab) void tab.cdp.stopScreencast().catch(() => {})
+  }
+
+  /**
+   * Drop one viewer from its tab's capture.
+   *
+   * The capture stops only when its last viewer leaves — that is what keeps a second viewer
+   * from paying for a second screencast, and what keeps the first one alive when the second
+   * closes its pane.
+   */
+  private detachViewStream(streamId: string): ViewStream | null {
     const stream = this.viewStreams.get(streamId)
-    if (!stream) return
+    if (!stream) return null
     this.viewStreams.delete(streamId)
+
+    const key = viewCaptureKey(stream.instanceId, stream.tabId)
+    const capture = this.viewCaptures.get(key)
+    if (!capture) return stream
+    capture.streams.delete(streamId)
+    if (capture.streams.size > 0) return stream
+
+    this.viewCaptures.delete(key)
     const tab = this.tabForStream(stream)
     if (tab) void tab.cdp.stopScreencast().catch(() => {})
-    this.viewStreamEndedHandler?.(stream.clientId, streamId, reason)
+    return stream
   }
 
   /** A viewer's pointer/keyboard, to the tab it is watching. */
-  async dispatchStreamInput(streamId: string, events: BrowserStreamInput[]): Promise<void> {
+  async dispatchStreamInput(streamId: string, clientId: string, events: BrowserStreamInput[]): Promise<void> {
     const stream = this.viewStreams.get(streamId)
     if (!stream) throw new Error('That stream is not running.')
+    if (stream.clientId !== clientId) throw new Error('That stream belongs to another client.')
+    if (!stream.controlled) throw new Error('Take control of the tab before sending input.')
     const tab = this.tabForStream(stream)
     if (!tab) throw new Error('The tab being watched is gone.')
+    // The agent can take the tab while the person is looking at it: the hold outranks the viewer,
+    // so control is dropped rather than letting a click land in the middle of the agent's turn.
+    if (tab.heldBy) {
+      stream.controlled = false
+      throw new Error(`The agent is working on this tab right now (${tab.heldBy}); control was released.`)
+    }
     await tab.cdp.dispatchInput(events)
   }
 
@@ -3093,20 +3237,24 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     return tabById(instance, stream.tabId) ?? null
   }
 
-  /** Streams end with the thing they are watching. */
-  private endViewStreams(predicate: (stream: { instanceId: string; tabId: string }) => boolean): void {
+  /** Streams end with the thing they are watching, or with the viewer that asked for them. */
+  private endViewStreams(predicate: (stream: ViewStream) => boolean): void {
     for (const [streamId, stream] of [...this.viewStreams]) {
       if (predicate(stream)) this.finishViewStream(streamId, 'closed')
     }
   }
 
-  listInstances(): BrowserInstanceInfo[] {
+  listInstances(workspaceId?: string | null): BrowserInstanceInfo[] {
     const infos: BrowserInstanceInfo[] = []
     for (const instance of this.instances.values()) {
       if (instance.window.isDestroyed()) {
         this.cleanupDestroyedInstance(instance, 'listInstances')
         continue
       }
+      // A caller with a workspace sees that workspace's windows (and unbound ones, which are
+      // visible everywhere). No workspace — a CLI or the app before a workspace is chosen — keeps
+      // the whole list, as before.
+      if (workspaceId && instance.workspaceId && instance.workspaceId !== workspaceId) continue
       infos.push(this.toInfo(instance))
     }
     return infos
@@ -3114,6 +3262,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   async listInstancesAsync(): Promise<BrowserInstanceInfo[]> {
     return this.listInstances()
+  }
+
+  /** Which tab of this window is on screen, or null when the window is gone. */
+  getActiveTabId(instanceId: string): string | null {
+    const instance = this.instances.get(instanceId)
+    if (!instance || instance.window.isDestroyed()) return null
+    return activeTab(instance)?.id ?? null
   }
 
   async getInstanceAsync(id: string): Promise<BrowserInstanceSnapshot | undefined> {
@@ -4635,8 +4790,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       dir: args.dir,
       ttlMs: args.ttlMs,
       source: tab.tabView.webContents,
-      // The tab's own CDP session, where the frames come from, and the size its view is at.
-      capture: tab.cdp,
+      // The recording's frames come through a **second** CDP session on the tab
+      // (`startRecordingScreencast`), so a viewer's stream on the page's own session keeps
+      // running while this records. `size` is the view it captures.
+      capture: {
+        startScreencast: (options) => tab.cdp.startRecordingScreencast(options),
+        stopScreencast: () => tab.cdp.stopRecordingScreencast(),
+      },
       size: tab.tabView.getBounds(),
       // The first frame, taken the way a screenshot is rather than from the capture: a page that
       // is not painting sends the screencast nothing, and a recording of a still page has to

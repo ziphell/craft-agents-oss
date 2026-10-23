@@ -16,6 +16,8 @@ export interface DeviceToolInfo {
   /** Display name (hostname), also accepted when unique. */
   name: string
   platform: string | null
+  /** App version the device advertised, when it sent one. Diagnostics only — never a gate. */
+  version: string | null
   /** Directories this device allows remote shell/file access inside. */
   workspaceRoots: string[]
   capabilities: {

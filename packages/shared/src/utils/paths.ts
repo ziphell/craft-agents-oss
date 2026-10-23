@@ -214,6 +214,9 @@ export function getBundledAssetsDir(subfolder: string): string | undefined {
     ...(_assetsRoot ? [join(_assetsRoot, 'resources', subfolder)] : []),
     // Dev: electron app resources folder (when cwd is apps/electron)
     join(process.cwd(), 'resources', subfolder),
+    // Dev: the monorepo root, where the headless server runs (`bun run server:dev`) while the
+    // fetched assets live beside the Electron app — drawio is the one the server itself serves.
+    join(process.cwd(), 'apps', 'electron', 'resources', subfolder),
     // Dev: dist output (after build:copy)
     join(process.cwd(), 'dist', 'resources', subfolder),
   ];

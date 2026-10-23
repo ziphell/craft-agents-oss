@@ -37,6 +37,7 @@ import {
   activeBrowserInstanceIdAtom,
   browserInstancesAtom,
   filterInstancesForWorkspace,
+  openBrowserViewAtom,
   setBrowserInstancesAtom,
   updateBrowserInstanceAtom,
   removeBrowserInstanceAtom,
@@ -114,6 +115,15 @@ interface BrowserTabStripProps {
    * is; left out (the playground) the menu still lists windows but opens nothing.
    */
   onOpenBrowser?: (profileId?: string) => void
+  /**
+   * This client only watches: the window itself runs on its server (a remote window, or the
+   * webui), so there is nothing on this machine to raise.
+   *
+   * The same control, the same menu, and the same management actions — profiles, new tab,
+   * terminate — but "show" means "open the frame viewer on it" rather than focusing a window
+   * that is not here (and, on a headless hub, is not anywhere).
+   */
+  viewerOnly?: boolean
 }
 
 export function BrowserTabStrip({
@@ -121,6 +131,7 @@ export function BrowserTabStrip({
   instancesOverride,
   onAddTabToConversation,
   onOpenBrowser,
+  viewerOnly = false,
 }: BrowserTabStripProps) {
   // Filter the badge strip to the workspace currently in focus. In a remote window the panes
   // carry the hub's workspace id filed under its server, which is the key built here.
@@ -144,6 +155,8 @@ export function BrowserTabStrip({
   const updateInstance = useSetAtom(updateBrowserInstanceAtom)
   const removeInstance = useSetAtom(removeBrowserInstanceAtom)
   const [activeInstanceId, setActiveInstanceId] = useAtom(activeBrowserInstanceIdAtom)
+  /** The one way this client can "show" a window it does not host: watch its tab. */
+  const openBrowserView = useSetAtom(openBrowserViewAtom)
   // Hover-only hint for the no-window globe. The dropdown itself stays uncontrolled: making it
   // controlled re-rendered this whole strip (every tab, every profile) before the menu could open,
   // which made the click feel one beat late (用户报告).
@@ -382,9 +395,24 @@ export function BrowserTabStrip({
     }
   }, [orderedInstances, activeInstanceId, setActiveInstanceId])
 
+  /** Open the viewer on the tab a window is showing — or on the tab named. */
+  const watchWindow = useCallback((instance: BrowserInstanceInfo, tabId?: string) => {
+    const targetTabId = tabId
+      ?? instance.tabs?.find((tab) => tab.active)?.id
+      ?? instance.tabs?.[0]?.id
+    if (!targetTabId) return
+    openBrowserView({ instanceId: instance.id, tabId: targetTabId })
+  }, [openBrowserView])
+
   const focusBrowserWindow = useCallback((instance: BrowserInstanceInfo) => {
     setActiveInstanceId(instance.id)
     if (instancesOverride) return
+
+    // The window is not on this machine: "show" is watching it.
+    if (viewerOnly) {
+      watchWindow(instance)
+      return
+    }
 
     const browserPaneApi = window.electronAPI?.browserPane
     if (!browserPaneApi) {
@@ -395,7 +423,7 @@ export function BrowserTabStrip({
     void browserPaneApi.focus(instance.id).catch((error) => {
       console.warn(`[BrowserTabStrip] Failed to focus browser window ${instance.id}:`, error)
     })
-  }, [instancesOverride, setActiveInstanceId])
+  }, [instancesOverride, setActiveInstanceId, viewerOnly, watchWindow])
 
   const openTabTarget = useCallback((instance: BrowserInstanceInfo) => {
     const target = openTargetOfActiveTab(instance.tabs, sessionMeta)
@@ -424,8 +452,12 @@ export function BrowserTabStrip({
       .catch((error) => {
         console.warn(`[BrowserTabStrip] Failed to switch tab ${tabId} of ${instance.id}:`, error)
       })
-    focusBrowserWindow(instance)
-  }, [focusBrowserWindow, instancesOverride])
+    setActiveInstanceId(instance.id)
+    // Name the tab: the switch above is still in flight, so the window's own "active" tab is
+    // the previous one for a moment — and watching the wrong tab is the whole mistake.
+    if (viewerOnly) watchWindow(instance, tabId)
+    else focusBrowserWindow(instance)
+  }, [focusBrowserWindow, instancesOverride, setActiveInstanceId, viewerOnly, watchWindow])
 
   /**
    * Give the window one more tab.
@@ -443,13 +475,28 @@ export function BrowserTabStrip({
       return
     }
 
-    void browserPaneApi
-      .tabAction({ instanceId: instance.id, action: 'new' })
+    const opening = browserPaneApi.tabAction({ instanceId: instance.id, action: 'new' })
+    if (viewerOnly) {
+      // The host activates the tab it just added, so the window's fresh active tab is the one
+      // to watch; `tabAction` answers nothing, and a list is one call.
+      void opening
+        .then(() => browserPaneApi.list())
+        .then((items) => {
+          const updated = items.find((item) => item.id === instance.id)
+          if (updated) watchWindow(updated)
+        })
+        .catch((error) => {
+          console.warn(`[BrowserTabStrip] Failed to add a tab to ${instance.id}:`, error)
+        })
+      return
+    }
+
+    void opening
       .then(() => browserPaneApi.focus(instance.id))
       .catch((error) => {
         console.warn(`[BrowserTabStrip] Failed to add a tab to ${instance.id}:`, error)
       })
-  }, [instancesOverride])
+  }, [instancesOverride, viewerOnly, watchWindow])
 
   /**
    * The window's own tabs: what it holds, which one is on screen, and what can be
@@ -606,7 +653,7 @@ export function BrowserTabStrip({
           onSelect={() => focusBrowserWindow(instance)}
         >
           <Icons.Monitor className="h-3.5 w-3.5" />
-          {t('browser.showWindow')}
+          {viewerOnly ? t('browser.openInViewer') : t('browser.showWindow')}
         </StyledDropdownMenuItem>
 
         <StyledDropdownMenuItem
@@ -632,7 +679,7 @@ export function BrowserTabStrip({
         </StyledDropdownMenuItem>
       </>
     )
-  }, [addTab, instancesOverride, focusBrowserWindow, openTabTarget, renderTabList, sessionMeta, t, terminateBrowserWindow])
+  }, [addTab, instancesOverride, focusBrowserWindow, openTabTarget, renderTabList, sessionMeta, t, terminateBrowserWindow, viewerOnly])
 
   /**
    * The window the trigger is about: the browser window for the conversation's profile, when it is open.

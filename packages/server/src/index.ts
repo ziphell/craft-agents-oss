@@ -29,6 +29,7 @@ import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
 import { version as packageVersion } from '../package.json'
 import { enableDebug } from '@craft-agent/shared/utils/debug'
+import { getBundledAssetsDir } from '@craft-agent/shared/utils'
 import { bootstrapServer, startHealthHttpServer, generateServerToken } from '@craft-agent/server-core/bootstrap'
 import { validateSession, createWebuiHandler, nodeHttpAdapter } from '@craft-agent/server-core/webui'
 import type { WebuiHandler } from '@craft-agent/server-core/webui'
@@ -141,6 +142,8 @@ if (serverToken) {
 
   webuiHandler = createWebuiHandler({
     webuiDir,
+    // Served same-origin so the web UI's editor sits behind the session cookie.
+    drawioDir: getBundledAssetsDir('drawio') ?? undefined,
     secret: serverToken,
     password: process.env.CRAFT_WEBUI_PASSWORD || undefined,
     secureCookies: webuiSecureCookies,

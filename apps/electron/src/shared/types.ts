@@ -116,6 +116,19 @@ export interface ToolIconMapping {
 /**
  * Browser pane creation options
  */
+/**
+ * The page a create / open actually landed on.
+ *
+ * An address opened on a server is not on this machine's screen, so the caller that asked for
+ * it also has to be able to *show* it: the viewer needs the window and the tab, not just the
+ * fact that the call succeeded.
+ */
+export interface BrowserOpenedPage {
+  instanceId: string
+  /** Null when the window has no tab to show — nothing to watch, but the page did open. */
+  tabId: string | null
+}
+
 export interface BrowserPaneCreateOptions {
   id?: string
   show?: boolean
@@ -672,6 +685,12 @@ export interface ElectronAPI {
   unwatchProjectFiles(): Promise<void>
   onProjectFilesChanged(callback: (workspaceId: string, file: string | null) => void): () => void
 
+  /**
+   * A link clicked where React cannot see it — a sandboxed preview frame navigates the top
+   * window, so main catches it and hands the URL here. The renderer decides where it opens.
+   */
+  onBrowserOpenLink(callback: (url: string) => void): () => void
+
   // Sources
   getSources(workspaceId: string): Promise<LoadedSource[]>
   createSource(workspaceId: string, config: Partial<FolderSourceConfig>): Promise<FolderSourceConfig>
@@ -875,7 +894,7 @@ export interface ElectronAPI {
      * A design belongs in that window because that is the surface the agent can keep
      * working on — `browser_tool` drives tabs, not frames inside this app.
      */
-    openFile(path: string, sessionId?: string | null): Promise<void>
+    openFile(path: string, sessionId?: string | null): Promise<BrowserOpenedPage>
     /**
      * Open a link as a page, in a new tab of the workspace's browser window.
      *
@@ -888,7 +907,7 @@ export interface ElectronAPI {
      * own window (the one its `browser_tool` commands work in). Omitted — a link clicked
      * outside any conversation — falls back to the workspace's default profile.
      */
-    openUrl(url: string, sessionId?: string | null): Promise<void>
+    openUrl(url: string, sessionId?: string | null): Promise<BrowserOpenedPage>
     goBack(id: string): Promise<void>
     goForward(id: string): Promise<void>
     reload(id: string): Promise<void>
@@ -896,6 +915,19 @@ export interface ElectronAPI {
     focus(id: string): Promise<void>
     /** Manage this window's tabs: switch, close, add (see `BrowserPaneTabAction`). */
     tabAction(input: BrowserPaneTabAction): Promise<void>
+    /**
+     * Give one tab's page a viewport — the size a viewer draws it at.
+     *
+     * Optional `tabId` names a background tab; it is sized where it lives and the person's
+     * window is left alone. The answer is the size the view actually ended up with, because
+     * OS window floors can refuse part of the request (see `resizeViewport`).
+     */
+    resizeViewport(
+      id: string,
+      width: number,
+      height: number,
+      tabId?: string,
+    ): Promise<{ width: number; height: number }>
     /**
      * Watch one tab from outside its window — a viewer in webui, or another machine.
      *
@@ -905,6 +937,14 @@ export interface ElectronAPI {
      */
     streamStart(input: BrowserStreamStartRequest): Promise<BrowserStreamStartResult>
     streamStop(streamId: string): Promise<void>
+    /**
+     * Whether this viewer may send input to the tab it is watching.
+     *
+     * Watching is not controlling: `streamInput` is refused until the viewer takes control, and
+     * control is refused while the agent holds the tab (its turn is still running). Control ends
+     * with the stream.
+     */
+    streamControl(streamId: string, controlled: boolean): Promise<void>
     /** Pointer/keyboard back to the tab being watched. Coordinates are the tab's CSS pixels. */
     streamInput(streamId: string, events: BrowserStreamInput[]): Promise<void>
     /** Frames for the stream this client started. Returns cleanup. */

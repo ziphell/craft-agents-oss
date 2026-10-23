@@ -506,6 +506,26 @@ export function drawioViewerUrl(origin: string, appLanguage?: string): string {
 }
 
 /**
+ * The origin messages come from, when the editor is served *under a path*.
+ *
+ * `origin` above is an address: the web UI serves the same bundle at `/drawio` on its own
+ * origin, which is not itself an origin. `MessageEvent.origin` and `postMessage`'s
+ * targetOrigin take scheme+host+port only, so the path has to come off before either is used —
+ * otherwise every handshake message is dropped, and Chromium throws on the target.
+ *
+ * A custom scheme whose parsed origin is opaque (`craft-local://…`) keeps the address as given:
+ * that is the string its frames reply with.
+ */
+export function drawioMessageOrigin(address: string): string {
+  try {
+    const { origin } = new URL(address)
+    return origin === 'null' ? address : origin
+  } catch {
+    return address
+  }
+}
+
+/**
  * What drawio says back — no `protocol` field, because drawio cannot be asked to carry
  * one. The property that shapes every caller is that **there is no request id**: a reply
  * cannot be matched to a request, so the frame embedding this has to know what it is

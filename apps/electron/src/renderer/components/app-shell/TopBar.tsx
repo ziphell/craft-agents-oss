@@ -8,6 +8,7 @@
  */
 
 import { useTranslation } from "react-i18next"
+import { useAtomValue } from "jotai"
 import * as Icons from "lucide-react"
 import { Tooltip, TooltipTrigger, TooltipContent } from "@craft-agent/ui"
 import { PanelLeftRounded } from "../icons/PanelLeftRounded"
@@ -23,8 +24,8 @@ import {
   StyledDropdownMenuSeparator,
 } from "@/components/ui/styled-dropdown"
 import type { SettingsMenuItem } from "../../../shared/menu-schema"
-import { SquarePenRounded } from "../icons/SquarePenRounded"
 import { BrowserTabStrip } from "../browser/BrowserTabStrip"
+import { windowIsRemoteAtom } from "@/atoms/window-mode"
 import type { Workspace } from "../../../shared/types"
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher"
 import { CompactWorkspaceSwitcher } from "./CompactWorkspaceSwitcher"
@@ -96,6 +97,9 @@ export function TopBar({
   isCompact,
 }: TopBarProps) {
   const { t } = useTranslation()
+  /** No local browser window to raise: a remote window's browser and the webui's are the server's. */
+  const isRemoteWindow = useAtomValue(windowIsRemoteAtom)
+  const usesServerBrowser = isRemoteWindow || isWebUI
 
   const goBackHotkey = useActionLabel('nav.goBackAlt').hotkey
   const goForwardHotkey = useActionLabel('nav.goForwardAlt').hotkey
@@ -148,6 +152,23 @@ export function TopBar({
           onToggleSidebar={onToggleSidebar}
           onToggleFocusMode={onToggleFocusMode}
         />
+
+        {/* Compact has no right slot, so the browser's globe comes here — the same control,
+            in the bar, rather than a floating pill over the page. */}
+        {isCompact && usesServerBrowser && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <TopBarButton
+                aria-label={t('browser.openBrowser')}
+                className="h-7 w-7 rounded-lg"
+                onClick={() => onAddBrowserPanel()}
+              >
+                <Icons.Globe className="h-4 w-4 text-foreground/70" strokeWidth={1.5} />
+              </TopBarButton>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">{t('browser.openBrowser')}</TooltipContent>
+          </Tooltip>
+        )}
         </div>
 
         {/* Back / Forward / Workspace selector (moved from center).
@@ -217,12 +238,19 @@ export function TopBar({
           profile and the settings page inside its menu. It used to be a row of badges plus a
           globe — the same jobs in two places, and a "+N" menu for the windows that did not fit.
           `onAddBrowserPanel` keeps the open-in-a-profile call (and its failure toast) in AppShell.
+
+          The same control serves a window the person only watches (a remote window, the webui):
+          the management is the server's either way — profiles, tabs, terminate — and `viewerOnly`
+          changes just what "show" means, since there is no window on this machine to raise.
         */}
-        <div className="min-w-0">
+        {/* The badge has its own padding but sits flush against the conversation button at
+            `gap-1`; the browser control is a different subject, so it gets air of its own. */}
+        <div className="mr-2 min-w-0">
           <BrowserTabStrip
             activeSessionId={activeSessionId}
             onAddTabToConversation={onAddTabToConversation}
             onOpenBrowser={onAddBrowserPanel}
+            viewerOnly={usesServerBrowser}
           />
         </div>
 
@@ -230,7 +258,7 @@ export function TopBar({
         <Tooltip>
           <TooltipTrigger asChild>
             <TopBarButton onClick={onAddSessionPanel} aria-label={t("session.newSessionInPanel")} className="h-7 w-7 rounded-lg">
-              <SquarePenRounded className="h-4 w-4 text-foreground/70" strokeWidth={1.5} />
+              <Icons.MessageSquarePlus className="h-4 w-4 text-foreground/70" strokeWidth={1.5} />
             </TopBarButton>
           </TooltipTrigger>
           <TooltipContent side="bottom">{t("session.newSessionInPanel")}</TooltipContent>

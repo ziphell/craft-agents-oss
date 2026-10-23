@@ -89,8 +89,8 @@ interface RemoteConnection {
 
 `packages/shared/src/protocol/routing.ts` 只有两个集合：
 
-- **LOCAL_ONLY**：必须在本机回答的东西——窗口控制、原生文件/文件夹对话框、shell 打开、系统信息、主题的应用级部分、`workspaces:GET`（本机列表）、`file:readUserAttachment`（本机草稿路径）、`browserPane.*`（浏览器窗口开在客户端）。
-- **REMOTE_ELIGIBLE**：其余全部，交给窗口的 workspace 客户端——会话、文件读写、fs、项目、server 接口、以及**跟随服务器的设置**（appearance / caching / rtk / decisions / tools）与 onboarding 判定。
+- **LOCAL_ONLY**：必须在本机回答的东西——窗口控制、原生文件/文件夹对话框、shell 打开、系统信息、主题的应用级部分、`workspaces:GET`（本机列表）、`file:readUserAttachment`（本机草稿路径）。
+- **REMOTE_ELIGIBLE**：其余全部，交给窗口的 workspace 客户端——会话、文件读写、fs、项目、server 接口、**浏览器（与 shell 同一条规则：窗口属于哪台服务器，浏览器就在哪台）**、以及**跟随服务器的设置**（appearance / caching / rtk / decisions / tools）与 onboarding 判定。
 
 注意工作区列表：渲染端拿列表走的是 `server:getWorkspaces`（REMOTE_ELIGIBLE，答案跟随窗口所在服务器）；`workspaces:GET` 只用于本机内部读取。因此远程窗口的下拉里放的是 hub 的工作区，本地窗口放的是本机的工作区。
 
@@ -157,7 +157,9 @@ interface RemoteConnection {
 |---|---|---|
 | 工作区文件 | hub | 窗口的 `file:*` / `fs:*` 由 hub 回答，路径是 hub 的真实路径 |
 | 会话附件 | hub（`<workspace>/sessions/<id>/attachments`） | `file:storeAttachment` 在 hub 执行；缩略图/Office→markdown 也在 hub |
-| 浏览器窗口 | **客户端** | `browserPane.*` 是 LOCAL_ONLY，画面开在窗口所在机器；agent 的浏览器工具只打 **hub 自己的浏览器**。hub 没有浏览器（headless / WebUI-only）时不注册 `browser_tool`，跨机器浏览器只能由 `device_tool` 点名 |
+| 浏览器窗口 | **hub（工作区所在服务器）** | 与 shell 同一条规则：本地窗口开本机浏览器，远程窗口开 hub 上的浏览器；客户端只画帧、送回输入（`RemoteBrowserPanel`，见 [browser-view-streaming.md](browser-view-streaming.md)）。hub 没有浏览器（headless / WebUI-only）时不注册 `browser_pane` 相关通道与 `browser_tool`，跨机器浏览器只能由 `device_tool` 点名 |
+| 链接与预览 | 动作在服务器，渲染在客户端 | 应用内浏览器的链接/文件开在工作区服务器，`openUrl`/`openFile` 返回 `{instanceId, tabId}`，客户端据此打开观看面板；只有显式“在系统浏览器打开”（设置关闭，或用户选择）才回本机。Markdown/HTML/PDF 预览在客户端渲染、内容走 RPC；HTML 预览里 React 看不到的链接由主进程截获后交给渲染端走同一条 openUrl 路径 |
+| drawio 编辑器 | **客户端资源** | 桌面窗口（含远程窗口）用本机 app 的 `craft-local://`（`drawio:getOrigin` 是 LOCAL_ONLY）；webui 由 hub 在 `/drawio/` 同源提供，走会话 cookie 鉴权，图表数据仍通过 postMessage |
 | 设备工作目录 | 客户端 | hub 把本机当设备时，只服务 `<config>/.hub/<hub device id>/<workspace id>`，不暴露任意本地路径 |
 
 附件有两种来源，形状一致（`FileAttachment`）：
@@ -175,7 +177,8 @@ interface RemoteConnection {
 
 - **跟随服务器的**：agent 行为、工具开关、onboarding 判定（`onboarding.GET_AUTH_STATE` / `VALIDATE_MCP` / `DEFER_SETUP`）、工作区增删。换窗口看同一工作区，设置一致。
 - **留在客户端的**：窗口/主题外观、原生对话框、shell、系统信息、`file:readUserAttachment`（草稿里是本机路径）、MCP OAuth 的本地 loopback 回调。
-- 客户端身份（`deviceId` / `name` / `platform`）随每次握手上报；hub 用它在设备列表和 `device_tool` 里点名这台机器。
+- 客户端身份（`deviceId` / `name` / `platform` / `version`）随每次握手上报；hub 用它在设备列表和 `device_tool` 里点名这台机器。
+- **版本协商只认两样东西**：protocol major（信封形状）+ 逐通道能力（`registeredChannels`、`clientCapabilities`，客户端用 `isChannelAvailable` 判断）。app 版本（`clientInfo.version` / `serverVersion`）只用于展示与诊断，**不是**连接门槛；major 不等时握手拒绝，错误里同时给出两端版本与“升级任一端”的指引。新增功能走通道与可选字段，不升 major。webui 标签页没有 app 版本，`version` 可为空。
 
 ---
 
@@ -219,6 +222,7 @@ interface RemoteConnection {
 | 窗口状态与标题 | `apps/electron/src/main/window-manager.ts`、`window-state.ts` |
 | 应用级设备链路与状态 | `apps/electron/src/main/hub-connection.ts` |
 | 会话的浏览器宿主 | `packages/server-core/src/sessions/SessionManager.ts`（`getBrowserPaneManagerForSession` 只返回本机 BPM；没有本机浏览器就没有 `browser_tool`） |
+| 远程窗口的浏览器观看端 | `apps/electron/src/renderer/components/browser/RemoteBrowserPanel.tsx`（顶栏 globe；帧流与 webui 同一套协议） |
 | 设备能力（exec/fs/browser） | `apps/electron/src/main/device-access.ts`、`packages/server-core/src/transport/device-capability.ts`、`packages/server-core/src/transport/capabilities.ts` |
 | 设备工作根 | `packages/shared/src/config/device.ts`（`HUB_ROOT_BASE`、`hubWorkspaceRoot`） |
 | preload 路由与重建 | `apps/electron/src/preload/bootstrap.ts`、`apps/electron/src/transport/routed-client.ts` |

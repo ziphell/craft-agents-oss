@@ -39,6 +39,7 @@
     "./docs": "./src/docs/index.ts",
     "./docs/doc-links": "./src/docs/doc-links.ts",
     "./drawio/types": "./src/drawio/types.ts",
+    "./drawio/viewer-shell": "./src/drawio/viewer-shell.ts",
     "./feature-flags": "./src/feature-flags.ts",
     "./i18n": "./src/i18n/index.ts",
     "./icons": "./src/icons/index.ts",

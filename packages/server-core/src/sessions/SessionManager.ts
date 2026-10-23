@@ -1371,6 +1371,7 @@ export class SessionManager implements ISessionManager {
         existing.info.capabilities.shell ||= capabilities.shell
         existing.info.capabilities.files ||= capabilities.files
         existing.info.capabilities.browser ||= capabilities.browser
+        existing.info.version ||= client.version
         for (const root of roots) {
           if (!existing.info.workspaceRoots.includes(root)) existing.info.workspaceRoots.push(root)
         }
@@ -1383,6 +1384,7 @@ export class SessionManager implements ISessionManager {
           id,
           name: client.name,
           platform: client.platform,
+          version: client.version,
           workspaceRoots: roots,
           capabilities,
         },

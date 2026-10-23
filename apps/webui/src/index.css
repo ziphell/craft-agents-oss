@@ -12,6 +12,7 @@
 @source "../../../packages/ui/src/components/**/*.{ts,tsx,jsx}";
 @source "../../../packages/ui/src/lib/**/*.{ts,tsx,jsx}";
 /* Scan our own web-specific components */
+@source "./*.tsx";
 @source "./components/**/*.{ts,tsx,jsx}";
 @source "./adapter/**/*.{ts,tsx}";
 @source "./App.tsx";

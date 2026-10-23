@@ -12,8 +12,8 @@ agent 对浏览器的控制一直有，走 RPC（click / fill / scroll / screens
 
 | 场景 | 今天 |
 |---|---|
-| **webui** | 完全没有浏览器界面 —— `apps/webui` 不调用任何 `browserPane`，连截图都得由 agent 取 |
-| **远程窗口**（瘦客户端连 hub） | agent 驱动的是 **hub 的**浏览器，窗口出现在 hub 的桌面上；坐在瘦客户端的人看不到 |
+| **webui** | 用右下角的面板观看 hub 的浏览器（`apps/webui/src/BrowserViewer.tsx`）——窗口本身仍开在 hub |
+| **远程窗口**（瘦客户端连 hub） | agent 驱动的是 **hub 的**浏览器；客户端在远程浏览器面板里看同一路帧流（Electron 与 webui 共用协议） |
 | **瘦客户端本机被 hub 驱动** | 浏览器窗口在这台设备上以独立窗口出现，但**别的客户端**（webui、另一台机器）看不到它 |
 
 三者是同一个洞：**浏览器画面没有离开它所在的机器**。
@@ -65,6 +65,7 @@ agent 对浏览器的控制一直有，走 RPC（click / fill / scroll / screens
 | `browser-pane:stream-start` | invoke | `{ instanceId, tabId }` → 开始流，返回 `{ streamId, tabId, width, height }` |
 | `browser-pane:stream-stop` | invoke | `streamId` → 停止 |
 | `browser-pane:stream-input` | invoke | `streamId`, 一批输入事件 |
+| `browser-pane:resize-viewport` | invoke | `instanceId`, `width`, `height`, 可选 `tabId` → 标签页重排到该尺寸，返回实际生效的尺寸 |
 | `browser-pane:stream-frame` | event | 只推给**发起该流的那一个 client**，不广播 |
 
 ### 5.2 帧
@@ -97,21 +98,23 @@ type BrowserStreamInput =
   | { type: 'key'; action: 'down' | 'up'; key: string; code?: string; text?: string; modifiers?: number }
 ```
 
-落到设备侧：`Input.dispatchMouseEvent` / `Input.dispatchMouseWheel` / `Input.dispatchKeyEvent`（与 `webContents.sendInputEvent` 相比，CDP 用的是 viewport 坐标，窗口停在屏幕外也成立）。
+落到设备侧：`Input.dispatchMouseEvent`（滚轮用它的 `type: 'mouseWheel'`，CDP 没有 `Input.dispatchMouseWheel`）/ `Input.dispatchKeyEvent`（与 `webContents.sendInputEvent` 相比，CDP 用的是 viewport 坐标，窗口停在屏幕外也成立）。
 
-### 5.4 一条流 = 一个观看者
+### 5.4 一条 capture = 一个标签页，一条 stream = 一个观看者
 
-Chromium 的 screencast 是**每个 CDP 会话一路**，且 `startScreencast` 会先停掉上一路。所以：
+Chromium 的 screencast 是**每个 CDP 会话一路**，且 `startScreencast` 会先停掉上一路。所以 screencast 由**标签页**持有、观看者共享（管理器里的 `viewCaptures` 扇出）：
 
-- 同一标签页**同时只允许一个**观看者；第二个 `stream-start` 得到明确错误（谁在看由 `list` 的流状态告知）。
-- 同一标签页**不能同时录制和观看**（录制也占这条 screencast）。阶段 1 直接拒绝并说清楚，不做"帧分发器"。
+- 同一标签页可以由**多个观看者**同时观看：一路 screencast、一次编码，按 stream id 分发；最后一个观看者离开才停止。
+- 每个观看者仍有自己的 `streamId`，控制权与输入仍按 stream 隔离。
+- 同一标签页**可以同时录制和观看**：会话录制在同一个 target 上再开一个**扁平子会话**（`Target.attachToTarget { flatten: true }`）并在那里跑自己的 screencast。两路互不影响；代价是同时运行时有两份编码（与 agent-browser 相同的取舍）。
 
 ### 5.5 控制权
 
 "看"不等于"能操作"。输入转发只有在观看者显式**接管**后才生效：
 
-- 接管是一个动作（按钮/点击画面），结束后交还；
-- 与 agent 的 `agentControlActive` / 租约共存：agent 正在驱动时，接管要么排队要么拒绝（阶段 1：拒绝并提示，避免抢鼠标）。
+- 接管是一个显式动作（观看端顶部的「接管」按钮），点画面不会顺手接管；结束后交还，控制随流结束而消失。
+- `stream-input` 在没有接管时被服务端拒绝，所以"只读"不是客户端的自觉。
+- 与 agent 的 `agentControlActive` / 标签页 hold 共存：agent 持有该标签页时拒绝接管（阶段 1：拒绝并说明原因）；接管之后 agent 又拿住标签页，下一次输入会被拒绝并把观看端踢回只读。
 
 ### 5.6 权限
 
@@ -123,7 +126,7 @@ Chromium 的 screencast 是**每个 CDP 会话一路**，且 `startScreencast` �
 
 | 阶段 | 范围 | 状态 |
 |---|---|---|
-| **1** | **hub 的浏览器 → webui 观看**：协议 + 服务端流 + 输入转发 + webui 观看 pane | 协议与服务端完成；webui pane 初版完成 |
+| **1** | **hub 的浏览器 → 观看端**：协议 + 服务端流 + 输入转发 + webui / Electron 远程窗口的观看 pane | webui 与 Electron 远程窗口都已接上；帧不进重连缓冲 |
 | 2 | 设备的浏览器 → hub 中转 → 任意观看端；复用同一观看组件与协议 | 未开始 |
 
 ~~同机主窗口直挂 `WebContentsView`~~ **不做**——见 §3：搬 view 等于换 viewport，用户与 agent 会互相改页面尺寸，还要移交停车窗。本机会话的浏览器窗口本身就是视图。
@@ -152,7 +155,7 @@ Chromium 的 screencast 是**每个 CDP 会话一路**，且 `startScreencast` �
 - **协议**：`packages/shared/src/protocol/channels.ts`（通道）、`routing.ts`（REMOTE_ELIGIBLE）、`events.ts`（`stream-frame` 的推送类型）、`dto.ts`（帧与输入类型）。
 - **源**：`apps/electron/src/main/browser-pane-manager.ts`（`startViewStream` / `stopViewStream` / `dispatchStreamInput`）、`browser-cdp.ts`（已有的 `startScreencast` + 新增 `dispatchInput`）。
 - **入口**：`apps/electron/src/main/handlers/browser.ts`（三个 handler，帧只推给 `ctx.clientId`）。
-- **观看端**：`apps/webui`（阶段 1）。它复用 `CHANNEL_MAP` 生成的 API，新增通道后 `browserPane.*` 自动可用。面板在 `apps/webui/src/BrowserViewer.tsx`。
+- **观看端**：`apps/webui/src/BrowserViewer.tsx` 与 Electron 远程窗口的 `apps/electron/src/renderer/components/browser/RemoteBrowserPanel.tsx`。两者都用 `CHANNEL_MAP` 生成的 API；在 Electron 里 `browserPane.*` 跟随窗口所在服务器（REMOTE_ELIGIBLE），本地窗口连本机、远程窗口连 hub。
 
 ---
 
@@ -161,17 +164,17 @@ Chromium 的 screencast 是**每个 CDP 会话一路**，且 `startScreencast` �
 - 不做整桌面串流、不做远程控制其他应用。
 - **不把标签页的 `WebContentsView` 搬进另一个窗口**（同机也一样）：换父窗就换 viewport，用户和 agent 会互相改页面布局，还要在停车窗与前台之间移交同一份 view（§3）。
 - 不做"分享给未登录用户"的观看链接。
-- 不在阶段 1 做多观看者、不做二进制帧、不做 WebRTC。
+- 不在阶段 1 做二进制帧、不做 WebRTC（多观看者已由 §5.4 的扇出支持）。
 - 不动窗口/连接模型（那是另一条线：窗口是视图，连接在应用级）。
 
 ---
 
 ## 10. 开放问题
 
-1. **多观看者**：真需要时，把 screencast 收成一路"帧分发器"（源侧一份，扇出给 N 个 client），顺带解决与录制的互斥。
+1. ~~**多观看者**~~ **已做**：源侧一路 screencast，按 stream 扇出给 N 个 client。~~**录制与观看共存**~~ **已做**：录制走独立的扁平子会话，与观看互不阻塞；将来的合并方向仍是"一路采集、按消费者分发"，以省掉同时运行时的第二份编码。
 2. **键盘映射**：`key`/`code`/`text` 到 `windowsVirtualKeyCode` 的映射表要覆盖常用键；阶段 1 先支持可打印字符 + Enter/Tab/Escape/方向键/退格。
 3. **画质自适应**：按观看端上报的 RTT/丢帧调 quality 与帧率，还是固定档位由人切。
-4. **接管与 agent 的仲裁**：当前倾向"agent 驱动中拒绝人接管"，但更自然的是"人接管即暂停 agent 操作该标签页"。
+4. **接管与 agent 的仲裁**：当前实现是"agent 持有时拒绝人接管；接管后 agent 拿住标签页则把人踢回只读"。更自然的方向仍是"人接管即暂停 agent 操作该标签页"。
 5. ~~**流的结束要告诉观看端**~~ **已补**：`browser-pane:stream-ended`（`streamId`, `reason`），只推给发起该流的 client；标签页关闭 / 窗口销毁 / CDP 会话丢失都会发。观看端收到后清掉画面并说明原因。
 6. ~~**webui 面板按什么过滤窗口**~~ **已补**：webui 把它连接的工作区传给面板，面板只列该工作区的窗口（无工作区标记的实例仍然可见）。局限：在 webui 里切换工作区后，面板仍按页面连接时的工作区过滤，刷新后才更新。
 7. ~~**输入覆盖面**~~ **已补**：单击、双击（`clickCount`）、右键/中键、拖拽选择（按下时的 `buttons` 位掩码）、滚轮、键盘（含修饰键）。仍未覆盖：输入法组合输入、文件拖放、触摸/手写笔。

@@ -795,6 +795,22 @@ export class BrowserCDP {
     listener: (event: unknown, method: string, params: any) => void
     startedAtMs: number
   } | null = null
+  /**
+   * A recording's stream, on a **second** CDP session of the same page.
+   *
+   * Chrome keeps one screencast per session, and a viewer already runs one on this page's own
+   * session. The recorder therefore attaches a flattened child session (`Target.attachToTarget`)
+   * and screencasts there, so a recording and people watching the tab are not mutually exclusive
+   * (the same shape agent-browser uses).
+   */
+  private recordingScreencast: {
+    onFrame: (frame: ScreencastFrame) => void
+    onEnd?: (reason: string) => void
+    listener: (event: unknown, method: string, params: any, sessionId?: string) => void
+    /** The flattened child session the recording's screencast runs on. */
+    sessionId: string
+    startedAtMs: number
+  } | null = null
   // Map from "@eN" refs to backend node IDs for the current snapshot.
   private refMap: Map<string, number> = new Map()
   // Map from "@eN" refs to semantic details captured during snapshot.
@@ -870,7 +886,10 @@ export class BrowserCDP {
    * `CDP_IDLE_DETACH_MS` is 5s).
    */
   private holdsSessionState(): boolean {
-    return this.initScriptIds.size > 0 || this.focusEmulated || this.screencast !== null
+    return this.initScriptIds.size > 0
+      || this.focusEmulated
+      || this.screencast !== null
+      || this.recordingScreencast !== null
   }
 
   private resetIdleDetachTimer(): void {
@@ -929,12 +948,25 @@ export class BrowserCDP {
       this.webContents.debugger.removeListener('message', screencast.listener)
       screencast.onEnd?.('the CDP session ended')
     }
+    // A recording's capture runs on a child session, but that session is an attachment of this
+    // one: it goes with the parent, and the recording has to hear about it.
+    const recording = this.recordingScreencast
+    if (recording) {
+      this.recordingScreencast = null
+      this.webContents.debugger.removeListener('message', recording.listener)
+      recording.onEnd?.('the CDP session ended')
+    }
   }
 
-  private async send(method: string, params?: Record<string, unknown>): Promise<any> {
+  /** One command. `sessionId` targets a flattened child session (the recording's capture). */
+  private async send(
+    method: string,
+    params?: Record<string, unknown>,
+    sessionId?: string,
+  ): Promise<any> {
     await this.ensureAttached()
     try {
-      return await this.webContents.debugger.sendCommand(method, params)
+      return await this.webContents.debugger.sendCommand(method, params, sessionId)
     } finally {
       // Keep detach countdown tied to completed calls so we do not detach mid-flight.
       this.resetIdleDetachTimer()
@@ -979,7 +1011,7 @@ export class BrowserCDP {
   // Screencast — the page as a stream of frames
   // ---------------------------------------------------------------------------
 
-  /** Whether a screencast is running on this page — a recording, or a viewer watching it. */
+  /** Whether a viewer's screencast is running on this page's own session. */
   isScreencasting(): boolean {
     return this.screencast !== null
   }
@@ -1011,7 +1043,9 @@ export class BrowserCDP {
       }
 
       if (event.type === 'wheel') {
-        await this.send('Input.dispatchMouseWheel', {
+        // There is no `Input.dispatchMouseWheel` in CDP — the wheel is a mouse event whose type
+        // is `mouseWheel`, sent through the same domain (and the same hit-testing pipeline).
+        await this.send('Input.dispatchMouseEvent', {
           type: 'mouseWheel',
           x: event.x,
           y: event.y,
@@ -1057,7 +1091,10 @@ export class BrowserCDP {
     await this.ensureAttached()
 
     const startedAtMs = Date.now()
-    const listener = (_event: unknown, method: string, params: any): void => {
+    const listener = (_event: unknown, method: string, params: any, sessionId?: string): void => {
+      // A frame from a child session is the recording's (`startRecordingScreencast`); this
+      // stream only owns the page's own session.
+      if (sessionId) return
       if (method !== 'Page.screencastFrame') return
       // A frame arriving after the stream was stopped — or after the session went away —
       // belongs to nothing. Dropping it is not a lost frame; it is the one that would have
@@ -1119,6 +1156,105 @@ export class BrowserCDP {
       await this.send('Page.stopScreencast')
     } catch {
       // The session may already be gone, in which case the stream went with it.
+    }
+    this.resetIdleDetachTimer()
+  }
+
+  /**
+   * A recording's own stream, on a flattened child session.
+   *
+   * Chrome keeps one screencast per CDP session, and a viewer's stream owns this page's session
+   * (`startScreencast`). A recording therefore attaches a child session
+   * (`Target.attachToTarget`, flattened) and runs its capture there, so watching a tab and
+   * recording it are not mutually exclusive. The cost is a second encode for as long as both
+   * are on — the same trade agent-browser makes.
+   *
+   * Frames and acks travel on the child session; the ack must name the child's frame, or
+   * Chromium waits forever after the first one.
+   */
+  async startRecordingScreencast(options: ScreencastOptions): Promise<void> {
+    await this.stopRecordingScreencast()
+    await this.ensureAttached()
+
+    // The page this debugger is attached to. Only the root session can name it, and
+    // `Target.attachToTarget` needs the id.
+    const info = await this.send('Target.getTargetInfo')
+    const targetId = String(info?.targetInfo?.targetId ?? '')
+    if (!targetId) throw new Error('The page did not report a target id.')
+
+    const attached = await this.send('Target.attachToTarget', { targetId, flatten: true })
+    const sessionId = String(attached?.sessionId ?? '')
+    if (!sessionId) throw new Error('The page did not open a second session for the recording.')
+
+    const startedAtMs = Date.now()
+    const listener = (_event: unknown, method: string, params: any, eventSessionId?: string): void => {
+      // Frames on the page's own session belong to the viewer's capture, not to this one.
+      if (eventSessionId !== sessionId) return
+      if (method !== 'Page.screencastFrame') return
+      const current = this.recordingScreencast
+      if (!current) return
+
+      const data = params?.data
+      if (typeof data === 'string' && data.length > 0) {
+        const atMs = typeof params?.metadata?.timestamp === 'number'
+          ? params.metadata.timestamp * 1000
+          : Date.now()
+        current.onFrame({
+          bytes: Buffer.from(data, 'base64'),
+          offsetMs: Math.max(0, Math.round(atMs - startedAtMs)),
+          ...(typeof params?.metadata?.deviceWidth === 'number' ? { width: params.metadata.deviceWidth } : {}),
+          ...(typeof params?.metadata?.deviceHeight === 'number' ? { height: params.metadata.deviceHeight } : {}),
+        })
+      }
+
+      void this.send('Page.screencastFrameAck', { sessionId: params?.sessionId }, sessionId).catch(() => {})
+    }
+
+    this.recordingScreencast = {
+      onFrame: options.onFrame,
+      onEnd: options.onEnd,
+      listener,
+      sessionId,
+      startedAtMs,
+    }
+    this.webContents.debugger.on('message', listener)
+
+    try {
+      await this.send('Page.startScreencast', {
+        format: 'jpeg',
+        quality: options.quality ?? 70,
+        everyNthFrame: 1,
+        ...(options.maxWidth ? { maxWidth: options.maxWidth } : {}),
+        ...(options.maxHeight ? { maxHeight: options.maxHeight } : {}),
+      }, sessionId)
+    } catch (error) {
+      this.webContents.debugger.removeListener('message', listener)
+      this.recordingScreencast = null
+      await this.send('Target.detachFromTarget', { sessionId }).catch(() => {})
+      throw error
+    }
+
+    // Held for as long as it runs: a static page sends no frames (and so no acks), and the
+    // parent detaching would take the child session with it (`holdsSessionState`).
+    this.resetIdleDetachTimer()
+  }
+
+  /** End the recording's stream and its session. Safe to call when none is running. */
+  async stopRecordingScreencast(): Promise<void> {
+    const current = this.recordingScreencast
+    if (!current) return
+
+    this.recordingScreencast = null
+    this.webContents.debugger.removeListener('message', current.listener)
+    try {
+      await this.send('Page.stopScreencast', undefined, current.sessionId)
+    } catch {
+      // Already gone with the session; the detach below is then a no-op too.
+    }
+    try {
+      await this.send('Target.detachFromTarget', { sessionId: current.sessionId })
+    } catch {
+      // The page may have gone already.
     }
     this.resetIdleDetachTimer()
   }

@@ -16,6 +16,7 @@
 
 import type { UserPreferences } from '@craft-agent/shared/config'
 import { isBrowserUrl } from '@craft-agent/shared/utils/url-safety'
+import { isWebUI } from '@/lib/platform'
 
 /** Whether a link goes to the app's own browser window — a browser address, and asked for. */
 export async function shouldOpenLinkInAppBrowser(url: string): Promise<boolean> {
@@ -34,12 +35,15 @@ export async function shouldOpenFileInAppBrowser(): Promise<boolean> {
 }
 
 /**
- * Whether the app's browser window is where these go here at all: there is one to open (a browser
- * client has none — a tab there would be the person's own browser, which is what the shell route
- * already gives them), and the person wants it (their setting; on unless they turned it off).
+ * Whether the app's browser is where these go here at all, and whether the person wants it
+ * (their setting; on unless they turned it off).
+ *
+ * Both hosts have one: the desktop app's window — this machine's, or the hub's when the window is
+ * remote — and the webui's viewer of the server's browser. A host with neither falls back to the
+ * shell, which is the explicit "open it locally" route.
  */
 async function appBrowserWanted(): Promise<boolean> {
-  if (window.electronAPI.getRuntimeEnvironment() !== 'electron') return false
+  if (window.electronAPI.getRuntimeEnvironment() !== 'electron' && !isWebUI) return false
   return await readOpenInAppBrowser()
 }
 

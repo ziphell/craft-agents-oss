@@ -99,7 +99,9 @@ function formatDevices(devices: DeviceToolInfo[]): string {
       .filter((key) => device.capabilities[key])
     lines.push(
       `- ${device.name} (${device.id})` +
-      ` · ${device.platform ?? 'unknown platform'} · ${allowed.length > 0 ? allowed.join(', ') : 'no access'}`,
+      ` · ${device.platform ?? 'unknown platform'}` +
+      (device.version ? ` · v${device.version}` : '') +
+      ` · ${allowed.length > 0 ? allowed.join(', ') : 'no access'}`,
     )
     for (const root of device.workspaceRoots) lines.push(`  root: ${root}`)
   }

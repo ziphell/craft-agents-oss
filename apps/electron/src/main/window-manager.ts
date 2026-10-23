@@ -80,6 +80,12 @@ export class WindowManager {
   private pendingCloseTimeouts: Map<number, NodeJS.Timeout> = new Map()  // Fallback timeouts for window close
   private eventSink: ((channel: string, target: import('@craft-agent/shared/protocol').PushTarget, ...args: any[]) => void) | null = null
   private clientResolver: ((wcId: number) => string | undefined) | null = null
+  /**
+   * Answers "send this address to the workspace's browser instead" for links React never saw —
+   * a sandboxed preview navigates the top frame, so only main is in the way. Returning true
+   * means it was taken care of and nothing should go to `shell.openExternal`.
+   */
+  private inAppLinkOpener: ((url: string, window: BrowserWindow) => boolean) | null = null
   private keyboardCloseIntents: Set<number> = new Set()  // webContents.id flagged by Cmd/Ctrl+W before close
   private keyboardCloseIntentTimeouts: Map<number, NodeJS.Timeout> = new Map()  // Auto-clear stale keyboard-close intents
   private isAppQuitting = false  // Skip layered close interception during app quit
@@ -115,6 +121,11 @@ export class WindowManager {
   ): void {
     this.eventSink = sink
     this.clientResolver = resolver
+  }
+
+  /** See `inAppLinkOpener` — set once, by the app, when the browser handlers are registered. */
+  setInAppLinkOpener(opener: (url: string, window: BrowserWindow) => boolean): void {
+    this.inAppLinkOpener = opener
   }
 
   /** Return current RPC event sink, if transport has been initialized. */
@@ -195,6 +206,11 @@ export class WindowManager {
       })
       return
     }
+
+    // A remote window's browser is on its server. The renderer decides where the address goes
+    // (the workspace's browser, or the system browser when that is what the person chose), so
+    // main only hands it over; a local window has nothing to hand it over to.
+    if (sourceWindow && this.inAppLinkOpener?.(url, sourceWindow)) return
 
     void shell.openExternal(url).catch((error) => {
       windowLog.warn(`[url-safety] Failed to open external URL from ${context}: ${error instanceof Error ? error.message : String(error)}`)

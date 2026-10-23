@@ -144,37 +144,13 @@ export const LOCAL_ONLY_CHANNELS = new Set<string>([
   // appearance / caching / rtk / decisions / tools are settings the *agent host* reads, so they
   // live in REMOTE_ELIGIBLE — a remote window must edit the server's policy, not this machine's.
 
-  // browserPane — Electron BrowserView
-  RPC_CHANNELS.browserPane.CREATE,
-  RPC_CHANNELS.browserPane.DESTROY,
-  RPC_CHANNELS.browserPane.LIST,
-  RPC_CHANNELS.browserPane.NAVIGATE,
-  RPC_CHANNELS.browserPane.OPEN_FILE,
-  RPC_CHANNELS.browserPane.OPEN_URL,
-  RPC_CHANNELS.browserPane.GO_BACK,
-  RPC_CHANNELS.browserPane.GO_FORWARD,
-  RPC_CHANNELS.browserPane.RELOAD,
-  RPC_CHANNELS.browserPane.STOP,
-  RPC_CHANNELS.browserPane.FOCUS,
-  RPC_CHANNELS.browserPane.TAB_ACTION,
-  RPC_CHANNELS.browserPane.SNAPSHOT,
-  RPC_CHANNELS.browserPane.CLICK,
-  RPC_CHANNELS.browserPane.FILL,
-  RPC_CHANNELS.browserPane.SELECT,
-  RPC_CHANNELS.browserPane.SCREENSHOT,
-  RPC_CHANNELS.browserPane.EVALUATE,
-  RPC_CHANNELS.browserPane.FETCH_RESOURCE,
-  RPC_CHANNELS.browserPane.SCROLL,
-  RPC_CHANNELS.browserPane.STREAM_START,
-  RPC_CHANNELS.browserPane.STREAM_STOP,
-  RPC_CHANNELS.browserPane.STREAM_INPUT,
-  RPC_CHANNELS.browserPane.STREAM_FRAME,
-  RPC_CHANNELS.browserPane.STREAM_ENDED,
-  RPC_CHANNELS.browserPane.LAUNCH,
-  RPC_CHANNELS.browserPane.STATE_CHANGED,
-  RPC_CHANNELS.browserPane.REMOVED,
-  RPC_CHANNELS.browserPane.INTERACTED,
-  RPC_CHANNELS.browserPane.TOOLBAR_ACTION,
+  // browserPane is NOT here: a browser window is the workspace's, like its shell. A local
+  // window's calls land on this machine's server and a remote window's on its hub — see the
+  // REMOTE_ELIGIBLE block. The client only renders frames and sends input back.
+
+  // drawio — the app's own bundled editor, at an origin this machine hands out. The editor is a
+  // client UI asset: a remote window loads its own copy, like a webview bundle.
+  RPC_CHANNELS.drawio.GET_ORIGIN,
 
   // gitbash — Windows-specific local
   RPC_CHANNELS.gitbash.CHECK,
@@ -401,6 +377,45 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.browserProfiles.DELETE,
   RPC_CHANNELS.browserProfiles.RESOLVE,
 
+  // browserPane — the workspace's browser, on the workspace's server.
+  //
+  // Same rule as the shell: a browser window is a thing that runs where the workspace lives, and
+  // the client is only a viewer. A local window's workspace client *is* this machine's server, so
+  // one code path serves both — no branch on "remote". Streaming frames only go to the client
+  // that started the stream (`to: 'client'`); `STREAM_FRAME` is never replayed (see transport).
+  RPC_CHANNELS.browserPane.CREATE,
+  RPC_CHANNELS.browserPane.DESTROY,
+  RPC_CHANNELS.browserPane.LIST,
+  RPC_CHANNELS.browserPane.NAVIGATE,
+  RPC_CHANNELS.browserPane.OPEN_FILE,
+  RPC_CHANNELS.browserPane.OPEN_URL,
+  RPC_CHANNELS.browserPane.GO_BACK,
+  RPC_CHANNELS.browserPane.GO_FORWARD,
+  RPC_CHANNELS.browserPane.RELOAD,
+  RPC_CHANNELS.browserPane.STOP,
+  RPC_CHANNELS.browserPane.FOCUS,
+  RPC_CHANNELS.browserPane.TAB_ACTION,
+  RPC_CHANNELS.browserPane.RESIZE_VIEWPORT,
+  RPC_CHANNELS.browserPane.SNAPSHOT,
+  RPC_CHANNELS.browserPane.CLICK,
+  RPC_CHANNELS.browserPane.FILL,
+  RPC_CHANNELS.browserPane.SELECT,
+  RPC_CHANNELS.browserPane.SCREENSHOT,
+  RPC_CHANNELS.browserPane.EVALUATE,
+  RPC_CHANNELS.browserPane.FETCH_RESOURCE,
+  RPC_CHANNELS.browserPane.SCROLL,
+  RPC_CHANNELS.browserPane.STREAM_START,
+  RPC_CHANNELS.browserPane.STREAM_STOP,
+  RPC_CHANNELS.browserPane.STREAM_CONTROL,
+  RPC_CHANNELS.browserPane.STREAM_INPUT,
+  RPC_CHANNELS.browserPane.STREAM_FRAME,
+  RPC_CHANNELS.browserPane.STREAM_ENDED,
+  RPC_CHANNELS.browserPane.LAUNCH,
+  RPC_CHANNELS.browserPane.STATE_CHANGED,
+  RPC_CHANNELS.browserPane.REMOVED,
+  RPC_CHANNELS.browserPane.INTERACTED,
+  RPC_CHANNELS.browserPane.TOOLBAR_ACTION,
+
   // permissions — workspace permissions
   RPC_CHANNELS.permissions.GET_DEFAULTS,
   RPC_CHANNELS.permissions.DEFAULTS_CHANGED,
@@ -459,8 +474,10 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.projects.UNWATCH_FILES,
   RPC_CHANNELS.projects.FILES_CHANGED,
 
-  // drawio — the app's own bundled editor, at an origin a host hands out
-  RPC_CHANNELS.drawio.GET_ORIGIN,
+  // drawio is NOT here: the editor is a UI asset that ships with the app. The desktop windows
+  // (local and remote) load it from their own `craft-local://` origin; the web UI loads the
+  // hub's copy from `/drawio/` on its own origin (see server-core/webui/drawio.ts).
+
 
   // tweaks — standing edits, stored as a folder per tweak in the workspace
   RPC_CHANNELS.tweaks.GET,

@@ -1,19 +1,17 @@
 /**
  * Tests for browser handler broadcast + LIST.
  *
- * Workspace isolation contract: enforced renderer-side via
- * filterInstancesForWorkspace (which handles both the local and remote-mirror
- * workspace ids). The server-side handler broadcasts every event to all
- * locally-connected renderers and returns the full instance list from LIST.
- *
- * The reason: a renderer's transport-level workspaceId is always the *local*
- * Craft Agents window's id (set by updateClientWorkspace), but remote-bridged
- * tabs are stamped with the *remote* server's workspaceId. A workspace-scoped
- * broadcast or LIST filter would silently drop those events because the two
- * ids never match. The renderer knows both ids and filters correctly.
+ * A browser window belongs to the workspace's own server now, so `LIST` is scoped to the
+ * workspace the connection speaks for: a remote window asks its hub, a local window asks this
+ * machine, and neither sees the other's windows. Broadcast events stay `to: "all"` — a state
+ * change is small and the renderer still filters the strip by workspace (a device-driven pane
+ * on this machine is filed under `hub:<connectionId>:<workspaceId>`).
  */
 
 import { describe, it, expect, beforeEach, mock } from 'bun:test'
+import { writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
 import type { BrowserInstanceInfo } from '@craft-agent/shared/protocol'
@@ -314,28 +312,43 @@ describe('browser handler — workspace filtering', () => {
       return handler({ clientId: 'c1', workspaceId, webContentsId: null }) as BrowserInstanceInfo[]
     }
 
-    it('returns ALL instances regardless of ctx.workspaceId (renderer filters)', async () => {
-      // The server-side filter is intentionally absent: ctx.workspaceId is the
-      // local Craft Agents window's workspace id, but remote-bridged tabs are
-      // stamped with the remote server's workspace id. Filtering here would
-      // hide those tabs. The renderer applies filterInstancesForWorkspace,
-      // which accepts both ids.
+    it('asks the manager for the workspace this connection speaks for', async () => {
+      const asked: Array<string | null | undefined> = []
+      const { registerBrowserHandlers } = await import('../browser')
+      const deps = makeDeps({ instances: [] })
+      ;(deps.browserPaneManager as unknown as Record<string, unknown>).listInstances =
+        (workspaceId?: string | null) => {
+          asked.push(workspaceId)
+          return []
+        }
+      registerBrowserHandlers(recorder.server, deps)
+
+      // Registration itself may prime the manager; the calls under test are the ones after it.
+      asked.length = 0
+      callListHandler('ws-1')
+      callListHandler(null)
+
+      expect(asked).toEqual(['ws-1', null])
+    })
+
+    it('answers with the workspace windows and the unbound ones', async () => {
       const instances = [
         makeInstance('local-tab', { workspaceId: 'local-ws' }),
-        makeInstance('remote-tab', { workspaceId: 'remote-ws' }),
+        makeInstance('other-tab', { workspaceId: 'other-ws' }),
         makeInstance('unbound', { workspaceId: null }),
       ]
       const { registerBrowserHandlers } = await import('../browser')
-      registerBrowserHandlers(recorder.server, makeDeps({ instances }))
+      const deps = makeDeps({ instances })
+      ;(deps.browserPaneManager as unknown as Record<string, unknown>).listInstances =
+        (workspaceId?: string | null) => (workspaceId
+          ? instances.filter((i) => !i.workspaceId || i.workspaceId === workspaceId)
+          : instances)
+      registerBrowserHandlers(recorder.server, deps)
 
-      expect(callListHandler('local-ws').map((i) => i.id).sort()).toEqual([
-        'local-tab',
-        'remote-tab',
-        'unbound',
-      ])
+      expect(callListHandler('local-ws').map((i) => i.id).sort()).toEqual(['local-tab', 'unbound'])
       expect(callListHandler(null).map((i) => i.id).sort()).toEqual([
         'local-tab',
-        'remote-tab',
+        'other-tab',
         'unbound',
       ])
     })
@@ -368,7 +381,7 @@ describe('browser handler — the profile a link opens in', () => {
         createTab: () => 'tab-1',
         focus: () => {},
         navigate: async () => ({ url: 'https://example.com', title: 'Example' }),
-        getActiveTab: () => null,
+        getActiveTabId: () => 'tab-1',
       } as unknown as NonNullable<HandlerDeps['browserPaneManager']>,
     })
 
@@ -382,5 +395,124 @@ describe('browser handler — the profile a link opens in', () => {
 
   it('falls back to the workspace window when no conversation is behind the click', async () => {
     expect(await openUrl([])).toEqual(['no-session'])
+  })
+})
+
+describe('browser handler — a page opened for a remote client', () => {
+  /**
+   * A person at a thin client is not in front of the hub's screen: the window must not pop up
+   * there, and the caller needs the tab back so its viewer can watch it.
+   */
+  it('opens on the server without showing a window there, and names the tab to watch', async () => {
+    const shows: boolean[] = []
+    let focused = 0
+    const recorder = makeServer()
+    recorder.server.isLocalClient = () => false
+
+    const { registerBrowserHandlers } = await import('../browser')
+    const deps = makeDeps({ instances: [] })
+    registerBrowserHandlers(recorder.server, {
+      ...deps,
+      browserPaneManager: {
+        listInstances: () => [],
+        onStateChange: () => {},
+        onRemoved: () => {},
+        onInteracted: () => {},
+        setViewStreamEndedHandler: () => {},
+        createForSession: (_sessionId: string | null, options?: { show?: boolean }) => {
+          shows.push(!!options?.show)
+          return 'instance-1'
+        },
+        createTab: () => 'tab-1',
+        focus: () => { focused += 1 },
+        navigate: async () => ({ url: 'https://example.com', title: 'Example' }),
+        getActiveTabId: () => 'tab-1',
+      } as unknown as NonNullable<HandlerDeps['browserPaneManager']>,
+    })
+
+    const opened = await recorder.handlers.get('browser-pane:open-url')!(
+      { clientId: 'thin-client', workspaceId: 'ws-1' },
+      'https://example.com',
+    )
+
+    expect(opened).toEqual({ instanceId: 'instance-1', tabId: 'tab-1' })
+    expect(shows).toEqual([false])
+    expect(focused).toBe(0)
+  })
+})
+
+describe('browser handler — the workspace a file opens in', () => {
+  /**
+   * A thin client's `webContentsId` belongs to its own process. Inferring this machine's
+   * window→workspace map from it can land on an unrelated local window, which would check the
+   * path against — and stamp the new tab with — that window's workspace. A request from a
+   * remote client must never borrow a local window's workspace; a local one still may.
+   */
+  async function openFile(opts: {
+    clientId: string
+    workspaceId: string | null
+    isLocal: boolean
+  }): Promise<{ lookedUp: number[]; stamped: Array<string | null | undefined> }> {
+    const lookedUp: number[] = []
+    const stamped: Array<string | null | undefined> = []
+    const recorder = makeServer()
+    recorder.server.isLocalClient = () => opts.isLocal
+
+    const { registerBrowserHandlers } = await import('../browser')
+    const deps = makeDeps({ instances: [] })
+    registerBrowserHandlers(recorder.server, {
+      ...deps,
+      windowManager: {
+        getWorkspaceForWindow: (webContentsId: number) => {
+          lookedUp.push(webContentsId)
+          return 'local-ws'
+        },
+      } as unknown as HandlerDeps['windowManager'],
+      browserPaneManager: {
+        listInstances: () => [],
+        onStateChange: () => {},
+        onRemoved: () => {},
+        onInteracted: () => {},
+        setViewStreamEndedHandler: () => {},
+        createForSession: (_sessionId: string | null, options?: { workspaceId?: string | null }) => {
+          stamped.push(options?.workspaceId)
+          return 'instance-1'
+        },
+        createTab: () => 'tab-1',
+        focus: () => {},
+        navigate: async () => ({ url: 'https://example.com', title: 'Example' }),
+        getActiveTabId: () => 'tab-1',
+      } as unknown as NonNullable<HandlerDeps['browserPaneManager']>,
+    })
+
+    const file = join(tmpdir(), `craft-open-file-${process.pid}-${Math.random().toString(36).slice(2)}.html`)
+    writeFileSync(file, '<p>hi</p>')
+    try {
+      await recorder.handlers.get('browser-pane:open-file')!(
+        { clientId: opts.clientId, workspaceId: opts.workspaceId, webContentsId: 7 },
+        file,
+      )
+    } finally {
+      rmSync(file, { force: true })
+    }
+    return { lookedUp, stamped }
+  }
+
+  it('never infers a local window for a remote client', async () => {
+    const { lookedUp, stamped } = await openFile({ clientId: 'thin-client', workspaceId: null, isLocal: false })
+    expect(lookedUp).toEqual([])
+    expect(stamped).toEqual([null])
+  })
+
+  it("uses the remote request's own workspace as given", async () => {
+    const { lookedUp, stamped } = await openFile({ clientId: 'thin-client', workspaceId: 'ws-remote', isLocal: false })
+    expect(lookedUp).toEqual([])
+    expect(stamped).toEqual(['ws-remote'])
+  })
+
+  it("still infers the workspace of this machine's own window", async () => {
+    const { lookedUp, stamped } = await openFile({ clientId: 'local-window', workspaceId: null, isLocal: true })
+    expect(lookedUp).toEqual([7])
+    expect(stamped).toEqual(['local-ws'])
   })
 })

@@ -42,7 +42,7 @@ import { TopBar } from "./TopBar"
 import { SquarePenRounded } from "../icons/SquarePenRounded"
 import { McpIcon } from "../icons/McpIcon"
 import { cn } from "@/lib/utils"
-import { isMac } from "@/lib/platform"
+import { isMac, isWebUI } from "@/lib/platform"
 import { Button } from "@/components/ui/button"
 import { HeaderIconButton } from "@/components/ui/HeaderIconButton"
 import { resolveInheritedFilterParams, type FilterMode } from "./inherited-filter-params"
@@ -77,6 +77,7 @@ import { SessionList, type ChatGroupingMode } from "./SessionList"
 import { MainContentPanel } from "./MainContentPanel"
 import { BoardListToggle } from "./kanban/BoardListToggle"
 import { PanelStackContainer } from "./PanelStackContainer"
+import { RemoteBrowserPanel } from "../browser/RemoteBrowserPanel"
 import { CompactSessionListFilter } from "./CompactSessionListFilter"
 import type { ChatDisplayHandle } from "./ChatDisplay"
 import { LeftSidebar } from "./LeftSidebar"
@@ -93,8 +94,8 @@ import { getSessionTitle } from "@/utils/session"
 import { useSetAtom } from "jotai"
 import type { Session, Workspace, FileAttachment, PermissionRequest, LoadedSource, LoadedSkill, PermissionMode, SourceFilter, AutomationFilter } from "../../../shared/types"
 import { sessionMetaMapAtom, sendToWorkspaceAtom, type SessionMeta } from "@/atoms/sessions"
-import { filterInstancesForWorkspace } from "@/atoms/browser-pane"
-import { windowServerScopeAtom } from "@/atoms/window-mode"
+import { filterInstancesForWorkspace, openBrowserViewAtom } from "@/atoms/browser-pane"
+import { windowIsRemoteAtom, windowServerScopeAtom } from "@/atoms/window-mode"
 import { sourcesAtom } from "@/atoms/sources"
 import { skillsAtom } from "@/atoms/skills"
 import { panelStackAtom, panelCountAtom, focusedPanelIdAtom, focusedSessionIdAtom, focusNextPanelAtom, focusPrevPanelAtom, parseSessionIdFromRoute } from "@/atoms/panel-stack"
@@ -614,6 +615,11 @@ function AppShellContent({
   const focusedSessionId = useAtomValue(focusedSessionIdAtom)
   // The saved server this window works on, so its browser windows are never another hub's.
   const serverScope = useAtomValue(windowServerScopeAtom)
+  /** A remote window's browser is on its server; the panel is this machine's view of it. */
+  const isRemoteWindow = useAtomValue(windowIsRemoteAtom)
+  /** The webui is a thin client too — there is no local browser window to raise. */
+  const usesServerBrowser = isRemoteWindow || isWebUI
+  const openBrowserView = useSetAtom(openBrowserViewAtom)
 
   // Navigate the focused panel to a session.
   // If the session is already open in another panel, focus that panel instead.
@@ -2193,6 +2199,28 @@ function AppShellContent({
   // `profileId` says which profile's window the person picked in the top bar. Left out, the
   // workspace's own answer is used — and the window already up is raised, whichever one it is.
   const handleOpenBrowser = useCallback(async (profileId?: string) => {
+    // A remote window's browser is the workspace's browser on its server — there is no window to
+    // raise on this machine, so the viewer is the answer. It opens the browser on the server when
+    // the workspace has none yet.
+    if (usesServerBrowser) {
+      // The viewer is the view; a profile names which window on the server to open first.
+      if (!profileId) {
+        openBrowserView()
+        return
+      }
+      try {
+        const instanceId = await window.electronAPI.browserPane.create({ show: false, profileId })
+        const instances = await window.electronAPI.browserPane.list()
+        const instance = instances.find((item) => item.id === instanceId)
+        const tabId = instance?.tabs?.find((tab) => tab.active)?.id ?? instance?.tabs?.[0]?.id
+        if (tabId) openBrowserView({ instanceId, tabId })
+        else openBrowserView()
+      } catch (error) {
+        console.error('[Chat] Failed to open the browser for a profile:', error)
+        toast.error(t('toast.failedToCreateBrowser'))
+      }
+      return
+    }
     try {
       if (profileId) {
         // A profile names its window: the host brings that one up, opening it when the
@@ -2213,7 +2241,7 @@ function AppShellContent({
       console.error('[Chat] Failed to open the browser:', error)
       toast.error(t('toast.failedToCreateBrowser'))
     }
-  }, [activeWorkspaceId, serverScope, t])
+  }, [activeWorkspaceId, serverScope, t, usesServerBrowser, openBrowserView])
 
   // Delete Source - simplified since agents system is removed
   const handleDeleteSource = useCallback(async (sourceSlug: string) => {
@@ -2542,6 +2570,9 @@ function AppShellContent({
           onAddTabToConversation={handleAddTabToConversation}
           isCompact={isAutoCompact}
         />
+
+        {/* The remote window's view of its server's browser — nothing in a local window. */}
+        <RemoteBrowserPanel />
 
       {/* === OUTER LAYOUT: Unified Panel Stack | Right Sidebar === */}
       <div

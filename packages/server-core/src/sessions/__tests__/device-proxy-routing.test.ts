@@ -27,6 +27,7 @@ function client(overrides: Partial<ConnectedClientInfo> & { clientId: string }):
     hubRootBase: null,
     name: overrides.clientId,
     platform: 'test',
+    version: null,
     mode: 'remote',
     workspaceId: 'ws-1',
     webContentsId: null,

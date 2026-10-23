@@ -76,6 +76,8 @@ interface ClientIdentity {
   deviceId: string
   name: string
   platform: string
+  /** App version advertised for diagnostics; the hub never gates on it. */
+  version?: string
   workspaceRoots: string[]
   /** Where this install keeps `<base>/<hub device id>/<workspace id>` working directories. */
   hubRootBase?: string
@@ -747,6 +749,17 @@ ipcRenderer.on('client-mode:target-changed', (_event, payload: RemoteTargetUpdat
   const handler = (_e: any, progress: { sessionIndex: number; sessionCount: number; chunkSent: number; chunkTotal: number }) => cb(progress)
   ipcRenderer.on('transfer:progress', handler)
   return () => { ipcRenderer.removeListener('transfer:progress', handler) }
+}
+
+/**
+ * A link that navigated a sandboxed preview's top frame — main caught it and asks this window
+ * where it should go. The renderer runs the ordinary open path, so the person's setting and the
+ * window's mode decide (the workspace's browser by default, the system browser when asked).
+ */
+;(api as ElectronAPI).onBrowserOpenLink = (cb: (url: string) => void) => {
+  const handler = (_e: any, url: string) => cb(url)
+  ipcRenderer.on('browser:open-link', handler)
+  return () => { ipcRenderer.removeListener('browser:open-link', handler) }
 }
 
 // System warnings — expose env-based flags set during main process startup

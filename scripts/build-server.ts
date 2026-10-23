@@ -119,7 +119,10 @@ function assembleResources(config: ServerBuildConfig): void {
   const destResources = join(outputDir, 'resources');
 
   console.log('  Copying docs, themes, permissions, tool-icons...');
-  for (const dir of ['docs', 'themes', 'permissions', 'tool-icons']) {
+  // `drawio` is fetched rather than committed; when it is present the web UI's editor is
+  // served from the server's own `/drawio/` (see server-core/webui/drawio.ts), so it travels
+  // with the rest of the resources. Absent, the editor reports itself as not installed.
+  for (const dir of ['docs', 'themes', 'permissions', 'tool-icons', 'drawio']) {
     const src = join(srcResources, dir);
     if (existsSync(src)) {
       cpSync(src, join(destResources, dir), { recursive: true });
