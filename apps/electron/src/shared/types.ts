@@ -402,6 +402,8 @@ export interface ElectronAPI {
   getServerConfig(): Promise<import('@craft-agent/shared/config/server-config').ServerConfig>
   setServerConfig(config: import('@craft-agent/shared/config/server-config').ServerConfig): Promise<void>
   getServerStatus(): Promise<import('@craft-agent/shared/config/server-config').ServerStatus>
+  /** Restart the server this window is on (the hub, in a remote window). */
+  restartServer(): Promise<{ ok: boolean }>
   /** Devices other than this machine that this hub can drive (one row per machine). */
   getConnectedDevices(): Promise<DeviceToolInfo[]>
 

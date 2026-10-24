@@ -5,15 +5,27 @@
  * accessible from other machines on the network.
  */
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Copy, Eye, EyeOff, AlertTriangle, RotateCw } from 'lucide-react'
 import { toast } from 'sonner'
 import { PanelHeader } from '@/components/app-shell/PanelHeader'
+import { ServerDirectoryBrowser } from '@/components/ServerDirectoryBrowser'
+import { useTransportConnectionState } from '@/hooks/useTransportConnectionState'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from '@/components/ui/dialog'
 import { Spinner } from '@craft-agent/ui'
 import type { DetailsPageMeta } from '@/lib/navigation-registry'
+import { isWebUI } from '@/lib/platform'
+import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import type { ServerConfig, ServerStatus } from '@craft-agent/shared/config/server-config'
 import type { ClientModeInfo, DeviceToolInfo } from '../../../shared/types'
 
@@ -102,10 +114,18 @@ export default function ServerSettingsPage() {
   const [isSaving, setIsSaving] = useState(false)
   const [tokenVisible, setTokenVisible] = useState(false)
   const [error, setError] = useState<string>()
+  const [loadError, setLoadError] = useState<string>()
+  const [browseTarget, setBrowseTarget] = useState<'cert' | 'key' | null>(null)
+  const [restartConfirmOpen, setRestartConfirmOpen] = useState(false)
+  const [isRestarting, setIsRestarting] = useState(false)
+  /** Set when this page asked the hub to restart, so the reconnect refreshes the form once. */
+  const restartRequestedRef = useRef(false)
+  const connectionStatus = useTransportConnectionState()?.status
 
   const isDirty = JSON.stringify(form) !== JSON.stringify(savedForm)
 
   const loadSettings = useCallback(async () => {
+    setLoadError(undefined)
     try {
       const [config, serverStatus] = await Promise.all([
         window.electronAPI.getServerConfig(),
@@ -117,33 +137,33 @@ export default function ServerSettingsPage() {
       setStatus(serverStatus)
     } catch (err) {
       console.error('Failed to load server settings:', err)
+      setLoadError(err instanceof Error ? err.message : String(err))
     } finally {
       setIsLoading(false)
     }
   }, [])
 
   useEffect(() => {
-    // These WS channels always go to the server that owns this workspace. In a window connected
-    // to a hub that is the *remote* server — reading or writing its config here would silently
-    // edit the host's settings. Resolve this window's connection first and show a notice instead.
+    // These channels follow the window's server, so a remote window edits its hub's listener rather
+    // than this machine's. `clientMode` is kept only to decide where a restart can happen: relaunching
+    // this process would restart the wrong machine.
+    void loadSettings()
     if (
       window.electronAPI.getRuntimeEnvironment() === 'electron'
       && typeof window.electronAPI.getClientMode === 'function'
     ) {
-      window.electronAPI.getClientMode()
-        .then((info) => {
-          setClientMode(info)
-          if (info.running) {
-            setIsLoading(false)
-            return
-          }
-          void loadSettings()
-        })
-        .catch(() => { void loadSettings() })
-      return
+      window.electronAPI.getClientMode().then(setClientMode).catch(() => {})
     }
-    void loadSettings()
   }, [loadSettings])
+
+  useEffect(() => {
+    // Only a reconnect caused by our own restart reloads the form. Doing it on every reconnect
+    // would throw away unsaved edits whenever the transport blips.
+    if (connectionStatus === 'connected' && restartRequestedRef.current) {
+      restartRequestedRef.current = false
+      void loadSettings()
+    }
+  }, [connectionStatus, loadSettings])
 
   const loadDevices = useCallback(async () => {
     setDevicesLoading(true)
@@ -156,7 +176,13 @@ export default function ServerSettingsPage() {
     }
   }, [])
 
-  const devicesVisible = !clientMode?.running && form.enabled
+  const isRemoteWindow = !!clientMode?.running
+  // A webui tab has no local listener either: its server settings are the hub's.
+  const isRemoteServer = isWebUI || isRemoteWindow
+  const clientModeKnown = isWebUI || clientMode !== null
+  // A headless hub does not register the handler: there is no process to relaunch through Electron.
+  const canRestartServer = window.electronAPI.isChannelAvailable(RPC_CHANNELS.server.RESTART)
+  const devicesVisible = form.enabled
   useEffect(() => {
     if (!devicesVisible) {
       setDevices(null)
@@ -223,12 +249,17 @@ export default function ServerSettingsPage() {
    * certificate pair) stops before the restart and stays on screen.
    */
   const handlePrimary = async () => {
-    // Nothing pending: the change is already on disk, so this is purely "apply it".
+    // Wait for the window mode before deciding where a restart goes; relaunching the wrong process
+    // is worse than a button that stays disabled for a tick.
+    if (!clientModeKnown) return
+    // A remote window cannot apply a listener change by relaunching itself — the listener is on the
+    // hub. Saving is all this window can do; the apply bar then says where the restart belongs.
     if (!isDirty) {
-      void window.electronAPI.relaunchApp()
+      if (!isRemoteServer) void window.electronAPI.relaunchApp()
       return
     }
-    if (await handleSave()) void window.electronAPI.relaunchApp()
+    const saved = await handleSave()
+    if (saved && !isRemoteServer) void window.electronAPI.relaunchApp()
   }
 
   /** Discards unsaved edits — back to the last saved config, not to factory defaults. */
@@ -242,17 +273,31 @@ export default function ServerSettingsPage() {
     toast.success(t('settings.server.copiedToClipboard', { label }))
   }
 
-  const handleBrowseCert = async () => {
+  const handleBrowse = async (target: 'cert' | 'key') => {
+    // A remote window's certificate lives on the hub, so the local OS picker would hand back a path
+    // the server cannot see. Browse the server's own filesystem in that case.
+    if (isRemoteServer) {
+      setBrowseTarget(target)
+      return
+    }
     const paths = await window.electronAPI.openFileDialog()
     if (paths.length > 0) {
-      setForm(f => ({ ...f, tlsCertPath: paths[0]! }))
+      setForm(f => target === 'cert' ? { ...f, tlsCertPath: paths[0]! } : { ...f, tlsKeyPath: paths[0]! })
     }
   }
 
-  const handleBrowseKey = async () => {
-    const paths = await window.electronAPI.openFileDialog()
-    if (paths.length > 0) {
-      setForm(f => ({ ...f, tlsKeyPath: paths[0]! }))
+  const handleRestartServer = async () => {
+    setRestartConfirmOpen(false)
+    setIsRestarting(true)
+    restartRequestedRef.current = true
+    try {
+      // The hub answers first and exits a beat later; the window's transport reconnects on its own.
+      await window.electronAPI.restartServer()
+    } catch (err) {
+      restartRequestedRef.current = false
+      toast.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setIsRestarting(false)
     }
   }
 
@@ -264,16 +309,12 @@ export default function ServerSettingsPage() {
     )
   }
 
-  // Remote window — the server settings belong to the hub, not to this device.
-  if (clientMode?.running) {
+  if (loadError) {
     return (
       <div className="flex flex-col h-full">
         <PanelHeader title={t('settings.server.title')} />
-        <div className="px-5 py-7 max-w-3xl mx-auto space-y-4">
-          <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-muted/50 border text-xs text-muted-foreground">
-            <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-            <span>{t('settings.server.thinClientNotice', { url: clientMode.running.url })}</span>
-          </div>
+        <div className="px-5 py-7 max-w-3xl mx-auto">
+          <p className="text-xs text-destructive">{loadError}</p>
         </div>
       </div>
     )
@@ -342,7 +383,9 @@ export default function ServerSettingsPage() {
            * and stays reachable while the fields below are edited.
            *
            * Every field on this page lands in the listener's startup config, so saving alone never
-           * applies anything — the bar always talks about the restart, never about saving.
+           * applies anything. In a local window that makes saving and restarting one button; in a
+           * remote window the listener is on the hub, so this window can only save and the bar says
+           * where the restart belongs.
            */}
           {(isDirty || needsRestart || error) && (
             <div className="sticky top-0 z-10 flex items-center gap-3 rounded-lg border border-warning/40 bg-background px-3 py-2.5 shadow-thin">
@@ -356,10 +399,39 @@ export default function ServerSettingsPage() {
                   {t('settings.server.undoChanges')}
                 </Button>
               )}
-              <Button size="sm" className="h-7 shrink-0" onClick={handlePrimary} disabled={isSaving}>
-                {isSaving ? <Spinner className="mr-1.5" /> : null}
-                {isDirty ? t('settings.server.saveAndRestart') : t('settings.server.restartNow')}
-              </Button>
+              {isRemoteServer && !isDirty ? (
+                needsRestart && (
+                  canRestartServer ? (
+                    <Button
+                      size="sm"
+                      className="h-7 shrink-0"
+                      onClick={() => setRestartConfirmOpen(true)}
+                      disabled={isRestarting}
+                    >
+                      {isRestarting ? <Spinner className="mr-1.5" /> : null}
+                      {t('settings.server.restartNow')}
+                    </Button>
+                  ) : (
+                    <span className="max-w-[320px] text-right text-xs text-muted-foreground">
+                      {t('settings.server.thinClientNotice', {
+                        url: clientMode?.running?.url ?? (isWebUI ? window.location.origin : ''),
+                      })}
+                    </span>
+                  )
+                )
+              ) : (
+                <Button
+                  size="sm"
+                  className="h-7 shrink-0"
+                  onClick={handlePrimary}
+                  disabled={isSaving || !clientModeKnown}
+                >
+                  {isSaving ? <Spinner className="mr-1.5" /> : null}
+                  {isDirty
+                    ? (isRemoteServer ? t('common.save') : t('settings.server.saveAndRestart'))
+                    : t('settings.server.restartNow')}
+                </Button>
+              )}
             </div>
           )}
 
@@ -466,7 +538,7 @@ export default function ServerSettingsPage() {
                     <span className="text-xs text-muted-foreground truncate max-w-[200px]">
                       {form.tlsCertPath || 'Not configured'}
                     </span>
-                    <Button variant="outline" size="sm" className="h-6 text-[11px] px-2 shrink-0" onClick={handleBrowseCert}>
+                    <Button variant="outline" size="sm" className="h-6 text-[11px] px-2 shrink-0" onClick={() => { void handleBrowse('cert') }}>
                       Browse
                     </Button>
                   </div>
@@ -477,7 +549,7 @@ export default function ServerSettingsPage() {
                     <span className="text-xs text-muted-foreground truncate max-w-[200px]">
                       {form.tlsKeyPath || 'Not configured'}
                     </span>
-                    <Button variant="outline" size="sm" className="h-6 text-[11px] px-2 shrink-0" onClick={handleBrowseKey}>
+                    <Button variant="outline" size="sm" className="h-6 text-[11px] px-2 shrink-0" onClick={() => { void handleBrowse('key') }}>
                       Browse
                     </Button>
                   </div>
@@ -563,6 +635,40 @@ export default function ServerSettingsPage() {
 
         </div>
       </ScrollArea>
+
+      <ServerDirectoryBrowser
+        open={browseTarget !== null}
+        mode="browse"
+        selectionKind="file"
+        onSelect={(path) => {
+          if (browseTarget === 'cert') setForm(f => ({ ...f, tlsCertPath: path }))
+          else if (browseTarget === 'key') setForm(f => ({ ...f, tlsKeyPath: path }))
+          setBrowseTarget(null)
+        }}
+        onCancel={() => setBrowseTarget(null)}
+      />
+
+      <Dialog open={restartConfirmOpen} onOpenChange={setRestartConfirmOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t('settings.server.restartRequired')}</DialogTitle>
+            <DialogDescription>
+              {t('settings.server.thinClientNotice', {
+                url: clientMode?.running?.url ?? (isWebUI ? window.location.origin : ''),
+              })}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" size="sm" onClick={() => setRestartConfirmOpen(false)} disabled={isRestarting}>
+              {t('common.cancel')}
+            </Button>
+            <Button size="sm" onClick={() => { void handleRestartServer() }} disabled={isRestarting}>
+              {isRestarting ? <Spinner className="mr-1.5" /> : null}
+              {t('settings.server.restartNow')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

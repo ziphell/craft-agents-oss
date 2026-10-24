@@ -1390,6 +1390,23 @@ app.whenReady().then(async () => {
         }
       })
 
+      /**
+       * Restart this server's process — the one thing a client connected to the hub cannot do on
+       * its own machine. A remote window calls it after saving listener settings that only a fresh
+       * process reads (port, TLS, token).
+       *
+       * The answer goes out first and the process exits a beat later: cutting the socket inside
+       * the handler would turn a successful restart into a transport error for the caller.
+       */
+      instance.wsServer.handle(RPC_CHANNELS.server.RESTART, async (ctx) => {
+        mainLog.info(`[server-mode] restart requested by client ${ctx.clientId}`)
+        setTimeout(() => {
+          app.relaunch()
+          app.exit(0)
+        }, 250)
+        return { ok: true }
+      })
+
       // TLS enforcement — warn when server mode binds to a network address without TLS
       // Mirrors the hard guard in packages/server/src/index.ts but warns instead of blocking,
       // since the user explicitly enabled server mode via UI (may be on a trusted LAN).

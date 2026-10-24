@@ -13,6 +13,7 @@ export const RPC_CHANNELS = {
     GET_ACTIVE_SESSIONS: 'server:getActiveSessions',
     GET_DEVICES: 'server:getDevices',
     SHUTTING_DOWN: 'server:shuttingDown',
+    RESTART: 'server:restart',
     STATUS_CHANGED: 'server:statusChanged',
     HOME_DIR: 'server:homeDir',
   },

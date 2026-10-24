@@ -271,6 +271,7 @@ const EXPECTED_CHANNELS: string[] = [
   'server:getWorkspaces',
   'server:homeDir',
   'server:removeWorkspace',
+  'server:restart',
   'server:shuttingDown',
   'server:statusChanged',
   'session:event',

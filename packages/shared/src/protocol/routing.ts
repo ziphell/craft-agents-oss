@@ -165,11 +165,6 @@ export const LOCAL_ONLY_CHANNELS = new Set<string>([
   RPC_CHANNELS.onboarding.START_MCP_OAUTH,
   RPC_CHANNELS.settings.GET_NETWORK_PROXY,
   RPC_CHANNELS.settings.SET_NETWORK_PROXY,
-
-  // server config — local embedded server settings
-  RPC_CHANNELS.settings.GET_SERVER_CONFIG,
-  RPC_CHANNELS.settings.SET_SERVER_CONFIG,
-  RPC_CHANNELS.settings.GET_SERVER_STATUS,
 ])
 
 // ---------------------------------------------------------------------------
@@ -191,6 +186,7 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.server.GET_ACTIVE_SESSIONS,
   RPC_CHANNELS.server.GET_DEVICES,
   RPC_CHANNELS.server.SHUTTING_DOWN,
+  RPC_CHANNELS.server.RESTART,
   RPC_CHANNELS.server.STATUS_CHANGED,
   RPC_CHANNELS.server.HOME_DIR,
 
@@ -311,6 +307,13 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.settings.TEST_LLM_CONNECTION_SETUP,
   RPC_CHANNELS.settings.GET_DEFAULT_THINKING_LEVEL,
   RPC_CHANNELS.settings.SET_DEFAULT_THINKING_LEVEL,
+
+  // server mode — the listener belongs to the server this window is on. A remote window therefore
+  // reads and writes its hub's port/TLS/token, not this machine's. The hub is already trusted with
+  // the workspace and shell; hiding these fields would be UI preference dressed up as a boundary.
+  RPC_CHANNELS.settings.GET_SERVER_CONFIG,
+  RPC_CHANNELS.settings.SET_SERVER_CONFIG,
+  RPC_CHANNELS.settings.GET_SERVER_STATUS,
 
   // settings the agent host reads — tool policy, prompt cache, token optimization, decisions
   RPC_CHANNELS.appearance.GET_RICH_TOOL_DESCRIPTIONS,
