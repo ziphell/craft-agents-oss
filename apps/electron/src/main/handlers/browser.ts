@@ -342,10 +342,10 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
       }
 
       if (input.action === 'release') {
-        // Taking a locked tab back: the overlay is what holds it, so dropping the
-        // overlay is the unlock. No session named — whoever is
-        // working there lets go.
-        browserPaneManager.clearAgentControlForInstance(input.instanceId)
+        // The person dismissing their half of a held tab's lock: the agent keeps the claim,
+        // they get the page back (ring, dim and shield go). No session named — the tab's own
+        // holder is who the dismissal is about.
+        browserPaneManager.clearAgentControlForInstance(input.instanceId, undefined, input.tabId)
         return
       }
 

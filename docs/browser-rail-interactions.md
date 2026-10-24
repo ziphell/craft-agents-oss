@@ -18,7 +18,7 @@ rail 的每一行（`TabRail`）是一个 `div`，里面并排若干**兄弟**�
 |---|---|
 | 行主体 `<button>` | 切到这个 tab |
 | 关闭 `<button>`（`×`） | 关掉这个 tab |
-| 锁 `<button>`（仅被 agent 持有时） | 放开持有 |
+| 锁 `<button>`（仅被 agent 持有时） | 收起人这一侧的锁（遮罩/圆环），hold 不变 |
 | 驱动点 `<span>` | 只报状态，不可点 |
 
 **兄弟而不是嵌套**是这一节的要点：行主体是 `<button>`，而按钮里不能再放按钮，所以关闭 / 锁只能是它的兄弟。这也顺带决定了 §2 的一条边界——点 `×` 不会顺带触发切 tab。
@@ -54,7 +54,7 @@ onClick={(event) => { if (event.detail === 0) onSelect(tab.id) }}
 | 顶栏左端的 `+` | 给自己新开一个 tab | `handleNewTab` → `tabAction('new')` |
 | 顶栏左端的折叠开关 | 收起 / 展开 rail | `toggleRailCollapsed()` |
 | 行的 `×` | 关这个 tab（关掉最后一个等于关窗） | `tabAction('close', tabId)` |
-| 行的锁 | 放开 agent 的持有 | `tabAction('release', tabId)` |
+| 行的锁 | 收起人这一侧的锁；agent 的 hold 与 agent 间互锁不变 | `tabAction('release', tabId)` |
 
 rail 的**列本身**是 `titlebar-drag-region`（拖窗），上面这些可点元素各自带 `titlebar-no-drag`，所以「点」与「拖」互不误伤。
 

@@ -541,6 +541,7 @@ function tabOf(sessionId: string | null): Pick<BrowserInstanceInfo, 'tabs'> {
       drivenBy: null,
       cursorOf: [],
       lockedBy: null,
+      overlayDismissed: false,
     }],
   }
 }

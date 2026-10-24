@@ -610,6 +610,7 @@ function tabSummary(overrides: Partial<BrowserTabSummary> & { id: string }): Bro
     drivenBy: null,
     cursorOf: [],
     lockedBy: null,
+    overlayDismissed: false,
     ...overrides,
   }
 }

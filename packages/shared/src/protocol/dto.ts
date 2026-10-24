@@ -1283,8 +1283,9 @@ export interface BrowserTabSummary {
    * Which session is **holding this tab at the moment**, or `null` when nobody is.
    *
    * The tab lock: a tab is held while the conversation working on it is
-   * mid-work, which is when a person cannot click or type into it and another conversation's
-   * commands that name it are refused — narrower than a window-wide lock: the chrome, the
+   * mid-work, which is when a person cannot click or type into it — unless they have dismissed
+   * their half of the overlay ({@link overlayDismissed}) — and another conversation's
+   * commands that name it are refused. Narrower than a window-wide lock: the chrome, the
    * other tabs and the window itself stay usable.
    *
    * Per tab, stored on the tab: several conversations share one window (a parent and its
@@ -1292,6 +1293,16 @@ export interface BrowserTabSummary {
    * window-level slot could only ever mean "whoever started last".
    */
   lockedBy: string | null
+  /**
+   * Whether the person has dismissed the agent's lock **for their own view**, or `false`.
+   *
+   * The lock above is the agent's claim and does not change. This is only the person's half:
+   * the purple ring, the dim and the input shield they were looking at are gone, so they can
+   * click and type into the tab again. Agent-to-agent rules still read {@link lockedBy}.
+   *
+   * Reset whenever the hold changes hands, so a new claim gets its own overlay back.
+   */
+  overlayDismissed: boolean
 }
 
 export interface BrowserInstanceInfo {
@@ -1373,6 +1384,16 @@ export interface BrowserStreamStartResult {
   /** CSS pixels of the tab's viewport, so a viewer can size itself before the first frame. */
   width: number
   height: number
+  /**
+   * The agent holding the tab when the stream started, or `null`. The viewer uses it to know
+   * whether it may take control now: a held tab is the lock's to give, not the stream's.
+   */
+  lockedBy: string | null
+  /**
+   * Whether the person had already dismissed their half of that lock, or `false`. A dismissed
+   * hold does not refuse input, so the viewer may take control on a tab that is still held.
+   */
+  overlayDismissed: boolean
 }
 
 /**

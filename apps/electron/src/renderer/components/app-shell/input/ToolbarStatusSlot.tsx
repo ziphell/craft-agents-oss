@@ -49,8 +49,9 @@ export function ToolbarStatusSlot({
 
   // Find the visible browser window this session is working in: one of its tabs is held by
   // the session — the tab lock, per tab, so a parent and its children each get their own
-  // banner while they work in parallel. Hidden instances are
-  // intentionally excluded so the status slot mirrors actual visibility.
+  // banner while they work in parallel. A person dismissing their half of the overlay does not
+  // change the hold, so this stays right. Hidden instances are intentionally excluded so the
+  // status slot mirrors actual visibility.
   const browserInstance = React.useMemo(() => {
     if (!sessionId) return null
 

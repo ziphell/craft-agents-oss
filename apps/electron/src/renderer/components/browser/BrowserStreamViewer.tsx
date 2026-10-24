@@ -5,19 +5,25 @@
  * (see docs/browser-view-streaming.md). There is nothing to raise on this machine, so a tab is
  * watched as a stream of frames and input goes back over the same socket.
  *
- * Deliberately one tab at a time: Chromium's screencast is one stream per CDP session, and the
- * server refuses a second viewer rather than silently replacing the first.
+ * One tab at a time: Chromium's screencast is one stream per CDP session, and the manager fans
+ * one tab's capture out to however many viewers ask for it.
  *
  * Two rules this component keeps visible in its UI:
- * - Watching is not controlling. The page is read-only until somebody presses **Take control**;
- *   clicking the picture no longer counts as an answer to that.
- * - The picture is fitted, not cropped: a frame is letterboxed inside the window, and every
+ * - The picture is the page: what is on screen is what a click hits, and typing in the address
+ *   bar is the same address bar the window has. Watching is not controlling, though: a tab an
+ *   agent holds is shown with its lock, and unlocking that lock is how a person takes the wheel.
+ * - The picture is fitted, not cropped: a frame is letterboxed inside the pane, and every
  *   pointer coordinate is mapped through the image's own box so a click lands where it looks.
+ *
+ * It is a fullscreen overlay in the app's sense of the word: the window's own caption buttons go
+ * away while it is up (the same counted request the preview overlays make), and it brings one
+ * close button instead.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useAtomValue, useSetAtom } from 'jotai'
+import { requestWindowControlsHidden, releaseWindowControlsHidden, usePlatform } from '@craft-agent/ui'
 import { cn } from '@/lib/utils'
 import {
   ArrowLeft,
@@ -28,7 +34,6 @@ import {
   Maximize2,
   Minimize2,
   MonitorPlay,
-  MousePointerClick,
   Plus,
   RefreshCw,
   RotateCw,
@@ -41,11 +46,14 @@ import {
   closeBrowserViewAtom,
   setBrowserInstancesAtom,
 } from '@/atoms/browser-pane'
+import { browserProfilesAtom, DEFAULT_BROWSER_PROFILE_ID, refreshBrowserProfilesAtom } from '@/atoms/browser-profiles'
 import type {
   BrowserInstanceInfo,
   BrowserStreamFrame,
   BrowserStreamInput,
 } from '../../../shared/types'
+
+type BrowserTabSummary = NonNullable<BrowserInstanceInfo['tabs']>[number]
 
 interface WatchTarget {
   instanceId: string
@@ -61,6 +69,9 @@ interface WatchTarget {
  * otherwise read as "broken".
  */
 type Phase = 'idle' | 'connecting' | 'waiting' | 'live' | 'ended'
+
+/** A first frame this late means the capture is not coming: retry, then say so. */
+const FIRST_FRAME_TIMEOUT_MS = 9_000
 
 export interface BrowserStreamViewerProps {
   /** Which workspace's browser to show; `undefined` means every instance visible to this client. */
@@ -80,12 +91,17 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
   const closeView = useSetAtom(closeBrowserViewAtom)
   /** The same list, for the composer's browser chip and the status slot — the strip is not here. */
   const setBrowserInstances = useSetAtom(setBrowserInstancesAtom)
+  const browserProfiles = useAtomValue(browserProfilesAtom)
+  const refreshBrowserProfiles = useSetAtom(refreshBrowserProfilesAtom)
   const open = request.open
 
   const [instances, setInstances] = useState<BrowserInstanceInfo[]>([])
   /** Whether a list has been read at all — "none open" and "not asked yet" are different screens. */
   const [loaded, setLoaded] = useState(false)
   const [selected, setSelected] = useState<WatchTarget | null>(null)
+  /** The same target, readable from callbacks that run before a render. */
+  const selectedRef = useRef<WatchTarget | null>(null)
+  selectedRef.current = selected
   /**
    * The size of the picture, not the picture itself.
    *
@@ -99,15 +115,21 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
   const [fitMode, setFitMode] = useState(false)
   /** The stage's own box, kept current by a ResizeObserver — the picture is fitted into it. */
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 })
-  /** Watching is not controlling: pointer and keyboard only go back after the person takes over. */
-  const [controlled, setControlled] = useState(false)
-  /** A refusal about control or input — news, not a reason to cover the picture. */
+  /** A refusal from the server — news, not a reason to cover the picture. */
   const [notice, setNotice] = useState<string | null>(null)
   /** Why the stream is over. */
   const [failure, setFailure] = useState<string | null>(null)
 
   /** The stream this panel owns. A ref, because frame callbacks arrive outside React's render. */
   const streamRef = useRef<string | null>(null)
+  /** Whether the server has accepted input on this stream. */
+  const controlRef = useRef(false)
+  /** Whether the watched tab is held by an agent — the lock, and the reason input is refused. */
+  const heldRef = useRef(false)
+  const acquiringRef = useRef(false)
+  /** Whether a frame has been painted — a capture that dies before one is a capture that never ran. */
+  const sawFrameRef = useRef(false)
+  const stallRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   /** The tab to try again, kept across an ended stream (which clears `selected`). */
   const lastTargetRef = useRef<WatchTarget | null>(null)
   const phaseRef = useRef<Phase>('idle')
@@ -240,11 +262,22 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
   }, [])
   drawLatestRef.current = drawLatest
 
+  /** The first frame is the only proof a capture is alive; this is the timer that says it is not. */
+  const clearStallTimer = useCallback(() => {
+    if (stallRef.current) {
+      clearTimeout(stallRef.current)
+      stallRef.current = null
+    }
+  }, [])
+
   const stop = useCallback(async () => {
     const streamId = streamRef.current
     streamRef.current = null
+    controlRef.current = false
+    heldRef.current = false
+    sawFrameRef.current = false
+    clearStallTimer()
     clearPicture()
-    setControlled(false)
     if (cursorRef.current) cursorRef.current.style.opacity = '0'
     if (reconnectRef.current.timer) {
       clearTimeout(reconnectRef.current.timer)
@@ -254,7 +287,55 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
     if (streamId) {
       await window.electronAPI.browserPane.streamStop(streamId).catch(() => {})
     }
-  }, [clearPicture, enterPhase])
+  }, [clearPicture, clearStallTimer, enterPhase])
+
+  /**
+   * Ask the server for input on this stream.
+   *
+   * Control is taken when the tab is free, so watching a free tab is the same as operating it.
+   * A tab an agent holds is different: that lock is the agent's, and it is not taken from
+   * under it by this panel (`heldRef`, refreshed from the state push). The lock in the rail is
+   * the way in — clicking it releases the hold and then asks for control (`takeOver`).
+   */
+  const acquireControl = useCallback(async (streamId: string) => {
+    if (controlRef.current || acquiringRef.current) return
+    acquiringRef.current = true
+    try {
+      await window.electronAPI.browserPane.streamControl(streamId, true)
+      if (streamRef.current === streamId) {
+        controlRef.current = true
+        setNotice(null)
+      }
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : String(err))
+    } finally {
+      acquiringRef.current = false
+    }
+  }, [])
+
+  /**
+   * Take the wheel on a held tab.
+   *
+   * The purple lock is the agent's claim, and unlocking it is the person asking for their own
+   * half back: the claim stays (sibling conversations are still kept out), the overlay goes,
+   * and this stream asks for input. The agent keeps working — the highlight stays — but the
+   * tab is the person's to type into again.
+   */
+  const takeOver = useCallback(async (instanceId: string, tabId: string) => {
+    try {
+      await window.electronAPI.browserPane.tabAction({ instanceId, action: 'release', tabId })
+      const streamId = streamRef.current
+      const target = selectedRef.current
+      if (!streamId || target?.instanceId !== instanceId || target.tabId !== tabId) return
+      // The dismissal is the takeover request; the state push it causes also clears `heldRef`.
+      // Asking here as well is the fast path, and a refusal (the claim changed under us)
+      // leaves the lock in place rather than starting a retry fight with it.
+      controlRef.current = false
+      await acquireControl(streamId)
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : String(err))
+    }
+  }, [acquireControl])
 
   /**
    * Watch a tab.
@@ -270,46 +351,52 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
     await stop()
     // The header should show what is being connected to, before there is a picture of it.
     setSelected(target)
+    selectedRef.current = target
     enterPhase('connecting')
+    let started: Awaited<ReturnType<typeof window.electronAPI.browserPane.streamStart>>
     try {
-      const started = await window.electronAPI.browserPane.streamStart(target)
-      streamRef.current = started.streamId
-      // Connected, but nothing painted yet — a still page can take a moment to send its first
-      // frame, and that is a different state to "not connected".
-      enterPhase('waiting')
+      started = await window.electronAPI.browserPane.streamStart(target)
     } catch (err) {
-      // The common refusal is "already being watched or recorded" — say it, do not swallow it.
-      streamRef.current = null
+      // The common refusals are "already being recorded" and "the tab is gone" — say it.
       setSelected(null)
       setFailure(err instanceof Error ? err.message : String(err))
       enterPhase('ended')
+      return
     }
-  }, [stop, enterPhase])
 
-  /**
-   * Take control of the watched tab, or give it back.
-   *
-   * The server refuses while the agent holds the tab: its turn is using the page, and a click
-   * landing in the middle of it is the thing the tab lock exists to prevent. A refusal leaves
-   * the panel read-only and says why.
-   */
-  const setControl = useCallback(async (next: boolean) => {
-    const streamId = streamRef.current
-    if (!streamId) return
-    try {
-      await window.electronAPI.browserPane.streamControl(streamId, next)
-      setControlled(next)
-      if (next) {
-        setNotice(null)
-        setFailure(null)
-      } else if (cursorRef.current) {
-        cursorRef.current.style.opacity = '0'
+    streamRef.current = started.streamId
+    sawFrameRef.current = false
+    // Connected, but nothing painted yet — a still page can take a moment to send its first
+    // frame, and that is a different state to "not connected".
+    enterPhase('waiting')
+    // The start result carries the lock and whether the person already dismissed their half
+    // of it. A held tab that has not been dismissed is not claimed by this stream; a dismissed
+    // one is the person's to use even though the agent's claim is still there.
+    heldRef.current = started.lockedBy != null && !started.overlayDismissed
+    if (!heldRef.current) void acquireControl(started.streamId)
+    clearStallTimer()
+    stallRef.current = setTimeout(() => {
+      stallRef.current = null
+      if (streamRef.current !== started.streamId) return
+      streamRef.current = null
+      controlRef.current = false
+      clearPicture()
+      void window.electronAPI.browserPane.streamStop(started.streamId).catch(() => {})
+      const next = lastTargetRef.current
+      if (next && reconnectRef.current.attempts < 1) {
+        reconnectRef.current.attempts += 1
+        enterPhase('connecting')
+        reconnectRef.current.timer = setTimeout(() => {
+          reconnectRef.current.timer = null
+          void watch(next, true)
+        }, 400)
+        return
       }
-    } catch (err) {
-      setControlled(false)
-      setNotice(err instanceof Error ? err.message : String(err))
-    }
-  }, [])
+      setSelected(null)
+      setFailure(t('browser.viewerNoFrames'))
+      enterPhase('ended')
+    }, FIRST_FRAME_TIMEOUT_MS)
+  }, [stop, enterPhase, acquireControl, clearStallTimer, clearPicture, t])
 
   /** Open the workspace's browser on the server, then watch its first tab. */
   const openBrowser = useCallback(async () => {
@@ -322,11 +409,35 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
     }
   }, [load])
 
+  // Names for the rail; a profile can be created or renamed while the app is open.
+  useEffect(() => {
+    if (!open) return
+    void refreshBrowserProfiles()
+  }, [open, refreshBrowserProfiles])
+
+  // A fullscreen overlay puts the window's own controls away while it is up — the counted
+  // request the preview overlays use, so a preview closing under this one cannot bring them
+  // back over it. On Windows those are the app's buttons (`App` stops drawing them); on macOS
+  // it is the traffic lights, hidden by the main process.
+  const { onSetTrafficLightsVisible } = usePlatform()
+  const setWindowControls = useRef(onSetTrafficLightsVisible)
+  useEffect(() => {
+    setWindowControls.current = onSetTrafficLightsVisible
+  }, [onSetTrafficLightsVisible])
+  useEffect(() => {
+    if (!open) return
+    if (requestWindowControlsHidden()) setWindowControls.current?.(false)
+    return () => {
+      if (releaseWindowControlsHidden()) setWindowControls.current?.(true)
+    }
+  }, [open])
+
   // Frames for whichever stream this panel owns, and a fresh list whenever a window changes.
   useEffect(() => {
     if (!open) return
     const offFrame = window.electronAPI.browserPane.onStreamFrame((incoming) => {
-      if (incoming.streamId !== streamRef.current) return
+      const streamId = streamRef.current
+      if (incoming.streamId !== streamId || !streamId) return
       pendingFrameRef.current = incoming
       const shown = frameSizeRef.current
       if (!shown || shown.width !== incoming.width || shown.height !== incoming.height) {
@@ -337,8 +448,13 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
         // A picture means the stream is real: the retry budget starts over here, not on the
         // start request (a stream that starts and dies at once must not retry forever).
         reconnectRef.current.attempts = 0
+        sawFrameRef.current = true
+        clearStallTimer()
         enterPhase('live')
       }
+      // Ask again only while the tab is free. A held tab is not taken over from under the
+      // agent by a stream ticking; the lock in the rail is the way in.
+      if (!controlRef.current && !heldRef.current) void acquireControl(streamId)
       drawLatest()
     })
     // The stream can end without us: its tab was closed, its window went away, or capture lost
@@ -347,24 +463,65 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
     const offEnded = window.electronAPI.browserPane.onStreamEnded((streamId) => {
       if (streamId !== streamRef.current) return
       streamRef.current = null
+      controlRef.current = false
+      const sawFrame = sawFrameRef.current
+      sawFrameRef.current = false
+      clearStallTimer()
       clearPicture()
-      setControlled(false)
       const target = lastTargetRef.current
       const attempt = reconnectRef.current.attempts
       if (target && attempt < 3) {
         reconnectRef.current.attempts = attempt + 1
         enterPhase('connecting')
+        // A capture that died without a single frame is usually a page that was still
+        // navigating (a brand-new tab, a reload): its renderer swap ends the capture. Retrying
+        // on a slower cadence than the backoff for a stream that had been painting is what gets
+        // past it — and the wait has to outlast that load, not just be "soon".
+        const delay = sawFrame ? 1_000 * 2 ** attempt : 800 * (attempt + 1)
         reconnectRef.current.timer = setTimeout(() => {
           reconnectRef.current.timer = null
           void watch(target, true)
-        }, 1_000 * 2 ** attempt)
+        }, delay)
         return
       }
       setSelected(null)
       setFailure(t('browser.streamEnded'))
       enterPhase('ended')
     })
-    const offState = window.electronAPI.browserPane.onStateChanged(() => { void load() })
+    // The window moved on without us: a new tab, a link followed on it, the agent activating
+    // another one. What the window *shows* is what this viewer is for, so the stream follows —
+    // otherwise the chrome (address, back, reload) acts on one tab while the picture is another,
+    // which reads as "the address bar does nothing".
+    const offState = window.electronAPI.browserPane.onStateChanged((info) => {
+      setInstances((previous) => {
+        const index = previous.findIndex((item) => item.id === info.id)
+        if (index === -1) return [...previous, info]
+        const next = [...previous]
+        next[index] = info
+        return next
+      })
+      const target = selectedRef.current
+      if (!target || target.instanceId !== info.id) return
+      const watched = info.tabs?.find((tab) => tab.id === target.tabId)
+      if (watched) {
+        const wasHeld = heldRef.current
+        heldRef.current = watched.lockedBy !== null && !watched.overlayDismissed
+        // The person got the tab back (dismissed the overlay, or the agent let go): it is
+        // theirs again, so the stream asks for control without a second gesture.
+        if (wasHeld && !heldRef.current && !controlRef.current) {
+          const streamId = streamRef.current
+          if (streamId) void acquireControl(streamId)
+        }
+      }
+      const active = info.tabs?.find((tab) => tab.active)?.id
+      if (!active || active === target.tabId) return
+      void watch({ instanceId: info.id, tabId: active })
+    })
+    // A window that went away is not a row in the rail. The watched one ends through
+    // `onStreamEnded`; this is for the others.
+    const offRemoved = window.electronAPI.browserPane.onRemoved((id) => {
+      setInstances((previous) => previous.filter((item) => item.id !== id))
+    })
     // The socket can also come back before the server notices: subscribe again rather than sit
     // on a frame that will never be replaced.
     const offReconnected = window.electronAPI.onReconnected(() => {
@@ -378,9 +535,10 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
       offFrame()
       offEnded()
       offState()
+      offRemoved()
       offReconnected()
     }
-  }, [open, load, enterPhase, t, drawLatest, clearPicture, watch])
+  }, [open, load, enterPhase, t, drawLatest, clearPicture, clearStallTimer, watch, acquireControl])
 
   // Closing the panel (or leaving the page) ends the stream; a viewer is not a background job.
   useEffect(() => {
@@ -450,17 +608,18 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
     return () => observer.disconnect()
   }, [open])
 
-  // The keyboard belongs to the page only while the person has control; otherwise the panel is
-  // just chrome and the app keeps its own shortcuts.
+  // The keyboard belongs to the page once there is a page. Not while the address bar is being
+  // used: the person is typing there, and taking the focus would eat the first keystroke.
   useEffect(() => {
-    if (open && controlled) surfaceRef.current?.focus()
-    else surfaceRef.current?.blur()
-  }, [open, controlled])
+    if (!open || phase !== 'live') return
+    if (document.activeElement instanceof HTMLInputElement) return
+    surfaceRef.current?.focus()
+  }, [open, phase])
 
-  // Reading is leaving nothing behind to protect: Escape closes a panel nobody has taken over.
-  // Once it has been taken over, Escape goes to the page (the surface's own handler).
+  // Escape closes the viewer, as it does every other fullscreen overlay. It is not forwarded to
+  // the page: the overlay is what a person is looking at, and "leave" has to be one keystroke.
   useEffect(() => {
-    if (!open || controlled) return
+    if (!open) return
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
       event.preventDefault()
@@ -468,28 +627,34 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [open, controlled, closeView])
+  }, [open, closeView])
 
   const send = useCallback((events: BrowserStreamInput[]) => {
     const streamId = streamRef.current
-    if (!streamId || events.length === 0 || !controlled) return
+    if (!streamId || events.length === 0) return
+    if (!controlRef.current) {
+      // A held tab is not typed into, and not taken over by typing either: the lock is the
+      // gesture. A free tab is claimed on the first input that beats the control request.
+      if (!heldRef.current) void acquireControl(streamId)
+      return
+    }
     void window.electronAPI.browserPane.streamInput(streamId, events).catch((err) => {
-      // The agent took the tab, or the stream ended: go back to watching.
-      setControlled(false)
+      // The agent took the tab, or the stream ended: say why and try again on the next frame.
+      controlRef.current = false
       setNotice(err instanceof Error ? err.message : String(err))
     })
-  }, [controlled])
+  }, [acquireControl])
 
   /**
    * The wheel is a native listener, not `onWheel`.
    *
    * React registers wheel handlers as passive, so `preventDefault` there is ignored (and logged):
    * the gesture would scroll whatever is behind the pane *and* reach the page. Attached by hand
-   * it can claim the gesture, and it is attached once per control change rather than per frame.
+   * it can claim the gesture, and it is attached once per phase rather than per frame.
    */
   useEffect(() => {
     const surface = surfaceRef.current
-    if (!controlled || !surface) return
+    if (phase !== 'live' || !surface) return
     const onWheel = (event: WheelEvent) => {
       const picture = canvasRef.current
       const current = frameSizeRef.current
@@ -511,14 +676,14 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
     }
     surface.addEventListener('wheel', onWheel, { passive: false })
     return () => surface.removeEventListener('wheel', onWheel)
-  }, [controlled, send])
+  }, [phase, send])
 
   /**
    * Client coordinates → the tab's CSS pixels.
    *
-   * Measured on the **image** rather than its container: the picture is fitted into the window
-   * with `object-contain`, so the image's own box already excludes the letterbox bars. That is
-   * what makes a click land where it looked, at any window size and any tab aspect ratio.
+   * Measured on the **picture** rather than its container: the picture is fitted into the pane,
+   * so its own box already excludes the letterbox bars. That is what makes a click land where
+   * it looked, at any window size and any tab aspect ratio.
    */
   const toTabPoint = (event: { clientX: number; clientY: number }): { x: number; y: number } | null => {
     const picture = canvasRef.current
@@ -546,9 +711,7 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
   }
 
   const mouse = (action: 'move' | 'down' | 'up') => (event: React.MouseEvent<HTMLElement>) => {
-    // Read-only means read-only: a click on the picture is not a takeover gesture any more.
-    // Control is taken with the header's button, deliberately and by name.
-    if (!controlled) return
+    if (phaseRef.current !== 'live') return
     const point = toTabPoint(event)
     if (!point) return
     if (action === 'move') {
@@ -583,7 +746,6 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
     }])
   }
 
-  const targetValue = selected ? `${selected.instanceId}::${selected.tabId}` : ''
   const live = phase === 'live'
   const hasTabs = visibleInstances.length > 0
 
@@ -591,12 +753,12 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
    * What the picture measures on screen.
    *
    * `frameSize` is the tab's CSS viewport and changes when the tab is resized, so the basis is
-   * never stale. The scale is capped at 1 — the stage may be larger than the page, and a page is
+   * never stale. The scale is capped at 1 — the pane may be larger than the page, and a page is
    * not a poster.
    *
    * The size is left exactly as the scale computes it: rounding it would drop a fraction of a
    * pixel on each axis, which shows up as an uneven letterbox and a picture that creeps off
-   * centre. Only the resolution label is rounded, and only for reading.
+   * centre. Only the labels are rounded, and only for reading.
    */
   const fit = frameSize && frameSize.width > 0 && frameSize.height > 0
     && stageSize.width > 0 && stageSize.height > 0
@@ -605,6 +767,7 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
         return {
           width: frameSize.width * scale,
           height: frameSize.height * scale,
+          scale,
         }
       })()
     : null
@@ -619,12 +782,16 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
 
   /**
    * The address field follows the page, unless somebody is typing in it — replacing the text
-   * under the caret would fight the person for the very field they are editing.
+   * under the caret would fight the person for the very field they are editing. A navigation
+   * that was just sent also keeps its text until the page reports the new address.
    */
   const [address, setAddress] = useState('')
   const [editingAddress, setEditingAddress] = useState(false)
+  const navigatingRef = useRef(false)
   useEffect(() => {
-    if (!editingAddress) setAddress(currentUrl)
+    if (editingAddress) return
+    navigatingRef.current = false
+    setAddress(currentUrl)
   }, [currentUrl, editingAddress])
 
   /** The list after an action, for the state the push has not described yet (a new tab's id). */
@@ -640,16 +807,30 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
     await window.electronAPI.browserPane
       .tabAction({ instanceId, action: 'activate', tabId })
       .catch((err) => setNotice(err instanceof Error ? err.message : String(err)))
+    // The window's own state push may have moved the viewer already (`onStateChanged`); a second
+    // watch here would stop the stream it just started.
+    const current = selectedRef.current
+    if (current?.instanceId === instanceId && current.tabId === tabId) return
     await watch({ instanceId, tabId })
   }, [watch])
 
+  /**
+   * A new tab starts on the window's empty-state document. The window's own state push is what
+   * moves this viewer onto it (see `onStateChanged`), so a new tab needs no second decision
+   * here; the check after the pause is the fallback for a push that never arrives, and it waits
+   * long enough for the empty-state load to commit — a capture started before that commit dies
+   * with the renderer swap it causes.
+   */
   const openNewTab = useCallback(async (instanceId: string) => {
     try {
       await window.electronAPI.browserPane.tabAction({ instanceId, action: 'new' })
+      await sleep(600)
       const next = await reloadList()
-      const instance = next.find((item) => item.id === instanceId)
-      const tabId = instance?.tabs?.find((tab) => tab.active)?.id ?? instance?.tabs?.[0]?.id
-      if (tabId) await watch({ instanceId, tabId })
+      const active = next.find((item) => item.id === instanceId)?.tabs?.find((tab) => tab.active)?.id
+      const target = selectedRef.current
+      if (active && (!target || target.instanceId !== instanceId || target.tabId !== active)) {
+        await watch({ instanceId, tabId: active })
+      }
     } catch (err) {
       setNotice(err instanceof Error ? err.message : String(err))
     }
@@ -681,16 +862,20 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
   }, [currentInstance?.id])
 
   const goToAddress = useCallback(async () => {
-    const instanceId = currentInstance?.id
+    // The window the stream is on, not a lookup that can be a beat behind a new tab.
+    const instanceId = currentInstance?.id ?? selected?.instanceId
     const target = address.trim()
     if (!instanceId || !target) return
+    navigatingRef.current = true
     try {
       // As typed: the server normalises, and a bare word is a search there.
       await window.electronAPI.browserPane.navigate(instanceId, target)
     } catch (err) {
+      navigatingRef.current = false
+      setAddress(currentUrl)
       setNotice(err instanceof Error ? err.message : String(err))
     }
-  }, [address, currentInstance?.id])
+  }, [address, currentInstance?.id, selected?.instanceId, currentUrl])
 
   /**
    * Fit mode: ask the tab to reflow to the pane, instead of drawing a bigger page small inside
@@ -702,439 +887,520 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
   useEffect(() => {
     if (!fitMode || !open || !selected) return
     if (stageSize.width <= 0 || stageSize.height <= 0) return
+    const width = Math.round(stageSize.width)
+    const height = Math.round(stageSize.height)
     const timer = setTimeout(() => {
-      void window.electronAPI.browserPane
-        .resizeViewport(
-          selected.instanceId,
-          Math.round(stageSize.width),
-          Math.round(stageSize.height),
-          selected.tabId,
-        )
-        .catch((err) => setNotice(err instanceof Error ? err.message : String(err)))
-    }, 300)
+      void (async () => {
+        try {
+          const applied = await window.electronAPI.browserPane
+            .resizeViewport(selected.instanceId, width, height, selected.tabId)
+          // An OS window can refuse part of the ask — a window taller than the work area is
+          // the usual one. Fit is about the page's *shape*, so a refused axis is taken out of
+          // both: same aspect, one size smaller, no bars either way.
+          const ratio = Math.min(applied.width / width, applied.height / height, 1)
+          if (ratio < 0.995) {
+            await window.electronAPI.browserPane.resizeViewport(
+              selected.instanceId,
+              Math.max(320, Math.round(width * ratio)),
+              Math.max(240, Math.round(height * ratio)),
+              selected.tabId,
+            )
+          }
+        } catch (err) {
+          setNotice(err instanceof Error ? err.message : String(err))
+        }
+      })()
+    }, 250)
     return () => clearTimeout(timer)
   }, [fitMode, open, selected, stageSize.width, stageSize.height])
 
   if (!open) return null
 
+  /** A window's name in the rail: the profile, when the app has more than one to tell apart. */
+  const windowNameOf = (instance: BrowserInstanceInfo): string | undefined => {
+    if (browserProfiles.length <= 1) return undefined
+    const match = browserProfiles.find((profile) => profile.id === (instance.profileId ?? DEFAULT_BROWSER_PROFILE_ID))
+    return match?.name
+  }
+
+  const statusLabel = phase === 'live'
+    ? t('browser.viewerLive')
+    : phase === 'waiting'
+      ? t('browser.viewerWaiting')
+      : phase === 'ended'
+        ? t('browser.viewerEnded')
+        : t('browser.viewerConnecting')
+
   return (
     /*
-      Three rows: the window's own bar, the page's chrome, then whatever is left. Two columns on
-      a wide screen — the tab rail and the picture — and one on a narrow one, where the rail is
-      hidden and the header's tab picker is the way across windows.
+      Rows: the viewer's own bar, then the rail and the page side by side, then the status line.
+      The browser chrome (back, address, fit) belongs to the page, so it sits in the page's
+      column — the rail is the window's, and runs the full height beside it.
     */
     <div
       role="dialog"
       aria-modal="true"
-      className="fixed inset-0 z-[100] grid grid-cols-1 grid-rows-[auto_auto_minmax(0,1fr)] bg-background md:grid-cols-[13rem_minmax(0,1fr)]"
+      className="fixed inset-0 z-[100] flex flex-col bg-background"
+      style={{ zIndex: 'var(--z-fullscreen, 350)' }}
     >
-      <header className="flex h-12 shrink-0 items-center gap-2.5 border-b border-border/70 px-3 md:col-span-2">
-        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
-          <Globe className="h-4 w-4" />
+      <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border/70 px-4">
+        <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-foreground">
+          {currentTab?.title.trim() || currentUrl || t('browser.tabs')}
         </span>
-
-        {hasTabs ? (
-          <select
-            className="h-8 min-w-0 max-w-[440px] flex-1 truncate rounded-lg bg-muted/50 px-2 text-[13px] outline-none transition-colors hover:bg-muted focus:bg-muted"
-            value={targetValue}
-            onChange={(event) => {
-              const [instanceId, tabId] = event.target.value.split('::')
-              // Through the window, so its own active tab follows the one being watched and
-              // the chrome above (back, reload, address) acts on the page on screen.
-              if (instanceId && tabId) void activateTab(instanceId, tabId)
-            }}
-          >
-            {!selected && <option value="">{t('browser.viewerPickTab')}</option>}
-            {visibleInstances.map((instance) =>
-              (instance.tabs ?? []).map((tab) => (
-                <option key={`${instance.id}::${tab.id}`} value={`${instance.id}::${tab.id}`}>
-                  {tab.title || tab.url || t('browser.untitledTab')}
-                </option>
-              )),
-            )}
-          </select>
-        ) : (
-          <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">
-            {loaded ? t('browser.viewerNoTabs') : t('browser.viewerConnecting')}
-          </span>
-        )}
-
-        <div className="ml-auto flex shrink-0 items-center gap-2">
-          {phase !== 'ended' && (
-            <span className="hidden items-center gap-1.5 rounded-full border border-border/60 px-2.5 py-1 text-[11.5px] text-muted-foreground sm:inline-flex">
-              <span
-                className={cn(
-                  'h-1.5 w-1.5 rounded-full',
-                  live ? 'bg-emerald-500' : 'animate-pulse bg-amber-500',
-                )}
-              />
-              {live
-                ? controlled ? t('browser.viewerControlling') : t('browser.viewerLive')
-                : t('browser.viewerConnecting')}
-              {frameSize && (
-                <span className="tabular-nums text-muted-foreground/60">
-                  {frameSize.width.toFixed(2)}×{frameSize.height.toFixed(2)}
-                </span>
-              )}
-            </span>
-          )}
-
-          {selected && phase !== 'ended' && (
-            <button
-              type="button"
-              onClick={() => { void setControl(!controlled) }}
-              disabled={phase === 'connecting'}
-              className={cn(
-                'inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[12.5px] font-medium transition-colors disabled:opacity-40',
-                controlled
-                  ? 'border border-accent/40 bg-accent/10 text-accent hover:bg-accent/15'
-                  : 'bg-foreground text-background hover:opacity-90',
-              )}
-            >
-              <MousePointerClick className="h-3.5 w-3.5" />
-              {controlled ? t('browser.releaseControl') : t('browser.takeOver')}
-            </button>
-          )}
-
-          <button
-            type="button"
-            onClick={() => closeView()}
-            className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            aria-label={t('common.close')}
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={() => closeView()}
+          className="shrink-0 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          aria-label={t('common.close')}
+        >
+          <X className="h-4 w-4" />
+        </button>
       </header>
 
-      {/* Browser chrome: the verbs the window's own toolbar has, acting on the tab on screen. */}
-      <div className="flex h-11 shrink-0 items-center gap-1 border-b border-border/60 px-2.5 md:col-span-2">
-        <button
-          type="button"
-          onClick={() => go('back')}
-          disabled={!currentInstance?.canGoBack}
-          className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
-          aria-label={t('common.back')}
-        >
-          <ArrowLeft className="h-4 w-4" />
-        </button>
-        <button
-          type="button"
-          onClick={() => go('forward')}
-          disabled={!currentInstance?.canGoForward}
-          className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
-          aria-label={t('common.forward')}
-        >
-          <ArrowRight className="h-4 w-4" />
-        </button>
-        {currentInstance?.isLoading ? (
-          <button
-            type="button"
-            onClick={() => go('stop')}
-            className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            aria-label={t('browser.stopLoading')}
-          >
-            <Square className="h-3 w-3" />
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={() => go('reload')}
-            disabled={!currentInstance}
-            className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
-            aria-label={t('common.reload')}
-          >
-            <RotateCw className="h-3.5 w-3.5" />
-          </button>
-        )}
-
-        {/* The address: what the tab is at, editable, and one Enter away from being where it goes. */}
-        <div className="mx-1.5 flex h-8 min-w-0 flex-1 items-center rounded-lg bg-muted/50 px-2.5 transition-colors focus-within:bg-muted">
-          <input
-            value={address}
-            onChange={(event) => setAddress(event.target.value)}
-            onFocus={(event) => {
-              setEditingAddress(true)
-              event.currentTarget.select()
-            }}
-            onBlur={() => {
-              setEditingAddress(false)
-              setAddress(currentUrl)
-            }}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                event.preventDefault()
-                event.currentTarget.blur()
-                void goToAddress()
-              } else if (event.key === 'Escape') {
-                // Back to the page's address, not out of the viewer.
-                event.preventDefault()
-                event.stopPropagation()
-                setAddress(currentUrl)
-                event.currentTarget.blur()
-              }
-            }}
-            placeholder={t('browser.urlPlaceholder')}
-            spellCheck={false}
-            disabled={!currentInstance}
-            className="w-full bg-transparent text-[12.5px] text-foreground outline-none placeholder:text-muted-foreground/50 disabled:opacity-50"
-          />
-        </div>
-
-        {/* Fit: let the page reflow to the pane, or leave it at its own size. */}
-        <button
-          type="button"
-          onClick={() => setFitMode((value) => !value)}
-          disabled={!currentInstance}
-          aria-pressed={fitMode}
-          aria-label={fitMode ? t('browser.viewerActualSize') : t('browser.viewerFit')}
-          className={cn(
-            'rounded-lg p-1.5 transition-colors disabled:pointer-events-none disabled:opacity-30',
-            fitMode
-              ? 'bg-accent/15 text-accent'
-              : 'text-muted-foreground hover:bg-muted hover:text-foreground',
-          )}
-        >
-          {fitMode ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-        </button>
-      </div>
-
-      {/* Vertical tabs: this window's tabs, the one being watched marked. */}
-      <aside className="hidden min-h-0 flex-col overflow-hidden border-r border-border/70 md:flex">
-        <div className="flex h-9 shrink-0 items-center justify-between px-3">
-          <span className="text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground/70">
-            {t('browser.tabs')}
-          </span>
-          {currentTabs.length > 0 && (
-            <span className="tabular-nums text-[10.5px] text-muted-foreground/50">{currentTabs.length}</span>
-          )}
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
-          {currentTabs.map((tab) => {
-            const watching = tab.id === selected?.tabId
-            return (
-              <div
-                key={tab.id}
-                role="button"
-                tabIndex={0}
-                onClick={() => { if (currentInstance) void activateTab(currentInstance.id, tab.id) }}
-                onKeyDown={(event) => {
-                  if (event.key !== 'Enter' && event.key !== ' ') return
-                  event.preventDefault()
-                  if (currentInstance) void activateTab(currentInstance.id, tab.id)
-                }}
-                className={cn(
-                  'group flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-[12.5px] transition-colors',
-                  watching
-                    ? 'bg-foreground/[0.06] text-foreground'
-                    : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
-                )}
-              >
-                {tab.isLoading ? (
-                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin opacity-70" />
-                ) : tab.favicon ? (
-                  <img src={tab.favicon} alt="" className="h-3.5 w-3.5 shrink-0 rounded-[3px] object-cover" />
-                ) : (
-                  <Globe className="h-3.5 w-3.5 shrink-0 opacity-60" />
-                )}
-                <span className="min-w-0 flex-1 truncate">
-                  {tab.title.trim() || tab.url || t('browser.untitledTab')}
-                </span>
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    if (currentInstance) void closeTab(currentInstance.id, tab.id)
-                  }}
-                  className="shrink-0 rounded p-0.5 text-muted-foreground/60 opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground group-hover:opacity-100"
-                  aria-label={t('browser.closeTab')}
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              </div>
-            )
-          })}
-          {currentTabs.length === 0 && (
-            <p className="px-2 py-3 text-[12px] text-muted-foreground">
-              {loaded ? t('browser.viewerNoTabs') : t('browser.viewerConnecting')}
-            </p>
-          )}
-        </div>
-        <div className="shrink-0 border-t border-border/60 p-1.5">
-          <button
-            type="button"
-            onClick={() => { if (currentInstance) void openNewTab(currentInstance.id) }}
-            disabled={!currentInstance}
-            className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-[12.5px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            {t('browser.newTab')}
-          </button>
-        </div>
-      </aside>
-
-      <div ref={stageRef} className="relative min-h-0 min-w-0 overflow-hidden bg-[#0b0c0f]">
-        <div
-          ref={surfaceRef}
-          tabIndex={0}
-          className="absolute inset-0 flex cursor-default items-center justify-center outline-none"
-          onMouseDown={(event) => {
-            // Preventing the default would drop the focus the keyboard needs; take it by hand.
-            if (controlled) surfaceRef.current?.focus()
-            mouse('down')(event)
-          }}
-          onMouseUp={mouse('up')}
-          onMouseMove={(event) => {
-            if (controlled) {
-              // The locator marks a point on the page; over the letterbox it would mark nothing.
-              if (toTabPoint(event)) moveCursor(event)
-              else if (cursorRef.current) cursorRef.current.style.opacity = '0'
-            }
-            mouse('move')(event)
-          }}
-          onMouseLeave={() => {
-            if (cursorRef.current) cursorRef.current.style.opacity = '0'
-          }}
-          onContextMenu={(event) => event.preventDefault()}
-          onKeyDown={(event) => {
-            if (!controlled) return
-            event.preventDefault()
-            send([{
-              type: 'key',
-              action: 'down',
-              key: event.key,
-              code: event.code,
-              ...(event.key.length === 1 ? { text: event.key } : {}),
-              modifiers: modifiersOf(event),
-            }])
-          }}
-          onKeyUp={(event) => {
-            if (!controlled) return
-            event.preventDefault()
-            send([{ type: 'key', action: 'up', key: event.key, code: event.code, modifiers: modifiersOf(event) }])
-          }}
-        >
-          {/* One canvas, painted in place. `style` is the measured size, so the picture is never
-              blown up past the tab's own pixels; the max-* pair is the placeholder for the moment
-              before the stage is measured. */}
-          <canvas
-            ref={canvasRef}
-            style={fit ?? undefined}
-            className={cn(
-              'max-h-full max-w-full select-none',
-              frameSize ? 'animate-[editPopoverFadeIn_180ms_ease-out]' : 'opacity-0',
-            )}
-          />
-        </div>
-
-        {/* The pointer, where it really is: the frames do not carry a cursor of their own. */}
-        {controlled && (
-          <div
-            ref={cursorRef}
-            className="pointer-events-none absolute left-0 top-0 z-10 h-5 w-5 rounded-full border border-white/80 bg-white/10 opacity-0 ring-1 ring-black/30 transition-opacity duration-150"
-          />
-        )}
-
-        {/* Read-only is stated, not implied — including how to leave it. */}
-        {live && !controlled && (
-          <div className="pointer-events-none absolute inset-x-0 bottom-4 z-10 flex justify-center px-4">
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-black/60 px-3 py-1.5 text-[12px] text-white/70 backdrop-blur">
-              <Lock className="h-3 w-3" />
-              {t('browser.viewerReadOnly')}
+      <div className="flex min-h-0 flex-1">
+        {/* Vertical tabs: every window this client can see, and its tabs under it. */}
+        <aside className="flex w-40 shrink-0 flex-col overflow-hidden border-r border-border/70 md:w-52">
+          <div className="flex h-9 shrink-0 items-center justify-between px-3">
+            <span className="text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground/70">
+              {t('browser.tabs')}
             </span>
+            {hasTabs && (
+              <span className="tabular-nums text-[10.5px] text-muted-foreground/50">
+                {visibleInstances.reduce((total, instance) => total + (instance.tabs?.length ?? 0), 0)}
+              </span>
+            )}
           </div>
-        )}
-
-        {/* A refusal about control or input is news about the session, not a reason to hide the page. */}
-        {notice && (
-          <div className="absolute inset-x-0 top-0 z-30 flex justify-center px-4 pt-3">
-            <div className="flex w-full max-w-xl items-start gap-2 rounded-xl border border-red-400/30 bg-[#2a1113]/95 px-3 py-2.5 text-[12px] text-red-100 shadow-modal-small backdrop-blur">
-              <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-300" />
-              <span className="min-w-0 flex-1">{notice}</span>
-              <button
-                type="button"
-                onClick={() => setNotice(null)}
-                className="shrink-0 rounded-md p-0.5 text-red-200/70 transition-colors hover:bg-white/10 hover:text-red-100"
-                aria-label={t('common.close')}
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Connected and not painting yet — or not connected yet. Two names, one picture. */}
-        {!frameSize && phase !== 'ended' && (!loaded || hasTabs) && (
-          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-6 bg-[#0b0c0f]">
-            <div className="relative flex h-16 w-16 items-center justify-center">
-              <div className="absolute inset-0 rounded-full border border-white/10" />
-              <div className="absolute inset-0 animate-spin rounded-full border-2 border-transparent border-r-white/15 border-t-white/75" />
-              <MonitorPlay className="h-6 w-6 text-white/55" />
-            </div>
-            <div className="space-y-1.5 px-6 text-center">
-              <p className="text-[13.5px] font-medium text-white/90">
-                {phase === 'waiting' ? t('browser.viewerWaiting') : t('browser.viewerConnecting')}
+          <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
+            {visibleInstances.map((instance) => {
+              const name = windowNameOf(instance)
+              return (
+                <div key={instance.id} className="mb-1">
+                  {name && (
+                    <p
+                      className="truncate px-2 pb-0.5 pt-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/50"
+                      title={name}
+                    >
+                      {name}
+                    </p>
+                  )}
+                  {(instance.tabs ?? []).map((tab) => (
+                    <TabRow
+                      key={tab.id}
+                      tab={tab}
+                      watching={selected?.instanceId === instance.id && selected.tabId === tab.id}
+                      onActivate={() => { void activateTab(instance.id, tab.id) }}
+                      onClose={() => { void closeTab(instance.id, tab.id) }}
+                      closeLabel={t('browser.closeTab')}
+                      untitledLabel={t('browser.untitledTab')}
+                      agentWorkingLabel={t('browser.tabInUse')}
+                      agentDrivenLabel={t('browser.tabDriven')}
+                      takeOverLabel={t('browser.takeOverTab')}
+                      onTakeOver={
+                        selected?.instanceId === instance.id && selected.tabId === tab.id
+                          ? () => { void takeOver(instance.id, tab.id) }
+                          : undefined
+                      }
+                    />
+                  ))}
+                </div>
+              )
+            })}
+            {!hasTabs && (
+              <p className="px-2 py-3 text-[12px] text-muted-foreground">
+                {loaded ? t('browser.viewerNoTabs') : t('browser.viewerConnecting')}
               </p>
-              <p className="text-[12px] leading-relaxed text-white/40">{t('browser.viewerLoadingHint')}</p>
-            </div>
-            <div className="h-[3px] w-44 overflow-hidden rounded-full bg-white/10">
-              <div className="h-full w-1/2 animate-shimmer-loading rounded-full bg-white/60" />
-            </div>
+            )}
           </div>
-        )}
+          <div className="shrink-0 border-t border-border/60 p-1.5">
+            <button
+              type="button"
+              onClick={() => {
+                const instanceId = selected?.instanceId ?? visibleInstances[0]?.id
+                if (instanceId) void openNewTab(instanceId)
+              }}
+              disabled={!hasTabs}
+              className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-[12.5px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              {t('browser.newTab')}
+            </button>
+          </div>
+        </aside>
 
-        {/* Nothing to watch at all: the window lives on the server, so this is where it is opened. */}
-        {loaded && !hasTabs && phase !== 'ended' && (
-          <div className="absolute inset-0 z-20 flex items-center justify-center bg-[#0b0c0f] px-6">
-            <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-white/[0.03] p-7 text-center">
-              <div className="mx-auto mb-4 flex h-11 w-11 items-center justify-center rounded-full bg-white/[0.06]">
-                <MonitorPlay className="h-5 w-5 text-white/60" />
-              </div>
-              <p className="text-[13.5px] text-white/90">{t('browser.viewerNoTabs')}</p>
-              <p className="mt-1 text-[12px] leading-relaxed text-white/40">{t('browser.viewerNoTabsHint')}</p>
+        <div className="flex min-w-0 flex-1 flex-col">
+          {/* Browser chrome: the verbs the window's own toolbar has, acting on the tab on screen. */}
+          <div className="flex h-11 shrink-0 items-center gap-1 border-b border-border/60 px-2.5">
+            <button
+              type="button"
+              onClick={() => go('back')}
+              disabled={!currentInstance?.canGoBack}
+              className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
+              aria-label={t('common.back')}
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => go('forward')}
+              disabled={!currentInstance?.canGoForward}
+              className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
+              aria-label={t('common.forward')}
+            >
+              <ArrowRight className="h-4 w-4" />
+            </button>
+            {currentInstance?.isLoading ? (
               <button
                 type="button"
-                onClick={() => { void openBrowser() }}
-                className="mt-5 inline-flex h-9 items-center gap-2 rounded-lg bg-white px-4 text-[12.5px] font-medium text-black transition-opacity hover:opacity-90"
+                onClick={() => go('stop')}
+                className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                aria-label={t('browser.stopLoading')}
               >
-                <Globe className="h-4 w-4" />
-                {t('browser.openBrowser')}
+                <Square className="h-3 w-3" />
               </button>
-            </div>
-          </div>
-        )}
+            ) : (
+              <button
+                type="button"
+                onClick={() => go('reload')}
+                disabled={!currentInstance}
+                className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
+                aria-label={t('common.reload')}
+              >
+                <RotateCw className="h-3.5 w-3.5" />
+              </button>
+            )}
 
-        {/* The stream is over. Say why, and offer the one thing worth doing about it. */}
-        {phase === 'ended' && (
-          <div className="absolute inset-0 z-20 flex items-center justify-center bg-[#0b0c0f] px-6">
-            <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-white/[0.03] p-7 text-center">
-              <div className="mx-auto mb-4 flex h-11 w-11 items-center justify-center rounded-full bg-white/[0.06]">
-                <TriangleAlert className="h-5 w-5 text-amber-400" />
-              </div>
-              <p className="text-[13.5px] leading-relaxed text-white/90">{failure ?? t('browser.streamEnded')}</p>
-              <div className="mt-5 flex justify-center gap-2">
-                {lastTargetRef.current && (
+            {/* The address: what the tab is at, editable, and one Enter away from being where it goes. */}
+            <div className="mx-1.5 flex h-8 min-w-0 flex-1 items-center rounded-lg bg-muted/50 px-2.5 transition-colors focus-within:bg-muted">
+              <input
+                value={address}
+                onChange={(event) => setAddress(event.target.value)}
+                onFocus={(event) => {
+                  setEditingAddress(true)
+                  event.currentTarget.select()
+                }}
+                onBlur={() => {
+                  setEditingAddress(false)
+                  if (!navigatingRef.current) setAddress(currentUrl)
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    setEditingAddress(false)
+                    void goToAddress()
+                    event.currentTarget.blur()
+                  } else if (event.key === 'Escape') {
+                    // Back to the page's address, not out of the viewer.
+                    event.preventDefault()
+                    event.stopPropagation()
+                    setEditingAddress(false)
+                    setAddress(currentUrl)
+                    event.currentTarget.blur()
+                  }
+                }}
+                placeholder={t('browser.urlPlaceholder')}
+                spellCheck={false}
+                disabled={!currentInstance}
+                className="w-full bg-transparent text-[12.5px] text-foreground outline-none placeholder:text-muted-foreground/50 disabled:opacity-50"
+              />
+            </div>
+
+            {/* Fit: let the page reflow to the pane, or leave it at its own size. Named, because
+                an icon alone does not say which of the two it is. */}
+            <button
+              type="button"
+              onClick={() => setFitMode((value) => !value)}
+              disabled={!currentInstance}
+              aria-pressed={fitMode}
+              title={fitMode ? t('browser.viewerFit') : t('browser.viewerActualSize')}
+              className={cn(
+                'flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-[12px] transition-colors disabled:pointer-events-none disabled:opacity-30',
+                fitMode
+                  ? 'bg-accent/15 text-accent'
+                  : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+              )}
+            >
+              {fitMode ? <Maximize2 className="h-3.5 w-3.5" /> : <Minimize2 className="h-3.5 w-3.5" />}
+              <span className="hidden sm:inline">{fitMode ? t('browser.viewerFit') : t('browser.viewerActualSize')}</span>
+            </button>
+          </div>
+
+          <div ref={stageRef} className="relative min-h-0 flex-1 overflow-hidden bg-[#0b0c0f]">
+            <div
+              ref={surfaceRef}
+              tabIndex={0}
+              className="absolute inset-0 flex cursor-default items-center justify-center outline-none"
+              onMouseDown={(event) => {
+                // Preventing the default would drop the focus the keyboard needs; take it by hand.
+                surfaceRef.current?.focus()
+                mouse('down')(event)
+              }}
+              onMouseUp={mouse('up')}
+              onMouseMove={(event) => {
+                // The locator marks a point on the page; over the letterbox it would mark nothing.
+                if (toTabPoint(event)) moveCursor(event)
+                else if (cursorRef.current) cursorRef.current.style.opacity = '0'
+                mouse('move')(event)
+              }}
+              onMouseLeave={() => {
+                if (cursorRef.current) cursorRef.current.style.opacity = '0'
+              }}
+              onContextMenu={(event) => event.preventDefault()}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') return
+                event.preventDefault()
+                send([{
+                  type: 'key',
+                  action: 'down',
+                  key: event.key,
+                  code: event.code,
+                  ...(event.key.length === 1 ? { text: event.key } : {}),
+                  modifiers: modifiersOf(event),
+                }])
+              }}
+              onKeyUp={(event) => {
+                if (event.key === 'Escape') return
+                event.preventDefault()
+                send([{ type: 'key', action: 'up', key: event.key, code: event.code, modifiers: modifiersOf(event) }])
+              }}
+            >
+              {/* One canvas, painted in place. `style` is the measured size, so the picture is never
+                  blown up past the tab's own pixels; the max-* pair is the placeholder for the
+                  moment before the stage is measured. */}
+              <canvas
+                ref={canvasRef}
+                style={fit ? { width: fit.width, height: fit.height } : undefined}
+                className={cn(
+                  'max-h-full max-w-full select-none',
+                  frameSize ? 'animate-[editPopoverFadeIn_180ms_ease-out]' : 'opacity-0',
+                )}
+              />
+            </div>
+
+            {/* The pointer, where it really is: the frames do not carry a cursor of their own. */}
+            {live && (
+              <div
+                ref={cursorRef}
+                className="pointer-events-none absolute left-0 top-0 z-10 h-5 w-5 rounded-full border border-white/80 bg-white/10 opacity-0 ring-1 ring-black/30 transition-opacity duration-150"
+              />
+            )}
+
+            {/* A refusal from the server is news about the session, not a reason to hide the page. */}
+            {notice && (
+              <div className="absolute inset-x-0 top-0 z-30 flex justify-center px-4 pt-3">
+                <div className="flex w-full max-w-xl items-start gap-2 rounded-xl border border-red-400/30 bg-[#2a1113]/95 px-3 py-2.5 text-[12px] text-red-100 shadow-modal-small backdrop-blur">
+                  <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-300" />
+                  <span className="min-w-0 flex-1">{notice}</span>
                   <button
                     type="button"
-                    onClick={() => { void watch(lastTargetRef.current!) }}
-                    className="inline-flex h-9 items-center gap-2 rounded-lg bg-white px-4 text-[12.5px] font-medium text-black transition-opacity hover:opacity-90"
+                    onClick={() => setNotice(null)}
+                    className="shrink-0 rounded-md p-0.5 text-red-200/70 transition-colors hover:bg-white/10 hover:text-red-100"
+                    aria-label={t('common.close')}
                   >
-                    <RefreshCw className="h-3.5 w-3.5" />
-                    {t('browser.viewerReconnect')}
+                    <X className="h-3.5 w-3.5" />
                   </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => closeView()}
-                  className="inline-flex h-9 items-center rounded-lg border border-white/15 px-4 text-[12.5px] text-white/70 transition-colors hover:bg-white/[0.06] hover:text-white"
-                >
-                  {t('common.close')}
-                </button>
+                </div>
               </div>
-            </div>
+            )}
+
+            {/* Connected and not painting yet — or not connected yet. Two names, one picture. */}
+            {!frameSize && phase !== 'ended' && (!loaded || hasTabs) && (
+              <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-6 bg-[#0b0c0f]">
+                <div className="relative flex h-16 w-16 items-center justify-center">
+                  <div className="absolute inset-0 rounded-full border border-white/10" />
+                  <div className="absolute inset-0 animate-spin rounded-full border-2 border-transparent border-r-white/15 border-t-white/75" />
+                  <MonitorPlay className="h-6 w-6 text-white/55" />
+                </div>
+                <div className="space-y-1.5 px-6 text-center">
+                  <p className="text-[13.5px] font-medium text-white/90">
+                    {phase === 'waiting' ? t('browser.viewerWaiting') : t('browser.viewerConnecting')}
+                  </p>
+                  <p className="text-[12px] leading-relaxed text-white/40">{t('browser.viewerLoadingHint')}</p>
+                </div>
+                <div className="h-[3px] w-44 overflow-hidden rounded-full bg-white/10">
+                  <div className="h-full w-1/2 animate-shimmer-loading rounded-full bg-white/60" />
+                </div>
+              </div>
+            )}
+
+            {/* Nothing to watch at all: the window lives on the server, so this is where it is opened. */}
+            {loaded && !hasTabs && phase !== 'ended' && (
+              <div className="absolute inset-0 z-20 flex items-center justify-center bg-[#0b0c0f] px-6">
+                <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-white/[0.03] p-7 text-center">
+                  <div className="mx-auto mb-4 flex h-11 w-11 items-center justify-center rounded-full bg-white/[0.06]">
+                    <MonitorPlay className="h-5 w-5 text-white/60" />
+                  </div>
+                  <p className="text-[13.5px] text-white/90">{t('browser.viewerNoTabs')}</p>
+                  <p className="mt-1 text-[12px] leading-relaxed text-white/40">{t('browser.viewerNoTabsHint')}</p>
+                  <button
+                    type="button"
+                    onClick={() => { void openBrowser() }}
+                    className="mt-5 inline-flex h-9 items-center gap-2 rounded-lg bg-white px-4 text-[12.5px] font-medium text-black transition-opacity hover:opacity-90"
+                  >
+                    <Globe className="h-4 w-4" />
+                    {t('browser.openBrowser')}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* The stream is over. Say why, and offer the one thing worth doing about it. */}
+            {phase === 'ended' && (
+              <div className="absolute inset-0 z-20 flex items-center justify-center bg-[#0b0c0f] px-6">
+                <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-white/[0.03] p-7 text-center">
+                  <div className="mx-auto mb-4 flex h-11 w-11 items-center justify-center rounded-full bg-white/[0.06]">
+                    <TriangleAlert className="h-5 w-5 text-amber-400" />
+                  </div>
+                  <p className="text-[13.5px] leading-relaxed text-white/90">{failure ?? t('browser.streamEnded')}</p>
+                  <div className="mt-5 flex justify-center gap-2">
+                    {lastTargetRef.current && (
+                      <button
+                        type="button"
+                        onClick={() => { void watch(lastTargetRef.current!) }}
+                        className="inline-flex h-9 items-center gap-2 rounded-lg bg-white px-4 text-[12.5px] font-medium text-black transition-opacity hover:opacity-90"
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" />
+                        {t('browser.viewerReconnect')}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => closeView()}
+                      className="inline-flex h-9 items-center rounded-lg border border-white/15 px-4 text-[12.5px] text-white/70 transition-colors hover:bg-white/[0.06] hover:text-white"
+                    >
+                      {t('common.close')}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
-        )}
+        </div>
       </div>
+
+      {/* The status line: how the picture is arriving, and at what size. */}
+      <footer className="flex h-8 shrink-0 items-center gap-3 border-t border-border/70 bg-muted/30 px-3 text-[11px] text-muted-foreground">
+        <span className="inline-flex min-w-0 items-center gap-1.5">
+          <span
+            className={cn(
+              'h-1.5 w-1.5 shrink-0 rounded-full',
+              live ? 'bg-emerald-500' : phase === 'ended' ? 'bg-red-400' : 'animate-pulse bg-amber-500',
+            )}
+          />
+          <span className="truncate">{statusLabel}</span>
+          {!live && phase !== 'ended' && <Loader2 className="h-3 w-3 shrink-0 animate-spin opacity-60" />}
+        </span>
+        <span className="ml-auto shrink-0 tabular-nums">
+          {frameSize ? `${frameSize.width.toFixed(2)}×${frameSize.height.toFixed(2)}` : '—'}
+          {fit && ` · ${Math.round(fit.scale * 100)}%`}
+        </span>
+        {fitMode && (
+          <span className="shrink-0 rounded bg-foreground/[0.08] px-1.5 py-0.5 text-[10.5px]">
+            {t('browser.viewerFit')}
+          </span>
+        )}
+      </footer>
+    </div>
+  )
+}
+
+/** One tab in the rail: the page, and — on hover — its close button. */
+function TabRow({
+  tab,
+  watching,
+  onActivate,
+  onClose,
+  closeLabel,
+  untitledLabel,
+  agentWorkingLabel,
+  agentDrivenLabel,
+  takeOverLabel,
+  onTakeOver,
+}: {
+  tab: BrowserTabSummary
+  watching: boolean
+  onActivate: () => void
+  onClose: () => void
+  closeLabel: string
+  untitledLabel: string
+  agentWorkingLabel: string
+  agentDrivenLabel: string
+  takeOverLabel: string
+  /** Present only on the tab being watched: unlocking is a takeover of *this* page. */
+  onTakeOver?: () => void
+}) {
+  // Two facts, two marks: the highlight says an agent is holding this tab right now (it stays
+  // through the person's dismissal — the claim did not move), the purple lock is only the part
+  // of the hold the person can still dismiss, and the dot says the tab was driven earlier and
+  // is not being worked on now.
+  const working = tab.lockedBy !== null
+  const holding = tab.lockedBy !== null && !tab.overlayDismissed
+  const driven = !working && tab.drivenBy !== null
+  const label = tab.title.trim() || tab.url || untitledLabel
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onActivate}
+      onKeyDown={(event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return
+        event.preventDefault()
+        onActivate()
+      }}
+      className={cn(
+        'group flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-[12.5px] transition-colors',
+        watching
+          ? 'bg-foreground/[0.06] text-foreground'
+          : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
+      )}
+    >
+      {tab.isLoading ? (
+        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin opacity-70" />
+      ) : tab.favicon ? (
+        <img src={tab.favicon} alt="" className="h-3.5 w-3.5 shrink-0 rounded-[3px] object-cover" />
+      ) : (
+        <Globe className="h-3.5 w-3.5 shrink-0 opacity-60" />
+      )}
+      <span className="relative min-w-0 flex-1" title={working ? agentWorkingLabel : undefined}>
+        <span className="block truncate">{label}</span>
+        {working && (
+          <span aria-hidden className="tab-title-shimmer pointer-events-none absolute inset-0 truncate">
+            {label}
+          </span>
+        )}
+      </span>
+      {holding && onTakeOver && (
+        <button
+          type="button"
+          aria-label={takeOverLabel}
+          title={takeOverLabel}
+          onClick={(event) => {
+            event.stopPropagation()
+            onTakeOver()
+          }}
+          className="shrink-0 rounded p-0.5 text-accent transition-colors hover:bg-accent/10"
+        >
+          <Lock className="h-3 w-3" />
+        </button>
+      )}
+      {driven && (
+        <span
+          aria-label={agentDrivenLabel}
+          title={agentDrivenLabel}
+          className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
+        />
+      )}
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation()
+          onClose()
+        }}
+        className="shrink-0 rounded p-0.5 text-muted-foreground/60 opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground group-hover:opacity-100"
+        aria-label={closeLabel}
+      >
+        <X className="h-3 w-3" />
+      </button>
     </div>
   )
 }
@@ -1162,4 +1428,8 @@ function buttonName(button: number): 'left' | 'middle' | 'right' {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }

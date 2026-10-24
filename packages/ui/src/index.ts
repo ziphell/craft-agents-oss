@@ -214,6 +214,8 @@ export {
   // Base overlay components
   FullscreenOverlayBase,
   FullscreenOverlayBaseHeader,
+  requestWindowControlsHidden,
+  releaseWindowControlsHidden,
   PreviewOverlay,
   ContentFrame,
   CopyButton,

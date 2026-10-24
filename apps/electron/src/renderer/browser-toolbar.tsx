@@ -383,6 +383,7 @@ function TabRail({
    * own `+` above it. The tab is the work's and joins its section.
    */
   onNewFor: (work: TabBelongsTo) => void
+  /** Unlock this tab: the agent's hold is dropped, which is the person taking the wheel. */
   onRelease: (tabId: string) => void
 }) {
   const { t } = useTranslation()
@@ -513,11 +514,16 @@ function TabRail({
 
             {group.tabs.map((tab) => {
               const label = tab.title.trim() || getHostname(tab.url) || t('browser.untitledTab')
-              // Everything the row is too narrow to say: the title it truncates and the
-              // address behind it. The rail is 200px wide and a popup of ours would be
-              // clipped by its own view, so this is the browser's own tooltip rather than
-              // the app's.
-              const tooltip = [label, tab.url].filter(Boolean).join('\n')
+              // Everything the row is too narrow to say: the title it truncates, the
+              // address behind it, and — since the hold and the dot are unlabelled marks —
+              // what an agent has to do with it.
+              const tooltip = [
+                label,
+                tab.url,
+                tab.lockedBy !== null ? t('browser.tabInUse') : tab.drivenBy !== null ? t('browser.tabDriven') : null,
+              ]
+                .filter(Boolean)
+                .join('\n')
 
               return (
                 <div
@@ -578,33 +584,39 @@ function TabRail({
                     >
                       <TabIcon src={tab.favicon} loading={tab.isLoading} />
                     </span>
-                    <span className="min-w-0 flex-1 truncate text-[11px]">{label}</span>
+                    <span className="relative min-w-0 flex-1 text-[11px]">
+                      <span className="block truncate">{label}</span>
+                      {tab.lockedBy !== null && (
+                        <span aria-hidden className="tab-title-shimmer pointer-events-none absolute inset-0 truncate">
+                          {label}
+                        </span>
+                      )}
+                    </span>
                   </button>
 
                   {/*
                     What is happening to the tab, in the same place on every row instead of
                     after the title: read down the rail's right edge and the answer is one
                     column, and a row's own marks never move the title they sit beside.
-                    Two strengths, one mark. The lock is a **button** — a click there does
-                    nothing, so taking the tab back has to be possible from outside it, since
-                    the agent's overlay is what holds the tab and letting go of the overlay is
-                    the unlock. It is an escape hatch rather than a
-                    setting: the agent's next action may take the tab again. The plain dot is
-                    the weaker fact, a tab somebody has driven but is not holding.
+                    Three facts, three marks: the title highlight says an agent is working here
+                    right now (it survives the person's dismissal — the work goes on), the lock
+                    says the agent still holds the tab (unlocking it drops only the person's
+                    half: ring, dim and shield), and the plain dot is the weaker fact, a tab
+                    somebody has driven but is not working on now.
                   */}
                   {tab.lockedBy === null && tab.drivenBy !== null && (
                     <span
-                      aria-label={t('browser.tabInUse')}
-                      title={t('browser.tabInUse')}
+                      aria-label={t('browser.tabDriven')}
+                      title={t('browser.tabDriven')}
                       className="mr-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
                     />
                   )}
 
-                  {tab.lockedBy !== null && (
+                  {tab.lockedBy !== null && !tab.overlayDismissed && (
                     <button
                       type="button"
-                      aria-label={t('browser.releaseLock')}
-                      title={t('browser.releaseLock')}
+                      aria-label={t('browser.takeOverTab')}
+                      title={t('browser.takeOverTab')}
                       className="titlebar-no-drag grid h-5 w-5 shrink-0 place-items-center rounded-[5px] text-accent transition-colors hover:bg-accent/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       onClick={() => onRelease(tab.id)}
                     >
@@ -1081,13 +1093,12 @@ function BrowserToolbarApp() {
   }, [api])
 
   /**
-   * Take a locked tab back.
+   * Unlock one tab.
    *
-   * The agent's overlay is what holds the tab, so this drops the overlay for whoever is
-   * working there — the escape hatch for "I am stuck behind
-   * somebody's running turn". Not awaited for its outcome: whether it released anything
-   * comes back as state, and this renderer drawing its own idea of that is the thing the
-   * state push exists to prevent.
+   * The agent's overlay is what holds the tab, so dropping the hold is the unlock — and for
+   * the person in front of this window, unlocking is taking the wheel. No session is named:
+   * whoever is working there lets go. The agent may take it again on its next command; this
+   * is an escape hatch, not a setting.
    */
   const handleReleaseLock = useCallback((tabId: string) => {
     void api?.tabAction('release', tabId)

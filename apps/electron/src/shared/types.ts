@@ -164,10 +164,10 @@ export interface BrowserPaneCreateOptions {
 export interface BrowserPaneTabAction {
   instanceId: string
   /**
-   * `activate` / `close` / `new` manage the tabs. `release` is the person taking a locked
-   * tab back: it drops the agent overlay that is holding it, so they are not stuck behind
-   * somebody else's running turn — the agent's next action may take
-   * the tab again, which is why the button is an escape hatch and not a setting.
+   * `activate` / `close` / `new` manage the tabs. `release` is the person dismissing their
+   * own half of a locked tab's overlay: the purple ring, the dim and the input shield go away
+   * so they can work in the page, while the agent's hold — and every agent-to-agent rule that
+   * reads it — stays exactly as it was.
    */
   action: 'activate' | 'close' | 'new' | 'release'
   tabId?: string
@@ -936,17 +936,20 @@ export interface ElectronAPI {
      * Watch one tab from outside its window — a viewer in webui, or another machine.
      *
      * Frames arrive on `onStreamFrame`, only to the client that asked (docs/browser-view-streaming.md).
-     * One watcher per tab: a second call for a tab already being watched is refused, as is a tab
-     * that is being recorded (recording owns the same stream at the source).
+     * One capture per tab, one stream per viewer: a second viewer joins the same capture rather
+     * than starting another. A tab that is being recorded is refused — the recorder owns a
+     * second CDP session, and the manager does not hand out a viewer on top of it.
      */
     streamStart(input: BrowserStreamStartRequest): Promise<BrowserStreamStartResult>
     streamStop(streamId: string): Promise<void>
     /**
      * Whether this viewer may send input to the tab it is watching.
      *
-     * Watching is not controlling: `streamInput` is refused until the viewer takes control, and
-     * control is refused while the agent holds the tab (its turn is still running). Control ends
-     * with the stream.
+     * Input is refused until the viewer has control. A free tab is claimed as soon as the
+     * stream exists, so this is a permission check rather than a step a person has to perform.
+     * A tab an agent holds is refused while that hold lasts — unless the person has dismissed
+     * their own half of the lock (`overlayDismissed`), which unlocks input without touching
+     * the agent's claim. Control ends with the stream; there is no "give back" step.
      */
     streamControl(streamId: string, controlled: boolean): Promise<void>
     /** Pointer/keyboard back to the tab being watched. Coordinates are the tab's CSS pixels. */

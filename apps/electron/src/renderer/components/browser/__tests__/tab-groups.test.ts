@@ -16,6 +16,7 @@ function tab(id: string, belongsTo: TabBelongsTo | null): BrowserTabSummary {
     drivenBy: belongsTo?.sessionId ?? null,
     cursorOf: [],
     lockedBy: null,
+    overlayDismissed: false,
   }
 }
 

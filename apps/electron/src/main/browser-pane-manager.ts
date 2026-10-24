@@ -694,8 +694,9 @@ interface BrowserTab {
    *
    * Stated rather than derived: the tab is claimed when a command says it is the one being
    * worked on, and let go when that turn ends or the person takes it back. A held tab takes
-   * no input from a person, and another conversation's commands that name it are refused —
-   * while the chrome, the other tabs and the window itself stay usable.
+   * no input from a person — until they dismiss their half of the overlay
+   * ({@link overlayDismissedByPerson}) — and another conversation's commands that name it are
+   * refused either way, while the chrome, the other tabs and the window itself stay usable.
    *
    * **Per tab, because several conversations work in one window at once**:
    * a DAG's child sessions run in parallel, each on its own tab. One slot per
@@ -703,6 +704,19 @@ interface BrowserTab {
    * lock — which is exactly what parallel children ran into.
    */
   heldBy: string | null
+  /**
+   * Whether the person has dismissed the agent's lock **for themselves**, or `false`.
+   *
+   * The hold ({@link heldBy}) is the agent's claim: it keeps other conversations out and keeps
+   * the page focused for the agent. What the person drops here is only their own half of it —
+   * the purple ring, the dim and the input shield they are looking at. The claim is untouched,
+   * so the agent and its sibling conversations still see the tab as held; the person can click
+   * and type into it again.
+   *
+   * Reset whenever the hold changes hands ({@link setHeldBy}): a new claim gets its own
+   * overlay, and there is nothing left to dismiss once the hold is gone.
+   */
+  overlayDismissedByPerson: boolean
   /**
    * Whether the input being dispatched **right now** came from a command rather than from the
    * person. Set around a command's click or key by the manager, and read by the window-open
@@ -1493,6 +1507,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       drivenBy: null,
       cursorOf: [],
       heldBy: null,
+      overlayDismissedByPerson: false,
       commandInput: false,
       disposition: null,
       themeColor: null,
@@ -2793,6 +2808,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     if (tab.drivenBy === by.sessionId) tab.drivenBy = null
     if (tab.heldBy === by.sessionId) this.setHeldBy(tab, null)
+    // The hold moving (if it was the giver's) resets the person's dismissal in `setHeldBy`;
+    // the receiver's claim starts with its own, visible overlay.
 
     tab.belongsTo = to
     // It becomes the tab the receiver works from: "here is your tab" has to mean it can start
@@ -3062,7 +3079,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // Somebody is already watching this tab: one more seat, no second capture.
     if (existing) {
       existing.streams.add(streamId)
-      return { streamId, tabId: tab.id, width: bounds.width, height: bounds.height }
+      return { streamId, tabId: tab.id, width: bounds.width, height: bounds.height, lockedBy: tab.heldBy, overlayDismissed: tab.overlayDismissedByPerson }
     }
 
     const capture = { instanceId, tabId: tab.id, lastSentAt: 0, streams: new Set([streamId]) }
@@ -3105,7 +3122,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       throw error
     }
 
-    return { streamId, tabId: tab.id, width: bounds.width, height: bounds.height }
+    return { streamId, tabId: tab.id, width: bounds.width, height: bounds.height, lockedBy: tab.heldBy, overlayDismissed: tab.overlayDismissedByPerson }
   }
 
   /** End a stream because the viewer asked. Safe to call for one that is already gone. */
@@ -3123,10 +3140,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   /**
    * Whether the viewer may send input to the tab it is watching.
    *
-   * Watching is not controlling. Taking control is refused while the agent **holds** the tab:
-   * its turn is using the page, and a person's click landing in the middle of it is the thing
-   * the tab lock exists to prevent (docs/browser-view-streaming.md §5.5). Control ends with the
-   * stream, so a closed viewer cannot leave a tab claimed.
+   * Watching is not controlling. A free tab is claimed as soon as the stream exists; a tab the
+   * agent **holds** is refused, because its turn is using the page. That refusal is not a dead
+   * end: the person's lock button dismisses their half of the overlay, after which this is
+   * allowed even though the agent's claim remains (docs/browser-view-streaming.md §5.5).
+   * Control ends with the stream, so a closed viewer cannot leave a tab claimed.
    */
   async setViewStreamControl(streamId: string, clientId: string, controlled: boolean): Promise<void> {
     const stream = this.viewStreams.get(streamId)
@@ -3140,7 +3158,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     const tab = this.tabForStream(stream)
     if (!tab) throw new Error('The tab being watched is gone.')
-    if (tab.heldBy) {
+    // The agent's claim keeps other conversations out; it does not keep the person out once
+    // they have dismissed their half of the overlay (`overlayDismissedByPerson`).
+    if (tab.heldBy && !tab.overlayDismissedByPerson) {
       throw new Error(`The agent is working on this tab right now (${tab.heldBy}); wait for its turn to end.`)
     }
 
@@ -3222,9 +3242,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     if (!stream.controlled) throw new Error('Take control of the tab before sending input.')
     const tab = this.tabForStream(stream)
     if (!tab) throw new Error('The tab being watched is gone.')
-    // The agent can take the tab while the person is looking at it: the hold outranks the viewer,
-    // so control is dropped rather than letting a click land in the middle of the agent's turn.
-    if (tab.heldBy) {
+    // The agent can take the tab while the person is looking at it: an undismissed hold
+    // outranks the viewer, so control is dropped rather than letting a click land in the
+    // middle of the agent's turn. A dismissed one is the person's to use again.
+    if (tab.heldBy && !tab.overlayDismissedByPerson) {
       stream.controlled = false
       throw new Error(`The agent is working on this tab right now (${tab.heldBy}); control was released.`)
     }
@@ -5571,7 +5592,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const page = activeTab(instance)
     const overlay = instance.nativeOverlayView
     const chrome = instance.chromeView
-    const held = page.heldBy !== null
+    const held = page.heldBy !== null && !page.overlayDismissedByPerson
     const menuUp = instance.toolbarMenuOpen || instance.toolbarMenuOverlayActive
     // A page whose home is the parking window is not this window's to place: `addChildView` here would
     // move it back into a window that cannot hand it a surface (`tabHome`). What is left in that
@@ -5710,6 +5731,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   private setHeldBy(tab: BrowserTab, sessionId: string | null): boolean {
     if (tab.heldBy === sessionId) return false
     tab.heldBy = sessionId
+    // A new claim is a new overlay: the previous person-facing dismissal does not carry over,
+    // and once the hold is gone there is nothing left to dismiss.
+    tab.overlayDismissedByPerson = false
     void tab.cdp.setFocusEmulation(sessionId !== null)
     return true
   }
@@ -5763,11 +5787,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * behind (see `BrowserInstance.nativeOverlayView`).
    */
   private updateNativeOverlayState(instance: BrowserInstance): void {
-    const heldBy = activeTab(instance).heldBy
+    const page = activeTab(instance)
+    const heldBy = page.heldBy
     const menuActive = !!instance.toolbarMenuOverlayActive
     // The lock is the tab's, so the accent, the dim and the shield all answer to this one
-    // question, and all three belong to the tab on screen alone.
-    const locked = heldBy !== null
+    // question, and all three belong to the tab on screen alone. A person may have dismissed
+    // their half of it: the claim stays, the overlay they see goes.
+    const locked = heldBy !== null && !page.overlayDismissedByPerson
     // What is being done is named by whoever is at the wheel on the tab on screen — the state
     // is read off that tab, so there is no other conversation it could be reporting.
     const label = this.getAgentControlLabel(heldBy ? instance.controlBy.get(heldBy) : null)
@@ -6902,13 +6928,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         }
 
         if (action === 'release') {
-          // The person taking a locked tab back. The overlay is what holds the tab, so
-          // dropping the overlay *is* the unlock — and it is the
-          // same act `tab-show` performs when it hands the page over, only sent from the
-          // other side. No session is named: whoever is working here lets go.
-          const result = this.clearAgentControlForInstance(inst.id)
+          // The person dismissing their half of a held tab's lock: the claim stays (other
+          // conversations are still kept out), the ring/dim/shield they see go. The tab is
+          // the row the lock was drawn on, not whichever tab the window happens to show.
+          const result = this.clearAgentControlForInstance(inst.id, undefined, tabId)
           mainLog.info(
-            `[browser-pane] tab lock released by hand instance=${inst.id} tab=${tabId ?? 'unstated'} released=${result.released}${result.reason ? ` reason=${result.reason}` : ''}`,
+            `[browser-pane] person dismissed the tab lock instance=${inst.id} tab=${tabId ?? 'unstated'} released=${result.released}${result.reason ? ` reason=${result.reason}` : ''}`,
           )
           return
         }
@@ -7657,13 +7682,24 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   /**
    * Let go of what is being held here: a named session's overlay and holds, or — when nobody
-   * is named, which is the person pressing `release` — the hold on the tab on screen.
+   * is named, which is the person pressing `release` — **only the person's half** of a tab's
+   * lock.
    *
-   * The person's half is deliberately narrower than it used to be: the shield they are
-   * looking at covers one tab, so that is the one that comes back. Their other tabs, and
-   * the other conversations sharing the window, are not what the button was about.
+   * The two halves are different facts. A named session is really let go: its overlay leaves
+   * the window and its holds drop. The person's release is narrower still: the claim stays
+   * (the tab is still the agent's, other conversations are still kept out), and what goes is
+   * the purple ring, the dim and the input shield *they* are looking at — their own view of
+   * the lock, not the lock. That is why an agent can keep working without re-locking, and
+   * why agent-to-agent locking is untouched.
+   *
+   * The tab is named when the caller knows it (a rail's lock button is on a row); the tab on
+   * screen is the fallback for callers that only know the window.
    */
-  clearAgentControlForInstance(instanceId: string, sessionId?: string): { released: boolean; reason?: string } {
+  clearAgentControlForInstance(
+    instanceId: string,
+    sessionId?: string,
+    tabId?: string,
+  ): { released: boolean; reason?: string } {
     const instance = this.instances.get(instanceId)
     if (!instance) {
       return { released: false, reason: `Browser window "${instanceId}" not found.` }
@@ -7679,15 +7715,27 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       return { released: true }
     }
 
-    const tab = activeTab(instance)
+    const tab = tabId ? tabById(instance, tabId) : activeTab(instance)
+    if (!tab) {
+      return { released: false, reason: `Browser tab "${tabId}" not found.` }
+    }
     if (!tab.heldBy) {
-      return { released: false, reason: 'No active agent overlay on the target window.' }
+      return { released: false, reason: 'No agent overlay on that tab.' }
+    }
+    if (tab.overlayDismissedByPerson) {
+      // Already the person's view of the tab: saying so twice changes nothing.
+      return { released: true }
     }
 
-    this.setHeldBy(tab, null)
+    // The claim is not touched: only the person-facing overlay is. The agent keeps the tab,
+    // other conversations are still refused it, and the person can click and type again.
+    tab.overlayDismissedByPerson = true
     this.updateNativeOverlayState(instance)
+    // Two audiences, two pushes: the rail inside the browser window hears IPC, everyone else
+    // (the main renderer, remote windows, webui) hears the state broadcast.
+    this.pushToolbarState(instance)
     this.emitStateChange(instance)
-    mainLog.info(`[browser-pane] tab lock released by hand instance=${instanceId} tab=${tab.id}`)
+    mainLog.info(`[browser-pane] person dismissed the tab lock instance=${instanceId} tab=${tab.id} holder=${tab.heldBy}`)
 
     return { released: true }
   }
@@ -8542,7 +8590,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // follows the lease: the tab stops refusing input when its turn ends or the overlay
     // goes, and a tab the person switched to is never covered by a lock on another.
     tabWc.on('before-input-event', (event) => {
-      if (tab.heldBy !== null) {
+      if (tab.heldBy !== null && !tab.overlayDismissedByPerson) {
         event.preventDefault()
       }
     })
@@ -8874,6 +8922,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       cursorOf: [...tab.cursorOf],
       // -- The lock: who is working on this tab right now, and only while they are --
       lockedBy: tab.heldBy,
+      // The person's half of that lock: the claim is unchanged, their overlay is hidden.
+      overlayDismissed: tab.overlayDismissedByPerson,
       // How the browser asked for it, when it did.
       disposition: tab.disposition,
     }

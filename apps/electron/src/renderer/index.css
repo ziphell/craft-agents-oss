@@ -1124,6 +1124,46 @@ html.dark[data-scenic] .fullscreen-overlay-background {
   50% { opacity: 0.5; }
 }
 
+/* Tab title shimmer — an accent highlight sweeping through the text while an agent works on the tab.
+   Painted as a second copy of the title over the real one: the base text stays opaque, so a
+   truncated title keeps its ellipsis, and the gradient only adds light where it passes.
+   One pass a second, with the highlight travelling well past both ends of the text — the pause
+   between passes is what reads as breathing — and a half-second opacity pulse on top of it. */
+@keyframes tab-title-sweep {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -100% 0; }
+}
+
+@keyframes tab-title-breathe {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1; }
+}
+
+.tab-title-shimmer {
+  background-image: linear-gradient(
+    100deg,
+    transparent 30%,
+    var(--accent) 50%,
+    transparent 70%
+  );
+  background-size: 260% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation:
+    tab-title-sweep 1s linear infinite,
+    tab-title-breathe 0.5s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tab-title-shimmer {
+    animation: none;
+    background-image: none;
+    -webkit-text-fill-color: var(--accent);
+  }
+}
+
 /* =============================================================================
    SHAKE ANIMATION
 

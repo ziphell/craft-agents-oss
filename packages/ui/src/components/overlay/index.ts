@@ -1,5 +1,10 @@
 // Base overlay components
-export { FullscreenOverlayBase, type FullscreenOverlayBaseProps } from './FullscreenOverlayBase'
+export {
+  FullscreenOverlayBase,
+  requestWindowControlsHidden,
+  releaseWindowControlsHidden,
+  type FullscreenOverlayBaseProps,
+} from './FullscreenOverlayBase'
 export { FullscreenOverlayBaseHeader, type FullscreenOverlayBaseHeaderProps, type OverlayTypeBadge } from './FullscreenOverlayBaseHeader'
 export { PreviewOverlay, type PreviewOverlayProps, type BadgeVariant } from './PreviewOverlay'
 export { ContentFrame, type ContentFrameProps } from './ContentFrame'
