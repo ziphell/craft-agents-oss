@@ -131,6 +131,14 @@ export function registerServerHandlers(
     return sessionManager.getConnectedDevices()
   })
 
+  server.handle(RPC_CHANNELS.server.SET_DEVICE_USE, async (_ctx, deviceId: string, use: boolean) => {
+    return sessionManager.setDeviceUse(deviceId, use)
+  })
+
+  server.handle(RPC_CHANNELS.server.FORGET_DEVICE, async (_ctx, deviceId: string) => {
+    sessionManager.forgetDevice(deviceId)
+  })
+
   // -----------------------------------------------------------------------
   // Server Home Directory (REMOTE_ELIGIBLE — returns this server's home)
   // -----------------------------------------------------------------------

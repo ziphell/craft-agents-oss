@@ -406,6 +406,10 @@ export interface ElectronAPI {
   restartServer(): Promise<{ ok: boolean }>
   /** Devices other than this machine that this hub can drive (one row per machine). */
   getConnectedDevices(): Promise<DeviceToolInfo[]>
+  /** Persist the hub-side switch for one device and return its updated row. */
+  setDeviceUse(deviceId: string, use: boolean): Promise<DeviceToolInfo>
+  /** Forget an offline device record. */
+  forgetDevice(deviceId: string): Promise<void>
 
   // Remote connections (per window — direct IPC, works while connected to a remote server)
   getClientMode(): Promise<ClientModeInfo>

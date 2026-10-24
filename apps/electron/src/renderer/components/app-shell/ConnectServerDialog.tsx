@@ -20,6 +20,7 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Switch } from '@/components/ui/switch'
 import { Spinner } from '@craft-agent/ui'
 import { cn } from '@/lib/utils'
 import { windowServerScopeAtom } from '@/atoms/window-mode'
@@ -54,6 +55,9 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
   const [serverUrl, setServerUrl] = useState('')
   const [token, setToken] = useState('')
   const [hostName, setHostName] = useState('')
+  // One switch covers shell/files/browser. Kept separate from "connect" on purpose: viewing a
+  // server's workspaces never needs this machine's capabilities.
+  const [deviceAccess, setDeviceAccess] = useState(false)
   const [isTesting, setIsTesting] = useState(false)
   const [isConnecting, setIsConnecting] = useState(false)
   const [busyConnectionId, setBusyConnectionId] = useState<string>()
@@ -80,6 +84,7 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
     setServerUrl('')
     setToken('')
     setHostName('')
+    setDeviceAccess(false)
     setEditingId(undefined)
     load()
   }, [open, load])
@@ -177,6 +182,7 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
         name: hostName.trim(),
         url: serverUrl.trim(),
         token: token.trim(),
+        deviceAccess,
       })
       await window.electronAPI.connectToRemoteConnection(saved.id, saved.lastWorkspaceId)
       onOpenChange(false)
@@ -191,6 +197,7 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
     setEditingId(connection.id)
     setServerUrl(connection.url)
     setHostName(connection.name)
+    setDeviceAccess(connection.deviceAccess === true)
     // Never echo the saved token into the form; blank means "keep it".
     setToken('')
     setError(undefined)
@@ -202,6 +209,7 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
     setServerUrl('')
     setHostName('')
     setToken('')
+    setDeviceAccess(false)
     setError(undefined)
     setTestResult(null)
   }
@@ -225,6 +233,7 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
         name: hostName.trim(),
         url: serverUrl.trim(),
         token: token.trim() || editingConnection?.token || '',
+        deviceAccess,
       })
       cancelEdit()
       load()
@@ -316,6 +325,17 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-[13px]">{connection.name}</div>
                         <div className="truncate text-xs text-muted-foreground">{connection.url}</div>
+                        <div
+                          className={cn(
+                            'truncate text-[11px]',
+                            connection.deviceAccess ? 'text-success' : 'text-muted-foreground',
+                          )}
+                        >
+                          {t('settings.client.deviceAccess')}:{' '}
+                          {connection.deviceAccess
+                            ? t('settings.client.deviceAccessAllowed')
+                            : t('settings.client.deviceAccessNotAllowed')}
+                        </div>
                       </div>
                       <Button
                         variant="ghost"
@@ -394,6 +414,24 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
               aria-label={t('settings.server.token')}
             />
             <span className="block text-xs text-muted-foreground">{t('settings.client.tokenDesc')}</span>
+          </div>
+
+          {/* Deliberately separate from the connection fields above: this grants capabilities to
+              the server, it does not connect or authorize viewing its workspaces. */}
+          <div className="space-y-2 rounded-lg border px-3 py-2.5">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[13px] font-medium">{t('settings.client.deviceAccess')}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {t('settings.client.deviceAccessDesc')}
+                </p>
+              </div>
+              <Switch
+                checked={deviceAccess}
+                onCheckedChange={setDeviceAccess}
+                aria-label={t('settings.client.deviceAccess')}
+              />
+            </div>
           </div>
 
           {isInsecureUrl && (

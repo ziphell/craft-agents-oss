@@ -21,6 +21,7 @@ import {
   whyTabIsOutOfReach,
   whyThereIsNoWorkingTab,
 } from '../domain/tab-access'
+import { HubDeviceRegistry } from '../domain/hub-device-registry'
 import {
   resolveSessionConnection,
   createBackendFromConnection,
@@ -1232,6 +1233,8 @@ export class SessionManager implements ISessionManager {
   private browserPaneManager: IBrowserPaneManager | null = null
   private installTweaksFn?: (workspaceId: string) => void
   private rpcServer: RpcServer | null = null
+  /** Durable record of devices that have connected; owns the hub-side `hubUses` switch. */
+  private deviceRegistry = new HubDeviceRegistry()
   /** Browser bridges for one **named** device, for `device_tool`'s nested `browser`. */
   private remoteDeviceBpms = new Map<string, RemoteBrowserPaneManager>()
   private eventSink: EventSink | null = null
@@ -1304,6 +1307,11 @@ export class SessionManager implements ISessionManager {
     sessionLog.info('[browser-pane] setRpcServer called — devices are reachable')
   }
 
+  /** Tests inject an in-memory registry so they never touch the person's config directory. */
+  setDeviceRegistry(registry: HubDeviceRegistry): void {
+    this.deviceRegistry = registry
+  }
+
   /**
    * The browser that serves a session's `browser_*` tools: this process's own, or nothing.
    *
@@ -1337,41 +1345,57 @@ export class SessionManager implements ISessionManager {
   // ---------------------------------------------------------------------------
 
   /**
-   * Every device the hub can reach, with the connections currently backing it.
+   * Every device that has connected to this hub, online or offline, with the connections backing
+   * it right now.
    *
    * This server's own machine is deliberately **not** one of them: it is where the agent already
    * runs, so its shell, files and browser need no name — `device_tool` names other machines. A
    * machine can hold several connections (an app-level link, a window, a reconnect mid-flight);
    * they are one device because they are one machine. Which connection answers a call is decided
    * in {@link resolveDevice}.
+   *
+   * Being connected is not the same as being usable: `deviceAllows` (the device-side switch) and
+   * `hubUses` (the persisted hub-side switch) must both be on, and only then is `available` true.
    */
   private deviceEntries(): Array<{
     info: DeviceToolInfo
+    offered: { shell: boolean; files: boolean; browser: boolean }
     clients: Array<{ clientId: string; workspaceId: string | null }>
   }> {
     const clients = this.rpcServer?.getConnectedClients?.() ?? []
     const entries = new Map<string, {
       info: DeviceToolInfo
+      offered: { shell: boolean; files: boolean; browser: boolean }
       clients: Array<{ clientId: string; workspaceId: string | null }>
     }>()
 
     for (const client of clients) {
       if (this.isLocalClient(client.clientId)) continue
+      // A browser tab has no stable device identity. It is a view of the hub, not a machine the
+      // agent can drive, so it must not create an ephemeral device row.
+      if (!client.deviceId?.trim()) continue
 
-      const id = client.deviceId ?? `client:${client.clientId}`
-      const capabilities = {
+      const id = client.deviceId
+      const offered = {
         shell: client.capabilities.includes(CLIENT_DEVICE_EXEC),
         files: client.capabilities.includes(CLIENT_DEVICE_FS),
         browser: client.capabilities.includes(CLIENT_BROWSER_INVOKE),
       }
+      const allows = offered.shell || offered.files || offered.browser
+      const record = this.deviceRegistry.ensure({
+        deviceId: id,
+        name: client.name,
+        platform: client.platform,
+        version: client.version,
+      })
 
       const existing = entries.get(id)
       const roots = this.deviceRoots(client)
       if (existing) {
-        existing.info.capabilities.shell ||= capabilities.shell
-        existing.info.capabilities.files ||= capabilities.files
-        existing.info.capabilities.browser ||= capabilities.browser
-        existing.info.version ||= client.version
+        existing.offered.shell ||= offered.shell
+        existing.offered.files ||= offered.files
+        existing.offered.browser ||= offered.browser
+        existing.info.deviceAllows ||= allows
         for (const root of roots) {
           if (!existing.info.workspaceRoots.includes(root)) existing.info.workspaceRoots.push(root)
         }
@@ -1382,30 +1406,95 @@ export class SessionManager implements ISessionManager {
       entries.set(id, {
         info: {
           id,
-          name: client.name,
-          platform: client.platform,
-          version: client.version,
+          name: record.name,
+          platform: record.platform,
+          version: record.version,
           workspaceRoots: roots,
-          capabilities,
+          online: true,
+          deviceAllows: allows,
+          hubUses: record.hubUses,
+          available: false,
+          lastSeenAt: record.lastSeenAt,
+          offered,
+          capabilities: { shell: false, files: false, browser: false },
         },
+        offered,
         clients: [{ clientId: client.clientId, workspaceId: client.workspaceId }],
       })
     }
 
-    return [...entries.values()]
-      // A client that answers none of the three (a browser UI, say) is connected but is not a
-      // device this tool can do anything with — listing it would only invite calls that must fail.
-      .filter((entry) =>
-        entry.info.capabilities.shell || entry.info.capabilities.files || entry.info.capabilities.browser)
-      .sort((a, b) => a.info.name.localeCompare(b.info.name))
+    // Records that outlived their connection. They stay visible (and switchable) while offline.
+    for (const record of this.deviceRegistry.list()) {
+      if (entries.has(record.deviceId)) continue
+      entries.set(record.deviceId, {
+        info: {
+          id: record.deviceId,
+          name: record.name,
+          platform: record.platform,
+          version: record.version,
+          workspaceRoots: [],
+          online: false,
+          deviceAllows: false,
+          hubUses: record.hubUses,
+          available: false,
+          lastSeenAt: record.lastSeenAt,
+          offered: { shell: false, files: false, browser: false },
+          capabilities: { shell: false, files: false, browser: false },
+        },
+        offered: { shell: false, files: false, browser: false },
+        clients: [],
+      })
+    }
+
+    const result = [...entries.values()]
+    for (const entry of result) {
+      entry.info.available = entry.info.online && entry.info.deviceAllows && entry.info.hubUses
+      entry.info.capabilities = entry.info.available
+        ? { ...entry.offered }
+        : { shell: false, files: false, browser: false }
+    }
+    return result.sort((a, b) =>
+      Number(b.info.online) - Number(a.info.online)
+      || (b.info.lastSeenAt ?? 0) - (a.info.lastSeenAt ?? 0)
+      || a.info.name.localeCompare(b.info.name))
   }
 
   /**
-   * Devices other than this machine, one row per machine — what the hub's Server settings lists.
-   * This is the same list `device_tool` names, so the UI and the agent agree on what exists.
+   * Every device the hub knows, online or offline — what Server settings lists. This is wider
+   * than the agent's list: a connected device that has not been enabled here is still a row.
    */
   getConnectedDevices(): DeviceToolInfo[] {
     return this.deviceEntries().map((entry) => entry.info)
+  }
+
+  /**
+   * Devices `device_tool` may name right now: connected, allowed by the device, and enabled on
+   * this server. The tool is only registered while this list is non-empty.
+   */
+  getAgentDevices(): DeviceToolInfo[] {
+    return this.deviceEntries().filter((entry) => entry.info.available).map((entry) => entry.info)
+  }
+
+  /** Whether `device_tool` should be part of the agent's tool list at all. */
+  hasAvailableDevices(): boolean {
+    return this.deviceEntries().some((entry) => entry.info.available)
+  }
+
+  /** Persist the hub-side switch and return the updated row. */
+  setDeviceUse(deviceId: string, use: boolean): DeviceToolInfo {
+    const record = this.deviceRegistry.setUse(deviceId, use)
+    if (!record) throw new Error(`Unknown device: ${deviceId}`)
+    const entry = this.deviceEntries().find((candidate) => candidate.info.id === deviceId)
+    if (!entry) throw new Error(`Unknown device: ${deviceId}`)
+    return entry.info
+  }
+
+  /** Remove a device record. Refused while the device is still connected. */
+  forgetDevice(deviceId: string): void {
+    const entry = this.deviceEntries().find((candidate) => candidate.info.id === deviceId)
+    if (!entry) throw new Error(`Unknown device: ${deviceId}`)
+    if (entry.info.online) throw new Error('Disconnect the device before forgetting it.')
+    this.deviceRegistry.forget(deviceId)
   }
 
   /**
@@ -1437,15 +1526,18 @@ export class SessionManager implements ISessionManager {
     const wanted = ref.trim()
     const entries = this.deviceEntries()
     if (entries.length === 0) {
-      throw new Error('No devices are connected. Connect another client to this hub; this machine\'s own tools need no device.')
+      throw new Error('No devices have connected to this hub. This machine\'s own tools need no device.')
     }
 
     const named = entries.filter(
       (entry) => entry.info.id === wanted || entry.info.name.toLowerCase() === wanted.toLowerCase(),
     )
     if (named.length === 0) {
-      const known = entries.map((entry) => `${entry.info.name} (${entry.info.id})`).join(', ')
-      throw new Error(`No device "${ref}". Devices: ${known}.`)
+      const available = entries.filter((entry) => entry.info.available)
+        .map((entry) => `${entry.info.name} (${entry.info.id})`).join(', ')
+      throw new Error(available
+        ? `No device "${ref}". Available devices: ${available}.`
+        : `No enabled device "${ref}".`)
     }
     if (named.length > 1) {
       const known = named.map((entry) => entry.info.id).join(', ')
@@ -1453,8 +1545,21 @@ export class SessionManager implements ISessionManager {
     }
 
     const entry = named[0]!
-    if (!entry.info.capabilities[capability]) {
-      throw new Error(`Device "${entry.info.name}" does not allow ${capability} access.`)
+    const name = entry.info.name
+    if (!entry.info.online) {
+      throw new Error(`Device "${name}" is offline.`)
+    }
+    if (!entry.info.deviceAllows) {
+      throw new Error(
+        `Device "${name}" has not allowed this server. Allow it on that device: ` +
+        'Connect to Server → Edit → This machine\'s capabilities.',
+      )
+    }
+    if (!entry.info.hubUses) {
+      throw new Error(`Device "${name}" is not enabled for agent use on this server.`)
+    }
+    if (!entry.info.offered[capability]) {
+      throw new Error(`Device "${name}" does not offer ${capability} access.`)
     }
 
     // A device's capability is the union of its connections', but a call has to go to one that
@@ -1466,7 +1571,7 @@ export class SessionManager implements ISessionManager {
       .sort((a, b) => Number(a.workspaceId !== null) - Number(b.workspaceId !== null))
     const server = servers[0]
     if (!server) {
-      throw new Error(`Device "${entry.info.name}" is connected but cannot serve ${capability} right now.`)
+      throw new Error(`Device "${name}" is connected but cannot serve ${capability} right now.`)
     }
     return { info: entry.info, clientId: server.clientId }
   }
@@ -1542,7 +1647,7 @@ export class SessionManager implements ISessionManager {
       : {}
 
     return {
-      list: async () => this.getConnectedDevices(),
+      list: async () => this.getAgentDevices(),
       exec: async (device: string, args: DeviceExecArgs) => {
         const { clientId } = this.resolveDevice(device, 'shell')
         const timeoutMs = Math.min(Math.max(args.timeoutMs ?? 60_000, 1_000), 300_000)
@@ -4731,6 +4836,9 @@ export class SessionManager implements ISessionManager {
           // server's browser.
           deviceFns: this.createDeviceToolFns(managed.workspace.id, (clientId) =>
             buildBrowserPaneFns(undefined, this.browserPaneManagerForClient(sid, clientId))),
+          // Read at tool-registration time: `device_tool` is omitted entirely while no device is
+          // connected, allowed by the device, and enabled here.
+          hasAvailableDevices: () => this.hasAvailableDevices(),
         })
       }
 

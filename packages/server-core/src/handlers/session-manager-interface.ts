@@ -281,10 +281,18 @@ export interface ISessionManager {
   /** Active sessions across all workspaces (sessions with running backend processes). */
   getActiveSessionsInfo(): ActiveSessionInfo[]
   /**
-   * Devices other than this machine that this hub can drive, one row per machine.
-   * The same list `device_tool` names, so the UI and the agent agree.
+   * Every device that has connected to this hub, online or offline — what Server settings lists.
+   * Being connected is not the same as being usable; `device_tool` uses {@link getAgentDevices}.
    */
   getConnectedDevices(): DeviceToolInfo[]
+  /** Devices the agent may use right now (connected, allowed by the device, enabled here). */
+  getAgentDevices(): DeviceToolInfo[]
+  /** Whether `device_tool` should be advertised at all. */
+  hasAvailableDevices(): boolean
+  /** Persist the hub-side switch for one device and return its updated row. */
+  setDeviceUse(deviceId: string, use: boolean): DeviceToolInfo
+  /** Forget an offline device record. */
+  forgetDevice(deviceId: string): void
 
   // ---------------------------------------------------------------------------
   // Auth

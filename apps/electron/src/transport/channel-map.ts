@@ -166,6 +166,8 @@ export const CHANNEL_MAP = {
   // Server info (REMOTE_ELIGIBLE)
   getServerHomeDir: invoke(RPC_CHANNELS.server.HOME_DIR),
   getConnectedDevices: invoke(RPC_CHANNELS.server.GET_DEVICES),
+  setDeviceUse: invoke(RPC_CHANNELS.server.SET_DEVICE_USE),
+  forgetDevice: invoke(RPC_CHANNELS.server.FORGET_DEVICE),
   restartServer: invoke(RPC_CHANNELS.server.RESTART),
 
   // Server mode configuration

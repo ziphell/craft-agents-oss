@@ -14,6 +14,7 @@ import { ServerDirectoryBrowser } from '@/components/ServerDirectoryBrowser'
 import { useTransportConnectionState } from '@/hooks/useTransportConnectionState'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Button } from '@/components/ui/button'
+import { Switch } from '@/components/ui/switch'
 import {
   Dialog,
   DialogContent,
@@ -25,6 +26,7 @@ import {
 import { Spinner } from '@craft-agent/ui'
 import type { DetailsPageMeta } from '@/lib/navigation-registry'
 import { isWebUI } from '@/lib/platform'
+import { cn } from '@/lib/utils'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import type { ServerConfig, ServerStatus } from '@craft-agent/shared/config/server-config'
 import type { ClientModeInfo, DeviceToolInfo } from '../../../shared/types'
@@ -298,6 +300,24 @@ export default function ServerSettingsPage() {
       toast.error(err instanceof Error ? err.message : String(err))
     } finally {
       setIsRestarting(false)
+    }
+  }
+
+  const handleSetDeviceUse = async (deviceId: string, use: boolean) => {
+    try {
+      await window.electronAPI.setDeviceUse(deviceId, use)
+      await loadDevices()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const handleForgetDevice = async (deviceId: string) => {
+    try {
+      await window.electronAPI.forgetDevice(deviceId)
+      await loadDevices()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err))
     }
   }
 
@@ -584,7 +604,7 @@ export default function ServerSettingsPage() {
             </SettingsSection>
           )}
 
-          {/* Devices — the machines this hub can drive. This server's own tools need no row. */}
+          {/* Devices — the machines this hub knows. Connected is not the same as usable. */}
           {devicesVisible && (
             <SettingsSection title={t("settings.server.connectedDevices")}>
               <SettingsCard>
@@ -594,24 +614,77 @@ export default function ServerSettingsPage() {
                   <SettingsRow label={t("settings.server.noDevices")} />
                 ) : (
                   devices.map((device) => (
-                    <SettingsRow
+                    <div
                       key={device.id}
-                      label={
-                        <span className="flex items-center gap-2">
-                          <span className="truncate">{device.name}</span>
-                          {device.capabilities.browser && (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
-                              {t("settings.server.deviceBrowser")}
+                      className="flex items-start justify-between gap-3 px-4 py-3"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={cn(
+                              'h-1.5 w-1.5 shrink-0 rounded-full',
+                              device.online ? 'bg-success' : 'bg-muted-foreground/40',
+                            )}
+                          />
+                          <span className="truncate text-[13px] font-medium">{device.name}</span>
+                          {device.available && (
+                            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                              {t('settings.server.deviceAvailable')}
                             </span>
                           )}
-                        </span>
-                      }
-                      description={
-                        [device.platform, device.version ? `v${device.version}` : null]
-                          .filter(Boolean)
-                          .join(' · ') || undefined
-                      }
-                    />
+                        </div>
+                        <div className="mt-0.5 text-xs text-muted-foreground">
+                          {[
+                            device.platform,
+                            device.version ? `v${device.version}` : null,
+                            device.online
+                              ? t('settings.server.deviceOnline')
+                              : t('settings.server.deviceOffline'),
+                            !device.online && device.lastSeenAt
+                              ? t('settings.server.deviceLastSeen', {
+                                  time: new Date(device.lastSeenAt).toLocaleDateString(),
+                                })
+                              : null,
+                          ].filter(Boolean).join(' · ')}
+                        </div>
+                        {device.hubUses && !device.deviceAllows && (
+                          <p className="mt-1 text-xs text-warning">
+                            {t('settings.server.deviceAllowHint')}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        {device.online && (
+                          <span
+                            className={cn(
+                              'text-[11px]',
+                              device.deviceAllows ? 'text-success' : 'text-muted-foreground',
+                            )}
+                          >
+                            {device.deviceAllows
+                              ? t('settings.client.deviceAccessAllowed')
+                              : t('settings.client.deviceAccessNotAllowed')}
+                          </span>
+                        )}
+                        <Switch
+                          checked={device.hubUses}
+                          onCheckedChange={(use) => { void handleSetDeviceUse(device.id, use) }}
+                          aria-label={t('settings.server.deviceUse')}
+                          title={t('settings.server.deviceUse')}
+                        />
+                        {!device.online && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 px-2 text-[11px]"
+                            onClick={() => { void handleForgetDevice(device.id) }}
+                            title={t('settings.server.deviceForget')}
+                          >
+                            {t('settings.server.deviceForget')}
+                          </Button>
+                        )}
+                      </div>
+                    </div>
                   ))
                 )}
               </SettingsCard>

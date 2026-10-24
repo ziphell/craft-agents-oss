@@ -17,6 +17,11 @@ export interface RemoteConnection {
   token: string
   /** The workspace this app last opened on that server, offered next time. */
   lastWorkspaceId?: string
+  /**
+   * Allow this server's agent to use this machine's capabilities — shell, files and browser —
+   * through the app-level device link. Connecting a window does not need it; the default is off.
+   */
+  deviceAccess?: boolean
 }
 
 export interface ClientConfig {

@@ -723,6 +723,11 @@ export class PiAgent extends BaseAgent {
       sessionToolDefs = sessionToolDefs.filter(d => d.name !== 'mcp__session__browser_tool');
     }
 
+    // Same gate as Claude: `device_tool` is only advertised while at least one device is usable.
+    if (getSessionScopedToolCallbacks(this._sessionId)?.hasAvailableDevices?.() !== true) {
+      sessionToolDefs = sessionToolDefs.filter(d => d.name !== 'mcp__session__device_tool');
+    }
+
     // Patch call_llm description with provider-specific model hint
     if (this.config.miniModel) {
       const callLlmDef = sessionToolDefs.find(d => d.name === 'mcp__session__call_llm');

@@ -12,6 +12,8 @@ export const RPC_CHANNELS = {
     GET_HEALTH: 'server:getHealth',
     GET_ACTIVE_SESSIONS: 'server:getActiveSessions',
     GET_DEVICES: 'server:getDevices',
+    SET_DEVICE_USE: 'server:setDeviceUse',
+    FORGET_DEVICE: 'server:forgetDevice',
     SHUTTING_DOWN: 'server:shuttingDown',
     RESTART: 'server:restart',
     STATUS_CHANGED: 'server:statusChanged',

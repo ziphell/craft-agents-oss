@@ -1,15 +1,13 @@
 /**
  * The app-level connections to saved hubs.
  *
- * One link per saved server, each carrying shell, file and browser access for this machine.
- * They belong to the **app**, not to a window: a hub has to be able to drive this machine while
- * nothing is on screen, and one connection that outlives every window also means the hub is never
- * talking to a window that happens to be closing. Windows keep their own connections for the
- * workspace they show (see `preload/bootstrap.ts`); these carry no workspace and no UI, only the
- * capabilities that make this machine a device.
+ * One link per saved server. It exists for two independent reasons: it is how this machine makes
+ * requests on its own behalf (workspace creation, directory browsing), and it is how a hub reaches
+ * this machine as a device. The second reason is opt-in: `deviceAccess` must be true on the saved
+ * connection, otherwise the link carries no device capabilities at all. Connecting a window to a
+ * hub never grants it shell/files/browser access by itself.
  *
- * A link exists exactly while its server is in the saved list, and reconnects on its own. Saving a
- * server is the whole of "this device can be driven by it"; nothing here depends on a window.
+ * A link exists exactly while its server is in the saved list, and reconnects on its own.
  */
 
 import {
@@ -49,6 +47,7 @@ interface Link {
   client: WsRpcClient
   url: string
   token: string
+  deviceAccess: boolean
 }
 
 /** One live link per saved connection id. */
@@ -73,7 +72,12 @@ export function syncHubConnections(
 
   for (const [id, link] of links) {
     const next = wanted.get(id)
-    if (next && next.url === link.url && next.token === link.token) continue
+    if (
+      next
+      && next.url === link.url
+      && next.token === link.token
+      && (next.deviceAccess === true) === link.deviceAccess
+    ) continue
     stopLink(link)
     links.delete(id)
   }
@@ -81,20 +85,26 @@ export function syncHubConnections(
   for (const [id, connection] of wanted) {
     if (links.has(id)) continue
 
+    // Capabilities are fixed at handshake. A link that is not allowed to use this machine still
+    // connects — workspace creation and other control-plane requests ride it — but advertises
+    // nothing, so the hub cannot list this machine as a drivable device.
+    const deviceAccess = connection.deviceAccess === true
     const client = new WsRpcClient(connection.url, {
       token: connection.token,
       autoReconnect: true,
       mode: 'remote',
-      clientCapabilities: [...DEVICE_CAPABILITIES],
+      clientCapabilities: deviceAccess ? [...DEVICE_CAPABILITIES] : [],
       clientInfo: connectionDeps.identity(),
       // The person typed this URL, so a hub with a self-signed certificate is accepted — the same
       // policy a window's hub connection uses.
       tlsRejectUnauthorized: false,
     })
-    attachDeviceCapabilities(client, connectionDeps.browserPaneManager, connection.id)
+    if (deviceAccess) {
+      attachDeviceCapabilities(client, connectionDeps.browserPaneManager, connection.id)
+    }
     client.connect()
-    links.set(id, { client, url: connection.url, token: connection.token })
-    mainLog.info(`[hub] device connection opened to ${connection.url} (${connection.name})`)
+    links.set(id, { client, url: connection.url, token: connection.token, deviceAccess })
+    mainLog.info(`[hub] link opened to ${connection.url} (${connection.name}, device access: ${deviceAccess})`)
   }
 }
 

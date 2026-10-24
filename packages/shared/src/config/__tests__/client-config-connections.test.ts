@@ -194,7 +194,7 @@ describe('editing a saved server', () => {
   it('keeps its id, its last workspace and the default marker', () => {
     const { configDir, configPath } = setupConfigDir([{ id: 'ws-local', name: 'Local' }], 'ws-local', {
       connections: [
-        { id: 'conn-1', name: 'Hub', url: 'ws://hub.example:4321', token: 'old-token', lastWorkspaceId: 'ws-7' },
+        { id: 'conn-1', name: 'Hub', url: 'ws://hub.example:4321', token: 'old-token', lastWorkspaceId: 'ws-7', deviceAccess: true },
       ],
       defaultConnectionId: 'conn-1',
     })
@@ -206,7 +206,7 @@ describe('editing a saved server', () => {
 
     const config = readConfig(configPath)
     expect(config.clientConfig.connections).toEqual([
-      { id: 'conn-1', name: 'Hub renamed', url: 'wss://hub.example:4321', token: 'new-token', lastWorkspaceId: 'ws-7' },
+      { id: 'conn-1', name: 'Hub renamed', url: 'wss://hub.example:4321', token: 'new-token', lastWorkspaceId: 'ws-7', deviceAccess: true },
     ])
     expect(config.clientConfig.defaultConnectionId).toBe('conn-1')
   })

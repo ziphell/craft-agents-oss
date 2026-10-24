@@ -3385,6 +3385,11 @@ export function saveRemoteConnection(connection: RemoteConnection): RemoteConnec
     ...(!connection.lastWorkspaceId && previous?.lastWorkspaceId
       ? { lastWorkspaceId: previous.lastWorkspaceId }
       : {}),
+    // An edit that only renames or rotates a token must not silently revoke (or grant) device
+    // access. The field is written only when the caller actually sends a boolean.
+    ...(connection.deviceAccess === undefined && previous?.deviceAccess !== undefined
+      ? { deviceAccess: previous.deviceAccess }
+      : {}),
   };
   config.connections = sameServer
     ? config.connections.map(existing => existing.id === sameServer.id ? saved : existing)

@@ -2236,10 +2236,11 @@ export function formatSessionState(
   if (getBrowserHostState(sessionId) === false) {
     result += '\nbrowserHost: none — this server has no browser of its own.';
     result +=
-      '\nbrowserHostNote: browser_tool cannot run here. List devices with {"tool":"devices"} and drive ' +
-      'one that allows browser with device_tool {"device":"<id>","tool":"browser","args":{"command":"…"}}. ' +
-      'Pass "--help" as the command for the full syntax. This is expected for this deployment — not a ' +
-      'setup error, and not a reason to retry browser_tool.';
+      '\nbrowserHostNote: browser_tool cannot run here. If `device_tool` is available, a connected ' +
+      'device that this server has been allowed to use may provide a browser (' +
+      'device_tool {"device":"<id>","tool":"browser","args":{"command":"…"}}). If it is not in your ' +
+      'tool list, no device is usable and this server has no browser. This is expected for this ' +
+      'deployment — not a setup error, and not a reason to retry browser_tool.';
   }
 
   // Always include plans folder path so agent knows where plans are stored

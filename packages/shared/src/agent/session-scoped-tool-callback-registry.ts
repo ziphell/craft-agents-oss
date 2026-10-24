@@ -68,6 +68,13 @@ export interface SessionScopedToolCallbacks {
    */
   deviceFns?: DeviceToolFns;
 
+  /**
+   * Whether at least one device is usable right now (connected, allowed by the device, and enabled
+   * on this server). `device_tool` is only advertised while this is true, so a hub with no usable
+   * device does not pay for the tool schema. Read at tool-registration time.
+   */
+  hasAvailableDevices?: () => boolean;
+
   /** Set labels on a session (defaults to current). */
   setSessionLabelsFn?: (sessionId: string | undefined, labels: string[]) => void | Promise<void>;
   /** Set status on a session (defaults to current). */

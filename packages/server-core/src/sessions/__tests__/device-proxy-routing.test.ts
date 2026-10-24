@@ -11,6 +11,7 @@ import { describe, it, expect } from 'bun:test'
 import type { ConnectedClientInfo } from '@craft-agent/shared/protocol'
 import { getDeviceId } from '@craft-agent/shared/config'
 import { SessionManager } from '../SessionManager'
+import { HubDeviceRegistry } from '../../domain/hub-device-registry'
 import { CLIENT_BROWSER_INVOKE, CLIENT_DEVICE_EXEC, CLIENT_DEVICE_FS } from '../../transport/capabilities'
 import type { RpcServer } from '../../transport/types'
 
@@ -58,9 +59,24 @@ function makeServer(clients: ConnectedClientInfo[], calls: InvokeRecord[]): RpcS
   }
 }
 
-function setup(clients: ConnectedClientInfo[]) {
+function setup(clients: ConnectedClientInfo[], enabledDeviceIds?: string[]) {
   const calls: InvokeRecord[] = []
+  const registry = new HubDeviceRegistry(null)
+  for (const entry of clients) {
+    if (entry.mode === 'local' || !entry.deviceId) continue
+    registry.ensure({
+      deviceId: entry.deviceId,
+      name: entry.name,
+      platform: entry.platform,
+      version: entry.version,
+    })
+  }
+  const enabled = enabledDeviceIds
+    ?? clients.filter((entry) => entry.mode !== 'local' && entry.deviceId).map((entry) => entry.deviceId!)
+  for (const id of enabled) registry.setUse(id, true)
+
   const sm = new SessionManager()
+  sm.setDeviceRegistry(registry)
   sm.setRpcServer(makeServer(clients, calls))
   // The browser surface is not under test here; a sentinel makes it obvious if a proxy call ever
   // reaches for the conversation's own browser instead of the named device's.
@@ -101,7 +117,7 @@ describe('device_tool — explicit proxy routing', () => {
       client({ clientId: 'c-2', deviceId: 'build', name: 'build', capabilities: [CLIENT_DEVICE_FS] }),
     ])
 
-    await expect(fns.exec('build', { command: 'ls' })).rejects.toThrow('does not allow shell')
+    await expect(fns.exec('build', { command: 'ls' })).rejects.toThrow('does not offer shell')
     expect(calls).toHaveLength(0)
   })
 
@@ -163,7 +179,54 @@ describe('device_tool — explicit proxy routing', () => {
       client({ clientId: 'c-1', deviceId: 'office', name: 'office', capabilities: [CLIENT_DEVICE_EXEC] }),
     ])
 
-    await expect(fns.getBrowserFns('office')).rejects.toThrow('does not allow browser')
+    await expect(fns.getBrowserFns('office')).rejects.toThrow('does not offer browser')
+  })
+
+  it('does not list or name a device the hub has not enabled', async () => {
+    const { fns } = setup(
+      [client({ clientId: 'c-1', deviceId: 'office', name: 'office', capabilities: [CLIENT_DEVICE_EXEC] })],
+      [],
+    )
+
+    expect(await fns.list()).toEqual([])
+    await expect(fns.exec('office', { command: 'ls' })).rejects.toThrow('not enabled for agent use')
+  })
+
+  it('does not use a device that has not allowed this server', async () => {
+    const { fns } = setup(
+      [client({ clientId: 'c-view', deviceId: 'office', name: 'office', capabilities: [] })],
+      ['office'],
+    )
+
+    await expect(fns.exec('office', { command: 'ls' })).rejects.toThrow('has not allowed this server')
+  })
+
+  it('reports a connected device as not available until the hub enables it', () => {
+    const { sm } = setup(
+      [client({ clientId: 'c-1', deviceId: 'office', name: 'office', capabilities: [CLIENT_DEVICE_EXEC] })],
+      [],
+    )
+
+    expect(sm.getConnectedDevices()).toMatchObject([
+      { id: 'office', online: true, deviceAllows: true, hubUses: false, available: false },
+    ])
+    expect(sm.getAgentDevices()).toEqual([])
+    expect(sm.hasAvailableDevices()).toBe(false)
+  })
+
+  it('keeps an offline record in the settings list but out of the agent list', () => {
+    const registry = new HubDeviceRegistry(null)
+    registry.ensure({ deviceId: 'office', name: 'Office' })
+    registry.setUse('office', true)
+
+    const sm = new SessionManager()
+    sm.setDeviceRegistry(registry)
+    sm.setRpcServer(makeServer([], []))
+
+    expect(sm.getConnectedDevices()).toMatchObject([
+      { id: 'office', online: false, hubUses: true, available: false },
+    ])
+    expect(sm.getAgentDevices()).toEqual([])
   })
 
   it('requires an unambiguous name', async () => {

@@ -1479,6 +1479,9 @@ app.whenReady().then(async () => {
         url,
         token,
         ...(existing?.lastWorkspaceId ? { lastWorkspaceId: existing.lastWorkspaceId } : {}),
+        ...(typeof input.deviceAccess === 'boolean'
+          ? { deviceAccess: input.deviceAccess }
+          : existing?.deviceAccess !== undefined ? { deviceAccess: existing.deviceAccess } : {}),
       })
       trustServerOrigin(saved.url)
       syncHubConnections(getRemoteConnections(), {

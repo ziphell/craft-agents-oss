@@ -325,19 +325,21 @@ export function getSessionScopedTools(
       );
     }
 
-    // Device meta-tool — one door onto this machine or another connected one. Not gated by the
-    // built-in browser setting: shell and files have nothing to do with that switch, and the
-    // nested `browser` command refuses by name when no browser runs here.
-    tools.push(
-      ...createDeviceTools({
-        sessionId,
-        workspaceRootPath,
-        getDeviceFns: () => {
-          const callbacks = getSessionScopedToolCallbacks(sessionId);
-          return callbacks?.deviceFns;
-        },
-      }),
-    );
+    // Device meta-tool — one door onto this machine or another connected one. Omitted entirely
+    // while no device is connected, allowed by the device, and enabled on this server: the schema
+    // is not worth advertising when every call could only refuse.
+    if (getSessionScopedToolCallbacks(sessionId)?.hasAvailableDevices?.() === true) {
+      tools.push(
+        ...createDeviceTools({
+          sessionId,
+          workspaceRootPath,
+          getDeviceFns: () => {
+            const callbacks = getSessionScopedToolCallbacks(sessionId);
+            return callbacks?.deviceFns;
+          },
+        }),
+      );
+    }
 
     // Video frames are decoded by the app's browser (a hidden window of its own) and diagrams are
     // drawn by the app's own drawio (another hidden window), so both are on this runtime — but

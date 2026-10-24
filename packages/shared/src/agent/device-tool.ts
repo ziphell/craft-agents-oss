@@ -20,6 +20,26 @@ export interface DeviceToolInfo {
   version: string | null
   /** Directories this device allows remote shell/file access inside. */
   workspaceRoots: string[]
+  /** A client from this device is connected right now. */
+  online: boolean
+  /** The device-side switch: it has allowed this server to use its capabilities. */
+  deviceAllows: boolean
+  /** The hub-side switch: this server's agent may use the device. Persisted on the hub. */
+  hubUses: boolean
+  /** `online && deviceAllows && hubUses` — the only state that makes the device usable. */
+  available: boolean
+  /** Last time a client from this device connected. Useful for offline rows. */
+  lastSeenAt?: number
+  /**
+   * What the device can technically serve. Authorization is one switch covering all of them;
+   * these stay separate so a device without a browser does not claim one.
+   */
+  offered: {
+    shell: boolean
+    files: boolean
+    browser: boolean
+  }
+  /** Offered capabilities that are usable right now (`available ? offered : false`). */
   capabilities: {
     shell: boolean
     files: boolean
