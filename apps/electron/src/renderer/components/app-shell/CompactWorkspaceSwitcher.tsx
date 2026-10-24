@@ -60,8 +60,8 @@ export function CompactWorkspaceSwitcher({
 
   /**
    * A pick moves this window: it builds a hub connection, swaps one, or releases it for this
-   * machine. There is no modifier on a touch sheet, so "open a second window" stays on the
-   * desktop dropdown.
+   * machine. There is no modifier on a touch sheet, so "open a second window" is a button on
+   * each row.
    */
   const chooseRemoteWorkspace = useCallback(async (connection: RemoteConnection | null, workspaceId: string) => {
     setOpen(false)
@@ -80,6 +80,25 @@ export function CompactWorkspaceSwitcher({
       })
     }
   }, [onSelect, t])
+
+  /** Open a second window on that server (or this machine), leaving this one where it is. */
+  const openRemoteWorkspaceInNewWindow = useCallback(async (
+    connection: RemoteConnection | null,
+    workspaceId: string,
+  ) => {
+    setOpen(false)
+    if (!connection) {
+      void window.electronAPI.openWorkspace(workspaceId)
+      return
+    }
+    try {
+      await window.electronAPI.connectToRemoteConnection(connection.id, workspaceId)
+    } catch (error) {
+      toast.error(t('toast.failedToOpenRemoteWindow'), {
+        description: error instanceof Error ? error.message : undefined,
+      })
+    }
+  }, [t])
 
   const hasUnreadInOtherWorkspaces = React.useMemo(() => {
     if (!activeWorkspaceId || !workspaceUnreadMap) return false
@@ -233,14 +252,27 @@ export function CompactWorkspaceSwitcher({
                         <span className="truncate">{group.connection?.name ?? t('workspace.thisComputer')}</span>
                       </div>
                       {group.workspaces.map((workspace) => (
-                        <button
+                        <div
                           key={workspace.id}
-                          type="button"
-                          onClick={() => void chooseRemoteWorkspace(group.connection, workspace.id)}
-                          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-[10px] hover:bg-foreground/5 transition-colors text-left"
+                          className="flex items-center gap-1 px-1 rounded-[10px] hover:bg-foreground/5 transition-colors"
                         >
-                          <span className="truncate text-sm">{workspace.name}</span>
-                        </button>
+                          <button
+                            type="button"
+                            onClick={() => void chooseRemoteWorkspace(group.connection, workspace.id)}
+                            className="flex-1 min-w-0 flex items-center gap-3 px-2 py-2.5 text-left"
+                          >
+                            <span className="truncate text-sm">{workspace.name}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void openRemoteWorkspaceInNewWindow(group.connection, workspace.id)}
+                            className="shrink-0 h-9 w-9 rounded-[8px] flex items-center justify-center text-foreground/50 hover:text-foreground hover:bg-foreground/10 transition-colors"
+                            aria-label={t("sidebarMenu.openInNewWindow")}
+                            title={t("sidebarMenu.openInNewWindow")}
+                          >
+                            <ExternalLink className="h-4 w-4" />
+                          </button>
+                        </div>
                       ))}
                       {group.workspaces.length === 0 && (
                         <div className="px-3 py-2 text-xs text-muted-foreground/70">

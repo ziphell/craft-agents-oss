@@ -418,7 +418,7 @@ export default function App() {
     return {
       initialSessionId: params.get('sessionId'),
       isFocusedMode: params.get('focused') === 'true',
-      // A design's own window (opened from the tray, docs/design-plan.md §2.7):
+      // A design's own window (opened from the design's menu, docs/design-plan.md §2.7):
       // it renders the design instead of the app shell.
       isDesignWindow: params.get('designWindow') === 'true',
     }

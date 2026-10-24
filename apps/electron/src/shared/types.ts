@@ -319,8 +319,6 @@ export interface RemoteWindowTarget {
 export interface ClientModeInfo {
   /** Every server this app can open a window on. */
   connections: RemoteConnection[]
-  /** The connection new windows open on, when one is set. */
-  defaultConnectionId?: string
   /** The remote server **this window** is connected to (`null` = this window is local). */
   running: RemoteWindowTarget | null
   /** Server Mode is enabled in the local config. */
@@ -416,8 +414,6 @@ export interface ElectronAPI {
   /** Add or update a server this app can open windows on. */
   saveRemoteConnection(connection: RemoteConnection): Promise<RemoteConnection>
   removeRemoteConnection(connectionId: string): Promise<void>
-  /** `null` clears it: new windows stay local. */
-  setDefaultRemoteConnection(connectionId: string | null): Promise<void>
   /** Open a window on a saved server, on `workspaceId` when given. */
   connectToRemoteConnection(connectionId: string, workspaceId?: string): Promise<void>
   testClientModeConnection(serverUrl: string, token: string): Promise<ClientModeTestResult>
@@ -518,6 +514,8 @@ export interface ElectronAPI {
   getWindowMode(): Promise<string | null>
   openWorkspace(workspaceId: string): Promise<void>
   openSessionInNewWindow(workspaceId: string, sessionId: string): Promise<void>
+  /** Open a design in its own window, or focus the one already showing it. */
+  openDesignWindow(workspaceId: string, designSlug: string): Promise<void>
   switchWorkspace(workspaceId: string): Promise<void>
   closeWindow(): Promise<void>
   confirmCloseWindow(): Promise<void>
@@ -1017,7 +1015,7 @@ export interface ElectronAPI {
   getDesign(workspaceId: string, designIdOrSlug: string): Promise<import('@craft-agent/shared/designs/types').LoadedDesign | null>
   createDesign(workspaceId: string, input: import('@craft-agent/shared/designs/types').CreateDesignInput): Promise<import('@craft-agent/shared/designs/types').DesignConfig>
   /** Optional fields (projectId, description, refresh) accept explicit null = clear (undefined is dropped by the JSON transport). */
-  updateDesign(workspaceId: string, designSlug: string, patch: Partial<Omit<import('@craft-agent/shared/designs/types').DesignConfig, 'id' | 'slug' | 'createdAt' | 'contentDigest' | 'lastRefresh' | 'grants' | 'share' | 'projectId' | 'description' | 'refresh' | 'pinnedToTrayAt'>> & { projectId?: string | null; description?: string | null; refresh?: import('@craft-agent/shared/designs/types').DesignRefreshSpec | null; pinnedToTrayAt?: number | null }): Promise<import('@craft-agent/shared/designs/types').DesignConfig>
+  updateDesign(workspaceId: string, designSlug: string, patch: Partial<Omit<import('@craft-agent/shared/designs/types').DesignConfig, 'id' | 'slug' | 'createdAt' | 'contentDigest' | 'lastRefresh' | 'grants' | 'share' | 'projectId' | 'description' | 'refresh'>> & { projectId?: string | null; description?: string | null; refresh?: import('@craft-agent/shared/designs/types').DesignRefreshSpec | null }): Promise<import('@craft-agent/shared/designs/types').DesignConfig>
   deleteDesign(workspaceId: string, designSlug: string): Promise<{ publicCopyMayRemain: boolean }>
   getDesignContent(workspaceId: string, designSlug: string): Promise<{ content: string | null; contentDigest?: string }>
   setDesignContent(workspaceId: string, designSlug: string, content: string): Promise<import('@craft-agent/shared/designs/types').DesignConfig>

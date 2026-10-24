@@ -126,18 +126,17 @@ export function DesignsHome() {
     }))
   }, [navigate, t])
 
-  // Presence of pinnedToTrayAt IS the pin; null clears it (see DesignConfig).
-  const handleTogglePin = React.useCallback(async (design: LoadedDesign) => {
+  // A design's own window is a temporary view of it: opening it again focuses
+  // the one already showing this design instead of stacking a second window.
+  const handleOpenInWindow = React.useCallback((design: LoadedDesign) => {
     if (!activeWorkspaceId) return
-    try {
-      await window.electronAPI.updateDesign(activeWorkspaceId, design.config.slug, {
-        pinnedToTrayAt: design.config.pinnedToTrayAt ? null : Date.now(),
+    void window.electronAPI
+      .openDesignWindow(activeWorkspaceId, design.config.slug)
+      .catch(err => {
+        toast.error(t('common.failed'), {
+          description: err instanceof Error ? err.message : String(err),
+        })
       })
-    } catch (err) {
-      toast.error(t('toast.designUpdateFailed'), {
-        description: err instanceof Error ? err.message : String(err),
-      })
-    }
   }, [activeWorkspaceId, t])
 
   const handleConfirmDelete = React.useCallback(async () => {
@@ -241,7 +240,7 @@ export function DesignsHome() {
                   onDelete={() => setPendingDelete(design)}
                   onContinueInChat={() => handleContinueInChat(design)}
                   onOpenFolder={() => onOpenFile(design.folderPath)}
-                  onTogglePin={() => void handleTogglePin(design)}
+                  onOpenInWindow={() => handleOpenInWindow(design)}
                 />
               ))}
           </div>

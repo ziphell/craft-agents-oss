@@ -51,7 +51,7 @@ interface RemoteConnection {
 }
 ```
 
-- 列表与默认服务器存在本机 config 的 `clientConfig`（`packages/shared/src/config/client-config.ts`、`storage.ts`）。
+- 列表存在本机 config 的 `clientConfig`（`packages/shared/src/config/client-config.ts`、`storage.ts`）。
 - URL 相同即同一台服务器：`saveRemoteConnection` 复用已有 id，不会因为「添加一次」出现两条。
 - **编辑的语义**：只带要改的字段；`id` 决定「更新哪一条」，`lastWorkspaceId` 在调用方没给时保留——改名、换地址、轮换 token 都不丢「上次在哪」。
 - 旧数据迁移：workspace 级的 `remoteServer` 折叠进连接列表（每个 URL 一条），并从本地工作区列表移除，标记 `workspace-level-remote-removed`（只跑一次）。
@@ -75,7 +75,7 @@ interface RemoteConnection {
 - 标题：远程窗口的工作区不在本机 config 里，主进程查不到名字，因此由渲染端设置 `<工作区> — <服务器>`（`window:set-title`，主进程把它记为 `customTitle`，窗口增减时不被默认规则覆盖）。
 - 远程身份：顶栏工作区胶囊旁有主机徽标（主机名 + 连接状态点）。点击进入 Settings → Server。
 - 打开一个远程目标的入口：
-  - Connect to Server…（新增 / 列表里 Open / 设为默认）
+  - Connect to Server…（新增 / 列表里 Open）
   - 托盘 → Remote servers → 某台服务器（打开它上次的工作区）
   - 工作区下拉 → Remote servers → 某台服务器的某个工作区：**就地换过去**（见 §4.2）——本地窗口借此建立 hub 连接，远程窗口借此换服务器；⌘/Ctrl 强制新开一个窗口
   - 工作区下拉 → Remote servers → **本机** → 某个工作区（只在远程窗口出现）：释放 hub 连接，窗口回到本机
@@ -113,7 +113,7 @@ interface RemoteConnection {
 
 | IPC | 用途 |
 |---|---|
-| `client-mode:get` / `save-connection` / `remove-connection` / `set-default` | 本机保存的服务器列表 |
+| `client-mode:get` / `save-connection` / `remove-connection` | 本机保存的服务器列表 |
 | `client-mode:connect` / `open-window` / `open-local` / `switch-workspace` / `switch-server` / `switch-local` / `test` | 开窗、换工作区、换服务器、回到本机、试连 |
 | `client-mode:remote-list-directory` / `remote-home-dir` / `remote-check-slug` / `remote-create-workspace` | 新建工作区时对**选定主机**的浏览与创建 |
 | `client-mode:remote-workspaces` / `remote-status` | 工作区下拉的二级菜单、服务器在线状态 |
@@ -218,7 +218,7 @@ interface RemoteConnection {
 |---|---|
 | 连接的读写、迁移、lastWorkspaceId | `packages/shared/src/config/client-config.ts`、`config/storage.ts` |
 | 通道分类 | `packages/shared/src/protocol/routing.ts` |
-| 窗口 target、默认服务器、开窗 | `apps/electron/src/main/index.ts`（`remoteTarget`、`client-mode:*`） |
+| 窗口 target、开窗 | `apps/electron/src/main/index.ts`（`remoteTarget`、`client-mode:*`） |
 | 窗口状态与标题 | `apps/electron/src/main/window-manager.ts`、`window-state.ts` |
 | 应用级设备链路与状态 | `apps/electron/src/main/hub-connection.ts` |
 | 会话的浏览器宿主 | `packages/server-core/src/sessions/SessionManager.ts`（`getBrowserPaneManagerForSession` 只返回本机 BPM；没有本机浏览器就没有 `browser_tool`） |

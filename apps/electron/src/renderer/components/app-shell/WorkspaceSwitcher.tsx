@@ -298,7 +298,7 @@ export function WorkspaceSwitcher({
                       {group.workspaces.map((workspace) => (
                         <StyledDropdownMenuItem
                           key={workspace.id}
-                          className="font-sans"
+                          className="font-sans group justify-between"
                           onClick={(e) => void chooseRemoteWorkspace(
                             group.connection,
                             workspace.id,
@@ -306,6 +306,17 @@ export function WorkspaceSwitcher({
                           )}
                         >
                           <span className="truncate">{workspace.name}</span>
+                          <button
+                            data-touch-reveal="true"
+                            className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-foreground/10 transition-opacity"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              void chooseRemoteWorkspace(group.connection, workspace.id, true)
+                            }}
+                            title={t("sidebarMenu.openInNewWindow")}
+                          >
+                            <ExternalLink className="h-3.5 w-3.5" />
+                          </button>
                         </StyledDropdownMenuItem>
                       ))}
                       {group.workspaces.length === 0 && (

@@ -399,6 +399,7 @@ const EXPECTED_CHANNELS: string[] = [
   'window:getMode',
   'window:getWorkspace',
   'window:maximizedState',
+  'window:openDesignWindow',
   'window:openSessionInNewWindow',
   'window:openWorkspace',
   'window:setTrafficLights',

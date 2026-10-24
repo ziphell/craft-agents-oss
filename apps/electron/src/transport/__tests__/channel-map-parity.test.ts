@@ -26,7 +26,6 @@ type ApiToChannelMapKeys = Exclude<
   | 'getClientMode' // direct IPC to main process — this window's connection
   | 'saveRemoteConnection' // direct IPC to main process — saved server list
   | 'removeRemoteConnection' // direct IPC to main process — saved server list
-  | 'setDefaultRemoteConnection' // direct IPC to main process — launch behaviour
   | 'connectToRemoteConnection' // direct IPC to main process — opens a window
   | 'testClientModeConnection' // direct IPC to main process — tests a server not routed through WS
   | 'listRemoteDirectories' // direct IPC — browses a saved server that may not be this window's

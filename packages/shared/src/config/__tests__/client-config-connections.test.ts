@@ -118,7 +118,6 @@ describe('remote connections (legacy shape)', () => {
     expect(connection.token).toBe('workspace-token')
     expect(connection.lastWorkspaceId).toBe('remote-ws-9')
     expect(connection.id.startsWith('legacy:')).toBe(false)
-    expect(config.clientConfig.defaultConnectionId).toBe(connection.id)
     expect(config.migrationsApplied).toContain('workspace-level-remote-removed')
   })
 
@@ -146,9 +145,6 @@ describe('remote connections (legacy shape)', () => {
     ])
     expect(connections.find((connection: any) => connection.url === 'wss://other.example:8443').token)
       .toBe('other-token')
-    // The default still names a server that exists.
-    expect(connections.some((connection: any) => connection.id === config.clientConfig.defaultConnectionId))
-      .toBe(true)
     expect(config.workspaces.map((workspace: any) => workspace.id)).toEqual(['ws-local'])
   })
 
@@ -191,12 +187,11 @@ describe('remote connections (legacy shape)', () => {
 })
 
 describe('editing a saved server', () => {
-  it('keeps its id, its last workspace and the default marker', () => {
+  it('keeps its id and its last workspace', () => {
     const { configDir, configPath } = setupConfigDir([{ id: 'ws-local', name: 'Local' }], 'ws-local', {
       connections: [
         { id: 'conn-1', name: 'Hub', url: 'ws://hub.example:4321', token: 'old-token', lastWorkspaceId: 'ws-7', deviceAccess: true },
       ],
-      defaultConnectionId: 'conn-1',
     })
 
     // What the Connect to Server… dialog sends when an existing server is edited: the same id,
@@ -208,6 +203,5 @@ describe('editing a saved server', () => {
     expect(config.clientConfig.connections).toEqual([
       { id: 'conn-1', name: 'Hub renamed', url: 'wss://hub.example:4321', token: 'new-token', lastWorkspaceId: 'ws-7', deviceAccess: true },
     ])
-    expect(config.clientConfig.defaultConnectionId).toBe('conn-1')
   })
 })

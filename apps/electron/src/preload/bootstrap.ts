@@ -444,8 +444,6 @@ client.onConnectionStateChanged((state) => {
   ipcRenderer.invoke('client-mode:save-connection', connection)
 ;(api as ElectronAPI).removeRemoteConnection = (connectionId) =>
   ipcRenderer.invoke('client-mode:remove-connection', connectionId)
-;(api as ElectronAPI).setDefaultRemoteConnection = (connectionId) =>
-  ipcRenderer.invoke('client-mode:set-default', connectionId)
 ;(api as ElectronAPI).connectToRemoteConnection = (connectionId, workspaceId) =>
   ipcRenderer.invoke('client-mode:connect', connectionId, workspaceId)
 ;(api as ElectronAPI).testClientModeConnection = (serverUrl, token) =>

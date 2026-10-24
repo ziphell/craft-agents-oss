@@ -98,7 +98,7 @@ import { WindowManager } from './window-manager'
 import { loadWindowState, saveWindowState } from './window-state'
 import { syncHubConnections, stopHubConnections, getHubConnectionClient, getHubConnectionStatus, type HubClientIdentity } from './hub-connection'
 import type { RemoteWindowTarget } from '../shared/types'
-import { getWorkspaces, getWorkspaceByNameOrId, loadStoredConfig, addWorkspace, saveConfig, resolveConversationBrowserProfileId, getRemoteConnections, getRemoteConnection, saveRemoteConnection, removeRemoteConnection, setDefaultRemoteConnection, rememberRemoteWorkspace, migrateLegacyRemoteWorkspaces, getClientConfig, getDeviceId, HUB_ROOT_BASE } from '@craft-agent/shared/config'
+import { getWorkspaces, getWorkspaceByNameOrId, loadStoredConfig, addWorkspace, saveConfig, resolveConversationBrowserProfileId, getRemoteConnections, getRemoteConnection, saveRemoteConnection, removeRemoteConnection, rememberRemoteWorkspace, migrateLegacyRemoteWorkspaces, getClientConfig, getDeviceId, HUB_ROOT_BASE } from '@craft-agent/shared/config'
 import { connectionNameFromUrl, type RemoteConnection } from '@craft-agent/shared/config/client-config'
 import { getDefaultWorkspacesDir, getWorkspaceBrowserProfile } from '@craft-agent/shared/workspaces'
 import { loadSessionHeader } from '@craft-agent/shared/sessions'
@@ -306,13 +306,6 @@ function remoteTarget(connection: RemoteConnection, workspaceId?: string): Remot
     name: connection.name,
     ...(targetWorkspaceId ? { workspaceId: targetWorkspaceId } : {}),
   }
-}
-
-/** The saved connection new windows (and launch, with nothing to restore) open on. */
-function defaultRemoteConnection(): RemoteConnection | null {
-  const config = getClientConfig()
-  if (!config.defaultConnectionId) return null
-  return config.connections.find((connection) => connection.id === config.defaultConnectionId) ?? null
 }
 
 /**
@@ -580,16 +573,7 @@ async function createInitialWindows(): Promise<void> {
     return
   }
 
-  // Nothing to restore: the default saved server if one is set, else the first workspace.
-  const remote = defaultRemoteConnection()
-  if (remote) {
-    const target = remoteTarget(remote)
-    trustServerOrigin(target.url)
-    windowManager.createWindow({ workspaceId: target.workspaceId ?? '', remote: target })
-    mainLog.info(`Created window for default remote server: ${remote.url}`)
-    return
-  }
-
+  // Nothing to restore: the first workspace.
   windowManager.createWindow({ workspaceId: workspaces[0].id })
   mainLog.info(`Created window for first workspace: ${workspaces[0].name}`)
 }
@@ -1445,7 +1429,6 @@ app.whenReady().then(async () => {
       const config = getClientConfig()
       return {
         connections: config.connections,
-        ...(config.defaultConnectionId ? { defaultConnectionId: config.defaultConnectionId } : {}),
         // What **this window** is connected to — not an install-wide mode.
         running: windowManager?.getRemoteForWindow(event.sender.id) ?? null,
         serverEnabled: getServerConfig().enabled,
@@ -1513,10 +1496,6 @@ app.whenReady().then(async () => {
       })
     })
 
-    ipcMain.handle('client-mode:set-default', async (_event, connectionId: string | null) => {
-      setDefaultRemoteConnection(connectionId)
-    })
-
     /** Open a window on a saved server. */
     ipcMain.handle('client-mode:connect', async (_event, connectionId: string, workspaceId?: string) => {
       const connection = getRemoteConnection(connectionId)
@@ -1530,20 +1509,15 @@ app.whenReady().then(async () => {
     })
 
     /**
-     * Open **another** window on the hub. It opens on the connection this window is on, else the
-     * default one; `workspaceId` names the workspace, and without it the connection's last one is
-     * used (the hub shows its picker when there is none). Switching the current window is
-     * `client-mode:switch-workspace`.
+     * Open **another** window on the hub this window is on. `workspaceId` names the workspace,
+     * and without it this window's own is used (the hub shows its picker when there is none).
+     * Switching the current window is `client-mode:switch-workspace`.
      */
     ipcMain.handle('client-mode:open-window', async (event, workspaceId?: string) => {
       const current = windowManager?.getRemoteForWindow(event.sender.id) ?? null
-      const currentConnection = current ? getRemoteConnection(current.connectionId) : null
-      const connection = currentConnection ?? defaultRemoteConnection()
-      if (!connection) throw new Error('No remote server is configured. Use Connect to Server… first.')
-      const target = remoteTarget(
-        connection,
-        workspaceId ?? (currentConnection ? current?.workspaceId : undefined),
-      )
+      const connection = current ? getRemoteConnection(current.connectionId) : null
+      if (!current || !connection) throw new Error('This window is not connected to a remote server')
+      const target = remoteTarget(connection, workspaceId ?? current.workspaceId)
       trustServerOrigin(target.url)
       openRemoteWindow(target)
     })

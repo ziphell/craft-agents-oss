@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { AlertTriangle, ArrowLeft, Check, Download, FolderKanban, FolderOpen, Globe2, KeyRound, Maximize2, MessageSquarePlus, MoreHorizontal, Pencil, Pin, PinOff, RefreshCw, Sparkles, Trash2 } from 'lucide-react'
+import { AlertTriangle, AppWindow, ArrowLeft, Check, Download, FolderKanban, FolderOpen, Globe2, KeyRound, Maximize2, MessageSquarePlus, MoreHorizontal, Pencil, RefreshCw, Sparkles, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useAtomValue } from 'jotai'
 import { useTranslation } from 'react-i18next'
@@ -193,19 +193,17 @@ export function DesignView({ designSlug, standalone = false }: DesignViewProps) 
     }
   }, [activeWorkspaceId, design, t])
 
-  // Pinning is a local tray preference: presence of the field IS the pin, so
-  // unpinning is an explicit null (see DesignConfig.pinnedToTrayAt).
-  const togglePin = React.useCallback(async () => {
+  // The design's own window is a temporary view of it: opening it again focuses
+  // the one already showing this design instead of stacking a second window.
+  const handleOpenInWindow = React.useCallback(() => {
     if (!activeWorkspaceId || !design) return
-    try {
-      await window.electronAPI.updateDesign(activeWorkspaceId, design.config.slug, {
-        pinnedToTrayAt: design.config.pinnedToTrayAt ? null : Date.now(),
+    void window.electronAPI
+      .openDesignWindow(activeWorkspaceId, design.config.slug)
+      .catch(err => {
+        toast.error(t('common.failed'), {
+          description: err instanceof Error ? err.message : String(err),
+        })
       })
-    } catch (err) {
-      toast.error(t('toast.designUpdateFailed'), {
-        description: err instanceof Error ? err.message : String(err),
-      })
-    }
   }, [activeWorkspaceId, design, t])
 
   const handleDesignWithAgent = React.useCallback(() => {
@@ -468,9 +466,9 @@ export function DesignView({ designSlug, standalone = false }: DesignViewProps) 
                   </StyledDropdownMenuSubContent>
                 </DropdownMenuSub>
               )}
-              <StyledDropdownMenuItem onClick={() => void togglePin()}>
-                {config.pinnedToTrayAt ? <PinOff /> : <Pin />}
-                {config.pinnedToTrayAt ? t('designs.unpinFromTray') : t('designs.pinToTray')}
+              <StyledDropdownMenuItem onClick={handleOpenInWindow}>
+                <AppWindow />
+                {t('designs.openInWindow')}
               </StyledDropdownMenuItem>
               <StyledDropdownMenuItem onClick={handleOpenFolder}>
                 <FolderOpen />

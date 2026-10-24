@@ -3319,8 +3319,6 @@ function isRemoteConnection(value: unknown): value is RemoteConnection {
 function normalizeClientConfig(raw: unknown): ClientConfig {
   const stored = (raw ?? {}) as {
     connections?: unknown;
-    defaultConnectionId?: unknown;
-    enabled?: unknown;
     serverUrl?: unknown;
     token?: unknown;
     workspaceId?: unknown;
@@ -3344,17 +3342,7 @@ function normalizeClientConfig(raw: unknown): ClientConfig {
     }
   }
 
-  let defaultConnectionId = typeof stored.defaultConnectionId === 'string'
-    ? stored.defaultConnectionId
-    : undefined;
-  if (!defaultConnectionId && stored.enabled === true && connections.length > 0) {
-    defaultConnectionId = connections[0]!.id;
-  }
-  if (defaultConnectionId && !connections.some(connection => connection.id === defaultConnectionId)) {
-    defaultConnectionId = undefined;
-  }
-
-  return { connections, ...(defaultConnectionId ? { defaultConnectionId } : {}) };
+  return { connections };
 }
 
 /** Every server this app can open a window on. */
@@ -3401,18 +3389,6 @@ export function saveRemoteConnection(connection: RemoteConnection): RemoteConnec
 export function removeRemoteConnection(connectionId: string): void {
   const config = getClientConfig();
   config.connections = config.connections.filter(connection => connection.id !== connectionId);
-  if (config.defaultConnectionId === connectionId) delete config.defaultConnectionId;
-  setClientConfig(config);
-}
-
-/** `null` clears the default, so new windows stay local. */
-export function setDefaultRemoteConnection(connectionId: string | null): void {
-  const config = getClientConfig();
-  if (connectionId && !config.connections.some(connection => connection.id === connectionId)) {
-    throw new Error('Unknown remote connection');
-  }
-  if (connectionId) config.defaultConnectionId = connectionId;
-  else delete config.defaultConnectionId;
   setClientConfig(config);
 }
 
@@ -3468,14 +3444,8 @@ export function migrateLegacyRemoteWorkspaces(): void {
 
   const normalized = normalizeClientConfig(config.clientConfig);
   // A legacy id is a placeholder; persist a real one now that the config is being written.
-  const reissued = new Map<string, string>();
   for (const connection of normalized.connections) {
-    if (!connection.id.startsWith('legacy:')) continue;
-    reissued.set(connection.id, randomUUID());
-    connection.id = reissued.get(connection.id)!;
-  }
-  if (normalized.defaultConnectionId && reissued.has(normalized.defaultConnectionId)) {
-    normalized.defaultConnectionId = reissued.get(normalized.defaultConnectionId);
+    if (connection.id.startsWith('legacy:')) connection.id = randomUUID();
   }
 
   for (const workspace of legacy) {

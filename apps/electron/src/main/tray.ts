@@ -16,7 +16,6 @@ import { join } from 'path'
 import { existsSync } from 'fs'
 import { i18n } from '@craft-agent/shared/i18n'
 import { getWorkspaces } from '@craft-agent/shared/config'
-import { loadWorkspaceDesigns } from '@craft-agent/shared/designs'
 import { mainLog } from './logger'
 import type { RemoteConnection } from '@craft-agent/shared/config/client-config'
 import type { WindowManager } from './window-manager'
@@ -90,32 +89,6 @@ function fallbackWorkspaceId(windowManager: WindowManager): string | undefined {
   return windowManager.getLastActiveWorkspaceId() ?? getWorkspaces()[0]?.id
 }
 
-/**
- * Every design pinned to the tray, across all workspaces, oldest pinned first.
- *
- * A design is pinned by `DesignConfig.pinnedToTrayAt` (presence = pinned — see
- * docs/design-plan.md §2.7). Scanned live on every menu open, so a deleted design
- * or a removed workspace simply is not listed: there is no second list to sync.
- */
-function pinnedDesigns(): Array<{ workspaceId: string; slug: string; name: string }> {
-  const pinned: Array<{ workspaceId: string; slug: string; name: string; at: number }> = []
-  for (const workspace of getWorkspaces()) {
-    let designs
-    try {
-      designs = loadWorkspaceDesigns(workspace.rootPath)
-    } catch (error) {
-      mainLog.warn(`[tray] could not list designs for workspace ${workspace.id}:`, error)
-      continue
-    }
-    for (const design of designs) {
-      const at = design.config.pinnedToTrayAt
-      if (at === undefined) continue
-      pinned.push({ workspaceId: workspace.id, slug: design.config.slug, name: design.config.name, at })
-    }
-  }
-  return pinned.sort((a, b) => a.at - b.at).map(({ at: _at, ...rest }) => rest)
-}
-
 export interface TrayOptions {
   /** Saved servers, offered as windows of their own. Read on every menu open. */
   getConnections?: () => RemoteConnection[]
@@ -140,20 +113,6 @@ function buildMenu(windowManager: WindowManager, options: TrayOptions): Menu {
     })
   }
   if (workspaces.length > 0) items.push({ type: 'separator' })
-
-  // Pinned designs — the design mini-app launcher (docs/design-plan.md §2.7).
-  // Each opens its own window without going through the main interface. Absent
-  // until at least one design is pinned.
-  const pinned = pinnedDesigns()
-  if (pinned.length > 0) {
-    items.push({
-      label: i18n.t('menu.designs'),
-      submenu: pinned.map(design => ({
-        label: design.name,
-        click: () => windowManager.openDesignWindow(design.workspaceId, design.slug),
-      })),
-    })
-  }
 
   // Saved servers, each as its own window.
   const connections = options.getConnections?.() ?? []

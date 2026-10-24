@@ -27,8 +27,6 @@ export interface RemoteConnection {
 export interface ClientConfig {
   /** Servers this app knows how to reach. */
   connections: RemoteConnection[]
-  /** The connection new windows (and launch, when nothing is restored) open on. */
-  defaultConnectionId?: string
 }
 
 /** Every connection's identity is its id; a URL that is already saved is the same server. */

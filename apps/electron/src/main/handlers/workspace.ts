@@ -5,6 +5,7 @@ import type { HandlerDeps } from './handler-deps'
 export const GUI_HANDLED_CHANNELS = [
   RPC_CHANNELS.window.OPEN_WORKSPACE,
   RPC_CHANNELS.window.OPEN_SESSION_IN_NEW_WINDOW,
+  RPC_CHANNELS.window.OPEN_DESIGN_WINDOW,
   RPC_CHANNELS.window.CLOSE,
   RPC_CHANNELS.window.CONFIRM_CLOSE,
   RPC_CHANNELS.window.CANCEL_CLOSE,
@@ -75,6 +76,14 @@ export function registerWorkspaceGuiHandlers(server: RpcServer, deps: HandlerDep
       focused: true,
       initialDeepLink: deepLink,
     })
+  })
+
+  // Open a design in its own window (or focus the one already open on it)
+  server.handle(RPC_CHANNELS.window.OPEN_DESIGN_WINDOW, async (ctx, workspaceId: string, designSlug: string) => {
+    if (!windowManager) return
+    // A remote window opens the design's window on **its** hub; a local one stays local.
+    const remote = ctx.webContentsId ? windowManager.getRemoteForWindow(ctx.webContentsId) : null
+    windowManager.openDesignWindow(workspaceId, designSlug, remote ?? undefined)
   })
 
   // Close the calling window (triggers close event which may be intercepted)

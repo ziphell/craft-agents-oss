@@ -195,6 +195,8 @@ export function createWebApi(options: WebApiOptions): {
       // Open in new tab
       window.open(`${window.location.origin}/?session=${sessionId}`, '_blank')
     },
+    // A design's own window is an Electron window; the browser has nothing to open.
+    openDesignWindow: async () => {},
 
     // Auto-update — not applicable to web (but expose server version for About page)
     checkForUpdates: () => Promise.resolve({ available: false, currentVersion: client.getServerVersion() ?? '' } as any),
@@ -285,7 +287,6 @@ export function createWebApi(options: WebApiOptions): {
     }),
     saveRemoteConnection: () => Promise.reject(new Error('Connection settings are not available in the web UI')),
     removeRemoteConnection: () => Promise.reject(new Error('Connection settings are not available in the web UI')),
-    setDefaultRemoteConnection: () => Promise.reject(new Error('Connection settings are not available in the web UI')),
     connectToRemoteConnection: () => Promise.reject(new Error('Connection settings are not available in the web UI')),
     testClientModeConnection: () => Promise.resolve({ ok: false, error: 'Not available in the web UI' }),
     openRemoteWindow: () => Promise.resolve(),

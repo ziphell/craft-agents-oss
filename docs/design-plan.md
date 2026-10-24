@@ -180,22 +180,11 @@
 
 design 现在只在详情页里看（§2.4）。它应当还能**开在自己的窗口里**——一个精简的独立窗口，去掉应用的主界面，只剩这件 design 加最薄的一层操作。这是**预览面的一种形态**，不是第五种产物：产物仍是那四种，变的只是它在哪儿被呈现。机制上它也不新建容器——窗口里仍是 app renderer 跑同一条 design 路由、同一个 `DesignFrame` 宿主。
 
-**它和"PWA"不是一回事。** 真 PWA（浏览器里 Install、独立 origin + manifest + SW）装不了：`craft-local` 是 Electron 自有 scheme，在 `thumbnail-protocol.ts:registerPrivilegedSchemes` 一次性注册，真浏览器认不得自定义 scheme；仓库现存的 manifest（`apps/webui/src/public/manifest.json`）是**整个应用**的远程壳，不是每一件 design 的。它与**发布副本**（Share 出去的远程链接，§Sharing）也不是一回事：那个在 app 之外、只读、actions 禁用；这个仍在 app 内、仍是活的。**但"入口不经过主界面"这条成立**——走托盘，不是 OS 级安装。
+**它和"PWA"不是一回事。** 真 PWA（浏览器里 Install、独立 origin + manifest + SW）装不了：`craft-local` 是 Electron 自有 scheme，在 `thumbnail-protocol.ts:registerPrivilegedSchemes` 一次性注册，真浏览器认不得自定义 scheme；仓库现存的 manifest（`apps/webui/src/public/manifest.json`）是**整个应用**的远程壳，不是每一件 design 的。它与**发布副本**（Share 出去的远程链接，§Sharing）也不是一回事：那个在 app 之外、只读、actions 禁用；这个仍在 app 内、仍是活的。
 
-**入口：托盘。** **托盘是唯一一直在、又不在主界面里的面**（`docs/tray-plan.md` 的口径：关窗只是收起，托盘是那个随时能回去的入口）。所以 design 的入口放这儿，不放主界面：
+**入口：design 自己的菜单。** 窗口本身仍是"不经过主界面"的呈现面，但入口不再借托盘：**`DesignView` 的 ⋯ 菜单**与 **`DesignTile` 的右键菜单**各放一条 **在独立窗口打开**，两处是同一个动作——同一件 design 已开着就聚焦，不叠窗。托盘不再列 design。
 
-- 托盘菜单加 **Designs ▸** 子菜单，**只列固定（pinned）的 design**。
-- 列表**扁平、跨工作区**；每一项内部仍解析出 `(workspaceId, slug)` 才能开窗——这对用户不可见。
-- 点一条 → **开或聚焦**那件 design 的窗口（同一 design 已开着就聚焦，不叠窗）。
-- 菜单每次打开时**扫盘重建**（扫各工作区的 `designs/`，只取固定了的），与托盘既有口径一致：**没有第二份清单要同步**，删掉 design 或工作区它自己就不列了。
-
-**不做**：不碰冷启动（`createInitialWindows()` / `pendingDeepLink` 的先后不动）、不碰深链（`designs` 不进行 `COMPOUND_ROUTE_PREFIXES`）、不在 `DesignView` 头部加入口。代价是 app 完全退出后托盘不在，得先起 app——常驻应用下这是常态之外。
-
-**固定（pin）。**
-
-- 存在 `design.json` 上：`pinnedToTrayAt: number`——**字段在 = 已固定**，值即顺序。一份描述，不另立字段；design 或工作区没了，托盘扫不到，不会留幽灵条目。
-- 顺序 = **固定顺序**（先固定的在上）。
-- 开关（固定 / 取消固定）**在 `DesignView` 与 `DesignTile` 两个 ⋯ 菜单各放一份**并反映当前状态——因为**必须好取消**：在哪固定就在哪取消，不必回另一个面。写盘走 `updateDesign`（正常写入路径；别直接改盘，digest 与 config watcher 那套要跟上）。
+**不做**：不碰冷启动（`createInitialWindows()` / `pendingDeepLink` 的先后不动）、不碰深链（`designs` 不进行 `COMPOUND_ROUTE_PREFIXES`）。代价是独立窗口要先经过主界面一次——但窗口本身一旦开着，仍是自足的。
 
 **复用（不新造机制）**：
 
@@ -205,17 +194,17 @@ design 现在只在详情页里看（§2.4）。它应当还能**开在自己的
 | 隐藏主界面（不用主界面） | design 窗的根是 `DesignWindow`（`renderer/components/designs/DesignWindow.tsx`）——只包 `AppShellProvider` + `useDesigns`，**根本不渲染 `AppShell`**；`DesignView` 以 `standalone` 渲染：没有头部、没有 Present 栏、没有 deck 栏、没有 banner，frame **无边距 / 无边框 / 无圆角 / 无阴影**——看上去就是那个页面被直接打开。**系统标题栏保留**（拖窗靠它；macOS 上 design 窗不用 `hiddenInset`）；**F11 全屏**（macOS 上另接 `⌃⌘F`；`before-input-event`，只对 design 窗） |
 | 落到这件 design | 窗口地址带 `?route=designs/design/<slug>`（`routes.ts`）；`App.tsx` 解析它拿到 slug，直接渲染 `DesignView`（与主界面同一个组件） |
 | 仍要是"活的" | 窗口里仍是 `DesignFrame` 作宿主，grants / 实时数据 / Present 照旧 |
-| 入口常驻、且不在主界面 | 托盘（`tray.ts` 的 `buildMenu`，纯主进程、无 RPC）；列固定项不必惊动 renderer——主进程本就有 `getWorkspaceDesignsPath` / `loadDesignConfig` |
+| 入口 | `DesignView` / `DesignTile` 的菜单 → `window:openDesignWindow` → `windowManager.openDesignWindow(workspaceId, slug)`；主进程只按 design 定位窗口，没有第二份清单要同步 |
 
 **缺口只有三处**：
 
-1. **窗口身份**：托盘开出的窗必须**自足**——按 `docs/tray-plan.md` §3.7 的**临时窗口**处理：关 = **销毁**（不能因"该工作区只剩它"而被隐藏），**不占工作区条目**（那条是工作区主窗的家），不跨重启恢复。于是从托盘起一个 mini-app，主界面可以从来没开过。
+1. **窗口身份**：从菜单开出的窗必须**自足**——按 `docs/tray-plan.md` §3.7 的**临时窗口**处理：关 = **销毁**（不能因"该工作区只剩它"而被隐藏），**不占工作区条目**（那条是工作区主窗的家），不跨重启恢复。
 2. **按 design 定位窗口**：`windowManager` 现在只记 `{ window, workspaceId }`，"聚焦已有的"要再记住 `designSlug`（一个可选字段就够）。
 3. **窗口自己的呈现**：design 窗去掉一切宿主痕迹——`DesignView` 的头部、Present 栏、deck 栏、两条 banner，以及 frame 自己的边距 / 边框 / 圆角 / 阴影，**只剩那个页面铺满窗口**（只保留"无内容 / 渲染失败"两种状态，否则空白窗口什么也不说）。名字改由**系统标题栏**承载（`windowManager.designTitleFor` + `refreshWindowTitles` 跳过它）；系统标题栏本就是原生帧的一部分，不新增容器。
 
 **为什么保留宿主，而不是让窗口直接加载地址**：直接 `loadURL('craft-local://…/index.html')` 会更薄，但会丢掉 **grants 与实时刷新**——那恰好是 design 之所以是"小应用"的部分；丢了它，独立窗与"Share 出来的只读副本"就只剩本地 / 远程之差。零壳那版更诚实的定位是"把设计导出成一张本地页面"，属于 §2.5「交出去」，不属于"开在哪里"。**所以：保留 `DesignFrame` 宿主。**
 
-**边界**：不新增 scheme、不新增服务、不新增容器；**不追求 OS 级"可安装应用"——托盘就是那个"不经过主界面"的入口，它仍在 app 内，不是系统里的独立 app。** 原先"不做绕开主窗口的桌面 / dock 入口"一条作废：入口恰恰要绕开主界面。
+**边界**：不新增 scheme、不新增服务、不新增容器；**不追求 OS 级"可安装应用"——独立窗口就是那个"只剩这件 design"的入口，它仍在 app 内，不是系统里的独立 app。**
 
 ---
 

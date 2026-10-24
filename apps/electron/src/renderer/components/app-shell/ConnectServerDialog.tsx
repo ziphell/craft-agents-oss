@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useAtomValue } from 'jotai'
-import { AlertTriangle, Pencil, Star, Trash2 } from 'lucide-react'
+import { AlertTriangle, Pencil, Trash2 } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -49,7 +49,6 @@ function statusLabelKey(status: TransportConnectionStatus | 'unknown'): string {
 export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogProps) {
   const { t } = useTranslation()
   const [connections, setConnections] = useState<RemoteConnection[]>([])
-  const [defaultConnectionId, setDefaultConnectionId] = useState<string>()
   const windowConnectionId = useAtomValue(windowServerScopeAtom)
   const windowTransport = useTransportConnectionState()
   const [serverUrl, setServerUrl] = useState('')
@@ -72,7 +71,6 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
     void window.electronAPI.getClientMode()
       .then((info) => {
         setConnections(info.connections)
-        setDefaultConnectionId(info.defaultConnectionId)
       })
       .catch(() => {})
   }, [])
@@ -270,17 +268,6 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
     }
   }
 
-  const handleSetDefault = async (connection: RemoteConnection) => {
-    setError(undefined)
-    try {
-      const next = defaultConnectionId === connection.id ? null : connection.id
-      await window.electronAPI.setDefaultRemoteConnection(next)
-      setDefaultConnectionId(next ?? undefined)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    }
-  }
-
   /**
    * Two questions, two sources. "Can this window work?" is answered by its own socket — the same
    * state the top-bar badge and the reconnect banner read. "Can this machine reach that server?"
@@ -307,7 +294,6 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
               <div className="rounded-lg border">
                 {connections.map((connection) => {
                   const isBusy = busyConnectionId === connection.id
-                  const isDefault = defaultConnectionId === connection.id
                   const isEditing = editingId === connection.id
                   const status = liveStatus(connection.id)
                   return (
@@ -345,15 +331,6 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
                         onClick={() => startEdit(connection)}
                       >
                         <Pencil className="h-3.5 w-3.5" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 w-6 p-0 shrink-0"
-                        title={t('settings.client.makeDefault')}
-                        onClick={() => { void handleSetDefault(connection) }}
-                      >
-                        <Star className={isDefault ? 'h-3.5 w-3.5 fill-current text-accent' : 'h-3.5 w-3.5'} />
                       </Button>
                       <Button
                         variant="ghost"

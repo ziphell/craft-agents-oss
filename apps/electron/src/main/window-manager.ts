@@ -32,8 +32,8 @@ interface ManagedWindow {
    */
   remote?: RemoteWindowTarget
   /**
-   * The design this window belongs to, when it is a design's own window (a
-   * temporary view opened from the tray — docs/design-plan.md §2.7). Absent for
+   * The design this window belongs to, when it is a design's own window (opened
+   * from the design's menu — docs/design-plan.md §2.7). Absent for
    * ordinary workspace windows. Its presence is what makes the window temporary:
    * see the close handler, getWindowStates, getWindowByWorkspace.
    */
@@ -652,8 +652,8 @@ export class WindowManager {
       }
 
       // A design window is a temporary view (docs/design-plan.md §2.7): it closes
-      // for real even when it is the only window of its workspace — a mini-app
-      // opened from the tray must not linger hidden with nothing to bring it back.
+      // for real even when it is the only window of its workspace — it must not
+      // linger hidden with nothing to bring it back.
       if (this.windows.get(webContentsId)?.designSlug) {
         return
       }
@@ -994,13 +994,21 @@ export class WindowManager {
 
   /**
    * Open a design in its own window, or bring its window back if one is already
-   * open. This is the tray's Designs menu entry (docs/design-plan.md §2.7).
+   * open. This is the design's "open in its own window" entry in the renderer
+   * (docs/design-plan.md §2.7).
    *
    * The window is a **temporary view** of the design's workspace: at most one
    * exists per design (clicking again focuses it), it never stands in for the
    * workspace's home window, and it closes for real.
+   *
+   * `remote` opens the window on that hub instead of this machine — a design
+   * belongs to the server that owns its workspace.
    */
-  openDesignWindow(workspaceId: string, designSlug: string): BrowserWindow {
+  openDesignWindow(
+    workspaceId: string,
+    designSlug: string,
+    remote?: RemoteWindowTarget,
+  ): BrowserWindow {
     const existing = [...this.windows.values()].find(
       managed =>
         managed.designSlug === designSlug &&
@@ -1011,6 +1019,7 @@ export class WindowManager {
 
     return this.createWindow({
       workspaceId,
+      ...(remote ? { remote: { ...remote, workspaceId } } : {}),
       focused: true,
       designSlug,
       initialRoute: routes.view.designs(designSlug),

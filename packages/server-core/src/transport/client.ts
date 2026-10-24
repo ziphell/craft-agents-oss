@@ -359,19 +359,26 @@ export class WsRpcClient implements RpcClient {
   // -------------------------------------------------------------------------
 
   /**
-   * Create a WebSocket instance. In Node.js (main process), uses the `ws` library
-   * to support TLS options (e.g. rejectUnauthorized for self-signed certs).
-   * In the renderer (browser), falls back to the global WebSocket.
+   * Create a WebSocket instance. In Node.js (main process and Electron preloads), uses the
+   * `ws` library; in the browser, falls back to the global WebSocket.
+   *
+   * `ws` is preferred whenever Node is available, not just for TLS options: the renderer page's
+   * CSP (`connect-src` in index.html) only allows `ws://localhost` and `ws://127.0.0.1`, so a
+   * socket opened from an already-loaded page to a LAN/tunnel hub is refused by Chromium — with
+   * an error event that carries no message. `ws` is not subject to the page CSP and reports the
+   * real cause (ECONNREFUSED, DNS, TLS), which is why a remote window connects at preload time
+   * but the same server fails when switched to from a loaded window.
    */
   private createWebSocket(url: string): WebSocket {
-    const needsTlsOptions = url.startsWith('wss://') && !this.tlsRejectUnauthorized
-
-    if (needsTlsOptions && typeof process !== 'undefined' && process.versions?.node) {
-      // Node.js / Electron main process — use `ws` library for TLS options
+    if (typeof process !== 'undefined' && process.versions?.node) {
+      // Node.js / Electron — use `ws` library
       try {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const { WebSocket: WsWebSocket } = require('ws') as typeof import('ws')
-        return new WsWebSocket(url, { rejectUnauthorized: false }) as unknown as WebSocket
+        const tlsOptions = url.startsWith('wss://') && !this.tlsRejectUnauthorized
+          ? { rejectUnauthorized: false }
+          : undefined
+        return new WsWebSocket(url, tlsOptions) as unknown as WebSocket
       } catch {
         // Fallback if ws not available
         return new WebSocket(url)
