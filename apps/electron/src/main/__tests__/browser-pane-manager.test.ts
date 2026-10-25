@@ -488,6 +488,8 @@ mock.module('../browser-cdp', () => ({
     isScreencasting = mock(() => false)
     startScreencast = mock(async (_options: { onFrame?: (frame: unknown) => void }) => {})
     stopScreencast = mock(async () => {})
+    /** The still a viewer gets before its page paints: Chromium's own render, no display surface. */
+    captureViewport = mock(async (_options?: unknown) => Buffer.alloc(0))
     /**
      * A recording captures on its own flattened session (`startRecordingScreencast`), so these
      * are separate from the viewer's pair above — recording and watching do not exclude each

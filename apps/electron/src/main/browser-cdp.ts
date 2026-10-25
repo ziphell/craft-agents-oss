@@ -1610,6 +1610,30 @@ export class BrowserCDP {
     }
   }
 
+  /**
+   * The page as it is now, through the debugger session.
+   *
+   * `webContents.capturePage` needs the window to have a **display surface**. A window created in
+   * the background has never been on a display, and on macOS that is fatal for the capture — both
+   * for the window itself and for the parking window holding its tabs ("Current display surface
+   * not available for capture"). Chromium's own screenshot renders the page from the renderer
+   * instead, so it answers for a tab nobody has ever seen.
+   */
+  async captureViewport(options: { format?: 'png' | 'jpeg'; quality?: number } = {}): Promise<Buffer> {
+    const result = await this.send('Page.captureScreenshot', {
+      format: options.format === 'jpeg' ? 'jpeg' : 'png',
+      ...(options.format === 'jpeg' ? { quality: Math.round((options.quality ?? 0.8) * 100) } : {}),
+      // The viewport as the viewer sees it: no clip, nothing beyond it.
+      fromSurface: true,
+    })
+
+    const data = result?.data
+    if (typeof data !== 'string' || data.length === 0) {
+      throw new Error('Page.captureScreenshot returned no image data')
+    }
+    return Buffer.from(data, 'base64')
+  }
+
   async getViewportMetrics(): Promise<ViewportMetrics> {
     const result = await this.send('Runtime.evaluate', {
       expression: `(() => ({

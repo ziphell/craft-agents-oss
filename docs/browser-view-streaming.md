@@ -86,7 +86,38 @@ interface BrowserStreamFrame {
 
 - **只推给订阅者**（`{ to: 'client', clientId }`），不广播：帧是观看者的，不是全体的。
 - 去重与限流在源头上做：静止页不产生新帧；连续帧按目标帧率丢弃（默认 15fps 上限，输入后 1.5s 内不额外降频）。
-- **首帧种子**：screencast 只在页面重绘时说话，而新标签页 / `about:blank` / 错误页 / 静止页可以一直不重绘。所以 `stream-start` 之后，管理器额外抓一张静帧发给**还没有收到过任何画面的观看者**（`ViewStream.sentAny`）。它不占用 15fps 预算，也不会覆盖已经到达的实时帧（发之前再确认一次），因此这些页面和普通页面走同一条路：看到的就是浏览器里真实的那一页，而不是观看端自己画的一个「没有画面」占位。
+- **首帧种子**：screencast 只在页面重绘时说话，而新标签页 / `about:blank` / 错误页 / 静止页可以一直不重绘。所以 `stream-start` 之后，管理器额外抓一张静帧发给**还没有收到过任何画面的观看者**（`ViewStream.sentAny`）。它不占用 15fps 预算，也不会覆盖已经到达的实时帧（发之前再确认一次），因此这些页面和普通页面走同一条路：看到的就是浏览器里真实的那一页，而不是观看端自己画的一个「没有画面」占位。这张静帧走哪条取图路径按平台定，见 §5.2.1。
+
+### 5.2.1 平台差异与兜底
+
+静帧不是锦上添花：在下面这些状态里它是**唯一**的画面来源，而两个平台能答出静帧的路径并不相同。所有数字都来自实测（[macos-capture-verification.md](./macos-capture-verification.md)、[windows-window-state-verification.md](./windows-window-state-verification.md)、[video-understanding-plan.md](./video-understanding-plan.md)）。
+
+| 窗口状态 | macOS | Windows |
+|---|---|---|
+| 在窗口里、可见 | `capturePage` 3–38ms ✅；CDP 50–88ms | `capturePage` 11–31ms ✅；CDP 被压住的 tab 超时 |
+| 最小化 | `capturePage` ✅；CDP ✅ 73ms | `capturePage` ✅；CDP ❌ 超时 |
+| show 过又 hide | `capturePage` ✅ 3–12ms；CDP ✅ | 两条路径都 ❌ 超时 |
+| 从未上屏 | `capturePage` ❌ 0ms 报「Current display surface not available for capture」；**CDP ✅ 98ms** | `capturePage` ❌ 立刻报错；CDP ❌ 超时 |
+| 屏外已显示的停车窗 | `capturePage` ✅（一帧之后）；CDP ✅ | `capturePage` ✅ |
+
+两条规则由此得出：
+
+1. **流本身不依赖 surface，静帧才依赖。** `Page.startScreencast` 在 visible / offscreen / hidden 三态都是 ~120 帧/2s，所以「窗口没上过屏」不该让流断；流断了只可能是页面不重绘（首帧种子覆盖）或整扇窗口没有合成器（下面的静帧泵）。
+2. **静帧按平台问「谁先答」。** macOS 先 CDP 再 `capturePage`（含停车窗兜底），Windows 反过来。判据是 `canCaptureHiddenWindows`（`process.platform !== 'win32'`），这是实测结论而不是偏好：在 Windows 上先问 CDP 会白等一次超时，在 macOS 上先问 `capturePage` 会先吃一次 0ms 的拒绝。
+
+**静帧泵（没有合成器时的降级）**
+
+`stream-start` 之后，如果这路 screencast **一帧都没出**（`ViewCapture.liveFrames === 0`），每 700ms 取一张静帧、按帧的同一格式发给该 capture 的所有观看者：约 1.4fps，够看清 agent 在做什么。
+
+- 触发：有观看者、且 `liveFrames === 0`。
+- 停止：出现第一帧实时画面（之后 screencast 就是画面）、最后一个观看者离开、capture 结束。
+- 取图是异步往返，下一拍等这一拍结束（`taking`），不会叠加。
+
+**不要做的三件事**（每条都有实测代价）
+
+1. 不要为了要 surface 把窗口 `show()` 到显示器上：停车窗已经证明「已显示但屏外」就够合成，且不抢焦点、不进任务栏。
+2. 不要为一次拍摄新建临时窗口：建窗不会更快，等的是那一帧。
+3. 不要裸 `await capturePage`：没有 surface 时它不 reject 而是**永不 settle**，必须带时限（1s）；CDP 侧同理（1500ms）。
 
 ### 5.3 输入
 
@@ -151,14 +182,15 @@ Chromium 的 screencast 是**每个 CDP 会话一路**，且 `startScreencast` �
 
 - 10fps、JPEG q60 的 1280×800 大约 0.5–1.5 MB/s，一条观看流。
 - 画面是"够看"，不是"顺滑"；日常浏览仍应在本地窗口里做。
-- 同一标签页录制/观看互斥（§5.4）。
+- 窗口如果从未产生过实时帧（从未上屏、没有合成器），只有静帧泵的 ~1.4fps，直到它第一次产生实时帧（§5.2.1）。
+- 录制与观看同时进行时有两份编码（录制在扁平子会话上，§5.4）。
 
 ---
 
 ## 8. 代码位置
 
 - **协议**：`packages/shared/src/protocol/channels.ts`（通道）、`routing.ts`（REMOTE_ELIGIBLE）、`events.ts`（`stream-frame` 的推送类型）、`dto.ts`（帧与输入类型）。
-- **源**：`apps/electron/src/main/browser-pane-manager.ts`（`startViewStream` / `stopViewStream` / `dispatchStreamInput`）、`browser-cdp.ts`（已有的 `startScreencast` + 新增 `dispatchInput`）。
+- **源**：`apps/electron/src/main/browser-pane-manager.ts`（`startViewStream` / `stopViewStream` / `dispatchStreamInput`，以及静帧的 `captureViewSeed` 与降级用的 `startViewStillPump`）、`browser-cdp.ts`（已有的 `startScreencast` + 新增 `dispatchInput`）。
 - **入口**：`apps/electron/src/main/handlers/browser.ts`（三个 handler，帧只推给 `ctx.clientId`）。
 - **观看端**：`apps/webui/src/BrowserViewer.tsx` 与 Electron 远程窗口的 `apps/electron/src/renderer/components/browser/RemoteBrowserPanel.tsx`。两者都用 `CHANNEL_MAP` 生成的 API；在 Electron 里 `browserPane.*` 跟随窗口所在服务器（REMOTE_ELIGIBLE），本地窗口连本机、远程窗口连 hub。
 

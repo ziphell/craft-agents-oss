@@ -149,6 +149,23 @@ const SCREENSHOT_FIRST_FRAME_MS = 16
  */
 const VIEW_SEED_RETRY_MS = 250
 /**
+ * How long Chromium's own screenshot gets to answer for a viewer's still.
+ *
+ * `Page.captureScreenshot` renders the page through the debugger session, which is the one path
+ * that answers for a window that has never been on a display — but on Windows it does not answer
+ * at all while the window is hidden (measured: every hidden-window row in `capture-methods.cjs`
+ * times out). Bounded so a platform that will not answer costs a moment, not a viewer.
+ */
+const VIEW_SEED_CDP_TIMEOUT_MS = 1_500
+/**
+ * How often a viewer's picture is refreshed with a still while the tab's screencast says nothing.
+ *
+ * A capture with no live frames is one whose window has no compositor to stream from, so the still
+ * *is* the picture — the timer is what keeps it from being a single frozen one. ~1.4fps is enough
+ * to watch a page be worked on, and the pump stops the moment a live frame arrives.
+ */
+const VIEW_STILL_POLL_MS = 700
+/**
  * How far past the last display a window that must never be seen is *asked* to go.
  *
  * "Off screen" is not a place, it is a relation to the displays — and the displays move: a screen
@@ -1210,6 +1227,27 @@ function viewCaptureKey(instanceId: string, tabId: string): string {
   return `${instanceId}\u0000${tabId}`
 }
 
+/** One tab being watched — see `BrowserPaneManager.startViewStream`. */
+interface ViewCapture {
+  instanceId: string
+  tabId: string
+  /** When the last frame went out — the ~15fps ceiling is per tab, not per viewer. */
+  lastSentAt: number
+  streams: Set<string>
+  /**
+   * Frames the **screencast itself** has delivered.
+   *
+   * Zero means the compositor has said nothing at all: a window that has never been on a display
+   * may have no `display surface` to stream from, and a screencast is only ever as alive as the
+   * compositor behind it. That is what the still pump below is for; the first live frame stops it.
+   */
+  liveFrames: number
+  /** A still is being taken right now — the next tick waits for this one. */
+  taking: boolean
+  /** The still pump, while no live frame has arrived (`startViewStillPump`). */
+  pump: ReturnType<typeof setInterval> | null
+}
+
 /** One viewer's subscription to a tab's capture — see `BrowserPaneManager.startViewStream`. */
 interface ViewStream {
   instanceId: string
@@ -1242,13 +1280,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * the single stream alive, fans frames out to the streams in `streams`, and stops when the
    * last viewer leaves.
    */
-  private viewCaptures: Map<string, {
-    instanceId: string
-    tabId: string
-    /** When the last frame went out — the ~15fps ceiling is per tab, not per viewer. */
-    lastSentAt: number
-    streams: Set<string>
-  }> = new Map()
+  private viewCaptures: Map<string, ViewCapture> = new Map()
   private viewStreamSeq = 0
   /** Told when a stream ends on its own, so the viewer is not left on its last frame. */
   private viewStreamEndedHandler: ((clientId: string, streamId: string, reason: string) => void) | null = null
@@ -3058,8 +3090,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * the screencast, every later one joins it, and the last to leave stops it. That is what makes
    * two people watching one tab cheap — one screencast, one encode, two sends.
    *
-   * Recording is the one thing still exclusive: it owns the tab's screencast outright in this
-   * build, so a tab that is being recorded is refused rather than having its capture replaced.
+   * Recording is not this capture's rival: it runs on its own flattened child session
+   * (`startRecordingScreencast`), so a tab can be watched and recorded at the same time — at the
+   * cost of two encodes while both run.
    */
   async startViewStream(
     instanceId: string,
@@ -3104,7 +3137,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       return { streamId, tabId: tab.id, width: bounds.width, height: bounds.height, lockedBy: tab.heldBy, overlayDismissed: tab.overlayDismissedByPerson }
     }
 
-    capture = { instanceId, tabId: tab.id, lastSentAt: 0, streams: new Set([streamId]) }
+    capture = {
+      instanceId,
+      tabId: tab.id,
+      lastSentAt: 0,
+      streams: new Set([streamId]),
+      liveFrames: 0,
+      taking: false,
+      pump: null,
+    }
     this.viewCaptures.set(key, capture)
 
     try {
@@ -3135,7 +3176,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   private async startViewCapture(
     key: string,
     tab: BrowserTab,
-    capture: { instanceId: string; tabId: string; lastSentAt: number; streams: Set<string> },
+    capture: ViewCapture,
   ): Promise<void> {
     const bounds = tab.tabView.getBounds()
     await tab.cdp.startScreencast({
@@ -3147,6 +3188,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // otherwise each sits on its last frame forever.
       onEnd: (reason) => this.finishViewCapture(key, reason || 'capture-ended'),
       onFrame: (frame) => {
+        // Any frame at all means the compositor is running — the pump has nothing left to cover.
+        capture.liveFrames += 1
         // ~15fps ceiling for the tab: Chromium paints faster than anyone needs to see, and
         // every frame is bandwidth on a link that also carries the conversation.
         const now = Date.now()
@@ -3180,6 +3223,131 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // frame, whatever state it is in.
     const page = tab.tabView.webContents
     if (!page.isDestroyed()) page.invalidate()
+
+    // …and if the window has no compositor to hear that repaint, a still on a timer is the
+    // picture until it does (`startViewStillPump`).
+    this.startViewStillPump(this.instances.get(capture.instanceId) ?? null, tab, capture)
+  }
+
+  /**
+   * Keep stills coming while the tab's screencast delivers nothing.
+   *
+   * A screencast speaks from the compositor, and a window that has never been on a display may
+   * never composite at all — the same window state that makes `capturePage` refuse it. Rather
+   * than putting that window on a display (it is nobody's to show, and may be on another
+   * machine's desk), the tab is photographed on a timer and the still is fanned out like a frame:
+   * the viewer watches the page at ~1.4fps instead of sitting on "waiting for the picture".
+   *
+   * Stops itself the moment a live frame arrives — from then on the screencast is the picture, and
+   * the stills would only be extra encodes. The timer does not keep the process alive.
+   */
+  private startViewStillPump(instance: BrowserInstance | null, tab: BrowserTab, capture: ViewCapture): void {
+    if (!instance || capture.pump) return
+    const timer = setInterval(() => { void this.pumpViewStill(instance, tab, capture) }, VIEW_STILL_POLL_MS)
+    timer.unref?.()
+    capture.pump = timer
+  }
+
+  private stopViewStillPump(capture: ViewCapture): void {
+    if (!capture.pump) return
+    clearInterval(capture.pump)
+    capture.pump = null
+  }
+
+  private async pumpViewStill(instance: BrowserInstance, tab: BrowserTab, capture: ViewCapture): Promise<void> {
+    const key = viewCaptureKey(instance.id, tab.id)
+    // Gone or covered by the screencast: nothing to pump.
+    if (this.viewCaptures.get(key) !== capture || capture.streams.size === 0 || capture.liveFrames > 0) {
+      this.stopViewStillPump(capture)
+      return
+    }
+    // A still is a round trip; the next tick waits for this one rather than stacking another.
+    if (capture.taking) return
+    capture.taking = true
+    try {
+      const still = await this.captureViewSeed(instance, tab)
+      if (!still || this.viewCaptures.get(key) !== capture) return
+
+      const now = Date.now()
+      const bounds = tab.tabView.getBounds()
+      const data = still.toString('base64')
+      for (const streamId of [...capture.streams]) {
+        const viewer = this.viewStreams.get(streamId)
+        if (!viewer) continue
+        viewer.sentAny = true
+        viewer.onFrame({
+          streamId,
+          tabId: tab.id,
+          data,
+          width: bounds.width,
+          height: bounds.height,
+          atMs: now,
+        })
+      }
+    } finally {
+      capture.taking = false
+    }
+  }
+
+  /**
+   * A still of the tab, for a viewer whose pane would otherwise show nothing.
+   *
+   * Two paths, one of which answers in every state a tab can be in: the window's own `capturePage`
+   * (what a parked view answers on Windows) and Chromium's screenshot through the debugger (what
+   * answers for a window that has never been on a display, where `capturePage` says "Current
+   * display surface not available for capture"). Which is asked first is `canCaptureHiddenWindows`
+   * — see the comment inside.
+   */
+  private async captureViewSeed(instance: BrowserInstance, tab: BrowserTab): Promise<Buffer | null> {
+    // Which side is asked first is measured, not a preference. On Windows a parked view answers
+    // `capturePage` and CDP does not come back at all while its window is hidden (`capture-methods.cjs`);
+    // on macOS it is the other way round for a window that has never been on a display — `capturePage`
+    // refuses it (and the parking window its tabs live in) while CDP renders that same page anyway
+    // (the `never-shown` row: immediate "no surface" versus own pixels in 98ms). Asking the side that
+    // answers first is what keeps a Windows viewer from waiting out a CDP timeout on every still.
+    if (this.canCaptureHiddenWindows) {
+      const viaPage = await this.captureViewportStill(tab)
+      if (viaPage) return viaPage
+      return this.captureRecordingSeed(instance, tab, 'view seed')
+    }
+    const viaWindow = await this.captureRecordingSeed(instance, tab, 'view seed')
+    if (viaWindow) return viaWindow
+    return this.captureViewportStill(tab)
+  }
+
+  /**
+   * Chromium's own screenshot, bounded — the path that does not need a display surface.
+   *
+   * `Page.captureScreenshot` renders the page through the debugger session, so a window nobody has
+   * ever looked at can still be photographed. Bounded because the same command does not answer at
+   * all on a hidden window on Windows: a viewer must not wait on a platform that will not speak.
+   */
+  private async captureViewportStill(tab: BrowserTab): Promise<Buffer | null> {
+    const shot = tab.cdp.captureViewport({ format: 'jpeg', quality: 80 })
+    // A command that answers after the bound is not this call's answer anymore, and an unhandled
+    // rejection would be noise about a picture nobody is waiting for.
+    shot.catch(() => {})
+    const timedOut = Symbol('cdp-capture-timeout')
+    let outcome: Buffer | null
+    try {
+      const raced = await Promise.race<Buffer | typeof timedOut>([
+        shot,
+        this.sleep(VIEW_SEED_CDP_TIMEOUT_MS).then<typeof timedOut>(() => timedOut),
+      ])
+      outcome = typeof raced === 'symbol' ? null : raced
+    } catch (error) {
+      mainLog.warn(
+        `[browser-pane] view seed cdp capture failed tab=${tab.id} url=${tab.currentUrl} detail=${error instanceof Error ? error.message : String(error)}`,
+      )
+      return null
+    }
+    if (!outcome) {
+      mainLog.warn(
+        `[browser-pane] view seed cdp capture did not answer within ${VIEW_SEED_CDP_TIMEOUT_MS}ms tab=${tab.id} url=${tab.currentUrl}`,
+      )
+      return null
+    }
+    return outcome.length > 0 ? outcome : null
   }
 
   /**
@@ -3197,7 +3365,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   private async sendViewSeed(
     instance: BrowserInstance,
     tab: BrowserTab,
-    capture: { instanceId: string; tabId: string; lastSentAt: number; streams: Set<string> },
+    capture: ViewCapture,
     attempts = 3,
   ): Promise<void> {
     const waiting = () => [...capture.streams]
@@ -3207,7 +3375,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       if (waiting().length === 0) return
 
-      const seed = await this.captureRecordingSeed(instance, tab, 'view seed')
+      const seed = await this.captureViewSeed(instance, tab)
       if (this.viewCaptures.get(viewCaptureKey(instance.id, tab.id)) !== capture) return
       if (!seed) {
         mainLog.warn(
@@ -3311,6 +3479,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const capture = this.viewCaptures.get(key)
     if (!capture) return
     this.viewCaptures.delete(key)
+    this.stopViewStillPump(capture)
     for (const streamId of [...capture.streams]) {
       const stream = this.viewStreams.get(streamId)
       if (!stream) continue
@@ -3341,6 +3510,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     if (capture.streams.size > 0) return stream
 
     this.viewCaptures.delete(key)
+    this.stopViewStillPump(capture)
     const tab = this.tabForStream(stream)
     if (tab) void tab.cdp.stopScreencast().catch(() => {})
     return stream
