@@ -251,10 +251,12 @@ SPIKE_DONE
 
 - `startViewCapture`：在 `startScreencast` 之前，`tabHome === 'parking'` 时 `raiseParkedView`；
 - `startRecordingForSession`：同样一处，会话录制的 screencast 之前；
-- `pumpViewStill`：停泵判据从"收到过一帧（`liveFrames > 0`）"改成"**页面自己说是可见的**"
-  （`pageIsComposited`）。原来那条判据把"订阅时必然发生的那一帧"当成"合成器在跑"，于是恰好在
-  最需要静帧的 tab 上把静帧关掉。现在只有在页面确实被合成时才停泵；未合成时继续以 ~1.4fps 出
-  CDP 静帧，而这本身又会把页面点亮，下一拍就自动停泵。
+- `pumpViewStill` → **`checkViewHealth`**：改成一个常驻的健康检查，而不是"停掉就再也没人看"的静帧泵。
+  每 700ms 一拍：有帧 → 什么都不做；静默超过 1.5s 且页面已被合成 → 静态页面，也不做；
+  静默且页面**未**被合成 → `raiseParkedView` + 一张 CDP 静帧。原来的实现里，一旦"合成过"就永久停泵，
+  于是**导航把合成打掉之后没有任何东西会发现** —— 这正是"导航后没有画面、把 hub 的窗口放上屏就有了"
+  的原因：`did-navigate` 那次 raise 发生在提交瞬间，新 renderer 可能还没建出来。
+  现在即使 raise 无效，静帧本身也是 CDP 截图（另一种强制合成），下一拍页面就会变成 `visible`。
 - `did-navigate`：每次主框架提交后，home 是停车窗的 tab 再 `raiseParkedView` 一次。
   **一次导航提交会丢合成** —— 实测同一扇窗，导航前后：`visible` / 2200×1690 / 120 帧每 2s →
   `hidden` / 0×0 / 无帧 → `moveTop` 后又是 `visible` / 2200×1690 / 120 帧。这解释了

@@ -223,9 +223,6 @@ app.whenReady().then(async () => {
     say('SPIKE_ROW_C ' + JSON.stringify(rowC))
 
     say('SPIKE_DONE')
-    c.win.destroy()
-    parking.destroy()
-    a.win.destroy()
     app.exit(0)
   } catch (error) {
     say('SPIKE_ERROR ' + (error && error.stack ? error.stack : String(error)))
