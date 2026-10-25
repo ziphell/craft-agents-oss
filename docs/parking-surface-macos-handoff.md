@@ -257,6 +257,17 @@ SPIKE_DONE
   于是**导航把合成打掉之后没有任何东西会发现** —— 这正是"导航后没有画面、把 hub 的窗口放上屏就有了"
   的原因：`did-navigate` 那次 raise 发生在提交瞬间，新 renderer 可能还没建出来。
   现在即使 raise 无效，静帧本身也是 CDP 截图（另一种强制合成），下一拍页面就会变成 `visible`。
+
+  实机验证（导航到 baidu 的那一次）：
+
+  ```
+  14:01:01.044  raised the parked view after a commit          ← 提交瞬间的 raise，单独没有用
+  14:01:01.503  view health check reordered … quiet=9096ms     ← 0.46s 后健康检查接管
+  14:01:01.568  view capture resumed … quiet=9161ms frames=2   ← 65ms 后帧回来
+  ```
+
+  `quiet=9096ms` 不是恢复耗时：那是一个静态页面自己 9 秒没有重绘（每次都因"静默但已合成"而放过），
+  真正的恢复是从提交到 `resumed` 的 **0.52s**。之前的表现是"永远不回来，除非把 hub 的窗口放上屏"。
 - `did-navigate`：每次主框架提交后，home 是停车窗的 tab 再 `raiseParkedView` 一次。
   **一次导航提交会丢合成** —— 实测同一扇窗，导航前后：`visible` / 2200×1690 / 120 帧每 2s →
   `hidden` / 0×0 / 无帧 → `moveTop` 后又是 `visible` / 2200×1690 / 120 帧。这解释了
@@ -269,6 +280,10 @@ SPIKE_DONE
 - `keepShowing`：停车窗被最小化/隐藏后回来时，`restore()` + `showInactive()` 之外再 `moveTop()`。
   回来 ≠ 重新被合成。只在真的回来过时才 order —— 每次显示变化都 order 会让它无谓地压住别的
   停车窗。
+- `startRecordingForSession` → **`checkRecordingHealth`**：同一个健康检查也覆盖录制。录制也是一条
+  screencast，导航后同样静默，而它没有 viewer 那条静帧兜底（输出是视频，没有"补一张静帧"这回事）。
+  所以静默且未合成时：`raiseParkedView` + `page.invalidate()`（order 恢复合成，invalidate 逼一帧
+  让录制重新有帧可写）。它随 `finished` 一起结束。
 
 那个 `tabHome === 'parking'` 的判断不能省：`raiseParkedView` 会无条件 `addChildView`，
 否则会把一扇正在人眼前窗口里的 tab 拽进停车窗。

@@ -3315,6 +3315,36 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
+   * The same watch for a **recording**'s screencast — see `checkViewHealth`.
+   *
+   * A recording has no viewer to fall back on: there is no still to send (its output is video), so
+   * the only answer is the other half of the same call — order the window front and give the page a
+   * reason to repaint. Nothing is done while the recording is delivering frames, and nothing is done
+   * for a tab whose home is the person's own window (it has a surface by being looked at).
+   */
+  private async checkRecordingHealth(
+    instance: BrowserInstance,
+    tab: BrowserTab,
+    lastFrameAt: () => number,
+  ): Promise<void> {
+    if (!this.instances.has(instance.id)) return
+    // A closed tab keeps its id but has nothing to order: the recording is ending anyway.
+    const page = tab.tabView.webContents
+    if (!page || page.isDestroyed()) return
+    if (this.tabHome(instance, tab) !== 'parking') return
+    if (Date.now() - lastFrameAt() < VIEW_QUIET_MS) return
+    if (await this.pageIsComposited(tab)) return
+
+    this.raiseParkedView(instance, tab)
+    // Ordering alone restores the compositor but not a repaint: a still page would stay quiet, so
+    // ask for the one frame the recording needs to prove it is alive again.
+    page.invalidate()
+    mainLog.info(
+      `[browser-pane] recording health check reordered the window instance=${instance.id} tab=${tab.id} quiet=${Date.now() - lastFrameAt()}ms`,
+    )
+  }
+
+  /**
    * Whether the page is being composited — the thing a screencast needs, and the thing a frame count
    * cannot answer.
    *
@@ -4383,13 +4413,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // answers there while a hidden one does not: `capture-methods.cjs`).
     const home = this.tabHome(instance, tab)
     const livesInTheWindow = home === 'window'
-    // Which state the capture is being asked in, once per call: the answer to "a shot worked, so
-    // something must have given this view a surface — what?" is in these five values and nowhere
-    // else (a window `show` and a CDP command are both silent in the log today).
-    const windowGone = instance.window.isDestroyed()
-    mainLog.info(
-      `[browser-pane] ${options.errorPrefix} capture state instance=${instance.id} tab=${tab.id} mode=${options.mode} home=${home} hasBeenShown=${instance.hasBeenShown} isVisible=${instance.isVisible} windowVisible=${windowGone ? 'destroyed' : instance.window.isVisible()} windowMinimized=${windowGone ? 'destroyed' : instance.window.isMinimized()} loading=${tab.isLoading}`,
-    )
 
     // A parked tab's view can be under a sibling in its own window, or its window under another
     // workspace's — either leaves it with no surface to copy (`raiseParkedView`). Bring it to the
@@ -4429,9 +4452,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         if (attempt > 1) {
           warnings.push(`Capture recovered after ${attempt} attempt${attempt === 1 ? '' : 's'}.`)
         }
-        mainLog.info(
-          `[browser-pane] ${options.errorPrefix} capture ok instance=${instance.id} tab=${tab.id} mode=${options.mode} arm=in-place attempt=${attempt} home=${home} size=${result.width}x${result.height}`,
-        )
         return { imageBuffer: result.buffer, imageFormat: result.format, imageWidth: result.width, imageHeight: result.height, warnings }
       }
 
@@ -4479,9 +4499,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
         if (result) {
           parked = result
-          mainLog.info(
-            `[browser-pane] ${options.errorPrefix} capture ok instance=${instance.id} tab=${tab.id} mode=${options.mode} arm=parked attempt=${attempt} home=${home} size=${result.width}x${result.height}`,
-          )
           break
         }
 
@@ -5231,6 +5248,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // window has been ordered front, and a recording of a page that never paints is one frame.
     if (this.tabHome(instance, tab) === 'parking') this.raiseParkedView(instance, tab)
 
+    /** When the recording's own screencast last delivered a frame — see the health check below. */
+    let lastFrameAt = 0
+
     const result = await this.sessionRecordings.start({
       sessionId,
       tabId: tab.id,
@@ -5241,8 +5261,17 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // The recording's frames come through a **second** CDP session on the tab
       // (`startRecordingScreencast`), so a viewer's stream on the page's own session keeps
       // running while this records. `size` is the view it captures.
+      //
+      // Every frame is also stamped here: the recorder consumes them, so this is the only place that
+      // can see the stream go quiet — which is what the health check below watches for.
       capture: {
-        startScreencast: (options) => tab.cdp.startRecordingScreencast(options),
+        startScreencast: (options) => tab.cdp.startRecordingScreencast({
+          ...options,
+          onFrame: (frame) => {
+            lastFrameAt = Date.now()
+            options.onFrame(frame)
+          },
+        }),
         stopScreencast: () => tab.cdp.stopRecordingScreencast(),
       },
       size: tab.tabView.getBounds(),
@@ -5263,6 +5292,18 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     // The page's own half of the observation starts with the recording (`recording-observer.ts`).
     void this.syncRecordingObserver(instance.id, tab.id)
+
+    // A recording is a screencast too, and it goes quiet for exactly the reason a viewer's does — a
+    // commit leaves the new document uncomposited and nothing else in the process notices. Watched
+    // from here because ordering the window front is this layer's to do; it ends with the recording.
+    let checking = false
+    const health = setInterval(() => {
+      if (checking) return
+      checking = true
+      void this.checkRecordingHealth(instance, tab, () => lastFrameAt).finally(() => { checking = false })
+    }, VIEW_STILL_POLL_MS)
+    health.unref?.()
+    void result.finished.finally(() => clearInterval(health))
 
     const recording = ref(result.state)
     const extension = result.state.file.split('.').pop() ?? ''
