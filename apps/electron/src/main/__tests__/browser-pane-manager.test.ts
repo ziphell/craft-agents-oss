@@ -287,6 +287,9 @@ function createMockWindow(opts?: { width?: number; height?: number; minWidth?: n
     // decide a window is `transient` (`hideFromWindowLists`).
     excludedFromShownWindowsMenu: false,
     setAlwaysOnTop: mock((_flag: boolean, _level?: string) => {}),
+    // Ordering a window front is what hands its views a surface on macOS (`parkTab`,
+    // `raiseParkedView`, `keepShowing`), so every fake window has one.
+    moveTop: mock(() => {}),
     // The window's place, for a parking window that has to stay off every display whatever the
     // person does to their screens (`keepOffEveryDisplay`), and its taskbar flag.
     getBounds: mock(() => ({ x: winX, y: winY, width: contentWidth, height: contentHeight })),
@@ -2425,6 +2428,10 @@ describe('BrowserPaneManager', () => {
     const behind = instance.tabs[1]
     const parking = instance.parkingWindow
     expect(parking).toBeTruthy()
+    // Parking a view puts it on top of its window (`addChildView`) **and** orders that window front:
+    // a parking window that is not the top window hands its views no surface on macOS, and there is
+    // one of these per browser window all asking for the same spot.
+    expect(parking.moveTop).toHaveBeenCalled()
 
     // Put past the right edge of the only display (0..1920) — and far past it, not just past the
     // window's own edge: this is a request the desktop may cap (measured: it lands at 16383 whatever
@@ -2446,11 +2453,17 @@ describe('BrowserPaneManager', () => {
     // And it may not stop being **shown**: a window that is not shown is not composited, and the
     // views inside it lose the viewport the freeze is for. Nothing about it is the person's, so a
     // shell-wide "minimize everything" does not get to leave it that way.
+    parking.moveTop.mockClear()
     parking.minimize()
     expect(parking.restore).toHaveBeenCalled()
     expect(parking.isMinimized()).toBe(false)
+    // …and it is ordered front again, because being shown again is not being composited again: the
+    // views inside it stay uncomposited until the window is the top window.
+    expect(parking.moveTop).toHaveBeenCalled()
+    parking.moveTop.mockClear()
     parking.hide()
     expect(parking.isVisible()).toBe(true)
+    expect(parking.moveTop).toHaveBeenCalled()
     // …while the tab in it is left alone, wherever the parking window had to go.
     expect(instance.window.contentView.children).not.toContain(behind.tabView)
 

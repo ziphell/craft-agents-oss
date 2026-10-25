@@ -175,6 +175,39 @@ app.whenReady().then(async () => {
     rowA.armB_afterMoveTop = await captureRow(a.view.webContents, { stayHidden: true, stayAwake: true })
     // The viewer's own sink, on the state `startViewCapture` now sets up before subscribing.
     rowA.screencastFrames2s = await screencastFrames(a.view.webContents, 2000)
+
+    // What does a commit/relayout do to that surface? `layoutAllViews` runs on every navigation and
+    // parks the view again (`addChildView` + `setBounds`) and re-asserts its corner radius. Each of
+    // those is applied here on the primed view, with `moveTop` restoring it in between so the next
+    // test starts from the same state. The question is "which one loses the picture", not "does any".
+    const step = async (label, apply) => {
+      apply()
+      await sleep(16)
+      const result = await captureRow(a.view.webContents, { stayHidden: true, stayAwake: true })
+      // Restore before the next one, so a failure is that step's and not the previous one's.
+      parking.moveTop()
+      await sleep(16)
+      return { label, result, restored: await captureRow(a.view.webContents, { stayHidden: true, stayAwake: true }) }
+    }
+    rowA.afterSteps = [
+      await step('addChildView', () => parking.contentView.addChildView(a.view)),
+      await step('setBounds', () => a.view.setBounds({ x: 0, y: 0, width: W, height: H })),
+      await step('setBorderRadius', () => a.view.setBorderRadius(10)),
+      await step('invalidate', () => a.view.webContents.invalidate()),
+    ]
+
+    // …and the reported symptom itself: a *commit* — the address bar's Enter. A new document (and,
+    // cross-site, a new renderer) may be born without the compositing the old one had, which would
+    // be exactly why the picture comes back only when something asks for the view again.
+    await a.view.webContents.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(PAGE_HTML.replace('#264', '#426'))}`).catch(() => {})
+    await sleep(800)
+    rowA.pageAfterNavigate = await readPage(a.view.webContents)
+    rowA.afterNavigate = await captureRow(a.view.webContents, { stayHidden: true, stayAwake: true })
+    parking.moveTop()
+    await sleep(16)
+    rowA.pageAfterNavigateMoveTop = await readPage(a.view.webContents)
+    rowA.afterNavigateMoveTop = await captureRow(a.view.webContents, { stayHidden: true, stayAwake: true })
+    rowA.screencastAfterNavigate2s = await screencastFrames(a.view.webContents, 2000)
     say('SPIKE_ROW_A ' + JSON.stringify(rowA))
 
     // --- C: same thing, but a CDP screenshot first — the state `parking-capture-order.cjs` primes ---

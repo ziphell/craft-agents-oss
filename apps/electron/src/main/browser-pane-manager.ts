@@ -6520,14 +6520,23 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    */
   private keepShowing(window: BrowserWindow): void {
     if (window.isDestroyed()) return
+    let cameBack = false
     if (window.isMinimized()) {
       window.restore()
+      cameBack = true
       mainLog.warn('[browser-pane] the parking window was minimized; restored it off screen')
     }
     if (!window.isVisible()) {
       window.showInactive()
+      cameBack = true
       mainLog.warn('[browser-pane] the parking window was hidden; showed it again off screen')
     }
+    // Coming back is not being composited again: `restore` and `showInactive` do not order the window
+    // front, and a parking window that is not the top window hands its views no surface — it shares
+    // its spot with every other browser window's parking window (`offscreenSpot`). Only when it
+    // actually came back: re-ordering on every display change would put this one over the others
+    // for nothing.
+    if (cameBack) window.moveTop()
     this.keepOffEveryDisplay(window)
   }
 
@@ -6729,6 +6738,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // Appended, so it is the top one: the tab just parked is the one that gets a surface, and the
     // active tab may be covered by it — the parking stack carries no "current tab" meaning.
     parking.contentView.addChildView(tab.tabView)
+    // …and the window itself, because a view is only composited while the window holding it is
+    // ordered front — and there is more than one parking window (one per browser window, all asking
+    // `offscreenSpot` for the same spot), so "this view is on top" is only true once its window is
+    // the top window. Measured: `addChildView` alone leaves the page `hidden` and the capture 0×0
+    // until `moveTop` (`agent-first-shot.cjs`).
+    parking.moveTop()
   }
 
   /**
@@ -8993,6 +9008,17 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // installed where that view is (`loadNativeOverlay`).
 
     tabWc.on('did-navigate', (_event, urlFromEvent) => {
+      // A commit is a new document, and a new document is born without the compositing the old one
+      // had. Measured on a parking window's view: the moment a navigation lands the page is
+      // `hidden` again, `capturePage` answers 0×0 and the screencast goes quiet; ordering the
+      // window front once brings back `visible`, 2200×1690 and 120 frames/2s
+      // (`agent-first-shot.cjs`). Without this, the address bar's Enter is a picture that only
+      // comes back when something else asks for the view (a tab switch) — the reported symptom,
+      // and the reason it is macOS-shaped: Windows has no such ordering state.
+      if (this.tabHome(instance, tab) === 'parking') {
+        this.raiseParkedView(instance, tab)
+        mainLog.info(`[browser-pane] raised the parked view after a commit id=${instance.id} tab=${tab.id}`)
+      }
       // Our error page is standing in for the failed document: it must not become the
       // tab's address or replace the title/icon that describe the failure.
       if (tab.internalPage === 'error') {

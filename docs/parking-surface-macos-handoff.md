@@ -255,6 +255,18 @@ SPIKE_DONE
   （`pageIsComposited`）。原来那条判据把"订阅时必然发生的那一帧"当成"合成器在跑"，于是恰好在
   最需要静帧的 tab 上把静帧关掉。现在只有在页面确实被合成时才停泵；未合成时继续以 ~1.4fps 出
   CDP 静帧，而这本身又会把页面点亮，下一拍就自动停泵。
+- `did-navigate`：每次主框架提交后，home 是停车窗的 tab 再 `raiseParkedView` 一次。
+  **一次导航提交会丢合成** —— 实测同一扇窗，导航前后：`visible` / 2200×1690 / 120 帧每 2s →
+  `hidden` / 0×0 / 无帧 → `moveTop` 后又是 `visible` / 2200×1690 / 120 帧。这解释了
+  "地址栏回车后没有画面、新建标签页再切回来就有"：切 tab 走的正是 `raiseParkedView`。
+  Windows 不需要这一步，因为它没有这个 ordering 状态。
+- `parkTab`：`addChildView` 之后补 `parking.moveTop()`。让"被 park ⇒ 被合成"变成结构事实，
+  而不是靠每个取图调用者记得先 raise。**停车窗不止一个**（每个浏览器窗口一个，`offscreenSpot`
+  对同尺寸给出同一个点，所以它们完全重叠），"这个 view 在最上层"只有在它那扇窗是最上层窗口时
+  才成立，这一步就是那个前提。
+- `keepShowing`：停车窗被最小化/隐藏后回来时，`restore()` + `showInactive()` 之外再 `moveTop()`。
+  回来 ≠ 重新被合成。只在真的回来过时才 order —— 每次显示变化都 order 会让它无谓地压住别的
+  停车窗。
 
 那个 `tabHome === 'parking'` 的判断不能省：`raiseParkedView` 会无条件 `addChildView`，
 否则会把一扇正在人眼前窗口里的 tab 拽进停车窗。
