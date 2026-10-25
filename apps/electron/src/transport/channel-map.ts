@@ -410,6 +410,7 @@ export const CHANNEL_MAP = {
   'browserPane.streamStop': invoke(RPC_CHANNELS.browserPane.STREAM_STOP),
   'browserPane.streamControl': invoke(RPC_CHANNELS.browserPane.STREAM_CONTROL),
   'browserPane.streamInput': invoke(RPC_CHANNELS.browserPane.STREAM_INPUT),
+  'browserPane.streamCaret': invoke(RPC_CHANNELS.browserPane.STREAM_CARET),
   'browserPane.onStreamFrame': listener(RPC_CHANNELS.browserPane.STREAM_FRAME),
   'browserPane.onStreamEnded': listener(RPC_CHANNELS.browserPane.STREAM_ENDED),
   'browserPane.emptyStateLaunch': invoke(RPC_CHANNELS.browserPane.LAUNCH),

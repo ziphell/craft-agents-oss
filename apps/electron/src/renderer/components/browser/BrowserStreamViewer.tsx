@@ -59,6 +59,7 @@ import {
 } from '@/atoms/browser-pane'
 import { browserProfilesAtom, DEFAULT_BROWSER_PROFILE_ID, refreshBrowserProfilesAtom } from '@/atoms/browser-profiles'
 import type {
+  BrowserCaretRect,
   BrowserInstanceInfo,
   BrowserStreamFrame,
   BrowserStreamInput,
@@ -83,6 +84,18 @@ type Phase = 'idle' | 'connecting' | 'waiting' | 'live' | 'ended'
 
 /** A first frame this late means the capture is not coming: retry, then say so. */
 const FIRST_FRAME_TIMEOUT_MS = 9_000
+
+/**
+ * Whether a key belongs to an input method rather than to the page.
+ *
+ * `isComposing` covers a live composition; `keyCode` 229 is what Chromium reports for a key the
+ * IME consumed — including the one that starts the composition, before `isComposing` is true —
+ * and `Process` is the key name that comes with it. Forwarding such a key would type the pinyin
+ * into the page while it is still being spelled out.
+ */
+function imeOwnsKey(event: React.KeyboardEvent<HTMLTextAreaElement>): boolean {
+  return event.nativeEvent.isComposing || event.keyCode === 229 || event.key === 'Process'
+}
 
 export interface BrowserStreamViewerProps {
   /** Which workspace's browser to show; `undefined` means every instance visible to this client. */
@@ -150,6 +163,20 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
 
   const stageRef = useRef<HTMLDivElement | null>(null)
   const surfaceRef = useRef<HTMLDivElement | null>(null)
+  /**
+   * The pane's editable target, invisible.
+   *
+   * An input method only composes on something editable, so the pane keeps its focus on this
+   * textarea instead of on a plain div: ordinary keys are forwarded from here, and a composition
+   * stays in here until it is done.
+   */
+  const inputRef = useRef<HTMLTextAreaElement | null>(null)
+  /** The address bar, the one other place the keyboard can belong. */
+  const addressRef = useRef<HTMLInputElement | null>(null)
+  /** Whether an input method is composing right now, readable from handlers before a render. */
+  const composingRef = useRef(false)
+  /** The pending caret read, kept so input bursts collapse into one. */
+  const caretTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   /** The picture. Painted imperatively; never re-mounted between frames. */
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const pendingFrameRef = useRef<BrowserStreamFrame | null>(null)
@@ -175,8 +202,6 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
     attempts: 0,
     timer: null,
   })
-  /** The pointer locator, moved by hand: sixty renders a second is not what a cursor is worth. */
-  const cursorRef = useRef<HTMLDivElement | null>(null)
 
   /** This client's workspace first: another workspace's pages are not this panel's business. */
   const visibleInstances = filterInstancesForWorkspace(instances, workspaceId ?? null)
@@ -300,7 +325,10 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
     sawFrameRef.current = false
     clearStallTimer()
     clearPicture()
-    if (cursorRef.current) cursorRef.current.style.opacity = '0'
+    if (caretTimerRef.current) {
+      clearTimeout(caretTimerRef.current)
+      caretTimerRef.current = null
+    }
     if (reconnectRef.current.timer) {
       clearTimeout(reconnectRef.current.timer)
       reconnectRef.current.timer = null
@@ -682,13 +710,34 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
     return () => observer.disconnect()
   }, [open])
 
-  // The keyboard belongs to the page once there is a page. Not while the address bar is being
-  // used: the person is typing there, and taking the focus would eat the first keystroke.
+  /**
+   * Where the keyboard belongs once a tab is on screen.
+   *
+   * The same rule the browser window follows (`wantsAddressBarFocus`): into the page, and into
+   * the address bar only for a tab nobody has pointed anywhere — the new-tab page or
+   * `about:blank` — where there is nothing in the page to type into. Chrome that acts on the
+   * page is not a place the keyboard stays: clicking reload, back or a rail tab must leave the
+   * keys going to the page, like it does in the window on the hub.
+   *
+   * Nothing happens while the person is typing in the address bar: that focus is theirs.
+   */
+  const focusShownPage = useCallback(() => {
+    if (document.activeElement instanceof HTMLInputElement) return
+    const target = selectedRef.current
+    const shown = visibleInstancesRef.current
+      .find((instance) => instance.id === target?.instanceId)
+      ?.tabs?.find((tab) => tab.id === target?.tabId)
+    const nothingToTypeInto = !shown || !shown.url || shown.url === 'about:blank' || shown.url === 'about:newtab'
+    if (nothingToTypeInto) addressRef.current?.focus()
+    else inputRef.current?.focus()
+  }, [])
+
+  // The keyboard belongs to the page once there is a page — including after a tab switch, which
+  // is why the target is part of this: the stream may not have left `live` to get here.
   useEffect(() => {
     if (!open || phase !== 'live') return
-    if (document.activeElement instanceof HTMLInputElement) return
-    surfaceRef.current?.focus()
-  }, [open, phase])
+    focusShownPage()
+  }, [open, phase, selected?.instanceId, selected?.tabId, focusShownPage])
 
   // Escape closes the viewer, as it does every other fullscreen overlay. It is not forwarded to
   // the page: the overlay is what a person is looking at, and "leave" has to be one keystroke.
@@ -702,6 +751,56 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [open, closeView])
+
+  /**
+   * Park the pane's invisible input on the caret the server reports.
+   *
+   * The input method anchors its candidate window to this element, so it should sit where the
+   * person is actually typing — the caret of the field in the page, mapped through the same
+   * picture box every pointer coordinate goes through. `null` (nothing editable focused) leaves
+   * the input where the last click put it.
+   */
+  const positionInputAtCaret = useCallback((caret: BrowserCaretRect) => {
+    // Mid-composition the IME is the one showing something: moving the target under it would
+    // make the candidate window jump for no reason.
+    if (composingRef.current) return
+    const size = frameSizeRef.current
+    const picture = canvasRef.current
+    const input = inputRef.current
+    if (!size || !picture || !input) return
+    const box = picture.getBoundingClientRect()
+    if (box.width === 0 || box.height === 0) return
+    input.style.left = `${box.left + (caret.x / size.width) * box.width}px`
+    input.style.top = `${box.top + (caret.y / size.height) * box.height}px`
+  }, [])
+
+  /** Ask the server where the caret is. A refusal is not news: the last anchor stays. */
+  const syncCaret = useCallback(async () => {
+    const streamId = streamRef.current
+    if (!streamId) return
+    try {
+      const caret = await window.electronAPI.browserPane.streamCaret(streamId)
+      if (streamRef.current !== streamId || !caret) return
+      positionInputAtCaret(caret)
+    } catch {
+      /* stream ended, or the page is mid-navigation */
+    }
+  }, [positionInputAtCaret])
+
+  /**
+   * One caret read per burst of input, not one per event.
+   *
+   * A click or a committed word settles the caret a moment after it lands — the page's focus and
+   * layout run first — so this waits a beat and then asks once. Pointer moves schedule nothing:
+   * they move no caret.
+   */
+  const scheduleCaretSync = useCallback(() => {
+    if (caretTimerRef.current) clearTimeout(caretTimerRef.current)
+    caretTimerRef.current = setTimeout(() => {
+      caretTimerRef.current = null
+      void syncCaret()
+    }, 150)
+  }, [syncCaret])
 
   const send = useCallback((events: BrowserStreamInput[]) => {
     const streamId = streamRef.current
@@ -717,7 +816,10 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
       controlRef.current = false
       setNotice(err instanceof Error ? err.message : String(err))
     })
-  }, [acquireControl])
+    // This input may have moved the caret — a click, a key, a scroll. Re-read it once the burst
+    // settles, so the input method points at the field rather than at the last pointer position.
+    if (events.some((event) => !(event.type === 'mouse' && event.action === 'move'))) scheduleCaretSync()
+  }, [acquireControl, scheduleCaretSync])
 
   /**
    * The wheel is a native listener, not `onWheel`.
@@ -772,16 +874,6 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
       x: clamp(Math.round(((event.clientX - box.left) / box.width) * size.width), 0, Math.max(0, size.width - 1)),
       y: clamp(Math.round(((event.clientY - box.top) / box.height) * size.height), 0, Math.max(0, size.height - 1)),
     }
-  }
-
-  /** Put the locator where the pointer is, in stage coordinates. No state: this runs per move. */
-  const moveCursor = (event: { clientX: number; clientY: number }) => {
-    const stage = stageRef.current
-    const cursor = cursorRef.current
-    if (!stage || !cursor) return
-    const box = stage.getBoundingClientRect()
-    cursor.style.transform = `translate(${event.clientX - box.left}px, ${event.clientY - box.top}px) translate(-50%, -50%)`
-    cursor.style.opacity = '1'
   }
 
   const mouse = (action: 'move' | 'down' | 'up') => (event: React.MouseEvent<HTMLElement>) => {
@@ -886,9 +978,13 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
     // The window's own state push may have moved the viewer already (`onStateChanged`); a second
     // watch here would stop the stream it just started.
     const current = selectedRef.current
-    if (current?.instanceId === instanceId && current.tabId === tabId) return
+    if (current?.instanceId === instanceId && current.tabId === tabId) {
+      // Already the picture: the click only carried the keyboard into the rail, so put it back.
+      focusShownPage()
+      return
+    }
     await watch({ instanceId, tabId })
-  }, [watch])
+  }, [focusShownPage, watch])
 
   /**
    * A new tab starts on the window's empty-state document. The window's own state push is what
@@ -934,8 +1030,14 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
       : verb === 'forward' ? api.goForward(instanceId)
       : verb === 'reload' ? api.reload(instanceId)
       : api.stop(instanceId)
-    void call.catch((err) => setNotice(err instanceof Error ? err.message : String(err)))
-  }, [currentInstance?.id])
+    void call
+      .then(() => {
+        // The button that was clicked is not where the keyboard goes: the page is. (Stop swaps
+        // itself for reload, which would otherwise drop the focus on the floor.)
+        focusShownPage()
+      })
+      .catch((err) => setNotice(err instanceof Error ? err.message : String(err)))
+  }, [currentInstance?.id, focusShownPage])
 
   const goToAddress = useCallback(async () => {
     // The window the stream is on, not a lookup that can be a beat behind a new tab.
@@ -946,6 +1048,9 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
     try {
       // As typed: the server normalises, and a bare word is a search there.
       await window.electronAPI.browserPane.navigate(instanceId, target)
+      // The address was typed, so the page it opened is where the keyboard goes next — whatever
+      // the list still says about that tab being blank.
+      inputRef.current?.focus()
     } catch (err) {
       navigatingRef.current = false
       setAddress(currentUrl)
@@ -1233,6 +1338,7 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
             {/* The address: what the tab is at, editable, and one Enter away from being where it goes. */}
             <div className="mx-1.5 flex h-8 min-w-0 flex-1 items-center rounded-lg bg-muted/50 px-2.5 transition-colors focus-within:bg-muted">
               <input
+                ref={addressRef}
                 value={address}
                 onChange={(event) => setAddress(event.target.value)}
                 onFocus={(event) => {
@@ -1250,12 +1356,14 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
                     void goToAddress()
                     event.currentTarget.blur()
                   } else if (event.key === 'Escape') {
-                    // Back to the page's address, not out of the viewer.
+                    // Back to the page's address, not out of the viewer — and back to the page,
+                    // which is where the keyboard was before the address bar took it.
                     event.preventDefault()
                     event.stopPropagation()
                     setEditingAddress(false)
                     setAddress(currentUrl)
                     event.currentTarget.blur()
+                    focusShownPage()
                   }
                 }}
                 placeholder={t('browser.urlPlaceholder')}
@@ -1269,41 +1377,24 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
           <div ref={stageRef} className="relative min-h-0 flex-1 overflow-hidden bg-[#0b0c0f]">
             <div
               ref={surfaceRef}
-              tabIndex={0}
               className="absolute inset-0 flex cursor-default items-center justify-center outline-none"
               onMouseDown={(event) => {
-                // Preventing the default would drop the focus the keyboard needs; take it by hand.
-                surfaceRef.current?.focus()
+                // The focus belongs to the hidden input below: the default would move it to the
+                // document instead, and a blurred editable target kills the keyboard and any
+                // composition in flight. It is also parked under the pointer, because that is
+                // where an input method anchors its candidate window.
+                event.preventDefault()
+                const input = inputRef.current
+                if (input) {
+                  input.style.left = `${event.clientX}px`
+                  input.style.top = `${event.clientY}px`
+                  input.focus()
+                }
                 mouse('down')(event)
               }}
               onMouseUp={mouse('up')}
-              onMouseMove={(event) => {
-                // The locator marks a point on the page; over the letterbox it would mark nothing.
-                if (toTabPoint(event)) moveCursor(event)
-                else if (cursorRef.current) cursorRef.current.style.opacity = '0'
-                mouse('move')(event)
-              }}
-              onMouseLeave={() => {
-                if (cursorRef.current) cursorRef.current.style.opacity = '0'
-              }}
+              onMouseMove={mouse('move')}
               onContextMenu={(event) => event.preventDefault()}
-              onKeyDown={(event) => {
-                if (event.key === 'Escape') return
-                event.preventDefault()
-                send([{
-                  type: 'key',
-                  action: 'down',
-                  key: event.key,
-                  code: event.code,
-                  ...(event.key.length === 1 ? { text: event.key } : {}),
-                  modifiers: modifiersOf(event),
-                }])
-              }}
-              onKeyUp={(event) => {
-                if (event.key === 'Escape') return
-                event.preventDefault()
-                send([{ type: 'key', action: 'up', key: event.key, code: event.code, modifiers: modifiersOf(event) }])
-              }}
             >
               {/* One canvas, painted in place. `style` is the measured size, so the picture is never
                   blown up past the tab's own pixels; the max-* pair is the placeholder for the
@@ -1316,15 +1407,75 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
                   frameSize ? 'animate-[editPopoverFadeIn_180ms_ease-out]' : 'opacity-0',
                 )}
               />
-            </div>
 
-            {/* The pointer, where it really is: the frames do not carry a cursor of their own. */}
-            {live && (
-              <div
-                ref={cursorRef}
-                className="pointer-events-none absolute left-0 top-0 z-10 h-5 w-5 rounded-full border border-white/80 bg-white/10 opacity-0 ring-1 ring-black/30 transition-opacity duration-150"
+              {/*
+                The pane's keyboard, invisible on purpose: the page is the picture, not this
+                element. It is a textarea because an input method only composes on something
+                editable — plain divs never enter a composition, which is why Chinese, Japanese
+                and Korean could not be typed here at all.
+
+                Ordinary keys are still forwarded one by one, exactly as before. Keys an IME is
+                consuming are left alone (`isComposing` / 229) and only the committed string is
+                sent, once, on `compositionend`.
+              */}
+              <textarea
+                ref={inputRef}
+                aria-label={t('browser.viewerTitle')}
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                className="pointer-events-none fixed left-0 top-0 h-6 w-48 resize-none bg-transparent text-transparent caret-transparent opacity-0 outline-none"
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') return
+                  // The composition owns these keys: forwarding them would type the pinyin into
+                  // the page as it is being spelled out. The textarea keeps them instead.
+                  if (composingRef.current || imeOwnsKey(event)) return
+                  event.preventDefault()
+                  send([{
+                    type: 'key',
+                    action: 'down',
+                    key: event.key,
+                    code: event.code,
+                    ...(event.key.length === 1 ? { text: event.key } : {}),
+                    modifiers: modifiersOf(event),
+                  }])
+                }}
+                onKeyUp={(event) => {
+                  if (event.key === 'Escape') return
+                  if (composingRef.current || imeOwnsKey(event)) return
+                  event.preventDefault()
+                  send([{ type: 'key', action: 'up', key: event.key, code: event.code, modifiers: modifiersOf(event) }])
+                }}
+                onCompositionStart={() => {
+                  composingRef.current = true
+                }}
+                onCompositionEnd={(event) => {
+                  composingRef.current = false
+                  const element = event.currentTarget
+                  // The committed string lives in the element; `data` is empty for some IMEs.
+                  const text = element.value || event.data
+                  element.value = ''
+                  if (text) send([{ type: 'text', text }])
+                }}
+                onInput={(event) => {
+                  // Nothing else writes here — forwarded keys are prevented — so a value seen
+                  // outside a composition is text an IME committed without composition events.
+                  if (composingRef.current) return
+                  const element = event.currentTarget
+                  const text = element.value
+                  if (!text) return
+                  element.value = ''
+                  send([{ type: 'text', text }])
+                }}
+                onBlur={(event) => {
+                  // A composition abandoned by leaving the pane is not text, and it must not hold
+                  // the keyboard hostage: drop the half-typed value and take keys again.
+                  composingRef.current = false
+                  event.currentTarget.value = ''
+                }}
               />
-            )}
+            </div>
 
             {/* A refusal from the server is news about the session, not a reason to hide the page. */}
             {notice && (
@@ -1566,7 +1717,12 @@ function TabRow({
           event.stopPropagation()
           onClose()
         }}
-        className="shrink-0 rounded p-0.5 text-muted-foreground/60 opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground group-hover:opacity-100"
+        className={cn(
+          'shrink-0 rounded p-0.5 text-muted-foreground/60 transition-opacity hover:bg-foreground/10 hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100',
+          // The tab being watched does not make a person hunt for its close button: the one they
+          // are looking at keeps it out, and every other row keeps it for the hover.
+          watching ? 'opacity-100' : 'opacity-0',
+        )}
         aria-label={closeLabel}
       >
         <X className="h-3 w-3" />

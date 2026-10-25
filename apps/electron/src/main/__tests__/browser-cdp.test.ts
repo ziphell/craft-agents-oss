@@ -377,6 +377,51 @@ describe('BrowserCDP', () => {
     })
   })
 
+  describe('dispatchInput', () => {
+    it('inserts a committed composition as one text insert, not as keys', async () => {
+      const sent: Array<{ method: string; params?: any }> = []
+      const wc = createMockWebContents(async (method, params) => {
+        sent.push({ method, params })
+        return {}
+      })
+
+      const cdp = new BrowserCDP(wc as any)
+      await cdp.dispatchInput([
+        { type: 'text', text: '你好' },
+        { type: 'key', action: 'down', key: 'Enter', code: 'Enter' },
+      ])
+
+      const insert = sent.find((command) => command.method === 'Input.insertText')
+      expect(insert?.params).toEqual({ text: '你好' })
+      // The Enter beside it is still a key event: only the composition goes through insertText.
+      expect(sent.filter((command) => command.method === 'Input.dispatchKeyEvent').length).toBe(1)
+    })
+  })
+
+  describe('caretRect', () => {
+    it('answers the caret position the page measured', async () => {
+      const wc = createMockWebContents(async (method) => {
+        if (method === 'Runtime.evaluate') return { result: { value: { x: 12, y: 34, height: 18 } } }
+        return {}
+      })
+
+      const cdp = new BrowserCDP(wc as any)
+
+      expect(await cdp.caretRect()).toEqual({ x: 12, y: 34, height: 18 })
+    })
+
+    it('says nothing when no editable element has focus', async () => {
+      const wc = createMockWebContents(async (method) => {
+        if (method === 'Runtime.evaluate') return { result: { value: null } }
+        return {}
+      })
+
+      const cdp = new BrowserCDP(wc as any)
+
+      expect(await cdp.caretRect()).toBeNull()
+    })
+  })
+
   describe('selectOption', () => {
     it('sets value and dispatches events', async () => {
       const sentCommands: string[] = []

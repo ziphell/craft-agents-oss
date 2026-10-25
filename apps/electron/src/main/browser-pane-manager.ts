@@ -57,7 +57,7 @@ import {
   type SavedBrowserWindowTabs,
 } from './browser-tabs-state'
 import { CodedError, RPC_CHANNELS, describeWork, sameWork, tabSectionOf } from '@craft-agent/shared/protocol'
-import type { PickedElement, PickedElementOrigin, BrowserToolbarAction, BrowserTabSummary, TabBelongsTo, BrowserLoadError, BrowserStreamFrame, BrowserStreamInput, BrowserStreamStartResult } from '@craft-agent/shared/protocol'
+import type { PickedElement, PickedElementOrigin, BrowserToolbarAction, BrowserTabSummary, TabBelongsTo, BrowserLoadError, BrowserStreamFrame, BrowserStreamInput, BrowserCaretRect, BrowserStreamStartResult } from '@craft-agent/shared/protocol'
 import { PAGE_PANEL_RING, resolvePagePanelRing, resolvePagePanelShadow } from '../shared/browser-live-fx'
 import { PANEL_EDGE_INSET, PANEL_RADIUS_INNER, TAB_RAIL_WIDTH, TOOLBAR_HEIGHT } from '../shared/panel-geometry'
 import { getWindowsBackgroundMaterial } from './window-material'
@@ -3673,6 +3673,22 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       throw new Error(`The agent is working on this tab right now (${tab.heldBy}); control was released.`)
     }
     await tab.cdp.dispatchInput(events)
+  }
+
+  /**
+   * Where the caret is in the tab a viewer is watching, in that tab's CSS pixels.
+   *
+   * Reading it is not input: it needs the stream to be the caller's, but not control of the tab —
+   * the answer is about the page's own focus, and a locked tab's page still has one. `null` when
+   * the stream or the tab is gone, or nothing editable has focus.
+   */
+  async streamCaret(streamId: string, clientId: string): Promise<BrowserCaretRect | null> {
+    const stream = this.viewStreams.get(streamId)
+    if (!stream) return null
+    if (stream.clientId !== clientId) throw new Error('That stream belongs to another client.')
+    const tab = this.tabForStream(stream)
+    if (!tab) return null
+    return tab.cdp.caretRect()
   }
 
   private tabForStream(stream: { instanceId: string; tabId: string }): BrowserTab | null {

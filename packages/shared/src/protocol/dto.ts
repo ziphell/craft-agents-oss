@@ -1423,6 +1423,27 @@ export type BrowserStreamInput =
     }
   | { type: 'wheel'; x: number; y: number; deltaX: number; deltaY: number }
   | { type: 'key'; action: 'down' | 'up'; key: string; code?: string; text?: string; modifiers?: number }
+  /**
+   * Text an input method committed, sent as one string rather than as its keystrokes.
+   *
+   * Composition keys never belonged to the page (the IME consumed them), so the viewer holds them
+   * on an editable target of its own and forwards only the result — `Input.insertText` enters it
+   * the way a paste would, with `beforeinput`/`input` and no `keydown`.
+   */
+  | { type: 'text'; text: string }
+
+/**
+ * Where the caret is in a watched tab, in the tab viewport's CSS pixels.
+ *
+ * The viewer's input method has to anchor its candidate window at the caret of the field being
+ * typed into — and that field lives on the server, not in the viewer. This is what the server
+ * answers so the invisible input can be parked there instead of at the last click.
+ */
+export interface BrowserCaretRect {
+  x: number
+  y: number
+  height: number
+}
 
 export interface DeepLinkNavigation {
   view?: string

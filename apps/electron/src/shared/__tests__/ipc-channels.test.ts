@@ -64,6 +64,7 @@ const EXPECTED_CHANNELS: string[] = [
   'browser-pane:snapshot',
   'browser-pane:state-changed',
   'browser-pane:stop',
+  'browser-pane:stream-caret',
   'browser-pane:stream-control',
   'browser-pane:stream-ended',
   'browser-pane:stream-frame',

@@ -26,6 +26,7 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.browserPane.STREAM_STOP,
   RPC_CHANNELS.browserPane.STREAM_CONTROL,
   RPC_CHANNELS.browserPane.STREAM_INPUT,
+  RPC_CHANNELS.browserPane.STREAM_CARET,
   RPC_CHANNELS.browserPane.LAUNCH,
   RPC_CHANNELS.browserPane.SNAPSHOT,
   RPC_CHANNELS.browserPane.CLICK,
@@ -271,6 +272,11 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
 
   server.handle(RPC_CHANNELS.browserPane.STREAM_INPUT, async (ctx, streamId: string, events: BrowserStreamInput[]) => {
     await browserPaneManager.dispatchStreamInput(streamId, ctx.clientId, Array.isArray(events) ? events : [])
+  })
+
+  // Where the caret is in the tab the caller is watching, for the viewer's input method.
+  server.handle(RPC_CHANNELS.browserPane.STREAM_CARET, async (ctx, streamId: string) => {
+    return browserPaneManager.streamCaret(streamId, ctx.clientId)
   })
 
   server.handle(RPC_CHANNELS.browserPane.LIST, (ctx) => {

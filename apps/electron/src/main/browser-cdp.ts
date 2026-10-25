@@ -11,7 +11,7 @@
 
 import type { WebContents } from 'electron'
 import type { PickedElement } from '@craft-agent/shared/protocol'
-import type { BrowserStreamInput } from '@craft-agent/shared/protocol'
+import type { BrowserStreamInput, BrowserCaretRect } from '@craft-agent/shared/protocol'
 import { mainLog } from './logger'
 import { keyStroke, modifierMask, type BrowserKeyModifier } from './browser-key-map'
 
@@ -778,6 +778,74 @@ function virtualKeyCode(key: string, code?: string): number {
   return 0
 }
 
+/**
+ * Where the caret is, read from the page itself, in its viewport's CSS pixels.
+ *
+ * A viewer types through an invisible textarea of its own, so an input method's candidate window
+ * would otherwise appear wherever that element happens to sit. The caret belongs to a field on
+ * this side, so it has to be measured here: rich text answers from the selection's own rect, and
+ * `<input>` / `<textarea>` are measured by copying the text before the caret into a hidden
+ * stand-in of the field (the same mirror technique a browser's own IME plumbing uses).
+ *
+ * `null` when nothing editable has focus — the viewer then keeps its last anchor.
+ */
+const CARET_RECT_EXPRESSION = `(() => {
+  let el = document.activeElement;
+  // A field inside a shadow root is the focused one, not the host that owns it.
+  while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+  if (!el) return null;
+  const tag = el.tagName;
+  const isField = tag === 'INPUT' || tag === 'TEXTAREA';
+  if (!isField && !el.isContentEditable) return null;
+
+  if (!isField) {
+    const root = el.getRootNode();
+    const selection = root && root.getSelection ? root.getSelection() : window.getSelection();
+    if (!selection || selection.rangeCount === 0) return null;
+    const range = selection.getRangeAt(0).cloneRange();
+    range.collapse(true);
+    const rects = range.getClientRects();
+    let rect = rects.length > 0 ? rects[0] : null;
+    if (!rect) {
+      const node = range.startContainer;
+      const box = node.nodeType === 1 ? node : node.parentElement;
+      if (!box) return null;
+      rect = box.getBoundingClientRect();
+    }
+    return { x: rect.left, y: rect.top, height: rect.height || 16 };
+  }
+
+  const style = getComputedStyle(el);
+  const value = el.value || '';
+  const caret = el.selectionStart == null ? value.length : el.selectionStart;
+  const mirror = document.createElement('div');
+  const m = mirror.style;
+  m.position = 'absolute';
+  m.left = '-9999px';
+  m.top = '0';
+  m.visibility = 'hidden';
+  m.whiteSpace = tag === 'INPUT' ? 'pre' : 'pre-wrap';
+  m.wordWrap = 'break-word';
+  m.overflow = 'hidden';
+  const props = ['boxSizing','width','height','paddingTop','paddingRight','paddingBottom','paddingLeft','borderTopWidth','borderRightWidth','borderBottomWidth','borderLeftWidth','fontFamily','fontSize','fontWeight','fontStyle','letterSpacing','lineHeight','textTransform','textIndent','direction'];
+  for (const prop of props) m[prop] = style[prop];
+  mirror.textContent = value.slice(0, caret);
+  const marker = document.createElement('span');
+  marker.textContent = value.slice(caret) || '.';
+  mirror.appendChild(marker);
+  document.body.appendChild(mirror);
+  const field = el.getBoundingClientRect();
+  const text = mirror.getBoundingClientRect();
+  const point = marker.getBoundingClientRect();
+  const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.2 || 16;
+  mirror.remove();
+  return {
+    x: field.left + (point.left - text.left) - el.scrollLeft,
+    y: field.top + (point.top - text.top) - el.scrollTop,
+    height: lineHeight,
+  };
+})()`
+
 export class BrowserCDP {
   private webContents: WebContents
   private attached = false
@@ -1055,6 +1123,13 @@ export class BrowserCDP {
         continue
       }
 
+      if (event.type === 'text') {
+        // A composition arrives whole: `Input.insertText` is the same path a paste takes, so the
+        // page sees one `beforeinput`/`input` instead of a key event per pinyin letter.
+        await this.send('Input.insertText', { text: event.text })
+        continue
+      }
+
       const virtual = virtualKeyCode(event.key, event.code)
       await this.send('Input.dispatchKeyEvent', {
         // `keyDown` (with `text`) inserts a character; `rawKeyDown` is the key without one.
@@ -1065,6 +1140,31 @@ export class BrowserCDP {
         ...(virtual ? { windowsVirtualKeyCode: virtual, nativeVirtualKeyCode: virtual } : {}),
         modifiers: event.modifiers ?? 0,
       })
+    }
+  }
+
+  /**
+   * Where the caret is in this page, in its viewport's CSS pixels.
+   *
+   * A viewer parks its invisible input here so the input method's candidate window shows up at
+   * the caret instead of wherever the pointer last was. `null` when nothing editable has focus,
+   * or the page cannot answer (navigating, gone) — the viewer keeps its last anchor then.
+   */
+  async caretRect(): Promise<BrowserCaretRect | null> {
+    try {
+      const response = await this.send('Runtime.evaluate', {
+        expression: CARET_RECT_EXPRESSION,
+        returnByValue: true,
+      })
+      const value = response?.result?.value
+      if (!value || typeof value.x !== 'number' || typeof value.y !== 'number') return null
+      return {
+        x: value.x,
+        y: value.y,
+        height: typeof value.height === 'number' ? value.height : 16,
+      }
+    } catch {
+      return null
     }
   }
 

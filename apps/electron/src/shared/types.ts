@@ -280,6 +280,7 @@ import type {
   BrowserLoadError,
   BrowserStreamFrame,
   BrowserStreamInput,
+  BrowserCaretRect,
   BrowserStreamStartRequest,
   BrowserStreamStartResult,
   BrowserToolbarAction,
@@ -954,6 +955,14 @@ export interface ElectronAPI {
     streamControl(streamId: string, controlled: boolean): Promise<void>
     /** Pointer/keyboard back to the tab being watched. Coordinates are the tab's CSS pixels. */
     streamInput(streamId: string, events: BrowserStreamInput[]): Promise<void>
+    /**
+     * Where the caret is in the watched tab, in that tab's CSS pixels.
+     *
+     * A viewer's invisible input parks its IME candidate window at this point, which is the only
+     * way to put it where the person is actually typing: the caret belongs to a field on the
+     * server. `null` when nothing editable has focus (or the stream is gone).
+     */
+    streamCaret(streamId: string): Promise<BrowserCaretRect | null>
     /** Frames for the stream this client started. Returns cleanup. */
     onStreamFrame(callback: (frame: BrowserStreamFrame) => void): () => void
     /**

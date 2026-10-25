@@ -128,9 +128,16 @@ type BrowserStreamInput =
   | { type: 'mouse'; action: 'move' | 'down' | 'up'; x: number; y: number; button?: 'left' | 'right' | 'middle'; clickCount?: number }
   | { type: 'wheel'; x: number; y: number; deltaX: number; deltaY: number }
   | { type: 'key'; action: 'down' | 'up'; key: string; code?: string; text?: string; modifiers?: number }
+  | { type: 'text'; text: string }
 ```
 
-落到设备侧：`Input.dispatchMouseEvent`（滚轮用它的 `type: 'mouseWheel'`，CDP 没有 `Input.dispatchMouseWheel`）/ `Input.dispatchKeyEvent`（与 `webContents.sendInputEvent` 相比，CDP 用的是 viewport 坐标，窗口停在屏幕外也成立）。
+落到设备侧：`Input.dispatchMouseEvent`（滚轮用它的 `type: 'mouseWheel'`，CDP 没有 `Input.dispatchMouseWheel`）/ `Input.dispatchKeyEvent`（与 `webContents.sendInputEvent` 相比，CDP 用的是 viewport 坐标，窗口停在屏幕外也成立）/ `Input.insertText`（`text`，走与粘贴相同的输入路径，只产生 `beforeinput`/`input`）。
+
+**输入法**：观看端的按键目标是 pane 里一个不可见的 textarea，而不是 div——输入法只在可编辑元素上进入组合态。组合期间（`isComposing` / keyCode 229）的按键不转发，页面不会收到被拼出来的拼音；`compositionend` 时把提交的字符串作为一条 `text` 发回设备侧。普通按键仍逐键转发，行为不变。
+
+**候选框位置**：光标属于服务端页面里的字段，观看端看不到，所以候选框默认只能停在最后点击处。`browser-pane:stream-caret` 让设备侧读一次光标（`Runtime.evaluate`：`document.activeElement` 为富文本时取 selection 的 rect，为 `input`/`textarea` 时把光标前的文本放进隐藏的镜像元素里量出坐标），观看端再按画面框把 tab CSS 像素映射回自己的坐标，把不可见 textarea 停到那里。读取按输入批次去抖（150ms 一次，纯鼠标移动不触发）；没有可编辑焦点（`null`）时保持上次的位置。组合进行中不移动，免得候选框在拼写途中跳动。
+
+**焦点**：键盘默认属于页面——切 tab、前进/后退、刷新、地址栏回车之后都会回到页面（不可见 textarea），不留在刚点过的按钮或轨道上；只有新标签页 / `about:blank` 回到地址栏，与窗口的 `wantsAddressBarFocus` 是同一条规则。正在地址栏里打字时不抢焦点（Escape 离开地址栏则还给页面）。
 
 ### 5.4 一条 capture = 一个标签页，一条 stream = 一个观看者
 
@@ -214,5 +221,5 @@ Chromium 的 screencast 是**每个 CDP 会话一路**，且 `startScreencast` �
 4. ~~**接管与 agent 的仲裁**~~ **已定**：不做仲裁。agent 不因人在操作而暂停；人被 agent 的锁挡住时，点锁解锁即接管；多观看者允许同时操作，不互斥。要独占需要另加租约，当前不做。
 5. ~~**流的结束要告诉观看端**~~ **已补**：`browser-pane:stream-ended`（`streamId`, `reason`），只推给发起该流的 client；标签页关闭 / 窗口销毁 / CDP 会话丢失都会发。观看端收到后清掉画面并说明原因。
 6. ~~**webui 面板按什么过滤窗口**~~ **已补**：webui 把它连接的工作区传给面板，面板只列该工作区的窗口（无工作区标记的实例仍然可见）。局限：在 webui 里切换工作区后，面板仍按页面连接时的工作区过滤，刷新后才更新。
-7. ~~**输入覆盖面**~~ **已补**：单击、双击（`clickCount`）、右键/中键、拖拽选择（按下时的 `buttons` 位掩码）、滚轮、键盘（含修饰键）。仍未覆盖：输入法组合输入、文件拖放、触摸/手写笔。
+7. ~~**输入覆盖面**~~ **已补**：单击、双击（`clickCount`）、右键/中键、拖拽选择（按下时的 `buttons` 位掩码）、滚轮、键盘（含修饰键）、输入法组合输入（不可见 textarea + `text` 事件，候选框按 `stream-caret` 停在光标处）。仍未覆盖：文件拖放、触摸/手写笔。
 8. **多屏同时看**：`documentPictureInPicture`（Chrome）可以把面板搬进画中画窗口，仍是同一条流；比"新标签页"合适，但会多一条浏览器分支。

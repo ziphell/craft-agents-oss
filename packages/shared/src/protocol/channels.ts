@@ -465,6 +465,11 @@ export const RPC_CHANNELS = {
     STREAM_STOP: 'browser-pane:stream-stop',
     STREAM_CONTROL: 'browser-pane:stream-control',
     STREAM_INPUT: 'browser-pane:stream-input',
+    /**
+     * Where the caret is in the watched tab, so a viewer's input method can put its candidate
+     * window at the caret rather than at the last click. `null` when nothing editable has focus.
+     */
+    STREAM_CARET: 'browser-pane:stream-caret',
     STREAM_FRAME: 'browser-pane:stream-frame',
     /**
      * The stream ended without the viewer asking — its tab or window went away, or the CDP
