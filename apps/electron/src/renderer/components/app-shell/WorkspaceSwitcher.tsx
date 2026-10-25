@@ -61,8 +61,8 @@ export function WorkspaceSwitcher({
   const setFullscreenOverlayOpen = useSetAtom(fullscreenOverlayOpenAtom)
   const selectedWorkspace = workspaces.find(w => w.id === activeWorkspaceId)
   const workspaceIconMap = useWorkspaceIcons(workspaces)
-  // Servers with no window open are reached here: server, then workspace. A remote window also
-  // gets one group for this machine, which is how it comes back.
+  // Servers with no window open are reached here: server, then workspace. On another machine a
+  // first group is this machine, which is how the window comes back.
   const { groups: remoteGroups } = useRemoteWorkspaceGroups(menuOpen)
   const hasUnreadInOtherWorkspaces = React.useMemo(() => {
     if (!activeWorkspaceId || !workspaceUnreadMap) return false
@@ -86,7 +86,7 @@ export function WorkspaceSwitcher({
    * Both kinds of window move themselves: a local one builds the hub connection, a remote one
    * swaps server (or workspace) — the way VS Code reconnects a window to another host, renderer
    * intact. ⌘/Ctrl asks for a second window instead. `connection === null` is "this machine",
-   * which only appears in a remote window and is how it gets back.
+   * which only appears in a window on another machine and is how it gets back.
    */
   const chooseRemoteWorkspace = useCallback(async (
     connection: RemoteConnection | null,
@@ -274,8 +274,7 @@ export function WorkspaceSwitcher({
 
           {/* Remote servers, one submenu each — the second level is that server's workspaces.
               This window moves itself to the pick (a local window builds the hub connection, a
-              remote one swaps it); ⌘/Ctrl asks for a second window. In a remote window the first
-              group is "this machine", which is how the window comes back. */}
+              remote one swaps it); ⌘/Ctrl asks for a second window. */}
           {remoteGroups.length > 0 && (
             <>
               <StyledDropdownMenuSeparator />

@@ -141,6 +141,14 @@ const SCREENSHOT_CAPTURE_TIMEOUT_MS = 1_000
  */
 const SCREENSHOT_FIRST_FRAME_MS = 16
 /**
+ * How long to wait before taking the viewer's seed still again, when the last one came back empty.
+ *
+ * A view that has just been moved or resized has nothing to copy for a moment — the first shot of
+ * a window nobody is looking at is exactly that case on macOS — and the viewer is sitting on
+ * "waiting for the picture" until one arrives.
+ */
+const VIEW_SEED_RETRY_MS = 250
+/**
  * How far past the last display a window that must never be seen is *asked* to go.
  *
  * "Off screen" is not a place, it is a relation to the displays — and the displays move: a screen
@@ -3181,34 +3189,51 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * frame: "has this viewer been sent a picture" is checked after the capture, before the send,
    * because a live frame gets its chance while the still is being taken. A capture that is gone
    * by then (the viewer left, the tab closed) is not sent to at all.
+   *
+   * A capture can come back empty for a view that was just moved or resized — the first shot at a
+   * window nobody is looking at is exactly that case on macOS — so a miss is tried again rather
+   * than leaving the viewer with nothing to show.
    */
   private async sendViewSeed(
     instance: BrowserInstance,
     tab: BrowserTab,
     capture: { instanceId: string; tabId: string; lastSentAt: number; streams: Set<string> },
+    attempts = 3,
   ): Promise<void> {
     const waiting = () => [...capture.streams]
       .map((id) => ({ id, viewer: this.viewStreams.get(id) }))
       .filter((entry): entry is { id: string; viewer: ViewStream } => entry.viewer !== undefined && !entry.viewer.sentAny)
-    if (waiting().length === 0) return
 
-    const seed = await this.captureRecordingSeed(instance, tab, 'view seed')
-    if (!seed) return
-    if (this.viewCaptures.get(viewCaptureKey(instance.id, tab.id)) !== capture) return
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      if (waiting().length === 0) return
 
-    const now = Date.now()
-    const bounds = tab.tabView.getBounds()
-    const data = seed.toString('base64')
-    for (const { id, viewer } of waiting()) {
-      viewer.sentAny = true
-      viewer.onFrame({
-        streamId: id,
-        tabId: tab.id,
-        data,
-        width: bounds.width,
-        height: bounds.height,
-        atMs: now,
-      })
+      const seed = await this.captureRecordingSeed(instance, tab, 'view seed')
+      if (this.viewCaptures.get(viewCaptureKey(instance.id, tab.id)) !== capture) return
+      if (!seed) {
+        mainLog.warn(
+          `[browser-pane] view seed empty instance=${instance.id} tab=${tab.id} attempt=${attempt}/${attempts} url=${tab.currentUrl}`,
+        )
+        if (attempt < attempts) await this.sleep(VIEW_SEED_RETRY_MS)
+        continue
+      }
+
+      const now = Date.now()
+      const bounds = tab.tabView.getBounds()
+      const data = seed.toString('base64')
+      // The viewers that were waiting when the still was taken — a live frame may have arrived
+      // while it was being captured, and that one is newer than this.
+      for (const { id, viewer } of waiting()) {
+        viewer.sentAny = true
+        viewer.onFrame({
+          streamId: id,
+          tabId: tab.id,
+          data,
+          width: bounds.width,
+          height: bounds.height,
+          atMs: now,
+        })
+      }
+      return
     }
   }
 

@@ -54,8 +54,8 @@ export function CompactWorkspaceSwitcher({
   const setFullscreenOverlayOpen = useSetAtom(fullscreenOverlayOpenAtom)
   const selectedWorkspace = workspaces.find(w => w.id === activeWorkspaceId)
   const workspaceIconMap = useWorkspaceIcons(workspaces)
-  // Servers without a window are reached from here: server, then its workspaces. A remote window
-  // also gets one group for this machine, which is how it comes back.
+  // Servers without a window are reached from here: server, then its workspaces. On another
+  // machine a first group is this machine, which is how the window comes back.
   const { groups: remoteGroups } = useRemoteWorkspaceGroups(open)
 
   /**
@@ -234,8 +234,8 @@ export function CompactWorkspaceSwitcher({
               )
             })}
 
-            {/* Servers and their workspaces. A pick moves this window there — and in a remote
-                window the first group is "this machine", which is how it comes back. */}
+            {/* Servers and their workspaces. A pick moves this window there — and on another
+                machine the first group is "this machine", which is how it comes back. */}
             {remoteGroups.length > 0 && (
               <div className="mt-2">
                 <div className="px-3 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
