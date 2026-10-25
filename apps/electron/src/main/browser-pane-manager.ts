@@ -1237,14 +1237,20 @@ interface ViewCapture {
   /**
    * Frames the **screencast itself** has delivered.
    *
-   * Zero means the compositor has said nothing at all: a window that has never been on a display
-   * may have no `display surface` to stream from, and a screencast is only ever as alive as the
-   * compositor behind it. That is what the still pump below is for; the first live frame stops it.
+   * Zero means the compositor has said nothing at all. **One does not mean it is running**: a
+   * window that is shown off every display but never ordered front emits exactly the frame the
+   * subscription provokes and nothing after it (measured — `agent-first-shot.cjs`, 1 frame before
+   * `moveTop`, 119 in 2s after it). So this is a hint, not the answer, and the still pump keeps
+   * going until the page itself says it is being composited (`pageIsComposited`).
    */
   liveFrames: number
+  /** When this capture was created — what "the first frame took Nms" is measured from. */
+  startedAt: number
+  /** Stills the pump has fanned out; logged once, when it stops. */
+  stills: number
   /** A still is being taken right now — the next tick waits for this one. */
   taking: boolean
-  /** The still pump, while no live frame has arrived (`startViewStillPump`). */
+  /** The still pump, while the page is not being composited (`startViewStillPump`). */
   pump: ReturnType<typeof setInterval> | null
 }
 
@@ -3112,6 +3118,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const streamId = `stream-${++this.viewStreamSeq}`
     const bounds = tab.tabView.getBounds()
     this.viewStreams.set(streamId, { instanceId, tabId: tab.id, clientId, controlled: false, sentAny: false, onFrame })
+    mainLog.info(
+      `[browser-pane] view stream start stream=${streamId} instance=${instanceId} tab=${tab.id} client=${clientId} bounds=${bounds.width}x${bounds.height}`,
+    )
 
     // Somebody is already watching this tab: one more seat, no second capture.
     let capture = this.viewCaptures.get(key)
@@ -3143,6 +3152,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       lastSentAt: 0,
       streams: new Set([streamId]),
       liveFrames: 0,
+      startedAt: Date.now(),
+      stills: 0,
       taking: false,
       pump: null,
     }
@@ -3179,6 +3190,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     capture: ViewCapture,
   ): Promise<void> {
     const bounds = tab.tabView.getBounds()
+    // A screencast speaks from the compositor, and a parking window only has one once it has been
+    // ordered front: shown but never ordered is not enough. Measured — same window, same view,
+    // 16ms apart, the only difference being `moveTop()`: before it the page is `hidden`, rAF is
+    // frozen and `capturePage` answers 0×0; after it the page is `visible` and the capture is
+    // 2200×1690 (`agent-first-shot.cjs`). The shot path already orders the window front before it
+    // copies (`raiseParkedView`); a viewer's stream has to as well, or its frames are the one the
+    // screencast emits when it starts and nothing after it.
+    const instance = this.instances.get(capture.instanceId) ?? null
+    if (instance && this.tabHome(instance, tab) === 'parking') this.raiseParkedView(instance, tab)
     await tab.cdp.startScreencast({
       quality: 60,
       // Cap at the source: a viewer is looking at a pane, not a poster.
@@ -3188,8 +3208,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // otherwise each sits on its last frame forever.
       onEnd: (reason) => this.finishViewCapture(key, reason || 'capture-ended'),
       onFrame: (frame) => {
-        // Any frame at all means the compositor is running — the pump has nothing left to cover.
+        // Not "the compositor is running" — a stream that emits its one start-up frame and then
+        // goes quiet looks the same here. The pump decides that itself (`pageIsComposited`).
         capture.liveFrames += 1
+        if (capture.liveFrames === 1) {
+          mainLog.info(
+            `[browser-pane] view capture first frame instance=${capture.instanceId} tab=${tab.id} after=${Date.now() - capture.startedAt}ms`,
+          )
+        }
         // ~15fps ceiling for the tab: Chromium paints faster than anyone needs to see, and
         // every frame is bandwidth on a link that also carries the conversation.
         const now = Date.now()
@@ -3215,6 +3241,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       },
     })
 
+    mainLog.info(
+      `[browser-pane] view capture started instance=${capture.instanceId} tab=${tab.id} home=${instance ? this.tabHome(instance, tab) : 'gone'}`,
+    )
+
     // A screencast only speaks when the page repaints, and a page that is sitting still — the
     // empty-state document a new tab opens with, `about:blank`, an error page — never does. The
     // still taken right after this (`sendViewSeed`) covers that, but it is one picture and it
@@ -3230,16 +3260,20 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Keep stills coming while the tab's screencast delivers nothing.
+   * Keep stills coming while the tab's page is not being composited.
    *
-   * A screencast speaks from the compositor, and a window that has never been on a display may
-   * never composite at all — the same window state that makes `capturePage` refuse it. Rather
-   * than putting that window on a display (it is nobody's to show, and may be on another
-   * machine's desk), the tab is photographed on a timer and the still is fanned out like a frame:
-   * the viewer watches the page at ~1.4fps instead of sitting on "waiting for the picture".
+   * A screencast speaks from the compositor, and a window that is shown off every display without
+   * ever being ordered front composites nothing — the same state that makes `capturePage` answer an
+   * empty image. Rather than putting that window on a display (it is nobody's to show, and may be
+   * on another machine's desk), the tab is photographed on a timer and the still is fanned out
+   * like a frame: the viewer watches the page at ~1.4fps instead of sitting on "waiting for the
+   * picture".
    *
-   * Stops itself the moment a live frame arrives — from then on the screencast is the picture, and
-   * the stills would only be extra encodes. The timer does not keep the process alive.
+   * Stops itself once the page is composited — from then on the screencast is the picture, and the
+   * stills would only be extra encodes. **Not** on the first live frame: a stream whose window was
+   * never ordered front emits the one frame its subscription provokes and then goes quiet, which is
+   * exactly the tab the stills are for (`pageIsComposited` has the measurement). The timer does not
+   * keep the process alive.
    */
   private startViewStillPump(instance: BrowserInstance | null, tab: BrowserTab, capture: ViewCapture): void {
     if (!instance || capture.pump) return
@@ -3254,10 +3288,40 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     capture.pump = null
   }
 
+  /**
+   * Whether the page is being composited — the thing a screencast needs, and the thing a frame count
+   * cannot answer.
+   *
+   * The page's own answer is the honest one: a document nobody composites is `hidden` and its rAF is
+   * frozen, which is what the parking window was before it was ordered front and what it is again if
+   * a sibling parked later covers the view (measured: `agent-first-shot.cjs`, `parking-surface.cjs`).
+   * Asked once per still, and only ever while one is still being taken, so the cost is one round trip
+   * per 700ms until the answer is "yes".
+   */
+  private async pageIsComposited(tab: BrowserTab): Promise<boolean> {
+    const page = tab.tabView.webContents
+    if (!page || page.isDestroyed()) return false
+    try {
+      return await page.executeJavaScript('document.visibilityState === "visible"') === true
+    } catch {
+      // Not answering is not the compositor's failure to report: a page that cannot be asked has
+      // nothing to stream either, so it is treated as uncomposited and the stills keep it visible.
+      return false
+    }
+  }
+
   private async pumpViewStill(instance: BrowserInstance, tab: BrowserTab, capture: ViewCapture): Promise<void> {
     const key = viewCaptureKey(instance.id, tab.id)
-    // Gone or covered by the screencast: nothing to pump.
-    if (this.viewCaptures.get(key) !== capture || capture.streams.size === 0 || capture.liveFrames > 0) {
+    // Gone, or nobody left to watch: nothing to pump.
+    if (this.viewCaptures.get(key) !== capture || capture.streams.size === 0) {
+      mainLog.info(`[browser-pane] view still pump stopped instance=${instance.id} tab=${tab.id} reason=gone stills=${capture.stills}`)
+      this.stopViewStillPump(capture)
+      return
+    }
+    // Covered by the screencast: it is the picture now. A live frame is only a reason to *ask* —
+    // the one a stream emits when it starts does not mean the compositor behind it is running.
+    if (capture.liveFrames > 0 && await this.pageIsComposited(tab)) {
+      mainLog.info(`[browser-pane] view still pump stopped instance=${instance.id} tab=${tab.id} reason=composited stills=${capture.stills}`)
       this.stopViewStillPump(capture)
       return
     }
@@ -3271,6 +3335,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       const now = Date.now()
       const bounds = tab.tabView.getBounds()
       const data = still.toString('base64')
+      capture.stills += 1
       for (const streamId of [...capture.streams]) {
         const viewer = this.viewStreams.get(streamId)
         if (!viewer) continue
@@ -3479,6 +3544,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const capture = this.viewCaptures.get(key)
     if (!capture) return
     this.viewCaptures.delete(key)
+    mainLog.info(
+      `[browser-pane] view capture end instance=${capture.instanceId} tab=${capture.tabId} reason=${reason} frames=${capture.liveFrames} stills=${capture.stills} after=${Date.now() - capture.startedAt}ms`,
+    )
     this.stopViewStillPump(capture)
     for (const streamId of [...capture.streams]) {
       const stream = this.viewStreams.get(streamId)
@@ -4270,7 +4338,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // below is for, is a view with no surface **anyway** — a page that has never painted, or a window
     // the platform will not answer for (on Windows that is a *hidden* one — measured, a minimized one
     // answers there while a hidden one does not: `capture-methods.cjs`).
-    const livesInTheWindow = this.tabHome(instance, tab) === 'window'
+    const home = this.tabHome(instance, tab)
+    const livesInTheWindow = home === 'window'
+    // Which state the capture is being asked in, once per call: the answer to "a shot worked, so
+    // something must have given this view a surface — what?" is in these five values and nowhere
+    // else (a window `show` and a CDP command are both silent in the log today).
+    const windowGone = instance.window.isDestroyed()
+    mainLog.info(
+      `[browser-pane] ${options.errorPrefix} capture state instance=${instance.id} tab=${tab.id} mode=${options.mode} home=${home} hasBeenShown=${instance.hasBeenShown} isVisible=${instance.isVisible} windowVisible=${windowGone ? 'destroyed' : instance.window.isVisible()} windowMinimized=${windowGone ? 'destroyed' : instance.window.isMinimized()} loading=${tab.isLoading}`,
+    )
 
     // A parked tab's view can be under a sibling in its own window, or its window under another
     // workspace's — either leaves it with no surface to copy (`raiseParkedView`). Bring it to the
@@ -4310,6 +4386,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         if (attempt > 1) {
           warnings.push(`Capture recovered after ${attempt} attempt${attempt === 1 ? '' : 's'}.`)
         }
+        mainLog.info(
+          `[browser-pane] ${options.errorPrefix} capture ok instance=${instance.id} tab=${tab.id} mode=${options.mode} arm=in-place attempt=${attempt} home=${home} size=${result.width}x${result.height}`,
+        )
         return { imageBuffer: result.buffer, imageFormat: result.format, imageWidth: result.width, imageHeight: result.height, warnings }
       }
 
@@ -4357,6 +4436,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
         if (result) {
           parked = result
+          mainLog.info(
+            `[browser-pane] ${options.errorPrefix} capture ok instance=${instance.id} tab=${tab.id} mode=${options.mode} arm=parked attempt=${attempt} home=${home} size=${result.width}x${result.height}`,
+          )
           break
         }
 
@@ -5101,6 +5183,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     /** What the file's entry looks like to the layer above — its `(owner, tab)` half included. */
     const ref = (state: TabRecordingState): BrowserRecordingRef =>
       ({ tabId: state.tabId, file: state.file, startedAt: state.startedAt, bytes: state.bytes })
+
+    // Same reason as a viewer's stream (`startViewCapture`): a parked view composites only once its
+    // window has been ordered front, and a recording of a page that never paints is one frame.
+    if (this.tabHome(instance, tab) === 'parking') this.raiseParkedView(instance, tab)
 
     const result = await this.sessionRecordings.start({
       sessionId,
@@ -8667,6 +8753,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // It has now been on a display, which is the moment this window acquired a surface — and the
       // difference between it and one that has never been shown (`hasBeenShown`, `tabHome`).
       instance.hasBeenShown = true
+      // Said out loud, once per show: "the shot worked, so the view had a surface" has exactly two
+      // explanations, and this line is the one that rules this one in or out.
+      mainLog.info(`[browser-pane] window shown instance=${instance.id}`)
       // The window can hand out a surface again, so the tab it is on comes back into it (`tabHome`) —
       // laid out before anything below reads the window's state, and before the person can see it.
       this.layoutAllViews(instance)

@@ -195,6 +195,26 @@ function copyResources(): void {
   }
 }
 
+// Stage the bundled Bun runtime for the host. `vendor/bun` is shared with the
+// dist scripts, which stage x64 last for universal macOS builds — without this
+// a dev run after `electron:dist:mac` picks up the x86_64 binary and Pi fails
+// with an architecture mismatch. Runs the canonical script so the version and
+// cache stay in sync with the packaged build.
+async function ensureBundledBunForCurrentPlatform(): Promise<void> {
+  console.log("🥟 Ensuring bundled Bun for current platform...");
+  const proc = spawn({
+    cmd: ["bun", "run", "scripts/fetch-bun.ts"],
+    cwd: ROOT_DIR,
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  const exitCode = await proc.exited;
+  if (exitCode !== 0) {
+    console.error("❌ Bundled Bun staging failed");
+    process.exit(1);
+  }
+}
+
 // Build the WhatsApp worker bundle (dist/worker.cjs). Runs the canonical
 // `scripts/build-wa-worker.ts` as a subprocess so the dev path stays in
 // sync with the packaged/CI build. Cheap (~70ms) so we always rebuild.
@@ -422,6 +442,7 @@ async function main(): Promise<void> {
   }
 
   await ensureBundledUvForCurrentPlatform();
+  await ensureBundledBunForCurrentPlatform();
 
   copyResources();
 

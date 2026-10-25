@@ -85,30 +85,176 @@ node_modules/electron/dist/Electron.app/Contents/MacOS/Electron apps/electron/sp
 - 不要覆盖或删除其它 spike 的 `.log`（它们是对照数据）。
 - 不要把 `enableLargerThanScreen` 从产品代码里删掉——它是“窗口不被系统拉回显示器”的唯一依据，和本问题无关，只是让本问题可测。
 
-## 结果（macOS 实测，待填）
+## 结果（macOS 实测）
 
-机器 / 版本：`________` / `________`（macOS 版本）
-Electron 版本（`node_modules/electron/package.json`）：`________`
-跑的日期：`________`
+机器 / 版本：单显示器 1440×900 @2x（`id 1`，primary） / macOS 15.6.1（24G90）
+Electron 版本（`node_modules/electron/package.json`）：39.2.7
+跑的日期：2026-10-25，退出码 0，`SPIKE_DONE`
 
 | label | landed | 重叠面积 | capturePage | CDP 截图 | screencast 帧/2s | rAF/700ms | hide 后能拍 |
 |---|---|---|---|---|---|---|---|
-| onscreen-control | | | | | | | |
-| offscreen-product | | | | | | | |
-| offscreen-legacy | | | | | | | |
-| edge-0px-tl | | | | | | | |
-| edge-0px-tr | | | | | | | |
-| edge-0px-bl | | | | | | | |
-| edge-0px-br | | | | | | | |
-| corner-1px-tl | | | | | | | |
-| corner-1px-tr | | | | | | | |
-| corner-1px-bl | | | | | | | |
-| corner-1px-br | | | | | | | |
+| onscreen-control | 40,40（未动） | 558000（900×620） | answered 1800×1240 | 14062 B | 1 | 43 | 是 1800×1240 |
+| offscreen-product | 21440,0（未动） | 0 | **refused: Current display surface not available for capture** | 14061 B | 1 | **0**（`frames` 停在 1） | 是 1800×1240 |
+| offscreen-legacy | **1400,25（被系统拉回）** | 24800（40×620） | answered 1800×1240 | 14061 B | 1 | 42 | 是 1800×1240 |
+| edge-0px-tl | -900,-620（未动） | 0 | **refused** | 14061 B | 1 | **0** | 是 1800×1240 |
+| edge-0px-tr | 1440,-620（未动） | 0 | **refused** | 14061 B | 1 | **0** | 是 1800×1240 |
+| edge-0px-bl | -900,900（未动） | 0 | **refused** | 14061 B | 1 | **0** | 是 1800×1240 |
+| edge-0px-br | 1440,900（未动） | 0 | **refused** | 14061 B | 1 | **0** | 是 1800×1240 |
+| corner-1px-tl | -899,-619（未动） | 1（1×1） | answered 1800×1240 | 14062 B | 1 | 42 | 是 1800×1240 |
+| corner-1px-tr | 1439,-619（未动） | 1（1×1） | answered 1800×1240 | 14062 B | 1 | 42 | 是 1800×1240 |
+| corner-1px-bl | -899,899（未动） | 1（1×1） | answered 1800×1240 | 14062 B | 1 | 42 | 是 1800×1240 |
+| corner-1px-br | 1439,899（未动） | 1（1×1） | answered 1800×1240 | 14062 B | 1 | 43 | 是 1800×1240 |
 
-**Q1**：`________`
-**Q2**：`________`
-**Q3**：`________`
-**Q4**：`________`
-**Q5**：`________`
+`page.visibilityState` 与 rAF 完全同向：屏外 / 0 像素贴边的 5 行是 `hidden`、`frames` 停在 1；
+屏内与所有 1×1 行是 `visible`、rAF 正常。
 
-**结论 / 建议改动**：`________`
+**Q1**：**没有。** 完全屏外（`enableLargerThanScreen`，landed 21440,0，重叠 0）`capturePage`
+立刻 refuse `Current display surface not available for capture`，页面 `visibilityState=hidden`、
+rAF 冻结（0 帧/700ms）。但 CDP `Page.captureScreenshot` 照样出图（14061 B）—— 两条是不同的 sink。
+
+**Q2**：**没有。** 四个角的 0 像素贴边（`edge-0px-*`，重叠面积 0）与 Q1 表现完全一致：
+全部 refuse + `hidden` + rAF 0。
+
+**Q3**：**有。** 四个角各让 1×1 像素落进显示器（重叠面积 1），四行**全部** answered 1800×1240，
+且页面 `visibilityState=visible`、rAF 42–43/700ms —— 不像"勉强能拍"，像完全正常的一扇窗。
+判据是二值的：面积 0 → 无 surface，面积 1 → 有 surface。
+
+**Q4**：**是，但这格不能当作"点亮一次"的依据。** 所有 11 行的 `capturePageAfterHide` 都是
+answered，包括 Q1/Q2 里 `hide()` 之前刚被 refuse 的 5 行。行内顺序是
+`capturePage → cdpScreenshot → screencast → hide() → capturePageAfterHide`，所以更省事的解释是
+**同一行的 CDP 截图 / screencast 先把 surface 造出来了**，而不是 `show()` 把 surface 保留下来。
+要判定"曾上屏就永久保留"，需要一次没有任何 CDP 介入的对照（见下面「还缺一格」）。
+
+**Q5**：**带 `enableLargerThanScreen` 的一律没被挪**（10 扇全部 `movedByTheDesktop: false`，
+包括请求 21440 的 `offscreen-product` —— 本机上并没有出现注释里说的"被限到 16383"）。
+**不带的 `offscreen-legacy` 被拉了回来**：请求 21440,0，landed 1400,25，与主屏重叠 40×620。
+这直接给旧 `parked` 行（`capturePage` 2800×1800、rAF 42）判了死刑 —— 它测的是**右侧露出 40 DIP**
+的一扇窗，不是"屏外"。
+
+**结论 / 建议改动**：
+
+命中判定表第 3 行（Q1 无、Q2 无、Q3 有）：**数学上的"完全不上屏"和"有 display surface"在 macOS
+上不可兼得，唯一的分界线是 1 个像素。** 两条可选路径，都需要产品拍板，本次**没有改业务代码**：
+
+1. **常驻 1×1 贴角**（产品若接受）。改三处，都在
+   [browser-pane-manager.ts](file:///Users/ryan/code/craft-agents-oss/apps/electron/src/main/browser-pane-manager.ts)：
+   - `offscreenSpot`（L4484）返回"与最近显示器角 1×1 重叠"的坐标，而不是 `right + 20000`；
+   - `overlapsADisplay`（L4506）的判据从"有任何共享像素"改成"重叠面积 > 1 px²"，
+     否则新坐标会被自己判成"在屏上"而被 `keepOffEveryDisplay` 反复挪走；
+   - `keepOffEveryDisplay`（L4525）用新判据（它只经 `overlapsADisplay`，实际不用单独改，
+     但注释 L4505 "shares any pixel" 要跟着改）。
+   - `parkingWindowFor`（L6366）的选项不动。
+
+2. **点亮一次**（产品若只接受"一帧"）。建窗时先放 1×1 贴角 `showInactive` → 等一帧 → 移回完全
+   屏外，之后不再点亮。实现落在 `parkingWindowFor` 建窗后的一次性步骤，`keepOffEveryDisplay`
+   保持"完全屏外"。**但这条路的关键前提本次没测到**，见下。
+
+产品若不接受任何一种 → 按判定表下一行：不做"上屏"，保留 CDP 取图 + 静帧泵（~1.4fps），
+并把"完全屏外没有 surface，且 CDP 截图在屏外仍可用"这条回填到
+[`browser-view-streaming.md`](./browser-view-streaming.md) §5.2.1 的代价一节。
+
+## 两个测量上的坑（读表前先看）
+
+1. **`screencastFrames` 这一列完全不分档**：11 行全是 1，连屏内的 `onscreen-control` 也是 1。
+   页面是一整块纯色，CDP screencast 只在有变化时发帧，所以这列测的是"页面有没有变化"而
+   不是"有没有 surface"。**不要用这一列下结论。**
+2. **`capturePageAfterHide` 被 CDP 污染**（见 Q4）。同理，`capturePage` 那一列的 refuse
+   发生在任何 CDP 调用之前，是干净的；`AfterHide` 不是。
+
+## 还缺一格（若要选"点亮一次"必须先补）
+
+现有变体都是"建窗即在某位置，此后不动"。**"先在 1×1 角上 `showInactive`，再移回完全屏外"之后
+还有没有 surface**，一次都没测 —— 而这正是"点亮一次"的全部内容。补它只需一个变体：
+
+```
+corner-1px-tl → showInactive → sleep 一帧 → win.setBounds(完全屏外) → capturePage（全程不碰 CDP）
+```
+
+- answered → "点亮一次"成立，只花一帧 1 个像素。
+- refused / `hidden` → surface 与"当前是否在显示器上"绑定，Q4 的"是"是假象，只能走常驻 1×1。
+
+## 附：`apps/electron/spike/parking-surface.log` 原文
+
+```
+SPIKE_DISPLAYS [{"id":1,"bounds":{"x":0,"y":0,"width":1440,"height":900},"workArea":{"x":0,"y":25,"width":1440,"height":802},"scaleFactor":2,"primary":true}]
+SPIKE_STEP 11:32:45.781 variant onscreen-control requested=40,40
+SPIKE_STEP 11:32:45.936 load onscreen-control
+SPIKE_ROW {"label":"onscreen-control","requested":{"x":40,"y":40},"landed":{"x":40,"y":40,"width":900,"height":620},"movedByTheDesktop":false,"sizeChanged":false,"overlap":{"area":558000,"displayId":1,"size":{"width":900,"height":620}},"visible":true,"page":{"innerWidth":900,"innerHeight":620,"visibility":"visible","hidden":false,"frames":43},"framesOver700ms":43,"capturePage":"answered 1800x1240","cdpScreenshot":"answered 14062 bytes","screencastFrames":1,"capturePageAfterHide":"answered 1800x1240","capturePageAfterShowAgain":"answered 1800x1240"}
+SPIKE_STEP 11:32:50.584 variant offscreen-product requested=21440,0
+SPIKE_STEP 11:32:50.599 load offscreen-product
+SPIKE_ROW {"label":"offscreen-product","requested":{"x":21440,"y":0},"landed":{"x":21440,"y":0,"width":900,"height":620},"movedByTheDesktop":false,"sizeChanged":false,"overlap":{"area":0,"displayId":null,"size":{"width":0,"height":0}},"visible":true,"page":{"innerWidth":900,"innerHeight":620,"visibility":"hidden","hidden":true,"frames":1},"framesOver700ms":0,"capturePage":"refused: Current display surface not available for capture","cdpScreenshot":"answered 14061 bytes","screencastFrames":1,"capturePageAfterHide":"answered 1800x1240","capturePageAfterShowAgain":"answered 1800x1240"}
+SPIKE_STEP 11:32:55.149 variant offscreen-legacy requested=21440,0
+SPIKE_STEP 11:32:55.158 load offscreen-legacy
+SPIKE_ROW {"label":"offscreen-legacy","requested":{"x":21440,"y":0},"landed":{"x":1400,"y":25,"width":900,"height":620},"movedByTheDesktop":true,"sizeChanged":false,"overlap":{"area":24800,"displayId":1,"size":{"width":40,"height":620}},"visible":true,"page":{"innerWidth":900,"innerHeight":620,"visibility":"visible","hidden":false,"frames":43},"framesOver700ms":42,"capturePage":"answered 1800x1240","cdpScreenshot":"answered 14061 bytes","screencastFrames":1,"capturePageAfterHide":"answered 1800x1240","capturePageAfterShowAgain":"answered 1800x1240"}
+SPIKE_STEP 11:32:59.726 variant edge-0px-tl requested=-900,-620
+SPIKE_STEP 11:32:59.740 load edge-0px-tl
+SPIKE_ROW {"label":"edge-0px-tl","requested":{"x":-900,"y":-620},"landed":{"x":-900,"y":-620,"width":900,"height":620},"movedByTheDesktop":false,"sizeChanged":false,"overlap":{"area":0,"displayId":null,"size":{"width":0,"height":0}},"visible":true,"page":{"innerWidth":900,"innerHeight":620,"visibility":"hidden","hidden":true,"frames":1},"framesOver700ms":0,"capturePage":"refused: Current display surface not available for capture","cdpScreenshot":"answered 14061 bytes","screencastFrames":1,"capturePageAfterHide":"answered 1800x1240","capturePageAfterShowAgain":"answered 1800x1240"}
+SPIKE_STEP 11:33:04.281 variant edge-0px-tr requested=1440,-620
+SPIKE_STEP 11:33:04.294 load edge-0px-tr
+SPIKE_ROW {"label":"edge-0px-tr","requested":{"x":1440,"y":-620},"landed":{"x":1440,"y":-620,"width":900,"height":620},"movedByTheDesktop":false,"sizeChanged":false,"overlap":{"area":0,"displayId":null,"size":{"width":0,"height":0}},"visible":true,"page":{"innerWidth":900,"innerHeight":620,"visibility":"hidden","hidden":true,"frames":1},"framesOver700ms":0,"capturePage":"refused: Current display surface not available for capture","cdpScreenshot":"answered 14061 bytes","screencastFrames":1,"capturePageAfterHide":"answered 1800x1240","capturePageAfterShowAgain":"answered 1800x1240"}
+SPIKE_STEP 11:33:08.869 variant edge-0px-bl requested=-900,900
+SPIKE_STEP 11:33:08.882 load edge-0px-bl
+SPIKE_ROW {"label":"edge-0px-bl","requested":{"x":-900,"y":900},"landed":{"x":-900,"y":900,"width":900,"height":620},"movedByTheDesktop":false,"sizeChanged":false,"overlap":{"area":0,"displayId":null,"size":{"width":0,"height":0}},"visible":true,"page":{"innerWidth":900,"innerHeight":620,"visibility":"hidden","hidden":true,"frames":1},"framesOver700ms":0,"capturePage":"refused: Current display surface not available for capture","cdpScreenshot":"answered 14061 bytes","screencastFrames":1,"capturePageAfterHide":"answered 1800x1240","capturePageAfterShowAgain":"answered 1800x1240"}
+SPIKE_STEP 11:33:13.440 variant edge-0px-br requested=1440,900
+SPIKE_STEP 11:33:13.453 load edge-0px-br
+SPIKE_ROW {"label":"edge-0px-br","requested":{"x":1440,"y":900},"landed":{"x":1440,"y":900,"width":900,"height":620},"movedByTheDesktop":false,"sizeChanged":false,"overlap":{"area":0,"displayId":null,"size":{"width":0,"height":0}},"visible":true,"page":{"innerWidth":900,"innerHeight":620,"visibility":"hidden","hidden":true,"frames":1},"framesOver700ms":0,"capturePage":"refused: Current display surface not available for capture","cdpScreenshot":"answered 14061 bytes","screencastFrames":1,"capturePageAfterHide":"answered 1800x1240","capturePageAfterShowAgain":"answered 1800x1240"}
+SPIKE_STEP 11:33:18.018 variant corner-1px-tl requested=-899,-619
+SPIKE_STEP 11:33:18.027 load corner-1px-tl
+SPIKE_ROW {"label":"corner-1px-tl","requested":{"x":-899,"y":-619},"landed":{"x":-899,"y":-619,"width":900,"height":620},"movedByTheDesktop":false,"sizeChanged":false,"overlap":{"area":1,"displayId":1,"size":{"width":1,"height":1}},"visible":true,"page":{"innerWidth":900,"innerHeight":620,"visibility":"visible","hidden":false,"frames":44},"framesOver700ms":42,"capturePage":"answered 1800x1240","cdpScreenshot":"answered 14062 bytes","screencastFrames":1,"capturePageAfterHide":"answered 1800x1240","capturePageAfterShowAgain":"answered 1800x1240"}
+SPIKE_STEP 11:33:22.597 variant corner-1px-tr requested=1439,-619
+SPIKE_STEP 11:33:22.605 load corner-1px-tr
+SPIKE_ROW {"label":"corner-1px-tr","requested":{"x":1439,"y":-619},"landed":{"x":1439,"y":-619,"width":900,"height":620},"movedByTheDesktop":false,"sizeChanged":false,"overlap":{"area":1,"displayId":1,"size":{"width":1,"height":1}},"visible":true,"page":{"innerWidth":900,"innerHeight":620,"visibility":"visible","hidden":false,"frames":44},"framesOver700ms":42,"capturePage":"answered 1800x1240","cdpScreenshot":"answered 14062 bytes","screencastFrames":1,"capturePageAfterHide":"answered 1800x1240","capturePageAfterShowAgain":"answered 1800x1240"}
+SPIKE_STEP 11:33:27.179 variant corner-1px-bl requested=-899,899
+SPIKE_STEP 11:33:27.189 load corner-1px-bl
+SPIKE_ROW {"label":"corner-1px-bl","requested":{"x":-899,"y":899},"landed":{"x":-899,"y":899,"width":900,"height":620},"movedByTheDesktop":false,"sizeChanged":false,"overlap":{"area":1,"displayId":1,"size":{"width":1,"height":1}},"visible":true,"page":{"innerWidth":900,"innerHeight":620,"visibility":"visible","hidden":false,"frames":43},"framesOver700ms":42,"capturePage":"answered 1800x1240","cdpScreenshot":"answered 14062 bytes","screencastFrames":1,"capturePageAfterHide":"answered 1800x1240","capturePageAfterShowAgain":"answered 1800x1240"}
+SPIKE_STEP 11:33:31.748 variant corner-1px-br requested=1439,899
+SPIKE_STEP 11:33:31.758 load corner-1px-br
+SPIKE_ROW {"label":"corner-1px-br","requested":{"x":1439,"y":899},"landed":{"x":1439,"y":899,"width":900,"height":620},"movedByTheDesktop":false,"sizeChanged":false,"overlap":{"area":1,"displayId":1,"size":{"width":1,"height":1}},"visible":true,"page":{"innerWidth":900,"innerHeight":620,"visibility":"visible","hidden":false,"frames":43},"framesOver700ms":43,"capturePage":"answered 1800x1240","cdpScreenshot":"answered 14062 bytes","screencastFrames":1,"capturePageAfterHide":"answered 1800x1240","capturePageAfterShowAgain":"answered 1800x1240"}
+SPIKE_DONE
+```
+
+## 第二轮：`moveTop()` 是那个开关（本文判定表的结论被推翻）
+
+第一轮的量法缺了一个动作：**窗口被 `moveTop()` 过一次**。补上它之后，"完全屏外就没有 surface"不成立。
+
+触发这次复查的是应用自己日志里一条真实截图：
+
+```
+[browser-pane] screenshot capture state instance=browser-1 tab=tab-1 mode=raw
+  home=parking hasBeenShown=false isVisible=false windowVisible=false windowMinimized=false
+[browser-pane] screenshot capture ok instance=browser-1 tab=tab-1 mode=raw arm=in-place attempt=1 size=1100x845
+```
+
+没上过屏、窗口不可见、住在停车窗里，第一次尝试就出图。隔离实验
+（[`agent-first-shot.cjs`](../apps/electron/spike/agent-first-shot.cjs)）——同一扇窗、同一个 view，相隔 16ms，只差一个 `moveTop()`：
+
+| 时刻 | 页面 | capturePage | screencast |
+|---|---|---|---|
+| `showInactive()` + view 移入，未 order | `hidden`，rAF 冻结（frames 1） | **0×0（空图）** | — |
+| `parking.moveTop()` | **`visible`**，rAF 恢复 | **2200×1690** | **119 帧/2s** |
+
+所以：
+
+- **Q1 改判为「有」。** 完全屏外的停车窗有 display surface，前提是它被 order 到最前过一次；
+  `showInactive()` 单独不够 —— 窗口"显示"了但从未 order front，Chromium 仍当它不可见。
+- **Q3 的 1×1 贴角、判定表里的"点亮一次"都不需要。** 一个像素都不用上屏。
+- **agent 截图一直没问题，是因为它本来就一直在做这件事**：`capturePageWithRecovery` 第一步就是
+  `raiseParkedView`，里面除了 `addChildView` 还有 `parking.moveTop()`。
+- **远程 viewer 黑屏，是因为它没做**：`startViewCapture` 直接 `Page.startScreencast`，
+  窗口没被 order → 页面 `hidden` → rAF 冻结 → 最多一帧；静帧泵又被 `liveFrames > 0` 关掉。
+
+另一条同效的"点亮"方式是 CDP `Page.captureScreenshot`（第一轮测到的就是它），它是另一种强制合成；
+`moveTop()` 更便宜。两者都是 **per-view** 的：同一扇已点亮的窗里新加一个 view，它仍然要先被
+`addChildView` + `moveTop` 一次。
+
+已按这条结论改动（业务代码）：
+
+- `startViewCapture`：在 `startScreencast` 之前，`tabHome === 'parking'` 时 `raiseParkedView`；
+- `startRecordingForSession`：同样一处，会话录制的 screencast 之前；
+- `pumpViewStill`：停泵判据从"收到过一帧（`liveFrames > 0`）"改成"**页面自己说是可见的**"
+  （`pageIsComposited`）。原来那条判据把"订阅时必然发生的那一帧"当成"合成器在跑"，于是恰好在
+  最需要静帧的 tab 上把静帧关掉。现在只有在页面确实被合成时才停泵；未合成时继续以 ~1.4fps 出
+  CDP 静帧，而这本身又会把页面点亮，下一拍就自动停泵。
+
+那个 `tabHome === 'parking'` 的判断不能省：`raiseParkedView` 会无条件 `addChildView`，
+否则会把一扇正在人眼前窗口里的 tab 拽进停车窗。

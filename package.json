@@ -66,7 +66,7 @@
     "electron:build:assets": "cd apps/electron && bun scripts/copy-assets.ts",
     "electron:fetch:drawio": "bun run apps/electron/scripts/fetch-drawio-assets.ts",
     "electron:build": "bun run electron:build:main && bun run electron:build:preload && bun run electron:build:renderer && bun run electron:build:resources && bun run electron:build:assets",
-    "electron:start": "bun run electron:build && electron apps/electron",
+    "electron:start": "bun run scripts/fetch-bun.ts && bun run electron:build && electron apps/electron",
     "electron:start:server": "bun run webui:build && bun run electron:start",
     "electron:dev": "bun run scripts/electron-dev.ts",
     "electron:dev:server": "bun run webui:build && bun run electron:build:assets && bun run electron:dev",
