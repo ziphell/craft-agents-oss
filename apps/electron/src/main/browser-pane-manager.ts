@@ -1209,6 +1209,8 @@ interface ViewStream {
   clientId: string
   /** Watching is not controlling: input is refused until the viewer takes over. */
   controlled: boolean
+  /** Whether this viewer has been sent a picture — a seed still is only for one that has not. */
+  sentAny: boolean
   /** Where this viewer's frames go; the capture fans one screencast out to all of them. */
   onFrame: (frame: BrowserStreamFrame) => void
 }
@@ -3065,64 +3067,149 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     if (!tab) throw new Error(`Browser window "${instanceId}" has no tab "${tabId}".`)
 
     const key = viewCaptureKey(instanceId, tab.id)
-    const existing = this.viewCaptures.get(key)
-    // No capture of ours, yet the page says one is running: the registry lost track of it.
-    // Refusing is safer than silently replacing a stream somebody else is waiting on.
-    if (!existing && tab.cdp.isScreencasting()) {
-      throw new Error('That tab already has a capture running.')
-    }
 
     const streamId = `stream-${++this.viewStreamSeq}`
     const bounds = tab.tabView.getBounds()
-    this.viewStreams.set(streamId, { instanceId, tabId: tab.id, clientId, controlled: false, onFrame })
+    this.viewStreams.set(streamId, { instanceId, tabId: tab.id, clientId, controlled: false, sentAny: false, onFrame })
 
     // Somebody is already watching this tab: one more seat, no second capture.
-    if (existing) {
-      existing.streams.add(streamId)
+    let capture = this.viewCaptures.get(key)
+    if (capture) {
+      capture.streams.add(streamId)
+      // A capture whose screencast is no longer running is a registry entry the page left behind
+      // (a detach nobody reported). Seating a viewer in it means waiting for frames that will
+      // never come — which is what "close the panel and open it again" used to look like, and why
+      // switching tab and back seemed to fix it: that tab's next start was a fresh capture.
+      // Restart in place instead: the seats already here keep their ids and their viewers.
+      if (!tab.cdp.isScreencasting()) {
+        try {
+          await this.startViewCapture(key, tab, capture)
+        } catch (error) {
+          if (this.viewCaptures.get(key) === capture) this.finishViewCapture(key, 'capture-failed')
+          throw error
+        }
+      }
+      // The new seat has no picture until the page repaints. A still of what the tab shows now
+      // is what keeps a still page (a new tab, a blank page, an error page) from being a pane
+      // that waits for a frame which will never come.
+      void this.sendViewSeed(instance, tab, capture)
       return { streamId, tabId: tab.id, width: bounds.width, height: bounds.height, lockedBy: tab.heldBy, overlayDismissed: tab.overlayDismissedByPerson }
     }
 
-    const capture = { instanceId, tabId: tab.id, lastSentAt: 0, streams: new Set([streamId]) }
+    capture = { instanceId, tabId: tab.id, lastSentAt: 0, streams: new Set([streamId]) }
     this.viewCaptures.set(key, capture)
 
     try {
-      await tab.cdp.startScreencast({
-        quality: 60,
-        // Cap at the source: a viewer is looking at a pane, not a poster.
-        maxWidth: 1600,
-        maxHeight: 1600,
-        // Capture lost its session (a detach out from under us): every viewer has to hear it,
-        // otherwise each sits on its last frame forever.
-        onEnd: (reason) => this.finishViewCapture(key, reason || 'capture-ended'),
-        onFrame: (frame) => {
-          // ~15fps ceiling for the tab: Chromium paints faster than anyone needs to see, and
-          // every frame is bandwidth on a link that also carries the conversation.
-          const now = Date.now()
-          if (now - capture.lastSentAt < 66) return
-          capture.lastSentAt = now
-          // Encoded once and shared: the only per-viewer work is its own stream id.
-          const data = frame.bytes.toString('base64')
-          const width = frame.width ?? bounds.width
-          const height = frame.height ?? bounds.height
-          for (const id of capture.streams) {
-            this.viewStreams.get(id)?.onFrame({
-              streamId: id,
-              tabId: tab.id,
-              data,
-              width,
-              height,
-              atMs: now,
-            })
-          }
-        },
-      })
+      await this.startViewCapture(key, tab, capture)
     } catch (error) {
       this.viewCaptures.delete(key)
       this.viewStreams.delete(streamId)
       throw error
     }
 
+    // A screencast only speaks when the page repaints. A page that is sitting still — the
+    // empty-state document a new tab opens with, `about:blank`, a page that failed to load —
+    // would otherwise leave the viewer on "waiting for the first frame" until it gives up.
+    // One still of the tab as it is right now is the same picture the screencast would have
+    // sent, and it makes those pages visible through the one path every other page uses.
+    void this.sendViewSeed(instance, tab, capture)
+
     return { streamId, tabId: tab.id, width: bounds.width, height: bounds.height, lockedBy: tab.heldBy, overlayDismissed: tab.overlayDismissedByPerson }
+  }
+
+  /**
+   * Turn the screencast on for a capture and route its frames to whoever is seated in it.
+   *
+   * Split out from {@link startViewStream} because a capture can outlive its screencast: a viewer
+   * arriving at a registry entry nothing is feeding restarts it here, instead of joining a stream
+   * that will never speak.
+   */
+  private async startViewCapture(
+    key: string,
+    tab: BrowserTab,
+    capture: { instanceId: string; tabId: string; lastSentAt: number; streams: Set<string> },
+  ): Promise<void> {
+    const bounds = tab.tabView.getBounds()
+    await tab.cdp.startScreencast({
+      quality: 60,
+      // Cap at the source: a viewer is looking at a pane, not a poster.
+      maxWidth: 1600,
+      maxHeight: 1600,
+      // Capture lost its session (a detach out from under us): every viewer has to hear it,
+      // otherwise each sits on its last frame forever.
+      onEnd: (reason) => this.finishViewCapture(key, reason || 'capture-ended'),
+      onFrame: (frame) => {
+        // ~15fps ceiling for the tab: Chromium paints faster than anyone needs to see, and
+        // every frame is bandwidth on a link that also carries the conversation.
+        const now = Date.now()
+        if (now - capture.lastSentAt < 66) return
+        capture.lastSentAt = now
+        // Encoded once and shared: the only per-viewer work is its own stream id.
+        const data = frame.bytes.toString('base64')
+        const width = frame.width ?? bounds.width
+        const height = frame.height ?? bounds.height
+        for (const id of capture.streams) {
+          const viewer = this.viewStreams.get(id)
+          if (!viewer) continue
+          viewer.sentAny = true
+          viewer.onFrame({
+            streamId: id,
+            tabId: tab.id,
+            data,
+            width,
+            height,
+            atMs: now,
+          })
+        }
+      },
+    })
+
+    // A screencast only speaks when the page repaints, and a page that is sitting still — the
+    // empty-state document a new tab opens with, `about:blank`, an error page — never does. The
+    // still taken right after this (`sendViewSeed`) covers that, but it is one picture and it
+    // depends on a capture of a window nobody is looking at. One scheduled repaint is the
+    // cheaper guarantee: it makes the very page the viewer is waiting for produce its first
+    // frame, whatever state it is in.
+    const page = tab.tabView.webContents
+    if (!page.isDestroyed()) page.invalidate()
+  }
+
+  /**
+   * Send one still of a tab to the viewers of its capture that have not been sent anything.
+   *
+   * The seed exists for the pages Chromium never repaints, so it must not overwrite a live
+   * frame: "has this viewer been sent a picture" is checked after the capture, before the send,
+   * because a live frame gets its chance while the still is being taken. A capture that is gone
+   * by then (the viewer left, the tab closed) is not sent to at all.
+   */
+  private async sendViewSeed(
+    instance: BrowserInstance,
+    tab: BrowserTab,
+    capture: { instanceId: string; tabId: string; lastSentAt: number; streams: Set<string> },
+  ): Promise<void> {
+    const waiting = () => [...capture.streams]
+      .map((id) => ({ id, viewer: this.viewStreams.get(id) }))
+      .filter((entry): entry is { id: string; viewer: ViewStream } => entry.viewer !== undefined && !entry.viewer.sentAny)
+    if (waiting().length === 0) return
+
+    const seed = await this.captureRecordingSeed(instance, tab, 'view seed')
+    if (!seed) return
+    if (this.viewCaptures.get(viewCaptureKey(instance.id, tab.id)) !== capture) return
+
+    const now = Date.now()
+    const bounds = tab.tabView.getBounds()
+    const data = seed.toString('base64')
+    for (const { id, viewer } of waiting()) {
+      viewer.sentAny = true
+      viewer.onFrame({
+        streamId: id,
+        tabId: tab.id,
+        data,
+        width: bounds.width,
+        height: bounds.height,
+        atMs: now,
+      })
+    }
   }
 
   /** End a stream because the viewer asked. Safe to call for one that is already gone. */
@@ -3442,6 +3529,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // when that is the new-tab page, the page otherwise — the same decision a tab switch makes
     // (`focusShownTab`). Forced, because the activation was just asked for above.
     this.focusShownTab(instance, activeTab(instance), true)
+    // Every client's strip follows "the window in use", and this window is now in use — the
+    // request may have come from another machine (a remote window opening its browser), whose
+    // window would otherwise appear in the hub's list without being the one it shows.
+    this.interactedCallback?.(instance.id)
   }
 
   hide(id: string): void {
@@ -3965,7 +4056,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
        * nobody is looking at is a shot of *that* tab. */
       tab: BrowserTab
       mode: 'raw' | 'agent' | 'region'
-      errorPrefix: 'screenshot' | 'region screenshot' | 'recording seed'
+      errorPrefix: 'screenshot' | 'region screenshot' | 'recording seed' | 'view seed'
       rect?: { x: number; y: number; width: number; height: number }
       dpr?: number
       cssSize?: { width: number; height: number }
@@ -4293,19 +4384,25 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * One JPEG of a tab, for a recording's first frame.
+   * One JPEG of a tab, as a seed for something that needs a first picture: a recording's first
+   * frame, or the still that shows a viewer a page Chromium will not repaint.
    *
    * The screenshot path, not the capture: a window that is not on screen has no surface for
    * `capturePage` to copy, and this is the same machinery `screenshot` uses to answer there —
    * including the parked shot it falls back to. `null` when even that cannot be had, because a
-   * recording without a first picture is still a recording.
+   * recording without a first picture is still a recording, and a viewer without one still has
+   * the live stream.
    */
-  private async captureRecordingSeed(instance: BrowserInstance, tab: BrowserTab): Promise<Buffer | null> {
+  private async captureRecordingSeed(
+    instance: BrowserInstance,
+    tab: BrowserTab,
+    errorPrefix: 'recording seed' | 'view seed' = 'recording seed',
+  ): Promise<Buffer | null> {
     try {
       const captured = await this.capturePageWithRecovery(instance, {
         tab,
         mode: 'raw',
-        errorPrefix: 'recording seed',
+        errorPrefix,
         format: 'jpeg',
         jpegQuality: 80,
       })
@@ -4632,8 +4729,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const instance = this.requireAliveInstance(id)
     const tab = this.tabOf(instance, tabId)
 
-    const requestedWidth = Math.max(320, Math.floor(width))
-    const requestedHeight = Math.max(240, Math.floor(height))
+    // Floors keep a page from becoming degenerate. They scale **both axes together**: a floor
+    // that moved only one of them would change the page's aspect, and a viewer fitting that page
+    // into its pane would then letterbox it — bars around a page that asked to fill the pane.
+    const safeWidth = Math.max(1, width)
+    const safeHeight = Math.max(1, height)
+    const floorScale = Math.max(1, 320 / safeWidth, 240 / safeHeight)
+    const requestedWidth = Math.floor(safeWidth * floorScale)
+    const requestedHeight = Math.floor(safeHeight * floorScale)
     const wanted = { width: requestedWidth, height: requestedHeight }
 
     if (this.tabHome(instance, tab) !== 'window') {
@@ -8285,6 +8388,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // maximized from outside the bar too (a double-click on the drag region, or the OS's
       // window menu) — so the state is re-sent here rather than only on the button's click.
       this.pushToolbarState(instance)
+      // A tab that was parked is back in the window now (and one that was in the window has
+      // just been laid out), so its viewport moved: viewers that asked for a size re-ask.
+      this.emitStateChange(instance)
     }
     instance.window.on('restore', cameBack)
     instance.window.on('maximize', cameBack)
@@ -8309,6 +8415,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
           `[browser-pane] minimized id=${instance.id} tab=${tab.id} home=${this.tabHome(instance, tab)}`,
         )
       }
+      // The tab just moved out of the window — a viewer's fit request can now be honoured
+      // exactly, but only if it knows the home changed.
+      this.emitStateChange(instance)
     })
 
     /**
@@ -8941,6 +9050,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       canGoForward: activeTab(instance).canGoForward,
       tabs: instance.tabs.map((tab) => this.toTabSummary(instance, tab)),
       isVisible: instance.isVisible,
+      isMinimized: instance.window.isDestroyed() ? false : instance.window.isMinimized(),
       // Any conversation working in this window at all — the window-level indicator. Which
       // tab each one holds is the tab's own answer (`lockedBy`, per tab).
       agentControlActive: instance.controlBy.size > 0,

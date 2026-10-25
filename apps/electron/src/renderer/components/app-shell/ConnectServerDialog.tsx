@@ -1,9 +1,10 @@
 /**
  * ConnectServerDialog — open a window on a saved server, or add one.
  *
- * The VS Code shape: connecting is an action, not a settings page. The saved servers are listed
- * (any number of them), "Open" opens a window on one, and the form below adds a new one. The
- * connection is remembered, so the tray keeps an entry for it; nothing else needs configuring.
+ * The VS Code shape: connecting is an action, not a settings page. Two views, never both — the
+ * saved-server list (open / edit / remove, plus "Add server") and the form for one server. Keeping
+ * them apart is what makes adding and editing tell themselves apart: the title, the primary button
+ * and where Cancel goes all follow the view.
  */
 
 import { useCallback, useEffect, useState } from 'react'
@@ -15,7 +16,6 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
-  DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
@@ -62,8 +62,8 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
   const [busyConnectionId, setBusyConnectionId] = useState<string>()
   const [testResult, setTestResult] = useState<ClientModeTestResult | null>(null)
   const [error, setError] = useState<string>()
-  // Editing a saved server reuses the form below. The id is what makes "Connect" become "Save"
-  // and what keeps the server's last workspace when the URL or token changes.
+  // `formOpen` is the second view; `editingId` picks its mode. Both undefined/false = the list.
+  const [formOpen, setFormOpen] = useState(false)
   const [editingId, setEditingId] = useState<string>()
   const [statuses, setStatuses] = useState<Record<string, TransportConnectionStatus | 'unknown'>>({})
 
@@ -84,6 +84,7 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
     setHostName('')
     setDeviceAccess(false)
     setEditingId(undefined)
+    setFormOpen(false)
     load()
   }, [open, load])
 
@@ -146,6 +147,19 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
     }
   })()
 
+  /**
+   * A URL that belongs to another saved server cannot be saved again: two entries for one endpoint
+   * are meaningless, and the main process refuses it. Show which entry owns the address before the
+   * person presses the button instead of surfacing the refusal after.
+   */
+  const sameUrlConnection = connections.find(
+    (connection) => connection.id !== editingId && connection.url.trim() === serverUrl.trim(),
+  )
+
+  const duplicateUrlError = sameUrlConnection
+    ? t('settings.client.urlAlreadySaved', { name: sameUrlConnection.name })
+    : null
+
   const handleTest = async () => {
     const validationError = validate(!editingConnection?.token)
     if (validationError) {
@@ -167,7 +181,7 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
   }
 
   const handleAddAndConnect = async () => {
-    const validationError = validate(true)
+    const validationError = validate(true) ?? duplicateUrlError
     if (validationError) {
       setError(validationError)
       return
@@ -191,6 +205,7 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
     }
   }
 
+  /** The form, on a saved server. The id is what makes the primary button "Save". */
   const startEdit = (connection: RemoteConnection) => {
     setEditingId(connection.id)
     setServerUrl(connection.url)
@@ -200,9 +215,11 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
     setToken('')
     setError(undefined)
     setTestResult(null)
+    setFormOpen(true)
   }
 
-  const cancelEdit = () => {
+  /** The form, empty — a server this app does not know yet. */
+  const startAdd = () => {
     setEditingId(undefined)
     setServerUrl('')
     setHostName('')
@@ -210,6 +227,19 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
     setDeviceAccess(false)
     setError(undefined)
     setTestResult(null)
+    setFormOpen(true)
+  }
+
+  /** Back to the list, form state dropped. */
+  const closeForm = () => {
+    setEditingId(undefined)
+    setServerUrl('')
+    setHostName('')
+    setToken('')
+    setDeviceAccess(false)
+    setError(undefined)
+    setTestResult(null)
+    setFormOpen(false)
   }
 
   /**
@@ -218,7 +248,7 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
    */
   const handleSaveEdit = async () => {
     if (!editingId) return
-    const validationError = validate(!editingConnection?.token)
+    const validationError = validate(!editingConnection?.token) ?? duplicateUrlError
     if (validationError) {
       setError(validationError)
       return
@@ -233,7 +263,7 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
         token: token.trim() || editingConnection?.token || '',
         deviceAccess,
       })
-      cancelEdit()
+      closeForm()
       load()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -281,28 +311,112 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-md" aria-describedby={undefined}>
         <DialogHeader>
-          <DialogTitle>{t('menu.connectServer')}</DialogTitle>
-          <DialogDescription>{t('settings.client.description')}</DialogDescription>
+          <DialogTitle>
+            {formOpen
+              ? editingId ? t('settings.client.editServer') : t('settings.client.addServer')
+              : t('settings.client.title')}
+          </DialogTitle>
         </DialogHeader>
 
-        <div className="space-y-3">
-          {connections.length > 0 && (
+        {formOpen ? (
+          <div className="space-y-3">
             <div className="space-y-1.5">
-              <p className="text-[13px] font-medium">{t('settings.client.savedServers')}</p>
+              <Input
+                value={hostName}
+                onChange={(e) => setHostName(e.target.value)}
+                placeholder={t('settings.client.namePlaceholder')}
+                aria-label={t('settings.client.name')}
+                autoFocus={!!editingId}
+              />
+              <span className="block text-xs text-muted-foreground">{t('settings.client.nameDesc')}</span>
+            </div>
+
+            <div className="space-y-1.5">
+              <Input
+                value={serverUrl}
+                onChange={(e) => setServerUrl(e.target.value)}
+                placeholder="wss://craft.example.com:9100"
+                aria-label={t('settings.client.serverUrl')}
+                aria-invalid={!!sameUrlConnection}
+                className={sameUrlConnection ? 'border-warning/60' : undefined}
+                autoFocus={!editingId}
+              />
+              <span className="block text-xs text-muted-foreground">{t('settings.client.serverUrlDesc')}</span>
+              {sameUrlConnection && (
+                <span className="block text-xs text-warning">
+                  {t('settings.client.urlAlreadySaved', { name: sameUrlConnection.name })}
+                </span>
+              )}
+            </div>
+
+            <div className="space-y-1.5">
+              <Input
+                type="password"
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+                placeholder={editingId ? t('settings.client.tokenKeep') : '••••••••••••'}
+                aria-label={t('settings.server.token')}
+              />
+              <span className="block text-xs text-muted-foreground">{t('settings.client.tokenDesc')}</span>
+            </div>
+
+            {/* Deliberately separate from the connection fields above: this grants capabilities to
+                the server, it does not connect or authorize viewing its workspaces. */}
+            <div className="space-y-2 rounded-lg border px-3 py-2.5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[13px] font-medium">{t('settings.client.deviceAccess')}</p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    {t('settings.client.deviceAccessDesc')}
+                  </p>
+                </div>
+                <Switch
+                  checked={deviceAccess}
+                  onCheckedChange={setDeviceAccess}
+                  aria-label={t('settings.client.deviceAccess')}
+                />
+              </div>
+            </div>
+
+            {isInsecureUrl && (
+              <p className="flex items-start gap-1.5 text-xs text-warning">
+                <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-px" />
+                <span>{t('settings.client.insecureUrl')}</span>
+              </p>
+            )}
+
+            {testResult?.ok && (
+              <p className="text-xs text-success">
+                {t('settings.client.testOk')}
+                {testResult.workspaces && testResult.workspaces.length > 0
+                  ? ` · ${testResult.workspaces.map((w) => w.name).join(', ')}`
+                  : ''}
+              </p>
+            )}
+            {testResult && !testResult.ok && (
+              <p className="text-xs text-destructive">
+                {t('settings.client.testFail', { message: testResult.error ?? 'unknown error' })}
+              </p>
+            )}
+            {error && <p className="text-xs text-destructive">{error}</p>}
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {connections.length === 0 ? (
+              <p className="rounded-lg border border-dashed px-3 py-8 text-center text-xs text-muted-foreground">
+                {t('settings.client.noSavedServers')}
+              </p>
+            ) : (
               <div className="rounded-lg border">
                 {connections.map((connection) => {
                   const isBusy = busyConnectionId === connection.id
-                  const isEditing = editingId === connection.id
                   const status = liveStatus(connection.id)
                   return (
                     <div
                       key={connection.id}
-                      className={cn(
-                        'flex items-center gap-2 px-2.5 py-2 border-b last:border-b-0',
-                        isEditing && 'bg-foreground/5',
-                      )}
+                      className="flex items-center gap-2 px-2.5 py-2 border-b last:border-b-0"
                     >
                       <span
                         className={cn('h-1.5 w-1.5 shrink-0 rounded-full', statusDotClass(status))}
@@ -356,103 +470,33 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
                   )
                 })}
               </div>
-            </div>
-          )}
-
-          <div className="space-y-1.5">
-            <p className="text-[13px] font-medium">
-              {editingId ? t('settings.client.editServer') : t('settings.client.addServer')}
-            </p>
-            <Input
-              value={hostName}
-              onChange={(e) => setHostName(e.target.value)}
-              placeholder={t('settings.client.namePlaceholder')}
-              aria-label={t('settings.client.name')}
-            />
-            <span className="block text-xs text-muted-foreground">{t('settings.client.nameDesc')}</span>
+            )}
+            {error && <p className="text-xs text-destructive">{error}</p>}
           </div>
-
-          <div className="space-y-1.5">
-            <Input
-              value={serverUrl}
-              onChange={(e) => setServerUrl(e.target.value)}
-              placeholder="wss://craft.example.com:9100"
-              autoFocus={!editingId}
-            />
-            <span className="block text-xs text-muted-foreground">{t('settings.client.serverUrlDesc')}</span>
-          </div>
-
-          <div className="space-y-1.5">
-            <Input
-              type="password"
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              placeholder={editingId ? t('settings.client.tokenKeep') : '••••••••••••'}
-              aria-label={t('settings.server.token')}
-            />
-            <span className="block text-xs text-muted-foreground">{t('settings.client.tokenDesc')}</span>
-          </div>
-
-          {/* Deliberately separate from the connection fields above: this grants capabilities to
-              the server, it does not connect or authorize viewing its workspaces. */}
-          <div className="space-y-2 rounded-lg border px-3 py-2.5">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-[13px] font-medium">{t('settings.client.deviceAccess')}</p>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  {t('settings.client.deviceAccessDesc')}
-                </p>
-              </div>
-              <Switch
-                checked={deviceAccess}
-                onCheckedChange={setDeviceAccess}
-                aria-label={t('settings.client.deviceAccess')}
-              />
-            </div>
-          </div>
-
-          {isInsecureUrl && (
-            <p className="flex items-start gap-1.5 text-xs text-warning">
-              <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-px" />
-              <span>{t('settings.client.insecureUrl')}</span>
-            </p>
-          )}
-
-          {testResult?.ok && (
-            <p className="text-xs text-success">
-              {t('settings.client.testOk')}
-              {testResult.workspaces && testResult.workspaces.length > 0
-                ? ` · ${testResult.workspaces.map((w) => w.name).join(', ')}`
-                : ''}
-            </p>
-          )}
-          {testResult && !testResult.ok && (
-            <p className="text-xs text-destructive">
-              {t('settings.client.testFail', { message: testResult.error ?? 'unknown error' })}
-            </p>
-          )}
-          {error && <p className="text-xs text-destructive">{error}</p>}
-        </div>
+        )}
 
         <DialogFooter className="gap-2">
-          <Button variant="outline" size="sm" onClick={handleTest} disabled={isTesting || isConnecting}>
-            {isTesting ? <Spinner className="mr-1.5" /> : null}
-            {t('settings.client.testConnection')}
-          </Button>
-          {editingId ? (
+          {formOpen ? (
             <>
-              <Button variant="outline" size="sm" onClick={cancelEdit} disabled={isConnecting}>
+              <Button variant="outline" size="sm" onClick={handleTest} disabled={isTesting || isConnecting}>
+                {isTesting ? <Spinner className="mr-1.5" /> : null}
+                {t('settings.client.testConnection')}
+              </Button>
+              <Button variant="outline" size="sm" onClick={closeForm} disabled={isConnecting}>
                 {t('common.cancel')}
               </Button>
-              <Button size="sm" onClick={handleSaveEdit} disabled={isTesting || isConnecting}>
+              <Button
+                size="sm"
+                onClick={editingId ? handleSaveEdit : handleAddAndConnect}
+                disabled={isTesting || isConnecting}
+              >
                 {isConnecting ? <Spinner className="mr-1.5" /> : null}
-                {t('common.save')}
+                {editingId ? t('common.save') : t('settings.client.connect')}
               </Button>
             </>
           ) : (
-            <Button size="sm" onClick={handleAddAndConnect} disabled={isTesting || isConnecting}>
-              {isConnecting ? <Spinner className="mr-1.5" /> : null}
-              {t('settings.client.connect')}
+            <Button size="sm" onClick={startAdd}>
+              {t('settings.client.addServer')}
             </Button>
           )}
         </DialogFooter>

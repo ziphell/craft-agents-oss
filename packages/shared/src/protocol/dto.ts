@@ -1329,6 +1329,14 @@ export interface BrowserInstanceInfo {
    */
   tabs?: BrowserTabSummary[]
   isVisible: boolean
+  /**
+   * Whether the window is minimized.
+   *
+   * A minimized window is not a page's home: its tab is parked (`tabHome`), and only there can a
+   * viewer's `resize-viewport` be honoured exactly. Optional — a reader that pre-dates the field
+   * treats missing as "not minimized".
+   */
+  isMinimized?: boolean
   agentControlActive: boolean
   themeColor: string | null
   /**

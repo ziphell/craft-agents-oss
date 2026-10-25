@@ -385,6 +385,42 @@ export function BrowserTabStrip({
     }
   }, [instancesOverride, updateInstance, removeInstance, setActiveInstanceId, setInstances])
 
+  /**
+   * Re-read the list when this window comes back into focus, and after a reconnect.
+   *
+   * The pushes above keep the strip live, but a push can be missed — a reconnect, or a strip
+   * that mounted before the transport could answer. The list is authoritative and cheap, and
+   * "the person is looking at the strip again" is exactly when being one window behind shows.
+   * This is also how a browser opened **from another machine on this hub** reaches the title
+   * bar if its state change never arrived.
+   */
+  useEffect(() => {
+    if (instancesOverride) return
+    const browserPaneApi = window.electronAPI?.browserPane
+    if (!browserPaneApi || !window.electronAPI.isChannelAvailable('browser-pane:list')) return
+
+    let live = true
+    const reconcile = () => {
+      void browserPaneApi.list()
+        .then((items) => { if (live) setInstances(items) })
+        .catch((error) => {
+          console.warn('[BrowserTabStrip] Reconcile list failed:', error)
+        })
+    }
+    window.addEventListener('focus', reconcile)
+    // A window that is already focused (side by side with something) does not get another
+    // focus event, so coming back to the app counts as well.
+    const onVisible = () => { if (document.visibilityState === 'visible') reconcile() }
+    document.addEventListener('visibilitychange', onVisible)
+    const cleanupReconnected = window.electronAPI.onReconnected?.(() => reconcile())
+    return () => {
+      live = false
+      window.removeEventListener('focus', reconcile)
+      document.removeEventListener('visibilitychange', onVisible)
+      cleanupReconnected?.()
+    }
+  }, [instancesOverride, setInstances])
+
   useEffect(() => {
     if (orderedInstances.length === 0) {
       setActiveInstanceId(null)

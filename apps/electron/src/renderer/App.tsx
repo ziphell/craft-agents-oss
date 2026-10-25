@@ -17,6 +17,7 @@ import { AppShellProvider, type AppShellContextType } from '@/context/AppShellCo
 import { parseRouteToNavigationState } from '../shared/route-parser'
 import { OnboardingWizard, ReauthScreen } from '@/components/onboarding'
 import { WorkspacePicker } from '@/components/workspace'
+import { RemoteUnreachableScreen } from '@/components/remote/RemoteUnreachableScreen'
 import { ResetConfirmationDialog } from '@/components/ResetConfirmationDialog'
 import { SplashScreen } from '@/components/SplashScreen'
 import { TooltipProvider } from '@craft-agent/ui'
@@ -95,7 +96,30 @@ import { rendererLog } from '@/lib/logger'
 import { ActionRegistryProvider } from '@/actions'
 import { toast } from 'sonner'
 
-type AppState = 'loading' | 'onboarding' | 'reauth' | 'workspace-picker' | 'ready'
+type AppState = 'loading' | 'onboarding' | 'reauth' | 'workspace-picker' | 'remote-unreachable' | 'ready'
+
+/**
+ * A remote window's setup state is answered by its hub, and a hub that is down may take the
+ * transport's full connect timeout to say so. Cap the wait so the window reaches the
+ * "cannot connect" screen instead of sitting on the splash screen.
+ */
+const REMOTE_SETUP_TIMEOUT_MS = 5000
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Timed out after ${ms}ms`)), ms)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (error) => {
+        clearTimeout(timer)
+        reject(error)
+      },
+    )
+  })
+}
 
 /** Type for the Jotai store returned by useStore() */
 type JotaiStore = ReturnType<typeof getDefaultStore>
@@ -799,37 +823,73 @@ export default function App() {
   }, [])
 
   // Check auth state and get window's workspace ID on mount
-  useEffect(() => {
-    const initialize = async () => {
+  const initialize = useCallback(async () => {
+    // A failure to read the hub's state means two different things depending on the window:
+    // "this server still needs setup" for a local one, "this server cannot be reached" for a
+    // remote one. The window's own connection decides which screen that is.
+    let isRemote = store.get(windowIsRemoteAtom)
+    try {
+      // Get this window's workspace ID (passed via URL query param from main process)
+      const wsId = await window.electronAPI.getWindowWorkspace()
+      setWindowWorkspaceId(wsId)
+
       try {
-        // Get this window's workspace ID (passed via URL query param from main process)
-        const wsId = await window.electronAPI.getWindowWorkspace()
-        setWindowWorkspaceId(wsId)
+        const mode = await window.electronAPI.getClientMode?.()
+        if (mode) isRemote = !!mode.running
+      } catch {
+        // Direct-IPC lookup is best effort; the atom value stands.
+      }
 
-        const needs = await window.electronAPI.getSetupNeeds()
-        setSetupNeeds(needs)
+      const needs = isRemote
+        ? await withTimeout(window.electronAPI.getSetupNeeds(), REMOTE_SETUP_TIMEOUT_MS)
+        : await window.electronAPI.getSetupNeeds()
+      setSetupNeeds(needs)
 
-        if (needs.isFullyConfigured) {
-          // If no workspace is selected (a remote window whose hub workspace is unset),
-          // show workspace picker before entering the main app
-          if (!wsId) {
-            setAppState('workspace-picker')
-          } else {
-            setAppState('ready')
-          }
+      if (needs.isFullyConfigured) {
+        // If no workspace is selected (a remote window whose hub workspace is unset),
+        // show workspace picker before entering the main app
+        if (!wsId) {
+          setAppState('workspace-picker')
         } else {
-          // New user or needs setup - show onboarding
-          setAppState('onboarding')
+          setAppState('ready')
         }
-      } catch (error) {
-        console.error('Failed to check auth state:', error)
-        // If check fails, show onboarding to be safe
+      } else {
+        // New user or needs setup - show onboarding
         setAppState('onboarding')
       }
+    } catch (error) {
+      console.error('Failed to check auth state:', error)
+      // A remote window has nothing to onboard: its wizard would run on the same unreachable
+      // server. Give the connection its own screen, the way VS Code reports an unreachable host.
+      setAppState(isRemote ? 'remote-unreachable' : 'onboarding')
     }
+  }, [setWindowWorkspaceId, store])
 
-    initialize()
-  }, [])
+  useEffect(() => {
+    void initialize()
+  }, [initialize])
+
+  // The unreachable screen is a waiting room, not a dead end: the transport keeps retrying in the
+  // background, and the first successful handshake has to take the window back into the app.
+  useEffect(() => {
+    if (appState !== 'remote-unreachable') return
+    let cancelled = false
+    const recheck = () => {
+      if (!cancelled) void initialize()
+    }
+    const unsubscribe = window.electronAPI.onTransportConnectionStateChanged?.((state) => {
+      if (state.status === 'connected') recheck()
+    })
+    void window.electronAPI.getTransportConnectionState?.()
+      .then((state) => {
+        if (state?.status === 'connected') recheck()
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+      unsubscribe?.()
+    }
+  }, [appState, initialize])
 
   // Session selection state
   const [sessionSelection, setSession] = useSession()
@@ -1901,6 +1961,24 @@ export default function App() {
     })
   }, [])
 
+  /**
+   * Leave an unreachable hub for a workspace on this machine, in place — the same window, the
+   * same renderer, now answered by the local server. Used by the "cannot connect" screen, so it
+   * only touches local-only channels and works while the hub is down.
+   */
+  const handleSwitchToLocalWorkspace = useCallback(async (workspaceId: string) => {
+    await window.electronAPI.switchLocalWorkspace(workspaceId)
+    setWindowWorkspaceId(workspaceId)
+    try {
+      const needs = await window.electronAPI.getSetupNeeds()
+      setSetupNeeds(needs)
+      setAppState(needs.isFullyConfigured ? 'ready' : 'onboarding')
+    } catch (error) {
+      console.error('[App] Failed to read setup needs after switching to this machine:', error)
+      setAppState('onboarding')
+    }
+  }, [setWindowWorkspaceId])
+
   const handleOpenFile = linkInterceptor.handleOpenFile
   const handleOpenUrl = linkInterceptor.handleOpenUrl
 
@@ -2274,6 +2352,25 @@ export default function App() {
             onUseGitBashPath={onboarding.handleUseGitBashPath}
             onRecheckGitBash={onboarding.handleRecheckGitBash}
             onClearError={onboarding.handleClearError}
+          />
+        </ModalProvider>
+      </DismissibleLayerProvider>
+    )
+  }
+
+  // Remote target unreachable — a remote window whose hub cannot be reached. Unlike onboarding,
+  // this is not a setup problem: the target is named, the failure is explained, and the person
+  // can either retry or keep working on this machine.
+  if (appState === 'remote-unreachable') {
+    return (
+      <DismissibleLayerProvider>
+        <ModalProvider>
+          <WindowCloseHandler />
+          <RemoteUnreachableScreen
+            target={remoteTarget}
+            connectionState={connectionState}
+            onRetry={handleReconnectTransport}
+            onSwitchToLocal={handleSwitchToLocalWorkspace}
           />
         </ModalProvider>
       </DismissibleLayerProvider>

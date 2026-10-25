@@ -16,11 +16,14 @@
  *   pointer coordinate is mapped through the image's own box so a click lands where it looks.
  *
  * It is a fullscreen overlay in the app's sense of the word: the window's own caption buttons go
- * away while it is up (the same counted request the preview overlays make), and it brings one
- * close button instead.
+ * away while it is up (the same counted request the preview overlays make), it brings one close
+ * button instead, and it portals to `document.body` — inside the app's shell its top row would
+ * share the window's drag region with the top bar, and the close button there would not be a
+ * button at all (see `PreviewHeader`, which every other overlay's header comes from).
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
+import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { useAtomValue, useSetAtom } from 'jotai'
 import { requestWindowControlsHidden, releaseWindowControlsHidden, usePlatform } from '@craft-agent/ui'
@@ -28,6 +31,8 @@ import { cn } from '@/lib/utils'
 import {
   ArrowLeft,
   ArrowRight,
+  Check,
+  ChevronDown,
   Globe,
   Loader2,
   Lock,
@@ -37,13 +42,19 @@ import {
   Plus,
   RefreshCw,
   RotateCw,
-  Square,
   TriangleAlert,
   X,
 } from 'lucide-react'
 import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  StyledDropdownMenuContent,
+  StyledDropdownMenuItem,
+} from '@/components/ui/styled-dropdown'
+import {
   browserViewRequestAtom,
   closeBrowserViewAtom,
+  filterInstancesForWorkspace,
   setBrowserInstancesAtom,
 } from '@/atoms/browser-pane'
 import { browserProfilesAtom, DEFAULT_BROWSER_PROFILE_ID, refreshBrowserProfilesAtom } from '@/atoms/browser-profiles'
@@ -142,6 +153,17 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
   /** The picture. Painted imperatively; never re-mounted between frames. */
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const pendingFrameRef = useRef<BrowserStreamFrame | null>(null)
+  /**
+   * A start request is in flight, so frames reaching this panel have no stream id to match yet.
+   *
+   * The server takes the seed still the moment the capture is asked for, and it travels the same
+   * socket as the answer to that request — so on a warm page the picture can arrive *first*.
+   * Dropping it leaves a still page (a new tab, a blank page) on "waiting for the picture" for
+   * good, which is what reopening the viewer on such a tab did.
+   */
+  const startingRef = useRef(false)
+  /** A frame that arrived before its stream was named, kept for `watch` to adopt. */
+  const unclaimedFrameRef = useRef<BrowserStreamFrame | null>(null)
   const rafRef = useRef<number | null>(null)
   const drawingRef = useRef(false)
   /** Bumped whenever the picture is cleared, so a decode in flight cannot draw onto it. */
@@ -157,9 +179,7 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
   const cursorRef = useRef<HTMLDivElement | null>(null)
 
   /** This client's workspace first: another workspace's pages are not this panel's business. */
-  const visibleInstances = workspaceId
-    ? instances.filter((instance) => !instance.workspaceId || instance.workspaceId === workspaceId)
-    : instances
+  const visibleInstances = filterInstancesForWorkspace(instances, workspaceId ?? null)
   /** The same list, for effects that must not re-run every time it is rebuilt. */
   const visibleInstancesRef = useRef(visibleInstances)
   visibleInstancesRef.current = visibleInstances
@@ -273,6 +293,8 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
   const stop = useCallback(async () => {
     const streamId = streamRef.current
     streamRef.current = null
+    startingRef.current = false
+    unclaimedFrameRef.current = null
     controlRef.current = false
     heldRef.current = false
     sawFrameRef.current = false
@@ -338,6 +360,35 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
   }, [acquireControl])
 
   /**
+   * Paint one frame of this panel's stream, and take it as proof the stream is real.
+   *
+   * Called from the frame listener for the ordinary case, and from `watch` for a frame that
+   * arrived before the start's answer named its stream (`unclaimedFrameRef`) — a seed of a still
+   * page is the only picture that page will ever send, so dropping it costs the whole view.
+   */
+  const handleFrame = useCallback((incoming: BrowserStreamFrame) => {
+    pendingFrameRef.current = incoming
+    const shown = frameSizeRef.current
+    if (!shown || shown.width !== incoming.width || shown.height !== incoming.height) {
+      frameSizeRef.current = { width: incoming.width, height: incoming.height }
+      setFrameSize(frameSizeRef.current)
+    }
+    if (phaseRef.current !== 'live') {
+      // A picture means the stream is real: the retry budget starts over here, not on the
+      // start request (a stream that starts and dies at once must not retry forever).
+      reconnectRef.current.attempts = 0
+      sawFrameRef.current = true
+      clearStallTimer()
+      enterPhase('live')
+    }
+    // Ask again only while the tab is free. A held tab is not taken over from under the
+    // agent by a stream ticking; the lock in the rail is the way in.
+    const streamId = streamRef.current
+    if (streamId && !controlRef.current && !heldRef.current) void acquireControl(streamId)
+    drawLatest()
+  }, [acquireControl, clearStallTimer, drawLatest, enterPhase])
+
+  /**
    * Watch a tab.
    *
    * `retrying` is the automatic path: it keeps the retry budget, where a person asking again
@@ -348,21 +399,26 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
     setNotice(null)
     setFailure(null)
     lastTargetRef.current = target
-    await stop()
-    // The header should show what is being connected to, before there is a picture of it.
+    // The target is claimed *before* the stop: stopping is an await, and a list that arrives in
+    // that gap must not read "nothing selected, nothing streaming" and start a second watch of
+    // the same panel (the auto-pick effect's guard is exactly those two facts).
     setSelected(target)
     selectedRef.current = target
+    await stop()
     enterPhase('connecting')
+    startingRef.current = true
     let started: Awaited<ReturnType<typeof window.electronAPI.browserPane.streamStart>>
     try {
       started = await window.electronAPI.browserPane.streamStart(target)
     } catch (err) {
+      startingRef.current = false
       // The common refusals are "already being recorded" and "the tab is gone" — say it.
       setSelected(null)
       setFailure(err instanceof Error ? err.message : String(err))
       enterPhase('ended')
       return
     }
+    startingRef.current = false
 
     streamRef.current = started.streamId
     sawFrameRef.current = false
@@ -396,18 +452,41 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
       setFailure(t('browser.viewerNoFrames'))
       enterPhase('ended')
     }, FIRST_FRAME_TIMEOUT_MS)
-  }, [stop, enterPhase, acquireControl, clearStallTimer, clearPicture, t])
 
-  /** Open the workspace's browser on the server, then watch its first tab. */
-  const openBrowser = useCallback(async () => {
+    // A picture that beat the start's answer — the seed of a still page, usually — belongs to
+    // this stream if it names it: paint it now, or the pane waits for a repaint that never comes.
+    const early = unclaimedFrameRef.current
+    unclaimedFrameRef.current = null
+    if (early && early.streamId === streamRef.current) handleFrame(early)
+  }, [stop, enterPhase, acquireControl, clearStallTimer, clearPicture, handleFrame, t])
+
+  /**
+   * Open — or bring up — the window of one profile on the server, and watch its tab.
+   *
+   * `show` is off because this is a *viewing* act: the window belongs to the server, and the
+   * person doing it is looking through this viewer, not at that machine. Bringing it up there
+   * would put a window on someone else's desktop and take the focus from whatever they were
+   * doing — so it is born hidden and its tab lives in the parking window, exactly what an agent
+   * opening the browser does. `profileId` is the window's whole identity on the host — one window
+   * per workspace per profile — so asking again for the same one reuses it rather than making a
+   * second. No id means the workspace's default.
+   */
+  const openBrowser = useCallback(async (profileId?: string) => {
     try {
-      // Hidden on the server: there is no one sitting in front of it, and this view is the point.
-      await window.electronAPI.browserPane.create({ show: false })
-      await load()
+      const instanceId = await window.electronAPI.browserPane.create({
+        show: false,
+        ...(profileId ? { profileId } : {}),
+      })
+      const next = await window.electronAPI.browserPane.list()
+      setInstances(next)
+      setBrowserInstances(next)
+      const instance = next.find((item) => item.id === instanceId)
+      const tab = instance?.tabs?.find((entry) => entry.active) ?? instance?.tabs?.[0]
+      if (tab) await watch({ instanceId, tabId: tab.id })
     } catch (err) {
       setNotice(err instanceof Error ? err.message : String(err))
     }
-  }, [load])
+  }, [setBrowserInstances, watch])
 
   // Names for the rail; a profile can be created or renamed while the app is open.
   useEffect(() => {
@@ -418,13 +497,14 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
   // A fullscreen overlay puts the window's own controls away while it is up — the counted
   // request the preview overlays use, so a preview closing under this one cannot bring them
   // back over it. On Windows those are the app's buttons (`App` stops drawing them); on macOS
-  // it is the traffic lights, hidden by the main process.
+  // it is the traffic lights, hidden by the main process. A *layout* effect, so the buttons are
+  // gone in the same commit that paints this overlay rather than a frame after it.
   const { onSetTrafficLightsVisible } = usePlatform()
   const setWindowControls = useRef(onSetTrafficLightsVisible)
   useEffect(() => {
     setWindowControls.current = onSetTrafficLightsVisible
   }, [onSetTrafficLightsVisible])
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return
     if (requestWindowControlsHidden()) setWindowControls.current?.(false)
     return () => {
@@ -437,25 +517,17 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
     if (!open) return
     const offFrame = window.electronAPI.browserPane.onStreamFrame((incoming) => {
       const streamId = streamRef.current
-      if (incoming.streamId !== streamId || !streamId) return
-      pendingFrameRef.current = incoming
-      const shown = frameSizeRef.current
-      if (!shown || shown.width !== incoming.width || shown.height !== incoming.height) {
-        frameSizeRef.current = { width: incoming.width, height: incoming.height }
-        setFrameSize(frameSizeRef.current)
+      if (!streamId) {
+        // Not named yet: the start's answer is still in flight. Keep the newest picture so
+        // `watch` can adopt it — for a still page this is the only frame there will ever be.
+        if (startingRef.current) {
+          unclaimedFrameRef.current = incoming
+          return
+        }
+        return
       }
-      if (phaseRef.current !== 'live') {
-        // A picture means the stream is real: the retry budget starts over here, not on the
-        // start request (a stream that starts and dies at once must not retry forever).
-        reconnectRef.current.attempts = 0
-        sawFrameRef.current = true
-        clearStallTimer()
-        enterPhase('live')
-      }
-      // Ask again only while the tab is free. A held tab is not taken over from under the
-      // agent by a stream ticking; the lock in the rail is the way in.
-      if (!controlRef.current && !heldRef.current) void acquireControl(streamId)
-      drawLatest()
+      if (incoming.streamId !== streamId) return
+      handleFrame(incoming)
     })
     // The stream can end without us: its tab was closed, its window went away, or capture lost
     // its session. A few silent retries first — most of these are a tab reload or a capture
@@ -538,17 +610,19 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
       offRemoved()
       offReconnected()
     }
-  }, [open, load, enterPhase, t, drawLatest, clearPicture, clearStallTimer, watch, acquireControl])
+  }, [open, load, enterPhase, t, drawLatest, clearPicture, clearStallTimer, watch, acquireControl, handleFrame])
 
   // Closing the panel (or leaving the page) ends the stream; a viewer is not a background job.
+  // It does not end the *browser*: the window and its tabs are the server's, and the shared list
+  // is what the top bar's badge and the composer's chip read. Emptying it here is what turned the
+  // badge back into "open browser" the moment this panel closed, with the window still running.
   useEffect(() => {
     if (open) return
     void stop()
     setSelected(null)
     setFailure(null)
     setNotice(null)
-    setBrowserInstances([])
-  }, [open, stop, setBrowserInstances])
+  }, [open, stop])
   useEffect(() => () => { void stop() }, [stop])
 
   // A workspace change is another browser: the stream on screen belongs to the one that was there.
@@ -753,8 +827,10 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
    * What the picture measures on screen.
    *
    * `frameSize` is the tab's CSS viewport and changes when the tab is resized, so the basis is
-   * never stale. The scale is capped at 1 — the pane may be larger than the page, and a page is
-   * not a poster.
+   * never stale. The scale is capped at 1 in both modes — the pane may be larger than the page,
+   * and a page is not a poster. Fit mode changes how big the *page* is (it reflows to the pane);
+   * it does not license blowing the picture up past its own pixels, so a pane the host cannot
+   * fill is letterboxed rather than magnified.
    *
    * The size is left exactly as the scale computes it: rounding it would drop a fraction of a
    * pixel on each axis, which shows up as an uneven letterbox and a picture that creeps off
@@ -881,8 +957,17 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
    * Fit mode: ask the tab to reflow to the pane, instead of drawing a bigger page small inside
    * it. Debounced — a window drag is one request when it settles, not sixty.
    *
-   * It reflows the page, which is the point; on a tab that is on screen at the hub it also sizes
-   * that window, which is the price of the page actually using the whole pane.
+   * It reflows the page, which is the point. On a tab that is on screen at the hub that means
+   * sizing the hub's window, which the desktop may keep within the screen; a tab in the parking
+   * window can simply be given the size. Either way the page's viewport is the host's answer,
+   * and the picture is shown at no more than 1:1 (`fit`), so a pane the host cannot fill is
+   * letterboxed rather than magnified.
+   *
+   * The request is re-sent when `frameSize` changes, and when the window's visibility or
+   * minimized state changes: those are the page saying its viewport moved under us — the tab went
+   * into the hub's window or back into the parking window (minimise, hide, restore), or the
+   * window was resized. Without that, coming back from the parking window left fit at whatever
+   * size the visible window had last allowed.
    */
   useEffect(() => {
     if (!fitMode || !open || !selected) return
@@ -890,38 +975,24 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
     const width = Math.round(stageSize.width)
     const height = Math.round(stageSize.height)
     const timer = setTimeout(() => {
-      void (async () => {
-        try {
-          const applied = await window.electronAPI.browserPane
-            .resizeViewport(selected.instanceId, width, height, selected.tabId)
-          // An OS window can refuse part of the ask — a window taller than the work area is
-          // the usual one. Fit is about the page's *shape*, so a refused axis is taken out of
-          // both: same aspect, one size smaller, no bars either way.
-          const ratio = Math.min(applied.width / width, applied.height / height, 1)
-          if (ratio < 0.995) {
-            await window.electronAPI.browserPane.resizeViewport(
-              selected.instanceId,
-              Math.max(320, Math.round(width * ratio)),
-              Math.max(240, Math.round(height * ratio)),
-              selected.tabId,
-            )
-          }
-        } catch (err) {
-          setNotice(err instanceof Error ? err.message : String(err))
-        }
-      })()
+      void window.electronAPI.browserPane
+        .resizeViewport(selected.instanceId, width, height, selected.tabId)
+        .catch((err) => setNotice(err instanceof Error ? err.message : String(err)))
     }, 250)
     return () => clearTimeout(timer)
-  }, [fitMode, open, selected, stageSize.width, stageSize.height])
+  }, [
+    fitMode,
+    open,
+    selected,
+    stageSize.width,
+    stageSize.height,
+    frameSize?.width,
+    frameSize?.height,
+    currentInstance?.isVisible,
+    currentInstance?.isMinimized,
+  ])
 
   if (!open) return null
-
-  /** A window's name in the rail: the profile, when the app has more than one to tell apart. */
-  const windowNameOf = (instance: BrowserInstanceInfo): string | undefined => {
-    if (browserProfiles.length <= 1) return undefined
-    const match = browserProfiles.find((profile) => profile.id === (instance.profileId ?? DEFAULT_BROWSER_PROFILE_ID))
-    return match?.name
-  }
 
   const statusLabel = phase === 'live'
     ? t('browser.viewerLive')
@@ -931,99 +1002,187 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
         ? t('browser.viewerEnded')
         : t('browser.viewerConnecting')
 
-  return (
+  /**
+   * The bar is the browser's title; the profile is what it can be switched by.
+   *
+   * The tab on screen already names itself in the rail and in the address field, so a third
+   * copy here read as a duplicate row rather than a title. With only the built-in profile there
+   * is nothing to switch to, and the bar says just "Browser"; once there are several, it says
+   * which one is on screen and becomes the switch.
+   */
+  const activeProfileId = currentInstance
+    ? (currentInstance.profileId ?? DEFAULT_BROWSER_PROFILE_ID)
+    : undefined
+  const knownProfile = activeProfileId
+    ? browserProfiles.find((profile) => profile.id === activeProfileId)
+    : undefined
+  /**
+   * Every profile the bar can switch to: the registry, plus a window whose profile has been
+   * deleted — that window is still usable, so leaving it out would strand it.
+   */
+  const profileChoices = [
+    ...browserProfiles.map((profile) => ({ id: profile.id, name: profile.name })),
+    ...visibleInstances
+      .map((instance) => instance.profileId ?? DEFAULT_BROWSER_PROFILE_ID)
+      .filter((id, index, all) => all.indexOf(id) === index)
+      .filter((id) => !browserProfiles.some((profile) => profile.id === id))
+      .map((id) => ({ id, name: t('composer.browserProfileMissing') })),
+  ]
+  const profileName = knownProfile?.name
+    ?? (activeProfileId && browserProfiles.length > 0
+      ? t('composer.browserProfileMissing')
+      : undefined)
+  const headerLabel = profileName && profileChoices.length > 1
+    ? `${t('browser.viewerTitle')} · ${profileName}`
+    : t('browser.viewerTitle')
+  const tabCountOf = (profileId: string): number =>
+    visibleInstances.find(
+      (instance) => (instance.profileId ?? DEFAULT_BROWSER_PROFILE_ID) === profileId,
+    )?.tabs?.length ?? 0
+
+  return createPortal(
     /*
-      Rows: the viewer's own bar, then the rail and the page side by side, then the status line.
-      The browser chrome (back, address, fit) belongs to the page, so it sits in the page's
-      column — the rail is the window's, and runs the full height beside it.
+      Rows: the viewer's own bar, then the rail and the page side by side. The status line is
+      the *page's*, so it sits at the bottom of the page's column — the rail keeps its full
+      height, and the line reports on the picture rather than on the window.
+
+      Portaled to `document.body`, like every other fullscreen overlay: inside the app's shell
+      its top edge would sit under the bar that is the window's drag region, and a click meant
+      for this overlay's own header would be read by the OS as a click on the title bar.
     */
     <div
       role="dialog"
       aria-modal="true"
-      className="fixed inset-0 z-[100] flex flex-col bg-background"
-      style={{ zIndex: 'var(--z-fullscreen, 350)' }}
+      aria-label={t('browser.viewerTitle')}
+      className="fixed inset-0 flex flex-col bg-background"
+      style={{ zIndex: 'var(--z-fullscreen, 350)', WebkitAppRegion: 'no-drag' } as CSSProperties}
     >
-      <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border/70 px-4">
-        <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-foreground">
-          {currentTab?.title.trim() || currentUrl || t('browser.tabs')}
-        </span>
+      {/* The bar is the handle: it is the window's title bar while this overlay is up. Only the
+          controls opt out, so the profile switch and the close button are buttons and not places
+          to drag from. The profile sits in the middle — the bar's one subject — and the close
+          button is pinned right so the two never trade places with the label's length. */}
+      <header
+        className="relative flex h-12 shrink-0 items-center justify-center border-b border-border/70 px-3"
+        style={{ WebkitAppRegion: 'drag' } as CSSProperties}
+      >
+        <div className="flex min-w-0 max-w-[min(60%,28rem)] items-center justify-center">
+          {profileChoices.length > 1 ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  className="flex h-8 min-w-0 items-center gap-1.5 rounded-lg px-2 text-[13px] font-medium text-foreground transition-colors hover:bg-muted"
+                  style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
+                  title={headerLabel}
+                  aria-label={t('browser.switchProfile')}
+                >
+                  <Globe className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <span className="truncate">{headerLabel}</span>
+                  <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70" />
+                </button>
+              </DropdownMenuTrigger>
+              {/* Above the overlay (z 350): this menu belongs to it, not to the app behind it. */}
+              <StyledDropdownMenuContent
+                align="center"
+                className="min-w-48"
+                style={{ zIndex: 'var(--z-floating-menu, 400)' }}
+              >
+                {profileChoices.map((profile) => {
+                  const count = tabCountOf(profile.id)
+                  return (
+                    <StyledDropdownMenuItem
+                      key={profile.id}
+                      onSelect={() => {
+                        // Already looking at it: re-watching would stop and restart the stream
+                        // for no change on screen.
+                        if (profile.id === activeProfileId) return
+                        void openBrowser(profile.id)
+                      }}
+                    >
+                      <Check
+                        className={cn(
+                          'h-3.5 w-3.5 shrink-0',
+                          profile.id === activeProfileId ? 'opacity-100' : 'opacity-0',
+                        )}
+                      />
+                      <span className="min-w-0 flex-1 truncate">{profile.name}</span>
+                      {count > 0 && (
+                        <span className="ml-2 shrink-0 tabular-nums text-[11px] text-muted-foreground/60">
+                          {count}
+                        </span>
+                      )}
+                    </StyledDropdownMenuItem>
+                  )
+                })}
+              </StyledDropdownMenuContent>
+            </DropdownMenu>
+          ) : (
+            <span
+              className="flex h-8 min-w-0 items-center gap-1.5 px-2 text-[13px] font-medium text-foreground"
+              title={headerLabel}
+            >
+              <Globe className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <span className="truncate">{headerLabel}</span>
+            </span>
+          )}
+        </div>
         <button
           type="button"
           onClick={() => closeView()}
-          className="shrink-0 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          className="absolute right-3 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
           aria-label={t('common.close')}
+          title={t('common.closeEsc')}
         >
           <X className="h-4 w-4" />
         </button>
       </header>
 
       <div className="flex min-h-0 flex-1">
-        {/* Vertical tabs: every window this client can see, and its tabs under it. */}
+        {/*
+          The watched window's tabs. Other windows are reached through the profile switch in the
+          bar — one window per profile — so this is a tab list, not a list of every window's
+          tabs with headings to tell the identical ones apart.
+        */}
         <aside className="flex w-40 shrink-0 flex-col overflow-hidden border-r border-border/70 md:w-52">
-          <div className="flex h-9 shrink-0 items-center justify-between px-3">
-            <span className="text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground/70">
-              {t('browser.tabs')}
-            </span>
-            {hasTabs && (
-              <span className="tabular-nums text-[10.5px] text-muted-foreground/50">
-                {visibleInstances.reduce((total, instance) => total + (instance.tabs?.length ?? 0), 0)}
-              </span>
-            )}
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
-            {visibleInstances.map((instance) => {
-              const name = windowNameOf(instance)
-              return (
-                <div key={instance.id} className="mb-1">
-                  {name && (
-                    <p
-                      className="truncate px-2 pb-0.5 pt-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/50"
-                      title={name}
-                    >
-                      {name}
-                    </p>
-                  )}
-                  {(instance.tabs ?? []).map((tab) => (
-                    <TabRow
-                      key={tab.id}
-                      tab={tab}
-                      watching={selected?.instanceId === instance.id && selected.tabId === tab.id}
-                      onActivate={() => { void activateTab(instance.id, tab.id) }}
-                      onClose={() => { void closeTab(instance.id, tab.id) }}
-                      closeLabel={t('browser.closeTab')}
-                      untitledLabel={t('browser.untitledTab')}
-                      agentWorkingLabel={t('browser.tabInUse')}
-                      agentDrivenLabel={t('browser.tabDriven')}
-                      takeOverLabel={t('browser.takeOverTab')}
-                      onTakeOver={
-                        selected?.instanceId === instance.id && selected.tabId === tab.id
-                          ? () => { void takeOver(instance.id, tab.id) }
-                          : undefined
-                      }
-                    />
-                  ))}
-                </div>
-              )
-            })}
+          <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2 pt-1.5">
+            {currentInstance && currentInstance.tabs?.map((tab) => (
+              <TabRow
+                key={tab.id}
+                tab={tab}
+                watching={selected?.instanceId === currentInstance.id && selected.tabId === tab.id}
+                onActivate={() => { void activateTab(currentInstance.id, tab.id) }}
+                onClose={() => { void closeTab(currentInstance.id, tab.id) }}
+                closeLabel={t('browser.closeTab')}
+                untitledLabel={t('browser.untitledTab')}
+                agentWorkingLabel={t('browser.tabInUse')}
+                agentDrivenLabel={t('browser.tabDriven')}
+                takeOverLabel={t('browser.takeOverTab')}
+                onTakeOver={
+                  selected?.instanceId === currentInstance.id && selected.tabId === tab.id
+                    ? () => { void takeOver(currentInstance.id, tab.id) }
+                    : undefined
+                }
+              />
+            ))}
             {!hasTabs && (
               <p className="px-2 py-3 text-[12px] text-muted-foreground">
                 {loaded ? t('browser.viewerNoTabs') : t('browser.viewerConnecting')}
               </p>
             )}
-          </div>
-          <div className="shrink-0 border-t border-border/60 p-1.5">
-            <button
-              type="button"
-              onClick={() => {
-                const instanceId = selected?.instanceId ?? visibleInstances[0]?.id
-                if (instanceId) void openNewTab(instanceId)
-              }}
-              disabled={!hasTabs}
-              className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-[12.5px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              {t('browser.newTab')}
-            </button>
+            {/* A new tab is one more row in the list, directly under the last one — where the
+                tab it adds will appear. Pinned to the rail's bottom it read as a control of the
+                rail rather than as part of the window's tab strip. */}
+            {currentInstance && (
+              <button
+                type="button"
+                onClick={() => { void openNewTab(currentInstance.id) }}
+                className="mt-0.5 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-[12.5px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                {t('browser.newTab')}
+              </button>
+            )}
           </div>
         </aside>
 
@@ -1055,7 +1214,9 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
                 className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                 aria-label={t('browser.stopLoading')}
               >
-                <Square className="h-3 w-3" />
+                {/* The same box as the reload mark: swapping a 12px square for a 14px glyph
+                    moved the address field a pixel every time a page started loading. */}
+                <X className="h-3.5 w-3.5" />
               </button>
             ) : (
               <button
@@ -1103,25 +1264,6 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
                 className="w-full bg-transparent text-[12.5px] text-foreground outline-none placeholder:text-muted-foreground/50 disabled:opacity-50"
               />
             </div>
-
-            {/* Fit: let the page reflow to the pane, or leave it at its own size. Named, because
-                an icon alone does not say which of the two it is. */}
-            <button
-              type="button"
-              onClick={() => setFitMode((value) => !value)}
-              disabled={!currentInstance}
-              aria-pressed={fitMode}
-              title={fitMode ? t('browser.viewerFit') : t('browser.viewerActualSize')}
-              className={cn(
-                'flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-[12px] transition-colors disabled:pointer-events-none disabled:opacity-30',
-                fitMode
-                  ? 'bg-accent/15 text-accent'
-                  : 'text-muted-foreground hover:bg-muted hover:text-foreground',
-              )}
-            >
-              {fitMode ? <Maximize2 className="h-3.5 w-3.5" /> : <Minimize2 className="h-3.5 w-3.5" />}
-              <span className="hidden sm:inline">{fitMode ? t('browser.viewerFit') : t('browser.viewerActualSize')}</span>
-            </button>
           </div>
 
           <div ref={stageRef} className="relative min-h-0 flex-1 overflow-hidden bg-[#0b0c0f]">
@@ -1202,7 +1344,9 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
               </div>
             )}
 
-            {/* Connected and not painting yet — or not connected yet. Two names, one picture. */}
+            {/* Connected and not painting yet — or not connected yet. One line, because the
+                phase is not something a person acts on; the status line at the bottom already
+                carries the same state for when this overlay is gone. */}
             {!frameSize && phase !== 'ended' && (!loaded || hasTabs) && (
               <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-6 bg-[#0b0c0f]">
                 <div className="relative flex h-16 w-16 items-center justify-center">
@@ -1210,12 +1354,9 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
                   <div className="absolute inset-0 animate-spin rounded-full border-2 border-transparent border-r-white/15 border-t-white/75" />
                   <MonitorPlay className="h-6 w-6 text-white/55" />
                 </div>
-                <div className="space-y-1.5 px-6 text-center">
-                  <p className="text-[13.5px] font-medium text-white/90">
-                    {phase === 'waiting' ? t('browser.viewerWaiting') : t('browser.viewerConnecting')}
-                  </p>
-                  <p className="text-[12px] leading-relaxed text-white/40">{t('browser.viewerLoadingHint')}</p>
-                </div>
+                <p className="px-6 text-center text-[13.5px] font-medium text-white/90">
+                  {phase === 'waiting' ? t('browser.viewerWaiting') : t('browser.viewerConnecting')}
+                </p>
                 <div className="h-[3px] w-44 overflow-hidden rounded-full bg-white/10">
                   <div className="h-full w-1/2 animate-shimmer-loading rounded-full bg-white/60" />
                 </div>
@@ -1230,7 +1371,6 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
                     <MonitorPlay className="h-5 w-5 text-white/60" />
                   </div>
                   <p className="text-[13.5px] text-white/90">{t('browser.viewerNoTabs')}</p>
-                  <p className="mt-1 text-[12px] leading-relaxed text-white/40">{t('browser.viewerNoTabsHint')}</p>
                   <button
                     type="button"
                     onClick={() => { void openBrowser() }}
@@ -1274,32 +1414,50 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
               </div>
             )}
           </div>
+
+          {/* The status line: how the picture is arriving, and at what size. It belongs to the
+              page, so it closes the page's column — the rail runs past it to the window's edge. */}
+          <footer className="flex h-8 shrink-0 items-center gap-3 border-t border-border/70 bg-muted/30 px-3 text-[11px] text-muted-foreground">
+            <span className="inline-flex min-w-0 items-center gap-1.5">
+              <span
+                className={cn(
+                  'h-1.5 w-1.5 shrink-0 rounded-full',
+                  live ? 'bg-emerald-500' : phase === 'ended' ? 'bg-red-400' : 'animate-pulse bg-amber-500',
+                )}
+              />
+              {/* While the loading overlay is up it already says what is happening; the strip
+                  keeps the dot (and a spinner) rather than repeating the sentence below it. */}
+              {(live || phase === 'ended') && <span className="truncate">{statusLabel}</span>}
+              {!live && phase !== 'ended' && <Loader2 className="h-3 w-3 shrink-0 animate-spin opacity-60" />}
+            </span>
+            <span className="ml-auto shrink-0 tabular-nums">
+              {frameSize ? `${Math.round(frameSize.width)}×${Math.round(frameSize.height)}` : '—'}
+              {fit && ` · ${Math.round(fit.scale * 100)}%`}
+            </span>
+            {/* Fit: let the page reflow to the pane, or draw it at its own size. Named, because
+                an icon alone does not say which of the two it is; the status line is where the
+                picture is described, so the switch sits with the size it changes. */}
+            <button
+              type="button"
+              onClick={() => setFitMode((value) => !value)}
+              disabled={!currentInstance}
+              aria-pressed={fitMode}
+              title={fitMode ? t('browser.viewerFit') : t('browser.viewerActualSize')}
+              className={cn(
+                'flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[10.5px] transition-colors disabled:pointer-events-none disabled:opacity-40',
+                fitMode
+                  ? 'bg-accent/15 text-accent'
+                  : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+              )}
+            >
+              {fitMode ? <Maximize2 className="h-3 w-3" /> : <Minimize2 className="h-3 w-3" />}
+              <span className="hidden sm:inline">{fitMode ? t('browser.viewerFit') : t('browser.viewerActualSize')}</span>
+            </button>
+          </footer>
         </div>
       </div>
-
-      {/* The status line: how the picture is arriving, and at what size. */}
-      <footer className="flex h-8 shrink-0 items-center gap-3 border-t border-border/70 bg-muted/30 px-3 text-[11px] text-muted-foreground">
-        <span className="inline-flex min-w-0 items-center gap-1.5">
-          <span
-            className={cn(
-              'h-1.5 w-1.5 shrink-0 rounded-full',
-              live ? 'bg-emerald-500' : phase === 'ended' ? 'bg-red-400' : 'animate-pulse bg-amber-500',
-            )}
-          />
-          <span className="truncate">{statusLabel}</span>
-          {!live && phase !== 'ended' && <Loader2 className="h-3 w-3 shrink-0 animate-spin opacity-60" />}
-        </span>
-        <span className="ml-auto shrink-0 tabular-nums">
-          {frameSize ? `${frameSize.width.toFixed(2)}×${frameSize.height.toFixed(2)}` : '—'}
-          {fit && ` · ${Math.round(fit.scale * 100)}%`}
-        </span>
-        {fitMode && (
-          <span className="shrink-0 rounded bg-foreground/[0.08] px-1.5 py-0.5 text-[10.5px]">
-            {t('browser.viewerFit')}
-          </span>
-        )}
-      </footer>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -1337,11 +1495,18 @@ function TabRow({
   const driven = !working && tab.drivenBy !== null
   const label = tab.title.trim() || tab.url || untitledLabel
 
+  // Switching happens on **press**, not on release: a tab strip switches as the pointer goes
+  // down. Waiting for the click made a press that slid a little feel like nothing happened, and a
+  // release outside the row cancelled a switch the person had already committed to. Keyboard
+  // activation has no pointerdown, so Enter/Space stay on `onKeyDown`.
   return (
     <div
       role="button"
       tabIndex={0}
-      onClick={onActivate}
+      onPointerDown={(event) => {
+        if (event.button !== 0) return
+        onActivate()
+      }}
       onKeyDown={(event) => {
         if (event.key !== 'Enter' && event.key !== ' ') return
         event.preventDefault()
@@ -1369,11 +1534,14 @@ function TabRow({
           </span>
         )}
       </span>
+      {/* The row switches on pointerdown, so a press that starts here would switch the tab
+          before this button sees its click. The lock is about this tab, not about moving to it. */}
       {holding && onTakeOver && (
         <button
           type="button"
           aria-label={takeOverLabel}
           title={takeOverLabel}
+          onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => {
             event.stopPropagation()
             onTakeOver()
@@ -1390,8 +1558,10 @@ function TabRow({
           className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
         />
       )}
+      {/* Closing must not also switch to the tab being closed. */}
       <button
         type="button"
+        onPointerDown={(event) => event.stopPropagation()}
         onClick={(event) => {
           event.stopPropagation()
           onClose()

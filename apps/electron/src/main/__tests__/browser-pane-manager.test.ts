@@ -136,6 +136,8 @@ function createMockWebContents() {
     // The manager tells the chrome's pages the pointer has left when the window comes or goes
     // (`releaseChromePointer`); a native input event, so this is where the test sees it.
     sendInputEvent: mock((_event: unknown) => {}),
+    // A viewer's stream starts with one scheduled repaint, so a still page produces a frame.
+    invalidate: mock(() => {}),
     debugger: {
       attach: mock(() => {}),
       detach: mock(() => {}),
@@ -4108,6 +4110,13 @@ describe('BrowserPaneManager', () => {
       expect(watched.cdp.startScreencast).toHaveBeenCalledTimes(1)
       expect(second.streamId).not.toBe(first.streamId)
 
+      // A viewer is sent one still seed before the page paints — a still page would never send
+      // a frame of its own. This test is about the *live* fan-out, so counting starts after the
+      // seeds have landed.
+      await new Promise((resolve) => setTimeout(resolve, 80))
+      firstFrames.length = 0
+      secondFrames.length = 0
+
       // One frame, two viewers, each addressed by its own stream id.
       const capture = (watched.cdp.startScreencast as any).mock.calls[0][0]
       capture.onFrame({ bytes: Buffer.from('jpeg'), width: 1280, height: 800 })
@@ -4144,16 +4153,42 @@ describe('BrowserPaneManager', () => {
       expect(ended.map((entry) => entry.clientId).sort()).toEqual(['client-1', 'client-2'])
     })
 
-    it('refuses a capture the registry does not know about', async () => {
+    it('takes over a screencast the registry does not know about, instead of refusing', async () => {
       const id = manager.createForSession(null, { workspaceId: 'ws-1' })
       const watched = watchedTab(id)
-      // Recording runs on its own session and is not seen here; a page that reports a capture
-      // while this manager holds none is a lost registration, and replacing it would strand
-      // whoever is waiting on it.
+      // The page reports a capture this manager has no entry for: a viewer's stop that landed
+      // after the next start asked, or a detach nobody reported. Refusing used to strand that
+      // next viewer — close the panel, open it again, nothing — which is why a tab switch, whose
+      // tab had no such leftover, appeared to fix it. `startScreencast` replaces the page's one
+      // capture, and this manager is the only thing that starts them, so taking over is safe.
       watched.cdp.isScreencasting = mock(() => true)
 
-      await expect(manager.startViewStream(id, watched.id, 'client-1', () => {}))
-        .rejects.toThrow('already has a capture running')
+      const { streamId } = await manager.startViewStream(id, watched.id, 'client-1', () => {})
+
+      expect(streamId).toBeTruthy()
+      expect(watched.cdp.startScreencast).toHaveBeenCalledTimes(1)
+    })
+
+    it('restarts a capture whose screencast is gone, rather than seating a viewer in a dead one', async () => {
+      const id = manager.createForSession(null, { workspaceId: 'ws-1' })
+      const watched = watchedTab(id)
+      const firstFrames: unknown[] = []
+      const secondFrames: unknown[] = []
+      const first = await manager.startViewStream(id, watched.id, 'client-1', (frame) => { firstFrames.push(frame) })
+      // Silently gone: the registry still has the capture, but nothing is feeding it. Joining it
+      // is what left a reopened viewer on "waiting for the first frame" until it gave up.
+      watched.cdp.isScreencasting = mock(() => false)
+
+      const second = await manager.startViewStream(id, watched.id, 'client-2', (frame) => { secondFrames.push(frame) })
+
+      expect(second.streamId).not.toBe(first.streamId)
+      expect(watched.cdp.startScreencast).toHaveBeenCalledTimes(2)
+      // One restarted screencast serves both seats, the one that was already there included.
+      await new Promise((resolve) => setTimeout(resolve, 70))
+      const restarted = (watched.cdp.startScreencast as any).mock.calls[1][0]
+      restarted.onFrame({ bytes: Buffer.from('jpeg'), width: 1280, height: 800 })
+      expect(firstFrames.length).toBeGreaterThan(0)
+      expect(secondFrames.length).toBeGreaterThan(0)
     })
   })
 

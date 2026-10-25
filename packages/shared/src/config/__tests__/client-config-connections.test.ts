@@ -186,6 +186,33 @@ describe('remote connections (legacy shape)', () => {
   })
 })
 
+describe('adding a server', () => {
+  it('refuses an address that already belongs to another saved server', () => {
+    const { configDir, configPath } = setupConfigDir([{ id: 'ws-local', name: 'Local' }], 'ws-local', {
+      connections: [
+        { id: 'conn-1', name: 'Hub', url: 'ws://hub.example:4321', token: 'tok' },
+      ],
+    })
+
+    // The Add form sends a fresh id; the address is what collides. Refusing keeps the existing
+    // entry intact instead of quietly renaming it.
+    runStorage(configDir, `
+      import { saveRemoteConnection } from '${STORAGE_MODULE_PATH}';
+      try {
+        saveRemoteConnection({ id: 'conn-2', name: 'Hub again', url: 'ws://hub.example:4321', token: 'tok' });
+        throw new Error('expected the save to be refused');
+      } catch (err) {
+        if (!/already saved/.test(String(err))) throw err;
+      }
+    `)
+
+    const config = readConfig(configPath)
+    expect(config.clientConfig.connections).toEqual([
+      { id: 'conn-1', name: 'Hub', url: 'ws://hub.example:4321', token: 'tok' },
+    ])
+  })
+})
+
 describe('editing a saved server', () => {
   it('keeps its id and its last workspace', () => {
     const { configDir, configPath } = setupConfigDir([{ id: 'ws-local', name: 'Local' }], 'ws-local', {

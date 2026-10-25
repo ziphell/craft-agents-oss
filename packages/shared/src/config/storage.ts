@@ -3355,20 +3355,28 @@ export function getRemoteConnection(connectionId: string): RemoteConnection | nu
 }
 
 /**
- * Add or update a connection. A URL that is already saved is the same server: the existing
- * entry keeps its id (windows still point at it) and takes the new name/token.
+ * Add or update a connection. The id decides which entry is written: a saved id updates it, a new
+ * one appends.
+ *
+ * A URL that belongs to a **different** saved connection is refused instead of merged. Two entries
+ * for one endpoint are meaningless, and silently reusing (and renaming) the existing entry when
+ * someone adds the address again is worse: it looks like one of the servers vanished. The UI turns
+ * this into "already saved as X — edit that one".
  *
  * An edit carries only what it changes, so the entry's last workspace is kept when the caller
  * does not name one — renaming a server or rotating its token must not forget "where I was".
  */
 export function saveRemoteConnection(connection: RemoteConnection): RemoteConnection {
   const config = getClientConfig();
-  const sameServer = findConnectionByUrl(config.connections, connection.url);
-  const resolvedId = sameServer?.id ?? connection.id;
-  const previous = config.connections.find(existing => existing.id === resolvedId);
+  const sameUrl = config.connections.find(
+    existing => existing.id !== connection.id && existing.url === connection.url,
+  );
+  if (sameUrl) {
+    throw new Error(`That address is already saved as "${sameUrl.name}"`);
+  }
+  const previous = config.connections.find(existing => existing.id === connection.id);
   const saved: RemoteConnection = {
     ...connection,
-    id: resolvedId,
     name: connection.name.trim() || connectionNameFromUrl(connection.url),
     ...(!connection.lastWorkspaceId && previous?.lastWorkspaceId
       ? { lastWorkspaceId: previous.lastWorkspaceId }
@@ -3379,9 +3387,7 @@ export function saveRemoteConnection(connection: RemoteConnection): RemoteConnec
       ? { deviceAccess: previous.deviceAccess }
       : {}),
   };
-  config.connections = sameServer
-    ? config.connections.map(existing => existing.id === sameServer.id ? saved : existing)
-    : [...config.connections.filter(existing => existing.id !== saved.id), saved];
+  config.connections = [...config.connections.filter(existing => existing.id !== saved.id), saved];
   setClientConfig(config);
   return saved;
 }

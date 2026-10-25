@@ -92,9 +92,10 @@ import { useFocusZone } from "@/hooks/keyboard"
 import { useFocusContext } from "@/context/FocusContext"
 import { getSessionTitle } from "@/utils/session"
 import { useSetAtom } from "jotai"
-import type { Session, Workspace, FileAttachment, PermissionRequest, LoadedSource, LoadedSkill, PermissionMode, SourceFilter, AutomationFilter } from "../../../shared/types"
+import type { Session, Workspace, FileAttachment, PermissionRequest, LoadedSource, LoadedSkill, PermissionMode, SourceFilter, AutomationFilter, BrowserInstanceInfo } from "../../../shared/types"
 import { sessionMetaMapAtom, sendToWorkspaceAtom, type SessionMeta } from "@/atoms/sessions"
 import { filterInstancesForWorkspace, openBrowserViewAtom } from "@/atoms/browser-pane"
+import { DEFAULT_BROWSER_PROFILE_ID } from "@/atoms/browser-profiles"
 import { windowIsRemoteAtom, windowServerScopeAtom } from "@/atoms/window-mode"
 import { sourcesAtom } from "@/atoms/sources"
 import { skillsAtom } from "@/atoms/skills"
@@ -2196,52 +2197,64 @@ function AppShellContent({
   // single empty-state tab when it is not. The host decides both (see `createInstance`),
   // which is why nothing about tabs is asked for here.
   //
-  // `profileId` says which profile's window the person picked in the top bar. Left out, the
-  // workspace's own answer is used — and the window already up is raised, whichever one it is.
+  // Which profile: the one the caller names (the top bar's profile menu), else the profile this
+  // conversation works in — the same chain the composer's picker and the agent's unnamed
+  // commands use — else the workspace's default. So "open the browser" from a conversation set
+  // to a profile opens *that* profile, instead of silently opening Default.
   const handleOpenBrowser = useCallback(async (profileId?: string) => {
-    // A remote window's browser is the workspace's browser on its server — there is no window to
-    // raise on this machine, so the viewer is the answer. It opens the browser on the server when
-    // the workspace has none yet.
-    if (usesServerBrowser) {
-      // The viewer is the view; a profile names which window on the server to open first.
-      if (!profileId) {
-        openBrowserView()
-        return
-      }
+    let wantedProfileId = profileId
+    if (!wantedProfileId && effectiveSessionId) {
       try {
-        const instanceId = await window.electronAPI.browserPane.create({ show: false, profileId })
-        const instances = await window.electronAPI.browserPane.list()
-        const instance = instances.find((item) => item.id === instanceId)
+        const resolved = await window.electronAPI.browserProfiles.resolve(effectiveSessionId)
+        wantedProfileId = resolved.effectiveProfileId ?? undefined
+      } catch {
+        // No registry answer (or no browser profiles on this host): the workspace's default is
+        // still the right window, and `create` resolves it.
+      }
+    }
+
+    const profileOf = (item: BrowserInstanceInfo) => item.profileId ?? DEFAULT_BROWSER_PROFILE_ID
+
+    try {
+      const instances = await window.electronAPI.browserPane.list()
+      const visible = filterInstancesForWorkspace(instances, activeWorkspaceId, serverScope)
+      const existing = wantedProfileId
+        ? visible.find((item) => profileOf(item) === wantedProfileId)
+        : visible[0]
+
+      // A remote window's browser is the workspace's browser on its server, and this click is a
+      // *viewing* act: the window is created hidden and stays that way — nothing comes up on the
+      // hub's desktop and nothing takes the focus from the person sitting there. Its tab lives in
+      // the parking window, which is where the stream is taken from, exactly as an agent opening
+      // the browser does it. The hub's own click (below) still raises a real window.
+      if (usesServerBrowser) {
+        const instanceId = existing?.id ?? await window.electronAPI.browserPane.create({
+          show: false,
+          ...(wantedProfileId ? { profileId: wantedProfileId } : {}),
+        })
+        // Read the window again: a fresh one answers with its first tab here.
+        const next = await window.electronAPI.browserPane.list()
+        const instance = next.find((item) => item.id === instanceId)
         const tabId = instance?.tabs?.find((tab) => tab.active)?.id ?? instance?.tabs?.[0]?.id
         if (tabId) openBrowserView({ instanceId, tabId })
         else openBrowserView()
-      } catch (error) {
-        console.error('[Chat] Failed to open the browser for a profile:', error)
-        toast.error(t('toast.failedToCreateBrowser'))
-      }
-      return
-    }
-    try {
-      if (profileId) {
-        // A profile names its window: the host brings that one up, opening it when the
-        // workspace has none for the account yet.
-        const instanceId = await window.electronAPI.browserPane.create({ show: true, profileId })
-        await window.electronAPI.browserPane.focus(instanceId)
         return
       }
-      const instances = await window.electronAPI.browserPane.list()
-      const existing = filterInstancesForWorkspace(instances, activeWorkspaceId, serverScope)[0]
+
       if (existing) {
         await window.electronAPI.browserPane.focus(existing.id)
         return
       }
-      const instanceId = await window.electronAPI.browserPane.create({ show: true })
+      const instanceId = await window.electronAPI.browserPane.create({
+        show: true,
+        ...(wantedProfileId ? { profileId: wantedProfileId } : {}),
+      })
       await window.electronAPI.browserPane.focus(instanceId)
     } catch (error) {
       console.error('[Chat] Failed to open the browser:', error)
       toast.error(t('toast.failedToCreateBrowser'))
     }
-  }, [activeWorkspaceId, serverScope, t, usesServerBrowser, openBrowserView])
+  }, [activeWorkspaceId, effectiveSessionId, serverScope, t, usesServerBrowser, openBrowserView])
 
   // Delete Source - simplified since agents system is removed
   const handleDeleteSource = useCallback(async (sourceSlug: string) => {

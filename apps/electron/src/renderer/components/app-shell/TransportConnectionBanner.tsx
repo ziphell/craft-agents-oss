@@ -61,7 +61,7 @@ export function getTransportBannerCopy(state: TransportConnectionState): Transpo
   }
 }
 
-function getFailureReason(state: TransportConnectionState): string {
+export function getFailureReason(state: TransportConnectionState): string {
   const err = state.lastError
   if (err) {
     if (err.kind === 'auth') return i18n.t('transport.authFailed')
