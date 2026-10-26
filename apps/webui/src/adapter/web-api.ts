@@ -15,6 +15,13 @@ import { WsRpcClient } from '../../../electron/src/transport/client'
 import { buildClientApi } from '../../../electron/src/transport/build-api'
 import { CHANNEL_MAP } from '../../../electron/src/transport/channel-map'
 import type { ElectronAPI, TransportConnectionState } from '../../../electron/src/shared/types'
+import {
+  hasNativeBridge,
+  nativeForeground,
+  onNativeForegroundChange,
+  onNativeNotificationNavigate,
+  postToNative,
+} from './native-bridge'
 
 // ---------------------------------------------------------------------------
 // Web file picker (replaces native Electron dialog)
@@ -68,6 +75,8 @@ export interface WebApiOptions {
  * a reload keeps the tab where it was, a brand new tab starts from the default workspace.
  */
 export const WORKSPACE_STORAGE_KEY = 'craft:workspaceId'
+/** 通知开关是客户端能力，不经过 hub；存在页面存储里，跟随 origin。 */
+const NOTIFICATIONS_STORAGE_KEY = 'craft:notificationsEnabled'
 
 function rememberWorkspace(workspaceId: string | undefined) {
   if (!workspaceId) return
@@ -94,11 +103,16 @@ export function createWebApi(options: WebApiOptions): {
     // No token — auth is via session cookie sent on WebSocket upgrade
   })
 
-  // Build the API proxy from the same channel map the Electron app uses
+  // Build the API proxy from the same channel map the Electron app uses.
+  // Notification channels are LOCAL_ONLY on desktop; the Android shell answers them through the
+  // native bridge, so they count as available here too.
+  const isChannelAvailable = (channel: string): boolean =>
+    (hasNativeBridge() && channel.startsWith('notification:')) || client.isChannelAvailable(channel)
+
   const baseApi = buildClientApi(
     client,
     CHANNEL_MAP,
-    (ch) => client.isChannelAvailable(ch),
+    isChannelAvailable,
   )
 
   // Override LOCAL_ONLY methods with web-compatible implementations
@@ -161,11 +175,19 @@ export function createWebApi(options: WebApiOptions): {
     confirmCloseWindow: () => Promise.resolve(),
     cancelCloseWindow: () => Promise.resolve(),
     onCloseRequested: () => () => {},
-    getWindowFocusState: () => Promise.resolve(document.hasFocus()),
+    getWindowFocusState: () => Promise.resolve(hasNativeBridge() ? nativeForeground() : document.hasFocus()),
     // No window to maximize here — the caption buttons are the browser's own.
     getWindowMaximizedState: () => Promise.resolve(false),
     onWindowMaximizedChange: () => () => {},
     onWindowFocusChange: (cb: (focused: boolean) => void) => {
+      // A WebView keeps DOM focus while the app is in the background; only the shell knows.
+      if (hasNativeBridge()) {
+        return onNativeForegroundChange((focused) => {
+          // 后台时页面可能被冻结，握手定时器会在回到前台后才报超时；直接补一次重连。
+          if (focused && client.getConnectionState().status !== 'connected') client.reconnectNow()
+          cb(focused)
+        })
+      }
       const onFocus = () => cb(true)
       const onBlur = () => cb(false)
       window.addEventListener('focus', onFocus)
@@ -240,13 +262,23 @@ export function createWebApi(options: WebApiOptions): {
     onBadgeDraw: () => () => {},
     onBadgeDrawWindows: () => () => {},
 
-    // Notifications — Web Notifications API
-    showNotification: async (title: string, body: string) => {
+    // Notifications — the Android shell shows them natively; a browser tab uses Web Notifications.
+    showNotification: async (title: string, body: string, workspaceId: string, sessionId: string) => {
+      if (hasNativeBridge() && postToNative({ type: 'notification', title, body, workspaceId, sessionId })) {
+        return
+      }
       if ('Notification' in window && Notification.permission === 'granted') {
         new Notification(title, { body })
       }
     },
-    onNotificationNavigate: () => () => {},
+    // Native notification taps re-enter the WebView and are delivered back as a shell event.
+    onNotificationNavigate: (cb: (data: { workspaceId: string; sessionId: string }) => void) =>
+      hasNativeBridge() ? onNativeNotificationNavigate(cb) : () => {},
+    // The notification toggle is a client-side preference (notification channels are LOCAL_ONLY).
+    getNotificationsEnabled: async () => localStorage.getItem(NOTIFICATIONS_STORAGE_KEY) !== 'false',
+    setNotificationsEnabled: async (enabled: boolean) => {
+      localStorage.setItem(NOTIFICATIONS_STORAGE_KEY, String(enabled))
+    },
 
     // Git bash (Windows-only) — not applicable
     checkGitBash: () => Promise.resolve({ available: true } as any),
@@ -271,7 +303,7 @@ export function createWebApi(options: WebApiOptions): {
       return client.onConnectionStateChanged(cb as any)
     },
     reconnectTransport: () => { client.reconnectNow(); return Promise.resolve() },
-    isChannelAvailable: (ch: string) => client.isChannelAvailable(ch),
+    isChannelAvailable,
 
     // Relaunch — reload page
     relaunchApp: () => { window.location.reload(); return Promise.resolve() },

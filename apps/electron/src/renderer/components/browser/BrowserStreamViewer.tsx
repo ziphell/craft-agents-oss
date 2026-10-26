@@ -39,6 +39,8 @@ import {
   Maximize2,
   Minimize2,
   MonitorPlay,
+  PanelLeftClose,
+  PanelLeftOpen,
   Plus,
   RefreshCw,
   RotateCw,
@@ -137,6 +139,8 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
   const [phase, setPhase] = useState<Phase>('idle')
   /** Reflow the page to the pane instead of drawing it 1:1 inside a bigger one. */
   const [fitMode, setFitMode] = useState(false)
+  /** The tab rail, folded away to give the picture the whole width. */
+  const [railOpen, setRailOpen] = useState(true)
   /** The stage's own box, kept current by a ResizeObserver — the picture is fitted into it. */
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 })
   /** A refusal from the server — news, not a reason to cover the picture. */
@@ -177,6 +181,14 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
   const composingRef = useRef(false)
   /** The pending caret read, kept so input bursts collapse into one. */
   const caretTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /**
+   * The press in flight, if any — a drag belongs to the window until the button comes up.
+   *
+   * The page's scrollbar is drawn on the picture's own edge, so a drag that starts on it is one
+   * pixel away from leaving the element, where React stops reporting moves. This keeps the
+   * gesture alive and clamped to the picture instead.
+   */
+  const dragCleanupRef = useRef<(() => void) | null>(null)
   /** The picture. Painted imperatively; never re-mounted between frames. */
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const pendingFrameRef = useRef<BrowserStreamFrame | null>(null)
@@ -328,6 +340,10 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
     if (caretTimerRef.current) {
       clearTimeout(caretTimerRef.current)
       caretTimerRef.current = null
+    }
+    if (dragCleanupRef.current) {
+      dragCleanupRef.current()
+      dragCleanupRef.current = null
     }
     if (reconnectRef.current.timer) {
       clearTimeout(reconnectRef.current.timer)
@@ -861,23 +877,70 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
    * so its own box already excludes the letterbox bars. That is what makes a click land where
    * it looked, at any window size and any tab aspect ratio.
    */
-  const toTabPoint = (event: { clientX: number; clientY: number }): { x: number; y: number } | null => {
+  const toTabPoint = (
+    event: { clientX: number; clientY: number },
+    /** A gesture already belongs to the page: where it goes past the picture, keep it at the edge. */
+    clampOutside = false,
+  ): { x: number; y: number } | null => {
     const picture = canvasRef.current
     const size = frameSize
     if (!size || !picture) return null
     const box = picture.getBoundingClientRect()
     if (box.width === 0 || box.height === 0) return null
-    if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) {
-      return null
-    }
+    const x = clampOutside ? clamp(event.clientX, box.left, box.right) : event.clientX
+    const y = clampOutside ? clamp(event.clientY, box.top, box.bottom) : event.clientY
+    if (x < box.left || x > box.right || y < box.top || y > box.bottom) return null
     return {
-      x: clamp(Math.round(((event.clientX - box.left) / box.width) * size.width), 0, Math.max(0, size.width - 1)),
-      y: clamp(Math.round(((event.clientY - box.top) / box.height) * size.height), 0, Math.max(0, size.height - 1)),
+      x: clamp(Math.round(((x - box.left) / box.width) * size.width), 0, Math.max(0, size.width - 1)),
+      y: clamp(Math.round(((y - box.top) / box.height) * size.height), 0, Math.max(0, size.height - 1)),
     }
+  }
+
+  /** Stop following a press. The release itself is sent by whoever ends it. */
+  const endDrag = () => {
+    if (!dragCleanupRef.current) return
+    dragCleanupRef.current()
+    dragCleanupRef.current = null
+  }
+
+  /**
+   * Follow a press out of the picture, until the button comes up.
+   *
+   * React only reports moves over the pane, and the page's scrollbar sits on the picture's own
+   * right edge: half a pixel of drift and the drag would end without the page ever seeing the
+   * rest of it. A real window keeps the gesture going while the button is down, so this listens
+   * on the window instead and clamps the point to the picture.
+   */
+  const beginDrag = (button: number, clickCount: number) => {
+    endDrag()
+    const onMove = (native: MouseEvent) => {
+      if (native.buttons === 0) {
+        // Released where we never heard it — outside the app window, say. Stop following.
+        endDrag()
+        return
+      }
+      const point = toTabPoint(native, true)
+      if (!point) return
+      send([{ type: 'mouse', action: 'move', ...point, buttons: native.buttons }])
+    }
+    const onUp = (native: MouseEvent) => {
+      endDrag()
+      const point = toTabPoint(native, true)
+      if (!point) return
+      send([{ type: 'mouse', action: 'up', ...point, button: buttonName(button), clickCount, buttons: 0 }])
+    }
+    dragCleanupRef.current = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
   }
 
   const mouse = (action: 'move' | 'down' | 'up') => (event: React.MouseEvent<HTMLElement>) => {
     if (phaseRef.current !== 'live') return
+    // While a press is down the window is reporting the gesture (see `beginDrag`), clamped.
+    if (action === 'move' && dragCleanupRef.current) return
     const point = toTabPoint(event)
     if (!point) return
     if (action === 'move') {
@@ -910,6 +973,9 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
       ...(action === 'move' ? {} : { button: buttonName(event.button), clickCount }),
       buttons: event.buttons,
     }])
+    // A press is a gesture from here on: the window follows it, so a scrollbar on the picture's
+    // edge (or a selection dragged past the bottom) keeps scrolling instead of dying on exit.
+    if (action === 'down') beginDrag(event.button, clickCount ?? 1)
   }
 
   const live = phase === 'live'
@@ -1059,6 +1125,20 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
   }, [address, currentInstance?.id, selected?.instanceId, currentUrl])
 
   /**
+   * Android WebView 的软键盘“前往 / 回车”不一定产生 keydown('Enter')（IME 可能报
+   * keyCode 229 / Process）。表单提交是可靠路径，桌面端的 BrowserControls 也是这么做的。
+   */
+  const submitAddress = useCallback(
+    (event: React.FormEvent<HTMLFormElement>) => {
+      event.preventDefault()
+      setEditingAddress(false)
+      void goToAddress()
+      addressRef.current?.blur()
+    },
+    [goToAddress],
+  )
+
+  /**
    * Fit mode: ask the tab to reflow to the pane, instead of drawing a bigger page small inside
    * it. Debounced — a window drag is one request when it settles, not sixty.
    *
@@ -1170,6 +1250,17 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
         className="relative flex h-12 shrink-0 items-center justify-center border-b border-border/70 px-3"
         style={{ WebkitAppRegion: 'drag' } as CSSProperties}
       >
+        <button
+          type="button"
+          onClick={() => setRailOpen((previous) => !previous)}
+          className="absolute left-3 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
+          aria-label={railOpen ? t('browser.hideTabs') : t('browser.showTabs')}
+          aria-expanded={railOpen}
+          title={railOpen ? t('browser.hideTabs') : t('browser.showTabs')}
+        >
+          {railOpen ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeftOpen className="h-4 w-4" />}
+        </button>
         <div className="flex min-w-0 max-w-[min(60%,28rem)] items-center justify-center">
           {profileChoices.length > 1 ? (
             <DropdownMenu>
@@ -1247,8 +1338,10 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
         {/*
           The watched window's tabs. Other windows are reached through the profile switch in the
           bar — one window per profile — so this is a tab list, not a list of every window's
-          tabs with headings to tell the identical ones apart.
+          tabs with headings to tell the identical ones apart. Folded away, the page takes the
+          whole width; the bar's button brings it back.
         */}
+        {railOpen && (
         <aside className="flex w-40 shrink-0 flex-col overflow-hidden border-r border-border/70 md:w-52">
           <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2 pt-1.5">
             {currentInstance && currentInstance.tabs?.map((tab) => (
@@ -1290,6 +1383,7 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
             )}
           </div>
         </aside>
+        )}
 
         <div className="flex min-w-0 flex-1 flex-col">
           {/* Browser chrome: the verbs the window's own toolbar has, acting on the tab on screen. */}
@@ -1336,7 +1430,11 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
             )}
 
             {/* The address: what the tab is at, editable, and one Enter away from being where it goes. */}
-            <div className="mx-1.5 flex h-8 min-w-0 flex-1 items-center rounded-lg bg-muted/50 px-2.5 transition-colors focus-within:bg-muted">
+            <form
+              className="mx-1.5 flex h-8 min-w-0 flex-1 items-center rounded-lg bg-muted/50 px-2.5 transition-colors focus-within:bg-muted"
+              onSubmit={submitAddress}
+              noValidate
+            >
               <input
                 ref={addressRef}
                 value={address}
@@ -1350,7 +1448,7 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
                   if (!navigatingRef.current) setAddress(currentUrl)
                 }}
                 onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
+                  if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
                     event.preventDefault()
                     setEditingAddress(false)
                     void goToAddress()
@@ -1366,12 +1464,14 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
                     focusShownPage()
                   }
                 }}
+                enterKeyHint="go"
+                inputMode="url"
                 placeholder={t('browser.urlPlaceholder')}
                 spellCheck={false}
                 disabled={!currentInstance}
                 className="w-full bg-transparent text-[12.5px] text-foreground outline-none placeholder:text-muted-foreground/50 disabled:opacity-50"
               />
-            </div>
+            </form>
           </div>
 
           <div ref={stageRef} className="relative min-h-0 flex-1 overflow-hidden bg-[#0b0c0f]">
@@ -1392,7 +1492,11 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
                 }
                 mouse('down')(event)
               }}
-              onMouseUp={mouse('up')}
+              onMouseUp={(event) => {
+                // While a press is down the window owns the release, wherever it lands.
+                if (dragCleanupRef.current) return
+                mouse('up')(event)
+              }}
               onMouseMove={mouse('move')}
               onContextMenu={(event) => event.preventDefault()}
             >

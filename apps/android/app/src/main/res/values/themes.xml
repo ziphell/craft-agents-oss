@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <style name="TextAppearance.Craft.ToolbarTitle" parent="TextAppearance.Material3.TitleMedium">
+    <item name="android:textSize">16sp</item>
+    <item name="android:textStyle">bold</item>
+  </style>
+
+  <style name="Theme.CraftAgents" parent="Theme.Material3.DayNight.NoActionBar">
+    <item name="colorPrimary">@color/craft_accent</item>
+    <item name="colorOnPrimary">@color/craft_on_accent</item>
+    <item name="colorSecondary">@color/craft_accent</item>
+    <item name="colorOnSecondary">@color/craft_on_accent</item>
+    <item name="android:colorBackground">@color/craft_background</item>
+    <item name="colorSurface">@color/craft_surface</item>
+    <item name="colorOnSurface">@color/craft_text</item>
+    <item name="colorOutline">@color/craft_outline</item>
+    <item name="android:statusBarColor">@color/craft_background</item>
+    <item name="android:navigationBarColor">@color/craft_background</item>
+    <item name="android:windowLightStatusBar">@bool/craft_light_system_bars</item>
+    <item name="android:windowLightNavigationBar">@bool/craft_light_system_bars</item>
+    <item name="android:windowActionModeOverlay">true</item>
+  </style>
+</resources>

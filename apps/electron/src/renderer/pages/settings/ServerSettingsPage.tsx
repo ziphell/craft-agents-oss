@@ -662,8 +662,8 @@ export default function ServerSettingsPage() {
                             )}
                           >
                             {device.deviceAllows
-                              ? t('settings.client.deviceAccessAllowed')
-                              : t('settings.client.deviceAccessNotAllowed')}
+                              ? t('settings.server.deviceAccessGranted')
+                              : t('settings.server.deviceAccessNotGranted')}
                           </span>
                         )}
                         <Switch

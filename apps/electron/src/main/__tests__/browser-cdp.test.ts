@@ -396,6 +396,39 @@ describe('BrowserCDP', () => {
       // The Enter beside it is still a key event: only the composition goes through insertText.
       expect(sent.filter((command) => command.method === 'Input.dispatchKeyEvent').length).toBe(1)
     })
+
+    it('names the held button on a move, so the page sees a drag', async () => {
+      const sent: Array<{ method: string; params?: any }> = []
+      const wc = createMockWebContents(async (method, params) => {
+        sent.push({ method, params })
+        return {}
+      })
+
+      const cdp = new BrowserCDP(wc as any)
+      await cdp.dispatchInput([
+        { type: 'mouse', action: 'down', x: 10, y: 20, button: 'left', buttons: 1, clickCount: 1 },
+        { type: 'mouse', action: 'move', x: 10, y: 60, buttons: 1 },
+      ])
+
+      const move = sent.find((command) => command.method === 'Input.dispatchMouseEvent' && command.params?.type === 'mouseMoved')
+      expect(move?.params?.button).toBe('left')
+      expect(move?.params?.buttons).toBe(1)
+    })
+
+    it('leaves a hover with no button named', async () => {
+      const sent: Array<{ method: string; params?: any }> = []
+      const wc = createMockWebContents(async (method, params) => {
+        sent.push({ method, params })
+        return {}
+      })
+
+      const cdp = new BrowserCDP(wc as any)
+      await cdp.dispatchInput([{ type: 'mouse', action: 'move', x: 10, y: 20, buttons: 0 }])
+
+      const move = sent.find((command) => command.method === 'Input.dispatchMouseEvent')
+      expect(move?.params?.button).toBe('none')
+      expect(move?.params?.buttons).toBe(0)
+    })
   })
 
   describe('caretRect', () => {

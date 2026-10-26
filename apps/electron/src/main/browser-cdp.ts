@@ -778,6 +778,14 @@ function virtualKeyCode(key: string, code?: string): number {
   return 0
 }
 
+/** The button a CDP `buttons` bitmask is holding (left=1, right=2, middle=4). */
+function heldButton(buttons: number): 'left' | 'right' | 'middle' | null {
+  if (buttons & 1) return 'left'
+  if (buttons & 2) return 'right'
+  if (buttons & 4) return 'middle'
+  return null
+}
+
 /**
  * Where the caret is, read from the page itself, in its viewport's CSS pixels.
  *
@@ -1100,8 +1108,11 @@ export class BrowserCDP {
           type,
           x: event.x,
           y: event.y,
-          // A move reports no button; a press/release names the one it used.
-          button: event.action === 'move' ? 'none' : event.button ?? 'left',
+          // A move that belongs to a drag names the button it holds. Blink reads `none` as a bare
+          // hover: a selection never extends and a drag never starts (measured — `left` selects,
+          // `none` does not), and the compositor's scrollbar follows the same field. `none` is
+          // only for a move with nothing down.
+          button: event.action === 'move' ? heldButton(event.buttons ?? 0) ?? 'none' : event.button ?? 'left',
           clickCount: event.action === 'move' ? 0 : event.clickCount ?? 1,
           // Which buttons stay down for the whole gesture — a drag with the right button is not
           // the same event stream as one with the left.

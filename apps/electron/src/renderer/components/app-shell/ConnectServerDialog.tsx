@@ -431,7 +431,6 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
                             connection.deviceAccess ? 'text-success' : 'text-muted-foreground',
                           )}
                         >
-                          {t('settings.client.deviceAccess')}:{' '}
                           {connection.deviceAccess
                             ? t('settings.client.deviceAccessAllowed')
                             : t('settings.client.deviceAccessNotAllowed')}

@@ -139,6 +139,8 @@ type BrowserStreamInput =
 
 **焦点**：键盘默认属于页面——切 tab、前进/后退、刷新、地址栏回车之后都会回到页面（不可见 textarea），不留在刚点过的按钮或轨道上；只有新标签页 / `about:blank` 回到地址栏，与窗口的 `wantsAddressBarFocus` 是同一条规则。正在地址栏里打字时不抢焦点（Escape 离开地址栏则还给页面）。
 
+**拖拽与滚动条**：两件事都要对。其一，**移动事件必须带上按住的按钮**（`button: 'left'` / `'right'` / `'middle'`）——只给 `buttons` 位掩码不够，Blink 把 `button: 'none'` 当作悬停：选区不延伸、拖动不开始（实测：`left` 能拖选文字、能在 `input` 里拖选、能拖滚动条；`none` 三者全不动）。设备侧从 `buttons` 推导按钮，悬停（没有任何键按下）才用 `none`。其二，按下之后手势归窗口：`mousemove`/`mouseup` 挂在 window 上，超出画面时坐标夹到画面边缘，直到按钮抬起——滚动条画在画面最右侧，指针滑出一像素就会丢掉整段拖动。滚动条本身由 Chromium 绘制与命中，观看端不模拟；滚轮走 `mouseWheel`，页面平滑滚动期间帧会继续更新。
+
 ### 5.4 一条 capture = 一个标签页，一条 stream = 一个观看者
 
 Chromium 的 screencast 是**每个 CDP 会话一路**，且 `startScreencast` 会先停掉上一路。所以 screencast 由**标签页**持有、观看者共享（管理器里的 `viewCaptures` 扇出）：

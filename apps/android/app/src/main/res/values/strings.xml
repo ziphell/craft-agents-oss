@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="app_name">Craft Agents</string>
+  <string name="main_title">Craft Agents</string>
+  <string name="main_subtitle">选择一台 WebUI 服务器开始</string>
+  <string name="add_server">添加服务器</string>
+  <string name="empty_title">还没有服务器</string>
+  <string name="empty_body">添加 Craft Agents 服务器的地址，支持 HTTP 与 HTTPS。</string>
+  <string name="server_name_hint">名称（可选）</string>
+  <string name="server_url_hint">服务器地址</string>
+  <string name="server_url_helper">例如 http://192.168.1.10:9100</string>
+  <string name="trust_self_signed">信任该服务器的自签名证书</string>
+  <string name="trust_self_signed_note">只影响页面加载。自签名 HTTPS 下的 WSS 连接无法由 WebView 忽略，详见 README。</string>
+  <string name="add_server_title">添加服务器</string>
+  <string name="edit_server_title">编辑服务器</string>
+  <string name="save">保存</string>
+  <string name="cancel">取消</string>
+  <string name="edit">编辑</string>
+  <string name="delete">删除</string>
+  <string name="delete_server_title">删除服务器</string>
+  <string name="delete_server_message">确定删除「%1$s」？只会移除列表项，不会影响服务器上的数据。</string>
+  <string name="test_connection">测试连接</string>
+  <string name="testing">正在测试…</string>
+  <string name="test_result">可连接（HTTP %1$d）</string>
+  <string name="test_failed">连接失败：%1$s</string>
+  <string name="error_invalid_url">请输入有效的 http:// 或 https:// 地址，不能包含路径或查询参数。</string>
+  <string name="server_trust_badge">信任自签证书</string>
+  <string name="server_last_used">上次使用 %1$s</string>
+  <string name="server_menu">服务器操作</string>
+  <string name="display_settings">显示设置</string>
+  <string name="close">关闭</string>
+  <string name="zoom_percent">%1$d%%</string>
+  <string name="screen_logical_resolution">屏幕逻辑分辨率：%1$d × %2$d dp</string>
+  <string name="screen_physical_resolution">物理分辨率：%1$d × %2$d px</string>
+  <string name="screen_density">密度：%1$s（%2$d dpi）</string>
+  <string name="webview_zoom_value">WebView 缩放：%1$d%%</string>
+  <string name="webview_viewport">WebView 可视区：%1$d × %2$d CSS px</string>
+  <string name="retry">重试</string>
+  <string name="webview_error_title">无法加载页面</string>
+  <string name="server_not_found">服务器不存在或已被删除</string>
+  <string name="open_failed">没有可用的应用打开此链接</string>
+  <string name="download_started">已加入下载</string>
+  <string name="download_failed">下载失败：%1$s</string>
+  <string name="bridge_unsupported">系统 WebView 版本过低，通知与前台状态不可用</string>
+  <string name="notification_channel_name">会话消息</string>
+  <string name="notification_channel_description">Agent 回复与需要你处理的事项</string>
+</resources>

@@ -123,11 +123,11 @@ export function TopBar({
       >
       {/* === LEFT: Sidebar + Menu + Navigation + Workspace === */}
       {/* Keep this container draggable. Only individual interactive controls should use titlebar-no-drag. */}
-      {/* In compact mode the right slot is hidden, so we add right padding here
-          so the workspace pill doesn't run flush against the viewport edge. */}
+      {/* In compact mode the right slot collapses to just the browser globe, so the
+          pill only needs edge padding when that globe isn't there at all. */}
       <div
         className="pointer-events-auto flex min-w-0 flex-1 items-center gap-1"
-        style={{ paddingLeft: menuLeftPadding, paddingRight: isCompact ? 12 : 0 }}
+        style={{ paddingLeft: menuLeftPadding, paddingRight: isCompact && !usesServerBrowser ? 12 : 0 }}
       >
         <div className="flex items-center gap-1">
         {!isCompact && (
@@ -152,23 +152,6 @@ export function TopBar({
           onToggleSidebar={onToggleSidebar}
           onToggleFocusMode={onToggleFocusMode}
         />
-
-        {/* Compact has no right slot, so the browser's globe comes here — the same control,
-            in the bar, rather than a floating pill over the page. */}
-        {isCompact && usesServerBrowser && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <TopBarButton
-                aria-label={t('browser.openBrowser')}
-                className="h-7 w-7 rounded-lg"
-                onClick={() => onAddBrowserPanel()}
-              >
-                <Icons.Globe className="h-4 w-4 text-foreground/70" strokeWidth={1.5} />
-              </TopBarButton>
-            </TooltipTrigger>
-            <TooltipContent side="bottom">{t('browser.openBrowser')}</TooltipContent>
-          </Tooltip>
-        )}
         </div>
 
         {/* Back / Forward / Workspace selector (moved from center).
@@ -229,6 +212,27 @@ export function TopBar({
           />
         </div>
       </div>
+
+      {/* === COMPACT RIGHT: the browser stays on the right edge, same as desktop === */}
+      {isCompact && usesServerBrowser && (
+        <div
+          className="pointer-events-auto flex shrink-0 items-center justify-end"
+          style={{ paddingRight: 12 }}
+        >
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <TopBarButton
+                aria-label={t('browser.openBrowser')}
+                className="h-7 w-7 rounded-lg"
+                onClick={() => onAddBrowserPanel()}
+              >
+                <Icons.Globe className="h-4 w-4 text-foreground/70" strokeWidth={1.5} />
+              </TopBarButton>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">{t('browser.openBrowser')}</TooltipContent>
+          </Tooltip>
+        </div>
+      )}
 
       {/* === RIGHT: browser + new conversation + help === */}
       {!isCompact && (

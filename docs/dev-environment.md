@@ -13,6 +13,7 @@ apps/
   webui/      浏览器版 Web UI（vite，dev 端口 5175）
   viewer/     会话分享查看器（vite，dev 端口 5174）
   cli/        命令行客户端（bun 直跑 TS）
+  android/    安卓 WebView 壳（Gradle 工程，不是 bun 包；见 apps/android/README.md）
 packages/
   core/                 基础类型/存储/agent 逻辑（TS 源包）
   shared/               共享业务逻辑：agent/auth/config/credentials（TS 源包，被依赖最多）

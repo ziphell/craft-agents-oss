@@ -1381,8 +1381,11 @@ function AppShellContent({
   // Connect to a hub (opens its own window)
   useAction('app.connectServer', () => setConnectServerOpen(true))
 
-  // Quit (note: also handled by native menu on macOS)
-  useAction('app.quit', () => window.electronAPI.menuQuit())
+  // Quit (note: also handled by native menu on macOS). The webui has no app to quit.
+  useAction('app.quit', () => {
+    if (isWebUI) return
+    window.electronAPI.menuQuit()
+  })
 
   // History navigation
   useAction('nav.goBack', goBack)

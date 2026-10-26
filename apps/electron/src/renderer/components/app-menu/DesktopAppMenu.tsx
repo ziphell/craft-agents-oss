@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 import * as Icons from "lucide-react"
 import { isMac } from "@/lib/platform"
+import { isNativeShell, openServerList } from "@/lib/native-shell"
 import { useActionLabel } from "@/actions"
 import {
   DropdownMenu,
@@ -260,11 +261,22 @@ export function DesktopAppMenu({
 
         <StyledDropdownMenuSeparator />
 
-        <StyledDropdownMenuItem onClick={() => window.electronAPI.menuQuit()}>
-          <Icons.LogOut className="h-3.5 w-3.5" />
-          {t(ROOT_MENU.quit.labelKey)}
-          {quitHotkey && <DropdownMenuShortcut className="pl-6">{quitHotkey}</DropdownMenuShortcut>}
-        </StyledDropdownMenuItem>
+        {/* 安卓壳没有自己的标题栏，退回服务器列表放在菜单最后。 */}
+        {isNativeShell && (
+          <StyledDropdownMenuItem onClick={() => openServerList()}>
+            <Icons.LogOut className="h-3.5 w-3.5" />
+            {t('menu.serverList')}
+          </StyledDropdownMenuItem>
+        )}
+
+        {/* 浏览器里的 WebUI 没有可退出的 App，隐藏以免和“回服务器列表”混淆。 */}
+        {isElectron && (
+          <StyledDropdownMenuItem onClick={() => window.electronAPI.menuQuit()}>
+            <Icons.LogOut className="h-3.5 w-3.5" />
+            {t(ROOT_MENU.quit.labelKey)}
+            {quitHotkey && <DropdownMenuShortcut className="pl-6">{quitHotkey}</DropdownMenuShortcut>}
+          </StyledDropdownMenuItem>
+        )}
       </StyledDropdownMenuContent>
     </DropdownMenu>
   )

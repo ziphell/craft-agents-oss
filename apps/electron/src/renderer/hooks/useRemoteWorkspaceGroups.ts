@@ -6,10 +6,9 @@
  * window's transport. The window's own server is left out: in a remote window its workspaces are
  * already the list the remote section sits under.
  *
- * This machine gets one group (`connection: null`) only when the window is on **another** machine:
- * a local window's list already is this machine, and a window pointed at this machine's own server
- * (LAN address, tunnel) would list the same workspaces twice. A genuinely remote window keeps it —
- * that group is the way back.
+ * This machine gets one group (`connection: null`) whenever the window is on a hub — including a
+ * hub that is this machine itself (LAN address, tunnel). It is the only way back to the local
+ * window, so it stays even when its workspaces happen to look like the list above.
  */
 
 import { useCallback, useEffect, useState } from 'react'
@@ -46,20 +45,13 @@ export function useRemoteWorkspaceGroups(active: boolean): RemoteWorkspaceGroups
       const connections = mode.connections.filter(
         connection => connection.id !== mode.running?.connectionId,
       )
-      // "This machine" is only worth a group when it is not already the list above. Same config
-      // dir ⇒ same workspace ids, so an identical set means the window is on this machine's own
-      // server, reached by its LAN address or a tunnel.
-      const [current, local] = mode.running
-        ? await Promise.all([
-            window.electronAPI.getWorkspaces().catch(() => [] as WorkspaceInfo[]),
-            window.electronAPI.getLocalWorkspaces().catch(() => [] as WorkspaceInfo[]),
-          ])
-        : [[], []]
-      const currentIds = new Set(current.map(workspace => workspace.id))
-      const alreadyListed = current.length === local.length
-        && local.every(workspace => currentIds.has(workspace.id))
-      const localGroup: RemoteWorkspaceGroup[] = mode.running && !alreadyListed
-        ? [{ connection: null, workspaces: local, unavailable: false }]
+      // A window on a hub always keeps the way back: this machine, listed like any other server.
+      const localGroup: RemoteWorkspaceGroup[] = mode.running
+        ? [{
+            connection: null,
+            workspaces: await window.electronAPI.getLocalWorkspaces().catch(() => [] as WorkspaceInfo[]),
+            unavailable: false,
+          }]
         : []
       const loaded = await Promise.all(connections.map(async (connection): Promise<RemoteWorkspaceGroup> => {
         try {
