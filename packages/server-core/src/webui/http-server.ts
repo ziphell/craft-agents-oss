@@ -115,11 +115,61 @@ export interface ResolveWebSocketUrlOptions {
   wsPort: number
 }
 
+/** The hostname a request claims to have arrived at, without its port. */
+function requestHostname(req: Request): string | null {
+  const host = getRequestHost(req)
+  if (!host) return null
+  try {
+    return new URL(`http://${host}`).hostname.toLowerCase() || null
+  } catch {
+    const withoutPort = host.replace(/:\d+$/, '').toLowerCase()
+    return withoutPort || null
+  }
+}
+
+/**
+ * Whether this request came in through the server's external endpoint.
+ *
+ * The configured external address belongs to the requests that arrive on it — a browser that
+ * enters by the tunnel host, or that reaches the hub through a reverse proxy (which is what puts
+ * `X-Forwarded-*` on the request). A browser on the LAN calls this hub directly: its host is the
+ * LAN address and nothing sits in front of it, so the external address is not its own and must
+ * not be handed to it — a tunnel or public host it cannot reach would break a connection that
+ * works today.
+ */
+export function requestUsesExternalAddress(req: Request, publicWsUrl: string): boolean {
+  const hostname = requestHostname(req)
+  try {
+    const publicHostname = new URL(publicWsUrl).hostname.toLowerCase()
+    if (hostname && publicHostname && hostname === publicHostname) return true
+  } catch {
+    // A malformed value (validated at save time) simply never matches here.
+  }
+
+  return Boolean(
+    req.headers.get('x-forwarded-host')
+    || req.headers.get('x-forwarded-proto')
+    || req.headers.get('forwarded'),
+  )
+}
+
+/**
+ * The socket form of a configured external address.
+ *
+ * The field takes whichever form the address came in — `https://host` is the same endpoint as
+ * `wss://host` — while what a browser is handed has to be a socket URL. Only the scheme changes:
+ * a path prefix a proxy forwards is part of the address and is kept.
+ */
+function toWebSocketUrl(address: string): string {
+  return address.replace(/^http/i, 'ws')
+}
+
 export function resolveWebSocketUrl(
   req: Request,
   { publicWsUrl, wsProtocol, wsPort }: ResolveWebSocketUrlOptions,
 ): string {
-  if (publicWsUrl) return publicWsUrl
+  // Per request, not globally: the internal address stays the address a LAN browser is given.
+  if (publicWsUrl && requestUsesExternalAddress(req, publicWsUrl)) return toWebSocketUrl(publicWsUrl)
 
   const host = getRequestHost(req)
   if (host) {
@@ -173,7 +223,12 @@ export interface WebuiHandlerOptions {
   authorizeBearer?: (header: string | null) => boolean | Promise<boolean>
   /** Explicit Secure-cookie override. When unset, infer from the request / proxy headers. */
   secureCookies?: boolean
-  /** Optional browser-facing WebSocket URL override for reverse-proxy deployments. */
+  /**
+   * Optional browser-facing WebSocket URL for the server's external address.
+   *
+   * Applied only to requests that arrive through it (see `requestUsesExternalAddress`); a browser
+   * on the network keeps the address it used.
+   */
   publicWsUrl?: string
   /** RPC WebSocket protocol used when building a browser-facing fallback URL. */
   wsProtocol: 'ws' | 'wss'

@@ -31,10 +31,16 @@ export interface ServerConfig {
    */
   webuiPassword?: string
   /**
-   * Public WebSocket URL the WebUI should connect to. Needed when browsers reach
-   * the server through a reverse proxy or a port mapping whose external port
-   * differs from `port` (e.g. `wss://agents.example.com/craft`). When unset, the
-   * URL is derived from the request host and `port`.
+   * The server's external address — how browsers reach it from outside this network, when a
+   * reverse proxy, tunnel or port mapping puts it somewhere the derived address cannot describe
+   * (e.g. `https://agents.example.com/craft`).
+   *
+   * Stored exactly as the person typed it: `https://host` and `wss://host` are the same endpoint,
+   * so both are accepted and the socket form is derived where a socket URL is needed.
+   *
+   * It is handed to the requests that arrive through it and nothing else: a browser on the LAN
+   * calls the hub directly and keeps the address it used, so setting this never redirects local
+   * traffic to a public host. When unset, the URL is derived from each request's host and `port`.
    */
   publicWsUrl?: string
 }

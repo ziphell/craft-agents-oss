@@ -1332,9 +1332,10 @@ app.whenReady().then(async () => {
         if (cfg.port < 1024 || cfg.port > 65535) {
           throw new Error(`Port must be between 1024 and 65535, got ${cfg.port}`)
         }
-        // Validate the public WS URL scheme when set (reverse-proxy override)
-        if (cfg.publicWsUrl && !/^wss?:\/\//i.test(cfg.publicWsUrl)) {
-          throw new Error('Public WebSocket URL must start with ws:// or wss://')
+        // The external address is a browser address as often as a socket one — they are the same
+        // endpoint — so both spellings are stored as typed and normalised where they are used.
+        if (cfg.publicWsUrl && !/^(wss?|https?):\/\//i.test(cfg.publicWsUrl)) {
+          throw new Error('External address must start with https://, wss://, http:// or ws://')
         }
         // Validate cert/key files exist if provided
         if (cfg.tlsCertPath && !existsSync(cfg.tlsCertPath)) {

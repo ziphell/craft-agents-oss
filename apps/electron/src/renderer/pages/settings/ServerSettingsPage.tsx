@@ -112,6 +112,21 @@ function platformLabel(platform: string | null): string | null {
   return platform
 }
 
+/**
+ * One address with its copy button.
+ *
+ * It is a line rather than a row so two of them stack inside one settings row: the machine's own
+ * address, and the external one underneath it when there is one.
+ */
+function AddressLine({ url, title, onCopy }: { url: string; title: string; onCopy: () => void }) {
+  return (
+    <span className="flex items-center gap-1">
+      <span className="font-mono text-sm text-muted-foreground">{url}</span>
+      <IconAction icon={Copy} title={title} onClick={onCopy} />
+    </span>
+  )
+}
+
 /** A heading inside a card, in the same voice as the section titles above it. */
 function GroupLabel({ children, className }: { children: React.ReactNode; className?: string }) {
   return (
@@ -604,9 +619,15 @@ export default function ServerSettingsPage() {
   const wsUrl = status && liveMatchesForm ? status.url : draftUrl
   const browserUrl = wsUrl.replace(/^ws/, 'http')
 
-  // Reverse-proxy / port-mapping address, taken from the form because it is part of this config.
+  // The external address, taken from the form because it is part of this config. It is a second
+  // address beside the one above, never a replacement: the rows that describe this machine on the
+  // network keep saying what they said before this field was filled in.
+  //
+  // It is kept exactly as it was typed — `https://host` and `wss://host` are the same endpoint —
+  // and turned into the form each line needs only here.
   const publicWsUrl = form.publicWsUrl.trim()
-  const publicHttpUrl = publicWsUrl.replace(/^ws/, 'http')
+  const publicHttpUrl = publicWsUrl.replace(/^ws/i, 'http')
+  const publicSocketUrl = publicWsUrl.replace(/^http/i, 'ws')
 
   return (
     <div className="flex flex-col h-full">
@@ -703,15 +724,21 @@ export default function ServerSettingsPage() {
                   placeholder="9100"
                 />
 
-                {/* Addresses show the one that reaches this machine from outside; the override
-                    is edited under the WebSocket address. */}
                 <SettingsRow label={t("settings.server.browserUrl")}>
-                  <span className="font-mono text-sm text-muted-foreground">{publicWsUrl ? publicHttpUrl : browserUrl}</span>
-                  <IconAction
-                    icon={Copy}
-                    title={t("common.copy")}
-                    onClick={() => handleCopy(publicWsUrl ? publicHttpUrl : browserUrl, t("settings.server.browserUrl"))}
-                  />
+                  <div className="flex flex-col items-end gap-0.5">
+                    <AddressLine
+                      url={browserUrl}
+                      title={t("common.copy")}
+                      onCopy={() => handleCopy(browserUrl, t("settings.server.browserUrl"))}
+                    />
+                    {publicWsUrl && (
+                      <AddressLine
+                        url={publicHttpUrl}
+                        title={t("settings.server.externalBrowserUrl")}
+                        onCopy={() => handleCopy(publicHttpUrl, t("settings.server.externalBrowserUrl"))}
+                      />
+                    )}
+                  </div>
                 </SettingsRow>
 
                 <SettingsRow label={t("settings.server.webuiPassword")}>
@@ -742,6 +769,23 @@ export default function ServerSettingsPage() {
                   />
                 </SettingsRow>
 
+                <SettingsRow label={t("settings.server.wsUrl")}>
+                  <div className="flex flex-col items-end gap-0.5">
+                    <AddressLine
+                      url={wsUrl}
+                      title={t("common.copy")}
+                      onCopy={() => handleCopy(wsUrl, t("settings.server.wsUrl"))}
+                    />
+                    {publicWsUrl && (
+                      <AddressLine
+                        url={publicSocketUrl}
+                        title={t("settings.server.externalWsUrl")}
+                        onCopy={() => handleCopy(publicSocketUrl, t("settings.server.externalWsUrl"))}
+                      />
+                    )}
+                  </div>
+                </SettingsRow>
+
                 <SettingsRow label={t("settings.server.certificate")}>
                   <span className="max-w-[220px] truncate text-sm text-muted-foreground">
                     {form.tlsCertPath || t("settings.server.notConfigured")}
@@ -760,20 +804,14 @@ export default function ServerSettingsPage() {
                   </RowButton>
                 </SettingsRow>
 
-                <SettingsRow label={t("settings.server.wsUrl")}>
-                  <span className="font-mono text-sm text-muted-foreground">{publicWsUrl || wsUrl}</span>
-                  <IconAction
-                    icon={Copy}
-                    title={t("common.copy")}
-                    onClick={() => handleCopy(publicWsUrl || wsUrl, t("settings.server.wsUrl"))}
-                  />
-                </SettingsRow>
-
+                {/* The address a reverse proxy, tunnel or port mapping exposes, in whichever form it
+                    was given — `https://…` and `wss://…` are both accepted as typed, and it is shown
+                    as the second line of the two address rows above. */}
                 <SettingsInputRow
                   label={t("settings.server.publicWsUrl")}
                   value={form.publicWsUrl}
                   onChange={(publicWsUrl) => setForm(f => ({ ...f, publicWsUrl }))}
-                  placeholder="wss://agents.example.com"
+                  placeholder="https://agents.example.com"
                 />
               </SettingsCard>
 

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { startWebuiHttpServer } from '../http-server'
+import { requestUsesExternalAddress, resolveWebSocketUrl, startWebuiHttpServer } from '../http-server'
 import { deriveWebuiSessionKey } from '../auth'
 import { storeExport } from '../../services/export-store'
 
@@ -283,7 +283,7 @@ describe('startWebuiHttpServer', () => {
     })
   })
 
-  it('returns an explicit public websocket URL override from /api/config', async () => {
+  it('gives the external address to a request that arrives through it', async () => {
     const { baseUrl } = await createServer({
       publicWsUrl: 'wss://craft.example.com/ws',
       wsProtocol: 'wss',
@@ -299,12 +299,39 @@ describe('startWebuiHttpServer', () => {
     const configRes = await fetch(`${baseUrl}/api/config`, {
       headers: {
         cookie: extractSessionCookie(authRes),
+        'X-Forwarded-Host': 'craft.example.com',
+        'X-Forwarded-Proto': 'https',
       },
     })
 
     expect(configRes.status).toBe(200)
     expect(await configRes.json()).toEqual({
       wsUrl: 'wss://craft.example.com/ws',
+    })
+  })
+
+  it('keeps a request on the network on its own address when an external address is set', async () => {
+    const { baseUrl } = await createServer({
+      publicWsUrl: 'wss://craft.example.com/ws',
+      wsProtocol: 'wss',
+      wsPort: 9100,
+    })
+
+    const authRes = await fetch(`${baseUrl}/api/auth`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: PASSWORD }),
+    })
+
+    // A browser on the LAN calls this hub directly: no proxy in front, its host is the address it
+    // will use. The external address is not its own, so it is not handed to it.
+    const configRes = await fetch(`${baseUrl}/api/config`, {
+      headers: { cookie: extractSessionCookie(authRes) },
+    })
+
+    expect(configRes.status).toBe(200)
+    expect(await configRes.json()).toEqual({
+      wsUrl: 'wss://127.0.0.1:9100',
     })
   })
 
@@ -360,5 +387,58 @@ describe('Web UI session signing key', () => {
     // Either credential changing ends the sessions the old key signed.
     expect(deriveWebuiSessionKey('token-b', 'password-a')).not.toBe(base)
     expect(deriveWebuiSessionKey('token-a', 'password-b')).not.toBe(base)
+  })
+})
+
+describe('which requests get the external address', () => {
+  const PUBLIC = 'wss://craft.example.com/ws'
+
+  const request = (url: string, headers: Record<string, string> = {}) =>
+    new Request(url, { headers })
+
+  it('applies to a request whose host is the external one', () => {
+    expect(requestUsesExternalAddress(request('http://127.0.0.1:9100/api/config', {
+      host: 'craft.example.com',
+    }), PUBLIC)).toBe(true)
+  })
+
+  it('applies to a request a proxy forwarded here, whatever its host', () => {
+    expect(requestUsesExternalAddress(request('http://127.0.0.1:9100/api/config', {
+      host: '127.0.0.1:9100',
+      'x-forwarded-host': 'craft.example.com',
+    }), PUBLIC)).toBe(true)
+  })
+
+  it('does not apply to a machine on the network calling the hub directly', () => {
+    expect(requestUsesExternalAddress(request('http://192.168.1.5:9100/api/config', {
+      host: '192.168.1.5:9100',
+    }), PUBLIC)).toBe(false)
+  })
+
+  it('resolves the LAN address for that machine, not the external one', () => {
+    expect(resolveWebSocketUrl(request('http://192.168.1.5:9100/api/config', {
+      host: '192.168.1.5:9100',
+    }), { publicWsUrl: PUBLIC, wsProtocol: 'ws', wsPort: 9100 })).toBe('ws://192.168.1.5:9100')
+  })
+
+  it('takes an https address and hands out its socket form', () => {
+    const proxied = request('http://127.0.0.1:9100/api/config', {
+      'x-forwarded-host': 'agents.example.com',
+      'x-forwarded-proto': 'https',
+    })
+
+    expect(requestUsesExternalAddress(proxied, 'https://agents.example.com/craft')).toBe(true)
+    expect(resolveWebSocketUrl(proxied, {
+      publicWsUrl: 'https://agents.example.com/craft',
+      wsProtocol: 'ws',
+      wsPort: 9100,
+    })).toBe('wss://agents.example.com/craft')
+  })
+
+  it('resolves the internal address when no external address is configured', () => {
+    expect(resolveWebSocketUrl(request('http://192.168.1.5:9100/api/config', {
+      host: '192.168.1.5:9100',
+      'x-forwarded-host': 'craft.example.com',
+    }), { wsProtocol: 'ws', wsPort: 9100 })).toBe('ws://craft.example.com:9100')
   })
 })

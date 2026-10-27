@@ -178,6 +178,15 @@ interface RemoteConnection {
 - **跟随服务器的**：agent 行为、工具开关、onboarding 判定（`onboarding.GET_AUTH_STATE` / `VALIDATE_MCP` / `DEFER_SETUP`）、工作区增删。换窗口看同一工作区，设置一致。
 - **留在客户端的**：窗口/主题外观、原生对话框、shell、系统信息、`file:readUserAttachment`（草稿里是本机路径）、MCP OAuth 的本地 loopback 回调。
 - 客户端身份（`deviceId` / `name` / `platform` / `version`）随每次握手上报；hub 用它在设备列表和 `device_tool` 里点名这台机器。
+
+### 7.1 外网访问地址（Server Mode）
+
+`serverConfig.publicWsUrl` 是**第二条地址**，不是对「上面那条」的覆盖：
+
+- **只发给从它进来的请求**（`requestUsesExternalAddress`：请求 host 与该地址的主机名相同，或请求带 `X-Forwarded-Host` / `X-Forwarded-Proto` / `Forwarded`，即前面有代理）。Web UI 的 `/api/config` 按请求回答 `wsUrl`，所以内网浏览器直连 `http://192.168.x.x:9100` 时拿到的仍是它自己正在用的那条；填了外网地址不会把它指到一条它可能到不了的隧道/公网地址上。
+- **界面上是两组地址**：卡尖依次是端口、浏览器访问地址、浏览器访问令牌、服务器 WebSocket 地址、证书、私钥，最后是外网访问地址输入框（**不附带解释文案**）。填了以后外网地址直接作为**第二行**长在「浏览器访问地址」和「服务器 WebSocket 地址」这两行下面（各带复制按钮，行高变高），不另起两行。
+- **外网地址按原样存**：`https://…` / `wss://…`（以及 `http://` / `ws://`）都收，屏幕上就是用户输入的样子，**不在失焦/保存时改写**；只在用到时取形态——浏览器那一行显示 `https` 形态，WebSocket 那一行与交给浏览器的 `wsUrl` 用 `toWebSocketUrl()` 取 `wss` 形态（`resolveWebSocketUrl`）。保存校验只要求 scheme 属于这四种，裸主机名会被拒。
+- 与端口 / TLS 一样在监听器启动时读入，改完要重启。
 - **版本协商只认两样东西**：protocol major（信封形状）+ 逐通道能力（`registeredChannels`、`clientCapabilities`，客户端用 `isChannelAvailable` 判断）。app 版本（`clientInfo.version` / `serverVersion`）只用于展示与诊断，**不是**连接门槛；major 不等时握手拒绝，错误里同时给出两端版本与“升级任一端”的指引。新增功能走通道与可选字段，不升 major。webui 标签页没有 app 版本，`version` 可为空。
 
 ---
