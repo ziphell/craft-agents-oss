@@ -10,7 +10,6 @@ data class ServerEntry(
   val id: String,
   val name: String,
   val url: String,
-  val trustSelfSigned: Boolean = false,
   val lastUsedAt: Long = 0L,
 )
 
@@ -58,7 +57,6 @@ class ServerStore(context: Context) {
           id = id,
           name = item.optString("name").ifBlank { displayName(url) },
           url = url,
-          trustSelfSigned = item.optBoolean("trustSelfSigned", false),
           lastUsedAt = item.optLong("lastUsedAt", 0L),
         ),
       )
@@ -74,7 +72,6 @@ class ServerStore(context: Context) {
           .put("id", entry.id)
           .put("name", entry.name)
           .put("url", entry.url)
-          .put("trustSelfSigned", entry.trustSelfSigned)
           .put("lastUsedAt", entry.lastUsedAt),
       )
     }

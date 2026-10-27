@@ -90,7 +90,7 @@ Android 系统 WebView **不实现** Web Notifications API（`Notification` 不�
 
 | 场景 | 原因 | 建议 |
 |---|---|---|
-| 自签 HTTPS + `wss://` | 页面证书错误可以按服务器勾选“信任自签名证书”后忽略；但 **WSS 握手的证书错误不经过 WebView 的 SSL 回调**，无法在 App 内忽略 | 换合法证书；或在 App 内做 127.0.0.1 本地 TLS 终结代理 |
+| 自签 HTTPS（含 `wss://`） | App 不信任自签名证书，页面与 WSS 握手都会被拒绝 | 换合法证书；或在 App 内做 127.0.0.1 本地 TLS 终结代理 |
 | 只有明文 `http://局域网 IP`，但页面依赖 secure context | `navigator.clipboard`（复制按钮）、`crypto.subtle`、Service Worker 在非安全上下文不可用 | 本地 `127.0.0.1` 反向代理（localhost 属于安全上下文） |
 | 服务器只监听 `127.0.0.1` | 手机本来就到不了；App 内代理也帮不上 | 服务端改 `CRAFT_RPC_HOST=0.0.0.0`，或电脑侧做端口转发/隧道 |
 
@@ -136,7 +136,7 @@ adb -s emulator-5556 shell dumpsys device_state | Select-String mCommittedState
 ## 安全边界
 
 - JS bridge 只注入配置的服务器 origin，原生侧还会再校验 `sourceOrigin` 与主框架。HTTP 局域网下页面本身可被中间人篡改，跨公网请使用 HTTPS。
-- “信任自签名证书”按服务器主机名生效，只影响页面资源加载。
+- 不提供“信任自签名证书”选项：证书不受信任时页面直接加载失败，请使用合法证书。
 - 服务器列表存在本机 SharedPreferences；登录 cookie 由 WebView `CookieManager` 按 origin 管理（保存在应用私有存储），壳代码不读取 token。
 - 外链、OAuth、自定义 scheme 一律交给系统浏览器/对应应用；同源新窗口留在当前 WebView。
 - 下载走系统 `DownloadManager`，文件名来自 `Content-Disposition` 并做路径字符清洗。

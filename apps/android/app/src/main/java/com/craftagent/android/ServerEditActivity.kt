@@ -37,7 +37,6 @@ class ServerEditActivity : AppCompatActivity() {
       binding.editTitle.setText(R.string.edit_server_title)
       binding.nameInput.setText(entry.name)
       binding.urlInput.setText(entry.url)
-      binding.trustSwitch.isChecked = entry.trustSelfSigned
     }
 
     binding.saveButton.setOnClickListener { save() }
@@ -58,7 +57,6 @@ class ServerEditActivity : AppCompatActivity() {
       id = current?.id ?: ServerStore.newId(),
       name = name.ifBlank { ServerStore.displayName(url) },
       url = url,
-      trustSelfSigned = binding.trustSwitch.isChecked,
       // 新添加的服务器排到列表最上面；真正打开时会再刷新一次。
       lastUsedAt = current?.lastUsedAt ?: System.currentTimeMillis(),
     )

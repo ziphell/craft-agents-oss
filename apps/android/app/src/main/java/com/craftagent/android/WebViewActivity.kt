@@ -6,7 +6,6 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.net.http.SslError
 import android.os.Bundle
 import android.os.Environment
 import android.os.Message
@@ -15,7 +14,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
-import android.webkit.SslErrorHandler
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -261,17 +259,6 @@ class WebViewActivity : AppCompatActivity() {
         if (!request.isForMainFrame) return
         loadFailed = true
         showError(getString(R.string.webview_error_title), error.description?.toString().orEmpty())
-      }
-
-      override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
-        val host = Uri.parse(error.url).host
-        if (server.trustSelfSigned && host != null && host.equals(serverUri.host, ignoreCase = true)) {
-          handler.proceed()
-        } else {
-          handler.cancel()
-          loadFailed = true
-          showError(getString(R.string.webview_error_title), error.toString())
-        }
       }
     }
 

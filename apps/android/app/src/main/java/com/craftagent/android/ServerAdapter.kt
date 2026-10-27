@@ -29,7 +29,6 @@ class ServerAdapter(
     holder.binding.serverUrl.text = server.url
 
     val meta = buildList {
-      if (server.trustSelfSigned) add(context.getString(R.string.server_trust_badge))
       if (server.lastUsedAt > 0) {
         add(
           context.getString(
