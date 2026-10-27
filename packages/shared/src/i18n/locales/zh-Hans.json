@@ -1499,7 +1499,7 @@
   "settings.server.failedToSave": "保存失败: {{message}}",
   "settings.server.insecureWarning": "服务器未启用 TLS 运行。认证令牌以明文传输。",
   "settings.server.loadingDevices": "正在加载设备…",
-  "settings.server.noDevices": "暂无设备连接记录。",
+  "settings.server.noDevices": "暂无已连接设备",
   "settings.server.noFiles": "这里没有文件。用上方的路径输入框导航。",
   "settings.server.noTlsWarning": "未启用 TLS，连接将不加密。",
   "settings.server.noUsableDevices": "已连接的机器都没有提供工具能力。需在那台机器的「连接到服务器」里打开设备访问。",

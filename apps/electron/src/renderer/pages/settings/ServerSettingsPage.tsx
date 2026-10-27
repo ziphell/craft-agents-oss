@@ -891,9 +891,9 @@ export default function ServerSettingsPage() {
                     <SettingsRow label={t("settings.server.loadingDevices")} />
                   </SettingsCard>
                 ) : devices.length === 0 ? (
-                  <SettingsCard>
-                    <SettingsRow label={t("settings.server.noDevices")} />
-                  </SettingsCard>
+                  <p className="rounded-xl bg-background px-4 py-6 text-center text-xs text-muted-foreground shadow-minimal">
+                    {t("settings.server.noDevices")}
+                  </p>
                 ) : (
                   devices.map((device) => {
                     const slot = slotByDeviceId.get(device.id)
