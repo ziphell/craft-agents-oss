@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { requestUsesExternalAddress, resolveWebSocketUrl, startWebuiHttpServer } from '../http-server'
-import { deriveWebuiSessionKey } from '../auth'
+import { deriveWebuiSessionKey, sessionCookieName, buildSessionCookie, createSessionToken, validateSession } from '../auth'
 import { storeExport } from '../../services/export-store'
 
 const SECRET = 'test-server-secret'
@@ -98,6 +98,26 @@ afterEach(() => {
   }
 })
 
+describe('session cookies across ports', () => {
+  it('scopes the cookie name by port so two instances on one host do not overwrite each other', () => {
+    expect(sessionCookieName('example.com:9100')).toBe('craft_session_9100')
+    expect(sessionCookieName('example.com:9101')).toBe('craft_session_9101')
+    expect(sessionCookieName('example.com')).toBe('craft_session')
+    expect(sessionCookieName(null)).toBe('craft_session')
+    expect(buildSessionCookie('jwt', false, 'craft_session_9100')).toContain('craft_session_9100=jwt')
+  })
+
+  it('accepts whichever port-scoped cookie verifies with this instance key', async () => {
+    const tokenA = await createSessionToken('secret-a')
+    const tokenB = await createSessionToken('secret-b')
+    const both = `craft_session_9100=${tokenB}; craft_session_9101=${tokenA}`
+
+    expect(await validateSession(both, 'secret-a')).not.toBeNull()
+    expect(await validateSession(both, 'secret-b')).not.toBeNull()
+    expect(await validateSession(`craft_session_9100=${tokenA}`, 'secret-b')).toBeNull()
+  })
+})
+
 describe('startWebuiHttpServer', () => {
   it('allows plain-http login even when the RPC transport is wss', async () => {
     const { baseUrl } = await createServer({ wsProtocol: 'wss', wsPort: 9100 })
@@ -110,7 +130,7 @@ describe('startWebuiHttpServer', () => {
 
     expect(authRes.status).toBe(200)
     const setCookie = authRes.headers.get('set-cookie')
-    expect(setCookie).toContain('craft_session=')
+    expect(setCookie).toMatch(/craft_session(_\d+)?=/)
     expect(setCookie).not.toContain('Secure')
 
     const configRes = await fetch(`${baseUrl}/api/config`, {

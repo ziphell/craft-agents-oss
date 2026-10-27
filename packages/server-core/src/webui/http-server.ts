@@ -20,6 +20,7 @@ import {
   validateSession,
   buildSessionCookie,
   buildLogoutCookie,
+  sessionCookieName,
 } from './auth'
 import { createDefaultWebuiRuntime, type WebuiRuntime } from './runtime'
 import { DRAWIO_ROUTE_BASE, serveDrawioRoute } from './drawio'
@@ -396,7 +397,7 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
       return Response.json({ ok: true }, {
         status: 200,
         headers: {
-          'Set-Cookie': buildSessionCookie(jwt, useSecureCookies),
+          'Set-Cookie': buildSessionCookie(jwt, useSecureCookies, sessionCookieName(req.headers.get('host'))),
         },
       })
     }
@@ -406,7 +407,7 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
       return new Response(null, {
         status: 204,
         headers: {
-          'Set-Cookie': buildLogoutCookie(useSecureCookies),
+          'Set-Cookie': buildLogoutCookie(useSecureCookies, sessionCookieName(req.headers.get('host'))),
         },
       })
     }

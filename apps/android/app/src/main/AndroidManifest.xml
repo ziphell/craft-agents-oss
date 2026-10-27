@@ -33,7 +33,7 @@
 
     <activity
       android:name=".WebViewActivity"
-      android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode"
+      android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|keyboardHidden|uiMode"
       android:exported="false"
       android:launchMode="singleTop"
       android:parentActivityName=".MainActivity"

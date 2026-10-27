@@ -130,14 +130,14 @@ adb -s emulator-5556 shell dumpsys device_state | Select-String mCommittedState
 
 - 通用 foldable AVD 的 `fold` 只改 posture，不会自动切到外屏尺寸；外屏请用 `wm size 1080x2092` 模拟。
 - `emulator` 的 `resize-display 0/1/2` 在当前 AVD 返回 `KO: Failed to resize display`，实际以 `wm size` / `wm density` 为准，或直接新建对应设备配置的 AVD。
-- App 的 `WebViewActivity` 声明了 `orientation|screenSize|screenLayout`，折叠/改分辨率不会重建页面。实测折叠前后 `window.__foldMarker` 仍存在、WebSocket 保持 `connected`。
+- App 的 `WebViewActivity` 声明了 `orientation|screenSize|screenLayout|smallestScreenSize|density`，折叠/改分辨率/改密度都不会重建页面。实测改变宽高比与 dpi 后 `window.__keepMarker` 仍存在、WebSocket 保持 `connected`。
 - WebUI 会自适应：展开时 onboarding 显示描述文本，折叠后切为紧凑单行列表。
 
 ## 安全边界
 
 - JS bridge 只注入配置的服务器 origin，原生侧还会再校验 `sourceOrigin` 与主框架。HTTP 局域网下页面本身可被中间人篡改，跨公网请使用 HTTPS。
 - 不提供“信任自签名证书”选项：证书不受信任时页面直接加载失败，请使用合法证书。
-- 服务器列表存在本机 SharedPreferences；登录 cookie 由 WebView `CookieManager` 按 origin 管理（保存在应用私有存储），壳代码不读取 token。
+- 服务器列表存在本机 SharedPreferences；登录 cookie 由 WebView `CookieManager` 统一管理（保存在应用私有存储，cookie 本身不区分端口）；服务端按端口命名会话 cookie，同域名不同端口的实例互不覆盖。壳代码不读取 token。
 - 外链、OAuth、自定义 scheme 一律交给系统浏览器/对应应用；同源新窗口留在当前 WebView。
 - 下载走系统 `DownloadManager`，文件名来自 `Content-Disposition` 并做路径字符清洗。
 

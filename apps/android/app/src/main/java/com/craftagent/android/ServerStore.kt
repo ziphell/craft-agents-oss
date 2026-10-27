@@ -15,7 +15,7 @@ data class ServerEntry(
 
 /**
  * 服务器列表只保存在本机 SharedPreferences 里。
- * 会话凭据（craft_session cookie）由 WebView 的 CookieManager 按 origin 管理，这里不接触 token。
+ * 会话凭据（craft_session cookie）由 WebView 的 CookieManager 按域名管理，这里不接触 token。
  */
 class ServerStore(context: Context) {
   private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)

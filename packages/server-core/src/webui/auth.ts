@@ -68,10 +68,21 @@ export async function createSessionToken(secret: string): Promise<string> {
 // ---------------------------------------------------------------------------
 
 const SESSION_COOKIE_NAME = 'craft_session'
+const SESSION_COOKIE_PATTERN = /^craft_session(_\d+)?$/
 
-export function buildSessionCookie(jwt: string, secure: boolean): string {
+/**
+ * Cookie 不区分端口：同一域名的多个实例（例如 example.com:9100 与 :9101）
+ * 都写 craft_session 时会互相覆盖，表现为登录态被对方清空。
+ * 把端口写进 cookie 名，让同一 cookie jar 里的多个实例各用各的。
+ */
+export function sessionCookieName(hostHeader: string | null): string {
+  const port = hostHeader?.match(/:(\d+)$/)?.[1]
+  return port ? `${SESSION_COOKIE_NAME}_${port}` : SESSION_COOKIE_NAME
+}
+
+export function buildSessionCookie(jwt: string, secure: boolean, name = SESSION_COOKIE_NAME): string {
   const parts = [
-    `${SESSION_COOKIE_NAME}=${jwt}`,
+    `${name}=${jwt}`,
     'HttpOnly',
     'SameSite=Strict',
     'Path=/',
@@ -81,9 +92,9 @@ export function buildSessionCookie(jwt: string, secure: boolean): string {
   return parts.join('; ')
 }
 
-export function buildLogoutCookie(secure = false): string {
+export function buildLogoutCookie(secure = false, name = SESSION_COOKIE_NAME): string {
   const parts = [
-    `${SESSION_COOKIE_NAME}=`,
+    `${name}=`,
     'HttpOnly',
     'SameSite=Strict',
     'Path=/',
@@ -93,13 +104,19 @@ export function buildLogoutCookie(secure = false): string {
   return parts.join('; ')
 }
 
-export function extractSessionCookie(cookieHeader: string | null): string | null {
-  if (!cookieHeader) return null
+/** 同时兼容旧的无端口 cookie 名，以及按端口隔离后的名字。 */
+function sessionCookieValues(cookieHeader: string | null): string[] {
+  if (!cookieHeader) return []
+  const values: string[] = []
   for (const pair of cookieHeader.split(';')) {
     const [name, ...rest] = pair.trim().split('=')
-    if (name === SESSION_COOKIE_NAME) return rest.join('=')
+    if (SESSION_COOKIE_PATTERN.test(name)) values.push(rest.join('='))
   }
-  return null
+  return values
+}
+
+export function extractSessionCookie(cookieHeader: string | null): string | null {
+  return sessionCookieValues(cookieHeader)[0] ?? null
 }
 
 // ---------------------------------------------------------------------------
@@ -172,7 +189,11 @@ export async function validateSession(
   cookieHeader: string | null,
   secret: string,
 ): Promise<JwtPayload | null> {
-  const token = extractSessionCookie(cookieHeader)
-  if (!token) return null
-  return verifyJwt(token, secret)
+  // 同一域名可能同时存在多个端口的 cookie；逐个校验，取能通过签名的那一个。
+  for (const token of sessionCookieValues(cookieHeader)) {
+    if (!token) continue
+    const payload = await verifyJwt(token, secret)
+    if (payload) return payload
+  }
+  return null
 }
